@@ -74,7 +74,7 @@ jobs:
           /p:WindowsAppSDKSelfContained=true
           /p:WindowsPackageType=None
           /p:PublishSingleFile=false
-          /p:PublishDir=publish\TextInFilesSearch\
+          /p:PublishDir="${{ github.workspace }}\publish\TextInFilesSearch\"
           /m /nologo /verbosity:minimal
 
       - name: Verify published artifact does not depend on a pre-installed .NET runtime
