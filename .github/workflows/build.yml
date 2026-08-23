@@ -34,15 +34,28 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: Setup MSBuild (from the runner's Visual Studio install)
+        # WindowsAppSDK's PRI-resource-generation MSBuild task
+        # (Microsoft.Build.Packaging.Pri.Tasks.dll, under
+        # MSBuild\Microsoft\VisualStudio\v17.0\AppxPackage) ships only with a
+        # full Visual Studio / Build Tools install, not with the .NET SDK's
+        # own bundled MSBuild. `dotnet build`/`dotnet publish` use the SDK's
+        # MSBuild and fail with MSB4062 trying to load that task even for an
+        # unpackaged app, because WinUI 3 resource indexing (.pri generation)
+        # runs regardless of MSIX packaging. windows-latest ships full VS, so
+        # building with its real msbuild.exe (found via this action) resolves
+        # the task correctly instead.
+        uses: microsoft/setup-msbuild@v2
+
       - name: Restore
         run: dotnet restore TextInFilesSearch.sln
 
       - name: Build (Debug, all projects)
-        run: dotnet build TextInFilesSearch.sln --no-restore --configuration Debug
+        run: msbuild TextInFilesSearch.sln /p:Configuration=Debug /m /nologo /verbosity:minimal
 
       - name: Run dependency-free verification suite
-        # This is the same 36-check harness used during development (see
-        # tests/TextInFilesSearch.Tests/Program.cs) - it exercises every
+        # This is the same dependency-free harness used during development
+        # (see tests/TextInFilesSearch.Tests/Program.cs) - it exercises every
         # match mode, the DOCX/PPTX/PDF/RTF extractors (including the
         # ASCII85+FlateDecode PDF chain), the cache lifecycle, parallel vs
         # sequential consistency, and the ViewModel run/cancel/progress
@@ -52,14 +65,16 @@ jobs:
 
       - name: Publish self-contained (win-x64, unpackaged)
         run: >
-          dotnet publish src/TextInFilesSearch/TextInFilesSearch.csproj
-          --configuration Release
-          --runtime win-x64
-          --self-contained true
-          --output publish/TextInFilesSearch
-          -p:WindowsAppSDKSelfContained=true
-          -p:WindowsPackageType=None
-          -p:PublishSingleFile=false
+          msbuild src/TextInFilesSearch/TextInFilesSearch.csproj
+          /t:Publish
+          /p:Configuration=Release
+          /p:RuntimeIdentifier=win-x64
+          /p:SelfContained=true
+          /p:WindowsAppSDKSelfContained=true
+          /p:WindowsPackageType=None
+          /p:PublishSingleFile=false
+          /p:PublishDir=publish\TextInFilesSearch\
+          /m /nologo /verbosity:minimal
 
       - name: Verify published artifact does not depend on a pre-installed .NET runtime
         shell: pwsh
