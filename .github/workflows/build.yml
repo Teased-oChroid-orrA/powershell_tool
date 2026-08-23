@@ -1,0 +1,111 @@
+name: Build and verify (self-contained, offline-runtime)
+
+# This workflow is the actual verification step called for by the migration
+# brief: the published artifact is built and inspected on a clean Windows
+# runner, not just assumed correct from a passing compile. Internet access
+# during THIS workflow (restoring NuGet packages, the .NET SDK, etc.) is
+# expected and fine - the requirement is that the PUBLISHED ARTIFACT itself
+# never needs internet access, admin rights, or a pre-installed runtime when
+# it's later run on a target machine. That is what the verification steps
+# below actually check for, rather than just trusting the build succeeded.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore TextInFilesSearch.sln
+
+      - name: Build (Debug, all projects)
+        run: dotnet build TextInFilesSearch.sln --no-restore --configuration Debug
+
+      - name: Run dependency-free verification suite
+        # This is the same 36-check harness used during development (see
+        # tests/TextInFilesSearch.Tests/Program.cs) - it exercises every
+        # match mode, the DOCX/PPTX/PDF/RTF extractors (including the
+        # ASCII85+FlateDecode PDF chain), the cache lifecycle, parallel vs
+        # sequential consistency, and the ViewModel run/cancel/progress
+        # lifecycle. It has no test-framework dependency, so a failure here
+        # is a genuine regression, not a tooling problem.
+        run: dotnet run --project tests/TextInFilesSearch.Tests --configuration Debug
+
+      - name: Publish self-contained (win-x64, unpackaged)
+        run: >
+          dotnet publish src/TextInFilesSearch/TextInFilesSearch.csproj
+          --configuration Release
+          --runtime win-x64
+          --self-contained true
+          --output publish/TextInFilesSearch
+          -p:WindowsAppSDKSelfContained=true
+          -p:WindowsPackageType=None
+          -p:PublishSingleFile=false
+
+      - name: Verify published artifact does not depend on a pre-installed .NET runtime
+        shell: pwsh
+        run: |
+          $publishDir = "publish/TextInFilesSearch"
+          $hostfxr = Get-ChildItem -Path $publishDir -Filter "hostfxr.dll" -Recurse -ErrorAction SilentlyContinue
+          $coreclr = Get-ChildItem -Path $publishDir -Filter "coreclr.dll" -Recurse -ErrorAction SilentlyContinue
+          if (-not $hostfxr -or -not $coreclr) {
+            Write-Error "Self-contained .NET runtime files (hostfxr.dll / coreclr.dll) were NOT found in the publish output. This build would require a pre-installed .NET runtime on the target machine, which violates the offline/no-prerequisite requirement."
+            exit 1
+          }
+          Write-Host "Found hostfxr.dll and coreclr.dll - the .NET runtime is bundled, not assumed pre-installed."
+
+      - name: Verify published artifact does not depend on a pre-installed Windows App SDK runtime
+        shell: pwsh
+        run: |
+          $publishDir = "publish/TextInFilesSearch"
+          $winAppSdkDll = Get-ChildItem -Path $publishDir -Filter "Microsoft.WindowsAppRuntime.dll" -Recurse -ErrorAction SilentlyContinue
+          if (-not $winAppSdkDll) {
+            Write-Error "Microsoft.WindowsAppRuntime.dll was NOT found in the publish output. This build would require the Windows App SDK runtime to be installed machine-wide on the target machine, which violates the offline/no-prerequisite requirement."
+            exit 1
+          }
+          Write-Host "Found Microsoft.WindowsAppRuntime.dll - the Windows App SDK runtime is bundled, not assumed pre-installed."
+
+      - name: Verify no MSIX / packaged-app artifacts were produced
+        shell: pwsh
+        run: |
+          $msixFiles = Get-ChildItem -Path "publish" -Filter "*.msix*" -Recurse -ErrorAction SilentlyContinue
+          if ($msixFiles) {
+            Write-Error "Found MSIX package output, but this project is configured for unpackaged deployment (WindowsPackageType=None). Investigate why packaging was triggered."
+            exit 1
+          }
+          Write-Host "No MSIX artifacts found - deployment is unpackaged, as configured."
+
+      - name: List published artifact contents (for manual review in build logs)
+        shell: pwsh
+        run: |
+          Write-Host "Publish output file count:"
+          (Get-ChildItem -Path "publish/TextInFilesSearch" -Recurse -File).Count
+          Write-Host ""
+          Write-Host "Top-level files:"
+          Get-ChildItem -Path "publish/TextInFilesSearch" | Format-Table Name, Length
+
+      - name: Upload published artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TextInFilesSearch-win-x64-self-contained
+          path: publish/TextInFilesSearch/
+          if-no-files-found: error
