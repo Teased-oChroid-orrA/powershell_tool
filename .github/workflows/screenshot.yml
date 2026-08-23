@@ -51,6 +51,22 @@ jobs:
       - name: Launch app and capture a screenshot
         shell: pwsh
         run: |
+          function Dump-CrashEvents {
+            Write-Host "--- Recent Application event log entries (.NET Runtime / Application Error / Windows Error Reporting) ---"
+            try {
+              Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = (Get-Date).AddMinutes(-5) } -ErrorAction Stop |
+                Where-Object { $_.ProviderName -in @('.NET Runtime', 'Application Error', 'Windows Error Reporting') } |
+                Sort-Object TimeCreated |
+                ForEach-Object {
+                  Write-Host "[$($_.TimeCreated) | $($_.ProviderName)]"
+                  Write-Host $_.Message
+                  Write-Host "---"
+                }
+            } catch {
+              Write-Host "Could not read event log: $_"
+            }
+          }
+
           $exe = Join-Path $env:GITHUB_WORKSPACE "publish\TextInFilesSearch\TextInFilesSearch.exe"
           if (-not (Test-Path $exe)) {
             Write-Error "Published exe not found at $exe"
@@ -67,6 +83,8 @@ jobs:
             $proc.Refresh()
             if ($proc.HasExited) {
               Write-Error "App exited early with code $($proc.ExitCode)."
+              Start-Sleep -Seconds 2
+              Dump-CrashEvents
               exit 1
             }
             if ($proc.MainWindowHandle -ne 0) { $hasWindow = $true; break }
