@@ -468,6 +468,271 @@ void Check(string name, bool condition)
         result.FileResults.Any(r => r.Status == FileSearchStatus.Hit));
 }
 
+// ---------------------------------------------------------------------
+// Test 21: ExcludeFolders matches whole path segments, not raw substrings -
+// excluding "bin" must prune the actual "bin" folder but must NOT exclude
+// "robin" merely because it contains "bin" as a substring (the same class
+// of bug documented in CLAUDE.md for the packaging script's -x "*.git*").
+// ---------------------------------------------------------------------
+{
+    var dir = Path.Combine(testRoot, "excludefolder");
+    var binDir = Path.Combine(dir, "bin");
+    var robinDir = Path.Combine(dir, "robin");
+    Directory.CreateDirectory(binDir);
+    Directory.CreateDirectory(robinDir);
+    File.WriteAllText(Path.Combine(binDir, "a.txt"), "apple\n");
+    File.WriteAllText(Path.Combine(robinDir, "b.txt"), "apple\n");
+
+    var settings = new SearchSettings { SearchPath = dir, OutputFolder = testRoot, Filters = new() { "apple" }, ExcludeFolders = new() { "bin" } };
+    var result = await new SearchOrchestrator().RunAsync(settings, null, CancellationToken.None);
+
+    Check("ExcludeFolders: the 'bin' folder itself is pruned from the walk entirely",
+        !result.FileResults.Any(r => r.FullName.EndsWith("a.txt")));
+    Check("ExcludeFolders: 'robin' is NOT excluded merely for containing \"bin\" as a substring",
+        result.FileResults.Any(r => r.FullName.EndsWith("b.txt") && r.Status == FileSearchStatus.Hit));
+}
+
+// ---------------------------------------------------------------------
+// Test 22: an invalid regex filter throws a typed, specific exception
+// naming the bad filter, instead of a bare ArgumentException surfacing
+// only as a generic "Error: parsing pattern..." with no indication of
+// which of possibly many filters was the problem.
+// ---------------------------------------------------------------------
+{
+    var dir = Path.Combine(testRoot, "badregex");
+    Directory.CreateDirectory(dir);
+    File.WriteAllText(Path.Combine(dir, "a.txt"), "apple\n");
+
+    var settings = new SearchSettings { SearchPath = dir, OutputFolder = testRoot, Filters = new() { "(unclosed" }, UseRegex = true };
+    bool threw = false;
+    string? message = null;
+    try
+    {
+        await new SearchOrchestrator().RunAsync(settings, null, CancellationToken.None);
+    }
+    catch (InvalidFilterRegexException ex)
+    {
+        threw = true;
+        message = ex.Message;
+    }
+    Check("Invalid regex filter throws InvalidFilterRegexException naming the bad filter",
+        threw && message is not null && message.Contains("(unclosed"));
+}
+
+// ---------------------------------------------------------------------
+// Test 23: whole-word matching on a filter whose first/last character is
+// itself punctuation (e.g. "C#"). Plain \b fails here because \b only
+// asserts a \w/\W transition, and neither side of "C#" standing alone
+// between spaces is such a transition on the '#' side.
+// ---------------------------------------------------------------------
+{
+    var dir = Path.Combine(testRoot, "wholewordpunct");
+    Directory.CreateDirectory(dir);
+    File.WriteAllText(Path.Combine(dir, "a.txt"), "I love C# language\n");
+    File.WriteAllText(Path.Combine(dir, "b.txt"), "ABC# is not C sharp\n");
+
+    var settings = new SearchSettings { SearchPath = dir, OutputFolder = testRoot, Filters = new() { "C#" }, WholeWord = true };
+    var result = await new SearchOrchestrator().RunAsync(settings, null, CancellationToken.None);
+
+    Check("WholeWord punctuation-edge: 'C#' matches as a standalone token",
+        result.FileResults.Any(r => r.FullName.EndsWith("a.txt") && r.Status == FileSearchStatus.Hit));
+    Check("WholeWord punctuation-edge: 'C#' does not match inside 'ABC#'",
+        result.FileResults.Any(r => r.FullName.EndsWith("b.txt") && r.Status == FileSearchStatus.NoHit));
+}
+
+// ---------------------------------------------------------------------
+// Test 24: case-variant duplicate filters (e.g. "apple" and "APPLE" both
+// present) are tracked as independent filter slots by index rather than
+// collapsing into one dictionary bucket keyed by case-insensitive text -
+// confirms Proximity mode still computes a correct, sane result rather
+// than silently losing one of the slots.
+// ---------------------------------------------------------------------
+{
+    var dir = Path.Combine(testRoot, "dupcasefilter");
+    Directory.CreateDirectory(dir);
+    File.WriteAllText(Path.Combine(dir, "a.txt"), "apple\nbanana\n");
+
+    var settings = new SearchSettings
+    {
+        SearchPath = dir,
+        OutputFolder = testRoot,
+        Filters = new() { "apple", "APPLE", "banana" },
+        MatchMode = MatchMode.Proximity,
+        ProximityLines = 5
+    };
+
+    var result = await new SearchOrchestrator().RunAsync(settings, null, CancellationToken.None);
+    var fileResult = result.FileResults.FirstOrDefault(r => r.FullName.EndsWith("a.txt"));
+    Check("Case-variant duplicate filters: Proximity mode handles duplicate slots correctly",
+        fileResult is not null && fileResult.Status == FileSearchStatus.Hit && fileResult.ProximityMinRange == 1);
+}
+
+// ---------------------------------------------------------------------
+// Test 25: an already-cancelled token is honored during the directory
+// walk itself, not just during per-file processing - previously
+// EnumerateFilesSafely had no CancellationToken parameter at all, so
+// Cancel did nothing until enumeration finished on a large/slow tree.
+// ---------------------------------------------------------------------
+{
+    var dir = Path.Combine(testRoot, "cancelenum");
+    Directory.CreateDirectory(dir);
+    File.WriteAllText(Path.Combine(dir, "a.txt"), "apple\n");
+
+    using var cts = new CancellationTokenSource();
+    cts.Cancel();
+
+    bool threw = false;
+    try
+    {
+        FileReaderService.EnumerateFilesSafely(dir, includeHidden: false, excludeFolders: null, cts.Token, onProgress: null, out _);
+    }
+    catch (OperationCanceledException)
+    {
+        threw = true;
+    }
+    Check("EnumerateFilesSafely honors an already-cancelled token", threw);
+}
+
+// ---------------------------------------------------------------------
+// Test 26: CSV export neutralizes formula injection - a matched line
+// starting with '=' would otherwise execute as a formula when the CSV is
+// opened in a spreadsheet app, since this export reflects arbitrary file
+// content verbatim.
+// ---------------------------------------------------------------------
+{
+    var rows = new System.Collections.Generic.List<ReportExportService.ExportRow>
+    {
+        new() { FilePath = "x.txt", LineNumber = 1, MatchedFilters = "f", MatchLine = "=SUM(A1:A10)", Created = DateTime.UtcNow, Modified = DateTime.UtcNow }
+    };
+    string csvPath = Path.Combine(testRoot, "injection.csv");
+    ReportExportService.WriteCsv(csvPath, rows);
+    string csvContent = File.ReadAllText(csvPath);
+    Check("CSV export neutralizes a leading '=' formula-injection trigger", csvContent.Contains("'=SUM(A1:A10)"));
+}
+
+// ---------------------------------------------------------------------
+// Test 27: real XLSX fixture - shared strings resolved per cell, one
+// "line" emitted per row.
+// ---------------------------------------------------------------------
+{
+    var dir = Path.Combine(testRoot, "xlsxcheck");
+    Directory.CreateDirectory(dir);
+    ExtractEmbeddedFixture("test.xlsx", Path.Combine(dir, "test.xlsx"));
+
+    var settings = new SearchSettings { SearchPath = dir, OutputFolder = testRoot, Filters = new() { "apple", "banana" } };
+    var result = await new SearchOrchestrator().RunAsync(settings, null, CancellationToken.None);
+    var xlsxResult = result.FileResults.FirstOrDefault(r => r.FullName.EndsWith("test.xlsx"));
+    Check("XLSX: finds both apple and banana via shared strings",
+        xlsxResult is not null && xlsxResult.Status == FileSearchStatus.Hit && xlsxResult.Hits.Sum(h => h.MatchedFilters.Count) == 2);
+}
+
+// ---------------------------------------------------------------------
+// Test 28: real ZIP fixture - a plain-text entry and a nested DOCX entry,
+// exercising the recursive per-entry extraction dispatch.
+// ---------------------------------------------------------------------
+{
+    var dir = Path.Combine(testRoot, "zipcheck");
+    Directory.CreateDirectory(dir);
+    ExtractEmbeddedFixture("test.zip", Path.Combine(dir, "test.zip"));
+
+    var settings = new SearchSettings { SearchPath = dir, OutputFolder = testRoot, Filters = new() { "apple", "banana" } };
+    var result = await new SearchOrchestrator().RunAsync(settings, null, CancellationToken.None);
+    var zipResult = result.FileResults.FirstOrDefault(r => r.FullName.EndsWith("test.zip"));
+    Check("ZIP: finds apple (plain entry) and banana (nested docx entry)",
+        zipResult is not null && zipResult.Status == FileSearchStatus.Hit && zipResult.Hits.Sum(h => h.MatchedFilters.Count) == 2);
+}
+
+// ---------------------------------------------------------------------
+// Test 29: real PPTX fixture with speaker notes and a SmartArt diagram
+// part in addition to the slide itself - both were previously invisible
+// to search.
+// ---------------------------------------------------------------------
+{
+    var dir = Path.Combine(testRoot, "pptxnotescheck");
+    Directory.CreateDirectory(dir);
+    ExtractEmbeddedFixture("test_notes.pptx", Path.Combine(dir, "test_notes.pptx"));
+
+    var settings = new SearchSettings { SearchPath = dir, OutputFolder = testRoot, Filters = new() { "apple", "banana", "cherry" } };
+    var result = await new SearchOrchestrator().RunAsync(settings, null, CancellationToken.None);
+    var pptxResult = result.FileResults.FirstOrDefault(r => r.FullName.EndsWith("test_notes.pptx"));
+    Check("PPTX: finds slide text (apple), speaker notes (banana), and SmartArt diagram text (cherry)",
+        pptxResult is not null && pptxResult.Status == FileSearchStatus.Hit && pptxResult.Hits.Sum(h => h.MatchedFilters.Count) == 3);
+}
+
+// ---------------------------------------------------------------------
+// Test 30: OutputName is sanitized against illegal path characters
+// instead of throwing at save time.
+// ---------------------------------------------------------------------
+{
+    var vm = new TextInFilesSearch.ViewModels.MainViewModel();
+    vm.SearchPath = testRoot;
+    vm.OutputFolder = testRoot;
+    vm.FiltersText = "apple";
+    vm.OutputName = "bad:name*report?.html";
+
+    var settings = vm.BuildSettings();
+    Check("OutputName sanitized: no invalid filename characters remain",
+        settings.OutputName is not null && settings.OutputName.IndexOfAny(Path.GetInvalidFileNameChars()) < 0);
+}
+
+// ---------------------------------------------------------------------
+// Test 31: SplitLines handles a lone \r (classic Mac line endings), not
+// just \r\n and \n - previously such a file extracted as one giant line,
+// making line numbers/context in the report meaningless for it.
+// ---------------------------------------------------------------------
+{
+    string[] lines = TextExtractionService.SplitLines("line one\rline two\rline three");
+    Check("SplitLines: lone \\r splits into 3 lines",
+        lines.Length == 3 && lines[0] == "line one" && lines[1] == "line two" && lines[2] == "line three");
+}
+
+// ---------------------------------------------------------------------
+// Test 32: numeric settings on the ViewModel clamp to a sane range
+// instead of silently accepting a negative/zero value that produces
+// confusing behavior (e.g. MaxFileSizeMB=0 skipping every file as "too
+// large" with no explanation).
+// ---------------------------------------------------------------------
+{
+    var vm = new TextInFilesSearch.ViewModels.MainViewModel();
+    vm.ThrottleLimit = -5;
+    vm.ProximityLines = -3;
+    vm.MaxFileSizeMB = -10;
+    vm.FileTimeoutSeconds = 0;
+
+    Check("Numeric clamps: ThrottleLimit floors at 1", vm.ThrottleLimit == 1);
+    Check("Numeric clamps: ProximityLines floors at 0", vm.ProximityLines == 0);
+    Check("Numeric clamps: MaxFileSizeMB floors above 0", vm.MaxFileSizeMB > 0);
+    Check("Numeric clamps: FileTimeoutSeconds floors at 1", vm.FileTimeoutSeconds == 1);
+}
+
+// ---------------------------------------------------------------------
+// Test 33: extension type-to-filter + tick-list picker - catalog
+// population, filtering, ticking feeding into BuildSettings, and adding
+// a custom extension not already in the built-in catalog.
+// ---------------------------------------------------------------------
+{
+    var vm = new TextInFilesSearch.ViewModels.MainViewModel();
+
+    Check("Extension picker: catalog is pre-populated from the shared ExtensionCatalog",
+        vm.ExtensionCatalog.Count == ExtensionCatalog.AllExtensions.Count);
+    Check("Extension picker: nothing ticked means BuildSettings().Extensions is null (default list)",
+        vm.BuildSettings().Extensions is null);
+
+    vm.ExtensionFilterText = "xlsx";
+    Check("Extension picker: typing narrows the filtered catalog",
+        vm.FilteredExtensionCatalog.Count > 0 && vm.FilteredExtensionCatalog.All(e => e.Extension.Contains("xlsx")));
+
+    var xlsxOption = vm.FilteredExtensionCatalog.First(e => e.Extension == ".xlsx");
+    xlsxOption.IsSelected = true;
+    Check("Extension picker: ticking an entry makes it appear in BuildSettings().Extensions",
+        vm.BuildSettings().Extensions is { } sel && sel.Contains(".xlsx"));
+
+    vm.ExtensionFilterText = string.Empty;
+    vm.AddCustomExtension("foo");
+    Check("Extension picker: custom extension normalized with a leading dot and auto-selected",
+        vm.ExtensionCatalog.Any(e => e.Extension == ".foo" && e.Category == "Custom" && e.IsSelected));
+}
+
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL TESTS PASSED" : $"{failures} TEST(S) FAILED");
 Directory.Delete(testRoot, true);

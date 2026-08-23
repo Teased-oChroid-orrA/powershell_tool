@@ -11,6 +11,27 @@ namespace TextInFilesSearch.Services;
 /// line) and reused across every file - the same optimization as the
 /// PowerShell version's compiled-regex cache and combined pre-check pattern.
 /// </summary>
+/// <summary>
+/// Thrown when one or more regex-mode filters fail to compile, identifying
+/// exactly which filter(s) and why - previously an invalid filter threw a
+/// bare ArgumentException from deep inside Regex construction, caught only
+/// generically by the ViewModel as "Error: parsing pattern..." with no
+/// indication of which of possibly many filters was the problem.
+/// </summary>
+public sealed class InvalidFilterRegexException : Exception
+{
+    public IReadOnlyList<(string Filter, string Error)> InvalidFilters { get; }
+
+    public InvalidFilterRegexException(IReadOnlyList<(string Filter, string Error)> invalidFilters)
+        : base(BuildMessage(invalidFilters))
+    {
+        InvalidFilters = invalidFilters;
+    }
+
+    private static string BuildMessage(IReadOnlyList<(string Filter, string Error)> invalidFilters) =>
+        "Invalid regex filter(s): " + string.Join("; ", invalidFilters.Select(f => $"\"{f.Filter}\" ({f.Error})"));
+}
+
 public sealed class CompiledMatchState
 {
     public required IReadOnlyList<string> Filters { get; init; }
@@ -39,17 +60,27 @@ public sealed class CompiledMatchState
 
         if (settings.UseRegex)
         {
+            var invalid = new List<(string Filter, string Error)>();
+
             foreach (var f in settings.Filters)
-                state.CompiledFilterRegex[f] = new Regex(f, RegexOptions.IgnoreCase | RegexOptions.Compiled, TimeSpan.FromSeconds(2));
+            {
+                try { state.CompiledFilterRegex[f] = new Regex(f, RegexOptions.IgnoreCase | RegexOptions.Compiled, TimeSpan.FromSeconds(2)); }
+                catch (Exception ex) { invalid.Add((f, ex.Message)); }
+            }
             foreach (var f in settings.ExcludeFilters)
-                state.CompiledExcludeRegex[f] = new Regex(f, RegexOptions.IgnoreCase | RegexOptions.Compiled, TimeSpan.FromSeconds(2));
+            {
+                try { state.CompiledExcludeRegex[f] = new Regex(f, RegexOptions.IgnoreCase | RegexOptions.Compiled, TimeSpan.FromSeconds(2)); }
+                catch (Exception ex) { invalid.Add((f, ex.Message)); }
+            }
+
+            if (invalid.Count > 0) throw new InvalidFilterRegexException(invalid);
         }
         else if (settings.WholeWord)
         {
             foreach (var f in settings.Filters)
-                state.WholeWordFilterRegex[f] = new Regex(@"\b" + Regex.Escape(f) + @"\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+                state.WholeWordFilterRegex[f] = new Regex(WholeWordHelper.BuildPattern(f), RegexOptions.IgnoreCase | RegexOptions.Compiled);
             foreach (var f in settings.ExcludeFilters)
-                state.WholeWordExcludeRegex[f] = new Regex(@"\b" + Regex.Escape(f) + @"\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+                state.WholeWordExcludeRegex[f] = new Regex(WholeWordHelper.BuildPattern(f), RegexOptions.IgnoreCase | RegexOptions.Compiled);
         }
 
         state.CombinedFilterRegex = BuildCombined(settings.Filters, settings.UseRegex, settings.WholeWord);
@@ -65,7 +96,7 @@ public sealed class CompiledMatchState
         if (filters.Count == 0) return null;
         try
         {
-            var parts = filters.Select(f => useRegex ? $"(?:{f})" : (wholeWord ? @"\b" + Regex.Escape(f) + @"\b" : Regex.Escape(f)));
+            var parts = filters.Select(f => useRegex ? $"(?:{f})" : (wholeWord ? WholeWordHelper.BuildPattern(f) : Regex.Escape(f)));
             string pattern = "(?:" + string.Join("|", parts) + ")";
             return new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled, TimeSpan.FromSeconds(2));
         }
@@ -77,6 +108,24 @@ public sealed class CompiledMatchState
             return null;
         }
     }
+}
+
+/// <summary>
+/// Builds the "whole word" match pattern used everywhere whole-word mode is
+/// needed (MatchingEngine and ReportExportService's highlighter alike - one
+/// implementation instead of two that could drift). Uses lookaround against
+/// letter/digit/underscore rather than \b: \b only asserts a transition
+/// between a \w and non-\w character, so a filter whose own first or last
+/// character is itself non-word (e.g. "C#") can fail to match even when
+/// standing alone between spaces, because neither side of that boundary is a
+/// \w-to-\W transition. Asserting "not adjacent to a letter/digit/underscore"
+/// on both sides instead gives the intuitive "isolated token" behavior
+/// regardless of what character the filter starts or ends with.
+/// </summary>
+public static class WholeWordHelper
+{
+    public static string BuildPattern(string filter) =>
+        @"(?<![\p{L}\p{N}_])" + Regex.Escape(filter) + @"(?![\p{L}\p{N}_])";
 }
 
 public static class MatchingEngine
@@ -106,7 +155,14 @@ public static class MatchingEngine
         passesMode = true;
         proximityMinRange = null;
 
-        var fileMatchedFilters = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Indexed by filter *slot* (position in settings.Filters), not by
+        // filter text - two filters differing only by case (or literal
+        // duplicates) are distinct slots. Keying this by string previously
+        // let case-variant duplicate filters silently collapse into one
+        // entry, skewing the proximity range calculation.
+        int filterCount = settings.Filters.Count;
+        var perFilterHitLines = new List<int>[filterCount];
+        for (int fi = 0; fi < filterCount; fi++) perFilterHitLines[fi] = new List<int>();
 
         for (int i = 0; i < lines.Length; i++)
         {
@@ -140,12 +196,13 @@ public static class MatchingEngine
 
             if (candidateLine)
             {
-                foreach (var f in settings.Filters)
+                for (int fi = 0; fi < filterCount; fi++)
                 {
+                    string f = settings.Filters[fi];
                     if (IsHit(line, f, settings, state.CompiledFilterRegex, state.WholeWordFilterRegex))
                     {
                         matchedFilters.Add(f);
-                        fileMatchedFilters.Add(f);
+                        perFilterHitLines[fi].Add(i + 1);
                     }
                 }
             }
@@ -167,33 +224,17 @@ public static class MatchingEngine
 
         if (settings.MatchMode is MatchMode.AllInFile or MatchMode.Proximity)
         {
-            foreach (var f in settings.Filters)
+            for (int fi = 0; fi < filterCount; fi++)
             {
-                if (!fileMatchedFilters.Contains(f)) { passesMode = false; break; }
+                if (perFilterHitLines[fi].Count == 0) { passesMode = false; break; }
             }
         }
 
         if (passesMode && settings.MatchMode == MatchMode.Proximity)
         {
-            var filterLineLists = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
-            foreach (var h in hits)
-            {
-                foreach (var mf in h.MatchedFilters)
-                {
-                    if (!filterLineLists.TryGetValue(mf, out var list))
-                    {
-                        list = new List<int>();
-                        filterLineLists[mf] = list;
-                    }
-                    list.Add(h.LineNumber);
-                }
-            }
-            foreach (var key in filterLineLists.Keys.ToList())
-            {
-                filterLineLists[key] = filterLineLists[key].Distinct().OrderBy(x => x).ToList();
-            }
-
-            int minRange = GetMinLineRangeAcrossFilters(filterLineLists, settings.Filters);
+            // Each per-filter list was appended in increasing line order by
+            // construction, so it's already sorted with no duplicates.
+            int minRange = GetMinLineRangeAcrossFilters(perFilterHitLines);
             proximityMinRange = minRange;
             if (minRange > settings.ProximityLines) passesMode = false;
         }
@@ -221,17 +262,16 @@ public static class MatchingEngine
     }
 
     /// <summary>
-    /// Given each filter's sorted, distinct hit-line-numbers within one file,
+    /// Given each filter slot's sorted hit-line-numbers within one file,
     /// returns the smallest line span covering at least one line per filter -
     /// the classic "smallest range covering one element from each list"
     /// problem, solved by always advancing whichever list sits at the current
     /// minimum. Assumes every filter has at least one entry (callers only call
     /// this after confirming that via the AllInFile-style gate above).
     /// </summary>
-    public static int GetMinLineRangeAcrossFilters(Dictionary<string, List<int>> filterLineLists, IReadOnlyList<string> filters)
+    public static int GetMinLineRangeAcrossFilters(IReadOnlyList<List<int>> filterLineLists)
     {
-        var lists = filters.Select(f => filterLineLists[f]).ToList();
-        int k = lists.Count;
+        int k = filterLineLists.Count;
         if (k == 0) return int.MaxValue;
 
         var ptr = new int[k];
@@ -243,8 +283,8 @@ public static class MatchingEngine
             bool exhausted = false;
             for (int i = 0; i < k; i++)
             {
-                if (ptr[i] >= lists[i].Count) { exhausted = true; break; }
-                vals[i] = lists[i][ptr[i]];
+                if (ptr[i] >= filterLineLists[i].Count) { exhausted = true; break; }
+                vals[i] = filterLineLists[i][ptr[i]];
             }
             if (exhausted) break;
 

@@ -70,13 +70,8 @@ public sealed class SearchSettings
     public int RetryDelayMs { get; set; } = 250;
     public int FileTimeoutSeconds { get; set; } = 30;
 
-    public static readonly IReadOnlyList<string> DefaultExtensions = new List<string>
-    {
-        ".txt", ".log", ".csv", ".tsv", ".md", ".ini", ".cfg", ".conf",
-        ".xml", ".json", ".yaml", ".yml", ".htm", ".html",
-        ".ps1", ".psm1", ".bat", ".cmd", ".py", ".js", ".ts", ".cs",
-        ".java", ".sql", ".rtf", ".docx", ".pptx", ".pdf"
-    };
+    /// <summary>The flattened form of <see cref="ExtensionCatalog.Categories"/> - kept as one source of truth so the engine's default and the picker UI's catalog can never drift apart.</summary>
+    public static readonly IReadOnlyList<string> DefaultExtensions = ExtensionCatalog.AllExtensions;
 }
 
 /// <summary>One matched line within one file, with one line of context on each side.</summary>
@@ -133,6 +128,7 @@ public sealed class SearchRunSummary
     public int SkippedByMode { get; set; }
     public int SkippedUnexpectedError { get; set; }
     public int CacheReused { get; set; }
+    public int EnumerationErrors { get; set; }
     public List<(string FullName, string Message)> Warnings { get; } = new();
 }
 
@@ -159,6 +155,20 @@ public sealed class SearchProgressReport
 
     public bool IsDryRun { get; set; }
 
+    /// <summary>True while the initial directory walk is still running, before any file processing has started - a large/slow (network-share) tree can take a while just to enumerate.</summary>
+    public bool IsEnumerating { get; set; }
+
+    /// <summary>Files found so far during enumeration; only meaningful while <see cref="IsEnumerating"/> is true.</summary>
+    public int EnumeratedFileCount { get; set; }
+
     /// <summary>Every file currently being processed right now (one entry in sequential mode, up to ThrottleLimit in parallel mode).</summary>
     public IReadOnlyList<InFlightFileStatus> InFlightFiles { get; set; } = Array.Empty<InFlightFileStatus>();
+
+    /// <summary>
+    /// The file result that just completed (freshly processed or reused from
+    /// cache) that triggered this report, if any - lets the UI stream
+    /// results into the list live instead of only populating it after the
+    /// whole run finishes.
+    /// </summary>
+    public FileSearchResult? LastCompletedResult { get; set; }
 }

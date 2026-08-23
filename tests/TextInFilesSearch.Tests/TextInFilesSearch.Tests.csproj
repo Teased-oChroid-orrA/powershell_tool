@@ -40,6 +40,15 @@
     <EmbeddedResource Include="Fixtures/test.pdf">
       <LogicalName>test.pdf</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="Fixtures/test.xlsx">
+      <LogicalName>test.xlsx</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Fixtures/test.zip">
+      <LogicalName>test.zip</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Fixtures/test_notes.pptx">
+      <LogicalName>test_notes.pptx</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
 </Project>

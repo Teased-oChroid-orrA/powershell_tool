@@ -38,13 +38,23 @@ public sealed class SearchOrchestrator
             StringComparer.OrdinalIgnoreCase);
         bool searchAllExtensions = extensionSet.Count == 1 && extensionSet.Contains("*");
 
-        var allFiles = FileReaderService.EnumerateFilesSafely(settings.SearchPath, settings.IncludeHidden, out int enumErrors);
+        // Excluded folders are now pruned during the walk itself (matched by
+        // whole path segment, not raw substring - see IsExcludedDirectory),
+        // so a huge excluded tree is never actually descended into, and
+        // "bin" no longer accidentally excludes "...\robin\...".
+        progress?.Report(new SearchProgressReport { IsEnumerating = true });
+        var allFiles = FileReaderService.EnumerateFilesSafely(
+            settings.SearchPath,
+            settings.IncludeHidden,
+            settings.ExcludeFolders,
+            cancellationToken,
+            onProgress: count => progress?.Report(new SearchProgressReport { IsEnumerating = true, EnumeratedFileCount = count }),
+            out int enumErrors);
+        runResult.Summary.EnumerationErrors = enumErrors;
 
         var candidates = new List<FileInfo>();
         foreach (var f in allFiles)
         {
-            if (settings.ExcludeFolders.Any(ex => f.FullName.Contains(ex, StringComparison.OrdinalIgnoreCase)))
-                continue;
             if (!searchAllExtensions && !extensionSet.Contains(f.Extension))
                 continue;
             candidates.Add(f);
@@ -89,51 +99,64 @@ public sealed class SearchOrchestrator
         var maxBytes = (long)(settings.MaxFileSizeMB * 1024 * 1024);
 
         var fresh = new List<FileSearchResult>();
+        int totalCandidates = candidates.Count;
         int filesCompleted = 0;
         int hitsSoFar = 0;
         var inFlight = new ConcurrentDictionary<string, InFlightFileStatus>();
 
-        void ReportProgress()
+        void ReportProgress(FileSearchResult? justCompleted = null)
         {
             progress?.Report(new SearchProgressReport
             {
                 FilesCompleted = filesCompleted,
-                TotalFiles = toProcess.Count,
+                TotalFiles = totalCandidates,
                 HitsSoFar = hitsSoFar,
-                InFlightFiles = inFlight.Values.ToList()
+                InFlightFiles = inFlight.Values.ToList(),
+                LastCompletedResult = justCompleted
             });
+        }
+
+        // Cache-reused files never go through ProcessOneFileAsync, so without
+        // this they'd be invisible to progress/streaming entirely - a warm
+        // run would show 0% until the very end even though every file is
+        // effectively "already done".
+        foreach (var r in reused)
+        {
+            filesCompleted++;
+            if (r.Status == FileSearchStatus.Hit) hitsSoFar += r.Hits.Count;
+            ReportProgress(r);
         }
 
         if (settings.Parallel && toProcess.Count > 0)
         {
-            using var throttle = new SemaphoreSlim(Math.Max(1, settings.ThrottleLimit));
-            var tasks = toProcess.Select(async file =>
+            var parallelOptions = new ParallelOptions
             {
-                await throttle.WaitAsync(cancellationToken);
-                try
-                {
-                    var result = await ProcessOneFileAsync(file, settings, matchState, maxBytes, inFlight, cancellationToken);
-                    Interlocked.Increment(ref filesCompleted);
-                    if (result.Status == FileSearchStatus.Hit) Interlocked.Add(ref hitsSoFar, result.Hits.Count);
-                    lock (fresh) { fresh.Add(result); }
-                    ReportProgress();
-                    return result;
-                }
-                finally
-                {
-                    throttle.Release();
-                }
-            }).ToList();
+                MaxDegreeOfParallelism = Math.Max(1, settings.ThrottleLimit),
+                CancellationToken = cancellationToken
+            };
 
             // Lightweight ticker so in-flight elapsed times keep updating even
             // between file completions - this is what makes a slow PDF visibly
             // "still going" instead of the display freezing for 10+ seconds.
             using var tickerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            var ticker = TickProgressAsync(tickerCts.Token, ReportProgress);
+            var ticker = TickProgressAsync(tickerCts.Token, () => ReportProgress());
 
-            await Task.WhenAll(tasks);
-            tickerCts.Cancel();
-            try { await ticker; } catch (OperationCanceledException) { }
+            try
+            {
+                await Parallel.ForEachAsync(toProcess, parallelOptions, async (file, ct) =>
+                {
+                    var result = await ProcessOneFileAsync(file, settings, matchState, maxBytes, inFlight, ct);
+                    Interlocked.Increment(ref filesCompleted);
+                    if (result.Status == FileSearchStatus.Hit) Interlocked.Add(ref hitsSoFar, result.Hits.Count);
+                    lock (fresh) { fresh.Add(result); }
+                    ReportProgress(result);
+                });
+            }
+            finally
+            {
+                tickerCts.Cancel();
+                try { await ticker; } catch (OperationCanceledException) { }
+            }
         }
         else
         {
@@ -144,7 +167,7 @@ public sealed class SearchOrchestrator
                 filesCompleted++;
                 if (result.Status == FileSearchStatus.Hit) hitsSoFar += result.Hits.Count;
                 fresh.Add(result);
-                ReportProgress();
+                ReportProgress(result);
             }
         }
 
@@ -261,6 +284,12 @@ public sealed class SearchOrchestrator
                 case ".pptx":
                     lines = TextExtractionService.ExtractPptxLines(bytes);
                     break;
+                case ".xlsx":
+                    lines = TextExtractionService.ExtractXlsxLines(bytes);
+                    break;
+                case ".zip":
+                    lines = TextExtractionService.ExtractZipArchiveLines(bytes);
+                    break;
                 case ".pdf":
                     lines = TextExtractionService.ExtractPdfLines(
                         bytes, settings.PdfTimeoutSeconds, out _,
@@ -281,7 +310,7 @@ public sealed class SearchOrchestrator
                         return result;
                     }
                     string text = TextExtractionService.DecodeText(bytes);
-                    lines = text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+                    lines = TextExtractionService.SplitLines(text);
                     break;
             }
 

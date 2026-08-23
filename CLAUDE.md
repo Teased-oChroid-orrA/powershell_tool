@@ -7,9 +7,14 @@ no memory of how it got here. Read this before making changes.
 
 A native Windows desktop app (WinUI 3 / C# / .NET 8) that recursively
 searches a folder for keyword filters across `.txt`, `.log`, `.docx`,
-`.pptx`, `.rtf`, `.pdf`, and other file types, producing an HTML report plus
-optional CSV/JSON export. It is a from-scratch C# migration of an earlier
-PowerShell tool (kept in `powershell/` for reference only - see below).
+`.pptx` (slides, speaker notes, and SmartArt diagram text), `.xlsx`, `.zip`
+(recursing into entries, including nested zips), `.rtf`, `.pdf`, and dozens
+of other code/config/data extensions (see `Models/ExtensionCatalog.cs` - the
+single source of truth for both the engine's default extension list and the
+UI's type-to-filter/tick-list extension picker), producing an HTML report
+plus optional CSV/JSON export. It is a from-scratch C# migration of an
+earlier PowerShell tool (kept in `powershell/` for reference only - see
+below).
 
 ## Architecture: Core/head split - do not merge these back together
 
@@ -90,15 +95,22 @@ don't fall back to calling out to the old script.
   dotnet run --project tests/TextInFilesSearch.Tests
   ```
   This is a plain console harness (not xUnit/MSTest, deliberately - zero
-  package restore needed), currently 36 checks covering all three match
-  modes, exclude scopes, whole-word/regex matching (including highlight-span
-  correctness), the ASCII85 decoder, RTF extraction, real DOCX/PPTX/PDF files
-  (the PDF case specifically exercises an ASCII85Decode+FlateDecode filter
-  chain that silently failed before that bug was caught), parallel-vs-
-  sequential consistency, the full incremental cache lifecycle, the
-  Windows-1252 encoding path, and the ViewModel run/cancel/progress
-  lifecycle. Add a new check here for any new behavior rather than trusting
-  a passing build.
+  package restore needed), currently 60 checks covering all three match
+  modes, exclude scopes (including that ExcludeFolders matches whole path
+  segments, not a raw substring - excluding "bin" must not exclude "robin"),
+  whole-word/regex matching (including the lookaround-based whole-word
+  boundary that correctly handles punctuation-edged filters like "C#", and
+  highlight-span correctness), invalid-regex-filter error reporting, the
+  ASCII85 decoder, RTF extraction, real DOCX/PPTX (slides + speaker notes +
+  SmartArt diagram)/XLSX/ZIP (including a nested DOCX entry)/PDF files (the
+  PDF case specifically exercises an ASCII85Decode+FlateDecode filter chain
+  that silently failed before that bug was caught), parallel-vs-sequential
+  consistency, cancellable/progress-reported directory enumeration, the full
+  incremental cache lifecycle, CSV formula-injection neutralization, the
+  Windows-1252 encoding path, ViewModel numeric-setting clamps and output-name
+  sanitization, the extension type-to-filter/tick-list picker, and the
+  ViewModel run/cancel/progress/streamed-results lifecycle. Add a new check
+  here for any new behavior rather than trusting a passing build.
 - **The WinUI layer (`src/TextInFilesSearch/Views`, the `.csproj`'s publish
   config) cannot be verified this way** - it needs an actual Windows build.
   `.github/workflows/build.yml` is the real verification gate: it builds,
@@ -153,14 +165,24 @@ cleaner - that regresses the exact problem this app was built to fix.
 
 If refactoring search/matching/reporting, confirm none of these regress:
 match modes (AnyLine / AllInFile / Proximity), exclude filters with Line/File
-scope, whole-word matching, regex mode, GroupBy (Created/Modified/None),
-configurable extension allowlist, parallel processing with a throttle limit,
+scope, exclude-folder matching by whole path segment (never raw substring -
+see the bug class note above), whole-word matching (lookaround-based, not
+`\b`, so punctuation-edged filters like "C#" work), regex mode (with a typed
+`InvalidFilterRegexException` naming the bad filter instead of a bare crash),
+GroupBy (Created/Modified/None), the extension type-to-filter/tick-list
+picker (`Models/ExtensionCatalog.cs` is the single source of truth backing
+both the picker and the engine's default list) plus a custom-extension add
+path, parallel processing via `Parallel.ForEachAsync` with a throttle limit,
 the incremental cache (fingerprinted by settings, keyed by path + size +
-mtime), dry run, retry-with-backoff plus per-file timeout for locked/slow
-files, symlink-safe directory walking, encoding detection (BOM → strict UTF-8
-→ Windows-1252 fallback), and the HTML report's dark-mode CSS, table of
-contents, per-filter bar chart, PDF low-confidence flagging, and match
-highlighting.
+mtime) including that cache-reused files still stream through progress, dry
+run, retry-with-backoff plus per-file timeout for locked/slow files
+(including detecting a file truncated by a concurrent write mid-read),
+symlink-safe and cancellable directory walking with periodic enumeration
+progress, encoding detection (BOM → strict UTF-8 → Windows-1252 fallback),
+CSV export's formula-injection guard, live streaming of results into the
+UI as each file completes (not just after the whole run finishes), and the
+HTML report's dark-mode CSS, table of contents, per-filter bar chart, PDF
+low-confidence flagging, and match highlighting.
 
 ## Target environment (do not relax these without discussion)
 

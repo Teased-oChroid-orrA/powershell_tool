@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using TextInFilesSearch.Helpers;
@@ -63,6 +64,22 @@ public sealed class MainViewModel : ObservableObject
         RunSearchCommand = new AsyncRelayCommand(RunSearchAsync, () => !IsRunning && !string.IsNullOrWhiteSpace(SearchPath) && !string.IsNullOrWhiteSpace(OutputFolder) && !string.IsNullOrWhiteSpace(FiltersText));
         CancelCommand = new RelayCommand(() => _cts?.Cancel(), () => IsRunning);
         OpenReportCommand = new RelayCommand(() => { if (LastReportPath is not null) _openReport(LastReportPath); }, () => LastReportPath is not null);
+        AddCustomExtensionCommand = new RelayCommand(() => AddCustomExtension(ExtensionFilterText), () => !string.IsNullOrWhiteSpace(ExtensionFilterText));
+        ClearSelectedExtensionsCommand = new RelayCommand(() =>
+        {
+            foreach (var e in ExtensionCatalog) e.IsSelected = false;
+        });
+
+        foreach (var category in Models.ExtensionCatalog.Categories)
+        {
+            foreach (var ext in category.Extensions)
+            {
+                var option = new ExtensionOption { Extension = ext, Category = category.Category };
+                option.PropertyChanged += (_, __) => RefreshSelectedExtensionsSummary();
+                ExtensionCatalog.Add(option);
+            }
+        }
+        RefreshFilteredExtensionCatalog();
     }
 
     // ---------------------------------------------------------------
@@ -88,7 +105,7 @@ public sealed class MainViewModel : ObservableObject
     public MatchMode MatchMode { get => _matchMode; set => SetProperty(ref _matchMode, value); }
 
     private int _proximityLines = 5;
-    public int ProximityLines { get => _proximityLines; set => SetProperty(ref _proximityLines, value); }
+    public int ProximityLines { get => _proximityLines; set => SetProperty(ref _proximityLines, Math.Max(0, value)); }
 
     private ExcludeScope _excludeScope = ExcludeScope.Line;
     public ExcludeScope ExcludeScope { get => _excludeScope; set => SetProperty(ref _excludeScope, value); }
@@ -102,8 +119,79 @@ public sealed class MainViewModel : ObservableObject
     private GroupByMode _groupBy = GroupByMode.Created;
     public GroupByMode GroupBy { get => _groupBy; set => SetProperty(ref _groupBy, value); }
 
-    private string? _extensionsText;
-    public string? ExtensionsText { get => _extensionsText; set => SetProperty(ref _extensionsText, value); }
+    // ---------------------------------------------------------------
+    // Extension picker: type-to-filter, then tick one or more. Typing
+    // narrows ExtensionCatalog down to FilteredExtensionCatalog; ticking an
+    // entry adds/removes it from the effective search extension list built
+    // in BuildSettings(). A typed extension that isn't in the built-in
+    // catalog can be added as a one-off custom entry via AddCustomExtension.
+    // ---------------------------------------------------------------
+
+    public ObservableCollection<ExtensionOption> ExtensionCatalog { get; } = new();
+    public ObservableCollection<ExtensionOption> FilteredExtensionCatalog { get; } = new();
+
+    private string _extensionFilterText = string.Empty;
+    public string ExtensionFilterText
+    {
+        get => _extensionFilterText;
+        set
+        {
+            if (SetProperty(ref _extensionFilterText, value))
+            {
+                RefreshFilteredExtensionCatalog();
+                AddCustomExtensionCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    private string _selectedExtensionsSummaryText = "Using built-in default extension list.";
+    public string SelectedExtensionsSummaryText { get => _selectedExtensionsSummaryText; private set => SetProperty(ref _selectedExtensionsSummaryText, value); }
+
+    private void RefreshFilteredExtensionCatalog()
+    {
+        FilteredExtensionCatalog.Clear();
+        string needle = _extensionFilterText.Trim();
+        IEnumerable<ExtensionOption> matches = needle.Length == 0
+            ? ExtensionCatalog
+            : ExtensionCatalog.Where(e =>
+                e.Extension.Contains(needle, StringComparison.OrdinalIgnoreCase) ||
+                e.Category.Contains(needle, StringComparison.OrdinalIgnoreCase));
+
+        foreach (var e in matches) FilteredExtensionCatalog.Add(e);
+    }
+
+    private void RefreshSelectedExtensionsSummary()
+    {
+        var selected = ExtensionCatalog.Where(e => e.IsSelected).Select(e => e.Extension).ToList();
+        SelectedExtensionsSummaryText = selected.Count == 0
+            ? "Using built-in default extension list."
+            : $"Searching: {string.Join(", ", selected)}";
+    }
+
+    /// <summary>Normalizes user-typed extension text (auto-prepends '.', lowercases) and adds it as a selected custom catalog entry if it isn't already present.</summary>
+    public void AddCustomExtension(string rawText)
+    {
+        string trimmed = rawText.Trim();
+        if (trimmed.Length == 0) return;
+
+        string normalized = trimmed.StartsWith('.') ? trimmed : "." + trimmed;
+        normalized = normalized.ToLowerInvariant();
+
+        var existing = ExtensionCatalog.FirstOrDefault(e => string.Equals(e.Extension, normalized, StringComparison.OrdinalIgnoreCase));
+        if (existing is not null)
+        {
+            existing.IsSelected = true;
+        }
+        else
+        {
+            var option = new ExtensionOption { Extension = normalized, Category = "Custom", IsSelected = true };
+            option.PropertyChanged += (_, __) => RefreshSelectedExtensionsSummary();
+            ExtensionCatalog.Add(option);
+        }
+
+        ExtensionFilterText = string.Empty;
+        RefreshSelectedExtensionsSummary();
+    }
 
     private string _excludeFoldersText = string.Empty;
     public string ExcludeFoldersText { get => _excludeFoldersText; set => SetProperty(ref _excludeFoldersText, value); }
@@ -112,13 +200,13 @@ public sealed class MainViewModel : ObservableObject
     public bool IncludeHidden { get => _includeHidden; set => SetProperty(ref _includeHidden, value); }
 
     private double _maxFileSizeMB = 50;
-    public double MaxFileSizeMB { get => _maxFileSizeMB; set => SetProperty(ref _maxFileSizeMB, value); }
+    public double MaxFileSizeMB { get => _maxFileSizeMB; set => SetProperty(ref _maxFileSizeMB, Math.Max(0.01, value)); }
 
     private int _maxEmbedLines = 4000;
-    public int MaxEmbedLines { get => _maxEmbedLines; set => SetProperty(ref _maxEmbedLines, value); }
+    public int MaxEmbedLines { get => _maxEmbedLines; set => SetProperty(ref _maxEmbedLines, Math.Max(1, value)); }
 
     private int _pdfTimeoutSeconds = 15;
-    public int PdfTimeoutSeconds { get => _pdfTimeoutSeconds; set => SetProperty(ref _pdfTimeoutSeconds, value); }
+    public int PdfTimeoutSeconds { get => _pdfTimeoutSeconds; set => SetProperty(ref _pdfTimeoutSeconds, Math.Max(1, value)); }
 
     private bool _openReportWhenDone;
     public bool OpenReportWhenDone { get => _openReportWhenDone; set => SetProperty(ref _openReportWhenDone, value); }
@@ -133,7 +221,7 @@ public sealed class MainViewModel : ObservableObject
     public bool Parallel { get => _parallel; set => SetProperty(ref _parallel, value); }
 
     private int _throttleLimit = 5;
-    public int ThrottleLimit { get => _throttleLimit; set => SetProperty(ref _throttleLimit, value); }
+    public int ThrottleLimit { get => _throttleLimit; set => SetProperty(ref _throttleLimit, Math.Max(1, value)); }
 
     private string? _cacheFilePath;
     public string? CacheFilePath { get => _cacheFilePath; set => SetProperty(ref _cacheFilePath, value); }
@@ -142,13 +230,13 @@ public sealed class MainViewModel : ObservableObject
     public bool DryRun { get => _dryRun; set => SetProperty(ref _dryRun, value); }
 
     private int _maxRetries = 3;
-    public int MaxRetries { get => _maxRetries; set => SetProperty(ref _maxRetries, value); }
+    public int MaxRetries { get => _maxRetries; set => SetProperty(ref _maxRetries, Math.Max(0, value)); }
 
     private int _retryDelayMs = 250;
-    public int RetryDelayMs { get => _retryDelayMs; set => SetProperty(ref _retryDelayMs, value); }
+    public int RetryDelayMs { get => _retryDelayMs; set => SetProperty(ref _retryDelayMs, Math.Max(0, value)); }
 
     private int _fileTimeoutSeconds = 30;
-    public int FileTimeoutSeconds { get => _fileTimeoutSeconds; set => SetProperty(ref _fileTimeoutSeconds, value); }
+    public int FileTimeoutSeconds { get => _fileTimeoutSeconds; set => SetProperty(ref _fileTimeoutSeconds, Math.Max(1, value)); }
 
     // ---------------------------------------------------------------
     // Live run state
@@ -202,6 +290,8 @@ public sealed class MainViewModel : ObservableObject
     public AsyncRelayCommand RunSearchCommand { get; }
     public RelayCommand CancelCommand { get; }
     public RelayCommand OpenReportCommand { get; }
+    public RelayCommand AddCustomExtensionCommand { get; }
+    public RelayCommand ClearSelectedExtensionsCommand { get; }
 
     private void RefreshCanRun() => RunSearchCommand.RaiseCanExecuteChanged();
 
@@ -212,11 +302,27 @@ public sealed class MainViewModel : ObservableObject
     private static List<string> ParseList(string text) =>
         text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
 
+    /// <summary>Null means "use the built-in default list" (same convention SearchSettings.Extensions already used) - so ticking nothing in the picker behaves exactly like the old blank free-text box did.</summary>
+    private List<string>? BuildSelectedExtensions()
+    {
+        var selected = ExtensionCatalog.Where(e => e.IsSelected).Select(e => e.Extension).ToList();
+        return selected.Count > 0 ? selected : null;
+    }
+
+    /// <summary>Replaces every character Windows disallows in a file name with '_' - a stray ':'/'*'/'?' etc. in a user-typed report name previously threw at save time instead of being caught proactively.</summary>
+    private static string SanitizeFileName(string name)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var sb = new StringBuilder(name.Length);
+        foreach (char c in name) sb.Append(invalid.Contains(c) ? '_' : c);
+        return sb.ToString();
+    }
+
     public SearchSettings BuildSettings() => new()
     {
         SearchPath = SearchPath.Trim(),
         OutputFolder = OutputFolder.Trim(),
-        OutputName = string.IsNullOrWhiteSpace(OutputName) ? null : OutputName,
+        OutputName = string.IsNullOrWhiteSpace(OutputName) ? null : SanitizeFileName(OutputName),
         Filters = ParseList(FiltersText),
         ExcludeFilters = ParseList(ExcludeFiltersText),
         MatchMode = MatchMode,
@@ -225,7 +331,7 @@ public sealed class MainViewModel : ObservableObject
         WholeWord = WholeWord,
         UseRegex = UseRegex,
         GroupBy = GroupBy,
-        Extensions = string.IsNullOrWhiteSpace(ExtensionsText) ? null : ParseList(ExtensionsText),
+        Extensions = BuildSelectedExtensions(),
         ExcludeFolders = ParseList(ExcludeFoldersText),
         IncludeHidden = IncludeHidden,
         MaxFileSizeMB = MaxFileSizeMB,
@@ -277,8 +383,18 @@ public sealed class MainViewModel : ObservableObject
                 return;
             }
 
+            // Results is normally already fully populated by OnProgress as
+            // each file streamed in live. But Progress<T> marshals its
+            // callback via whatever SynchronizationContext was captured at
+            // construction (the UI dispatcher in the real app; the thread
+            // pool - asynchronously - when there is none, e.g. this
+            // console test harness), so live delivery is a UX nicety, not a
+            // completeness guarantee. Reconcile against the actual final
+            // result set so Results is always correct regardless of timing.
+            var alreadyStreamed = new HashSet<string>(Results.Select(r => r.FullName), StringComparer.OrdinalIgnoreCase);
             foreach (var r in runResult.FileResults.Where(r => r.Status == FileSearchStatus.Hit))
             {
+                if (!alreadyStreamed.Add(r.FullName)) continue;
                 Results.Add(new FileResultViewModel
                 {
                     FullName = r.FullName,
@@ -294,7 +410,8 @@ public sealed class MainViewModel : ObservableObject
             ResultsSummaryText = $"Searched {runResult.Summary.FilesSearched} file(s). " +
                 $"{Results.Count} file(s) with hits, {totalHits} total hits. " +
                 $"Skipped: {runResult.Summary.SkippedTooLarge} too large, {runResult.Summary.SkippedBinary} binary, " +
-                $"{runResult.Summary.SkippedReadError} unreadable, {runResult.Summary.SkippedUnexpectedError} unexpected errors.";
+                $"{runResult.Summary.SkippedReadError} unreadable, {runResult.Summary.SkippedUnexpectedError} unexpected errors." +
+                (runResult.Summary.EnumerationErrors > 0 ? $" {runResult.Summary.EnumerationErrors} folder(s)/file(s) couldn't be listed (permissions or a broken link)." : string.Empty);
 
             if (!settings.DryRun)
             {
@@ -339,6 +456,17 @@ public sealed class MainViewModel : ObservableObject
 
     private void OnProgress(SearchProgressReport report)
     {
+        if (report.IsEnumerating)
+        {
+            // A large or slow (network-share) tree can take a real while just
+            // to walk before any file processing even starts - without this,
+            // that phase looked exactly like the UI being hung.
+            StatusText = report.EnumeratedFileCount > 0
+                ? $"Scanning folders... {report.EnumeratedFileCount} file(s) found so far"
+                : "Scanning folders...";
+            return;
+        }
+
         if (report.TotalFiles > 0)
         {
             ProgressPercent = 100.0 * report.FilesCompleted / report.TotalFiles;
@@ -347,5 +475,19 @@ public sealed class MainViewModel : ObservableObject
 
         InFlightFiles.Clear();
         foreach (var f in report.InFlightFiles) InFlightFiles.Add(f);
+
+        if (report.LastCompletedResult is { Status: FileSearchStatus.Hit } r &&
+            !Results.Any(existing => string.Equals(existing.FullName, r.FullName, StringComparison.OrdinalIgnoreCase)))
+        {
+            Results.Add(new FileResultViewModel
+            {
+                FullName = r.FullName,
+                HitCount = r.Hits.Count,
+                Created = r.Created,
+                Modified = r.Modified,
+                LowConfidencePdf = r.LowConfidencePdf
+            });
+            HasResults = true;
+        }
     }
 }

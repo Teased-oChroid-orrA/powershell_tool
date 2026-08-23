@@ -77,6 +77,22 @@ public static class TextExtractionService
     }
 
     // ------------------------------------------------------------------
+    // Line splitting
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Splits on \r\n, \n, and a lone \r (classic Mac line endings) alike -
+    /// splitting only on \r\n/\n left old-format files as one giant "line",
+    /// making line numbers and before/after context in the report meaningless
+    /// for that file even though substring/regex matching still found hits.
+    /// </summary>
+    public static string[] SplitLines(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return Array.Empty<string>();
+        return text.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
+    }
+
+    // ------------------------------------------------------------------
     // DOCX
     // ------------------------------------------------------------------
 
@@ -99,7 +115,7 @@ public static class TextExtractionService
             xml = Regex.Replace(xml, "<[^>]+>", string.Empty);
             xml = DecodeXmlEntities(xml);
 
-            return xml.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+            return SplitLines(xml);
         }
         catch
         {
@@ -108,7 +124,7 @@ public static class TextExtractionService
     }
 
     // ------------------------------------------------------------------
-    // PPTX
+    // PPTX (slides, speaker notes, and SmartArt diagram text)
     // ------------------------------------------------------------------
 
     public static string[]? ExtractPptxLines(byte[] bytes)
@@ -124,36 +140,305 @@ public static class TextExtractionService
                 .OrderBy(x => x.Num)
                 .ToList();
 
-            if (slideEntries.Count == 0) return null;
+            var noteEntries = zip.Entries
+                .Where(e => Regex.IsMatch(e.FullName, @"^ppt/notesSlides/notesSlide(\d+)\.xml$"))
+                .ToDictionary(e => int.Parse(Regex.Match(e.FullName, @"\d+").Value), e => e);
+
+            var diagramEntries = zip.Entries
+                .Where(e => Regex.IsMatch(e.FullName, @"^ppt/diagrams/data\d*\.xml$"))
+                .OrderBy(e => e.FullName, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (slideEntries.Count == 0 && diagramEntries.Count == 0) return null;
 
             var allLines = new List<string>();
-            int slideNum = 0;
+
             foreach (var s in slideEntries)
             {
-                slideNum++;
+                allLines.Add($"--- Slide {s.Num} ---");
+                allLines.AddRange(ExtractPptxPartText(s.Entry));
+
+                if (noteEntries.TryGetValue(s.Num, out var noteEntry))
+                {
+                    var noteLines = ExtractPptxPartText(noteEntry);
+                    if (noteLines.Count > 0)
+                    {
+                        allLines.Add($"--- Slide {s.Num} notes ---");
+                        allLines.AddRange(noteLines);
+                    }
+                }
+            }
+
+            int diagramNum = 0;
+            foreach (var d in diagramEntries)
+            {
+                diagramNum++;
+                var diagramLines = ExtractPptxPartText(d);
+                if (diagramLines.Count > 0)
+                {
+                    allLines.Add($"--- SmartArt diagram {diagramNum} ---");
+                    allLines.AddRange(diagramLines);
+                }
+            }
+
+            return allLines.Count > 0 ? allLines.ToArray() : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Shared drawingml (a:p/a:t) text extraction used for slides, speaker notes, and SmartArt diagram data - all three use the same run/paragraph markup.</summary>
+    private static List<string> ExtractPptxPartText(ZipArchiveEntry entry)
+    {
+        string xml;
+        using (var reader = new StreamReader(entry.Open()))
+        {
+            xml = reader.ReadToEnd();
+        }
+
+        xml = xml.Replace("</a:p>", "\n").Replace("<a:br/>", "\n").Replace("<a:br />", "\n");
+        xml = Regex.Replace(xml, "<[^>]+>", string.Empty);
+        xml = DecodeXmlEntities(xml);
+
+        var result = new List<string>();
+        foreach (var line in SplitLines(xml))
+        {
+            if (line.Trim().Length > 0) result.Add(line);
+        }
+        return result;
+    }
+
+    // ------------------------------------------------------------------
+    // XLSX
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Best-effort, dependency-free XLSX extraction: resolves xl/sharedStrings.xml,
+    /// then walks each xl/worksheets/sheetN.xml emitting one "line" per row
+    /// (cell values tab-joined) - same regex tag-strip approach as DOCX/PPTX
+    /// rather than a full XML parser, consistent with the rest of this file.
+    /// Sheets are numbered by file order rather than resolved to their real
+    /// names (would require parsing workbook.xml + its rels), matching the
+    /// existing "Slide N" convention used for PPTX.
+    /// </summary>
+    public static string[]? ExtractXlsxLines(byte[] bytes)
+    {
+        try
+        {
+            using var ms = new MemoryStream(bytes);
+            using var zip = new ZipArchive(ms, ZipArchiveMode.Read);
+
+            var sharedStrings = new List<string>();
+            var sharedEntry = zip.GetEntry("xl/sharedStrings.xml");
+            if (sharedEntry is not null)
+            {
+                string sharedXml;
+                using (var reader = new StreamReader(sharedEntry.Open()))
+                {
+                    sharedXml = reader.ReadToEnd();
+                }
+
+                foreach (Match m in Regex.Matches(sharedXml, @"(?s)<si\b[^>]*>(.*?)</si>"))
+                {
+                    string inner = Regex.Replace(m.Groups[1].Value, "<[^>]+>", string.Empty);
+                    sharedStrings.Add(DecodeXmlEntities(inner));
+                }
+            }
+
+            var sheetEntries = zip.Entries
+                .Where(e => Regex.IsMatch(e.FullName, @"^xl/worksheets/sheet(\d+)\.xml$"))
+                .Select(e => new { Entry = e, Num = int.Parse(Regex.Match(e.FullName, @"\d+").Value) })
+                .OrderBy(x => x.Num)
+                .ToList();
+
+            if (sheetEntries.Count == 0) return null;
+
+            var allLines = new List<string>();
+
+            foreach (var s in sheetEntries)
+            {
                 string xml;
                 using (var reader = new StreamReader(s.Entry.Open()))
                 {
                     xml = reader.ReadToEnd();
                 }
 
-                xml = xml.Replace("</a:p>", "\n").Replace("<a:br/>", "\n").Replace("<a:br />", "\n");
-                xml = Regex.Replace(xml, "<[^>]+>", string.Empty);
-                xml = DecodeXmlEntities(xml);
+                allLines.Add($"--- Sheet {s.Num} ---");
 
-                allLines.Add($"--- Slide {slideNum} ---");
-                foreach (var line in xml.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None))
+                foreach (Match rowMatch in Regex.Matches(xml, @"(?s)<row\b[^>]*>(.*?)</row>"))
                 {
-                    if (line.Trim().Length > 0) allLines.Add(line);
+                    var cellValues = new List<string>();
+                    foreach (Match cellMatch in Regex.Matches(rowMatch.Value, @"(?s)<c\b([^>]*)>(.*?)</c>"))
+                    {
+                        string cellAttrs = cellMatch.Groups[1].Value;
+                        string cellInner = cellMatch.Groups[2].Value;
+                        bool isSharedString = Regex.IsMatch(cellAttrs, "t=\"s\"");
+                        bool isInlineString = Regex.IsMatch(cellAttrs, "t=\"(inlineStr|str)\"");
+
+                        string cellText;
+                        if (isSharedString)
+                        {
+                            var vMatch = Regex.Match(cellInner, @"(?s)<v>(.*?)</v>");
+                            cellText = vMatch.Success
+                                && int.TryParse(vMatch.Groups[1].Value, out int idx)
+                                && idx >= 0 && idx < sharedStrings.Count
+                                ? sharedStrings[idx]
+                                : string.Empty;
+                        }
+                        else if (isInlineString)
+                        {
+                            string stripped = Regex.Replace(cellInner, "<[^>]+>", string.Empty);
+                            cellText = DecodeXmlEntities(stripped);
+                        }
+                        else
+                        {
+                            var vMatch = Regex.Match(cellInner, @"(?s)<v>(.*?)</v>");
+                            cellText = vMatch.Success ? DecodeXmlEntities(vMatch.Groups[1].Value) : string.Empty;
+                        }
+
+                        if (cellText.Length > 0) cellValues.Add(cellText);
+                    }
+
+                    if (cellValues.Count > 0) allLines.Add(string.Join("\t", cellValues));
                 }
             }
 
-            return allLines.ToArray();
+            return allLines.Count > 0 ? allLines.ToArray() : null;
         }
         catch
         {
             return null;
         }
+    }
+
+    // ------------------------------------------------------------------
+    // ZIP archives (recurse into entries, dispatch by inner extension)
+    // ------------------------------------------------------------------
+
+    private const int ZipMaxEntriesScanned = 500;
+    private const long ZipMaxUncompressedBytesTotal = 200_000_000;
+    private const long ZipMaxEntryUncompressedBytes = 20_000_000;
+
+    private sealed class ZipScanState
+    {
+        public int EntriesScanned;
+        public long TotalBytesRead;
+    }
+
+    /// <summary>
+    /// Best-effort search inside a .zip archive: recurses into each entry and
+    /// dispatches to the matching extractor by extension (including nested
+    /// zips, up to maxDepth). Bounded against zip-bomb-style abuse by a
+    /// shared entry-count and total-uncompressed-bytes budget across the
+    /// whole scan (including nested zips, not reset per nesting level), plus
+    /// a per-entry size cap - oversized or over-budget entries are silently
+    /// skipped rather than causing a hang or an out-of-memory failure.
+    /// </summary>
+    public static string[]? ExtractZipArchiveLines(byte[] bytes, int maxDepth = 2)
+    {
+        try
+        {
+            var lines = new List<string>();
+            var state = new ZipScanState();
+            ExtractZipEntries(bytes, lines, depth: 0, maxDepth, state);
+            return lines.Count > 0 ? lines.ToArray() : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static void ExtractZipEntries(byte[] bytes, List<string> lines, int depth, int maxDepth, ZipScanState state)
+    {
+        if (depth > maxDepth) return;
+
+        ZipArchive zip;
+        try
+        {
+            var ms = new MemoryStream(bytes);
+            zip = new ZipArchive(ms, ZipArchiveMode.Read);
+        }
+        catch
+        {
+            return;
+        }
+
+        using (zip)
+        {
+            foreach (var entry in zip.Entries)
+            {
+                if (state.EntriesScanned >= ZipMaxEntriesScanned)
+                {
+                    lines.Add("[... zip entry scan limit reached, remaining entries skipped ...]");
+                    return;
+                }
+                if (string.IsNullOrEmpty(entry.Name)) continue; // directory entry
+                if (entry.Length > ZipMaxEntryUncompressedBytes) continue;
+                if (state.TotalBytesRead + entry.Length > ZipMaxUncompressedBytesTotal)
+                {
+                    lines.Add("[... zip total-size scan limit reached, remaining entries skipped ...]");
+                    return;
+                }
+
+                state.EntriesScanned++;
+
+                byte[] entryBytes;
+                try
+                {
+                    using var es = entry.Open();
+                    using var msEntry = new MemoryStream();
+                    es.CopyTo(msEntry);
+                    entryBytes = msEntry.ToArray();
+                }
+                catch
+                {
+                    continue;
+                }
+
+                state.TotalBytesRead += entryBytes.LongLength;
+
+                string ext = Path.GetExtension(entry.Name).ToLowerInvariant();
+                switch (ext)
+                {
+                    case ".docx":
+                        AppendEntryLines(lines, entry.FullName, ExtractDocxLines(entryBytes));
+                        break;
+                    case ".pptx":
+                        AppendEntryLines(lines, entry.FullName, ExtractPptxLines(entryBytes));
+                        break;
+                    case ".xlsx":
+                        AppendEntryLines(lines, entry.FullName, ExtractXlsxLines(entryBytes));
+                        break;
+                    case ".rtf":
+                        AppendEntryLines(lines, entry.FullName, ExtractRtfLines(entryBytes));
+                        break;
+                    case ".pdf":
+                        AppendEntryLines(lines, entry.FullName, ExtractPdfLines(entryBytes, 5, out _));
+                        break;
+                    case ".zip":
+                        if (depth < maxDepth)
+                        {
+                            lines.Add($"--- {entry.FullName} ---");
+                            ExtractZipEntries(entryBytes, lines, depth + 1, maxDepth, state);
+                        }
+                        break;
+                    default:
+                        if (!LooksBinary(entryBytes))
+                            AppendEntryLines(lines, entry.FullName, SplitLines(DecodeText(entryBytes)));
+                        break;
+                }
+            }
+        }
+    }
+
+    private static void AppendEntryLines(List<string> lines, string entryName, string[]? entryLines)
+    {
+        if (entryLines is null || entryLines.Length == 0) return;
+        lines.Add($"--- {entryName} ---");
+        lines.AddRange(entryLines);
     }
 
     private static string DecodeXmlEntities(string xml) =>
@@ -292,7 +577,7 @@ public static class TextExtractionService
             i++;
         }
 
-        return sb.ToString().Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+        return SplitLines(sb.ToString());
     }
 
     private static bool IsAsciiLetter(char c) => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');

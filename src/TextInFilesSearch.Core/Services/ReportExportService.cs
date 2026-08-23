@@ -232,7 +232,7 @@ public static class ReportExportService
         {
             if (string.IsNullOrEmpty(f)) continue;
             string pattern = settings.UseRegex ? f
-                : settings.WholeWord ? @"\b" + System.Text.RegularExpressions.Regex.Escape(f) + @"\b"
+                : settings.WholeWord ? WholeWordHelper.BuildPattern(f)
                 : System.Text.RegularExpressions.Regex.Escape(f);
             try
             {
@@ -324,9 +324,24 @@ public static class ReportExportService
         File.WriteAllText(path, sb.ToString(), Encoding.UTF8);
     }
 
+    /// <summary>Leading characters that a spreadsheet application (Excel, Google Sheets, LibreOffice) treats as the start of a formula.</summary>
+    private static readonly char[] CsvFormulaTriggerChars = { '=', '+', '-', '@', '\t', '\r' };
+
+    /// <summary>
+    /// CSV-encodes one field, guarding against CSV/formula injection: this
+    /// export reflects arbitrary matched file content verbatim, so a line
+    /// starting with =, +, -, or @ would execute as a formula if the CSV is
+    /// opened in a spreadsheet app. Prefixing with a single quote neutralizes
+    /// that while keeping the visible text unchanged, per standard OWASP
+    /// CSV-injection guidance.
+    /// </summary>
     private static string CsvField(string? value)
     {
         value ??= string.Empty;
+        if (value.Length > 0 && CsvFormulaTriggerChars.Contains(value[0]))
+        {
+            value = "'" + value;
+        }
         bool needsQuoting = value.Contains(',') || value.Contains('"') || value.Contains('\n') || value.Contains('\r');
         string escaped = value.Replace("\"", "\"\"");
         return needsQuoting ? $"\"{escaped}\"" : escaped;
