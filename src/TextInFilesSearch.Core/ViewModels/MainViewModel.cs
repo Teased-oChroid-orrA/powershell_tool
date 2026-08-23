@@ -281,6 +281,29 @@ public sealed class MainViewModel : ObservableObject
 
     private CancellationTokenSource? _cts;
 
+    /// <summary>
+    /// Guards every mutation of Results/InFlightFiles from OnProgress against
+    /// concurrent execution. Progress&lt;T&gt; marshals its callback via
+    /// whatever SynchronizationContext was captured when it was constructed:
+    /// the UI dispatcher in the real app, which serializes every call onto
+    /// one thread - but genuinely concurrently on the thread pool when there
+    /// is none (e.g. a console test harness), and a report can still be
+    /// in flight on a background thread even after RunAsync's own await has
+    /// completed. Without this lock, two overlapping calls (or a still-
+    /// draining one racing the final reconciliation below) can both pass a
+    /// "not already added" check for the same file and double-add it into
+    /// the non-thread-safe ObservableCollection.
+    /// </summary>
+    private readonly object _progressLock = new();
+
+    /// <summary>
+    /// Set once RunSearchAsync has finished (successfully, cancelled, or
+    /// errored) so a still-draining, stale Progress&lt;T&gt; callback from
+    /// before that point can't land afterward and overwrite the final
+    /// StatusText/ProgressPercent with a mid-run value.
+    /// </summary>
+    private volatile bool _runConcluded = true;
+
     // ---------------------------------------------------------------
     // Commands
     // ---------------------------------------------------------------
@@ -367,6 +390,7 @@ public sealed class MainViewModel : ObservableObject
 
         _cts = new CancellationTokenSource();
         IsRunning = true;
+        _runConcluded = false;
 
         var progress = new Progress<SearchProgressReport>(OnProgress);
 
@@ -383,28 +407,35 @@ public sealed class MainViewModel : ObservableObject
                 return;
             }
 
-            // Results is normally already fully populated by OnProgress as
-            // each file streamed in live. But Progress<T> marshals its
-            // callback via whatever SynchronizationContext was captured at
-            // construction (the UI dispatcher in the real app; the thread
-            // pool - asynchronously - when there is none, e.g. this
-            // console test harness), so live delivery is a UX nicety, not a
-            // completeness guarantee. Reconcile against the actual final
-            // result set so Results is always correct regardless of timing.
-            var alreadyStreamed = new HashSet<string>(Results.Select(r => r.FullName), StringComparer.OrdinalIgnoreCase);
-            foreach (var r in runResult.FileResults.Where(r => r.Status == FileSearchStatus.Hit))
+            // Results is normally already populated live by OnProgress as
+            // each file streams in - a UX nicety, not a completeness or
+            // correctness guarantee: Progress<T> marshals its callback via
+            // whatever SynchronizationContext was captured at construction
+            // (the UI dispatcher in the real app, which serializes every
+            // call onto one thread; the thread pool - genuinely
+            // concurrently - when there is none, e.g. a console test
+            // harness). Concurrent delivery can race two OnProgress calls
+            // past each other's "not already added" check for the same
+            // file. Rebuilding from scratch here (rather than merging with
+            // whatever the live phase left behind) means Results is always
+            // exactly correct regardless of that timing, with no risk of a
+            // race-induced duplicate surviving into the final state.
+            lock (_progressLock)
             {
-                if (!alreadyStreamed.Add(r.FullName)) continue;
-                Results.Add(new FileResultViewModel
+                Results.Clear();
+                foreach (var r in runResult.FileResults.Where(r => r.Status == FileSearchStatus.Hit))
                 {
-                    FullName = r.FullName,
-                    HitCount = r.Hits.Count,
-                    Created = r.Created,
-                    Modified = r.Modified,
-                    LowConfidencePdf = r.LowConfidencePdf
-                });
+                    Results.Add(new FileResultViewModel
+                    {
+                        FullName = r.FullName,
+                        HitCount = r.Hits.Count,
+                        Created = r.Created,
+                        Modified = r.Modified,
+                        LowConfidencePdf = r.LowConfidencePdf
+                    });
+                }
+                HasResults = Results.Count > 0;
             }
-            HasResults = Results.Count > 0;
 
             int totalHits = runResult.FileResults.Where(r => r.Status == FileSearchStatus.Hit).Sum(r => r.Hits.Count);
             ResultsSummaryText = $"Searched {runResult.Summary.FilesSearched} file(s). " +
@@ -451,11 +482,17 @@ public sealed class MainViewModel : ObservableObject
             InFlightFiles.Clear();
             _cts?.Dispose();
             _cts = null;
+            _runConcluded = true;
         }
     }
 
     private void OnProgress(SearchProgressReport report)
     {
+        // A stale callback still draining after the run has already
+        // concluded (see _runConcluded's doc comment) must not clobber the
+        // final StatusText/ProgressPercent with a mid-run value.
+        if (_runConcluded) return;
+
         if (report.IsEnumerating)
         {
             // A large or slow (network-share) tree can take a real while just
@@ -473,21 +510,24 @@ public sealed class MainViewModel : ObservableObject
             StatusText = $"{report.FilesCompleted} of {report.TotalFiles} file(s) - {report.HitsSoFar} hit(s) so far";
         }
 
-        InFlightFiles.Clear();
-        foreach (var f in report.InFlightFiles) InFlightFiles.Add(f);
-
-        if (report.LastCompletedResult is { Status: FileSearchStatus.Hit } r &&
-            !Results.Any(existing => string.Equals(existing.FullName, r.FullName, StringComparison.OrdinalIgnoreCase)))
+        lock (_progressLock)
         {
-            Results.Add(new FileResultViewModel
+            InFlightFiles.Clear();
+            foreach (var f in report.InFlightFiles) InFlightFiles.Add(f);
+
+            if (report.LastCompletedResult is { Status: FileSearchStatus.Hit } r &&
+                !Results.Any(existing => string.Equals(existing.FullName, r.FullName, StringComparison.OrdinalIgnoreCase)))
             {
-                FullName = r.FullName,
-                HitCount = r.Hits.Count,
-                Created = r.Created,
-                Modified = r.Modified,
-                LowConfidencePdf = r.LowConfidencePdf
-            });
-            HasResults = true;
+                Results.Add(new FileResultViewModel
+                {
+                    FullName = r.FullName,
+                    HitCount = r.Hits.Count,
+                    Created = r.Created,
+                    Modified = r.Modified,
+                    LowConfidencePdf = r.LowConfidencePdf
+                });
+                HasResults = true;
+            }
         }
     }
 }
