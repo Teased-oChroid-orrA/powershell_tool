@@ -1,0 +1,81 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>TextInFilesSearch</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <UseWinUI>true</UseWinUI>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+
+    <!--
+      ================================================================
+      SELF-CONTAINED, UNPACKAGED DEPLOYMENT (see docs/deployment.md)
+      ================================================================
+      Goal: the published output must run on a clean Windows machine with
+      no internet access, no admin rights, no pre-installed .NET runtime,
+      and no pre-installed Windows App SDK runtime.
+    -->
+
+    <!-- Bundle the .NET runtime itself into the publish output. -->
+    <SelfContained>true</SelfContained>
+
+    <!--
+      Bundle the Windows App SDK runtime components (the WinUI 3 native
+      libraries) into the publish output too, instead of requiring the
+      Windows App SDK runtime to be installed machine-wide. This is the
+      single most important setting for the "no pre-installed dependency"
+      requirement - see docs/deployment.md for what this actually produces
+      on disk and how it was verified.
+    -->
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+
+    <!--
+      Unpackaged deployment: no MSIX, no installer, no admin-requiring
+      registration step. The published folder can be copied to a target
+      machine and run directly - this is the "prefer unpackaged" guidance
+      from the migration brief.
+    -->
+    <WindowsPackageType>None</WindowsPackageType>
+    <EnableMsixTooling>false</EnableMsixTooling>
+
+    <!--
+      Reliability over a single EXE: a folder-based publish is the default
+      here. PublishSingleFile is deliberately left OFF because WinUI 3's
+      native resources and the Windows App SDK's own bundled DLLs have a
+      documented history of single-file-publish edge cases; a working
+      folder-based deployment beats a fragile single EXE. If single-file is
+      wanted later, verify it explicitly against a clean machine before
+      relying on it - do not assume it works from a green build alone.
+    -->
+    <PublishSingleFile>false</PublishSingleFile>
+    <SelfContainedDeployment>true</SelfContainedDeployment>
+
+    <!--
+      Trimming is left off. IL trimming has real, documented risk of removing
+      code that's only reached via reflection (which WinUI/XAML uses
+      internally) unless every trimming warning is individually resolved and
+      the trimmed output is tested on a clean machine. Given the migration
+      brief prioritizes reliability over minimizing file size, trimming is
+      not enabled without that verification step having actually happened.
+    -->
+    <PublishTrimmed>false</PublishTrimmed>
+
+    <!-- No auto-update / telemetry / network calls of any kind. -->
+    <GenerateAppInstallerFile>false</GenerateAppInstallerFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.5.240311000" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.22621.2428" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../TextInFilesSearch.Core/TextInFilesSearch.Core.csproj" />
+  </ItemGroup>
+
+</Project>

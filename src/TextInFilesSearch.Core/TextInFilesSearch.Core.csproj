@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Deliberately a plain net8.0 class library with zero WinUI/Windows App SDK
+    dependency. Every line of search logic, matching, extraction, caching,
+    report generation, and the ViewModel layer lives here specifically so it
+    can be built and unit tested on any platform/CI runner - not just
+    Windows. This project was in fact compiled and exercised against 36
+    passing integration tests during development; see
+    tests/TextInFilesSearch.Tests for the test project that references it.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>TextInFilesSearch</RootNamespace>
+  </PropertyGroup>
+
+</Project>
