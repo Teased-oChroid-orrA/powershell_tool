@@ -52,24 +52,36 @@ jobs:
         shell: pwsh
         run: |
           function Dump-CrashEvents {
-            Write-Host "--- Recent Application event log entries (.NET Runtime / Application Error / Windows Error Reporting) ---"
+            Write-Host "--- Recent Application event log entries (last 5 min, unfiltered) ---"
             try {
               Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = (Get-Date).AddMinutes(-5) } -ErrorAction Stop |
-                Where-Object { $_.ProviderName -in @('.NET Runtime', 'Application Error', 'Windows Error Reporting') } |
                 Sort-Object TimeCreated |
                 ForEach-Object {
-                  Write-Host "[$($_.TimeCreated) | $($_.ProviderName)]"
+                  Write-Host "[$($_.TimeCreated) | $($_.ProviderName) | Id=$($_.Id) | Level=$($_.LevelDisplayName)]"
                   Write-Host $_.Message
                   Write-Host "---"
                 }
             } catch {
-              Write-Host "Could not read event log: $_"
+              Write-Host "Could not read Application log: $_"
+            }
+
+            Write-Host "--- Recent System event log entries (last 5 min, unfiltered) ---"
+            try {
+              Get-WinEvent -FilterHashtable @{ LogName = 'System'; StartTime = (Get-Date).AddMinutes(-5) } -ErrorAction Stop |
+                Sort-Object TimeCreated |
+                ForEach-Object {
+                  Write-Host "[$($_.TimeCreated) | $($_.ProviderName) | Id=$($_.Id) | Level=$($_.LevelDisplayName)]"
+                  Write-Host $_.Message
+                  Write-Host "---"
+                }
+            } catch {
+              Write-Host "Could not read System log: $_"
             }
           }
 
           $exe = Join-Path $env:GITHUB_WORKSPACE "publish\TextInFilesSearch\TextInFilesSearch.exe"
           if (-not (Test-Path $exe)) {
-            Write-Error "Published exe not found at $exe"
+            Write-Host "ERROR: Published exe not found at $exe"
             exit 1
           }
 
@@ -82,7 +94,7 @@ jobs:
             Start-Sleep -Seconds 1
             $proc.Refresh()
             if ($proc.HasExited) {
-              Write-Error "App exited early with code $($proc.ExitCode)."
+              Write-Host "ERROR: App exited early with code $($proc.ExitCode)."
               Start-Sleep -Seconds 2
               Dump-CrashEvents
               exit 1
@@ -91,7 +103,7 @@ jobs:
           }
 
           if (-not $hasWindow) {
-            Write-Error "App never reported a main window handle within 30s."
+            Write-Host "ERROR: App never reported a main window handle within 30s."
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
             exit 1
           }
