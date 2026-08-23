@@ -10,10 +10,6 @@ name: Build and verify (self-contained, offline-runtime)
 # below actually check for, rather than just trusting the build succeeded.
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
   workflow_dispatch: {}
 
 env:
