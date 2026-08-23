@@ -68,6 +68,7 @@ jobs:
           msbuild src/TextInFilesSearch/TextInFilesSearch.csproj
           /t:Publish
           /p:Configuration=Release
+          /p:Platform=x64
           /p:RuntimeIdentifier=win-x64
           /p:SelfContained=true
           /p:WindowsAppSDKSelfContained=true
