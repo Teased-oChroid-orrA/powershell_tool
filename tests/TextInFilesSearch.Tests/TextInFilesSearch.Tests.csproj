@@ -24,4 +24,22 @@
     <ProjectReference Include="../../src/TextInFilesSearch.Core/TextInFilesSearch.Core.csproj" />
   </ItemGroup>
 
+  <!--
+    Real DOCX/PPTX/PDF fixtures used by the "real formats" check below.
+    Embedded (rather than referenced by a hardcoded filesystem path) so the
+    test harness runs identically on any machine/CI runner with no setup
+    step required.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="Fixtures/test.docx">
+      <LogicalName>test.docx</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Fixtures/test.pptx">
+      <LogicalName>test.pptx</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Fixtures/test.pdf">
+      <LogicalName>test.pdf</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
 </Project>
