@@ -4,3 +4,4 @@ publish/
 *.user
 .vs/
 nuget.config
+.DS_Store
