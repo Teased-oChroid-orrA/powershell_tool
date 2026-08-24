@@ -866,10 +866,13 @@ void Check(string name, bool condition)
 
     var vm = new TextInFilesSearch.ViewModels.MainViewModel(nativeSearchIndexDirectory: nativeIndexDir);
 
-    Check("ViewModel: NativeSearchCommand.CanExecute is false with an empty query",
+    Check("ViewModel: NativeSearchCommand.CanExecute is false with an empty query and no SearchPath",
         !vm.NativeSearchCommand.CanExecute(null));
     vm.NativeSearchQuery = "torque";
-    Check("ViewModel: NativeSearchCommand.CanExecute becomes true once a query is typed",
+    Check("ViewModel: NativeSearchCommand.CanExecute is still false with a query but no SearchPath (issue #2/ADR-011 - the index lives inside SearchPath)",
+        !vm.NativeSearchCommand.CanExecute(null));
+    vm.SearchPath = dir;
+    Check("ViewModel: NativeSearchCommand.CanExecute becomes true once both a query and SearchPath are set",
         vm.NativeSearchCommand.CanExecute(null));
     Check("ViewModel: CancelNativeSearchCommand.CanExecute is false when nothing is searching",
         !vm.CancelNativeSearchCommand.CanExecute(null));
@@ -883,7 +886,6 @@ void Check(string name, bool condition)
     // failing can't turn a successful file search into a reported error).
     // The SKIP/PASS branch below is driven by that status text, not a
     // try/catch here.
-    vm.SearchPath = dir;
     vm.OutputFolder = outputDir;
     vm.FiltersText = "torque, corrosion";
     vm.IndexForFastSearch = true;
