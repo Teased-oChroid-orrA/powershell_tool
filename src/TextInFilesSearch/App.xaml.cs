@@ -52,11 +52,21 @@ public partial class App : Application
     // `using Microsoft.UI.Xaml;` above) - the two types share a name and
     // the bare name is ambiguous (CS0104) without qualifying one of them.
     private static void OnAppDomainUnhandledException(object sender, System.UnhandledExceptionEventArgs e) =>
-        ReportFatalError(e.ExceptionObject as Exception, "AppDomain.UnhandledException");
+        ReportFatalError(e.ExceptionObject as Exception, "AppDomain.UnhandledException", frameworkMessage: null);
 
     private void OnXamlUnhandledException(object sender, Microsoft.UI.Xaml.UnhandledExceptionEventArgs e)
     {
-        ReportFatalError(e.Exception, "Application.UnhandledException");
+        // e.Message (WinUI's own field, separate from e.Exception.Message) is
+        // populated directly from the native diagnostic text before it
+        // crosses the WinRT ABI boundary - for a XamlParseException in
+        // particular, Exception.ToString() alone is notoriously reduced to
+        // a bare "XAML parsing failed." with no further detail (confirmed:
+        // that's exactly what the first two field reports of this bug
+        // showed), while e.Message has repeatedly been the only place the
+        // *actual* underlying reason (a missing resource, an unresolvable
+        // type, etc.) survives the crossing. Capture both explicitly rather
+        // than assuming one subsumes the other.
+        ReportFatalError(e.Exception, "Application.UnhandledException", e.Message);
         // Deliberately not setting e.Handled = true: swallowing a XAML-layer
         // exception and continuing risks leaving the app in a half-broken
         // state that's harder to diagnose than a clean, reported exit.
@@ -71,14 +81,44 @@ public partial class App : Application
     /// mechanism that can still work even when almost everything else
     /// about the app's startup has already failed.
     /// </summary>
-    private static void ReportFatalError(Exception? ex, string source)
+    private static void ReportFatalError(Exception? ex, string source, string? frameworkMessage)
     {
-        string details = ex?.ToString() ?? "(no exception object was provided)";
+        var sb = new StringBuilder();
+        sb.AppendLine($"{DateTime.Now:O} [{source}]");
+        if (!string.IsNullOrEmpty(frameworkMessage))
+        {
+            sb.AppendLine($"Framework message (UnhandledExceptionEventArgs.Message): {frameworkMessage}");
+        }
+        if (ex is null)
+        {
+            sb.AppendLine("(no exception object was provided)");
+        }
+        else
+        {
+            sb.AppendLine($"HResult: 0x{ex.HResult:X8}");
+            // Walk the InnerException chain explicitly rather than relying
+            // solely on ex.ToString() - for exceptions that crossed a WinRT
+            // ABI boundary, ToString() has been observed to omit detail that
+            // inspecting the exception object graph directly still exposes.
+            Exception? current = ex;
+            int depth = 0;
+            while (current is not null)
+            {
+                sb.AppendLine($"[{depth}] {current.GetType().FullName}: {current.Message} (HResult 0x{current.HResult:X8})");
+                if (depth == 0)
+                {
+                    sb.AppendLine(current.StackTrace ?? "(no stack trace)");
+                }
+                current = current.InnerException;
+                depth++;
+            }
+        }
+        string details = sb.ToString();
 
         try
         {
             string logPath = Path.Combine(AppContext.BaseDirectory, "crash.log");
-            File.AppendAllText(logPath, $"{DateTime.Now:O} [{source}]{Environment.NewLine}{details}{Environment.NewLine}{Environment.NewLine}");
+            File.AppendAllText(logPath, details + Environment.NewLine);
         }
         catch
         {
@@ -91,7 +131,8 @@ public partial class App : Application
             string message =
                 $"TextInFilesSearch hit an unexpected error during startup and needs to close.\n\n" +
                 $"Details were written to crash.log next to the executable.\n\n" +
-                $"{ex?.GetType().Name}: {ex?.Message}";
+                $"{ex?.GetType().Name}: {ex?.Message}" +
+                (string.IsNullOrEmpty(frameworkMessage) ? "" : $"\n\n{frameworkMessage}");
             NativeMessageBox.Show(message, "TextInFilesSearch - Error");
         }
         catch
