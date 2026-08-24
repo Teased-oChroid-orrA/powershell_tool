@@ -70,6 +70,18 @@ jobs:
         # runs regardless of MSIX packaging. windows-latest ships full VS, so
         # building with its real msbuild.exe (found via this action) resolves
         # the task correctly instead.
+        #
+        # That comment above was correct but incomplete for a while: this
+        # step alone makes the PRI task *loadable*, but TextInFilesSearch.csproj
+        # separately had EnableMsixTooling=false, which prevented the PRI
+        # *target* from ever being scheduled to run at all - so the publish
+        # output shipped with zero resources.pri regardless of this step,
+        # and every ms-appx:///... XAML page URI failed at runtime (see
+        # docs/deployment.md's "First real-machine launch" section, and the
+        # "Verify published artifact bundles resources.pri" step below).
+        # Fixed by setting EnableMsixTooling=true in the .csproj -
+        # WindowsPackageType=None remains the actual, separately-verified
+        # control for "no MSIX output," unaffected by that change.
         uses: microsoft/setup-msbuild@v2
 
       - name: Restore
@@ -166,6 +178,33 @@ jobs:
             exit 1
           }
           Write-Host "Found vcruntime140.dll, vcruntime140_1.dll, msvcp140.dll in the publish output - VC++ Redistributable is bundled app-local, not assumed pre-installed."
+
+      - name: Verify published artifact bundles resources.pri
+        # Real field bug (docs/deployment.md's "First real-machine launch"
+        # section): with EnableMsixTooling=false, the publish output
+        # contained zero resources.pri - the compiled-XAML resource index
+        # ms-appx:///... URIs resolve through. The app launched and
+        # immediately failed with a XamlParseException ("Cannot locate
+        # resource from 'ms-appx:///Views/MainWindow.xaml'", HResult
+        # 0x802B000A) on MainWindow's very first line - confirmed via a
+        # real crash.log from an actual Windows machine, not assumed. Fixed
+        # by setting EnableMsixTooling=true (WindowsPackageType=None, not
+        # EnableMsixTooling, is what actually controls MSIX output - see
+        # the "Verify no MSIX" step below, unaffected by this). This check
+        # exists so that regression can never again go undetected until
+        # someone launches the built app by hand - resources.pri missing
+        # from the publish output is a build-time-checkable fact, and
+        # should have been checked from the start, the same as every other
+        # bundled runtime component already is in this workflow.
+        shell: pwsh
+        run: |
+          $publishDir = "publish/TextInFilesSearch"
+          $resourcesPri = Get-ChildItem -Path $publishDir -Filter "resources.pri" -ErrorAction SilentlyContinue
+          if (-not $resourcesPri) {
+            Write-Error "resources.pri was NOT found in the publish output. Every ms-appx:///... XAML page URI (including MainWindow.xaml itself) will fail to resolve at runtime with a XamlParseException, and the app will launch with no window and no visible error."
+            exit 1
+          }
+          Write-Host "Found resources.pri in the publish output ($($resourcesPri.Length) bytes) - ms-appx:/// resource resolution is not silently broken."
 
       - name: Verify published artifact bundles native_search.dll
         # TextInFilesSearch.csproj now includes native_search.dll as a real

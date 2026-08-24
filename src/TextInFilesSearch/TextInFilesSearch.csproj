@@ -39,10 +39,30 @@
       Unpackaged deployment: no MSIX, no installer, no admin-requiring
       registration step. The published folder can be copied to a target
       machine and run directly - this is the "prefer unpackaged" guidance
-      from the migration brief.
+      from the migration brief. WindowsPackageType=None is what actually
+      controls this - independently verified every CI run by the "Verify
+      no MSIX / packaged-app artifacts were produced" step in build.yml.
     -->
     <WindowsPackageType>None</WindowsPackageType>
-    <EnableMsixTooling>false</EnableMsixTooling>
+
+    <!--
+      Real field bug (docs/deployment.md's "First real-machine launch"
+      section): this was EnableMsixTooling=false, on the reasonable-looking
+      assumption that "unpackaged, so disable the packaging tooling." That
+      setting does not only control MSIX packaging, though - it gates the
+      *entire* packaging-tooling MSBuild target chain, which PRI (resource
+      index) generation rides along with even though it has nothing to do
+      with MSIX. With it false, the publish output shipped with zero
+      resources.pri file, so every ms-appx:///... XAML page URI
+      (Application.LoadComponent for MainWindow.xaml, in this app's case)
+      failed at runtime with "Cannot locate resource from
+      'ms-appx:///Views/MainWindow.xaml'" (HResult 0x802B000A) - the app
+      launched and then silently produced no window at all, confirmed by a
+      real crash.log from an actual Windows machine, not assumed. Setting
+      this true does not reintroduce MSIX output - WindowsPackageType=None
+      above is the actual, separately-verified control for that.
+    -->
+    <EnableMsixTooling>true</EnableMsixTooling>
 
     <!--
       Reliability over a single EXE: a folder-based publish is the default

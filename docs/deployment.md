@@ -105,79 +105,80 @@ yet accounted for - please report exactly which step failed and the error
 text, since it likely points at a WinUI/Windows App SDK configuration detail
 that only manifests on a real machine.
 
-## First real-machine launch (2026-08-24): silent startup failure
+## First real-machine launch (2026-08-24): silent startup failure - RESOLVED
 
 The clean-machine test procedure above was finally run for real, for the
-first time ever, on an actual Windows machine. Result: SmartScreen's "Run
-anyway" prompt appeared and was accepted, then nothing happened - no
-window, no taskbar entry, no error dialog. Root cause not yet confirmed
-(no Windows access to reproduce with), but the most likely explanation:
+first time ever, on an actual Windows machine, and surfaced a real bug
+through three rounds of investigation. Recorded here in full because the
+process matters as much as the fix: two reasonable-sounding theories were
+tried and directly disproven by evidence before the real cause was found,
+and the improved diagnostics built along the way are what actually made
+that possible.
 
-**`WindowsAppSDKSelfContained=true` bundles the Windows App SDK's own
-managed+native components, but does not bundle the Visual C++
-Redistributable those native components themselves depend on**
-(`vcruntime140.dll`, `msvcp140.dll`, `vcruntime140_1.dll`). These are
-extremely commonly present on real Windows machines (many other
-applications install them) but are not guaranteed on a genuinely clean
-one, and this project's own target requirement is "nothing pre-installed."
-A missing dependency of a *native* module can fail before any of this
-app's own managed code - including a global exception handler - ever runs,
-which matches the reported symptom (no error, not even a crash dialog)
-better than a managed-code exception would.
+**Round 1 - no error at all.** SmartScreen's "Run anyway" prompt appeared
+and was accepted, then nothing happened: no window, no taskbar entry, no
+error dialog. Leading theory at the time: a missing Visual C++
+Redistributable dependency of `Microsoft.WindowsAppRuntime.dll`'s own
+native components, failing before any of this app's managed code -
+including any exception handler - could run. Response: added global
+`AppDomain`/`Application.UnhandledException` handlers (writing to
+`crash.log` and showing a Win32 `MessageBoxW`, chosen specifically because
+it doesn't need a working XAML dispatcher) so a startup failure would at
+least become visible; statically linked `native_search.dll`'s own C
+runtime; and (once the user restated the actual requirement - fully
+self-contained, no host-machine dependency, full stop) bundled
+`vcruntime140.dll`/`vcruntime140_1.dll`/`msvcp140.dll` app-local into the
+publish output regardless of whether they turned out to be the cause.
+**All of this was good defensive work and stayed** - see the sections
+above - **but it was not the cause of this bug.**
 
-**Immediate thing to try**: install the
-[VC++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe)
-(official Microsoft installer) on the affected machine and re-launch. If
-that fixes it, this is confirmed.
+**Round 2 - a real crash, but a wrong diagnosis.** The exception handler
+worked: a `XamlParseException` at `MainWindow.InitializeComponent()`, but
+`Exception.ToString()` gave only "XAML parsing failed." with no further
+detail (a known limitation of exceptions crossing the WinRT ABI). The one
+structural thing that stood out in the newly-added "Fast re-search" XAML -
+its `x:DataType` bound against a C# `record` where every other binding in
+the file used a plain class - looked like a plausible, well-documented
+`x:Bind`-vs-`record` rough edge. `NativeSearchHit` was converted to a
+plain class to match. **The exact same exception, same stack trace, same
+line number, recurred anyway** - direct proof this theory was wrong, not
+just unconfirmed. Response, rather than a third guess: improved the crash
+handler to also capture `UnhandledExceptionEventArgs.Message` (a field
+separate from `Exception.Message`, populated from native diagnostic text
+before it's lost crossing the ABI) and the full `HResult`/inner-exception
+chain.
 
-**What was changed in response, blind (no way to verify locally or via
-CI - GitHub Actions has no interactive desktop session to launch a WinUI
-GUI in)**:
+**Round 3 - the real cause.** The improved log finally surfaced it:
 
-1. `App.xaml.cs` now wires up `AppDomain.CurrentDomain.UnhandledException`
-   and `Application.UnhandledException` at the very start of the `App`
-   constructor, before anything else runs. Any *managed* exception during
-   startup now writes to `crash.log` next to the executable and shows a
-   plain Win32 `MessageBoxW` (not a WinUI `ContentDialog`, which needs a
-   working XAML dispatcher that might not exist yet) instead of failing
-   silently. This does **not** catch a true native-module-load failure
-   happening before managed code starts - if the VC++ Redistributable
-   theory above is correct, this specific fix won't surface anything,
-   because the process never gets far enough to run it. It's still
-   unconditionally worth having: it turns every *other* class of startup
-   failure from silent into diagnosable.
-2. `native-search/.cargo/config.toml` now statically links the MSVC C
-   runtime into `native_search.dll` (`-C target-feature=+crt-static`), so
-   *that* component at least has zero dependency on the VC++
-   Redistributable being present. This doesn't touch
-   `Microsoft.WindowsAppRuntime.dll` (a prebuilt Microsoft binary, not
-   something this project compiles), which remains the prime suspect if
-   the redistributable theory is correct.
+```
+Framework message (UnhandledExceptionEventArgs.Message): Cannot locate resource from 'ms-appx:///Views/MainWindow.xaml'.
+HResult: 0x802B000A
+```
 
-**Update**: rather than wait for confirmation, the redistributable is now
-bundled directly, by explicit direction - "self-contained" was always the
-actual requirement, and depending on the VC++ Redistributable being
-pre-installed contradicts it regardless of whether it turns out to be the
-cause of this specific bug. `.github/workflows/build.yml` now copies
-`vcruntime140.dll`, `vcruntime140_1.dll`, and `msvcp140.dll` from the
-build runner's `System32` (present there because `windows-latest` ships a
-full Visual Studio install, which installs the redistributable
-system-wide) into the publish output as loose files next to the exe, with
-a verification step that fails the build loudly if any are missing —
-same pattern as the existing hostfxr/coreclr and
-Microsoft.WindowsAppRuntime.dll checks. This is Microsoft's own documented
-"local" (a.k.a. "app-local") deployment technique for these specific
-DLLs: no installer, no registration, no elevation - Windows' DLL search
-order checks the application's own directory before `System32`, so they're
-picked up automatically. The DLLs themselves aren't vendored into the git
-repo (they come from the build runner at build time, same as the .NET
-runtime and Windows App SDK components already do), consistent with how
-every other bundled runtime component in this publish pipeline is sourced.
+**`resources.pri` - the compiled-XAML resource index every `ms-appx:///...`
+URI resolves through, including `MainWindow.xaml` itself - was completely
+absent from the publish output.** Root cause: `TextInFilesSearch.csproj`
+had `EnableMsixTooling=false`, set for the reasonable-looking reason
+"unpackaged deployment, so disable the packaging tooling." That property
+does not narrowly control MSIX output, though - it gates the *entire*
+packaging-tooling MSBuild target chain, and PRI generation rides along
+with that chain even though it has nothing to do with MSIX. With it
+false, `resources.pri` was never generated at all, so *every* XAML page
+in the app - not something specific to the native-search UI work, not
+content-dependent in any way, which is exactly why the record fix had zero
+effect - was guaranteed to fail identically. This matches a
+well-documented WinUI3 unpackaged-deployment gotcha.
 
-This still hasn't been confirmed against the original symptom on a real
-machine - it addresses the requirement ("must not depend on the host
-machine") unconditionally, independent of whether it turns out to be the
-actual root cause of the reported silent-startup bug.
+**Fixed**: `EnableMsixTooling` set back to `true`.
+`WindowsPackageType=None` is the actual, independently-verified control
+for "no MSIX output" (the existing "Verify no MSIX / packaged-app
+artifacts were produced" CI step confirms this every run, unaffected by
+this change) - the two properties are not the same control, and conflating
+them is exactly what caused this. A new CI step,
+"Verify published artifact bundles resources.pri", now fails the build
+loudly if this regresses again, the same as every other bundled runtime
+component in this pipeline already does - this should have existed from
+the start.
 
 ## Known limitations
 
