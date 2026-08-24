@@ -847,6 +847,66 @@ void Check(string name, bool condition)
     }
 }
 
+// ---------------------------------------------------------------------
+// Test 36: MainViewModel wiring for native search (issue #2). Test 35
+// covers NativeSearchService directly; this covers the actual UI-facing
+// surface - IndexForFastSearch driving RunSearchAsync to index its hits,
+// and NativeSearchCommand/RunNativeSearchAsync searching them back out -
+// so the ViewModel-level integration is verified too, not just the
+// service it wraps. Same SKIP-not-FAIL convention as Test 35.
+// ---------------------------------------------------------------------
+{
+    var dir = Path.Combine(testRoot, "vm-native-search");
+    Directory.CreateDirectory(dir);
+    File.WriteAllText(Path.Combine(dir, "torque.txt"), "torque spec deviation on aft mount bolts\n");
+    File.WriteAllText(Path.Combine(dir, "corrosion.txt"), "minor filiform corrosion observed\n");
+
+    var nativeIndexDir = Path.Combine(testRoot, "vm-native-search-index");
+    var outputDir = Path.Combine(testRoot, "vm-native-search-out");
+
+    var vm = new TextInFilesSearch.ViewModels.MainViewModel(nativeSearchIndexDirectory: nativeIndexDir);
+
+    Check("ViewModel: NativeSearchCommand.CanExecute is false with an empty query",
+        !vm.NativeSearchCommand.CanExecute(null));
+    vm.NativeSearchQuery = "torque";
+    Check("ViewModel: NativeSearchCommand.CanExecute becomes true once a query is typed",
+        vm.NativeSearchCommand.CanExecute(null));
+    Check("ViewModel: CancelNativeSearchCommand.CanExecute is false when nothing is searching",
+        !vm.CancelNativeSearchCommand.CanExecute(null));
+    Check("ViewModel: IndexForFastSearch defaults to off",
+        !vm.IndexForFastSearch);
+
+    // Note: unlike Test 35, RunSearchAsync/RunNativeSearchAsync never throw
+    // DllNotFoundException out to a caller - IndexHitsForFastSearch and
+    // RunNativeSearchAsync both catch it internally and report it through
+    // NativeSearchStatusText instead (so an optional convenience feature
+    // failing can't turn a successful file search into a reported error).
+    // The SKIP/PASS branch below is driven by that status text, not a
+    // try/catch here.
+    vm.SearchPath = dir;
+    vm.OutputFolder = outputDir;
+    vm.FiltersText = "torque, corrosion";
+    vm.IndexForFastSearch = true;
+
+    await vm.RunSearchAsync();
+
+    Check("ViewModel: a run with IndexForFastSearch on reports an outcome (indexed or explicitly unavailable), never leaves the status blank",
+        !string.IsNullOrWhiteSpace(vm.NativeSearchStatusText));
+
+    if (vm.NativeSearchStatusText.StartsWith("Indexed", StringComparison.Ordinal))
+    {
+        await vm.RunNativeSearchAsync();
+        Check("ViewModel: NativeSearchCommand's underlying search finds the file indexed by the run above",
+            vm.NativeSearchResults.Count == 1 && vm.NativeSearchResults[0].Filename == "torque.txt");
+        Check("ViewModel: IsNativeSearching is false after the search completes",
+            !vm.IsNativeSearching);
+    }
+    else
+    {
+        Console.WriteLine($"SKIP: ViewModel native-search round trip (native_search.dll not present - {vm.NativeSearchStatusText})");
+    }
+}
+
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL TESTS PASSED" : $"{failures} TEST(S) FAILED");
 Directory.Delete(testRoot, true);

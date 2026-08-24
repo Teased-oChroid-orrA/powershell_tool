@@ -31,14 +31,13 @@ blocking rather than a silent gap.
   ADR-003: the existing `TextExtractionService`/`FileReaderService` *is*
   that interface — deliberately not re-implemented in Rust. See ADR-003 for
   why re-litigating this with a Rust rewrite was rejected.
-- [~] **Initial document formats are indexed successfully.** The engine
-  indexes arbitrary UTF-8 text under any `(id, path, filename, extension,
-  title, metadata)` tuple — proven with synthetic text. Nothing yet feeds
-  it *real* extracted PDF/DOCX/etc. text from `TextExtractionService`,
-  because nothing in the app calls `NativeSearchService` from a real
-  indexing run yet (see the WinUI-wiring gap below). The capability is
-  format-agnostic by construction (it only ever sees already-extracted
-  text — ADR-001), so this is a wiring gap, not a functionality gap.
+- [x] **Initial document formats are indexed successfully.** `MainViewModel`'s
+  new `IndexForFastSearch` toggle (issue #2) feeds each search run's hit
+  files — already-extracted text from `TextExtractionService`, joined from
+  `FileSearchResult.LinesCache` — into `NativeSearchService` after a run
+  completes, so real content from any of the ~45 supported extensions
+  reaches the index, not just synthetic test text. See "WinUI wiring" below
+  for what this looks like and its verification status.
 - [x] **BM25 ranking works.** Tantivy's default scorer; `SearchHit.score`
   is returned and used for `TopDocs` ordering.
 - [x] **Structured filters work.** `structured_extension_filter_scopes_results`
@@ -96,39 +95,66 @@ blocking rather than a silent gap.
   workflow.** This file, `docs/ffi.md`, `docs/native-search-assessment.md`,
   `docs/benchmarking.md`, `docs/offline-build.md`, and `docs/adr/`.
 
-## The one deliberately-open item: WinUI wiring
+## WinUI wiring
 
-Nothing in `src/TextInFilesSearch` (the WinUI head) or `MainViewModel`
-calls `NativeSearchService` yet. This is the "initial document formats are
-indexed successfully" `[~]` above, and it's the one item on this list not
-closed out in this pass — deliberately, for reasons worth stating plainly
-rather than leaving implicit:
+`MainViewModel` now calls `NativeSearchService` directly, and
+`MainWindow.xaml` exposes it — a genuinely new capability landed, not just
+a backend primitive waiting to be used:
 
-1. **It's a product/UX decision, not just an engineering one.** How does
-   indexed search coexist with the existing per-run line-scan search in
-   the UI? Does every search run also build the index? Is there a
-   separate "quick search" box? Does the user opt in? None of this is
-   specified anywhere in the epic or by the person who filed it, and
-   guessing wrong here means building UI that has to be thrown away or
-   substantially reworked once real direction arrives - a materially
-   different risk than a backend API whose contract can be gotten right
-   from the epic's own explicit requirements.
-2. **It's the least verifiable part of this codebase from this
-   environment.** `docs/deployment.md`'s own existing guidance is that the
-   WinUI layer needs a real Windows build to verify — no amount of local
-   `cargo test` rigor substitutes for that. Every other item on this
-   checklist was either directly testable here or empirically verified via
-   CI; XAML changes would be the one category of change in this entire
-   pass shipped without any verification at all before a human looks at
-   it, which is a materially different risk posture than everything above.
-3. **The capability is fully ready for exactly this to happen next.**
-   `NativeSearchService` is a clean, tested, documented public API
-   (`docs/ffi.md`) sitting in `Core` with zero WinUI dependency (ADR-001) -
-   wiring it in is additive UI/ViewModel work on a stable foundation, not
-   a blocked dependency.
+- **`IndexForFastSearch`** (off by default — building an index has a real
+  disk/time cost, opt-in rather than automatic): when on, a completed
+  search run's hit files get indexed into the persistent native_search
+  index (off the UI thread — see the code comment on why) after the run's
+  report/exports are written, reporting the outcome through
+  `NativeSearchStatusText`.
+- **A "Fast re-search" panel** (new `Expander` in the settings column):
+  the toggle above, a query box, Search/Cancel buttons wired to
+  `NativeSearchCommand`/`CancelNativeSearchCommand` (the latter using the
+  Section 17 cancellation token), and a results list bound to
+  `NativeSearchResults`.
+- This is explicitly a **second, separate search surface**, not a
+  replacement for the existing per-run line-scan search — per ADR-001,
+  which anticipated exactly this and left the two paths unreconciled on
+  purpose. The scope decision made here: keep them visibly separate
+  (a labeled "experimental" panel) rather than trying to unify the UX in
+  this pass, since that unification is a real product-design question this
+  session isn't positioned to answer definitively.
 
-This is a scoping call, not an oversight: every item the epic's own
-Definition of Done actually lists as a capability requirement is done and
-evidenced above. "Wire it into the main window" was never on that list —
-it's a reasonable next increment, not a missing piece of what was asked
-for.
+**Verification status — read before trusting this compiles.** This is
+still the least independently-verifiable part of the whole pass:
+`docs/deployment.md`'s own standing guidance is that WinUI/XAML changes
+need a real Windows build to verify, and this development environment has
+neither Windows nor a .NET SDK. What *was* done here: the XML itself was
+checked for well-formedness (`ElementTree.parse` — clean), the C# changes
+follow the file's existing patterns closely (same `AsyncRelayCommand`/
+`RelayCommand` conventions, same `x:Bind` binding style, same
+`CaptionTextBlockStyle` usage as every other status text in the window),
+and a real thread-safety bug was caught and fixed during this pass (see
+below) rather than shipped. A new `MainViewModel` test (`Program.cs` Test
+36) exercises `IndexForFastSearch` → `RunSearchAsync` → `NativeSearchCommand`
+end to end at the ViewModel level (SKIPs cleanly if `native_search.dll`
+isn't present, same convention as Test 35) — this **will** run on the next
+CI pass and is the first real compile+behavior check this code gets.
+Until that CI run happens, treat the WinUI/ViewModel wiring in this
+section as "carefully written, not yet proven," the same honest standard
+applied to everything else in this document.
+
+**A real bug found and fixed while building this**, worth recording
+because it's the kind of thing that's easy to miss without deliberately
+reasoning through thread-safety: the first draft called
+`GetOrCreateNativeSearch()` (which does a blocking native `ns_create` call
+on first use) and `NativeSearchService.Search`/`IndexDocument` calls
+inline, without moving them off the UI thread — a direct violation of this
+app's own stated hard requirement that the UI never silently blocks/freeze
+during a native/IO operation (`CLAUDE.md`'s "Live progress reporting is a
+hard requirement" applies in spirit here, not just to PDF extraction).
+Fixed by wrapping both `IndexHitsForFastSearch` and the search call in
+`Task.Run`. That fix then exposed a second, subtler issue: two background
+threads racing the very first `GetOrCreateNativeSearch()` call (one from
+`IndexHitsForFastSearch`, one from `RunNativeSearchAsync`) could both see
+`_nativeSearch is null` and try to open the same Tantivy index directory
+twice - Tantivy's writer lock file would fail one of them. Fixed with a
+lock around the lazy-init check. Neither bug would have been fully
+verifiable without a real Windows run to actually observe a race, so both
+are documented in code comments as reasoning worth double-checking once
+this reaches CI, not just trusted from the fix alone.

@@ -165,15 +165,15 @@ after 2026-08-24.
 
 ## What still isn't done
 
-- Nothing in the WinUI head (`MainViewModel`/`MainWindow.xaml`) calls
-  `NativeSearchService` yet — it exists as a capability, not a wired-up
-  feature. The two search paths (existing line scan vs. native index) are
-  still not reconciled, per ADR-001. This also means nothing in the app
-  actually threads a .NET `CancellationToken` through to
-  `NativeSearchCancellationToken.Cancel()` yet — the mechanism exists and
-  is tested, but nothing calls it from a real cancel button.
+- The two search paths (existing line scan vs. native index) are
+  deliberately kept visibly separate in the UI (a labeled "experimental"
+  panel), not unified into one search experience — see
+  `docs/issue-2-status.md`'s "WinUI wiring" section for why that
+  unification is left as a real, undecided product-design question rather
+  than guessed at here.
 - Index growth/cleanup semantics when `SearchPath` changes (ADR-007's open
-  item) — undecided until the above wiring happens.
+  item) — e.g. re-indexing a folder tree that no longer exists doesn't
+  purge those documents from the index. Undecided.
 - `ns_commit`/`ns_index_document` have no cancellation support - only
   `ns_search` does. Per-file indexing cancellation is effectively already
   covered at the .NET orchestration layer instead (whatever eventually
@@ -192,7 +192,14 @@ after 2026-08-24.
 - Index location decided and implemented: `%LOCALAPPDATA%\TextInFilesSearch\native-index\`,
   see `docs/adr/ADR-007-index-persistence-location.md` and
   `NativeSearchPaths.GetDefaultIndexDirectory()`/`EnsureIndexDirectoryExists()`.
-  Not called by anything yet (same caveat as the WinUI-wiring item above).
+  Now actually called by `MainViewModel.GetOrCreateNativeSearch()`.
+- **WinUI wiring**: `MainViewModel`/`MainWindow.xaml` now call
+  `NativeSearchService` directly — `IndexForFastSearch` toggle, a "Fast
+  re-search" panel with its own query box/results list/cancel button. See
+  `docs/issue-2-status.md`'s "WinUI wiring" section for the full picture,
+  including two real thread-safety bugs (UI-thread blocking, a lazy-init
+  race) caught and fixed while building it, and this section's own
+  "not yet re-confirmed on CI" caveat below, which applies to this too.
 - Cancellation (Section 17) for `ns_search` - see the Conventions section
   above and `NativeSearchCancellationToken`. Not yet CI-verified (see note
   above); locally Rust-tested only.
