@@ -110,6 +110,16 @@ workflow now:
 This closes the gap flagged after Phase 3: the C# side is no longer
 "written to contract but unverified" once this workflow runs.
 
+**Confirmed on real hardware** (run
+[32688244936](https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/32688244936),
+2026-08-24): all 19 steps green, all 68 checks in the dependency-free suite
+passed including the four `native_search:` checks above, and
+`native_search.dll` was confirmed present in the self-contained publish
+output. The `[LibraryImport]`-generated marshalling, `SafeHandle` lifetime,
+and UTF-8/byte-buffer conventions described in this document link and work
+correctly across the real Rust/.NET boundary on Windows - not just asserted
+by this document, actually run.
+
 ## What still isn't done
 
 - Cancellation (Section 17) — not wired up. `ns_search`/`ns_commit` run to
@@ -134,5 +144,5 @@ across reopen, and that a null handle / null pointer / invalid UTF-8 /
 malformed query string all return a typed error status instead of
 crashing).
 
-C#: written to contract but not locally compiled (no SDK on this machine) —
-correctness rests on the CI run described above, not on local testing.
+C#: not locally compiled (no SDK on this machine), but confirmed compiling
+and working correctly via the real CI run described above.
