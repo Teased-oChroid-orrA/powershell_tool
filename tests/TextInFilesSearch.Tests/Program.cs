@@ -751,6 +751,80 @@ void Check(string name, bool condition)
         html.Contains("<img class=\"report-banner\" src=\"data:image/jpeg;base64,"));
 }
 
+// ---------------------------------------------------------------------
+// Test 35: native_search.dll round trip (issue #2 Phase 3). This is the
+// one thing the Rust side's own test suite (native-search/tests) cannot
+// prove by itself: that the actual P/Invoke marshalling in
+// NativeSearchService/NativeSearchInterop - source-generated LibraryImport
+// stubs, SafeHandle lifetime, UTF-8 string marshalling, the (ptr, len)
+// body convention - lines up with the Rust side across a real process
+// boundary, not just in each side's own unit tests.
+//
+// native_search.dll only exists once native-search/ has actually been
+// built (see .github/workflows/build.yml, which builds it before this
+// harness runs). A developer running this locally without the Rust
+// toolchain still gets a clean run - SKIP, not FAIL - rather than being
+// forced to install Rust just to iterate on unrelated C# changes.
+// ---------------------------------------------------------------------
+{
+    var dir = Path.Combine(testRoot, "native-search-index");
+    Directory.CreateDirectory(dir);
+
+    try
+    {
+        using var native = new NativeSearchService(dir);
+
+        native.IndexDocument(new NativeDocumentInput(
+            Id: "1",
+            Path: @"C:\docs\Torque-Spec-Deviation-Report.pdf",
+            FileName: "Torque-Spec-Deviation-Report.pdf",
+            Extension: ".pdf",
+            Title: null,
+            Modified: DateTime.UtcNow,
+            Created: DateTime.UtcNow,
+            Size: 4096,
+            Body: "torque spec deviation on aft mount bolts, re-torque completed"));
+        native.IndexDocument(new NativeDocumentInput(
+            Id: "2",
+            Path: @"C:\docs\Corrosion-Inspection-Q1.docx",
+            FileName: "Corrosion-Inspection-Q1.docx",
+            Extension: ".docx",
+            Title: "Quarterly Corrosion Inspection",
+            Modified: DateTime.UtcNow,
+            Created: DateTime.UtcNow,
+            Size: 2048,
+            Body: "minor filiform corrosion observed along fastener row twelve"));
+        native.Commit();
+
+        var hits = native.Search("torque", limit: 10);
+        Check("native_search: query matches only the indexed document containing the term",
+            hits.Count == 1 && hits[0].Id == "1");
+        Check("native_search: unmatched fields still round-trip through the JSON boundary",
+            hits.Count == 1 && hits[0].Path == @"C:\docs\Torque-Spec-Deviation-Report.pdf" && hits[0].Extension == ".pdf");
+
+        native.DeleteDocument("1");
+        native.Commit();
+        var afterDelete = native.Search("torque", limit: 10);
+        Check("native_search: delete + commit removes the document from search results",
+            afterDelete.Count == 0);
+
+        bool threw = false;
+        try
+        {
+            _ = native.Search(string.Empty, limit: 10);
+        }
+        catch (NativeSearchException ex) when (ex.Status == "InvalidArgument")
+        {
+            threw = true;
+        }
+        Check("native_search: an empty query surfaces as a typed NativeSearchException, not a crash", threw);
+    }
+    catch (DllNotFoundException)
+    {
+        Console.WriteLine("SKIP: native_search round trip (native_search.dll not present - build native-search/ first; see docs/ffi.md)");
+    }
+}
+
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL TESTS PASSED" : $"{failures} TEST(S) FAILED");
 Directory.Delete(testRoot, true);

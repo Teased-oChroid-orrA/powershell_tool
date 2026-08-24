@@ -30,6 +30,35 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: Setup Rust toolchain (stable, MSVC)
+        # native-search/ (issue #2) is a separate Rust cdylib, not part of
+        # TextInFilesSearch.sln. Built explicitly here rather than relying
+        # on whatever Rust happens to be preinstalled on the runner image,
+        # so a runner-image change can't silently change what "the build"
+        # means.
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Cargo registry/target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            native-search/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('native-search/Cargo.lock') }}
+
+      - name: Build and test native_search (Rust)
+        # cargo test alone already proves the safe engine API AND the raw
+        # extern "C" ABI round-trip correctly (see native-search/tests/) -
+        # this is the same suite verified locally during development (see
+        # docs/ffi.md), run here again as a real CI gate rather than trusted
+        # from a developer's machine.
+        working-directory: native-search
+        run: |
+          cargo build --release --target x86_64-pc-windows-msvc
+          cargo test --target x86_64-pc-windows-msvc
+
       - name: Setup MSBuild (from the runner's Visual Studio install)
         # WindowsAppSDK's PRI-resource-generation MSBuild task
         # (Microsoft.Build.Packaging.Pri.Tasks.dll, under
@@ -49,15 +78,31 @@ jobs:
       - name: Build (Debug, all projects)
         run: msbuild TextInFilesSearch.sln /p:Configuration=Debug /m /nologo /verbosity:minimal
 
+      - name: Copy native_search.dll next to the test harness
+        # P/Invoke resolves a native library from the process's own base
+        # directory, so native_search.dll has to sit beside
+        # TextInFilesSearch.Tests.dll for the NativeSearchService round-trip
+        # check (Test 35 in Program.cs) to find it at runtime - this is also
+        # the first real proof that the LibraryImport-generated marshalling
+        # code in NativeSearchInterop.cs actually links against the Rust
+        # side correctly, not just that it compiles.
+        shell: pwsh
+        run: |
+          Copy-Item native-search/target/x86_64-pc-windows-msvc/release/native_search.dll `
+            tests/TextInFilesSearch.Tests/bin/Debug/net8.0/native_search.dll
+
       - name: Run dependency-free verification suite
         # This is the same dependency-free harness used during development
         # (see tests/TextInFilesSearch.Tests/Program.cs) - it exercises every
         # match mode, the DOCX/PPTX/PDF/RTF extractors (including the
         # ASCII85+FlateDecode PDF chain), the cache lifecycle, parallel vs
-        # sequential consistency, and the ViewModel run/cancel/progress
-        # lifecycle. It has no test-framework dependency, so a failure here
-        # is a genuine regression, not a tooling problem.
-        run: dotnet run --project tests/TextInFilesSearch.Tests --configuration Debug
+        # sequential consistency, the ViewModel run/cancel/progress
+        # lifecycle, and (Test 35, issue #2) a real native_search.dll P/Invoke
+        # round trip - index, commit, search, delete, typed-error handling -
+        # across the actual process boundary, not just each side's own unit
+        # tests. It has no test-framework dependency, so a failure here is a
+        # genuine regression, not a tooling problem.
+        run: dotnet run --project tests/TextInFilesSearch.Tests --configuration Debug --no-build
 
       - name: Publish self-contained (win-x64, unpackaged)
         run: >
@@ -72,6 +117,27 @@ jobs:
           /p:PublishSingleFile=false
           /p:PublishDir="${{ github.workspace }}\publish\TextInFilesSearch\"
           /m /nologo /verbosity:minimal
+
+      - name: Copy native_search.dll into the publish output
+        # Not yet wired into the .csproj as a real Content/reference item
+        # (see docs/ffi.md "What Phase 3 does not cover yet") - copied here
+        # explicitly so the published app can actually resolve the P/Invoke
+        # at runtime, and so the verification step below has something real
+        # to check for rather than trusting the copy happened.
+        shell: pwsh
+        run: |
+          Copy-Item native-search/target/x86_64-pc-windows-msvc/release/native_search.dll `
+            publish/TextInFilesSearch/native_search.dll
+
+      - name: Verify published artifact bundles native_search.dll
+        shell: pwsh
+        run: |
+          $nativeSearchDll = Get-ChildItem -Path "publish/TextInFilesSearch" -Filter "native_search.dll" -ErrorAction SilentlyContinue
+          if (-not $nativeSearchDll) {
+            Write-Error "native_search.dll was NOT found in the publish output. NativeSearchService would fail with DllNotFoundException at runtime."
+            exit 1
+          }
+          Write-Host "Found native_search.dll in the publish output."
 
       - name: Verify published artifact does not depend on a pre-installed .NET runtime
         shell: pwsh

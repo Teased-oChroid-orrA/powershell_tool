@@ -80,26 +80,59 @@ src/TextInFilesSearch.Core/Models/NativeSearchModels.cs
   changed file is a safe call, not a duplicate — this happens inside
   `engine.rs`, callers don't need to delete-then-add themselves.
 
-## What Phase 3 does *not* cover yet
+## CI (`.github/workflows/build.yml`)
+
+Since this development machine has neither Windows nor a .NET SDK, GitHub
+Actions' `windows-latest` runner is where the C# side actually gets
+compiled and exercised for the first time — not an afterthought. The
+workflow now:
+
+1. Installs a pinned Rust toolchain (`dtolnay/rust-toolchain@stable`,
+   `x86_64-pc-windows-msvc`) and runs `cargo build --release` + `cargo test`
+   for `native-search/` — the same 12-test suite verified locally.
+2. Builds the whole `.sln` (this is what actually proves the
+   `[LibraryImport]`-generated marshalling code in `NativeSearchInterop.cs`
+   compiles — the biggest previously-unverified risk).
+3. Copies the built `native_search.dll` next to the test harness's own
+   output, then runs the dependency-free suite (`Program.cs`), which
+   includes a **Test 35** that round-trips a real `NativeSearchService`
+   call through the actual process boundary: index two documents, commit,
+   search, assert the right one comes back with fields intact, delete,
+   commit, search again, and confirm an empty query surfaces as a typed
+   `NativeSearchException` rather than crashing. If `native_search.dll`
+   isn't present (e.g. a developer running the harness locally without the
+   Rust toolchain installed), this prints `SKIP`, not `FAIL` — it never
+   blocks unrelated C# iteration.
+4. Copies `native_search.dll` into the self-contained publish output and
+   verifies it's actually there, alongside the existing hostfxr/coreclr/
+   WindowsAppRuntime checks.
+
+This closes the gap flagged after Phase 3: the C# side is no longer
+"written to contract but unverified" once this workflow runs.
+
+## What still isn't done
 
 - Cancellation (Section 17) — not wired up. `ns_search`/`ns_commit` run to
   completion; there's no cancel token in this slice.
-- Build/publish integration — `native_search.dll` is not yet copied into the
-  WinUI head's publish output, and `.github/workflows/build.yml` does not
-  yet build the Rust crate. Both are real work before this is runnable
-  end-to-end on Windows; tracked as a follow-up, not done here.
+- `native_search.dll` is copied into place by CI shell steps, not a real
+  MSBuild `Content`/reference item in `TextInFilesSearch.csproj` — a
+  `dotnet publish` run outside this workflow won't include it yet.
 - Schema-evolution and corruption-recovery hardening flagged as open in
   ADR-002 (items 9/10) — not addressed by this slice.
 - A `%LOCALAPPDATA%` index-location convention (ADR-007, not yet written).
+- Nothing in the WinUI head (`MainViewModel`/`MainWindow.xaml`) calls
+  `NativeSearchService` yet — it exists as a capability, not a wired-up
+  feature. The two search paths (existing line scan vs. native index) are
+  still not reconciled, per ADR-001.
 
-## What was actually verified this pass
+## What was actually verified locally (before CI ever ran)
 
-This machine has no Windows install and no .NET SDK, so the C# side above
-is written to contract but **not compiled**. The Rust side was fully built
-and tested locally (`cargo build`, `cargo clippy --all-targets`, `cargo
-test` — 12/12 passing, covering round-trip indexing/search, re-indexing
-replacing not duplicating, delete, index persistence across reopen, and
-that a null handle / null pointer / invalid UTF-8 / malformed query string
-all return a typed error status instead of crashing). The C# side needs a
-real `dotnet build` on the next machine that has the SDK before it can be
-trusted — don't treat it as verified.
+Rust: fully built and tested (`cargo build`, `cargo clippy --all-targets` —
+zero warnings, `cargo test` — 12/12 passing, covering round-trip indexing/
+search, re-indexing replacing not duplicating, delete, index persistence
+across reopen, and that a null handle / null pointer / invalid UTF-8 /
+malformed query string all return a typed error status instead of
+crashing).
+
+C#: written to contract but not locally compiled (no SDK on this machine) —
+correctness rests on the CI run described above, not on local testing.
