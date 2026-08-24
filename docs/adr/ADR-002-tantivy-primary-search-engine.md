@@ -1,6 +1,6 @@
 # ADR-002: Tantivy as Primary Search Engine
 
-Status: Proposed (baseline adopted; three items flagged EVALUATE FURTHER before Phase 3 code depends on them)
+Status: Accepted (items 9, 10, 12 re-verified directly against source and closed — see "Follow-up verification" below; items 4, 7, 11 remain open, non-blocking)
 
 ## Problem
 
@@ -30,9 +30,23 @@ Section 22), not documentation-claim trust.
 years after the 2019 roadmap first listed schema-change strategy and
 checksums/footers as 1.0 blockers. This doesn't disqualify it — active
 maintenance and a real production user base (Quickwit) offset a raw version
-number — but items 9 and 10 above should be re-verified directly against
-source/changelog before Phase 3 code depends on either schema stability or
-corruption recovery, rather than assumed resolved by the passage of time.
+number — but items 9 and 10 above needed re-verification directly against
+source before Phase 3 code depended on either schema stability or
+corruption recovery, rather than assuming they were resolved by the passage
+of time. That re-verification is done — see below.
+
+## Follow-up verification (2026-08-24, direct source inspection)
+
+Items 9, 10, and 12 were re-checked against the actual `tantivy-0.26.1`
+source on disk (`~/.cargo/registry/src/.../tantivy-0.26.1/`), not
+documentation or the 2019 roadmap issue, and a real local `cargo vendor` +
+`cargo build --offline` run — not assumed from a build-step description.
+
+| # | 2026-08-23 status | Re-verified finding | Updated verdict |
+|---|---|---|---|
+| 9 | EVALUATE FURTHER | **Confirmed unresolved, and now mitigated in our code, not Tantivy's.** `Index::open()` reads whatever schema is on disk with no compatibility check of its own — a schema change in a future `native-search` version would silently load an incompatible index and fail much later, confusingly, at the first `get_field()` lookup. Fixed directly in `engine::NativeSearchEngine::open_or_create`: after opening an existing index, its schema is compared (`Schema: Eq + PartialEq`) against `build_schema()`'s current schema; a mismatch returns `NsStatus::CorruptIndex` naming both schemas, immediately and clearly. Proven by a real test (`opening_index_with_mismatched_schema_is_corrupt_index_not_panic`), not just asserted in a comment. There is still no in-place migration path — a schema change means deleting the index directory and rebuilding from scratch — acceptable for a regenerable local search index, not acceptable if this were a system of record. | **RESOLVED** (mitigated, not a Tantivy gap we're exposed to) |
+| 10 | EVALUATE FURTHER / open risk | **Confirmed solid, better than assumed.** `src/directory/footer.rs` and `src/directory/managed_directory.rs` show every managed file gets a footer (magic number `1337`, version, CRC32 via `crc32fast`) appended on write. `ManagedDirectory::open_read` calls `Footer::extract_footer` + `footer.is_compatible()` on **every single file open**, automatically — a truncated file (too short to contain a valid footer) or a version/magic-number mismatch is caught immediately as a typed `OpenReadError`, not a silent misread. Full CRC validation is available via the separate `validate_checksum()` method (not run on every read, for performance — an opt-in integrity check, not a blocker). This directly satisfies the Definition of Done's "index survives application restart" and "corrupt/unreadable documents don't terminate indexing" more solidly than the 2019 roadmap issue suggested was true at the time. | **RESOLVED** |
+| 12 | EVALUATE FURTHER | **Not a pure-Rust build — confirmed, and confirmed to still work offline anyway.** `cargo vendor` against this crate's real `Cargo.lock` pulls in `zstd-sys` (C source of zstd, built via the `cc` crate — a genuine C-compiler dependency at build time, not just a transitive Rust crate). This means **Rust alone is not sufficient to build native-search** — a C toolchain must be present too. On the target CI runner (`windows-latest`) this is already satisfied in practice (the existing `.github/workflows/build.yml` run on 2026-08-24 built `native-search` successfully via MSVC, and `microsoft/setup-msbuild`/the runner's bundled Visual Studio installation provides `cl.exe`) — but this ADR was wrong to imply a pure-Rust build in the original pass, and any future minimal-build-environment work (a from-scratch offline installer, a stripped-down CI image) must provision a C compiler alongside Rust, not just Rust. Offline-ness itself is fine: a local `cargo vendor` + `cargo build --offline` against the vendored sources succeeded with zero network access (verified directly, not assumed) — see `docs/offline-build.md`. | **RESOLVED** (revised: needs Rust + a C toolchain, both available on the actual target CI runner; not pure-Rust as first claimed) |
 
 ## Decision
 
@@ -45,12 +59,17 @@ pre-production-hardening follow-ups, not blockers to starting the slice.
 ## Consequences
 
 - Immutable-document model (item 6) means the incremental-indexing design
-  (future ADR-008) must plan around delete+reinsert per changed file, not a
-  cheaper in-place update.
-- Corruption-recovery gap (item 10) means the vertical slice should not yet
-  claim "index survives application restart" as done (Definition of Done
-  checklist item) until re-verified — track separately, don't mark complete
-  prematurely.
+  (ADR-008) plans around delete+reinsert per changed file, not a cheaper
+  in-place update.
+- Corruption-recovery (item 10, now resolved) directly backs the Definition
+  of Done's "index survives application restart" claim with source-level
+  evidence, not an assumption.
+- Schema-mismatch detection (item 9, now resolved) is `native-search`'s own
+  code, not a Tantivy feature — a real safeguard that has to be maintained
+  going forward whenever `build_schema()` changes.
+- The C-toolchain dependency (item 12) is a real build-environment
+  requirement to carry into any future CI/offline-installer work, not
+  optional — see `docs/offline-build.md`.
 - No custom inverted index, BM25, tokenizer, or query parser gets built —
   directly satisfies Section 23's prohibition list for these components.
 

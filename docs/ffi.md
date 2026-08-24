@@ -1,8 +1,12 @@
 # native_search FFI contract
 
-Phase 3 vertical slice for issue #2. See `docs/adr/ADR-001` through `ADR-003`
-for why the boundary sits where it does (indexing/search only, not
-extraction) and `docs/native-search-assessment.md` for the wider context.
+Phase 3 vertical slice for issue #2. See `docs/adr/` (ADR-001 through
+ADR-010) for the architectural decisions behind this — ADR-001/003 for why
+the boundary sits where it does (indexing/search only, not extraction),
+ADR-008/009/010 for incremental-indexing, serialization, and single-vs-
+multi-index strategy — and `docs/native-search-assessment.md` for the wider
+context. `docs/benchmarking.md` and `docs/offline-build.md` cover Sections
+13 and 15 respectively.
 
 ## Where things live
 
@@ -11,15 +15,20 @@ native-search/                  Rust crate (cdylib "native_search" + lib)
   src/error.rs                    NsStatus, NsError - Section 18 error classes
   src/engine.rs                   Safe Rust core: schema, indexing, search,
                                    cancellation (CancellationFlag,
-                                   CancellableCollector). No unsafe, no FFI
-                                   types - unit-tested on its own (10 tests,
-                                   cargo test).
+                                   CancellableCollector), schema-mismatch
+                                   detection on open (ADR-002 item 9). No
+                                   unsafe, no FFI types - unit-tested on its
+                                   own (13 tests, cargo test).
   src/ffi.rs                      The extern "C" surface. Every export is
                                    wrapped in catch_unwind - a Rust panic
                                    must never cross into .NET (Section 18).
   tests/ffi_smoke.rs               Exercises the raw extern "C" functions
                                    directly (10 tests) - proves the ABI shape
                                    itself round-trips, not just the Rust API.
+  benches/indexing_and_search.rs  Section 13 benchmark harness - manual
+                                   timing, not criterion. See
+                                   docs/benchmarking.md for measured numbers
+                                   and their caveats.
 
 src/TextInFilesSearch.Core/Native/
   NativeSearchInterop.cs          [LibraryImport] declarations, must match
@@ -156,8 +165,6 @@ after 2026-08-24.
 
 ## What still isn't done
 
-- Schema-evolution and corruption-recovery hardening flagged as open in
-  ADR-002 (items 9/10) — not addressed by this slice.
 - Nothing in the WinUI head (`MainViewModel`/`MainWindow.xaml`) calls
   `NativeSearchService` yet — it exists as a capability, not a wired-up
   feature. The two search paths (existing line scan vs. native index) are
@@ -189,18 +196,48 @@ after 2026-08-24.
 - Cancellation (Section 17) for `ns_search` - see the Conventions section
   above and `NativeSearchCancellationToken`. Not yet CI-verified (see note
   above); locally Rust-tested only.
+- ADR-002 items 9 (schema evolution) and 10 (corruption recovery) -
+  re-verified directly against Tantivy's source and resolved: schema
+  mismatches on open now fail fast with `NsStatus::CorruptIndex` (our own
+  code, tested), and Tantivy's own per-file footer/CRC corruption detection
+  was confirmed to already exist and run automatically on every file open,
+  stronger than the 2019-roadmap-issue uncertainty originally suggested.
+  See ADR-002's "Follow-up verification" section.
+- ADR-002 item 12 (offline/vendored build) - re-verified with a real local
+  `cargo vendor` + `cargo build --offline` run (succeeded), but corrected:
+  this is **not** a pure-Rust build (`zstd-sys` needs a C compiler) as
+  first assumed. See `docs/offline-build.md`.
+- A Section 13 benchmark harness (`native-search/benches/`) with real,
+  measured (not fabricated) numbers from this development machine - see
+  `docs/benchmarking.md` for the numbers and why they're explicitly not a
+  performance SLA for the target hardware.
+- ADR-008 (incremental indexing strategy), ADR-009 (FFI serialization
+  strategy), ADR-010 (multi-index vs. Tantivy-only architecture) - all
+  three formalize decisions already implemented in code, closing out the
+  ADR checklist from the epic's Section 21.
+- Two more Definition-of-Done items proven with tests, not just designed:
+  structured field filters (`extension:.pdf`-style queries -
+  `structured_extension_filter_scopes_results`) and that one rejected
+  document doesn't affect others indexed around it
+  (`a_rejected_document_does_not_affect_documents_indexed_around_it`).
 
 ## What was actually verified locally
 
-Rust: fully built and tested (`cargo build`, `cargo clippy --all-targets` —
-zero warnings, `cargo test` — 20/20 passing: round-trip indexing/search,
-re-indexing replacing not duplicating, delete, index persistence across
-reopen, that a null handle / null pointer / invalid UTF-8 / malformed query
-string all return a typed error status instead of crashing, and (added
-after the CI run above) that a pre-cancelled token reports
+Rust: fully built and tested (`cargo build`, `cargo clippy --all-targets`
+(including `--benches`) — zero warnings, `cargo test` — 23/23 passing:
+round-trip indexing/search, re-indexing replacing not duplicating, delete,
+index persistence across reopen, that a null handle / null pointer /
+invalid UTF-8 / malformed query string all return a typed error status
+instead of crashing, that a pre-cancelled token reports
 `NsStatus::Cancelled` from both the safe Rust API and the raw FFI surface,
-an un-cancelled token doesn't block a search, and cancelling a token after
-a search already succeeded doesn't retroactively fail that completed call).
+an un-cancelled token doesn't block a search, cancelling a token after a
+search already succeeded doesn't retroactively fail that completed call,
+a structured `extension:` field filter narrows results correctly, a
+rejected document doesn't corrupt indexing for documents around it, and
+opening an index with a mismatched schema fails fast with
+`NsStatus::CorruptIndex` naming both schemas). Plus a real local
+`cargo vendor` + `cargo build --offline` run (see `docs/offline-build.md`)
+and a real benchmark run (see `docs/benchmarking.md`).
 
 C#: not locally compiled (no SDK on this machine). Everything through the
 2026-08-24 CI run is confirmed compiling and working correctly; the

@@ -19,7 +19,7 @@ use tantivy::{
     TantivyDocument, TantivyError, Term,
 };
 
-use crate::error::{NsError, NsResult, CANCELLED_SENTINEL};
+use crate::error::{NsError, NsResult, NsStatus, CANCELLED_SENTINEL};
 
 /// A cheaply-cloneable flag a caller can hand to
 /// [`NativeSearchEngine::search`] and set from another thread to abort an
@@ -176,7 +176,34 @@ impl NativeSearchEngine {
         let index = if Index::exists(&dir)
             .map_err(|e| NsError::index_error(format!("cannot probe index: {e}")))?
         {
-            Index::open(dir).map_err(|e| NsError::index_error(format!("cannot open index: {e}")))?
+            let opened = Index::open(dir)
+                .map_err(|e| NsError::index_error(format!("cannot open index: {e}")))?;
+            // ADR-002 item 9: Index::open reads whatever schema is already on
+            // disk with no compatibility check of its own - if a future
+            // native-search version changes build_schema() (new/renamed/
+            // retyped field), silently proceeding here would defer the
+            // failure to the first get_field() lookup deep inside
+            // index_document/search, with a much more confusing error. Fail
+            // fast and specifically here instead, naming both sides so the
+            // problem is obvious - this is a real fix, not a hypothetical
+            // placeholder, but there's still no migration path once this
+            // fires (see the doc comment on NsStatus::CorruptIndex usage
+            // below): today the only recovery is deleting the index
+            // directory and letting it rebuild from scratch.
+            if opened.schema() != schema {
+                return Err(NsError::new(
+                    NsStatus::CorruptIndex,
+                    format!(
+                        "index at {} was built with a different schema than this version of \
+                         native-search expects (on-disk: {:?}, expected: {:?}). Delete the index \
+                         directory to force a rebuild - there is no in-place migration.",
+                        index_dir.display(),
+                        opened.schema(),
+                        schema
+                    ),
+                ));
+            }
+            opened
         } else {
             Index::create(dir, schema.clone(), tantivy::IndexSettings::default())
                 .map_err(|e| NsError::index_error(format!("cannot create index: {e}")))?
@@ -437,6 +464,96 @@ mod tests {
         let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
         let err = engine.index_document(sample("", "body")).unwrap_err();
         assert_eq!(err.status, crate::error::NsStatus::InvalidArgument);
+    }
+
+    /// Definition of Done: "Structured filters work." `extension` is a
+    /// `STRING` (untokenized, exact-match) field, so Tantivy's own query
+    /// syntax already supports scoping a query to it - `extension:pdf` -
+    /// with no custom query language needed (Section 9: "Do not create a
+    /// custom query language unless... required").
+    #[test]
+    fn structured_extension_filter_scopes_results() {
+        let dir = tempdir().unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        engine
+            .index_document(DocumentInput {
+                extension: ".pdf",
+                filename: "report.pdf",
+                ..sample("1", "corrosion inspection findings")
+            })
+            .unwrap();
+        engine
+            .index_document(DocumentInput {
+                extension: ".docx",
+                filename: "report.docx",
+                ..sample("2", "corrosion inspection findings")
+            })
+            .unwrap();
+        engine.commit().unwrap();
+
+        // Both documents match the free-text term...
+        let all_hits = engine.search("corrosion", 10, None).unwrap();
+        assert_eq!(all_hits.len(), 2);
+
+        // ...but the extension filter narrows to just the PDF. `extension`
+        // is a STRING field (untokenized, exact match), and the stored
+        // value includes the leading dot (".pdf", matching what
+        // TextInFilesSearch.Core's ExtensionCatalog uses on the .NET side)
+        // - so the query term needs the dot too, not just "pdf".
+        let filtered = engine.search("extension:.pdf", 10, None).unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "1");
+    }
+
+    /// Definition of Done: "Corrupt/unreadable documents don't terminate
+    /// indexing." Each ns_index_document call is independent (Section 11's
+    /// "one bad document must never abort an entire indexing run" is a
+    /// per-file .NET orchestration property once wired up, but it only
+    /// holds if a failed call here doesn't poison the engine for later,
+    /// valid calls) - proven here, not just assumed from the FFI shape.
+    #[test]
+    fn a_rejected_document_does_not_affect_documents_indexed_around_it() {
+        let dir = tempdir().unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+
+        engine
+            .index_document(sample("1", "first valid document"))
+            .unwrap();
+        let bad = engine.index_document(sample("", "invalid: empty id"));
+        assert!(bad.is_err());
+        engine
+            .index_document(sample("3", "third valid document"))
+            .unwrap();
+        engine.commit().unwrap();
+
+        assert_eq!(engine.num_docs(), 2);
+        assert_eq!(engine.search("first", 10, None).unwrap().len(), 1);
+        assert_eq!(engine.search("third", 10, None).unwrap().len(), 1);
+    }
+
+    /// ADR-002 item 9: an index built with a different schema than the
+    /// current `build_schema()` must fail fast and clearly on open, not
+    /// silently misbehave the first time code looks up a field that
+    /// doesn't exist on disk.
+    #[test]
+    fn opening_index_with_mismatched_schema_is_corrupt_index_not_panic() {
+        let dir = tempdir().unwrap();
+
+        // Build and persist an index with a deliberately different schema
+        // (missing every field build_schema() defines) at the same path
+        // NativeSearchEngine::open_or_create will look at.
+        let mut builder = tantivy::schema::Schema::builder();
+        builder.add_text_field("unrelated_field", tantivy::schema::TEXT);
+        let other_schema = builder.build();
+        let mmap_dir = MmapDirectory::open(dir.path()).unwrap();
+        tantivy::Index::create(mmap_dir, other_schema, tantivy::IndexSettings::default()).unwrap();
+
+        let err = match NativeSearchEngine::open_or_create(dir.path()) {
+            Ok(_) => panic!("expected a schema-mismatch error, got Ok"),
+            Err(e) => e,
+        };
+        assert_eq!(err.status, crate::error::NsStatus::CorruptIndex);
+        assert!(err.message.contains("different schema"));
     }
 
     #[test]
