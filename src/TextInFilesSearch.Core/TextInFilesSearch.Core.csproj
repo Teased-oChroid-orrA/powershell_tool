@@ -16,6 +16,13 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>TextInFilesSearch</RootNamespace>
+    <!--
+      Required for the [LibraryImport]-generated P/Invoke marshalling stubs
+      in Native/NativeSearchInterop.cs (issue #2) - the source generator
+      emits unsafe pointer code for the native_search.dll boundary. This is
+      the only unsafe code in Core; everything else stays managed.
+    -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <!--
