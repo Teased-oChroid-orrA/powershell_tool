@@ -188,12 +188,18 @@ for the corrected guidance. Publish/publish-verification steps were
 skipped as a downstream consequence of the test-harness failure, not
 independently tested this run.
 
-**Not yet confirmed on CI**: the fix above, and everything from the
-cancellation/ADR-007/schema-check/benchmark-harness/WinUI-wiring work
-generally — this session ends with that fix committed but not yet re-run
-through CI. The next CI run (whenever one is next triggered) is the one
-that actually confirms it. Until then, treat this specific bug as
-"identified and fixed in source, not yet proven fixed by a passing run."
+**Third CI run — fully green** (run
+[32691063260](https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/32691063260),
+2026-08-24): all 19 steps passed, including the exact check that failed
+before (`native_search: an empty query surfaces as a typed
+NativeSearchException, not a crash`), the cancellation checks, and all
+four new ViewModel-level checks
+(`ViewModel: NativeSearchCommand's underlying search finds the file
+indexed by the run above` among them — the WinUI/`MainViewModel` wiring's
+first real proof, not just a clean compile). `native_search.dll` (5.8MB)
+confirmed present in the self-contained publish output. Everything in this
+document and in `docs/issue-2-status.md` as of this run is real,
+CI-confirmed-on-Windows work, not a claim awaiting verification.
 
 ## What still isn't done
 

@@ -9,11 +9,10 @@ blocking rather than a silent gap.
   `native-search`/`NativeSearchService` is additive, nothing in
   `SearchOrchestrator`/`MatchingEngine`/the existing UI was touched.
 - [x] **Rust native module builds on Windows.** Confirmed on the
-  `windows-latest` CI runner, 2026-08-24 run
-  ([32688244936](https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/32688244936)) —
-  pre-cancellation code. Cancellation/ADR-007/schema-check additions since
-  then are locally Rust-tested (23/23) but not yet re-run on CI (batched
-  per session direction — see `docs/ffi.md`).
+  `windows-latest` CI runner across three runs, most recently
+  [32691063260](https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/32691063260)
+  (2026-08-24) with cancellation, schema-mismatch detection, and the
+  benchmark harness all included and all 19 steps green.
 - [x] **No administrator privileges are required.** `%LOCALAPPDATA%`
   (ADR-007) needs no elevation; nothing in the build/publish pipeline
   requires admin rights.
@@ -25,8 +24,8 @@ blocking rather than a silent gap.
 - [x] **Tantivy-based indexing/search works end-to-end.** Proven twice:
   the Rust test suite, and `tests/TextInFilesSearch.Tests/Program.cs`
   Test 35, which round-trips a real `NativeSearchService` call through the
-  actual C#↔Rust process boundary (CI-confirmed for the pre-cancellation
-  version).
+  actual C#↔Rust process boundary — CI-confirmed including cancellation,
+  as of run 32691063260.
 - [x] **Text extraction is abstracted behind a unified interface.**
   ADR-003: the existing `TextExtractionService`/`FileReaderService` *is*
   that interface — deliberately not re-implemented in Rust. See ADR-003 for
@@ -120,24 +119,31 @@ a backend primitive waiting to be used:
   this pass, since that unification is a real product-design question this
   session isn't positioned to answer definitively.
 
-**Verification status — read before trusting this compiles.** This is
-still the least independently-verifiable part of the whole pass:
-`docs/deployment.md`'s own standing guidance is that WinUI/XAML changes
-need a real Windows build to verify, and this development environment has
-neither Windows nor a .NET SDK. What *was* done here: the XML itself was
-checked for well-formedness (`ElementTree.parse` — clean), the C# changes
-follow the file's existing patterns closely (same `AsyncRelayCommand`/
-`RelayCommand` conventions, same `x:Bind` binding style, same
-`CaptionTextBlockStyle` usage as every other status text in the window),
-and a real thread-safety bug was caught and fixed during this pass (see
-below) rather than shipped. A new `MainViewModel` test (`Program.cs` Test
-36) exercises `IndexForFastSearch` → `RunSearchAsync` → `NativeSearchCommand`
-end to end at the ViewModel level (SKIPs cleanly if `native_search.dll`
-isn't present, same convention as Test 35) — this **will** run on the next
-CI pass and is the first real compile+behavior check this code gets.
-Until that CI run happens, treat the WinUI/ViewModel wiring in this
-section as "carefully written, not yet proven," the same honest standard
-applied to everything else in this document.
+**Verification status — confirmed, not just written.** This development
+environment has neither Windows nor a .NET SDK, so this was written
+blind — but CI (`windows-latest`) is where it actually got checked, and it
+was checked twice:
+
+1. **Run [32690778016](https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/32690778016)**:
+   the whole `.sln` compiled clean, including `MainWindow.xaml`/
+   `MainViewModel.cs` — but the test harness crashed with a real
+   `NullReferenceException` in `ns_search`'s cancel-token marshalling (see
+   `docs/ffi.md`'s CI-history notes for the root cause and fix — a
+   generated `SafeHandleMarshaller` bug had nothing to do with the WinUI
+   code itself, but it blocked every test after it, Test 36 included, from
+   running at all).
+2. **Run [32691063260](https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/32691063260), after the fix**:
+   all 19 steps green, including `Program.cs` Test 36 —
+   `ViewModel: NativeSearchCommand's underlying search finds the file
+   indexed by the run above` passed, meaning `IndexForFastSearch` →
+   `RunSearchAsync` → `NativeSearchCommand` → `RunNativeSearchAsync` works
+   end to end on real Windows hardware, not just "compiles."
+
+The WinUI/ViewModel wiring in this section is CI-confirmed working, not
+"carefully written, not yet proven" — that caveat applied for about twenty
+minutes of wall-clock time between the two runs above and has since been
+resolved with evidence, the same standard as everything else in this
+document.
 
 **A real bug found and fixed while building this**, worth recording
 because it's the kind of thing that's easy to miss without deliberately
