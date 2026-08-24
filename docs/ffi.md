@@ -300,8 +300,20 @@ reflects the *latest* re-index rather than the stale original, rejects an
 empty id, and round-trips correctly through the raw `extern "C"` surface
 (found/not-found/null-handle cases).
 
-C#: not locally compiled (no SDK on this machine). Everything through the
-[32691063260](https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/32691063260)
-CI run (2026-08-24) is confirmed compiling and working correctly; the
-change-detection/in-folder-index-location (ADR-011) work since then is
-written to the same contract but awaits the next CI run for confirmation.
+C#: not locally compiled (no SDK on this machine), but confirmed on real
+Windows hardware — run
+[32726269929](https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/32726269929),
+2026-08-24: all 19 steps green, including the change-detection check
+(`ViewModel: re-running over unchanged files reports them as already up
+to date, not re-indexed`) and the auto-exclusion checks
+(`ViewModel: BuildSettings() automatically excludes the native_search
+index folder`, `...normal search never descends into the auto-excluded
+native_search index folder`). One real bug was caught and fixed along the
+way in the prior run
+([32725890735](https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/32725890735)):
+`NativeSearchCommand.CanExecute` gained a `SearchPath` requirement
+(ADR-011 — the index lives inside `SearchPath`), and Test 36 checked
+"becomes true once a query is typed" before `SearchPath` was set, which
+the old contract never required. Fixed by reordering the test and adding
+an explicit intermediate-state assertion — a genuine test bug caught by
+CI, not a product bug.
