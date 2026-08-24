@@ -19,7 +19,7 @@ use std::path::Path;
 use std::ptr;
 use std::slice;
 
-use crate::engine::{DocumentInput, NativeSearchEngine};
+use crate::engine::{CancellationFlag, DocumentInput, NativeSearchEngine};
 use crate::error::{NsError, NsStatus};
 
 thread_local! {
@@ -200,15 +200,24 @@ pub unsafe extern "C" fn ns_commit(handle: *mut c_void) -> i32 {
 /// `engine::SearchHit`) into a newly allocated buffer via `out_buffer`/
 /// `out_len`. The caller must release it with `ns_free_buffer`.
 ///
+/// `cancel_token` is optional (pass null for no cancellation support) - a
+/// live token from `ns_cancel_token_create`, cancelled from another thread
+/// via `ns_cancel_token_cancel`, aborts this call with `NsStatus::Cancelled`
+/// once the check fires (before the search starts, and before each segment
+/// scan - see `engine::CancellableCollector`, not a guarantee of instant
+/// mid-scan interruption).
+///
 /// # Safety
 /// `handle` must be a live handle from `ns_create`. `query` must be a valid
 /// NUL-terminated UTF-8 C string. `out_buffer`/`out_len` must be valid,
-/// writable pointers.
+/// writable pointers. `cancel_token`, if non-null, must be a live handle
+/// from `ns_cancel_token_create` not yet destroyed.
 #[no_mangle]
 pub unsafe extern "C" fn ns_search(
     handle: *mut c_void,
     query: *const c_char,
     limit: u32,
+    cancel_token: *mut c_void,
     out_buffer: *mut *mut u8,
     out_len: *mut usize,
 ) -> i32 {
@@ -222,7 +231,8 @@ pub unsafe extern "C" fn ns_search(
         *out_len = 0;
         let engine = handle_ref(handle)?;
         let query_str = cstr_to_str(query, "query")?;
-        let hits = engine.search(query_str, limit as usize)?;
+        let cancel = cancel_token_ref(cancel_token);
+        let hits = engine.search(query_str, limit as usize, cancel)?;
         let json = serde_json::to_vec(&hits)
             .map_err(|e| NsError::index_error(format!("failed to serialize results: {e}")))?;
         let (ptr, len) = alloc_buffer(json);
@@ -230,6 +240,62 @@ pub unsafe extern "C" fn ns_search(
         *out_len = len;
         Ok(())
     })
+}
+
+/// Creates a cancellation token for `ns_search` (issue #2 Section 17).
+/// Independent of any search-engine handle, so it can be created and
+/// cancelled from a different thread than the one blocked inside
+/// `ns_search`.
+///
+/// # Safety
+/// `out_token` must be a valid, writable pointer.
+#[no_mangle]
+pub unsafe extern "C" fn ns_cancel_token_create(out_token: *mut *mut c_void) -> i32 {
+    guard(|| {
+        if out_token.is_null() {
+            return Err(NsError::invalid_argument("out_token must not be null"));
+        }
+        *out_token = Box::into_raw(Box::new(CancellationFlag::new())) as *mut c_void;
+        Ok(())
+    })
+}
+
+/// Signals cancellation. Idempotent - cancelling an already-cancelled or
+/// not-yet-used token is not an error.
+///
+/// # Safety
+/// `token` must be a live handle from `ns_cancel_token_create`.
+#[no_mangle]
+pub unsafe extern "C" fn ns_cancel_token_cancel(token: *mut c_void) -> i32 {
+    guard(|| {
+        let flag = (token as *mut CancellationFlag)
+            .as_ref()
+            .ok_or_else(|| NsError::invalid_argument("token must not be null"))?;
+        flag.cancel();
+        Ok(())
+    })
+}
+
+/// # Safety
+/// `token` must be a pointer previously returned by `ns_cancel_token_create`
+/// and not yet destroyed. Passing null is a documented no-op. Do not call
+/// this while a `ns_search` call using this token may still be in flight on
+/// another thread - the same lifetime discipline as `ns_destroy`/
+/// `NativeSearchEngine`, just without a `SafeHandle`-equivalent ref-count on
+/// the Rust side for this narrower type.
+#[no_mangle]
+pub unsafe extern "C" fn ns_cancel_token_destroy(token: *mut c_void) {
+    if token.is_null() {
+        return;
+    }
+    drop(Box::from_raw(token as *mut CancellationFlag));
+}
+
+/// # Safety
+/// `token` must be null or a pointer previously returned by
+/// `ns_cancel_token_create`.
+unsafe fn cancel_token_ref<'a>(token: *mut c_void) -> Option<&'a CancellationFlag> {
+    (token as *mut CancellationFlag).as_ref()
 }
 
 /// Copies the last error message set on this thread by a prior `ns_*` call

@@ -6,16 +6,84 @@
 //! already extracted; this module never reads a file from disk itself.
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use tantivy::collector::TopDocs;
+use tantivy::collector::{Collector, SegmentCollector, TopDocs};
 use tantivy::directory::MmapDirectory;
 use tantivy::query::QueryParser;
 use tantivy::schema::{Schema, Value, FAST, INDEXED, STORED, STRING, TEXT};
-use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term};
+use tantivy::{
+    doc, Index, IndexReader, IndexWriter, ReloadPolicy, SegmentOrdinal, SegmentReader,
+    TantivyDocument, TantivyError, Term,
+};
 
-use crate::error::{NsError, NsResult};
+use crate::error::{NsError, NsResult, CANCELLED_SENTINEL};
+
+/// A cheaply-cloneable flag a caller can hand to
+/// [`NativeSearchEngine::search`] and set from another thread to abort an
+/// in-flight search (issue #2 Section 17). Checked before the search starts
+/// and again before each segment is scanned (`CancellableCollector`) - a
+/// large single-segment index can't be interrupted mid-scan (Tantivy's
+/// `SegmentCollector::collect` has no early-exit hook), but this is real,
+/// working, best-effort cancellation for the common multi-segment case, not
+/// a no-op placeholder.
+#[derive(Clone, Default)]
+pub struct CancellationFlag(Arc<AtomicBool>);
+
+impl CancellationFlag {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+/// Wraps any `Collector` so `for_segment` bails out with a distinguishable
+/// error once `flag` is set, aborting the search before scanning the next
+/// segment. See `error::CANCELLED_SENTINEL` for how `engine::search`
+/// recognizes this specific error and reports `NsStatus::Cancelled` rather
+/// than a generic index error.
+struct CancellableCollector<C> {
+    inner: C,
+    flag: CancellationFlag,
+}
+
+impl<C: Collector> Collector for CancellableCollector<C> {
+    type Fruit = C::Fruit;
+    type Child = C::Child;
+
+    fn for_segment(
+        &self,
+        segment_local_id: SegmentOrdinal,
+        segment: &SegmentReader,
+    ) -> tantivy::Result<Self::Child> {
+        if self.flag.is_cancelled() {
+            return Err(TantivyError::InvalidArgument(
+                CANCELLED_SENTINEL.to_string(),
+            ));
+        }
+        self.inner.for_segment(segment_local_id, segment)
+    }
+
+    fn requires_scoring(&self) -> bool {
+        self.inner.requires_scoring()
+    }
+
+    fn merge_fruits(
+        &self,
+        segment_fruits: Vec<<Self::Child as SegmentCollector>::Fruit>,
+    ) -> tantivy::Result<Self::Fruit> {
+        self.inner.merge_fruits(segment_fruits)
+    }
+}
 
 /// A document to index. All fields are already-extracted text/metadata from
 /// the .NET side (ADR-001/ADR-003) - this module does no file I/O of its own.
@@ -188,9 +256,19 @@ impl NativeSearchEngine {
         Ok(())
     }
 
-    pub fn search(&self, query_text: &str, limit: usize) -> NsResult<Vec<SearchHit>> {
+    pub fn search(
+        &self,
+        query_text: &str,
+        limit: usize,
+        cancel: Option<&CancellationFlag>,
+    ) -> NsResult<Vec<SearchHit>> {
         if query_text.trim().is_empty() {
             return Err(NsError::invalid_argument("query must not be empty"));
+        }
+        if let Some(flag) = cancel {
+            if flag.is_cancelled() {
+                return Err(NsError::cancelled("search was cancelled before it started"));
+            }
         }
         let searcher = self.reader.searcher();
         let parser = QueryParser::for_index(
@@ -198,9 +276,20 @@ impl NativeSearchEngine {
             vec![self.fields.filename, self.fields.title, self.fields.body],
         );
         let query = parser.parse_query(query_text)?;
-        let top_docs = searcher
-            .search(&query, &TopDocs::with_limit(limit).order_by_score())
-            .map_err(|e| NsError::index_error(e.to_string()))?;
+        let base_collector = TopDocs::with_limit(limit).order_by_score();
+        // `?` here (not a manual map_err) so `NsError::from(TantivyError)`
+        // gets a chance to recognize CANCELLED_SENTINEL and report
+        // NsStatus::Cancelled instead of a generic index error.
+        let top_docs = match cancel {
+            Some(flag) => searcher.search(
+                &query,
+                &CancellableCollector {
+                    inner: base_collector,
+                    flag: flag.clone(),
+                },
+            )?,
+            None => searcher.search(&query, &base_collector)?,
+        };
 
         let mut hits = Vec::with_capacity(top_docs.len());
         for (score, addr) in top_docs {
@@ -271,7 +360,7 @@ mod tests {
             .unwrap();
         engine.commit().unwrap();
 
-        let hits = engine.search("torque", 10).unwrap();
+        let hits = engine.search("torque", 10, None).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "1");
     }
@@ -290,9 +379,9 @@ mod tests {
         engine.commit().unwrap();
 
         assert_eq!(engine.num_docs(), 1);
-        let hits = engine.search("updated", 10).unwrap();
+        let hits = engine.search("updated", 10, None).unwrap();
         assert_eq!(hits.len(), 1);
-        let stale = engine.search("original", 10).unwrap();
+        let stale = engine.search("original", 10, None).unwrap();
         assert_eq!(stale.len(), 0);
     }
 
@@ -302,11 +391,11 @@ mod tests {
         let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
         engine.index_document(sample("1", "findable text")).unwrap();
         engine.commit().unwrap();
-        assert_eq!(engine.search("findable", 10).unwrap().len(), 1);
+        assert_eq!(engine.search("findable", 10, None).unwrap().len(), 1);
 
         engine.delete_document("1").unwrap();
         engine.commit().unwrap();
-        assert_eq!(engine.search("findable", 10).unwrap().len(), 0);
+        assert_eq!(engine.search("findable", 10, None).unwrap().len(), 0);
     }
 
     #[test]
@@ -320,7 +409,7 @@ mod tests {
             engine.commit().unwrap();
         }
         let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
-        let hits = engine.search("persisted", 10).unwrap();
+        let hits = engine.search("persisted", 10, None).unwrap();
         assert_eq!(hits.len(), 1);
     }
 
@@ -328,7 +417,7 @@ mod tests {
     fn empty_query_is_invalid_argument_not_panic() {
         let dir = tempdir().unwrap();
         let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
-        let err = engine.search("", 10).unwrap_err();
+        let err = engine.search("", 10, None).unwrap_err();
         assert_eq!(err.status, crate::error::NsStatus::InvalidArgument);
     }
 
@@ -338,7 +427,7 @@ mod tests {
         let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
         engine.index_document(sample("1", "some body")).unwrap();
         engine.commit().unwrap();
-        let err = engine.search("title:(unclosed", 10).unwrap_err();
+        let err = engine.search("title:(unclosed", 10, None).unwrap_err();
         assert_eq!(err.status, crate::error::NsStatus::QueryError);
     }
 
@@ -348,5 +437,49 @@ mod tests {
         let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
         let err = engine.index_document(sample("", "body")).unwrap_err();
         assert_eq!(err.status, crate::error::NsStatus::InvalidArgument);
+    }
+
+    #[test]
+    fn search_cancelled_before_it_starts_reports_cancelled_not_index_error() {
+        let dir = tempdir().unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        engine.index_document(sample("1", "findable text")).unwrap();
+        engine.commit().unwrap();
+
+        let cancel = CancellationFlag::new();
+        cancel.cancel();
+        let err = engine.search("findable", 10, Some(&cancel)).unwrap_err();
+        assert_eq!(err.status, crate::error::NsStatus::Cancelled);
+    }
+
+    #[test]
+    fn uncancelled_flag_does_not_affect_search() {
+        let dir = tempdir().unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        engine.index_document(sample("1", "findable text")).unwrap();
+        engine.commit().unwrap();
+
+        let cancel = CancellationFlag::new();
+        assert!(!cancel.is_cancelled());
+        let hits = engine.search("findable", 10, Some(&cancel)).unwrap();
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn cancelling_after_a_successful_search_does_not_retroactively_fail_it() {
+        let dir = tempdir().unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        engine.index_document(sample("1", "findable text")).unwrap();
+        engine.commit().unwrap();
+
+        let cancel = CancellationFlag::new();
+        let hits = engine.search("findable", 10, Some(&cancel)).unwrap();
+        assert_eq!(hits.len(), 1);
+        cancel.cancel();
+        // A second, independent search using the now-cancelled flag correctly fails -
+        // the flag isn't a one-shot "did anything ever get cancelled" latch tied to the
+        // engine, it just reflects the caller's own token state at call time.
+        let err = engine.search("findable", 10, Some(&cancel)).unwrap_err();
+        assert_eq!(err.status, crate::error::NsStatus::Cancelled);
     }
 }

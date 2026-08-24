@@ -111,10 +111,23 @@ public sealed class NativeSearchService : IDisposable
         }
     }
 
-    public IReadOnlyList<NativeSearchHit> Search(string query, int limit = 50)
+    /// <summary>
+    /// Pass <paramref name="cancellationToken"/> and call its
+    /// <see cref="NativeSearchCancellationToken.Cancel"/> from another
+    /// thread to abort a long-running search (issue #2 Section 17) - it
+    /// surfaces here as a <see cref="NativeSearchException"/> whose
+    /// <see cref="NativeSearchException.Status"/> is <c>"Cancelled"</c>.
+    /// </summary>
+    public IReadOnlyList<NativeSearchHit> Search(string query, int limit = 50, NativeSearchCancellationToken? cancellationToken = null)
     {
         ThrowIfDisposed();
-        int status = NativeSearchInterop.ns_search(_handle, query, (uint)limit, out IntPtr buffer, out nuint len);
+        int status = NativeSearchInterop.ns_search(
+            _handle,
+            query,
+            (uint)limit,
+            cancellationToken?.Handle,
+            out IntPtr buffer,
+            out nuint len);
         if (status != (int)NativeSearchStatus.Ok)
         {
             throw NewException(status);

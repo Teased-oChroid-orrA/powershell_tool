@@ -79,7 +79,16 @@ fn create_index_search_destroy_round_trip() {
     let query = CString::new("torque").unwrap();
     let mut out_buf: *mut u8 = ptr::null_mut();
     let mut out_len: usize = 0;
-    let status = unsafe { ns_search(idx.handle, query.as_ptr(), 10, &mut out_buf, &mut out_len) };
+    let status = unsafe {
+        ns_search(
+            idx.handle,
+            query.as_ptr(),
+            10,
+            ptr::null_mut(),
+            &mut out_buf,
+            &mut out_len,
+        )
+    };
     assert_eq!(status, 0);
     assert!(!out_buf.is_null());
 
@@ -103,6 +112,7 @@ fn null_handle_returns_invalid_argument_not_crash() {
             ptr::null_mut(),
             query.as_ptr(),
             10,
+            ptr::null_mut(),
             &mut out_buf,
             &mut out_len,
         )
@@ -151,4 +161,122 @@ fn invalid_utf8_body_is_rejected_not_crash() {
         )
     };
     assert_eq!(status, 1 /* InvalidArgument */);
+}
+
+#[test]
+fn cancelled_before_search_starts_returns_cancelled_status() {
+    let idx = TestIndex::new();
+    let id = CString::new("1").unwrap();
+    let path = CString::new("p").unwrap();
+    let filename = CString::new("f").unwrap();
+    let extension = CString::new("e").unwrap();
+    let title = CString::new("").unwrap();
+    let body = b"findable text";
+    unsafe {
+        ns_index_document(
+            idx.handle,
+            id.as_ptr(),
+            path.as_ptr(),
+            filename.as_ptr(),
+            extension.as_ptr(),
+            title.as_ptr(),
+            0,
+            0,
+            0,
+            body.as_ptr(),
+            body.len(),
+        )
+    };
+    unsafe { ns_commit(idx.handle) };
+
+    let mut token: *mut c_void = ptr::null_mut();
+    let status = unsafe { ns_cancel_token_create(&mut token) };
+    assert_eq!(status, 0);
+    assert!(!token.is_null());
+
+    let status = unsafe { ns_cancel_token_cancel(token) };
+    assert_eq!(status, 0);
+
+    let query = CString::new("findable").unwrap();
+    let mut out_buf: *mut u8 = ptr::null_mut();
+    let mut out_len: usize = 0;
+    let status = unsafe {
+        ns_search(
+            idx.handle,
+            query.as_ptr(),
+            10,
+            token,
+            &mut out_buf,
+            &mut out_len,
+        )
+    };
+    assert_eq!(status, 9 /* Cancelled */);
+    assert!(out_buf.is_null());
+
+    unsafe { ns_cancel_token_destroy(token) };
+}
+
+#[test]
+fn uncancelled_token_does_not_block_search() {
+    let idx = TestIndex::new();
+    let id = CString::new("1").unwrap();
+    let path = CString::new("p").unwrap();
+    let filename = CString::new("f").unwrap();
+    let extension = CString::new("e").unwrap();
+    let title = CString::new("").unwrap();
+    let body = b"findable text";
+    unsafe {
+        ns_index_document(
+            idx.handle,
+            id.as_ptr(),
+            path.as_ptr(),
+            filename.as_ptr(),
+            extension.as_ptr(),
+            title.as_ptr(),
+            0,
+            0,
+            0,
+            body.as_ptr(),
+            body.len(),
+        )
+    };
+    unsafe { ns_commit(idx.handle) };
+
+    let mut token: *mut c_void = ptr::null_mut();
+    unsafe { ns_cancel_token_create(&mut token) };
+
+    let query = CString::new("findable").unwrap();
+    let mut out_buf: *mut u8 = ptr::null_mut();
+    let mut out_len: usize = 0;
+    let status = unsafe {
+        ns_search(
+            idx.handle,
+            query.as_ptr(),
+            10,
+            token,
+            &mut out_buf,
+            &mut out_len,
+        )
+    };
+    assert_eq!(status, 0);
+    assert!(!out_buf.is_null());
+    unsafe { ns_free_buffer(out_buf, out_len) };
+    unsafe { ns_cancel_token_destroy(token) };
+}
+
+#[test]
+fn cancel_token_null_create_out_param_is_invalid_argument() {
+    let status = unsafe { ns_cancel_token_create(ptr::null_mut()) };
+    assert_eq!(status, 1 /* InvalidArgument */);
+}
+
+#[test]
+fn cancel_token_null_cancel_is_invalid_argument_not_crash() {
+    let status = unsafe { ns_cancel_token_cancel(ptr::null_mut()) };
+    assert_eq!(status, 1 /* InvalidArgument */);
+}
+
+#[test]
+fn cancel_token_destroy_null_is_a_documented_noop() {
+    unsafe { ns_cancel_token_destroy(ptr::null_mut()) };
 }

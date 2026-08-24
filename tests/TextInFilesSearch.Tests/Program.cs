@@ -752,13 +752,15 @@ void Check(string name, bool condition)
 }
 
 // ---------------------------------------------------------------------
-// Test 35: native_search.dll round trip (issue #2 Phase 3). This is the
-// one thing the Rust side's own test suite (native-search/tests) cannot
-// prove by itself: that the actual P/Invoke marshalling in
-// NativeSearchService/NativeSearchInterop - source-generated LibraryImport
-// stubs, SafeHandle lifetime, UTF-8 string marshalling, the (ptr, len)
-// body convention - lines up with the Rust side across a real process
-// boundary, not just in each side's own unit tests.
+// Test 35: native_search.dll round trip (issue #2 Phase 3), including
+// cancellation (Section 17). This is the one thing the Rust side's own
+// test suite (native-search/tests) cannot prove by itself: that the actual
+// P/Invoke marshalling in NativeSearchService/NativeSearchInterop -
+// source-generated LibraryImport stubs, SafeHandle lifetime (for both the
+// engine handle and the cancellation-token handle), UTF-8 string
+// marshalling, the (ptr, len) body convention - lines up with the Rust
+// side across a real process boundary, not just in each side's own unit
+// tests.
 //
 // native_search.dll only exists once native-search/ has actually been
 // built (see .github/workflows/build.yml, which builds it before this
@@ -818,6 +820,26 @@ void Check(string name, bool condition)
             threw = true;
         }
         Check("native_search: an empty query surfaces as a typed NativeSearchException, not a crash", threw);
+
+        // Document "2" ("corrosion...") was indexed above and never
+        // deleted (only "1" was) - still live, so the cancellation checks
+        // below exercise a real search, not an already-empty index.
+        using var cancelledToken = new NativeSearchCancellationToken();
+        cancelledToken.Cancel();
+        bool threwCancelled = false;
+        try
+        {
+            _ = native.Search("corrosion", limit: 10, cancellationToken: cancelledToken);
+        }
+        catch (NativeSearchException ex) when (ex.Status == "Cancelled")
+        {
+            threwCancelled = true;
+        }
+        Check("native_search: a pre-cancelled token surfaces search as a typed Cancelled exception (issue #2 Section 17)", threwCancelled);
+
+        using var freshToken = new NativeSearchCancellationToken();
+        var uncancelledHits = native.Search("corrosion", limit: 10, cancellationToken: freshToken);
+        Check("native_search: an un-cancelled token does not block a search", uncancelledHits.Count == 1);
     }
     catch (DllNotFoundException)
     {

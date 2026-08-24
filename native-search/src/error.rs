@@ -46,7 +46,19 @@ impl NsError {
     pub fn query_error(message: impl Into<String>) -> Self {
         Self::new(NsStatus::QueryError, message)
     }
+
+    pub fn cancelled(message: impl Into<String>) -> Self {
+        Self::new(NsStatus::Cancelled, message)
+    }
 }
+
+/// Sentinel message `CancellableCollector` uses to signal a cancelled
+/// search through `TantivyError::InvalidArgument` (the only TantivyError
+/// variant that carries an arbitrary `String` and isn't otherwise
+/// meaningful mid-search) - checked for in `engine::search` to report
+/// `NsStatus::Cancelled` instead of a generic `IndexError`. Not a public
+/// contract; both ends live in this crate.
+pub(crate) const CANCELLED_SENTINEL: &str = "native-search: search cancelled";
 
 impl fmt::Display for NsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -58,6 +70,11 @@ impl std::error::Error for NsError {}
 
 impl From<tantivy::TantivyError> for NsError {
     fn from(e: tantivy::TantivyError) -> Self {
+        if let tantivy::TantivyError::InvalidArgument(ref msg) = e {
+            if msg == CANCELLED_SENTINEL {
+                return NsError::cancelled("search was cancelled");
+            }
+        }
         NsError::new(NsStatus::IndexError, e.to_string())
     }
 }

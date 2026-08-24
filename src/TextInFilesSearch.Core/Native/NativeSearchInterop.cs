@@ -47,8 +47,20 @@ internal static partial class NativeSearchInterop
         NativeSearchHandle handle,
         string query,
         uint limit,
+        NativeSearchCancellationHandle? cancelToken,
         out IntPtr outBuffer,
         out nuint outLen);
+
+    [LibraryImport(LibraryName)]
+    internal static partial int ns_cancel_token_create(out NativeSearchCancellationHandle outToken);
+
+    [LibraryImport(LibraryName)]
+    internal static partial int ns_cancel_token_cancel(NativeSearchCancellationHandle token);
+
+    // Raw-IntPtr overload used only by NativeSearchCancellationHandle.ReleaseHandle,
+    // same reason as ns_destroy above.
+    [LibraryImport(LibraryName)]
+    internal static partial void ns_cancel_token_destroy(IntPtr token);
 
     [LibraryImport(LibraryName)]
     internal static partial int ns_last_error(out IntPtr outBuffer, out nuint outLen);
