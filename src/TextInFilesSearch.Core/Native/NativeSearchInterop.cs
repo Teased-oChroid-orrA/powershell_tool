@@ -42,12 +42,22 @@ internal static partial class NativeSearchInterop
     [LibraryImport(LibraryName)]
     internal static partial int ns_commit(NativeSearchHandle handle);
 
+    // cancelToken is IntPtr, not NativeSearchCancellationHandle, despite
+    // every other handle-taking function in this file using the SafeHandle
+    // type directly: LibraryImport's generated SafeHandleMarshaller does
+    // NOT null-check before dereferencing, so passing null for an "optional
+    // token" parameter throws NullReferenceException instead of meaning
+    // "no cancellation" - confirmed by a real CI failure on Windows, not a
+    // guess (System.Runtime.InteropServices.Marshalling.SafeHandleMarshaller`1
+    // .ManagedToUnmanagedIn.FromManaged). NativeSearchService.Search does
+    // the ref-counted DangerousAddRef/DangerousGetHandle/DangerousRelease
+    // dance by hand instead, passing IntPtr.Zero when there's no token.
     [LibraryImport(LibraryName, StringMarshalling = StringMarshalling.Utf8)]
     internal static partial int ns_search(
         NativeSearchHandle handle,
         string query,
         uint limit,
-        NativeSearchCancellationHandle? cancelToken,
+        IntPtr cancelToken,
         out IntPtr outBuffer,
         out nuint outLen);
 

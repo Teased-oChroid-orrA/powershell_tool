@@ -86,12 +86,26 @@ src/TextInFilesSearch.Core/Models/NativeSearchModels.cs
   Rust side owns until `ns_free_buffer` releases it. `NativeSearchInterop.CopyAndFreeBuffer`
   is the single choke point on the C# side — nothing else should call
   `ns_free_buffer` directly.
-- **Handle lifetime**: `NativeSearchHandle` is a `SafeHandle`. Every
-  handle-taking export marshals it via ref-counted `DangerousAddRef`/
-  `DangerousRelease`, so a concurrent `Dispose()` can't race a call already
-  in flight into a use-after-free. Don't add a raw-`IntPtr` overload for any
-  function except `ns_destroy` (which exists only for `ReleaseHandle` itself
-  to call, since a handle can't pass itself as an argument mid-release).
+- **Handle lifetime**: `NativeSearchHandle`/`NativeSearchCancellationHandle`
+  are `SafeHandle`s. A **required** handle-taking export (`ns_index_document`,
+  `ns_delete_document`, `ns_commit`, `ns_cancel_token_cancel`, and `ns_search`'s
+  own `handle` parameter) takes the `SafeHandle`-derived type directly -
+  LibraryImport marshals it via ref-counted `DangerousAddRef`/`DangerousRelease`
+  automatically, so a concurrent `Dispose()` can't race a call already in
+  flight into a use-after-free. An **optional** handle (`ns_search`'s
+  `cancel_token`) cannot use that same pattern: the generated
+  `SafeHandleMarshaller` does not null-check before dereferencing, so
+  passing `null` throws `NullReferenceException` instead of meaning "no
+  token" — confirmed by a real CI failure on Windows (`SafeHandleMarshaller<T>
+  .ManagedToUnmanagedIn.FromManaged`), not assumed. `ns_search`'s
+  `cancelToken` parameter is `IntPtr` instead, and
+  `NativeSearchService.Search` performs the same `DangerousAddRef`/
+  `DangerousGetHandle`/`DangerousRelease` sequence by hand, passing
+  `IntPtr.Zero` for "no token." Don't add a raw-`IntPtr` overload for a
+  *required* handle parameter — `ns_destroy`/`ns_cancel_token_destroy`
+  exist only because `ReleaseHandle` can't pass itself as an argument
+  mid-release; a raw `IntPtr` for an *optional* handle parameter (like
+  `ns_search`'s) is the correct, deliberate pattern instead.
 - **Panics**: every `ffi.rs` export runs its body inside `catch_unwind`
   and converts a caught panic to `NsStatus::InternalError` plus a message —
   verified by the Rust test suite, not just asserted in a comment.
@@ -152,16 +166,34 @@ and work correctly across the real Rust/.NET boundary on Windows for
 everything that run covered - not just asserted by this document, actually
 run.
 
-**Not yet re-confirmed on CI**: the cancellation support (`ns_cancel_token_*`,
-`NativeSearchCancellationToken`, the real MSBuild `Content` item replacing
-the old CI-only DLL copy) and the ADR-007 index-path helper were added
-*after* that run. They're fully covered by the local Rust suite (`cargo
-test`, 20/20 — see below) and written to the same contract on the C# side,
-but per-commit CI runs are being batched rather than triggered on every
-change (GitHub Actions minutes) — the next full CI run is the one that will
-confirm these compile and work on real hardware too. Don't treat this
-section's "confirmed on real hardware" claim as covering anything added
-after 2026-08-24.
+**Second CI run** (run
+[32690778016](https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/32690778016),
+2026-08-24, after cancellation/ADR-007/schema-check/benchmark/WinUI-wiring
+work): Rust build+test passed on Windows, and — significant on its own —
+the **entire `.sln` compiled clean, including the new `MainWindow.xaml`/
+`MainViewModel.cs` wiring**. The test harness itself then failed with a
+real, genuine bug: `NativeSearchInterop.ns_search`'s optional
+`NativeSearchCancellationHandle?` parameter threw `NullReferenceException`
+from the generated `SafeHandleMarshaller` when passed `null` (Test 35's
+"empty query" check calls `Search` without a cancellation token). This
+directly contradicted this document's own prior "Don't add a raw-`IntPtr`
+overload for any function except `ns_destroy`" guidance — that guidance
+was correct for *required* handles, wrong for *optional* ones, and CI is
+what caught the difference, not a compile error or local test (the Rust
+side had no way to exercise the .NET marshalling layer). **Fixed**:
+`ns_search`'s `cancelToken` is now `IntPtr`, with `NativeSearchService.Search`
+doing the `DangerousAddRef`/`DangerousGetHandle`/`DangerousRelease`
+sequence by hand — see the Conventions section's "Handle lifetime" bullet
+for the corrected guidance. Publish/publish-verification steps were
+skipped as a downstream consequence of the test-harness failure, not
+independently tested this run.
+
+**Not yet confirmed on CI**: the fix above, and everything from the
+cancellation/ADR-007/schema-check/benchmark-harness/WinUI-wiring work
+generally — this session ends with that fix committed but not yet re-run
+through CI. The next CI run (whenever one is next triggered) is the one
+that actually confirms it. Until then, treat this specific bug as
+"identified and fixed in source, not yet proven fixed by a passing run."
 
 ## What still isn't done
 

@@ -121,26 +121,52 @@ public sealed class NativeSearchService : IDisposable
     public IReadOnlyList<NativeSearchHit> Search(string query, int limit = 50, NativeSearchCancellationToken? cancellationToken = null)
     {
         ThrowIfDisposed();
-        int status = NativeSearchInterop.ns_search(
-            _handle,
-            query,
-            (uint)limit,
-            cancellationToken?.Handle,
-            out IntPtr buffer,
-            out nuint len);
-        if (status != (int)NativeSearchStatus.Ok)
-        {
-            throw NewException(status);
-        }
 
-        byte[] json = NativeSearchInterop.CopyAndFreeBuffer(buffer, len);
-        if (json.Length == 0)
+        // NativeSearchInterop.ns_search takes a raw IntPtr for the cancel
+        // token, not the SafeHandle directly - LibraryImport's generated
+        // marshaller doesn't null-check a SafeHandle parameter, so this
+        // does the ref-counted add/release by hand instead (the same
+        // protection a non-nullable SafeHandle parameter gets
+        // automatically), passing IntPtr.Zero when there's no token.
+        NativeSearchCancellationHandle? tokenHandle = cancellationToken?.Handle;
+        bool addedRef = false;
+        try
         {
-            return Array.Empty<NativeSearchHit>();
-        }
+            IntPtr tokenPtr = IntPtr.Zero;
+            if (tokenHandle is not null)
+            {
+                tokenHandle.DangerousAddRef(ref addedRef);
+                tokenPtr = tokenHandle.DangerousGetHandle();
+            }
 
-        return JsonSerializer.Deserialize<List<NativeSearchHit>>(json, HitJsonOptions)
-            ?? (IReadOnlyList<NativeSearchHit>)Array.Empty<NativeSearchHit>();
+            int status = NativeSearchInterop.ns_search(
+                _handle,
+                query,
+                (uint)limit,
+                tokenPtr,
+                out IntPtr buffer,
+                out nuint len);
+            if (status != (int)NativeSearchStatus.Ok)
+            {
+                throw NewException(status);
+            }
+
+            byte[] json = NativeSearchInterop.CopyAndFreeBuffer(buffer, len);
+            if (json.Length == 0)
+            {
+                return Array.Empty<NativeSearchHit>();
+            }
+
+            return JsonSerializer.Deserialize<List<NativeSearchHit>>(json, HitJsonOptions)
+                ?? (IReadOnlyList<NativeSearchHit>)Array.Empty<NativeSearchHit>();
+        }
+        finally
+        {
+            if (addedRef)
+            {
+                tokenHandle!.DangerousRelease();
+            }
+        }
     }
 
     private static NativeSearchException NewException(int status)
