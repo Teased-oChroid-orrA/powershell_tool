@@ -1,6 +1,11 @@
 # ADR-007: Index Persistence Location
 
-Status: Proposed
+Status: **Superseded by [ADR-011](ADR-011-in-folder-index-location.md)**.
+The `%LOCALAPPDATA%` decision below shipped and was wired into
+`MainViewModel`, then explicitly reversed by direct user direction to an
+in-folder location instead. Kept here for the reasoning trail (the
+per-machine-vs-per-folder tradeoff this ADR weighed is still real context
+for ADR-011), not as the current behavior.
 
 ## Problem
 

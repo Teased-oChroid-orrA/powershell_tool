@@ -1,12 +1,13 @@
 # native_search FFI contract
 
 Phase 3 vertical slice for issue #2. See `docs/adr/` (ADR-001 through
-ADR-010) for the architectural decisions behind this — ADR-001/003 for why
+ADR-011) for the architectural decisions behind this — ADR-001/003 for why
 the boundary sits where it does (indexing/search only, not extraction),
 ADR-008/009/010 for incremental-indexing, serialization, and single-vs-
-multi-index strategy — and `docs/native-search-assessment.md` for the wider
-context. `docs/benchmarking.md` and `docs/offline-build.md` cover Sections
-13 and 15 respectively.
+multi-index strategy, ADR-011 for the in-folder index location (supersedes
+ADR-007) — and `docs/native-search-assessment.md` for the wider context.
+`docs/benchmarking.md` and `docs/offline-build.md` cover Sections 13 and 15
+respectively.
 
 ## Where things live
 
@@ -16,14 +17,17 @@ native-search/                  Rust crate (cdylib "native_search" + lib)
   src/engine.rs                   Safe Rust core: schema, indexing, search,
                                    cancellation (CancellationFlag,
                                    CancellableCollector), schema-mismatch
-                                   detection on open (ADR-002 item 9). No
-                                   unsafe, no FFI types - unit-tested on its
-                                   own (13 tests, cargo test).
+                                   detection on open (ADR-002 item 9),
+                                   get_document_metadata for change
+                                   detection (issue #2/ADR-011 - "only
+                                   re-index if different"). No unsafe, no
+                                   FFI types - unit-tested on its own (17
+                                   tests, cargo test).
   src/ffi.rs                      The extern "C" surface. Every export is
                                    wrapped in catch_unwind - a Rust panic
                                    must never cross into .NET (Section 18).
   tests/ffi_smoke.rs               Exercises the raw extern "C" functions
-                                   directly (10 tests) - proves the ABI shape
+                                   directly (13 tests) - proves the ABI shape
                                    itself round-trips, not just the Rust API.
   benches/indexing_and_search.rs  Section 13 benchmark harness - manual
                                    timing, not criterion. See
@@ -38,7 +42,7 @@ src/TextInFilesSearch.Core/Native/
   NativeSearchCancellationHandle.cs SafeHandle wrapper around the opaque
                                    handle ns_cancel_token_create returns.
   NativeSearchStatus.cs           C# mirror of NsStatus - keep in sync.
-  NativeSearchPaths.cs            Default index location (ADR-007).
+  NativeSearchPaths.cs            In-folder index location (ADR-011).
 
 src/TextInFilesSearch.Core/Services/
   NativeSearchService.cs           Public, safe, IDisposable wrapper. This is
@@ -62,6 +66,7 @@ src/TextInFilesSearch.Core/Models/NativeSearchModels.cs
 | `ns_index_document(handle, id, path, filename, extension, title, modified_unix, created_unix, size, body, body_len)` | `NsStatus` | `ns_index_document(...)` |
 | `ns_delete_document(handle, id)` | `NsStatus` | `ns_delete_document(...)` |
 | `ns_commit(handle)` | `NsStatus` | `ns_commit(...)` |
+| `ns_get_document_metadata(handle, id) -> (found, modified_unix, size)` | `NsStatus` | `ns_get_document_metadata(...)` |
 | `ns_search(handle, query, limit, cancel_token) -> JSON buffer` | `NsStatus` | `ns_search(...)` |
 | `ns_cancel_token_create() -> token` | `NsStatus` | `ns_cancel_token_create(out NativeSearchCancellationHandle)` |
 | `ns_cancel_token_cancel(token)` | `NsStatus` | `ns_cancel_token_cancel(...)` |
@@ -113,6 +118,15 @@ src/TextInFilesSearch.Core/Models/NativeSearchModels.cs
   deletes any existing document with the same `id` first, so re-indexing a
   changed file is a safe call, not a duplicate — this happens inside
   `engine.rs`, callers don't need to delete-then-add themselves.
+- **Change detection** (issue #2/ADR-008/ADR-011): `ns_get_document_metadata`
+  looks up the `(modified_unix, size)` stored for an `id` via an exact
+  `TermQuery`, deliberately **not** `QueryParser::parse_query` — `id` is an
+  arbitrary caller-supplied string (a file path), and the free-text parser
+  would mis-parse anything containing query syntax characters (a Windows
+  path like `C:\...` would be read as field `C` with value `\...`).
+  `NativeSearchService.TryGetDocumentMetadata`/`MainViewModel.IndexHitsForFastSearch`
+  use this to skip re-indexing a file whose modified time and size haven't
+  changed, instead of unconditionally re-indexing every hit on every run.
 - **Cancellation** (Section 17): `ns_search`'s `cancel_token` parameter is
   optional (null = no cancellation). A live token from
   `ns_cancel_token_create`, cancelled via `ns_cancel_token_cancel` from
@@ -209,9 +223,14 @@ CI-confirmed-on-Windows work, not a claim awaiting verification.
   `docs/issue-2-status.md`'s "WinUI wiring" section for why that
   unification is left as a real, undecided product-design question rather
   than guessed at here.
-- Index growth/cleanup semantics when `SearchPath` changes (ADR-007's open
-  item) — e.g. re-indexing a folder tree that no longer exists doesn't
-  purge those documents from the index. Undecided.
+- Index growth/cleanup semantics: a file that's deleted or moved out of
+  `SearchPath` between runs stays in the index indefinitely (nothing calls
+  `DeleteDocument` for files that no longer exist) - `IndexHitsForFastSearch`
+  only ever adds/updates from the current run's hits, never prunes.
+  Undecided; ADR-011's in-folder location makes this lower-stakes than
+  ADR-007's global index would have (deleting the whole searched folder
+  takes its index with it), but a file deleted from an otherwise-still-
+  searched folder is still a real gap.
 - `ns_commit`/`ns_index_document` have no cancellation support - only
   `ns_search` does. Per-file indexing cancellation is effectively already
   covered at the .NET orchestration layer instead (whatever eventually
@@ -227,10 +246,15 @@ CI-confirmed-on-Windows work, not a claim awaiting verification.
   local `dotnet build` still succeeds), not a CI-only shell copy — CI's
   publish-output check now verifies that pipeline actually worked rather
   than trusting a manual copy step.
-- Index location decided and implemented: `%LOCALAPPDATA%\TextInFilesSearch\native-index\`,
-  see `docs/adr/ADR-007-index-persistence-location.md` and
-  `NativeSearchPaths.GetDefaultIndexDirectory()`/`EnsureIndexDirectoryExists()`.
-  Now actually called by `MainViewModel.GetOrCreateNativeSearch()`.
+- Index location: **revised from ADR-007's global `%LOCALAPPDATA%` design
+  to ADR-011's in-folder `<SearchPath>\.native-search-index\`**, by direct
+  user direction after ADR-007 had already shipped and been CI-verified.
+  `NativeSearchPaths.GetIndexDirectory(searchPath)` + the shared
+  `IndexFolderName` constant; `BuildSettings()` auto-excludes that folder
+  name so the normal line-scan search never walks into it.
+- Change detection (issue #2): re-indexing now skips files whose modified
+  time and size match what's already stored - `ns_get_document_metadata`/
+  `TryGetDocumentMetadata`, wired into `IndexHitsForFastSearch`.
 - **WinUI wiring**: `MainViewModel`/`MainWindow.xaml` now call
   `NativeSearchService` directly — `IndexForFastSearch` toggle, a "Fast
   re-search" panel with its own query box/results list/cancel button. See
@@ -269,22 +293,15 @@ CI-confirmed-on-Windows work, not a claim awaiting verification.
 ## What was actually verified locally
 
 Rust: fully built and tested (`cargo build`, `cargo clippy --all-targets`
-(including `--benches`) — zero warnings, `cargo test` — 23/23 passing:
-round-trip indexing/search, re-indexing replacing not duplicating, delete,
-index persistence across reopen, that a null handle / null pointer /
-invalid UTF-8 / malformed query string all return a typed error status
-instead of crashing, that a pre-cancelled token reports
-`NsStatus::Cancelled` from both the safe Rust API and the raw FFI surface,
-an un-cancelled token doesn't block a search, cancelling a token after a
-search already succeeded doesn't retroactively fail that completed call,
-a structured `extension:` field filter narrows results correctly, a
-rejected document doesn't corrupt indexing for documents around it, and
-opening an index with a mismatched schema fails fast with
-`NsStatus::CorruptIndex` naming both schemas). Plus a real local
-`cargo vendor` + `cargo build --offline` run (see `docs/offline-build.md`)
-and a real benchmark run (see `docs/benchmarking.md`).
+(including `--benches`) — zero warnings, `cargo test` — 30/30 passing,
+adding to the 23/23 baseline above: `get_document_metadata` returns the
+stored `(modified_unix, size)` for a known id, `None` for an unknown one,
+reflects the *latest* re-index rather than the stale original, rejects an
+empty id, and round-trips correctly through the raw `extern "C"` surface
+(found/not-found/null-handle cases).
 
 C#: not locally compiled (no SDK on this machine). Everything through the
-2026-08-24 CI run is confirmed compiling and working correctly; the
-cancellation/MSBuild-integration/ADR-007 additions since then are written
-to the same contract but await the next CI run for confirmation.
+[32691063260](https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/32691063260)
+CI run (2026-08-24) is confirmed compiling and working correctly; the
+change-detection/in-folder-index-location (ADR-011) work since then is
+written to the same contract but awaits the next CI run for confirmation.

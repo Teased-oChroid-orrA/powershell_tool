@@ -42,6 +42,14 @@ internal static partial class NativeSearchInterop
     [LibraryImport(LibraryName)]
     internal static partial int ns_commit(NativeSearchHandle handle);
 
+    [LibraryImport(LibraryName, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int ns_get_document_metadata(
+        NativeSearchHandle handle,
+        string id,
+        out int outFound,
+        out long outModifiedUnix,
+        out long outSize);
+
     // cancelToken is IntPtr, not NativeSearchCancellationHandle, despite
     // every other handle-taking function in this file using the SafeHandle
     // type directly: LibraryImport's generated SafeHandleMarshaller does

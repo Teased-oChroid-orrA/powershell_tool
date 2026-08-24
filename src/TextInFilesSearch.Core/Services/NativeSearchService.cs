@@ -112,6 +112,26 @@ public sealed class NativeSearchService : IDisposable
     }
 
     /// <summary>
+    /// Returns the <c>(ModifiedUnix, Size)</c> stored for <paramref name="id"/>
+    /// the last time it was indexed, or <see langword="null"/> if it isn't in
+    /// the index yet. Lets a caller decide whether re-indexing a file is
+    /// actually necessary (issue #2) by comparing against the file's current
+    /// metadata, without a separate side-channel cache file - the index
+    /// itself is the source of truth.
+    /// </summary>
+    public (long ModifiedUnix, long Size)? TryGetDocumentMetadata(string id)
+    {
+        ThrowIfDisposed();
+        int status = NativeSearchInterop.ns_get_document_metadata(
+            _handle, id, out int found, out long modifiedUnix, out long size);
+        if (status != (int)NativeSearchStatus.Ok)
+        {
+            throw NewException(status);
+        }
+        return found != 0 ? (modifiedUnix, size) : null;
+    }
+
+    /// <summary>
     /// Pass <paramref name="cancellationToken"/> and call its
     /// <see cref="NativeSearchCancellationToken.Cancel"/> from another
     /// thread to abort a long-running search (issue #2 Section 17) - it

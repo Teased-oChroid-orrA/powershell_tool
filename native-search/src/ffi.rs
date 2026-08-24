@@ -189,6 +189,43 @@ pub unsafe extern "C" fn ns_delete_document(handle: *mut c_void, id: *const c_ch
     })
 }
 
+/// Looks up the `(modified_unix, size)` stored for `id`, so a caller can
+/// decide whether re-indexing it is actually necessary (issue #2 - "only
+/// re-index if different"). `*out_found` is `0`/`1`; `*out_modified_unix`/
+/// `*out_size` are only meaningful when `*out_found == 1`.
+///
+/// # Safety
+/// `handle` must be a live handle from `ns_create`. `id` must be a valid
+/// NUL-terminated UTF-8 C string. `out_found`/`out_modified_unix`/`out_size`
+/// must be valid, writable pointers.
+#[no_mangle]
+pub unsafe extern "C" fn ns_get_document_metadata(
+    handle: *mut c_void,
+    id: *const c_char,
+    out_found: *mut i32,
+    out_modified_unix: *mut i64,
+    out_size: *mut i64,
+) -> i32 {
+    guard(|| {
+        if out_found.is_null() || out_modified_unix.is_null() || out_size.is_null() {
+            return Err(NsError::invalid_argument(
+                "out_found/out_modified_unix/out_size must not be null",
+            ));
+        }
+        *out_found = 0;
+        *out_modified_unix = 0;
+        *out_size = 0;
+        let engine = handle_ref(handle)?;
+        let id_str = cstr_to_str(id, "id")?;
+        if let Some((modified, size)) = engine.get_document_metadata(id_str)? {
+            *out_found = 1;
+            *out_modified_unix = modified;
+            *out_size = size;
+        }
+        Ok(())
+    })
+}
+
 /// # Safety
 /// `handle` must be a live handle from `ns_create`.
 #[no_mangle]

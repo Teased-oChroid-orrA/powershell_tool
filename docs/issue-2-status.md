@@ -13,9 +13,10 @@ blocking rather than a silent gap.
   [32691063260](https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/32691063260)
   (2026-08-24) with cancellation, schema-mismatch detection, and the
   benchmark harness all included and all 19 steps green.
-- [x] **No administrator privileges are required.** `%LOCALAPPDATA%`
-  (ADR-007) needs no elevation; nothing in the build/publish pipeline
-  requires admin rights.
+- [x] **No administrator privileges are required.** The index directory
+  (`<SearchPath>\.native-search-index\`, ADR-011 — supersedes ADR-007's
+  `%LOCALAPPDATA%` design) needs no elevation; nothing in the build/publish
+  pipeline requires admin rights.
 - [x] **Runtime requires no Internet connection.** No network calls
   anywhere in `native-search` or its FFI/C# wrapper. (Build-time NuGet/
   crates.io restore is expected and fine per Section 15's own distinction —
@@ -44,8 +45,12 @@ blocking rather than a silent gap.
   correctly, with no custom query language.
 - [x] **Incremental indexing works.** `reindexing_same_id_replaces_not_duplicates`
   proves re-indexing a changed file's id replaces rather than duplicates.
-  See ADR-008 for the full strategy and what's still the caller's
-  responsibility (change detection, stable id generation).
+  Change detection itself (once ADR-008's "still the caller's
+  responsibility" note) is now implemented too:
+  `ns_get_document_metadata`/`TryGetDocumentMetadata` lets
+  `IndexHitsForFastSearch` skip a file whose modified time and size
+  haven't changed, instead of unconditionally re-indexing every hit on
+  every run.
 - [x] **Deleted documents disappear from results.** `delete_removes_document`
   (Rust) and the `native_search: delete + commit removes...` check
   (C#/Test 35, CI-confirmed).

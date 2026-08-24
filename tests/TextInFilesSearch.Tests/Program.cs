@@ -900,11 +900,55 @@ void Check(string name, bool condition)
             vm.NativeSearchResults.Count == 1 && vm.NativeSearchResults[0].Filename == "torque.txt");
         Check("ViewModel: IsNativeSearching is false after the search completes",
             !vm.IsNativeSearching);
+
+        // issue #2: re-running against the same, unchanged files must skip
+        // re-indexing them (NativeSearchService.TryGetDocumentMetadata),
+        // not silently redo the same work every run.
+        await vm.RunSearchAsync();
+        Check("ViewModel: re-running over unchanged files reports them as already up to date, not re-indexed",
+            vm.NativeSearchStatusText.Contains("already up to date", StringComparison.OrdinalIgnoreCase));
     }
     else
     {
         Console.WriteLine($"SKIP: ViewModel native-search round trip (native_search.dll not present - {vm.NativeSearchStatusText})");
     }
+}
+
+// ---------------------------------------------------------------------
+// Test 37: native_search index folder placement and auto-exclusion
+// (issue #2/ADR-011). Doesn't need native_search.dll - BuildSettings()
+// and the normal line-scan search are pure C#, so this always runs,
+// unlike Test 35/36's DLL-dependent checks.
+// ---------------------------------------------------------------------
+{
+    var dir = Path.Combine(testRoot, "auto-exclude-index-folder");
+    Directory.CreateDirectory(dir);
+    File.WriteAllText(Path.Combine(dir, "keep.txt"), "findme in a real file\n");
+
+    // Simulates what a prior run with IndexForFastSearch on would have
+    // left behind - a real native_search run isn't needed to prove the
+    // *exclusion* works, only that something living at this exact path
+    // never gets walked into.
+    var indexFolder = Path.Combine(dir, TextInFilesSearch.Native.NativeSearchPaths.IndexFolderName);
+    Directory.CreateDirectory(indexFolder);
+    File.WriteAllText(Path.Combine(indexFolder, "decoy.txt"), "findme inside the index folder\n");
+
+    var outputDir = Path.Combine(testRoot, "auto-exclude-index-folder-out");
+    var vm = new TextInFilesSearch.ViewModels.MainViewModel();
+    vm.SearchPath = dir;
+    vm.OutputFolder = outputDir;
+    vm.FiltersText = "findme";
+
+    var settings = vm.BuildSettings();
+    Check("ViewModel: BuildSettings() automatically excludes the native_search index folder",
+        settings.ExcludeFolders.Contains(TextInFilesSearch.Native.NativeSearchPaths.IndexFolderName, StringComparer.OrdinalIgnoreCase));
+
+    await vm.RunSearchAsync();
+
+    Check("ViewModel: normal search still finds the real file outside the index folder",
+        vm.Results.Any(r => r.FileName == "keep.txt"));
+    Check("ViewModel: normal search never descends into the auto-excluded native_search index folder",
+        !vm.Results.Any(r => r.FileName == "decoy.txt"));
 }
 
 Console.WriteLine();

@@ -14,7 +14,8 @@ for Sections 13 and 15.
 | [004](ADR-004-fm-index-evaluation.md) | FM-Index Evaluation | Rejected (no incremental update support) |
 | [005](ADR-005-suffix-array-evaluation.md) | Suffix Array Evaluation | Rejected (no incremental update support) |
 | [006](ADR-006-bioinformatics-indexing-library-evaluation.md) | Bioinformatics Indexing Library Evaluation | Rejected (no incremental update support) |
-| [007](ADR-007-index-persistence-location.md) | Index Persistence Location | Accepted (`%LOCALAPPDATA%\TextInFilesSearch\native-index\`) |
+| [007](ADR-007-index-persistence-location.md) | Index Persistence Location | Superseded by 011 |
 | [008](ADR-008-incremental-indexing-strategy.md) | Incremental Indexing Strategy | Accepted |
 | [009](ADR-009-ffi-serialization-strategy.md) | FFI Serialization Strategy | Accepted (JSON) |
 | [010](ADR-010-multi-index-vs-tantivy-only-architecture.md) | Multi-Index vs. Tantivy-Only Architecture | Accepted (Tantivy-only) |
+| [011](ADR-011-in-folder-index-location.md) | In-Folder Index Location | Accepted (`<SearchPath>\.native-search-index\`, by direct user direction) |

@@ -280,3 +280,88 @@ fn cancel_token_null_cancel_is_invalid_argument_not_crash() {
 fn cancel_token_destroy_null_is_a_documented_noop() {
     unsafe { ns_cancel_token_destroy(ptr::null_mut()) };
 }
+
+#[test]
+fn get_document_metadata_round_trips_through_the_raw_abi() {
+    let idx = TestIndex::new();
+    let id = CString::new("1").unwrap();
+    let path = CString::new("p").unwrap();
+    let filename = CString::new("f").unwrap();
+    let extension = CString::new("e").unwrap();
+    let title = CString::new("").unwrap();
+    let body = b"some body";
+
+    unsafe {
+        ns_index_document(
+            idx.handle,
+            id.as_ptr(),
+            path.as_ptr(),
+            filename.as_ptr(),
+            extension.as_ptr(),
+            title.as_ptr(),
+            1_700_000_123,
+            1_600_000_000,
+            9999,
+            body.as_ptr(),
+            body.len(),
+        )
+    };
+    unsafe { ns_commit(idx.handle) };
+
+    let mut found: i32 = -1;
+    let mut modified_unix: i64 = 0;
+    let mut size: i64 = 0;
+    let status = unsafe {
+        ns_get_document_metadata(
+            idx.handle,
+            id.as_ptr(),
+            &mut found,
+            &mut modified_unix,
+            &mut size,
+        )
+    };
+    assert_eq!(status, 0);
+    assert_eq!(found, 1);
+    assert_eq!(modified_unix, 1_700_000_123);
+    assert_eq!(size, 9999);
+}
+
+#[test]
+fn get_document_metadata_unknown_id_reports_not_found_not_an_error() {
+    let idx = TestIndex::new();
+    let id = CString::new("nope").unwrap();
+    let mut found: i32 = -1;
+    let mut modified_unix: i64 = 0;
+    let mut size: i64 = 0;
+    let status = unsafe {
+        ns_get_document_metadata(
+            idx.handle,
+            id.as_ptr(),
+            &mut found,
+            &mut modified_unix,
+            &mut size,
+        )
+    };
+    assert_eq!(status, 0);
+    assert_eq!(found, 0);
+    assert_eq!(modified_unix, 0);
+    assert_eq!(size, 0);
+}
+
+#[test]
+fn get_document_metadata_null_handle_is_invalid_argument_not_crash() {
+    let id = CString::new("1").unwrap();
+    let mut found: i32 = -1;
+    let mut modified_unix: i64 = 0;
+    let mut size: i64 = 0;
+    let status = unsafe {
+        ns_get_document_metadata(
+            ptr::null_mut(),
+            id.as_ptr(),
+            &mut found,
+            &mut modified_unix,
+            &mut size,
+        )
+    };
+    assert_eq!(status, 1 /* InvalidArgument */);
+}

@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 use tantivy::collector::{Collector, SegmentCollector, TopDocs};
 use tantivy::directory::MmapDirectory;
-use tantivy::query::QueryParser;
-use tantivy::schema::{Schema, Value, FAST, INDEXED, STORED, STRING, TEXT};
+use tantivy::query::{QueryParser, TermQuery};
+use tantivy::schema::{IndexRecordOption, Schema, Value, FAST, INDEXED, STORED, STRING, TEXT};
 use tantivy::{
     doc, Index, IndexReader, IndexWriter, ReloadPolicy, SegmentOrdinal, SegmentReader,
     TantivyDocument, TantivyError, Term,
@@ -341,6 +341,39 @@ impl NativeSearchEngine {
     pub fn num_docs(&self) -> u64 {
         self.reader.searcher().num_docs()
     }
+
+    /// Looks up the `(modified_unix, size)` stored for `id` the last time it
+    /// was indexed, or `None` if `id` isn't in the index. Exact term lookup
+    /// on the `id` field (not `QueryParser::parse_query`) - `id` is an
+    /// arbitrary caller-supplied string (a file path, per ADR-008), and
+    /// running it through the free-text query parser would mis-parse
+    /// anything containing query syntax characters (`:`, parens, quotes -
+    /// a real risk for Windows paths like `C:\...`, where the parser would
+    /// read `C` as a field name). Lets a caller skip re-indexing a file
+    /// that hasn't changed (issue #2) without a separate side-channel cache
+    /// file - the index itself is the source of truth for "what did we
+    /// last store for this id."
+    pub fn get_document_metadata(&self, id: &str) -> NsResult<Option<(i64, i64)>> {
+        if id.is_empty() {
+            return Err(NsError::invalid_argument("document id must not be empty"));
+        }
+        let searcher = self.reader.searcher();
+        let term_query = TermQuery::new(
+            Term::from_field_text(self.fields.id, id),
+            IndexRecordOption::Basic,
+        );
+        let top_docs = searcher.search(&term_query, &TopDocs::with_limit(1).order_by_score())?;
+        let Some((_, addr)) = top_docs.into_iter().next() else {
+            return Ok(None);
+        };
+        let retrieved: TantivyDocument = searcher
+            .doc(addr)
+            .map_err(|e| NsError::index_error(e.to_string()))?;
+        Ok(Some((
+            int_value(&retrieved, self.fields.modified),
+            int_value(&retrieved, self.fields.size),
+        )))
+    }
 }
 
 fn text_value(doc: &TantivyDocument, field: tantivy::schema::Field) -> String {
@@ -463,6 +496,57 @@ mod tests {
         let dir = tempdir().unwrap();
         let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
         let err = engine.index_document(sample("", "body")).unwrap_err();
+        assert_eq!(err.status, crate::error::NsStatus::InvalidArgument);
+    }
+
+    #[test]
+    fn get_document_metadata_returns_none_for_unknown_id() {
+        let dir = tempdir().unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        assert_eq!(engine.get_document_metadata("nope").unwrap(), None);
+    }
+
+    #[test]
+    fn get_document_metadata_returns_stored_modified_and_size() {
+        let dir = tempdir().unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        let mut doc = sample("1", "some body");
+        doc.modified_unix = 1_700_000_123;
+        doc.size = 9999;
+        engine.index_document(doc).unwrap();
+        engine.commit().unwrap();
+
+        let meta = engine.get_document_metadata("1").unwrap();
+        assert_eq!(meta, Some((1_700_000_123, 9999)));
+    }
+
+    #[test]
+    fn get_document_metadata_reflects_reindexing_not_the_stale_original() {
+        let dir = tempdir().unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        let mut original = sample("1", "original");
+        original.modified_unix = 1_000;
+        original.size = 10;
+        engine.index_document(original).unwrap();
+        engine.commit().unwrap();
+
+        let mut updated = sample("1", "updated");
+        updated.modified_unix = 2_000;
+        updated.size = 20;
+        engine.index_document(updated).unwrap();
+        engine.commit().unwrap();
+
+        assert_eq!(
+            engine.get_document_metadata("1").unwrap(),
+            Some((2_000, 20))
+        );
+    }
+
+    #[test]
+    fn get_document_metadata_empty_id_is_invalid_argument() {
+        let dir = tempdir().unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        let err = engine.get_document_metadata("").unwrap_err();
         assert_eq!(err.status, crate::error::NsStatus::InvalidArgument);
     }
 
