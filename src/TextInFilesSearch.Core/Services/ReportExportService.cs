@@ -16,6 +16,22 @@ namespace TextInFilesSearch.Services;
 /// </summary>
 public static class ReportExportService
 {
+    /// <summary>
+    /// Base64-encoded GS Engineering banner, embedded as a data URI in every
+    /// report so it stays a single self-contained file (matches the rest of
+    /// this report - no external image to go missing if it's moved).
+    /// Computed once and cached; falls back to no banner (rather than
+    /// failing the whole report) if the embedded resource is ever missing.
+    /// </summary>
+    private static readonly Lazy<string?> BannerDataUri = new(() =>
+    {
+        using var stream = typeof(ReportExportService).Assembly.GetManifestResourceStream("Banner.jpg");
+        if (stream is null) return null;
+        using var ms = new MemoryStream();
+        stream.CopyTo(ms);
+        return "data:image/jpeg;base64," + Convert.ToBase64String(ms.ToArray());
+    });
+
     public static string BuildHtmlReport(SearchSettings settings, SearchRunResult run)
     {
         var sb = new StringBuilder();
@@ -24,6 +40,10 @@ public static class ReportExportService
         sb.AppendLine("<title>Text Search Report</title>");
         sb.AppendLine(CssBlock);
         sb.AppendLine("</head><body>");
+        if (BannerDataUri.Value is { } bannerUri)
+        {
+            sb.AppendLine($"<img class=\"report-banner\" src=\"{bannerUri}\" alt=\"GS Engineering\" />");
+        }
         sb.AppendLine("<h1>Text Search Report</h1>");
 
         var hitResults = run.FileResults.Where(r => r.Status == FileSearchStatus.Hit).ToList();
@@ -365,6 +385,7 @@ public static class ReportExportService
              --link:#6cb2f2; --pre-bg:#181a1f; --pre-border:#33373f; --bar-bg:#2c3441; --bar-fill:#6cb2f2; --confidence-bg:#3a2222; --confidence-fg:#f2a3a3; }
   }
   body { font-family: Segoe UI, Arial, sans-serif; margin: 2em; background: var(--bg); color: var(--fg); }
+  img.report-banner { display: block; max-width: 100%; height: auto; border-radius: 8px; margin-bottom: 1em; }
   h1 { font-size: 1.4em; }
   .summary { background: var(--panel-bg); border: 1px solid var(--panel-border); padding: 0.8em 1em; border-radius: 6px; margin-bottom: 1.5em; }
   .toc { background: var(--panel-bg); border: 1px solid var(--panel-border); padding: 0.8em 1em; border-radius: 6px; margin-bottom: 1.5em; max-height: 220px; overflow-y: auto; }

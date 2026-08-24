@@ -1,6 +1,9 @@
 using System;
 using System.Diagnostics;
+using System.IO;
 using System.Threading.Tasks;
+using Microsoft.UI;
+using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using TextInFilesSearch.Models;
 using TextInFilesSearch.ViewModels;
@@ -28,11 +31,37 @@ public sealed partial class MainWindow : Window
     {
         InitializeComponent();
         Title = "Text In Files Search";
+        SetWindowIcon();
 
         ViewModel = new MainViewModel(
             browseSearchFolder: BrowseForFolderAsync,
             browseOutputFolder: BrowseForFolderAsync,
             openReport: OpenReport);
+    }
+
+    /// <summary>
+    /// ApplicationIcon in the .csproj bakes an icon into the .exe's Win32
+    /// resources (what File Explorer shows for the file), but a WinUI 3
+    /// window's own title-bar/taskbar icon is a separate, runtime-only
+    /// setting - AppWindow.SetIcon needs an actual file path, so the same
+    /// .ico is also copied to the output/publish folder as Content (see the
+    /// .csproj) and loaded from there.
+    /// </summary>
+    private void SetWindowIcon()
+    {
+        try
+        {
+            string iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico");
+            if (!File.Exists(iconPath)) return;
+
+            var hwnd = WindowNative.GetWindowHandle(this);
+            var windowId = Win32Interop.GetWindowIdFromWindow(hwnd);
+            AppWindow.GetFromWindowId(windowId)?.SetIcon(iconPath);
+        }
+        catch
+        {
+            // A missing/unloadable icon is cosmetic, never worth failing startup over.
+        }
     }
 
     /// <summary>

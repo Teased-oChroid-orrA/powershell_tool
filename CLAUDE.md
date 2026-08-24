@@ -38,11 +38,32 @@ src/TextInFilesSearch/        The WinUI 3 head. Keep this THIN.
     Views/MainWindow.xaml(.cs)   The ONLY two files in the whole solution that
                                should touch a WinUI/Win32 API directly
                                (FolderPicker + window-handle interop,
+                               AppWindow.SetIcon for the window/taskbar icon,
                                Process.Start to open the report).
+    Assets/AppIcon.ico, Assets/Banner.png   Production-sized brand assets for
+                               the head project - exe icon (baked in via
+                               ApplicationIcon + loaded at runtime via
+                               AppWindow.SetIcon) and the in-app title-bar
+                               banner. Derived from GS_Engineering_Brand_Assets/
+                               (see below), not hand-edited directly.
+
+src/TextInFilesSearch.Core/Assets/Banner.jpg   The same banner, separately
+                               sized/compressed for embedding as a base64
+                               data URI in the HTML report (ReportExportService)
+                               - kept here rather than referencing the head
+                               project's copy so Core stays zero-WinUI-dependency
+                               and the report stays a single portable file.
 
 tests/TextInFilesSearch.Tests/Program.cs   Dependency-free integration harness.
 docs/architecture.md, docs/deployment.md   Longer-form design rationale.
 powershell/                    Original scripts. Reference only - see below.
+GS_Engineering_Brand_Assets/    Source brand assets (master-resolution icons,
+                               banners, README) the Assets/ folders above were
+                               derived from. Reference only, like powershell/ -
+                               don't point csproj/XAML/report code at this
+                               folder directly; regenerate the sized/compressed
+                               Assets/ copies from it instead if the brand
+                               assets ever change.
 ```
 
 **Why the split matters:** everything in `Core` builds and runs on any

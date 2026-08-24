@@ -5,9 +5,10 @@
     dependency. Every line of search logic, matching, extraction, caching,
     report generation, and the ViewModel layer lives here specifically so it
     can be built and unit tested on any platform/CI runner - not just
-    Windows. This project was in fact compiled and exercised against 36
-    passing integration tests during development; see
-    tests/TextInFilesSearch.Tests for the test project that references it.
+    Windows. This project was in fact compiled and exercised against a
+    growing suite of integration tests (60 and counting) during
+    development; see tests/TextInFilesSearch.Tests for the test project
+    that references it.
   -->
 
   <PropertyGroup>
@@ -16,5 +17,17 @@
     <Nullable>enable</Nullable>
     <RootNamespace>TextInFilesSearch</RootNamespace>
   </PropertyGroup>
+
+  <!--
+    GS Engineering banner, embedded so ReportExportService can produce a
+    fully self-contained HTML report (base64 data URI, no external image
+    file to go missing if the report is moved) without any filesystem
+    dependency on the WinUI head project's own copy of the same asset.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\Banner.jpg">
+      <LogicalName>Banner.jpg</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
 
 </Project>

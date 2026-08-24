@@ -733,6 +733,24 @@ void Check(string name, bool condition)
         vm.ExtensionCatalog.Any(e => e.Extension == ".foo" && e.Category == "Custom" && e.IsSelected));
 }
 
+// ---------------------------------------------------------------------
+// Test 34: HTML report embeds the GS Engineering banner as a self-contained
+// base64 data URI (no external image file for the report to lose track
+// of if it's moved).
+// ---------------------------------------------------------------------
+{
+    var dir = Path.Combine(testRoot, "bannercheck");
+    Directory.CreateDirectory(dir);
+    File.WriteAllText(Path.Combine(dir, "a.txt"), "apple\n");
+
+    var settings = new SearchSettings { SearchPath = dir, OutputFolder = testRoot, Filters = new() { "apple" } };
+    var result = await new SearchOrchestrator().RunAsync(settings, null, CancellationToken.None);
+    string html = ReportExportService.BuildHtmlReport(settings, result);
+
+    Check("HTML report embeds the banner as a base64 data URI",
+        html.Contains("<img class=\"report-banner\" src=\"data:image/jpeg;base64,"));
+}
+
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL TESTS PASSED" : $"{failures} TEST(S) FAILED");
 Directory.Delete(testRoot, true);

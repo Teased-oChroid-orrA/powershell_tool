@@ -15,13 +15,14 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <!-- Title bar -->
-        <Grid x:Name="AppTitleBar" Height="48" Background="{ThemeResource LayerFillColorDefaultBrush}">
-            <TextBlock Text="Text In Files Search"
-                       VerticalAlignment="Center"
-                       Margin="16,0,0,0"
-                       FontSize="14"
-                       FontWeight="SemiBold" />
+        <!-- Title bar / brand banner (GS Engineering) -->
+        <Grid x:Name="AppTitleBar" Height="64" Background="{ThemeResource LayerFillColorDefaultBrush}">
+            <Image Source="Assets/Banner.png"
+                   Stretch="Uniform"
+                   HorizontalAlignment="Left"
+                   VerticalAlignment="Center"
+                   Height="48"
+                   Margin="16,0,0,0" />
         </Grid>
 
         <Grid Grid.Row="1" Margin="16">

@@ -6,6 +6,7 @@
     <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
     <RootNamespace>TextInFilesSearch</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
     <UseWinUI>true</UseWinUI>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -76,6 +77,23 @@
 
   <ItemGroup>
     <ProjectReference Include="../TextInFilesSearch.Core/TextInFilesSearch.Core.csproj" />
+  </ItemGroup>
+
+  <!--
+    Brand assets (GS Engineering). AppIcon.ico is also referenced by
+    ApplicationIcon above (baked into the exe's Win32 resources at compile
+    time), but is listed again here too so the physical file itself is
+    copied to the output/publish folder - MainWindow.xaml.cs loads it from
+    disk at runtime via AppWindow.SetIcon() for the window/taskbar icon,
+    which ApplicationIcon alone does not set for a WinUI 3 app.
+  -->
+  <ItemGroup>
+    <Content Include="Assets\AppIcon.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Assets\Banner.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
 </Project>
