@@ -35,6 +35,10 @@ single EXE - see "Why not a single file?" below.
 - `Microsoft.WindowsAppRuntime.dll` and the other Windows App SDK native
   components - bundled because of `WindowsAppSDKSelfContained=true`, so the
   target machine does not need the Windows App SDK runtime installed
+- `vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll` - the Visual C++
+  Redistributable runtime those Windows App SDK native components
+  themselves depend on, bundled app-local by an explicit CI step (see
+  "First real-machine launch" below for why this exists)
 - All managed DLLs, XAML resource files (`.pri`), and content files needed to
   run
 
@@ -150,11 +154,30 @@ GUI in)**:
    something this project compiles), which remains the prime suspect if
    the redistributable theory is correct.
 
-If the redistributable install fixes it, the longer-term fix is bundling
-the redistributable's specific DLLs into the publish output directly
-(a `vc_redist` merge-module or the loose DLLs themselves), so "nothing
-pre-installed" is actually true rather than aspirational - not done yet,
-pending confirmation this is really the cause.
+**Update**: rather than wait for confirmation, the redistributable is now
+bundled directly, by explicit direction - "self-contained" was always the
+actual requirement, and depending on the VC++ Redistributable being
+pre-installed contradicts it regardless of whether it turns out to be the
+cause of this specific bug. `.github/workflows/build.yml` now copies
+`vcruntime140.dll`, `vcruntime140_1.dll`, and `msvcp140.dll` from the
+build runner's `System32` (present there because `windows-latest` ships a
+full Visual Studio install, which installs the redistributable
+system-wide) into the publish output as loose files next to the exe, with
+a verification step that fails the build loudly if any are missing —
+same pattern as the existing hostfxr/coreclr and
+Microsoft.WindowsAppRuntime.dll checks. This is Microsoft's own documented
+"local" (a.k.a. "app-local") deployment technique for these specific
+DLLs: no installer, no registration, no elevation - Windows' DLL search
+order checks the application's own directory before `System32`, so they're
+picked up automatically. The DLLs themselves aren't vendored into the git
+repo (they come from the build runner at build time, same as the .NET
+runtime and Windows App SDK components already do), consistent with how
+every other bundled runtime component in this publish pipeline is sourced.
+
+This still hasn't been confirmed against the original symptom on a real
+machine - it addresses the requirement ("must not depend on the host
+machine") unconditionally, independent of whether it turns out to be the
+actual root cause of the reported silent-startup bug.
 
 ## Known limitations
 

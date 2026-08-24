@@ -118,6 +118,55 @@ jobs:
           /p:PublishDir="${{ github.workspace }}\publish\TextInFilesSearch\"
           /m /nologo /verbosity:minimal
 
+      - name: Bundle the Visual C++ Redistributable runtime (app-local deployment)
+        # Real field bug (docs/deployment.md's "First real-machine launch"
+        # section): the app was launched on a clean Windows machine for the
+        # first time ever and showed no window, no taskbar entry, no error.
+        # Leading theory: Microsoft.WindowsAppRuntime.dll's own native
+        # components dynamically link vcruntime140.dll/vcruntime140_1.dll/
+        # msvcp140.dll, which WindowsAppSDKSelfContained does NOT bundle -
+        # not guaranteed present on a genuinely clean machine, directly
+        # violating this project's "nothing pre-installed, fully
+        # self-contained" requirement.
+        #
+        # Microsoft explicitly documents and permits "local" (a.k.a.
+        # "app-local") deployment of exactly these DLLs: dropping them as
+        # loose files next to the exe, no installer, no registration, no
+        # elevation - Windows' DLL search order checks the application's own
+        # directory before System32, so they're picked up automatically.
+        # windows-latest ships a full Visual Studio install, which installs
+        # the VC++ Redistributable system-wide, so they're sourced from
+        # System32 here rather than vendored into the repo (a binary
+        # Microsoft doesn't intend to be redistributed via a public git repo
+        # - redistribution alongside the built application, which is what
+        # this step does, is exactly what the redistributable is for).
+        shell: pwsh
+        run: |
+          $requiredDlls = @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")
+          $destDir = "publish/TextInFilesSearch"
+          foreach ($dllName in $requiredDlls) {
+            $source = Join-Path "$env:WINDIR\System32" $dllName
+            if (-not (Test-Path $source)) {
+              Write-Error "$dllName was not found at $source on this runner - cannot bundle it. This step assumes the VC++ Redistributable is installed system-wide on the build machine (true for windows-latest); if that assumption ever breaks, this needs a different source path."
+              exit 1
+            }
+            Copy-Item $source (Join-Path $destDir $dllName) -Force
+            Write-Host "Bundled $dllName from $source"
+          }
+
+      - name: Verify published artifact bundles the Visual C++ Redistributable runtime
+        shell: pwsh
+        run: |
+          $publishDir = "publish/TextInFilesSearch"
+          $missing = @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll") | Where-Object {
+            -not (Test-Path (Join-Path $publishDir $_))
+          }
+          if ($missing) {
+            Write-Error "Missing VC++ Redistributable DLL(s) in the publish output: $($missing -join ', '). The app would depend on these being pre-installed on the target machine, violating the offline/no-prerequisite requirement."
+            exit 1
+          }
+          Write-Host "Found vcruntime140.dll, vcruntime140_1.dll, msvcp140.dll in the publish output - VC++ Redistributable is bundled app-local, not assumed pre-installed."
+
       - name: Verify published artifact bundles native_search.dll
         # TextInFilesSearch.csproj now includes native_search.dll as a real
         # Content item (Condition="Exists(...)"), copied through the normal
