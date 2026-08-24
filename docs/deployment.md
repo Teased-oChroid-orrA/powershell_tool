@@ -101,6 +101,61 @@ yet accounted for - please report exactly which step failed and the error
 text, since it likely points at a WinUI/Windows App SDK configuration detail
 that only manifests on a real machine.
 
+## First real-machine launch (2026-08-24): silent startup failure
+
+The clean-machine test procedure above was finally run for real, for the
+first time ever, on an actual Windows machine. Result: SmartScreen's "Run
+anyway" prompt appeared and was accepted, then nothing happened - no
+window, no taskbar entry, no error dialog. Root cause not yet confirmed
+(no Windows access to reproduce with), but the most likely explanation:
+
+**`WindowsAppSDKSelfContained=true` bundles the Windows App SDK's own
+managed+native components, but does not bundle the Visual C++
+Redistributable those native components themselves depend on**
+(`vcruntime140.dll`, `msvcp140.dll`, `vcruntime140_1.dll`). These are
+extremely commonly present on real Windows machines (many other
+applications install them) but are not guaranteed on a genuinely clean
+one, and this project's own target requirement is "nothing pre-installed."
+A missing dependency of a *native* module can fail before any of this
+app's own managed code - including a global exception handler - ever runs,
+which matches the reported symptom (no error, not even a crash dialog)
+better than a managed-code exception would.
+
+**Immediate thing to try**: install the
+[VC++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+(official Microsoft installer) on the affected machine and re-launch. If
+that fixes it, this is confirmed.
+
+**What was changed in response, blind (no way to verify locally or via
+CI - GitHub Actions has no interactive desktop session to launch a WinUI
+GUI in)**:
+
+1. `App.xaml.cs` now wires up `AppDomain.CurrentDomain.UnhandledException`
+   and `Application.UnhandledException` at the very start of the `App`
+   constructor, before anything else runs. Any *managed* exception during
+   startup now writes to `crash.log` next to the executable and shows a
+   plain Win32 `MessageBoxW` (not a WinUI `ContentDialog`, which needs a
+   working XAML dispatcher that might not exist yet) instead of failing
+   silently. This does **not** catch a true native-module-load failure
+   happening before managed code starts - if the VC++ Redistributable
+   theory above is correct, this specific fix won't surface anything,
+   because the process never gets far enough to run it. It's still
+   unconditionally worth having: it turns every *other* class of startup
+   failure from silent into diagnosable.
+2. `native-search/.cargo/config.toml` now statically links the MSVC C
+   runtime into `native_search.dll` (`-C target-feature=+crt-static`), so
+   *that* component at least has zero dependency on the VC++
+   Redistributable being present. This doesn't touch
+   `Microsoft.WindowsAppRuntime.dll` (a prebuilt Microsoft binary, not
+   something this project compiles), which remains the prime suspect if
+   the redistributable theory is correct.
+
+If the redistributable install fixes it, the longer-term fix is bundling
+the redistributable's specific DLLs into the publish output directly
+(a `vc_redist` merge-module or the loose DLLs themselves), so "nothing
+pre-installed" is actually true rather than aspirational - not done yet,
+pending confirmation this is really the cause.
+
 ## Known limitations
 
 - **PDF text extraction remains best-effort**, exactly as it was in the
