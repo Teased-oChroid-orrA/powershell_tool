@@ -124,16 +124,26 @@ by this document, actually run.
 
 - Cancellation (Section 17) — not wired up. `ns_search`/`ns_commit` run to
   completion; there's no cancel token in this slice.
-- `native_search.dll` is copied into place by CI shell steps, not a real
-  MSBuild `Content`/reference item in `TextInFilesSearch.csproj` — a
-  `dotnet publish` run outside this workflow won't include it yet.
 - Schema-evolution and corruption-recovery hardening flagged as open in
   ADR-002 (items 9/10) — not addressed by this slice.
-- A `%LOCALAPPDATA%` index-location convention (ADR-007, not yet written).
 - Nothing in the WinUI head (`MainViewModel`/`MainWindow.xaml`) calls
   `NativeSearchService` yet — it exists as a capability, not a wired-up
   feature. The two search paths (existing line scan vs. native index) are
   still not reconciled, per ADR-001.
+- Index growth/cleanup semantics when `SearchPath` changes (ADR-007's open
+  item) — undecided until the above wiring happens.
+
+## Resolved since the initial Phase 3 pass
+
+- `native_search.dll` is now a real MSBuild `Content` item in
+  `TextInFilesSearch.csproj` (`Condition="Exists(...)"`, so a Rust-less
+  local `dotnet build` still succeeds), not a CI-only shell copy — CI's
+  publish-output check now verifies that pipeline actually worked rather
+  than trusting a manual copy step.
+- Index location decided and implemented: `%LOCALAPPDATA%\TextInFilesSearch\native-index\`,
+  see `docs/adr/ADR-007-index-persistence-location.md` and
+  `NativeSearchPaths.GetDefaultIndexDirectory()`/`EnsureIndexDirectoryExists()`.
+  Not called by anything yet (same caveat as the WinUI-wiring item above).
 
 ## What was actually verified locally (before CI ever ran)
 

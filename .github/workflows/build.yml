@@ -118,18 +118,11 @@ jobs:
           /p:PublishDir="${{ github.workspace }}\publish\TextInFilesSearch\"
           /m /nologo /verbosity:minimal
 
-      - name: Copy native_search.dll into the publish output
-        # Not yet wired into the .csproj as a real Content/reference item
-        # (see docs/ffi.md "What Phase 3 does not cover yet") - copied here
-        # explicitly so the published app can actually resolve the P/Invoke
-        # at runtime, and so the verification step below has something real
-        # to check for rather than trusting the copy happened.
-        shell: pwsh
-        run: |
-          Copy-Item native-search/target/x86_64-pc-windows-msvc/release/native_search.dll `
-            publish/TextInFilesSearch/native_search.dll
-
       - name: Verify published artifact bundles native_search.dll
+        # TextInFilesSearch.csproj now includes native_search.dll as a real
+        # Content item (Condition="Exists(...)"), copied through the normal
+        # MSBuild publish pipeline rather than a separate CI shell step -
+        # this check proves that actually happened instead of trusting it.
         shell: pwsh
         run: |
           $nativeSearchDll = Get-ChildItem -Path "publish/TextInFilesSearch" -Filter "native_search.dll" -ErrorAction SilentlyContinue

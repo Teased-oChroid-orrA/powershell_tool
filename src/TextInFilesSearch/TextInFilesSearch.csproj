@@ -96,4 +96,21 @@
     </Content>
   </ItemGroup>
 
+  <!--
+    native_search.dll (issue #2 - see docs/ffi.md). Included only when the
+    Rust crate has already been built, so a plain `dotnet build`/`publish`
+    of this project alone - on a machine without the Rust toolchain -
+    doesn't fail for lack of it. CI builds native-search/ before this
+    project for exactly that reason (.github/workflows/build.yml); this
+    Content item is what makes that copy happen through the normal MSBuild
+    publish pipeline instead of a separate CI shell step now that the two
+    would otherwise duplicate each other.
+  -->
+  <ItemGroup Condition="Exists('..\..\native-search\target\x86_64-pc-windows-msvc\release\native_search.dll')">
+    <Content Include="..\..\native-search\target\x86_64-pc-windows-msvc\release\native_search.dll">
+      <Link>native_search.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
 </Project>
