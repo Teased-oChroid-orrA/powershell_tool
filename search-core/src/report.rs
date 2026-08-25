@@ -737,4 +737,14 @@ mod tests {
         let apple_pos = html.find("bar-label\" title=\"apple\"").unwrap();
         assert!(banana_pos < apple_pos, "bar chart must follow settings.Filters order");
     }
+
+    #[test]
+    fn html_report_embeds_banner_as_base64_data_uri() {
+        let settings = SearchSettings { filters: vec!["apple".to_string()], ..Default::default() };
+        let mut run = SearchRunResult::default();
+        run.file_results.push(sample_result("/x/a.txt", vec![hit(1, "apple", &["apple"])]));
+
+        let html = build_html_report(&settings, &run);
+        assert!(html.contains("<img class=\"report-banner\" src=\"data:image/jpeg;base64,"));
+    }
 }

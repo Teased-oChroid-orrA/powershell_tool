@@ -646,4 +646,68 @@ mod tests {
         }
         assert!(saw_completion);
     }
+
+    #[tokio::test]
+    async fn windows_1252_file_end_to_end_through_full_pipeline_finds_hit() {
+        let dir = tempfile::tempdir().unwrap();
+        // "Hello \x93World\x94" with cp1252 curly quotes, followed by ASCII " apple".
+        let mut bytes: Vec<u8> = vec![72, 101, 108, 108, 111, 32, 0x93, 87, 111, 114, 108, 100, 0x94];
+        bytes.extend_from_slice(b" apple");
+        std::fs::write(dir.path().join("legacy.txt"), &bytes).unwrap();
+
+        let settings = settings_for(dir.path(), &["apple"]);
+        let result = run(settings, None, CancellationToken::new()).await.unwrap();
+        assert!(result.file_results.iter().any(|r| r.status == FileSearchStatus::Hit));
+    }
+
+    #[tokio::test]
+    async fn invalid_regex_filter_propagates_through_run_naming_the_bad_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "apple\n").unwrap();
+
+        let mut settings = settings_for(dir.path(), &["(unclosed"]);
+        settings.use_regex = true;
+
+        let err = run(settings, None, CancellationToken::new()).await.unwrap_err();
+        match err {
+            OrchestratorError::InvalidFilterRegex(e) => {
+                assert!(e.to_string().contains("(unclosed"));
+            }
+            other => panic!("expected InvalidFilterRegex, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn case_variant_duplicate_filters_compute_correct_proximity_range() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "apple\nbanana\n").unwrap();
+
+        let mut settings = settings_for(dir.path(), &["apple", "APPLE", "banana"]);
+        settings.match_mode = crate::models::MatchMode::Proximity;
+        settings.proximity_lines = 5;
+
+        let result = run(settings, None, CancellationToken::new()).await.unwrap();
+        let r = result.file_results.iter().find(|r| r.full_name.ends_with("a.txt")).unwrap();
+        assert_eq!(r.status, FileSearchStatus::Hit);
+        assert_eq!(r.proximity_min_range, Some(1));
+    }
+
+    #[tokio::test]
+    async fn native_search_index_folder_is_auto_excluded_end_to_end() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("keep.txt"), "findme in a real file\n").unwrap();
+        let index_folder = dir.path().join(crate::native_index::INDEX_FOLDER_NAME);
+        std::fs::create_dir(&index_folder).unwrap();
+        std::fs::write(index_folder.join("decoy.txt"), "findme inside the index folder\n").unwrap();
+
+        let mut settings = settings_for(dir.path(), &["findme"]);
+        crate::native_index::ensure_index_folder_excluded(&mut settings.exclude_folders);
+
+        let result = run(settings, None, CancellationToken::new()).await.unwrap();
+        assert!(result.file_results.iter().any(|r| r.full_name.ends_with("keep.txt") && r.status == FileSearchStatus::Hit));
+        assert!(
+            !result.file_results.iter().any(|r| r.full_name.ends_with("decoy.txt")),
+            "the native_search index folder must never be walked into"
+        );
+    }
 }
