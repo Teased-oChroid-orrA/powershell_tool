@@ -220,6 +220,19 @@ fn App() -> Element {
                 }
             },
             onmouseup: move |_| resizing.set(None),
+            // Ambient-glow blobs approximating profile_capabilities' glassmorphic
+            // look. That project uses `filter: blur(80px)` on these - verified
+            // unsupported here (Stylo parses `filter` as a CSS value but
+            // blitz-paint/src/render.rs never reads it off get_effects(), only
+            // `.opacity`; same for `backdrop-filter`, zero references anywhere
+            // in blitz-paint/blitz-dom). Radial gradients with a transparent
+            // outer stop are confirmed-working and fade softly on their own
+            // without needing real blur, so that's the substitute technique -
+            // not a pixel-match, but the same "colored soft light behind glass
+            // chrome" effect the source design uses blur for.
+            div { class: "ambient-glow ambient-glow-a" }
+            div { class: "ambient-glow ambient-glow-b" }
+            div { class: "ambient-glow ambient-glow-c" }
             div { class: "title-bar",
                 div { class: "title-bar-brand",
                     span { class: "brand-mark", "GS" }
@@ -326,53 +339,94 @@ fn App() -> Element {
 const APP_CSS: &str = r#"
 :root { color-scheme: dark; }
 
+/* "Instrument" palette, adopted literally from profile_capabilities'
+   theme.rs (the sibling Dioxus app whose look this was asked to match),
+   not a re-keyed variant. --glass-* tokens carry the same alpha values as
+   that project's `--glass`/`--glass-strong`/`--glass-border` too, minus
+   `--glass-blur` - blur is dropped, not approximated with a fake value,
+   because it's verified unrenderable here (see the ambient-glow div
+   comment in App() for the source check). The glass look instead comes
+   from translucent color-mix() surfaces + layered shadow + the glow blobs
+   showing through the transparency - all three confirmed-working
+   primitives. */
 .app-shell[data-theme="dark"] {
     --fg: #eef0f4;
     --fg-muted: #8d96a3;
     --fg-subtle: #626a76;
     --bg: #14161b;
+    --bg-raised: #1b1e25;
     --bg-sunken: #0e1013;
     --panel-bg: #1b1e25;
-    --panel-hover: #262b34;
+    --panel-hover: #282d37;
     --border: #2b303a;
     --border-strong: #3c424e;
-    --accent: #4fa8e8;
-    --accent-strong: #7cc0f5;
-    --accent-fg: #06202e;
-    --active: #e0a05f;
+    --accent: #3fbfe8;
+    --accent-strong: #6ad2f2;
+    --accent-fg: #05222c;
+    --active: #e6a05f;
+    --active-fg: #2c1608;
+    --constraint: #a78bfa;
     --danger: #e2657a;
+    --danger-bg: #3a1f24;
     --good: #52c98a;
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-    --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.35);
+    --good-bg: #173a2a;
+    --warning: #e0b355;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+    --shadow-md: 0 8px 28px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 18px 48px rgba(0, 0, 0, 0.5);
+    --glass-bg: color-mix(in srgb, #08090c 55%, transparent);
+    --glass: rgba(255, 255, 255, 0.055);
+    --glass-strong: rgba(255, 255, 255, 0.09);
+    --glass-border: rgba(255, 255, 255, 0.11);
+    --glass-border-strong: rgba(255, 255, 255, 0.2);
+    --glow-a: #b18cf7; --glow-a-op: 0.28;
+    --glow-b: #4fd2f0; --glow-b-op: 0.22;
+    --glow-c: #f0a860; --glow-c-op: 0.14;
 }
 .app-shell[data-theme="light"] {
     --fg: #171a1f;
-    --fg-muted: #5b6472;
+    --fg-muted: #626c78;
     --fg-subtle: #8992a1;
-    --bg: #f2f4f7;
-    --bg-sunken: #e7eaee;
+    --bg: #eef1f5;
+    --bg-raised: #ffffff;
+    --bg-sunken: #e4e8ed;
     --panel-bg: #ffffff;
     --panel-hover: #eef1f5;
     --border: #d9dfe6;
     --border-strong: #c2cad4;
-    --accent: #1c6fae;
-    --accent-strong: #0b5fa5;
+    --accent: #1c7fae;
+    --accent-strong: #0b6a97;
     --accent-fg: #ffffff;
     --active: #a8632c;
+    --active-fg: #ffffff;
+    --constraint: #7c5cd6;
     --danger: #c2394f;
+    --danger-bg: #fbe9ec;
     --good: #29875a;
+    --good-bg: #e6f5ec;
+    --warning: #a1751f;
     --shadow-sm: 0 1px 2px rgba(20, 25, 35, 0.08);
-    --shadow-md: 0 6px 20px rgba(20, 25, 35, 0.12);
+    --shadow-md: 0 8px 24px rgba(20, 25, 35, 0.1);
+    --shadow-lg: 0 18px 40px rgba(20, 25, 35, 0.14);
+    --glass-bg: color-mix(in srgb, #ffffff 65%, transparent);
+    --glass: rgba(20, 25, 35, 0.035);
+    --glass-strong: rgba(20, 25, 35, 0.06);
+    --glass-border: rgba(20, 25, 35, 0.09);
+    --glass-border-strong: rgba(20, 25, 35, 0.16);
+    --glow-a: #b18cf7; --glow-a-op: 0.16;
+    --glow-b: #4fd2f0; --glow-b-op: 0.14;
+    --glow-c: #f0a860; --glow-c-op: 0.1;
 }
 
 :root {
     --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 20px; --space-6: 28px;
-    --radius-sm: 5px; --radius-md: 8px; --radius-pill: 999px;
+    --radius-sm: 6px; --radius-md: 9px; --radius-lg: 14px; --radius-pill: 999px;
     --ease: cubic-bezier(0.4, 0, 0.2, 1);
+    --ease-spring: cubic-bezier(0.16, 1, 0.3, 1);
     --mono: ui-monospace, "SF Mono", Consolas, monospace;
 }
 
-* { box-sizing: border-box; min-width: 0; }
+* { box-sizing: border-box; min-width: 0; appearance: none; -webkit-appearance: none; }
 html, body { height: 100%; overflow: hidden; }
 body {
     margin: 0;
@@ -394,15 +448,38 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
 .app-shell {
     display: flex; flex-direction: column; height: 100vh; width: 100vw;
     background: var(--bg); color: var(--fg); overflow: hidden;
-    /* Positioning context for .drop-overlay - see that rule's comment. */
+    /* Positioning context for .ambient-glow / .drop-overlay - see those rules' comments. */
     position: relative;
 }
+/* Soft-edged color blobs standing in for profile_capabilities'
+   `filter: blur(80px)` glow (see App()'s comment on the divs using these
+   classes for why blur itself isn't used). A radial-gradient's own
+   transparent outer stop fades softly without any blur operator, so the
+   "colored ambient light" read survives even though the edge is a true
+   gradient boundary rather than a Gaussian blur. Same positions/sizes/hues
+   as the source design's .a/.b/.c blobs. */
+.ambient-glow {
+    position: absolute; z-index: 0; border-radius: 50%; pointer-events: none;
+}
+.ambient-glow-a {
+    top: -120px; left: -80px; width: 480px; height: 480px;
+    background: radial-gradient(circle, color-mix(in srgb, var(--glow-a) calc(var(--glow-a-op) * 100%), transparent) 0%, transparent 70%);
+}
+.ambient-glow-b {
+    top: -140px; right: -100px; width: 420px; height: 420px;
+    background: radial-gradient(circle, color-mix(in srgb, var(--glow-b) calc(var(--glow-b-op) * 100%), transparent) 0%, transparent 70%);
+}
+.ambient-glow-c {
+    bottom: -160px; left: 12%; width: 380px; height: 380px;
+    background: radial-gradient(circle, color-mix(in srgb, var(--glow-c) calc(var(--glow-c-op) * 100%), transparent) 0%, transparent 70%);
+}
 .title-bar {
+    position: relative; z-index: 1;
     flex: none;
     display: flex; align-items: center; justify-content: space-between;
     padding: var(--space-3) var(--space-4);
-    border-bottom: 1px solid var(--border);
-    background: var(--panel-bg);
+    border-bottom: 1px solid var(--glass-border);
+    background: var(--glass-bg);
     box-shadow: var(--shadow-sm);
 }
 .title-bar-brand { display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
@@ -411,7 +488,8 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
     display: flex; align-items: center; justify-content: center;
     width: 26px; height: 26px;
     border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--accent) 22%, var(--panel-bg));
+    background: color-mix(in srgb, var(--accent) 24%, var(--glass-strong));
+    border: 1px solid var(--glass-border);
     color: var(--accent-strong);
     font-size: 11px; font-weight: 700; letter-spacing: 0.02em;
 }
@@ -420,11 +498,12 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
     flex: none; width: 30px; height: 30px; padding: 0;
     display: flex; align-items: center; justify-content: center;
     border-radius: 50%; font-size: 13px;
-    background: var(--panel-bg); border: 1px solid var(--border); color: var(--fg-muted);
+    background: var(--glass); border: 1px solid var(--glass-border); color: var(--fg-muted);
+    transition: background-color 0.15s var(--ease), border-color 0.15s var(--ease), color 0.15s var(--ease);
 }
-.theme-toggle:hover { background: var(--panel-hover); color: var(--fg); border-color: var(--border-strong); }
+.theme-toggle:hover { background: var(--glass-strong); color: var(--fg); border-color: var(--glass-border-strong); }
 
-.main-grid { display: flex; flex: 1; min-height: 0; gap: var(--space-2); padding: var(--space-4); overflow: hidden; }
+.main-grid { position: relative; z-index: 1; display: flex; flex: 1; min-height: 0; gap: var(--space-2); padding: var(--space-4); overflow: hidden; }
 .settings-column { flex: none; overflow-y: auto; overflow-x: hidden; padding-right: var(--space-1); }
 .results-column { flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden; }
 .preview-column { flex: none; overflow-y: auto; overflow-x: hidden; border-left: 1px solid var(--border); padding-left: var(--space-4); }
@@ -443,14 +522,14 @@ h3 {
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 details {
-    border: 1px solid var(--border);
+    border: 1px solid var(--glass-border);
     border-radius: var(--radius-md);
     padding: 0 var(--space-3);
-    background: var(--panel-bg);
+    background: var(--glass);
     box-shadow: var(--shadow-sm);
-    transition: border-color 0.15s var(--ease);
+    transition: border-color 0.15s var(--ease), background-color 0.15s var(--ease);
 }
-details[open] { border-color: var(--border-strong); }
+details[open] { border-color: var(--glass-border-strong); background: var(--glass-strong); }
 summary {
     cursor: pointer;
     font-weight: 650;
@@ -534,8 +613,8 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 .select-trigger:hover { background: var(--panel-hover); }
 .select-caret { flex: none; color: var(--fg-subtle); font-size: 0.75em; margin-left: var(--space-2); }
 .select-menu {
-    display: block; margin-top: var(--space-1); border: 1px solid var(--border);
-    border-radius: var(--radius-sm); background: var(--panel-bg); overflow: hidden; box-shadow: var(--shadow-md);
+    display: block; margin-top: var(--space-1); border: 1px solid var(--glass-border-strong);
+    border-radius: var(--radius-sm); background: var(--bg-raised); overflow: hidden; box-shadow: var(--shadow-md);
 }
 .select-option { display: block; padding: var(--space-2) var(--space-3); font-size: 0.9em; cursor: pointer; }
 .select-option:hover { background: var(--panel-hover); }
@@ -639,9 +718,9 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 }
 .drop-overlay-card {
     display: flex; flex-direction: column; align-items: center; gap: var(--space-2);
-    padding: var(--space-6); border-radius: var(--radius-md);
-    background: var(--panel-bg); border: 2px dashed var(--accent);
-    box-shadow: var(--shadow-md);
+    padding: var(--space-6); border-radius: var(--radius-lg);
+    background: var(--glass-bg); border: 2px dashed var(--accent);
+    box-shadow: var(--shadow-lg);
     text-align: center; max-width: 320px;
 }
 .drop-overlay-title { margin: 0; font-size: 1.1em; font-weight: 700; color: var(--fg); }
@@ -664,8 +743,8 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 .palette-card {
     width: 420px; max-width: 90vw; max-height: 60vh;
     display: flex; flex-direction: column;
-    background: var(--panel-bg); border: 1px solid var(--border-strong);
-    border-radius: var(--radius-md); box-shadow: var(--shadow-md);
+    background: var(--glass-bg); border: 1px solid var(--glass-border-strong);
+    border-radius: var(--radius-lg); box-shadow: var(--shadow-lg);
     overflow: hidden;
 }
 .palette-input {
@@ -687,8 +766,8 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
     position: absolute;
     display: flex; flex-direction: column;
     min-width: 190px; padding: var(--space-1);
-    background: var(--panel-bg); border: 1px solid var(--border-strong);
-    border-radius: var(--radius-sm); box-shadow: var(--shadow-md);
+    background: var(--glass-bg); border: 1px solid var(--glass-border-strong);
+    border-radius: var(--radius-md); box-shadow: var(--shadow-lg);
 }
 .ctx-menu-title {
     display: block; padding: var(--space-2) var(--space-3) var(--space-1);

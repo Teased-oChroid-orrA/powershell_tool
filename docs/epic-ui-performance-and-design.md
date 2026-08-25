@@ -1914,3 +1914,48 @@ any section that assumes a platform capability, check it against the real
 the top of this document was built), the same way every other technical
 claim in this codebase's `CLAUDE.md`/`docs/adr/` is expected to be
 grounded in real verification, not assumption.**
+
+## Addendum: literal `profile_capabilities` color scheme + glassmorphism verdict
+
+A later pass was asked to match `profile_capabilities` not just in overall
+direction but its literal color scheme, and to make the look
+"glassmorphic modern" like that project's.
+
+**`filter: blur()` is also unsupported, not just `backdrop-filter`.**
+`profile_capabilities`' glow blobs use `filter: blur(80px)` (not
+`backdrop-filter`) - a different CSS property, so the earlier
+`backdrop-filter`-absence finding didn't automatically cover it. Checked
+by reading `blitz-paint`'s actual paint routine (`render.rs`): Stylo does
+parse `filter` as a CSS value (`stylo-0.8.0/values/specified/effects.rs`
+exists and handles it), but `render.rs` only ever reads `.opacity` off
+`node.primary_styles().get_effects()` - no blur/filter field is read or
+painted anywhere in the file. So both `backdrop-filter` (frosted glass
+over content) and `filter: blur()` (soft glow blobs) are dead code paths
+in this renderer: parsed without erroring, never painted. There is no
+real blur available in `dioxus-native` at all, at the version pinned in
+this workspace.
+
+**Approximation adopted instead:** the "Instrument" palette from
+`profile_capabilities/theme.rs` was adopted with literal hex values (not
+re-keyed) - `--accent:#3fbfe8` (dark) / `#1c7fae` (light) cyan,
+`--active:#e6a05f` / `#a8632c` copper, plus its `--glass`/`--glass-strong`/
+`--glass-border` alpha tokens (same rgba values, minus the blur term).
+Glassmorphism is approximated with three techniques that ARE confirmed
+working:
+1. Translucent `color-mix()` surface backgrounds (`--glass-bg`,
+   `--glass`, `--glass-strong`) on the title bar, panels, command
+   palette, context menu, and drop overlay, so the ambient-glow blobs
+   show through as tinted light rather than a flat panel color.
+2. Three fixed-position radial-gradient "ambient glow" blobs
+   (`.ambient-glow-a/b/c` in `main.rs`) at the same positions/sizes/hues
+   as `profile_capabilities`' `.a`/`.b`/`.c` blobs. A radial gradient's
+   own transparent outer stop fades softly without any blur operator, so
+   it reads as ambient colored light even though the edge is a gradient
+   boundary, not a Gaussian blur - not a pixel match, but the same
+   perceptual effect the source design uses blur for.
+3. Layered `box-shadow` (`--shadow-sm/md/lg`, new heavier values) for
+   panel depth, which was already confirmed working earlier in this epic.
+
+This was verified by real compile (`cargo build -p app`, clean) and a
+background launch-and-check-for-panic (`cargo run -p app`, ran 5s,
+no crash, no panic in output) - not assumed from source reading alone.
