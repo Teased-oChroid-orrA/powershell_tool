@@ -751,6 +751,208 @@ void Check(string name, bool condition)
         html.Contains("<img class=\"report-banner\" src=\"data:image/jpeg;base64,"));
 }
 
+// ---------------------------------------------------------------------
+// Test 35: native_search.dll round trip (issue #2 Phase 3), including
+// cancellation (Section 17). This is the one thing the Rust side's own
+// test suite (native-search/tests) cannot prove by itself: that the actual
+// P/Invoke marshalling in NativeSearchService/NativeSearchInterop -
+// source-generated LibraryImport stubs, SafeHandle lifetime (for both the
+// engine handle and the cancellation-token handle), UTF-8 string
+// marshalling, the (ptr, len) body convention - lines up with the Rust
+// side across a real process boundary, not just in each side's own unit
+// tests.
+//
+// native_search.dll only exists once native-search/ has actually been
+// built (see .github/workflows/build.yml, which builds it before this
+// harness runs). A developer running this locally without the Rust
+// toolchain still gets a clean run - SKIP, not FAIL - rather than being
+// forced to install Rust just to iterate on unrelated C# changes.
+// ---------------------------------------------------------------------
+{
+    var dir = Path.Combine(testRoot, "native-search-index");
+    Directory.CreateDirectory(dir);
+
+    try
+    {
+        using var native = new NativeSearchService(dir);
+
+        native.IndexDocument(new NativeDocumentInput(
+            Id: "1",
+            Path: @"C:\docs\Torque-Spec-Deviation-Report.pdf",
+            FileName: "Torque-Spec-Deviation-Report.pdf",
+            Extension: ".pdf",
+            Title: null,
+            Modified: DateTime.UtcNow,
+            Created: DateTime.UtcNow,
+            Size: 4096,
+            Body: "torque spec deviation on aft mount bolts, re-torque completed"));
+        native.IndexDocument(new NativeDocumentInput(
+            Id: "2",
+            Path: @"C:\docs\Corrosion-Inspection-Q1.docx",
+            FileName: "Corrosion-Inspection-Q1.docx",
+            Extension: ".docx",
+            Title: "Quarterly Corrosion Inspection",
+            Modified: DateTime.UtcNow,
+            Created: DateTime.UtcNow,
+            Size: 2048,
+            Body: "minor filiform corrosion observed along fastener row twelve"));
+        native.Commit();
+
+        var hits = native.Search("torque", limit: 10);
+        Check("native_search: query matches only the indexed document containing the term",
+            hits.Count == 1 && hits[0].Id == "1");
+        Check("native_search: unmatched fields still round-trip through the JSON boundary",
+            hits.Count == 1 && hits[0].Path == @"C:\docs\Torque-Spec-Deviation-Report.pdf" && hits[0].Extension == ".pdf");
+
+        native.DeleteDocument("1");
+        native.Commit();
+        var afterDelete = native.Search("torque", limit: 10);
+        Check("native_search: delete + commit removes the document from search results",
+            afterDelete.Count == 0);
+
+        bool threw = false;
+        try
+        {
+            _ = native.Search(string.Empty, limit: 10);
+        }
+        catch (NativeSearchException ex) when (ex.Status == "InvalidArgument")
+        {
+            threw = true;
+        }
+        Check("native_search: an empty query surfaces as a typed NativeSearchException, not a crash", threw);
+
+        // Document "2" ("corrosion...") was indexed above and never
+        // deleted (only "1" was) - still live, so the cancellation checks
+        // below exercise a real search, not an already-empty index.
+        using var cancelledToken = new NativeSearchCancellationToken();
+        cancelledToken.Cancel();
+        bool threwCancelled = false;
+        try
+        {
+            _ = native.Search("corrosion", limit: 10, cancellationToken: cancelledToken);
+        }
+        catch (NativeSearchException ex) when (ex.Status == "Cancelled")
+        {
+            threwCancelled = true;
+        }
+        Check("native_search: a pre-cancelled token surfaces search as a typed Cancelled exception (issue #2 Section 17)", threwCancelled);
+
+        using var freshToken = new NativeSearchCancellationToken();
+        var uncancelledHits = native.Search("corrosion", limit: 10, cancellationToken: freshToken);
+        Check("native_search: an un-cancelled token does not block a search", uncancelledHits.Count == 1);
+    }
+    catch (DllNotFoundException)
+    {
+        Console.WriteLine("SKIP: native_search round trip (native_search.dll not present - build native-search/ first; see docs/ffi.md)");
+    }
+}
+
+// ---------------------------------------------------------------------
+// Test 36: MainViewModel wiring for native search (issue #2). Test 35
+// covers NativeSearchService directly; this covers the actual UI-facing
+// surface - IndexForFastSearch driving RunSearchAsync to index its hits,
+// and NativeSearchCommand/RunNativeSearchAsync searching them back out -
+// so the ViewModel-level integration is verified too, not just the
+// service it wraps. Same SKIP-not-FAIL convention as Test 35.
+// ---------------------------------------------------------------------
+{
+    var dir = Path.Combine(testRoot, "vm-native-search");
+    Directory.CreateDirectory(dir);
+    File.WriteAllText(Path.Combine(dir, "torque.txt"), "torque spec deviation on aft mount bolts\n");
+    File.WriteAllText(Path.Combine(dir, "corrosion.txt"), "minor filiform corrosion observed\n");
+
+    var nativeIndexDir = Path.Combine(testRoot, "vm-native-search-index");
+    var outputDir = Path.Combine(testRoot, "vm-native-search-out");
+
+    var vm = new TextInFilesSearch.ViewModels.MainViewModel(nativeSearchIndexDirectory: nativeIndexDir);
+
+    Check("ViewModel: NativeSearchCommand.CanExecute is false with an empty query and no SearchPath",
+        !vm.NativeSearchCommand.CanExecute(null));
+    vm.NativeSearchQuery = "torque";
+    Check("ViewModel: NativeSearchCommand.CanExecute is still false with a query but no SearchPath (issue #2/ADR-011 - the index lives inside SearchPath)",
+        !vm.NativeSearchCommand.CanExecute(null));
+    vm.SearchPath = dir;
+    Check("ViewModel: NativeSearchCommand.CanExecute becomes true once both a query and SearchPath are set",
+        vm.NativeSearchCommand.CanExecute(null));
+    Check("ViewModel: CancelNativeSearchCommand.CanExecute is false when nothing is searching",
+        !vm.CancelNativeSearchCommand.CanExecute(null));
+    Check("ViewModel: IndexForFastSearch defaults to off",
+        !vm.IndexForFastSearch);
+
+    // Note: unlike Test 35, RunSearchAsync/RunNativeSearchAsync never throw
+    // DllNotFoundException out to a caller - IndexHitsForFastSearch and
+    // RunNativeSearchAsync both catch it internally and report it through
+    // NativeSearchStatusText instead (so an optional convenience feature
+    // failing can't turn a successful file search into a reported error).
+    // The SKIP/PASS branch below is driven by that status text, not a
+    // try/catch here.
+    vm.OutputFolder = outputDir;
+    vm.FiltersText = "torque, corrosion";
+    vm.IndexForFastSearch = true;
+
+    await vm.RunSearchAsync();
+
+    Check("ViewModel: a run with IndexForFastSearch on reports an outcome (indexed or explicitly unavailable), never leaves the status blank",
+        !string.IsNullOrWhiteSpace(vm.NativeSearchStatusText));
+
+    if (vm.NativeSearchStatusText.StartsWith("Indexed", StringComparison.Ordinal))
+    {
+        await vm.RunNativeSearchAsync();
+        Check("ViewModel: NativeSearchCommand's underlying search finds the file indexed by the run above",
+            vm.NativeSearchResults.Count == 1 && vm.NativeSearchResults[0].Filename == "torque.txt");
+        Check("ViewModel: IsNativeSearching is false after the search completes",
+            !vm.IsNativeSearching);
+
+        // issue #2: re-running against the same, unchanged files must skip
+        // re-indexing them (NativeSearchService.TryGetDocumentMetadata),
+        // not silently redo the same work every run.
+        await vm.RunSearchAsync();
+        Check("ViewModel: re-running over unchanged files reports them as already up to date, not re-indexed",
+            vm.NativeSearchStatusText.Contains("already up to date", StringComparison.OrdinalIgnoreCase));
+    }
+    else
+    {
+        Console.WriteLine($"SKIP: ViewModel native-search round trip (native_search.dll not present - {vm.NativeSearchStatusText})");
+    }
+}
+
+// ---------------------------------------------------------------------
+// Test 37: native_search index folder placement and auto-exclusion
+// (issue #2/ADR-011). Doesn't need native_search.dll - BuildSettings()
+// and the normal line-scan search are pure C#, so this always runs,
+// unlike Test 35/36's DLL-dependent checks.
+// ---------------------------------------------------------------------
+{
+    var dir = Path.Combine(testRoot, "auto-exclude-index-folder");
+    Directory.CreateDirectory(dir);
+    File.WriteAllText(Path.Combine(dir, "keep.txt"), "findme in a real file\n");
+
+    // Simulates what a prior run with IndexForFastSearch on would have
+    // left behind - a real native_search run isn't needed to prove the
+    // *exclusion* works, only that something living at this exact path
+    // never gets walked into.
+    var indexFolder = Path.Combine(dir, TextInFilesSearch.Native.NativeSearchPaths.IndexFolderName);
+    Directory.CreateDirectory(indexFolder);
+    File.WriteAllText(Path.Combine(indexFolder, "decoy.txt"), "findme inside the index folder\n");
+
+    var outputDir = Path.Combine(testRoot, "auto-exclude-index-folder-out");
+    var vm = new TextInFilesSearch.ViewModels.MainViewModel();
+    vm.SearchPath = dir;
+    vm.OutputFolder = outputDir;
+    vm.FiltersText = "findme";
+
+    var settings = vm.BuildSettings();
+    Check("ViewModel: BuildSettings() automatically excludes the native_search index folder",
+        settings.ExcludeFolders.Contains(TextInFilesSearch.Native.NativeSearchPaths.IndexFolderName, StringComparer.OrdinalIgnoreCase));
+
+    await vm.RunSearchAsync();
+
+    Check("ViewModel: normal search still finds the real file outside the index folder",
+        vm.Results.Any(r => r.FileName == "keep.txt"));
+    Check("ViewModel: normal search never descends into the auto-excluded native_search index folder",
+        !vm.Results.Any(r => r.FileName == "decoy.txt"));
+}
+
 Console.WriteLine();
 Console.WriteLine(failures == 0 ? "ALL TESTS PASSED" : $"{failures} TEST(S) FAILED");
 Directory.Delete(testRoot, true);

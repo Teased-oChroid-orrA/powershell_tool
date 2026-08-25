@@ -136,6 +136,51 @@
                         </StackPanel>
                     </Expander>
 
+                    <!--
+                        Fast re-search (issue #2, experimental) - a separate,
+                        opt-in capability alongside the run above (ADR-001),
+                        not a replacement for it. "Index results for fast
+                        re-search" indexes this run's hit files into a
+                        persistent Tantivy index (NativeSearchService); the
+                        search box below queries whatever's currently in
+                        that index (from any prior run with the toggle on),
+                        independent of the current SearchPath/filters above.
+                    -->
+                    <Expander Header="Fast re-search (experimental)" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left">
+                        <StackPanel Spacing="10" Padding="0,8,0,0">
+                            <ToggleSwitch Header="Index results for fast re-search" IsOn="{x:Bind ViewModel.IndexForFastSearch, Mode=TwoWay}" />
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBox Header="Search the fast index" Width="240"
+                                         PlaceholderText="e.g. torque OR extension:.pdf"
+                                         Text="{x:Bind ViewModel.NativeSearchQuery, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                <Button Content="Search" VerticalAlignment="Bottom" Command="{x:Bind ViewModel.NativeSearchCommand}" />
+                                <Button Content="Cancel" VerticalAlignment="Bottom" Command="{x:Bind ViewModel.CancelNativeSearchCommand}" />
+                            </StackPanel>
+                            <TextBlock Text="{x:Bind ViewModel.NativeSearchStatusText, Mode=OneWay}"
+                                       Style="{StaticResource CaptionTextBlockStyle}"
+                                       TextWrapping="Wrap" Opacity="0.85" />
+                            <ListView ItemsSource="{x:Bind ViewModel.NativeSearchResults}"
+                                      MaxHeight="220"
+                                      SelectionMode="None">
+                                <ListView.ItemTemplate>
+                                    <DataTemplate x:DataType="models:NativeSearchHit">
+                                        <Grid Padding="6" ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel>
+                                                <TextBlock Text="{x:Bind Filename}" FontWeight="SemiBold" />
+                                                <TextBlock Text="{x:Bind Path}" Style="{StaticResource CaptionTextBlockStyle}" Opacity="0.7" />
+                                            </StackPanel>
+                                            <TextBlock Grid.Column="1" Text="{x:Bind Score}" VerticalAlignment="Center" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListView.ItemTemplate>
+                            </ListView>
+                        </StackPanel>
+                    </Expander>
+
                     <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
                         <Button Content="Run Search" Style="{StaticResource AccentButtonStyle}"
                                 Command="{x:Bind ViewModel.RunSearchCommand}" />

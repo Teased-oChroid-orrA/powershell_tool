@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = ["native-search", "search-core", "app"]
+
+# Moved here from native-search/Cargo.toml: Cargo ignores [profile.*]
+# sections in non-root workspace members. panic="unwind" (not "abort") is
+# required for native_search's cdylib since ffi.rs's catch_unwind-based
+# panic guard (issue #2 Section 18 - no panic may cross into .NET) only
+# works with unwinding, not abort.
+[profile.release]
+panic = "unwind"
+
+# native-search/ keeps its own [package] (license, version) - unaffected by
+# joining this workspace as a member. search-core/ and app/ are new (Rust
+# rewrite of TextInFilesSearch.Core and the WinUI head, respectively - see
+# docs/adr/ for the architecture decisions and docs/rust-rewrite-status.md
+# for the current port status). src/TextInFilesSearch(.Core)/ (the C#/WinUI
+# app) stays in the repo, untouched, as a working reference during the
+# transition - same treatment this repo already gives powershell/.

@@ -1,0 +1,123 @@
+name: Rust workspace build and verify (search-core, native-search, app)
+
+# Verifies the Rust/Dioxus rewrite (search-core + native-search + the
+# `app` Dioxus-native desktop head - see docs/rust-rewrite-status.md).
+# search-core is deliberately zero-GUI-dependency (same invariant the old
+# C#/WinUI split had for TextInFilesSearch.Core), so its own test job runs
+# on Linux for speed; the `app` crate is a real win-x64 desktop build and
+# is built (and its published output inspected) on a Windows runner, same
+# as the existing C#/WinUI workflow.
+#
+# `app` uses dioxus's "native" feature (dioxus-native / Blitz, WGPU+winit)
+# rather than "desktop" (wry/WebView2) - wry hardcodes
+# CreateCoreWebView2EnvironmentWithOptions's browserExecutableFolder to
+# null (verified by reading wry-0.53.5/src/webview2/mod.rs directly), so
+# there is no supported way to bundle a Fixed Version WebView2 Runtime
+# app-locally with it; every wry-based build would depend on a
+# machine-wide WebView2 install, violating this project's standing
+# "fully self-contained, no host-machine dependency" requirement. Blitz
+# has no WebView dependency at all - Windows' bundled D3D12 (always
+# present) is the only runtime graphics dependency.
+
+on:
+  workflow_dispatch: {}
+  # workflow_dispatch alone isn't reachable via the API/UI until this file
+  # exists on the default branch (GitHub only registers manually-triggered
+  # workflows from main) - this repo's convention is not to merge feature
+  # branches to main without explicit approval, so a scoped push trigger
+  # is how this workflow actually runs pre-merge. Narrow to this branch
+  # rather than a blanket `push: {}` to avoid firing on every push once
+  # merged (see build.yml's own history of being made manual-only for the
+  # same "don't burn CI minutes on every push" reasoning).
+  push:
+    branches:
+      - feature/issue-2-native-search-eval
+
+jobs:
+  search-core-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry/target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: cargo-search-core-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: cargo test -p search-core
+        # search-core has zero GUI dependency by design (same invariant
+        # TextInFilesSearch.Core enforced) - this is the same guarantee
+        # that lets it be developed and verified without a Windows
+        # machine, run here on the fastest/cheapest runner rather than
+        # trusted from a developer's machine. Includes the real
+        # DOCX/PPTX/XLSX/ZIP/PDF fixture parity tests (tests/fixtures.rs).
+        run: cargo test -p search-core
+
+  app-build-windows:
+    runs-on: windows-latest
+    needs: search-core-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain (stable, MSVC)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Cargo registry/target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: cargo-app-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build app (release, win-x64)
+        run: cargo build --release -p app --target x86_64-pc-windows-msvc
+
+      - name: Verify published exe does not link WebView2/wry
+        # Real regression guard for the wry -> Blitz switch above: if a
+        # future dependency change accidentally re-pulls wry (directly or
+        # transitively), this build would silently reintroduce the
+        # machine-wide WebView2 dependency this switch exists to avoid.
+        # Checking the binary's imports is a build-time-checkable fact,
+        # not an assumption.
+        shell: pwsh
+        run: |
+          $exePath = "target/x86_64-pc-windows-msvc/release/app.exe"
+          if (-not (Test-Path $exePath)) {
+            Write-Error "app.exe was not found at $exePath - the release build did not produce the expected output."
+            exit 1
+          }
+          # DLL import names are stored as plain ASCII strings in a PE
+          # file's import table, so a raw byte scan finds them without
+          # needing dumpbin.exe (which requires a full VS Developer Prompt
+          # environment, not guaranteed to be on PATH here) - good enough
+          # for a "did this dependency come back" regression guard.
+          $bytes = [System.IO.File]::ReadAllBytes($exePath)
+          $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+          if ($text -match "(?i)WebView2Loader") {
+            Write-Error "app.exe links WebView2Loader.dll - the wry/WebView2 dependency this project deliberately moved away from has been reintroduced. Check that dioxus's 'native' feature (not 'desktop') is still what's enabled in app/Cargo.toml."
+            exit 1
+          }
+          Write-Host "Confirmed: app.exe does not link WebView2Loader.dll."
+
+      - name: List published exe (for manual review in build logs)
+        shell: pwsh
+        run: |
+          Get-Item "target/x86_64-pc-windows-msvc/release/app.exe" | Format-List Name, Length, LastWriteTime
+
+      - name: Upload built exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: TextInFilesSearch-rust-app-win-x64
+          path: target/x86_64-pc-windows-msvc/release/app.exe
+          if-no-files-found: error

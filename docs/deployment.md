@@ -35,6 +35,10 @@ single EXE - see "Why not a single file?" below.
 - `Microsoft.WindowsAppRuntime.dll` and the other Windows App SDK native
   components - bundled because of `WindowsAppSDKSelfContained=true`, so the
   target machine does not need the Windows App SDK runtime installed
+- `vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll` - the Visual C++
+  Redistributable runtime those Windows App SDK native components
+  themselves depend on, bundled app-local by an explicit CI step (see
+  "First real-machine launch" below for why this exists)
 - All managed DLLs, XAML resource files (`.pri`), and content files needed to
   run
 
@@ -100,6 +104,81 @@ If any step fails, that is genuinely new information this migration hasn't
 yet accounted for - please report exactly which step failed and the error
 text, since it likely points at a WinUI/Windows App SDK configuration detail
 that only manifests on a real machine.
+
+## First real-machine launch (2026-08-24): silent startup failure - RESOLVED
+
+The clean-machine test procedure above was finally run for real, for the
+first time ever, on an actual Windows machine, and surfaced a real bug
+through three rounds of investigation. Recorded here in full because the
+process matters as much as the fix: two reasonable-sounding theories were
+tried and directly disproven by evidence before the real cause was found,
+and the improved diagnostics built along the way are what actually made
+that possible.
+
+**Round 1 - no error at all.** SmartScreen's "Run anyway" prompt appeared
+and was accepted, then nothing happened: no window, no taskbar entry, no
+error dialog. Leading theory at the time: a missing Visual C++
+Redistributable dependency of `Microsoft.WindowsAppRuntime.dll`'s own
+native components, failing before any of this app's managed code -
+including any exception handler - could run. Response: added global
+`AppDomain`/`Application.UnhandledException` handlers (writing to
+`crash.log` and showing a Win32 `MessageBoxW`, chosen specifically because
+it doesn't need a working XAML dispatcher) so a startup failure would at
+least become visible; statically linked `native_search.dll`'s own C
+runtime; and (once the user restated the actual requirement - fully
+self-contained, no host-machine dependency, full stop) bundled
+`vcruntime140.dll`/`vcruntime140_1.dll`/`msvcp140.dll` app-local into the
+publish output regardless of whether they turned out to be the cause.
+**All of this was good defensive work and stayed** - see the sections
+above - **but it was not the cause of this bug.**
+
+**Round 2 - a real crash, but a wrong diagnosis.** The exception handler
+worked: a `XamlParseException` at `MainWindow.InitializeComponent()`, but
+`Exception.ToString()` gave only "XAML parsing failed." with no further
+detail (a known limitation of exceptions crossing the WinRT ABI). The one
+structural thing that stood out in the newly-added "Fast re-search" XAML -
+its `x:DataType` bound against a C# `record` where every other binding in
+the file used a plain class - looked like a plausible, well-documented
+`x:Bind`-vs-`record` rough edge. `NativeSearchHit` was converted to a
+plain class to match. **The exact same exception, same stack trace, same
+line number, recurred anyway** - direct proof this theory was wrong, not
+just unconfirmed. Response, rather than a third guess: improved the crash
+handler to also capture `UnhandledExceptionEventArgs.Message` (a field
+separate from `Exception.Message`, populated from native diagnostic text
+before it's lost crossing the ABI) and the full `HResult`/inner-exception
+chain.
+
+**Round 3 - the real cause.** The improved log finally surfaced it:
+
+```
+Framework message (UnhandledExceptionEventArgs.Message): Cannot locate resource from 'ms-appx:///Views/MainWindow.xaml'.
+HResult: 0x802B000A
+```
+
+**`resources.pri` - the compiled-XAML resource index every `ms-appx:///...`
+URI resolves through, including `MainWindow.xaml` itself - was completely
+absent from the publish output.** Root cause: `TextInFilesSearch.csproj`
+had `EnableMsixTooling=false`, set for the reasonable-looking reason
+"unpackaged deployment, so disable the packaging tooling." That property
+does not narrowly control MSIX output, though - it gates the *entire*
+packaging-tooling MSBuild target chain, and PRI generation rides along
+with that chain even though it has nothing to do with MSIX. With it
+false, `resources.pri` was never generated at all, so *every* XAML page
+in the app - not something specific to the native-search UI work, not
+content-dependent in any way, which is exactly why the record fix had zero
+effect - was guaranteed to fail identically. This matches a
+well-documented WinUI3 unpackaged-deployment gotcha.
+
+**Fixed**: `EnableMsixTooling` set back to `true`.
+`WindowsPackageType=None` is the actual, independently-verified control
+for "no MSIX output" (the existing "Verify no MSIX / packaged-app
+artifacts were produced" CI step confirms this every run, unaffected by
+this change) - the two properties are not the same control, and conflating
+them is exactly what caused this. A new CI step,
+"Verify published artifact bundles resources.pri", now fails the build
+loudly if this regresses again, the same as every other bundled runtime
+component in this pipeline already does - this should have existed from
+the start.
 
 ## Known limitations
 

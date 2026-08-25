@@ -1,0 +1,14 @@
+# Statically link the MSVC C runtime into native_search.dll on Windows, so
+# it doesn't dynamically depend on vcruntime140.dll/msvcp140.dll/
+# vcruntime140_1.dll at load time - those aren't guaranteed present on a
+# clean target machine (the Visual C++ Redistributable isn't something
+# WindowsAppSDKSelfContained bundles), and this app's whole deployment
+# story is "must run with nothing pre-installed" (see docs/deployment.md).
+# The `cc` crate (used to build zstd-sys's C source) reads this same
+# target-feature flag and switches to /MT instead of /MD automatically, so
+# this covers native_search's full dependency tree, not just the Rust code.
+#
+# Only scoped to the MSVC target - harmless on any other platform this
+# crate is built on (this repo's own macOS development machine included).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

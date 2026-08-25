@@ -1,0 +1,49 @@
+[package]
+name = "search-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+name = "search_core"
+
+# Zero GUI dependency, deliberately - mirrors TextInFilesSearch.Core's own
+# "plain net8.0 class library, zero WinUI reference" invariant. This crate
+# must stay `cargo test`-able on its own, without app/ (the Dioxus UI)
+# ever being built - that property is the whole reason the original C#
+# Core/head split existed, and it's the property this Rust rewrite exists
+# to make actually usable locally (see docs/rust-rewrite-status.md).
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+regex = "1"
+# Rust's `regex` crate has no lookaround (no backtracking, by design), but
+# whole-word matching's boundary check needs it (see matching.rs's
+# `whole_word_pattern` doc comment). fancy-regex 0.19 verified by real
+# compile-and-test against the C# whole-word test cases before adopting.
+fancy-regex = "0.19"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+native-search = { path = "../native-search" }
+# DOCX/PPTX/XLSX/ZIP: the C# original reads these via .NET's ZipArchive +
+# regex tag-stripping (no real OOXML parser), so `zip` fills the same role
+# here rather than a format-specific crate that would extract differently.
+zip = "2"
+# PDF's /FlateDecode filter is raw DEFLATE (RFC1951, no zlib wrapper) - same
+# as .NET's DeflateStream, which the C# original pairs with a manual 2-byte
+# zlib-header skip.
+flate2 = "1"
+# Windows-1252 fallback decode for DecodeText - .NET pulls this from the
+# OS/ICU; Rust has no such built-in, so this is the standard well-vetted
+# crate for it (also used transitively by many other encoding-aware crates).
+encoding_rs = "0.8"
+# Async file reads with a hard per-file timeout, retry-with-backoff, and
+# cooperative cancellation - ports FileReaderService.cs's ReadFileBytesRobustAsync.
+tokio = { version = "1", features = ["fs", "io-util", "time", "rt", "rt-multi-thread", "macros", "sync"] }
+tokio-util = "0.7"
+# HTML report: banner data-URI embedding and the "Open original file" link.
+base64 = "0.22"
+urlencoding = "2"
+
+[dev-dependencies]
+tempfile = "3"

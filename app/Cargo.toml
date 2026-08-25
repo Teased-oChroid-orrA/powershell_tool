@@ -1,0 +1,45 @@
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+search-core = { path = "../search-core" }
+native-search = { path = "../native-search" }
+# "native" (not "desktop"): dioxus-native's Blitz renderer (WGPU+winit),
+# no WebView involved - avoids wry/WebView2's hard machine-wide-runtime
+# dependency (wry hardcodes browserExecutableFolder to null, so there is
+# no supported way to bundle WebView2 app-locally; verified by reading
+# wry-0.53.5/src/webview2/mod.rs directly, not assumed). Ships as a
+# first-party dioxus 0.7 feature (dioxus-native pinned to the same 0.7.10
+# version), not an unofficial fork.
+dioxus = { version = "0.7", features = ["native", "logger"] }
+rfd = "0.15"
+open = "5"
+tokio = { version = "1", features = ["fs", "rt", "sync"] }
+tokio-util = "0.7"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# Already pulled in transitively by dioxus-native (its own text-input
+# copy/paste support) - declared explicitly here too so the "copy path"
+# result-row action doesn't rely on that being an implementation detail
+# that could change.
+arboard = "3"
+# Direct deps needed to hand-roll the launch sequence dioxus_native::launch_cfg
+# normally does internally (see main.rs's `launch_with_drag_drop_support`):
+# blitz-shell doesn't forward WindowEvent::DroppedFile/HoveredFile to the
+# Dioxus app at all (verified against its source - see
+# docs/epic-ui-performance-and-design.md's "Verified platform constraints"
+# table), so this wraps `DioxusNativeApplication` in a thin
+# `winit::application::ApplicationHandler` that intercepts those two events
+# before delegating everything else to the real application unchanged.
+winit = "0.30"
+blitz-shell = "0.2"
+blitz-html = "0.2"
+# Settings/recent-search persistence across relaunches (epic §22).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Filesystem watching (epic §21) - flags when the search folder changes
+# since the last run. Native OS watch APIs (FSEvents/ReadDirectoryChangesW/
+# inotify), not polling.
+notify = "6"

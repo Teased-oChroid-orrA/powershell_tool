@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using TextInFilesSearch.Helpers;
 using TextInFilesSearch.Models;
+using TextInFilesSearch.Native;
 using TextInFilesSearch.Services;
 
 namespace TextInFilesSearch.ViewModels;
@@ -39,15 +40,25 @@ public sealed class MainViewModel : ObservableObject
     private readonly Func<Task<string?>> _browseSearchFolder;
     private readonly Func<Task<string?>> _browseOutputFolder;
     private readonly Action<string> _openReport;
+    private readonly string? _nativeSearchIndexDirectoryOverride;
 
     public MainViewModel(
         Func<Task<string?>>? browseSearchFolder = null,
         Func<Task<string?>>? browseOutputFolder = null,
-        Action<string>? openReport = null)
+        Action<string>? openReport = null,
+        string? nativeSearchIndexDirectory = null)
     {
         _browseSearchFolder = browseSearchFolder ?? (() => Task.FromResult<string?>(null));
         _browseOutputFolder = browseOutputFolder ?? (() => Task.FromResult<string?>(null));
         _openReport = openReport ?? (_ => { });
+        // Test-only seam (mirrors the folder-picker delegates above): the
+        // real app always uses NativeSearchPaths.GetIndexDirectory(searchPath)
+        // (ADR-011 - the index lives inside the folder being searched).
+        // Overriding it lets automated tests point at one fixed isolated
+        // temp directory regardless of whatever SearchPath a test uses,
+        // instead of writing an index into a temp folder tree the test
+        // also has to clean up as if it were real search content.
+        _nativeSearchIndexDirectoryOverride = nativeSearchIndexDirectory;
 
         BrowseSearchFolderCommand = new AsyncRelayCommand(async () =>
         {
@@ -69,6 +80,9 @@ public sealed class MainViewModel : ObservableObject
         {
             foreach (var e in ExtensionCatalog) e.IsSelected = false;
         });
+
+        NativeSearchCommand = new AsyncRelayCommand(RunNativeSearchAsync, () => !IsNativeSearching && !string.IsNullOrWhiteSpace(NativeSearchQuery) && !string.IsNullOrWhiteSpace(SearchPath));
+        CancelNativeSearchCommand = new RelayCommand(() => _nativeSearchCancelToken?.Cancel(), () => IsNativeSearching);
 
         foreach (var category in Models.ExtensionCatalog.Categories)
         {
@@ -238,6 +252,18 @@ public sealed class MainViewModel : ObservableObject
     private int _fileTimeoutSeconds = 30;
     public int FileTimeoutSeconds { get => _fileTimeoutSeconds; set => SetProperty(ref _fileTimeoutSeconds, Math.Max(1, value)); }
 
+    /// <summary>
+    /// Opt-in (issue #2): when a normal search run finishes, also index its
+    /// hit files into the native_search Tantivy index (see
+    /// <see cref="NativeSearchService"/>) for fast re-search later, without
+    /// re-walking/re-extracting the folder. Off by default - this is a new,
+    /// separate capability alongside the existing per-run line scan above
+    /// (ADR-001), not a replacement for it, and building an index has a
+    /// real cost (disk space, indexing time) a user should opt into.
+    /// </summary>
+    private bool _indexForFastSearch;
+    public bool IndexForFastSearch { get => _indexForFastSearch; set => SetProperty(ref _indexForFastSearch, value); }
+
     // ---------------------------------------------------------------
     // Live run state
     // ---------------------------------------------------------------
@@ -281,6 +307,90 @@ public sealed class MainViewModel : ObservableObject
 
     private CancellationTokenSource? _cts;
 
+    // ---------------------------------------------------------------
+    // Native (Tantivy) quick search - issue #2. A separate, opt-in
+    // capability alongside the run above: searches whatever's already
+    // indexed for the current SearchPath (built up via IndexForFastSearch
+    // on prior runs against that same folder - ADR-011: the index lives
+    // inside the folder it indexes, so it's scoped per-folder, not global).
+    // Lazily opened on first use - most sessions may never touch this, so
+    // there's no reason to open an index file before it's actually needed.
+    // ---------------------------------------------------------------
+
+    // Never explicitly disposed on app shutdown: MainViewModel is one
+    // instance for the whole app's lifetime (no WinUI window-closed hook
+    // wired to it), so a final release relies on NativeSearchHandle's
+    // SafeHandle finalizer at process exit. GetOrCreateNativeSearch DOES
+    // dispose this explicitly, though, whenever it swaps to a different
+    // folder's index - see that method.
+    private NativeSearchService? _nativeSearch;
+    private string? _nativeSearchDirectory;
+    private readonly object _nativeSearchInitLock = new();
+
+    /// <summary>
+    /// Lock-guarded: <see cref="RunNativeSearchAsync"/> and
+    /// <see cref="IndexHitsForFastSearch"/> both run their native calls on
+    /// a thread-pool thread (Task.Run) to keep the UI responsive, so a
+    /// quick search and a "index for fast re-search" run could genuinely
+    /// race here - two concurrent first-calls both seeing <c>_nativeSearch
+    /// is null</c> would try to open the same Tantivy index directory
+    /// twice, which fails on the writer's lock file. This isn't a
+    /// hypothetical; it's the direct consequence of moving both callers
+    /// off the UI thread's naturally-serializing single dispatcher.
+    ///
+    /// Also handles switching folders: the index lives inside
+    /// <paramref name="searchPath"/> (ADR-011), which can change between
+    /// calls (the user typed a different search folder), so this disposes
+    /// the previous instance and opens a fresh one whenever the resolved
+    /// directory differs from what's currently open - callers already in
+    /// possession of the old instance from before a swap get an
+    /// <see cref="ObjectDisposedException"/> on their next call, which
+    /// both callers catch and report rather than let crash the operation.
+    /// </summary>
+    private NativeSearchService GetOrCreateNativeSearch(string searchPath)
+    {
+        string dir = _nativeSearchIndexDirectoryOverride ?? NativeSearchPaths.GetIndexDirectory(searchPath);
+        lock (_nativeSearchInitLock)
+        {
+            if (_nativeSearch is null || !string.Equals(_nativeSearchDirectory, dir, StringComparison.OrdinalIgnoreCase))
+            {
+                _nativeSearch?.Dispose();
+                NativeSearchPaths.EnsureIndexDirectoryExists(dir);
+                _nativeSearch = new NativeSearchService(dir);
+                _nativeSearchDirectory = dir;
+            }
+            return _nativeSearch;
+        }
+    }
+
+    public ObservableCollection<NativeSearchHit> NativeSearchResults { get; } = new();
+
+    private string _nativeSearchQuery = string.Empty;
+    public string NativeSearchQuery
+    {
+        get => _nativeSearchQuery;
+        set { if (SetProperty(ref _nativeSearchQuery, value)) NativeSearchCommand.RaiseCanExecuteChanged(); }
+    }
+
+    private string _nativeSearchStatusText = "Enable \"Index for fast re-search\" below, run a search, then search here.";
+    public string NativeSearchStatusText { get => _nativeSearchStatusText; private set => SetProperty(ref _nativeSearchStatusText, value); }
+
+    private bool _isNativeSearching;
+    public bool IsNativeSearching
+    {
+        get => _isNativeSearching;
+        private set
+        {
+            if (SetProperty(ref _isNativeSearching, value))
+            {
+                NativeSearchCommand.RaiseCanExecuteChanged();
+                CancelNativeSearchCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    private NativeSearchCancellationToken? _nativeSearchCancelToken;
+
     /// <summary>
     /// Guards every mutation of Results/InFlightFiles from OnProgress against
     /// concurrent execution. Progress&lt;T&gt; marshals its callback via
@@ -315,8 +425,18 @@ public sealed class MainViewModel : ObservableObject
     public RelayCommand OpenReportCommand { get; }
     public RelayCommand AddCustomExtensionCommand { get; }
     public RelayCommand ClearSelectedExtensionsCommand { get; }
+    public AsyncRelayCommand NativeSearchCommand { get; }
+    public RelayCommand CancelNativeSearchCommand { get; }
 
-    private void RefreshCanRun() => RunSearchCommand.RaiseCanExecuteChanged();
+    private void RefreshCanRun()
+    {
+        RunSearchCommand.RaiseCanExecuteChanged();
+        // NativeSearchCommand's CanExecute also depends on SearchPath (the
+        // index lives inside it - ADR-011) - cheap to re-evaluate on every
+        // settings change that touches this method, even the ones (e.g.
+        // FiltersText) that don't actually affect it.
+        NativeSearchCommand.RaiseCanExecuteChanged();
+    }
 
     // ---------------------------------------------------------------
     // Settings <-> free-text field parsing
@@ -341,6 +461,25 @@ public sealed class MainViewModel : ObservableObject
         return sb.ToString();
     }
 
+    /// <summary>
+    /// The user's own exclude-folder list, plus the native_search index
+    /// folder (issue #2/ADR-011) - always, regardless of whether
+    /// <see cref="IndexForFastSearch"/> is on for *this* run, since a
+    /// folder indexed by an earlier run must never be walked into as if it
+    /// were user content, and <c>MatchingEngine</c> already matches
+    /// <c>ExcludeFolders</c> by whole path segment (not substring), so
+    /// adding it here can't accidentally over-exclude something else.
+    /// </summary>
+    private List<string> BuildExcludeFolders()
+    {
+        var folders = ParseList(ExcludeFoldersText);
+        if (!folders.Contains(NativeSearchPaths.IndexFolderName, StringComparer.OrdinalIgnoreCase))
+        {
+            folders.Add(NativeSearchPaths.IndexFolderName);
+        }
+        return folders;
+    }
+
     public SearchSettings BuildSettings() => new()
     {
         SearchPath = SearchPath.Trim(),
@@ -355,7 +494,7 @@ public sealed class MainViewModel : ObservableObject
         UseRegex = UseRegex,
         GroupBy = GroupBy,
         Extensions = BuildSelectedExtensions(),
-        ExcludeFolders = ParseList(ExcludeFoldersText),
+        ExcludeFolders = BuildExcludeFolders(),
         IncludeHidden = IncludeHidden,
         MaxFileSizeMB = MaxFileSizeMB,
         MaxEmbedLines = MaxEmbedLines,
@@ -466,6 +605,23 @@ public sealed class MainViewModel : ObservableObject
                 if (settings.OpenReportWhenDone) _openReport(reportPath);
             }
 
+            if (IndexForFastSearch)
+            {
+                // Off the UI thread: IndexDocument/Commit are blocking
+                // native calls, and a run with many hits committing them
+                // all synchronously here would freeze the UI right after
+                // a search that just finished being responsive throughout.
+                // IndexHitsForFastSearch returns a plain string rather than
+                // setting NativeSearchStatusText itself, so that property
+                // write happens after the await below, back on the UI
+                // thread the await resumed onto - not from inside Task.Run,
+                // where ObservableObject's PropertyChanged (no built-in
+                // thread marshaling - see its own doc comment) would fire
+                // on a background thread and could break a live binding.
+                var hitsToIndex = runResult.FileResults.Where(r => r.Status == FileSearchStatus.Hit).ToList();
+                NativeSearchStatusText = await Task.Run(() => IndexHitsForFastSearch(hitsToIndex, settings.SearchPath));
+            }
+
             StatusText = "Done.";
         }
         catch (OperationCanceledException)
@@ -483,6 +639,139 @@ public sealed class MainViewModel : ObservableObject
             _cts?.Dispose();
             _cts = null;
             _runConcluded = true;
+        }
+    }
+
+    /// <summary>
+    /// Indexes this run's hit files into native_search so
+    /// <see cref="NativeSearchCommand"/> can re-search them later without
+    /// re-walking/re-extracting the folder (issue #2). A file whose
+    /// modified time and size match what's already stored for it is
+    /// skipped entirely - re-indexing an unchanged file is wasted work
+    /// (ADR-011/ADR-008), and <see cref="NativeSearchService.TryGetDocumentMetadata"/>
+    /// answers "did this change" from the index itself, no separate cache
+    /// file needed. Failure here (e.g. native_search.dll missing on a
+    /// machine where native-search/ hasn't been built) surfaces as the
+    /// returned status message, not a thrown exception - this is an
+    /// opt-in convenience on top of a run that already succeeded, and
+    /// must never turn a successful search into a reported failure just
+    /// because the optional indexing step couldn't run. Returns a status
+    /// string rather than setting <see cref="NativeSearchStatusText"/>
+    /// itself - see the call site's comment for why (this runs on a
+    /// background thread).
+    /// </summary>
+    private string IndexHitsForFastSearch(IEnumerable<FileSearchResult> hits, string searchPath)
+    {
+        try
+        {
+            var native = GetOrCreateNativeSearch(searchPath);
+            int indexedCount = 0;
+            int skippedCount = 0;
+            foreach (var r in hits)
+            {
+                long modifiedUnix = new DateTimeOffset(r.Modified.ToUniversalTime()).ToUnixTimeSeconds();
+                var existing = native.TryGetDocumentMetadata(r.FullName);
+                if (existing is { } meta && meta.ModifiedUnix == modifiedUnix && meta.Size == r.FileLength)
+                {
+                    skippedCount++;
+                    continue;
+                }
+
+                native.IndexDocument(new NativeDocumentInput(
+                    Id: r.FullName,
+                    Path: r.FullName,
+                    FileName: Path.GetFileName(r.FullName),
+                    Extension: Path.GetExtension(r.FullName),
+                    Title: null,
+                    Modified: r.Modified,
+                    Created: r.Created,
+                    Size: r.FileLength,
+                    Body: string.Join('\n', r.LinesCache)));
+                indexedCount++;
+            }
+
+            if (indexedCount > 0)
+            {
+                native.Commit();
+            }
+
+            return (indexedCount, skippedCount) switch
+            {
+                (0, 0) => "No hits to index for fast re-search.",
+                (0, > 0) => $"All {skippedCount} file(s) already up to date in the fast index. Search above.",
+                (_, 0) => $"Indexed {indexedCount} file(s) for fast re-search. Search above.",
+                _ => $"Indexed {indexedCount} file(s), {skippedCount} already up to date. Search above."
+            };
+        }
+        catch (NativeSearchException ex)
+        {
+            return $"Fast re-search indexing failed: {ex.Message}";
+        }
+        catch (DllNotFoundException)
+        {
+            return "Fast re-search unavailable: native_search.dll not found on this machine.";
+        }
+        catch (ObjectDisposedException)
+        {
+            // GetOrCreateNativeSearch disposed this instance mid-call because
+            // SearchPath changed to a different folder while this run's
+            // indexing was still in flight - rare, but a real possible
+            // interleaving now that the index location is per-folder
+            // (ADR-011), not a fixed global path.
+            return "Fast re-search indexing was interrupted by a folder change - try running the search again.";
+        }
+    }
+
+    /// <summary>
+    /// Searches whatever's currently in the native_search index (built up
+    /// via <see cref="IndexForFastSearch"/> on prior runs) - a separate
+    /// capability from <see cref="RunSearchCommand"/>, not a replacement
+    /// for it (ADR-001). Runs the blocking native call off the UI thread;
+    /// cancellable via <see cref="CancelNativeSearchCommand"/>.
+    /// </summary>
+    public async Task RunNativeSearchAsync()
+    {
+        NativeSearchResults.Clear();
+        NativeSearchStatusText = "Searching...";
+        IsNativeSearching = true;
+
+        using var cancelToken = new NativeSearchCancellationToken();
+        _nativeSearchCancelToken = cancelToken;
+        try
+        {
+            string query = NativeSearchQuery;
+            string searchPath = SearchPath;
+            // Off the UI thread: GetOrCreateNativeSearch()'s first call
+            // opens/creates the index (a blocking native call), and Search
+            // itself blocks on Tantivy - neither should run inline on the
+            // UI thread, same reasoning as IndexHitsForFastSearch above.
+            var hits = await Task.Run(() => GetOrCreateNativeSearch(searchPath).Search(query, limit: 50, cancellationToken: cancelToken));
+
+            foreach (var hit in hits) NativeSearchResults.Add(hit);
+            NativeSearchStatusText = hits.Count == 0 ? "No results." : $"{hits.Count} result(s).";
+        }
+        catch (NativeSearchException ex) when (ex.Status == "Cancelled")
+        {
+            NativeSearchStatusText = "Cancelled.";
+        }
+        catch (NativeSearchException ex)
+        {
+            NativeSearchStatusText = $"Error: {ex.Message}";
+        }
+        catch (DllNotFoundException)
+        {
+            NativeSearchStatusText = "native_search.dll not found on this machine - build native-search/ first (see docs/ffi.md).";
+        }
+        catch (ObjectDisposedException)
+        {
+            // Same folder-change race as IndexHitsForFastSearch - see its
+            // ObjectDisposedException comment.
+            NativeSearchStatusText = "Fast re-search was interrupted by a folder change - try searching again.";
+        }
+        finally
+        {
+            IsNativeSearching = false;
+            _nativeSearchCancelToken = null;
         }
     }
 

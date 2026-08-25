@@ -30,6 +30,35 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: Setup Rust toolchain (stable, MSVC)
+        # native-search/ (issue #2) is a separate Rust cdylib, not part of
+        # TextInFilesSearch.sln. Built explicitly here rather than relying
+        # on whatever Rust happens to be preinstalled on the runner image,
+        # so a runner-image change can't silently change what "the build"
+        # means.
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Cargo registry/target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            native-search/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('native-search/Cargo.lock') }}
+
+      - name: Build and test native_search (Rust)
+        # cargo test alone already proves the safe engine API AND the raw
+        # extern "C" ABI round-trip correctly (see native-search/tests/) -
+        # this is the same suite verified locally during development (see
+        # docs/ffi.md), run here again as a real CI gate rather than trusted
+        # from a developer's machine.
+        working-directory: native-search
+        run: |
+          cargo build --release --target x86_64-pc-windows-msvc
+          cargo test --target x86_64-pc-windows-msvc
+
       - name: Setup MSBuild (from the runner's Visual Studio install)
         # WindowsAppSDK's PRI-resource-generation MSBuild task
         # (Microsoft.Build.Packaging.Pri.Tasks.dll, under
@@ -41,6 +70,18 @@ jobs:
         # runs regardless of MSIX packaging. windows-latest ships full VS, so
         # building with its real msbuild.exe (found via this action) resolves
         # the task correctly instead.
+        #
+        # That comment above was correct but incomplete for a while: this
+        # step alone makes the PRI task *loadable*, but TextInFilesSearch.csproj
+        # separately had EnableMsixTooling=false, which prevented the PRI
+        # *target* from ever being scheduled to run at all - so the publish
+        # output shipped with zero resources.pri regardless of this step,
+        # and every ms-appx:///... XAML page URI failed at runtime (see
+        # docs/deployment.md's "First real-machine launch" section, and the
+        # "Verify published artifact bundles resources.pri" step below).
+        # Fixed by setting EnableMsixTooling=true in the .csproj -
+        # WindowsPackageType=None remains the actual, separately-verified
+        # control for "no MSIX output," unaffected by that change.
         uses: microsoft/setup-msbuild@v2
 
       - name: Restore
@@ -49,15 +90,31 @@ jobs:
       - name: Build (Debug, all projects)
         run: msbuild TextInFilesSearch.sln /p:Configuration=Debug /m /nologo /verbosity:minimal
 
+      - name: Copy native_search.dll next to the test harness
+        # P/Invoke resolves a native library from the process's own base
+        # directory, so native_search.dll has to sit beside
+        # TextInFilesSearch.Tests.dll for the NativeSearchService round-trip
+        # check (Test 35 in Program.cs) to find it at runtime - this is also
+        # the first real proof that the LibraryImport-generated marshalling
+        # code in NativeSearchInterop.cs actually links against the Rust
+        # side correctly, not just that it compiles.
+        shell: pwsh
+        run: |
+          Copy-Item native-search/target/x86_64-pc-windows-msvc/release/native_search.dll `
+            tests/TextInFilesSearch.Tests/bin/Debug/net8.0/native_search.dll
+
       - name: Run dependency-free verification suite
         # This is the same dependency-free harness used during development
         # (see tests/TextInFilesSearch.Tests/Program.cs) - it exercises every
         # match mode, the DOCX/PPTX/PDF/RTF extractors (including the
         # ASCII85+FlateDecode PDF chain), the cache lifecycle, parallel vs
-        # sequential consistency, and the ViewModel run/cancel/progress
-        # lifecycle. It has no test-framework dependency, so a failure here
-        # is a genuine regression, not a tooling problem.
-        run: dotnet run --project tests/TextInFilesSearch.Tests --configuration Debug
+        # sequential consistency, the ViewModel run/cancel/progress
+        # lifecycle, and (Test 35, issue #2) a real native_search.dll P/Invoke
+        # round trip - index, commit, search, delete, typed-error handling -
+        # across the actual process boundary, not just each side's own unit
+        # tests. It has no test-framework dependency, so a failure here is a
+        # genuine regression, not a tooling problem.
+        run: dotnet run --project tests/TextInFilesSearch.Tests --configuration Debug --no-build
 
       - name: Publish self-contained (win-x64, unpackaged)
         run: >
@@ -72,6 +129,96 @@ jobs:
           /p:PublishSingleFile=false
           /p:PublishDir="${{ github.workspace }}\publish\TextInFilesSearch\"
           /m /nologo /verbosity:minimal
+
+      - name: Bundle the Visual C++ Redistributable runtime (app-local deployment)
+        # Real field bug (docs/deployment.md's "First real-machine launch"
+        # section): the app was launched on a clean Windows machine for the
+        # first time ever and showed no window, no taskbar entry, no error.
+        # Leading theory: Microsoft.WindowsAppRuntime.dll's own native
+        # components dynamically link vcruntime140.dll/vcruntime140_1.dll/
+        # msvcp140.dll, which WindowsAppSDKSelfContained does NOT bundle -
+        # not guaranteed present on a genuinely clean machine, directly
+        # violating this project's "nothing pre-installed, fully
+        # self-contained" requirement.
+        #
+        # Microsoft explicitly documents and permits "local" (a.k.a.
+        # "app-local") deployment of exactly these DLLs: dropping them as
+        # loose files next to the exe, no installer, no registration, no
+        # elevation - Windows' DLL search order checks the application's own
+        # directory before System32, so they're picked up automatically.
+        # windows-latest ships a full Visual Studio install, which installs
+        # the VC++ Redistributable system-wide, so they're sourced from
+        # System32 here rather than vendored into the repo (a binary
+        # Microsoft doesn't intend to be redistributed via a public git repo
+        # - redistribution alongside the built application, which is what
+        # this step does, is exactly what the redistributable is for).
+        shell: pwsh
+        run: |
+          $requiredDlls = @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")
+          $destDir = "publish/TextInFilesSearch"
+          foreach ($dllName in $requiredDlls) {
+            $source = Join-Path "$env:WINDIR\System32" $dllName
+            if (-not (Test-Path $source)) {
+              Write-Error "$dllName was not found at $source on this runner - cannot bundle it. This step assumes the VC++ Redistributable is installed system-wide on the build machine (true for windows-latest); if that assumption ever breaks, this needs a different source path."
+              exit 1
+            }
+            Copy-Item $source (Join-Path $destDir $dllName) -Force
+            Write-Host "Bundled $dllName from $source"
+          }
+
+      - name: Verify published artifact bundles the Visual C++ Redistributable runtime
+        shell: pwsh
+        run: |
+          $publishDir = "publish/TextInFilesSearch"
+          $missing = @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll") | Where-Object {
+            -not (Test-Path (Join-Path $publishDir $_))
+          }
+          if ($missing) {
+            Write-Error "Missing VC++ Redistributable DLL(s) in the publish output: $($missing -join ', '). The app would depend on these being pre-installed on the target machine, violating the offline/no-prerequisite requirement."
+            exit 1
+          }
+          Write-Host "Found vcruntime140.dll, vcruntime140_1.dll, msvcp140.dll in the publish output - VC++ Redistributable is bundled app-local, not assumed pre-installed."
+
+      - name: Verify published artifact bundles resources.pri
+        # Real field bug (docs/deployment.md's "First real-machine launch"
+        # section): with EnableMsixTooling=false, the publish output
+        # contained zero resources.pri - the compiled-XAML resource index
+        # ms-appx:///... URIs resolve through. The app launched and
+        # immediately failed with a XamlParseException ("Cannot locate
+        # resource from 'ms-appx:///Views/MainWindow.xaml'", HResult
+        # 0x802B000A) on MainWindow's very first line - confirmed via a
+        # real crash.log from an actual Windows machine, not assumed. Fixed
+        # by setting EnableMsixTooling=true (WindowsPackageType=None, not
+        # EnableMsixTooling, is what actually controls MSIX output - see
+        # the "Verify no MSIX" step below, unaffected by this). This check
+        # exists so that regression can never again go undetected until
+        # someone launches the built app by hand - resources.pri missing
+        # from the publish output is a build-time-checkable fact, and
+        # should have been checked from the start, the same as every other
+        # bundled runtime component already is in this workflow.
+        shell: pwsh
+        run: |
+          $publishDir = "publish/TextInFilesSearch"
+          $resourcesPri = Get-ChildItem -Path $publishDir -Filter "resources.pri" -ErrorAction SilentlyContinue
+          if (-not $resourcesPri) {
+            Write-Error "resources.pri was NOT found in the publish output. Every ms-appx:///... XAML page URI (including MainWindow.xaml itself) will fail to resolve at runtime with a XamlParseException, and the app will launch with no window and no visible error."
+            exit 1
+          }
+          Write-Host "Found resources.pri in the publish output ($($resourcesPri.Length) bytes) - ms-appx:/// resource resolution is not silently broken."
+
+      - name: Verify published artifact bundles native_search.dll
+        # TextInFilesSearch.csproj now includes native_search.dll as a real
+        # Content item (Condition="Exists(...)"), copied through the normal
+        # MSBuild publish pipeline rather than a separate CI shell step -
+        # this check proves that actually happened instead of trusting it.
+        shell: pwsh
+        run: |
+          $nativeSearchDll = Get-ChildItem -Path "publish/TextInFilesSearch" -Filter "native_search.dll" -ErrorAction SilentlyContinue
+          if (-not $nativeSearchDll) {
+            Write-Error "native_search.dll was NOT found in the publish output. NativeSearchService would fail with DllNotFoundException at runtime."
+            exit 1
+          }
+          Write-Host "Found native_search.dll in the publish output."
 
       - name: Verify published artifact does not depend on a pre-installed .NET runtime
         shell: pwsh
