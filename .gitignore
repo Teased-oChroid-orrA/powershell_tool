@@ -5,3 +5,7 @@ publish/
 .vs/
 nuget.config
 .DS_Store
+
+# Rust workspace (native-search/, search-core/, app/)
+/target/
+**/target/

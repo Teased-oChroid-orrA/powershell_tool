@@ -1,0 +1,12 @@
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+search-core = { path = "../search-core" }
+native-search = { path = "../native-search" }
+dioxus = { version = "0.7", features = ["desktop"] }
+rfd = "0.15"
+open = "5"
