@@ -7,7 +7,9 @@ use components::{ResultsPanel, SettingsPanel};
 use state::AppState;
 
 fn main() {
-    dioxus::launch(App);
+    let window_attributes = dioxus::native::WindowAttributes::default().with_title("GS Engineering - Text Search");
+    let config = dioxus::native::Config::default().with_window_attributes(window_attributes);
+    dioxus::native::launch_cfg(App, vec![], vec![Box::new(config)]);
 }
 
 #[component]

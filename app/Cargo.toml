@@ -7,7 +7,14 @@ publish = false
 [dependencies]
 search-core = { path = "../search-core" }
 native-search = { path = "../native-search" }
-dioxus = { version = "0.7", features = ["desktop"] }
+# "native" (not "desktop"): dioxus-native's Blitz renderer (WGPU+winit),
+# no WebView involved - avoids wry/WebView2's hard machine-wide-runtime
+# dependency (wry hardcodes browserExecutableFolder to null, so there is
+# no supported way to bundle WebView2 app-locally; verified by reading
+# wry-0.53.5/src/webview2/mod.rs directly, not assumed). Ships as a
+# first-party dioxus 0.7 feature (dioxus-native pinned to the same 0.7.10
+# version), not an unofficial fork.
+dioxus = { version = "0.7", features = ["native"] }
 rfd = "0.15"
 open = "5"
 tokio = { version = "1", features = ["fs", "rt", "sync"] }
