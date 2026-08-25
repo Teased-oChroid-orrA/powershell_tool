@@ -1959,3 +1959,132 @@ working:
 This was verified by real compile (`cargo build -p app`, clean) and a
 background launch-and-check-for-panic (`cargo run -p app`, ran 5s,
 no crash, no panic in output) - not assumed from source reading alone.
+
+## Addendum: Windows console window, gibberish .txt results, large-folder slowness
+
+Three real-world bug reports came in after the first Windows run: a
+second, blank console window opening alongside the app (closing it kills
+the whole process), gibberish characters in some `.txt` search results,
+and large-folder parallel search feeling slower than the old PowerShell
+tool despite parallelism.
+
+**Console window** - a plain `fn main()` with no other attribute compiles
+to `SUBSYSTEM:CONSOLE` on Windows by default, which is what opens that
+second window and gives it console-owner-process semantics (close it, the
+whole process dies). Fixed with `#![cfg_attr(not(debug_assertions),
+windows_subsystem = "windows")]` in `app/src/main.rs`, gated to release
+builds only so `cargo run`/`dx serve` during local dev keep the console
+for the `tracing::Level::INFO` logger.
+
+**Gibberish `.txt` results** - `search_core::extraction::decode_text`'s
+BOM/strict-UTF-8/Windows-1252 fallback (ported 1:1 from the C# original,
+verified identical in `TextExtractionService.cs`) falls back to
+Windows-1252 for the *whole file* the instant strict UTF-8 validation
+fails anywhere in it. A file that's genuinely UTF-8 with just a handful of
+stray invalid bytes (mid-file corruption, a paste from a different
+encoding) got its entire text re-decoded as Windows-1252, turning every
+correct multi-byte UTF-8 character into mojibake (e.g. `’` → `â€™`) - the
+exact "gibberish" pattern reported. This bug is present in the C# original
+too (same fallback logic, not a Rust-port regression), but was fixed here
+anyway since it's a plain decoding heuristic, not an extraction algorithm
+the byte-for-byte fixture tests pin down. Fix: measure what fraction of
+the file's bytes actually fall inside an invalid UTF-8 sequence
+(`utf8_invalid_byte_ratio`, via `str::from_utf8`'s own error reporting).
+Below 5%, use `String::from_utf8_lossy` (keeps every valid multi-byte
+character, only the truly-bad bytes become U+FFFD); at or above 5%, still
+fall back to whole-file Windows-1252 as before (the systematic
+high-bit-byte pattern of a genuinely legacy-encoded file). New tests:
+`decode_text_preserves_valid_utf8_around_a_single_stray_byte`,
+`utf8_invalid_byte_ratio_matches_expectations`.
+
+**Large-folder search slower than the old PowerShell tool** - found in
+`search-core::matching`: literal-mode filters (the default mode, no regex,
+no whole-word) were still being routed through `fancy_regex` for the
+per-line "combined filter" pre-check (an escaped-literal alternation
+regex) *and* the per-filter `is_hit` check, on every single line of every
+file. `fancy-regex` is a backtracking-VM interpreter - correct and
+necessary for whole-word (needs lookaround) and user regex-mode filters,
+but pure overhead for literal mode, which has no regex semantics to
+diverge on in the first place (a case-insensitive substring check is
+unambiguous with or without a regex engine behind it). The literal filters
+were also being re-lowercased on every line via `is_hit`'s
+`line.to_lowercase()` call, on top of the regex overhead. Fixed: literal
+mode now lowercases each line exactly once per line (not once per
+combined-check plus once per per-filter check) and lowercases filters once
+at `CompiledMatchState::build()` time (not per line), then does a plain
+`str::contains` loop - no `fancy_regex` involvement anywhere in the
+literal-mode path. Whole-word and regex mode are completely unchanged
+(still routed through `fancy_regex` exactly as before, preserving
+`CLAUDE.md`'s "one regex engine, no semantic drift" invariant for the two
+modes that actually need regex semantics). All 82 `search-core` tests
+still pass unchanged - this is a pure performance fix, not a matching
+behavior change. (`settings.throttle_limit`'s default of 5 was also
+checked against both the old PowerShell tool and the C# port - identical
+in all three, so not a regression and left as-is.)
+
+Also added in this pass: progressive disclosure in `SettingsPanel` -
+"Proximity lines" only shows in Proximity mode, "Whole word matching" only
+shows when regex mode is off (regex mode makes it a no-op in
+`matching::is_hit`), "Exclude scope" only shows once an exclude filter is
+entered, and the Fast re-search query/Search/Cancel controls only show
+once indexing is enabled (an explanatory line takes their place
+otherwise) - `app/src/components.rs`.
+
+## Backlog: further improvement ideas (not yet implemented)
+
+Concrete, code-grounded next steps, roughly in order of likely impact:
+
+1. **Auto-scale the default `throttle_limit`** to
+   `std::thread::available_parallelism()` (capped, e.g. 2x cores up to
+   32) instead of the fixed `5` inherited from the PowerShell/C# originals
+   (`search_core::models::SearchSettings::default`,
+   `app/src/state.rs`'s `throttle_limit` signal). Now that literal-mode
+   matching no longer pays `fancy_regex` overhead, concurrency is the next
+   real lever for large-folder wall-clock time - `5` was tuned for a much
+   older baseline.
+2. **Bundle a real window icon.** `app/src/main.rs`'s
+   `WindowAttributes::default().with_title(...)` never calls
+   `.with_window_icon(...)` - confirmed by grep, matches
+   `docs/rust-rewrite-status.md`'s "no custom icon" note. The C# app
+   already has `GS_Engineering_Brand_Assets/` wired up; port the same
+   icon in via `winit::window::Icon::from_rgba`.
+3. **Keyboard navigation of the results list.** Row selection (feeding
+   the preview pane) is mouse-only (`onclick` in `components.rs`'s hit
+   rows). Up/Down to move selection, Enter to open, would match the
+   preview pane's existing keyboard-first command palette pattern.
+4. **Auto-reindex prompt on fs_watch changes.** `app/src/fs_watch.rs`
+   only signals "this folder changed" (drives the existing
+   `folder_changed_since_search` hint); when fast-search indexing is
+   enabled, that hint could offer a one-click "Reindex now" instead of
+   just warning the index may be stale.
+5. **Live regex-filter validation.** Invalid regex filters currently only
+   surface as an error after a run starts
+   (`OrchestratorError::InvalidFilterRegex`). Compiling the filter text
+   with `fancy_regex` on each keystroke (debounced) and showing an inline
+   error under the Filters field in regex mode would catch this before
+   the user commits to a run.
+6. **Multi-root search.** `SearchSettings.search_path` is a single path;
+   a small add/remove list of roots searched in one run would help
+   compliance-style sweeps across several folders.
+7. **Named saved search presets**, beyond the existing 8-deep MRU
+   "recent searches" (`state.rs`'s `RecentSearch`/`remember_recent_search`)
+   - save a full settings snapshot under a user-given name for repeat
+   audits, not just the last 8 runs.
+8. **Toast/desktop notification on completion** when a long search
+   finishes while the window isn't focused - today, completion is only
+   visible by looking at the progress bar.
+9. **`app`-crate test coverage.** `search-core` has 82 tests; `app` has
+   none. The pure-logic pieces of `AppState` (settings-building,
+   recent-search dedup/cap, extension filtering) don't need a real window
+   and could get `#[test]`s directly.
+10. **Export size warnings.** The HTML report embeds everything inline
+    (including the base64 banner); a very large result set could produce
+    a sizeable file with no warning before writing it.
+11. **Per-file "export just this file's hits"** action alongside the
+    existing per-row Open/Copy-path/Open-folder buttons
+    (`components.rs`'s `.hit-actions`).
+12. **Proximity-mode span visualization** in the preview pane - currently
+    only the single match line gets highlight marks
+    (`preview.rs`'s `highlighted_line`); showing the actual matched range
+    across the before/match/after context would make Proximity-mode
+    results easier to read at a glance.

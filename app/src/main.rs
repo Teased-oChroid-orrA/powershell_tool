@@ -1,3 +1,13 @@
+// Suppresses the extra console window Windows opens for a normal
+// SUBSYSTEM:CONSOLE binary (the default for `fn main()` with no other
+// attribute) - without this, launching app.exe on Windows opens a second,
+// blank console alongside the real window, and closing that console
+// window kills the whole process (console-owner-process semantics; a GUI
+// subsystem process has no such console to begin with). Gated to release
+// builds only - `cargo run`/`dx serve` during local development still
+// want the console for the tracing::Level::INFO logger output below.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod command_palette;
 mod components;
 mod context_menu;

@@ -83,9 +83,32 @@ pub struct CompiledMatchState {
     whole_word_exclude_regex: HashMap<String, FancyRegex>,
 
     /// One alternation of every filter, for a cheap single check per line
-    /// before the slower per-filter loop.
+    /// before the slower per-filter loop. Only populated for regex/
+    /// whole-word mode - literal mode uses `filters_lower`/
+    /// `exclude_filters_lower` instead, see the doc comment on those.
     combined_filter_regex: Option<FancyRegex>,
     combined_exclude_regex: Option<FancyRegex>,
+
+    /// Literal-mode filters/excludes, lowercased once here rather than on
+    /// every line of every file. Positional (aligned 1:1 with
+    /// `settings.filters`/`exclude_filters`), not a HashMap, for the same
+    /// reason `per_filter_hit_lines` in `apply_line_matching` is
+    /// slot-indexed - two filters differing only by case are distinct
+    /// slots, and a map would collapse them.
+    ///
+    /// Literal mode deliberately does NOT go through `fancy_regex` at all
+    /// (unlike whole-word/regex mode, which both need it - see this
+    /// module's top doc comment). A plain case-insensitive substring check
+    /// has no regex semantics to diverge on, so there's no "two engines
+    /// might disagree" risk to guard against by routing it through a regex
+    /// engine anyway - and fancy-regex's backtracking-VM `is_match` on an
+    /// escaped-literal-alternation pattern is real, measurable per-line
+    /// overhead compared to `str::contains` when it's invoked on every
+    /// line of every file in a large search. This was found while
+    /// investigating a reported "large-folder search is slower than the
+    /// old PowerShell tool" regression.
+    filters_lower: Vec<String>,
+    exclude_filters_lower: Vec<String>,
 }
 
 impl CompiledMatchState {
@@ -97,6 +120,8 @@ impl CompiledMatchState {
             whole_word_exclude_regex: HashMap::new(),
             combined_filter_regex: None,
             combined_exclude_regex: None,
+            filters_lower: Vec::new(),
+            exclude_filters_lower: Vec::new(),
         };
 
         if settings.use_regex {
@@ -145,19 +170,27 @@ impl CompiledMatchState {
                     .expect("whole-word pattern is always valid regex");
                 state.whole_word_exclude_regex.insert(f.clone(), rx);
             }
+        } else {
+            // Literal mode - no fancy_regex involved at all, see the doc
+            // comment on `filters_lower`/`exclude_filters_lower`.
+            state.filters_lower = settings.filters.iter().map(|f| f.to_lowercase()).collect();
+            state.exclude_filters_lower =
+                settings.exclude_filters.iter().map(|f| f.to_lowercase()).collect();
         }
 
-        state.combined_filter_regex =
-            build_combined(&settings.filters, settings.use_regex, settings.whole_word);
-        state.combined_exclude_regex = if !settings.exclude_filters.is_empty() {
-            build_combined(
-                &settings.exclude_filters,
-                settings.use_regex,
-                settings.whole_word,
-            )
-        } else {
-            None
-        };
+        if settings.use_regex || settings.whole_word {
+            state.combined_filter_regex =
+                build_combined(&settings.filters, settings.use_regex, settings.whole_word);
+            state.combined_exclude_regex = if !settings.exclude_filters.is_empty() {
+                build_combined(
+                    &settings.exclude_filters,
+                    settings.use_regex,
+                    settings.whole_word,
+                )
+            } else {
+                None
+            };
+        }
 
         Ok(state)
     }
@@ -221,30 +254,45 @@ pub fn apply_line_matching(
     let filter_count = settings.filters.len();
     let mut per_filter_hit_lines: Vec<Vec<i32>> = vec![Vec::new(); filter_count];
 
+    // Literal mode never needs fancy_regex - see the doc comment on
+    // `CompiledMatchState::filters_lower`. Lowercasing each line once here
+    // (instead of once per combined-check call plus once per per-filter
+    // `is_hit` call, as the regex-routed path effectively did before) is
+    // itself part of the fix: same substring semantics, far fewer
+    // allocations and no backtracking-VM invocation per line.
+    let is_literal = !settings.use_regex && !settings.whole_word;
+
     for (i, line) in lines.iter().enumerate() {
         let line_number = (i + 1) as i32;
+        let line_lower = if is_literal { Some(line.to_lowercase()) } else { None };
 
         if !settings.exclude_filters.is_empty() {
-            let exclude_candidate = state
-                .combined_exclude_regex
-                .as_ref()
-                .map(|rx| rx.is_match(line).unwrap_or(true))
-                .unwrap_or(true);
+            let exclude_candidate = if is_literal {
+                let ll = line_lower.as_deref().unwrap();
+                state.exclude_filters_lower.iter().any(|f| ll.contains(f.as_str()))
+            } else {
+                state
+                    .combined_exclude_regex
+                    .as_ref()
+                    .map(|rx| rx.is_match(line).unwrap_or(true))
+                    .unwrap_or(true)
+            };
 
             if exclude_candidate {
-                let mut is_excluded_line = false;
-                for xf in &settings.exclude_filters {
-                    if is_hit(
-                        line,
-                        xf,
-                        settings,
-                        &state.compiled_exclude_regex,
-                        &state.whole_word_exclude_regex,
-                    ) {
-                        is_excluded_line = true;
-                        break;
-                    }
-                }
+                let is_excluded_line = if is_literal {
+                    let ll = line_lower.as_deref().unwrap();
+                    state.exclude_filters_lower.iter().any(|f| ll.contains(f.as_str()))
+                } else {
+                    settings.exclude_filters.iter().any(|xf| {
+                        is_hit(
+                            line,
+                            xf,
+                            settings,
+                            &state.compiled_exclude_regex,
+                            &state.whole_word_exclude_regex,
+                        )
+                    })
+                };
                 if is_excluded_line {
                     if settings.exclude_scope == ExcludeScope::File {
                         outcome.excluded_by_file = true;
@@ -255,21 +303,31 @@ pub fn apply_line_matching(
         }
 
         let mut matched_filters = Vec::new();
-        let candidate_line = state
-            .combined_filter_regex
-            .as_ref()
-            .map(|rx| rx.is_match(line).unwrap_or(true))
-            .unwrap_or(true);
+        let candidate_line = if is_literal {
+            let ll = line_lower.as_deref().unwrap();
+            state.filters_lower.iter().any(|f| ll.contains(f.as_str()))
+        } else {
+            state
+                .combined_filter_regex
+                .as_ref()
+                .map(|rx| rx.is_match(line).unwrap_or(true))
+                .unwrap_or(true)
+        };
 
         if candidate_line {
             for (fi, f) in settings.filters.iter().enumerate() {
-                if is_hit(
-                    line,
-                    f,
-                    settings,
-                    &state.compiled_filter_regex,
-                    &state.whole_word_filter_regex,
-                ) {
+                let hit = if is_literal {
+                    line_lower.as_deref().unwrap().contains(state.filters_lower[fi].as_str())
+                } else {
+                    is_hit(
+                        line,
+                        f,
+                        settings,
+                        &state.compiled_filter_regex,
+                        &state.whole_word_filter_regex,
+                    )
+                };
+                if hit {
                     matched_filters.push(f.clone());
                     per_filter_hit_lines[fi].push(line_number);
                 }

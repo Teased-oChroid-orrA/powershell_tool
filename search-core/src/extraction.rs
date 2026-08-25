@@ -66,13 +66,78 @@ pub fn decode_text(bytes: &[u8]) -> String {
     match std::str::from_utf8(bytes) {
         Ok(s) => s.to_string(),
         Err(_) => {
-            // Windows-1252 decode is infallible in encoding_rs (every byte
-            // value maps to something) - no further fallback needed, unlike
-            // the C# side which has a belt-and-suspenders Latin1 catch.
-            let (decoded, _, _) = encoding_rs::WINDOWS_1252.decode(bytes);
-            decoded.into_owned()
+            // The C# original (TextExtractionService.cs) falls back to
+            // Windows-1252 for the *whole file* the instant strict UTF-8
+            // fails, with no partial-validity check - ported 1:1 at first.
+            // That whole-file fallback has a real bug though, present in
+            // both: a file that's genuinely UTF-8 but has a handful of
+            // stray invalid bytes (mid-file corruption, a paste from a
+            // different encoding, one bad byte from a buggy writer) gets
+            // its ENTIRE text re-decoded as Windows-1252, turning every
+            // correct multi-byte UTF-8 character (accented letters, smart
+            // quotes, em-dashes, ...) into mojibake - e.g. the UTF-8 bytes
+            // for U+2019 (right single quote) get reread one byte at a time as three
+            // separate cp1252 glyphs ("â€™"). That's the exact "gibberish
+            // in .txt results" pattern - deliberately diverging from
+            // strict parity here since this is a plain heuristic, not an
+            // extraction algorithm the byte-for-byte fixture tests pin
+            // down.
+            //
+            // Fix: measure how much of the file is actually invalid UTF-8
+            // (summing the invalid byte runs `from_utf8`'s error reports).
+            // If it's a small fraction, the file is genuinely UTF-8 with
+            // isolated corruption - use `from_utf8_lossy`, which preserves
+            // every valid multi-byte character and only replaces the
+            // actually-bad bytes with U+FFFD. Only fall back to decoding
+            // the whole file as Windows-1252 when a large fraction of it
+            // fails UTF-8 validity - the systematic-high-bit-byte pattern
+            // of a genuinely legacy-encoded file.
+            let invalid_ratio = utf8_invalid_byte_ratio(bytes);
+            if invalid_ratio < 0.05 {
+                String::from_utf8_lossy(bytes).into_owned()
+            } else {
+                // Windows-1252 decode is infallible in encoding_rs (every
+                // byte value maps to something) - no further fallback
+                // needed, unlike the C# side's belt-and-suspenders Latin1
+                // catch (registering the 1252 codepage never fails in
+                // encoding_rs the way .NET's optional CodePages provider
+                // can).
+                let (decoded, _, _) = encoding_rs::WINDOWS_1252.decode(bytes);
+                decoded.into_owned()
+            }
         }
     }
+}
+
+/// Fraction of `bytes` that lies within an invalid UTF-8 sequence, per
+/// `str::from_utf8`'s own error reporting (`valid_up_to`/`error_len`) -
+/// walks the reported invalid runs rather than re-implementing UTF-8
+/// validation.
+fn utf8_invalid_byte_ratio(bytes: &[u8]) -> f64 {
+    if bytes.is_empty() {
+        return 0.0;
+    }
+    let mut invalid = 0usize;
+    let mut rest = bytes;
+    loop {
+        match std::str::from_utf8(rest) {
+            Ok(_) => break,
+            Err(e) => {
+                let bad_len = e.error_len().unwrap_or(rest.len() - e.valid_up_to());
+                invalid += bad_len;
+                let advance = e.valid_up_to() + bad_len;
+                if advance == 0 || advance > rest.len() {
+                    invalid += rest.len().saturating_sub(e.valid_up_to());
+                    break;
+                }
+                rest = &rest[advance..];
+                if rest.is_empty() {
+                    break;
+                }
+            }
+        }
+    }
+    invalid as f64 / bytes.len() as f64
 }
 
 fn decode_utf16le(bytes: &[u8]) -> String {
@@ -1004,6 +1069,34 @@ mod tests {
         let bytes = vec![0x93, b'h', b'i', 0x94];
         let decoded = decode_text(&bytes);
         assert!(decoded.contains('h') && decoded.contains('i'));
+    }
+
+    #[test]
+    fn decode_text_preserves_valid_utf8_around_a_single_stray_byte() {
+        // A predominantly-UTF-8 file (real accented/multi-byte characters,
+        // like a genuine `apple café “quote”` line) with exactly one
+        // corrupted byte spliced in (0xFF is never valid in UTF-8, in any
+        // position) - simulating one bad byte from mid-file corruption or a
+        // paste from a different source. Whole-file Windows-1252 fallback
+        // would mangle every one of the correct multi-byte characters into
+        // mojibake ("cafÃ©", "â€œquoteâ€"); the fix should instead keep
+        // them intact and only replace the single bad byte.
+        let mut bytes = "apple caf\u{e9} \u{201c}quote\u{201d} banana".as_bytes().to_vec();
+        let stray_pos = bytes.len() / 2;
+        bytes.insert(stray_pos, 0xFF);
+
+        let decoded = decode_text(&bytes);
+        assert!(decoded.contains("café"), "decoded={decoded:?}");
+        assert!(decoded.contains("apple") && decoded.contains("banana"), "decoded={decoded:?}");
+        assert!(decoded.contains('\u{FFFD}'), "expected a replacement char for the stray byte: {decoded:?}");
+    }
+
+    #[test]
+    fn utf8_invalid_byte_ratio_matches_expectations() {
+        assert_eq!(utf8_invalid_byte_ratio(b"hello world"), 0.0);
+        assert_eq!(utf8_invalid_byte_ratio(b""), 0.0);
+        // Every byte invalid.
+        assert_eq!(utf8_invalid_byte_ratio(&[0x93, 0x94, 0xFF, 0xFE]), 1.0);
     }
 
     #[test]

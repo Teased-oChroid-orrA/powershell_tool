@@ -141,12 +141,18 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                         options: vec![("AnyLine", "Any line"), ("AllInFile", "All in file"), ("Proximity", "Proximity")],
                         on_select: move |v: String| state.match_mode.set(parse_match_mode(&v)),
                     }
-                    label { class: "field",
-                        span { "Proximity lines" }
-                        input {
-                            r#type: "number", min: "0",
-                            value: "{state.proximity_lines}",
-                            oninput: move |e| { if let Ok(v) = e.value().parse::<i32>() { state.proximity_lines.set(v.max(0)); } },
+                    // Proximity lines only means anything in Proximity mode
+                    // (AnyLine/AllInFile both ignore it entirely - see
+                    // matching.rs's `apply_line_matching`) - shown only once
+                    // its prerequisite (match mode) is actually set.
+                    if *state.match_mode.read() == MatchMode::Proximity {
+                        label { class: "field",
+                            span { "Proximity lines" }
+                            input {
+                                r#type: "number", min: "0",
+                                value: "{state.proximity_lines}",
+                                oninput: move |e| { if let Ok(v) = e.value().parse::<i32>() { state.proximity_lines.set(v.max(0)); } },
+                            }
                         }
                     }
                     label { class: "field-inline",
@@ -157,13 +163,21 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                         }
                         span { "Use regex" }
                     }
-                    label { class: "field-inline",
-                        input {
-                            r#type: "checkbox",
-                            checked: *state.whole_word.read(),
-                            onchange: move |e| state.whole_word.set(e.checked()),
+                    // Whole-word mode requires regex mode to be OFF - `is_hit`
+                    // in matching.rs checks `use_regex` first and never even
+                    // looks at `whole_word` when it's on, so a checked-but-
+                    // regex-mode-active whole-word box would silently do
+                    // nothing. Hidden rather than just disabled so there's no
+                    // dead control sitting in the panel with no visible effect.
+                    if !*state.use_regex.read() {
+                        label { class: "field-inline",
+                            input {
+                                r#type: "checkbox",
+                                checked: *state.whole_word.read(),
+                                onchange: move |e| state.whole_word.set(e.checked()),
+                            }
+                            span { "Whole word matching" }
                         }
-                        span { "Whole word matching" }
                     }
                     label { class: "field",
                         span { "Exclude filters (comma-separated)" }
@@ -173,11 +187,15 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                             oninput: move |e| state.exclude_filters_text.set(e.value()),
                         }
                     }
-                    Dropdown {
-                        field_label: "Exclude scope",
-                        selected_label: exclude_scope_str(*state.exclude_scope.read()).to_string(),
-                        options: vec![("Line", "Line"), ("File", "File")],
-                        on_select: move |v: String| state.exclude_scope.set(parse_exclude_scope(&v)),
+                    // Exclude scope (line vs. whole file) only matters once
+                    // there's at least one exclude filter to apply it to.
+                    if !state.exclude_filters_text.read().trim().is_empty() {
+                        Dropdown {
+                            field_label: "Exclude scope",
+                            selected_label: exclude_scope_str(*state.exclude_scope.read()).to_string(),
+                            options: vec![("Line", "Line"), ("File", "File")],
+                            on_select: move |v: String| state.exclude_scope.set(parse_exclude_scope(&v)),
+                        }
                     }
                 }
             }
@@ -361,28 +379,38 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                         }
                         span { "Index results for fast re-search" }
                     }
-                    div { class: "row",
-                        label { class: "field",
-                            span { "Search the fast index" }
-                            input {
-                                r#type: "text",
-                                placeholder: "e.g. torque OR extension:.pdf",
-                                value: "{state.native_search_query}",
-                                oninput: move |e| state.native_search_query.set(e.value()),
+                    // The query box/Search/Cancel controls are meaningless
+                    // until indexing has been turned on and a search has run
+                    // at least once to actually build the index - shown only
+                    // once that prerequisite is met, with an explanatory hint
+                    // in its place otherwise instead of a box of controls
+                    // that all just silently no-op.
+                    if *state.index_for_fast_search.read() {
+                        div { class: "row",
+                            label { class: "field",
+                                span { "Search the fast index" }
+                                input {
+                                    r#type: "text",
+                                    placeholder: "e.g. torque OR extension:.pdf",
+                                    value: "{state.native_search_query}",
+                                    oninput: move |e| state.native_search_query.set(e.value()),
+                                }
+                            }
+                            button {
+                                disabled: !can_native_search,
+                                onclick: move |_| { spawn(state.run_native_search()); },
+                                "Search"
+                            }
+                            button {
+                                disabled: !is_native_searching,
+                                onclick: move |_| state.cancel_native_search(),
+                                "Cancel"
                             }
                         }
-                        button {
-                            disabled: !can_native_search,
-                            onclick: move |_| { spawn(state.run_native_search()); },
-                            "Search"
-                        }
-                        button {
-                            disabled: !is_native_searching,
-                            onclick: move |_| state.cancel_native_search(),
-                            "Cancel"
-                        }
+                        p { class: "caption", "{state.native_search_status_text}" }
+                    } else {
+                        p { class: "caption", "Enable indexing above, then run a search once to build the index before it can be searched." }
                     }
-                    p { class: "caption", "{state.native_search_status_text}" }
                     div { class: "extension-list",
                         for hit in state.native_search_results.read().iter().cloned() {
                             div {
