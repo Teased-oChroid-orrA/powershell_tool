@@ -111,7 +111,7 @@ impl Default for SearchSettings {
 }
 
 /// One matched line within one file, with one line of context on each side.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct LineHit {
     pub line_number: i32,
     pub before: Option<String>,

@@ -1,9 +1,19 @@
+mod command_palette;
 mod components;
+mod context_menu;
+mod drag_drop;
+mod fs_watch;
+mod persistence;
+mod preview;
 mod state;
 
+use dioxus::html::{Code, Modifiers};
 use dioxus::prelude::*;
 
+use command_palette::CommandPalette;
 use components::{ResultsPanel, SettingsPanel};
+use context_menu::ContextMenu;
+use preview::PreviewPane;
 use state::AppState;
 
 fn main() {
@@ -14,33 +24,256 @@ fn main() {
     let _ = dioxus::logger::init(dioxus::logger::tracing::Level::INFO);
 
     let window_attributes = dioxus::native::WindowAttributes::default().with_title("GS Engineering - Text Search");
-    let config = dioxus::native::Config::default().with_window_attributes(window_attributes);
-    dioxus::native::launch_cfg(App, vec![], vec![Box::new(config)]);
+    launch::run(App, window_attributes);
+}
+
+/// Hand-rolled replacement for `dioxus_native::launch_cfg` - see
+/// `drag_drop.rs` for why. This mirrors that function's own body (the
+/// public API surface it needs is entirely `pub` on `dioxus-native`/
+/// `dioxus-native-dom`/`blitz-shell`/`blitz-html`, verified by reading
+/// `dioxus-native-0.7.10/src/lib.rs` directly) with two narrowed-down
+/// simplifications specific to this app, not general-purpose omissions:
+/// `net_provider`/`navigation_provider` are both `None` because this app
+/// has no `<img src="http://...">`/remote-font/`<a href>` usage at all -
+/// everything is inline `style{}` and local file I/O - so the (crate-
+/// private, unreachable from outside `dioxus-native`) providers that
+/// would normally supply those aren't needed here.
+mod launch {
+    use std::sync::Arc;
+
+    use blitz_shell::{create_default_event_loop, BlitzShellEvent, WindowConfig};
+    use dioxus::core::VirtualDom;
+    use dioxus::native::{DioxusDocument, DioxusNativeApplication, DioxusNativeWindowRenderer, DocumentConfig};
+    use dioxus::prelude::Element;
+    use tokio::sync::mpsc;
+    use winit::window::WindowAttributes;
+
+    use crate::drag_drop::{DragDropApplication, DROP_EVENTS};
+
+    pub fn run(app: fn() -> Element, window_attributes: WindowAttributes) {
+        let (drop_tx, drop_rx) = mpsc::unbounded_channel();
+        // Fine to ignore a `set` failure (can't happen - `run` is only ever
+        // called once from `main`) rather than unwrap and panic over it.
+        let _ = DROP_EVENTS.set(tokio::sync::Mutex::new(drop_rx));
+
+        let event_loop = create_default_event_loop::<BlitzShellEvent>();
+
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("failed to start the async runtime");
+        let _guard = rt.enter();
+
+        crate::fs_watch::start();
+
+        let vdom = VirtualDom::new(app);
+
+        let html_parser_provider = Some(Arc::new(blitz_html::HtmlProvider) as _);
+        let doc = DioxusDocument::new(
+            vdom,
+            DocumentConfig { net_provider: None, html_parser_provider, navigation_provider: None, ..Default::default() },
+        );
+
+        let renderer = DioxusNativeWindowRenderer::with_features_and_limits(None, None);
+        let win_config = WindowConfig::with_attributes(Box::new(doc) as _, renderer, window_attributes);
+
+        let inner = DioxusNativeApplication::new(event_loop.create_proxy(), win_config);
+        let mut application = DragDropApplication { inner, drop_tx };
+
+        event_loop.run_app(&mut application).expect("winit event loop exited with an error");
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ResizeTarget {
+    Settings,
+    Preview,
 }
 
 #[component]
 fn App() -> Element {
-    let state = AppState::new();
-    let mut dark = use_signal(|| true);
+    // Settings/recent-search persistence (epic §22) - loaded once at
+    // startup, applied onto the freshly-defaulted AppState/theme signal
+    // before the first render.
+    let persisted = use_hook(persistence::load);
+    let mut dark = use_signal({
+        let initial_dark = persisted.as_ref().map(|p| p.dark_theme).unwrap_or(true);
+        move || initial_dark
+    });
+    let mut state = AppState::new();
+    use_hook(move || {
+        if let Some(p) = persisted {
+            persistence::apply(&mut state, p);
+        }
+    });
+    // Re-saves whenever any persisted field changes - `use_effect`'s
+    // dependency tracking is based on which signals actually get `.read()`
+    // during the closure call, which happens transitively inside
+    // `persistence::save` here just as it would if the reads were written
+    // out inline.
+    use_effect(move || {
+        persistence::save(&state, dark());
+    });
+
+    let mut is_drag_hovering = use_signal(|| false);
+    let mut command_palette_open = use_signal(|| false);
+
+    // Resizable three-pane layout (epic §12). Plain mouse events, not
+    // scroll/drag/keyboard - no verified platform gap applies here, so
+    // this is ordinary drag-to-resize logic: a resize handle's
+    // `onmousedown` records the starting cursor X and starting pane
+    // width, `.app-shell`'s `onmousemove` (added below, alongside the
+    // existing keyboard listener) applies the delta while a drag is in
+    // progress, and `onmouseup` ends it. Column widths are clamped to
+    // stay usable rather than lettable shrink to zero or grow to
+    // swallow the whole window.
+    let mut settings_width = use_signal(|| 380.0_f64);
+    let mut preview_width = use_signal(|| 340.0_f64);
+    let mut resizing: Signal<Option<ResizeTarget>> = use_signal(|| None);
+    let mut resize_start_x = use_signal(|| 0.0_f64);
+    let mut resize_start_width = use_signal(|| 0.0_f64);
+
+    // Filesystem watching (epic §21) - retarget the watcher thread
+    // whenever the search folder changes, and drain its change
+    // notifications into a signal ResultsPanel surfaces as a hint.
+    use_effect(move || {
+        fs_watch::set_path(&state.search_path.read());
+    });
+    use_hook(move || {
+        spawn(async move {
+            loop {
+                let Some(mutex) = fs_watch::CHANGE_EVENTS.get() else { break };
+                let event = {
+                    let mut rx = mutex.lock().await;
+                    rx.recv().await
+                };
+                match event {
+                    Some(()) => {
+                        if !*state.is_running.read() {
+                            state.folder_changed_since_search.set(true);
+                        }
+                    }
+                    None => break,
+                }
+            }
+        });
+    });
+
+    // Drains the drag_drop::DROP_EVENTS channel `main.rs`'s hand-rolled
+    // launch sequence feeds (see `launch::run`/`drag_drop.rs`) - the
+    // application-facing side of the drag-and-drop workaround. Dropping a
+    // folder sets it as the search folder directly; dropping a single
+    // file uses its containing folder, since "drop a file to search a
+    // folder" is a reasonable reading of the gesture and there's no
+    // sensible alternative action for a bare file drop in this app.
+    use_hook(|| {
+        spawn(async move {
+            loop {
+                let Some(mutex) = crate::drag_drop::DROP_EVENTS.get() else { break };
+                let event = {
+                    let mut rx = mutex.lock().await;
+                    rx.recv().await
+                };
+                match event {
+                    Some(crate::drag_drop::DropEvent::Hovering) => is_drag_hovering.set(true),
+                    Some(crate::drag_drop::DropEvent::HoverCancelled) => is_drag_hovering.set(false),
+                    Some(crate::drag_drop::DropEvent::Dropped(path)) => {
+                        is_drag_hovering.set(false);
+                        let folder = if path.is_dir() { Some(path) } else { path.parent().map(|p| p.to_path_buf()) };
+                        if let Some(folder) = folder {
+                            state.search_path.set(folder.to_string_lossy().into_owned());
+                        }
+                    }
+                    None => break,
+                }
+            }
+        });
+    });
 
     rsx! {
         style { {APP_CSS} }
-        div { class: "app-shell", "data-theme": if dark() { "dark" } else { "light" },
+        div {
+            class: "app-shell",
+            "data-theme": if dark() { "dark" } else { "light" },
+            tabindex: "-1",
+            // Global Ctrl/Cmd+K (command palette) and Escape (close it) -
+            // verified this renderer dispatches keydown regardless of
+            // modifier state or focus target (see command_palette.rs's
+            // doc comment for the exact evidence). `tabindex: "-1"` makes
+            // this div a valid keyboard-event target even though it's
+            // never meant to be tab-stopped into.
+            onkeydown: move |e| {
+                let mods = e.modifiers();
+                if e.code() == Code::KeyK && (mods.contains(Modifiers::CONTROL) || mods.contains(Modifiers::META)) {
+                    command_palette_open.set(!command_palette_open());
+                } else if e.code() == Code::Escape && command_palette_open() {
+                    command_palette_open.set(false);
+                }
+            },
+            onmousemove: move |e| {
+                let Some(target) = resizing() else { return };
+                let dx = e.client_coordinates().x - resize_start_x();
+                let new_width = match target {
+                    ResizeTarget::Settings => (resize_start_width() + dx).clamp(260.0, 640.0),
+                    ResizeTarget::Preview => (resize_start_width() - dx).clamp(260.0, 640.0),
+                };
+                match target {
+                    ResizeTarget::Settings => settings_width.set(new_width),
+                    ResizeTarget::Preview => preview_width.set(new_width),
+                }
+            },
+            onmouseup: move |_| resizing.set(None),
             div { class: "title-bar",
                 div { class: "title-bar-brand",
                     span { class: "brand-mark", "GS" }
                     h1 { "Text Search" }
                 }
-                button {
-                    class: "theme-toggle",
-                    title: if dark() { "Switch to light theme" } else { "Switch to dark theme" },
-                    onclick: move |_| dark.set(!dark()),
-                    if dark() { "\u{2600}" } else { "\u{263D}" }
+                div { class: "title-bar-actions",
+                    button {
+                        class: "palette-trigger",
+                        title: "Command palette (Ctrl/Cmd+K)",
+                        onclick: move |_| command_palette_open.set(true),
+                        "\u{2318}K"
+                    }
+                    button {
+                        class: "theme-toggle",
+                        title: if dark() { "Switch to light theme" } else { "Switch to dark theme" },
+                        onclick: move |_| dark.set(!dark()),
+                        if dark() { "\u{2600}" } else { "\u{263D}" }
+                    }
+                }
+            }
+            if command_palette_open() {
+                CommandPalette { state, dark, open: command_palette_open }
+            }
+            if state.context_menu.read().is_some() {
+                ContextMenu { state }
+            }
+            if is_drag_hovering() {
+                div { class: "drop-overlay",
+                    div { class: "drop-overlay-card",
+                        p { class: "drop-overlay-title", "\u{2193} Drop to search" }
+                        p { class: "caption", "Drop a folder (or a file - its folder will be used) to set it as the search folder." }
+                    }
                 }
             }
             div { class: "main-grid",
-                div { class: "settings-column", SettingsPanel { state } }
+                div { class: "settings-column", style: "width: {settings_width()}px;", SettingsPanel { state } }
+                div {
+                    class: "resize-handle",
+                    onmousedown: move |e| {
+                        resizing.set(Some(ResizeTarget::Settings));
+                        resize_start_x.set(e.client_coordinates().x);
+                        resize_start_width.set(settings_width());
+                    },
+                }
                 div { class: "results-column", ResultsPanel { state } }
+                div {
+                    class: "resize-handle",
+                    onmousedown: move |e| {
+                        resizing.set(Some(ResizeTarget::Preview));
+                        resize_start_x.set(e.client_coordinates().x);
+                        resize_start_width.set(preview_width());
+                    },
+                }
+                div { class: "preview-column", style: "width: {preview_width()}px;", PreviewPane { state } }
             }
         }
     }
@@ -161,6 +394,8 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
 .app-shell {
     display: flex; flex-direction: column; height: 100vh; width: 100vw;
     background: var(--bg); color: var(--fg); overflow: hidden;
+    /* Positioning context for .drop-overlay - see that rule's comment. */
+    position: relative;
 }
 .title-bar {
     flex: none;
@@ -189,9 +424,16 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
 }
 .theme-toggle:hover { background: var(--panel-hover); color: var(--fg); border-color: var(--border-strong); }
 
-.main-grid { display: flex; flex: 1; min-height: 0; gap: var(--space-4); padding: var(--space-4); overflow: hidden; }
-.settings-column { width: 380px; flex: none; overflow-y: auto; overflow-x: hidden; padding-right: var(--space-1); }
+.main-grid { display: flex; flex: 1; min-height: 0; gap: var(--space-2); padding: var(--space-4); overflow: hidden; }
+.settings-column { flex: none; overflow-y: auto; overflow-x: hidden; padding-right: var(--space-1); }
 .results-column { flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden; }
+.preview-column { flex: none; overflow-y: auto; overflow-x: hidden; border-left: 1px solid var(--border); padding-left: var(--space-4); }
+.resize-handle { flex: none; width: 6px; margin: 0 calc(-1 * var(--space-1)); cursor: ew-resize; position: relative; }
+.resize-handle::after {
+    content: ""; position: absolute; left: 2px; top: 0; bottom: 0; width: 2px;
+    background: var(--border); border-radius: var(--radius-pill);
+}
+.resize-handle:hover::after { background: var(--accent); }
 .settings-panel, .results-panel { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
 
 h3 {
@@ -321,7 +563,8 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
     border-bottom: 1px solid var(--border);
     transition: background-color 0.12s var(--ease);
 }
-.hit-row:hover { background: var(--panel-hover); }
+.hit-row:hover { background: var(--panel-hover); cursor: pointer; }
+.hit-row.selected { background: color-mix(in srgb, var(--accent) 12%, var(--panel-bg)); border-left: 2px solid var(--accent); }
 .hit-row:last-child { border-bottom: none; }
 .hit-row-top { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-2); min-width: 0; }
 .hit-name {
@@ -379,4 +622,109 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 .stat-bar-track { flex: 1 1 auto; min-width: 0; height: 6px; border-radius: var(--radius-pill); background: var(--bg-sunken); overflow: hidden; }
 .stat-bar-fill { display: block; height: 100%; background: var(--accent); border-radius: var(--radius-pill); }
 .stat-bar-count { flex: none; width: 28px; text-align: right; color: var(--fg-muted); font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+/* `position: fixed` isn't implemented as true viewport-relative
+   positioning in this renderer - it's silently treated identically to
+   `position: absolute` (confirmed by reading stylo_taffy's own position()
+   conversion function, which has a literal `// TODO: support
+   position:fixed and sticky` next to the line mapping both to the same
+   Taffy::Position::Absolute). `.app-shell` already fills the viewport
+   (100vw/100vh) and is the overlay's direct positioned ancestor, so
+   `position: absolute; inset: 0;` on `.drop-overlay` covers the same area
+   a real `fixed` overlay would here - deliberately not using `fixed`. */
+.drop-overlay {
+    position: absolute; inset: 0; z-index: 50;
+    display: flex; align-items: center; justify-content: center;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+}
+.drop-overlay-card {
+    display: flex; flex-direction: column; align-items: center; gap: var(--space-2);
+    padding: var(--space-6); border-radius: var(--radius-md);
+    background: var(--panel-bg); border: 2px dashed var(--accent);
+    box-shadow: var(--shadow-md);
+    text-align: center; max-width: 320px;
+}
+.drop-overlay-title { margin: 0; font-size: 1.1em; font-weight: 700; color: var(--fg); }
+
+.title-bar-actions { flex: none; display: flex; align-items: center; gap: var(--space-2); }
+.palette-trigger {
+    height: 30px; padding: 0 var(--space-3);
+    font-family: var(--mono); font-size: 0.8em; font-weight: 600;
+    border-radius: var(--radius-sm); color: var(--fg-muted);
+}
+.palette-trigger:hover { color: var(--fg); }
+
+/* Same position:absolute-not-fixed reasoning as .drop-overlay above. */
+.palette-overlay {
+    position: absolute; inset: 0; z-index: 60;
+    display: flex; align-items: flex-start; justify-content: center;
+    padding-top: 12vh;
+    background: color-mix(in srgb, var(--bg) 55%, transparent);
+}
+.palette-card {
+    width: 420px; max-width: 90vw; max-height: 60vh;
+    display: flex; flex-direction: column;
+    background: var(--panel-bg); border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md); box-shadow: var(--shadow-md);
+    overflow: hidden;
+}
+.palette-input {
+    height: 42px; padding: 0 var(--space-4); border: none; border-bottom: 1px solid var(--border);
+    background: transparent; color: var(--fg); font-size: 1em; font-family: inherit;
+}
+.palette-input:focus { outline: none; }
+.palette-list { display: block; overflow-y: auto; overflow-x: hidden; padding: var(--space-1); }
+.palette-item { display: block; padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm); cursor: pointer; font-size: 0.92em; }
+.palette-item:hover { background: var(--panel-hover); color: var(--accent-strong); }
+.palette-empty { display: block; padding: var(--space-3); }
+.palette-group-label {
+    display: block; padding: var(--space-2) var(--space-3) var(--space-1);
+    text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700;
+}
+
+.ctx-overlay { position: absolute; inset: 0; z-index: 70; }
+.ctx-menu {
+    position: absolute;
+    display: flex; flex-direction: column;
+    min-width: 190px; padding: var(--space-1);
+    background: var(--panel-bg); border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm); box-shadow: var(--shadow-md);
+}
+.ctx-menu-title {
+    display: block; padding: var(--space-2) var(--space-3) var(--space-1);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ctx-item {
+    display: block; width: 100%; text-align: left;
+    padding: var(--space-2) var(--space-3); border: none;
+    background: transparent; border-radius: var(--radius-sm); font-weight: 500;
+}
+.ctx-item:hover { background: var(--panel-hover); }
+
+.folder-changed-hint {
+    display: block; padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-sm); font-size: 0.85em; font-weight: 500;
+    background: color-mix(in srgb, var(--active) 18%, var(--panel-bg));
+    color: var(--active);
+}
+
+.pagination { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-1) 0; }
+
+.preview-pane { display: flex; flex-direction: column; gap: var(--space-2); height: 100%; }
+.preview-pane-empty { align-items: center; justify-content: center; text-align: center; }
+.preview-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-width: 0; }
+.preview-title { font-weight: 700; font-size: 1em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.preview-actions-visible { opacity: 1; }
+.preview-path { font-family: var(--mono); word-break: break-all; margin: 0; }
+.preview-matches { display: block; overflow-y: auto; overflow-x: hidden; flex: 1; }
+.preview-match { display: block; padding: var(--space-2) 0; border-bottom: 1px solid var(--border); }
+.preview-match:last-child { border-bottom: none; }
+.preview-lineno { display: block; margin-bottom: 2px; }
+.preview-context {
+    display: block; margin: 0 0 2px; padding: var(--space-1) var(--space-2);
+    font-family: var(--mono); font-size: 0.82em; white-space: pre-wrap; word-break: break-word;
+    color: var(--fg-muted); background: transparent; border-radius: var(--radius-sm);
+}
+.preview-matchline { color: var(--fg); background: var(--bg-sunken); }
+.preview-context mark { background: color-mix(in srgb, var(--accent) 55%, transparent); color: var(--fg); border-radius: 2px; padding: 0 1px; }
 "#;

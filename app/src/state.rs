@@ -28,7 +28,7 @@ use search_core::report;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ExtensionOption {
     pub extension: String,
     pub category: String,
@@ -40,6 +40,16 @@ pub struct FileResultView {
     pub full_name: String,
     pub file_name: String,
     pub hit_count: usize,
+    /// Full match context (before/match/after lines, matched filter
+    /// names) - carried through so the preview pane (`preview.rs`) can
+    /// show real highlighted match context, not just a file name and a
+    /// count. Search-core's own `search-core::report` module has the
+    /// canonical highlighting logic for the HTML report; the preview
+    /// pane's highlighting is a plain-text-friendly equivalent of the
+    /// same idea (bold the matched span), not a reimplementation of that
+    /// HTML-specific code.
+    pub hits: Vec<search_core::models::LineHit>,
+    pub low_confidence_pdf: bool,
 }
 
 impl From<&FileSearchResult> for FileResultView {
@@ -48,7 +58,13 @@ impl From<&FileSearchResult> for FileResultView {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| r.full_name.clone());
-        FileResultView { full_name: r.full_name.clone(), file_name, hit_count: r.hits.len() }
+        FileResultView {
+            full_name: r.full_name.clone(),
+            file_name,
+            hit_count: r.hits.len(),
+            hits: r.hits.clone(),
+            low_confidence_pdf: r.low_confidence_pdf,
+        }
     }
 }
 
@@ -58,7 +74,7 @@ impl From<&FileSearchResult> for FileResultView {
 /// persisted to disk (no settings-persistence layer exists in this app
 /// yet for any other session toggle either - matches the rest of
 /// `AppState`, which all resets to defaults on relaunch).
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RecentSearch {
     pub search_path: String,
     pub filters_text: String,
@@ -139,10 +155,43 @@ pub struct AppState {
     pub in_flight_files: Signal<Vec<InFlightFileStatus>>,
     pub results: Signal<Vec<FileResultView>>,
     pub results_summary_text: Signal<String>,
+    /// Real substitute for list virtualization (epic §5/§31) - see
+    /// `components.rs`'s `MAX_RENDERED_RESULTS`/pagination comment for
+    /// why scroll-based virtualization specifically is not just deferred
+    /// but architecturally incoherent to attempt in this renderer.
+    pub results_page: Signal<usize>,
+    /// The result currently shown in the preview pane (epic §14) - set by
+    /// clicking a row in `ResultsPanel`.
+    pub selected_result: Signal<Option<FileResultView>>,
     pub has_results: Signal<bool>,
     pub last_report_path: Signal<Option<String>>,
     pub cancel_token: Signal<Option<CancellationToken>>,
     pub recent_searches: Signal<Vec<RecentSearch>>,
+    /// Rendered by `ContextMenu` at the app root (`main.rs`), set by any
+    /// row's right-click handler - a top-level signal rather than
+    /// component-local state so the menu overlay isn't clipped by
+    /// whatever scrollable list the row lives in. See `context_menu.rs`
+    /// for why this is a custom component (`oncontextmenu` is a
+    /// framework-level event type in `dioxus-html` that's never actually
+    /// dispatched by this renderer - right-click only ever arrives as an
+    /// ordinary mouse event with `MouseButton::Secondary` - the same
+    /// "the generic event type exists but isn't wired for this renderer"
+    /// gap as `onscroll`).
+    pub context_menu: Signal<Option<ContextMenuState>>,
+    /// Set by a spawned task draining `fs_watch::CHANGE_EVENTS` (main.rs) -
+    /// epic §21. Reset to `false` at the start of every `run_search`.
+    pub folder_changed_since_search: Signal<bool>,
+}
+
+/// One open custom context menu (epic §35 - no native context-menu API
+/// exists in this stack) - the file it applies to, and the position
+/// (client/viewport coordinates from the triggering right-click) to
+/// render it at.
+#[derive(Clone, PartialEq)]
+pub struct ContextMenuState {
+    pub full_name: String,
+    pub x: f64,
+    pub y: f64,
 }
 
 impl AppState {
@@ -204,10 +253,14 @@ impl AppState {
             in_flight_files: use_signal(Vec::new),
             results: use_signal(Vec::new),
             results_summary_text: use_signal(String::new),
+            results_page: use_signal(|| 0),
+            selected_result: use_signal(|| None),
             has_results: use_signal(|| false),
             last_report_path: use_signal(|| None),
             cancel_token: use_signal(|| None),
             recent_searches: use_signal(Vec::new),
+            context_menu: use_signal(|| None),
+            folder_changed_since_search: use_signal(|| false),
         }
     }
 
@@ -391,6 +444,9 @@ impl AppState {
     pub async fn run_search(mut self) {
         let settings = self.build_settings();
         self.remember_recent_search();
+        self.folder_changed_since_search.set(false);
+        self.results_page.set(0);
+        self.selected_result.set(None);
 
         self.results.write().clear();
         self.in_flight_files.write().clear();

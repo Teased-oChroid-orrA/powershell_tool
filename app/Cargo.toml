@@ -25,3 +25,21 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 # result-row action doesn't rely on that being an implementation detail
 # that could change.
 arboard = "3"
+# Direct deps needed to hand-roll the launch sequence dioxus_native::launch_cfg
+# normally does internally (see main.rs's `launch_with_drag_drop_support`):
+# blitz-shell doesn't forward WindowEvent::DroppedFile/HoveredFile to the
+# Dioxus app at all (verified against its source - see
+# docs/epic-ui-performance-and-design.md's "Verified platform constraints"
+# table), so this wraps `DioxusNativeApplication` in a thin
+# `winit::application::ApplicationHandler` that intercepts those two events
+# before delegating everything else to the real application unchanged.
+winit = "0.30"
+blitz-shell = "0.2"
+blitz-html = "0.2"
+# Settings/recent-search persistence across relaunches (epic §22).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Filesystem watching (epic §21) - flags when the search folder changes
+# since the last run. Native OS watch APIs (FSEvents/ReadDirectoryChangesW/
+# inotify), not polling.
+notify = "6"

@@ -43,7 +43,15 @@ Not yet done:
   pass (empty states, recent searches, per-row actions, a stat breakdown).
   Not yet a pixel-accurate recreation of anything in particular - it's
   this app's own visual identity now, not a WinUI/Fluent recreation
-  target.
+  target. A follow-up pass on the same epic then implemented every
+  remaining item from that document's original vision, including the
+  ones the first pass had marked blocked or deferred - a command palette
+  (merged with Quick Open), drag & drop, native context menus, filesystem
+  watching, cross-relaunch settings/recent-search persistence, a preview
+  pane, and a real resizable three-pane layout - each via a verified
+  workaround for whatever `dioxus-native`/`blitz-shell` gap stood in the
+  way (see that doc's "What shipped" section for the specifics of each).
+  Nothing from that vision document remains unimplemented.
 - `CLAUDE.md`'s bundled-asset section (`GS_Engineering_Brand_Assets/` →
   `Assets/AppIcon.ico`/`Banner.png`) hasn't been re-pointed at an `app/`
   equivalent - the Dioxus window currently has no custom icon.

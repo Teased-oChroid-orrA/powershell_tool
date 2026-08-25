@@ -385,7 +385,13 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                     p { class: "caption", "{state.native_search_status_text}" }
                     div { class: "extension-list",
                         for hit in state.native_search_results.read().iter().cloned() {
-                            div { key: "{hit.id}", class: "hit-row",
+                            div {
+                                key: "{hit.id}",
+                                class: "hit-row",
+                                onmousedown: {
+                                    let full_name = hit.path.clone();
+                                    move |e| crate::context_menu::maybe_open_context_menu(state, &e, &full_name)
+                                },
                                 div { class: "hit-row-top",
                                     div { class: "hit-name", "{hit.filename}" }
                                     div { class: "hit-value", "{hit.score}" }
@@ -411,16 +417,25 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
     }
 }
 
-/// Defensive cap on rendered result rows. Real virtualization (rendering
-/// only the visible slice of a long list) is currently unimplementable in
-/// `dioxus-native` - scroll position is never forwarded from
-/// `blitz-shell` to application code at all (see
-/// docs/epic-ui-performance-and-design.md's "Verified platform
-/// constraints" table) - so this is the next-best guard against a
-/// pathologically large result set turning into thousands of live DOM
-/// nodes. The full result set is always still in the saved HTML/CSV/JSON
-/// report regardless of this cap.
-const MAX_RENDERED_RESULTS: usize = 300;
+/// Real substitute for scroll-based list virtualization (epic §5/§31),
+/// not just a defensive cap. Scroll-based virtualization is not merely
+/// unimplemented but architecturally incoherent to attempt here: (1)
+/// scroll position is never forwarded from `blitz-shell` to application
+/// code (confirmed - see docs/epic-ui-performance-and-design.md's
+/// "Verified platform constraints" table), so there's no way to compute
+/// "which slice is visible"; and (2) `WindowEvent::MouseWheel` is
+/// consumed entirely inside `blitz-shell` to drive the *native* CSS
+/// scroll (`Document::scroll_node_by_has_changed`) - it never reaches a
+/// dioxus `onwheel` handler either (checked the same handler - it calls
+/// `request_redraw()` directly, never `handle_ui_event`). Even
+/// intercepting the raw window-level wheel delta (the same channel
+/// pattern `drag_drop.rs` uses) couldn't drive a *virtual* slice without
+/// fighting the native scroll already happening underneath it, since
+/// there is no way to suppress or query that native scroll from
+/// application code either. Pagination sidesteps the whole problem: it
+/// bounds the live DOM node count exactly like virtualization would,
+/// without needing scroll position at all.
+const RESULTS_PAGE_SIZE: usize = 50;
 
 /// Ports the epic's §24 "search statistics" micro-breakdown - top 6
 /// extensions among the current hits, most-common first. Pure
@@ -441,7 +456,7 @@ fn extension_breakdown(results: &[FileResultView]) -> Vec<(String, usize)> {
     breakdown
 }
 
-fn copy_to_clipboard(text: &str) {
+pub(crate) fn copy_to_clipboard(text: &str) {
     if let Ok(mut clipboard) = arboard::Clipboard::new() {
         let _ = clipboard.set_text(text);
     }
@@ -460,6 +475,12 @@ pub fn ResultsPanel(state: AppState) -> Element {
             div { class: "progress-block",
                 progress { class: "progress-bar", max: "100", value: "{state.progress_percent}" }
                 p { "{state.status_text}" }
+            }
+
+            if *state.folder_changed_since_search.read() && !is_running {
+                div { class: "folder-changed-hint",
+                    "Files changed in this folder since your last search - run it again to see what's new."
+                }
             }
 
             if is_running && !in_flight.is_empty() {
@@ -507,9 +528,43 @@ pub fn ResultsPanel(state: AppState) -> Element {
                         }
                     }
                 }
-                div { class: "results-list",
-                    for r in results.iter().take(MAX_RENDERED_RESULTS).cloned() {
-                        div { key: "{r.full_name}", class: "hit-row",
+                {
+                    let total_pages = total_results.div_ceil(RESULTS_PAGE_SIZE).max(1);
+                    let page = (*state.results_page.read()).min(total_pages - 1);
+                    let page_start = page * RESULTS_PAGE_SIZE;
+                    let page_results: Vec<FileResultView> = results.iter().skip(page_start).take(RESULTS_PAGE_SIZE).cloned().collect();
+                    rsx! {
+                        if total_pages > 1 {
+                            div { class: "pagination",
+                                button {
+                                    class: "hit-action",
+                                    disabled: page == 0,
+                                    onclick: move |_| { let mut s = state; let p = *s.results_page.read(); s.results_page.set(p.saturating_sub(1)); },
+                                    "\u{2190} Previous"
+                                }
+                                span { class: "caption", "Page {page + 1} of {total_pages} ({total_results} total)" }
+                                button {
+                                    class: "hit-action",
+                                    disabled: page + 1 >= total_pages,
+                                    onclick: move |_| { let mut s = state; let p = *s.results_page.read(); s.results_page.set(p + 1); },
+                                    "Next \u{2192}"
+                                }
+                            }
+                        }
+                        div { class: "results-list",
+                            for r in page_results {
+                        div {
+                            key: "{r.full_name}",
+                            class: if state.selected_result.read().as_ref().map(|s| &s.full_name) == Some(&r.full_name) { "hit-row selected" } else { "hit-row" },
+                            onmousedown: {
+                                let full_name = r.full_name.clone();
+                                move |e| crate::context_menu::maybe_open_context_menu(state, &e, &full_name)
+                            },
+                            onclick: {
+                                let mut state = state;
+                                let r = r.clone();
+                                move |_| state.selected_result.set(Some(r.clone()))
+                            },
                             div { class: "hit-row-top",
                                 div { class: "hit-name", "{r.file_name}" }
                                 div { class: "hit-value", "{r.hit_count}" }
@@ -552,9 +607,6 @@ pub fn ResultsPanel(state: AppState) -> Element {
                             }
                         }
                     }
-                    if total_results > MAX_RENDERED_RESULTS {
-                        div { class: "caption", style: "display: block; padding: var(--space-2) var(--space-3);",
-                            "+{total_results - MAX_RENDERED_RESULTS} more result(s) not shown here - narrow your filters to see them, or check the saved report for the full list."
                         }
                     }
                 }

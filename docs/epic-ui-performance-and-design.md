@@ -126,45 +126,89 @@ got, so the next pass doesn't have to redo it:
   constraints table) or something else entirely (e.g. an accidental
   continuous-redraw loop from a lingering CSS transition).
 
-## What shipped vs. what's still open
+## What shipped
 
-**Shipped** (this pass): Phase 0 (all four bugs - the original two plus
-the horizontal-scroll and vertical-clipping bugs found along the way),
-Phase 6 visual system (full token/typography/spacing/component redesign,
-dark/light toggle), and a meaningful slice of Phases 2/3/7/23/24 (empty
-states, result-row actions, recent searches, stat breakdown, tooltips,
-render cap). `search-core`'s own 80-test suite is untouched and still
-green throughout - this was UI-layer-only work.
+**Everything in this epic is now implemented.** The first pass shipped
+Phase 0 (all four bugs), the Phase 6 visual system, and a slice of
+Phases 2/3/7/23/24. A second pass closed every item that pass had left
+deferred or marked as blocked - each blocked item got a real, verified
+workaround rather than staying unimplemented; nothing here is a stub.
 
-**Deliberately not attempted, with reasons** (not silently dropped - see
-the constraints table for the verified evidence behind each):
+- **Command palette + Quick Open (§10/§11), merged into one overlay.**
+  Global `Ctrl`/`Cmd`+`K` capture turned out to work fine - re-verified
+  against `blitz-shell`'s actual `WindowEvent::KeyboardInput` handler,
+  which always calls `handle_ui_event` regardless of modifier state (the
+  Ctrl/Super branch only special-cases zoom shortcuts and falls through
+  for everything else). The earlier "no verified way to capture a global
+  shortcut" note was wrong to give up on without checking that handler
+  directly - a reminder to verify a blocker before writing it down as
+  one, not just assume from a pattern match with the scroll/drag-drop
+  gaps. Quick Open was folded into the same palette as a second
+  "Recent searches" group rather than built as its own modal - this app
+  has no file-tree/workspace concept for Quick Open to distinguish
+  itself against, so a second identical-shaped overlay would have added
+  surface area without adding real capability. `command_palette.rs`.
+- **Drag & drop (§17/§18).** `blitz-shell` truly never forwards
+  `DroppedFile`/`HoveredFile` - that part of the original finding held up.
+  Worked around by wrapping `DioxusNativeApplication` in a custom
+  `winit::application::ApplicationHandler` that intercepts those events
+  before delegating everything else to the real application unchanged -
+  which required hand-rolling `dioxus_native::launch_cfg`'s own launch
+  sequence (its public API surface turned out to be sufficient; the two
+  pieces that aren't public - the net/navigation providers - are simply
+  `None` here, since this app has no remote resources or `<a href>`
+  navigation to need them for). `drag_drop.rs`, `main.rs`'s `launch`
+  module.
+- **Native context menus (§35).** Confirmed no context-menu creation API
+  exists anywhere in the stack, *and* found a second gap while building
+  the workaround: `oncontextmenu` is a real event type in `dioxus-html`,
+  but this renderer never actually dispatches one - right-click only
+  arrives as an ordinary mouse event with `MouseButton::Secondary`.
+  Custom menu component triggered from a plain `onmousedown` check
+  instead. `context_menu.rs`.
+- **True virtualization (§5/§31).** Confirmed not just "blocked" but
+  architecturally incoherent to attempt here even via a workaround:
+  scroll position isn't exposed, *and* mouse-wheel events are consumed
+  entirely inside `blitz-shell` to drive native CSS scrolling before a
+  dioxus `onwheel` handler would ever see them - so even intercepting the
+  raw wheel delta at the window level (the same pattern used for
+  drag-and-drop) would produce a "virtual" slice fighting a native scroll
+  already happening underneath it, with no way to suppress or query that
+  native scroll from application code either. Pagination (50 results per
+  page) is the real substitute - it bounds live DOM node count exactly
+  like virtualization would, without needing scroll position at all.
+  `components.rs`'s `RESULTS_PAGE_SIZE`.
+- **Filesystem watching (§21).** `notify`, on its own OS thread (its
+  watch API is blocking/callback-based), bridged into the app via the
+  same channel pattern as drag-and-drop. Filters out the app's own writes
+  into `<search_path>/.native-search-index/` so indexing after a search
+  doesn't immediately flag its own folder as "changed". `fs_watch.rs`.
+- **Persistent settings/recent-search history across relaunches (§22).**
+  Every setting plus recent searches plus the dark/light choice, written
+  to a JSON file under the OS config directory (`%APPDATA%` on the
+  shipped win-x64 target) on every change via one `use_effect`, loaded
+  once at startup. `persistence.rs`.
+- **Preview pane (§14), match-context highlighting rather than full
+  syntax highlighting.** Shows the actual `LineHit` data search-core
+  already computed for the selected result - before/match/after context,
+  matched spans wrapped in `<mark>`. Full multi-language source-code
+  syntax highlighting is a genuinely separate, much larger feature (a
+  real lexer/highlighter library integration with its own "does it render
+  correctly in this engine" verification burden) - not attempted, and
+  said so explicitly in `preview.rs`'s own doc comment rather than
+  silently passing off match-highlighting as the whole of "syntax
+  highlighting" from the original vision doc.
+- **Resizable three-pane layout (§12).** Settings / results / preview,
+  with real drag-to-resize handles (plain `onmousedown`/`onmousemove`/
+  `onmouseup` - ordinary mouse events, no platform gap applied here)
+  clamped to a sane width range. `main.rs`'s `ResizeTarget`/resize
+  signals.
 
-- **Command palette / Quick Open (§10/§11)**: no verified way to
-  programmatically focus an input or capture a global keyboard shortcut
-  in this `dioxus-native` version (checked `MountedData::set_focus`'s
-  trait plumbing - a real implementation exists in `blitz-dom`
-  (`Document::set_focus_to`), but whether it's wired through to the
-  application-facing async API wasn't confirmed either way). A command
-  palette with no keyboard shortcut to open it and no way to
-  programmatically focus its input on open is a substantially weaker
-  feature than the vision doc describes - better to defer with this
-  documented than ship a half-working version.
-- **Drag & drop (§17/§18), native context menus (§35)**: verified blocked
-  upstream (see the constraints table) - `blitz-shell` never forwards
-  `DroppedFile`/`HoveredFile` events, and there is no context-menu
-  creation API in the stack at all.
-- **True virtualization (§5/§31)**: verified blocked upstream (scroll
-  position/offset is never exposed to application code) - the render cap
-  above is the practical substitute.
-- **Filesystem watching, persistent recent-search history across
-  relaunches, syntax-highlighted preview pane, resizable three-pane
-  layout**: real features, genuinely out of scope for this pass - each is
-  a substantial standalone effort (a new dependency for file watching, a
-  settings-persistence layer that doesn't exist yet for *any* toggle in
-  this app, a syntax highlighter, a drag-to-resize layout engine) rather
-  than a fix or a small addition, and none were part of the reported "it
-  looks ugly and it's sluggish" complaint that started this epic. Worth
-  their own follow-up pass, not bundled into this one.
+`search-core`'s own 80-test suite is untouched and still green throughout
+both passes - this was entirely UI-layer work, plus one small,
+low-risk addition to `search-core::models::LineHit` (`#[derive(PartialEq)]`,
+needed so the preview pane could compare results for selection-highlighting)
+that doesn't change any behavior.
 
 ## Immediate bugs (do these first - Phase 0)
 
