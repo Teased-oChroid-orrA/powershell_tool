@@ -5,210 +5,337 @@ no memory of how it got here. Read this before making changes.
 
 ## What this project is
 
-A native Windows desktop app (WinUI 3 / C# / .NET 8) that recursively
-searches a folder for keyword filters across `.txt`, `.log`, `.docx`,
-`.pptx` (slides, speaker notes, and SmartArt diagram text), `.xlsx`, `.zip`
-(recursing into entries, including nested zips), `.rtf`, `.pdf`, and dozens
-of other code/config/data extensions (see `Models/ExtensionCatalog.cs` - the
-single source of truth for both the engine's default extension list and the
-UI's type-to-filter/tick-list extension picker), producing an HTML report
-plus optional CSV/JSON export. It is a from-scratch C# migration of an
-earlier PowerShell tool (kept in `powershell/` for reference only - see
-below).
+A native Windows desktop app that recursively searches a folder for keyword
+filters across `.txt`, `.log`, `.docx`, `.pptx` (slides, speaker notes, and
+SmartArt diagram text), `.xlsx`, `.zip` (recursing into entries, including
+nested zips), `.rtf`, `.pdf`, and dozens of other code/config/data
+extensions (see `search-core/src/models.rs`'s `extension_catalog` module -
+the single source of truth for both the engine's default extension list and
+the UI's type-to-filter/tick-list extension picker), producing an HTML
+report plus optional CSV/JSON export.
 
-## Architecture: Core/head split - do not merge these back together
+**The project is mid-migration from C#/WinUI to Rust/Dioxus.** The Rust
+stack (`native-search/`, `search-core/`, `app/`) is the actively developed
+implementation; the C#/WinUI app (`src/`) is kept as a working reference
+during the transition - same treatment this repo already gives `powershell/`
+(the original PowerShell tool the C# version was itself migrated from). See
+"Why the migration happened" below before assuming either older stack is
+dead weight to delete.
+
+## Architecture: three-crate Cargo workspace
 
 ```
-src/TextInFilesSearch.Core/   Plain net8.0 class library. Zero WinUI reference.
-    Models/                    SearchSettings, FileSearchResult, LineHit, progress-report types
-    Services/                  TextExtractionService, FileReaderService, MatchingEngine,
-                               SearchOrchestrator, CacheService, ReportExportService
-    ViewModels/MainViewModel.cs  All UI state + commands. Folder-picking and
-                               report-opening are injected as delegates
-                               (Func<Task<string?>> / Action<string>) specifically
-                               so this file has NO WinUI dependency and can be
-                               unit tested with fakes.
-    Helpers/                   Dependency-free ObservableObject + RelayCommand
-                               (see "No MVVM Toolkit" below).
+Cargo.toml                     Workspace root. [profile.*] and
+                               .cargo/config.toml live HERE, not in a
+                               member crate - Cargo silently ignores
+                               per-crate [profile.*] sections for non-root
+                               workspace members.
 
-src/TextInFilesSearch/        The WinUI 3 head. Keep this THIN.
-    App.xaml(.cs)               Entry point; registers CodePagesEncodingProvider
-                               once at startup (required for the Windows-1252
-                               fallback in TextExtractionService to work at all).
-    Views/MainWindow.xaml(.cs)   The ONLY two files in the whole solution that
-                               should touch a WinUI/Win32 API directly
-                               (FolderPicker + window-handle interop,
-                               AppWindow.SetIcon for the window/taskbar icon,
-                               Process.Start to open the report).
-    Assets/AppIcon.ico, Assets/Banner.png   Production-sized brand assets for
-                               the head project - exe icon (baked in via
-                               ApplicationIcon + loaded at runtime via
-                               AppWindow.SetIcon) and the in-app title-bar
-                               banner. Derived from GS_Engineering_Brand_Assets/
-                               (see below), not hand-edited directly.
+native-search/                 Tantivy-backed indexing/search engine
+                               (issue #2's "Fast re-search" feature).
+    src/engine.rs                NativeSearchEngine: open_or_create,
+                               index_document, delete_document, commit,
+                               search, get_document_metadata. Called
+                               in-process by search-core/app - no FFI
+                               involved on the Rust side of this repo.
+    src/ffi.rs                  A C ABI (extern "C", catch_unwind-guarded)
+                               that exists ONLY to serve the legacy C#/
+                               WinUI app's P/Invoke layer. Dead weight for
+                               the Rust app; do not remove until the C# app
+                               is retired (see docs/ffi.md).
 
-src/TextInFilesSearch.Core/Assets/Banner.jpg   The same banner, separately
-                               sized/compressed for embedding as a base64
-                               data URI in the HTML report (ReportExportService)
-                               - kept here rather than referencing the head
-                               project's copy so Core stays zero-WinUI-dependency
-                               and the report stays a single portable file.
+search-core/                   Plain Rust library. Zero GUI dependency -
+                               ports TextInFilesSearch.Core 1:1, and keeps
+                               the same "buildable/testable on any
+                               platform's toolchain, no GUI libs needed"
+                               property that made the C# Core valuable.
+    src/models.rs                 SearchSettings, FileSearchResult,
+                               LineHit, SearchRunResult, the match-mode/
+                               exclude-scope/group-by enums, and the
+                               extension_catalog module.
+    src/matching.rs                MatchingEngine port. Uses `fancy-regex`
+                               (not the `regex` crate) everywhere, even for
+                               plain literal/regex-mode filters - whole-word
+                               matching needs lookaround, which `regex`
+                               doesn't support by design, and using one
+                               regex engine throughout avoids two subtly
+                               different matching semantics coexisting.
+    src/extraction.rs              TextExtractionService port. DOCX/PPTX/
+                               XLSX/ZIP read via `zip` + regex tag-stripping
+                               (matching the C# original's own dependency-
+                               free ZipArchive+Regex approach, not a real
+                               OOXML parser) rather than adopting
+                               `calamine`/`docx-rust`/etc., whose extraction
+                               algorithms would silently diverge from the
+                               byte-for-byte-tested original. PDF via a
+                               hand-rolled stream/ASCII85/FlateDecode walker
+                               (flate2 for the raw-deflate part).
+    src/file_reader.rs              FileReaderService port. Async
+                               (tokio) robust file reads with retry/
+                               timeout, plus a sync, cancellable,
+                               symlink-safe directory walk.
+    src/cache.rs                    CacheService port. The incremental
+                               JSON cache, fingerprinted by the settings
+                               that affect matching.
+    src/report.rs                    ReportExportService port. HTML/CSV/
+                               JSON export - the HTML report's CSS and
+                               structure are copied verbatim from the C#
+                               original so old and new reports stay
+                               visually identical.
+    src/orchestrator.rs               SearchOrchestrator port. Async,
+                               tokio-based; throttled parallel processing
+                               via a `Semaphore` + `JoinSet` (not literally
+                               `Parallel.ForEachAsync`, but the same
+                               throttle-limit semantics).
+    src/native_index.rs               Policy layer over native-search's
+                               `engine.rs` (index-per-searched-folder
+                               placement at `.native-search-index/`
+                               inside the searched folder - ADR-011 -
+                               auto-exclusion of that folder, and
+                               skip-reindex-if-unchanged). No FFI, no
+                               SafeHandle - native-search is a normal
+                               in-process library dependency here.
+    tests/fixtures.rs                  Integration tests against the SAME
+                               real DOCX/PPTX/XLSX/ZIP/PDF fixture files
+                               the old C# test harness used (reused
+                               byte-identical from
+                               tests/TextInFilesSearch.Tests/Fixtures/,
+                               not regenerated).
 
-tests/TextInFilesSearch.Tests/Program.cs   Dependency-free integration harness.
-docs/architecture.md, docs/deployment.md   Longer-form design rationale.
-powershell/                    Original scripts. Reference only - see below.
-GS_Engineering_Brand_Assets/    Source brand assets (master-resolution icons,
-                               banners, README) the Assets/ folders above were
-                               derived from. Reference only, like powershell/ -
-                               don't point csproj/XAML/report code at this
-                               folder directly; regenerate the sized/compressed
-                               Assets/ copies from it instead if the brand
-                               assets ever change.
+app/                            Dioxus desktop head. Keep this THIN - all
+                               business logic belongs in search-core.
+    src/main.rs                    Entry point. Launches via
+                               `dioxus_native::launch_cfg` (NOT
+                               `dioxus::launch`/the "desktop" feature -
+                               see "Why dioxus-native, not dioxus-desktop"
+                               below).
+    src/state.rs                    AppState: one Dioxus `Signal<T>` per
+                               setting (mirrors the old MainViewModel's
+                               properties 1:1), plus the Run/Cancel/
+                               Native-Search async command logic
+                               (`run_search`, `run_native_search`,
+                               `browse_search_folder`, etc.) as methods on
+                               it. Calls `rfd` (folder picker) and `open`
+                               (report opening) directly - unlike the C#
+                               ViewModel, there's no separate-testability
+                               reason to inject these as delegates, since
+                               all the actually-testable logic already
+                               lives in search-core.
+    src/components.rs                The rsx UI: `SettingsPanel` (mirrors
+                               MainWindow.xaml's Required / Matching /
+                               Scope and output / Performance and
+                               robustness / Fast re-search sections, each
+                               as a `<details>`/`<summary>` - the HTML
+                               equivalent of WinUI's `Expander`) and
+                               `ResultsPanel` (progress bar, in-flight
+                               file list, results list).
+
+src/TextInFilesSearch(.Core)/   The C#/WinUI app. Reference only during
+                               the transition - see "Why the migration
+                               happened" below. Do not add new features
+                               here; port them into search-core/app
+                               instead.
+tests/TextInFilesSearch.Tests/  The C# app's own dependency-free test
+                               harness (Program.cs) - still the
+                               verification gate for src/TextInFilesSearch*
+                               while that app remains in the repo.
+                               Fixtures/ is also reused by
+                               search-core/tests/fixtures.rs.
+docs/, GS_Engineering_Brand_Assets/, powershell/   Unchanged - see the
+                               longer-form docs and the "reference only,
+                               never wire up" treatment already established
+                               for powershell/.
 ```
 
-**Why the split matters:** everything in `Core` builds and runs on any
-platform's .NET 8 SDK with zero NuGet restore needed for the class library
-itself. That's not incidental - it's how this codebase was actually developed
-and verified (no Windows machine was available during initial development).
-Any new business logic goes in `Core`. If you find yourself adding a
-`using Microsoft.UI...` anywhere outside `src/TextInFilesSearch/Views` or
-`App.xaml.cs`, stop - that logic belongs in `Core` instead, with the WinUI
-dependency injected in from the head project.
+## Why the migration happened
 
-## `powershell/` is reference-only - never wire it up
+WinUI 3 cannot run, build, or be debugged on a non-Windows development
+machine at all - every UI iteration had to go through a Windows CI
+round-trip (tens of minutes each). A real bug (`EnableMsixTooling=false`
+silently disabling `resources.pri` generation, causing "app launches, no
+window appears, no error") took three separate CI round-trips to diagnose
+blind, something local reproduction would have caught in seconds. Rust +
+Dioxus was chosen specifically so the whole app - business logic AND UI -
+can be built, run, and debugged locally on any platform, closing that loop.
 
-The app has zero runtime or build dependency on the `.ps1` files. They exist
-so the original implementation can be diffed against if a behavior
-discrepancy is ever suspected. Do not add a PowerShell invocation, a
-`System.Management.Automation` reference, or any shell-out to `powershell.exe`
-anywhere in `src/`. If a feature seems missing, port it into `Core` as C# -
-don't fall back to calling out to the old script.
+## Why `dioxus-native` (Blitz/WGPU/winit), not `dioxus-desktop` (wry/WebView2)
+
+`app/Cargo.toml` enables dioxus's `"native"` feature, not `"desktop"`. This
+was a deliberate, verified decision, not a default: `wry` (the webview
+backend `"desktop"` uses) hardcodes `browserExecutableFolder` to null in its
+`CreateCoreWebView2EnvironmentWithOptions` call (confirmed by reading
+`wry-0.53.5/src/webview2/mod.rs` directly in the local Cargo registry cache,
+not assumed from documentation) - there is no supported way to bundle a
+Fixed Version WebView2 Runtime app-locally with it. Every `"desktop"` build
+would therefore depend on a machine-wide WebView2 install, which directly
+violates this project's standing "fully self-contained, no host-machine
+dependency" requirement (the same requirement that drove bundling the VC++
+Redistributable for the WinUI build - see `docs/deployment.md`).
+`dioxus-native` has no WebView dependency at all: Windows' bundled D3D12
+(always present) is the only runtime graphics dependency. If you ever
+consider switching back to `"desktop"`, re-verify that constraint hasn't
+changed upstream first - don't just flip the feature flag.
+`.github/workflows/rust-build.yml` has a regression check that fails the
+build if `WebView2Loader.dll` ends up linked into `app.exe`.
+
+## `powershell/` and `src/TextInFilesSearch(.Core)/` are reference-only
+
+Neither has a runtime or build dependency from `native-search/`,
+`search-core/`, or `app/`. They exist so behavior can be diffed against if a
+discrepancy is ever suspected between the Rust port and the (twice-migrated)
+original. Do not add a PowerShell invocation, a C#/`.NET` reference, or any
+shell-out to either from Rust code. If a feature seems missing from the Rust
+port, port it into `search-core` - don't fall back to calling out to an
+older implementation.
 
 ## Design decisions worth knowing before you change them
 
-- **No CommunityToolkit.Mvvm.** `Helpers/ObservableObject.cs` and
-  `Helpers/RelayCommand.cs` are small hand-rolled `INotifyPropertyChanged`/
-  `ICommand` implementations. This was originally a workaround for no NuGet
-  access in the dev sandbox, not a hard architectural requirement - swapping
-  to the MVVM Toolkit later is a fine, low-risk change if you want the
-  source-generator ergonomics (`[ObservableProperty]` etc.). Just don't do it
-  silently; it changes the dependency footprint of a self-contained build.
-- **Folder pickers and "open report" are injected, not called directly** from
-  `MainViewModel`. Keep it that way - it's what lets the ViewModel be unit
-  tested without a Windows App SDK reference. If you add a new
-  Windows-API-dependent action, inject it the same way rather than reaching
-  into WinUI types from the ViewModel.
-- **`PublishSingleFile` is deliberately `false`.** WinUI 3's native resources
-  and the Windows App SDK's bundled DLLs have a documented history of
-  single-file-publish edge cases. Don't flip this on without actually
-  verifying the result runs on a clean machine (see `docs/deployment.md`) -
-  a green build is not the same as a working publish here.
-- **`WindowsPackageType=None` (unpackaged, no MSIX)** and
-  **`SelfContained=true` + `WindowsAppSDKSelfContained=true`** are both load-
-  bearing for the "runs on a machine with no internet, no admin rights, no
-  pre-installed runtime" requirement. Don't remove these to "simplify" the
-  csproj without re-reading `docs/deployment.md` first.
+- **`fancy-regex`, not `regex`, throughout `matching.rs` and the report
+  highlighter.** Whole-word matching needs lookaround
+  (`(?<![\p{L}\p{N}_])...(?![\p{L}\p{N}_])`, so punctuation-edged filters
+  like "C#" work standing alone between spaces) - the `regex` crate
+  deliberately doesn't support lookaround (no backtracking, by design).
+  Verified against the C# whole-word test cases before adopting, not
+  assumed. Using `fancy-regex` for plain/regex-mode filters too (not just
+  whole-word) avoids two different regex engines' matching semantics
+  quietly diverging on edge cases.
+- **DOCX/PPTX/XLSX/ZIP extraction is hand-rolled (`zip` + regex
+  tag-stripping), not a real OOXML parser crate.** The C# original is
+  itself dependency-free (`ZipArchive` + `Regex`, no OOXML library) - this
+  is a deliberate parity choice, not an oversight. A "better" library
+  (`calamine`, `docx-rust`, ...) would extract text differently in edge
+  cases and silently drift from the byte-for-byte-tested original.
+- **`InFlightMap` (orchestrator.rs) is `std::sync::Mutex`, not
+  `tokio::sync::Mutex`.** The PDF-progress and retry-status callbacks
+  extraction.rs/file_reader.rs accept are plain synchronous `FnMut`
+  closures (not async) - a std Mutex lets them lock/update/unlock without
+  needing to be async themselves, and the critical sections are always
+  short (a HashMap insert). Don't "upgrade" this to an async mutex without
+  also making those callback signatures async.
+- **`AppState` (app/src/state.rs) is a flat `Copy` struct of `Signal<T>`
+  fields**, not a context-provided struct or a nested tree of smaller
+  state objects. `Signal<T>` is itself `Copy`, so this is the idiomatic
+  Dioxus pattern for a single-window app - passing `AppState` into a
+  component or an async task just copies a handful of cheap handles, no
+  `Arc`/context-provider plumbing needed.
+- **Numeric `<input>` handlers must only call `.set()` on a successful
+  parse**, never fall back to a hardcoded default on invalid/partial input.
+  Dioxus's controlled inputs re-render the `value` attribute on every
+  signal change - calling `.set()` with a fallback default on every
+  keystroke (including while the field is transiently empty mid-edit)
+  fights the user's typing with a visible snap-back. This was a real bug
+  caught and fixed during the initial port; if you add a new numeric field,
+  match the existing pattern (`if let Ok(v) = evt.value().parse() { ... }`,
+  no `else` branch that sets anything).
 
 ## Testing requirements - do not skip these
 
-- **Before considering any `Core` or `ViewModels` change done**, run:
+- **Before considering any `search-core` change done**, run:
   ```
-  dotnet run --project tests/TextInFilesSearch.Tests
+  cargo test -p search-core
   ```
-  This is a plain console harness (not xUnit/MSTest, deliberately - zero
-  package restore needed), currently 60 checks covering all three match
-  modes, exclude scopes (including that ExcludeFolders matches whole path
-  segments, not a raw substring - excluding "bin" must not exclude "robin"),
-  whole-word/regex matching (including the lookaround-based whole-word
-  boundary that correctly handles punctuation-edged filters like "C#", and
-  highlight-span correctness), invalid-regex-filter error reporting, the
+  Zero GUI dependency, runs anywhere (developed and verified without a
+  Windows machine, same as the old C# `Core` was). Covers all three match
+  modes, exclude scopes (including that `exclude_folders` matches whole
+  path segments, not a raw substring), whole-word/regex matching (including
+  the punctuation-edged "C#" case and highlight-span correctness),
+  invalid-regex-filter error reporting (naming the bad filter), the
   ASCII85 decoder, RTF extraction, real DOCX/PPTX (slides + speaker notes +
-  SmartArt diagram)/XLSX/ZIP (including a nested DOCX entry)/PDF files (the
-  PDF case specifically exercises an ASCII85Decode+FlateDecode filter chain
-  that silently failed before that bug was caught), parallel-vs-sequential
-  consistency, cancellable/progress-reported directory enumeration, the full
-  incremental cache lifecycle, CSV formula-injection neutralization, the
-  Windows-1252 encoding path, ViewModel numeric-setting clamps and output-name
-  sanitization, the extension type-to-filter/tick-list picker, and the
-  ViewModel run/cancel/progress/streamed-results lifecycle. Add a new check
-  here for any new behavior rather than trusting a passing build.
-- **The WinUI layer (`src/TextInFilesSearch/Views`, the `.csproj`'s publish
-  config) cannot be verified this way** - it needs an actual Windows build.
-  `.github/workflows/build.yml` is the real verification gate: it builds,
-  runs the test harness above, publishes self-contained, then explicitly
-  checks the published output for `hostfxr.dll`/`coreclr.dll` (proves the
-  .NET runtime is bundled) and `Microsoft.WindowsAppRuntime.dll` (proves the
-  Windows App SDK runtime is bundled), and fails loudly if either is
-  missing rather than letting a framework-dependent build slip through. If
-  you change `RuntimeIdentifier`, `SelfContained`, or
-  `WindowsAppSDKSelfContained` in the `.csproj`, update the matching
-  verification step in `build.yml` too - they're meant to stay in sync.
-- If you have access to a real Windows machine, that's a faster feedback
-  loop than round-tripping through CI for XAML/WinUI changes specifically.
+  SmartArt diagram)/XLSX/ZIP (including a nested DOCX entry)/PDF fixtures
+  (the PDF case specifically exercises an ASCII85Decode+FlateDecode filter
+  chain), parallel-vs-sequential consistency, cancellable/progress-reported
+  directory enumeration, the full incremental cache lifecycle, CSV
+  formula-injection neutralization, the Windows-1252 encoding path, the
+  native_search index-per-folder/auto-exclude/skip-if-unchanged policy, and
+  full end-to-end orchestrator runs against every real fixture. Add a new
+  test here for any new behavior rather than trusting a passing build.
+- **The `app` crate (Dioxus UI) cannot be fully verified this way** - the
+  actual rendered window needs a real run. `dx serve` (or `cargo run -p
+  app`) locally is the fast feedback loop; unlike the old WinUI head, this
+  works on any platform including macOS/Linux, since `dioxus-native` has no
+  Windows-only rendering dependency. `.github/workflows/rust-build.yml` is
+  the CI gate for the actual win-x64 build: it builds `app` for
+  `x86_64-pc-windows-msvc` on a Windows runner and checks the published exe
+  for an accidental `WebView2Loader.dll` dependency creeping back in (see
+  "Why dioxus-native" above).
+- **`src/TextInFilesSearch(.Core)/` (the C#/WinUI reference app)** still
+  has its own gate: `dotnet run --project tests/TextInFilesSearch.Tests`
+  locally, `.github/workflows/build.yml` in CI (builds, tests, publishes
+  self-contained, and checks the publish output for `hostfxr.dll`/
+  `coreclr.dll`/`Microsoft.WindowsAppRuntime.dll`/`resources.pri`/
+  `native_search.dll`, and the absence of MSIX output). Only relevant if
+  you're deliberately still touching that app during the transition.
 
 ## Live progress reporting is a hard requirement, not a nice-to-have
 
 This project exists partly because of a specific, explicit complaint: PDF
-processing in the original tool would go silent for many seconds with no way
-to tell "still working" from "actually stuck." Any future change to
-`SearchOrchestrator` or `TextExtractionService.ExtractPdfLines` MUST preserve:
-- Per-file progress reporting during extraction, not just on file completion
-  (`PdfProgressCallback` fires roughly every 150ms with streams-scanned +
-  elapsed time).
-- A background ticker during parallel runs so elapsed-time displays keep
-  moving between file completions, not just when a file finishes.
-- Per-file in-flight status visible in the UI (`ViewModel.InFlightFiles`),
+processing in the original PowerShell tool would go silent for many seconds
+with no way to tell "still working" from "actually stuck." Any future
+change to `search-core::orchestrator` or `extraction::extract_pdf_lines`
+MUST preserve:
+- Per-file progress reporting during extraction, not just on file
+  completion (the PDF progress callback fires roughly every 150ms with
+  streams-scanned + elapsed time).
+- A background ticker during parallel runs (`orchestrator.rs`'s
+  `ticker_handle`) so elapsed-time displays keep moving between file
+  completions, not just when a file finishes.
+- Per-file in-flight status visible in the UI (`AppState.in_flight_files`),
   not just an aggregate progress bar - a user should be able to see which
   specific file is slow and what it's doing.
 
-Don't refactor this into a simpler "start/done" event model even if it looks
-cleaner - that regresses the exact problem this app was built to fix.
+Don't refactor this into a simpler "start/done" event model even if it
+looks cleaner - that regresses the exact problem this app was built to fix.
 
 ## Bug classes already found and fixed once - watch for recurrences
 
-- A mode-gating bug in `MatchingEngine.ApplyLineMatching`: "no hits at all"
-  and "hits existed but failed AllInFile/Proximity gating" were briefly
-  conflated by inferring pass/fail from whether the hits list was empty.
-  Fixed by making `passesMode` an explicit `out` parameter. If you touch this
-  method, keep that distinction explicit rather than re-deriving it from list
-  state.
-- An XML comment containing `--` broke a `.csproj` file outright (XML
-  disallows `--` inside comments). Worth remembering when writing comments in
-  any `.csproj`/`.xaml`/`.yml` file in this repo.
-- A `zip -x "*.git*"` packaging command once silently excluded the entire
-  `.github/` folder, because the wildcard substring-matched ".git" inside
-  ".github". If you ever script an archive/export of this repo, use an exact
-  path exclusion (e.g. `-x "*/.git/*"`) rather than a bare substring wildcard,
-  and diff the archive's file list against the source tree afterward rather
-  than assuming the exclusion did only what you intended.
+- A mode-gating bug: "no hits at all" and "hits existed but failed
+  AllInFile/Proximity gating" were briefly conflated by inferring pass/fail
+  from whether the hits list was empty (the original C# bug). The Rust
+  port's `matching::apply_line_matching` reports `passes_mode` as an
+  explicit struct field for exactly this reason - keep that distinction
+  explicit rather than re-deriving it from list state if you touch this
+  function.
+- A numeric `<input>` snap-back bug (see "Design decisions" above) -
+  calling `.set()` with a fallback default on every keystroke instead of
+  only on successful parse.
+- (Historical, C#-era, preserved for context) An XML comment containing
+  `--` broke a `.csproj` file outright; a `zip -x "*.git*"` packaging
+  command once silently excluded the entire `.github/` folder via
+  substring wildcard matching. Worth remembering if you ever script an
+  archive/export of this repo - use exact path exclusions, not bare
+  substring wildcards, and diff the result.
 
-## Feature parity checklist (from the original PowerShell tool)
+## Feature parity checklist (from the original PowerShell tool, via the C# port)
 
 If refactoring search/matching/reporting, confirm none of these regress:
-match modes (AnyLine / AllInFile / Proximity), exclude filters with Line/File
-scope, exclude-folder matching by whole path segment (never raw substring -
-see the bug class note above), whole-word matching (lookaround-based, not
-`\b`, so punctuation-edged filters like "C#" work), regex mode (with a typed
-`InvalidFilterRegexException` naming the bad filter instead of a bare crash),
-GroupBy (Created/Modified/None), the extension type-to-filter/tick-list
-picker (`Models/ExtensionCatalog.cs` is the single source of truth backing
-both the picker and the engine's default list) plus a custom-extension add
-path, parallel processing via `Parallel.ForEachAsync` with a throttle limit,
-the incremental cache (fingerprinted by settings, keyed by path + size +
-mtime) including that cache-reused files still stream through progress, dry
-run, retry-with-backoff plus per-file timeout for locked/slow files
+match modes (AnyLine / AllInFile / Proximity), exclude filters with
+Line/File scope, exclude-folder matching by whole path segment (never raw
+substring), whole-word matching (lookaround-based, not `\b`, so
+punctuation-edged filters like "C#" work), regex mode (with a typed error
+naming the bad filter instead of a bare crash), group-by (Created/Modified/
+None), the extension type-to-filter/tick-list picker
+(`search-core::models::extension_catalog` is the single source of truth
+backing both the picker and the engine's default list) plus a
+custom-extension add path, parallel processing with a throttle limit, the
+incremental cache (fingerprinted by settings, keyed by path + size +
+mtime) including that cache-reused files still stream through progress,
+dry run, retry-with-backoff plus per-file timeout for locked/slow files
 (including detecting a file truncated by a concurrent write mid-read),
 symlink-safe and cancellable directory walking with periodic enumeration
 progress, encoding detection (BOM → strict UTF-8 → Windows-1252 fallback),
 CSV export's formula-injection guard, live streaming of results into the
-UI as each file completes (not just after the whole run finishes), and the
+UI as each file completes (not just after the whole run finishes), the
 HTML report's dark-mode CSS, table of contents, per-filter bar chart, PDF
-low-confidence flagging, and match highlighting.
+low-confidence flagging, and match highlighting, and (issue #2) the
+native_search fast re-search index: per-folder placement, auto-exclusion,
+and skip-reindex-if-unchanged.
 
 ## Target environment (do not relax these without discussion)
 
 Windows 10 1809+ / Windows 11, `win-x64`. No internet access, no admin
-rights, no pre-installed .NET runtime, no pre-installed Windows App SDK
-runtime required on the machine running the built app. Build-time internet
-access (NuGet restore in CI) is fine and expected - it's only the *published,
-running application* that must be fully self-contained and offline-capable.
+rights, no pre-installed runtime of any kind required on the machine
+running the built app. Build-time internet access (crates.io/NuGet restore
+in CI) is fine and expected - it's only the *published, running
+application* that must be fully self-contained and offline-capable. See
+"Why dioxus-native, not dioxus-desktop" above for the one place this
+requirement actively shaped a dependency choice.
