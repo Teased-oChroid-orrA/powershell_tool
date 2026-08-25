@@ -33,8 +33,27 @@ fn main() {
     // this was added).
     let _ = dioxus::logger::init(dioxus::logger::tracing::Level::INFO);
 
-    let window_attributes = dioxus::native::WindowAttributes::default().with_title("GS Engineering - Text Search");
+    let window_attributes = dioxus::native::WindowAttributes::default()
+        .with_title("GS Engineering - Text Search")
+        .with_window_icon(load_window_icon());
     launch::run(App, window_attributes);
+}
+
+/// Decodes the bundled GS Engineering app icon into the raw RGBA buffer
+/// `winit::window::Icon::from_rgba` needs. The window previously had no
+/// custom icon at all (`docs/rust-rewrite-status.md`'s "not yet done"
+/// note) - `WindowAttributes` never called `.with_window_icon(...)`. Loaded
+/// from bytes embedded at compile time (`include_bytes!`), not read from
+/// disk at runtime, so it stays part of the single self-contained exe (see
+/// CLAUDE.md's "no host-machine dependency" target). Returns `None` on any
+/// decode failure rather than panicking - a missing/bad icon should never
+/// stop the window from opening.
+fn load_window_icon() -> Option<winit::window::Icon> {
+    const ICON_BYTES: &[u8] =
+        include_bytes!("../../GS_Engineering_Brand_Assets/GS_Engineering_AppIcon_64x64.png");
+    let img = image::load_from_memory(ICON_BYTES).ok()?.into_rgba8();
+    let (width, height) = img.dimensions();
+    winit::window::Icon::from_rgba(img.into_raw(), width, height).ok()
 }
 
 /// Hand-rolled replacement for `dioxus_native::launch_cfg` - see
@@ -203,18 +222,28 @@ fn App() -> Element {
             class: "app-shell",
             "data-theme": if dark() { "dark" } else { "light" },
             tabindex: "-1",
-            // Global Ctrl/Cmd+K (command palette) and Escape (close it) -
-            // verified this renderer dispatches keydown regardless of
-            // modifier state or focus target (see command_palette.rs's
-            // doc comment for the exact evidence). `tabindex: "-1"` makes
-            // this div a valid keyboard-event target even though it's
-            // never meant to be tab-stopped into.
+            // Global Ctrl/Cmd+K (command palette), Escape (close it), and
+            // Up/Down/Enter (results-list selection/open) - verified this
+            // renderer dispatches keydown regardless of modifier state or
+            // focus target (see command_palette.rs's doc comment for the
+            // exact evidence). `tabindex: "-1"` makes this div a valid
+            // keyboard-event target even though it's never meant to be
+            // tab-stopped into. Up/Down/Enter are gated on the command
+            // palette being closed so they don't fight its own (separate)
+            // list; row selection was previously mouse-only.
             onkeydown: move |e| {
                 let mods = e.modifiers();
                 if e.code() == Code::KeyK && (mods.contains(Modifiers::CONTROL) || mods.contains(Modifiers::META)) {
                     command_palette_open.set(!command_palette_open());
                 } else if e.code() == Code::Escape && command_palette_open() {
                     command_palette_open.set(false);
+                } else if !command_palette_open() {
+                    match e.code() {
+                        Code::ArrowDown => state.select_relative(1),
+                        Code::ArrowUp => state.select_relative(-1),
+                        Code::Enter => state.open_selected_result(),
+                        _ => {}
+                    }
                 }
             },
             onmousemove: move |e| {
@@ -611,6 +640,12 @@ button.primary {
 }
 button.primary:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); }
 .caption { color: var(--fg-muted); font-size: 0.8em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.field-error {
+    margin: 0; padding: var(--space-1) var(--space-2);
+    font-size: 0.8em; font-weight: 500; color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 14%, transparent);
+    border-radius: var(--radius-sm); word-break: break-word;
+}
 
 /* Custom dropdown - stands in for <select> (see the comment on `Dropdown` in components.rs) */
 .select-box { position: relative; min-width: 0; }
@@ -701,6 +736,18 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .chip:hover { color: var(--fg); border-color: var(--border-strong); background: var(--panel-hover); }
+/* A preset chip paired with its own small delete button - two adjacent
+   buttons that read as one pill (the round radius only on the outer
+   edges), unlike a plain `.chip` (recent searches), which has no per-item
+   delete affordance at all. */
+.chip-removable { display: inline-flex; max-width: 100%; }
+.chip-removable .chip { border-radius: var(--radius-pill) 0 0 var(--radius-pill); border-right: none; }
+.chip-remove {
+    flex: none; padding: 3px 6px; font-size: 0.72em;
+    border-radius: 0 var(--radius-pill) var(--radius-pill) 0;
+    background: var(--bg-sunken); color: var(--fg-muted);
+}
+.chip-remove:hover { color: var(--danger); background: var(--panel-hover); border-color: var(--danger); }
 
 .stat-bars { display: flex; flex-direction: column; gap: 3px; margin: -4px 0 4px; }
 .stat-bar-row { display: flex; align-items: center; gap: var(--space-2); font-size: 0.78em; min-width: 0; }
@@ -791,10 +838,14 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 .ctx-item:hover { background: var(--panel-hover); }
 
 .folder-changed-hint {
-    display: block; padding: var(--space-2) var(--space-3);
+    display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+    padding: var(--space-2) var(--space-3);
     border-radius: var(--radius-sm); font-size: 0.85em; font-weight: 500;
     background: color-mix(in srgb, var(--active) 18%, var(--panel-bg));
     color: var(--active);
+}
+.folder-changed-hint button {
+    flex: none; color: var(--active); border-color: color-mix(in srgb, var(--active) 45%, var(--border));
 }
 
 .pagination { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-1) 0; }

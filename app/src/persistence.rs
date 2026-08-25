@@ -17,6 +17,13 @@ use crate::state::{AppState, ExtensionOption, RecentSearch};
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub struct PersistedState {
     pub search_path: String,
+    // `serde(default)` specifically here (unlike the other fields above,
+    // which predate this one) so a config file saved before multi-root
+    // search existed still deserializes successfully instead of `load()`
+    // silently discarding the whole file (`.ok()` on a hard parse failure)
+    // over one new, harmless-to-default field.
+    #[serde(default)]
+    pub search_paths_extra: Vec<String>,
     pub output_folder: String,
     pub output_name: String,
     pub filters_text: String,
@@ -43,6 +50,21 @@ pub struct PersistedState {
     pub index_for_fast_search: bool,
     pub selected_extensions: Vec<String>,
     pub recent_searches: Vec<RecentSearch>,
+    // `serde(default)` for the same reason as `search_paths_extra` above -
+    // a config file saved before named presets existed shouldn't fail to
+    // load entirely over one new, harmless-to-default field.
+    //
+    // NOTE: `SavedPreset::settings` is ALSO a `PersistedState`, so this
+    // field is structurally recursive (a preset's stored snapshot has its
+    // own `saved_presets` field). `build_snapshot` always zeroes it on the
+    // snapshot handed to `AppState::save_current_as_preset` specifically
+    // to prevent that recursion from actually storing data at every
+    // level - each preset's OWN nested snapshot always has an empty
+    // `saved_presets`, so this can't balloon in size across repeated
+    // saves. Only the outer, top-level snapshot `save()` writes to disk
+    // carries the real list.
+    #[serde(default)]
+    pub saved_presets: Vec<crate::state::SavedPreset>,
     pub dark_theme: bool,
 }
 
@@ -72,7 +94,28 @@ pub fn load() -> Option<PersistedState> {
 /// added later just uses the current default for it, rather than
 /// zeroing it out).
 pub fn apply(state: &mut AppState, persisted: PersistedState) {
+    apply_settings_fields(state, &persisted);
+    state.recent_searches.set(persisted.recent_searches);
+    state.saved_presets.set(persisted.saved_presets);
+}
+
+/// Same field-by-field restore as [`apply`], minus `recent_searches` (and
+/// `dark_theme`, which `apply` never touches either - handled separately
+/// in `main.rs`). Used for named search presets (`AppState::apply_preset`)
+/// - applying a saved preset should restore its settings without clobbering
+/// the user's actual, currently-accumulating recent-searches list, which a
+/// preset is a completely separate, named-and-persisted concept from (a
+/// preset is deliberately saved once and only changes when the user
+/// re-saves it under that name; recent searches are an automatic MRU of
+/// the last 8 runs).
+pub fn apply_preset(state: &mut AppState, persisted: &PersistedState) {
+    apply_settings_fields(state, persisted);
+}
+
+fn apply_settings_fields(state: &mut AppState, persisted: &PersistedState) {
+    let persisted = persisted.clone();
     state.search_path.set(persisted.search_path);
+    state.search_paths_extra.set(persisted.search_paths_extra);
     state.output_folder.set(persisted.output_folder);
     state.output_name.set(persisted.output_name);
     state.filters_text.set(persisted.filters_text);
@@ -115,7 +158,6 @@ pub fn apply(state: &mut AppState, persisted: PersistedState) {
         state.max_retries.set(v);
     }
     state.index_for_fast_search.set(persisted.index_for_fast_search);
-    state.recent_searches.set(persisted.recent_searches);
 
     if !persisted.selected_extensions.is_empty() {
         let mut catalog = state.extension_catalog.write();
@@ -139,12 +181,27 @@ pub fn apply(state: &mut AppState, persisted: PersistedState) {
 /// the user).
 pub fn save(state: &AppState, dark_theme: bool) {
     let Some(path) = config_path() else { return };
+    let persisted = build_snapshot(state, dark_theme);
 
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(&persisted) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+/// Builds a full settings snapshot from the live `AppState` - shared by
+/// [`save`] (writes it to the cross-relaunch config file) and named search
+/// presets (`AppState::save_current_as_preset`, which keeps a named one of
+/// these rather than the single always-latest one `save` maintains).
+pub fn build_snapshot(state: &AppState, dark_theme: bool) -> PersistedState {
     let selected_extensions: Vec<String> =
         state.extension_catalog.read().iter().filter(|e| e.is_selected).map(|e| e.extension.clone()).collect();
 
-    let persisted = PersistedState {
+    PersistedState {
         search_path: state.search_path.read().clone(),
+        search_paths_extra: state.search_paths_extra.read().clone(),
         output_folder: state.output_folder.read().clone(),
         output_name: state.output_name.read().clone(),
         filters_text: state.filters_text.read().clone(),
@@ -171,13 +228,7 @@ pub fn save(state: &AppState, dark_theme: bool) {
         index_for_fast_search: *state.index_for_fast_search.read(),
         selected_extensions,
         recent_searches: state.recent_searches.read().clone(),
+        saved_presets: state.saved_presets.read().clone(),
         dark_theme,
-    };
-
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(json) = serde_json::to_string_pretty(&persisted) {
-        let _ = std::fs::write(path, json);
     }
 }

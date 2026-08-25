@@ -43,3 +43,17 @@ serde_json = "1"
 # since the last run. Native OS watch APIs (FSEvents/ReadDirectoryChangesW/
 # inotify), not polling.
 notify = "6"
+# Decodes the bundled window icon PNG into the raw RGBA winit::window::Icon
+# needs - "png" only (default-features off) since that's the one format
+# actually used, not the full codec set.
+image = { version = "0.25", default-features = false, features = ["png"] }
+# Desktop completion notification (epic backlog #8) - native toast APIs
+# (WinRT toast on Windows, NSUserNotificationCenter/UNUserNotification on
+# macOS, D-Bus on Linux), not a custom in-app popup. Best-effort: a failed
+# notification (e.g. a Windows AppUserModelID quirk for unpackaged/
+# unsigned exes - a real, known rough edge for toast notifications from a
+# plain win32 exe, not yet verified against an actual signed build of this
+# app) is swallowed, same as this app's established pattern for the
+# settings file and incremental cache - never a reason to interrupt the
+# user or fail a search.
+notify-rust = "4"

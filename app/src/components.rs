@@ -89,6 +89,37 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                 }
             }
 
+            // Multi-root search - additional folders searched alongside
+            // "Search folder" above in the same run (`run_search` loops
+            // over all of them and merges results into one report). Only
+            // shown once there's at least one extra root, or via the
+            // always-visible "+ Add another folder" affordance to add the
+            // first one.
+            if !state.search_paths_extra.read().is_empty() {
+                div { class: "field",
+                    span { "Additional folders" }
+                    div { class: "chip-row",
+                        for path in state.search_paths_extra.read().iter().cloned() {
+                            button {
+                                key: "{path}",
+                                class: "chip",
+                                title: "Remove {path}",
+                                disabled: is_running,
+                                onclick: move |_| state.remove_extra_search_path(&path),
+                                "{path} \u{2715}"
+                            }
+                        }
+                    }
+                }
+            }
+            div { class: "row",
+                button {
+                    disabled: is_running,
+                    onclick: move |_| { spawn(state.browse_add_search_folder()); },
+                    "+ Add another folder"
+                }
+            }
+
             div { class: "row",
                 label { class: "field",
                     span { "Output folder" }
@@ -132,6 +163,64 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                 }
             }
 
+            // Named presets - a full settings snapshot saved under a
+            // user-given name, distinct from the automatic "Recent" MRU
+            // above (which only remembers path+filters and can't be
+            // deliberately kept). Click a chip to apply it; its own × button
+            // deletes it.
+            {
+                let mut preset_name = use_signal(String::new);
+                rsx! {
+                    div { class: "field",
+                        span { "Presets" }
+                        div { class: "row",
+                            input {
+                                r#type: "text",
+                                placeholder: "Preset name...",
+                                value: "{preset_name}",
+                                oninput: move |e| preset_name.set(e.value()),
+                            }
+                            button {
+                                disabled: preset_name.read().trim().is_empty(),
+                                onclick: move |_| {
+                                    let name = preset_name.read().trim().to_string();
+                                    if !name.is_empty() {
+                                        state.save_current_as_preset(name);
+                                        preset_name.set(String::new());
+                                    }
+                                },
+                                "Save current as preset"
+                            }
+                        }
+                        if !state.saved_presets.read().is_empty() {
+                            div { class: "chip-row",
+                                for preset in state.saved_presets.read().iter().cloned() {
+                                    {
+                                        let preset_name = preset.name.clone();
+                                        rsx! {
+                                            div { key: "{preset.name}", class: "chip-removable",
+                                                button {
+                                                    class: "chip",
+                                                    title: "Apply this preset",
+                                                    onclick: move |_| state.apply_preset(&preset),
+                                                    "{preset_name}"
+                                                }
+                                                button {
+                                                    class: "chip-remove",
+                                                    title: "Delete this preset",
+                                                    onclick: move |_| state.delete_preset(&preset_name),
+                                                    "\u{2715}"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             details {
                 summary { "Matching" }
                 div { class: "expander-body",
@@ -162,6 +251,25 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                             onchange: move |e| state.use_regex.set(e.checked()),
                         }
                         span { "Use regex" }
+                    }
+                    // Catches an invalid regex filter before a run starts
+                    // instead of only after (`OrchestratorError::
+                    // InvalidFilterRegex`). `use_memo` re-derives only when
+                    // filters_text/exclude_filters_text/use_regex actually
+                    // change, not on every unrelated keystroke elsewhere in
+                    // this panel.
+                    {
+                        let regex_error = use_memo(move || {
+                            let _ = state.filters_text.read();
+                            let _ = state.exclude_filters_text.read();
+                            let _ = state.use_regex.read();
+                            state.regex_validation_error()
+                        });
+                        rsx! {
+                            if let Some(err) = regex_error() {
+                                p { class: "field-error", "{err}" }
+                            }
+                        }
                     }
                     // Whole-word mode requires regex mode to be OFF - `is_hit`
                     // in matching.rs checks `use_regex` first and never even
@@ -463,7 +571,7 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
 /// application code either. Pagination sidesteps the whole problem: it
 /// bounds the live DOM node count exactly like virtualization would,
 /// without needing scroll position at all.
-const RESULTS_PAGE_SIZE: usize = 50;
+pub(crate) const RESULTS_PAGE_SIZE: usize = 50;
 
 /// Ports the epic's §24 "search statistics" micro-breakdown - top 6
 /// extensions among the current hits, most-common first. Pure
@@ -507,7 +615,21 @@ pub fn ResultsPanel(state: AppState) -> Element {
 
             if *state.folder_changed_since_search.read() && !is_running {
                 div { class: "folder-changed-hint",
-                    "Files changed in this folder since your last search - run it again to see what's new."
+                    span { "Files changed in this folder since your last search - run it again to see what's new." }
+                    // Re-running IS how re-indexing happens in this app -
+                    // indexing is a side effect of a normal search run
+                    // (state.rs's `finish_successful_run`), not a separate
+                    // pathway - so "Reindex now" is just a convenience
+                    // alias for Run Search, shown only when there's
+                    // actually an index to keep current.
+                    if *state.index_for_fast_search.read() {
+                        button {
+                            class: "hit-action",
+                            disabled: !state.can_run(),
+                            onclick: move |_| { spawn(state.run_search()); },
+                            "Reindex now"
+                        }
+                    }
                 }
             }
 
@@ -630,6 +752,33 @@ pub fn ResultsPanel(state: AppState) -> Element {
                                             }
                                         },
                                         "Folder"
+                                    }
+                                    button {
+                                        class: "hit-action",
+                                        title: "Export just this file's hits as a text file",
+                                        onclick: {
+                                            let mut state = state;
+                                            let r = r.clone();
+                                            move |_| {
+                                                let output_folder = state.output_folder.read().trim().to_string();
+                                                if output_folder.is_empty() {
+                                                    return;
+                                                }
+                                                let file_stem = std::path::Path::new(&r.file_name)
+                                                    .file_stem()
+                                                    .map(|s| s.to_string_lossy().into_owned())
+                                                    .unwrap_or_else(|| r.file_name.clone());
+                                                let out_path = std::path::Path::new(&output_folder)
+                                                    .join(format!("{}_hits.txt", crate::state::sanitize_file_name(&file_stem)));
+                                                if std::fs::write(&out_path, r.hits_as_text()).is_ok() {
+                                                    let _ = open::that(&out_path);
+                                                    state.status_text.set(format!("Exported hits to {}", out_path.display()));
+                                                } else {
+                                                    state.status_text.set("Error exporting hits: could not write file.".to_string());
+                                                }
+                                            }
+                                        },
+                                        "Export"
                                     }
                                 }
                             }

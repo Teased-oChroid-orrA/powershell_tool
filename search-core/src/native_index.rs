@@ -184,6 +184,57 @@ mod tests {
         );
     }
 
+    /// Reproduces the actual app flow end to end - real files on disk,
+    /// through `orchestrator::run` (not a hand-built `FileSearchResult`
+    /// like the other tests here), through `index_hits_for_fast_search`,
+    /// then a real `NativeSearchEngine::open_or_create` + `search` in a
+    /// fresh engine instance (matching `app/src/state.rs`'s
+    /// `run_native_search`, which always opens a brand new engine handle
+    /// rather than reusing the one indexing used) - written to chase down
+    /// a "the indexer doesn't work" report the synthetic-hit tests above
+    /// wouldn't have caught.
+    #[tokio::test]
+    async fn full_pipeline_orchestrator_run_then_index_then_native_search_finds_hit() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("report.txt"), "quarterly torque figures\nnothing else here\n").unwrap();
+        std::fs::write(dir.path().join("other.txt"), "unrelated content\n").unwrap();
+
+        let mut exclude_folders = Vec::new();
+        ensure_index_folder_excluded(&mut exclude_folders);
+        let settings = crate::models::SearchSettings {
+            search_path: dir.path().to_string_lossy().into_owned(),
+            output_folder: dir.path().to_string_lossy().into_owned(),
+            filters: vec!["torque".to_string()],
+            exclude_folders,
+            ..Default::default()
+        };
+
+        let run_result = crate::orchestrator::run(settings, None, tokio_util::sync::CancellationToken::new())
+            .await
+            .unwrap();
+        let hit_results: Vec<FileSearchResult> = run_result
+            .file_results
+            .into_iter()
+            .filter(|r| r.status == FileSearchStatus::Hit)
+            .collect();
+        assert_eq!(hit_results.len(), 1, "expected exactly one real hit file from the orchestrator run");
+
+        let index_dir = index_directory(&dir.path().to_string_lossy());
+        ensure_index_directory_exists(&index_dir).unwrap();
+        {
+            let engine = NativeSearchEngine::open_or_create(&index_dir).unwrap();
+            let outcome = index_hits_for_fast_search(&engine, &hit_results).unwrap();
+            assert_eq!(outcome.indexed_count, 1, "the real hit file must actually get indexed");
+        }
+
+        // A fresh engine handle, exactly like run_native_search opens
+        // separately from whatever indexed the documents.
+        let search_engine = NativeSearchEngine::open_or_create(&index_dir).unwrap();
+        let results = search(&search_engine, "torque", 10).unwrap();
+        assert_eq!(results.len(), 1, "fast re-search must find the just-indexed document");
+        assert!(results[0].id.ends_with("report.txt"), "unexpected id: {}", results[0].id);
+    }
+
     #[test]
     fn index_then_search_finds_indexed_document() {
         let dir = tempfile::tempdir().unwrap();

@@ -56,16 +56,35 @@ pub fn PreviewPane(state: AppState) -> Element {
                     "This PDF's extracted text looks unreliable (often a sign of embedded/subsetted fonts) - open the file directly if you expected more matches."
                 }
             }
-            div { class: "preview-matches",
-                for (i, hit) in selected.hits.iter().enumerate() {
-                    div { key: "{i}", class: "preview-match",
-                        div { class: "preview-lineno caption", "Line {hit.line_number}" }
-                        if let Some(before) = &hit.before {
-                            pre { class: "preview-context", "{before}" }
-                        }
-                        pre { class: "preview-context preview-matchline", {highlighted_line(&hit.match_line, &hit.matched_filters)} }
-                        if let Some(after) = &hit.after {
-                            pre { class: "preview-context", "{after}" }
+            {
+                // Before/after context lines previously rendered plain,
+                // even in Proximity mode where a *different* filter
+                // matching on a nearby line is exactly what makes that
+                // context relevant - only the single match line ever got
+                // `<mark>` spans. Highlighted here against the full
+                // current filter list (not just `hit.matched_filters`,
+                // which is only ever this one line's own matches) so a
+                // filter that hit on the line just above/below shows up
+                // too. Best-effort against the *current* Filters field
+                // rather than a filter list captured at search time (this
+                // view has no such snapshot to read) - if filters were
+                // edited after the run without re-searching, highlighting
+                // may drift from what actually matched; the match line
+                // itself (`hit.matched_filters`) stays exact regardless.
+                let context_filters = crate::state::parse_list(&state.filters_text.read());
+                rsx! {
+                    div { class: "preview-matches",
+                        for (i, hit) in selected.hits.iter().enumerate() {
+                            div { key: "{i}", class: "preview-match",
+                                div { class: "preview-lineno caption", "Line {hit.line_number}" }
+                                if let Some(before) = &hit.before {
+                                    pre { class: "preview-context", {highlighted_line(before, &context_filters)} }
+                                }
+                                pre { class: "preview-context preview-matchline", {highlighted_line(&hit.match_line, &hit.matched_filters)} }
+                                if let Some(after) = &hit.after {
+                                    pre { class: "preview-context", {highlighted_line(after, &context_filters)} }
+                                }
+                            }
                         }
                     }
                 }

@@ -76,6 +76,24 @@ pub struct SearchSettings {
     pub file_timeout_seconds: i32,
 }
 
+/// Default parallel throttle limit - scaled to the machine's core count
+/// rather than the fixed `5` the PowerShell tool and C# port both used.
+/// `5` was tuned for a much older baseline and, per
+/// `docs/epic-ui-performance-and-design.md`'s large-folder performance
+/// investigation, concurrency is the next real lever now that literal-mode
+/// matching no longer pays `fancy_regex` overhead. 2x the core count is a
+/// reasonable starting point for I/O-bound work (most time per file is
+/// spent waiting on disk/extraction, not pegging a CPU core), clamped to
+/// [4, 32] so a single-core CI runner still gets some concurrency and a
+/// very-many-core machine doesn't spawn an unreasonable number of
+/// concurrent file handles. `available_parallelism()` can fail (rare,
+/// sandboxed/unusual environments) - falls back to the old fixed default
+/// in that case rather than panicking.
+pub fn default_throttle_limit() -> i32 {
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(5);
+    ((cores * 2) as i32).clamp(4, 32)
+}
+
 impl Default for SearchSettings {
     fn default() -> Self {
         Self {
@@ -100,7 +118,7 @@ impl Default for SearchSettings {
             export_json: false,
             open_report_when_done: false,
             parallel: false,
-            throttle_limit: 5,
+            throttle_limit: default_throttle_limit(),
             cache_file_path: None,
             dry_run: false,
             max_retries: 3,
@@ -322,7 +340,7 @@ mod tests {
         assert_eq!(s.max_file_size_mb, 50.0);
         assert_eq!(s.max_embed_lines, 4000);
         assert_eq!(s.pdf_timeout_seconds, 15);
-        assert_eq!(s.throttle_limit, 5);
+        assert!((4..=32).contains(&s.throttle_limit), "throttle_limit out of expected range: {}", s.throttle_limit);
         assert_eq!(s.max_retries, 3);
         assert_eq!(s.retry_delay_ms, 250);
         assert_eq!(s.file_timeout_seconds, 30);

@@ -2030,61 +2030,95 @@ entered, and the Fast re-search query/Search/Cancel controls only show
 once indexing is enabled (an explanatory line takes their place
 otherwise) - `app/src/components.rs`.
 
-## Backlog: further improvement ideas (not yet implemented)
+## Backlog: implemented
 
-Concrete, code-grounded next steps, roughly in order of likely impact:
+All 12 items below shipped in a follow-up pass, plus a real bug fix to
+the Fast re-search indexer along the way. **The indexer itself was never
+actually broken** - a new end-to-end test
+(`native_index::tests::full_pipeline_orchestrator_run_then_index_then_native_search_finds_hit`,
+real files through `orchestrator::run` → index → search, not a synthetic
+`FileSearchResult`) proved the underlying pipeline works. The real bug:
+the indexing-completion message only ever wrote to
+`native_search_status_text`, which renders inside the "Fast re-search
+(experimental)" `<details>` - collapsed by default, so indexing was
+succeeding silently where nobody had expanded that section to see it.
+Fixed by also folding the message into the main, always-visible status
+line (`app/src/state.rs`'s `finish_successful_run`), without touching
+`<details>`'s `open` state (would risk the exact "controlled attribute
+fights a user's own manual toggle" bug class `CLAUDE.md` documents for
+numeric inputs).
 
-1. **Auto-scale the default `throttle_limit`** to
-   `std::thread::available_parallelism()` (capped, e.g. 2x cores up to
-   32) instead of the fixed `5` inherited from the PowerShell/C# originals
-   (`search_core::models::SearchSettings::default`,
-   `app/src/state.rs`'s `throttle_limit` signal). Now that literal-mode
-   matching no longer pays `fancy_regex` overhead, concurrency is the next
-   real lever for large-folder wall-clock time - `5` was tuned for a much
-   older baseline.
-2. **Bundle a real window icon.** `app/src/main.rs`'s
-   `WindowAttributes::default().with_title(...)` never calls
-   `.with_window_icon(...)` - confirmed by grep, matches
-   `docs/rust-rewrite-status.md`'s "no custom icon" note. The C# app
-   already has `GS_Engineering_Brand_Assets/` wired up; port the same
-   icon in via `winit::window::Icon::from_rgba`.
-3. **Keyboard navigation of the results list.** Row selection (feeding
-   the preview pane) is mouse-only (`onclick` in `components.rs`'s hit
-   rows). Up/Down to move selection, Enter to open, would match the
-   preview pane's existing keyboard-first command palette pattern.
-4. **Auto-reindex prompt on fs_watch changes.** `app/src/fs_watch.rs`
-   only signals "this folder changed" (drives the existing
-   `folder_changed_since_search` hint); when fast-search indexing is
-   enabled, that hint could offer a one-click "Reindex now" instead of
-   just warning the index may be stale.
-5. **Live regex-filter validation.** Invalid regex filters currently only
-   surface as an error after a run starts
-   (`OrchestratorError::InvalidFilterRegex`). Compiling the filter text
-   with `fancy_regex` on each keystroke (debounced) and showing an inline
-   error under the Filters field in regex mode would catch this before
-   the user commits to a run.
-6. **Multi-root search.** `SearchSettings.search_path` is a single path;
-   a small add/remove list of roots searched in one run would help
-   compliance-style sweeps across several folders.
-7. **Named saved search presets**, beyond the existing 8-deep MRU
-   "recent searches" (`state.rs`'s `RecentSearch`/`remember_recent_search`)
-   - save a full settings snapshot under a user-given name for repeat
-   audits, not just the last 8 runs.
-8. **Toast/desktop notification on completion** when a long search
-   finishes while the window isn't focused - today, completion is only
-   visible by looking at the progress bar.
-9. **`app`-crate test coverage.** `search-core` has 82 tests; `app` has
-   none. The pure-logic pieces of `AppState` (settings-building,
-   recent-search dedup/cap, extension filtering) don't need a real window
-   and could get `#[test]`s directly.
-10. **Export size warnings.** The HTML report embeds everything inline
-    (including the base64 banner); a very large result set could produce
-    a sizeable file with no warning before writing it.
-11. **Per-file "export just this file's hits"** action alongside the
-    existing per-row Open/Copy-path/Open-folder buttons
-    (`components.rs`'s `.hit-actions`).
-12. **Proximity-mode span visualization** in the preview pane - currently
-    only the single match line gets highlight marks
-    (`preview.rs`'s `highlighted_line`); showing the actual matched range
-    across the before/match/after context would make Proximity-mode
-    results easier to read at a glance.
+All 12 items originally listed here shipped in the same pass as the
+indexer-visibility fix above:
+
+1. **Auto-scaled `throttle_limit` default** -
+   `search_core::models::default_throttle_limit()` uses
+   `std::thread::available_parallelism()` (2x cores, clamped to [4, 32]),
+   replacing the fixed `5` inherited from the PowerShell/C# originals.
+   Test assertion loosened from an exact `5` to a `4..=32` range check
+   accordingly.
+2. **Real window icon** - `app/src/main.rs`'s `load_window_icon()` decodes
+   `GS_Engineering_AppIcon_64x64.png` (embedded via `include_bytes!`, the
+   `image` crate with only its `png` feature) into the RGBA buffer
+   `winit::window::Icon::from_rgba` needs, wired via
+   `.with_window_icon(...)`.
+3. **Keyboard navigation of the results list** -
+   `AppState::select_relative`/`open_selected_result` (`state.rs`), wired
+   to Up/Down/Enter in the same app-shell-level `onkeydown` handler that
+   already does Ctrl/Cmd+K and Escape, gated on the command palette being
+   closed. Navigates the full results list (not just the current page),
+   flipping `results_page` to keep the selection visible.
+4. **"Reindex now" affordance** - a button next to the existing
+   folder-changed hint, shown only when fast-search indexing is on; it's
+   a convenience alias for Run Search, since indexing is a side effect of
+   a normal run, not a separate pathway.
+5. **Live regex-filter validation** -
+   `AppState::regex_validation_error` reuses
+   `matching::CompiledMatchState::build` (the exact compile path a real
+   run takes, not a reimplementation) and renders inline under "Use
+   regex" via a `use_memo`.
+6. **Multi-root search** - `AppState::search_paths_extra` (a second list
+   alongside the single `search_path`, not a breaking type change to
+   `SearchSettings`); `run_search` loops over every root sequentially
+   under one shared `CancellationToken` and merges each root's
+   `SearchRunResult` via the new `merge_run_result` helper. The
+   single-root case runs the identical loop with one iteration, not a
+   separate fast path.
+7. **Named saved search presets** - `SavedPreset { name, settings:
+   PersistedState }`, reusing the existing cross-relaunch snapshot shape
+   rather than a second one. `PersistedState::saved_presets` is
+   structurally recursive (a preset's own snapshot has a
+   `saved_presets` field) - `save_current_as_preset` always zeroes that
+   nested field to stop it from actually storing data at every level.
+8. **Desktop completion notification** - `notify-rust` (WinRT toast /
+   D-Bus / NSUserNotificationCenter), fired unconditionally on completion
+   rather than gated on real OS focus state (tracking that would need the
+   same custom winit `ApplicationHandler` interception `drag_drop.rs`
+   uses for drop events - more machinery than one notification justified).
+   Best-effort/swallowed on failure, matching this app's established
+   pattern for settings persistence and the incremental cache. Not yet
+   verified against a real signed Windows build - unpackaged win32 exes
+   have a known AppUserModelID rough edge with toast notifications.
+9. **`app`-crate test coverage** - 8 new `#[test]`s in `state.rs`
+   covering the pure, non-`Signal` helpers (`parse_list`,
+   `sanitize_file_name`, `change_extension`, `filtered_extensions`,
+   `selected_extensions_summary`, `RecentSearch::label`,
+   `merge_run_result`). `AppState` methods that read/write live `Signal`s
+   need a real component scope a bare `#[test]` doesn't have, so those
+   stay covered only by the existing `cargo run -p app` verification.
+10. **Export size warning** - `finish_successful_run` checks the built
+    HTML string's byte length against a 25 MB threshold and appends a
+    warning to the results summary rather than blocking the write - the
+    report is still valid, just possibly slow to open.
+11. **Per-file "export just this file's hits"** - `FileResultView::
+    hits_as_text` plus an "Export" button alongside Open/Copy/Folder,
+    writing a plain-text file into the output folder and opening it.
+12. **Proximity-mode context highlighting** - `preview.rs`'s before/after
+    context lines are now run through `highlighted_line` too (previously
+    only `hit.match_line` was), against the live Filters field's full
+    filter list rather than just the one hit's own `matched_filters` -
+    relevant specifically in Proximity mode, where a *different* filter
+    matching on a neighboring line is exactly what makes that context
+    worth seeing highlighted. Best-effort against the current Filters
+    field, not a filter list snapshotted at search time (the view has none
+    to read) - the match line itself stays exact regardless.

@@ -53,8 +53,10 @@ Not yet done:
   way (see that doc's "What shipped" section for the specifics of each).
   Nothing from that vision document remains unimplemented.
 - `CLAUDE.md`'s bundled-asset section (`GS_Engineering_Brand_Assets/` →
-  `Assets/AppIcon.ico`/`Banner.png`) hasn't been re-pointed at an `app/`
-  equivalent - the Dioxus window currently has no custom icon.
+  `Assets/AppIcon.ico`/`Banner.png`) - done. The HTML report already
+  embeds the banner as a base64 data URI (`search-core/src/report.rs`,
+  commit `f471438`) and the window now has a real icon too
+  (`app/src/main.rs`'s `load_window_icon`, embedded via `include_bytes!`).
 
 ## Key decisions and why (chronological)
 

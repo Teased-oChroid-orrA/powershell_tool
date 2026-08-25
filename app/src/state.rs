@@ -17,6 +17,7 @@
 use std::path::Path;
 
 use dioxus::prelude::*;
+use crate::persistence;
 use native_search::engine::{CancellationFlag, NativeSearchEngine, SearchHit};
 use search_core::models::{
     extension_catalog, ExcludeScope, FileSearchResult, FileSearchStatus, GroupByMode, InFlightFileStatus, MatchMode,
@@ -52,6 +53,26 @@ pub struct FileResultView {
     pub low_confidence_pdf: bool,
 }
 
+impl FileResultView {
+    /// Plain-text rendering of just this file's hits (line number, matched
+    /// filters, and the match line itself) - the content behind the
+    /// per-row "Export hits" action (`components.rs`), for pulling one
+    /// file's matches out on their own rather than the whole run's HTML
+    /// report.
+    pub fn hits_as_text(&self) -> String {
+        let mut out = format!("{}\n{}\n\n", self.full_name, "=".repeat(self.full_name.len()));
+        for hit in &self.hits {
+            out.push_str(&format!(
+                "Line {} (matched: {}):\n{}\n\n",
+                hit.line_number,
+                hit.matched_filters.join(", "),
+                hit.match_line
+            ));
+        }
+        out
+    }
+}
+
 impl From<&FileSearchResult> for FileResultView {
     fn from(r: &FileSearchResult) -> Self {
         let file_name = Path::new(&r.full_name)
@@ -69,11 +90,9 @@ impl From<&FileSearchResult> for FileResultView {
 }
 
 /// One prior search's search-defining fields (issue: epic §23 "recent
-/// searches") - session-only, in-memory, most-recent-first, capped and
-/// deduplicated in `AppState::remember_recent_search`. Deliberately not
-/// persisted to disk (no settings-persistence layer exists in this app
-/// yet for any other session toggle either - matches the rest of
-/// `AppState`, which all resets to defaults on relaunch).
+/// searches") - automatic, most-recent-first, capped and deduplicated in
+/// `AppState::remember_recent_search`. Persisted across relaunches
+/// (`persistence.rs`) alongside every other setting.
 #[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RecentSearch {
     pub search_path: String,
@@ -88,6 +107,18 @@ impl RecentSearch {
             .unwrap_or_else(|| self.search_path.clone());
         format!("{folder_name} - {}", self.filters_text)
     }
+}
+
+/// A full settings snapshot saved under a user-given name - unlike
+/// `RecentSearch` (an automatic MRU of the last 8 runs, just path+filters),
+/// a preset captures every setting (via `persistence::PersistedState`, the
+/// same snapshot shape used for cross-relaunch persistence - reused rather
+/// than inventing a second settings-shaped struct) and only changes when
+/// the user explicitly saves over it again.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct SavedPreset {
+    pub name: String,
+    pub settings: crate::persistence::PersistedState,
 }
 
 #[derive(Clone, PartialEq)]
@@ -108,6 +139,12 @@ impl From<SearchHit> for NativeHitView {
 pub struct AppState {
     // ---- Required ----
     pub search_path: Signal<String>,
+    // Additional search roots beyond `search_path` - multi-root search.
+    // Kept as a separate list (not folding `search_path` itself into a
+    // Vec) so the empty case is *exactly* the pre-existing single-root
+    // code path in `run_search`, not a one-element-Vec special case of a
+    // new one - zero behavior change for the common case.
+    pub search_paths_extra: Signal<Vec<String>>,
     pub output_folder: Signal<String>,
     pub output_name: Signal<String>,
     pub filters_text: Signal<String>,
@@ -167,6 +204,7 @@ pub struct AppState {
     pub last_report_path: Signal<Option<String>>,
     pub cancel_token: Signal<Option<CancellationToken>>,
     pub recent_searches: Signal<Vec<RecentSearch>>,
+    pub saved_presets: Signal<Vec<SavedPreset>>,
     /// Rendered by `ContextMenu` at the app root (`main.rs`), set by any
     /// row's right-click handler - a top-level signal rather than
     /// component-local state so the menu overlay isn't clipped by
@@ -209,6 +247,7 @@ impl AppState {
 
         AppState {
             search_path: use_signal(String::new),
+            search_paths_extra: use_signal(Vec::new),
             output_folder: use_signal(String::new),
             output_name: use_signal(String::new),
             filters_text: use_signal(String::new),
@@ -231,7 +270,7 @@ impl AppState {
             export_json: use_signal(|| false),
 
             parallel: use_signal(|| false),
-            throttle_limit: use_signal(|| 5),
+            throttle_limit: use_signal(search_core::models::default_throttle_limit),
             cache_file_path: use_signal(String::new),
             dry_run: use_signal(|| false),
             pdf_timeout_seconds: use_signal(|| 15),
@@ -259,6 +298,7 @@ impl AppState {
             last_report_path: use_signal(|| None),
             cancel_token: use_signal(|| None),
             recent_searches: use_signal(Vec::new),
+            saved_presets: use_signal(Vec::new),
             context_menu: use_signal(|| None),
             folder_changed_since_search: use_signal(|| false),
         }
@@ -283,6 +323,36 @@ impl AppState {
     /// Ports the "Recent" click-to-reapply interaction (epic §23) -
     /// re-populates the two search-defining fields without touching any
     /// other setting.
+    /// Saves (or overwrites, by name) a full settings snapshot as a named
+    /// preset - unlike the automatic `recent_searches` MRU, this persists
+    /// under a name the user chose and only changes when they explicitly
+    /// re-save over it. `dark_theme` is irrelevant to a *search* preset
+    /// (it's a global app-appearance setting, not a search setting) -
+    /// `persistence::apply_preset` never reads it back out, so `false`
+    /// here is inert, not a real "always applies dark mode" default.
+    pub fn save_current_as_preset(&mut self, name: String) {
+        let mut snapshot = persistence::build_snapshot(self, false);
+        // See the doc comment on `PersistedState::saved_presets` -
+        // zeroed here so a preset's own nested snapshot never carries a
+        // (potentially stale, unboundedly-growing-in-size-over-repeated-
+        // saves) copy of the whole presets list.
+        snapshot.saved_presets = Vec::new();
+        let mut presets = self.saved_presets.write();
+        if let Some(existing) = presets.iter_mut().find(|p| p.name == name) {
+            existing.settings = snapshot;
+        } else {
+            presets.push(SavedPreset { name, settings: snapshot });
+        }
+    }
+
+    pub fn apply_preset(&mut self, preset: &SavedPreset) {
+        persistence::apply_preset(self, &preset.settings);
+    }
+
+    pub fn delete_preset(&mut self, name: &str) {
+        self.saved_presets.write().retain(|p| p.name != name);
+    }
+
     pub fn apply_recent_search(&mut self, recent: &RecentSearch) {
         self.search_path.set(recent.search_path.clone());
         self.filters_text.set(recent.filters_text.clone());
@@ -379,6 +449,57 @@ impl AppState {
         }
     }
 
+    /// Live regex-filter validation - `use_regex` mode filters previously
+    /// only surfaced a bad pattern after a full run started
+    /// (`OrchestratorError::InvalidFilterRegex`). Reuses
+    /// `matching::CompiledMatchState::build` (the exact same compile path
+    /// a real run takes) rather than re-implementing regex validation, so
+    /// there's no risk of this check disagreeing with what a run would
+    /// actually do.
+    pub fn regex_validation_error(&self) -> Option<String> {
+        if !*self.use_regex.read() {
+            return None;
+        }
+        let settings = search_core::models::SearchSettings {
+            filters: parse_list(&self.filters_text.read()),
+            exclude_filters: parse_list(&self.exclude_filters_text.read()),
+            use_regex: true,
+            ..Default::default()
+        };
+        search_core::matching::CompiledMatchState::build(&settings).err().map(|e| e.to_string())
+    }
+
+    /// Moves the selected result by `delta` positions through the FULL
+    /// results list (not just the current page) - flips `results_page`
+    /// along with it so the newly-selected row is always the one visible,
+    /// rather than requiring a separate manual page click mid-navigation.
+    /// Row selection was previously mouse-only (`onclick` in
+    /// `components.rs`'s hit rows).
+    pub fn select_relative(&mut self, delta: i32) {
+        let results = self.results.read().clone();
+        if results.is_empty() {
+            return;
+        }
+        let current_idx = self
+            .selected_result
+            .read()
+            .as_ref()
+            .and_then(|sel| results.iter().position(|r| r.full_name == sel.full_name));
+        let next_idx = match current_idx {
+            Some(i) => (i as i32 + delta).clamp(0, results.len() as i32 - 1) as usize,
+            None if delta >= 0 => 0,
+            None => results.len() - 1,
+        };
+        self.selected_result.set(Some(results[next_idx].clone()));
+        self.results_page.set(next_idx / crate::components::RESULTS_PAGE_SIZE);
+    }
+
+    pub fn open_selected_result(&self) {
+        if let Some(r) = self.selected_result.read().as_ref() {
+            let _ = open::that(&r.full_name);
+        }
+    }
+
     pub fn cancel_search(&self) {
         if let Some(token) = self.cancel_token.read().as_ref() {
             token.cancel();
@@ -395,6 +516,21 @@ impl AppState {
         if let Some(handle) = rfd::AsyncFileDialog::new().pick_folder().await {
             self.search_path.set(handle.path().to_string_lossy().into_owned());
         }
+    }
+
+    pub async fn browse_add_search_folder(mut self) {
+        if let Some(handle) = rfd::AsyncFileDialog::new().pick_folder().await {
+            let path = handle.path().to_string_lossy().into_owned();
+            let primary = self.search_path.read().trim().to_string();
+            let mut extra = self.search_paths_extra.write();
+            if path != primary && !extra.iter().any(|p| p == &path) {
+                extra.push(path);
+            }
+        }
+    }
+
+    pub fn remove_extra_search_path(&mut self, path: &str) {
+        self.search_paths_extra.write().retain(|p| p != path);
     }
 
     pub async fn browse_output_folder(mut self) {
@@ -441,8 +577,21 @@ impl AppState {
         }
     }
 
+    /// Runs the search across `search_path` plus every root in
+    /// `search_paths_extra` (multi-root search), sequentially reusing the
+    /// same cancellation token throughout so Cancel stops the whole run,
+    /// not just the current root, and merging every root's
+    /// `SearchRunResult` into one before building the report. The
+    /// single-root case (`search_paths_extra` empty, by far the common
+    /// case) runs exactly one iteration of this same loop - not a
+    /// special-cased fast path - so there's only one code path to keep
+    /// correct, not two that could drift apart.
     pub async fn run_search(mut self) {
-        let settings = self.build_settings();
+        let base_settings = self.build_settings();
+        let roots: Vec<String> = std::iter::once(base_settings.search_path.clone())
+            .chain(self.search_paths_extra.read().iter().cloned())
+            .collect();
+
         self.remember_recent_search();
         self.folder_changed_since_search.set(false);
         self.results_page.set(0);
@@ -460,26 +609,63 @@ impl AppState {
         self.cancel_token.set(Some(cancellation.clone()));
         self.is_running.set(true);
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut combined: Option<search_core::models::SearchRunResult> = None;
+        let mut cancelled = false;
+        let mut hard_error: Option<String> = None;
 
-        let run_settings = settings.clone();
-        let run_cancellation = cancellation.clone();
-        // Raw tokio::spawn (not Dioxus's spawn) is safe here: this task
-        // only ever writes into an mpsc channel, never touches a Signal
-        // directly - only the outer, Dioxus-spawned task (this whole
-        // async fn) touches signals, and it does so from a single
-        // consistent task throughout.
-        let join_handle = tokio::spawn(async move { orchestrator::run(run_settings, Some(tx), run_cancellation).await });
+        for (root_idx, root) in roots.iter().enumerate() {
+            if cancellation.is_cancelled() {
+                cancelled = true;
+                break;
+            }
+            if roots.len() > 1 {
+                self.status_text.set(format!("Searching folder {} of {}: {root}", root_idx + 1, roots.len()));
+            }
 
-        while let Some(report) = rx.recv().await {
-            self.apply_progress(report);
+            let mut run_settings = base_settings.clone();
+            run_settings.search_path = root.clone();
+
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let run_cancellation = cancellation.clone();
+            let spawn_settings = run_settings.clone();
+            // Raw tokio::spawn (not Dioxus's spawn) is safe here: this task
+            // only ever writes into an mpsc channel, never touches a Signal
+            // directly - only the outer, Dioxus-spawned task (this whole
+            // async fn) touches signals, and it does so from a single
+            // consistent task throughout.
+            let join_handle =
+                tokio::spawn(async move { orchestrator::run(spawn_settings, Some(tx), run_cancellation).await });
+
+            while let Some(report) = rx.recv().await {
+                self.apply_progress(report);
+            }
+
+            match join_handle.await {
+                Ok(Ok(result)) => match &mut combined {
+                    None => combined = Some(result),
+                    Some(acc) => merge_run_result(acc, result),
+                },
+                Ok(Err(OrchestratorError::Cancelled)) => {
+                    cancelled = true;
+                    break;
+                }
+                Ok(Err(e)) => {
+                    hard_error = Some(e.to_string());
+                    break;
+                }
+                Err(join_err) => {
+                    hard_error = Some(join_err.to_string());
+                    break;
+                }
+            }
         }
 
-        match join_handle.await {
-            Ok(Ok(result)) => self.finish_successful_run(settings, result).await,
-            Ok(Err(OrchestratorError::Cancelled)) => self.status_text.set("Cancelled.".to_string()),
-            Ok(Err(e)) => self.status_text.set(format!("Error: {e}")),
-            Err(join_err) => self.status_text.set(format!("Error: {join_err}")),
+        if let Some(err) = hard_error {
+            self.status_text.set(format!("Error: {err}"));
+        } else if cancelled {
+            self.status_text.set("Cancelled.".to_string());
+        } else if let Some(result) = combined {
+            self.finish_successful_run(base_settings, result).await;
         }
 
         self.is_running.set(false);
@@ -522,6 +708,23 @@ impl AppState {
         ));
 
         let html = report::build_html_report(&settings, &result);
+        // The HTML report embeds everything inline (including the base64
+        // banner and every match's before/match/after context) with no
+        // separate paging - a very large result set can produce a
+        // sizeable file with no warning before it's written. Warn, don't
+        // block: the report is still fully valid and useful, just
+        // possibly slow for a browser to open - matching this app's
+        // established "never interrupt the user over a soft problem"
+        // pattern (settings persistence, incremental cache) rather than
+        // adding a confirm/cancel dialog for what's still a successful
+        // search.
+        const LARGE_REPORT_WARNING_BYTES: usize = 25 * 1024 * 1024;
+        if html.len() > LARGE_REPORT_WARNING_BYTES {
+            let mb = html.len() as f64 / (1024.0 * 1024.0);
+            self.results_summary_text.write().push_str(&format!(
+                " Warning: this report is {mb:.0} MB - a browser may be slow to open it. Consider narrowing your filters or search folder."
+            ));
+        }
         let output_name = match &settings.output_name {
             Some(n) if n.to_lowercase().ends_with(".html") => n.clone(),
             Some(n) => format!("{n}.html"),
@@ -557,15 +760,28 @@ impl AppState {
             Err(e) => self.status_text.set(format!("Error writing report: {e}")),
         }
 
+        let mut done_text = "Done.".to_string();
         if *self.index_for_fast_search.read() {
             let search_path = settings.search_path.clone();
             let msg = tokio::task::spawn_blocking(move || index_hits_for_fast_search(&hit_results, &search_path))
                 .await
                 .unwrap_or_else(|e| format!("Fast re-search indexing failed: {e}"));
-            self.native_search_status_text.set(msg);
+            self.native_search_status_text.set(msg.clone());
+            // `native_search_status_text` only renders inside the "Fast
+            // re-search (experimental)" `<details>`, which is collapsed by
+            // default - a real "indexer doesn't work" report turned out to
+            // be indexing succeeding silently inside a collapsed section
+            // nobody had expanded. Folding the same message into the main,
+            // always-visible status line (outside any collapsible section)
+            // fixes that without touching `<details>`'s `open` state, which
+            // would risk the exact "controlled attribute fights a user's own
+            // manual toggle" bug class CLAUDE.md already documents for
+            // numeric inputs.
+            done_text = format!("Done. {msg}");
         }
 
-        self.status_text.set("Done.".to_string());
+        self.status_text.set(done_text);
+        notify_search_complete(self.results_summary_text.read().clone());
     }
 
     pub async fn run_native_search(mut self) {
@@ -608,14 +824,56 @@ impl AppState {
     }
 }
 
-fn parse_list(text: &str) -> Vec<String> {
+/// Best-effort desktop toast on search completion (epic backlog #8) - a
+/// long search finishing while the window isn't the foreground app was
+/// previously only visible by looking back at the progress bar. Fired
+/// unconditionally on completion (not gated on window focus - tracking
+/// real OS focus state would need the same kind of custom winit
+/// `ApplicationHandler` event interception `drag_drop.rs` uses for
+/// drop events, which is more machinery than this one notification
+/// justifies; showing it even while focused is harmless, just occasionally
+/// redundant). Spawned onto a blocking thread since the underlying OS
+/// notification call (WinRT/D-Bus/NSUserNotificationCenter) may block
+/// briefly, and errors are swallowed - same "never a reason to interrupt
+/// the user" pattern as this app's settings persistence and incremental
+/// cache.
+fn notify_search_complete(summary: String) {
+    tokio::task::spawn_blocking(move || {
+        let _ = notify_rust::Notification::new()
+            .summary("Search complete - GS Engineering Text Search")
+            .body(&summary)
+            .show();
+    });
+}
+
+/// Folds one root's `SearchRunResult` into the running multi-root total -
+/// concatenates the per-file results/warnings/dry-run candidates and sums
+/// every `SearchRunSummary` counter.
+fn merge_run_result(acc: &mut search_core::models::SearchRunResult, mut next: search_core::models::SearchRunResult) {
+    acc.file_results.append(&mut next.file_results);
+    acc.summary.files_searched += next.summary.files_searched;
+    acc.summary.skipped_too_large += next.summary.skipped_too_large;
+    acc.summary.skipped_binary += next.summary.skipped_binary;
+    acc.summary.skipped_read_error += next.summary.skipped_read_error;
+    acc.summary.skipped_by_exclude += next.summary.skipped_by_exclude;
+    acc.summary.skipped_by_mode += next.summary.skipped_by_mode;
+    acc.summary.skipped_unexpected_error += next.summary.skipped_unexpected_error;
+    acc.summary.cache_reused += next.summary.cache_reused;
+    acc.summary.enumeration_errors += next.summary.enumeration_errors;
+    acc.summary.warnings.append(&mut next.summary.warnings);
+    if let Some(mut cands) = next.dry_run_candidates.take() {
+        acc.dry_run_candidates.get_or_insert_with(Vec::new).append(&mut cands);
+    }
+}
+
+pub(crate) fn parse_list(text: &str) -> Vec<String> {
     text.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
 }
 
 /// Mirrors `Path.GetInvalidFileNameChars()` on Windows (the shipped
 /// target - see CLAUDE.md): every ASCII control character plus
 /// `< > : " / \ | ? *`.
-fn sanitize_file_name(name: &str) -> String {
+pub(crate) fn sanitize_file_name(name: &str) -> String {
     name.chars().map(|c| if is_invalid_windows_filename_char(c) { '_' } else { c }).collect()
 }
 
@@ -664,5 +922,122 @@ pub fn selected_extensions_summary(catalog: &[ExtensionOption]) -> String {
         "Using built-in default extension list.".to_string()
     } else {
         format!("Searching: {}", selected.join(", "))
+    }
+}
+
+/// `search-core` has its own 82-test suite (zero GUI dependency, per
+/// CLAUDE.md); `app` had none - `dioxus-native`'s actual rendered window
+/// needs a real run to verify (`cargo run -p app`, done throughout this
+/// epic), but the pure-logic pieces here don't need a window OR even a
+/// live `Signal`/component scope (which a bare `#[test]` doesn't have) -
+/// only the plain data-in-data-out helpers, not `AppState` methods that
+/// read/write real `Signal<T>` fields.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Local;
+    use search_core::models::{FileSearchResult, FileSearchStatus};
+
+    fn sample_hit(full_name: &str) -> FileSearchResult {
+        FileSearchResult {
+            full_name: full_name.to_string(),
+            status: FileSearchStatus::Hit,
+            hits: vec![],
+            created: Local::now(),
+            modified: Local::now(),
+            file_length: 0,
+            lines_cache: vec![],
+            total_line_count: 0,
+            proximity_min_range: None,
+            low_confidence_pdf: false,
+            error_message: None,
+        }
+    }
+
+    #[test]
+    fn parse_list_splits_trims_and_drops_empties() {
+        assert_eq!(parse_list("apple, banana ,  , cherry"), vec!["apple", "banana", "cherry"]);
+        assert_eq!(parse_list(""), Vec::<String>::new());
+        assert_eq!(parse_list("   "), Vec::<String>::new());
+        assert_eq!(parse_list("single"), vec!["single"]);
+    }
+
+    #[test]
+    fn sanitize_file_name_replaces_every_windows_invalid_char() {
+        assert_eq!(sanitize_file_name(r#"a<b>c:d"e/f\g|h?i*j"#), "a_b_c_d_e_f_g_h_i_j");
+        assert_eq!(sanitize_file_name("normal-name_123"), "normal-name_123");
+        assert_eq!(sanitize_file_name("tab\tnewline\n"), "tab_newline_");
+    }
+
+    #[test]
+    fn change_extension_replaces_or_appends() {
+        assert_eq!(change_extension("report.html", "csv"), "report.csv");
+        assert_eq!(change_extension("path/to/report.html", "json"), "path/to/report.json");
+        assert_eq!(change_extension("no_extension", "csv"), "no_extension.csv");
+    }
+
+    #[test]
+    fn filtered_extensions_matches_extension_or_category_case_insensitively() {
+        let catalog = vec![
+            ExtensionOption { extension: ".docx".to_string(), category: "Documents".to_string(), is_selected: false },
+            ExtensionOption { extension: ".py".to_string(), category: "Code".to_string(), is_selected: true },
+        ];
+        assert_eq!(filtered_extensions(&catalog, "").len(), 2);
+        assert_eq!(filtered_extensions(&catalog, "DOC").len(), 1);
+        assert_eq!(filtered_extensions(&catalog, "code").len(), 1);
+        assert_eq!(filtered_extensions(&catalog, "nomatch").len(), 0);
+    }
+
+    #[test]
+    fn selected_extensions_summary_reports_default_or_explicit_selection() {
+        let none_selected = vec![ExtensionOption { extension: ".txt".to_string(), category: "Text".to_string(), is_selected: false }];
+        assert_eq!(selected_extensions_summary(&none_selected), "Using built-in default extension list.");
+
+        let one_selected = vec![ExtensionOption { extension: ".txt".to_string(), category: "Text".to_string(), is_selected: true }];
+        assert_eq!(selected_extensions_summary(&one_selected), "Searching: .txt");
+    }
+
+    #[test]
+    fn recent_search_label_uses_folder_name_not_full_path() {
+        let recent = RecentSearch { search_path: "/x/y/project".to_string(), filters_text: "apple, banana".to_string() };
+        assert_eq!(recent.label(), "project - apple, banana");
+    }
+
+    #[test]
+    fn merge_run_result_sums_counters_and_concatenates_files() {
+        let mut acc = search_core::models::SearchRunResult {
+            file_results: vec![sample_hit("a.txt")],
+            summary: search_core::models::SearchRunSummary { files_searched: 3, skipped_binary: 1, ..Default::default() },
+            ..Default::default()
+        };
+        let next = search_core::models::SearchRunResult {
+            file_results: vec![sample_hit("b.txt")],
+            summary: search_core::models::SearchRunSummary { files_searched: 2, skipped_binary: 4, ..Default::default() },
+            ..Default::default()
+        };
+
+        merge_run_result(&mut acc, next);
+
+        assert_eq!(acc.file_results.len(), 2);
+        assert_eq!(acc.summary.files_searched, 5);
+        assert_eq!(acc.summary.skipped_binary, 5);
+    }
+
+    #[test]
+    fn merge_run_result_concatenates_dry_run_candidates() {
+        let mut acc = search_core::models::SearchRunResult {
+            was_dry_run: true,
+            dry_run_candidates: Some(vec![std::path::PathBuf::from("a.txt")]),
+            ..Default::default()
+        };
+        let next = search_core::models::SearchRunResult {
+            was_dry_run: true,
+            dry_run_candidates: Some(vec![std::path::PathBuf::from("b.txt")]),
+            ..Default::default()
+        };
+
+        merge_run_result(&mut acc, next);
+
+        assert_eq!(acc.dry_run_candidates.unwrap().len(), 2);
     }
 }
