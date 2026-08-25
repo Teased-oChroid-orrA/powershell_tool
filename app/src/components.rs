@@ -248,7 +248,7 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                         input {
                             r#type: "checkbox",
                             checked: *state.use_regex.read(),
-                            onchange: move |e| state.use_regex.set(e.checked()),
+                            oninput: move |e| state.use_regex.set(e.checked()),
                         }
                         span { "Use regex" }
                     }
@@ -282,7 +282,7 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                             input {
                                 r#type: "checkbox",
                                 checked: *state.whole_word.read(),
-                                onchange: move |e| state.whole_word.set(e.checked()),
+                                oninput: move |e| state.whole_word.set(e.checked()),
                             }
                             span { "Whole word matching" }
                         }
@@ -329,7 +329,7 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                                         input {
                                             r#type: "checkbox",
                                             checked: opt.is_selected,
-                                            onchange: move |e| {
+                                            oninput: move |e| {
                                                 let checked = e.checked();
                                                 if let Some(entry) = state
                                                     .extension_catalog
@@ -369,7 +369,7 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                         input {
                             r#type: "checkbox",
                             checked: *state.include_hidden.read(),
-                            onchange: move |e| state.include_hidden.set(e.checked()),
+                            oninput: move |e| state.include_hidden.set(e.checked()),
                         }
                         span { "Include hidden files" }
                     }
@@ -391,7 +391,7 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                         input {
                             r#type: "checkbox",
                             checked: *state.open_report_when_done.read(),
-                            onchange: move |e| state.open_report_when_done.set(e.checked()),
+                            oninput: move |e| state.open_report_when_done.set(e.checked()),
                         }
                         span { "Open report when done" }
                     }
@@ -399,7 +399,7 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                         input {
                             r#type: "checkbox",
                             checked: *state.export_csv.read(),
-                            onchange: move |e| state.export_csv.set(e.checked()),
+                            oninput: move |e| state.export_csv.set(e.checked()),
                         }
                         span { "Export CSV" }
                     }
@@ -407,7 +407,7 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                         input {
                             r#type: "checkbox",
                             checked: *state.export_json.read(),
-                            onchange: move |e| state.export_json.set(e.checked()),
+                            oninput: move |e| state.export_json.set(e.checked()),
                         }
                         span { "Export JSON" }
                     }
@@ -421,7 +421,7 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                         input {
                             r#type: "checkbox",
                             checked: *state.parallel.read(),
-                            onchange: move |e| state.parallel.set(e.checked()),
+                            oninput: move |e| state.parallel.set(e.checked()),
                         }
                         span { "Parallel processing" }
                     }
@@ -445,7 +445,7 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                         input {
                             r#type: "checkbox",
                             checked: *state.dry_run.read(),
-                            onchange: move |e| state.dry_run.set(e.checked()),
+                            oninput: move |e| state.dry_run.set(e.checked()),
                         }
                         span { "Dry run (list files only)" }
                     }
@@ -483,7 +483,7 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                         input {
                             r#type: "checkbox",
                             checked: *state.index_for_fast_search.read(),
-                            onchange: move |e| state.index_for_fast_search.set(e.checked()),
+                            oninput: move |e| state.index_for_fast_search.set(e.checked()),
                         }
                         span { "Index results for fast re-search" }
                     }

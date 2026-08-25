@@ -298,6 +298,23 @@ looks cleaner - that regresses the exact problem this app was built to fix.
 - A numeric `<input>` snap-back bug (see "Design decisions" above) -
   calling `.set()` with a fallback default on every keystroke instead of
   only on successful parse.
+- **`onchange` never fires on this renderer - use `oninput` for
+  everything, including checkboxes.** `dioxus-native`/`blitz-dom` has no
+  `Change` DOM event at all (`blitz-traits::events::DomEventData` has no
+  such variant); a checkbox click dispatches only an `Input` event. Every
+  checkbox in `SettingsPanel` used `onchange` from the original port
+  onward, so none of them ever actually updated app state - Blitz's own
+  internal visual toggle would flip on click, then the next re-render's
+  controlled `checked: {signal}` binding (holding the never-updated old
+  value) would snap it straight back, reading as "the checkbox doesn't
+  respond to clicks." Silent for a long time because it degrades
+  gracefully-looking (a flicker, not a crash) rather than erroring. Fixed
+  by switching every `onchange` to `oninput` (see
+  `docs/epic-ui-performance-and-design.md`'s platform-constraints table
+  for the full source trail) - `FormData::checked()` reads the same
+  `value` string either way, so this is a pure rename, not a logic
+  change. If you add a new checkbox/radio/any form control, use `oninput`
+  from the start, not `onchange`.
 - (Historical, C#-era, preserved for context) An XML comment containing
   `--` broke a `.csproj` file outright; a `zip -x "*.git*"` packaging
   command once silently excluded the entire `.github/` folder via
