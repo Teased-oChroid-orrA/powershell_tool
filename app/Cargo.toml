@@ -10,3 +10,6 @@ native-search = { path = "../native-search" }
 dioxus = { version = "0.7", features = ["desktop"] }
 rfd = "0.15"
 open = "5"
+tokio = { version = "1", features = ["fs", "rt", "sync"] }
+tokio-util = "0.7"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
