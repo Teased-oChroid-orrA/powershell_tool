@@ -33,10 +33,17 @@ Not yet done:
   runtime on Windows (this session's local verification was on macOS -
   the win-x64 CI build has been verified to compile and link correctly,
   but not yet run by a human on an actual Windows machine).
-- Visual polish. The current `app/src/main.rs`'s `APP_CSS` is a
-  functional-parity pass (dark-mode-aware, matches the WinUI Expander
-  sections via `<details>`), not a pixel-accurate recreation of the
-  WinUI/Fluent visual design.
+- Visual polish - **superseded, see `docs/epic-ui-performance-and-design.md`**.
+  The first functional-parity CSS pass shipped real Blitz rendering bugs
+  (garbled `<select>`, overlapping list rows, a horizontal-scroll bug, and
+  vertical text-clipping in plain `<input>`s), all found and fixed via a
+  full redesign pass documented in that epic - graphite "Instrument"
+  palette (following the sibling `profile_capabilities` Dioxus app's
+  design direction), real design tokens, a dark/light toggle, and a UX
+  pass (empty states, recent searches, per-row actions, a stat breakdown).
+  Not yet a pixel-accurate recreation of anything in particular - it's
+  this app's own visual identity now, not a WinUI/Fluent recreation
+  target.
 - `CLAUDE.md`'s bundled-asset section (`GS_Engineering_Brand_Assets/` →
   `Assets/AppIcon.ico`/`Banner.png`) hasn't been re-pointed at an `app/`
   equivalent - the Dioxus window currently has no custom icon.

@@ -27,7 +27,9 @@ could change.
 | §17/§18 Drag & drop (folders/files dropped onto the window) | **Not wired up.** `winit` delivers `DroppedFile`/`HoveredFile` events to `blitz-shell`, but they're received and discarded. | `blitz-shell-0.2.3/src/window.rs:405-407`: `WindowEvent::DroppedFile(_) => {}` / `HoveredFile(_) => {}` / `HoveredFileCancelled => {}` - empty match arms, no event forwarded into the Dioxus app at all. |
 | §35 Context menus ("should feel native and fast") | **No native context-menu API exists** in `blitz-shell`/`dioxus-native`. The only "ContextMenu" references are keyboard `Code`/`Key` enum mappings for the physical Menu key, not an OS context-menu widget. | `blitz-shell-0.2.3/src/convert_events.rs:146,335` - both are `WinitKeyCode`/`WinitNamedKey` mappings, not a menu-creation API. |
 | §29 Animation / CSS transitions | **Confirmed working.** Stylo (the CSS engine) actively tracks transition state (`Pending`/`Running`/`Finished`) and Blitz's document layer checks `has_active_transitions` to decide whether to keep re-rendering every frame. | `blitz-dom-0.2.4/src/stylo.rs:91-96,716,728-734`; `blitz-dom-0.2.4/src/document.rs:142`. |
-| §2 list-overlap bug already observed in the current app | Root cause not yet pinned to a specific missing CSS feature - flagged for investigation, not to be assumed identical to the `<select>` issue. | See "Phase 0" below for the verification step before fixing blind. |
+| §2 list-overlap bug already observed in the current app | **Fixed and root-caused**: the `display: flex; flex-direction: column` + `gap` list-container pattern combined with `overflow-y: auto` produced the overlap; switching to a plain `display: block` list with `display: block` rows (margin/padding, not `gap`) fixed it. Not confirmed whether this was a genuine Blitz clipping bug or an app-level CSS mistake this renderer happens to expose more readily than a mature browser engine would - either way, the block-list pattern is now the standing rule (see the CSS file header comment in `app/src/main.rs`). | `app/src/main.rs`'s `APP_CSS`, `.extension-list/.in-flight-list/.results-list/.hit-row` rules. |
+| §5/§31 List virtualization | **Not implementable today.** Scroll position/offset changes (`WindowEvent::MouseWheel` → `Document::scroll_node_by_has_changed`) are handled entirely inside `blitz-shell`/`blitz-dom` and never dispatched to the app as a DOM `scroll` event - `dioxus-html` defines a platform-agnostic `ScrollEvent`/`ScrollData` type, but nothing in `dioxus-native-dom` or `blitz-shell` ever constructs or fires one. Without a way to read current scroll position from application code, there is no way to compute "which slice of a virtual list is visible" at all - the same class of gap as drag-and-drop (§17/§18): the platform event exists at the winit/shell layer but is never forwarded up. | `blitz-shell-0.2.3/src/window.rs:388-401` (`MouseWheel` handling calls `scroll_node_by_has_changed`/`request_redraw` only); zero hits for `"scroll"`/`onscroll` in `dioxus-native-dom-0.7.10/src/*.rs`. |
+| Non-input vertical text clipping | Not a Blitz-wide bug - narrower than it first looked. Plain `<input>` elements relying on `padding` + inherited `line-height` for vertical centering rendered with the top of glyphs clipped (a real, screenshotted bug: "50" for Max file size showed only the bottom half of each digit). The `.select-trigger` `<button>` sitting right next to it, which centers its text via `display: flex; align-items: center` instead, rendered perfectly. **Fixed** by giving every `<input>` an explicit `height` and matching `line-height` instead of relying on padding math. | `app/src/main.rs`'s `input[type="text"], input[type="number"]` rule (explicit `height: 34px; line-height: 34px`). |
 
 **What this means for the plan below:** treat §35 (context menus) and
 §17/§18 (drag & drop) as **build-it-yourself** work, not "wire up the
@@ -39,11 +41,130 @@ forward `DroppedFile`/`HoveredFile` into the Dioxus event system, or find
 another intercept point) before any app-level drag & drop code can do
 anything at all - don't start on the app-level UI for this until that
 plumbing exists and is verified with a real dropped file logged somewhere.
-Everything else in the vision doc (virtualization, incremental search,
+Update after implementation: **virtualization (§5/§31) turned out to be a
+third item in this same "event never forwarded" family** - see the new
+table row above. Everything else in the vision doc (incremental search,
 theming, keyboard shortcuts, CSS transitions/animation, layout) is either
 confirmed supported above or is ordinary Dioxus/Rust application logic
 with no Blitz-specific platform dependency - build those with normal
 confidence, verifying only if something behaves unexpectedly.
+
+## Progress log
+
+- **Phase 0 (immediate bugs): done.** `<select>` replaced with a custom
+  `Dropdown` component (`app/src/components.rs`); list-row overlap fixed
+  (block-layout lists, see the constraints table); a horizontal-scroll bug
+  found during the visual pass (long unbroken content forcing flex rows
+  wider than the window - fixed with a blanket `min-width: 0` reset plus
+  `overflow-x: hidden` on scroll containers) and a vertical text-clipping
+  bug in plain `<input>`s (see the constraints table) were both found and
+  fixed along the way, beyond the original two screenshotted issues.
+- **Sluggish scrolling investigated.** True virtualization is blocked (see
+  above) - scroll position isn't readable from application code at all
+  today. Confirmed the scroll handler itself only triggers a repaint
+  (`request_redraw()`), not a full relayout, so the cost is in
+  paint/rasterization, not layout thrashing. Mitigations applied instead
+  of virtualization: `filtered_extensions`/`selected_extensions_summary`
+  memoized (`use_memo`) so they don't recompute on every unrelated
+  keystroke; per-row hover transitions kept minimal (background-color
+  only, no shadow/transform); see "Sluggishness, revisited" below for
+  what's still open.
+- **Visual system (Phase 6): done**, following `profile_capabilities`'
+  (a sibling Dioxus desktop app) "Instrument" palette direction - graphite
+  dark ground, GS Engineering's own accent blue (continuity with the HTML
+  report's CSS) rather than that app's cyan/copper, real design tokens
+  (spacing/radius/shadow scale), uppercase-tracked micro-labels, monospace
+  for numeric/path values, an explicit dark/light toggle (`data-theme`
+  attribute + a signal in `App`, not a `prefers-color-scheme` media query,
+  so the in-app toggle always wins). No glass/blur anywhere - confirmed
+  `backdrop-filter` isn't implemented in `blitz-paint` (zero hits grepping
+  the crate source), unlike `profile_capabilities`' own glass-chrome
+  design which relies on it and runs on `dioxus-desktop`/WebKit instead.
+- **Result-panel UX pass (partial Phase 2/3/7/24): done.** Empty states
+  (first-run vs. no-matches, distinct copy for each - epic §19); a
+  defensive render cap (`MAX_RENDERED_RESULTS = 300`, with a "+N more, not
+  shown" note) since real virtualization is blocked (epic §5/§31); a
+  per-extension mini stat-bar breakdown of the current hits (§24), computed
+  client-side from data already in `AppState`, no new backend plumbing;
+  per-row "Open" / "Copy path" / "Folder" actions (reveal via
+  `open::that` on the parent directory, since there's no OS "reveal in
+  Finder/Explorer" primitive - `open` just launches the default handler
+  for whatever path it's given); session-only "Recent" search chips (§23)
+  that reapply a prior search-folder+filters pair on click.
+
+## Sluggishness, revisited
+
+Root cause not fully pinned down - here's exactly how far verification
+got, so the next pass doesn't have to redo it:
+
+- The scroll handler itself is cheap (`request_redraw()` only, no
+  relayout - see the constraints table), so the cost is in
+  paint/rasterization of a `request_redraw`, not layout thrashing.
+- Whether that repaint is scoped to the changed/visible region or
+  re-rasterizes the whole document scene graph every frame was **not
+  determined** - would need either reading deep into `blitz-paint`'s
+  scene-construction code or, more reliably, actual frame-time
+  instrumentation. A `dioxus-logger`/`tracing` subscriber was added
+  (`app/src/main.rs`) specifically to make that kind of profiling
+  possible going forward, but wiring wgpu/wgpu-hal's own `log`-crate
+  output into it (they don't use `tracing` directly) needs a bridge
+  (`tracing-log`'s `LogTracer`) that wasn't added - `RUST_LOG=wgpu=info`
+  produced zero output even after the subscriber existed, confirming the
+  bridge is the missing piece, not that wgpu has nothing to say.
+- Mitigations applied without that root cause confirmed: memoized the two
+  per-keystroke recomputations that didn't need to run on every render
+  (`use_memo` on the extension filter/summary); kept per-row visual effects
+  minimal (a single `background-color` hover transition, no shadows/
+  transforms on list rows); capped worst-case result-row count at 300.
+- **Next step if this resurfaces**: add the `tracing-log` bridge, capture
+  a trace during a slow scroll, and look specifically at whether frame
+  time scales with total result count or stays flat - that single data
+  point would tell you definitively whether this is a "Blitz doesn't cull
+  off-screen content" issue (in which case the fix is upstream, or a
+  workaround that manually swaps a shorter row set in based on some proxy
+  for scroll position, since `onscroll` isn't available - see the
+  constraints table) or something else entirely (e.g. an accidental
+  continuous-redraw loop from a lingering CSS transition).
+
+## What shipped vs. what's still open
+
+**Shipped** (this pass): Phase 0 (all four bugs - the original two plus
+the horizontal-scroll and vertical-clipping bugs found along the way),
+Phase 6 visual system (full token/typography/spacing/component redesign,
+dark/light toggle), and a meaningful slice of Phases 2/3/7/23/24 (empty
+states, result-row actions, recent searches, stat breakdown, tooltips,
+render cap). `search-core`'s own 80-test suite is untouched and still
+green throughout - this was UI-layer-only work.
+
+**Deliberately not attempted, with reasons** (not silently dropped - see
+the constraints table for the verified evidence behind each):
+
+- **Command palette / Quick Open (§10/§11)**: no verified way to
+  programmatically focus an input or capture a global keyboard shortcut
+  in this `dioxus-native` version (checked `MountedData::set_focus`'s
+  trait plumbing - a real implementation exists in `blitz-dom`
+  (`Document::set_focus_to`), but whether it's wired through to the
+  application-facing async API wasn't confirmed either way). A command
+  palette with no keyboard shortcut to open it and no way to
+  programmatically focus its input on open is a substantially weaker
+  feature than the vision doc describes - better to defer with this
+  documented than ship a half-working version.
+- **Drag & drop (§17/§18), native context menus (§35)**: verified blocked
+  upstream (see the constraints table) - `blitz-shell` never forwards
+  `DroppedFile`/`HoveredFile` events, and there is no context-menu
+  creation API in the stack at all.
+- **True virtualization (§5/§31)**: verified blocked upstream (scroll
+  position/offset is never exposed to application code) - the render cap
+  above is the practical substitute.
+- **Filesystem watching, persistent recent-search history across
+  relaunches, syntax-highlighted preview pane, resizable three-pane
+  layout**: real features, genuinely out of scope for this pass - each is
+  a substantial standalone effort (a new dependency for file watching, a
+  settings-persistence layer that doesn't exist yet for *any* toggle in
+  this app, a syntax highlighter, a drag-to-resize layout engine) rather
+  than a fix or a small addition, and none were part of the reported "it
+  looks ugly and it's sluggish" complaint that started this epic. Worth
+  their own follow-up pass, not bundled into this one.
 
 ## Immediate bugs (do these first - Phase 0)
 

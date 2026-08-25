@@ -6,7 +6,52 @@
 use dioxus::prelude::*;
 use search_core::models::{ExcludeScope, GroupByMode, MatchMode};
 
-use crate::state::{filtered_extensions, selected_extensions_summary, AppState};
+use crate::state::{filtered_extensions, selected_extensions_summary, AppState, FileResultView};
+
+/// Stands in for `<select>`, which `blitz-dom` does not yet implement as a
+/// real dropdown widget - it renders every `<option>`'s text flattened
+/// together with no popup at all (see `docs/epic-ui-performance-and-design.md`'s
+/// "Verified platform constraints" table; `blitz-dom-0.2.4/src/form.rs`'s
+/// only select-specific code is a bare `// TODO` for form submission).
+/// Renders in normal document flow (not `position: absolute/fixed`) when
+/// open, rather than a floating popover - deliberately, since this app's
+/// *other* now-fixed rendering bug (overlapping list rows) means
+/// positioning/stacking behavior on this renderer shouldn't be trusted
+/// without its own separate verification first.
+#[component]
+fn Dropdown(field_label: String, selected_label: String, options: Vec<(&'static str, &'static str)>, on_select: EventHandler<String>) -> Element {
+    let mut open = use_signal(|| false);
+
+    rsx! {
+        div { class: "field",
+            span { "{field_label}" }
+            div { class: "select-box",
+                button {
+                    class: "select-trigger",
+                    r#type: "button",
+                    onclick: move |_| open.set(!open()),
+                    span { "{selected_label}" }
+                    span { class: "select-caret", if open() { "▴" } else { "▾" } }
+                }
+                if open() {
+                    div { class: "select-menu",
+                        for (value, display) in options.iter().copied() {
+                            div {
+                                key: "{value}",
+                                class: if display == selected_label.as_str() { "select-option selected" } else { "select-option" },
+                                onclick: move |_| {
+                                    on_select.call(value.to_string());
+                                    open.set(false);
+                                },
+                                "{display}"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 #[component]
 pub fn SettingsPanel(mut state: AppState) -> Element {
@@ -16,8 +61,12 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
     let is_native_searching = *state.is_native_searching.read();
     let has_report = state.last_report_path.read().is_some();
 
-    let filtered = filtered_extensions(&state.extension_catalog.read(), &state.extension_filter_text.read());
-    let summary = selected_extensions_summary(&state.extension_catalog.read());
+    // Memoized (not recomputed inline) so typing anywhere else in this
+    // panel - e.g. "Search folder" - doesn't re-filter/re-clone the whole
+    // ~50-entry extension catalog on every keystroke. See
+    // docs/epic-ui-performance-and-design.md's sluggishness investigation.
+    let filtered = use_memo(move || filtered_extensions(&state.extension_catalog.read(), &state.extension_filter_text.read()));
+    let summary = use_memo(move || selected_extensions_summary(&state.extension_catalog.read()));
     let can_add_custom = !state.extension_filter_text.read().trim().is_empty();
 
     rsx! {
@@ -66,18 +115,31 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                 }
             }
 
+            if !state.recent_searches.read().is_empty() {
+                div { class: "field",
+                    span { "Recent" }
+                    div { class: "chip-row",
+                        for recent in state.recent_searches.read().iter().cloned() {
+                            button {
+                                key: "{recent.label()}",
+                                class: "chip",
+                                title: "{recent.search_path}",
+                                onclick: move |_| state.apply_recent_search(&recent),
+                                "{recent.label()}"
+                            }
+                        }
+                    }
+                }
+            }
+
             details {
                 summary { "Matching" }
                 div { class: "expander-body",
-                    label { class: "field",
-                        span { "Match mode" }
-                        select {
-                            value: "{match_mode_str(*state.match_mode.read())}",
-                            onchange: move |e| state.match_mode.set(parse_match_mode(&e.value())),
-                            option { value: "AnyLine", "AnyLine" }
-                            option { value: "AllInFile", "AllInFile" }
-                            option { value: "Proximity", "Proximity" }
-                        }
+                    Dropdown {
+                        field_label: "Match mode",
+                        selected_label: match_mode_display(*state.match_mode.read()).to_string(),
+                        options: vec![("AnyLine", "Any line"), ("AllInFile", "All in file"), ("Proximity", "Proximity")],
+                        on_select: move |v: String| state.match_mode.set(parse_match_mode(&v)),
                     }
                     label { class: "field",
                         span { "Proximity lines" }
@@ -111,14 +173,11 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                             oninput: move |e| state.exclude_filters_text.set(e.value()),
                         }
                     }
-                    label { class: "field",
-                        span { "Exclude scope" }
-                        select {
-                            value: "{exclude_scope_str(*state.exclude_scope.read())}",
-                            onchange: move |e| state.exclude_scope.set(parse_exclude_scope(&e.value())),
-                            option { value: "Line", "Line" }
-                            option { value: "File", "File" }
-                        }
+                    Dropdown {
+                        field_label: "Exclude scope",
+                        selected_label: exclude_scope_str(*state.exclude_scope.read()).to_string(),
+                        options: vec![("Line", "Line"), ("File", "File")],
+                        on_select: move |v: String| state.exclude_scope.set(parse_exclude_scope(&v)),
                     }
                 }
             }
@@ -136,7 +195,7 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                         }
                     }
                     div { class: "extension-list",
-                        for opt in filtered {
+                        for opt in filtered() {
                             {
                                 let ext_key = opt.extension.clone();
                                 rsx! {
@@ -170,7 +229,7 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                         }
                         button { onclick: move |_| state.clear_selected_extensions(), "Clear selection" }
                     }
-                    p { class: "caption", "{summary}" }
+                    p { class: "caption", "{summary()}" }
 
                     label { class: "field",
                         span { "Exclude folders (comma-separated)" }
@@ -196,15 +255,11 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                             oninput: move |e| { if let Ok(v) = e.value().parse::<f64>() { state.max_file_size_mb.set(v.max(0.01)); } },
                         }
                     }
-                    label { class: "field",
-                        span { "Group by" }
-                        select {
-                            value: "{group_by_str(*state.group_by.read())}",
-                            onchange: move |e| state.group_by.set(parse_group_by(&e.value())),
-                            option { value: "Created", "Created" }
-                            option { value: "Modified", "Modified" }
-                            option { value: "None", "None" }
-                        }
+                    Dropdown {
+                        field_label: "Group by",
+                        selected_label: group_by_str(*state.group_by.read()).to_string(),
+                        options: vec![("Created", "Created"), ("Modified", "Modified"), ("None", "None")],
+                        on_select: move |v: String| state.group_by.set(parse_group_by(&v)),
                     }
                     label { class: "field-inline",
                         input {
@@ -331,11 +386,11 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                     div { class: "extension-list",
                         for hit in state.native_search_results.read().iter().cloned() {
                             div { key: "{hit.id}", class: "hit-row",
-                                div {
+                                div { class: "hit-row-top",
                                     div { class: "hit-name", "{hit.filename}" }
-                                    div { class: "caption", "{hit.path}" }
+                                    div { class: "hit-value", "{hit.score}" }
                                 }
-                                div { "{hit.score}" }
+                                div { class: "caption", title: "{hit.path}", "{hit.path}" }
                             }
                         }
                     }
@@ -356,8 +411,50 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
     }
 }
 
+/// Defensive cap on rendered result rows. Real virtualization (rendering
+/// only the visible slice of a long list) is currently unimplementable in
+/// `dioxus-native` - scroll position is never forwarded from
+/// `blitz-shell` to application code at all (see
+/// docs/epic-ui-performance-and-design.md's "Verified platform
+/// constraints" table) - so this is the next-best guard against a
+/// pathologically large result set turning into thousands of live DOM
+/// nodes. The full result set is always still in the saved HTML/CSV/JSON
+/// report regardless of this cap.
+const MAX_RENDERED_RESULTS: usize = 300;
+
+/// Ports the epic's §24 "search statistics" micro-breakdown - top 6
+/// extensions among the current hits, most-common first. Pure
+/// client-side aggregation over data already in `AppState.results`, no
+/// new backend plumbing needed.
+fn extension_breakdown(results: &[FileResultView]) -> Vec<(String, usize)> {
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for r in results {
+        let ext = std::path::Path::new(&r.file_name)
+            .extension()
+            .map(|e| format!(".{}", e.to_string_lossy().to_lowercase()))
+            .unwrap_or_else(|| "(no extension)".to_string());
+        *counts.entry(ext).or_insert(0) += 1;
+    }
+    let mut breakdown: Vec<(String, usize)> = counts.into_iter().collect();
+    breakdown.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    breakdown.truncate(6);
+    breakdown
+}
+
+fn copy_to_clipboard(text: &str) {
+    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+        let _ = clipboard.set_text(text);
+    }
+}
+
 #[component]
 pub fn ResultsPanel(state: AppState) -> Element {
+    let is_running = *state.is_running.read();
+    let has_started = state.status_text.read().as_str() != "Ready.";
+    let in_flight = state.in_flight_files.read().clone();
+    let results = state.results.read().clone();
+    let total_results = results.len();
+
     rsx! {
         div { class: "results-panel",
             div { class: "progress-block",
@@ -365,28 +462,100 @@ pub fn ResultsPanel(state: AppState) -> Element {
                 p { "{state.status_text}" }
             }
 
-            div { class: "in-flight-list",
-                for f in state.in_flight_files.read().iter().cloned() {
-                    div { key: "{f.file_name}", class: "hit-row",
-                        div {
-                            div { class: "hit-name", "{f.file_name}" }
+            if is_running && !in_flight.is_empty() {
+                div { class: "in-flight-list",
+                    for f in in_flight {
+                        div { key: "{f.file_name}", class: "hit-row",
+                            div { class: "hit-row-top",
+                                div { class: "hit-name", "{f.file_name}" }
+                                div { class: "hit-value caption", {format!("{:.1}s", f.elapsed_seconds)} }
+                            }
                             div { class: "caption", "{f.status_text}" }
                         }
-                        div { class: "caption", {format!("{:.1}s", f.elapsed_seconds)} }
                     }
                 }
             }
 
-            h3 { "{state.results_summary_text}" }
-
-            div { class: "results-list",
-                for r in state.results.read().iter().cloned() {
-                    div { key: "{r.full_name}", class: "hit-row",
-                        div {
-                            div { class: "hit-name", "{r.file_name}" }
-                            div { class: "caption", "{r.full_name}" }
+            if total_results == 0 {
+                div { class: "empty-state",
+                    if has_started {
+                        p { class: "empty-state-title", "No matches" }
+                        p { class: "caption", "Nothing matched your current filters. Try a broader term, or remove an exclude filter." }
+                    } else {
+                        p { class: "empty-state-title", "Search anything" }
+                        p { class: "caption", "Choose a search folder and at least one filter on the left, then Run Search." }
+                    }
+                }
+            } else {
+                h3 { "{state.results_summary_text}" }
+                {
+                    let breakdown = extension_breakdown(&results);
+                    let max_count = breakdown.first().map(|(_, c)| *c).unwrap_or(1).max(1);
+                    rsx! {
+                        if breakdown.len() > 1 {
+                            div { class: "stat-bars",
+                                for (ext, count) in breakdown {
+                                    div { key: "{ext}", class: "stat-bar-row",
+                                        span { class: "stat-bar-label", "{ext}" }
+                                        span { class: "stat-bar-track",
+                                            span { class: "stat-bar-fill", style: "width: {100 * count / max_count}%" }
+                                        }
+                                        span { class: "stat-bar-count", "{count}" }
+                                    }
+                                }
+                            }
                         }
-                        div { "{r.hit_count}" }
+                    }
+                }
+                div { class: "results-list",
+                    for r in results.iter().take(MAX_RENDERED_RESULTS).cloned() {
+                        div { key: "{r.full_name}", class: "hit-row",
+                            div { class: "hit-row-top",
+                                div { class: "hit-name", "{r.file_name}" }
+                                div { class: "hit-value", "{r.hit_count}" }
+                            }
+                            div { class: "hit-row-bottom",
+                                div { class: "caption", title: "{r.full_name}", "{r.full_name}" }
+                                div { class: "hit-actions",
+                                    button {
+                                        class: "hit-action",
+                                        title: "Open this file",
+                                        onclick: {
+                                            let path = r.full_name.clone();
+                                            move |_| { let _ = open::that(&path); }
+                                        },
+                                        "Open"
+                                    }
+                                    button {
+                                        class: "hit-action",
+                                        title: "Copy full path",
+                                        onclick: {
+                                            let path = r.full_name.clone();
+                                            move |_| copy_to_clipboard(&path)
+                                        },
+                                        "Copy"
+                                    }
+                                    button {
+                                        class: "hit-action",
+                                        title: "Open the containing folder",
+                                        onclick: {
+                                            let path = r.full_name.clone();
+                                            move |_| {
+                                                if let Some(parent) = std::path::Path::new(&path).parent() {
+                                                    let _ = open::that(parent);
+                                                }
+                                            }
+                                        },
+                                        "Folder"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if total_results > MAX_RENDERED_RESULTS {
+                        div { class: "caption", style: "display: block; padding: var(--space-2) var(--space-3);",
+                            "+{total_results - MAX_RENDERED_RESULTS} more result(s) not shown here - narrow your filters to see them, or check the saved report for the full list."
+                        }
                     }
                 }
             }
@@ -394,10 +563,10 @@ pub fn ResultsPanel(state: AppState) -> Element {
     }
 }
 
-fn match_mode_str(m: MatchMode) -> &'static str {
+fn match_mode_display(m: MatchMode) -> &'static str {
     match m {
-        MatchMode::AnyLine => "AnyLine",
-        MatchMode::AllInFile => "AllInFile",
+        MatchMode::AnyLine => "Any line",
+        MatchMode::AllInFile => "All in file",
         MatchMode::Proximity => "Proximity",
     }
 }

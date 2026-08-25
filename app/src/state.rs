@@ -52,6 +52,28 @@ impl From<&FileSearchResult> for FileResultView {
     }
 }
 
+/// One prior search's search-defining fields (issue: epic §23 "recent
+/// searches") - session-only, in-memory, most-recent-first, capped and
+/// deduplicated in `AppState::remember_recent_search`. Deliberately not
+/// persisted to disk (no settings-persistence layer exists in this app
+/// yet for any other session toggle either - matches the rest of
+/// `AppState`, which all resets to defaults on relaunch).
+#[derive(Clone, PartialEq)]
+pub struct RecentSearch {
+    pub search_path: String,
+    pub filters_text: String,
+}
+
+impl RecentSearch {
+    pub fn label(&self) -> String {
+        let folder_name = Path::new(&self.search_path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.search_path.clone());
+        format!("{folder_name} - {}", self.filters_text)
+    }
+}
+
 #[derive(Clone, PartialEq)]
 pub struct NativeHitView {
     pub id: String,
@@ -120,6 +142,7 @@ pub struct AppState {
     pub has_results: Signal<bool>,
     pub last_report_path: Signal<Option<String>>,
     pub cancel_token: Signal<Option<CancellationToken>>,
+    pub recent_searches: Signal<Vec<RecentSearch>>,
 }
 
 impl AppState {
@@ -184,7 +207,32 @@ impl AppState {
             has_results: use_signal(|| false),
             last_report_path: use_signal(|| None),
             cancel_token: use_signal(|| None),
+            recent_searches: use_signal(Vec::new),
         }
+    }
+
+    /// Most-recent-first, deduplicated by (search_path, filters_text),
+    /// capped at 8 - called once per `run_search` (not per keystroke).
+    fn remember_recent_search(&mut self) {
+        let entry = RecentSearch {
+            search_path: self.search_path.read().trim().to_string(),
+            filters_text: self.filters_text.read().trim().to_string(),
+        };
+        if entry.search_path.is_empty() || entry.filters_text.is_empty() {
+            return;
+        }
+        let mut recent = self.recent_searches.write();
+        recent.retain(|r| *r != entry);
+        recent.insert(0, entry);
+        recent.truncate(8);
+    }
+
+    /// Ports the "Recent" click-to-reapply interaction (epic §23) -
+    /// re-populates the two search-defining fields without touching any
+    /// other setting.
+    pub fn apply_recent_search(&mut self, recent: &RecentSearch) {
+        self.search_path.set(recent.search_path.clone());
+        self.filters_text.set(recent.filters_text.clone());
     }
 
     pub fn can_run(&self) -> bool {
@@ -342,6 +390,7 @@ impl AppState {
 
     pub async fn run_search(mut self) {
         let settings = self.build_settings();
+        self.remember_recent_search();
 
         self.results.write().clear();
         self.in_flight_files.write().clear();
