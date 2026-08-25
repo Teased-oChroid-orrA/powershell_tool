@@ -21,6 +21,17 @@ name: Rust workspace build and verify (search-core, native-search, app)
 
 on:
   workflow_dispatch: {}
+  # workflow_dispatch alone isn't reachable via the API/UI until this file
+  # exists on the default branch (GitHub only registers manually-triggered
+  # workflows from main) - this repo's convention is not to merge feature
+  # branches to main without explicit approval, so a scoped push trigger
+  # is how this workflow actually runs pre-merge. Narrow to this branch
+  # rather than a blanket `push: {}` to avoid firing on every push once
+  # merged (see build.yml's own history of being made manual-only for the
+  # same "don't burn CI minutes on every push" reasoning).
+  push:
+    branches:
+      - feature/issue-2-native-search-eval
 
 jobs:
   search-core-test:
