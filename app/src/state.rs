@@ -767,7 +767,17 @@ impl AppState {
         // just to check its size" reason.
         let report_path = Path::new(&settings.output_folder).join(&output_name);
         let report_path_for_write = report_path.clone();
-        let write_settings = settings.clone();
+        let mut write_settings = settings.clone();
+        if roots.len() > 1 {
+            // Display-only override for the report's "Search folder" line
+            // (epic #6 §68 - the report should show every root searched,
+            // not just the primary one) - `search_path` isn't used for
+            // anything functional downstream of this point (every hit
+            // already carries its own absolute `full_name`), so this is
+            // safe to repurpose on this clone without touching the real
+            // settings used anywhere else.
+            write_settings.search_path = roots.join("; ");
+        }
         let write_result = result.clone();
         let write_outcome = tokio::task::spawn_blocking(move || {
             report::write_html_report(&report_path_for_write.to_string_lossy(), &write_settings, &write_result)

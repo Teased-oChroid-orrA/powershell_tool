@@ -176,6 +176,15 @@ async fn run_over_candidates(
     progress: Option<mpsc::UnboundedSender<SearchProgressReport>>,
     cancellation: CancellationToken,
 ) -> Result<SearchRunResult, OrchestratorError> {
+    // Epic #6 §68 "HTML Report Design" - "performance statistics". Total
+    // wall-clock time for this run, surfaced in the HTML report's summary
+    // (distinct from the per-file `elapsed_seconds` already tracked on
+    // `InFlightFileStatus` for live progress, and from the separate
+    // `native-search`/`search-core` benchmark harnesses in
+    // docs/benchmarking.md, which measure synthetic-corpus throughput,
+    // not a specific user-facing run).
+    let run_start = Instant::now();
+
     if settings.dry_run {
         run_result.was_dry_run = true;
         run_result.dry_run_candidates = Some(candidates.iter().map(|f| f.path.clone()).collect());
@@ -186,6 +195,7 @@ async fn run_over_candidates(
                 ..Default::default()
             });
         }
+        run_result.summary.total_elapsed_seconds = run_start.elapsed().as_secs_f64();
         return Ok(run_result);
     }
 
@@ -405,6 +415,7 @@ async fn run_over_candidates(
         }
     }
 
+    run_result.summary.total_elapsed_seconds = run_start.elapsed().as_secs_f64();
     Ok(run_result)
 }
 
@@ -814,6 +825,16 @@ mod tests {
         };
         assert_eq!(hit_files(&result_a), hit_files(&result_b));
         assert_eq!(hit_files(&result_a).len(), 8);
+    }
+
+    #[tokio::test]
+    async fn a_real_run_populates_total_elapsed_seconds() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "apple").unwrap();
+        let settings = settings_for(dir.path(), &["apple"]);
+        let result = run(settings, None, CancellationToken::new()).await.unwrap();
+        assert!(result.summary.total_elapsed_seconds >= 0.0, "must be a real, non-negative measurement");
+        assert!(result.summary.total_elapsed_seconds < 30.0, "sanity bound - this run must not have actually taken 30s");
     }
 
     #[tokio::test]

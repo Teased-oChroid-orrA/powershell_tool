@@ -168,6 +168,9 @@ fn write_report_to_sink(sink: &mut ReportSink, settings: &SearchSettings, run: &
         run.summary.skipped_by_exclude,
         run.summary.skipped_by_mode
     ));
+    if run.summary.total_elapsed_seconds > 0.0 {
+        out.push_str(&format!("<div><strong>Elapsed:</strong> {:.2}s</div>\n", run.summary.total_elapsed_seconds));
+    }
 
     // Case-insensitive aggregation by filter *text* (not slot) - two
     // filters differing only by case share one bar-chart bucket, matching
@@ -546,6 +549,15 @@ pub struct ExportRow {
     pub after: Option<String>,
     pub created: DateTime<Local>,
     pub modified: DateTime<Local>,
+    /// Epic #6 §69 "Export Metadata" - file size in bytes. `filename`/
+    /// `extension` from that section's list are deliberately not
+    /// separate columns - both are trivially derivable from `file_path`
+    /// by any downstream consumer (a spreadsheet formula, `jq`, etc.) and
+    /// duplicating them here would just be redundant data. `score` is
+    /// also omitted: this is a literal/regex line scanner, not a ranked
+    /// search - there is no real relevance score to report, and a
+    /// fabricated constant would be actively misleading.
+    pub file_size: i64,
 }
 
 /// Scans `lines_cache` backward from `line_number` for the nearest
@@ -580,6 +592,7 @@ pub fn build_export_rows(run: &SearchRunResult) -> Vec<ExportRow> {
                 after: h.after.clone(),
                 created: r.created,
                 modified: r.modified,
+                file_size: r.file_length,
             })
         })
         .collect()
@@ -621,7 +634,7 @@ fn csv_field(value: Option<&str>) -> String {
 pub fn write_csv(path: &str, rows: &[ExportRow]) -> std::io::Result<()> {
     use std::io::Write;
     let mut writer = std::io::BufWriter::new(std::fs::File::create(path)?);
-    writer.write_all(b"FilePath,LineNumber,Location,MatchedFilters,Before,MatchLine,After,Created,Modified\n")?;
+    writer.write_all(b"FilePath,LineNumber,Location,MatchedFilters,Before,MatchLine,After,Created,Modified,FileSize\n")?;
     for row in rows {
         let fields = [
             csv_field(Some(&row.file_path)),
@@ -633,6 +646,7 @@ pub fn write_csv(path: &str, rows: &[ExportRow]) -> std::io::Result<()> {
             csv_field(row.after.as_deref()),
             csv_field(Some(&row.created.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))),
             csv_field(Some(&row.modified.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))),
+            csv_field(Some(&row.file_size.to_string())),
         ];
         writer.write_all(fields.join(",").as_bytes())?;
         writer.write_all(b"\n")?;
@@ -852,6 +866,7 @@ mod tests {
             after: None,
             created: Local::now(),
             modified: Local::now(),
+            file_size: 0,
         };
         write_csv(path.to_str().unwrap(), &[row]).unwrap();
 
@@ -874,6 +889,7 @@ mod tests {
             after: None,
             created: Local::now(),
             modified: Local::now(),
+            file_size: 0,
         };
         write_json(path.to_str().unwrap(), &[row]).unwrap();
 
@@ -907,6 +923,17 @@ mod tests {
     }
 
     #[test]
+    fn export_rows_carry_the_file_size_from_the_file_result() {
+        let mut run = SearchRunResult::default();
+        let mut result = sample_result("/x/a.txt", vec![hit(1, "line one has apple", &["apple"])]);
+        result.file_length = 12345;
+        run.file_results.push(result);
+
+        let rows = build_export_rows(&run);
+        assert_eq!(rows[0].file_size, 12345);
+    }
+
+    #[test]
     fn export_rows_leave_location_none_for_non_pptx_formats() {
         let mut run = SearchRunResult::default();
         run.file_results.push(sample_result("/x/a.txt", vec![hit(1, "line one has apple", &["apple"])]));
@@ -929,6 +956,7 @@ mod tests {
                 after: None,
                 created: Local::now(),
                 modified: Local::now(),
+                file_size: 0,
             },
             ExportRow {
                 file_path: "/x/b.txt".to_string(),
@@ -940,6 +968,7 @@ mod tests {
                 after: None,
                 created: Local::now(),
                 modified: Local::now(),
+                file_size: 4096,
             },
         ];
         write_jsonl(path.to_str().unwrap(), &rows).unwrap();
@@ -952,6 +981,26 @@ mod tests {
             assert!(parsed.is_object());
         }
         assert!(lines[1].contains("Slide 3"));
+    }
+
+    #[test]
+    fn html_report_shows_elapsed_time_when_present() {
+        let settings = SearchSettings { filters: vec!["apple".to_string()], ..Default::default() };
+        let mut run = SearchRunResult::default();
+        run.summary.total_elapsed_seconds = 1.5;
+        run.file_results.push(sample_result("/x/a.txt", vec![hit(1, "apple pie", &["apple"])]));
+
+        let html = build_html_report(&settings, &run);
+        assert!(html.contains("Elapsed:"));
+        assert!(html.contains("1.50s"));
+    }
+
+    #[test]
+    fn html_report_omits_elapsed_line_when_not_tracked() {
+        let settings = SearchSettings { filters: vec!["apple".to_string()], ..Default::default() };
+        let run = SearchRunResult::default();
+        let html = build_html_report(&settings, &run);
+        assert!(!html.contains("Elapsed:"));
     }
 
     #[test]

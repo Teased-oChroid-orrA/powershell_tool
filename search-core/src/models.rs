@@ -226,6 +226,10 @@ pub struct SearchRunSummary {
     pub cache_reused: i32,
     pub enumeration_errors: i32,
     pub warnings: Vec<Warning>,
+    /// Total wall-clock time for this run (epic #6 §68 "performance
+    /// statistics" in the HTML report). Distinct from `InFlightFileStatus`'s
+    /// per-file `elapsed_seconds` (live progress display).
+    pub total_elapsed_seconds: f64,
 }
 
 /// Live status of one file currently being processed - in parallel mode

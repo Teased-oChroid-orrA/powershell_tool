@@ -1,11 +1,16 @@
-# native_search benchmarking (issue #2 Section 13)
+# Benchmarking (issue #2 Section 13, issue #6 §54-56)
 
 ## Scope of what exists today
 
-`native-search/benches/indexing_and_search.rs` is a minimal, manual-timing
-harness (`cargo bench`, `harness = false` — not criterion, per Section 23's
-"don't overengineer"). It measures indexing throughput and search latency
-against a single synthetic corpus.
+`native-search/benches/indexing_and_search.rs` and
+`search-core/benches/discovery_and_extraction.rs` are minimal, manual-timing
+harnesses (`cargo bench`, `harness = false` — not criterion, per Section 23's
+"don't overengineer"). Together they cover 4 of epic #6 §54's 6 categories:
+indexing throughput, search latency, directory-discovery throughput, and
+plain-text extraction throughput. Memory (peak/steady RSS) and UI (result
+update latency, scroll performance) are not covered - see "What's
+deliberately not benchmarked" below for why, honestly, rather than a
+fabricated number.
 
 **This is not** the full tiered benchmark suite Section 13 describes (10k /
 100k / 1M file corpora, mixed real file types, Tantivy-vs-FM-index-vs-
@@ -77,11 +82,59 @@ any of these numbers elsewhere.
   duplicate-content patterns of real PDFs/DOCX/logs this app actually
   searches.
 
+## Discovery and extraction (2026-08-25, this development machine)
+
+```
+$ cargo bench -p search-core --bench discovery_and_extraction
+search-core discovery/extraction benchmark harness (issue #6 §54)
+Measured on THIS machine only - not the win-x64 target hardware. See docs/benchmarking.md.
+
+Discovery:
+  269865 files/sec (5000 files across 50 dirs in 0.019s, 0 enumeration errors)
+
+Extraction (.txt path, 2000 files, ~200 words each):
+  544817 files/sec, 898.40 MB/sec (3.30 MB total in 0.004s)
+  latency: median 1us, p95 1us
+```
+
+Same caveats as above apply (wrong hardware, small corpus, synthetic
+content) - additionally: the extraction number only exercises the plain-
+text path (`PlainTextExtractor`), not DOCX/PPTX/PDF's own extractors.
+Format-specific extraction *correctness* is covered by
+`search-core/tests/fixtures.rs` against real fixture files, but those
+fixtures are a handful of small files - not a corpus large enough to
+produce a meaningful throughput number - and generating a large synthetic
+corpus of valid DOCX/PPTX/PDF byte content is real extra machinery
+disproportionate to what a "does this look pathological" sanity check
+needs. `.txt`/`.log` also dominate typical searched folders far more than
+`.docx`/`.pptx`/`.pdf` do in practice, so the path actually measured is
+the one most real corpora spend most of their time on.
+
+## What's deliberately not benchmarked
+
+- **Memory (peak/steady RSS).** Would need a platform-specific RSS query
+  (`/proc/self/status` on Linux, `GetProcessMemoryInfo` on Windows - the
+  actual target platform, not this development machine) wired into the
+  harness - real work, and the resulting number would still only describe
+  this machine's allocator behavior, not the target Windows machine's.
+  `search-core`'s architecture (Tantivy's disk-backed index, streaming
+  HTML/CSV/JSON export, bounded per-resource-class concurrency) is what
+  actually keeps memory bounded - see this doc's sibling phase docs
+  (`issue-6-phase-3.md` streaming export, `issue-6-phase-8.md`
+  concurrency) for the design reasoning, not a fabricated RSS figure.
+- **UI (result update latency, scroll performance).** Needs a real running
+  `dioxus-native`/Blitz window - not something a `cargo bench` binary can
+  measure. `docs/epic-ui-performance-and-design.md` (if present) or
+  manual `dx serve`/`cargo run -p app` verification is the actual
+  verification path for this, same as every other UI-only concern in this
+  repo (this project's own testing requirements already say the `app`
+  crate "cannot be fully verified this way").
+
 ## Re-running this
 
 ```
-cd native-search
-cargo bench --bench indexing_and_search
+cd native-search && cargo bench --bench indexing_and_search
+cd search-core && cargo bench --bench discovery_and_extraction
 ```
 
 No special setup beyond what `cargo build`/`cargo test` already need (see

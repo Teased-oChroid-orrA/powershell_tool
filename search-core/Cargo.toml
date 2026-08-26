@@ -57,3 +57,11 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = "3"
+
+# Same philosophy as native-search/benches/indexing_and_search.rs (see
+# docs/benchmarking.md): plain manual timing, harness = false, no
+# criterion - "a small benchmark harness where practical," not a
+# permanent perf-tracking suite.
+[[bench]]
+name = "discovery_and_extraction"
+harness = false
