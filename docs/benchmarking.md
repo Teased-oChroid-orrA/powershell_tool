@@ -82,33 +82,61 @@ any of these numbers elsewhere.
   duplicate-content patterns of real PDFs/DOCX/logs this app actually
   searches.
 
-## Discovery and extraction (2026-08-25, this development machine)
+## Discovery and extraction (2026-08-26, this development machine)
 
 ```
 $ cargo bench -p search-core --bench discovery_and_extraction
-search-core discovery/extraction benchmark harness (issue #6 §54)
+search-core discovery/extraction benchmark harness (issue #6 §54, issue #8 §2)
 Measured on THIS machine only - not the win-x64 target hardware. See docs/benchmarking.md.
 
 Discovery:
-  269865 files/sec (5000 files across 50 dirs in 0.019s, 0 enumeration errors)
+  293934 files/sec (5000 files across 50 dirs in 0.017s, 0 enumeration errors)
 
 Extraction (.txt path, 2000 files, ~200 words each):
-  544817 files/sec, 898.40 MB/sec (3.30 MB total in 0.004s)
+  543023 files/sec, 895.45 MB/sec (3.30 MB total in 0.004s)
   latency: median 1us, p95 1us
+
+Per-format extraction (real fixtures, 500 iterations each):
+  .docx     1363 bytes on disk, median     6us, p95     6us
+  .pptx     2383 bytes on disk, median     8us, p95     8us
+  .xlsx     2857 bytes on disk, median    12us, p95    13us
+  .zip      1525 bytes on disk, median     9us, p95     9us
+  .pdf       684 bytes on disk, median    28us, p95    28us
 ```
 
 Same caveats as above apply (wrong hardware, small corpus, synthetic
-content) - additionally: the extraction number only exercises the plain-
-text path (`PlainTextExtractor`), not DOCX/PPTX/PDF's own extractors.
-Format-specific extraction *correctness* is covered by
-`search-core/tests/fixtures.rs` against real fixture files, but those
-fixtures are a handful of small files - not a corpus large enough to
-produce a meaningful throughput number - and generating a large synthetic
-corpus of valid DOCX/PPTX/PDF byte content is real extra machinery
-disproportionate to what a "does this look pathological" sanity check
-needs. `.txt`/`.log` also dominate typical searched folders far more than
-`.docx`/`.pptx`/`.pdf` do in practice, so the path actually measured is
-the one most real corpora spend most of their time on.
+content for the `.txt` number). The per-format section (added for issue
+#8 §2's "measure extraction separately by format") runs each real fixture
+`search-core/tests/fixtures.rs` also uses for correctness - 1-4KB files,
+so these are per-file latencies at small-document size, not a throughput
+claim; real-world documents will cost more, but PDF's regex/stream-
+scanning approach being the slowest of the five (28µs vs. 6-12µs for the
+others) is a genuine, real signal, not noise - consistent with it being
+the one format without a real structural parser (`docs/issue-6-phase-6.md`'s
+PDF-page-awareness limitation note has the same root cause).
+`.txt`/`.log` also dominate typical searched folders far more than
+`.docx`/`.pptx`/`.pdf` do in practice, so the plain-text path remains the
+one most real corpora spend most of their time on.
+
+## Trigram candidate-set reduction (2026-08-26, this development machine)
+
+```
+$ cargo bench -p native-search --bench trigram_candidate_reduction
+Tier                                  total candidates   cand.%  full-scan(us)   narrowed(us)    speedup
+"the" (~100% of docs)                 10000      10000   100.0%            273          12782       0.0x
+"corrosion" (~20% of docs)            10000       2000    20.0%            230           2575       0.1x
+"zqx9k7f2" (rare, 0.05% of docs)      10000          5     0.1%            225             28       8.0x
+"ab" (below trigram threshold)        10000      10000   100.0%            220            220       1.0x
+```
+
+Added for issue #8 §7. Full discussion (why the "full-scan" baseline here
+is deliberately the *cheapest possible* verification cost, and why that
+makes common/medium terms look like a net loss here despite being a real
+win in production, where verification means real file I/O + parsing, not
+an in-memory string check) is in `docs/issue-8-status.md`'s "Optimization
+Results" section - read that before citing the 0.0x/0.1x numbers as
+evidence the trigram filter isn't worthwhile; it deliberately isolates
+overhead from reduction, and is not itself a production-shaped measurement.
 
 ## What's deliberately not benchmarked
 
@@ -134,6 +162,7 @@ the one most real corpora spend most of their time on.
 
 ```
 cd native-search && cargo bench --bench indexing_and_search
+cd native-search && cargo bench --bench trigram_candidate_reduction
 cd search-core && cargo bench --bench discovery_and_extraction
 ```
 

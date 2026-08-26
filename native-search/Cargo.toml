@@ -21,6 +21,10 @@ tempfile = "3"
 name = "indexing_and_search"
 harness = false
 
+[[bench]]
+name = "trigram_candidate_reduction"
+harness = false
+
 # [profile.*] moved to the workspace root Cargo.toml - Cargo ignores
 # per-crate profile sections for non-root workspace members (confirmed by
 # a real build warning when native-search joined the Rust-rewrite
