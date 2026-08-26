@@ -1016,6 +1016,60 @@ mod tests {
         assert_eq!(result.file_results[0].status, FileSearchStatus::ReadError, "permission-denied must be a clean read error, not a panic");
     }
 
+    // ---- Stress test (issue #6 §53) ----
+    // Deliberately #[ignore]d (docs/issue-6-phase-14.md explains why: a
+    // 100K-file corpus would make every `cargo test` run slow/disk-heavy
+    // for a scale this desktop tool's real usage rarely approaches).
+    // Run on demand: `cargo test -p search-core --release -- --ignored
+    // stress_test_100k_files`. Proves the full pipeline (enumerate,
+    // extension-filter, parallel process, match, tally) doesn't fall over
+    // - panic, hang, or produce a wrong count - at epic #6 §53's "100K
+    // files" tier, not just that it's theoretically bounded-parallel.
+    #[tokio::test]
+    #[ignore]
+    async fn stress_test_100k_files() {
+        const FILE_COUNT: usize = 100_000;
+        const DIR_COUNT: usize = 200;
+        const HIT_EVERY_NTH: usize = 7;
+
+        let dir = tempfile::tempdir().unwrap();
+        let setup_start = Instant::now();
+        for d in 0..DIR_COUNT {
+            let sub = dir.path().join(format!("d{d}"));
+            std::fs::create_dir_all(&sub).unwrap();
+            for f in 0..(FILE_COUNT / DIR_COUNT) {
+                let i = d * (FILE_COUNT / DIR_COUNT) + f;
+                let body = if i % HIT_EVERY_NTH == 0 { "apple pie recipe\n" } else { "nothing relevant here\n" };
+                std::fs::write(sub.join(format!("f{f}.txt")), body).unwrap();
+            }
+        }
+        eprintln!("stress_test_100k_files: wrote {FILE_COUNT} files in {:.2}s", setup_start.elapsed().as_secs_f64());
+
+        let mut settings = settings_for(dir.path(), &["apple"]);
+        settings.parallel = true;
+        settings.throttle_limit = 8;
+
+        let run_start = Instant::now();
+        let result = run(settings, None, CancellationToken::new()).await.unwrap();
+        let elapsed = run_start.elapsed();
+
+        let expected_hits = FILE_COUNT.div_ceil(HIT_EVERY_NTH);
+        let hit_count = result.file_results.iter().filter(|r| r.status == FileSearchStatus::Hit).count();
+        eprintln!(
+            "stress_test_100k_files: searched {} file(s) in {:.2}s ({:.0} files/sec), {} hit(s) (expected {})",
+            result.summary.files_searched,
+            elapsed.as_secs_f64(),
+            FILE_COUNT as f64 / elapsed.as_secs_f64(),
+            hit_count,
+            expected_hits
+        );
+
+        assert_eq!(result.file_results.len(), FILE_COUNT, "every file must be accounted for, none silently dropped");
+        assert_eq!(hit_count, expected_hits, "exact hit count must survive at this scale, not just 'roughly right'");
+        assert_eq!(result.summary.skipped_read_error, 0);
+        assert_eq!(result.summary.skipped_unexpected_error, 0);
+    }
+
     #[tokio::test]
     async fn a_real_run_populates_total_elapsed_seconds() {
         let dir = tempfile::tempdir().unwrap();

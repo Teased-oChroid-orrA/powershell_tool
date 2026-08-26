@@ -58,24 +58,34 @@ need a real file deleted mid-read - the same genuine, hard-to-do-safely
 timing dependency already declined for the truncation-detection test in
 Phase 10, for the same reason.
 
-## Stress tests (100K/500K/1M files) - documented as opt-in, not run by
-default
+## Stress tests (100K files) - opt-in, not run by default
 
-Epic §53's "stress tests" category (large synthetic corpora at 100K/500K/
-1M files) was not added to the default `cargo test` suite. Generating and
-tearing down hundreds of thousands of real files on every `cargo test`
-run would make the test suite itself slow and disk-heavy for every
-contributor on every run, for a scale this app's actual use case (a
-folder search tool, not a corpus-indexing service) rarely if ever
-approaches. The discovery benchmark added in Phase 11
-(`search-core/benches/discovery_and_extraction.rs`) already exercises
-5,000 files as a throughput sanity check - the closest thing to a stress
-test this session added, deliberately opt-in via `cargo bench` rather
-than every `cargo test` invocation. A dedicated `#[ignore]`d 100K-file
-stress test would be straightforward to add if a specific concern ever
-motivates it (`cargo test -- --ignored` to run it on demand) - not added
-speculatively here, matching this project's own "measure first, don't
-build infrastructure without evidence it's needed" philosophy.
+Added `orchestrator::tests::stress_test_100k_files`, `#[ignore]`d so it
+never runs as part of the default `cargo test` suite - generating and
+tearing down 100,000 real files on every contributor's every test run
+would make the suite itself slow and disk-heavy for a scale this app's
+actual use case (a folder search tool, not a corpus-indexing service)
+rarely if ever approaches. Run on demand:
+`cargo test -p search-core --release -- --ignored stress_test_100k_files --nocapture`.
+
+Real, measured (this development machine, release build, 2026-08-26):
+
+```
+stress_test_100k_files: wrote 100000 files in 12.37s
+stress_test_100k_files: searched 100000 file(s) in 6.13s (16308 files/sec), 14286 hit(s) (expected 14286)
+```
+
+100,000 files across 200 directories, every 7th file containing the
+filter text. Asserts every file is accounted for (`file_results.len() ==
+100_000`, none silently dropped), the exact expected hit count survives
+at this scale (not just "roughly right"), and zero unexpected/read
+errors. 500K/1M tiers were not added on top of this - 100K already
+exercises the full pipeline (enumerate, extension-filter, bounded-
+parallel process, match, tally) at a scale that would surface any
+O(n²) behavior or resource exhaustion; going further would mean a much
+longer opt-in test for diminishing evidentiary value without a specific
+motivating concern, the same "measure first, don't build infrastructure
+without evidence it's needed" judgment this project applies elsewhere.
 
 ## Verification
 
