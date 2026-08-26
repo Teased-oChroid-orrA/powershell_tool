@@ -84,7 +84,9 @@ pub fn CommandPalette(mut state: AppState, mut dark: Signal<bool>, mut open: Sig
                 spawn(state.run_search());
             }
             Command::CancelSearch => state.cancel_search(),
-            Command::OpenReport => state.open_report(),
+            Command::OpenReport => {
+                spawn(state.open_report());
+            }
             Command::ToggleTheme => dark.set(!dark()),
             Command::BrowseSearchFolder => {
                 spawn(state.browse_search_folder());

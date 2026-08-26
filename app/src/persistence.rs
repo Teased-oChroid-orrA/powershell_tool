@@ -37,6 +37,13 @@ pub struct PersistedState {
     pub include_hidden: bool,
     pub max_file_size_mb: Option<f64>,
     pub group_by: Option<GroupByMode>,
+    // Defaults true on missing/old config files - this app always
+    // generated the HTML report unconditionally before the checkbox
+    // existed, so an old persisted-settings file loading this as `false`
+    // (bool's own Default) would be a silent behavior change for existing
+    // users, not a neutral one.
+    #[serde(default = "default_true")]
+    pub export_html: bool,
     pub open_report_when_done: bool,
     pub export_csv: bool,
     pub export_json: bool,
@@ -68,6 +75,10 @@ pub struct PersistedState {
     #[serde(default)]
     pub saved_presets: Vec<crate::state::SavedPreset>,
     pub dark_theme: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn config_path() -> Option<PathBuf> {
@@ -141,6 +152,7 @@ fn apply_settings_fields(state: &mut AppState, persisted: &PersistedState) {
     if let Some(v) = persisted.group_by {
         state.group_by.set(v);
     }
+    state.export_html.set(persisted.export_html);
     state.open_report_when_done.set(persisted.open_report_when_done);
     state.export_csv.set(persisted.export_csv);
     state.export_json.set(persisted.export_json);
@@ -231,6 +243,7 @@ pub fn build_snapshot(state: &AppState, dark_theme: bool) -> PersistedState {
         include_hidden: *state.include_hidden.read(),
         max_file_size_mb: Some(*state.max_file_size_mb.read()),
         group_by: Some(*state.group_by.read()),
+        export_html: *state.export_html.read(),
         open_report_when_done: *state.open_report_when_done.read(),
         export_csv: *state.export_csv.read(),
         export_json: *state.export_json.read(),

@@ -57,7 +57,11 @@ fn Dropdown(field_label: String, selected_label: String, options: Vec<(&'static 
 pub fn SettingsPanel(mut state: AppState) -> Element {
     let can_run = state.can_run();
     let is_running = *state.is_running.read();
-    let has_report = state.last_report_path.read().is_some();
+    // "Open Report" stays usable even when "Generate HTML report" was
+    // unchecked for the run that just finished - `pending_report` holds
+    // what's needed to generate it lazily, on click, rather than forcing
+    // the user to re-run with the checkbox on just to see the report.
+    let has_report = state.last_report_path.read().is_some() || state.pending_report.read().is_some();
 
     // Memoized (not recomputed inline) so typing anywhere else in this
     // panel - e.g. "Search folder" - doesn't re-filter/re-clone the whole
@@ -388,6 +392,14 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                     label { class: "field-inline",
                         input {
                             r#type: "checkbox",
+                            checked: *state.export_html.read(),
+                            oninput: move |e| state.export_html.set(e.checked()),
+                        }
+                        span { "Generate HTML report" }
+                    }
+                    label { class: "field-inline",
+                        input {
+                            r#type: "checkbox",
                             checked: *state.open_report_when_done.read(),
                             oninput: move |e| state.open_report_when_done.set(e.checked()),
                         }
@@ -550,7 +562,7 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                     "Run Search"
                 }
                 button { disabled: !is_running, onclick: move |_| state.cancel_search(), "Cancel" }
-                button { disabled: !has_report, onclick: move |_| state.open_report(), "Open Report" }
+                button { disabled: !has_report, onclick: move |_| { spawn(state.open_report()); }, "Open Report" }
             }
         }
     }

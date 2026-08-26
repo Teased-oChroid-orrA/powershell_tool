@@ -72,6 +72,17 @@ impl FileResultView {
     }
 }
 
+/// What `open_report()` needs to generate the HTML report lazily, on
+/// click, when "Generate HTML report" was left unchecked for the run
+/// that produced these results - see `AppState::pending_report`'s doc
+/// comment.
+#[derive(Clone)]
+pub struct PendingReport {
+    pub path: String,
+    pub settings: SearchSettings,
+    pub result: search_core::models::SearchRunResult,
+}
+
 impl From<&FileSearchResult> for FileResultView {
     fn from(r: &FileSearchResult) -> Self {
         let file_name = Path::new(&r.full_name)
@@ -149,6 +160,7 @@ pub struct AppState {
     pub include_hidden: Signal<bool>,
     pub max_file_size_mb: Signal<f64>,
     pub group_by: Signal<GroupByMode>,
+    pub export_html: Signal<bool>,
     pub open_report_when_done: Signal<bool>,
     pub export_csv: Signal<bool>,
     pub export_json: Signal<bool>,
@@ -194,7 +206,14 @@ pub struct AppState {
     /// clicking a row in `ResultsPanel`.
     pub selected_result: Signal<Option<FileResultView>>,
     pub has_results: Signal<bool>,
+    /// Set once the HTML report has actually been written to disk this
+    /// run - `open_report()` opens straight from here when present.
     pub last_report_path: Signal<Option<String>>,
+    /// Set instead of `last_report_path` when "Generate HTML report" was
+    /// unchecked for a run that otherwise finished successfully - holds
+    /// everything `open_report()` needs to generate the report lazily, on
+    /// click, so unchecking the box never makes "Open Report" a dead end.
+    pub pending_report: Signal<Option<PendingReport>>,
     pub cancel_token: Signal<Option<CancellationToken>>,
     pub recent_searches: Signal<Vec<RecentSearch>>,
     pub saved_presets: Signal<Vec<SavedPreset>>,
@@ -261,6 +280,11 @@ impl AppState {
             include_hidden: use_signal(|| false),
             max_file_size_mb: use_signal(|| 50.0),
             group_by: use_signal(|| GroupByMode::Created),
+            // Defaults on: matches this app's pre-existing behavior (the
+            // HTML report was previously always generated, unconditionally)
+            // - unchecking is an opt-out, never a silent behavior change
+            // for anyone who already has this app configured.
+            export_html: use_signal(|| true),
             open_report_when_done: use_signal(|| false),
             export_csv: use_signal(|| false),
             export_json: use_signal(|| false),
@@ -286,6 +310,7 @@ impl AppState {
             selected_result: use_signal(|| None),
             has_results: use_signal(|| false),
             last_report_path: use_signal(|| None),
+            pending_report: use_signal(|| None),
             cancel_token: use_signal(|| None),
             recent_searches: use_signal(Vec::new),
             saved_presets: use_signal(Vec::new),
@@ -528,9 +553,30 @@ impl AppState {
         }
     }
 
-    pub fn open_report(&self) {
-        if let Some(path) = self.last_report_path.read().as_ref() {
-            let _ = open::that(path);
+    /// Opens the HTML report - generating it first, if "Generate HTML
+    /// report" was unchecked for the run that produced the currently-shown
+    /// results (`pending_report` holds what's needed for that). Unchecking
+    /// the box only skips the *automatic* write; "Open Report" must still
+    /// work on demand, or the checkbox would silently make the button a
+    /// dead end.
+    pub async fn open_report(mut self) {
+        if let Some(path) = self.last_report_path.read().clone() {
+            let _ = open::that(&path);
+            return;
+        }
+        let Some(pending) = self.pending_report.read().clone() else { return };
+        let path = pending.path.clone();
+        let write_outcome =
+            tokio::task::spawn_blocking(move || report::write_html_report(&pending.path, &pending.settings, &pending.result))
+                .await;
+        match write_outcome {
+            Ok(Ok(_)) => {
+                self.last_report_path.set(Some(path.clone()));
+                self.pending_report.set(None);
+                let _ = open::that(&path);
+            }
+            Ok(Err(e)) => self.status_text.set(format!("Error generating report: {e}")),
+            Err(join_err) => self.status_text.set(format!("Error generating report: {join_err}")),
         }
     }
 
@@ -591,6 +637,7 @@ impl AppState {
         self.has_results.set(false);
         self.results_summary_text.set(String::new());
         self.last_report_path.set(None);
+        self.pending_report.set(None);
         self.progress_percent.set(0.0);
         self.status_text.set("Starting...".to_string());
 
@@ -766,7 +813,7 @@ impl AppState {
         // length, for the same "don't hold the whole thing in memory
         // just to check its size" reason.
         let report_path = Path::new(&settings.output_folder).join(&output_name);
-        let report_path_for_write = report_path.clone();
+        let report_path_str = report_path.to_string_lossy().into_owned();
         let mut write_settings = settings.clone();
         if roots.len() > 1 {
             // Display-only override for the report's "Search folder" line
@@ -778,52 +825,67 @@ impl AppState {
             // settings used anywhere else.
             write_settings.search_path = roots.join("; ");
         }
-        let write_result = result.clone();
-        let write_outcome = tokio::task::spawn_blocking(move || {
-            report::write_html_report(&report_path_for_write.to_string_lossy(), &write_settings, &write_result)
-        })
-        .await;
 
-        match write_outcome {
-            Ok(Ok(byte_count)) => {
-                // The HTML report embeds everything inline (including the
-                // base64 banner and every match's before/match/after
-                // context) with no separate paging - a very large result
-                // set can produce a sizeable file with no warning before
-                // it's written. Warn, don't block: the report is still
-                // fully valid and useful, just possibly slow for a
-                // browser to open - matching this app's established
-                // "never interrupt the user over a soft problem" pattern
-                // (settings persistence, incremental cache) rather than
-                // adding a confirm/cancel dialog for what's still a
-                // successful search.
-                const LARGE_REPORT_WARNING_BYTES: u64 = 25 * 1024 * 1024;
-                if byte_count > LARGE_REPORT_WARNING_BYTES {
-                    let mb = byte_count as f64 / (1024.0 * 1024.0);
-                    self.results_summary_text.write().push_str(&format!(
-                        " Warning: this report is {mb:.0} MB - a browser may be slow to open it. Consider narrowing your filters or search folder."
-                    ));
-                }
+        if *self.export_html.read() {
+            let report_path_for_write = report_path.clone();
+            let write_settings_for_write = write_settings.clone();
+            let write_result = result.clone();
+            let write_outcome = tokio::task::spawn_blocking(move || {
+                report::write_html_report(&report_path_for_write.to_string_lossy(), &write_settings_for_write, &write_result)
+            })
+            .await;
 
-                let report_path_str = report_path.to_string_lossy().into_owned();
-                self.last_report_path.set(Some(report_path_str.clone()));
-
-                if settings.export_csv || settings.export_json {
-                    let rows = report::build_export_rows(&result);
-                    if settings.export_csv {
-                        let _ = report::write_csv(&change_extension(&report_path_str, "csv"), &rows);
+            match write_outcome {
+                Ok(Ok(byte_count)) => {
+                    // The HTML report embeds everything inline (including the
+                    // base64 banner and every match's before/match/after
+                    // context) with no separate paging - a very large result
+                    // set can produce a sizeable file with no warning before
+                    // it's written. Warn, don't block: the report is still
+                    // fully valid and useful, just possibly slow for a
+                    // browser to open - matching this app's established
+                    // "never interrupt the user over a soft problem" pattern
+                    // (settings persistence, incremental cache) rather than
+                    // adding a confirm/cancel dialog for what's still a
+                    // successful search.
+                    const LARGE_REPORT_WARNING_BYTES: u64 = 25 * 1024 * 1024;
+                    if byte_count > LARGE_REPORT_WARNING_BYTES {
+                        let mb = byte_count as f64 / (1024.0 * 1024.0);
+                        self.results_summary_text.write().push_str(&format!(
+                            " Warning: this report is {mb:.0} MB - a browser may be slow to open it. Consider narrowing your filters or search folder."
+                        ));
                     }
-                    if settings.export_json {
-                        let _ = report::write_json(&change_extension(&report_path_str, "json"), &rows);
+
+                    self.last_report_path.set(Some(report_path_str.clone()));
+                    self.pending_report.set(None);
+
+                    if settings.open_report_when_done {
+                        let _ = open::that(&report_path_str);
                     }
                 }
-
-                if settings.open_report_when_done {
-                    let _ = open::that(&report_path_str);
-                }
+                Ok(Err(e)) => self.status_text.set(format!("Error writing report: {e}")),
+                Err(join_err) => self.status_text.set(format!("Error writing report: {join_err}")),
             }
-            Ok(Err(e)) => self.status_text.set(format!("Error writing report: {e}")),
-            Err(join_err) => self.status_text.set(format!("Error writing report: {join_err}")),
+        } else {
+            // "Generate HTML report" unchecked - don't write anything now,
+            // but keep everything needed to generate it lazily if the user
+            // clicks "Open Report" later (see `open_report`'s doc comment).
+            self.last_report_path.set(None);
+            self.pending_report.set(Some(PendingReport {
+                path: report_path_str.clone(),
+                settings: write_settings.clone(),
+                result: result.clone(),
+            }));
+        }
+
+        if settings.export_csv || settings.export_json {
+            let rows = report::build_export_rows(&result);
+            if settings.export_csv {
+                let _ = report::write_csv(&change_extension(&report_path_str, "csv"), &rows);
+            }
+            if settings.export_json {
+                let _ = report::write_json(&change_extension(&report_path_str, "json"), &rows);
+            }
         }
 
         let mut done_text = "Done.".to_string();
