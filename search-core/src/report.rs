@@ -32,7 +32,68 @@ fn banner_data_uri() -> &'static str {
     })
 }
 
+/// Where a report's HTML text actually goes - `Buffer` accumulates
+/// everything into one `String` (what [`build_html_report`] returns, used
+/// by tests and any caller that genuinely needs the whole report as a
+/// string), `Writer` streams it straight to a file (what
+/// [`write_html_report`] uses - the actual production report-writing
+/// path). Both drive the exact same generation logic
+/// ([`write_report_to_sink`]) - the sink is the only thing that differs.
+enum ReportSink<'a> {
+    Buffer(&'a mut String),
+    Writer(&'a mut dyn std::io::Write),
+}
+
+impl ReportSink<'_> {
+    /// Moves `chunk`'s content to the sink and empties `chunk` either way
+    /// - appended for `Buffer` (which needs everything resident anyway),
+    /// written straight to disk and dropped for `Writer`. This second
+    /// case is the actual streaming behavior epic #6 §35 asks for
+    /// ("write result / write result / write result... do not construct
+    /// massive HTML strings in memory"): `chunk` is called at each
+    /// natural boundary - after the header, after the table of contents,
+    /// after every single file block - so at most one such piece of
+    /// formatted HTML is ever resident at once when writing to a file,
+    /// not the whole report.
+    fn commit(&mut self, chunk: &mut String) -> std::io::Result<()> {
+        match self {
+            ReportSink::Buffer(buf) => buf.push_str(chunk),
+            ReportSink::Writer(w) => w.write_all(chunk.as_bytes())?,
+        }
+        chunk.clear();
+        Ok(())
+    }
+}
+
+/// Builds the full HTML report as one in-memory `String` - for tests and
+/// any caller that genuinely needs the whole report as a string, not a
+/// file. The actual production report-writing path
+/// (`app/src/state.rs`'s `finish_successful_run`) uses
+/// [`write_html_report`] instead, which streams to disk without ever
+/// holding the whole formatted report in memory - see that function's
+/// doc comment.
 pub fn build_html_report(settings: &SearchSettings, run: &SearchRunResult) -> String {
+    let mut result = String::new();
+    write_report_to_sink(&mut ReportSink::Buffer(&mut result), settings, run)
+        .expect("writing into a String sink is infallible");
+    result
+}
+
+/// Streams the HTML report directly to `path` - see [`ReportSink::commit`]
+/// for what "streams" means here concretely. Returns the written file's
+/// final byte size (from the filesystem, not a pre-computed in-memory
+/// length) so callers can warn on a very large report without needing to
+/// have held the whole thing in memory first just to call `.len()` on it.
+pub fn write_html_report(path: &str, settings: &SearchSettings, run: &SearchRunResult) -> std::io::Result<u64> {
+    let file = std::fs::File::create(path)?;
+    let mut writer = std::io::BufWriter::new(file);
+    write_report_to_sink(&mut ReportSink::Writer(&mut writer), settings, run)?;
+    std::io::Write::flush(&mut writer)?;
+    drop(writer);
+    Ok(std::fs::metadata(path)?.len())
+}
+
+fn write_report_to_sink(sink: &mut ReportSink, settings: &SearchSettings, run: &SearchRunResult) -> std::io::Result<()> {
     let mut out = String::new();
     out.push_str("<!DOCTYPE html>\n");
     out.push_str("<html lang=\"en\"><head><meta charset=\"UTF-8\">\n");
@@ -137,6 +198,7 @@ pub fn build_html_report(settings: &SearchSettings, run: &SearchRunResult) -> St
         "<div style=\"margin-top:0.6em;\">Click a file below to expand its content in this page. A separate small link inside lets you open the real file if you want it.</div>\n",
     );
     out.push_str("</div>\n");
+    sink.commit(&mut out)?;
 
     if hit_results.is_empty() {
         out.push_str("<p class=\"no-hits\">No matches found.</p>\n");
@@ -150,9 +212,11 @@ pub fn build_html_report(settings: &SearchSettings, run: &SearchRunResult) -> St
             .map(|(i, r)| (file_name_of(&r.full_name), format!("file-{}", i + 1)))
             .collect();
         append_toc(&mut out, &toc_entries);
+        sink.commit(&mut out)?;
 
         for (idx, r) in ordered.iter().enumerate() {
             append_file_block(&mut out, r, settings, &format!("file-{}", idx + 1));
+            sink.commit(&mut out)?;
         }
     } else {
         let dated: Vec<(&crate::models::FileSearchResult, DateTime<Local>)> = hit_results
@@ -171,6 +235,7 @@ pub fn build_html_report(settings: &SearchSettings, run: &SearchRunResult) -> St
         let toc_entries: Vec<(String, String)> =
             years.iter().map(|y| (y.to_string(), format!("year-{y}"))).collect();
         append_toc(&mut out, &toc_entries);
+        sink.commit(&mut out)?;
 
         let mut file_anchor = 0;
         for year in years {
@@ -187,6 +252,7 @@ pub fn build_html_report(settings: &SearchSettings, run: &SearchRunResult) -> St
             months.sort_unstable();
             months.dedup();
             months.reverse();
+            sink.commit(&mut out)?;
 
             for month in months {
                 let mut month_items: Vec<&(&crate::models::FileSearchResult, DateTime<Local>)> =
@@ -198,12 +264,14 @@ pub fn build_html_report(settings: &SearchSettings, run: &SearchRunResult) -> St
                     month_items.len()
                 ));
                 out.push_str("<div class=\"month-body\">\n");
+                sink.commit(&mut out)?;
 
                 month_items.sort_by(|a, b| b.1.cmp(&a.1));
 
                 for (r, _) in month_items {
                     file_anchor += 1;
                     append_file_block(&mut out, r, settings, &format!("file-{file_anchor}"));
+                    sink.commit(&mut out)?;
                 }
 
                 out.push_str("</div></details>\n");
@@ -214,7 +282,8 @@ pub fn build_html_report(settings: &SearchSettings, run: &SearchRunResult) -> St
     }
 
     out.push_str("</body></html>\n");
-    out
+    sink.commit(&mut out)?;
+    Ok(())
 }
 
 fn append_toc(out: &mut String, entries: &[(String, String)]) {
@@ -669,6 +738,31 @@ mod tests {
 
         let html = build_html_report(&settings, &run);
         assert!(html.contains("<mark>appple</mark>"));
+    }
+
+    #[test]
+    fn write_html_report_streams_identical_content_to_the_string_builder() {
+        // Proves the streaming path (write_html_report, used in
+        // production) and the buffering path (build_html_report, used
+        // here and by every other test) produce byte-for-byte identical
+        // output despite committing to their sink at completely different
+        // granularities (once at the end vs. after every file block) -
+        // both drive the same write_report_to_sink, only the sink differs.
+        let settings = SearchSettings { filters: vec!["apple".to_string()], ..Default::default() };
+        let hits = vec![hit(1, "line one has apple", &["apple"])];
+        let mut run = SearchRunResult::default();
+        run.file_results.push(sample_result("/x/a.txt", hits));
+        run.summary = SearchRunSummary::default();
+
+        let expected = build_html_report(&settings, &run);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("report.html");
+        let byte_count = write_html_report(path.to_str().unwrap(), &settings, &run).unwrap();
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(written, expected, "streamed file content must match the in-memory build exactly");
+        assert_eq!(byte_count, written.len() as u64, "returned byte count must match the real file size");
     }
 
     #[test]

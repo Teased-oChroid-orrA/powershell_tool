@@ -723,24 +723,6 @@ impl AppState {
             result.summary.skipped_unexpected_error,
         ));
 
-        let html = report::build_html_report(&settings, &result);
-        // The HTML report embeds everything inline (including the base64
-        // banner and every match's before/match/after context) with no
-        // separate paging - a very large result set can produce a
-        // sizeable file with no warning before it's written. Warn, don't
-        // block: the report is still fully valid and useful, just
-        // possibly slow for a browser to open - matching this app's
-        // established "never interrupt the user over a soft problem"
-        // pattern (settings persistence, incremental cache) rather than
-        // adding a confirm/cancel dialog for what's still a successful
-        // search.
-        const LARGE_REPORT_WARNING_BYTES: usize = 25 * 1024 * 1024;
-        if html.len() > LARGE_REPORT_WARNING_BYTES {
-            let mb = html.len() as f64 / (1024.0 * 1024.0);
-            self.results_summary_text.write().push_str(&format!(
-                " Warning: this report is {mb:.0} MB - a browser may be slow to open it. Consider narrowing your filters or search folder."
-            ));
-        }
         let output_name = match &settings.output_name {
             Some(n) if n.to_lowercase().ends_with(".html") => n.clone(),
             Some(n) => format!("{n}.html"),
@@ -753,9 +735,44 @@ impl AppState {
             return;
         }
 
+        // Streams directly to disk (issue #6 §35 - see
+        // report::write_html_report's own doc comment) rather than
+        // building the whole formatted report as one in-memory String
+        // first, the way this call used to via build_html_report +
+        // tokio::fs::write. The returned byte count comes from the real
+        // written file (std::fs::metadata), not a pre-computed String
+        // length, for the same "don't hold the whole thing in memory
+        // just to check its size" reason.
         let report_path = Path::new(&settings.output_folder).join(&output_name);
-        match tokio::fs::write(&report_path, &html).await {
-            Ok(()) => {
+        let report_path_for_write = report_path.clone();
+        let write_settings = settings.clone();
+        let write_result = result.clone();
+        let write_outcome = tokio::task::spawn_blocking(move || {
+            report::write_html_report(&report_path_for_write.to_string_lossy(), &write_settings, &write_result)
+        })
+        .await;
+
+        match write_outcome {
+            Ok(Ok(byte_count)) => {
+                // The HTML report embeds everything inline (including the
+                // base64 banner and every match's before/match/after
+                // context) with no separate paging - a very large result
+                // set can produce a sizeable file with no warning before
+                // it's written. Warn, don't block: the report is still
+                // fully valid and useful, just possibly slow for a
+                // browser to open - matching this app's established
+                // "never interrupt the user over a soft problem" pattern
+                // (settings persistence, incremental cache) rather than
+                // adding a confirm/cancel dialog for what's still a
+                // successful search.
+                const LARGE_REPORT_WARNING_BYTES: u64 = 25 * 1024 * 1024;
+                if byte_count > LARGE_REPORT_WARNING_BYTES {
+                    let mb = byte_count as f64 / (1024.0 * 1024.0);
+                    self.results_summary_text.write().push_str(&format!(
+                        " Warning: this report is {mb:.0} MB - a browser may be slow to open it. Consider narrowing your filters or search folder."
+                    ));
+                }
+
                 let report_path_str = report_path.to_string_lossy().into_owned();
                 self.last_report_path.set(Some(report_path_str.clone()));
 
@@ -773,7 +790,8 @@ impl AppState {
                     let _ = open::that(&report_path_str);
                 }
             }
-            Err(e) => self.status_text.set(format!("Error writing report: {e}")),
+            Ok(Err(e)) => self.status_text.set(format!("Error writing report: {e}")),
+            Err(join_err) => self.status_text.set(format!("Error writing report: {join_err}")),
         }
 
         let mut done_text = "Done.".to_string();
