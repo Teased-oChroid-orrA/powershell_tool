@@ -511,9 +511,17 @@ fn csv_field(value: Option<&str>) -> String {
     }
 }
 
+/// Streams directly to a buffered file writer - epic #6 §36 ("CSV export
+/// must stream results... do not construct the entire export in memory
+/// before writing it"). Previously built one `String` holding the whole
+/// formatted (escaped/quoted) CSV text before a single `std::fs::write` -
+/// roughly 2-3x the raw row data's size once CSV quoting/escaping is
+/// applied, held in memory alongside `rows` itself for no reason once
+/// each row is only ever needed once, in order.
 pub fn write_csv(path: &str, rows: &[ExportRow]) -> std::io::Result<()> {
-    let mut out = String::new();
-    out.push_str("FilePath,LineNumber,MatchedFilters,Before,MatchLine,After,Created,Modified\n");
+    use std::io::Write;
+    let mut writer = std::io::BufWriter::new(std::fs::File::create(path)?);
+    writer.write_all(b"FilePath,LineNumber,MatchedFilters,Before,MatchLine,After,Created,Modified\n")?;
     for row in rows {
         let fields = [
             csv_field(Some(&row.file_path)),
@@ -525,15 +533,22 @@ pub fn write_csv(path: &str, rows: &[ExportRow]) -> std::io::Result<()> {
             csv_field(Some(&row.created.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))),
             csv_field(Some(&row.modified.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))),
         ];
-        out.push_str(&fields.join(","));
-        out.push('\n');
+        writer.write_all(fields.join(",").as_bytes())?;
+        writer.write_all(b"\n")?;
     }
-    std::fs::write(path, out)
+    writer.flush()
 }
 
+/// `serde_json::to_writer_pretty` serializes directly into the buffered
+/// file writer as it walks `rows`, never building the full JSON `String`
+/// `to_string_pretty` used to (same epic #6 §36/§37 "stream, don't
+/// buffer the whole export" concern as `write_csv`, applied via
+/// serde_json's own streaming `Serializer` rather than a hand-rolled
+/// writer loop, since JSON's nesting/escaping rules aren't as trivial to
+/// hand-stream correctly as CSV's).
 pub fn write_json(path: &str, rows: &[ExportRow]) -> std::io::Result<()> {
-    let json = serde_json::to_string_pretty(rows).expect("export rows are always serializable");
-    std::fs::write(path, json)
+    let writer = std::io::BufWriter::new(std::fs::File::create(path)?);
+    serde_json::to_writer_pretty(writer, rows).map_err(std::io::Error::from)
 }
 
 const CSS_BLOCK: &str = "<style>

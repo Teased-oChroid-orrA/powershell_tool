@@ -508,6 +508,13 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                                 onclick: move |_| { spawn(state.build_corpus_index()); },
                                 if *state.is_building_index.read() { "Indexing..." } else { "Build/update index" }
                             }
+                            button {
+                                class: "hit-action",
+                                title: "Delete and fully rebuild the index from scratch - use if results from the fast index look wrong or stale",
+                                disabled: state.search_path.read().trim().is_empty() || *state.is_building_index.read(),
+                                onclick: move |_| { spawn(state.rebuild_corpus_index()); },
+                                "Rebuild from scratch"
+                            }
                         }
                         if !state.index_build_status_text.read().is_empty() {
                             p { class: "caption", "{state.index_build_status_text}" }

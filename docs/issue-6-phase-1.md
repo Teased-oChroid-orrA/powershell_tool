@@ -131,12 +131,59 @@ still finds it.
   this work). `cargo build -p app` clean at every step; background
   `cargo run -p app` launch with no panic after each change.
 
-## Explicitly out of scope for this phase
+## Phase 1.1: follow-ups shipped in the same pass
+
+- **Trimmed the redundant UI.** Once Run Search itself routed through the
+  index, the old "Search the fast index directly" sub-panel (its own raw-
+  Tantivy-query box, Search/Cancel, and a bare id/path/score results list
+  with no line context) was mostly dead weight next to Run Search's richer
+  results. Removed, along with the state/methods it alone needed
+  (`native_search_query`/`_status_text`/`_results`/`_cancel`,
+  `NativeHitView`, `run_native_search`, `can_native_search`,
+  `cancel_native_search` - all confirmed unused elsewhere first). Kept:
+  the indexing checkbox and "Build/update index" button - the actual
+  index-first machinery. Section renamed "Fast re-search (experimental)"
+  → "Fast re-search index".
+- **Multi-root automatic indexing** (closes the gap this doc originally
+  flagged). Both `finish_successful_run`'s post-search indexing and the
+  "Build/update index" button now loop over every root
+  (`search_path` + `search_paths_extra`), not just the primary one -
+  `index_one_root`/the loop in `build_or_rebuild_corpus_index` factor the
+  per-root ensure-dir/open/build sequence so both call sites can't drift.
+- **Index health (epic §50).** "Rebuild from scratch" button -
+  `AppState::rebuild_corpus_index` deletes each root's
+  `.native-search-index` folder entirely before rebuilding, so
+  `get_document_metadata`'s skip-if-unchanged check can't skip anything.
+  Recovers from a suspected-corrupt or stale index without the user
+  manually finding and deleting a hidden folder - matches epic §71's
+  wording almost verbatim ("do not require users to manually delete
+  application directories to recover from corruption"). Shares its
+  per-root loop with the non-destructive "Build/update index" via a
+  private `build_or_rebuild_corpus_index(force_rebuild: bool)`.
+- **Streaming CSV/JSON export (epic §36/§37).** `write_csv` now writes
+  directly to a `BufWriter<File>` row by row instead of building one
+  `String` holding the whole formatted (escaped/quoted) CSV text first -
+  that intermediate string ran roughly 2-3x the raw row data's size once
+  CSV quoting is applied, held in memory for no reason once each row is
+  only ever needed once, in order. `write_json` switched from
+  `serde_json::to_string_pretty` (also a full-string builder) to
+  `serde_json::to_writer_pretty` - serde_json's own streaming serializer
+  writes directly into the buffered file writer as it walks the rows,
+  never materializing the full JSON string either. Output format
+  unchanged (existing `csv_export_neutralizes_formula_injection_trigger`/
+  `json_export_writes_non_empty_pascal_case_file` tests pass unmodified).
+  `build_export_rows`/`ExportRow` themselves weren't restructured into a
+  lazy iterator - `SearchRunResult` is already fully resident in memory
+  by the time any export runs (the search that produced it has already
+  completed), so collecting rows first doesn't multiply peak memory the
+  way building a second full-text copy of the *formatted* output did;
+  that's the part actually worth streaming.
+
+## Explicitly still out of scope
 
 Unchanged from `docs/issue-6-status.md`'s list: SQLite metadata store,
-streaming HTML/CSV/JSON export, extractor trait abstraction beyond the
-shared dispatch function, CLI/headless entry point, per-resource-class
-concurrency limits, index health/rebuild-inspection tooling beyond the
-automatic schema-mismatch rebuild, fuzzy/wildcard query UI exposure,
-ranking tuning, and (new, found during this phase) multi-root automatic
-indexing.
+streaming HTML export (CSV/JSON now stream; HTML's single-document
+structure makes this a larger, separate effort - not attempted here),
+extractor trait abstraction beyond the shared dispatch function, CLI/
+headless entry point, per-resource-class concurrency limits, fuzzy/
+wildcard query UI exposure, ranking tuning.

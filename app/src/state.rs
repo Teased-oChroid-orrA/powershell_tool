@@ -673,7 +673,7 @@ impl AppState {
         } else if cancelled {
             self.status_text.set("Cancelled.".to_string());
         } else if let Some(result) = combined {
-            self.finish_successful_run(base_settings, result).await;
+            self.finish_successful_run(base_settings, &roots, result).await;
         }
 
         self.is_running.set(false);
@@ -681,7 +681,12 @@ impl AppState {
         self.cancel_token.set(None);
     }
 
-    async fn finish_successful_run(&mut self, settings: SearchSettings, result: search_core::models::SearchRunResult) {
+    async fn finish_successful_run(
+        &mut self,
+        settings: SearchSettings,
+        roots: &[String],
+        result: search_core::models::SearchRunResult,
+    ) {
         if result.was_dry_run {
             let count = result.dry_run_candidates.as_ref().map(|c| c.len()).unwrap_or(0);
             let msg = format!("Dry run: {count} file(s) would be searched. Nothing was read or written.");
@@ -771,38 +776,44 @@ impl AppState {
         let mut done_text = "Done.".to_string();
         if *self.index_for_fast_search.read() {
             // Indexes the WHOLE corpus (every extension-matching file
-            // under this root), not just this run's hit files - issue #6
-            // Phase 1. This used to call the narrower
-            // `index_hits_for_fast_search` (hits only), but the trigram
-            // candidate-filter's safe-superset guarantee (`run_search`'s
-            // query-routing logic, above) only holds if the index actually
-            // covers every file that could match, not just files a past
-            // search happened to already prove were hits - an index built
-            // from hits-only would silently miss real matches in files
-            // that were never indexed at all. `build_or_update_corpus_index`
-            // is skip-if-unchanged per file, so re-running this after every
-            // search stays cheap once the corpus is already current.
-            let msg = match native_index::ensure_index_directory_exists(&native_index::index_directory(&settings.search_path)) {
-                Ok(()) => match native_index::open_or_create_with_rebuild(&native_index::index_directory(&settings.search_path)) {
-                    Ok(engine) => match native_index::build_or_update_corpus_index(
-                        &settings,
-                        &engine,
-                        &CancellationToken::new(),
-                        None,
-                    )
-                    .await
-                    {
-                        Ok(outcome) => format!(
-                            "Indexed {} file(s), {} already up to date{}.",
-                            outcome.indexed_count,
-                            outcome.skipped_count,
-                            if outcome.failed_count > 0 { format!(", {} failed to extract", outcome.failed_count) } else { String::new() }
-                        ),
-                        Err(e) => format!("Fast re-search indexing failed: {e}"),
-                    },
-                    Err(e) => format!("Fast re-search indexing failed: {e}"),
-                },
-                Err(e) => format!("Fast re-search indexing failed: {e}"),
+            // under EVERY searched root, not just the primary one - a
+            // multi-root search previously only indexed `search_path`,
+            // silently leaving `search_paths_extra`'s roots stale), not
+            // just this run's hit files - issue #6 Phase 1. This used to
+            // call the narrower `index_hits_for_fast_search` (hits only),
+            // but the trigram candidate-filter's safe-superset guarantee
+            // (`run_search`'s query-routing logic, above) only holds if
+            // the index actually covers every file that could match, not
+            // just files a past search happened to already prove were
+            // hits - an index built from hits-only would silently miss
+            // real matches in files that were never indexed at all.
+            // `build_or_update_corpus_index` is skip-if-unchanged per
+            // file, so re-running this after every search stays cheap
+            // once every root's corpus is already current.
+            let mut total = native_index::CorpusIndexOutcome::default();
+            let mut root_errors: Vec<String> = Vec::new();
+            for root in roots {
+                let mut root_settings = settings.clone();
+                root_settings.search_path = root.clone();
+                match index_one_root(&root_settings).await {
+                    Ok(outcome) => {
+                        total.indexed_count += outcome.indexed_count;
+                        total.skipped_count += outcome.skipped_count;
+                        total.failed_count += outcome.failed_count;
+                    }
+                    Err(e) => root_errors.push(format!("{root}: {e}")),
+                }
+            }
+            let msg = if !root_errors.is_empty() {
+                format!("Fast re-search indexing failed for {} folder(s): {}", root_errors.len(), root_errors.join("; "))
+            } else {
+                format!(
+                    "Indexed {} file(s){}, {} already up to date{}.",
+                    total.indexed_count,
+                    if roots.len() > 1 { format!(" across {} folder(s)", roots.len()) } else { String::new() },
+                    total.skipped_count,
+                    if total.failed_count > 0 { format!(", {} failed to extract", total.failed_count) } else { String::new() }
+                )
             };
             // Folded straight into the main, always-visible status line
             // (not a separate `native_search_status_text` signal - that
@@ -825,44 +836,93 @@ impl AppState {
     /// Explicit "Build/update index" action (issue #6 Phase 1) -
     /// decoupled from Run Search entirely, unlike the automatic
     /// corpus-reindex `finish_successful_run` does after every search
-    /// with fast-search indexing on. Scoped to `search_path` only (the
-    /// primary root) - a multi-root search's extra roots
-    /// (`search_paths_extra`) don't get indexed by this button or by the
-    /// automatic post-search indexing either; each extra root would need
-    /// its own index build. Left as a known gap rather than solved here -
-    /// the common case (one root) is fully correct and tested.
-    pub async fn build_corpus_index(mut self) {
+    /// with fast-search indexing on. Loops over every root
+    /// (`search_path` + `search_paths_extra`), same as
+    /// `finish_successful_run`'s indexing loop - previously scoped to
+    /// `search_path` only, silently leaving a multi-root search's extra
+    /// roots stale.
+    pub async fn build_corpus_index(self) {
+        self.build_or_rebuild_corpus_index(false).await;
+    }
+
+    /// "Rebuild index from scratch" (epic #6 §50: "index health" - rebuild/
+    /// verify/inspect-failed-documents mechanisms). Deletes each root's
+    /// `.native-search-index` folder entirely before rebuilding, so
+    /// `get_document_metadata`'s skip-if-unchanged check can't skip
+    /// anything - every file gets genuinely re-extracted and re-indexed,
+    /// not just files that look changed. For recovering from a suspected-
+    /// corrupt or stale index without the user manually finding and
+    /// deleting a hidden folder themselves (`open_or_create_with_rebuild`
+    /// already auto-recovers from a schema-version mismatch specifically -
+    /// this is the more general "start over" escape hatch epic #6 asks
+    /// for, matching its "do not require users to manually delete
+    /// application directories to recover from corruption" wording almost
+    /// verbatim).
+    pub async fn rebuild_corpus_index(self) {
+        self.build_or_rebuild_corpus_index(true).await;
+    }
+
+    async fn build_or_rebuild_corpus_index(mut self, force_rebuild: bool) {
         self.is_building_index.set(true);
         self.index_build_status_text.set("Starting...".to_string());
 
-        let settings = self.build_settings();
-        let index_dir = native_index::index_directory(&settings.search_path);
+        let base_settings = self.build_settings();
+        let roots: Vec<String> =
+            std::iter::once(base_settings.search_path.clone()).chain(self.search_paths_extra.read().iter().cloned()).collect();
         let cancellation = CancellationToken::new();
 
-        let result: native_search::error::NsResult<native_index::CorpusIndexOutcome> = async {
-            native_index::ensure_index_directory_exists(&index_dir)
-                .map_err(|e| native_search::error::NsError::index_error(e.to_string()))?;
-            let engine = native_index::open_or_create_with_rebuild(&index_dir)?;
-            let mut on_progress = |p: native_index::CorpusIndexProgress| {
-                self.index_build_status_text.set(format!(
-                    "Indexing {} of {}: {}",
-                    p.files_processed + 1,
-                    p.total_files.max(1),
-                    p.current_file
-                ));
-            };
-            native_index::build_or_update_corpus_index(&settings, &engine, &cancellation, Some(&mut on_progress)).await
-        }
-        .await;
+        let mut total = native_index::CorpusIndexOutcome::default();
+        let mut root_errors: Vec<String> = Vec::new();
 
-        let msg = match result {
-            Ok(outcome) => format!(
-                "Indexed {} file(s), {} already up to date{}.",
-                outcome.indexed_count,
-                outcome.skipped_count,
-                if outcome.failed_count > 0 { format!(", {} failed to extract", outcome.failed_count) } else { String::new() }
-            ),
-            Err(e) => format!("Indexing failed: {e}"),
+        for (i, root) in roots.iter().enumerate() {
+            let mut settings = base_settings.clone();
+            settings.search_path = root.clone();
+            let index_dir = native_index::index_directory(root);
+
+            if force_rebuild && index_dir.exists() {
+                if let Err(e) = std::fs::remove_dir_all(&index_dir) {
+                    root_errors.push(format!("{root}: could not remove existing index: {e}"));
+                    continue;
+                }
+            }
+
+            let result: native_search::error::NsResult<native_index::CorpusIndexOutcome> = async {
+                native_index::ensure_index_directory_exists(&index_dir)
+                    .map_err(|e| native_search::error::NsError::index_error(e.to_string()))?;
+                let engine = native_index::open_or_create_with_rebuild(&index_dir)?;
+                let mut on_progress = |p: native_index::CorpusIndexProgress| {
+                    let root_prefix = if roots.len() > 1 { format!("[{} of {}] ", i + 1, roots.len()) } else { String::new() };
+                    self.index_build_status_text.set(format!(
+                        "{root_prefix}Indexing {} of {}: {}",
+                        p.files_processed + 1,
+                        p.total_files.max(1),
+                        p.current_file
+                    ));
+                };
+                native_index::build_or_update_corpus_index(&settings, &engine, &cancellation, Some(&mut on_progress)).await
+            }
+            .await;
+
+            match result {
+                Ok(outcome) => {
+                    total.indexed_count += outcome.indexed_count;
+                    total.skipped_count += outcome.skipped_count;
+                    total.failed_count += outcome.failed_count;
+                }
+                Err(e) => root_errors.push(format!("{root}: {e}")),
+            }
+        }
+
+        let msg = if !root_errors.is_empty() {
+            format!("Indexing failed for {} folder(s): {}", root_errors.len(), root_errors.join("; "))
+        } else {
+            format!(
+                "Indexed {} file(s){}, {} already up to date{}.",
+                total.indexed_count,
+                if roots.len() > 1 { format!(" across {} folder(s)", roots.len()) } else { String::new() },
+                total.skipped_count,
+                if total.failed_count > 0 { format!(", {} failed to extract", total.failed_count) } else { String::new() }
+            )
         };
         self.index_build_status_text.set(msg);
         self.is_building_index.set(false);
@@ -943,6 +1003,23 @@ fn change_extension(path: &str, new_ext: &str) -> String {
 /// single path that fails to read/extract is skipped, not treated as a
 /// reason to abort the rest of the batch (this app's established per-file
 /// error isolation).
+/// Opens (auto-rebuilding if needed) the index for `settings.search_path`
+/// and brings it fully up to date via `build_or_update_corpus_index` -
+/// the single-root indexing step, called once per root by
+/// `finish_successful_run`'s multi-root loop and by
+/// `AppState::build_corpus_index`'s explicit single-root button. Kept as
+/// one shared function so both call sites can't drift on the ensure-dir/
+/// open/build sequence.
+async fn index_one_root(
+    settings: &search_core::models::SearchSettings,
+) -> native_search::error::NsResult<native_index::CorpusIndexOutcome> {
+    let dir = native_index::index_directory(&settings.search_path);
+    native_index::ensure_index_directory_exists(&dir)
+        .map_err(|e| native_search::error::NsError::index_error(e.to_string()))?;
+    let engine = native_index::open_or_create_with_rebuild(&dir)?;
+    native_index::build_or_update_corpus_index(settings, &engine, &CancellationToken::new(), None).await
+}
+
 fn reindex_changed_paths(paths: &[String], search_path: &str, settings: &search_core::models::SearchSettings) {
     let dir = native_index::index_directory(search_path);
     if native_index::ensure_index_directory_exists(&dir).is_err() {
