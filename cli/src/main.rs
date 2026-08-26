@@ -13,8 +13,10 @@ use search_core::models::{ExcludeScope, GroupByMode, MatchMode, SearchSettings};
 use search_core::{native_index, orchestrator, report};
 use tokio_util::sync::CancellationToken;
 
+mod interactive;
+
 #[derive(Copy, Clone, ValueEnum)]
-enum CliMatchMode {
+pub(crate) enum CliMatchMode {
     AnyLine,
     AllInFile,
     Proximity,
@@ -31,7 +33,7 @@ impl From<CliMatchMode> for MatchMode {
 }
 
 #[derive(Copy, Clone, ValueEnum)]
-enum CliExcludeScope {
+pub(crate) enum CliExcludeScope {
     Line,
     File,
 }
@@ -46,7 +48,7 @@ impl From<CliExcludeScope> for ExcludeScope {
 }
 
 #[derive(Copy, Clone, ValueEnum)]
-enum CliGroupBy {
+pub(crate) enum CliGroupBy {
     Created,
     Modified,
     None,
@@ -67,92 +69,107 @@ impl From<CliGroupBy> for GroupByMode {
 /// Dioxus GUI uses, headless.
 #[derive(Parser)]
 #[command(name = "search-cli", version, about)]
-struct Cli {
-    /// Folder to search, recursively.
-    search_path: PathBuf,
+pub(crate) struct Cli {
+    /// Folder to search, recursively. Omit together with --filter to be
+    /// prompted interactively instead (or pass --interactive explicitly
+    /// alongside a folder to still get prompted for everything else).
+    #[arg(required_unless_present = "interactive")]
+    pub(crate) search_path: Option<PathBuf>,
 
-    /// Filter text - at least one required. Repeat for multiple filters
-    /// (any-line mode: a line matching ANY of them is a hit).
-    #[arg(short = 'f', long = "filter", required = true)]
-    filters: Vec<String>,
+    /// Filter text - at least one required (unless --interactive).
+    /// Repeat for multiple filters (any-line mode: a line matching ANY of
+    /// them is a hit).
+    #[arg(short = 'f', long = "filter", required_unless_present = "interactive")]
+    pub(crate) filters: Vec<String>,
+
+    /// Walk through an interactive menu (folder, filters, mode, and -
+    /// optionally - advanced options) instead of requiring flags upfront.
+    #[arg(short = 'i', long)]
+    pub(crate) interactive: bool,
 
     /// Folder to write the report(s) into. Defaults to the search folder.
     #[arg(short = 'o', long)]
-    output_folder: Option<PathBuf>,
+    pub(crate) output_folder: Option<PathBuf>,
 
     /// Report base file name (without extension). Defaults to a
     /// timestamped name, same as the GUI.
     #[arg(long)]
-    output_name: Option<String>,
+    pub(crate) output_name: Option<String>,
 
     /// Exclude filter text - lines/files matching any of these are
     /// dropped. Repeat for multiple.
     #[arg(short = 'x', long = "exclude")]
-    exclude_filters: Vec<String>,
+    pub(crate) exclude_filters: Vec<String>,
 
     #[arg(long, value_enum, default_value = "line")]
-    exclude_scope: CliExcludeScope,
+    pub(crate) exclude_scope: CliExcludeScope,
 
     #[arg(long, value_enum, default_value = "any-line")]
-    mode: CliMatchMode,
+    pub(crate) mode: CliMatchMode,
 
     /// Only meaningful with --mode proximity.
     #[arg(long, default_value_t = 5)]
-    proximity_lines: i32,
+    pub(crate) proximity_lines: i32,
 
     /// Treat filters as regular expressions instead of literal substrings.
     #[arg(long)]
-    regex: bool,
+    pub(crate) regex: bool,
 
     /// Match whole words/tokens only (ignored in --regex mode).
     #[arg(long)]
-    whole_word: bool,
+    pub(crate) whole_word: bool,
 
     /// Extensions to search, comma-separated (e.g. "txt,log,pdf"). Omit
     /// to use the built-in default extension catalog, same as the GUI.
     #[arg(long, value_delimiter = ',')]
-    extensions: Option<Vec<String>>,
+    pub(crate) extensions: Option<Vec<String>>,
 
     /// Folder names to exclude from the walk, comma-separated. Matched by
     /// whole path segment, not substring.
     #[arg(long, value_delimiter = ',')]
-    exclude_folders: Vec<String>,
+    pub(crate) exclude_folders: Vec<String>,
 
     #[arg(long)]
-    include_hidden: bool,
+    pub(crate) include_hidden: bool,
 
     #[arg(long, default_value_t = 50.0)]
-    max_file_size_mb: f64,
+    pub(crate) max_file_size_mb: f64,
 
     #[arg(long, value_enum, default_value = "created")]
-    group_by: CliGroupBy,
+    pub(crate) group_by: CliGroupBy,
 
     /// Disable parallel processing (sequential is easier to reason about
     /// for scripted/CI use, but much slower on large folders).
     #[arg(long)]
-    no_parallel: bool,
+    pub(crate) no_parallel: bool,
 
     #[arg(long)]
-    throttle_limit: Option<i32>,
+    pub(crate) throttle_limit: Option<i32>,
 
     #[arg(long)]
-    heavy_throttle_limit: Option<i32>,
+    pub(crate) heavy_throttle_limit: Option<i32>,
 
     /// List what would be searched without reading or writing anything.
     #[arg(long)]
-    dry_run: bool,
+    pub(crate) dry_run: bool,
 
     #[arg(long)]
-    csv: bool,
+    pub(crate) csv: bool,
 
     #[arg(long)]
-    json: bool,
+    pub(crate) json: bool,
+
+    /// JSON Lines export (one compact JSON object per line) - better
+    /// suited to large exports and downstream pipeline processing
+    /// (`jq`, `grep`, etc.) than a single pretty-printed JSON array.
+    #[arg(long)]
+    pub(crate) jsonl: bool,
 
     /// Also build/update the persistent fast-search index for this folder
     /// (issue #6 Phase 1) while searching - the CLI's equivalent of the
     /// GUI's "Index this folder for fast re-search" checkbox.
     #[arg(long)]
-    index: bool,
+    pub(crate) index: bool,
 
     /// Path to a persistent SQLite extraction-failure log (issue #6
     /// §12/§16 - not exposed in the GUI yet, see search-core's
@@ -160,11 +177,20 @@ struct Cli {
     /// future runs (using this same path, on unchanged content) instead
     /// of being re-attempted every time.
     #[arg(long)]
-    failure_log: Option<PathBuf>,
+    pub(crate) failure_log: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    if cli.interactive {
+        match interactive::gather(cli) {
+            Ok(filled) => cli = filled,
+            Err(e) => {
+                eprintln!("Error: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -173,7 +199,15 @@ fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> ExitCode {
-    let search_path = cli.search_path.to_string_lossy().into_owned();
+    // Guaranteed Some here: clap enforces search_path/filters unless
+    // --interactive, and the --interactive branch in main() fills both
+    // in via the wizard before run() is ever called.
+    let search_path = cli
+        .search_path
+        .as_ref()
+        .expect("search_path must be populated by clap or the interactive wizard before run()")
+        .to_string_lossy()
+        .into_owned();
     let output_folder = cli
         .output_folder
         .map(|p| p.to_string_lossy().into_owned())
@@ -260,7 +294,7 @@ async fn run(cli: Cli) -> ExitCode {
         }
     }
 
-    if settings.export_csv || settings.export_json {
+    if settings.export_csv || settings.export_json || cli.jsonl {
         let rows = report::build_export_rows(&result);
         let stem = report_path.with_extension("");
         if settings.export_csv {
@@ -275,6 +309,13 @@ async fn run(cli: Cli) -> ExitCode {
             match report::write_json(&json_path.to_string_lossy(), &rows) {
                 Ok(()) => println!("Wrote {}", json_path.display()),
                 Err(e) => eprintln!("Error writing JSON: {e}"),
+            }
+        }
+        if cli.jsonl {
+            let jsonl_path = stem.with_extension("jsonl");
+            match report::write_jsonl(&jsonl_path.to_string_lossy(), &rows) {
+                Ok(()) => println!("Wrote {}", jsonl_path.display()),
+                Err(e) => eprintln!("Error writing JSONL: {e}"),
             }
         }
     }

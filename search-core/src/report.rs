@@ -527,6 +527,19 @@ fn month_name_english(month: u32) -> &'static str {
 pub struct ExportRow {
     pub file_path: String,
     pub line_number: i32,
+    /// Best-effort finer-grained location than `line_number` alone -
+    /// currently only populated for PPTX (`"Slide N"`/`"Slide N notes"`,
+    /// derived from the `--- Slide N ---` marker lines `extract_pptx_lines`
+    /// already emits into `lines_cache` - no extraction change, no new
+    /// storage per hit, matches epic #6 §29's "prefer the approach that
+    /// minimizes storage" - just scan a slice of the file's already-stored
+    /// `lines_cache` at export time). `None` for every other format,
+    /// including PDF: this extractor is a regex/content-stream scanner,
+    /// not a structural PDF parser (see extraction.rs's PDF section
+    /// comment), so it has no reliable page-boundary information to
+    /// report - a documented known limitation (docs/issue-6-phase-6.md),
+    /// not a silently-wrong guess.
+    pub location: Option<String>,
     pub matched_filters: String,
     pub before: Option<String>,
     pub match_line: String,
@@ -535,14 +548,32 @@ pub struct ExportRow {
     pub modified: DateTime<Local>,
 }
 
+/// Scans `lines_cache` backward from `line_number` for the nearest
+/// `--- Slide N ---`/`--- Slide N notes ---` marker `extract_pptx_lines`
+/// already inserts (see extraction.rs) - purely a read of already-stored
+/// data, no new extraction work. Only called for `.pptx` files.
+fn pptx_slide_location(lines_cache: &[String], line_number: i32) -> Option<String> {
+    let idx = usize::try_from(line_number).ok()?;
+    lines_cache
+        .get(..idx.min(lines_cache.len()))?
+        .iter()
+        .rev()
+        .find_map(|l| {
+            let inner = l.strip_prefix("--- Slide ")?.strip_suffix(" ---")?;
+            Some(format!("Slide {inner}"))
+        })
+}
+
 pub fn build_export_rows(run: &SearchRunResult) -> Vec<ExportRow> {
     run.file_results
         .iter()
         .filter(|r| r.status == FileSearchStatus::Hit)
         .flat_map(|r| {
+            let is_pptx = r.full_name.to_lowercase().ends_with(".pptx");
             r.hits.iter().map(move |h| ExportRow {
                 file_path: r.full_name.clone(),
                 line_number: h.line_number,
+                location: if is_pptx { pptx_slide_location(&r.lines_cache, h.line_number) } else { None },
                 matched_filters: h.matched_filters.join("; "),
                 before: h.before.clone(),
                 match_line: h.match_line.clone(),
@@ -590,11 +621,12 @@ fn csv_field(value: Option<&str>) -> String {
 pub fn write_csv(path: &str, rows: &[ExportRow]) -> std::io::Result<()> {
     use std::io::Write;
     let mut writer = std::io::BufWriter::new(std::fs::File::create(path)?);
-    writer.write_all(b"FilePath,LineNumber,MatchedFilters,Before,MatchLine,After,Created,Modified\n")?;
+    writer.write_all(b"FilePath,LineNumber,Location,MatchedFilters,Before,MatchLine,After,Created,Modified\n")?;
     for row in rows {
         let fields = [
             csv_field(Some(&row.file_path)),
             csv_field(Some(&row.line_number.to_string())),
+            csv_field(row.location.as_deref()),
             csv_field(Some(&row.matched_filters)),
             csv_field(row.before.as_deref()),
             csv_field(Some(&row.match_line)),
@@ -618,6 +650,24 @@ pub fn write_csv(path: &str, rows: &[ExportRow]) -> std::io::Result<()> {
 pub fn write_json(path: &str, rows: &[ExportRow]) -> std::io::Result<()> {
     let writer = std::io::BufWriter::new(std::fs::File::create(path)?);
     serde_json::to_writer_pretty(writer, rows).map_err(std::io::Error::from)
+}
+
+/// JSON Lines - one compact JSON object per row (epic #6 §37: "for very
+/// large exports, also consider JSON Lines... especially useful for large
+/// datasets and downstream processing"). Unlike `write_json`'s single
+/// pretty-printed array, each line is independently parseable - the format
+/// scripting pipelines (`jq`, `grep`, line-oriented tools) actually want,
+/// and never requires holding the whole document in memory to parse one
+/// record. CLI-only for now (`--jsonl`) - no GUI use case was requested,
+/// see docs/issue-6-phase-6.md.
+pub fn write_jsonl(path: &str, rows: &[ExportRow]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut writer = std::io::BufWriter::new(std::fs::File::create(path)?);
+    for row in rows {
+        serde_json::to_writer(&mut writer, row).map_err(std::io::Error::from)?;
+        writer.write_all(b"\n")?;
+    }
+    writer.flush()
 }
 
 const CSS_BLOCK: &str = "<style>
@@ -795,6 +845,7 @@ mod tests {
         let row = ExportRow {
             file_path: "/x/a.txt".to_string(),
             line_number: 1,
+            location: None,
             matched_filters: "x".to_string(),
             before: None,
             match_line: "=SUM(A1:A10)".to_string(),
@@ -816,6 +867,7 @@ mod tests {
         let row = ExportRow {
             file_path: "/x/a.txt".to_string(),
             line_number: 1,
+            location: None,
             matched_filters: "apple".to_string(),
             before: None,
             match_line: "apple".to_string(),
@@ -829,6 +881,77 @@ mod tests {
         assert!(!content.is_empty());
         assert!(content.contains("\"FilePath\""));
         assert!(content.contains("\"LineNumber\""));
+    }
+
+    #[test]
+    fn export_rows_derive_pptx_slide_location_from_marker_lines() {
+        let mut run = SearchRunResult::default();
+        let mut result = sample_result(
+            "/x/deck.pptx",
+            vec![hit(4, "engine specs", &["engine"]), hit(1, "before any slide marker", &["engine"])],
+        );
+        result.lines_cache = vec![
+            "--- Slide 1 ---".to_string(),
+            "intro text".to_string(),
+            "--- Slide 2 ---".to_string(),
+            "engine specs".to_string(),
+        ];
+        run.file_results.push(result);
+
+        let rows = build_export_rows(&run);
+        let by_line = |n: i32| rows.iter().find(|r| r.line_number == n).unwrap();
+        assert_eq!(by_line(4).location.as_deref(), Some("Slide 2"));
+        // A hit that lands directly on the "--- Slide 1 ---" marker line
+        // itself still resolves to that slide - the marker line is line 1.
+        assert_eq!(by_line(1).location.as_deref(), Some("Slide 1"));
+    }
+
+    #[test]
+    fn export_rows_leave_location_none_for_non_pptx_formats() {
+        let mut run = SearchRunResult::default();
+        run.file_results.push(sample_result("/x/a.txt", vec![hit(1, "line one has apple", &["apple"])]));
+        let rows = build_export_rows(&run);
+        assert_eq!(rows[0].location, None);
+    }
+
+    #[test]
+    fn write_jsonl_writes_one_compact_object_per_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.jsonl");
+        let rows = vec![
+            ExportRow {
+                file_path: "/x/a.txt".to_string(),
+                line_number: 1,
+                location: None,
+                matched_filters: "apple".to_string(),
+                before: None,
+                match_line: "apple".to_string(),
+                after: None,
+                created: Local::now(),
+                modified: Local::now(),
+            },
+            ExportRow {
+                file_path: "/x/b.txt".to_string(),
+                line_number: 2,
+                location: Some("Slide 3".to_string()),
+                matched_filters: "banana".to_string(),
+                before: None,
+                match_line: "banana".to_string(),
+                after: None,
+                created: Local::now(),
+                modified: Local::now(),
+            },
+        ];
+        write_jsonl(path.to_str().unwrap(), &rows).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 2);
+        for line in &lines {
+            let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert!(parsed.is_object());
+        }
+        assert!(lines[1].contains("Slide 3"));
     }
 
     #[test]

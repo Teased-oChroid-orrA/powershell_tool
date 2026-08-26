@@ -634,8 +634,21 @@ input[type="text"]:focus, input[type="number"]:focus {
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 input[type="checkbox"] {
-    flex: none; width: 16px; height: 16px; margin: 0;
+    /* blitz-paint's draw_checkbox (form_controls.rs) does NOT read the CSS
+       `accent-color` property at all - its own source comment admits this
+       ("TODO this should be coming from css accent-color, but I couldn't
+       find how to retrieve it") and falls back to painting the checked
+       fill using the element's computed `color` (text-color) property
+       instead. With `--fg` a near-white #eef0f4 in dark mode and no
+       explicit `color` set here, a checked box painted near-white plus a
+       white tick on top was visually indistinguishable from an unchecked
+       box (also painted white by blitz's UA default) - "can't tell if
+       it's ticked." Setting `color` (not `accent-color`) to the real
+       accent is the actual fix for this renderer; `accent-color` is kept
+       below in case a future blitz-paint version starts honoring it. */
+    color: var(--accent);
     accent-color: var(--accent);
+    flex: none; width: 16px; height: 16px; margin: 0;
 }
 
 .row { display: flex; gap: var(--space-2); align-items: flex-end; min-width: 0; }
