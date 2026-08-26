@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod extraction;
+pub mod failure_log;
 pub mod file_reader;
 pub mod matching;
 pub mod models;

@@ -44,6 +44,16 @@ tokio-util = "0.7"
 # HTML report: banner data-URI embedding and the "Open original file" link.
 base64 = "0.22"
 urlencoding = "2"
+# Persistent extraction-failure log (issue #6 §12/§16/§17/§50 - see
+# failure_log.rs's module doc for why this is scoped to failures
+# specifically, not a wholesale replacement of cache.rs's JSON result
+# cache or Tantivy's own document metadata). "bundled" statically links
+# SQLite's C amalgamation into the binary - required by this project's
+# standing "no pre-installed runtime of any kind on the target machine"
+# rule (see CLAUDE.md's "Target environment" section) - a plain `rusqlite`
+# without this feature would need the host to already have a system
+# SQLite library, which win-x64 machines aren't guaranteed to have.
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = "3"

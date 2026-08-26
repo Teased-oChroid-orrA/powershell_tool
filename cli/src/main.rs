@@ -153,6 +153,14 @@ struct Cli {
     /// GUI's "Index this folder for fast re-search" checkbox.
     #[arg(long)]
     index: bool,
+
+    /// Path to a persistent SQLite extraction-failure log (issue #6
+    /// §12/§16 - not exposed in the GUI yet, see search-core's
+    /// failure_log.rs). A file that fails extraction is skipped on
+    /// future runs (using this same path, on unchanged content) instead
+    /// of being re-attempted every time.
+    #[arg(long)]
+    failure_log: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
@@ -198,6 +206,9 @@ async fn run(cli: Cli) -> ExitCode {
     }
     if let Some(v) = cli.heavy_throttle_limit {
         settings.heavy_throttle_limit = v;
+    }
+    if let Some(path) = &cli.failure_log {
+        settings.failure_log_path = Some(path.to_string_lossy().into_owned());
     }
     if cli.index {
         native_index::ensure_index_folder_excluded(&mut settings.exclude_folders);

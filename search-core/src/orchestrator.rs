@@ -195,6 +195,12 @@ async fn run_over_candidates(
         _ => None,
     };
 
+    // ---- Extraction-failure log (issue #6 §12/§16) ----
+    let failure_log: Option<Arc<crate::failure_log::FailureLog>> = match settings.failure_log_path.as_deref() {
+        Some(p) if !p.trim().is_empty() => crate::failure_log::FailureLog::open(p).ok().map(Arc::new),
+        _ => None,
+    };
+
     let mut to_process: Vec<EnumeratedFile> = Vec::new();
     let mut reused: Vec<FileSearchResult> = Vec::new();
 
@@ -286,9 +292,10 @@ async fn run_over_candidates(
             let match_state = Arc::clone(&match_state);
             let inflight = Arc::clone(&inflight);
             let cancellation = cancellation.clone();
+            let failure_log = failure_log.clone();
             join_set.spawn(async move {
                 let _permit = sem.acquire_owned().await.expect("semaphore is never closed");
-                process_one_file(file, settings, match_state, max_bytes, inflight, cancellation).await
+                process_one_file(file, settings, match_state, max_bytes, inflight, cancellation, failure_log).await
             });
         }
 
@@ -338,6 +345,7 @@ async fn run_over_candidates(
                 max_bytes,
                 Arc::clone(&inflight),
                 cancellation.clone(),
+                failure_log.clone(),
             )
             .await;
             let completed = files_completed.fetch_add(1, Ordering::SeqCst) + 1;
@@ -428,6 +436,7 @@ async fn process_one_file(
     max_bytes: i64,
     inflight: InFlightMap,
     cancellation: CancellationToken,
+    failure_log: Option<Arc<crate::failure_log::FailureLog>>,
 ) -> FileSearchResult {
     let full_name = file.path.to_string_lossy().into_owned();
     let file_name_only = file
@@ -435,6 +444,7 @@ async fn process_one_file(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| full_name.clone());
+    let modified_unix = file.modified.timestamp();
 
     let mut result = FileSearchResult {
         full_name: full_name.clone(),
@@ -449,6 +459,20 @@ async fn process_one_file(
         low_confidence_pdf: false,
         error_message: None,
     };
+
+    // A known, unchanged extraction failure (issue #6 §16) - skip the
+    // read+extraction attempt entirely rather than re-discovering the
+    // same malformed file on every run. Only genuine extraction failures
+    // are ever recorded here (see failure_log.rs's module doc for why
+    // transient read errors - locked files, timeouts - are deliberately
+    // never recorded, since those ARE worth retrying every run).
+    if let Some(log) = &failure_log {
+        if let Some(reason) = log.known_failure_reason(&full_name, file.length, modified_unix) {
+            result.status = FileSearchStatus::ReadError;
+            result.error_message = Some(reason);
+            return result;
+        }
+    }
 
     if file.length > max_bytes {
         result.status = FileSearchStatus::TooLarge;
@@ -511,6 +535,12 @@ async fn process_one_file(
     let lines = match extracted {
         Ok(e) => {
             result.low_confidence_pdf = e.low_confidence_pdf;
+            // The file extracted successfully now - clear any prior
+            // recorded failure for it (fixed, or the earlier failure was
+            // a fluke of that specific past content).
+            if let Some(log) = &failure_log {
+                log.clear_failure(&full_name);
+            }
             e.lines
         }
         Err(extraction::ExtractLinesError::Binary) => {
@@ -519,6 +549,11 @@ async fn process_one_file(
         }
         Err(extraction::ExtractLinesError::Failed) => {
             result.status = FileSearchStatus::ReadError;
+            let reason = format!("{ext} extractor produced no usable text");
+            result.error_message = Some(reason.clone());
+            if let Some(log) = &failure_log {
+                log.record_failure(&full_name, file.length, modified_unix, "ReadError", &reason, chrono::Local::now().timestamp());
+            }
             return result;
         }
     };
@@ -623,6 +658,79 @@ mod tests {
         let names: Vec<&str> = result.file_results.iter().map(|r| r.full_name.as_str()).collect();
         assert!(names.iter().any(|n| n.ends_with("y.txt")), "robin must not be excluded");
         assert!(!names.iter().any(|n| n.ends_with("x.txt")), "bin must be excluded");
+    }
+
+    #[tokio::test]
+    async fn known_extraction_failure_is_skipped_on_a_rerun_not_reattempted() {
+        let dir = tempfile::tempdir().unwrap();
+        // Garbage bytes with a .docx extension - DocxExtractor is
+        // registered for this extension (see extraction.rs), so this
+        // skips the binary-sniff fallback entirely and goes straight to
+        // extract_docx_lines, which fails to parse it as a ZIP archive
+        // and returns None -> ExtractLinesError::Failed, a genuine
+        // extraction failure (not a transient read error).
+        std::fs::write(dir.path().join("corrupt.docx"), b"not a real docx file, just garbage bytes").unwrap();
+        let failure_db = dir.path().join("failures.db");
+
+        let mut settings = settings_for(dir.path(), &["apple"]);
+        settings.extensions = Some(vec![".docx".to_string()]);
+        settings.failure_log_path = Some(failure_db.to_str().unwrap().to_string());
+
+        let first = run(settings.clone(), None, CancellationToken::new()).await.unwrap();
+        let first_result = first.file_results.iter().find(|r| r.full_name.ends_with("corrupt.docx")).unwrap();
+        assert_eq!(first_result.status, FileSearchStatus::ReadError);
+        assert!(first_result.error_message.as_deref().unwrap().contains("docx"));
+
+        // The failure must now be persisted on disk, independent of this
+        // process's memory.
+        let log = crate::failure_log::FailureLog::open(failure_db.to_str().unwrap()).unwrap();
+        assert_eq!(log.list_failures().len(), 1);
+
+        // Second run, same settings, same unchanged file - must still
+        // report the exact same failure (proving the skip path produces
+        // an equivalent result, not just "some" result), sourced from the
+        // failure log rather than a second real extraction attempt.
+        let second = run(settings, None, CancellationToken::new()).await.unwrap();
+        let second_result = second.file_results.iter().find(|r| r.full_name.ends_with("corrupt.docx")).unwrap();
+        assert_eq!(second_result.status, FileSearchStatus::ReadError);
+        assert_eq!(second_result.error_message, first_result.error_message);
+    }
+
+    #[tokio::test]
+    async fn a_file_that_now_extracts_successfully_clears_its_failure_record() {
+        // Pre-seeds the failure log for a real, valid, easily-extractable
+        // file (bypassing the need to construct genuinely malformed
+        // ZIP/OOXML bytes just to trigger a real failure first) - proves
+        // process_one_file's success path calls clear_failure, directly
+        // and robustly.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "apple pie recipe\n").unwrap();
+        let failure_db = dir.path().join("failures.db");
+
+        // Deliberately a fingerprint that does NOT match the file's real
+        // current size/mtime - otherwise process_one_file's upfront
+        // known-failure skip check would match and short-circuit before
+        // ever reaching real extraction, and this test would never
+        // exercise the clear_failure code path it's meant to prove at
+        // all (a stale/mismatched record is exactly the "this failure no
+        // longer applies" case the fingerprint check exists to handle).
+        let full_name = path.to_string_lossy().into_owned();
+        {
+            let log = crate::failure_log::FailureLog::open(failure_db.to_str().unwrap()).unwrap();
+            log.record_failure(&full_name, 999_999, 1, "ReadError", "stale failure record from different content", 0);
+            assert_eq!(log.list_failures().len(), 1);
+        }
+
+        let mut settings = settings_for(dir.path(), &["apple"]);
+        settings.failure_log_path = Some(failure_db.to_str().unwrap().to_string());
+        let result = run(settings, None, CancellationToken::new()).await.unwrap();
+
+        let file_result = result.file_results.iter().find(|r| r.full_name.ends_with("a.txt")).unwrap();
+        assert_eq!(file_result.status, FileSearchStatus::Hit, "the stale failure record must not have blocked a real, successful extraction");
+
+        let log = crate::failure_log::FailureLog::open(failure_db.to_str().unwrap()).unwrap();
+        assert!(log.list_failures().is_empty(), "a file that extracts successfully must have its prior failure record cleared");
     }
 
     #[tokio::test]

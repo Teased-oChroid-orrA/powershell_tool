@@ -81,6 +81,14 @@ pub struct SearchSettings {
     pub heavy_throttle_limit: i32,
 
     pub cache_file_path: Option<String>,
+    /// Persistent SQLite extraction-failure log path (issue #6 §12/§16 -
+    /// see `failure_log.rs`'s module doc for why this is scoped
+    /// narrower than a general metadata store). `None`/empty disables it
+    /// entirely - a file that fails extraction gets retried every run,
+    /// same as before this existed. Deliberately separate from
+    /// `cache_file_path` (a different concern: result caching vs.
+    /// failure tracking, and either can be enabled without the other).
+    pub failure_log_path: Option<String>,
     pub dry_run: bool,
 
     pub max_retries: i32,
@@ -145,6 +153,7 @@ impl Default for SearchSettings {
             throttle_limit: default_throttle_limit(),
             heavy_throttle_limit: default_heavy_throttle_limit(),
             cache_file_path: None,
+            failure_log_path: None,
             dry_run: false,
             max_retries: 3,
             retry_delay_ms: 250,

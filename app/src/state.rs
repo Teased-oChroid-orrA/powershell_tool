@@ -403,6 +403,15 @@ impl AppState {
             throttle_limit: *self.throttle_limit.read(),
             heavy_throttle_limit: *self.heavy_throttle_limit.read(),
             cache_file_path: if cache_path_raw.is_empty() { None } else { Some(cache_path_raw) },
+            // Not exposed in the GUI (issue #6 §12/§16's persistent
+            // extraction-failure log - see search-core's failure_log.rs)
+            // - fully functional via the CLI's --index/orchestrator API
+            // directly, just not wired to a SettingsPanel checkbox yet.
+            // A reasonable scope boundary, not an oversight: the GUI
+            // already shows per-run errors in its own results list, so
+            // this is a smaller marginal win for it than it is for
+            // scripted/CLI use.
+            failure_log_path: None,
             dry_run: *self.dry_run.read(),
             max_retries: *self.max_retries.read(),
             // Not exposed in the UI - matches the C# original, which has no
