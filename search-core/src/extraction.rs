@@ -409,10 +409,28 @@ fn decode_xml_entities(xml: &str) -> String {
         .replace("&apos;", "'")
 }
 
+/// Issue #6 §62 "Security/Safety" - "enforce extracted size limits" for
+/// archive extraction. This is the single choke point every DOCX/PPTX/
+/// XLSX entry read goes through (word/document.xml, each slide/notes/
+/// diagram entry, sheet XML, shared strings) - unlike the nested-zip path
+/// in `extract_zip_entries`, these formats were reading each entry with a
+/// plain unbounded `read_to_string`, so a malicious file with one of
+/// these extensions whose one XML entry has a large *declared*
+/// uncompressed size (a classic zip-bomb: a small compressed file, a huge
+/// declared/actual decompressed size) could exhaust memory before the
+/// orchestrator's `max_file_size_mb` gate ever gets a chance to matter -
+/// that gate only sees the small on-disk *compressed* file size. Checks
+/// the declared size up front (reject before decompressing at all, same
+/// as `extract_zip_entries`'s own per-entry check), then bounds the
+/// actual read with `Read::take` as defense-in-depth against a
+/// deliberately-wrong declared size, not just a trusted-header check.
 fn read_zip_entry_to_string(zip: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str) -> Option<String> {
-    let mut entry = zip.by_name(name).ok()?;
+    let entry = zip.by_name(name).ok()?;
+    if entry.size() as i64 > ZIP_MAX_ENTRY_UNCOMPRESSED_BYTES {
+        return None;
+    }
     let mut s = String::new();
-    entry.read_to_string(&mut s).ok()?;
+    entry.take(ZIP_MAX_ENTRY_UNCOMPRESSED_BYTES as u64).read_to_string(&mut s).ok()?;
     Some(s)
 }
 
@@ -730,11 +748,15 @@ fn extract_zip_entries(
 
         let mut entry_bytes = Vec::new();
         {
-            let mut entry = match zip.by_index(i) {
+            let entry = match zip.by_index(i) {
                 Ok(e) => e,
                 Err(_) => continue,
             };
-            if entry.read_to_end(&mut entry_bytes).is_err() {
+            // Bounded read, not just the declared-size precheck above -
+            // defense-in-depth against a deliberately-wrong declared size
+            // (see read_zip_entry_to_string's doc comment for the same
+            // reasoning applied to DOCX/PPTX/XLSX entries).
+            if entry.take(ZIP_MAX_ENTRY_UNCOMPRESSED_BYTES as u64).read_to_end(&mut entry_bytes).is_err() {
                 continue;
             }
         }
@@ -1103,11 +1125,22 @@ pub fn extract_pdf_lines(
     (result, truncated_by_time)
 }
 
+/// Issue #6 §62 "Security/Safety" - a PDF content stream declares itself
+/// `/FlateDecode`d but there's no header field bounding how large the
+/// *inflated* output is before decompression actually runs (unlike a zip
+/// entry's declared `uncompressed_size`) - a small on-disk PDF containing
+/// a deliberately extreme-ratio deflate stream ("deflate bomb") could
+/// otherwise make `read_to_end` allocate without bound, before
+/// `extract_pdf_lines`'s own `MAX_CONTENT_CHARS` truncation - which only
+/// trims the buffer *after* it's already fully inflated - ever gets a
+/// chance to matter.
+const PDF_MAX_INFLATED_STREAM_BYTES: u64 = 20_000_000;
+
 fn inflate_raw_deflate(data: &[u8]) -> Option<Vec<u8>> {
     use flate2::read::DeflateDecoder;
-    let mut decoder = DeflateDecoder::new(data);
+    let decoder = DeflateDecoder::new(data);
     let mut out = Vec::new();
-    decoder.read_to_end(&mut out).ok()?;
+    decoder.take(PDF_MAX_INFLATED_STREAM_BYTES).read_to_end(&mut out).ok()?;
     Some(out)
 }
 
@@ -1320,6 +1353,31 @@ mod tests {
     #[test]
     fn extract_docx_lines_returns_none_for_non_zip_bytes() {
         assert!(extract_docx_lines(b"not a zip file").is_none());
+    }
+
+    /// Issue #6 §62 "Security/Safety" - "enforce extracted size limits".
+    /// Builds a real (not fabricated) zip whose `word/document.xml` entry
+    /// declares more than `ZIP_MAX_ENTRY_UNCOMPRESSED_BYTES` of
+    /// uncompressed content (highly compressible repeated bytes, so the
+    /// on-disk/compressed size stays tiny and the test runs instantly) -
+    /// exactly the shape a small-file, huge-decompressed-content zip bomb
+    /// would take. `extract_docx_lines` must reject it via the declared-
+    /// size precheck in `read_zip_entry_to_string`, never attempt to
+    /// materialize the full decompressed content in memory.
+    #[test]
+    fn extract_docx_lines_rejects_an_entry_declaring_more_than_the_size_cap() {
+        use std::io::Write;
+        let oversized_len = (ZIP_MAX_ENTRY_UNCOMPRESSED_BYTES + 1) as usize;
+        let mut buf = Vec::new();
+        {
+            let cursor = Cursor::new(&mut buf);
+            let mut writer = zip::ZipWriter::new(cursor);
+            let options = zip::write::SimpleFileOptions::default();
+            writer.start_file("word/document.xml", options).unwrap();
+            writer.write_all(&vec![b'a'; oversized_len]).unwrap();
+            writer.finish().unwrap();
+        }
+        assert!(extract_docx_lines(&buf).is_none(), "an entry over the declared-size cap must be rejected, not decompressed");
     }
 
     #[test]
