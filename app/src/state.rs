@@ -18,7 +18,7 @@ use std::path::Path;
 
 use dioxus::prelude::*;
 use crate::persistence;
-use native_search::engine::{CancellationFlag, NativeSearchEngine, SearchHit};
+use native_search::engine::{CancellationFlag, SearchHit};
 use search_core::models::{
     extension_catalog, ExcludeScope, FileSearchResult, FileSearchStatus, GroupByMode, InFlightFileStatus, MatchMode,
     SearchSettings,
@@ -181,6 +181,18 @@ pub struct AppState {
     pub index_for_fast_search: Signal<bool>,
     pub native_search_query: Signal<String>,
     pub native_search_status_text: Signal<String>,
+    /// Paths the filesystem watcher has reported changed since the last
+    /// incremental-reindex flush (issue #6 Phase 1) - accumulated here
+    /// rather than reindexed one at a time as each `notify` event arrives,
+    /// so a file saved repeatedly in a short window (a real editor
+    /// behavior, epic §39) coalesces into a single re-extract+reindex, not
+    /// one per keystroke-triggered autosave. Flushed periodically by a
+    /// background task in `main.rs`. A `HashSet`, not a `Vec`, because the
+    /// same path can be reported by multiple raw `notify` events before a
+    /// flush happens and only needs reindexing once.
+    pub pending_reindex_paths: Signal<std::collections::HashSet<String>>,
+    pub index_build_status_text: Signal<String>,
+    pub is_building_index: Signal<bool>,
     pub is_native_searching: Signal<bool>,
     pub native_search_results: Signal<Vec<NativeHitView>>,
     pub native_search_cancel: Signal<Option<CancellationFlag>>,
@@ -248,6 +260,9 @@ impl AppState {
         AppState {
             search_path: use_signal(String::new),
             search_paths_extra: use_signal(Vec::new),
+            pending_reindex_paths: use_signal(std::collections::HashSet::new),
+            index_build_status_text: use_signal(String::new),
+            is_building_index: use_signal(|| false),
             output_folder: use_signal(String::new),
             output_name: use_signal(String::new),
             filters_text: use_signal(String::new),
@@ -625,6 +640,33 @@ impl AppState {
             let mut run_settings = base_settings.clone();
             run_settings.search_path = root.clone();
 
+            // Index-first query routing (issue #6 Phase 1) - a trigram
+            // candidate query is a safe superset filter for every match
+            // mode except regex (see native-search's `trigram_candidate_paths`
+            // doc comment for the full reasoning), so this can narrow the
+            // file list before the real line-scan for AnyLine/AllInFile/
+            // Proximity/whole-word alike, not just plain literal mode.
+            // `None` (regex mode, an empty/never-built index, or any
+            // filter too short to have trigrams) always means "fall back
+            // to the unchanged full scan" - never a reason to report an
+            // empty result with confidence.
+            let query_candidates: Option<Vec<String>> = if !run_settings.use_regex && *self.index_for_fast_search.read() {
+                let index_dir = native_index::index_directory(root);
+                let filters = run_settings.filters.clone();
+                tokio::task::spawn_blocking(move || -> Option<Vec<String>> {
+                    native_index::ensure_index_directory_exists(&index_dir).ok()?;
+                    let engine = native_index::open_or_create_with_rebuild(&index_dir).ok()?;
+                    if engine.num_docs() == 0 {
+                        return None;
+                    }
+                    engine.trigram_candidate_paths(&filters).ok().flatten()
+                })
+                .await
+                .unwrap_or(None)
+            } else {
+                None
+            };
+
             let (tx, mut rx) = mpsc::unbounded_channel();
             let run_cancellation = cancellation.clone();
             let spawn_settings = run_settings.clone();
@@ -633,8 +675,12 @@ impl AppState {
             // directly - only the outer, Dioxus-spawned task (this whole
             // async fn) touches signals, and it does so from a single
             // consistent task throughout.
-            let join_handle =
-                tokio::spawn(async move { orchestrator::run(spawn_settings, Some(tx), run_cancellation).await });
+            let join_handle = match query_candidates {
+                Some(candidates) => tokio::spawn(async move {
+                    orchestrator::run_candidates(&candidates, spawn_settings, Some(tx), run_cancellation).await
+                }),
+                None => tokio::spawn(async move { orchestrator::run(spawn_settings, Some(tx), run_cancellation).await }),
+            };
 
             while let Some(report) = rx.recv().await {
                 self.apply_progress(report);
@@ -762,10 +808,40 @@ impl AppState {
 
         let mut done_text = "Done.".to_string();
         if *self.index_for_fast_search.read() {
-            let search_path = settings.search_path.clone();
-            let msg = tokio::task::spawn_blocking(move || index_hits_for_fast_search(&hit_results, &search_path))
-                .await
-                .unwrap_or_else(|e| format!("Fast re-search indexing failed: {e}"));
+            // Indexes the WHOLE corpus (every extension-matching file
+            // under this root), not just this run's hit files - issue #6
+            // Phase 1. This used to call the narrower
+            // `index_hits_for_fast_search` (hits only), but the trigram
+            // candidate-filter's safe-superset guarantee (`run_search`'s
+            // query-routing logic, above) only holds if the index actually
+            // covers every file that could match, not just files a past
+            // search happened to already prove were hits - an index built
+            // from hits-only would silently miss real matches in files
+            // that were never indexed at all. `build_or_update_corpus_index`
+            // is skip-if-unchanged per file, so re-running this after every
+            // search stays cheap once the corpus is already current.
+            let msg = match native_index::ensure_index_directory_exists(&native_index::index_directory(&settings.search_path)) {
+                Ok(()) => match native_index::open_or_create_with_rebuild(&native_index::index_directory(&settings.search_path)) {
+                    Ok(engine) => match native_index::build_or_update_corpus_index(
+                        &settings,
+                        &engine,
+                        &CancellationToken::new(),
+                        None,
+                    )
+                    .await
+                    {
+                        Ok(outcome) => format!(
+                            "Indexed {} file(s), {} already up to date{}.",
+                            outcome.indexed_count,
+                            outcome.skipped_count,
+                            if outcome.failed_count > 0 { format!(", {} failed to extract", outcome.failed_count) } else { String::new() }
+                        ),
+                        Err(e) => format!("Fast re-search indexing failed: {e}"),
+                    },
+                    Err(e) => format!("Fast re-search indexing failed: {e}"),
+                },
+                Err(e) => format!("Fast re-search indexing failed: {e}"),
+            };
             self.native_search_status_text.set(msg.clone());
             // `native_search_status_text` only renders inside the "Fast
             // re-search (experimental)" `<details>`, which is collapsed by
@@ -799,7 +875,7 @@ impl AppState {
             let dir = native_index::index_directory(&search_path);
             native_index::ensure_index_directory_exists(&dir)
                 .map_err(|e| native_search::error::NsError::index_error(e.to_string()))?;
-            let engine = NativeSearchEngine::open_or_create(&dir)?;
+            let engine = native_index::open_or_create_with_rebuild(&dir)?;
             let hits = engine.search(&query, 50, Some(&cancel_flag))?;
             Ok(hits.into_iter().map(NativeHitView::from).collect())
         })
@@ -821,6 +897,52 @@ impl AppState {
 
         self.is_native_searching.set(false);
         self.native_search_cancel.set(None);
+    }
+
+    /// Explicit "Build/update index" action (issue #6 Phase 1) -
+    /// decoupled from Run Search entirely, unlike the automatic
+    /// corpus-reindex `finish_successful_run` does after every search
+    /// with fast-search indexing on. Scoped to `search_path` only (the
+    /// primary root) - a multi-root search's extra roots
+    /// (`search_paths_extra`) don't get indexed by this button or by the
+    /// automatic post-search indexing either; each extra root would need
+    /// its own index build. Left as a known gap rather than solved here -
+    /// the common case (one root) is fully correct and tested.
+    pub async fn build_corpus_index(mut self) {
+        self.is_building_index.set(true);
+        self.index_build_status_text.set("Starting...".to_string());
+
+        let settings = self.build_settings();
+        let index_dir = native_index::index_directory(&settings.search_path);
+        let cancellation = CancellationToken::new();
+
+        let result: native_search::error::NsResult<native_index::CorpusIndexOutcome> = async {
+            native_index::ensure_index_directory_exists(&index_dir)
+                .map_err(|e| native_search::error::NsError::index_error(e.to_string()))?;
+            let engine = native_index::open_or_create_with_rebuild(&index_dir)?;
+            let mut on_progress = |p: native_index::CorpusIndexProgress| {
+                self.index_build_status_text.set(format!(
+                    "Indexing {} of {}: {}",
+                    p.files_processed + 1,
+                    p.total_files.max(1),
+                    p.current_file
+                ));
+            };
+            native_index::build_or_update_corpus_index(&settings, &engine, &cancellation, Some(&mut on_progress)).await
+        }
+        .await;
+
+        let msg = match result {
+            Ok(outcome) => format!(
+                "Indexed {} file(s), {} already up to date{}.",
+                outcome.indexed_count,
+                outcome.skipped_count,
+                if outcome.failed_count > 0 { format!(", {} failed to extract", outcome.failed_count) } else { String::new() }
+            ),
+            Err(e) => format!("Indexing failed: {e}"),
+        };
+        self.index_build_status_text.set(msg);
+        self.is_building_index.set(false);
     }
 }
 
@@ -888,18 +1010,90 @@ fn change_extension(path: &str, new_ext: &str) -> String {
     }
 }
 
-fn index_hits_for_fast_search(hits: &[FileSearchResult], search_path: &str) -> String {
+
+/// Re-extracts and reindexes (or, if the path no longer exists on disk,
+/// removes from the index) each of `paths` - the actual work behind the
+/// incremental-reindex flush (issue #6 Phase 1). Plain blocking
+/// `std::fs`/synchronous calls throughout, matching
+/// `index_hits_for_fast_search`'s established pattern in this file -
+/// both are only ever invoked already wrapped in `spawn_blocking`. A
+/// single path that fails to read/extract is skipped, not treated as a
+/// reason to abort the rest of the batch (this app's established per-file
+/// error isolation).
+fn reindex_changed_paths(paths: &[String], search_path: &str, settings: &search_core::models::SearchSettings) {
     let dir = native_index::index_directory(search_path);
-    if let Err(e) = native_index::ensure_index_directory_exists(&dir) {
-        return format!("Fast re-search indexing failed: {e}");
+    if native_index::ensure_index_directory_exists(&dir).is_err() {
+        return;
     }
-    let engine = match NativeSearchEngine::open_or_create(&dir) {
-        Ok(e) => e,
-        Err(e) => return format!("Fast re-search indexing failed: {e}"),
-    };
-    match native_index::index_hits_for_fast_search(&engine, hits) {
-        Ok(outcome) => outcome.status_message(),
-        Err(e) => format!("Fast re-search indexing failed: {e}"),
+    let Ok(engine) = native_index::open_or_create_with_rebuild(&dir) else { return };
+
+    let mut any_change = false;
+    for full_name in paths {
+        let path = Path::new(full_name);
+        if !path.exists() {
+            any_change |= engine.delete_document(full_name).is_ok();
+            continue;
+        }
+        let Ok(meta) = std::fs::metadata(path) else { continue };
+        let Ok(bytes) = std::fs::read(path) else { continue };
+        let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy().to_lowercase())).unwrap_or_default();
+        let Ok(extracted) = search_core::extraction::extract_lines_by_extension(&ext, &bytes, settings.pdf_timeout_seconds as u64, None)
+        else {
+            continue;
+        };
+        let body = extracted.lines.join("\n");
+        let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let to_unix = |t: std::io::Result<std::time::SystemTime>| {
+            t.ok().map(|s| chrono::DateTime::<chrono::Local>::from(s).timestamp()).unwrap_or(0)
+        };
+        let indexed = engine
+            .index_document(native_search::engine::DocumentInput {
+                id: full_name,
+                path: full_name,
+                filename: &file_name,
+                extension: &ext,
+                title: "",
+                modified_unix: to_unix(meta.modified()),
+                created_unix: to_unix(meta.created()),
+                size: meta.len() as i64,
+                body: &body,
+            })
+            .is_ok();
+        any_change |= indexed;
+    }
+
+    if any_change {
+        let _ = engine.commit();
+    }
+}
+
+/// Periodically flushes `state.pending_reindex_paths` into the corpus
+/// index (issue #6 Phase 1) - spawned once at startup
+/// (`main.rs`'s `App()`), alongside the fs_watch drain loop that fills
+/// that set. A fixed interval rather than a per-change timer is the
+/// debounce mechanism itself: several rapid saves of the same file
+/// within one tick coalesce into a single re-extract+reindex (epic §39 -
+/// "a file saved repeatedly by an application should not cause five full
+/// extractions unnecessarily"), since `pending_reindex_paths` is a
+/// `HashSet` and only the final flushed content of each changed file
+/// matters, not how many times it changed in between flushes.
+pub async fn run_incremental_reindex_flusher(mut state: AppState) {
+    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(2));
+    loop {
+        ticker.tick().await;
+        if !*state.index_for_fast_search.read() {
+            continue;
+        }
+        let pending: Vec<String> = {
+            let mut set = state.pending_reindex_paths.write();
+            if set.is_empty() {
+                continue;
+            }
+            set.drain().collect()
+        };
+        let search_path = state.search_path.read().clone();
+        let settings = state.build_settings();
+        let _ = tokio::task::spawn_blocking(move || reindex_changed_paths(&pending, &search_path, &settings)).await;
     }
 }
 

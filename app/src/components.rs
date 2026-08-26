@@ -485,18 +485,34 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                             checked: *state.index_for_fast_search.read(),
                             oninput: move |e| state.index_for_fast_search.set(e.checked()),
                         }
-                        span { "Index results for fast re-search" }
+                        span { "Index this folder for fast re-search" }
                     }
-                    // The query box/Search/Cancel controls are meaningless
-                    // until indexing has been turned on and a search has run
-                    // at least once to actually build the index - shown only
-                    // once that prerequisite is met, with an explanatory hint
-                    // in its place otherwise instead of a box of controls
-                    // that all just silently no-op.
+                    // The query box/Search/Cancel/Build controls are
+                    // meaningless until indexing has been turned on - shown
+                    // only once that prerequisite is met, with an
+                    // explanatory hint in its place otherwise instead of a
+                    // box of controls that all just silently no-op.
                     if *state.index_for_fast_search.read() {
+                        // Decoupled from Run Search entirely (issue #6
+                        // Phase 1) - indexes the whole corpus proactively,
+                        // not just this run's hits. Run Search also keeps
+                        // the index current automatically after every
+                        // completed search when this checkbox is on; this
+                        // button is for building/refreshing it without
+                        // running a full text-scan search first.
+                        div { class: "row",
+                            button {
+                                disabled: state.search_path.read().trim().is_empty() || *state.is_building_index.read(),
+                                onclick: move |_| { spawn(state.build_corpus_index()); },
+                                if *state.is_building_index.read() { "Indexing..." } else { "Build/update index" }
+                            }
+                        }
+                        if !state.index_build_status_text.read().is_empty() {
+                            p { class: "caption", "{state.index_build_status_text}" }
+                        }
                         div { class: "row",
                             label { class: "field",
-                                span { "Search the fast index" }
+                                span { "Search the fast index directly" }
                                 input {
                                     r#type: "text",
                                     placeholder: "e.g. torque OR extension:.pdf",
@@ -516,8 +532,11 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                             }
                         }
                         p { class: "caption", "{state.native_search_status_text}" }
+                        p { class: "caption",
+                            "Run Search (left) also uses this index automatically now for non-regex filters, narrowing to candidate files first."
+                        }
                     } else {
-                        p { class: "caption", "Enable indexing above, then run a search once to build the index before it can be searched." }
+                        p { class: "caption", "Enable indexing above, then click \"Build/update index\" or run a search - either keeps this folder's index current." }
                     }
                     div { class: "extension-list",
                         for hit in state.native_search_results.read().iter().cloned() {

@@ -28,7 +28,7 @@ pub struct EnumeratedFile {
     pub modified: DateTime<Local>,
 }
 
-fn system_time_to_local(t: SystemTime) -> DateTime<Local> {
+pub(crate) fn system_time_to_local(t: SystemTime) -> DateTime<Local> {
     DateTime::<chrono::Utc>::from(t).with_timezone(&Local)
 }
 

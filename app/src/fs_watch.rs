@@ -22,14 +22,17 @@ enum WatchCommand {
 static WATCH_COMMANDS: OnceLock<std_mpsc::Sender<WatchCommand>> = OnceLock::new();
 /// Drained by a spawned task in `main.rs`'s `App` - one message per
 /// detected change, already filtered to exclude the native_search index
-/// folder (see below).
-pub static CHANGE_EVENTS: OnceLock<Mutex<tokio_mpsc::UnboundedReceiver<()>>> = OnceLock::new();
+/// folder (see below). Carries the actual changed path(s) (not just a
+/// bare "something changed" signal) - state.rs's incremental-reindex task
+/// (issue #6 Phase 1) needs to know *which* file to re-extract/re-index or
+/// remove, not just that the folder is now possibly stale.
+pub static CHANGE_EVENTS: OnceLock<Mutex<tokio_mpsc::UnboundedReceiver<Vec<PathBuf>>>> = OnceLock::new();
 
 /// Starts the watcher thread. Call once, before the first `set_path`.
 #[allow(unused_assignments, unused_variables)]
 pub fn start() {
     let (cmd_tx, cmd_rx) = std_mpsc::channel::<WatchCommand>();
-    let (change_tx, change_rx) = tokio_mpsc::unbounded_channel::<()>();
+    let (change_tx, change_rx) = tokio_mpsc::unbounded_channel::<Vec<PathBuf>>();
     let _ = WATCH_COMMANDS.set(cmd_tx);
     let _ = CHANGE_EVENTS.set(Mutex::new(change_rx));
 
@@ -73,7 +76,7 @@ pub fn start() {
                     .iter()
                     .any(|p| p.components().any(|c| c.as_os_str() == search_core::native_index::INDEX_FOLDER_NAME));
                 if !is_own_index_write {
-                    let _ = change_tx.send(());
+                    let _ = change_tx.send(event.paths.clone());
                 }
             }
         }

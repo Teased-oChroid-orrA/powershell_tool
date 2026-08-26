@@ -10,10 +10,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use tantivy::collector::{Collector, SegmentCollector, TopDocs};
+use tantivy::collector::{Collector, DocSetCollector, SegmentCollector, TopDocs};
 use tantivy::directory::MmapDirectory;
-use tantivy::query::{QueryParser, TermQuery};
-use tantivy::schema::{IndexRecordOption, Schema, Value, FAST, INDEXED, STORED, STRING, TEXT};
+use tantivy::query::{BooleanQuery, Occur, Query, QueryParser, TermQuery};
+use tantivy::schema::{
+    IndexRecordOption, Schema, TextFieldIndexing, TextOptions, Value, FAST, INDEXED, STORED, STRING, TEXT,
+};
+use tantivy::tokenizer::{LowerCaser, NgramTokenizer, TextAnalyzer};
 use tantivy::{
     doc, Index, IndexReader, IndexWriter, ReloadPolicy, SegmentOrdinal, SegmentReader,
     TantivyDocument, TantivyError, Term,
@@ -112,6 +115,15 @@ pub struct SearchHit {
     pub score: f32,
 }
 
+/// Name the `trigram` field's tokenizer is registered under - must be
+/// identical at index time (`open_or_create`'s `register` call) and query
+/// time (`trigram_candidate_paths`'s `tokenizers().get(...)` call), since
+/// the whole safe-superset guarantee behind trigram candidate filtering
+/// depends on both sides splitting text into trigrams exactly the same
+/// way (see `search-core/docs/issue-6-status.md` / the epic #6 plan for
+/// the full reasoning).
+const TRIGRAM_TOKENIZER_NAME: &str = "trigram3";
+
 struct Fields {
     id: tantivy::schema::Field,
     path: tantivy::schema::Field,
@@ -122,6 +134,12 @@ struct Fields {
     created: tantivy::schema::Field,
     size: tantivy::schema::Field,
     body: tantivy::schema::Field,
+    /// Character-trigram-tokenized copy of `body`'s text, used only as a
+    /// candidate pre-filter for substring-style queries (issue #6 Phase 1)
+    /// - never retrieved (not `STORED`), never searched directly by a user
+    /// query the way `body`/`filename`/`title` are. See
+    /// `trigram_candidate_paths`.
+    trigram: tantivy::schema::Field,
 }
 
 fn build_schema() -> (Schema, Fields) {
@@ -134,10 +152,14 @@ fn build_schema() -> (Schema, Fields) {
     let modified = builder.add_i64_field("modified", INDEXED | STORED | FAST);
     let created = builder.add_i64_field("created", INDEXED | STORED | FAST);
     let size = builder.add_i64_field("size", INDEXED | STORED | FAST);
-    // Not STORED: the extracted body already lives on the .NET side
-    // (FileSearchResult.LinesCache) - duplicating it here would double the
-    // index's on-disk footprint for no reader who needs it back out.
+    // Not STORED: the full extracted text is re-derived from the source
+    // file when needed (search-core's extraction pipeline) - duplicating
+    // it here would double the index's on-disk footprint for no reader
+    // that needs it back out of Tantivy itself.
     let body = builder.add_text_field("body", TEXT);
+    let trigram_options =
+        TextOptions::default().set_indexing_options(TextFieldIndexing::default().set_tokenizer(TRIGRAM_TOKENIZER_NAME));
+    let trigram = builder.add_text_field("trigram", trigram_options);
     let schema = builder.build();
     (
         schema,
@@ -151,6 +173,7 @@ fn build_schema() -> (Schema, Fields) {
             created,
             size,
             body,
+            trigram,
         },
     )
 }
@@ -209,6 +232,22 @@ impl NativeSearchEngine {
                 .map_err(|e| NsError::index_error(format!("cannot create index: {e}")))?
         };
 
+        // Tokenizer registration is a runtime property of an `Index`
+        // instance, not persisted to the on-disk index files - this must
+        // run on every `open_or_create` call (fresh or reopened alike),
+        // not just at creation time, or a reopened index's `trigram` field
+        // would silently tokenize with Tantivy's raw/unregistered default
+        // instead of the ngram analyzer the schema declares for it.
+        index.tokenizers().register(
+            TRIGRAM_TOKENIZER_NAME,
+            TextAnalyzer::builder(
+                NgramTokenizer::new(3, 3, false)
+                    .map_err(|e| NsError::index_error(format!("cannot build trigram tokenizer: {e}")))?,
+            )
+            .filter(LowerCaser)
+            .build(),
+        );
+
         // 50 MB indexing buffer is tantivy's own documented minimum-viable
         // default for a single-threaded writer; revisit once Section 13
         // benchmarking exists.
@@ -251,6 +290,7 @@ impl NativeSearchEngine {
                 self.fields.created => doc.created_unix,
                 self.fields.size => doc.size,
                 self.fields.body => doc.body,
+                self.fields.trigram => doc.body,
             ))
             .map_err(|e| NsError::index_error(e.to_string()))?;
         Ok(())
@@ -338,6 +378,80 @@ impl NativeSearchEngine {
         Ok(hits)
     }
 
+    /// Splits `text` into trigrams using the exact same tokenizer pipeline
+    /// registered for the `trigram` field at index time
+    /// (`index.tokenizers().get(TRIGRAM_TOKENIZER_NAME)`, never a second,
+    /// separately-constructed `NgramTokenizer`) - the safe-superset
+    /// guarantee behind [`trigram_candidate_paths`](Self::trigram_candidate_paths)
+    /// depends on index-time and query-time trigram splitting being
+    /// byte-for-byte identical.
+    fn trigrams_of(&self, text: &str) -> Vec<String> {
+        let mut analyzer = self
+            .index
+            .tokenizers()
+            .get(TRIGRAM_TOKENIZER_NAME)
+            .expect("trigram tokenizer is registered on every open_or_create call");
+        let mut stream = analyzer.token_stream(text);
+        let mut out = Vec::new();
+        while stream.advance() {
+            out.push(stream.token().text.clone());
+        }
+        out
+    }
+
+    /// Safe-superset candidate filter for substring-style queries (issue
+    /// #6 Phase 1 - see the plan doc/epic addendum for the full
+    /// reasoning). A file whose `trigram` field doesn't contain every
+    /// trigram of a given filter *cannot* contain that filter as a
+    /// substring, so requiring all of a filter's trigrams (AND) - then
+    /// OR-ing across filters, since any match mode this app has still
+    /// needs "does the file contain filter X somewhere" for at least one
+    /// filter - is a sound pre-filter: it can only over-select candidates,
+    /// never drop a file that a real substring scan would have found.
+    ///
+    /// Returns `Ok(None)` - meaning "don't narrow, the caller must fall
+    /// back to an unfiltered full scan" - when `filters` is empty or any
+    /// single filter is shorter than 3 characters (produces zero
+    /// trigrams, so no safe narrowing is possible for it). Never a
+    /// correctness risk either way: `None` is always the conservative,
+    /// slower-but-correct answer.
+    pub fn trigram_candidate_paths(&self, filters: &[String]) -> NsResult<Option<Vec<String>>> {
+        if filters.is_empty() {
+            return Ok(None);
+        }
+
+        let mut per_filter_queries: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(filters.len());
+        for f in filters {
+            let trigrams = self.trigrams_of(f);
+            if trigrams.is_empty() {
+                return Ok(None);
+            }
+            let must_clauses: Vec<(Occur, Box<dyn Query>)> = trigrams
+                .into_iter()
+                .map(|t| {
+                    let term_query: Box<dyn Query> =
+                        Box::new(TermQuery::new(Term::from_field_text(self.fields.trigram, &t), IndexRecordOption::Basic));
+                    (Occur::Must, term_query)
+                })
+                .collect();
+            let per_filter: Box<dyn Query> = Box::new(BooleanQuery::new(must_clauses));
+            per_filter_queries.push((Occur::Should, per_filter));
+        }
+
+        let query = BooleanQuery::new(per_filter_queries);
+        let searcher = self.reader.searcher();
+        let doc_addrs = searcher
+            .search(&query, &DocSetCollector)
+            .map_err(|e| NsError::index_error(e.to_string()))?;
+
+        let mut paths = Vec::with_capacity(doc_addrs.len());
+        for addr in doc_addrs {
+            let retrieved: TantivyDocument = searcher.doc(addr).map_err(|e| NsError::index_error(e.to_string()))?;
+            paths.push(text_value(&retrieved, self.fields.path));
+        }
+        Ok(Some(paths))
+    }
+
     pub fn num_docs(&self) -> u64 {
         self.reader.searcher().num_docs()
     }
@@ -423,6 +537,78 @@ mod tests {
         let hits = engine.search("torque", 10, None).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "1");
+    }
+
+    #[test]
+    fn trigram_candidates_find_a_substring_the_default_tokenizer_would_miss() {
+        // "eng" is a substring of "engine" but not a whole token of it -
+        // the default tokenizer's `search("eng", ...)` would find nothing
+        // here (proving the gap this candidate filter exists to close),
+        // but the trigram path must still find the document.
+        let dir = tempdir().unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        engine.index_document(sample("1", "torque spec deviation on engine mount")).unwrap();
+        engine.commit().unwrap();
+
+        assert!(engine.search("eng", 10, None).unwrap().is_empty(), "sanity check: default tokenizer should NOT match");
+
+        let candidates = engine.trigram_candidate_paths(&["eng".to_string()]).unwrap();
+        let paths = candidates.expect("3+ char filter must produce a narrowed candidate list, not None");
+        assert_eq!(paths.len(), 1);
+    }
+
+    #[test]
+    fn trigram_candidates_are_case_insensitive() {
+        let dir = tempdir().unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        engine.index_document(sample("1", "TORQUE spec deviation")).unwrap();
+        engine.commit().unwrap();
+
+        let paths = engine.trigram_candidate_paths(&["torque".to_string()]).unwrap().unwrap();
+        assert_eq!(paths.len(), 1);
+    }
+
+    #[test]
+    fn trigram_candidates_or_across_multiple_filters() {
+        let dir = tempdir().unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        engine.index_document(sample("1", "torque spec")).unwrap();
+        engine.index_document(sample("2", "corrosion inspection")).unwrap();
+        engine.index_document(sample("3", "completely unrelated content")).unwrap();
+        engine.commit().unwrap();
+
+        let paths = engine
+            .trigram_candidate_paths(&["torque".to_string(), "corrosion".to_string()])
+            .unwrap()
+            .unwrap();
+        assert_eq!(paths.len(), 2, "doc 3 (neither filter) must not be a candidate");
+    }
+
+    #[test]
+    fn trigram_candidates_excludes_a_document_missing_all_trigrams() {
+        let dir = tempdir().unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        engine.index_document(sample("1", "torque spec deviation")).unwrap();
+        engine.commit().unwrap();
+
+        let paths = engine.trigram_candidate_paths(&["zzzzz".to_string()]).unwrap().unwrap();
+        assert!(paths.is_empty(), "a filter with no matching trigrams anywhere must exclude the document");
+    }
+
+    #[test]
+    fn trigram_candidates_falls_back_to_none_for_short_filters() {
+        let dir = tempdir().unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        engine.index_document(sample("1", "torque spec")).unwrap();
+        engine.commit().unwrap();
+
+        assert_eq!(engine.trigram_candidate_paths(&["ab".to_string()]).unwrap(), None, "2-char filter has no trigrams");
+        assert_eq!(engine.trigram_candidate_paths(&[]).unwrap(), None, "empty filter list");
+        assert_eq!(
+            engine.trigram_candidate_paths(&["torque".to_string(), "ab".to_string()]).unwrap(),
+            None,
+            "one short filter must fall back the whole query, not silently ignore that filter"
+        );
     }
 
     #[test]

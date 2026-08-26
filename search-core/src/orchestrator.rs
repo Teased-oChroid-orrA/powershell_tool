@@ -16,7 +16,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::cache::{self, CandidateMetadata};
 use crate::extraction;
-use crate::file_reader::{self, EnumeratedFile};
+use chrono::Local;
+
+use crate::file_reader::{self, system_time_to_local, EnumeratedFile};
 use crate::matching::{self, CompiledMatchState, InvalidFilterRegexError};
 use crate::models::{
     extension_catalog, FileSearchResult, FileSearchStatus, InFlightFileStatus, SearchProgressReport, SearchRunResult,
@@ -77,10 +79,6 @@ pub async fn run(
 ) -> Result<SearchRunResult, OrchestratorError> {
     let mut run_result = SearchRunResult::default();
 
-    let extensions: Vec<String> = settings.extensions.clone().unwrap_or_else(extension_catalog::all_extensions);
-    let extension_set: std::collections::HashSet<String> = extensions.iter().map(|e| e.to_lowercase()).collect();
-    let search_all_extensions = extension_set.len() == 1 && extension_set.contains("*");
-
     // Excluded folders are pruned during the walk itself (matched by whole
     // path segment, not raw substring), so a huge excluded tree is never
     // actually descended into.
@@ -106,11 +104,67 @@ pub async fn run(
     .map_err(|_| OrchestratorError::Cancelled)?;
     run_result.summary.enumeration_errors = enum_errors;
 
-    let candidates: Vec<EnumeratedFile> = all_files
+    let candidates = filter_by_extension(all_files, &settings);
+
+    run_over_candidates(candidates, run_result, settings, progress, cancellation).await
+}
+
+/// Narrows a raw enumerated-file list down to the extensions a run should
+/// actually consider - factored out of `run` so the proactive corpus
+/// indexer (`native_index::build_or_update_corpus_index`) applies the
+/// exact same extension scoping a normal search would, not a
+/// second, potentially-drifting copy of this logic.
+pub fn filter_by_extension(all_files: Vec<EnumeratedFile>, settings: &SearchSettings) -> Vec<EnumeratedFile> {
+    let extensions: Vec<String> = settings.extensions.clone().unwrap_or_else(extension_catalog::all_extensions);
+    let extension_set: std::collections::HashSet<String> = extensions.iter().map(|e| e.to_lowercase()).collect();
+    let search_all_extensions = extension_set.len() == 1 && extension_set.contains("*");
+    all_files
         .into_iter()
         .filter(|f| search_all_extensions || extension_set.contains(&file_extension_lower(&f.path)))
-        .collect();
+        .collect()
+}
 
+/// Given a set of paths already known to be worth processing (e.g. a
+/// candidate list narrowed by a trigram index query - see
+/// `native_index.rs`'s corpus indexer), stats each one to build the
+/// `EnumeratedFile` entries `run_over_candidates` needs and skips the
+/// directory walk entirely. A path that fails to stat (deleted since the
+/// candidate list was produced, permissions changed, ...) is silently
+/// dropped rather than failing the whole run - matches this app's
+/// established "a bad file must never stop the rest of a run" philosophy
+/// (`process_one_file`'s own per-file error isolation).
+pub async fn run_candidates(
+    paths: &[String],
+    settings: SearchSettings,
+    progress: Option<mpsc::UnboundedSender<SearchProgressReport>>,
+    cancellation: CancellationToken,
+) -> Result<SearchRunResult, OrchestratorError> {
+    let mut candidates = Vec::with_capacity(paths.len());
+    for p in paths {
+        let path = std::path::PathBuf::from(p);
+        let Ok(meta) = tokio::fs::metadata(&path).await else { continue };
+        candidates.push(EnumeratedFile {
+            length: meta.len() as i64,
+            created: meta.created().map(system_time_to_local).unwrap_or_else(|_| Local::now()),
+            modified: meta.modified().map(system_time_to_local).unwrap_or_else(|_| Local::now()),
+            path,
+        });
+    }
+    run_over_candidates(candidates, SearchRunResult::default(), settings, progress, cancellation).await
+}
+
+/// The shared "process a known list of files" core both [`run`] (after
+/// walking the folder) and [`run_candidates`] (given a pre-narrowed list,
+/// no walk) call - dry-run handling, the incremental cache split, parallel/
+/// sequential processing, and the final summary tally, all unchanged from
+/// before this was factored out of `run` itself.
+async fn run_over_candidates(
+    candidates: Vec<EnumeratedFile>,
+    mut run_result: SearchRunResult,
+    settings: SearchSettings,
+    progress: Option<mpsc::UnboundedSender<SearchProgressReport>>,
+    cancellation: CancellationToken,
+) -> Result<SearchRunResult, OrchestratorError> {
     if settings.dry_run {
         run_result.was_dry_run = true;
         run_result.dry_run_candidates = Some(candidates.iter().map(|f| f.path.clone()).collect());
@@ -428,47 +482,31 @@ async fn process_one_file(
 
     set_status("Extracting text...".to_string());
     let ext = file_extension_lower(&file.path);
-    let mut low_confidence = false;
 
-    let lines: Option<Vec<String>> = match ext.as_str() {
-        ".docx" => extraction::extract_docx_lines(&bytes),
-        ".pptx" => extraction::extract_pptx_lines(&bytes),
-        ".xlsx" => extraction::extract_xlsx_lines(&bytes),
-        ".zip" => extraction::extract_zip_archive_lines(&bytes, 2),
-        ".pdf" => {
-            let mut on_pdf_progress = |streams_scanned: i32, _elapsed: Duration| {
-                set_status(format!("Extracting PDF text - {streams_scanned} stream(s) scanned"));
-            };
-            let (pdf_lines, _truncated) = extraction::extract_pdf_lines(
-                &bytes,
-                settings.pdf_timeout_seconds as u64,
-                Some(&mut on_pdf_progress),
-            );
-            if let Some(pl) = &pdf_lines {
-                low_confidence = !extraction::pdf_extraction_looks_reliable(pl);
-            }
-            pdf_lines
-        }
-        ".rtf" => extraction::extract_rtf_lines(&bytes),
-        _ => {
-            if extraction::looks_binary(&bytes) {
-                result.status = FileSearchStatus::Binary;
-                return result;
-            }
-            let text = extraction::decode_text(&bytes);
-            Some(extraction::split_lines(&text))
-        }
+    let mut on_pdf_progress = |streams_scanned: i32, _elapsed: Duration| {
+        set_status(format!("Extracting PDF text - {streams_scanned} stream(s) scanned"));
     };
+    let extracted = extraction::extract_lines_by_extension(
+        &ext,
+        &bytes,
+        settings.pdf_timeout_seconds as u64,
+        Some(&mut on_pdf_progress),
+    );
 
-    let lines = match lines {
-        Some(l) if !l.is_empty() => l,
-        _ => {
+    let lines = match extracted {
+        Ok(e) => {
+            result.low_confidence_pdf = e.low_confidence_pdf;
+            e.lines
+        }
+        Err(extraction::ExtractLinesError::Binary) => {
+            result.status = FileSearchStatus::Binary;
+            return result;
+        }
+        Err(extraction::ExtractLinesError::Failed) => {
             result.status = FileSearchStatus::ReadError;
             return result;
         }
     };
-
-    result.low_confidence_pdf = low_confidence;
 
     set_status("Matching filters...".to_string());
     let outcome = matching::apply_line_matching(&lines, &settings, &match_state);
@@ -627,6 +665,45 @@ mod tests {
         assert_eq!(a.status, FileSearchStatus::ModeExcluded);
         let b = result.file_results.iter().find(|r| r.full_name.ends_with("b.txt")).unwrap();
         assert_eq!(b.status, FileSearchStatus::Hit);
+    }
+
+    #[tokio::test]
+    async fn run_candidates_matches_run_over_the_same_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "apple pie\nnothing here\n").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "no fruit at all\n").unwrap();
+
+        let settings = settings_for(dir.path(), &["apple"]);
+        let full_scan = run(settings.clone(), None, CancellationToken::new()).await.unwrap();
+
+        let candidate_paths = vec![dir.path().join("a.txt").to_string_lossy().into_owned()];
+        let narrowed = run_candidates(&candidate_paths, settings, None, CancellationToken::new()).await.unwrap();
+
+        // run_candidates was only given a.txt - b.txt (correctly excluded by
+        // the caller, e.g. a trigram query that didn't match it) never gets
+        // processed, but a.txt's own result must be identical either way -
+        // proving the shared run_over_candidates core doesn't behave
+        // differently depending on which entry point reached it.
+        let full_hit = full_scan.file_results.iter().find(|r| r.full_name.ends_with("a.txt")).unwrap();
+        let narrowed_hit = narrowed.file_results.iter().find(|r| r.full_name.ends_with("a.txt")).unwrap();
+        assert_eq!(full_hit.status, narrowed_hit.status);
+        assert_eq!(full_hit.hits.len(), narrowed_hit.hits.len());
+        assert_eq!(full_hit.hits[0].match_line, narrowed_hit.hits[0].match_line);
+        assert_eq!(narrowed.file_results.len(), 1, "only the given candidate should be processed, not the whole folder");
+    }
+
+    #[tokio::test]
+    async fn run_candidates_skips_a_path_that_no_longer_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "apple pie\n").unwrap();
+
+        let settings = settings_for(dir.path(), &["apple"]);
+        let paths =
+            vec![dir.path().join("a.txt").to_string_lossy().into_owned(), dir.path().join("gone.txt").to_string_lossy().into_owned()];
+        let result = run_candidates(&paths, settings, None, CancellationToken::new()).await.unwrap();
+
+        assert_eq!(result.file_results.len(), 1, "the missing path must be dropped, not fail the whole run");
+        assert!(result.file_results[0].full_name.ends_with("a.txt"));
     }
 
     #[tokio::test]

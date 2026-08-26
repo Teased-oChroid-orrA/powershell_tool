@@ -29,6 +29,80 @@ use std::time::{Duration, Instant};
 use regex::Regex;
 
 // --------------------------------------------------------------------
+// Extension dispatch
+// --------------------------------------------------------------------
+
+/// Result of [`extract_lines_by_extension`] on success - just the lines
+/// plus the one extractor-specific signal (`extract_pdf_lines`'s
+/// reliability heuristic) any caller needs, not the full `FileSearchResult`
+/// shape (that's `orchestrator`'s job, not extraction's).
+pub struct ExtractedLines {
+    pub lines: Vec<String>,
+    pub low_confidence_pdf: bool,
+}
+
+/// Distinguishes *why* extraction produced no lines - `orchestrator.rs`
+/// maps this to a different `FileSearchStatus` per variant (`Binary` vs
+/// `ReadError`), so this can't just collapse to `Option<Vec<String>>`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ExtractLinesError {
+    /// NUL byte sniffed in the first chunk - not a text-bearing format at
+    /// all, never even attempted.
+    Binary,
+    /// The format-specific extractor ran but returned nothing usable
+    /// (`None`, or `Some(vec![])`).
+    Failed,
+}
+
+/// Extension-to-extractor dispatch, factored out of `orchestrator.rs`'s
+/// `process_one_file` so the same table backs both the normal search path
+/// and the proactive corpus indexer (`native_index.rs`) - one place that
+/// knows "which extractor for which extension," not two that could drift
+/// apart as formats are added (see `CLAUDE.md`'s extraction design notes
+/// for why each format's extractor itself is hand-rolled, not a generic
+/// parser crate - this function only owns the dispatch, not the parsing).
+///
+/// `on_pdf_progress` mirrors `extract_pdf_lines`'s own live-progress
+/// callback - required by this app's standing "PDF extraction must never
+/// go silent" rule (see CLAUDE.md's "Live progress reporting" section);
+/// pass `None` for callers (like the corpus indexer) that don't have a
+/// per-file progress UI to feed.
+pub fn extract_lines_by_extension(
+    ext: &str,
+    bytes: &[u8],
+    pdf_timeout_seconds: u64,
+    on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
+) -> Result<ExtractedLines, ExtractLinesError> {
+    let mut low_confidence_pdf = false;
+
+    let lines: Option<Vec<String>> = match ext {
+        ".docx" => extract_docx_lines(bytes),
+        ".pptx" => extract_pptx_lines(bytes),
+        ".xlsx" => extract_xlsx_lines(bytes),
+        ".zip" => extract_zip_archive_lines(bytes, 2),
+        ".pdf" => {
+            let (pdf_lines, _truncated) = extract_pdf_lines(bytes, pdf_timeout_seconds, on_pdf_progress);
+            if let Some(pl) = &pdf_lines {
+                low_confidence_pdf = !pdf_extraction_looks_reliable(pl);
+            }
+            pdf_lines
+        }
+        ".rtf" => extract_rtf_lines(bytes),
+        _ => {
+            if looks_binary(bytes) {
+                return Err(ExtractLinesError::Binary);
+            }
+            Some(split_lines(&decode_text(bytes)))
+        }
+    };
+
+    match lines {
+        Some(l) if !l.is_empty() => Ok(ExtractedLines { lines: l, low_confidence_pdf }),
+        _ => Err(ExtractLinesError::Failed),
+    }
+}
+
+// --------------------------------------------------------------------
 // Binary sniff
 // --------------------------------------------------------------------
 

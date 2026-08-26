@@ -174,15 +174,32 @@ fn App() -> Element {
                     rx.recv().await
                 };
                 match event {
-                    Some(()) => {
+                    Some(paths) => {
                         if !*state.is_running.read() {
                             state.folder_changed_since_search.set(true);
+                        }
+                        // Incremental reindex (issue #6 Phase 1) - only
+                        // worth queuing while fast-search indexing is
+                        // actually on; the periodic flush task
+                        // (state::run_incremental_reindex_flusher, spawned
+                        // below) re-checks this same flag before doing any
+                        // real work too, but there's no reason to even
+                        // accumulate paths for an index that isn't being
+                        // kept current.
+                        if *state.index_for_fast_search.read() {
+                            let mut pending = state.pending_reindex_paths.write();
+                            for p in paths {
+                                pending.insert(p.to_string_lossy().into_owned());
+                            }
                         }
                     }
                     None => break,
                 }
             }
         });
+    });
+    use_hook(move || {
+        spawn(state::run_incremental_reindex_flusher(state));
     });
 
     // Drains the drag_drop::DROP_EVENTS channel `main.rs`'s hand-rolled
