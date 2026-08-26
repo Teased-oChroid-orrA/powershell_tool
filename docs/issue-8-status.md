@@ -15,6 +15,20 @@ real gaps in existing coverage. Nothing in `search-core`'s or
 `native-search`'s production code changed as a result of this
 investigation.
 
+**Update (2026-08-26, methodology correction):** a review of this
+report's first version correctly identified that its per-format
+extraction benchmark measured in-memory parse cost against 1-4KB toy
+fixtures only, with file I/O excluded after the first read - narrower
+than what the epic asks for ("the actual extraction pipeline, including
+file I/O"), and mislabeled as such. Corrected: real medium/large
+documents (Apache POI/Tika/PDFBox test-data, `search-core/benches/data/`)
+and a second benchmark measuring the actual production I/O path on every
+iteration were added. The correction changed one real conclusion - PDF
+extraction cost is genuinely significant at realistic sizes (33.6-112ms,
+not the 28µs the tiny fixture suggested) - now reflected throughout
+sections C, E, and the decision matrix below. Every other conclusion in
+this report held up under the corrected numbers.
+
 ## A. Existing Architecture
 
 Pipeline (already documented in CLAUDE.md and `docs/issue-6-*.md`, restated
@@ -51,7 +65,7 @@ choice, unchanged by this investigation):
 | Harness | Covers |
 |---|---|
 | `native-search/benches/indexing_and_search.rs` | Indexing throughput, search latency (mixed query shapes) |
-| `search-core/benches/discovery_and_extraction.rs` | Directory discovery, plain-text extraction throughput, **new**: per-format extraction latency against real DOCX/PPTX/XLSX/ZIP/PDF fixtures |
+| `search-core/benches/discovery_and_extraction.rs` | Directory discovery, plain-text extraction throughput, **new**: per-format extraction latency at 3 real size tiers (tiny/medium/large) for DOCX/PPTX/XLSX/RTF/PDF, both in-memory-parse-only and full-pipeline-with-real-I/O (`search-core/benches/data/`, see that directory's README for provenance) |
 | `native-search/benches/trigram_candidate_reduction.rs` (**new**) | Candidate-set reduction and narrowed-vs-full-scan timing across query selectivity tiers |
 
 The two new additions close real gaps the epic explicitly asks for
@@ -64,22 +78,49 @@ fabricated number.
 
 ## C. Bottleneck Report
 
-**No real bottleneck was found in `search-core`/`native-search` at this
-application's actual scale.** Every measured number is already well under
-any reasonable UX threshold:
+**Revised after a methodology correction** (a user review caught that the
+original per-format extraction numbers only measured in-memory parse cost
+against 1-4KB toy fixtures, with real file I/O excluded after the first
+read - see `docs/benchmarking.md`'s "Methodology correction" for the full
+account and the corrected numbers, gathered against real medium/large
+documents pulled from Apache POI/Tika/PDFBox's test-data corpora, with a
+second benchmark function added that calls the actual production
+`read_file_bytes_robust` for real I/O on every iteration).
+
+Everything except one format remains well under any reasonable UX
+threshold at realistic sizes:
 
 - Search p50/p95: 35-130µs (native-search's existing benchmark).
-- Discovery: ~294,000 files/sec.
-- Plain-text extraction: ~543,000 files/sec, 895 MB/sec.
-- Per-format extraction (real fixtures): 6-28µs per file (DOCX 6µs, PPTX
-  8µs, XLSX 12µs, ZIP 9µs, PDF 28µs - PDF slowest, still trivial).
+- Discovery: ~291,000 files/sec.
+- Plain-text extraction: ~550,000 files/sec, 907 MB/sec.
+- DOCX/PPTX/XLSX/RTF extraction, real 150KB-3MB documents: sub-millisecond
+  to low-single-digit-milliseconds (full pipeline, including real I/O -
+  e.g. DOCX large 2.96MB: 770µs warm-reread median).
 - 100K-file end-to-end stress test (`docs/issue-6-phase-14.md`):
   16,308 files/sec, exact correctness at scale.
 
-The only place this investigation found a real, quantifiable tradeoff -
-not a bottleneck, a genuine cost/benefit question - is the trigram
-candidate filter's fixed per-query overhead vs. its candidate-set
-reduction. See the new benchmark's results below.
+**PDF is a real, quantified exception.** 33.6ms for a real 272KB PDF,
+112ms for a real 1.04MB PDF (full pipeline, real I/O included) - two to
+three orders of magnitude above what the original tiny-fixture number
+(28µs) suggested. This is not being reported as a new, unaddressed
+bottleneck: CLAUDE.md already documents that this exact cost (PDF
+extraction taking many seconds with no progress indication) is the
+specific, real user complaint that motivated this whole project's
+"live progress reporting is a hard requirement" design - the mitigations
+(150ms-interval progress callback, per-file timeout, heavy/light resource-
+class throttling) already exist and predate this benchmark. What changed
+is that the cost is now a concrete number instead of an inherited design
+assumption. Whether to additionally replace the regex-scan PDF extractor
+with a real structural parser is a legitimate question this number now
+supports investigating, but is a substantial, parity-risking rewrite (see
+CLAUDE.md's stated rationale for the current hand-rolled approach) that
+this investigation does not unilaterally undertake - see "Deviations"
+below.
+
+The trigram candidate filter's fixed per-query overhead vs. its
+candidate-set reduction remains the other real, quantified tradeoff (not
+a bottleneck) this investigation measured - see the benchmark results
+below, unchanged by this correction.
 
 ## D. Optimization Results
 
@@ -172,15 +213,36 @@ Matching the epic's own §26 format:
   result. (Tantivy's *columnar* Zstd compression, a separate feature, is
   already enabled by default and unaffected by this question - it covers
   `FAST` fields like `modified`/`created`/`size`, also tiny.)
-- **Alternative document extraction libraries** (Omniparse, Office Oxide,
-  Apache Tika, etc.) → rejected, reaffirming the existing, explicit
-  CLAUDE.md decision: this app's DOCX/PPTX/XLSX/ZIP extraction
+- **Alternative document extraction libraries for DOCX/PPTX/XLSX/ZIP**
+  (Omniparse, Office Oxide, Apache Tika, etc.) → rejected, reaffirming the
+  existing, explicit CLAUDE.md decision: this app's extraction
   deliberately mirrors the original C# tool's own dependency-free
-  `ZipArchive` + regex approach for byte-for-byte parity with a
+  `ZipArchive` + regex approach for byte-for-byte parity with an
   already-tested reference implementation - swapping to a "better"
   library would extract differently in edge cases and silently drift from
-  that tested baseline, for extraction costs already measured at 6-28µs
-  per file (not a bottleneck to solve).
+  that tested baseline, for extraction costs measured (after the
+  methodology correction, real 150KB-3MB documents, full pipeline
+  including I/O) at sub-millisecond to low-single-digit-milliseconds -
+  not a bottleneck to solve.
+- **A real structural PDF parser, replacing the regex/content-stream
+  scanner** → **not rejected outright - deferred, not attempted.** Unlike
+  the other formats, PDF extraction *is* measurably expensive at realistic
+  size (33.6ms/272KB, 112ms/1.04MB, full pipeline - see "Bottleneck
+  Report"). This is the one place this investigation's evidence points
+  toward a real optimization candidate rather than "no bottleneck exists."
+  Not attempted here because: (1) it's a substantial rewrite of the one
+  extractor CLAUDE.md most explicitly documents a deliberate hand-rolled
+  design for, carrying real parity/correctness risk against the existing
+  fixture-tested behavior; (2) the cost is already mitigated at the UX
+  level (live progress reporting, per-file timeout, heavy-class
+  throttling) for the specific problem it originally caused; (3) no
+  evidence exists yet that real users are bottlenecked by it *now* that
+  those mitigations exist, as opposed to being bottlenecked by it *before*
+  they existed (the historical complaint CLAUDE.md documents predates the
+  progress-reporting system, not this benchmark). If PDF-heavy folders
+  become a reported real-world pain point again, this number is the
+  evidence to start from - a next step, not unfinished work from this
+  investigation.
 - **Cost-based query planner** → rejected/not needed. The existing routing
   is already exactly the epic's own preferred starting point (§13):
   static rules (`use_regex` → literal-chunk extraction or full scan;
@@ -284,7 +346,8 @@ code in `search-core` or `native-search` changed.
 | Positional trigrams | Presence-only, verified safe | No | Keep `IndexRecordOption::Basic` | N/A | Medium | **Rejected** - verification is unconditional anyway |
 | Trigram filter itself | 8x reduction (rare), 0.1-0.0x (common, cheap-verify proxy) | No, net positive at realistic verify cost | Full scan always | Positive for realistic per-file cost | Low (already built) | **Keep unchanged** |
 | Zstd vs LZ4 (stored fields) | Affects only tiny metadata fields | No | Keep LZ4 default | ~0 (schema-proven) | Low | **Rejected** - provably negligible |
-| Extraction library replacement | 6-28µs/file (real fixtures) | No | Keep hand-rolled parity extractors | N/A | Medium | **Rejected** - parity risk, no bottleneck |
+| Extraction library replacement (DOCX/PPTX/XLSX/ZIP) | Sub-ms to low-ms/file (real 150KB-3MB docs, full pipeline) | No | Keep hand-rolled parity extractors | N/A | Medium | **Rejected** - parity risk, no bottleneck |
+| Structural PDF parser, replacing regex scanner | 33.6-112ms/file (real 272KB-1.04MB PDFs, full pipeline) | **Yes, real and measured** | Keep regex/stream scanner | Likely significant | High, parity risk | **Deferred** - already UX-mitigated, no rewrite attempted |
 | Cost-based query planner | Static routing already matches epic's own starting point | No | Keep static rules | N/A | Medium | **Rejected** - no evidence of misrouting |
 | Result virtualization | Pagination already bounds DOM nodes | No | Scroll-position virtualization | N/A | Medium | **Rejected** (`docs/issue-6-phase-13.md`) |
 | Hot/warm/cold tiers | OS+Tantivy caching relied on | No | Explicit app-level tiers | N/A | High | **Rejected** - no workload evidence |

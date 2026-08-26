@@ -7,12 +7,26 @@
 //! perf-tracking suite. Read `docs/benchmarking.md`'s caveats section
 //! before citing any number this prints anywhere - wrong hardware, small
 //! corpus, synthetic content, all apply here exactly as they do there.
+//!
+//! **Methodology correction (issue #8 follow-up, 2026-08-26):** the
+//! original per-format extraction section here read each file from disk
+//! exactly once, then timed 500 repeated in-memory parse calls against
+//! the same bytes - a pure parser-CPU microbenchmark, mislabeled at the
+//! time as characterizing "extraction." It never exercised file I/O
+//! after the first read, and only ran against 1-4KB correctness
+//! fixtures, not realistic document sizes. Two functions now exist:
+//! `bench_parse_only_extraction` (the original methodology, honestly
+//! relabeled, kept because parser-CPU-only is still a real and useful
+//! number) and `bench_full_pipeline_extraction` (new - real file I/O via
+//! the actual production `read_file_bytes_robust` function, every
+//! iteration, against real medium/large documents pulled from Apache
+//! POI/Tika/PDFBox's own test-data corpora - see `benches/data/README.md`).
 
 use std::path::Path;
 use std::time::Instant;
 
 use search_core::extraction::extract_lines_by_extension;
-use search_core::file_reader::enumerate_files_safely;
+use search_core::file_reader::{enumerate_files_safely, read_file_bytes_robust};
 use tokio_util::sync::CancellationToken;
 
 const DISCOVERY_FILE_COUNT: usize = 5_000;
@@ -101,30 +115,55 @@ fn bench_extraction(_tmp_root: &Path) {
     println!("  latency: median {median}us, p95 {p95}us");
 }
 
-/// Per-format extraction timing (issue #8 §2 - "measure separately by
-/// format: TXT/LOG/DOCX/PPTX/RTF/PDF"), against real fixture files
-/// (`tests/TextInFilesSearch.Tests/Fixtures/`) rather than synthetic
-/// bytes - DOCX/PPTX/PDF extraction is real container-format/regex
-/// parsing, not reproducible with a fabricated byte string the way plain
-/// text is. These fixtures are small (1-4 KB, the same ones
-/// `search-core/tests/fixtures.rs` uses for correctness), so this reports
-/// per-file latency at realistic small-document sizes, run many times for
-/// a stable median/p95 - not a throughput number, since one tiny file
-/// repeated isn't a volume claim.
-const FORMAT_ITERATIONS: usize = 500;
+/// Fixture set for the per-format benchmarks below: 3 real size tiers per
+/// format, not one. `tiny` reuses the same 1-4KB files
+/// `search-core/tests/fixtures.rs` uses for correctness (so this can be
+/// read directly as "how much slower does a realistic-size document get
+/// vs. the tiny correctness fixture"); `medium`/`large` are real
+/// documents (not synthetic filler) pulled from the Apache POI/Tika/
+/// PDFBox projects' own test-data corpora specifically for parser
+/// benchmarking - see `search-core/benches/data/README.md` for exact
+/// provenance/license/original filenames.
+fn format_fixtures() -> Vec<(&'static str, &'static str, std::path::PathBuf)> {
+    let tiny_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/TextInFilesSearch.Tests/Fixtures");
+    let sized_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("benches/data");
+    vec![
+        (".docx", "tiny", tiny_dir.join("test.docx")),
+        (".docx", "medium", sized_dir.join("medium.docx")),
+        (".docx", "large", sized_dir.join("large.docx")),
+        (".pptx", "tiny", tiny_dir.join("test.pptx")),
+        (".pptx", "medium", sized_dir.join("medium.pptx")),
+        (".pptx", "large", sized_dir.join("large.pptx")),
+        (".xlsx", "tiny", tiny_dir.join("test.xlsx")),
+        (".xlsx", "medium", sized_dir.join("medium.xlsx")),
+        (".xlsx", "large", sized_dir.join("large.xlsx")),
+        (".rtf", "medium", sized_dir.join("medium.rtf")),
+        (".rtf", "large", sized_dir.join("large.rtf")),
+        (".pdf", "tiny", tiny_dir.join("test.pdf")),
+        (".pdf", "medium", sized_dir.join("medium.pdf")),
+        (".pdf", "large", sized_dir.join("large.pdf")),
+    ]
+}
 
-fn bench_per_format_extraction() {
-    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/TextInFilesSearch.Tests/Fixtures");
-    let files: &[(&str, &str)] =
-        &[(".docx", "test.docx"), (".pptx", "test.pptx"), (".xlsx", "test.xlsx"), (".zip", "test.zip"), (".pdf", "test.pdf")];
+/// **In-memory parse cost only** (issue #8's methodology concern: this
+/// reads each file from disk exactly ONCE before timing starts, then
+/// times `FORMAT_ITERATIONS` repeated calls to `extract_lines_by_extension`
+/// against the same already-in-memory `Vec<u8>` - it deliberately
+/// excludes file I/O entirely, on every iteration after the first. This
+/// isolates the parser/extractor's own CPU cost, but must never be read
+/// as "the extraction pipeline's cost" - see `bench_full_pipeline_extraction`
+/// below for the number that actually includes I/O, which is what issue
+/// #8 asked for and this function alone does not provide.
+const FORMAT_ITERATIONS: usize = 200;
 
-    println!("\nPer-format extraction (real fixtures, {FORMAT_ITERATIONS} iterations each):");
-    for (ext, filename) in files {
-        let path = fixtures_dir.join(filename);
+fn bench_parse_only_extraction() {
+    println!("\nParse-only extraction (in-memory, no file I/O after the initial read, {FORMAT_ITERATIONS} iterations each):");
+    println!("  ** Isolates parser CPU cost. Does NOT include file I/O - see 'full pipeline' section below for that. **");
+    for (ext, tier, path) in format_fixtures() {
         let bytes = match std::fs::read(&path) {
             Ok(b) => b,
             Err(e) => {
-                println!("  {ext:<6} skipped - could not read {}: {e}", path.display());
+                println!("  {ext:<6} {tier:<7} skipped - could not read {}: {e}", path.display());
                 continue;
             }
         };
@@ -139,7 +178,67 @@ fn bench_per_format_extraction() {
         latencies_us.sort_unstable();
         let median = latencies_us[latencies_us.len() / 2];
         let p95 = latencies_us[(latencies_us.len() as f64 * 0.95) as usize];
-        println!("  {:<6} {:>7} bytes on disk, median {:>5}us, p95 {:>5}us", ext, bytes.len(), median, p95);
+        println!("  {:<6} {:<7} {:>9} bytes, median {:>6}us, p95 {:>6}us", ext, tier, bytes.len(), median, p95);
+    }
+}
+
+/// **Full pipeline: real file I/O + parse, every iteration** (the
+/// measurement issue #8 actually asked for). Calls
+/// `file_reader::read_file_bytes_robust` - the exact async function
+/// `orchestrator::process_one_file` uses in production, not a bare
+/// `std::fs::read` standing in for it - then `extract_lines_by_extension`,
+/// timed together, for every one of `FULL_PIPELINE_ITERATIONS`
+/// iterations. No bytes are cached/reused across iterations; each
+/// iteration re-opens and re-reads the file from disk.
+///
+/// Reports the *first* iteration's latency separately from the median of
+/// the remaining iterations - the closest honest proxy for a cold-vs-warm
+/// OS page-cache distinction this benchmark can produce without
+/// platform-specific cache-dropping privileges (there is no portable,
+/// no-root way to force a true cold read on demand; `purge` on macOS and
+/// `/proc/sys/vm/drop_caches` on Linux both need elevated privileges this
+/// benchmark should not require to run). The first iteration is the only
+/// one guaranteed not to already be sitting in the OS page cache from an
+/// earlier run of this same benchmark or from the `file()`/download step
+/// that fetched it - iterations 2+ are honestly reported as warm-cache
+/// repeated reads, not claimed as cold.
+const FULL_PIPELINE_ITERATIONS: usize = 50;
+
+fn bench_full_pipeline_extraction() {
+    let rt = tokio::runtime::Runtime::new().expect("build tokio runtime for full-pipeline benchmark");
+    println!(
+        "\nFull pipeline extraction (real file I/O via file_reader::read_file_bytes_robust + parse, every iteration, {FULL_PIPELINE_ITERATIONS} iterations each):"
+    );
+    println!("  ** This is the number that includes I/O - the one issue #8 asked for. **");
+    for (ext, tier, path) in format_fixtures() {
+        if !path.exists() {
+            println!("  {ext:<6} {tier:<7} skipped - {} does not exist", path.display());
+            continue;
+        }
+        let path_str = path.to_string_lossy().into_owned();
+
+        let mut latencies_us: Vec<u128> = Vec::with_capacity(FULL_PIPELINE_ITERATIONS);
+        for _ in 0..FULL_PIPELINE_ITERATIONS {
+            let cancellation = CancellationToken::new();
+            let t0 = Instant::now();
+            let bytes = rt
+                .block_on(read_file_bytes_robust(&path_str, 30, 0, 0, None, &cancellation))
+                .expect("read_file_bytes_robust");
+            let result = extract_lines_by_extension(ext, &bytes, 30, None);
+            latencies_us.push(t0.elapsed().as_micros());
+            std::hint::black_box(&result);
+        }
+
+        let first_us = latencies_us[0];
+        let mut rest = latencies_us[1..].to_vec();
+        rest.sort_unstable();
+        let warm_median = rest[rest.len() / 2];
+        let warm_p95 = rest[(rest.len() as f64 * 0.95) as usize];
+        let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        println!(
+            "  {:<6} {:<7} {:>9} bytes, 1st-read {:>6}us, warm-reread median {:>6}us, p95 {:>6}us",
+            ext, tier, file_size, first_us, warm_median, warm_p95
+        );
     }
 }
 
@@ -152,7 +251,8 @@ fn main() {
 
     bench_discovery(&tmp_root);
     bench_extraction(&tmp_root);
-    bench_per_format_extraction();
+    bench_parse_only_extraction();
+    bench_full_pipeline_extraction();
 
     std::fs::remove_dir_all(&tmp_root).ok();
 }
