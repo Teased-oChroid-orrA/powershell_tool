@@ -616,6 +616,19 @@ pub fn ResultsPanel(state: AppState) -> Element {
                 p { "{state.status_text}" }
             }
 
+            // Epic #6 §70 "Operational UX" - the watcher (fs_watch.rs) is
+            // always active for whatever folder is currently set (see
+            // main.rs's unconditional `fs_watch::set_path` on every
+            // search_path change), but nothing surfaced that to the user
+            // before this - only its downstream effect (the "files
+            // changed" hint below) was visible, with no way to tell
+            // "watching, nothing's changed yet" from "not watching at
+            // all." Suppressed once the changed-hint itself is showing,
+            // so the two don't compete for the same line.
+            if !state.search_path.read().is_empty() && !*state.folder_changed_since_search.read() {
+                p { class: "caption", "Watching this folder for changes." }
+            }
+
             if *state.folder_changed_since_search.read() && !is_running {
                 div { class: "folder-changed-hint",
                     span { "Files changed in this folder since your last search - run it again to see what's new." }
