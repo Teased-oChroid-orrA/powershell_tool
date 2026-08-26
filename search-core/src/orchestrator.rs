@@ -853,6 +853,169 @@ mod tests {
         assert_eq!(hit_files(&result_a).len(), 8);
     }
 
+    // ---- Adversarial tests (issue #6 §53) ----
+    // A bad file must never stop the rest of a run, and must never panic
+    // - each test below proves that for one specific adversarial shape,
+    // rather than trusting the general "error isolation" claim.
+
+    #[tokio::test]
+    async fn empty_file_does_not_crash_and_is_not_a_hit() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("empty.txt"), b"").unwrap();
+        std::fs::write(dir.path().join("real.txt"), "apple pie\n").unwrap();
+        let settings = settings_for(dir.path(), &["apple"]);
+        let result = run(settings, None, CancellationToken::new()).await.unwrap();
+        assert_eq!(result.file_results.len(), 2, "both files must be processed - the empty one must not crash or be silently dropped");
+        let empty_result = result.file_results.iter().find(|r| r.full_name.contains("empty.txt")).unwrap();
+        // No usable text to extract from an empty file - a clean
+        // ReadError ("no usable text"), never a hit and never a panic.
+        assert_ne!(empty_result.status, FileSearchStatus::Hit);
+        let hit_count = result.file_results.iter().filter(|r| r.status == FileSearchStatus::Hit).count();
+        assert_eq!(hit_count, 1, "only real.txt should be a hit");
+    }
+
+    #[tokio::test]
+    async fn a_file_over_the_size_limit_is_skipped_as_too_large_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("big.txt"), "apple ".repeat(1000)).unwrap();
+        let mut settings = settings_for(dir.path(), &["apple"]);
+        settings.max_file_size_mb = 0.0001; // ~100 bytes - the file above is well over this
+        let result = run(settings, None, CancellationToken::new()).await.unwrap();
+        assert_eq!(result.summary.skipped_too_large, 1);
+        assert_eq!(result.summary.files_searched, 0, "a too-large file must not count toward files_searched");
+    }
+
+    #[tokio::test]
+    async fn a_binary_file_with_a_text_extension_is_skipped_as_binary_not_crash() {
+        let dir = tempfile::tempdir().unwrap();
+        // NUL bytes mid-content - looks_binary's actual detection signal -
+        // wrapped in a real .txt extension (the adversarial part: the
+        // extension lies about the content).
+        let mut content = b"apple ".to_vec();
+        content.extend_from_slice(&[0u8, 0u8, 0u8]);
+        content.extend_from_slice(b" more binary junk");
+        std::fs::write(dir.path().join("fake.txt"), &content).unwrap();
+        let settings = settings_for(dir.path(), &["apple"]);
+        let result = run(settings, None, CancellationToken::new()).await.unwrap();
+        assert_eq!(result.summary.skipped_binary, 1);
+        assert_eq!(result.file_results[0].status, FileSearchStatus::Binary);
+    }
+
+    #[tokio::test]
+    async fn invalid_utf8_that_is_also_not_valid_windows_1252_does_not_crash() {
+        // Bytes that are invalid UTF-8 AND decode to something under the
+        // Windows-1252 fallback too - proving the encoding-detection chain
+        // (BOM -> UTF-8 -> Windows-1252) never panics even on genuinely
+        // adversarial byte content, only ever produces *some* text or a
+        // clean skip.
+        let dir = tempfile::tempdir().unwrap();
+        let mut content = b"apple ".to_vec();
+        content.extend_from_slice(&[0xFF, 0xFE, 0xFF, 0xFE, 0xC0, 0xC1]); // never valid UTF-8 lead bytes
+        content.extend_from_slice(b" pie");
+        std::fs::write(dir.path().join("weird_bytes.txt"), &content).unwrap();
+        let settings = settings_for(dir.path(), &["apple"]);
+        let result = run(settings, None, CancellationToken::new()).await.unwrap();
+        assert_eq!(result.summary.files_searched, 1, "must process the file (Windows-1252 fallback), not panic or silently drop it");
+    }
+
+    #[tokio::test]
+    async fn a_file_with_a_very_long_path_does_not_crash() {
+        let dir = tempfile::tempdir().unwrap();
+        // 200 characters of nested single-char directories plus a real
+        // filename - well past typical old-style Windows MAX_PATH (260
+        // chars total is the classic limit; this pushes the directory
+        // component alone past most of that budget).
+        let mut nested = dir.path().to_path_buf();
+        for _ in 0..80 {
+            nested.push("d");
+        }
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("apple.txt"), "apple pie\n").unwrap();
+        let settings = settings_for(dir.path(), &["apple"]);
+        let result = run(settings, None, CancellationToken::new()).await.unwrap();
+        assert_eq!(result.summary.files_searched, 1);
+        let hit_count = result.file_results.iter().filter(|r| r.status == FileSearchStatus::Hit).count();
+        assert_eq!(hit_count, 1, "a deeply nested path must not be silently skipped");
+    }
+
+    #[tokio::test]
+    async fn a_unicode_filename_and_path_component_are_found_and_searched() {
+        let dir = tempfile::tempdir().unwrap();
+        let unicode_dir = dir.path().join("caf\u{e9}_\u{1f34e}"); // "café_🍎"
+        std::fs::create_dir_all(&unicode_dir).unwrap();
+        std::fs::write(unicode_dir.join("r\u{e9}sum\u{e9}.txt"), "apple pie\n").unwrap();
+        let settings = settings_for(dir.path(), &["apple"]);
+        let result = run(settings, None, CancellationToken::new()).await.unwrap();
+        assert_eq!(result.summary.files_searched, 1);
+        let hit_count = result.file_results.iter().filter(|r| r.status == FileSearchStatus::Hit).count();
+        assert_eq!(hit_count, 1, "a Unicode path/filename must be found and searched, not skipped or mangled");
+    }
+
+    #[tokio::test]
+    async fn malformed_docx_bytes_are_a_read_error_not_a_crash() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("broken.docx"), b"this is not a real zip/docx file at all").unwrap();
+        let settings = settings_for(dir.path(), &["apple"]);
+        let result = run(settings, None, CancellationToken::new()).await.unwrap();
+        assert_eq!(result.file_results.len(), 1);
+        assert_eq!(result.file_results[0].status, FileSearchStatus::ReadError);
+        assert_eq!(result.summary.skipped_read_error, 1);
+    }
+
+    #[tokio::test]
+    async fn malformed_pdf_bytes_are_handled_without_a_crash() {
+        let dir = tempfile::tempdir().unwrap();
+        // Not a real PDF at all - no %PDF header, no stream objects. The
+        // regex-based extractor should simply find nothing to extract,
+        // not panic on the missing structure.
+        std::fs::write(dir.path().join("broken.pdf"), b"definitely not a pdf file, no streams here").unwrap();
+        let settings = settings_for(dir.path(), &["apple"]);
+        let result = run(settings, None, CancellationToken::new()).await.unwrap();
+        assert_eq!(result.file_results.len(), 1);
+        // No usable text -> ReadError (extractor produced nothing), same
+        // classification a malformed DOCX gets - never a panic either way.
+        assert_eq!(result.file_results[0].status, FileSearchStatus::ReadError);
+    }
+
+    // chmod-based permission bits don't translate to Windows ACLs - this
+    // whole test is gated out (not compiled at all, not just #[ignore]d)
+    // on non-Unix targets, same reasoning `.github/workflows/rust-build.yml`
+    // already applies elsewhere in this project for platform-specific code.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_permission_denied_file_is_a_read_error_not_a_crash() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Running as root (common in some CI/sandboxes) bypasses Unix
+        // permission bits entirely - skip rather than fail a test
+        // asserting behavior that literally cannot occur under that user,
+        // same "don't force a test past what the environment can prove"
+        // judgment call as the truncation-detection gap documented in
+        // docs/issue-6-phase-10.md.
+        let running_as_root = unsafe {
+            extern "C" {
+                fn geteuid() -> u32;
+            }
+            geteuid() == 0
+        };
+        if running_as_root {
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("locked.txt");
+        std::fs::write(&path, "apple pie\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let settings = settings_for(dir.path(), &["apple"]);
+        let result = run(settings, None, CancellationToken::new()).await.unwrap();
+
+        // Restore permissions so tempdir cleanup can actually delete it.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert_eq!(result.file_results[0].status, FileSearchStatus::ReadError, "permission-denied must be a clean read error, not a panic");
+    }
+
     #[tokio::test]
     async fn a_real_run_populates_total_elapsed_seconds() {
         let dir = tempfile::tempdir().unwrap();
