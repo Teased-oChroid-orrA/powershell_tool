@@ -767,6 +767,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_pre_cancelled_token_stops_the_run_before_processing_anything() {
+        // Issue #6 §25/§52 "search cancellation"/"concurrency correctness" -
+        // a token cancelled before (or immediately after) a run starts
+        // must short-circuit cleanly, not race through to a normal
+        // result. `orchestrator::run` checks `cancellation.is_cancelled()`
+        // right after enumeration (see the `if cancellation.is_cancelled()`
+        // guard before `run_over_candidates`'s parallel/sequential split).
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..5 {
+            std::fs::write(dir.path().join(format!("f{i}.txt")), "apple").unwrap();
+        }
+        let settings = settings_for(dir.path(), &["apple"]);
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let result = run(settings, None, token).await;
+        assert!(matches!(result, Err(OrchestratorError::Cancelled)), "a pre-cancelled token must report Cancelled, not a normal result");
+    }
+
+    #[tokio::test]
+    async fn multiple_concurrent_runs_against_the_same_folder_do_not_interfere() {
+        // Issue #6 §52 "concurrency correctness" - "multiple searches".
+        // InFlightMap and every other piece of run-local state is created
+        // fresh inside each `run` call (never a shared static), so two
+        // concurrent runs over the same folder must produce identical,
+        // uncorrupted results - proven empirically here, not just by
+        // reading the code.
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..8 {
+            std::fs::write(dir.path().join(format!("f{i}.txt")), format!("apple {i}\n")).unwrap();
+        }
+
+        let a = settings_for(dir.path(), &["apple"]);
+        let b = settings_for(dir.path(), &["apple"]);
+        let (result_a, result_b) =
+            tokio::join!(run(a, None, CancellationToken::new()), run(b, None, CancellationToken::new()));
+        let result_a = result_a.unwrap();
+        let result_b = result_b.unwrap();
+
+        let hit_files = |r: &SearchRunResult| -> Vec<String> {
+            let mut v: Vec<String> =
+                r.file_results.iter().filter(|f| f.status == FileSearchStatus::Hit).map(|f| f.full_name.clone()).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(hit_files(&result_a), hit_files(&result_b));
+        assert_eq!(hit_files(&result_a).len(), 8);
+    }
+
+    #[tokio::test]
     async fn incremental_cache_reuses_unchanged_files() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "apple\n").unwrap();

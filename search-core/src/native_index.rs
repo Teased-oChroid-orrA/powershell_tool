@@ -685,6 +685,48 @@ mod tests {
         assert_eq!(results[0].id, "/x/apple.txt");
     }
 
+    /// Issue #6 §52 "Concurrency Correctness" - "simultaneous indexing and
+    /// searching". Runs a real corpus-index build concurrently with a
+    /// burst of searches against the same live `NativeSearchEngine` -
+    /// both take `&self` (interior mutability inside the engine, not a
+    /// `&mut` borrow), so this must not panic, deadlock, or corrupt the
+    /// index, and the indexed content must be reliably findable once the
+    /// indexing future completes.
+    #[tokio::test]
+    async fn concurrent_indexing_and_searching_against_the_same_engine_does_not_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "torque spec deviation on engine mount\n").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "unrelated corrosion notes\n").unwrap();
+
+        let mut exclude_folders = Vec::new();
+        ensure_index_folder_excluded(&mut exclude_folders);
+        let settings = crate::models::SearchSettings {
+            search_path: dir.path().to_string_lossy().into_owned(),
+            output_folder: dir.path().to_string_lossy().into_owned(),
+            exclude_folders,
+            ..Default::default()
+        };
+
+        let index_dir = index_directory(&dir.path().to_string_lossy());
+        ensure_index_directory_exists(&index_dir).unwrap();
+        let engine = NativeSearchEngine::open_or_create(&index_dir).unwrap();
+
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let index_fut = build_or_update_corpus_index(&settings, &engine, &cancellation, None);
+        let search_fut = async {
+            for _ in 0..20 {
+                let _ = engine.search("torque", 10, None);
+                tokio::task::yield_now().await;
+            }
+        };
+        let (index_result, ()) = tokio::join!(index_fut, search_fut);
+        assert!(index_result.is_ok(), "concurrent search must not make indexing fail: {index_result:?}");
+        assert_eq!(index_result.unwrap().indexed_count, 2);
+
+        let hits = engine.search("torque", 10, None).unwrap();
+        assert_eq!(hits.len(), 1, "the document must be reliably findable once indexing has completed");
+    }
+
     #[test]
     fn reindexing_unchanged_file_is_skipped() {
         let dir = tempfile::tempdir().unwrap();
