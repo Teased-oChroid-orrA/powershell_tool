@@ -408,6 +408,14 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                     label { class: "field-inline",
                         input {
                             r#type: "checkbox",
+                            checked: *state.desktop_notification_when_done.read(),
+                            oninput: move |e| state.desktop_notification_when_done.set(e.checked()),
+                        }
+                        span { "Desktop notification when done (may be unstable on some Windows setups)" }
+                    }
+                    label { class: "field-inline",
+                        input {
+                            r#type: "checkbox",
                             checked: *state.export_csv.read(),
                             oninput: move |e| state.export_csv.set(e.checked()),
                         }

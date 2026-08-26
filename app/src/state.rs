@@ -28,6 +28,28 @@ use search_core::report;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+/// Serializes every corpus-index write against every other one, app-wide.
+///
+/// Three independent code paths each open their own `NativeSearchEngine`
+/// (own Tantivy `IndexWriter`) for the same on-disk index directory with
+/// zero coordination between them: the automatic post-search reindex in
+/// `finish_successful_run`, the explicit "Build/update index"/"Rebuild
+/// from scratch" buttons (`build_or_rebuild_corpus_index`), and the
+/// 2-second incremental-reindex flusher (`run_incremental_reindex_flusher`/
+/// `reindex_changed_paths`) that drains filesystem-watcher events in the
+/// background the whole time indexing is enabled. Two `IndexWriter`s
+/// opened concurrently against the same directory is a real, reported
+/// crash: "An index writer was killed... A worker thread encountered an
+/// error (io::Error most likely) or panicked" - Tantivy's own writer
+/// lock doesn't reliably prevent this on Windows, and even when it does,
+/// the loser fails loudly instead of queueing. A single process-wide lock
+/// held for the full open-write-commit sequence, on every path, is the
+/// simplest fix that's correct regardless of which two operations happen
+/// to race - not scoped per index directory, since this app's real usage
+/// (one folder actively being searched/indexed/watched at a time) makes
+/// that added precision not worth the complexity.
+static INDEX_WRITE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ExtensionOption {
     pub extension: String,
@@ -161,6 +183,12 @@ pub struct AppState {
     pub max_file_size_mb: Signal<f64>,
     pub group_by: Signal<GroupByMode>,
     pub export_html: Signal<bool>,
+    /// Defaults OFF - unlike every other checkbox here, this isn't
+    /// preserving prior behavior, it's opting into behavior that was
+    /// previously unconditional and is a confirmed, reported crash source
+    /// on Windows (`notify_search_complete`'s doc comment has the detail).
+    /// Opt-in, not opt-out, until it's verified safe on a signed build.
+    pub desktop_notification_when_done: Signal<bool>,
     pub open_report_when_done: Signal<bool>,
     pub export_csv: Signal<bool>,
     pub export_json: Signal<bool>,
@@ -285,6 +313,7 @@ impl AppState {
             // - unchecking is an opt-out, never a silent behavior change
             // for anyone who already has this app configured.
             export_html: use_signal(|| true),
+            desktop_notification_when_done: use_signal(|| false),
             open_report_when_done: use_signal(|| false),
             export_csv: use_signal(|| false),
             export_json: use_signal(|| false),
@@ -910,6 +939,11 @@ impl AppState {
             for root in roots {
                 let mut root_settings = settings.clone();
                 root_settings.search_path = root.clone();
+                // See INDEX_WRITE_LOCK's doc comment - held for the whole
+                // open+write+commit sequence so this can never race the
+                // incremental-reindex flusher or an explicit Build/
+                // Rebuild click against the same index directory.
+                let _guard = INDEX_WRITE_LOCK.lock().await;
                 match index_one_root(&root_settings).await {
                     Ok(outcome) => {
                         total.indexed_count += outcome.indexed_count;
@@ -945,7 +979,9 @@ impl AppState {
         }
 
         self.status_text.set(done_text);
-        notify_search_complete(self.results_summary_text.read().clone());
+        if *self.desktop_notification_when_done.read() {
+            notify_search_complete(self.results_summary_text.read().clone());
+        }
     }
 
     /// Explicit "Build/update index" action (issue #6 Phase 1) -
@@ -993,6 +1029,14 @@ impl AppState {
             let mut settings = base_settings.clone();
             settings.search_path = root.clone();
             let index_dir = native_index::index_directory(root);
+
+            // See INDEX_WRITE_LOCK's doc comment - held across the delete
+            // (when rebuilding) and the whole open+write+commit sequence
+            // below, so an explicit Build/Rebuild click can never race the
+            // automatic post-search reindex or the incremental-reindex
+            // flusher, including the window between deleting the old
+            // index directory and recreating it.
+            let _guard = INDEX_WRITE_LOCK.lock().await;
 
             if force_rebuild && index_dir.exists() {
                 if let Err(e) = std::fs::remove_dir_all(&index_dir) {
@@ -1046,23 +1090,33 @@ impl AppState {
 
 /// Best-effort desktop toast on search completion (epic backlog #8) - a
 /// long search finishing while the window isn't the foreground app was
-/// previously only visible by looking back at the progress bar. Fired
-/// unconditionally on completion (not gated on window focus - tracking
-/// real OS focus state would need the same kind of custom winit
-/// `ApplicationHandler` event interception `drag_drop.rs` uses for
-/// drop events, which is more machinery than this one notification
-/// justifies; showing it even while focused is harmless, just occasionally
-/// redundant). Spawned onto a blocking thread since the underlying OS
-/// notification call (WinRT/D-Bus/NSUserNotificationCenter) may block
-/// briefly, and errors are swallowed - same "never a reason to interrupt
-/// the user" pattern as this app's settings persistence and incremental
-/// cache.
+/// previously only visible by looking back at the progress bar.
+///
+/// **Reported crashing the whole app on Windows** (2026-08-26 field
+/// report: the app crashes ~5s after every search completes, whether or
+/// not fast-search indexing is on - matches this being the one thing
+/// that fires unconditionally after every run and touches an OS-native
+/// API). This was flagged as a real risk before it shipped (the crate's
+/// own `Cargo.toml` comment: "a real, known rough edge for toast
+/// notifications from a plain win32 exe, not yet verified against an
+/// actual signed build" - unpackaged/unsigned exes commonly lack the
+/// AppUserModelID Windows' WinRT toast API expects, and some failure
+/// modes there cross out of Rust's own panic-catching, which is why
+/// `spawn_blocking` + `let _ =` swallowing a `Result` wasn't sufficient
+/// protection). Now opt-in only (`AppState::desktop_notification_when_done`,
+/// defaults OFF - see its own doc comment) rather than fixed outright,
+/// since there's no Windows machine in this environment to verify a real
+/// fix against; `catch_unwind` below is defense-in-depth for the subset
+/// of failure modes that are ordinary Rust panics, not a claimed fix for
+/// the whole problem.
 fn notify_search_complete(summary: String) {
     tokio::task::spawn_blocking(move || {
-        let _ = notify_rust::Notification::new()
-            .summary("Search complete - GS Engineering Text Search")
-            .body(&summary)
-            .show();
+        let _ = std::panic::catch_unwind(|| {
+            let _ = notify_rust::Notification::new()
+                .summary("Search complete - GS Engineering Text Search")
+                .body(&summary)
+                .show();
+        });
     });
 }
 
@@ -1208,6 +1262,11 @@ pub async fn run_incremental_reindex_flusher(mut state: AppState) {
         };
         let search_path = state.search_path.read().clone();
         let settings = state.build_settings();
+        // See INDEX_WRITE_LOCK's doc comment - held across the blocking
+        // call so this background flush can never race a Build/Rebuild
+        // click or the automatic post-search reindex against the same
+        // index directory.
+        let _guard = INDEX_WRITE_LOCK.lock().await;
         let _ = tokio::task::spawn_blocking(move || reindex_changed_paths(&pending, &search_path, &settings)).await;
     }
 }

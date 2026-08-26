@@ -44,6 +44,12 @@ pub struct PersistedState {
     // users, not a neutral one.
     #[serde(default = "default_true")]
     pub export_html: bool,
+    // Opt-in (defaults false, including on an old config file predating
+    // this field) - see AppState.desktop_notification_when_done's doc
+    // comment: this was a confirmed Windows crash source, not just a
+    // feature nobody had opted out of yet.
+    #[serde(default)]
+    pub desktop_notification_when_done: bool,
     pub open_report_when_done: bool,
     pub export_csv: bool,
     pub export_json: bool,
@@ -153,6 +159,7 @@ fn apply_settings_fields(state: &mut AppState, persisted: &PersistedState) {
         state.group_by.set(v);
     }
     state.export_html.set(persisted.export_html);
+    state.desktop_notification_when_done.set(persisted.desktop_notification_when_done);
     state.open_report_when_done.set(persisted.open_report_when_done);
     state.export_csv.set(persisted.export_csv);
     state.export_json.set(persisted.export_json);
@@ -244,6 +251,7 @@ pub fn build_snapshot(state: &AppState, dark_theme: bool) -> PersistedState {
         max_file_size_mb: Some(*state.max_file_size_mb.read()),
         group_by: Some(*state.group_by.read()),
         export_html: *state.export_html.read(),
+        desktop_notification_when_done: *state.desktop_notification_when_done.read(),
         open_report_when_done: *state.open_report_when_done.read(),
         export_csv: *state.export_csv.read(),
         export_json: *state.export_json.read(),
