@@ -57,8 +57,6 @@ fn Dropdown(field_label: String, selected_label: String, options: Vec<(&'static 
 pub fn SettingsPanel(mut state: AppState) -> Element {
     let can_run = state.can_run();
     let is_running = *state.is_running.read();
-    let can_native_search = state.can_native_search();
-    let is_native_searching = *state.is_native_searching.read();
     let has_report = state.last_report_path.read().is_some();
 
     // Memoized (not recomputed inline) so typing anywhere else in this
@@ -477,7 +475,16 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
             }
 
             details {
-                summary { "Fast re-search (experimental)" }
+                // Renamed from "Fast re-search (experimental)" - since
+                // issue #6 Phase 1, this isn't a side experiment anymore:
+                // Run Search itself routes through this index
+                // automatically for non-regex filters (see the hint text
+                // below). This section is just where the index itself is
+                // managed - the old separate "search the index directly"
+                // sub-panel (raw Tantivy query box + its own results list)
+                // was trimmed as redundant now that Run Search gives
+                // richer, index-accelerated results on its own.
+                summary { "Fast re-search index" }
                 div { class: "expander-body",
                     label { class: "field-inline",
                         input {
@@ -487,19 +494,14 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                         }
                         span { "Index this folder for fast re-search" }
                     }
-                    // The query box/Search/Cancel/Build controls are
-                    // meaningless until indexing has been turned on - shown
-                    // only once that prerequisite is met, with an
-                    // explanatory hint in its place otherwise instead of a
-                    // box of controls that all just silently no-op.
                     if *state.index_for_fast_search.read() {
-                        // Decoupled from Run Search entirely (issue #6
-                        // Phase 1) - indexes the whole corpus proactively,
-                        // not just this run's hits. Run Search also keeps
-                        // the index current automatically after every
-                        // completed search when this checkbox is on; this
-                        // button is for building/refreshing it without
-                        // running a full text-scan search first.
+                        // Decoupled from Run Search entirely - indexes the
+                        // whole corpus proactively, not just this run's
+                        // hits. Run Search also keeps the index current
+                        // automatically after every completed search when
+                        // this checkbox is on; this button is for building/
+                        // refreshing it without running a full text-scan
+                        // search first.
                         div { class: "row",
                             button {
                                 disabled: state.search_path.read().trim().is_empty() || *state.is_building_index.read(),
@@ -510,50 +512,11 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                         if !state.index_build_status_text.read().is_empty() {
                             p { class: "caption", "{state.index_build_status_text}" }
                         }
-                        div { class: "row",
-                            label { class: "field",
-                                span { "Search the fast index directly" }
-                                input {
-                                    r#type: "text",
-                                    placeholder: "e.g. torque OR extension:.pdf",
-                                    value: "{state.native_search_query}",
-                                    oninput: move |e| state.native_search_query.set(e.value()),
-                                }
-                            }
-                            button {
-                                disabled: !can_native_search,
-                                onclick: move |_| { spawn(state.run_native_search()); },
-                                "Search"
-                            }
-                            button {
-                                disabled: !is_native_searching,
-                                onclick: move |_| state.cancel_native_search(),
-                                "Cancel"
-                            }
-                        }
-                        p { class: "caption", "{state.native_search_status_text}" }
                         p { class: "caption",
-                            "Run Search (left) also uses this index automatically now for non-regex filters, narrowing to candidate files first."
+                            "Run Search (left) uses this index automatically for non-regex filters, narrowing to candidate files before the real line-by-line scan."
                         }
                     } else {
                         p { class: "caption", "Enable indexing above, then click \"Build/update index\" or run a search - either keeps this folder's index current." }
-                    }
-                    div { class: "extension-list",
-                        for hit in state.native_search_results.read().iter().cloned() {
-                            div {
-                                key: "{hit.id}",
-                                class: "hit-row",
-                                onmousedown: {
-                                    let full_name = hit.path.clone();
-                                    move |e| crate::context_menu::maybe_open_context_menu(state, &e, &full_name)
-                                },
-                                div { class: "hit-row-top",
-                                    div { class: "hit-name", "{hit.filename}" }
-                                    div { class: "hit-value", "{hit.score}" }
-                                }
-                                div { class: "caption", title: "{hit.path}", "{hit.path}" }
-                            }
-                        }
                     }
                 }
             }

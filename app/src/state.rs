@@ -18,7 +18,6 @@ use std::path::Path;
 
 use dioxus::prelude::*;
 use crate::persistence;
-use native_search::engine::{CancellationFlag, SearchHit};
 use search_core::models::{
     extension_catalog, ExcludeScope, FileSearchResult, FileSearchStatus, GroupByMode, InFlightFileStatus, MatchMode,
     SearchSettings,
@@ -121,20 +120,6 @@ pub struct SavedPreset {
     pub settings: crate::persistence::PersistedState,
 }
 
-#[derive(Clone, PartialEq)]
-pub struct NativeHitView {
-    pub id: String,
-    pub path: String,
-    pub filename: String,
-    pub score: f32,
-}
-
-impl From<SearchHit> for NativeHitView {
-    fn from(h: SearchHit) -> Self {
-        NativeHitView { id: h.id, path: h.path, filename: h.filename, score: h.score }
-    }
-}
-
 #[derive(Clone, Copy, PartialEq)]
 pub struct AppState {
     // ---- Required ----
@@ -179,8 +164,6 @@ pub struct AppState {
 
     // ---- Fast re-search (native_search) ----
     pub index_for_fast_search: Signal<bool>,
-    pub native_search_query: Signal<String>,
-    pub native_search_status_text: Signal<String>,
     /// Paths the filesystem watcher has reported changed since the last
     /// incremental-reindex flush (issue #6 Phase 1) - accumulated here
     /// rather than reindexed one at a time as each `notify` event arrives,
@@ -193,9 +176,6 @@ pub struct AppState {
     pub pending_reindex_paths: Signal<std::collections::HashSet<String>>,
     pub index_build_status_text: Signal<String>,
     pub is_building_index: Signal<bool>,
-    pub is_native_searching: Signal<bool>,
-    pub native_search_results: Signal<Vec<NativeHitView>>,
-    pub native_search_cancel: Signal<Option<CancellationFlag>>,
 
     // ---- Live run state ----
     pub is_running: Signal<bool>,
@@ -293,13 +273,6 @@ impl AppState {
             max_retries: use_signal(|| 3),
 
             index_for_fast_search: use_signal(|| false),
-            native_search_query: use_signal(String::new),
-            native_search_status_text: use_signal(|| {
-                "Enable \"Index for fast re-search\" below, run a search, then search here.".to_string()
-            }),
-            is_native_searching: use_signal(|| false),
-            native_search_results: use_signal(Vec::new),
-            native_search_cancel: use_signal(|| None),
 
             is_running: use_signal(|| false),
             progress_percent: use_signal(|| 0.0),
@@ -380,11 +353,6 @@ impl AppState {
             && !self.filters_text.read().trim().is_empty()
     }
 
-    pub fn can_native_search(&self) -> bool {
-        !*self.is_native_searching.read()
-            && !self.native_search_query.read().trim().is_empty()
-            && !self.search_path.read().trim().is_empty()
-    }
 
     fn build_selected_extensions(&self) -> Option<Vec<String>> {
         let selected: Vec<String> =
@@ -518,12 +486,6 @@ impl AppState {
     pub fn cancel_search(&self) {
         if let Some(token) = self.cancel_token.read().as_ref() {
             token.cancel();
-        }
-    }
-
-    pub fn cancel_native_search(&self) {
-        if let Some(flag) = self.native_search_cancel.read().as_ref() {
-            flag.cancel();
         }
     }
 
@@ -842,61 +804,22 @@ impl AppState {
                 },
                 Err(e) => format!("Fast re-search indexing failed: {e}"),
             };
-            self.native_search_status_text.set(msg.clone());
-            // `native_search_status_text` only renders inside the "Fast
-            // re-search (experimental)" `<details>`, which is collapsed by
-            // default - a real "indexer doesn't work" report turned out to
-            // be indexing succeeding silently inside a collapsed section
-            // nobody had expanded. Folding the same message into the main,
-            // always-visible status line (outside any collapsible section)
-            // fixes that without touching `<details>`'s `open` state, which
-            // would risk the exact "controlled attribute fights a user's own
-            // manual toggle" bug class CLAUDE.md already documents for
-            // numeric inputs.
+            // Folded straight into the main, always-visible status line
+            // (not a separate `native_search_status_text` signal - that
+            // field, and the "Search the fast index directly" panel it
+            // used to feed, were removed as redundant once Run Search
+            // itself started routing through this same index
+            // automatically - see docs/issue-6-phase-1.md) rather than a
+            // secondary caption only visible inside the collapsed "Fast
+            // re-search" `<details>` - a real "indexer doesn't work"
+            // report turned out to be indexing succeeding silently where
+            // nobody had expanded that section to see it.
+            self.index_build_status_text.set(msg.clone());
             done_text = format!("Done. {msg}");
         }
 
         self.status_text.set(done_text);
         notify_search_complete(self.results_summary_text.read().clone());
-    }
-
-    pub async fn run_native_search(mut self) {
-        self.native_search_results.write().clear();
-        self.native_search_status_text.set("Searching...".to_string());
-        self.is_native_searching.set(true);
-
-        let cancel_flag = CancellationFlag::new();
-        self.native_search_cancel.set(Some(cancel_flag.clone()));
-
-        let query = self.native_search_query.read().clone();
-        let search_path = self.search_path.read().clone();
-
-        let outcome = tokio::task::spawn_blocking(move || -> Result<Vec<NativeHitView>, native_search::error::NsError> {
-            let dir = native_index::index_directory(&search_path);
-            native_index::ensure_index_directory_exists(&dir)
-                .map_err(|e| native_search::error::NsError::index_error(e.to_string()))?;
-            let engine = native_index::open_or_create_with_rebuild(&dir)?;
-            let hits = engine.search(&query, 50, Some(&cancel_flag))?;
-            Ok(hits.into_iter().map(NativeHitView::from).collect())
-        })
-        .await;
-
-        match outcome {
-            Ok(Ok(hits)) => {
-                let count = hits.len();
-                self.native_search_results.set(hits);
-                self.native_search_status_text
-                    .set(if count == 0 { "No results.".to_string() } else { format!("{count} result(s).") });
-            }
-            Ok(Err(e)) if e.status == native_search::error::NsStatus::Cancelled => {
-                self.native_search_status_text.set("Cancelled.".to_string());
-            }
-            Ok(Err(e)) => self.native_search_status_text.set(format!("Error: {}", e.message)),
-            Err(join_err) => self.native_search_status_text.set(format!("Error: {join_err}")),
-        }
-
-        self.is_native_searching.set(false);
-        self.native_search_cancel.set(None);
     }
 
     /// Explicit "Build/update index" action (issue #6 Phase 1) -
