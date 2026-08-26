@@ -192,7 +192,18 @@ pub fn save(state: &AppState, dark_theme: bool) {
         let _ = std::fs::create_dir_all(parent);
     }
     if let Ok(json) = serde_json::to_string_pretty(&persisted) {
-        let _ = std::fs::write(path, json);
+        // Write-to-temp-then-rename, not a direct truncating write (issue
+        // #6 §51 "crash recovery"): a crash mid-write to the real path
+        // would leave a truncated, unparseable settings file that the
+        // next launch's `load()` would fail to read (same reasoning as
+        // search-core's `cache::atomic_write`) - here that means falling
+        // back to defaults instead of the user's actual saved settings,
+        // silently, on every launch until the file happens to get
+        // overwritten cleanly again.
+        let tmp_path = path.with_extension("json.tmp");
+        if std::fs::write(&tmp_path, json).is_ok() {
+            let _ = std::fs::rename(&tmp_path, &path);
+        }
     }
 }
 

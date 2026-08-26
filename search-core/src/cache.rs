@@ -165,8 +165,28 @@ pub fn save(
     // Failing to write the cache should never fail the search itself - it
     // just means next run starts from scratch again.
     if let Ok(json) = serde_json::to_string(&cache_file) {
-        let _ = std::fs::write(cache_file_path, json);
+        let _ = atomic_write(cache_file_path, json.as_bytes());
     }
+}
+
+/// Write-to-temp-then-rename (issue #6 §51 "crash recovery" - "do not
+/// mark a document as successfully indexed until the appropriate
+/// persistence operation has completed"). A direct `std::fs::write`
+/// truncates the destination file before writing its new content, so a
+/// crash/power-loss mid-write leaves a truncated, unparseable cache file
+/// that `try_load`'s `serde_json::from_str` would then fail to load -
+/// silently losing the whole incremental cache, not just the last run's
+/// updates. Writing to a sibling `.tmp` path first and renaming over the
+/// real path means a crash mid-write only ever leaves behind an orphaned
+/// `.tmp` file; the real cache file is either the old complete one or the
+/// new complete one, never a partial one. `std::fs::rename` is an atomic
+/// replace on both this project's target platform (Windows'
+/// `MoveFileExW`/`MOVEFILE_REPLACE_EXISTING`, which `std::fs::rename`
+/// uses) and Unix (`rename(2)`).
+fn atomic_write(path: &str, contents: &[u8]) -> std::io::Result<()> {
+    let tmp_path = format!("{path}.tmp");
+    std::fs::write(&tmp_path, contents)?;
+    std::fs::rename(&tmp_path, path)
 }
 
 #[cfg(test)]
@@ -297,6 +317,21 @@ mod tests {
         assert_eq!(restored.full_name, "/x/a.txt");
         assert_eq!(restored.file_length, 10);
         assert_eq!(restored.status, FileSearchStatus::Hit);
+    }
+
+    #[test]
+    fn atomic_write_replaces_content_and_leaves_no_tmp_file_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.json");
+        let path_str = path.to_str().unwrap();
+
+        super::atomic_write(path_str, b"first").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first");
+
+        super::atomic_write(path_str, b"second").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "second", "rename must replace, not append or fail");
+
+        assert!(!dir.path().join("cache.json.tmp").exists(), "the temp file must not linger after a successful write");
     }
 
     #[test]

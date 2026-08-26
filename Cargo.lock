@@ -5606,6 +5606,7 @@ dependencies = [
  "clap",
  "dialoguer",
  "search-core",
+ "serde_json",
  "tempfile",
  "tokio",
  "tokio-util",

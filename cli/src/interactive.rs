@@ -174,6 +174,13 @@ pub(crate) fn gather(defaults: Cli) -> Result<Cli, dialoguer::Error> {
         jsonl,
         index,
         failure_log: defaults.failure_log,
+        cache_file: defaults.cache_file,
+        // Maintenance actions (--verify-index etc.) are a separate,
+        // non-interactive mode of the CLI - never part of this wizard.
+        verify_index: false,
+        remove_orphaned: false,
+        clear_cache: false,
+        list_failures: false,
     })
 }
 

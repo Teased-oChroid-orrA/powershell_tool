@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 use tantivy::collector::{Collector, DocSetCollector, SegmentCollector, TopDocs};
 use tantivy::directory::MmapDirectory;
-use tantivy::query::{BooleanQuery, Occur, Query, QueryParser, TermQuery};
+use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, QueryParser, TermQuery};
 use tantivy::schema::{
     IndexRecordOption, Schema, TextFieldIndexing, TextOptions, Value, FAST, INDEXED, STORED, STRING, TEXT,
 };
@@ -555,6 +555,27 @@ impl NativeSearchEngine {
         self.reader.searcher().num_docs()
     }
 
+    /// Every indexed document's `id` (== its file path, per ADR-008 - see
+    /// `get_document_metadata`'s doc comment). Issue #6 §50 "Index
+    /// Health/Maintenance" - "remove orphaned documents": a caller walks
+    /// this list, checks which paths no longer exist on disk, and
+    /// `delete_document`s those. Not used by the normal search/index path
+    /// at all - maintenance tooling only (currently `search-cli
+    /// --remove-orphaned`), so an `AllQuery` full-index scan here is fine;
+    /// nothing performance-sensitive calls this.
+    pub fn all_document_ids(&self) -> NsResult<Vec<String>> {
+        let searcher = self.reader.searcher();
+        let doc_addrs = searcher
+            .search(&AllQuery, &DocSetCollector)
+            .map_err(|e| NsError::index_error(e.to_string()))?;
+        let mut ids = Vec::with_capacity(doc_addrs.len());
+        for addr in doc_addrs {
+            let retrieved: TantivyDocument = searcher.doc(addr).map_err(|e| NsError::index_error(e.to_string()))?;
+            ids.push(text_value(&retrieved, self.fields.id));
+        }
+        Ok(ids)
+    }
+
     /// Looks up the `(modified_unix, size)` stored for `id` the last time it
     /// was indexed, or `None` if `id` isn't in the index. Exact term lookup
     /// on the `id` field (not `QueryParser::parse_query`) - `id` is an
@@ -851,6 +872,19 @@ mod tests {
             None,
             "a chunk shorter than 3 chars has no trigrams"
         );
+    }
+
+    #[test]
+    fn all_document_ids_returns_every_indexed_id() {
+        let dir = tempdir().unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        engine.index_document(sample("1", "torque spec")).unwrap();
+        engine.index_document(sample("2", "corrosion notes")).unwrap();
+        engine.commit().unwrap();
+
+        let mut ids = engine.all_document_ids().unwrap();
+        ids.sort();
+        assert_eq!(ids, vec!["1".to_string(), "2".to_string()]);
     }
 
     #[test]

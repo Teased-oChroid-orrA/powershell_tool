@@ -293,6 +293,39 @@ pub fn search(engine: &NativeSearchEngine, query: &str, limit: usize) -> NsResul
     engine.search(query, limit, None)
 }
 
+/// Issue #6 §50 "Index Health/Maintenance" - "remove orphaned documents":
+/// deletes every indexed document whose path no longer exists on disk
+/// (moved, renamed, or deleted since the file was indexed - possible any
+/// time the corpus index isn't perfectly current with the filesystem,
+/// e.g. before the next scheduled reconciliation scan or watcher event).
+/// Commits once at the end if anything was actually removed. Returns the
+/// number of documents removed.
+pub fn remove_orphaned_documents(engine: &NativeSearchEngine) -> NsResult<usize> {
+    let mut removed = 0usize;
+    for id in engine.all_document_ids()? {
+        if !Path::new(&id).exists() {
+            engine.delete_document(&id)?;
+            removed += 1;
+        }
+    }
+    if removed > 0 {
+        engine.commit()?;
+    }
+    Ok(removed)
+}
+
+/// Issue #6 §50 - "verify index": opens the index *without* the
+/// auto-rebuild-on-schema-mismatch behavior `open_or_create_with_rebuild`
+/// has (that would silently "fix" a corrupt/stale-schema index rather
+/// than reporting it) and returns its document count on success. An `Err`
+/// here - most commonly `NsStatus::CorruptIndex`, per `open_or_create`'s
+/// own doc comment - is the caller's signal to offer/perform a rebuild,
+/// not something this function does on its own.
+pub fn verify_index(index_directory: &Path) -> NsResult<u64> {
+    let engine = NativeSearchEngine::open_or_create(index_directory)?;
+    Ok(engine.num_docs())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -680,5 +713,69 @@ mod tests {
         let outcome = index_hits_for_fast_search(&engine, &v2).unwrap();
         assert_eq!(outcome.indexed_count, 1, "changed mtime/size must trigger a re-index");
         assert_eq!(outcome.skipped_count, 0);
+    }
+
+    #[test]
+    fn remove_orphaned_documents_deletes_only_paths_missing_from_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let real_file = dir.path().join("still-here.txt");
+        std::fs::write(&real_file, "content").unwrap();
+        let real_path = real_file.to_string_lossy().into_owned();
+        let gone_path = dir.path().join("deleted-since-indexing.txt").to_string_lossy().into_owned();
+
+        ensure_index_directory_exists(dir.path()).unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        index_hits_for_fast_search(&engine, &[sample_hit(&real_path, 1_700_000_000, 7, &["kept"])]).unwrap();
+        index_hits_for_fast_search(&engine, &[sample_hit(&gone_path, 1_700_000_000, 7, &["orphaned"])]).unwrap();
+        assert_eq!(engine.num_docs(), 2);
+
+        let removed = remove_orphaned_documents(&engine).unwrap();
+        assert_eq!(removed, 1);
+        assert_eq!(engine.num_docs(), 1);
+        assert_eq!(engine.all_document_ids().unwrap(), vec![real_path]);
+    }
+
+    #[test]
+    fn remove_orphaned_documents_is_a_no_op_when_nothing_is_orphaned() {
+        let dir = tempfile::tempdir().unwrap();
+        let real_file = dir.path().join("still-here.txt");
+        std::fs::write(&real_file, "content").unwrap();
+        let real_path = real_file.to_string_lossy().into_owned();
+
+        ensure_index_directory_exists(dir.path()).unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        index_hits_for_fast_search(&engine, &[sample_hit(&real_path, 1_700_000_000, 7, &["kept"])]).unwrap();
+
+        assert_eq!(remove_orphaned_documents(&engine).unwrap(), 0);
+        assert_eq!(engine.num_docs(), 1);
+    }
+
+    #[test]
+    fn verify_index_reports_the_document_count() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_index_directory_exists(dir.path()).unwrap();
+        {
+            let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+            index_hits_for_fast_search(&engine, &[sample_hit("/x/a.txt", 1_700_000_000, 7, &["hi"])]).unwrap();
+        }
+        assert_eq!(verify_index(dir.path()).unwrap(), 1);
+    }
+
+    #[test]
+    fn verify_index_reports_corrupt_index_instead_of_silently_rebuilding() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_index_directory_exists(dir.path()).unwrap();
+        {
+            // Build an index, then reopen with a schema that will look
+            // "mismatched" to a fresh open_or_create call - simplest way
+            // to reproduce is to just corrupt meta.json directly, same
+            // approach `open_or_create`'s own existing corruption test
+            // family uses elsewhere in this codebase.
+            let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+            index_hits_for_fast_search(&engine, &[sample_hit("/x/a.txt", 1_700_000_000, 7, &["hi"])]).unwrap();
+        }
+        std::fs::write(dir.path().join("meta.json"), "not valid json at all").unwrap();
+
+        assert!(verify_index(dir.path()).is_err(), "a corrupt index must surface as an error, not silently rebuild");
     }
 }

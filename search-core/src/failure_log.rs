@@ -44,6 +44,7 @@ use rusqlite::Connection;
 /// so a parser fix doesn't silently leave affected files skipped forever.
 const EXTRACTOR_VERSION: i32 = 1;
 
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct FailureRecord {
     pub path: String,
     pub size: i64,

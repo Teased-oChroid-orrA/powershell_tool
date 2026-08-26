@@ -72,14 +72,22 @@ impl From<CliGroupBy> for GroupByMode {
 pub(crate) struct Cli {
     /// Folder to search, recursively. Omit together with --filter to be
     /// prompted interactively instead (or pass --interactive explicitly
-    /// alongside a folder to still get prompted for everything else).
-    #[arg(required_unless_present = "interactive")]
+    /// alongside a folder to still get prompted for everything else). Also
+    /// required (as the folder to operate on) by --verify-index and
+    /// --remove-orphaned, in place of a search.
+    #[arg(required_unless_present_any = ["interactive", "clear_cache", "list_failures"])]
     pub(crate) search_path: Option<PathBuf>,
 
-    /// Filter text - at least one required (unless --interactive).
-    /// Repeat for multiple filters (any-line mode: a line matching ANY of
-    /// them is a hit).
-    #[arg(short = 'f', long = "filter", required_unless_present = "interactive")]
+    /// Filter text - at least one required, unless running in
+    /// --interactive mode or performing a maintenance action
+    /// (--verify-index / --remove-orphaned / --clear-cache /
+    /// --list-failures) instead of a search. Repeat for multiple filters
+    /// (any-line mode: a line matching ANY of them is a hit).
+    #[arg(
+        short = 'f',
+        long = "filter",
+        required_unless_present_any = ["interactive", "verify_index", "remove_orphaned", "clear_cache", "list_failures"]
+    )]
     pub(crate) filters: Vec<String>,
 
     /// Walk through an interactive menu (folder, filters, mode, and -
@@ -178,6 +186,42 @@ pub(crate) struct Cli {
     /// of being re-attempted every time.
     #[arg(long)]
     pub(crate) failure_log: Option<PathBuf>,
+
+    /// Path to the incremental JSON result cache (fingerprinted by the
+    /// settings that affect matching - see search-core's cache.rs). Not
+    /// exposed in the GUI's CLI-equivalent flag set until now; opt-in,
+    /// same as the GUI's own cache field defaulting to "unset".
+    #[arg(long)]
+    pub(crate) cache_file: Option<PathBuf>,
+
+    // --- Maintenance actions (issue #6 §50) - each of these performs one
+    // action and exits, instead of running a search. Mutually exclusive
+    // with each other and with a normal search in practice (only the
+    // first one present is honored, checked in that order in `run()`).
+    /// Open the fast-search index for --search-path and report its
+    /// document count, or a clear error if the index is corrupt/schema-
+    /// mismatched - does NOT auto-rebuild (that would hide the exact
+    /// problem this flag exists to surface). Follow up with `--index` on
+    /// a normal search, or delete the `.native-search-index` folder
+    /// manually, to rebuild.
+    #[arg(long)]
+    pub(crate) verify_index: bool,
+
+    /// Delete every indexed document under --search-path whose file no
+    /// longer exists on disk (moved/renamed/deleted since it was
+    /// indexed), then commit. Prints the number removed.
+    #[arg(long)]
+    pub(crate) remove_orphaned: bool,
+
+    /// Delete the file at --cache-file, if present.
+    #[arg(long)]
+    pub(crate) clear_cache: bool,
+
+    /// Print every recorded extraction failure from --failure-log (path,
+    /// size/modified fingerprint, status, reason, when it failed) as
+    /// JSON, newest first.
+    #[arg(long)]
+    pub(crate) list_failures: bool,
 }
 
 fn main() -> ExitCode {
@@ -198,10 +242,122 @@ fn main() -> ExitCode {
     rt.block_on(run(cli))
 }
 
+/// Issue #6 §50 "Index Health/Maintenance" - four one-shot actions that
+/// each perform their job and exit, instead of running a search. Checked
+/// in this order; only the first one present is honored (they're not
+/// meant to be combined). Kept as plain sync fns - none of the underlying
+/// operations (Tantivy, rusqlite, `std::fs`) need the async runtime
+/// `main()` sets up for the normal search path, so `run()` calls these
+/// directly before doing anything else.
+fn run_maintenance_action(cli: &Cli) -> Option<ExitCode> {
+    if cli.list_failures {
+        return Some(cmd_list_failures(cli));
+    }
+    if cli.clear_cache {
+        return Some(cmd_clear_cache(cli));
+    }
+    if cli.verify_index {
+        return Some(cmd_verify_index(cli));
+    }
+    if cli.remove_orphaned {
+        return Some(cmd_remove_orphaned(cli));
+    }
+    None
+}
+
+fn cmd_verify_index(cli: &Cli) -> ExitCode {
+    let Some(search_path) = &cli.search_path else {
+        eprintln!("Error: --verify-index requires a search folder");
+        return ExitCode::FAILURE;
+    };
+    let index_dir = native_index::index_directory(&search_path.to_string_lossy());
+    match native_index::verify_index(&index_dir) {
+        Ok(count) => {
+            println!("Index OK: {count} document(s).");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("Index verification failed: {e} (the index may be corrupt or from an older schema - rebuild it with a normal search using --index)");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_remove_orphaned(cli: &Cli) -> ExitCode {
+    let Some(search_path) = &cli.search_path else {
+        eprintln!("Error: --remove-orphaned requires a search folder");
+        return ExitCode::FAILURE;
+    };
+    let index_dir = native_index::index_directory(&search_path.to_string_lossy());
+    let engine = match native_index::open_or_create_with_rebuild(&index_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("Error opening index: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match native_index::remove_orphaned_documents(&engine) {
+        Ok(removed) => {
+            println!("Removed {removed} orphaned document(s).");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("Error removing orphaned documents: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_clear_cache(cli: &Cli) -> ExitCode {
+    let Some(path) = &cli.cache_file else {
+        eprintln!("Error: --clear-cache requires --cache-file <path>");
+        return ExitCode::FAILURE;
+    };
+    match std::fs::remove_file(path) {
+        Ok(()) => {
+            println!("Removed {}", path.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            println!("No cache file at {} (nothing to do).", path.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("Error removing cache file: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_list_failures(cli: &Cli) -> ExitCode {
+    let Some(path) = &cli.failure_log else {
+        eprintln!("Error: --list-failures requires --failure-log <path>");
+        return ExitCode::FAILURE;
+    };
+    let log = match search_core::failure_log::FailureLog::open(&path.to_string_lossy()) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("Error opening failure log: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let failures = log.list_failures();
+    println!("{} recorded failure(s).", failures.len());
+    match serde_json::to_string_pretty(&failures) {
+        Ok(json) => println!("{json}"),
+        Err(e) => eprintln!("Error formatting failures as JSON: {e}"),
+    }
+    ExitCode::SUCCESS
+}
+
 async fn run(cli: Cli) -> ExitCode {
+    if let Some(code) = run_maintenance_action(&cli) {
+        return code;
+    }
+
     // Guaranteed Some here: clap enforces search_path/filters unless
-    // --interactive, and the --interactive branch in main() fills both
-    // in via the wizard before run() is ever called.
+    // --interactive or a maintenance action, and the --interactive branch
+    // in main() fills both in via the wizard before run() is ever called.
     let search_path = cli
         .search_path
         .as_ref()
@@ -243,6 +399,9 @@ async fn run(cli: Cli) -> ExitCode {
     }
     if let Some(path) = &cli.failure_log {
         settings.failure_log_path = Some(path.to_string_lossy().into_owned());
+    }
+    if let Some(path) = &cli.cache_file {
+        settings.cache_file_path = Some(path.to_string_lossy().into_owned());
     }
     if cli.index {
         native_index::ensure_index_folder_excluded(&mut settings.exclude_folders);
