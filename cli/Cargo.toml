@@ -35,6 +35,14 @@ dialoguer = "0.11"
 # depends on serde_json for its own report export - a normal, expected
 # dependency, not new surface area.
 serde_json = "1"
+# Installs a subscriber for search-core's tracing instrumentation (issue
+# #6 §57/§58) - the GUI gets one for free via dioxus's "logger" feature,
+# but the CLI has no such feature to lean on, so it needs its own. Quiet
+# by default (WARN) - opt into search-core's discover/extract/index/query/
+# export events with RUST_LOG=search_core=info (or =debug/=trace for the
+# noisier per-file events), matching this crate's `env_logger`-family
+# convention rather than a bespoke --verbose flag.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 tempfile = "3"

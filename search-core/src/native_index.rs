@@ -142,6 +142,7 @@ pub fn index_hits_for_fast_search(engine: &NativeSearchEngine, hits: &[FileSearc
         engine.commit()?;
     }
 
+    tracing::info!(indexed = outcome.indexed_count, skipped = outcome.skipped_count, "fast-search index update complete");
     Ok(outcome)
 }
 
@@ -282,6 +283,12 @@ pub async fn build_or_update_corpus_index(
         engine.commit()?;
     }
 
+    tracing::info!(
+        indexed = outcome.indexed_count,
+        skipped = outcome.skipped_count,
+        failed = outcome.failed_count,
+        "corpus index build complete"
+    );
     Ok(outcome)
 }
 
@@ -290,7 +297,15 @@ pub async fn build_or_update_corpus_index(
 /// from the normal per-run line scan (`orchestrator::run`), not a
 /// replacement for it.
 pub fn search(engine: &NativeSearchEngine, query: &str, limit: usize) -> NsResult<Vec<SearchHit>> {
-    engine.search(query, limit, None)
+    let start = std::time::Instant::now();
+    let result = engine.search(query, limit, None);
+    tracing::debug!(
+        query = %query,
+        result_count = result.as_ref().map(|r| r.len()).unwrap_or(0),
+        elapsed_us = start.elapsed().as_micros() as u64,
+        "query complete"
+    );
+    result
 }
 
 /// Issue #6 §50 "Index Health/Maintenance" - "remove orphaned documents":

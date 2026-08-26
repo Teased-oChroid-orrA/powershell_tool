@@ -85,11 +85,13 @@ pub fn build_html_report(settings: &SearchSettings, run: &SearchRunResult) -> St
 /// length) so callers can warn on a very large report without needing to
 /// have held the whole thing in memory first just to call `.len()` on it.
 pub fn write_html_report(path: &str, settings: &SearchSettings, run: &SearchRunResult) -> std::io::Result<u64> {
+    let start = std::time::Instant::now();
     let file = std::fs::File::create(path)?;
     let mut writer = std::io::BufWriter::new(file);
     write_report_to_sink(&mut ReportSink::Writer(&mut writer), settings, run)?;
     std::io::Write::flush(&mut writer)?;
     drop(writer);
+    tracing::info!(path = %path, elapsed_ms = start.elapsed().as_millis() as u64, "export: HTML report written");
     Ok(std::fs::metadata(path)?.len())
 }
 

@@ -105,6 +105,7 @@ pub async fn run(
             });
         }
     };
+    let discover_start = Instant::now();
     let (all_files, enum_errors) = file_reader::enumerate_files_safely(
         &settings.search_path,
         settings.include_hidden,
@@ -116,6 +117,14 @@ pub async fn run(
     run_result.summary.enumeration_errors = enum_errors;
 
     let candidates = filter_by_extension(all_files, &settings);
+    // Issue #6 §57 "Instrumentation" - one aggregate event per run, not
+    // one per file/directory (§58 explicitly warns against that).
+    tracing::info!(
+        files_discovered = candidates.len(),
+        enumeration_errors = enum_errors,
+        elapsed_ms = discover_start.elapsed().as_millis() as u64,
+        "discovery complete"
+    );
 
     run_over_candidates(candidates, run_result, settings, progress, cancellation).await
 }
@@ -416,6 +425,16 @@ async fn run_over_candidates(
     }
 
     run_result.summary.total_elapsed_seconds = run_start.elapsed().as_secs_f64();
+    tracing::info!(
+        files_searched = run_result.summary.files_searched,
+        skipped_too_large = run_result.summary.skipped_too_large,
+        skipped_binary = run_result.summary.skipped_binary,
+        skipped_read_error = run_result.summary.skipped_read_error,
+        skipped_unexpected_error = run_result.summary.skipped_unexpected_error,
+        cache_reused = run_result.summary.cache_reused,
+        elapsed_seconds = run_result.summary.total_elapsed_seconds,
+        "search run complete"
+    );
     Ok(run_result)
 }
 
@@ -456,6 +475,11 @@ async fn process_one_file(
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| full_name.clone());
     let modified_unix = file.modified.timestamp();
+    // trace, not info/debug: this runs once per file, potentially
+    // thousands of times per run - epic #6 §58 explicitly warns against
+    // flooding logs with one message per file "unless explicitly
+    // enabled" (opt in via RUST_LOG=search_core=trace).
+    tracing::trace!(file = %full_name, "extract: processing file");
 
     let mut result = FileSearchResult {
         full_name: full_name.clone(),
@@ -479,6 +503,7 @@ async fn process_one_file(
     // never recorded, since those ARE worth retrying every run).
     if let Some(log) = &failure_log {
         if let Some(reason) = log.known_failure_reason(&full_name, file.length, modified_unix) {
+            tracing::debug!(file = %full_name, "extract: skipping known extraction failure");
             result.status = FileSearchStatus::ReadError;
             result.error_message = Some(reason);
             return result;
@@ -562,6 +587,7 @@ async fn process_one_file(
             result.status = FileSearchStatus::ReadError;
             let reason = format!("{ext} extractor produced no usable text");
             result.error_message = Some(reason.clone());
+            tracing::warn!(file = %full_name, extension = %ext, "extraction failed");
             if let Some(log) = &failure_log {
                 log.record_failure(&full_name, file.length, modified_unix, "ReadError", &reason, chrono::Local::now().timestamp());
             }

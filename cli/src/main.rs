@@ -225,6 +225,18 @@ pub(crate) struct Cli {
 }
 
 fn main() -> ExitCode {
+    // Issue #6 §57/§58 - search-core emits tracing events (discover/
+    // extract/index/query/export spans and aggregate-not-per-file
+    // summaries); this installs the subscriber that actually prints them.
+    // Quiet by default (WARN) so a normal `search-cli` invocation stays
+    // exactly as quiet as before this was added - opt in with
+    // RUST_LOG=search_core=info (or =debug/=trace for the noisier
+    // per-file events).
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()))
+        .with_writer(std::io::stderr)
+        .init();
+
     let mut cli = Cli::parse();
     if cli.interactive {
         match interactive::gather(cli) {

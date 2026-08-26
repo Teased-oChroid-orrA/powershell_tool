@@ -54,6 +54,16 @@ urlencoding = "2"
 # without this feature would need the host to already have a system
 # SQLite library, which win-x64 machines aren't guaranteed to have.
 rusqlite = { version = "0.32", features = ["bundled"] }
+# Structured instrumentation (issue #6 §57/§58) - spans/events around
+# discover/extract/index/query, aggregate-not-per-file log lines. Already
+# pulled into this workspace transitively (dioxus's "logger" feature in
+# app/Cargo.toml depends on tracing-subscriber) - this just makes
+# search-core's own use of it a direct, explicit dependency instead of
+# relying on a transitive one from a crate it doesn't otherwise depend on.
+# A no-op with no subscriber installed (the GUI installs one via dioxus's
+# logger feature; the CLI installs its own - see cli/src/main.rs), so
+# this has zero behavioral cost for search-core's own test suite.
+tracing = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
