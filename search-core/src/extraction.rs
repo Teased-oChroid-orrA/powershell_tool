@@ -54,13 +54,138 @@ pub enum ExtractLinesError {
     Failed,
 }
 
+/// One format's extraction logic (epic #6 §5's "extractor abstraction" -
+/// registering a new `Extractor` impl in [`EXTRACTORS`] is now how a
+/// format gets added, not editing a match arm buried in a dispatch
+/// function). Deliberately thin: this trait owns *dispatch* only, not
+/// parsing - each impl below still calls the same hand-rolled, byte-for-
+/// byte-tested `extract_*_lines` free functions this module always has
+/// (see `CLAUDE.md`'s extraction design notes for why those stay
+/// hand-rolled rather than adopting a generic OOXML/PDF parser crate;
+/// this trait doesn't change that reasoning, it only changes how the
+/// *dispatch table* is expressed).
+///
+/// `pdf_timeout_seconds`/`on_pdf_progress` are part of the shared
+/// signature (not a PDF-only extra parameter) so every impl has the same
+/// shape - only `PdfExtractor` actually reads them, everyone else ignores
+/// them, matching this app's standing "PDF extraction must never go
+/// silent" progress-reporting requirement without needing a second,
+/// PDF-specific trait method.
+pub trait Extractor: Send + Sync {
+    /// Lowercase, dot-prefixed extensions this extractor handles (e.g.
+    /// `".docx"`). Checked via `extensions().contains(&ext)` by
+    /// [`extract_lines_by_extension`] - an extractor matching more than
+    /// one extension (there are none today) is exactly as valid as one
+    /// matching a single extension.
+    fn extensions(&self) -> &'static [&'static str];
+
+    fn extract(
+        &self,
+        bytes: &[u8],
+        pdf_timeout_seconds: u64,
+        on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
+    ) -> Option<Vec<String>>;
+
+    /// Only `PdfExtractor` overrides this - see
+    /// `pdf_extraction_looks_reliable`'s doc comment for what it detects.
+    fn low_confidence(&self, _lines: &[String]) -> bool {
+        false
+    }
+}
+
+struct DocxExtractor;
+impl Extractor for DocxExtractor {
+    fn extensions(&self) -> &'static [&'static str] {
+        &[".docx"]
+    }
+    fn extract(&self, bytes: &[u8], _pdf_timeout_seconds: u64, _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>) -> Option<Vec<String>> {
+        extract_docx_lines(bytes)
+    }
+}
+
+struct PptxExtractor;
+impl Extractor for PptxExtractor {
+    fn extensions(&self) -> &'static [&'static str] {
+        &[".pptx"]
+    }
+    fn extract(&self, bytes: &[u8], _pdf_timeout_seconds: u64, _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>) -> Option<Vec<String>> {
+        extract_pptx_lines(bytes)
+    }
+}
+
+struct XlsxExtractor;
+impl Extractor for XlsxExtractor {
+    fn extensions(&self) -> &'static [&'static str] {
+        &[".xlsx"]
+    }
+    fn extract(&self, bytes: &[u8], _pdf_timeout_seconds: u64, _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>) -> Option<Vec<String>> {
+        extract_xlsx_lines(bytes)
+    }
+}
+
+struct ZipExtractor;
+impl Extractor for ZipExtractor {
+    fn extensions(&self) -> &'static [&'static str] {
+        &[".zip"]
+    }
+    fn extract(&self, bytes: &[u8], _pdf_timeout_seconds: u64, _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>) -> Option<Vec<String>> {
+        extract_zip_archive_lines(bytes, 2)
+    }
+}
+
+struct PdfExtractor;
+impl Extractor for PdfExtractor {
+    fn extensions(&self) -> &'static [&'static str] {
+        &[".pdf"]
+    }
+    fn extract(
+        &self,
+        bytes: &[u8],
+        pdf_timeout_seconds: u64,
+        on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
+    ) -> Option<Vec<String>> {
+        extract_pdf_lines(bytes, pdf_timeout_seconds, on_pdf_progress).0
+    }
+    fn low_confidence(&self, lines: &[String]) -> bool {
+        !pdf_extraction_looks_reliable(lines)
+    }
+}
+
+struct RtfExtractor;
+impl Extractor for RtfExtractor {
+    fn extensions(&self) -> &'static [&'static str] {
+        &[".rtf"]
+    }
+    fn extract(&self, bytes: &[u8], _pdf_timeout_seconds: u64, _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>) -> Option<Vec<String>> {
+        extract_rtf_lines(bytes)
+    }
+}
+
+/// The fallback for every extension not otherwise registered - not
+/// reached via `extensions()` matching at all (see
+/// [`extract_lines_by_extension`]'s loop), since "everything else" isn't
+/// a finite extension list.
+struct PlainTextExtractor;
+impl Extractor for PlainTextExtractor {
+    fn extensions(&self) -> &'static [&'static str] {
+        &[]
+    }
+    fn extract(&self, bytes: &[u8], _pdf_timeout_seconds: u64, _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>) -> Option<Vec<String>> {
+        Some(split_lines(&decode_text(bytes)))
+    }
+}
+
+/// The registry - add a new format by adding an `Extractor` impl above
+/// and one entry here, not by editing
+/// [`extract_lines_by_extension`]'s dispatch logic itself.
+static EXTRACTORS: &[&dyn Extractor] =
+    &[&DocxExtractor, &PptxExtractor, &XlsxExtractor, &ZipExtractor, &PdfExtractor, &RtfExtractor];
+
 /// Extension-to-extractor dispatch, factored out of `orchestrator.rs`'s
 /// `process_one_file` so the same table backs both the normal search path
 /// and the proactive corpus indexer (`native_index.rs`) - one place that
 /// knows "which extractor for which extension," not two that could drift
-/// apart as formats are added (see `CLAUDE.md`'s extraction design notes
-/// for why each format's extractor itself is hand-rolled, not a generic
-/// parser crate - this function only owns the dispatch, not the parsing).
+/// apart as formats are added.
 ///
 /// `on_pdf_progress` mirrors `extract_pdf_lines`'s own live-progress
 /// callback - required by this app's standing "PDF extraction must never
@@ -73,31 +198,28 @@ pub fn extract_lines_by_extension(
     pdf_timeout_seconds: u64,
     on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
 ) -> Result<ExtractedLines, ExtractLinesError> {
-    let mut low_confidence_pdf = false;
+    let registered = EXTRACTORS.iter().find(|e| e.extensions().contains(&ext)).copied();
 
-    let lines: Option<Vec<String>> = match ext {
-        ".docx" => extract_docx_lines(bytes),
-        ".pptx" => extract_pptx_lines(bytes),
-        ".xlsx" => extract_xlsx_lines(bytes),
-        ".zip" => extract_zip_archive_lines(bytes, 2),
-        ".pdf" => {
-            let (pdf_lines, _truncated) = extract_pdf_lines(bytes, pdf_timeout_seconds, on_pdf_progress);
-            if let Some(pl) = &pdf_lines {
-                low_confidence_pdf = !pdf_extraction_looks_reliable(pl);
-            }
-            pdf_lines
-        }
-        ".rtf" => extract_rtf_lines(bytes),
-        _ => {
+    // Binary sniffing only applies to the plain-text fallback path - every
+    // registered format extractor above parses its own container format
+    // regardless of NUL bytes appearing incidentally in binary structure
+    // (a real DOCX/PDF/etc. always has them).
+    let extractor: &dyn Extractor = match registered {
+        Some(e) => e,
+        None => {
             if looks_binary(bytes) {
                 return Err(ExtractLinesError::Binary);
             }
-            Some(split_lines(&decode_text(bytes)))
+            &PlainTextExtractor
         }
     };
 
+    let lines = extractor.extract(bytes, pdf_timeout_seconds, on_pdf_progress);
     match lines {
-        Some(l) if !l.is_empty() => Ok(ExtractedLines { lines: l, low_confidence_pdf }),
+        Some(l) if !l.is_empty() => {
+            let low_confidence_pdf = extractor.low_confidence(&l);
+            Ok(ExtractedLines { lines: l, low_confidence_pdf })
+        }
         _ => Err(ExtractLinesError::Failed),
     }
 }

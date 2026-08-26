@@ -323,6 +323,21 @@ impl NativeSearchEngine {
         Ok(())
     }
 
+    /// `filename`/`title` are boosted over `body` (epic #6 §48 - "users
+    /// should generally see the most relevant result before a weak
+    /// incidental match"; a term appearing in a file's own name/title is
+    /// a stronger relevance signal than the same term appearing once
+    /// somewhere in its body text). Shared by [`search`](Self::search) and
+    /// [`search_fuzzy`](Self::search_fuzzy) so the two query modes can't
+    /// silently diverge on which fields matter or by how much.
+    fn build_parser(&self) -> QueryParser {
+        let mut parser =
+            QueryParser::for_index(&self.index, vec![self.fields.filename, self.fields.title, self.fields.body]);
+        parser.set_field_boost(self.fields.filename, 3.0);
+        parser.set_field_boost(self.fields.title, 2.0);
+        parser
+    }
+
     pub fn search(
         &self,
         query_text: &str,
@@ -332,30 +347,64 @@ impl NativeSearchEngine {
         if query_text.trim().is_empty() {
             return Err(NsError::invalid_argument("query must not be empty"));
         }
+        let query = self.build_parser().parse_query(query_text)?;
+        self.run_parsed_query(query.as_ref(), limit, cancel)
+    }
+
+    /// Fuzzy (edit-distance) search - not exposed in the app UI (the raw-
+    /// query panel that would have hosted it was trimmed as redundant
+    /// once Run Search started routing through the trigram index
+    /// automatically - see docs/issue-6-phase-1.md), but a real, tested
+    /// library capability distinct from `search`'s exact/boolean/phrase/
+    /// prefix querying: fields must be explicitly registered fuzzy via
+    /// `QueryParser::set_field_fuzzy` for a plain term to match with
+    /// tolerance - there's no per-term `~N` query-text syntax for this in
+    /// Tantivy's grammar the way Lucene has (`~` in query text means
+    /// phrase *slop*, not fuzzy distance - verified against
+    /// `tantivy-query-grammar-0.26.0`'s own parser, not assumed).
+    pub fn search_fuzzy(
+        &self,
+        query_text: &str,
+        distance: u8,
+        limit: usize,
+        cancel: Option<&CancellationFlag>,
+    ) -> NsResult<Vec<SearchHit>> {
+        if query_text.trim().is_empty() {
+            return Err(NsError::invalid_argument("query must not be empty"));
+        }
+        let mut parser = self.build_parser();
+        parser.set_field_fuzzy(self.fields.filename, true, distance, true);
+        parser.set_field_fuzzy(self.fields.title, true, distance, true);
+        parser.set_field_fuzzy(self.fields.body, true, distance, true);
+        let query = parser.parse_query(query_text)?;
+        self.run_parsed_query(query.as_ref(), limit, cancel)
+    }
+
+    fn run_parsed_query(
+        &self,
+        query: &dyn tantivy::query::Query,
+        limit: usize,
+        cancel: Option<&CancellationFlag>,
+    ) -> NsResult<Vec<SearchHit>> {
         if let Some(flag) = cancel {
             if flag.is_cancelled() {
                 return Err(NsError::cancelled("search was cancelled before it started"));
             }
         }
         let searcher = self.reader.searcher();
-        let parser = QueryParser::for_index(
-            &self.index,
-            vec![self.fields.filename, self.fields.title, self.fields.body],
-        );
-        let query = parser.parse_query(query_text)?;
         let base_collector = TopDocs::with_limit(limit).order_by_score();
         // `?` here (not a manual map_err) so `NsError::from(TantivyError)`
         // gets a chance to recognize CANCELLED_SENTINEL and report
         // NsStatus::Cancelled instead of a generic index error.
         let top_docs = match cancel {
             Some(flag) => searcher.search(
-                &query,
+                query,
                 &CancellableCollector {
                     inner: base_collector,
                     flag: flag.clone(),
                 },
             )?,
-            None => searcher.search(&query, &base_collector)?,
+            None => searcher.search(query, &base_collector)?,
         };
 
         let mut hits = Vec::with_capacity(top_docs.len());
@@ -520,6 +569,94 @@ mod tests {
             size: 42,
             body,
         }
+    }
+
+    /// Prefix/wildcard support turned out narrower than the grammar's own
+    /// doc comments suggest - found empirically here, not assumed from
+    /// reading source. A bare single-word `term*` (quoted or not, with or
+    /// without an explicit field prefix) is NOT a prefix query in this
+    /// Tantivy version at all: `generate_literals_for_str` only builds a
+    /// `PhrasePrefixQuery` when tokenizing the phrase produces 2+ tokens
+    /// (`tantivy-0.26.1/src/query/query_parser/query_parser.rs`) - a
+    /// single-token quoted phrase-prefix (`"engin"*`) is a hard
+    /// `QueryParserError` ("does not produce at least two terms"), and a
+    /// bare unquoted `engin*` silently becomes an ordinary exact-term
+    /// query for the literal text "engin" (0 results against "engine"/
+    /// "engineering" tokens, no error at all - the `*` never reaches the
+    /// prefix-flag path for an unquoted single word). Only a *multi-word*
+    /// quoted phrase ending in `*` (`"the engin"*`) actually produces a
+    /// working prefix match, on its last term only.
+    #[test]
+    fn search_supports_prefix_wildcard_on_multi_word_phrases_only() {
+        let dir = tempdir().unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        engine.index_document(sample("1", "engineering report on the engine mount")).unwrap();
+        engine.index_document(sample("2", "unrelated corrosion notes")).unwrap();
+        engine.commit().unwrap();
+
+        let hits = engine.search("\"the engin\"*", 10, None).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "1");
+
+        // The single-word forms confirmed NOT to work, exactly as documented
+        // above - asserted here (not just described) so a future Tantivy
+        // upgrade that changes this behavior gets caught by a failing test,
+        // not stale documentation.
+        assert!(engine.search("engin*", 10, None).unwrap().is_empty(), "bare single-word prefix silently matches nothing");
+        assert!(engine.search("\"engin\"*", 10, None).is_err(), "quoted single-word phrase-prefix is a hard query error");
+    }
+
+    #[test]
+    fn search_fuzzy_tolerates_a_typo_plain_search_would_miss() {
+        let dir = tempdir().unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        engine.index_document(sample("1", "torque spec deviation on engine mount")).unwrap();
+        engine.commit().unwrap();
+
+        // "torqe" (missing a character) - a plain search must not match it,
+        // proving this isn't accidentally already fuzzy by default.
+        assert!(engine.search("torqe", 10, None).unwrap().is_empty());
+
+        let hits = engine.search_fuzzy("torqe", 1, 10, None).unwrap();
+        assert_eq!(hits.len(), 1, "distance-1 fuzzy search must tolerate a single missing character");
+        assert_eq!(hits[0].id, "1");
+    }
+
+    #[test]
+    fn search_ranks_filename_match_above_body_only_match() {
+        let dir = tempdir().unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        engine
+            .index_document(DocumentInput {
+                id: "body-only",
+                path: "C:\\docs\\unrelated.txt",
+                filename: "unrelated.txt",
+                extension: ".txt",
+                title: "",
+                modified_unix: 0,
+                created_unix: 0,
+                size: 1,
+                body: "a report that happens to mention torque once in passing",
+            })
+            .unwrap();
+        engine
+            .index_document(DocumentInput {
+                id: "filename-match",
+                path: "C:\\docs\\torque.txt",
+                filename: "torque.txt",
+                extension: ".txt",
+                title: "",
+                modified_unix: 0,
+                created_unix: 0,
+                size: 1,
+                body: "nothing else relevant here",
+            })
+            .unwrap();
+        engine.commit().unwrap();
+
+        let hits = engine.search("torque", 10, None).unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].id, "filename-match", "a filename match should outrank a body-only match");
     }
 
     #[test]

@@ -156,6 +156,7 @@ pub struct AppState {
     // ---- Performance and robustness ----
     pub parallel: Signal<bool>,
     pub throttle_limit: Signal<i32>,
+    pub heavy_throttle_limit: Signal<i32>,
     pub cache_file_path: Signal<String>,
     pub dry_run: Signal<bool>,
     pub pdf_timeout_seconds: Signal<i32>,
@@ -266,6 +267,7 @@ impl AppState {
 
             parallel: use_signal(|| false),
             throttle_limit: use_signal(search_core::models::default_throttle_limit),
+            heavy_throttle_limit: use_signal(search_core::models::default_heavy_throttle_limit),
             cache_file_path: use_signal(String::new),
             dry_run: use_signal(|| false),
             pdf_timeout_seconds: use_signal(|| 15),
@@ -399,6 +401,7 @@ impl AppState {
             open_report_when_done: *self.open_report_when_done.read(),
             parallel: *self.parallel.read(),
             throttle_limit: *self.throttle_limit.read(),
+            heavy_throttle_limit: *self.heavy_throttle_limit.read(),
             cache_file_path: if cache_path_raw.is_empty() { None } else { Some(cache_path_raw) },
             dry_run: *self.dry_run.read(),
             max_retries: *self.max_retries.read(),

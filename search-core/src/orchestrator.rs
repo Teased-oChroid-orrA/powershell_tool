@@ -50,6 +50,17 @@ fn file_extension_lower(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// Classifies an extension as CPU/memory-heavy extraction (ZIP/OOXML/PDF
+/// parsing) vs. everything else - epic #6 §19's "different resource
+/// classes" ask, backing the parallel branch's two separate semaphores
+/// (`settings.heavy_throttle_limit` vs `settings.throttle_limit`). `.rtf`
+/// stays "light" - its extractor is plain regex tag-stripping over
+/// already-decoded text, not a container format to parse open, closer in
+/// cost to plain-text reading than to ZIP/OOXML/PDF parsing.
+fn is_heavy_extension(ext: &str) -> bool {
+    matches!(ext, ".pdf" | ".docx" | ".pptx" | ".xlsx" | ".zip")
+}
+
 fn report_progress(
     progress: &Option<mpsc::UnboundedSender<SearchProgressReport>>,
     files_completed: i32,
@@ -232,8 +243,8 @@ async fn run_over_candidates(
     let mut cancelled = false;
 
     if settings.parallel && !to_process.is_empty() {
-        let throttle_limit = settings.throttle_limit.max(1) as usize;
-        let semaphore = Arc::new(Semaphore::new(throttle_limit));
+        let light_semaphore = Arc::new(Semaphore::new(settings.throttle_limit.max(1) as usize));
+        let heavy_semaphore = Arc::new(Semaphore::new(settings.heavy_throttle_limit.max(1) as usize));
 
         // Lightweight ticker so in-flight elapsed times keep updating even
         // between file completions - this is what makes a slow PDF visibly
@@ -266,7 +277,11 @@ async fn run_over_candidates(
 
         let mut join_set: JoinSet<FileSearchResult> = JoinSet::new();
         for file in to_process {
-            let sem = Arc::clone(&semaphore);
+            let sem = if is_heavy_extension(&file_extension_lower(&file.path)) {
+                Arc::clone(&heavy_semaphore)
+            } else {
+                Arc::clone(&light_semaphore)
+            };
             let settings = Arc::clone(&settings);
             let match_state = Arc::clone(&match_state);
             let inflight = Arc::clone(&inflight);
@@ -540,6 +555,16 @@ async fn process_one_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_heavy_extension_classifies_container_formats_only() {
+        for ext in [".pdf", ".docx", ".pptx", ".xlsx", ".zip"] {
+            assert!(is_heavy_extension(ext), "{ext} should be heavy");
+        }
+        for ext in [".txt", ".log", ".rtf", ".md", ""] {
+            assert!(!is_heavy_extension(ext), "{ext} should be light");
+        }
+    }
 
     fn settings_for(dir: &std::path::Path, filters: &[&str]) -> SearchSettings {
         SearchSettings {

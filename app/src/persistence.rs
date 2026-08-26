@@ -42,6 +42,8 @@ pub struct PersistedState {
     pub export_json: bool,
     pub parallel: bool,
     pub throttle_limit: Option<i32>,
+    #[serde(default)]
+    pub heavy_throttle_limit: Option<i32>,
     pub cache_file_path: String,
     pub dry_run: bool,
     pub pdf_timeout_seconds: Option<i32>,
@@ -146,6 +148,9 @@ fn apply_settings_fields(state: &mut AppState, persisted: &PersistedState) {
     if let Some(v) = persisted.throttle_limit {
         state.throttle_limit.set(v);
     }
+    if let Some(v) = persisted.heavy_throttle_limit {
+        state.heavy_throttle_limit.set(v);
+    }
     state.cache_file_path.set(persisted.cache_file_path);
     state.dry_run.set(persisted.dry_run);
     if let Some(v) = persisted.pdf_timeout_seconds {
@@ -220,6 +225,7 @@ pub fn build_snapshot(state: &AppState, dark_theme: bool) -> PersistedState {
         export_json: *state.export_json.read(),
         parallel: *state.parallel.read(),
         throttle_limit: Some(*state.throttle_limit.read()),
+        heavy_throttle_limit: Some(*state.heavy_throttle_limit.read()),
         cache_file_path: state.cache_file_path.read().clone(),
         dry_run: *state.dry_run.read(),
         pdf_timeout_seconds: Some(*state.pdf_timeout_seconds.read()),

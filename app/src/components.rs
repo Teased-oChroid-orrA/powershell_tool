@@ -423,12 +423,26 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                         }
                         span { "Parallel processing" }
                     }
-                    label { class: "field",
-                        span { "Parallel throttle limit" }
-                        input {
-                            r#type: "number", min: "1",
-                            value: "{state.throttle_limit}",
-                            oninput: move |e| { if let Ok(v) = e.value().parse::<i32>() { state.throttle_limit.set(v.max(1)); } },
+                    // Both throttle limits are meaningless while parallel
+                    // processing is off (sequential processing has no
+                    // concurrency to bound) - shown only when the
+                    // prerequisite checkbox above is on.
+                    if *state.parallel.read() {
+                        label { class: "field",
+                            span { "Throttle limit (light files: txt/log/etc.)" }
+                            input {
+                                r#type: "number", min: "1",
+                                value: "{state.throttle_limit}",
+                                oninput: move |e| { if let Ok(v) = e.value().parse::<i32>() { state.throttle_limit.set(v.max(1)); } },
+                            }
+                        }
+                        label { class: "field",
+                            span { "Throttle limit (heavy files: PDF/DOCX/PPTX/XLSX/ZIP)" }
+                            input {
+                                r#type: "number", min: "1",
+                                value: "{state.heavy_throttle_limit}",
+                                oninput: move |e| { if let Ok(v) = e.value().parse::<i32>() { state.heavy_throttle_limit.set(v.max(1)); } },
+                            }
                         }
                     }
                     label { class: "field",

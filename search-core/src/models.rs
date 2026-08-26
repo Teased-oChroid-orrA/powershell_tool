@@ -67,6 +67,18 @@ pub struct SearchSettings {
 
     pub parallel: bool,
     pub throttle_limit: i32,
+    /// Separate concurrency limit for CPU/memory-heavier extraction
+    /// (`.pdf`/`.docx`/`.pptx`/`.xlsx`/`.zip` - see
+    /// `orchestrator::is_heavy_extension`) from `throttle_limit`, which
+    /// now governs everything else (plain text, `.rtf`, ...) - epic #6
+    /// §19: "TXT/LOG processing should not necessarily compete with large
+    /// PDF extraction under the same limits." A folder with a handful of
+    /// large PDFs mixed into thousands of small log files no longer lets
+    /// the PDFs' extraction cost starve the log files' throughput (or vice
+    /// versa - a huge burst of light files no longer queues behind a
+    /// separate, smaller heavy-format limit either), since each class
+    /// gets its own semaphore.
+    pub heavy_throttle_limit: i32,
 
     pub cache_file_path: Option<String>,
     pub dry_run: bool,
@@ -94,6 +106,18 @@ pub fn default_throttle_limit() -> i32 {
     ((cores * 2) as i32).clamp(4, 32)
 }
 
+/// Default concurrency limit for heavy-format extraction
+/// (`heavy_throttle_limit`) - closer to the raw core count (not 2x, like
+/// the light-format default above) since ZIP/OOXML/PDF parsing is more
+/// CPU/memory-bound per file than plain-text reading is, so running many
+/// more of them at once than there are cores buys little real throughput
+/// while multiplying peak memory. Clamped to [2, 16] - a smaller ceiling
+/// than the light default's [4, 32], deliberately, for the same reason.
+pub fn default_heavy_throttle_limit() -> i32 {
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    (cores as i32).clamp(2, 16)
+}
+
 impl Default for SearchSettings {
     fn default() -> Self {
         Self {
@@ -119,6 +143,7 @@ impl Default for SearchSettings {
             open_report_when_done: false,
             parallel: false,
             throttle_limit: default_throttle_limit(),
+            heavy_throttle_limit: default_heavy_throttle_limit(),
             cache_file_path: None,
             dry_run: false,
             max_retries: 3,
