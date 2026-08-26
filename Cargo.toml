@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["native-search", "search-core", "app"]
+members = ["native-search", "search-core", "app", "cli"]
 
 # Moved here from native-search/Cargo.toml: Cargo ignores [profile.*]
 # sections in non-root workspace members. panic="unwind" (not "abort") is
@@ -17,3 +17,9 @@ panic = "unwind"
 # for the current port status). src/TextInFilesSearch(.Core)/ (the C#/WinUI
 # app) stays in the repo, untouched, as a working reference during the
 # transition - same treatment this repo already gives powershell/.
+# cli/ (issue #6 §60) is a second, independent consumer of search-core -
+# proof search-core is actually usable without Dioxus, not just
+# theoretically GUI-free. A separate crate rather than a `[[bin]]` in
+# search-core itself so search-core's own [dependencies] stay exactly what
+# the library needs (no clap/arg-parsing pulled into every consumer,
+# including app/).

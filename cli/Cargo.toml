@@ -1,0 +1,27 @@
+[package]
+name = "search-cli"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Headless entry point for search-core (issue #6 §60 - "make it possible
+# to have Dioxus GUI / CLI / future API, all built on the same core, and
+# it also makes automated testing easier"). Proves search-core is
+# actually usable without Dioxus, not just theoretically GUI-free - the
+# whole reason this crate is a separate workspace member from search-core
+# itself (see the root Cargo.toml's comment) rather than a `[[bin]]`
+# there, so search-core's own [dependencies] stay exactly what the
+# library needs.
+[[bin]]
+name = "search-cli"
+path = "src/main.rs"
+
+[dependencies]
+search-core = { path = "../search-core" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio-util = "0.7"
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+
+[dev-dependencies]
+tempfile = "3"
