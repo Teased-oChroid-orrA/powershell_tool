@@ -614,18 +614,24 @@ impl AppState {
             let mut run_settings = base_settings.clone();
             run_settings.search_path = root.clone();
 
-            // Index-first query routing (issue #6 Phase 1) - a trigram
-            // candidate query is a safe superset filter for every match
-            // mode except regex (see native-search's `trigram_candidate_paths`
-            // doc comment for the full reasoning), so this can narrow the
-            // file list before the real line-scan for AnyLine/AllInFile/
-            // Proximity/whole-word alike, not just plain literal mode.
-            // `None` (regex mode, an empty/never-built index, or any
-            // filter too short to have trigrams) always means "fall back
-            // to the unchanged full scan" - never a reason to report an
-            // empty result with confidence.
-            let query_candidates: Option<Vec<String>> = if !run_settings.use_regex && *self.index_for_fast_search.read() {
+            // Index-first query routing (issue #6 Phase 1, extended by
+            // §24 "Regex Candidate Filtering"). A trigram candidate query
+            // is a safe superset filter for every match mode (see
+            // native-search's `trigram_candidate_paths` doc comment), so
+            // this can narrow the file list before the real line-scan for
+            // AnyLine/AllInFile/Proximity/whole-word alike, not just plain
+            // literal mode. Regex mode gets the same narrowing IF
+            // `regex_literals::required_literal_chunks` can extract a safe
+            // literal requirement from every filter's pattern - see that
+            // module's doc comment for exactly what it will and won't
+            // attempt. `None` (an empty/never-built index, a regex pattern
+            // with no safely-extractable literal, or any filter/chunk too
+            // short to have trigrams) always means "fall back to the
+            // unchanged full scan" - never a reason to report an empty
+            // result with confidence.
+            let query_candidates: Option<Vec<String>> = if *self.index_for_fast_search.read() {
                 let index_dir = native_index::index_directory(root);
+                let use_regex = run_settings.use_regex;
                 let filters = run_settings.filters.clone();
                 tokio::task::spawn_blocking(move || -> Option<Vec<String>> {
                     native_index::ensure_index_directory_exists(&index_dir).ok()?;
@@ -633,7 +639,14 @@ impl AppState {
                     if engine.num_docs() == 0 {
                         return None;
                     }
-                    engine.trigram_candidate_paths(&filters).ok().flatten()
+                    if use_regex {
+                        let chunk_sets: Option<Vec<Vec<String>>> =
+                            filters.iter().map(|f| search_core::regex_literals::required_literal_chunks(f)).collect();
+                        let chunk_sets = chunk_sets?;
+                        engine.trigram_candidate_paths_for_chunk_sets(&chunk_sets).ok().flatten()
+                    } else {
+                        engine.trigram_candidate_paths(&filters).ok().flatten()
+                    }
                 })
                 .await
                 .unwrap_or(None)

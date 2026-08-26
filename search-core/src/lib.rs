@@ -6,4 +6,5 @@ pub mod matching;
 pub mod models;
 pub mod native_index;
 pub mod orchestrator;
+pub mod regex_literals;
 pub mod report;

@@ -463,6 +463,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn regex_mode_index_first_routing_agrees_with_full_scan() {
+        // Same shape as `index_first_routing_agrees_with_full_scan`, but
+        // exercises the §24 "regex candidate filtering" path: the filter
+        // is a regex pattern, narrowed via
+        // `regex_literals::required_literal_chunks("eng.*mount")` =>
+        // ["eng", "mount"] rather than the plain-literal trigram path.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "torque spec deviation on engine mount\n").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "unrelated corrosion inspection notes\n").unwrap();
+        std::fs::write(dir.path().join("c.txt"), "engine reported separately from any mount reference\n").unwrap();
+
+        let mut exclude_folders = Vec::new();
+        ensure_index_folder_excluded(&mut exclude_folders);
+        let settings = crate::models::SearchSettings {
+            search_path: dir.path().to_string_lossy().into_owned(),
+            output_folder: dir.path().to_string_lossy().into_owned(),
+            filters: vec!["eng.*mount".to_string()],
+            use_regex: true,
+            exclude_folders,
+            ..Default::default()
+        };
+
+        let full_scan = crate::orchestrator::run(settings.clone(), None, tokio_util::sync::CancellationToken::new())
+            .await
+            .unwrap();
+
+        let index_dir = index_directory(&dir.path().to_string_lossy());
+        ensure_index_directory_exists(&index_dir).unwrap();
+        let engine = NativeSearchEngine::open_or_create(&index_dir).unwrap();
+        let build_outcome =
+            build_or_update_corpus_index(&settings, &engine, &tokio_util::sync::CancellationToken::new(), None)
+                .await
+                .unwrap();
+        assert_eq!(build_outcome.indexed_count, 3);
+
+        let chunk_sets: Vec<Vec<String>> = settings
+            .filters
+            .iter()
+            .map(|f| crate::regex_literals::required_literal_chunks(f).expect("this pattern must extract chunks"))
+            .collect();
+        assert_eq!(chunk_sets, vec![vec!["eng".to_string(), "mount".to_string()]]);
+
+        let candidates = engine.trigram_candidate_paths_for_chunk_sets(&chunk_sets).unwrap().expect("must narrow");
+        assert_eq!(candidates.len(), 2, "a.txt and c.txt contain both chunks, b.txt contains neither");
+
+        let index_first =
+            crate::orchestrator::run_candidates(&candidates, settings, None, tokio_util::sync::CancellationToken::new())
+                .await
+                .unwrap();
+
+        let mut full_hit_files: Vec<&str> = full_scan
+            .file_results
+            .iter()
+            .filter(|r| r.status == FileSearchStatus::Hit)
+            .map(|r| r.full_name.as_str())
+            .collect();
+        let mut narrowed_hit_files: Vec<&str> = index_first
+            .file_results
+            .iter()
+            .filter(|r| r.status == FileSearchStatus::Hit)
+            .map(|r| r.full_name.as_str())
+            .collect();
+        full_hit_files.sort();
+        narrowed_hit_files.sort();
+        assert_eq!(full_hit_files, narrowed_hit_files, "regex index-first must find exactly the same hit files as a full scan");
+    }
+
+    #[tokio::test]
     async fn full_pipeline_orchestrator_run_then_index_then_native_search_finds_hit() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("report.txt"), "quarterly torque figures\nnothing else here\n").unwrap();

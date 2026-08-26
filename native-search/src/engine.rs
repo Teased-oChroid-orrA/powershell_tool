@@ -24,6 +24,22 @@ use tantivy::{
 
 use crate::error::{NsError, NsResult, NsStatus, CANCELLED_SENTINEL};
 
+/// Builds "every one of `trigrams` must be present in `field`" as a single
+/// boxed query - shared by `trigram_candidate_paths` (one filter's own
+/// trigrams) and `trigram_candidate_paths_for_chunk_sets` (the union of
+/// several literal chunks' trigrams for one regex filter). Not a method:
+/// only needs a `Field`, not `&self`.
+fn must_all_trigrams(field: tantivy::schema::Field, trigrams: Vec<String>) -> Box<dyn Query> {
+    let must_clauses: Vec<(Occur, Box<dyn Query>)> = trigrams
+        .into_iter()
+        .map(|t| {
+            let term_query: Box<dyn Query> = Box::new(TermQuery::new(Term::from_field_text(field, &t), IndexRecordOption::Basic));
+            (Occur::Must, term_query)
+        })
+        .collect();
+    Box::new(BooleanQuery::new(must_clauses))
+}
+
 /// A cheaply-cloneable flag a caller can hand to
 /// [`NativeSearchEngine::search`] and set from another thread to abort an
 /// in-flight search (issue #2 Section 17). Checked before the search starts
@@ -475,19 +491,53 @@ impl NativeSearchEngine {
             if trigrams.is_empty() {
                 return Ok(None);
             }
-            let must_clauses: Vec<(Occur, Box<dyn Query>)> = trigrams
-                .into_iter()
-                .map(|t| {
-                    let term_query: Box<dyn Query> =
-                        Box::new(TermQuery::new(Term::from_field_text(self.fields.trigram, &t), IndexRecordOption::Basic));
-                    (Occur::Must, term_query)
-                })
-                .collect();
-            let per_filter: Box<dyn Query> = Box::new(BooleanQuery::new(must_clauses));
-            per_filter_queries.push((Occur::Should, per_filter));
+            per_filter_queries.push((Occur::Should, must_all_trigrams(self.fields.trigram, trigrams)));
         }
 
-        let query = BooleanQuery::new(per_filter_queries);
+        self.run_candidate_query(BooleanQuery::new(per_filter_queries))
+    }
+
+    /// Same safe-superset trigram narrowing as [`trigram_candidate_paths`](Self::trigram_candidate_paths),
+    /// but for regex-mode filters (issue #6 §24 "Regex Candidate
+    /// Filtering"). A regex *pattern* isn't itself a literal string, so
+    /// there's no single "trigrams of the filter" to require - instead
+    /// each entry in `chunk_sets` is one filter's set of literal
+    /// substrings that `search_core::regex_literals::required_literal_chunks`
+    /// has already proven are guaranteed to appear (contiguously,
+    /// independently of each other) in any real match of that filter's
+    /// pattern. All of a filter's chunks' trigrams are required (AND);
+    /// filters are OR'd together, same "does the file contain filter X
+    /// somewhere" semantics `trigram_candidate_paths` uses.
+    ///
+    /// Returns `Ok(None)` if `chunk_sets` is empty, any filter has zero
+    /// chunks, or any chunk is too short to produce trigrams - the same
+    /// "always fall back to an unfiltered full scan rather than guess"
+    /// contract as the plain-filter version.
+    pub fn trigram_candidate_paths_for_chunk_sets(&self, chunk_sets: &[Vec<String>]) -> NsResult<Option<Vec<String>>> {
+        if chunk_sets.is_empty() {
+            return Ok(None);
+        }
+
+        let mut per_filter_queries: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(chunk_sets.len());
+        for chunks in chunk_sets {
+            if chunks.is_empty() {
+                return Ok(None);
+            }
+            let mut all_trigrams: Vec<String> = Vec::new();
+            for chunk in chunks {
+                let trigrams = self.trigrams_of(chunk);
+                if trigrams.is_empty() {
+                    return Ok(None);
+                }
+                all_trigrams.extend(trigrams);
+            }
+            per_filter_queries.push((Occur::Should, must_all_trigrams(self.fields.trigram, all_trigrams)));
+        }
+
+        self.run_candidate_query(BooleanQuery::new(per_filter_queries))
+    }
+
+    fn run_candidate_query(&self, query: BooleanQuery) -> NsResult<Option<Vec<String>>> {
         let searcher = self.reader.searcher();
         let doc_addrs = searcher
             .search(&query, &DocSetCollector)
@@ -745,6 +795,61 @@ mod tests {
             engine.trigram_candidate_paths(&["torque".to_string(), "ab".to_string()]).unwrap(),
             None,
             "one short filter must fall back the whole query, not silently ignore that filter"
+        );
+    }
+
+    #[test]
+    fn chunk_set_candidates_find_a_document_matching_all_chunks_of_one_regex_filter() {
+        // Mirrors `search_core::regex_literals::required_literal_chunks("foo.*bar")`
+        // => vec!["foo", "bar"] - a real match must contain both chunks
+        // somewhere, not necessarily adjacent.
+        let dir = tempdir().unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        engine.index_document(sample("1", "foo appears here, and bar too")).unwrap();
+        engine.index_document(sample("2", "only foo here, no b-word")).unwrap();
+        engine.index_document(sample("3", "unrelated content entirely")).unwrap();
+        engine.commit().unwrap();
+
+        let paths = engine
+            .trigram_candidate_paths_for_chunk_sets(&[vec!["foo".to_string(), "bar".to_string()]])
+            .unwrap()
+            .unwrap();
+        assert_eq!(paths.len(), 1, "only the doc containing BOTH chunks is a candidate");
+    }
+
+    #[test]
+    fn chunk_set_candidates_or_across_regex_filters() {
+        let dir = tempdir().unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        engine.index_document(sample("1", "torque spec here")).unwrap();
+        engine.index_document(sample("2", "corrosion inspection notes")).unwrap();
+        engine.index_document(sample("3", "completely unrelated")).unwrap();
+        engine.commit().unwrap();
+
+        let paths = engine
+            .trigram_candidate_paths_for_chunk_sets(&[vec!["torque".to_string()], vec!["corrosion".to_string()]])
+            .unwrap()
+            .unwrap();
+        assert_eq!(paths.len(), 2, "doc 3 (neither regex filter's chunks) must not be a candidate");
+    }
+
+    #[test]
+    fn chunk_set_candidates_fall_back_to_none_when_any_filter_has_no_usable_chunks() {
+        let dir = tempdir().unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        engine.index_document(sample("1", "torque spec")).unwrap();
+        engine.commit().unwrap();
+
+        assert_eq!(engine.trigram_candidate_paths_for_chunk_sets(&[]).unwrap(), None, "empty chunk-set list");
+        assert_eq!(
+            engine.trigram_candidate_paths_for_chunk_sets(&[vec![]]).unwrap(),
+            None,
+            "a filter with zero chunks must fall back the whole query"
+        );
+        assert_eq!(
+            engine.trigram_candidate_paths_for_chunk_sets(&[vec!["ab".to_string()]]).unwrap(),
+            None,
+            "a chunk shorter than 3 chars has no trigrams"
         );
     }
 
