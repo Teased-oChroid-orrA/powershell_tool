@@ -350,12 +350,18 @@ cd native-search && cargo bench --bench indexing_and_search
 cd native-search && cargo bench --bench trigram_candidate_reduction
 cd search-core && cargo bench --bench discovery_and_extraction
 cd search-core && cargo bench --bench concurrent_extraction
+cd search-core && cargo bench --bench regex_query_shapes_at_scale
 ```
 
-Fixtures for the last two live in `search-core/benches/data/`, committed
-to the repo like the rest of that directory (see its `README.md` for
-exact source/provenance); both benchmarks skip themselves with a message
-if the fixtures aren't present rather than failing.
+Fixtures for `discovery_and_extraction`/`concurrent_extraction` live in
+`search-core/benches/data/`, committed to the repo like the rest of that
+directory (see its `README.md` for exact source/provenance); both
+benchmarks skip themselves with a message if the fixtures aren't present
+rather than failing. `regex_query_shapes_at_scale` (issue #9's Level-3
+justification check - see `docs/issue-9-status.md`) generates its own
+110,000-file, 2,000-directory synthetic corpus under the OS temp dir at
+run time and deletes it afterward; no fixture setup needed, but expect it
+to take ~1-2 minutes (corpus generation plus ten full 110,000-file scans).
 
 No special setup beyond what `cargo build`/`cargo test` already need (see
 `docs/ffi.md`). Numbers will vary machine to machine — that's expected and

@@ -79,3 +79,7 @@ harness = false
 [[bench]]
 name = "concurrent_extraction"
 harness = false
+
+[[bench]]
+name = "regex_query_shapes_at_scale"
+harness = false

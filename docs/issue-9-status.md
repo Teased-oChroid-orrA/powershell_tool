@@ -9,12 +9,14 @@ automaton → positional index execution → cost-based planner), and this
 report leans on issue #8's real, measured numbers rather than re-deriving
 them.
 
-**Bottom line so far: three small, evidence-backed pieces were worth
-taking from the epic immediately; the large architectural ask (Level 3
-automaton/positional execution, cost-based planner) is not yet justified
-by any measured bottleneck and is deferred pending a scale-specific
-benchmark** (task tracked separately - see "Deferred: Level 3 at real
-scale" below).
+**Bottom line: three small, evidence-backed pieces were worth taking from
+the epic immediately; the large architectural ask (Level 3
+automaton/positional execution, cost-based planner) was benchmarked at
+the user's real reported scale (thousands of folders, 100,000+ files) and
+rejected - the matching stage it would optimize is a small fraction of
+total wall-clock time at that scale, dominated instead by per-file
+processing overhead** - see "Level 3 at real scale - benchmarked,
+rejected" below for the actual numbers.
 
 ## What was implemented this pass
 
@@ -115,29 +117,96 @@ style.
 | Batch queries | App runs one search at a time (desktop tool, single-user, one click = one run) | Shared posting/decompression access across concurrent queries | Unmeasured, doesn't match this app's actual usage pattern | Medium | **REJECT** - doesn't match this app's UX model |
 | Other: ReDoS safety | Investigated this pass (see "2." above) - already bounded by fancy-regex's default 1,000,000-step backtrack limit | N/A | N/A - already safe | Done (docs + regression test only) | **Done, no further work** |
 
-## Deferred: Level 3 at real scale
+## Level 3 at real scale - benchmarked, rejected
 
 The user's real usage profile, given for this evaluation: **thousands of
 folders, 100,000+ files** - substantially larger than every benchmark this
-investigation (issue #8 and this one) has run so far (largest to date:
+investigation (issue #8 and this one) had run so far (previous largest:
 the 100K-file stress test, `docs/issue-6-phase-14.md`, and 5,000-document
-synthetic corpora for search-latency benchmarks). The direction agreed:
-if a scale-specific benchmark shows Level 3 (regex automaton/positional
+synthetic corpora for search-latency benchmarks). The agreed direction: if
+a scale-specific benchmark shows Level 3 (regex automaton/positional
 execution, cost-based planning) provides real benefit *without*
-regressing current speed at that scale, it's worth implementing - built
-and proven on a separate branch, merged only once confirmed safe. That
-benchmark has **not been run yet** - this section records the decision,
-not the result. See the follow-up work item for the actual measurement.
+regressing current speed at that scale, it's worth implementing on a
+separate branch, merged only once confirmed safe.
+
+**That benchmark was built and run.** `search-core/benches/regex_query_shapes_at_scale.rs`
+runs a real `orchestrator::run` (not an isolated function call) over a
+real 110,000-file, 2,000-directory corpus, across the epic's own §44
+benchmark-matrix query shapes (simple/rare/common/long literal, no-match,
+`foo.*bar`, `foo.{0,5}bar`, `(foo|bar)baz`, anchored regex, regex with no
+useful literal), each row also labeled with whether the existing
+mandatory-literal/trigram narrowing (`regex_literals.rs`) currently
+applies to it or not:
+
+```
+$ cargo bench -p search-core --bench regex_query_shapes_at_scale
+Corpus: 2000 directories, 55 files/dir, 40 lines/file.
+Wrote 110000 files in 12.9s.
+
+Query shape                                   narrowed?    elapsed   searched      hits
+simple literal                                     yes      6728ms     110000    110000
+rare literal                                       yes      6441ms     110000        22
+common literal                                     yes      7227ms     110000    110000
+long literal                                       yes      6360ms     110000       110
+no match                                           yes      6561ms     110000         0
+foo.*bar  (start.*finish)                          yes      6542ms     110000       550
+foo.{0,5}bar  (mid.{0,5}point)                     yes      6748ms     110000       734
+(foo|bar)baz  ((red|blue)flag)                      NO      7836ms     110000      1100
+anchored regex  (^SECTION)                         yes     12100ms     110000       367
+regex, no useful literal  (.{10,20})                NO      8862ms     110000    110000
+```
+
+**Verdict: REJECT. No headroom for Level 3 to help at this scale.**
+
+The decisive signal isn't any one row - it's that literal mode (5 rows,
+which never touches `fancy-regex` at all - see `matching.rs`'s own doc
+comment on why literal mode bypasses the regex engine entirely) and full
+regex-scan mode (the two `NO`-narrowed rows, genuinely doing a complete
+per-line regex evaluation of every one of 110,000 files with zero
+candidate-filtering) land in the *same* 6.3-8.9s band. If the matching
+engine - literal `contains`, a narrowed regex, or a completely
+un-narrowed full regex scan - were the bottleneck at this scale, these
+numbers would spread far apart; they don't. That means **per-file
+processing overhead (walk + open + read + close + extract, at
+`orchestrator.rs`'s current `throttle_limit: 8` concurrency) dominates
+total wall-clock time by a wide margin, and the matching stage - the only
+thing Level 3 touches - is a small fraction of it.** This is consistent
+with, not contradicting, issue #8's own numbers (discovery ~284K files/sec,
+plain-text extraction ~547K files/sec alone) - it's the combination of
+110,000 *separate real file* open/read/close operations plus orchestration
+under a concurrency cap that adds up, not raw throughput of any one stage.
+
+Practically: even the worst case tested here - a regex with **zero**
+indexed narrowing, scanning all 110,000 files' full content line-by-line -
+finishes in well under 10 seconds at this exact scale. Building a regex
+AST/automaton/positional-execution/cost-based-planner engine to shrink
+the *matching* portion of that further would shave a cost that isn't the
+dominant one to begin with. The one row that stands out (`anchored regex`
+at 12.1s, versus 6-9s for everything else) is most plausibly OS page-cache
+variance across ten consecutive full passes over the same 110,000 files
+(not a real anchoring-specific slowdown - `.{10,20}`, the very next row,
+came back down to 8.9s) - a single-trial run, not averaged, so treated as
+noise rather than a finding.
+
+**No separate branch, no automaton/positional-index implementation was
+started** - per the agreed condition ("if it doesn't impact current
+speeds... worthwhile... prove no regression... merge"), the benchmark
+this required came back showing no headroom to justify building it in the
+first place. If a future report shows *specific* file-open/read overhead
+being the actual pain point at this scale (a different question from
+issue #9's regex-execution scope), that would be a new, separate
+investigation - not Level 3.
 
 ## Everything else in the epic
 
 Consistent with issue #8's rejected-optimizations reasoning (same
-dependencies, same measured numbers, same app scale assumptions unless
-the 100k+-file benchmark above changes the picture): SIMD codec/
-compression bake-off (already covered by issue #8 - Tantivy's own
-`bitpacking`/`lz4_flex`/`zstd`), hot/warm/cold storage tiers, adaptive
-runtime learning, hardware-aware dispatch (already Tantivy's job) -
-**REJECT**, no evidence at this app's scale. Explainability/debug mode
-(§37) - **DEFER**, only relevant if a real planner gets built. Everything
-tagged **REJECT** above stays REJECT regardless of the Level-3 decision,
-since none of them depend on whether regex gets automaton-level execution.
+dependencies, same measured numbers) and now also confirmed by the
+100k+-file benchmark above: SIMD codec/compression bake-off (already
+covered by issue #8 - Tantivy's own `bitpacking`/`lz4_flex`/`zstd`),
+hot/warm/cold storage tiers, adaptive runtime learning, hardware-aware
+dispatch (already Tantivy's job) - **REJECT**, no evidence at this app's
+scale. Explainability/debug mode (§37), cost-based planner (§17) - **REJECT**,
+there is nothing for a planner to plan around once Level 3 itself is
+rejected. Everything tagged **REJECT** above stays REJECT independent of
+the Level-3 decision, since none of them depend on whether regex gets
+automaton-level execution.
