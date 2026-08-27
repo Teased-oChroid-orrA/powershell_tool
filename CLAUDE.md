@@ -123,8 +123,21 @@ search-core/                   Plain Rust library. Zero GUI dependency -
                                not regenerated).
 
 app/                            Dioxus desktop head. Keep this THIN - all
-                               business logic belongs in search-core.
-    src/main.rs                    Entry point. Launches via
+                               business logic belongs in search-core. Now
+                               a multi-tool dashboard shell ("Toolbench" -
+                               see docs/toolbench-status.md) with a left
+                               tool-switcher rail, not a single-purpose
+                               window - the search feature described
+                               throughout this file is the first, fully-
+                               functional tool inside it; a few more rail
+                               slots exist as inert "Coming soon"
+                               placeholders (Duplicate Finder/Batch
+                               Rename/Log Analyzer).
+    src/main.rs                    Entry point AND the dashboard shell
+                               itself (`App()`: `.rail` tool switcher +
+                               `.main` topbar/stage, `ToolId` enum,
+                               `PlaceholderTool` component, hand-written
+                               inline-SVG icons). Launches via
                                `dioxus_native::launch_cfg` (NOT
                                `dioxus::launch`/the "desktop" feature -
                                see "Why dioxus-native, not dioxus-desktop"

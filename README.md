@@ -7,6 +7,13 @@ entries, including nested zips), `.rtf`, `.pdf`, and dozens of other
 code/config/data extensions - producing a live-updating HTML report plus
 optional CSV/JSON/JSONL export.
 
+The GUI (`app/`) is a multi-tool dashboard shell ("Toolbench") - a left
+rail switches between tools, and this search feature is the first,
+fully-functional one inside it. A few more tool slots exist in the rail
+today as "Coming soon" placeholders (Duplicate Finder, Batch Rename, Log
+Analyzer) with no logic behind them yet - see
+[`docs/toolbench-status.md`](docs/toolbench-status.md).
+
 ## Project status: mid-migration, Rust is the active implementation
 
 This project is being migrated from **C#/WinUI 3** to **Rust/Dioxus**.
@@ -170,8 +177,9 @@ above - `rust-rewrite-status.md` (migration status), `architecture.md`
 (the original PowerShell → C# map), `benchmarking.md` (real, measured
 performance numbers with caveats), `search-semantics.md` (the formal
 matching contract), `deployment-rust.md` (build/publish/clean-machine
-verification for `app`/`cli`) and `deployment.md`/`offline-build.md`
-(the same for the C# reference app), and a series of
+verification for `app`/`cli`), `deployment.md`/`offline-build.md`
+(the same for the C# reference app), `toolbench-status.md` (the
+multi-tool dashboard shell `app/` is becoming), and a series of
 `issue-*-status.md`/`issue-6-phase-*.md` docs recording the
 evidence-driven investigation and decisions behind specific features and
 rejected optimizations - read those before assuming something wasn't

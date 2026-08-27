@@ -34,7 +34,7 @@ fn main() {
     let _ = dioxus::logger::init(dioxus::logger::tracing::Level::INFO);
 
     let window_attributes = dioxus::native::WindowAttributes::default()
-        .with_title("GS Engineering - Text Search")
+        .with_title("GS Engineering - Toolbench")
         .with_window_icon(load_window_icon());
     launch::run(App, window_attributes);
 }
@@ -116,6 +116,111 @@ enum ResizeTarget {
     Preview,
 }
 
+/// Which tool is showing in the dashboard's main stage - "Toolbench" (see
+/// `docs/toolbench-status.md`), the multi-tool shell this app is becoming.
+/// `Search` is the only one with real functionality behind it; the rest
+/// render `PlaceholderTool` until they're actually built. Deliberately a
+/// plain runtime `Signal`, not persisted - the mockup this was built from
+/// didn't demonstrate remembering the last-open tool across relaunch, and
+/// defaulting to `Search` (this app's one real tool) on every launch is
+/// the more predictable behavior anyway.
+#[derive(Clone, Copy, PartialEq)]
+enum ToolId {
+    Search,
+    Dupes,
+    Rename,
+    Logs,
+}
+
+/// Inline SVG icons, matching the artifact preview's set exactly (same
+/// stroke-based line-icon style as the rest of this app's chrome - see
+/// `docs/epic-ui-performance-and-design.md` for why this app avoids an
+/// icon-font/sprite-sheet dependency: a handful of hand-written paths
+/// costs nothing extra to bundle and stays crisp at any size). Each
+/// returns a full `<svg>` `Element` so callers can interpolate it
+/// directly (`{icon_search()}`) without any prop-passing ceremony.
+fn icon_search() -> Element {
+    rsx! {
+        svg { view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_linecap: "round", stroke_linejoin: "round",
+            circle { cx: "11", cy: "11", r: "7" }
+            path { d: "M21 21l-4.3-4.3" }
+        }
+    }
+}
+fn icon_dupes() -> Element {
+    rsx! {
+        svg { view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_linecap: "round", stroke_linejoin: "round",
+            rect { x: "9", y: "9", width: "12", height: "12", rx: "2" }
+            path { d: "M5 15V5a2 2 0 0 1 2-2h10" }
+        }
+    }
+}
+fn icon_rename() -> Element {
+    rsx! {
+        svg { view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_linecap: "round", stroke_linejoin: "round",
+            path { d: "M12 20h9" }
+            path { d: "M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" }
+        }
+    }
+}
+fn icon_logs() -> Element {
+    rsx! {
+        svg { view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_linecap: "round", stroke_linejoin: "round",
+            path { d: "M4 6h16M4 12h10M4 18h13" }
+        }
+    }
+}
+fn icon_plus() -> Element {
+    rsx! {
+        svg { view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_linecap: "round", stroke_linejoin: "round",
+            path { d: "M12 5v14M5 12h14" }
+        }
+    }
+}
+fn icon_sun() -> Element {
+    rsx! {
+        svg { view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_linecap: "round", stroke_linejoin: "round",
+            circle { cx: "12", cy: "12", r: "4" }
+            path { d: "M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" }
+        }
+    }
+}
+fn icon_moon() -> Element {
+    rsx! {
+        svg { view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_linecap: "round", stroke_linejoin: "round",
+            path { d: "M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z" }
+        }
+    }
+}
+/// The rail's brand mark - a stylized "search beam" glyph, replacing the
+/// old plain-text "GS" square (same spot, same size, real vector icon
+/// instead of two letters).
+fn icon_brand() -> Element {
+    rsx! {
+        svg { view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round",
+            path { d: "M14 3l7 7-2.5 2.5L14 8l-4 4-3-3 4-4z" }
+            path { d: "M3 21l6-6" }
+            circle { cx: "18", cy: "6", r: "2" }
+        }
+    }
+}
+
+/// One stub tool card for the dashboard - "Duplicate Finder"/"Batch
+/// Rename"/"Log Analyzer" are all this same shape today, differing only
+/// in copy and icon. Real content replaces this one tool at a time as
+/// each is actually built, same as `Search` already was.
+#[component]
+fn PlaceholderTool(title: String, description: String, icon: Element) -> Element {
+    rsx! {
+        div { class: "panel placeholder",
+            div { class: "placeholder-icon", {icon} }
+            span { class: "soon-pill", "Coming soon" }
+            h2 { {title} }
+            p { {description} }
+        }
+    }
+}
+
 #[component]
 fn App() -> Element {
     // Settings/recent-search persistence (epic §22) - loaded once at
@@ -143,6 +248,7 @@ fn App() -> Element {
 
     let mut is_drag_hovering = use_signal(|| false);
     let mut command_palette_open = use_signal(|| false);
+    let mut active_tool = use_signal(|| ToolId::Search);
 
     // Resizable three-pane layout (epic §12). Plain mouse events, not
     // scroll/drag/keyboard - no verified platform gap applies here, so
@@ -289,23 +395,138 @@ fn App() -> Element {
             div { class: "ambient-glow ambient-glow-a" }
             div { class: "ambient-glow ambient-glow-b" }
             div { class: "ambient-glow ambient-glow-c" }
-            div { class: "title-bar",
-                div { class: "title-bar-brand",
-                    span { class: "brand-mark", "GS" }
-                    h1 { "Text Search" }
-                }
-                div { class: "title-bar-actions",
-                    button {
-                        class: "palette-trigger",
-                        title: "Command palette (Ctrl/Cmd+K)",
-                        onclick: move |_| command_palette_open.set(true),
-                        "\u{2318}K"
+            div { class: "shell",
+                nav { class: "rail",
+                    div { class: "brand",
+                        div { class: "brand-mark", {icon_brand()} }
+                        div { class: "brand-text",
+                            span { class: "brand-name", "Toolbench" }
+                            span { class: "brand-sub", "GS Engineering" }
+                        }
                     }
-                    button {
-                        class: "theme-toggle",
-                        title: if dark() { "Switch to light theme" } else { "Switch to dark theme" },
-                        onclick: move |_| dark.set(!dark()),
-                        if dark() { "\u{2600}" } else { "\u{263D}" }
+                    div { class: "nav-label", "Tools" }
+                    div { class: "nav-list",
+                        button {
+                            class: if active_tool() == ToolId::Search { "nav-item active" } else { "nav-item" },
+                            onclick: move |_| active_tool.set(ToolId::Search),
+                            span { class: "nav-icon", {icon_search()} }
+                            span { class: "nav-item-body",
+                                span { class: "nav-item-title", "Search Files" }
+                                span { class: "nav-item-desc", "Keyword & regex search" }
+                            }
+                        }
+                        button {
+                            class: if active_tool() == ToolId::Dupes { "nav-item active" } else { "nav-item" },
+                            onclick: move |_| active_tool.set(ToolId::Dupes),
+                            span { class: "nav-icon", {icon_dupes()} }
+                            span { class: "nav-item-body",
+                                span { class: "nav-item-title", "Duplicate Finder" }
+                                span { class: "nav-item-desc", "Find identical files" }
+                            }
+                            span { class: "soon-pill", "Soon" }
+                        }
+                        button {
+                            class: if active_tool() == ToolId::Rename { "nav-item active" } else { "nav-item" },
+                            onclick: move |_| active_tool.set(ToolId::Rename),
+                            span { class: "nav-icon", {icon_rename()} }
+                            span { class: "nav-item-body",
+                                span { class: "nav-item-title", "Batch Rename" }
+                                span { class: "nav-item-desc", "Pattern-based renaming" }
+                            }
+                            span { class: "soon-pill", "Soon" }
+                        }
+                        button {
+                            class: if active_tool() == ToolId::Logs { "nav-item active" } else { "nav-item" },
+                            onclick: move |_| active_tool.set(ToolId::Logs),
+                            span { class: "nav-icon", {icon_logs()} }
+                            span { class: "nav-item-body",
+                                span { class: "nav-item-title", "Log Analyzer" }
+                                span { class: "nav-item-desc", "Parse & chart log files" }
+                            }
+                            span { class: "soon-pill", "Soon" }
+                        }
+                    }
+                    div { class: "rail-footer",
+                        button { class: "add-tool-btn", {icon_plus()} "Add tool" }
+                        button {
+                            class: "theme-toggle",
+                            onclick: move |_| dark.set(!dark()),
+                            if dark() { {icon_moon()} } else { {icon_sun()} }
+                            span { if dark() { "Dark mode" } else { "Light mode" } }
+                        }
+                    }
+                }
+                div { class: "main",
+                    div { class: "topbar",
+                        div { class: "topbar-title",
+                            h1 {
+                                match active_tool() {
+                                    ToolId::Search => "Search Files",
+                                    ToolId::Dupes => "Duplicate Finder",
+                                    ToolId::Rename => "Batch Rename",
+                                    ToolId::Logs => "Log Analyzer",
+                                }
+                            }
+                            p {
+                                match active_tool() {
+                                    ToolId::Search => "Recursively search a folder for keyword filters",
+                                    ToolId::Dupes => "Find and clean up redundant files",
+                                    ToolId::Rename => "Pattern-based bulk renaming",
+                                    ToolId::Logs => "Parse and chart log files",
+                                }
+                            }
+                        }
+                        div { class: "topbar-actions",
+                            button {
+                                class: "palette-trigger",
+                                title: "Command palette (Ctrl/Cmd+K)",
+                                onclick: move |_| command_palette_open.set(true),
+                                "\u{2318}K"
+                            }
+                        }
+                    }
+                    div { class: "stage",
+                        if active_tool() == ToolId::Search {
+                            div { class: "main-grid",
+                                div { class: "settings-column", style: "width: {settings_width()}px;", SettingsPanel { state } }
+                                div {
+                                    class: "resize-handle",
+                                    onmousedown: move |e| {
+                                        resizing.set(Some(ResizeTarget::Settings));
+                                        resize_start_x.set(e.client_coordinates().x);
+                                        resize_start_width.set(settings_width());
+                                    },
+                                }
+                                div { class: "results-column", ResultsPanel { state } }
+                                div {
+                                    class: "resize-handle",
+                                    onmousedown: move |e| {
+                                        resizing.set(Some(ResizeTarget::Preview));
+                                        resize_start_x.set(e.client_coordinates().x);
+                                        resize_start_width.set(preview_width());
+                                    },
+                                }
+                                div { class: "preview-column", style: "width: {preview_width()}px;", PreviewPane { state } }
+                            }
+                        } else if active_tool() == ToolId::Dupes {
+                            PlaceholderTool {
+                                title: "Duplicate Finder",
+                                description: "Scan a folder tree for byte-identical or near-identical files and clear out redundant copies safely.",
+                                icon: icon_dupes(),
+                            }
+                        } else if active_tool() == ToolId::Rename {
+                            PlaceholderTool {
+                                title: "Batch Rename",
+                                description: "Rename hundreds of files at once with pattern matching, numbering, and a live preview before committing.",
+                                icon: icon_rename(),
+                            }
+                        } else {
+                            PlaceholderTool {
+                                title: "Log Analyzer",
+                                description: "Parse structured and unstructured log files, surface error spikes, and chart activity over time.",
+                                icon: icon_logs(),
+                            }
+                        }
                     }
                 }
             }
@@ -322,27 +543,6 @@ fn App() -> Element {
                         p { class: "caption", "Drop a folder (or a file - its folder will be used) to set it as the search folder." }
                     }
                 }
-            }
-            div { class: "main-grid",
-                div { class: "settings-column", style: "width: {settings_width()}px;", SettingsPanel { state } }
-                div {
-                    class: "resize-handle",
-                    onmousedown: move |e| {
-                        resizing.set(Some(ResizeTarget::Settings));
-                        resize_start_x.set(e.client_coordinates().x);
-                        resize_start_width.set(settings_width());
-                    },
-                }
-                div { class: "results-column", ResultsPanel { state } }
-                div {
-                    class: "resize-handle",
-                    onmousedown: move |e| {
-                        resizing.set(Some(ResizeTarget::Preview));
-                        resize_start_x.set(e.client_coordinates().x);
-                        resize_start_width.set(preview_width());
-                    },
-                }
-                div { class: "preview-column", style: "width: {preview_width()}px;", PreviewPane { state } }
             }
         }
     }
@@ -529,37 +729,110 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
     bottom: -160px; left: 12%; width: 380px; height: 380px;
     background: radial-gradient(circle, color-mix(in srgb, var(--glow-c) calc(var(--glow-c-op) * 100%), transparent) 0%, transparent 70%);
 }
-.title-bar {
-    position: relative; z-index: 1;
-    flex: none;
-    display: flex; align-items: center; justify-content: space-between;
-    padding: var(--space-3) var(--space-4);
-    border-bottom: 1px solid var(--glass-border);
+/* ---- Toolbench shell: a left tool-switcher rail + a right main column
+   (topbar + stage). `.shell` is the single positioned/z-index-1 layer now
+   (the old .title-bar/.main-grid each set their own `position: relative;
+   z-index: 1` individually - one wrapper doing it once is equivalent,
+   since the ambient-glow blobs are `.app-shell`'s direct children at
+   z-index 0 either way). The command palette / context menu / drop
+   overlay stay direct children of `.app-shell` (siblings of `.shell`,
+   not nested inside it) specifically so `.drop-overlay`'s `position:
+   absolute; inset: 0` keeps covering the whole `.app-shell` area, not
+   just `.shell` - see that rule's own comment. ---- */
+.shell { position: relative; z-index: 1; display: flex; flex: 1; min-height: 0; overflow: hidden; }
+
+.rail {
+    position: relative; z-index: 2; flex: none; width: 232px;
+    display: flex; flex-direction: column;
     background: var(--glass-bg);
-    box-shadow: var(--shadow-sm);
+    border-right: 1px solid var(--glass-border);
+    padding: var(--space-4) var(--space-3);
+    overflow-y: auto;
 }
-.title-bar-brand { display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
+.brand {
+    display: flex; align-items: center; gap: var(--space-2);
+    padding: var(--space-2) var(--space-2) var(--space-5);
+    margin-bottom: var(--space-2);
+    border-bottom: 1px solid var(--border);
+}
 .brand-mark {
     flex: none;
     display: flex; align-items: center; justify-content: center;
-    width: 26px; height: 26px;
-    border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--accent) 24%, var(--glass-strong));
-    border: 1px solid var(--glass-border);
-    color: var(--accent-strong);
-    font-size: 11px; font-weight: 700; letter-spacing: 0.02em;
+    width: 30px; height: 30px;
+    border-radius: var(--radius-md);
+    background: linear-gradient(135deg, var(--accent), var(--constraint));
+    color: var(--accent-fg);
+    box-shadow: var(--shadow-sm);
 }
-.title-bar h1 { margin: 0; font-size: 1.02em; font-weight: 650; letter-spacing: -0.005em; }
-.theme-toggle {
-    flex: none; width: 30px; height: 30px; padding: 0;
-    display: flex; align-items: center; justify-content: center;
-    border-radius: 50%; font-size: 13px;
-    background: var(--glass); border: 1px solid var(--glass-border); color: var(--fg-muted);
-    transition: background-color 0.15s var(--ease), border-color 0.15s var(--ease), color 0.15s var(--ease);
-}
-.theme-toggle:hover { background: var(--glass-strong); color: var(--fg); border-color: var(--glass-border-strong); }
+.brand-mark svg { width: 17px; height: 17px; }
+.brand-text { display: flex; flex-direction: column; line-height: 1.2; min-width: 0; }
+.brand-name { font-weight: 700; font-size: 1.05em; letter-spacing: -0.01em; }
+.brand-sub { font-size: 0.76em; color: var(--fg-subtle); text-transform: uppercase; letter-spacing: 0.07em; }
 
-.main-grid { position: relative; z-index: 1; display: flex; flex: 1; min-height: 0; gap: var(--space-2); padding: var(--space-4); overflow: hidden; }
+.nav-label {
+    font-size: 0.76em; font-weight: 650; color: var(--fg-subtle);
+    text-transform: uppercase; letter-spacing: 0.08em;
+    padding: var(--space-3) var(--space-2) var(--space-1);
+}
+.nav-list { display: flex; flex-direction: column; gap: 2px; }
+.nav-item {
+    display: flex; align-items: center; gap: var(--space-3);
+    padding: 9px var(--space-2); border-radius: var(--radius-md);
+    border: 1px solid transparent; background: transparent; color: inherit; cursor: pointer;
+    text-align: left; width: 100%;
+    transition: background-color 0.12s var(--ease), border-color 0.12s var(--ease);
+}
+.nav-item:hover { background: var(--panel-hover); }
+.nav-item.active { background: color-mix(in srgb, var(--accent) 14%, var(--panel-bg)); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.nav-item.active .nav-icon, .nav-item.active .nav-item-title { color: var(--accent-strong); }
+.nav-icon { width: 17px; height: 17px; flex: none; color: var(--fg-muted); stroke-width: 1.8; }
+.nav-icon svg { width: 100%; height: 100%; }
+.nav-item-body { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
+.nav-item-title { font-size: 0.97em; font-weight: 600; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nav-item-desc { font-size: 0.83em; color: var(--fg-subtle); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.soon-pill {
+    margin-left: auto; flex: none; font-size: 0.7em; font-weight: 700; letter-spacing: 0.04em;
+    text-transform: uppercase; padding: 2px 6px; border-radius: var(--radius-pill);
+    background: var(--bg-sunken); color: var(--fg-subtle); border: 1px solid var(--border);
+}
+
+.rail-footer { margin-top: auto; display: flex; flex-direction: column; gap: var(--space-2); padding-top: var(--space-3); border-top: 1px solid var(--border); }
+.add-tool-btn {
+    display: flex; align-items: center; gap: var(--space-2);
+    padding: 8px var(--space-2); border-radius: var(--radius-md);
+    background: transparent; border: 1px dashed var(--border-strong); color: var(--fg-subtle); cursor: pointer;
+    font-size: 0.89em;
+}
+.add-tool-btn:hover { color: var(--accent-strong); border-color: var(--accent); }
+.add-tool-btn svg { width: 14px; height: 14px; stroke-width: 2; }
+.theme-toggle {
+    display: flex; align-items: center; gap: var(--space-2);
+    padding: 8px var(--space-2); border-radius: var(--radius-md);
+    background: transparent; border: 1px solid var(--border); color: var(--fg-muted); cursor: pointer;
+    font-size: 0.89em;
+    transition: background-color 0.15s var(--ease), color 0.15s var(--ease);
+}
+.theme-toggle:hover { background: var(--panel-hover); color: var(--fg); }
+.theme-toggle svg { width: 15px; height: 15px; stroke-width: 1.8; }
+
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+.topbar {
+    flex: none; display: flex; align-items: center; justify-content: space-between;
+    padding: var(--space-4) var(--space-6) var(--space-3);
+}
+.topbar-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.topbar-title h1 { margin: 0; font-size: 1.28em; font-weight: 700; letter-spacing: -0.015em; }
+.topbar-title p { margin: 0; font-size: 0.86em; color: var(--fg-muted); }
+.topbar-actions { flex: none; display: flex; align-items: center; gap: var(--space-2); }
+
+.stage { flex: 1; min-height: 0; padding: 0 var(--space-6) var(--space-6); overflow: auto; }
+.panel {
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border); border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+}
+
+.main-grid { display: flex; height: 100%; gap: var(--space-2); overflow: hidden; }
 .settings-column { flex: none; overflow-y: auto; overflow-x: hidden; padding-right: var(--space-1); }
 .results-column { flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden; }
 .preview-column { flex: none; overflow-y: auto; overflow-x: hidden; border-left: 1px solid var(--border); padding-left: var(--space-4); }
@@ -569,6 +842,22 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
     background: var(--border); border-radius: var(--radius-pill);
 }
 .resize-handle:hover::after { background: var(--accent); }
+
+/* ---- Placeholder ("Coming soon") tool stage ---- */
+.placeholder {
+    height: 100%; display: flex; align-items: center; justify-content: center; flex-direction: column;
+    gap: var(--space-3); text-align: center; padding: var(--space-6);
+}
+.placeholder-icon {
+    width: 56px; height: 56px; border-radius: var(--radius-lg);
+    background: var(--bg-sunken); color: var(--fg-subtle);
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: var(--space-2);
+}
+.placeholder-icon svg { width: 26px; height: 26px; stroke-width: 1.5; }
+.placeholder h2 { margin: 0; font-size: 1.25em; font-weight: 700; }
+.placeholder p { margin: 0; max-width: 360px; font-size: 0.96em; color: var(--fg-muted); }
+.placeholder .soon-pill { margin: 0; }
 .settings-panel, .results-panel { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
 
 h3 {
@@ -812,7 +1101,6 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 }
 .drop-overlay-title { margin: 0; font-size: 1.1em; font-weight: 700; color: var(--fg); }
 
-.title-bar-actions { flex: none; display: flex; align-items: center; gap: var(--space-2); }
 .palette-trigger {
     height: 30px; padding: 0 var(--space-3);
     font-family: var(--mono); font-size: 0.8em; font-weight: 600;
