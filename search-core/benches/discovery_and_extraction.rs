@@ -131,17 +131,43 @@ fn format_fixtures() -> Vec<(&'static str, &'static str, std::path::PathBuf)> {
         (".docx", "tiny", tiny_dir.join("test.docx")),
         (".docx", "medium", sized_dir.join("medium.docx")),
         (".docx", "large", sized_dir.join("large.docx")),
+        (".docx", "xlarge", sized_dir.join("xlarge.docx")),
         (".pptx", "tiny", tiny_dir.join("test.pptx")),
         (".pptx", "medium", sized_dir.join("medium.pptx")),
         (".pptx", "large", sized_dir.join("large.pptx")),
+        // No real ~10MB+ PPTX found from a source this project treats as
+        // legitimate (Apache POI's own test-data tops out at 2.28MB for
+        // PPTX) - `large` (2.28MB) stays the biggest real tier for this
+        // format. Documented as a real gap, not silently skipped.
         (".xlsx", "tiny", tiny_dir.join("test.xlsx")),
         (".xlsx", "medium", sized_dir.join("medium.xlsx")),
         (".xlsx", "large", sized_dir.join("large.xlsx")),
+        // No real, representative ~10MB+ XLSX with genuine extractable
+        // content was found - the only real ~10MB+ XLSX sourced
+        // (`xlarge-recordheavy.xlsx`, Apache Tika's own
+        // testRecordSizeExceeded.xlsx) is a deliberate pathological-
+        // compression stress fixture whose single worksheet decompresses
+        // to ~328MB, correctly rejected by the zip-bomb guard before any
+        // real parse work happens - timing it here mostly measures the
+        // guard's early-reject path, not representative extraction cost.
+        // Included anyway so this stays an honest, labeled gap rather
+        // than a silently-missing tier; see benches/data/README.md.
+        (".xlsx", "xlarge (rejected by zip-bomb guard)", sized_dir.join("xlarge-recordheavy.xlsx")),
         (".rtf", "medium", sized_dir.join("medium.rtf")),
         (".rtf", "large", sized_dir.join("large.rtf")),
+        // Same gap as PPTX - no real ~10MB+ RTF found; `large` (1.23MB)
+        // is the biggest real tier available.
         (".pdf", "tiny", tiny_dir.join("test.pdf")),
         (".pdf", "medium", sized_dir.join("medium.pdf")),
         (".pdf", "large", sized_dir.join("large.pdf")),
+        (".pdf", "xlarge", sized_dir.join("xlarge.pdf")),
+        // The other real ~10MB+ PDF sourced, `xlarge-scanned.pdf`
+        // (sample-files.com's large-doc.pdf, 38.6MB), is image-only
+        // (scanned pages, no Tj/TJ text operators) - included as its own
+        // tier so the benchmark also reports the cost of scanning a large
+        // file that correctly extracts zero lines, not just the
+        // real-text case above.
+        (".pdf", "xlarge-scanned (image-only, no text)", sized_dir.join("xlarge-scanned.pdf")),
     ]
 }
 

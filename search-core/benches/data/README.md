@@ -39,6 +39,30 @@ parsers (exactly this codebase's `search-core::extraction` module) real
 files to test against - the same reason this benchmark needs them, not
 files scraped from an unrelated site.
 
+## `xlarge` tier (~10MB+), added 2026-08-26
+
+Added in response to a follow-up request to also benchmark files in the
+~10MB+ range and concurrent/mixed-format search
+(`search-core/benches/concurrent_extraction.rs`). None of POI/Tika/PDFBox's
+own test-data corpora had a real file this large for every format, so two
+additional legitimate sources were used: [sample-files.com](https://sample-files.com)
+(a site whose stated purpose is hosting real, freely-downloadable sample
+files of exactly this kind - verified by downloading directly and checking
+`file(1)` output and content, not assumed from the page) and
+[arXiv.org](https://arxiv.org) (freely-redistributable academic PDFs).
+
+| File | Bytes | Source | Notes |
+|---|---|---|---|
+| `xlarge.docx` | 11,317,142 | sample-files.com, `large-doc.docx` | Real, image-heavy DOCX; extracts successfully. |
+| `xlarge.pdf` | 5,853,703 | arXiv.org, paper [2303.18223](https://arxiv.org/abs/2303.18223) | Real, text-heavy PDF; extracts successfully (verified via `search-cli` - 7114 real hits on a test filter). The "representative" xlarge PDF. |
+| `xlarge-scanned.pdf` | 38,589,556 | sample-files.com, `large-doc.pdf` | Real PDF, but image-only (scanned pages, `/Im1 Do` content streams, zero `Tj`/`TJ` text-showing operators) - this extractor has no OCR, so it correctly returns no text. Kept deliberately as a real "large file, zero extractable text" edge case for concurrency/robustness testing, not a bug. |
+| `xlarge-recordheavy.xlsx` | 12,364,136 | apache/tika, `test-documents/testRecordSizeExceeded.xlsx` | Deliberately pathological Tika test fixture: its single worksheet entry decompresses from 12.4MB to ~328MB. Correctly rejected by `search-core`'s `ZIP_MAX_ENTRY_UNCOMPRESSED_BYTES` (20MB) zip-bomb guard before any real parse work happens - the guard working as designed, not a bug. Kept as a real-world pathological-compression-ratio edge case. |
+
+No real ~10MB+ PPTX or RTF was found from a source this project treats as
+legitimate - `large.pptx` (2.28MB) and `large.rtf` (1.23MB) stay the
+biggest real tiers for those two formats. Documented as a real gap in
+`discovery_and_extraction.rs`'s `format_fixtures()`, not silently skipped.
+
 ## Not used for correctness testing
 
 These files are extraction-*performance* fixtures only. `extract_lines_by_extension`'s

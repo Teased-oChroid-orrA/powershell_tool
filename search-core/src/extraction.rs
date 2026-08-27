@@ -986,9 +986,101 @@ pub fn extract_rtf_lines(bytes: &[u8]) -> Option<Vec<String>> {
 // PDF (best-effort, no OCR, no ToUnicode CMap resolution - see docs)
 // --------------------------------------------------------------------
 
+/// Kept **only** as the differential-test oracle for
+/// [`find_stream_blocks`] (see `extraction::tests::find_stream_blocks_matches_the_original_regex_*`) -
+/// no longer used by `extract_pdf_lines` itself. Profiling real PDFs
+/// (`docs/benchmarking.md`'s "PDF extraction bottleneck" section) found
+/// this one regex responsible for 74-93% of total PDF extraction time,
+/// worsening with file size (272KB: 75%, 1.04MB: 74%, 38.6MB: 93%) -
+/// `.{0,400}?` bounded repetition compiles to a much larger automaton
+/// than a plain literal search in Rust's `regex` crate (it has to track
+/// a counter up to 400 through the NFA rather than a simple star/plus),
+/// which is almost certainly the real cost driver, not algorithmic
+/// complexity (the per-KB rate was roughly constant to slightly
+/// *decreasing* with size, not blowing up quadratically). Replaced with
+/// `find_stream_blocks`, a manual `str::find`-based scanner proven
+/// byte-for-byte equivalent on every real PDF fixture in this repo plus
+/// synthetic adversarial cases before the swap was made.
+#[cfg(test)]
 fn stream_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"(?s)(.{0,400}?)stream\r?\n(.*?)endstream").unwrap())
+}
+
+/// Manual replacement for the old `stream_re()` regex - see that
+/// function's doc comment for why. Finds every non-overlapping
+/// `stream\r?\n ... endstream` block in `raw`, yielding
+/// `(header, body)` where `header` is up to 400 *bytes* immediately
+/// preceding the `stream` keyword (nudged forward to the nearest valid
+/// UTF-8 char boundary if a multi-byte Latin-1-mapped character falls
+/// exactly on the cut - PDF stream dictionaries are effectively always
+/// ASCII in practice, so this only matters for pathological input, but
+/// slicing on a non-boundary would panic) and `body` is everything
+/// between the newline after `stream` and the next `endstream`.
+///
+/// Iteration semantics are a deliberate, verified match for what the old
+/// regex's `captures_iter` actually did (non-overlapping, leftmost
+/// matches; a `stream` keyword not immediately followed by `\r\n`/`\n` is
+/// skipped and scanning resumes right after it, matching substrings like
+/// "bit**stream**\n" included - the old regex had no word-boundary
+/// assertion around the literal either, so this preserves that exact,
+/// slightly odd but pre-existing behavior rather than "fixing" it as an
+/// incidental side effect of a performance change).
+fn find_stream_blocks(raw: &str) -> impl Iterator<Item = (&str, &str)> {
+    // Two positions, deliberately not one - this distinction is exactly
+    // the bug the differential tests below caught in an earlier draft.
+    // `anchor` is the *lower bound* the header capture can't reach behind
+    // (only moves forward once a full match completes, matching
+    // `captures_iter`'s non-overlapping-match semantics). `probe` is
+    // where to resume looking for the next literal "stream" text after a
+    // candidate turns out not to be followed by a newline - it must NOT
+    // also drag `anchor` forward, because the real regex's lazily-
+    // quantified header can absorb a failed "stream" candidate as
+    // ordinary header text and keep extending past it in the *same*
+    // overall match attempt (e.g. "bitstream ... stream\n": the "stream"
+    // inside "bitstream" fails the newline check, but the header for the
+    // real match still starts from the original anchor, not from just
+    // after the failed candidate).
+    let mut anchor = 0usize;
+    let mut probe = 0usize;
+    std::iter::from_fn(move || loop {
+        let rel = raw.get(probe..)?.find("stream")?;
+        let stream_abs = probe + rel;
+        let after_stream = stream_abs + "stream".len();
+
+        let body_start = if raw.as_bytes().get(after_stream..after_stream + 2) == Some(b"\r\n") {
+            after_stream + 2
+        } else if raw.as_bytes().get(after_stream).copied() == Some(b'\n') {
+            after_stream + 1
+        } else {
+            probe = after_stream;
+            continue;
+        };
+
+        // Exactly 400 *characters* back, not bytes - matching the old
+        // regex's `.{0,400}?` (Rust's `regex` crate matches `.` against
+        // one Unicode scalar value by default). `decode_latin1` maps
+        // every byte 0-255 to the same-valued codepoint, so bytes
+        // 0x80-0xFF become 2-byte UTF-8 sequences - a byte-count cutoff
+        // would disagree with the regex (and risk landing mid-character)
+        // the moment any such byte appears in the 400 bytes before a
+        // stream keyword. `char_indices().rev().nth(399)` only walks
+        // back up to 400 characters regardless of file size, so this
+        // stays cheap even on huge files.
+        let header_start = raw[..stream_abs].char_indices().rev().nth(399).map(|(idx, _)| idx).unwrap_or(0).max(anchor);
+        let header = &raw[header_start..stream_abs];
+
+        return match raw.get(body_start..)?.find("endstream") {
+            Some(end_rel) => {
+                let end_abs = body_start + end_rel;
+                let body = &raw[body_start..end_abs];
+                anchor = end_abs + "endstream".len();
+                probe = anchor;
+                Some((header, body))
+            }
+            None => None,
+        };
+    })
 }
 
 fn text_re() -> &'static Regex {
@@ -1043,7 +1135,7 @@ pub fn extract_pdf_lines(
     const MAX_CONTENT_CHARS: usize = 2_000_000;
     let mut truncated_by_time = false;
 
-    for caps in stream_re().captures_iter(&raw) {
+    for (header, stream_text) in find_stream_blocks(&raw) {
         let elapsed = start.elapsed();
         if elapsed.as_secs_f64() >= overall_timeout_seconds as f64 {
             truncated_by_time = true;
@@ -1058,12 +1150,10 @@ pub fn extract_pdf_lines(
             }
         }
 
-        let header = &caps[1];
         if skip_marker_re().is_match(header) {
             continue;
         }
 
-        let stream_text = &caps[2];
         if stream_text.is_empty() {
             continue;
         }
@@ -1443,5 +1533,335 @@ mod tests {
         assert_eq!(path_extension_lower("dir/file.DOCX"), ".docx");
         assert_eq!(path_extension_lower("dir/noext"), "");
         assert_eq!(path_extension_lower("a/b/c.tar.gz"), ".gz");
+    }
+
+    // ---- find_stream_blocks vs. the original regex (issue #8 follow-up,
+    // 2026-08-26) - the differential proof the swap in extract_pdf_lines
+    // is safe. Profiling found the old `stream_re()` regex responsible
+    // for 74-93% of total PDF extraction time; `find_stream_blocks` is
+    // its manual-scan replacement. Every case below asserts BYTE-FOR-BYTE
+    // identical (header, body) pairs, in the same order, from both
+    // implementations - not "close enough."
+
+    fn old_regex_blocks(raw: &str) -> Vec<(&str, &str)> {
+        stream_re().captures_iter(raw).map(|c| (c.get(1).unwrap().as_str(), c.get(2).unwrap().as_str())).collect()
+    }
+
+    fn assert_same_blocks(raw: &str) {
+        let old: Vec<(&str, &str)> = old_regex_blocks(raw);
+        let new: Vec<(&str, &str)> = find_stream_blocks(raw).collect();
+        assert_eq!(old, new, "find_stream_blocks must match the original regex exactly for: {raw:?}");
+    }
+
+    #[test]
+    fn find_stream_blocks_matches_the_original_regex_on_simple_cases() {
+        assert_same_blocks("BT stream\nhello world endstream ET");
+        assert_same_blocks("no stream markers here at all");
+        assert_same_blocks("");
+        assert_same_blocks("stream\n\nendstream"); // empty body
+        assert_same_blocks("/Filter/FlateDecode stream\r\nBODY1endstream junk /Filter2 stream\nBODY2endstream");
+    }
+
+    #[test]
+    fn find_stream_blocks_matches_the_original_regex_on_adversarial_cases() {
+        // "stream" as a substring of another word, not followed by a
+        // newline at all - the old regex has no word-boundary assertion,
+        // so "bitstream" partially matches the literal "stream" but fails
+        // the \r?\n requirement immediately after; scanning must resume
+        // and still find the real block later.
+        assert_same_blocks("bitstream text here, then /Filter stream\nREAL BODYendstream");
+        // "stream" appearing but never followed by endstream at all - no
+        // match should be produced (old regex finds nothing either).
+        assert_same_blocks("garbage /Filter stream\nbody never closes");
+        // Multiple candidate "stream" occurrences before a valid one -
+        // the first "stream" isn't followed by a newline, scanning must
+        // skip it and find the second.
+        assert_same_blocks("stream stream\nactual body endstream");
+        // \r\n vs bare \n line endings after the "stream" keyword.
+        assert_same_blocks("hdr stream\r\nCRLF bodyendstream hdr2 stream\nLF bodyendstream");
+        // Header longer than 400 chars before "stream" - must be capped
+        // to (at most) 400 in both implementations.
+        let long_header = "x".repeat(500);
+        assert_same_blocks(&format!("{long_header} stream\nbody endstream"));
+        // Back-to-back blocks with no separating text at all.
+        assert_same_blocks("stream\nAendstreamstream\nBendstream");
+        // A multi-byte (non-ASCII, Latin-1-mapped) character sitting near
+        // the 400-byte header cutoff - proves the char-boundary nudge in
+        // find_stream_blocks doesn't panic and still agrees with the
+        // regex (which counts *characters*, not bytes, for its {0,400}
+        // bound - decode_latin1 maps every byte 0-255 to the same-valued
+        // Unicode scalar, so bytes 0x80-0xFF become 2-byte UTF-8
+        // sequences; Latin-1 byte 0xE9 was chosen arbitrarily as one such
+        // character).
+        let padding_with_high_byte: String = std::iter::repeat('a').take(398).chain(std::iter::once('\u{e9}')).collect();
+        assert_same_blocks(&format!("{padding_with_high_byte} stream\nbody endstream"));
+    }
+
+    #[test]
+    fn find_stream_blocks_matches_the_original_regex_on_real_pdf_fixtures() {
+        let fixtures_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/TextInFilesSearch.Tests/Fixtures");
+        let data_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/benches/data");
+        for path in [
+            format!("{fixtures_dir}/test.pdf"),
+            format!("{data_dir}/medium.pdf"),
+            format!("{data_dir}/large.pdf"),
+        ] {
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue; // benches/data/ files aren't always present (e.g. a fresh checkout before fetching them) - skip, don't fail
+            };
+            let raw = decode_latin1(&bytes);
+            let old = old_regex_blocks(&raw);
+            let new: Vec<(&str, &str)> = find_stream_blocks(&raw).collect();
+            assert_eq!(old.len(), new.len(), "block count must match for {path}");
+            assert_eq!(old, new, "blocks must be byte-for-byte identical for {path}");
+        }
+    }
+
+    /// Same proof as `find_stream_blocks_matches_the_original_regex_on_real_pdf_fixtures`,
+    /// for `xlarge-scanned.pdf` (38.6MB, the original scanned/image-only
+    /// PDF this test was written and verified against - renamed from
+    /// `xlarge.pdf` once a genuine text-bearing ~10MB PDF was sourced and
+    /// took the `xlarge.pdf` name instead, see `benches/data/README.md`)
+    /// specifically - `#[ignore]`d and kept separate because running the
+    /// *old* regex (the whole reason for this rewrite) against a file
+    /// this size takes seconds even in release mode and far longer in the
+    /// default debug test profile - not something every `cargo test` run
+    /// should pay for. Run on demand: `cargo test -p search-core
+    /// --release -- --ignored
+    /// find_stream_blocks_matches_the_original_regex_on_xlarge_pdf`.
+    #[test]
+    #[ignore]
+    fn find_stream_blocks_matches_the_original_regex_on_xlarge_pdf() {
+        let data_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/benches/data");
+        let path = format!("{data_dir}/xlarge-scanned.pdf");
+        let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("could not read {path}: {e}"));
+        let raw = decode_latin1(&bytes);
+        let old = old_regex_blocks(&raw);
+        let new: Vec<(&str, &str)> = find_stream_blocks(&raw).collect();
+        assert_eq!(old.len(), new.len(), "block count must match for xlarge-scanned.pdf");
+        assert_eq!(old, new, "blocks must be byte-for-byte identical for xlarge-scanned.pdf");
+    }
+
+    /// `xlarge-scanned.pdf` is a real, legitimately-sourced ~38.6MB PDF
+    /// that is image-only (scanned pages, `/Im1 Do` content streams, zero
+    /// `Tj`/`TJ` text-showing operators) - this extractor has no OCR, so
+    /// it correctly returns no text for it, not a bug. `xlarge-
+    /// recordheavy.xlsx` is Apache Tika's `testRecordSizeExceeded.xlsx`,
+    /// whose single worksheet entry decompresses from 12.4MB to ~328MB -
+    /// exactly what `ZIP_MAX_ENTRY_UNCOMPRESSED_BYTES` (20MB) exists to
+    /// reject, so it correctly returns no text too. Both are kept as
+    /// permanent, `#[ignore]`d (large file I/O) regression proof that
+    /// these real-world pathological documents degrade gracefully -
+    /// extraction returns `None`/no lines - rather than crashing, hanging,
+    /// or silently producing wrong output.
+    #[test]
+    #[ignore]
+    fn diagnose_why_xlarge_pdf_and_xlsx_fail_extraction() {
+        let data_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/benches/data");
+        let pdf_bytes = std::fs::read(format!("{data_dir}/xlarge-scanned.pdf")).unwrap();
+        let xlsx_bytes = std::fs::read(format!("{data_dir}/xlarge-recordheavy.xlsx")).unwrap();
+
+        let raw = decode_latin1(&pdf_bytes);
+        let blocks: Vec<_> = find_stream_blocks(&raw).collect();
+        eprintln!("xlarge-scanned.pdf: {} stream blocks total", blocks.len());
+        let mut flate_count = 0;
+        let mut flate_rejected_by_size_cap = 0;
+        let mut flate_produced_no_text = 0;
+        let mut skipped_by_marker = 0;
+        for (header, body) in &blocks {
+            if skip_marker_re().is_match(header) {
+                skipped_by_marker += 1;
+                continue;
+            }
+            if header.contains("/FlateDecode") {
+                flate_count += 1;
+                let working = encode_latin1(body);
+                if working.len() > 2 {
+                    match inflate_raw_deflate(&working[2..]) {
+                        Some(inflated) => {
+                            if inflated.is_empty() {
+                                flate_produced_no_text += 1;
+                            } else if flate_count <= 3 {
+                                let content = decode_latin1(&inflated[..inflated.len().min(500)]);
+                                eprintln!("  sample stream #{flate_count} (first 500 chars of inflated content):\n{content}\n---");
+                            }
+                        }
+                        None => flate_rejected_by_size_cap += 1,
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "  skipped_by_marker={skipped_by_marker} flate_streams={flate_count} rejected_by_20MB_cap={flate_rejected_by_size_cap} inflate_empty={flate_produced_no_text}"
+        );
+        let (pdf_result, _) = extract_pdf_lines(&pdf_bytes, 15, None);
+        eprintln!("  extract_pdf_lines final: {:?} lines", pdf_result.as_ref().map(|l| l.len()));
+        assert!(
+            pdf_result.map(|l| l.is_empty()).unwrap_or(true),
+            "xlarge-scanned.pdf is image-only (no Tj/TJ operators) - extraction has no OCR, so this must stay empty/None, not regress into a panic or spurious text"
+        );
+
+        eprintln!("\nxlarge-recordheavy.xlsx: {} bytes on disk", xlsx_bytes.len());
+        let xlsx_result = extract_xlsx_lines(&xlsx_bytes);
+        eprintln!("  extract_xlsx_lines result: {:?}", xlsx_result.as_ref().map(|l| l.len()));
+        assert!(
+            xlsx_result.is_none(),
+            "xlarge-recordheavy.xlsx's worksheet entry decompresses to ~328MB - the ZIP_MAX_ENTRY_UNCOMPRESSED_BYTES guard must keep rejecting it, not regress into decompressing it"
+        );
+    }
+
+    // ---- PDF extraction profiling (issue #8 follow-up, 2026-08-26) ----
+    // `docs/benchmarking.md`'s corrected numbers showed PDF extraction
+    // costing 33.6-112ms on real 272KB-1.04MB documents, orders of
+    // magnitude above the other formats. Before deciding whether that
+    // justifies replacing the regex/content-stream scanner with a real
+    // structural parser (a substantial, parity-risking rewrite), find out
+    // *where inside the current algorithm* the time actually goes - a
+    // cheap, safe, no-dependency-change fix might get most of the benefit.
+    // #[ignore]d (needs the real fixture files in benches/data/, and
+    // prints a report rather than asserting anything) - matches this
+    // project's established pattern for opt-in diagnostic/stress tests
+    // (`stress_test_100k_files`).
+
+    #[derive(Default)]
+    struct PdfPhaseBreakdown {
+        decode_latin1_whole_file: std::time::Duration,
+        stream_regex_scan: std::time::Duration,
+        ascii85_decode: std::time::Duration,
+        inflate: std::time::Duration,
+        decode_latin1_per_stream: std::time::Duration,
+        tj_probe_regex: std::time::Duration,
+        text_extract_regex: std::time::Duration,
+        unescape: std::time::Duration,
+        streams_total: usize,
+        streams_skipped_by_marker: usize,
+        streams_with_no_tj: usize,
+    }
+
+    /// Exact same algorithm as `extract_pdf_lines`, instrumented with a
+    /// `std::time::Instant` around each conceptual phase instead of just
+    /// running them - calls the real private helper functions this module
+    /// already has (`find_stream_blocks`, `decode_ascii85`,
+    /// `inflate_raw_deflate`, etc.), not a reimplemented copy that could
+    /// silently drift from the real behavior and give a misleading
+    /// profile.
+    fn profile_pdf_extraction(bytes: &[u8]) -> PdfPhaseBreakdown {
+        let mut b = PdfPhaseBreakdown::default();
+
+        let t = std::time::Instant::now();
+        let raw = decode_latin1(bytes);
+        b.decode_latin1_whole_file += t.elapsed();
+
+        let t = std::time::Instant::now();
+        let blocks: Vec<_> = find_stream_blocks(&raw).collect();
+        b.stream_regex_scan += t.elapsed();
+
+        for (header, stream_text) in blocks {
+            b.streams_total += 1;
+            if skip_marker_re().is_match(header) {
+                b.streams_skipped_by_marker += 1;
+                continue;
+            }
+            if stream_text.is_empty() {
+                continue;
+            }
+            let has_ascii85 = header.contains("/ASCII85Decode");
+            let has_flate = header.contains("/FlateDecode");
+
+            let t = std::time::Instant::now();
+            let working_bytes: Vec<u8> =
+                if has_ascii85 { decode_ascii85(stream_text) } else { encode_latin1(stream_text) };
+            if has_ascii85 {
+                b.ascii85_decode += t.elapsed();
+            }
+
+            let t = std::time::Instant::now();
+            let content_bytes: Option<Vec<u8>> = if !working_bytes.is_empty() {
+                if has_flate {
+                    if working_bytes.len() > 2 { inflate_raw_deflate(&working_bytes[2..]) } else { None }
+                } else {
+                    Some(working_bytes)
+                }
+            } else {
+                None
+            };
+            if has_flate {
+                b.inflate += t.elapsed();
+            }
+
+            if let Some(cb_bytes) = content_bytes {
+                if !cb_bytes.is_empty() {
+                    const MAX_CONTENT_CHARS: usize = 2_000_000;
+                    let content_len = cb_bytes.len().min(MAX_CONTENT_CHARS);
+
+                    let t = std::time::Instant::now();
+                    let content = decode_latin1(&cb_bytes[..content_len]);
+                    b.decode_latin1_per_stream += t.elapsed();
+
+                    let t = std::time::Instant::now();
+                    let has_tj = tj_re().is_match(&content);
+                    b.tj_probe_regex += t.elapsed();
+
+                    if has_tj {
+                        let t = std::time::Instant::now();
+                        let matches: Vec<String> = text_re().find_iter(&content).map(|m| m.as_str().to_string()).collect();
+                        b.text_extract_regex += t.elapsed();
+
+                        let t = std::time::Instant::now();
+                        for s in &matches {
+                            let raw_inner = &s[1..s.len() - 1];
+                            let _ = unescape_pdf_string(raw_inner);
+                        }
+                        b.unescape += t.elapsed();
+                    } else {
+                        b.streams_with_no_tj += 1;
+                    }
+                }
+            }
+        }
+
+        b
+    }
+
+    fn print_pdf_profile(label: &str, path: &str) {
+        let Ok(bytes) = std::fs::read(path) else {
+            eprintln!("{label}: could not read {path}, skipping");
+            return;
+        };
+        let total_start = std::time::Instant::now();
+        let b = profile_pdf_extraction(&bytes);
+        let total = total_start.elapsed();
+
+        eprintln!("\n=== {label} ({} bytes) - total {:.2}ms ===", bytes.len(), total.as_secs_f64() * 1000.0);
+        eprintln!(
+            "  streams: {} total, {} skipped (image/font/ICC/metadata marker), {} decoded-but-no-Tj/TJ",
+            b.streams_total, b.streams_skipped_by_marker, b.streams_with_no_tj
+        );
+        let phases: &[(&str, std::time::Duration)] = &[
+            ("decode_latin1 (whole file, once)", b.decode_latin1_whole_file),
+            ("find_stream_blocks scan (find all stream..endstream)", b.stream_regex_scan),
+            ("ascii85 decode (per ASCII85Decode stream)", b.ascii85_decode),
+            ("inflate (per FlateDecode stream)", b.inflate),
+            ("decode_latin1 (per decoded stream)", b.decode_latin1_per_stream),
+            ("Tj/TJ probe regex (per stream)", b.tj_probe_regex),
+            ("text_re find_iter (per stream with Tj/TJ)", b.text_extract_regex),
+            ("unescape_pdf_string (per matched text run)", b.unescape),
+        ];
+        for (name, dur) in phases {
+            let pct = 100.0 * dur.as_secs_f64() / total.as_secs_f64();
+            eprintln!("  {:<45} {:>8.2}ms  ({:>5.1}%)", name, dur.as_secs_f64() * 1000.0, pct);
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn profile_pdf_extraction_phases_on_real_documents() {
+        let data_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/benches/data");
+        let fixtures_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/TextInFilesSearch.Tests/Fixtures");
+        print_pdf_profile("tiny.pdf", &format!("{fixtures_dir}/test.pdf"));
+        print_pdf_profile("medium.pdf", &format!("{data_dir}/medium.pdf"));
+        print_pdf_profile("large.pdf", &format!("{data_dir}/large.pdf"));
+        print_pdf_profile("xlarge.pdf (real text, arXiv paper)", &format!("{data_dir}/xlarge.pdf"));
+        print_pdf_profile("xlarge-scanned.pdf (image-only, no text)", &format!("{data_dir}/xlarge-scanned.pdf"));
     }
 }

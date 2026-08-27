@@ -10,10 +10,13 @@ rather than repeated.
 **Bottom line: no major architectural change is justified by the evidence.**
 Per the epic's own explicit allowance ("A successful outcome can therefore
 be 'no code change'"), this report documents what was investigated,
-measured, and rejected, plus two small additive benchmarks that filled
-real gaps in existing coverage. Nothing in `search-core`'s or
-`native-search`'s production code changed as a result of this
-investigation.
+measured, and rejected, plus one real fix and two small additive
+benchmarks that filled real gaps in existing coverage. The one production
+change - `find_stream_blocks` replacing the `stream_re` regex in
+`extraction.rs`'s PDF path (see the 2026-08-26 update below) - is a
+narrowly-scoped, differentially-proven micro-optimization of an existing
+scan, not the structural-parser rewrite this report elsewhere declines to
+undertake; that larger question remains deferred, not attempted.
 
 **Update (2026-08-26, methodology correction):** a review of this
 report's first version correctly identified that its per-format
@@ -28,6 +31,30 @@ extraction cost is genuinely significant at realistic sizes (33.6-112ms,
 not the 28µs the tiny fixture suggested) - now reflected throughout
 sections C, E, and the decision matrix below. Every other conclusion in
 this report held up under the corrected numbers.
+
+**Update (2026-08-26, PDF fix implemented):** profiling the number above
+(`cargo test -p search-core --release -- --ignored --nocapture
+profile_pdf_extraction_phases_on_real_documents`) found `stream_re` - the
+regex finding `stream ... endstream` blocks, not the inflate/text-
+extraction work inherent to the format - was 74-93% of total PDF
+extraction cost, caused by Rust's `regex` crate's expensive bounded-
+repetition (`.{0,400}?`) compilation. Replaced with `find_stream_blocks`,
+a hand-rolled scan proven byte-for-byte identical via differential
+testing against the original regex (kept as a `#[cfg(test)]`-only
+oracle) across every existing fixture, 7 adversarial edge cases, and real
+files up to 38.6MB. Result: 2.4-13.5x real speedup depending on file
+size (`medium.pdf` 33.6ms→13.9ms, `large.pdf` 112ms→32.6ms,
+`xlarge-scanned.pdf` 38.6MB ~3.08s→229ms) with zero change to extraction
+*output* - see `docs/benchmarking.md`'s "PDF extraction fix" section for
+full before/after numbers and methodology. Also added: a concurrent/
+mixed-format benchmark against the real `orchestrator::run` (not
+isolated per-format calls), covering same-type and mixed-type folders
+plus ~10MB+ real files under parallel contention - see
+`docs/benchmarking.md`'s "Concurrent / mixed-format extraction" section.
+This changes section C, E's PDF entry, and the Decision Matrix below from
+"measured, not acted on" to "measured, fixed, re-measured" for the
+narrow bottleneck; the broader "full structural parser" question these
+sections also discuss remains deferred, unchanged.
 
 ## A. Existing Architecture
 
@@ -99,23 +126,35 @@ threshold at realistic sizes:
 - 100K-file end-to-end stress test (`docs/issue-6-phase-14.md`):
   16,308 files/sec, exact correctness at scale.
 
-**PDF is a real, quantified exception.** 33.6ms for a real 272KB PDF,
-112ms for a real 1.04MB PDF (full pipeline, real I/O included) - two to
-three orders of magnitude above what the original tiny-fixture number
-(28µs) suggested. This is not being reported as a new, unaddressed
+**PDF was a real, quantified exception - profiled, fixed, re-measured.**
+The original correction found 33.6ms for a real 272KB PDF, 112ms for a
+real 1.04MB PDF (full pipeline, real I/O included) - two to three orders
+of magnitude above what the tiny-fixture number (28µs) suggested.
+Profiling that number (not just accepting it) found 74-93% of the cost
+was one specific regex (`stream_re`'s bounded-repetition header
+lookback), not extraction work inherent to the format. Replacing it with
+a differentially-proven-identical hand-rolled scan
+(`find_stream_blocks`) brought the same two files to 13.9ms and 32.6ms
+respectively (2.4-3.4x), and the 38.6MB file the profiling run was
+originally done against from ~3.08s to 229ms (13.5x) - see
+`docs/benchmarking.md`'s "PDF extraction fix" for full methodology and
+numbers. PDF extraction is *still* the slowest format by one to two
+orders of magnitude even after this fix (a regex/content-stream scanner
+inherently re-scans the whole byte stream rather than walking a parsed
+object graph), so this is not being reported as a fully-closed
 bottleneck: CLAUDE.md already documents that this exact cost (PDF
 extraction taking many seconds with no progress indication) is the
 specific, real user complaint that motivated this whole project's
 "live progress reporting is a hard requirement" design - the mitigations
 (150ms-interval progress callback, per-file timeout, heavy/light resource-
-class throttling) already exist and predate this benchmark. What changed
-is that the cost is now a concrete number instead of an inherited design
-assumption. Whether to additionally replace the regex-scan PDF extractor
-with a real structural parser is a legitimate question this number now
-supports investigating, but is a substantial, parity-risking rewrite (see
-CLAUDE.md's stated rationale for the current hand-rolled approach) that
-this investigation does not unilaterally undertake - see "Deviations"
-below.
+class throttling) already exist and predate this benchmark, and remain
+the primary UX answer for the residual cost. Whether to additionally
+replace the regex-scan PDF extractor with a real structural parser
+(distinct from the scan-level fix already applied) is a legitimate
+question the post-fix numbers now support investigating, but is a
+substantial, parity-risking rewrite (see CLAUDE.md's stated rationale for
+the current hand-rolled approach) that this investigation does not
+unilaterally undertake - see "Deviations" below.
 
 The trigram candidate filter's fixed per-query overhead vs. its
 candidate-set reduction remains the other real, quantified tradeoff (not
@@ -224,25 +263,46 @@ Matching the epic's own §26 format:
   methodology correction, real 150KB-3MB documents, full pipeline
   including I/O) at sub-millisecond to low-single-digit-milliseconds -
   not a bottleneck to solve.
+- **The `stream_re` block-finding regex within PDF extraction** →
+  **fixed, not deferred.** Profiling the PDF cost found this one regex
+  (not the format's inherent inflate/text-extraction work) was 74-93% of
+  total cost, root-caused to Rust's `regex` crate compiling `.{0,400}?`
+  bounded repetition into an expensive-per-byte NFA. Replaced with
+  `find_stream_blocks`, a hand-rolled scan proven byte-for-byte identical
+  via differential testing (original regex kept as a `#[cfg(test)]`-only
+  oracle, exact match required across every existing fixture, 7
+  adversarial edge cases, and real files up to 38.6MB) - 2.4-13.5x real
+  speedup, zero change to extraction output. This was a low-risk,
+  narrowly-scoped fix specifically *because* it replaces one internal
+  scan step with a provably-equivalent one, not the extractor's actual
+  parsing logic - it does not carry the parity risk the full parser
+  rewrite below does, which is why it was undertaken here rather than
+  deferred alongside it.
 - **A real structural PDF parser, replacing the regex/content-stream
-  scanner** → **not rejected outright - deferred, not attempted.** Unlike
-  the other formats, PDF extraction *is* measurably expensive at realistic
-  size (33.6ms/272KB, 112ms/1.04MB, full pipeline - see "Bottleneck
-  Report"). This is the one place this investigation's evidence points
-  toward a real optimization candidate rather than "no bottleneck exists."
-  Not attempted here because: (1) it's a substantial rewrite of the one
-  extractor CLAUDE.md most explicitly documents a deliberate hand-rolled
-  design for, carrying real parity/correctness risk against the existing
-  fixture-tested behavior; (2) the cost is already mitigated at the UX
-  level (live progress reporting, per-file timeout, heavy-class
-  throttling) for the specific problem it originally caused; (3) no
-  evidence exists yet that real users are bottlenecked by it *now* that
-  those mitigations exist, as opposed to being bottlenecked by it *before*
-  they existed (the historical complaint CLAUDE.md documents predates the
-  progress-reporting system, not this benchmark). If PDF-heavy folders
-  become a reported real-world pain point again, this number is the
-  evidence to start from - a next step, not unfinished work from this
-  investigation.
+  scanner entirely** → **not rejected outright - deferred, not
+  attempted.** Distinct from the `stream_re` fix above: even after that
+  fix, PDF remains the slowest format by one to two orders of magnitude
+  (13.9ms/272KB, 32.6ms/1.04MB, full pipeline - see "Bottleneck Report"),
+  because a regex/content-stream scanner is inherently re-scanning the
+  whole byte stream rather than walking a parsed object graph - no
+  further scan-level micro-optimization changes that. This remains the
+  one place this investigation's evidence points toward a real
+  *architectural* optimization candidate rather than "no bottleneck
+  exists," but a full rewrite is not attempted here because: (1) it's a
+  substantial rewrite of the one extractor CLAUDE.md most explicitly
+  documents a deliberate hand-rolled design for, carrying real
+  parity/correctness risk against the existing fixture-tested behavior,
+  categorically larger than the proven-equivalent scan-level fix above;
+  (2) the residual cost is already mitigated at the UX level (live
+  progress reporting, per-file timeout, heavy-class throttling) for the
+  specific problem it originally caused; (3) no evidence exists yet that
+  real users are bottlenecked by it *now* that those mitigations exist
+  and the scan-level fix is in place, as opposed to being bottlenecked by
+  it *before* they existed (the historical complaint CLAUDE.md documents
+  predates both the progress-reporting system and this fix). If
+  PDF-heavy folders become a reported real-world pain point again, the
+  post-fix numbers are the evidence to start from - a next step, not
+  unfinished work from this investigation.
 - **Cost-based query planner** → rejected/not needed. The existing routing
   is already exactly the epic's own preferred starting point (§13):
   static rules (`use_regex` → literal-chunk extraction or full scan;
@@ -308,10 +368,13 @@ existing coverage already proves the invariant this epic asks to verify.
   streams per-file not per-match, no live-search-as-you-type exists to
   debounce).
 
-**What changed as a result of this investigation:** two new benchmark
+**What changed as a result of this investigation:** three new benchmark
 harnesses (`trigram_candidate_reduction.rs`, the per-format extraction
-section of `discovery_and_extraction.rs`) and this report. No production
-code in `search-core` or `native-search` changed.
+section of `discovery_and_extraction.rs`, and `concurrent_extraction.rs`),
+one production fix in `search-core` (`find_stream_blocks` replacing
+`stream_re` in `extraction.rs`'s PDF path - a narrowly-scoped,
+differentially-proven scan-level fix, not the deferred structural-parser
+rewrite), and this report. No production code in `native-search` changed.
 
 ## Known Gaps (honestly unmeasured, not silently claimed done)
 
@@ -347,7 +410,8 @@ code in `search-core` or `native-search` changed.
 | Trigram filter itself | 8x reduction (rare), 0.1-0.0x (common, cheap-verify proxy) | No, net positive at realistic verify cost | Full scan always | Positive for realistic per-file cost | Low (already built) | **Keep unchanged** |
 | Zstd vs LZ4 (stored fields) | Affects only tiny metadata fields | No | Keep LZ4 default | ~0 (schema-proven) | Low | **Rejected** - provably negligible |
 | Extraction library replacement (DOCX/PPTX/XLSX/ZIP) | Sub-ms to low-ms/file (real 150KB-3MB docs, full pipeline) | No | Keep hand-rolled parity extractors | N/A | Medium | **Rejected** - parity risk, no bottleneck |
-| Structural PDF parser, replacing regex scanner | 33.6-112ms/file (real 272KB-1.04MB PDFs, full pipeline) | **Yes, real and measured** | Keep regex/stream scanner | Likely significant | High, parity risk | **Deferred** - already UX-mitigated, no rewrite attempted |
+| `stream_re` block-finding regex within PDF extraction | 74-93% of PDF extraction cost (profiled) | **Yes, real and measured** | `find_stream_blocks` (differentially-proven-identical hand-rolled scan) | 2.4-13.5x real speedup, zero output change | Low (scan-level, proven-equivalent) | **Implemented** - see `docs/benchmarking.md` |
+| Structural PDF parser, replacing regex/content-stream scanner entirely | 13.9-32.6ms/file post-fix (real 272KB-1.04MB PDFs, full pipeline) - still the slowest format by 1-2 orders of magnitude | **Yes, real and measured, post-fix** | Keep regex/stream scanner | Likely significant | High, parity risk | **Deferred** - already UX-mitigated, scan-level bottleneck already fixed, no full rewrite attempted |
 | Cost-based query planner | Static routing already matches epic's own starting point | No | Keep static rules | N/A | Medium | **Rejected** - no evidence of misrouting |
 | Result virtualization | Pagination already bounds DOM nodes | No | Scroll-position virtualization | N/A | Medium | **Rejected** (`docs/issue-6-phase-13.md`) |
 | Hot/warm/cold tiers | OS+Tantivy caching relied on | No | Explicit app-level tiers | N/A | High | **Rejected** - no workload evidence |
