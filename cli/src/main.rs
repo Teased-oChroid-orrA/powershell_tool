@@ -362,6 +362,22 @@ fn cmd_list_failures(cli: &Cli) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// `search_core::models::extension_catalog` (the GUI's source of truth
+/// too) always stores/matches extensions with a leading dot (`.pdf`, not
+/// `pdf`) - `orchestrator::filter_by_extension` compares against
+/// `file_extension_lower`, which always includes the dot. The `--extensions`
+/// flag's own `--help` text gives a dotless example ("txt,log,pdf") for
+/// readability, so normalize here rather than silently matching zero
+/// files when a user follows that example literally - `"*"` (the
+/// search-all-extensions wildcard) is passed through unchanged.
+fn normalize_extension(ext: String) -> String {
+    if ext == "*" || ext.starts_with('.') {
+        ext
+    } else {
+        format!(".{ext}")
+    }
+}
+
 async fn run(cli: Cli) -> ExitCode {
     if let Some(code) = run_maintenance_action(&cli) {
         return code;
@@ -393,7 +409,7 @@ async fn run(cli: Cli) -> ExitCode {
         whole_word: cli.whole_word,
         use_regex: cli.regex,
         group_by: cli.group_by.into(),
-        extensions: cli.extensions,
+        extensions: cli.extensions.map(|exts| exts.into_iter().map(normalize_extension).collect()),
         exclude_folders: cli.exclude_folders,
         include_hidden: cli.include_hidden,
         max_file_size_mb: cli.max_file_size_mb,

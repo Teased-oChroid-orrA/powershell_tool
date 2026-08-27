@@ -1103,6 +1103,143 @@ fn pdf_escape_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"\\([\\()nrtbf]|[0-7]{1,3})").unwrap())
 }
 
+/// A PDF hex string operand to `Tj`/`TJ` (e.g. `<0176>` in `<0176> Tj`) -
+/// the encoding a CID-keyed/Type0 font (nearly universal for embedded/
+/// subsetted fonts from modern PDF generators - web renderers, Chromium
+/// print-to-PDF, Stripe's invoice renderer, LaTeX/pdflatex, etc.) uses
+/// instead of a parenthesized literal string. Requires whole byte pairs
+/// (real PDF hex strings may contain whitespace and an odd trailing
+/// nibble per spec; this only recognizes the common, unambiguous case,
+/// falling back to "no match" - never guessing - for anything looser).
+/// Deliberately cannot match a dictionary's `<<...>>` delimiters: the
+/// second character of `<<` is `<`, never a hex digit, so the pattern
+/// fails to start there.
+fn hex_string_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"<((?:[0-9A-Fa-f]{2})+)>").unwrap())
+}
+
+fn bfchar_block_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?s)beginbfchar(.*?)endbfchar").unwrap())
+}
+
+fn bfrange_block_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?s)beginbfrange(.*?)endbfrange").unwrap())
+}
+
+fn bfchar_entry_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>").unwrap())
+}
+
+/// Only the common `<start> <end> <dstStart>` sequential form of a
+/// `bfrange` entry (source CIDs `start..=end` map to `dstStart..`,
+/// incrementing) - the alternative `<start> <end> [<dst1> <dst2> ...]`
+/// array form is rarer and deliberately not parsed (skipped, not
+/// guessed - same "never invent a mapping" rule the whole ToUnicode
+/// resolver follows).
+fn bfrange_entry_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>").unwrap())
+}
+
+/// Parses a `/ToUnicode` CMap stream's decompressed PostScript-ish text
+/// (`beginbfchar`/`endbfchar` and `beginbfrange`/`endbfrange` blocks - see
+/// PDF32000-1:2008 §9.10.3) into `cid -> unicode text` entries, merging
+/// into `map`. A destination value can itself be more than one UTF-16BE
+/// code unit (a ligature mapping to multiple real characters); each dest
+/// hex string is decoded as UTF-16BE and any unpaired/invalid code units
+/// are dropped rather than guessed.
+fn parse_tounicode_cmap(content: &str, map: &mut HashMap<u32, String>) {
+    for block in bfchar_block_re().captures_iter(content) {
+        for entry in bfchar_entry_re().captures_iter(&block[1]) {
+            if let Ok(cid) = u32::from_str_radix(&entry[1], 16) {
+                if let Some(text) = utf16be_hex_to_string(&entry[2]) {
+                    map.insert(cid, text);
+                }
+            }
+        }
+    }
+    for block in bfrange_block_re().captures_iter(content) {
+        for entry in bfrange_entry_re().captures_iter(&block[1]) {
+            let (Ok(start), Ok(end)) = (u32::from_str_radix(&entry[1], 16), u32::from_str_radix(&entry[2], 16)) else { continue };
+            // A malformed range (end before start, or absurdly wide -
+            // real fonts never legitimately need more than a few hundred
+            // thousand code points) is skipped rather than looped, so a
+            // corrupt/adversarial CMap can't turn this into an unbounded
+            // allocation loop.
+            if end < start || end - start > 200_000 {
+                continue;
+            }
+            let dst_hex = &entry[3];
+            // The dest is a single UTF-16BE code point that increments by
+            // one per source CID in the range (the sequential form this
+            // function supports) - only valid when dst_hex is exactly one
+            // 4-hex-digit code unit; a longer dest here is the ligature
+            // case, which has no well-defined "increment," so it's
+            // skipped rather than guessed.
+            if dst_hex.len() != 4 {
+                continue;
+            }
+            let Ok(dst_start) = u32::from_str_radix(dst_hex, 16) else { continue };
+            for (i, cid) in (start..=end).enumerate() {
+                if let Some(ch) = char::from_u32(dst_start + i as u32) {
+                    map.insert(cid, ch.to_string());
+                }
+            }
+        }
+    }
+}
+
+/// Decodes a hex string (as it appears inside `<...>`, e.g. `"0041"`) as
+/// UTF-16BE text. Returns `None` if the hex itself is malformed or if
+/// decoding produces no valid text at all (an odd number of hex digits,
+/// or content that isn't valid UTF-16) - callers treat `None` as "skip,"
+/// never as a reason to guess.
+fn utf16be_hex_to_string(hex: &str) -> Option<String> {
+    if hex.len() % 4 != 0 {
+        return None;
+    }
+    let mut units = Vec::with_capacity(hex.len() / 4);
+    for chunk in hex.as_bytes().chunks(4) {
+        let chunk_str = std::str::from_utf8(chunk).ok()?;
+        units.push(u16::from_str_radix(chunk_str, 16).ok()?);
+    }
+    String::from_utf16(&units).ok().filter(|s| !s.is_empty())
+}
+
+/// Decodes a Tj/TJ hex-string operand's inner hex text (e.g. `"0176"`)
+/// into real characters via a previously-parsed ToUnicode CID map -
+/// grouped into 2-byte (4-hex-digit) codes, the near-universal
+/// Identity-H/Identity-V encoding for CID-keyed fonts. A code with no
+/// entry in `map` is skipped, not guessed (raw CIDs are font-specific
+/// glyph indices, not Unicode code points - treating an unmapped CID as
+/// its own numeric value as a "character" would produce wrong text, not
+/// just incomplete text).
+fn hex_string_to_unicode(hex: &str, map: &HashMap<u32, String>) -> String {
+    let mut out = String::new();
+    for chunk in hex.as_bytes().chunks(4) {
+        if chunk.len() != 4 {
+            break; // trailing odd nibble(s) - malformed per this function's caller's regex guarantee, but defensive anyway
+        }
+        let Ok(chunk_str) = std::str::from_utf8(chunk) else { continue };
+        let Ok(cid) = u32::from_str_radix(chunk_str, 16) else { continue };
+        if let Some(text) = map.get(&cid) {
+            out.push_str(text);
+        }
+    }
+    // Some real-world ToUnicode CMaps (observed in a real Stripe-
+    // generated invoice this extractor was fixed against) map a
+    // word-separator glyph to U+0000 rather than U+0020 - a literal NUL
+    // in extracted, searchable text is never useful either way, so it's
+    // normalized to a space rather than left in or dropped (dropping it
+    // would glue adjacent words together, which is worse for search than
+    // an extra space).
+    out.replace('\0', " ")
+}
+
 /// Lightweight, dependency-free, BEST-EFFORT PDF text extractor. Finds
 /// stream...endstream blocks, decodes `/ASCII85Decode` and/or
 /// `/FlateDecode` filtered streams, and pulls text out of Tj/TJ show-text
@@ -1117,10 +1254,15 @@ fn pdf_escape_re() -> &'static Regex {
 /// caller can surface "still working, N streams scanned, Ys elapsed"
 /// rather than the UI appearing frozen on a large/complex PDF.
 ///
-/// LIMITATIONS: no OCR; does not resolve ToUnicode CMaps, so PDFs with
-/// embedded/subsetted fonts (common from LaTeX/pdflatex) may extract as
-/// garbled or missing text; filters other than ASCII85Decode/FlateDecode
-/// are not handled.
+/// LIMITATIONS: no OCR; resolves `/ToUnicode` CMaps for the common
+/// `beginbfchar`/sequential-`beginbfrange` forms (see
+/// `parse_tounicode_cmap`), which covers the overwhelming majority of
+/// CID-keyed/Type0-font PDFs from modern generators - a CID with no entry
+/// in the resolved map (a ligature-form `bfrange`, an array-form
+/// `bfrange`, or simply a missing/absent `/ToUnicode` stream entirely) is
+/// skipped rather than guessed, so text from those specific glyphs may
+/// still be missing even though the surrounding text extracts correctly;
+/// filters other than ASCII85Decode/FlateDecode are not handled.
 pub fn extract_pdf_lines(
     bytes: &[u8],
     overall_timeout_seconds: u64,
@@ -1134,6 +1276,16 @@ pub fn extract_pdf_lines(
     let mut streams_scanned: i32 = 0;
     const MAX_CONTENT_CHARS: usize = 2_000_000;
     let mut truncated_by_time = false;
+
+    // A ToUnicode CMap can appear anywhere in the file relative to the
+    // content stream(s) that need it - in practice, usually *after*
+    // (content streams tend to get lower object numbers than the font
+    // resources a PDF writer appends afterward) - so hex-string operands
+    // are collected here and resolved only once every stream has been
+    // scanned and `cid_to_unicode` is as complete as it's going to get,
+    // rather than requiring CMap-before-content file ordering.
+    let mut cid_to_unicode: HashMap<u32, String> = HashMap::new();
+    let mut pending_hex_strings: Vec<String> = Vec::new();
 
     for (header, stream_text) in find_stream_blocks(&raw) {
         let elapsed = start.elapsed();
@@ -1186,6 +1338,14 @@ pub fn extract_pdf_lines(
                 let content_len = cb_bytes.len().min(MAX_CONTENT_CHARS);
                 let content = decode_latin1(&cb_bytes[..content_len]);
 
+                // A ToUnicode CMap stream (PostScript-ish syntax, no
+                // Tj/TJ operators of its own) - parse it for later hex-
+                // string resolution rather than treating it as page
+                // content.
+                if content.contains("beginbfchar") || content.contains("beginbfrange") {
+                    parse_tounicode_cmap(&content, &mut cid_to_unicode);
+                }
+
                 if tj_re().is_match(&content) {
                     for tm in text_re().find_iter(&content) {
                         let s = tm.as_str();
@@ -1195,8 +1355,40 @@ pub fn extract_pdf_lines(
                             lines.push(inner);
                         }
                     }
+                    // CID-keyed/Type0 fonts show text as hex-string
+                    // operands (`<0176> Tj`) instead of parenthesized
+                    // literals - resolved after the full scan, once
+                    // `cid_to_unicode` has seen every CMap in the file
+                    // (see the comment on `pending_hex_strings` above).
+                    // Many real-world generators (this extractor was
+                    // fixed against a real Stripe-generated invoice that
+                    // does exactly this) emit one `Tj` call per *glyph*,
+                    // not per word - concatenating every hex match in
+                    // this stream into one accumulated string (instead of
+                    // one `lines` entry per match, which would fragment
+                    // every word into single-character lines and break
+                    // substring/whole-word search entirely) keeps real
+                    // words intact for matching, at the cost of losing
+                    // this stream's original line breaks - an accepted
+                    // tradeoff, consistent with this being a best-effort
+                    // extractor, not a real PDF renderer.
+                    let mut stream_hex_text = String::new();
+                    for hm in hex_string_re().find_iter(&content) {
+                        let s = hm.as_str();
+                        stream_hex_text.push_str(&s[1..s.len() - 1]);
+                    }
+                    if !stream_hex_text.is_empty() {
+                        pending_hex_strings.push(stream_hex_text);
+                    }
                 }
             }
+        }
+    }
+
+    for hex in &pending_hex_strings {
+        let text = hex_string_to_unicode(hex, &cid_to_unicode);
+        if !text.trim().is_empty() {
+            lines.push(text);
         }
     }
 
@@ -1708,6 +1900,111 @@ mod tests {
             xlsx_result.is_none(),
             "xlarge-recordheavy.xlsx's worksheet entry decompresses to ~328MB - the ZIP_MAX_ENTRY_UNCOMPRESSED_BYTES guard must keep rejecting it, not regress into decompressing it"
         );
+    }
+
+    // ---- CID-keyed/Type0 font hex-string + ToUnicode CMap support
+    // (found and fixed investigating a real user-reported PDF - a
+    // Stripe-generated invoice - that extracted zero text despite its
+    // content stream being correctly located and decompressed; see
+    // `extract_pdf_lines`'s LIMITATIONS doc comment). Root cause: the
+    // file's font is CID-keyed, so `Tj`/`TJ` operands are hex strings
+    // (`<0176> Tj`), not parenthesized literals (`(...) Tj`) - `text_re`
+    // only ever matched the latter. The real invoice file itself is
+    // personal financial data and is deliberately NOT committed to this
+    // repo; these tests reproduce the same structure (hex-string Tj
+    // operands + a `/ToUnicode` CMap) synthetically instead. ----
+
+    #[test]
+    fn parse_tounicode_cmap_handles_bfchar_entries() {
+        let cmap = "1 beginbfchar\n<0041> <0048>\n<0042> <0065>\nendbfchar\n";
+        let mut map = HashMap::new();
+        parse_tounicode_cmap(cmap, &mut map);
+        assert_eq!(map.get(&0x0041).map(String::as_str), Some("H"));
+        assert_eq!(map.get(&0x0042).map(String::as_str), Some("e"));
+    }
+
+    #[test]
+    fn parse_tounicode_cmap_handles_sequential_bfrange_entries() {
+        // <0100> <0102> <0041> means CID 0x0100->'A', 0x0101->'B', 0x0102->'C'.
+        let cmap = "1 beginbfrange\n<0100> <0102> <0041>\nendbfrange\n";
+        let mut map = HashMap::new();
+        parse_tounicode_cmap(cmap, &mut map);
+        assert_eq!(map.get(&0x0100).map(String::as_str), Some("A"));
+        assert_eq!(map.get(&0x0101).map(String::as_str), Some("B"));
+        assert_eq!(map.get(&0x0102).map(String::as_str), Some("C"));
+    }
+
+    #[test]
+    fn parse_tounicode_cmap_skips_a_pathologically_wide_bfrange_instead_of_looping() {
+        let cmap = "1 beginbfrange\n<0000> <FFFFFF> <0041>\nendbfrange\n";
+        let mut map = HashMap::new();
+        parse_tounicode_cmap(cmap, &mut map); // must return promptly, not loop ~16M times
+        assert!(map.is_empty(), "a range wider than the sanity cap must be skipped entirely, not partially applied");
+    }
+
+    #[test]
+    fn hex_string_to_unicode_maps_known_cids_and_skips_unknown_ones() {
+        let mut map = HashMap::new();
+        map.insert(0x0041, "H".to_string());
+        map.insert(0x0042, "i".to_string());
+        // 0x0043 deliberately absent from the map.
+        assert_eq!(hex_string_to_unicode("00410042", &map), "Hi");
+        assert_eq!(hex_string_to_unicode("00410043", &map), "H", "an unmapped CID must be skipped, not guessed as a literal codepoint");
+    }
+
+    #[test]
+    fn hex_string_to_unicode_normalizes_embedded_nul_to_a_space() {
+        let mut map = HashMap::new();
+        map.insert(0x0041, "a".to_string());
+        map.insert(0x0000, "\0".to_string());
+        map.insert(0x0042, "b".to_string());
+        assert_eq!(hex_string_to_unicode("004100000042", &map), "a b");
+    }
+
+    /// End-to-end proof, built from a small synthetic (uncompressed, no
+    /// `/Filter`) PDF-like byte stream rather than requiring a real PDF
+    /// fixture - `extract_pdf_lines` treats a stream with no `/Filter` as
+    /// literal content, so this exercises the exact same code path a
+    /// real `/FlateDecode`d CID-font PDF would, without needing to
+    /// hand-roll a deflate stream in the test. Mirrors the real
+    /// structure that motivated this fix: a content stream with several
+    /// single-glyph `Tj` calls (many real-world generators emit one `Tj`
+    /// per glyph, not per word) plus a separate `/ToUnicode` CMap stream
+    /// - proving both the CID->text mapping AND the "concatenate within
+    /// one stream, don't fragment into one line per glyph" behavior that
+    /// keeps whole words searchable.
+    #[test]
+    fn extract_pdf_lines_resolves_cid_hex_text_via_tounicode_cmap() {
+        let pdf = concat!(
+            "%PDF-1.4\n",
+            "10 0 obj\n<< /Length 60 >>\nstream\n",
+            "BT <0041> Tj <0042> Tj <0043> Tj <0044> Tj ET\n",
+            "endstream\nendobj\n",
+            "12 0 obj\n<< /Length 100 >>\nstream\n",
+            "1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n",
+            "4 beginbfchar\n<0041> <0048>\n<0042> <0069>\n<0043> <0021>\n<0044> <003F>\nendbfchar\n",
+            "endcmap\nendstream\nendobj\n",
+        );
+        let (result, low_confidence) = extract_pdf_lines(pdf.as_bytes(), 15, None);
+        assert!(!low_confidence);
+        let lines = result.expect("must extract the CID-hex-encoded text via the ToUnicode CMap, not return None");
+        assert!(
+            lines.iter().any(|l| l.contains("Hi!?")),
+            "expected a line containing the concatenated, correctly-mapped text \"Hi!?\" (one line per stream, glyphs joined - not fragmented into one line per Tj call); got: {lines:?}"
+        );
+    }
+
+    /// Regression guard: a PDF using ordinary parenthesized-literal `Tj`
+    /// operands (the common case, unaffected by this fix) must keep
+    /// working exactly as before - each literal string its own line,
+    /// no interaction with the new hex-string/CMap path.
+    #[test]
+    fn extract_pdf_lines_still_handles_plain_literal_tj_operands_unchanged() {
+        let pdf = concat!("10 0 obj\n<< /Length 40 >>\nstream\n", "BT (Hello) Tj (World) Tj ET\n", "endstream\nendobj\n",);
+        let (result, _) = extract_pdf_lines(pdf.as_bytes(), 15, None);
+        let lines = result.expect("plain literal-string Tj text must still extract");
+        assert!(lines.contains(&"Hello".to_string()));
+        assert!(lines.contains(&"World".to_string()));
     }
 
     // ---- PDF extraction profiling (issue #8 follow-up, 2026-08-26) ----

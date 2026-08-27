@@ -321,6 +321,29 @@ looks cleaner - that regresses the exact problem this app was built to fix.
   substring wildcard matching. Worth remembering if you ever script an
   archive/export of this repo - use exact path exclusions, not bare
   substring wildcards, and diff the result.
+- **PDF text extraction silently returned zero text for CID-keyed/Type0-font
+  PDFs (hex-string `<0176> Tj` operands) even though `extract_pdf_lines`
+  correctly located and decompressed the actual content stream** - found
+  investigating a real user-reported PDF (a Stripe-generated invoice) that
+  extracted nothing. Root cause: `text_re` (`extraction.rs`) only ever
+  matched parenthesized-literal Tj operands (`(...)  Tj`), never
+  hex-string operands (`<...> Tj`) - the encoding a CID-keyed embedded/
+  subsetted font uses, which is the *default* for most modern PDF
+  generators (headless-browser/Chromium print-to-PDF, many invoicing/web
+  tools, LaTeX/pdflatex), not a rare edge case. Fixed by adding
+  `hex_string_re`/`parse_tounicode_cmap`/`hex_string_to_unicode`: resolves
+  hex CIDs through the file's own `/ToUnicode` CMap (`beginbfchar`/
+  sequential-`beginbfrange` forms) rather than treating the raw CID as a
+  Unicode codepoint (which would produce wrong, not just missing, text).
+  A second, non-obvious pitfall caught in the same investigation: many
+  real generators emit one `Tj` call *per glyph*, not per word - naively
+  pushing one `lines` entry per hex-string match fragments every word into
+  one character per line, silently breaking substring/whole-word search
+  even though the mapped text is byte-for-byte correct. Fixed by
+  concatenating all hex-derived characters within one content *stream*
+  into a single line before pushing. If you touch PDF text extraction
+  again, keep both fixes in mind - correct character mapping alone isn't
+  enough if the result gets fragmented back into unsearchable pieces.
 
 ## Feature parity checklist (from the original PowerShell tool, via the C# port)
 
