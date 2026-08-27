@@ -1145,6 +1145,16 @@ fn bfrange_entry_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>").unwrap())
 }
 
+/// The other legal `bfrange` form: `<start> <end> [<dst1> <dst2> ...]` -
+/// one explicit destination per source CID, not a sequential increment.
+/// Never confused with the sequential 3-hex-value form above: the
+/// character immediately after the second hex string is `[` here, `<`
+/// there, so each regex only ever matches its own real syntax.
+fn bfrange_array_entry_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?s)<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*\[\s*((?:<[0-9A-Fa-f]+>\s*)+)\]").unwrap())
+}
+
 /// Parses a `/ToUnicode` CMap stream's decompressed PostScript-ish text
 /// (`beginbfchar`/`endbfchar` and `beginbfrange`/`endbfrange` blocks - see
 /// PDF32000-1:2008 §9.10.3) into `cid -> unicode text` entries, merging
@@ -1187,6 +1197,24 @@ fn parse_tounicode_cmap(content: &str, map: &mut HashMap<u32, String>) {
             for (i, cid) in (start..=end).enumerate() {
                 if let Some(ch) = char::from_u32(dst_start + i as u32) {
                     map.insert(cid, ch.to_string());
+                }
+            }
+        }
+        // Array form: one explicit destination per source CID (not a
+        // sequential increment) - `zip` naturally stops at whichever of
+        // the range or the array is shorter, so a claimed `end` far
+        // beyond the array's actual length can't turn this into an
+        // unbounded or out-of-range loop; no separate sanity cap needed
+        // here the way the sequential form above requires one.
+        for entry in bfrange_array_entry_re().captures_iter(&block[1]) {
+            let (Ok(start), Ok(end)) = (u32::from_str_radix(&entry[1], 16), u32::from_str_radix(&entry[2], 16)) else { continue };
+            if end < start {
+                continue;
+            }
+            let dsts: Vec<&str> = hex_string_re().find_iter(&entry[3]).map(|m| &m.as_str()[1..m.as_str().len() - 1]).collect();
+            for (cid, dst_hex) in (start..=end).zip(dsts) {
+                if let Some(text) = utf16be_hex_to_string(dst_hex) {
+                    map.insert(cid, text);
                 }
             }
         }
@@ -1254,15 +1282,19 @@ fn hex_string_to_unicode(hex: &str, map: &HashMap<u32, String>) -> String {
 /// caller can surface "still working, N streams scanned, Ys elapsed"
 /// rather than the UI appearing frozen on a large/complex PDF.
 ///
-/// LIMITATIONS: no OCR; resolves `/ToUnicode` CMaps for the common
-/// `beginbfchar`/sequential-`beginbfrange` forms (see
-/// `parse_tounicode_cmap`), which covers the overwhelming majority of
-/// CID-keyed/Type0-font PDFs from modern generators - a CID with no entry
-/// in the resolved map (a ligature-form `bfrange`, an array-form
-/// `bfrange`, or simply a missing/absent `/ToUnicode` stream entirely) is
-/// skipped rather than guessed, so text from those specific glyphs may
-/// still be missing even though the surrounding text extracts correctly;
-/// filters other than ASCII85Decode/FlateDecode are not handled.
+/// LIMITATIONS: resolves `/ToUnicode` CMaps for `beginbfchar`, sequential-
+/// `beginbfrange` (`<start> <end> <dstStart>`), and array-form
+/// `beginbfrange` (`<start> <end> [<dst1> <dst2> ...]`) - including
+/// ligature (multi-character) destinations in `bfchar` and array-form
+/// `bfrange` entries (see `parse_tounicode_cmap`) - which together cover
+/// effectively all real-world `/ToUnicode` CMaps; a CID with no entry in
+/// the resolved map (a missing/absent `/ToUnicode` stream, or a
+/// ligature destination on the *sequential* `bfrange` form specifically,
+/// which has no well-defined "increment" and is skipped rather than
+/// guessed) still produces missing, not wrong, text for that glyph.
+/// No OCR - an image-only/scanned PDF (no text-showing operators at all,
+/// just a drawn image) extracts no text regardless of CMap handling.
+/// Filters other than ASCII85Decode/FlateDecode are not handled.
 pub fn extract_pdf_lines(
     bytes: &[u8],
     overall_timeout_seconds: u64,
@@ -1932,6 +1964,44 @@ mod tests {
         assert_eq!(map.get(&0x0100).map(String::as_str), Some("A"));
         assert_eq!(map.get(&0x0101).map(String::as_str), Some("B"));
         assert_eq!(map.get(&0x0102).map(String::as_str), Some("C"));
+    }
+
+    #[test]
+    fn parse_tounicode_cmap_handles_array_form_bfrange_entries() {
+        // <0200> <0202> [<0058> <0059> <005A>] means CID 0x0200->'X',
+        // 0x0201->'Y', 0x0202->'Z' - explicit per-CID destinations, not a
+        // sequential increment from a single starting value.
+        let cmap = "1 beginbfrange\n<0200> <0202> [<0058> <0059> <005A>]\nendbfrange\n";
+        let mut map = HashMap::new();
+        parse_tounicode_cmap(cmap, &mut map);
+        assert_eq!(map.get(&0x0200).map(String::as_str), Some("X"));
+        assert_eq!(map.get(&0x0201).map(String::as_str), Some("Y"));
+        assert_eq!(map.get(&0x0202).map(String::as_str), Some("Z"));
+    }
+
+    #[test]
+    fn parse_tounicode_cmap_array_form_bfrange_supports_ligature_destinations() {
+        // A dest entry longer than one UTF-16 code unit (a ligature, e.g.
+        // CID 0x0300 rendering as the two characters "fi") - the array
+        // form has no "sequential increment" ambiguity to worry about
+        // (unlike the 3-hex-value form), so multi-unit dests just work.
+        let cmap = "1 beginbfrange\n<0300> <0300> [<00660069>]\nendbfrange\n";
+        let mut map = HashMap::new();
+        parse_tounicode_cmap(cmap, &mut map);
+        assert_eq!(map.get(&0x0300).map(String::as_str), Some("fi"));
+    }
+
+    #[test]
+    fn parse_tounicode_cmap_array_form_bfrange_stops_at_the_shorter_of_range_or_array() {
+        // A claimed range far wider than the actual array must not loop
+        // out of bounds or allocate absurdly - `zip` naturally stops once
+        // the array is exhausted, regardless of what `end` claims.
+        let cmap = "1 beginbfrange\n<0000> <FFFFFF> [<0041> <0042>]\nendbfrange\n";
+        let mut map = HashMap::new();
+        parse_tounicode_cmap(cmap, &mut map); // must return promptly
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get(&0x0000).map(String::as_str), Some("A"));
+        assert_eq!(map.get(&0x0001).map(String::as_str), Some("B"));
     }
 
     #[test]
