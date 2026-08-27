@@ -167,8 +167,10 @@ must be fully self-contained and offline-capable).
 above - `rust-rewrite-status.md` (migration status), `architecture.md`
 (the original PowerShell → C# map), `benchmarking.md` (real, measured
 performance numbers with caveats), `search-semantics.md` (the formal
-matching contract), `deployment.md`/`offline-build.md` (publish and
-offline-build verification), and a series of `issue-*-status.md`/
-`issue-6-phase-*.md` docs recording the evidence-driven investigation
-and decisions behind specific features and rejected optimizations - read
-those before assuming something wasn't considered.
+matching contract), `deployment-rust.md` (build/publish/clean-machine
+verification for `app`/`cli`) and `deployment.md`/`offline-build.md`
+(the same for the C# reference app), and a series of
+`issue-*-status.md`/`issue-6-phase-*.md` docs recording the
+evidence-driven investigation and decisions behind specific features and
+rejected optimizations - read those before assuming something wasn't
+considered.

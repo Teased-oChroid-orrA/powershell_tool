@@ -1,5 +1,10 @@
 # Deployment
 
+Scope: this document covers the C#/WinUI 3 reference app (`src/`) only.
+The actively-developed Rust stack (`app/`/`cli/`) has its own, much
+simpler deployment story - see `docs/deployment-rust.md` - verified
+independently of this document.
+
 ## Target requirements (from the migration brief)
 
 - No internet access on the target machine
