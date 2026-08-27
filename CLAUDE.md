@@ -95,6 +95,26 @@ search-core/                   Plain Rust library. Zero GUI dependency -
                                skip-reindex-if-unchanged). No FFI, no
                                SafeHandle - native-search is a normal
                                in-process library dependency here.
+    src/ocr.rs                       Optional OCR fallback for image-only/
+                               scanned PDFs (`ocr` Cargo feature, off by
+                               default for the bare library, on for
+                               `app`/`cli`). `ocrs`+`rten` - pure-Rust
+                               ONNX-model execution, no system runtime
+                               dependency - chosen after evaluating
+                               alternatives specifically against this
+                               project's "no pre-installed runtime, fully
+                               offline-capable" constraint. Two `.rten`
+                               model files (~12MB, `assets/ocr/`) are
+                               embedded via `include_bytes!` rather than
+                               downloaded at runtime. Only attempted when
+                               a PDF has no text-showing operators at all
+                               AND `SearchSettings.ocr_scanned_pdfs` is
+                               explicitly enabled (real per-page latency,
+                               not the millisecond range the rest of
+                               extraction runs in) - time-bounded against
+                               the same `overall_timeout_seconds` the rest
+                               of `extract_pdf_lines` respects, never run
+                               unconditionally.
     tests/fixtures.rs                  Integration tests against the SAME
                                real DOCX/PPTX/XLSX/ZIP/PDF fixture files
                                the old C# test harness used (reused

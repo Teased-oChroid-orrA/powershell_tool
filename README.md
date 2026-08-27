@@ -65,7 +65,9 @@ PowerShell → C# migration map.
   speaker notes + SmartArt diagrams), `.xlsx`, `.zip` (including nested
   zips and nested Office documents), `.rtf`, `.pdf` (including
   CID-keyed/Type0-font PDFs via `/ToUnicode` CMap resolution - the
-  encoding most modern PDF generators use), and dozens of other
+  encoding most modern PDF generators use, plus an opt-in OCR fallback
+  for image-only/scanned PDFs, pure-Rust and fully offline - no
+  internet access or system OCR runtime needed), and dozens of other
   extensions - the full default list plus a type-to-filter tick-list
   picker and custom-extension add path
 - **Fast re-search**: an optional persistent Tantivy index (per searched

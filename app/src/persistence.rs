@@ -60,6 +60,10 @@ pub struct PersistedState {
     pub cache_file_path: String,
     pub dry_run: bool,
     pub pdf_timeout_seconds: Option<i32>,
+    // Opt-in (defaults false, including on an old config file predating
+    // this field) - real per-file latency, not a preserved default.
+    #[serde(default)]
+    pub ocr_scanned_pdfs: bool,
     pub file_timeout_seconds: Option<i32>,
     pub max_retries: Option<i32>,
     pub index_for_fast_search: bool,
@@ -175,6 +179,7 @@ fn apply_settings_fields(state: &mut AppState, persisted: &PersistedState) {
     if let Some(v) = persisted.pdf_timeout_seconds {
         state.pdf_timeout_seconds.set(v);
     }
+    state.ocr_scanned_pdfs.set(persisted.ocr_scanned_pdfs);
     if let Some(v) = persisted.file_timeout_seconds {
         state.file_timeout_seconds.set(v);
     }
@@ -261,6 +266,7 @@ pub fn build_snapshot(state: &AppState, dark_theme: bool) -> PersistedState {
         cache_file_path: state.cache_file_path.read().clone(),
         dry_run: *state.dry_run.read(),
         pdf_timeout_seconds: Some(*state.pdf_timeout_seconds.read()),
+        ocr_scanned_pdfs: *state.ocr_scanned_pdfs.read(),
         file_timeout_seconds: Some(*state.file_timeout_seconds.read()),
         max_retries: Some(*state.max_retries.read()),
         index_for_fast_search: *state.index_for_fast_search.read(),

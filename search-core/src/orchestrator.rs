@@ -566,6 +566,7 @@ async fn process_one_file(
         &bytes,
         settings.pdf_timeout_seconds as u64,
         Some(&mut on_pdf_progress),
+        settings.ocr_scanned_pdfs,
     );
 
     let lines = match extracted {

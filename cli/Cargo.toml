@@ -17,7 +17,12 @@ name = "search-cli"
 path = "src/main.rs"
 
 [dependencies]
-search-core = { path = "../search-core" }
+# "ocr" enables OCR fallback for image-only/scanned PDFs (search-core's
+# own Cargo.toml has the full dependency rationale) - on by default here
+# since this is a real, end-user-facing binary; a caller embedding
+# search-core as a library dependency without wanting the ~12MB model/
+# dependency cost would omit it.
+search-core = { path = "../search-core", features = ["ocr"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tokio-util = "0.7"
 clap = { version = "4", features = ["derive"] }

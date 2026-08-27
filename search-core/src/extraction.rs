@@ -65,12 +65,12 @@ pub enum ExtractLinesError {
 /// this trait doesn't change that reasoning, it only changes how the
 /// *dispatch table* is expressed).
 ///
-/// `pdf_timeout_seconds`/`on_pdf_progress` are part of the shared
-/// signature (not a PDF-only extra parameter) so every impl has the same
-/// shape - only `PdfExtractor` actually reads them, everyone else ignores
-/// them, matching this app's standing "PDF extraction must never go
-/// silent" progress-reporting requirement without needing a second,
-/// PDF-specific trait method.
+/// `pdf_timeout_seconds`/`on_pdf_progress`/`ocr_scanned_pdfs` are part of
+/// the shared signature (not PDF-only extra parameters) so every impl has
+/// the same shape - only `PdfExtractor` actually reads them, everyone
+/// else ignores them, matching this app's standing "PDF extraction must
+/// never go silent" progress-reporting requirement without needing a
+/// second, PDF-specific trait method.
 pub trait Extractor: Send + Sync {
     /// Lowercase, dot-prefixed extensions this extractor handles (e.g.
     /// `".docx"`). Checked via `extensions().contains(&ext)` by
@@ -84,6 +84,7 @@ pub trait Extractor: Send + Sync {
         bytes: &[u8],
         pdf_timeout_seconds: u64,
         on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
+        ocr_scanned_pdfs: bool,
     ) -> Option<Vec<String>>;
 
     /// Only `PdfExtractor` overrides this - see
@@ -98,7 +99,7 @@ impl Extractor for DocxExtractor {
     fn extensions(&self) -> &'static [&'static str] {
         &[".docx"]
     }
-    fn extract(&self, bytes: &[u8], _pdf_timeout_seconds: u64, _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>) -> Option<Vec<String>> {
+    fn extract(&self, bytes: &[u8], _pdf_timeout_seconds: u64, _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>, _ocr_scanned_pdfs: bool) -> Option<Vec<String>> {
         extract_docx_lines(bytes)
     }
 }
@@ -108,7 +109,7 @@ impl Extractor for PptxExtractor {
     fn extensions(&self) -> &'static [&'static str] {
         &[".pptx"]
     }
-    fn extract(&self, bytes: &[u8], _pdf_timeout_seconds: u64, _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>) -> Option<Vec<String>> {
+    fn extract(&self, bytes: &[u8], _pdf_timeout_seconds: u64, _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>, _ocr_scanned_pdfs: bool) -> Option<Vec<String>> {
         extract_pptx_lines(bytes)
     }
 }
@@ -118,7 +119,7 @@ impl Extractor for XlsxExtractor {
     fn extensions(&self) -> &'static [&'static str] {
         &[".xlsx"]
     }
-    fn extract(&self, bytes: &[u8], _pdf_timeout_seconds: u64, _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>) -> Option<Vec<String>> {
+    fn extract(&self, bytes: &[u8], _pdf_timeout_seconds: u64, _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>, _ocr_scanned_pdfs: bool) -> Option<Vec<String>> {
         extract_xlsx_lines(bytes)
     }
 }
@@ -128,7 +129,7 @@ impl Extractor for ZipExtractor {
     fn extensions(&self) -> &'static [&'static str] {
         &[".zip"]
     }
-    fn extract(&self, bytes: &[u8], _pdf_timeout_seconds: u64, _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>) -> Option<Vec<String>> {
+    fn extract(&self, bytes: &[u8], _pdf_timeout_seconds: u64, _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>, _ocr_scanned_pdfs: bool) -> Option<Vec<String>> {
         extract_zip_archive_lines(bytes, 2)
     }
 }
@@ -143,8 +144,9 @@ impl Extractor for PdfExtractor {
         bytes: &[u8],
         pdf_timeout_seconds: u64,
         on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
+        ocr_scanned_pdfs: bool,
     ) -> Option<Vec<String>> {
-        extract_pdf_lines(bytes, pdf_timeout_seconds, on_pdf_progress).0
+        extract_pdf_lines(bytes, pdf_timeout_seconds, on_pdf_progress, ocr_scanned_pdfs).0
     }
     fn low_confidence(&self, lines: &[String]) -> bool {
         !pdf_extraction_looks_reliable(lines)
@@ -156,7 +158,7 @@ impl Extractor for RtfExtractor {
     fn extensions(&self) -> &'static [&'static str] {
         &[".rtf"]
     }
-    fn extract(&self, bytes: &[u8], _pdf_timeout_seconds: u64, _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>) -> Option<Vec<String>> {
+    fn extract(&self, bytes: &[u8], _pdf_timeout_seconds: u64, _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>, _ocr_scanned_pdfs: bool) -> Option<Vec<String>> {
         extract_rtf_lines(bytes)
     }
 }
@@ -170,7 +172,7 @@ impl Extractor for PlainTextExtractor {
     fn extensions(&self) -> &'static [&'static str] {
         &[]
     }
-    fn extract(&self, bytes: &[u8], _pdf_timeout_seconds: u64, _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>) -> Option<Vec<String>> {
+    fn extract(&self, bytes: &[u8], _pdf_timeout_seconds: u64, _on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>, _ocr_scanned_pdfs: bool) -> Option<Vec<String>> {
         Some(split_lines(&decode_text(bytes)))
     }
 }
@@ -197,6 +199,7 @@ pub fn extract_lines_by_extension(
     bytes: &[u8],
     pdf_timeout_seconds: u64,
     on_pdf_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
+    ocr_scanned_pdfs: bool,
 ) -> Result<ExtractedLines, ExtractLinesError> {
     let registered = EXTRACTORS.iter().find(|e| e.extensions().contains(&ext)).copied();
 
@@ -214,7 +217,7 @@ pub fn extract_lines_by_extension(
         }
     };
 
-    let lines = extractor.extract(bytes, pdf_timeout_seconds, on_pdf_progress);
+    let lines = extractor.extract(bytes, pdf_timeout_seconds, on_pdf_progress, ocr_scanned_pdfs);
     match lines {
         Some(l) if !l.is_empty() => {
             let low_confidence_pdf = extractor.low_confidence(&l);
@@ -770,7 +773,15 @@ fn extract_zip_entries(
             ".xlsx" => append_entry_lines(lines, &full_name, extract_xlsx_lines(&entry_bytes)),
             ".rtf" => append_entry_lines(lines, &full_name, extract_rtf_lines(&entry_bytes)),
             ".pdf" => {
-                let (pdf_lines, _truncated) = extract_pdf_lines(&entry_bytes, 5, None);
+                // OCR deliberately not offered for a PDF nested inside a
+                // zip (or a zip nested inside a zip) - this recursive
+                // scanner has no `SearchSettings` to read an opt-in flag
+                // from, and OCR-ing every image-only PDF that happens to
+                // be archived somewhere would be an unbounded, silent
+                // cost with no way for a user to have opted in. Only a
+                // standalone top-level `.pdf` file (via `PdfExtractor`)
+                // is eligible.
+                let (pdf_lines, _truncated) = extract_pdf_lines(&entry_bytes, 5, None, false);
                 append_entry_lines(lines, &full_name, pdf_lines);
             }
             ".zip" => {
@@ -1292,13 +1303,138 @@ fn hex_string_to_unicode(hex: &str, map: &HashMap<u32, String>) -> String {
 /// ligature destination on the *sequential* `bfrange` form specifically,
 /// which has no well-defined "increment" and is skipped rather than
 /// guessed) still produces missing, not wrong, text for that glyph.
-/// No OCR - an image-only/scanned PDF (no text-showing operators at all,
-/// just a drawn image) extracts no text regardless of CMap handling.
-/// Filters other than ASCII85Decode/FlateDecode are not handled.
+/// Finds JPEG-encoded (`/DCTDecode`) image XObject streams in a PDF - the
+/// filter essentially every real-world scanner/scan-to-PDF tool uses for
+/// a page image, and the one format OCR is attempted on (see this
+/// module's Cargo.toml comment for why not CCITTFaxDecode/JPXDecode too:
+/// "skip what isn't confidently handled" rather than adding more image-
+/// codec dependencies for formats not yet seen in a real reported case).
+/// Reuses `find_stream_blocks` - the same scanner the text-extraction
+/// path uses - rather than a second, parallel PDF-object scanner; the
+/// only difference here is which streams are kept (`/Image`+`/DCTDecode`
+/// headers, not ones the normal path's `skip_marker_re` would skip).
+/// A decoded, OCR-ready RGB8 image found in a PDF, however it was
+/// actually encoded on disk - `ocr.rs` only ever deals with this already-
+/// decoded shape, never a specific PDF image filter.
+#[cfg(feature = "ocr")]
+pub(crate) struct OcrCandidateImage {
+    pub width: u32,
+    pub height: u32,
+    /// Tightly-packed RGB8 rows, `width * height * 3` bytes.
+    pub rgb: Vec<u8>,
+}
+
+#[cfg(feature = "ocr")]
+fn find_jpeg_image_streams(raw: &str) -> Vec<OcrCandidateImage> {
+    let mut out = Vec::new();
+    for (header, stream_text) in find_stream_blocks(raw) {
+        if !header.contains("/Image") || !header.contains("/DCTDecode") || stream_text.is_empty() {
+            continue;
+        }
+        let jpeg_bytes = if header.contains("/ASCII85Decode") {
+            decode_ascii85(stream_text)
+        } else {
+            encode_latin1(stream_text)
+        };
+        if jpeg_bytes.is_empty() {
+            continue;
+        }
+        let Ok(decoded) = image::load_from_memory(&jpeg_bytes) else { continue };
+        let rgb_img = decoded.into_rgb8();
+        let (width, height) = rgb_img.dimensions();
+        out.push(OcrCandidateImage { width, height, rgb: rgb_img.into_raw() });
+    }
+    out
+}
+
+#[cfg(feature = "ocr")]
+fn header_u32(header: &str, key: &str) -> Option<u32> {
+    let idx = header.find(key)?;
+    header[idx + key.len()..].trim_start().split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+}
+
+/// Finds `/Image` streams encoded as raw, uncompressed pixel data behind
+/// a plain `/FlateDecode` filter (`/ColorSpace /DeviceRGB` or
+/// `/DeviceGray`, `/BitsPerComponent 8`) - a real, legitimately common
+/// encoding for scanned-document images from tools that store lossless
+/// pixel data rather than JPEG-compressing it (found investigating this
+/// exact case in a real scanned-PDF test fixture, `xlarge-scanned.pdf` -
+/// see `benches/data/README.md`). Anything not matching this exact,
+/// unambiguous shape (missing/unparseable dimensions, a `BitsPerComponent`
+/// other than 8, a `ColorSpace` other than the two handled, or an
+/// inflated byte count that doesn't match `width * height *
+/// bytes_per_pixel` exactly) is skipped, not guessed at.
+#[cfg(feature = "ocr")]
+fn find_raw_flate_image_streams(raw: &str) -> Vec<OcrCandidateImage> {
+    let mut out = Vec::new();
+    for (header, stream_text) in find_stream_blocks(raw) {
+        if !header.contains("/Image") || !header.contains("/FlateDecode") || header.contains("/DCTDecode") || stream_text.is_empty() {
+            continue;
+        }
+        let (Some(width), Some(height), Some(bits_per_component)) = (header_u32(header, "/Width"), header_u32(header, "/Height"), header_u32(header, "/BitsPerComponent")) else {
+            continue;
+        };
+        if bits_per_component != 8 {
+            continue; // 1/2/4/16-bit-per-component images not handled - see doc comment
+        }
+        let bytes_per_pixel: u32 = if header.contains("/DeviceRGB") {
+            3
+        } else if header.contains("/DeviceGray") {
+            1
+        } else {
+            continue; // DeviceCMYK and indexed/ICC color spaces not handled
+        };
+        let Some(expected_len) = (width as u64).checked_mul(height as u64).and_then(|n| n.checked_mul(bytes_per_pixel as u64)) else { continue };
+        // A real full-page scan at a few hundred DPI in DeviceRGB (no
+        // subsampling) is genuinely 20-100MB of raw pixel data - well
+        // past `inflate_raw_deflate`'s shared 20MB deflate-bomb cap
+        // (calibrated for arbitrary text-stream content, not a
+        // dimension-bounded raster image). `bounded_inflate_to_exact_len`
+        // below is deliberately NOT that shared cap: it reads at most
+        // `expected_len` bytes - exactly what the declared, already-
+        // sanity-checked dimensions require, no more - so a malicious
+        // deflate stream can never force more than one legitimately-sized
+        // image's worth of allocation regardless of its compression
+        // ratio. The separate cap here guards the *other* attack surface
+        // (a claimed Width/Height large enough to make even `expected_len`
+        // itself an unreasonable allocation, before any inflating starts).
+        if expected_len > 300_000_000 {
+            continue;
+        }
+
+        let working_bytes = encode_latin1(stream_text);
+        if working_bytes.len() <= 2 {
+            continue;
+        }
+        let Some(inflated) = bounded_inflate_to_exact_len(&working_bytes[2..], expected_len) else { continue };
+
+        let rgb = if bytes_per_pixel == 3 {
+            inflated
+        } else {
+            // DeviceGray -> RGB (replicate the single channel 3x).
+            let mut rgb = Vec::with_capacity(inflated.len() * 3);
+            for g in &inflated {
+                rgb.extend_from_slice(&[*g, *g, *g]);
+            }
+            rgb
+        };
+        out.push(OcrCandidateImage { width, height, rgb });
+    }
+    out
+}
+
+/// An image-only/scanned PDF (no text-showing operators at all, just a
+/// drawn page image) extracts no text via the above - unless
+/// `ocr_scanned_pdfs` is `true` (and this crate is built with the `ocr`
+/// feature - see `ocr.rs`), in which case a whole-page JPEG image XObject
+/// is decoded and OCR'd as a fallback, only when the normal pass above
+/// found nothing. Filters other than ASCII85Decode/FlateDecode are not
+/// handled.
 pub fn extract_pdf_lines(
     bytes: &[u8],
     overall_timeout_seconds: u64,
     mut on_progress: Option<&mut (dyn FnMut(i32, Duration) + Send)>,
+    ocr_scanned_pdfs: bool,
 ) -> (Option<Vec<String>>, bool) {
     let raw = decode_latin1(bytes);
 
@@ -1424,6 +1560,50 @@ pub fn extract_pdf_lines(
         }
     }
 
+    // OCR fallback (opt-in, feature-gated) - only attempted when every
+    // extraction path above found nothing at all. Never runs for a PDF
+    // that already has real, extractable text, so the common case pays
+    // zero OCR cost.
+    if ocr_scanned_pdfs && lines.is_empty() && !truncated_by_time {
+        #[cfg(feature = "ocr")]
+        {
+            let mut candidates = find_jpeg_image_streams(&raw);
+            candidates.extend(find_raw_flate_image_streams(&raw));
+            // Real full-page OCR measured around 0.6-1s per page against
+            // a real scanned document - a multi-page scanned PDF could
+            // easily have dozens of page images, which would blow far
+            // past `overall_timeout_seconds` if run unconditionally.
+            // Checked before *every* image (not just once up front), so
+            // a run that's already close to the timeout after the normal
+            // extraction pass still gets bounded correctly, and results
+            // already found are always kept - this never trades a
+            // completed page's real text away because a later page would
+            // have run over.
+            let mut ocr_truncated = false;
+            for image in &candidates {
+                if start.elapsed().as_secs_f64() >= overall_timeout_seconds as f64 {
+                    ocr_truncated = true;
+                    break;
+                }
+                if let Some(cb) = on_progress.as_deref_mut() {
+                    cb(streams_scanned, start.elapsed());
+                }
+                if let Some(ocr_lines) = crate::ocr::ocr_image(image) {
+                    lines.extend(ocr_lines);
+                }
+            }
+            if ocr_truncated {
+                truncated_by_time = true;
+            }
+        }
+        #[cfg(not(feature = "ocr"))]
+        {
+            // This build wasn't compiled with the `ocr` feature - the
+            // setting exists (so `SearchSettings`/UI don't need their own
+            // feature-conditional compilation) but has no effect here.
+        }
+    }
+
     if let Some(cb) = on_progress.as_deref_mut() {
         cb(streams_scanned, start.elapsed());
     }
@@ -1456,6 +1636,32 @@ fn inflate_raw_deflate(data: &[u8]) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     decoder.take(PDF_MAX_INFLATED_STREAM_BYTES).read_to_end(&mut out).ok()?;
     Some(out)
+}
+
+/// Inflates raw deflate `data`, requiring the result to be *exactly*
+/// `expected_len` bytes - not "at most," like `inflate_raw_deflate`'s
+/// fixed cap. Used only for dimension-declared raster image data (see
+/// `find_raw_flate_image_streams`), where the caller already knows
+/// precisely how many bytes a correctly-formed stream must produce.
+/// Reads one byte beyond `expected_len` to distinguish "produced exactly
+/// `expected_len` bytes" from "produced `expected_len` bytes so far, but
+/// there's more" - both `Ok`, until this exact-length check - without
+/// that extra byte, a deflate bomb could still be capped at
+/// `expected_len` and *appear* to match by truncation alone. Bounding the
+/// read at `expected_len + 1` (not an unrelated fixed constant) is what
+/// keeps this safe regardless of `expected_len`'s size: the caller
+/// already validated it against a sane upper bound before calling this.
+#[cfg(feature = "ocr")]
+fn bounded_inflate_to_exact_len(data: &[u8], expected_len: u64) -> Option<Vec<u8>> {
+    use flate2::read::DeflateDecoder;
+    let decoder = DeflateDecoder::new(data);
+    let mut out = Vec::new();
+    let read = decoder.take(expected_len + 1).read_to_end(&mut out).ok()?;
+    if read as u64 == expected_len {
+        Some(out)
+    } else {
+        None
+    }
 }
 
 fn unescape_pdf_string(inner: &str) -> String {
@@ -1918,7 +2124,7 @@ mod tests {
         eprintln!(
             "  skipped_by_marker={skipped_by_marker} flate_streams={flate_count} rejected_by_20MB_cap={flate_rejected_by_size_cap} inflate_empty={flate_produced_no_text}"
         );
-        let (pdf_result, _) = extract_pdf_lines(&pdf_bytes, 15, None);
+        let (pdf_result, _) = extract_pdf_lines(&pdf_bytes, 15, None, false);
         eprintln!("  extract_pdf_lines final: {:?} lines", pdf_result.as_ref().map(|l| l.len()));
         assert!(
             pdf_result.map(|l| l.is_empty()).unwrap_or(true),
@@ -2055,7 +2261,7 @@ mod tests {
             "4 beginbfchar\n<0041> <0048>\n<0042> <0069>\n<0043> <0021>\n<0044> <003F>\nendbfchar\n",
             "endcmap\nendstream\nendobj\n",
         );
-        let (result, low_confidence) = extract_pdf_lines(pdf.as_bytes(), 15, None);
+        let (result, low_confidence) = extract_pdf_lines(pdf.as_bytes(), 15, None, false);
         assert!(!low_confidence);
         let lines = result.expect("must extract the CID-hex-encoded text via the ToUnicode CMap, not return None");
         assert!(
@@ -2071,7 +2277,7 @@ mod tests {
     #[test]
     fn extract_pdf_lines_still_handles_plain_literal_tj_operands_unchanged() {
         let pdf = concat!("10 0 obj\n<< /Length 40 >>\nstream\n", "BT (Hello) Tj (World) Tj ET\n", "endstream\nendobj\n",);
-        let (result, _) = extract_pdf_lines(pdf.as_bytes(), 15, None);
+        let (result, _) = extract_pdf_lines(pdf.as_bytes(), 15, None, false);
         let lines = result.expect("plain literal-string Tj text must still extract");
         assert!(lines.contains(&"Hello".to_string()));
         assert!(lines.contains(&"World".to_string()));
@@ -2230,5 +2436,184 @@ mod tests {
         print_pdf_profile("large.pdf", &format!("{data_dir}/large.pdf"));
         print_pdf_profile("xlarge.pdf (real text, arXiv paper)", &format!("{data_dir}/xlarge.pdf"));
         print_pdf_profile("xlarge-scanned.pdf (image-only, no text)", &format!("{data_dir}/xlarge-scanned.pdf"));
+    }
+
+    // ---- OCR (feature-gated, "ocr" Cargo feature) ----
+
+    #[cfg(feature = "ocr")]
+    fn tiny_jpeg_bytes() -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(32, 32, image::Rgb([255, 255, 255]));
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgb8(img).write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Jpeg).unwrap();
+        bytes
+    }
+
+    /// Proves the PDF-side half of OCR support - finding and correctly
+    /// extracting a `/DCTDecode` image XObject's raw JPEG bytes - without
+    /// needing the (slow, model-loading) ML half. Real, arbitrary binary
+    /// JPEG bytes (the full 0-255 byte range, not just ASCII text) must
+    /// round-trip through `find_stream_blocks`'s Latin-1 decode/encode
+    /// exactly, since JPEG's own byte stream would be corrupted otherwise.
+    #[cfg(feature = "ocr")]
+    #[test]
+    fn find_jpeg_image_streams_extracts_dctdecode_image_bytes() {
+        let jpeg = tiny_jpeg_bytes();
+        let raw_bytes: Vec<u8> = [
+            b"10 0 obj\n<< /Type /XObject /Subtype /Image /Width 32 /Height 32 /Filter /DCTDecode /Length ".as_slice(),
+            jpeg.len().to_string().as_bytes(),
+            b" >>\nstream\n".as_slice(),
+            &jpeg,
+            b"\nendstream\nendobj\n".as_slice(),
+        ]
+        .concat();
+        let raw = decode_latin1(&raw_bytes);
+
+        let found = find_jpeg_image_streams(&raw);
+        assert_eq!(found.len(), 1, "must find exactly the one /Image + /DCTDecode stream");
+        // Proves the extracted bytes really did decode as a valid,
+        // undamaged JPEG through the real `image` crate decoder (not
+        // merely "some bytes came out") - the round-trip through
+        // `find_stream_blocks`'s Latin-1 decode/encode must be lossless
+        // across JPEG's full 0-255 byte range, not just ASCII text.
+        assert_eq!((found[0].width, found[0].height), (32, 32));
+        assert_eq!(found[0].rgb.len(), 32 * 32 * 3);
+    }
+
+    #[cfg(feature = "ocr")]
+    #[test]
+    fn find_jpeg_image_streams_skips_non_image_and_non_dctdecode_streams() {
+        // A regular FlateDecode content stream (not an image at all) and
+        // an /Image stream using a filter other than /DCTDecode (not
+        // attempted - see the module's Cargo.toml comment on scope)
+        // must both be skipped, not misidentified as OCR candidates.
+        let raw = "5 0 obj\n<< /Length 10 >>\nstream\nBT (hi) Tj ET\nendstream\nendobj\n\
+             6 0 obj\n<< /Subtype /Image /Filter /FlateDecode /Length 4 >>\nstream\nabcd\nendstream\nendobj\n";
+        assert!(find_jpeg_image_streams(raw).is_empty());
+    }
+
+    /// `#[ignore]`d - loads the real ~12MB bundled models and runs real
+    /// inference, real per-run cost (seconds, not the millisecond range
+    /// the rest of this test suite runs in), same reasoning this crate
+    /// already applies to its other slow/real-fixture tests. Run on
+    /// demand: `cargo test -p search-core --features ocr -- --ignored
+    /// ocr_images_runs_without_panicking_on_a_real_image`. Doesn't assert
+    /// specific recognized text - a solid-color image has none to find -
+    /// only that the full model-load-through-inference pipeline runs to
+    /// completion without panicking or returning `None` (which would mean
+    /// the bundled models themselves failed to load).
+    #[cfg(feature = "ocr")]
+    #[test]
+    #[ignore]
+    fn ocr_images_runs_without_panicking_on_a_real_image() {
+        let jpeg = tiny_jpeg_bytes();
+        let decoded = image::load_from_memory(&jpeg).unwrap().into_rgb8();
+        let (width, height) = decoded.dimensions();
+        let candidate = OcrCandidateImage { width, height, rgb: decoded.into_raw() };
+        let result = crate::ocr::ocr_image(&candidate);
+        assert!(result.is_some(), "the bundled models must load successfully");
+    }
+
+    /// `#[ignore]`d (real ~12MB model load + real ~1s/page inference,
+    /// same reasoning as this file's other slow/real-fixture tests).
+    /// `xlarge-scanned.pdf` (`benches/data/README.md`) is a real,
+    /// legitimately-sourced scanned document whose pages are raw
+    /// `/DeviceRGB`/`/FlateDecode` images (2479x3509 - the exact shape
+    /// that motivated `find_raw_flate_image_streams`/
+    /// `bounded_inflate_to_exact_len`, since its ~26MB-per-page raw pixel
+    /// data exceeds `inflate_raw_deflate`'s shared 20MB deflate-bomb cap,
+    /// which is why a dedicated, dimension-bounded inflate path exists at
+    /// all rather than reusing that one). Locks in that real, readable
+    /// text keeps coming out - this is the actual case that proved the
+    /// feature works, not just a synthetic round-trip.
+    #[cfg(feature = "ocr")]
+    #[test]
+    #[ignore]
+    fn ocr_extracts_real_text_from_the_real_scanned_pdf_fixture() {
+        let data_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/benches/data");
+        let bytes = std::fs::read(format!("{data_dir}/xlarge-scanned.pdf")).unwrap();
+        let raw = decode_latin1(&bytes);
+        let candidates = find_raw_flate_image_streams(&raw);
+        assert!(!candidates.is_empty(), "must find this fixture's raw-FlateDecode page images");
+        assert_eq!((candidates[0].width, candidates[0].height), (2479, 3509));
+
+        let lines = crate::ocr::ocr_image(&candidates[0]).expect("OCR must run against the bundled models");
+        let joined = lines.join(" ");
+        for expected in ["PDF", "Testing", "sample-files.com"] {
+            assert!(joined.contains(expected), "expected {expected:?} in real OCR output, got: {lines:?}");
+        }
+    }
+
+    #[cfg(feature = "ocr")]
+    #[test]
+    fn find_raw_flate_image_streams_extracts_raw_devicergb_pixels() {
+        let (width, height) = (4u32, 3u32);
+        let pixels: Vec<u8> = (0..(width * height * 3) as u8).collect(); // deterministic, distinguishable bytes
+        let mut deflated = Vec::new();
+        {
+            use flate2::write::DeflateEncoder;
+            use flate2::Compression;
+            let mut enc = DeflateEncoder::new(&mut deflated, Compression::default());
+            std::io::Write::write_all(&mut enc, &pixels).unwrap();
+            enc.finish().unwrap();
+        }
+        // A real /FlateDecode PDF stream is the zlib-wrapped form (2-byte
+        // header + raw deflate body + adler32 trailer) - `inflate_raw_deflate`
+        // only reads the raw-deflate body, so the header bytes just need
+        // to be present and skippable, matching every other FlateDecode
+        // stream in this file's own handling.
+        let mut stream_bytes = vec![0x78u8, 0x9c];
+        stream_bytes.extend_from_slice(&deflated);
+
+        let raw_bytes: Vec<u8> = [
+            format!("10 0 obj\n<< /Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /Length {} >>\nstream\n", stream_bytes.len()).into_bytes(),
+            stream_bytes,
+            b"\nendstream\nendobj\n".to_vec(),
+        ]
+        .concat();
+        let raw = decode_latin1(&raw_bytes);
+
+        let found = find_raw_flate_image_streams(&raw);
+        assert_eq!(found.len(), 1);
+        assert_eq!((found[0].width, found[0].height), (width, height));
+        assert_eq!(found[0].rgb, pixels, "decoded pixel bytes must match exactly, not just have the right length");
+    }
+
+    #[cfg(feature = "ocr")]
+    #[test]
+    fn find_raw_flate_image_streams_skips_when_dimensions_dont_match_inflated_length() {
+        // Declares 100x100 (30000 bytes expected) but the actual deflated
+        // payload is tiny - a real mismatch this function must not guess
+        // past.
+        let raw = "10 0 obj\n<< /Subtype /Image /Width 100 /Height 100 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /Length 10 >>\nstream\nxx\nendstream\nendobj\n";
+        assert!(find_raw_flate_image_streams(raw).is_empty());
+    }
+
+    /// `#[ignore]`d for the same real-model-load reason as above. Builds
+    /// a synthetic image-only PDF (an `/Im1 Do` content stream drawing a
+    /// `/DCTDecode` image XObject, no text-showing operators anywhere -
+    /// the same shape as a real scanned-document PDF) and confirms the
+    /// full `extract_pdf_lines` OCR fallback path runs to completion when
+    /// `ocr_scanned_pdfs` is enabled, without panicking - the actual
+    /// integration point a future refactor could most plausibly break.
+    #[cfg(feature = "ocr")]
+    #[test]
+    #[ignore]
+    fn extract_pdf_lines_falls_back_to_ocr_for_an_image_only_pdf_when_enabled() {
+        let jpeg = tiny_jpeg_bytes();
+        let pdf_bytes: Vec<u8> = [
+            b"10 0 obj\n<< /Type /XObject /Subtype /Image /Name /Im1 /Width 32 /Height 32 /Filter /DCTDecode /Length ".as_slice(),
+            jpeg.len().to_string().as_bytes(),
+            b" >>\nstream\n".as_slice(),
+            &jpeg,
+            b"\nendstream\nendobj\n11 0 obj\n<< /Length 20 >>\nstream\nq 32 0 0 32 0 0 cm /Im1 Do Q\nendstream\nendobj\n".as_slice(),
+        ]
+        .concat();
+
+        let (result, truncated) = extract_pdf_lines(&pdf_bytes, 15, None, true);
+        assert!(!truncated);
+        // No assertion on recognized text content (a solid-color image
+        // has none) - this proves the pipeline doesn't panic and
+        // completes, which is what this integration point can break.
+        let _ = result;
     }
 }

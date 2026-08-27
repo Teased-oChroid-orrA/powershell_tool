@@ -200,6 +200,13 @@ pub struct AppState {
     pub cache_file_path: Signal<String>,
     pub dry_run: Signal<bool>,
     pub pdf_timeout_seconds: Signal<i32>,
+    /// Defaults OFF - real per-file latency (roughly a second or more per
+    /// page, not the millisecond range the rest of extraction runs in),
+    /// so opting in is a deliberate tradeoff, not a preserved default.
+    /// Only attempted when a PDF has no text-showing operators at all
+    /// (an image-only/scanned page) - never runs against a normal text
+    /// PDF regardless of this setting.
+    pub ocr_scanned_pdfs: Signal<bool>,
     pub file_timeout_seconds: Signal<i32>,
     pub max_retries: Signal<i32>,
 
@@ -324,6 +331,7 @@ impl AppState {
             cache_file_path: use_signal(String::new),
             dry_run: use_signal(|| false),
             pdf_timeout_seconds: use_signal(|| 15),
+            ocr_scanned_pdfs: use_signal(|| false),
             file_timeout_seconds: use_signal(|| 30),
             max_retries: use_signal(|| 3),
 
@@ -450,6 +458,7 @@ impl AppState {
             // XAML control for MaxEmbedLines either.
             max_embed_lines: 4000,
             pdf_timeout_seconds: *self.pdf_timeout_seconds.read(),
+            ocr_scanned_pdfs: *self.ocr_scanned_pdfs.read(),
             export_csv: *self.export_csv.read(),
             export_json: *self.export_json.read(),
             open_report_when_done: *self.open_report_when_done.read(),
@@ -1206,7 +1215,7 @@ fn reindex_changed_paths(paths: &[String], search_path: &str, settings: &search_
         let Ok(meta) = std::fs::metadata(path) else { continue };
         let Ok(bytes) = std::fs::read(path) else { continue };
         let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy().to_lowercase())).unwrap_or_default();
-        let Ok(extracted) = search_core::extraction::extract_lines_by_extension(&ext, &bytes, settings.pdf_timeout_seconds as u64, None)
+        let Ok(extracted) = search_core::extraction::extract_lines_by_extension(&ext, &bytes, settings.pdf_timeout_seconds as u64, None, settings.ocr_scanned_pdfs)
         else {
             continue;
         };

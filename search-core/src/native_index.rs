@@ -248,7 +248,7 @@ pub async fn build_or_update_corpus_index(
         };
 
         let ext = file.path.extension().map(|e| format!(".{}", e.to_string_lossy().to_lowercase())).unwrap_or_default();
-        let extracted = extraction::extract_lines_by_extension(&ext, &bytes, settings.pdf_timeout_seconds as u64, None);
+        let extracted = extraction::extract_lines_by_extension(&ext, &bytes, settings.pdf_timeout_seconds as u64, None, settings.ocr_scanned_pdfs);
         let lines = match extracted {
             Ok(e) => e.lines,
             Err(_) => {

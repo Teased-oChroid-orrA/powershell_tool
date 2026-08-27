@@ -5,7 +5,10 @@ edition = "2021"
 publish = false
 
 [dependencies]
-search-core = { path = "../search-core" }
+# "ocr" enables OCR fallback for image-only/scanned PDFs (search-core's
+# own Cargo.toml has the full dependency rationale) - on by default here
+# since this is the real end-user-facing GUI.
+search-core = { path = "../search-core", features = ["ocr"] }
 native-search = { path = "../native-search" }
 # "native" (not "desktop"): dioxus-native's Blitz renderer (WGPU+winit),
 # no WebView involved - avoids wry/WebView2's hard machine-wide-runtime

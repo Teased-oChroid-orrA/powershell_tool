@@ -64,6 +64,42 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # logger feature; the CLI installs its own - see cli/src/main.rs), so
 # this has zero behavioral cost for search-core's own test suite.
 tracing = "0.1"
+# Optional OCR support for image-only/scanned PDFs (no text-showing
+# operators at all - a drawn page image, which the regex/content-stream
+# extractor genuinely cannot get text from any other way). `ocrs`+`rten`
+# were chosen after evaluating alternatives specifically against this
+# project's standing "no pre-installed runtime, fully offline-capable"
+# constraint: `rten` is a pure-Rust ONNX-model execution engine (no
+# system ONNX Runtime, no Python, no libtorch - unlike `ort` or Tesseract
+# bindings, which would need a real C/C++ runtime installed on the target
+# machine). Its two `.rten` model files (~12MB total) are embedded into
+# the binary via `include_bytes!`/`Model::load_static_slice` (see ocr.rs)
+# rather than the CLI tool's own default of downloading them at first
+# run, which would violate this app's "no internet access on the target
+# machine" requirement. Feature-gated (not a default dependency) since
+# it's a real ~12MB+ binary size and dependency-tree increase that only
+# matters to callers who actually want OCR - `app`/`cli` enable it by
+# default; a caller using `search-core` as a pure library doesn't pay for
+# it unless they opt in.
+# Pinned to exactly what ocrs 0.12.2 itself depends on (verified via
+# Cargo.lock after a first build attempt pulled in two different rten
+# versions from an unpinned/mismatched constraint here) - `rten`'s public
+# types (like `Model`) aren't compatible across versions, so this crate's
+# own `rten` dependency must resolve to the same version ocrs's
+# `OcrEngineParams` expects, not just "any 0.x that satisfies semver."
+ocrs = { version = "0.12", optional = true }
+rten = { version = "=0.24.0", optional = true }
+image = { version = "0.25", optional = true, default-features = false, features = ["jpeg"] }
+
+[features]
+# JPEG only (via `image`'s "jpeg" feature) - DCTDecode is the filter
+# essentially every real-world scanner/scan-to-PDF tool uses for a page
+# image; CCITTFaxDecode (fax-style bilevel) and JPXDecode (JPEG2000) are
+# real PDF filters this doesn't attempt, matching this extractor's
+# established "skip what isn't confidently handled, never guess" rule
+# rather than adding more image-format dependencies for formats not yet
+# seen in a real reported case.
+ocr = ["dep:ocrs", "dep:rten", "dep:image"]
 
 [dev-dependencies]
 tempfile = "3"

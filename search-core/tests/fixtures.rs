@@ -45,7 +45,7 @@ fn pptx_fixture_finds_apple() {
 
 #[test]
 fn pdf_fixture_ascii85_flate_chain_finds_apple_and_banana_reliably() {
-    let (lines, truncated) = extract_pdf_lines(TEST_PDF, 15, None);
+    let (lines, truncated) = extract_pdf_lines(TEST_PDF, 15, None, false);
     let lines = lines.expect("real ReportLab PDF fixture (ASCII85+FlateDecode) must extract");
     assert!(!truncated);
     let joined = lines.join("\n");

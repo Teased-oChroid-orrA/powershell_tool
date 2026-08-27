@@ -60,6 +60,16 @@ pub struct SearchSettings {
     pub max_file_size_mb: f64,
     pub max_embed_lines: i32,
     pub pdf_timeout_seconds: i32,
+    /// Opt-in fallback for image-only/scanned PDFs (no text-showing
+    /// operators at all, just a drawn page image) - only attempted when
+    /// every other PDF text-extraction path found nothing, so a normal
+    /// text PDF never pays this cost. `false` by default: OCR is real
+    /// per-file latency (roughly a second or more per page, not the
+    /// millisecond range the rest of extraction runs in) and, when this
+    /// crate is built without the `ocr` Cargo feature, has no effect at
+    /// all regardless of this flag - see `extraction.rs`'s
+    /// `extract_pdf_lines` and `ocr.rs`.
+    pub ocr_scanned_pdfs: bool,
 
     pub export_csv: bool,
     pub export_json: bool,
@@ -146,6 +156,7 @@ impl Default for SearchSettings {
             max_file_size_mb: 50.0,
             max_embed_lines: 4000,
             pdf_timeout_seconds: 15,
+            ocr_scanned_pdfs: false,
             export_csv: false,
             export_json: false,
             open_report_when_done: false,

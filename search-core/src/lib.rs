@@ -5,6 +5,8 @@ pub mod file_reader;
 pub mod matching;
 pub mod models;
 pub mod native_index;
+#[cfg(feature = "ocr")]
+pub mod ocr;
 pub mod orchestrator;
 pub mod regex_literals;
 pub mod report;

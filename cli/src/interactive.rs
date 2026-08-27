@@ -160,6 +160,7 @@ pub(crate) fn gather(defaults: Cli) -> Result<Cli, dialoguer::Error> {
         proximity_lines,
         regex,
         whole_word,
+        ocr_scanned_pdfs: defaults.ocr_scanned_pdfs,
         extensions,
         exclude_folders,
         include_hidden,

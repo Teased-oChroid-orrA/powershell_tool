@@ -489,6 +489,14 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                             oninput: move |e| { if let Ok(v) = e.value().parse::<i32>() { state.pdf_timeout_seconds.set(v.max(1)); } },
                         }
                     }
+                    label { class: "field-inline",
+                        input {
+                            r#type: "checkbox",
+                            checked: *state.ocr_scanned_pdfs.read(),
+                            oninput: move |e| state.ocr_scanned_pdfs.set(e.checked()),
+                        }
+                        span { "OCR image-only/scanned PDFs (slower - roughly a second or more per page)" }
+                    }
                     label { class: "field",
                         span { "Per-file read timeout (seconds)" }
                         input {

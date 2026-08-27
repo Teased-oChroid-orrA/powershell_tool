@@ -127,6 +127,14 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) whole_word: bool,
 
+    /// OCR fallback for image-only/scanned PDFs (no text-showing
+    /// operators at all - just a drawn page image), only attempted when
+    /// every other PDF text-extraction path finds nothing. Off by
+    /// default: real per-file latency (roughly a second or more per
+    /// page, not the millisecond range the rest of extraction runs in).
+    #[arg(long)]
+    pub(crate) ocr_scanned_pdfs: bool,
+
     /// Extensions to search, comma-separated (e.g. "txt,log,pdf"). Omit
     /// to use the built-in default extension catalog, same as the GUI.
     #[arg(long, value_delimiter = ',')]
@@ -408,6 +416,7 @@ async fn run(cli: Cli) -> ExitCode {
         exclude_scope: cli.exclude_scope.into(),
         whole_word: cli.whole_word,
         use_regex: cli.regex,
+        ocr_scanned_pdfs: cli.ocr_scanned_pdfs,
         group_by: cli.group_by.into(),
         extensions: cli.extensions.map(|exts| exts.into_iter().map(normalize_extension).collect()),
         exclude_folders: cli.exclude_folders,

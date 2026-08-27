@@ -110,8 +110,8 @@ failure is genuinely new information, not something to guess around.
   CID-keyed/Type0-font PDFs (the common case for modern PDF generators)
   are handled via `/ToUnicode` CMap resolution (see `extraction.rs`'s
   `parse_tounicode_cmap`), and a scanned/image-only PDF (no text-showing
-  operators at all - just a drawn page image) can optionally be OCR'd
-  (see the OCR section below) if that opt-in setting is enabled.
+  operators at all - just a drawn page image) can optionally be OCR'd if
+  the "OCR image-only/scanned PDFs" setting is enabled - see "OCR" below.
 - **Architecture is win-x64 only for now**, matching the C# app's own
   scope - `x86_64-pc-windows-msvc` is the only target CI builds and
   verifies.
@@ -122,3 +122,39 @@ failure is genuinely new information, not something to guess around.
   first real-world confirmation, the same gap `docs/deployment.md`
   documented (and then found a real bug through) for the C# app before
   its own first real-machine run.
+
+## OCR ("OCR image-only/scanned PDFs" setting)
+
+Bundled, not downloaded - satisfies "no internet access on the target
+machine" the same as everything else in this doc. `ocrs`+`rten`'s two
+`.rten` model files (~12MB total: `search-core/assets/ocr/text-detection.rten`,
+`text-recognition.rten`) are embedded into `app.exe`/`search-cli.exe` via
+`include_bytes!` at compile time (see `search-core/Cargo.toml`'s `ocrs`/
+`rten` dependency comment for the full evaluation behind this specific
+choice - pure-Rust ONNX-model execution, no system runtime, unlike
+Tesseract bindings or `ort`). Nothing extra ships alongside the exe for
+this feature; the binary itself is still the complete, self-contained
+artifact "What ends up in the build output" above describes.
+
+**Real-world measured cost** (this development machine, not win-x64 -
+same "wrong hardware" caveat as `docs/benchmarking.md`): ~0.6-1s per
+full-page image against a real scanned document
+(`search-core/benches/data/xlarge-scanned.pdf`, 2479x3509 raw
+`/DeviceRGB` pixels per page). A multi-page scanned PDF is bounded by the
+same `overall_timeout_seconds` the rest of `extract_pdf_lines` respects -
+checked before every page, not just once up front - so a large scanned
+document produces partial (not zero, not unbounded-runtime) results if
+OCR would otherwise run past the configured PDF timeout, the same
+truncation behavior the normal text-extraction path already has for
+large/complex files.
+
+**Scope**: only `/DCTDecode` (JPEG) and raw, uncompressed `/FlateDecode`
+`/DeviceRGB`/`/DeviceGray` 8-bit images are attempted - the two encodings
+real-world scan-to-PDF tools were actually observed using (including the
+committed `xlarge-scanned.pdf` fixture, which uses the raw-FlateDecode
+form specifically - its ~26MB-per-page raw pixel data is why a dedicated,
+dimension-bounded inflate path exists in `extraction.rs`
+(`bounded_inflate_to_exact_len`) rather than reusing the shared 20MB
+deflate-bomb cap the rest of PDF extraction uses, which a real full-page
+scan at this resolution legitimately exceeds). `CCITTFaxDecode`/
+`JPXDecode` and non-8-bit images are skipped, not guessed at.
