@@ -8,11 +8,13 @@
 // want the console for the tracing::Level::INFO logger output below.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod bushing_workbench;
 mod command_palette;
 mod components;
 mod context_menu;
 mod drag_drop;
 mod fs_watch;
+mod net_provider;
 mod persistence;
 mod preview;
 mod state;
@@ -62,11 +64,15 @@ fn load_window_icon() -> Option<winit::window::Icon> {
 /// `dioxus-native-dom`/`blitz-shell`/`blitz-html`, verified by reading
 /// `dioxus-native-0.7.10/src/lib.rs` directly) with two narrowed-down
 /// simplifications specific to this app, not general-purpose omissions:
-/// `net_provider`/`navigation_provider` are both `None` because this app
-/// has no `<img src="http://...">`/remote-font/`<a href>` usage at all -
-/// everything is inline `style{}` and local file I/O - so the (crate-
-/// private, unreachable from outside `dioxus-native`) providers that
-/// would normally supply those aren't needed here.
+/// `navigation_provider` is `None` because this app has no `<a href>`
+/// navigation at all. `net_provider` is `net_provider::data_uri_only(...)`
+/// (not `None`, and not `dioxus-native`'s own full HTTP-capable default) -
+/// the Bushing Workbench's pre-rendered LaTeX formula images load via
+/// `<img src="data:...">`, which needs *some* provider (see
+/// `net_provider.rs`'s doc comment for why `DummyNetProvider`, what
+/// `None` resolves to, can't serve that), but this app still has no
+/// legitimate use for fetching a real remote URL, so the HTTP-capable
+/// `blitz-net::Provider` stays deliberately unwired.
 mod launch {
     use std::sync::Arc;
 
@@ -95,9 +101,10 @@ mod launch {
         let vdom = VirtualDom::new(app);
 
         let html_parser_provider = Some(Arc::new(blitz_html::HtmlProvider) as _);
+        let net_provider = Some(crate::net_provider::data_uri_only(event_loop.create_proxy()));
         let doc = DioxusDocument::new(
             vdom,
-            DocumentConfig { net_provider: None, html_parser_provider, navigation_provider: None, ..Default::default() },
+            DocumentConfig { net_provider, html_parser_provider, navigation_provider: None, ..Default::default() },
         );
 
         let renderer = DioxusNativeWindowRenderer::with_features_and_limits(None, None);
@@ -127,6 +134,7 @@ enum ResizeTarget {
 #[derive(Clone, Copy, PartialEq)]
 enum ToolId {
     Search,
+    Bushing,
     Dupes,
     Rename,
     Logs,
@@ -167,6 +175,18 @@ fn icon_logs() -> Element {
     rsx! {
         svg { view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_linecap: "round", stroke_linejoin: "round",
             path { d: "M4 6h16M4 12h10M4 18h13" }
+        }
+    }
+}
+/// A bushing's own cross-section (concentric rings, the two diameters
+/// this whole tool centers on) rather than a generic mechanical/gear
+/// glyph - the same "icon should mean the specific thing it opens"
+/// discipline the other nav icons already follow.
+fn icon_bushing() -> Element {
+    rsx! {
+        svg { view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_linecap: "round", stroke_linejoin: "round",
+            circle { cx: "12", cy: "12", r: "9" }
+            circle { cx: "12", cy: "12", r: "4" }
         }
     }
 }
@@ -416,6 +436,15 @@ fn App() -> Element {
                             }
                         }
                         button {
+                            class: if active_tool() == ToolId::Bushing { "nav-item active" } else { "nav-item" },
+                            onclick: move |_| active_tool.set(ToolId::Bushing),
+                            span { class: "nav-icon", {icon_bushing()} }
+                            span { class: "nav-item-body",
+                                span { class: "nav-item-title", "Bushing Workbench" }
+                                span { class: "nav-item-desc", "Interference-fit stress & margins" }
+                            }
+                        }
+                        button {
                             class: if active_tool() == ToolId::Dupes { "nav-item active" } else { "nav-item" },
                             onclick: move |_| active_tool.set(ToolId::Dupes),
                             span { class: "nav-icon", {icon_dupes()} }
@@ -462,6 +491,7 @@ fn App() -> Element {
                             h1 {
                                 match active_tool() {
                                     ToolId::Search => "Search Files",
+                                    ToolId::Bushing => "Bushing Workbench",
                                     ToolId::Dupes => "Duplicate Finder",
                                     ToolId::Rename => "Batch Rename",
                                     ToolId::Logs => "Log Analyzer",
@@ -470,6 +500,7 @@ fn App() -> Element {
                             p {
                                 match active_tool() {
                                     ToolId::Search => "Recursively search a folder for keyword filters",
+                                    ToolId::Bushing => "Straight-bushing interference-fit stress & margins",
                                     ToolId::Dupes => "Find and clean up redundant files",
                                     ToolId::Rename => "Pattern-based bulk renaming",
                                     ToolId::Logs => "Parse and chart log files",
@@ -508,6 +539,8 @@ fn App() -> Element {
                                 }
                                 div { class: "preview-column", style: "width: {preview_width()}px;", PreviewPane { state } }
                             }
+                        } else if active_tool() == ToolId::Bushing {
+                            bushing_workbench::BushingWorkbench { dark }
                         } else if active_tool() == ToolId::Dupes {
                             PlaceholderTool {
                                 title: "Duplicate Finder",
@@ -1185,4 +1218,103 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 }
 .preview-matchline { color: var(--fg); background: var(--bg-sunken); }
 .preview-context mark { background: color-mix(in srgb, var(--accent) 55%, transparent); color: var(--fg); border-radius: 2px; padding: 0 1px; }
+
+/* ---- Bushing Workbench (bushing_workbench.rs) ---- */
+.bushing-layout {
+    display: flex; height: 100%; min-height: 0; overflow: hidden;
+}
+.bushing-inputs {
+    flex: none; width: 340px; overflow-y: auto; overflow-x: hidden;
+    padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3);
+    border-right: 1px solid var(--glass-border);
+}
+.bushing-section { margin: 0; }
+.bushing-section-body { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-1) 0 var(--space-4); }
+.field-label { font-weight: 600; font-size: 0.78em; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.field-row { display: flex; gap: var(--space-2); }
+.field-row .field { min-width: 0; }
+.field-inline-row { display: flex; align-items: center; gap: var(--space-2); }
+
+.bushing-inputs .chip { cursor: pointer; transition: background-color 0.15s var(--ease), color 0.15s var(--ease), border-color 0.15s var(--ease); border: 1px solid transparent; }
+.bushing-inputs .chip.selected { background: var(--accent); color: var(--accent-fg); }
+
+.reamer-picker-trigger { flex: none; font-size: 0.82em; padding: var(--space-1) var(--space-3); }
+.reamer-picker {
+    position: relative; width: 100%; margin-top: var(--space-2);
+    background: var(--bg-raised); border: 1px solid var(--border-strong); border-radius: var(--radius-md);
+    box-shadow: var(--shadow-md); overflow: hidden;
+}
+.reamer-picker-header {
+    display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);
+    padding: var(--space-2) var(--space-3); font-size: 0.82em; font-weight: 650; color: var(--fg-muted);
+    border-bottom: 1px solid var(--border); background: var(--bg-sunken);
+}
+.reamer-picker-close { flex: none; padding: 2px 8px; font-size: 0.8em; }
+.reamer-picker-list { max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; }
+.reamer-picker-row {
+    display: flex; align-items: center; gap: var(--space-2); width: 100%;
+    padding: var(--space-2) var(--space-3); border: none; border-radius: 0; border-bottom: 1px solid var(--border);
+    background: transparent; text-align: left; font-weight: 500;
+}
+.reamer-picker-row:last-child { border-bottom: none; }
+.reamer-picker-row:hover { background: var(--panel-hover); }
+.reamer-picker-size { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reamer-picker-nominal { flex: none; font-family: var(--mono); color: var(--fg-muted); font-size: 0.9em; }
+.reamer-picker-tier { flex: none; font-size: 0.72em; color: var(--fg-subtle); }
+
+.bushing-results { flex: 1; min-width: 0; overflow: hidden; }
+.bushing-results-scroll { height: 100%; overflow-y: auto; overflow-x: hidden; padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-4); }
+
+.bushing-summary-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--space-3); }
+.summary-card {
+    display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-3);
+    background: var(--glass); border: 1px solid var(--glass-border); border-radius: var(--radius-md);
+}
+.summary-card-label { font-size: 0.76em; font-weight: 650; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.summary-card-value { font-size: 1.15em; font-weight: 700; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.ms-pill {
+    align-self: flex-start; font-size: 0.76em; font-weight: 700; padding: 2px var(--space-2);
+    border-radius: var(--radius-pill); font-variant-numeric: tabular-nums;
+}
+.ms-pass { background: var(--good-bg); color: var(--good); }
+.ms-marginal { background: color-mix(in srgb, var(--warning) 18%, transparent); color: var(--warning); }
+.ms-fail { background: var(--danger-bg); color: var(--danger); }
+.ms-neutral { background: var(--bg-sunken); color: var(--fg-subtle); }
+
+.bushing-alert {
+    padding: var(--space-3); border-radius: var(--radius-md); font-size: 0.9em; font-weight: 550;
+    border: 1px solid transparent;
+}
+.bushing-alert-fail { background: var(--danger-bg); color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
+.bushing-alert-warn { background: color-mix(in srgb, var(--warning) 14%, transparent); color: var(--warning); border-color: color-mix(in srgb, var(--warning) 35%, transparent); }
+
+.bushing-margins { display: flex; flex-direction: column; gap: var(--space-2); }
+.margin-row {
+    display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3);
+    background: var(--glass); border: 1px solid var(--glass-border); border-radius: var(--radius-md);
+}
+.margin-row-label { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.margin-row-demand { flex: none; font-size: 0.82em; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+
+.bushing-detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: var(--space-2) var(--space-4); }
+.detail-field { display: flex; flex-direction: column; gap: 2px; }
+.detail-field-label { font-size: 0.76em; color: var(--fg-muted); }
+.detail-field-value { font-weight: 650; font-variant-numeric: tabular-nums; }
+
+.bushing-derivation-toggle { display: flex; }
+.link-button {
+    padding: 0; border: none; background: none; color: var(--accent); font-weight: 650;
+    font-size: 0.88em; text-decoration: underline; text-underline-offset: 2px;
+}
+.link-button:hover:not(:disabled) { background: none; color: var(--accent-strong); }
+
+.derivation-block { display: flex; flex-direction: column; gap: var(--space-3); padding-top: var(--space-1); }
+.derivation-row {
+    display: flex; align-items: center; gap: var(--space-4); padding: var(--space-2) 0;
+    border-bottom: 1px solid var(--border);
+}
+.derivation-row:last-child { border-bottom: none; }
+.derivation-formula { flex: none; max-height: 42px; width: auto; }
+.derivation-value { flex: 1; min-width: 0; font-family: var(--mono); font-size: 0.86em; color: var(--fg-muted); }
 "#;

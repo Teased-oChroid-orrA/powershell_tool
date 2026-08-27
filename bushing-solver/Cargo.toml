@@ -1,0 +1,29 @@
+[package]
+name = "bushing-solver"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Straight-bushing interference-fit calculation engine, ported from
+# ~/Claude/Projects/engineering.toolbox's TypeScript bushing workbench
+# (src/lib/core/bushing/{solveEngine,solveMath,materials,reamerCatalog}.ts
+# - a much larger tool covering straight/flanged/countersink bushings,
+# tolerance-stack enforcement policy, service-duty/wear screening,
+# process-route review, and standards/approval review). This crate is a
+# scoped v1: straight bushings only (no countersink/flange geometry, no
+# duty/process/approval layers) - see docs/bushing-workbench-status.md in
+# the powershell_tool repo for the exact scope decision and what's
+# deliberately deferred.
+#
+# The straight-bushing physics (Lame thick-wall interference fit,
+# tolerance-stack resolution, margins of safety) is ported line-for-line,
+# not reinterpreted - verified against real golden output from the
+# original TS engine (see tests/differential.rs), the same "prove it
+# against the real thing" discipline this repo's other ports use.
+#
+# Zero GUI dependency, deliberately - a pure calculation library `app/`
+# consumes, same shape as search-core's own "zero GUI dependency" rule.
+[dependencies]
+
+[dev-dependencies]

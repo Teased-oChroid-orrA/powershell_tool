@@ -1,0 +1,139 @@
+# Bushing Workbench: straight-bushing interference-fit calculator
+
+A new Toolbench tool (`app/src/bushing_workbench.rs`, backed by the new
+`bushing-solver` crate) ported from
+`~/Claude/Projects/engineering.toolbox`'s much larger aerospace-grade
+bushing workbench. Scoped deliberately - see "Scope decision" below - not
+a 1:1 port of the source project's entire tool.
+
+## Source project and why this is a scoped subset, not a full port
+
+`engineering.toolbox`'s bushing workbench
+(`src/lib/core/bushing/{solveEngine,solveMath,materials,reamerCatalog}.ts`,
+~4,100 lines, 40+ Svelte UI components) analyzes press-fit/interference-fit
+bushings for straight *and* countersunk/flanged geometry, with tolerance-
+stack enforcement policy, service-duty/wear (PV) screening, process-route
+review, and standards/approval review (FAA AC 43-13, NAS/MS, SAE AMS, OEM
+SRM). Porting all of that was explicitly out of scope for this pass - the
+user chose "core engine + essential UI" (Lamé interference-fit stress,
+contact pressure, margins of safety for housing/bushing/ligament/edge-
+distance, tolerance stack), plus two additions on top: the LaTeX-rendered
+derivation view, and the reamer picker.
+
+**Straight-bushing-only in practice means more than "skip the countersink
+inputs."** Reading `solveEngine.ts` confirmed that excluding countersink/
+flange geometry eliminates the "corner enumeration" worst-case tolerance-
+stacking complexity entirely (`enumerateCountersinkCorners`,
+`solveCountersink`, `csDiaToleranceFromBase`/`csDepthToleranceFromBase`),
+which in turn collapses `calculateUniversalBearing`'s `t_eff_sequence` to
+just `housing_len` (a single cylindrical segment, `eta = 1.0` - confirmed
+by reading `src/lib/core/shared/bearing.ts`), so that whole shared module
+didn't need porting either. This is a real scope boundary, not a
+placeholder - a future flanged-bushing pass would need to port both of
+those pieces, not just add UI fields.
+
+## Crate: `bushing-solver`
+
+Plain Rust library, zero GUI dependency (mirrors `search-core`'s own
+"testable on any toolchain" property):
+
+- `materials.rs` - the 17-entry material table (`Al7075`, `Ti-6Al-4V`,
+  `Inconel 718`, bronze/steel washer stand-ins, etc.), ported verbatim.
+- `tolerance.rs` - `resolveTolerance`/`makeRange`/`buildOdTolerance`/
+  `containmentViolations` from `solveMath.ts`, the straight-bushing-
+  relevant subset (the TS source's bore-capability/interference-policy
+  auto-adjustment machinery that tries to auto-tighten an infeasible bore
+  band is not ported - v1 always resolves tolerance bands as entered, and
+  honestly reports `Infeasible` status when they don't overlap, rather
+  than silently adjusting them).
+- `solve.rs` - the Lamé thick-wall interference-fit physics: contact
+  pressure, hoop stress in housing/bushing, installed OD, thermal
+  interference correction, install force, and the four margin-of-safety
+  candidates (housing hoop stress, bushing hoop stress, edge-distance
+  sequencing, edge-distance strength) with the governing (lowest-margin)
+  check selected automatically.
+- `reamers.rs` - the aircraft reamer catalog (`data/aircraft_reamer_catalog.csv`,
+  48 real, sourced entries extracted verbatim from the TS source's own
+  `aircraftReamerCatalogData.ts`) and `nearest(target_in, count)` for the
+  reamer picker.
+
+15 unit tests plus one differential test, all passing
+(`cargo test -p bushing-solver`).
+
+## Correctness: differential testing against the real TS engine
+
+Rather than hand-deriving expected values, `tests/differential.rs` runs
+the project's own base fixture (`engineering.toolbox/tests/bushing-
+fixture.ts`'s `baseBushingInput`) through the Rust port and asserts
+against golden values captured by actually executing the production
+TypeScript `computeBushing` function via `npx tsx` - the same "prove it
+against the real thing" discipline this repo already uses for its DOCX/
+PPTX/XLSX/PDF fixtures. This caught one real porting bug before the test
+was even run: a naive `.max()` chain for `Fbru_ksi || Sy_ksi || 0` (JS
+falsy-fallback semantics, not a numeric max) was replaced with an explicit
+`if fbru_ksi != 0.0 { .. } else { .. }` during code review.
+
+## UI: `app/src/bushing_workbench.rs`
+
+Four collapsible input sections (Geometry incl. reamer picker,
+Interference & tolerance, Materials, Environment & install), a live
+results column (summary cards, governing-check badge, conditional
+fail/clearance-fit/infeasible-tolerance alert banners, four margin rows,
+a detail grid, and a toggleable derivation view) - `compute()` runs on
+every render since the math is cheap pure arithmetic, no debouncing
+needed.
+
+### LaTeX derivation view
+
+Blitz/dioxus-native has no live MathML/LaTeX layout engine. Two Rust-
+native candidates were evaluated and rejected: `RaTeX` (v0.0.1, 77
+downloads, `NOASSERTION` license - too immature and legally unclear) and
+`pulldown-latex` (MathML output only - no visual rendering without
+building a full math-layout engine from scratch). Instead, the 7 core
+formulas are pre-rendered to static PNGs at authoring time using
+`engineering.toolbox`'s own already-installed, mature KaTeX (v0.16.44) +
+Playwright, from the exact same LaTeX source strings as its
+`BushingInformationPage.svelte` (`../engineering.toolbox/
+render_bushing_formulas_TEMP.mjs`, a one-shot script, not part of either
+repo's normal build). Two color variants per formula (light-on-dark,
+dark-on-light) since a raster PNG can't respond to `currentColor` the way
+the original MathML did. Output lands in `app/assets/bushing_formulas/`
+and is embedded via `include_bytes!` - fully offline, no runtime
+dependency on KaTeX/Playwright/Node in the shipped app.
+
+### The `<img src="data:...">` net-provider gap this surfaced
+
+Rendering the formula PNGs as `<img src="data:image/png;base64,...">`
+exposed a real gap: this app's hand-rolled `launch::run` (see `main.rs`)
+passed `net_provider: None`, which Blitz resolves to
+`blitz_traits::net::DummyNetProvider` - a true no-op `fetch` (verified by
+reading `blitz-traits-0.2.0/src/net.rs` directly) that silently drops
+every image load, including `data:` URIs. This had never mattered before
+because the app had no `<img src>` usage at all until this feature.
+
+Fixed with `app/src/net_provider.rs`, a small standalone module wiring up
+`blitz-shell`'s own `DataUriNetProvider` (behind its `data-uri` Cargo
+feature) - resolves `data:` URIs locally (base64 decode, no I/O, no
+network) and returns an explicit `UnsupportedScheme` error for every other
+scheme. Deliberately *not* `blitz-net::Provider` (`dioxus-native`'s normal
+default), which would also pull in a real HTTP client (`reqwest`) this app
+has no legitimate use for. Kept in its own file specifically so it's easy
+to remove/replace: delete `net_provider.rs`, drop the `mod net_provider;`
+and `net_provider::data_uri_only(...)` call in `main.rs`'s `launch::run`,
+and drop `blitz-shell`'s `data-uri` feature from `app/Cargo.toml`.
+
+### Reamer picker
+
+A dropdown over `reamers::nearest(target_in, 8)`, opened from the bore-
+diameter field. Picking a row sets `bore_dia`/`bore_tol_plus`/
+`bore_tol_minus` directly from the catalog entry's nominal size and tool
+tolerance, then closes the picker.
+
+## What's deliberately not in this pass
+
+Countersink/flange geometry, service-duty/wear (PV) screening,
+process-route review, and standards/approval review - all explicitly
+excluded per the scope decision above. The bore-capability/interference-
+policy tolerance auto-adjustment machinery (`tolerance.rs`'s doc comment)
+is also not ported - v1 reports `Infeasible` honestly instead of trying
+to auto-resolve it.

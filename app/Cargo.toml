@@ -10,6 +10,7 @@ publish = false
 # since this is the real end-user-facing GUI.
 search-core = { path = "../search-core", features = ["ocr"] }
 native-search = { path = "../native-search" }
+bushing-solver = { path = "../bushing-solver" }
 # "native" (not "desktop"): dioxus-native's Blitz renderer (WGPU+winit),
 # no WebView involved - avoids wry/WebView2's hard machine-wide-runtime
 # dependency (wry hardcodes browserExecutableFolder to null, so there is
@@ -37,8 +38,17 @@ arboard = "3"
 # `winit::application::ApplicationHandler` that intercepts those two events
 # before delegating everything else to the real application unchanged.
 winit = "0.30"
-blitz-shell = "0.2"
+# "data-uri" enables blitz-shell::DataUriNetProvider - see
+# app/src/net_provider.rs's doc comment for why the Bushing Workbench's
+# pre-rendered LaTeX formula images (`<img src="data:...">`) need this and
+# why it's this narrow provider, not blitz-net's full HTTP client.
+blitz-shell = { version = "0.2", features = ["data-uri"] }
 blitz-html = "0.2"
+# Direct deps (already pulled in transitively by blitz-shell/dioxus-native)
+# so net_provider.rs can name `Resource`/`NetProvider` itself instead of
+# reaching through re-exports that could silently change shape upstream.
+blitz-dom = "0.2"
+blitz-traits = "0.2"
 # Settings/recent-search persistence across relaunches (epic §22).
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -60,3 +70,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # settings file and incremental cache - never a reason to interrupt the
 # user or fail a search.
 notify-rust = "4"
+# Encodes the Bushing Workbench's pre-rendered LaTeX formula PNGs
+# (embedded via `include_bytes!`) into `data:image/png;base64,...` `<img>`
+# src strings - see bushing_workbench.rs's `formula_img_src`.
+base64 = "0.22"
