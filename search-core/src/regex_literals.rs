@@ -12,12 +12,22 @@
 //! This is deliberately NOT a general regex analyzer. It handles a
 //! restricted, easily-verified-safe subset of syntax and returns `None`
 //! (meaning "don't narrow, fall back to a full scan") the moment it sees
-//! anything it isn't sure about - groups, character classes, alternation,
-//! and bounded quantifiers (`(`, `)`, `[`, `]`, `{`, `}`, `|`) all bail
-//! immediately rather than being partially/incorrectly analyzed. `None`
-//! is always the safe answer; getting a chunk *wrong* (claiming a
-//! substring is required when it isn't) would silently drop real matches,
-//! which this whole feature exists to never do.
+//! anything it isn't sure about - groups, character classes, and
+//! alternation (`(`, `)`, `[`, `]`, `|`) all bail immediately rather than
+//! being partially/incorrectly analyzed. `None` is always the safe
+//! answer; getting a chunk *wrong* (claiming a substring is required when
+//! it isn't) would silently drop real matches, which this whole feature
+//! exists to never do.
+//!
+//! Bounded quantifiers (`{n}`, `{n,}`, `{n,m}`) are a narrow, deliberate
+//! exception (issue #9 epic §6's own example, `foo.{0,5}bar`): a `{...}`
+//! body is only ever treated as a quantifier - and the atom immediately
+//! before it dropped/flushed, exactly like `*`/`+`/`?` - when its content
+//! is strictly digits, an optional comma, then more digits (Rust regex's
+//! actual repetition grammar). Anything else after `{` (non-digit
+//! content, no closing `}`) still bails the whole pattern, same as
+//! before - this isn't a general brace parser, just enough to recognize
+//! the one construct that's unambiguous.
 //!
 //! ## Why quantifiers need a flush, not just a drop
 //!
@@ -38,9 +48,10 @@
 pub fn required_literal_chunks(pattern: &str) -> Option<Vec<String>> {
     const LITERAL_ESCAPES: &[char] = &['.', '^', '$', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '\\', '/', '-'];
 
+    let chars: Vec<char> = pattern.chars().collect();
     let mut chunks: Vec<String> = Vec::new();
     let mut run: Vec<char> = Vec::new();
-    let mut chars = pattern.chars();
+    let mut i: usize = 0;
 
     fn flush(run: &mut Vec<char>, chunks: &mut Vec<String>) {
         if !run.is_empty() {
@@ -49,17 +60,25 @@ pub fn required_literal_chunks(pattern: &str) -> Option<Vec<String>> {
         }
     }
 
-    while let Some(c) = chars.next() {
+    while i < chars.len() {
+        let c = chars[i];
         match c {
-            '\\' => match chars.next() {
-                None => return None, // trailing backslash - malformed pattern, bail
-                Some(esc) if LITERAL_ESCAPES.contains(&esc) => run.push(esc),
-                // \d \D \w \W \s \S \b \B \A \z \Z and anything else -
-                // contributes no guaranteed literal text, but doesn't
-                // itself break the safety of what's already in `run`.
-                Some(_) => flush(&mut run, &mut chunks),
-            },
-            '.' | '^' | '$' => flush(&mut run, &mut chunks),
+            '\\' => {
+                i += 1;
+                match chars.get(i) {
+                    None => return None, // trailing backslash - malformed pattern, bail
+                    Some(esc) if LITERAL_ESCAPES.contains(esc) => run.push(*esc),
+                    // \d \D \w \W \s \S \b \B \A \z \Z and anything else -
+                    // contributes no guaranteed literal text, but doesn't
+                    // itself break the safety of what's already in `run`.
+                    Some(_) => flush(&mut run, &mut chunks),
+                }
+                i += 1;
+            }
+            '.' | '^' | '$' => {
+                flush(&mut run, &mut chunks);
+                i += 1;
+            }
             '*' | '+' | '?' => {
                 // The quantified atom (if any) is not guaranteed to
                 // appear contiguously adjacent to what follows - drop it
@@ -67,9 +86,27 @@ pub fn required_literal_chunks(pattern: &str) -> Option<Vec<String>> {
                 // not just a drop, is required for correctness).
                 run.pop();
                 flush(&mut run, &mut chunks);
+                i += 1;
             }
-            '(' | ')' | '[' | ']' | '{' | '}' | '|' => return None,
-            other => run.push(other),
+            '{' => match bounded_quantifier_end(&chars, i) {
+                // A recognized `{n}`/`{n,}`/`{n,m}` body - same
+                // pop-then-flush treatment as `*`/`+`/`?`, since the atom
+                // immediately before `{` is the one being repeated.
+                Some(end) => {
+                    run.pop();
+                    flush(&mut run, &mut chunks);
+                    i = end + 1; // past the closing '}'
+                }
+                // Not a recognized quantifier body (non-digit content, or
+                // no closing '}') - unsure, bail the whole pattern rather
+                // than guess.
+                None => return None,
+            },
+            '(' | ')' | '[' | ']' | '}' | '|' => return None,
+            other => {
+                run.push(other);
+                i += 1;
+            }
         }
     }
     flush(&mut run, &mut chunks);
@@ -79,6 +116,35 @@ pub fn required_literal_chunks(pattern: &str) -> Option<Vec<String>> {
         None
     } else {
         Some(usable)
+    }
+}
+
+/// If `chars[open_brace_idx..]` starts with a syntactically valid bounded-
+/// repetition body - `{` then one-or-more digits, then optionally a comma
+/// and zero-or-more more digits, then `}` (Rust regex's actual `{n}`/
+/// `{n,}`/`{n,m}` grammar) - returns the index of the closing `}`.
+/// Anything else (non-digit content, an empty `{}`, no closing brace at
+/// all) returns `None`, the signal to bail the whole pattern rather than
+/// misinterpret a `{` that wasn't actually a quantifier.
+fn bounded_quantifier_end(chars: &[char], open_brace_idx: usize) -> Option<usize> {
+    let mut j = open_brace_idx + 1;
+    let digits_start = j;
+    while j < chars.len() && chars[j].is_ascii_digit() {
+        j += 1;
+    }
+    if j == digits_start {
+        return None; // `{` must be followed by at least one digit
+    }
+    if j < chars.len() && chars[j] == ',' {
+        j += 1;
+        while j < chars.len() && chars[j].is_ascii_digit() {
+            j += 1;
+        }
+    }
+    if j < chars.len() && chars[j] == '}' {
+        Some(j)
+    } else {
+        None
     }
 }
 
@@ -113,10 +179,68 @@ mod tests {
     }
 
     #[test]
-    fn groups_classes_alternation_and_bounded_quantifiers_all_bail() {
-        for pattern in ["(engine|motor)", "eng[ei]ne", "eng{1,2}ine", "(?:engine)", "a(bc)d"] {
+    fn groups_classes_and_alternation_all_bail() {
+        for pattern in ["(engine|motor)", "eng[ei]ne", "(?:engine)", "a(bc)d"] {
             assert_eq!(required_literal_chunks(pattern), None, "pattern {pattern:?} must bail, not guess");
         }
+    }
+
+    /// Issue #9 epic §6's own example: `foo.{0,5}bar` must narrow to
+    /// `["foo", "bar"]`, not bail to a full scan - a recognized bounded
+    /// quantifier is treated exactly like `*`/`+`/`?` (split, don't glue).
+    #[test]
+    fn bounded_quantifier_splits_into_required_chunks_like_other_quantifiers() {
+        assert_eq!(required_literal_chunks("foo.{0,5}bar"), Some(vec!["foo".to_string(), "bar".to_string()]));
+        assert_eq!(required_literal_chunks("foo.{3}bar"), Some(vec!["foo".to_string(), "bar".to_string()]));
+        assert_eq!(required_literal_chunks("foo.{2,}bar"), Some(vec!["foo".to_string(), "bar".to_string()]));
+    }
+
+    /// The atom immediately before `{n,m}` is the one being repeated -
+    /// must be popped off the run before flushing, same as `x+`/`x*`.
+    /// "eng{1,2}ine" repeats only the "g", so "en" (what's left of "eng"
+    /// after popping it) is too short to be a usable 3+ char chunk and is
+    /// correctly dropped, leaving only "ine".
+    #[test]
+    fn bounded_quantifier_pops_the_immediately_preceding_atom() {
+        assert_eq!(required_literal_chunks("eng{1,2}ine"), Some(vec!["ine".to_string()]));
+    }
+
+    /// Same safety property this whole module exists to guarantee, proven
+    /// for the new bounded-quantifier path specifically: every real match
+    /// of `x{n,m}`-containing patterns actually contains every returned
+    /// chunk, across both ends of the repetition range.
+    #[test]
+    fn bounded_quantifier_chunks_are_present_in_every_real_match() {
+        let re = fancy_regex::Regex::new("eng{1,3}ine").unwrap();
+        let chunks = required_literal_chunks("eng{1,3}ine").unwrap();
+        for candidate in ["enggine", "engggine", "engggggine"] {
+            let is_match = re.is_match(candidate).unwrap();
+            for chunk in &chunks {
+                let contains = candidate.contains(chunk.as_str());
+                assert!(
+                    !is_match || contains,
+                    "{candidate:?} matched eng{{1,3}}ine but is missing required chunk {chunk:?}"
+                );
+            }
+        }
+    }
+
+    /// `{` bodies this module doesn't recognize (non-digit content, an
+    /// unterminated brace, or an empty `{}`) must still bail the whole
+    /// pattern - the new quantifier handling must not become a general
+    /// brace parser.
+    #[test]
+    fn unrecognized_or_unterminated_brace_bodies_still_bail() {
+        for pattern in ["eng{abc}ine", "eng{ine", "eng{}ine", "eng{1,2"] {
+            assert_eq!(required_literal_chunks(pattern), None, "pattern {pattern:?} must bail, not guess");
+        }
+    }
+
+    /// An escaped `\{` is a literal brace character, not the start of a
+    /// quantifier - must never be routed through the new lookahead logic.
+    #[test]
+    fn escaped_brace_is_literal_not_a_quantifier() {
+        assert_eq!(required_literal_chunks(r"eng\{1,2\}ine"), Some(vec!["eng{1,2}ine".to_string()]));
     }
 
     #[test]

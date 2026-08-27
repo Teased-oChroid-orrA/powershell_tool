@@ -12,6 +12,45 @@
 //! backtracking, by design), and `fancy-regex` was chosen over a
 //! hand-rolled boundary scan after verifying it against the C# whole-word
 //! test cases (Program.cs Test 6/23) - see docs/rust-rewrite-status.md.
+//!
+//! ## Catastrophic-backtracking safety (issue #9 epic §40)
+//!
+//! Regex mode compiles the user's own filter text directly (unlike
+//! whole-word mode, which only ever wraps an *escaped* literal in a fixed
+//! lookaround template - no user-controlled quantifiers there, so it
+//! can't backtrack pathologically regardless of filter content). A
+//! hand-written classic ReDoS pattern (`(a+)+$`-style nested/ambiguous
+//! quantifiers) run against adversarial input in regex mode could in
+//! principle cost exponential backtracking work.
+//!
+//! Verified (not assumed) that this is already bounded: every `FancyRegex`
+//! in this file is built via plain `Regex::new`/`RegexBuilder::new`
+//! (`compile_case_insensitive`, `build_combined`), and fancy-regex 0.19's
+//! own `RegexOptions::default()`/`RegexOptionsBuilder::new()` both set
+//! `backtrack_limit: 1_000_000` (confirmed by reading
+//! `fancy-regex-0.19.0/src/lib.rs`'s `HardRegexRuntimeOptions::default()`
+//! directly, not assumed from documentation) - nothing in this file
+//! overrides it. `is_match` returns `Err` once that many backtrack steps
+//! are spent, rather than continuing unboundedly - see
+//! `regex_backtrack_limit_bounds_a_classic_redos_pattern_instead_of_hanging`
+//! below for a real proof against an adversarial pattern+input pair, not
+//! just a reading of the dependency's source.
+//!
+//! What that error becomes matters for correctness, and is a real,
+//! previously-undocumented asymmetry: the cheap combined pre-check
+//! (`build_combined`/`apply_line_matching`'s `candidate_line`/
+//! `exclude_candidate`) fails OPEN (`unwrap_or(true)` - "treat as a
+//! candidate, fall through to the real per-filter check"), the safe
+//! direction. The authoritative per-filter check in `is_hit` fails CLOSED
+//! (`unwrap_or(false)` - "not a hit"), meaning a filter that hits the
+//! backtrack limit against a specific line is silently treated as *not
+//! matching* that line, rather than erroring the whole search or being
+//! reported as a low-confidence result. This requires a genuinely
+//! pathological pattern (1,000,000 backtrack steps is not something an
+//! ordinary regex filter hits by accident) - not a new risk introduced by
+//! anything in this file, but worth this explicit record since nothing in
+//! CLAUDE.md's regex-engine rationale previously mentioned this bound or
+//! its failure direction.
 
 use std::collections::HashMap;
 
@@ -610,5 +649,43 @@ mod tests {
         // 0) - both give a span of 5, which is the true minimum.
         let lists = vec![vec![1, 10], vec![5], vec![6, 20]];
         assert_eq!(get_min_line_range_across_filters(&lists), 5);
+    }
+
+    /// Issue #9 epic §40: "Claude Code MUST explicitly evaluate regex
+    /// denial-of-service risks." A classic ReDoS pattern
+    /// (nested/ambiguous quantifiers) run in regex mode against
+    /// adversarial input must not hang - fancy-regex's default 1,000,000
+    /// backtrack limit (see this module's top doc comment) must kick in
+    /// and bound the work, proven here with a real wall-clock assertion
+    /// rather than just trusting the dependency's documented default.
+    #[test]
+    fn regex_backtrack_limit_bounds_a_classic_redos_pattern_instead_of_hanging() {
+        let mut settings = settings_with_filters(&["(a+)+$"]);
+        settings.use_regex = true;
+        let state = CompiledMatchState::build(&settings).unwrap();
+
+        // The textbook ReDoS trigger: a long run of the repeated
+        // character followed by one character that can never complete
+        // the match, forcing a naive backtracking engine through
+        // exponentially many ways to partition the "a" run before it can
+        // conclude there's no match.
+        let adversarial_line = format!("{}!", "a".repeat(40));
+        let lines = lines_of(&[adversarial_line.as_str()]);
+
+        let start = std::time::Instant::now();
+        let outcome = apply_line_matching(&lines, &settings, &state);
+        let elapsed = start.elapsed();
+
+        // Bounded by the backtrack limit, not exponential in input length -
+        // generous enough to be robust on slow CI hardware, tight enough
+        // that an unbounded hang would still fail this test rather than
+        // stalling the suite.
+        assert!(elapsed < std::time::Duration::from_secs(10), "regex match took {elapsed:?} - backtrack limit did not bound the work");
+        // The backtrack limit is a *safety* bound, not a correctness
+        // guarantee for pathological patterns - hitting it fails closed
+        // (see this module's top doc comment), so "no hit" here is the
+        // documented, acceptable outcome, not an assertion this specific
+        // pattern must match.
+        let _ = outcome;
     }
 }

@@ -1,12 +1,15 @@
-name: Rust workspace build and verify (search-core, native-search, app)
+name: Rust workspace build and verify (search-core, native-search, app, search-cli)
 
 # Verifies the Rust/Dioxus rewrite (search-core + native-search + the
-# `app` Dioxus-native desktop head - see docs/rust-rewrite-status.md).
-# search-core is deliberately zero-GUI-dependency (same invariant the old
-# C#/WinUI split had for TextInFilesSearch.Core), so its own test job runs
-# on Linux for speed; the `app` crate is a real win-x64 desktop build and
-# is built (and its published output inspected) on a Windows runner, same
-# as the existing C#/WinUI workflow.
+# `app` Dioxus-native desktop head - see docs/rust-rewrite-status.md) and
+# the `search-cli` headless entry point (issue #6 §60). search-core is
+# deliberately zero-GUI-dependency (same invariant the old C#/WinUI split
+# had for TextInFilesSearch.Core), so its own test job runs on Linux for
+# speed; `app` and `search-cli` are real win-x64 builds and are built (and
+# `app`'s published output inspected) on a Windows runner, same as the
+# existing C#/WinUI workflow. `search-cli` shares `app`'s build job rather
+# than getting its own, since both need the same toolchain/target/cache -
+# a second Windows job would just double runner minutes for no benefit.
 #
 # `app` uses dioxus's "native" feature (dioxus-native / Blitz, WGPU+winit)
 # rather than "desktop" (wry/WebView2) - wry hardcodes
@@ -60,6 +63,13 @@ jobs:
         # DOCX/PPTX/XLSX/ZIP/PDF fixture parity tests (tests/fixtures.rs).
         run: cargo test -p search-core
 
+      - name: cargo test -p search-cli
+        # search-cli is equally GUI-free (that's the whole point of the
+        # headless entry point, issue #6 §60) - its own smoke test
+        # (cli/tests/cli_smoke.rs) runs here too, cheaply, before the
+        # Windows job spends time building the release exe.
+        run: cargo test -p search-cli
+
   app-build-windows:
     runs-on: windows-latest
     needs: search-core-test
@@ -82,6 +92,13 @@ jobs:
 
       - name: Build app (release, win-x64)
         run: cargo build --release -p app --target x86_64-pc-windows-msvc
+
+      - name: Build search-cli (release, win-x64)
+        # Headless entry point (issue #6 §60) - proves search-core is
+        # genuinely usable without Dioxus, not just theoretically GUI-free.
+        # No CI job built a Windows search-cli.exe before now - it had to
+        # be built locally (`cargo build --release -p search-cli`).
+        run: cargo build --release -p search-cli --target x86_64-pc-windows-msvc
 
       - name: Verify published exe does not link WebView2/wry
         # Real regression guard for the wry -> Blitz switch above: if a
@@ -114,10 +131,18 @@ jobs:
         shell: pwsh
         run: |
           Get-Item "target/x86_64-pc-windows-msvc/release/app.exe" | Format-List Name, Length, LastWriteTime
+          Get-Item "target/x86_64-pc-windows-msvc/release/search-cli.exe" | Format-List Name, Length, LastWriteTime
 
-      - name: Upload built exe
+      - name: Upload built app exe
         uses: actions/upload-artifact@v4
         with:
           name: TextInFilesSearch-rust-app-win-x64
           path: target/x86_64-pc-windows-msvc/release/app.exe
+          if-no-files-found: error
+
+      - name: Upload built search-cli exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: search-cli-win-x64
+          path: target/x86_64-pc-windows-msvc/release/search-cli.exe
           if-no-files-found: error
