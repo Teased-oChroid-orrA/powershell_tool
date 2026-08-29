@@ -116,3 +116,30 @@ fn a_bad_regex_filter_is_a_clean_error_not_a_panic() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("Error"));
 }
+
+/// Regression test for a field-reported "the app doesn't launch at all"
+/// bug specific to double-clicking `search-cli.exe` on Windows. A bare
+/// double-click passes zero arguments (argv = [program name] only); clap's
+/// `required_unless_present_any` on `search_path`/`filters` doesn't know
+/// "no args" means "go interactive" - it printed a missing-required-
+/// argument error and exited with clap's usage-error code (2) before
+/// `main` ever checked `cli.interactive`, even though
+/// docs/deployment-rust.md documents bare invocation as the
+/// interactive-menu entry point. On Windows this reads as the console
+/// window flashing open and closing with nothing readable in it.
+///
+/// This test can't drive the interactive prompts themselves (dialoguer
+/// needs a real terminal, not a piped test harness), but it proves the
+/// process no longer takes clap's hard-exit(2) usage-error path: it must
+/// print the interactive banner and fail only once dialoguer itself
+/// detects a non-terminal stdin/stdout, not before.
+#[test]
+fn bare_invocation_with_no_args_attempts_interactive_mode_not_a_clap_usage_error() {
+    let output = Command::new(env!("CARGO_BIN_EXE_search-cli"))
+        .output()
+        .expect("failed to run search-cli");
+
+    assert_ne!(output.status.code(), Some(2), "must not take clap's required-argument usage-error exit path");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("interactive mode"), "stdout: {stdout}");
+}

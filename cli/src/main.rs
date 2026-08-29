@@ -245,7 +245,22 @@ fn main() -> ExitCode {
         .with_writer(std::io::stderr)
         .init();
 
-    let mut cli = Cli::parse();
+    // A bare double-click (or a plain `search-cli` with no arguments at
+    // all) launches with argv = [program name] only. clap's
+    // `required_unless_present_any` on `search_path`/`filters` doesn't
+    // know "no args were given" means "go interactive" - it just reports
+    // the missing required arguments and clap exits the process (code 2)
+    // before `main` ever sees `cli.interactive`. On Windows that reads as
+    // "the app doesn't launch at all": Explorer opens a console, the
+    // process exits immediately, and the window closes with nothing
+    // visible to read. docs/deployment-rust.md documents bare invocation
+    // as the interactive-menu entry point, so honor that here rather than
+    // letting clap's hard-required-argument error win.
+    let mut cli = if std::env::args_os().count() <= 1 {
+        Cli::parse_from(["search-cli", "--interactive"])
+    } else {
+        Cli::parse()
+    };
     if cli.interactive {
         match interactive::gather(cli) {
             Ok(filled) => cli = filled,

@@ -293,7 +293,7 @@ impl NativeSearchEngine {
         if doc.id.is_empty() {
             return Err(NsError::invalid_argument("document id must not be empty"));
         }
-        let writer = self.writer.lock().expect("index writer mutex poisoned");
+        let writer = self.lock_writer();
         writer.delete_term(Term::from_field_text(self.fields.id, doc.id));
         writer
             .add_document(doc!(
@@ -316,9 +316,29 @@ impl NativeSearchEngine {
         if id.is_empty() {
             return Err(NsError::invalid_argument("document id must not be empty"));
         }
-        let writer = self.writer.lock().expect("index writer mutex poisoned");
+        let writer = self.lock_writer();
         writer.delete_term(Term::from_field_text(self.fields.id, id));
         Ok(())
+    }
+
+    /// Locks `self.writer`, recovering the guard rather than panicking if
+    /// it's poisoned. A previously reported Windows-only crash ("app
+    /// crashes when I use the index or perform a search, and once it
+    /// happens the index stays broken") is consistent with a poisoning
+    /// cascade: something (an OS-level mmap fault from tantivy's
+    /// `MmapDirectory`, a segment file locked by antivirus, or a synced/
+    /// cloud-placeholder folder colliding with a live memory mapping - all
+    /// far more common on Windows than macOS, where this hasn't
+    /// reproduced) panics once while holding this lock, poisoning it -
+    /// after which every subsequent `index_document`/`delete_document`/
+    /// `commit` call would ALSO panic via a bare `.expect(..)`, permanently
+    /// wedging the index for the rest of the process's life. Recovering
+    /// the guard (`std::sync::Mutex`'s documented, intended way to opt out
+    /// of poisoning propagation) can't undo whatever caused the original
+    /// panic, but it stops one bad write from taking every future
+    /// index/search action down with it.
+    fn lock_writer(&self) -> std::sync::MutexGuard<'_, IndexWriter> {
+        self.writer.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Commits pending changes and reloads the reader so `search` sees them
@@ -328,7 +348,7 @@ impl NativeSearchEngine {
     /// already learned once in this repo (commit 96f00df).
     pub fn commit(&self) -> NsResult<()> {
         {
-            let mut writer = self.writer.lock().expect("index writer mutex poisoned");
+            let mut writer = self.lock_writer();
             writer
                 .commit()
                 .map_err(|e| NsError::index_error(e.to_string()))?;
@@ -1144,5 +1164,36 @@ mod tests {
         // engine, it just reflects the caller's own token state at call time.
         let err = engine.search("findable", 10, Some(&cancel)).unwrap_err();
         assert_eq!(err.status, crate::error::NsStatus::Cancelled);
+    }
+
+    /// Regression test for the field-reported Windows crash: "app crashes
+    /// when I use the index or perform a search, and once it happens the
+    /// index stays broken." A panic while holding `self.writer`'s lock
+    /// poisons it; before `lock_writer()` existed, every later
+    /// `index_document`/`delete_document`/`commit` call used a bare
+    /// `.expect(..)` on that same lock, so it would ALSO panic - wedging
+    /// the index for the rest of the process's life. This proves recovery:
+    /// deliberately poison the mutex, then confirm normal engine operations
+    /// still succeed afterward.
+    #[test]
+    fn engine_survives_a_poisoned_writer_mutex() {
+        let dir = tempdir().unwrap();
+        let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+
+        let poison_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _writer = engine.writer.lock().unwrap();
+            panic!("simulated panic while holding the index writer lock");
+        }));
+        assert!(poison_result.is_err());
+        assert!(engine.writer.is_poisoned());
+
+        // None of these should panic despite the poisoned mutex.
+        engine
+            .index_document(sample("1", "survives after poisoning"))
+            .unwrap();
+        engine.commit().unwrap();
+        assert_eq!(engine.search("survives", 10, None).unwrap().len(), 1);
+        engine.delete_document("1").unwrap();
+        engine.commit().unwrap();
     }
 }
