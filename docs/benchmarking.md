@@ -323,6 +323,62 @@ Results" section - read that before citing the 0.0x/0.1x numbers as
 evidence the trigram filter isn't worthwhile; it deliberately isolates
 overhead from reduction, and is not itself a production-shaped measurement.
 
+## Result-processing phase breakdown (2026-08-29, this development machine)
+
+Closes issue #8's "result processing breakdown" Known Gap: candidate
+generation, verification, snippet generation, and result serialization,
+timed as four *separate* phases against 17 real fixture files (198,518
+real extracted lines total) - not the tiny in-memory `str::contains`
+proxy the trigram benchmark above uses for its "full-scan" baseline. Full
+phase-boundary reasoning and the differential-testing proof that the
+snippet-generation reimplementation matches production
+(`report::build_html_report`'s real output) are in
+`docs/issue-8-status.md`'s "Result processing breakdown" section - this
+is just the raw numbers.
+
+```
+$ cargo bench -p search-core --bench result_processing_phases
+Filter terms picked dynamically from real fixture content (not hardcoded):
+  common = "this"   rare = "transformed"
+
+Phase 1 - candidate generation (real-content corpus, 3320 documents):
+  common "this": 685us, 399 of 3320 documents (12.0%)
+  rare   "transformed": 106us, 4 of 3320 documents (0.1%)
+
+Phase 2 - verification (real extracted lines, real per-file cost):
+  "this" (common): 17 file(s), total 13869us, per-file min 0us / median 1us / max 8893us
+  "transformed" (rare): 17 file(s), total 12453us, per-file min 0us / median 0us / max 7564us
+
+Phase 3 - snippet generation (highlight-span computation per real hit line):
+  differential check: 471 real hit line(s) confirmed byte-for-byte identical to production output
+  highlight per line: 471 file(s), total 60326us, per-file min 126us / median 127us / max 177us
+
+Phase 4 - result serialization:
+  build_export_rows: 73us (471 row(s))
+  write_csv:   935us
+  write_json:  962us
+  write_jsonl: 692us
+  write_html_report (includes phase 3's snippet generation): 158457us, 2695001 bytes written
+```
+
+**One real, per-unit disproportion found:** snippet generation
+(`report.rs`'s `highlight_matches`) recompiles a `FancyRegex` per matched
+filter on *every* hit line it's called on, with no equivalent of
+`matching.rs`'s `CompiledMatchState` (compiled once per run, reused
+everywhere). Measured at ~127us/line, essentially flat regardless of line
+content - roughly 1,800x verification's real per-line cost (~70ns/line
+average across the same 198,518 real lines). Still small in absolute
+terms at this benchmark's scale (60ms for 471 real hits), so this is
+reported as an evidence-backed recommendation for a future investigation
+(cache a compiled regex per filter across a report's hit lines), not
+implemented here - this investigation's scope was measurement-only. The
+exact "rare" term printed varies run to run (picked dynamically from
+whichever real word happens to be file-unique in the fixture set that
+run, to avoid a hardcoded term silently going stale if fixtures change) -
+the cost *shape* (flat ~127us/line for highlighting, bimodal per-file cost
+for verification dominated by the largest real documents) is what's
+significant, not the specific word.
+
 ## What's deliberately not benchmarked
 
 - **Memory (peak/steady RSS).** Would need a platform-specific RSS query
@@ -351,6 +407,7 @@ cd native-search && cargo bench --bench trigram_candidate_reduction
 cd search-core && cargo bench --bench discovery_and_extraction
 cd search-core && cargo bench --bench concurrent_extraction
 cd search-core && cargo bench --bench regex_query_shapes_at_scale
+cd search-core && cargo bench --bench result_processing_phases
 ```
 
 Fixtures for `discovery_and_extraction`/`concurrent_extraction` live in

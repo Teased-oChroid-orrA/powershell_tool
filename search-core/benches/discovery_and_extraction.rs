@@ -94,7 +94,7 @@ fn bench_extraction(_tmp_root: &Path) {
     let start = Instant::now();
     for body in &bodies {
         let t0 = Instant::now();
-        let result = extract_lines_by_extension(".txt", body.as_bytes(), 30, None);
+        let result = extract_lines_by_extension(".txt", body.as_bytes(), 30, None, false);
         latencies_us.push(t0.elapsed().as_micros());
         std::hint::black_box(&result);
     }
@@ -197,7 +197,7 @@ fn bench_parse_only_extraction() {
         let mut latencies_us: Vec<u128> = Vec::with_capacity(FORMAT_ITERATIONS);
         for _ in 0..FORMAT_ITERATIONS {
             let t0 = Instant::now();
-            let result = extract_lines_by_extension(ext, &bytes, 30, None);
+            let result = extract_lines_by_extension(ext, &bytes, 30, None, false);
             latencies_us.push(t0.elapsed().as_micros());
             std::hint::black_box(&result);
         }
@@ -250,7 +250,7 @@ fn bench_full_pipeline_extraction() {
             let bytes = rt
                 .block_on(read_file_bytes_robust(&path_str, 30, 0, 0, None, &cancellation))
                 .expect("read_file_bytes_robust");
-            let result = extract_lines_by_extension(ext, &bytes, 30, None);
+            let result = extract_lines_by_extension(ext, &bytes, 30, None, false);
             latencies_us.push(t0.elapsed().as_micros());
             std::hint::black_box(&result);
         }

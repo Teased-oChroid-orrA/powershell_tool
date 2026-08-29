@@ -94,3 +94,24 @@ UI rendering at all - `app`'s 8 tests are all `AppState`/settings-
 persistence logic, not component rendering - so this phase's UI change
 couldn't regress any existing test, and doesn't add one either, for the
 same reason).
+
+**Correction (2026-08-29, issue #8 re-evaluation):** "this sandboxed
+environment cannot open a real display" was never actually verified
+against the running session - it turned out to be false for at least one
+later session on this same development machine. Direct checks
+(`echo $DISPLAY` empty but `who`/`w` showing a physical **console**
+session, not remote/SSH; `system_profiler SPDisplaysDataType` reporting a
+real attached Retina display; a live WindowServer process) plus an actual
+launch of the built `app.exe`-equivalent binary, confirmed via
+`CGWindowListCopyWindowInfo` that it registered a genuine on-screen,
+alpha-opaque, layer-0 window with real pixel geometry - not headless, not
+a stub. Separately confirmed by reading `winit`/`blitz-shell`/`blitz-dom`/
+`dioxus-native`'s actual source: none of them implement a headless/
+offscreen rendering mode on macOS (`winit`'s macOS backend unconditionally
+requires a real `NSApplication`/`WindowServer` connection), so a real
+display is genuinely required either way - the point is that one is
+usually present in an interactive development shell on this machine, and
+should be checked directly (`system_profiler`/`ps aux | grep
+[W]indowServer`) rather than assumed absent. See
+`docs/issue-8-status.md`'s "Known Gaps" section for the fuller writeup and
+what this does/doesn't unlock for automated render-latency benchmarking.

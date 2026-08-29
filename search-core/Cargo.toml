@@ -119,3 +119,12 @@ harness = false
 [[bench]]
 name = "regex_query_shapes_at_scale"
 harness = false
+
+# Issue #8 "result processing breakdown" Known Gap: candidate generation /
+# verification / snippet generation / result serialization, timed as four
+# separate phases against real fixture files - see the file's own doc
+# comment for the exact phase boundaries and why each is measured where
+# it is.
+[[bench]]
+name = "result_processing_phases"
+harness = false
