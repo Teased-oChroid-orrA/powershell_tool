@@ -131,9 +131,37 @@ tolerance, then closes the picker.
 
 ## What's deliberately not in this pass
 
-Countersink/flange geometry, service-duty/wear (PV) screening,
-process-route review, and standards/approval review - all explicitly
-excluded per the scope decision above. The bore-capability/interference-
-policy tolerance auto-adjustment machinery (`tolerance.rs`'s doc comment)
-is also not ported - v1 reports `Infeasible` honestly instead of trying
-to auto-resolve it.
+Service-duty/wear (PV) screening, process-route review, and standards/
+approval review - all explicitly excluded per the scope decision above.
+
+**Countersink/flange geometry and tolerance auto-adjustment (added in a
+later pass, ported the same way as everything above - line-for-line, with
+a real countersink/flanged differential fixture proving it against the
+actual TS engine, not just internal self-consistency):**
+
+- `bushing-solver/src/countersink.rs` - `solveCountersink`,
+  `enumerateCountersinkCorners`, `csDiaToleranceFromBase`/
+  `csDepthToleranceFromBase` (`solveMath.ts`).
+- `bushing-solver/src/bearing.rs` - `calculateUniversalBearing`
+  (`shared/bearing.ts`), just the `t_eff_sequence` field this port
+  actually consumes.
+- `bushing-solver/src/geometry.rs` - `resolveBushingSectionParams`/
+  `evaluateBushingOuterRadius`/`evaluateBushingInnerRadius`/
+  `computeMinimumBushingWall` (`shared/bushingProfileGeometry.ts`,
+  solver mode only - no 3D-viewer render-mode branches).
+- `bushing-solver/src/tolerance.rs` - `enforceBoreBandForTarget` plus the
+  `ToleranceStatus::Clamped` variant it makes reachable.
+- `solve.rs`'s `BushingInputs`/`compute` wire all of the above in behind
+  `BushingType`/`IdType` (default `Straight`) and
+  `EnforcementPolicy::enabled` (default `false`) - every new field
+  defaults through `..Default::default()` to exactly reproduce the
+  original straight-bushing-only behavior, so no existing caller/test
+  needed to change.
+- UI: `app/src/bushing_workbench.rs` gained OD/ID geometry type chip-rows,
+  conditional internal/external countersink sections (a CS-mode chip-row
+  gates which of dia/depth/angle is editable vs. derived, matching
+  `normalize.ts`), flange fields, a neck-wall margin row/fail banner, and
+  a tolerance auto-adjust checkbox. `MaterialField` was also fixed to use
+  `components.rs`'s `Dropdown` instead of a raw `<select>` (`blitz-dom`
+  renders `<option>` children as flattened text, no real popup - a real
+  bug, not new scope, found during this pass).

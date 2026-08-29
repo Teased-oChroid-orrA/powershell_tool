@@ -9,9 +9,14 @@
 //! proves this port matches the real TS engine's output on a real input,
 //! not just that it "looks right."
 
+use crate::bearing::{calculate_universal_bearing, BearingSegment};
+use crate::countersink::{enumerate_countersink_corners, solve_countersink, CsCorner, CsMode};
+use crate::geometry::{compute_minimum_bushing_wall, resolve_bushing_section_params, BushingSectionInput};
+pub use crate::geometry::{BushingType, IdType};
 use crate::materials::{get_material, Material};
 use crate::tolerance::{
-    build_od_tolerance, clamp, containment_violations, resolve_tolerance, ResolveToleranceInput, ToleranceMode, ToleranceRange, ToleranceStatus,
+    build_od_tolerance, clamp, containment_violations, enforce_bore_band_for_target, resolve_tolerance, BoreCapability, EnforcementPolicy,
+    ResolveToleranceInput, ToleranceMode, ToleranceRange, ToleranceStatus,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -22,11 +27,17 @@ pub enum EndConstraint {
     BothEnds,
 }
 
-/// Straight-bushing inputs - imperial units only for v1 (in, psi/ksi,
-/// lbf, °F). A metric front-end would convert to these units before
-/// calling `compute`, the same boundary the TS source draws with its own
-/// `units` field feeding unit-aware sub-calculations.
-#[derive(Debug, Clone)]
+/// Bushing inputs - imperial units only for v1 (in, psi/ksi, lbf, °F). A
+/// metric front-end would convert to these units before calling
+/// `compute`, the same boundary the TS source draws with its own `units`
+/// field feeding unit-aware sub-calculations.
+///
+/// Every new (post-straight-bushing-v1) field defaults through
+/// `..Default::default()` to the exact values that reproduce the
+/// original straight-bushing-only behavior (`BushingType::Straight`,
+/// `IdType::Straight`, `EnforcementPolicy { enabled: false, .. }`) - so
+/// existing straight-bushing callers/tests don't need to change.
+#[derive(Debug, Clone, Default)]
 pub struct BushingInputs {
     /// Housing bore nominal diameter, in.
     pub bore_dia: f64,
@@ -59,6 +70,47 @@ pub struct BushingInputs {
     pub edge_load_angle_deg: Option<f64>,
     /// Applied edge load, lbf. `None` falls back to 1000.
     pub load: Option<f64>,
+
+    /// OD geometry: straight cylinder, flanged, or externally countersunk.
+    pub bushing_type: BushingType,
+    /// ID geometry: straight bore or internally countersunk.
+    pub id_type: IdType,
+    /// Flange outer diameter, in. Only meaningful when `bushing_type == Flanged`.
+    pub flange_od: f64,
+    /// Flange thickness, in. Only meaningful when `bushing_type == Flanged`.
+    pub flange_thk: f64,
+    /// Minimum acceptable neck-wall thickness (thinnest point once
+    /// countersink/flange geometry is accounted for), in.
+    pub min_wall_neck: f64,
+
+    /// Internal (ID-side) countersink mode/geometry. Only meaningful when
+    /// `id_type == Countersink`.
+    pub cs_mode: CsMode,
+    pub cs_dia: f64,
+    pub cs_depth: f64,
+    pub cs_angle: f64,
+    pub cs_dia_tol_plus: f64,
+    pub cs_dia_tol_minus: f64,
+    pub cs_depth_tol_plus: f64,
+    pub cs_depth_tol_minus: f64,
+
+    /// External (OD-side) countersink mode/geometry. Only meaningful when
+    /// `bushing_type == Countersink`.
+    pub ext_cs_mode: CsMode,
+    pub ext_cs_dia: f64,
+    pub ext_cs_depth: f64,
+    pub ext_cs_angle: f64,
+    pub ext_cs_dia_tol_plus: f64,
+    pub ext_cs_dia_tol_minus: f64,
+    pub ext_cs_depth_tol_plus: f64,
+    pub ext_cs_depth_tol_minus: f64,
+
+    /// Bore-tolerance auto-adjustment policy - disabled (`enabled: false`)
+    /// reproduces the original v1 behavior of reporting `Infeasible`
+    /// honestly rather than tightening the bore band.
+    pub enforcement: EnforcementPolicy,
+    /// Bore process-capability floor consulted by the enforcement policy.
+    pub bore_capability: Option<BoreCapability>,
 }
 
 /// One named margin-of-safety candidate - `governing` is whichever of
@@ -74,6 +126,15 @@ pub struct BushingOutput {
     pub od_installed: f64,
     pub wall_straight: f64,
     pub fail_straight: bool,
+    /// Minimum wall thickness once countersink/flange geometry is
+    /// accounted for - equal to `wall_straight` for `BushingType::Straight`.
+    pub wall_neck: f64,
+    /// `wall_neck` at nominal countersink geometry, before the corner
+    /// worst-case search - equal to `wall_neck` when `id_type != Countersink`.
+    pub wall_neck_nominal: f64,
+    pub fail_neck: bool,
+    pub cs_solved_id: Option<CsCorner>,
+    pub cs_solved_od: Option<CsCorner>,
 
     pub delta_thermal: f64,
     pub delta_user: f64,
@@ -112,7 +173,7 @@ pub struct BushingOutput {
     pub od_tol: ToleranceRange,
     pub achieved_interference_tol: ToleranceRange,
     pub tolerance_status: ToleranceStatus,
-    pub tolerance_notes: Vec<&'static str>,
+    pub tolerance_notes: Vec<String>,
     pub enforcement_satisfied: bool,
 }
 
@@ -134,7 +195,7 @@ pub fn compute(input: &BushingInputs) -> BushingOutput {
     // solveEngine.ts:187-204 - bore/interference tolerance resolution
     // (nominal_tol mode only - v1 doesn't expose the `limits`-mode entry
     // path since there's no UI for it yet).
-    let bore_tol = resolve_tolerance(ResolveToleranceInput {
+    let mut bore_tol = resolve_tolerance(ResolveToleranceInput {
         mode: ToleranceMode::NominalTol,
         nominal: input.bore_dia,
         plus: input.bore_tol_plus,
@@ -154,13 +215,28 @@ pub fn compute(input: &BushingInputs) -> BushingOutput {
     });
 
     // solveEngine.ts:206,242-248 - OD tolerance solve + containment check.
-    // v1 doesn't implement the bore-capability/interference-policy auto-
-    // adjustment path (solveEngine.ts:207-241) - an infeasible band is
-    // reported honestly via `tolerance_status`, not silently worked
-    // around.
-    let od_fit = build_od_tolerance(bore_tol, interference_tol);
+    let mut od_fit = build_od_tolerance(bore_tol, interference_tol);
+    // solveEngine.ts:207-241 - bore-capability/interference-policy
+    // auto-adjustment. Disabled (`input.enforcement.enabled == false`,
+    // the default) reproduces the original v1 behavior of reporting
+    // `Infeasible` honestly rather than tightening the bore band.
+    if input.enforcement.enabled && od_fit.status == ToleranceStatus::Infeasible {
+        if input.enforcement.lock_bore {
+            od_fit.notes.push("Strict interference enforcement is blocked because bore is locked (reamer-fixed).".to_string());
+        } else {
+            let enforced = enforce_bore_band_for_target(bore_tol, interference_tol, input.bore_capability.as_ref(), &input.enforcement);
+            if enforced.changed {
+                bore_tol = enforced.adjusted;
+                od_fit = build_od_tolerance(bore_tol, interference_tol);
+            }
+            if let Some(note) = enforced.note {
+                od_fit.notes.insert(0, note);
+            }
+        }
+    }
     let vio = containment_violations(od_fit.achieved_interference, interference_tol);
-    let enforcement_satisfied = vio.lower_violation <= crate::tolerance::EPS && vio.upper_violation <= crate::tolerance::EPS;
+    // solveEngine.ts:243 - `!enforceInterference || (containment satisfied)`.
+    let enforcement_satisfied = !input.enforcement.enabled || (vio.lower_violation <= crate::tolerance::EPS && vio.upper_violation <= crate::tolerance::EPS);
     let od_installed = od_fit.od.nominal;
 
     // solveEngine.ts:250-254 - thermal + user interference -> net delta.
@@ -173,6 +249,100 @@ pub fn compute(input: &BushingInputs) -> BushingOutput {
     // solveEngine.ts:356 - straight wall thickness (no countersink term).
     let wall_straight = ((od_installed - input.id_bushing) / 2.0).max(0.0);
     let fail_straight = wall_straight < input.min_wall_straight;
+
+    // solveEngine.ts:265-270 - solve internal/external countersink
+    // geometry (the derived dimension is re-solved from the other two +
+    // the base diameter it's cut into). A non-countersink side has no
+    // solved corner at all - `None`, not a meaningless placeholder.
+    let cs_solved_id =
+        (input.id_type == IdType::Countersink).then(|| solve_countersink(input.cs_mode, input.cs_dia, input.cs_depth, input.cs_angle, input.id_bushing));
+    let cs_solved_od = (input.bushing_type == BushingType::Countersink)
+        .then(|| solve_countersink(input.ext_cs_mode, input.ext_cs_dia, input.ext_cs_depth, input.ext_cs_angle, od_installed));
+
+    // solveEngine.ts:274-309 - resolved tolerance bands for whichever CS
+    // dia/depth field is the direct user input, needed for the corner
+    // worst-case searches below.
+    let cs_internal_dia_tol =
+        resolve_tolerance(ResolveToleranceInput { mode: ToleranceMode::NominalTol, nominal: input.cs_dia, plus: input.cs_dia_tol_plus, minus: input.cs_dia_tol_minus, lower: None, upper: None, min_floor: Some(0.0) });
+    let cs_internal_depth_tol = resolve_tolerance(ResolveToleranceInput {
+        mode: ToleranceMode::NominalTol,
+        nominal: input.cs_depth,
+        plus: input.cs_depth_tol_plus,
+        minus: input.cs_depth_tol_minus,
+        lower: None,
+        upper: None,
+        min_floor: Some(0.0),
+    });
+    let cs_external_dia_tol = resolve_tolerance(ResolveToleranceInput {
+        mode: ToleranceMode::NominalTol,
+        nominal: input.ext_cs_dia,
+        plus: input.ext_cs_dia_tol_plus,
+        minus: input.ext_cs_dia_tol_minus,
+        lower: None,
+        upper: None,
+        min_floor: Some(0.0),
+    });
+    let cs_external_depth_tol = resolve_tolerance(ResolveToleranceInput {
+        mode: ToleranceMode::NominalTol,
+        nominal: input.ext_cs_depth,
+        plus: input.ext_cs_depth_tol_plus,
+        minus: input.ext_cs_depth_tol_minus,
+        lower: None,
+        upper: None,
+        min_floor: Some(0.0),
+    });
+    let nominal_ext = cs_solved_od.map(|c| (c.dia, c.depth)).unwrap_or((od_installed, 0.0));
+    let nominal_int = cs_solved_id.map(|c| (c.dia, c.depth)).unwrap_or((input.id_bushing, 0.0));
+
+    // solveEngine.ts:356-410 - neck-wall minimum thickness. Only an
+    // internally-countersunk ID actually thins the wall (an externally
+    // countersunk/flanged OD flares outward or only extends axially
+    // beyond the housing - proven equal to `wall_straight` in
+    // `geometry.rs`'s own tests), matching the TS source's own gate
+    // exactly (`idType !== 'countersink' ? wallStraight : ...`).
+    let section_input = |cs_ext: (f64, f64), cs_int: (f64, f64)| BushingSectionInput {
+        bore_dia: bore_tol.nominal,
+        housing_len: input.housing_len,
+        housing_width: input.housing_width,
+        id_bushing: input.id_bushing,
+        bushing_type: input.bushing_type,
+        id_type: input.id_type,
+        flange_od: input.flange_od,
+        flange_thk: input.flange_thk,
+        od_bushing: od_installed,
+        cs_external: Some(cs_ext),
+        cs_internal: Some(cs_int),
+    };
+    let wall_neck_nominal = if input.id_type != IdType::Countersink {
+        wall_straight
+    } else {
+        compute_minimum_bushing_wall(&resolve_bushing_section_params(&section_input(nominal_ext, nominal_int)))
+    };
+    // solveEngine.ts:376-410 - worst-case corner search: minimize wall
+    // thickness across every physically self-consistent combination of
+    // internal/external countersink corners (each corner is re-solved via
+    // `enumerate_countersink_corners`, never an independently-perturbed
+    // dia/depth pair).
+    let wall_neck = if input.id_type != IdType::Countersink {
+        wall_neck_nominal
+    } else {
+        let internal_corners =
+            enumerate_countersink_corners(input.cs_mode, cs_solved_id.map(|c| c.angle_deg).unwrap_or(input.cs_angle), input.id_bushing, cs_internal_dia_tol, cs_internal_depth_tol);
+        let external_corners = if input.bushing_type == BushingType::Countersink {
+            enumerate_countersink_corners(input.ext_cs_mode, cs_solved_od.map(|c| c.angle_deg).unwrap_or(input.ext_cs_angle), od_installed, cs_external_dia_tol, cs_external_depth_tol)
+        } else {
+            vec![CsCorner { dia: nominal_ext.0, depth: nominal_ext.1, angle_deg: 0.0 }]
+        };
+        let mut worst = f64::INFINITY;
+        for int_c in &internal_corners {
+            for ext_c in &external_corners {
+                let wall = compute_minimum_bushing_wall(&resolve_bushing_section_params(&section_input((ext_c.dia, ext_c.depth), (int_c.dia, int_c.depth))));
+                worst = worst.min(wall);
+            }
+        }
+        wall_neck_nominal.min(worst)
+    };
+    let fail_neck = wall_neck < input.min_wall_neck;
 
     // solveEngine.ts:414-433 - Lame compliance terms + contact pressure,
     // including the finite-plate (psi/lambda) housing correction.
@@ -204,12 +374,38 @@ pub fn compute(input: &BushingInputs) -> BushingOutput {
     // falls back to when no assembly-temperature override is given.
     let install_force = retained_install_force;
 
-    // solveEngine.ts:464-465,481-498 - edge-distance sequencing/strength
-    // checks. `t_eff_seq` collapses to `housing_len` for a straight
-    // (single-segment, eta=1.0) bushing - see `shared/bearing.ts`'s
-    // `calculateUniversalBearing`, which this crate doesn't need to port
-    // in full for exactly that reason.
-    let t_eff_seq = input.housing_len;
+    // solveEngine.ts:450-480 - edge-distance strength's effective
+    // sequencing thickness. Reduces to exactly `housing_len` for
+    // `Straight`/`Flanged` (a single cylindrical, eta=1.0 parent segment
+    // the length of the housing - `bearing.rs`'s own tests prove this),
+    // so no behavior change there; `Countersink` gets the real bearing
+    // profile plus a worst-external-corner search.
+    let build_bearing_profile = |od_dia: f64, od_depth: f64| -> Vec<BearingSegment> {
+        if input.bushing_type == BushingType::Countersink {
+            let mut segments = vec![BearingSegment { d_top: od_dia, d_bottom: od_installed, height: od_depth.min(input.housing_len), eta: None, is_parent: true }];
+            if od_depth < input.housing_len {
+                segments.push(BearingSegment { d_top: od_installed, d_bottom: od_installed, height: (input.housing_len - od_depth).max(0.0), eta: None, is_parent: true });
+            }
+            segments
+        } else {
+            vec![BearingSegment { d_top: od_installed, d_bottom: od_installed, height: input.housing_len, eta: None, is_parent: true }]
+        }
+    };
+    // `... || input.housingLen` in the TS source - JS `||` replaces an
+    // exact-zero (not just absent) `t_eff_sequence` with `housingLen`.
+    let t_eff_seq_or_housing_len = |dia: f64, depth: f64| {
+        let t = calculate_universal_bearing(&build_bearing_profile(dia, depth)).t_eff_sequence;
+        if t != 0.0 { t } else { input.housing_len }
+    };
+    let t_eff_seq_nominal = t_eff_seq_or_housing_len(nominal_ext.0, nominal_ext.1);
+    let t_eff_seq = if input.bushing_type != BushingType::Countersink {
+        t_eff_seq_nominal
+    } else {
+        let external_corners =
+            enumerate_countersink_corners(input.ext_cs_mode, cs_solved_od.map(|c| c.angle_deg).unwrap_or(input.ext_cs_angle), od_installed, cs_external_dia_tol, cs_external_depth_tol);
+        let worst = external_corners.iter().map(|c| t_eff_seq_or_housing_len(c.dia, c.depth)).fold(f64::INFINITY, f64::min);
+        t_eff_seq_nominal.min(worst)
+    };
     let edge_load_angle_deg = input.edge_load_angle_deg.filter(|v| v.is_finite() && *v > 0.0).unwrap_or(40.0);
     let sin_theta = (edge_load_angle_deg.abs() * std::f64::consts::PI / 180.0).sin().max(1e-6);
     // toPsiFromKsi(matHousing.Fbru_ksi || matHousing.Sy_ksi || 0) - JS `||`
@@ -231,6 +427,7 @@ pub fn compute(input: &BushingInputs) -> BushingOutput {
         MarginCandidate { name: "Edge distance (sequencing)", margin: sequence_margin },
         MarginCandidate { name: "Edge distance (strength)", margin: strength_margin },
         MarginCandidate { name: "Straight wall thickness", margin: wall_straight / input.min_wall_straight - 1.0 },
+        MarginCandidate { name: "Neck wall thickness", margin: wall_neck / input.min_wall_neck - 1.0 },
     ];
     let governing = candidates.iter().cloned().reduce(|best, cur| if cur.margin < best.margin { cur } else { best }).expect("candidates is never empty");
 
@@ -242,6 +439,11 @@ pub fn compute(input: &BushingInputs) -> BushingOutput {
         od_installed,
         wall_straight,
         fail_straight,
+        wall_neck,
+        wall_neck_nominal,
+        fail_neck,
+        cs_solved_id,
+        cs_solved_od,
         delta_thermal,
         delta_user,
         delta_total: delta,
@@ -301,6 +503,7 @@ mod tests {
             min_wall_straight: 0.05,
             edge_load_angle_deg: None,
             load: None,
+            ..Default::default()
         }
     }
 

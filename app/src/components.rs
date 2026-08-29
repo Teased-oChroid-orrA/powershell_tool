@@ -19,7 +19,7 @@ use crate::state::{filtered_extensions, selected_extensions_summary, AppState, F
 /// positioning/stacking behavior on this renderer shouldn't be trusted
 /// without its own separate verification first.
 #[component]
-fn Dropdown(field_label: String, selected_label: String, options: Vec<(&'static str, &'static str)>, on_select: EventHandler<String>) -> Element {
+pub(crate) fn Dropdown(field_label: String, selected_label: String, options: Vec<(&'static str, &'static str)>, on_select: EventHandler<String>) -> Element {
     let mut open = use_signal(|| false);
 
     rsx! {

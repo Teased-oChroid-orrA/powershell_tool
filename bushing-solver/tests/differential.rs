@@ -50,6 +50,7 @@ fn golden_input() -> BushingInputs {
         min_wall_straight: 0.05,
         edge_load_angle_deg: None,
         load: None,
+        ..Default::default()
     }
 }
 

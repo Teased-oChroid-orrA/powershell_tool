@@ -9,10 +9,14 @@
 
 use dioxus::prelude::*;
 
+use bushing_solver::countersink::CsMode;
+use bushing_solver::geometry::{BushingType, IdType};
 use bushing_solver::materials::MATERIALS;
 use bushing_solver::reamers::{self, ReamerEntry};
 use bushing_solver::solve::{compute, BushingInputs, EndConstraint};
-use bushing_solver::tolerance::ToleranceStatus;
+use bushing_solver::tolerance::{EnforcementPolicy, ToleranceStatus};
+
+use crate::components::Dropdown;
 
 /// The 7 core derivation formulas, in display order - ids match the PNG
 /// asset filenames (`{id}_dark.png`/`{id}_light.png`, pre-rendered via
@@ -94,6 +98,32 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
     let mut reamer_picker_open = use_signal(|| false);
     let mut show_derivation = use_signal(|| false);
 
+    let mut bushing_type = use_signal(BushingType::default);
+    let mut id_type = use_signal(IdType::default);
+    let flange_od = use_signal(|| 0.75_f64);
+    let flange_thk = use_signal(|| 0.063_f64);
+    let min_wall_neck = use_signal(|| 0.04_f64);
+
+    let cs_mode = use_signal(CsMode::default);
+    let cs_dia = use_signal(|| 0.5_f64);
+    let cs_depth = use_signal(|| 0.08_f64);
+    let cs_angle = use_signal(|| 100.0_f64);
+    let cs_dia_tol_plus = use_signal(|| 0.002_f64);
+    let cs_dia_tol_minus = use_signal(|| 0.0_f64);
+    let cs_depth_tol_plus = use_signal(|| 0.005_f64);
+    let cs_depth_tol_minus = use_signal(|| 0.0_f64);
+
+    let ext_cs_mode = use_signal(CsMode::default);
+    let ext_cs_dia = use_signal(|| 0.6_f64);
+    let ext_cs_depth = use_signal(|| 0.06_f64);
+    let ext_cs_angle = use_signal(|| 100.0_f64);
+    let ext_cs_dia_tol_plus = use_signal(|| 0.002_f64);
+    let ext_cs_dia_tol_minus = use_signal(|| 0.0_f64);
+    let ext_cs_depth_tol_plus = use_signal(|| 0.005_f64);
+    let ext_cs_depth_tol_minus = use_signal(|| 0.0_f64);
+
+    let mut enforcement_enabled = use_signal(|| false);
+
     let input = BushingInputs {
         bore_dia: bore_dia(),
         bore_tol_plus: bore_tol_plus(),
@@ -113,6 +143,29 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
         min_wall_straight: min_wall_straight(),
         edge_load_angle_deg: Some(edge_load_angle_deg()),
         load: Some(load()),
+        bushing_type: bushing_type(),
+        id_type: id_type(),
+        flange_od: flange_od(),
+        flange_thk: flange_thk(),
+        min_wall_neck: min_wall_neck(),
+        cs_mode: cs_mode(),
+        cs_dia: cs_dia(),
+        cs_depth: cs_depth(),
+        cs_angle: cs_angle(),
+        cs_dia_tol_plus: cs_dia_tol_plus(),
+        cs_dia_tol_minus: cs_dia_tol_minus(),
+        cs_depth_tol_plus: cs_depth_tol_plus(),
+        cs_depth_tol_minus: cs_depth_tol_minus(),
+        ext_cs_mode: ext_cs_mode(),
+        ext_cs_dia: ext_cs_dia(),
+        ext_cs_depth: ext_cs_depth(),
+        ext_cs_angle: ext_cs_angle(),
+        ext_cs_dia_tol_plus: ext_cs_dia_tol_plus(),
+        ext_cs_dia_tol_minus: ext_cs_dia_tol_minus(),
+        ext_cs_depth_tol_plus: ext_cs_depth_tol_plus(),
+        ext_cs_depth_tol_minus: ext_cs_depth_tol_minus(),
+        enforcement: EnforcementPolicy { enabled: enforcement_enabled(), ..EnforcementPolicy::default() },
+        bore_capability: None,
     };
     let out = compute(&input);
 
@@ -123,6 +176,30 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
         div { class: "panel bushing-layout",
             div { class: "bushing-inputs",
                 BushingSection { title: "Geometry",
+                    div { class: "field",
+                        span { class: "field-label", "OD geometry" }
+                        div { class: "chip-row",
+                            for (t , label) in [(BushingType::Straight, "Straight"), (BushingType::Flanged, "Flanged"), (BushingType::Countersink, "Countersink")] {
+                                span {
+                                    class: if bushing_type() == t { "chip selected" } else { "chip" },
+                                    onclick: move |_| bushing_type.set(t),
+                                    "{label}"
+                                }
+                            }
+                        }
+                    }
+                    div { class: "field",
+                        span { class: "field-label", "ID geometry" }
+                        div { class: "chip-row",
+                            for (t , label) in [(IdType::Straight, "Straight"), (IdType::Countersink, "Countersink")] {
+                                span {
+                                    class: if id_type() == t { "chip selected" } else { "chip" },
+                                    onclick: move |_| id_type.set(t),
+                                    "{label}"
+                                }
+                            }
+                        }
+                    }
                     NumberField { label: "Housing bore, nominal (in)", value: bore_dia, step: "0.0005" }
                     div { class: "field-row",
                         NumberField { label: "Bore tol +", value: bore_tol_plus, step: "0.0001" }
@@ -152,12 +229,61 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                     NumberField { label: "Housing width (in)", value: housing_width, step: "0.01" }
                     NumberField { label: "Edge distance (in)", value: edge_dist, step: "0.01" }
                 }
+                if id_type() == IdType::Countersink {
+                    BushingSection { title: "Internal countersink (ID)",
+                        CsModeField { mode: cs_mode }
+                        CsGeometryField { mode: cs_mode(), which: CsField::Dia, label: "Countersink diameter (in)", value: cs_dia, step: "0.001", solved: out.cs_solved_id }
+                        CsGeometryField { mode: cs_mode(), which: CsField::Depth, label: "Countersink depth (in)", value: cs_depth, step: "0.001", solved: out.cs_solved_id }
+                        CsGeometryField { mode: cs_mode(), which: CsField::Angle, label: "Countersink angle (deg)", value: cs_angle, step: "1", solved: out.cs_solved_id }
+                        div { class: "field-row",
+                            NumberField { label: "Dia tol +", value: cs_dia_tol_plus, step: "0.0005" }
+                            NumberField { label: "Dia tol \u{2212}", value: cs_dia_tol_minus, step: "0.0005" }
+                        }
+                        div { class: "field-row",
+                            NumberField { label: "Depth tol +", value: cs_depth_tol_plus, step: "0.0005" }
+                            NumberField { label: "Depth tol \u{2212}", value: cs_depth_tol_minus, step: "0.0005" }
+                        }
+                    }
+                }
+                if bushing_type() == BushingType::Countersink || bushing_type() == BushingType::Flanged {
+                    BushingSection { title: "External geometry (OD)",
+                        if bushing_type() == BushingType::Countersink {
+                            CsModeField { mode: ext_cs_mode }
+                            CsGeometryField { mode: ext_cs_mode(), which: CsField::Dia, label: "Countersink diameter (in)", value: ext_cs_dia, step: "0.001", solved: out.cs_solved_od }
+                            CsGeometryField { mode: ext_cs_mode(), which: CsField::Depth, label: "Countersink depth (in)", value: ext_cs_depth, step: "0.001", solved: out.cs_solved_od }
+                            CsGeometryField { mode: ext_cs_mode(), which: CsField::Angle, label: "Countersink angle (deg)", value: ext_cs_angle, step: "1", solved: out.cs_solved_od }
+                            div { class: "field-row",
+                                NumberField { label: "Dia tol +", value: ext_cs_dia_tol_plus, step: "0.0005" }
+                                NumberField { label: "Dia tol \u{2212}", value: ext_cs_dia_tol_minus, step: "0.0005" }
+                            }
+                            div { class: "field-row",
+                                NumberField { label: "Depth tol +", value: ext_cs_depth_tol_plus, step: "0.0005" }
+                                NumberField { label: "Depth tol \u{2212}", value: ext_cs_depth_tol_minus, step: "0.0005" }
+                            }
+                        }
+                        if bushing_type() == BushingType::Flanged {
+                            NumberField { label: "Flange OD (in)", value: flange_od, step: "0.01" }
+                            NumberField { label: "Flange thickness (in)", value: flange_thk, step: "0.001" }
+                        }
+                    }
+                }
                 BushingSection { title: "Interference & tolerance",
                     NumberField { label: "Target diametral interference (in)", value: interference, step: "0.0001" }
                     div { class: "field-row",
                         NumberField { label: "Interference tol +", value: interference_tol_plus, step: "0.0001" }
                         NumberField { label: "Interference tol \u{2212}", value: interference_tol_minus, step: "0.0001" }
                     }
+                    label { class: "field field-checkbox",
+                        input {
+                            r#type: "checkbox",
+                            checked: enforcement_enabled(),
+                            oninput: move |e| enforcement_enabled.set(e.checked()),
+                        }
+                        span { "Auto-tighten bore tolerance to meet target interference" }
+                    }
+                }
+                BushingSection { title: "Neck wall",
+                    NumberField { label: "Minimum neck wall (in)", value: min_wall_neck, step: "0.001" }
                 }
                 BushingSection { title: "Materials",
                     MaterialField { label: "Housing material", value: mat_housing }
@@ -202,6 +328,11 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                             "Straight wall thickness ({out.wall_straight:.4} in) is below the minimum ({min_wall_straight():.4} in)."
                         }
                     }
+                    if out.fail_neck {
+                        div { class: "bushing-alert bushing-alert-fail",
+                            "Neck wall thickness ({out.wall_neck:.4} in) is below the minimum ({min_wall_neck():.4} in)."
+                        }
+                    }
                     if out.delta_total <= 0.0 {
                         div { class: "bushing-alert bushing-alert-warn",
                             "Net interference is zero or negative after thermal correction - this is a clearance fit, not a press fit."
@@ -212,12 +343,18 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                             "Bore and interference tolerance bands don't fully overlap - the achieved-interference range shown is collapsed to a point estimate, not a real tolerance band."
                         }
                     }
+                    if out.tolerance_status == ToleranceStatus::Clamped {
+                        div { class: "bushing-alert bushing-alert-warn",
+                            "OD nominal was clamped to keep the fit inside the requested interference tolerance window (bore tolerance auto-adjustment was applied)."
+                        }
+                    }
 
                     div { class: "bushing-margins",
                         MarginRow { label: "Housing hoop stress", stress: out.stress_hoop_housing, ms: out.housing_ms, allowable: mat_housing_props.sy_ksi * 1000.0 }
                         MarginRow { label: "Bushing hoop stress", stress: out.stress_hoop_bushing, ms: out.bushing_ms, allowable: mat_bushing_props.sy_ksi * 1000.0 }
                         MarginRow { label: "Edge distance (sequencing)", stress: out.ed_actual, ms: out.sequence_margin, allowable: out.ed_min_sequence }
                         MarginRow { label: "Edge distance (strength)", stress: out.ed_actual, ms: out.strength_margin, allowable: out.ed_min_strength }
+                        MarginRow { label: "Neck wall thickness", stress: out.wall_neck, ms: out.wall_neck / min_wall_neck() - 1.0, allowable: min_wall_neck() }
                     }
 
                     div { class: "bushing-detail-grid",
@@ -227,6 +364,13 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                         DetailField { label: "Edge-distance ratio \u{03bb}", value: format!("{:.3}", out.lambda) }
                         DetailField { label: "Achieved interference", value: format!("{:.4} in", out.achieved_interference_tol.nominal) }
                         DetailField { label: "Solved OD band", value: format!("{:.4}\u{2013}{:.4} in", out.od_tol.lower, out.od_tol.upper) }
+                        DetailField { label: "Neck wall (nominal)", value: format!("{:.4} in", out.wall_neck_nominal) }
+                        if let Some(id) = out.cs_solved_id {
+                            DetailField { label: "Internal CS (solved)", value: format!("\u{2300}{:.4} \u{00d7} {:.4} deep, {:.1}\u{00b0}", id.dia, id.depth, id.angle_deg) }
+                        }
+                        if let Some(od) = out.cs_solved_od {
+                            DetailField { label: "External CS (solved)", value: format!("\u{2300}{:.4} \u{00d7} {:.4} deep, {:.1}\u{00b0}", od.dia, od.depth, od.angle_deg) }
+                        }
                     }
 
                     div { class: "bushing-derivation-toggle",
@@ -255,36 +399,128 @@ fn BushingSection(title: &'static str, children: Element) -> Element {
     }
 }
 
+/// A numeric field with its own display-text signal, decoupled from the
+/// numeric `value` signal it reads/writes - NOT the naive
+/// `value: "{value}"` pattern used elsewhere in this app (see CLAUDE.md's
+/// "numeric `<input>` snap-back" note), because that pattern has a second
+/// failure mode beyond the one already documented there: even a
+/// *successful* parse can still clobber what the user is mid-typing.
+/// Bushing dimensions are routinely < 1 (e.g. `0.375`), so typing one
+/// means typing "0" then "." before any nonzero digit - "0".parse() and
+/// "0.".parse() both succeed as `Ok(0.0)`, and Rust's `f64` `Display`
+/// formats `0.0` back as `"0"`, not `"0."` - reformatting the controlled
+/// value from the parsed float on every keystroke silently deletes the
+/// decimal point the instant it's typed, making any value below 1
+/// unenterable. Keeping a separate `text` signal that only ever gets
+/// overwritten by what the user actually typed (never by reformatting a
+/// successful parse) fixes this for every fractional value, not just this
+/// one case. `text` is still resynced from `value` when it changes from
+/// *outside* this field (e.g. the reamer picker setting `bore_dia`) - the
+/// guard compares the current text's own parse against the new value so a
+/// self-triggered update (this field's own `oninput`) never clobbers
+/// itself, only a genuinely external change does.
 #[component]
 fn NumberField(label: &'static str, value: Signal<f64>, step: &'static str) -> Element {
     let mut value = value;
+    let mut text = use_signal(|| format!("{}", value()));
+    use_effect(move || {
+        let v = value();
+        if text.peek().parse::<f64>().ok() != Some(v) {
+            text.set(format!("{v}"));
+        }
+    });
     rsx! {
         label { class: "field",
             span { class: "field-label", "{label}" }
             input {
                 r#type: "number",
                 step: "{step}",
-                value: "{value}",
-                oninput: move |e| { if let Ok(v) = e.value().parse::<f64>() { value.set(v); } },
+                value: "{text}",
+                oninput: move |e| {
+                    let s = e.value();
+                    if let Ok(v) = s.parse::<f64>() { value.set(v); }
+                    text.set(s);
+                },
             }
         }
     }
 }
 
+/// `select`/`option` renders on `blitz-dom` as every option's text
+/// flattened together with no popup at all (see `components.rs`'s own
+/// `Dropdown` doc comment and `docs/epic-ui-performance-and-design.md`'s
+/// "Verified platform constraints" table) - the exact bug a user reported
+/// here ("hardcoded text of all materials" instead of a real picker).
+/// Reuses the same `Dropdown` component every other picker in this app
+/// already uses, rather than reinventing it.
 #[component]
 fn MaterialField(label: &'static str, value: Signal<String>) -> Element {
     let mut value = value;
+    let selected_label = bushing_solver::materials::get_material(&value()).name.to_string();
+    let options: Vec<(&'static str, &'static str)> = MATERIALS.iter().map(|m| (m.id, m.name)).collect();
     rsx! {
-        label { class: "field",
-            span { class: "field-label", "{label}" }
-            select {
-                value: "{value}",
-                oninput: move |e| value.set(e.value()),
-                for m in MATERIALS {
-                    option { value: "{m.id}", "{m.name}" }
+        Dropdown {
+            field_label: label.to_string(),
+            selected_label,
+            options,
+            on_select: move |v: String| value.set(v),
+        }
+    }
+}
+
+/// Which of a countersink's three dimensions (diameter/depth/angle) a
+/// given `CsGeometryField` renders - the mode determines which two are
+/// direct user inputs and which one is derived (see `countersink.rs`'s
+/// `CsMode`).
+#[derive(Clone, Copy, PartialEq)]
+enum CsField {
+    Dia,
+    Depth,
+    Angle,
+}
+
+fn cs_field_is_direct_input(mode: CsMode, which: CsField) -> bool {
+    match (mode, which) {
+        (CsMode::DepthAngle, CsField::Dia) => false,
+        (CsMode::DiaAngle, CsField::Depth) => false,
+        (CsMode::DiaDepth, CsField::Angle) => false,
+        _ => true,
+    }
+}
+
+#[component]
+fn CsModeField(mode: Signal<CsMode>) -> Element {
+    let mut mode = mode;
+    rsx! {
+        div { class: "field",
+            span { class: "field-label", "Countersink mode" }
+            div { class: "chip-row",
+                for (m , label) in [(CsMode::DepthAngle, "Depth + angle"), (CsMode::DiaAngle, "Dia + angle"), (CsMode::DiaDepth, "Dia + depth")] {
+                    span {
+                        class: if mode() == m { "chip selected" } else { "chip" },
+                        onclick: move |_| mode.set(m),
+                        "{label}"
+                    }
                 }
             }
         }
+    }
+}
+
+/// One countersink dimension - an editable `NumberField` when `mode`
+/// treats it as a direct input, or a read-only `DetailField` showing the
+/// solved value when `mode` derives it from the other two.
+#[component]
+fn CsGeometryField(mode: CsMode, which: CsField, label: &'static str, value: Signal<f64>, step: &'static str, solved: Option<bushing_solver::countersink::CsCorner>) -> Element {
+    if cs_field_is_direct_input(mode, which) {
+        rsx! { NumberField { label, value, step } }
+    } else {
+        let derived = solved.map(|c| match which {
+            CsField::Dia => c.dia,
+            CsField::Depth => c.depth,
+            CsField::Angle => c.angle_deg,
+        });
+        rsx! { DetailField { label, value: derived.map(|v| format!("{v:.4} (derived)")).unwrap_or_default() } }
     }
 }
 
