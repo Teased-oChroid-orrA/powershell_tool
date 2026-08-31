@@ -129,6 +129,55 @@ diameter field. Picking a row sets `bore_dia`/`bore_tol_plus`/
 `bore_tol_minus` directly from the catalog entry's nominal size and tool
 tolerance, then closes the picker.
 
+### Cross-section visualizer (`app/src/bushing_visualizer.rs`)
+
+An axial cross-section of the housing (parent material) + installed
+bushing, drawn as an engineering-style section: 45-degree cross-hatching
+for cut material (housing and bushing hatched at *opposite* diagonals -
+the real ANSI convention for distinguishing adjacent parts in an
+assembly section), a chain-dash-dot centerline, and an interference
+dimension callout as text rather than an exaggerated/to-scale gap (a real
+interference is thousandths of an inch - invisible at any sane drawing
+scale, and there is no dedicated graphical symbol for it beyond a
+tolerance/dimension callout - researched, not guessed). Oriented with the
+axial direction vertical and the head end (flange/countersink face) at
+the top, radius mirrored left/right around the centerline.
+
+Ported the same "geometry struct, then SVG string-building" split
+`~/Claude/Projects/profile_capabilities`'s `joint_section_view.rs` uses -
+but that project renders inside a real WebView (`dioxus::desktop`/wry);
+this app deliberately has none (see CLAUDE.md's "Why dioxus-native"),
+so the SVG is embedded as a `data:image/svg+xml;base64,...` `<img>` src
+instead of inline `<svg>` markup, the same mechanism already used for the
+derivation-view formula PNGs. Confirmed as a real working path by reading
+`blitz-dom-0.2.4/src/net.rs`'s image decode: it tries a raster decode
+first, falls back to `usvg::parse_svg` on the same bytes - `blitz-paint`'s
+SVG support (`usvg`+`anyrender_svg`) is default-on.
+
+No new geometry math - every coordinate comes from
+`bushing-solver::geometry`'s already-tested section params. The one real
+bug from the first version: a flange's sharp radius step got linearly
+interpolated into a taper, because the original approach sampled a few
+(z, radius) breakpoints from the continuous `evaluate_bushing_outer_radius`
+(correct for finding a wall-thickness *minimum*, wrong for drawing a
+profile outline) and connected all of them with straight lines. Fixed by
+building each profile as an explicit, per-geometry-type point list
+(`outer_profile_points`/`inner_profile_points`) that knows which
+transitions are real tapers (a countersink chamfer) versus steps (a
+flange shoulder - drawn as two perpendicular segments, confirmed against
+real drafting convention, not assumed). Also fixed: the SVG's own
+`viewBox`/intrinsic size is derived directly from the real geometry at a
+fixed px-per-inch scale, not fitted into an arbitrary fixed-aspect box -
+the first version forced every bushing into the same landscape frame
+regardless of its actual proportions, which for a short/wide bushing drew
+a sliver of content in a mostly-empty canvas.
+
+Rendered output isn't visible to this agent (no GUI screenshot capability
+in this environment) - verified instead by decoding the actual generated
+SVG and rasterizing it with `inkscape` for direct visual inspection (see
+`bushing_visualizer.rs`'s `dump_for_visual_inspection` test), for
+straight/flanged/countersink cases, before treating this as correct.
+
 ## What's deliberately not in this pass
 
 Service-duty/wear (PV) screening, process-route review, and standards/

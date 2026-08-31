@@ -348,6 +348,30 @@ looks cleaner - that regresses the exact problem this app was built to fix.
   `value` string either way, so this is a pure rename, not a logic
   change. If you add a new checkbox/radio/any form control, use `oninput`
   from the start, not `onchange`.
+- **`<details>`/`<summary>` never toggles on click either - use
+  `components.rs`'s `Expander` component, never a raw `details`/
+  `summary`.** Same root cause and bug class as the `onchange`/`<select>`
+  gaps above: `blitz-dom`'s click dispatcher
+  (`blitz-dom-0.2.4/src/events/mouse.rs`'s `handle_click`) only special-
+  cases `checkbox`/`radio`/`label`/`a`/`submit`/file `input` elements -
+  clicking a `<summary>` falls through to `_ => {}` and does nothing, and
+  no code anywhere in `blitz-dom` ever mutates a `details` element's
+  `open` attribute in response to any event. Every `<details>` in this
+  app (the four `SettingsPanel` sections, all seven original
+  `BushingSection`s) was therefore permanently stuck at whatever `open`
+  state it was given at render time - `SettingsPanel`'s were stuck
+  closed, `bushing_workbench.rs`'s were hardcoded `open: true` (stuck
+  open) specifically because an earlier pass already needed a workaround
+  for this. Found while investigating a scroll-cumbersomeness request:
+  making bushing's sections default-closed to shorten scroll distance
+  would have made critical fields permanently inaccessible without this
+  fix landing first. Fixed by `Expander` (`components.rs`): keeps real
+  `<details>`/`<summary>` markup (so the existing `details`/`summary`/
+  `details[open]` CSS in `main.rs` still applies unchanged) but drives
+  `open` from an explicit signal and toggles it via a manual `onclick` on
+  `summary`, the same "replicate the missing native behavior by hand"
+  fix shape as `Dropdown`. If you add a new collapsible section, use
+  `Expander`, not a bare `details`/`summary`.
 - (Historical, C#-era, preserved for context) An XML comment containing
   `--` broke a `.csproj` file outright; a `zip -x "*.git*"` packaging
   command once silently excluded the entire `.github/` folder via

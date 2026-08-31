@@ -8,6 +8,7 @@
 // want the console for the tracing::Level::INFO logger output below.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod bushing_visualizer;
 mod bushing_workbench;
 mod command_palette;
 mod components;
@@ -1235,6 +1236,15 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 .field-row .field { min-width: 0; }
 .field-inline-row { display: flex; align-items: center; gap: var(--space-2); }
 
+.field-group {
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: var(--space-2) var(--space-3) var(--space-3);
+    display: flex; flex-direction: column; gap: var(--space-2);
+}
+.field-group-label { font-weight: 650; font-size: 0.76em; color: var(--fg-subtle); text-transform: uppercase; letter-spacing: 0.03em; }
+.field-group-body { display: flex; flex-direction: column; gap: var(--space-2); }
+.field-group-body .field-row { margin: 0; }
+
 .bushing-inputs .chip { cursor: pointer; transition: background-color 0.15s var(--ease), color 0.15s var(--ease), border-color 0.15s var(--ease); border: 1px solid transparent; }
 .bushing-inputs .chip.selected { background: var(--accent); color: var(--accent-fg); }
 
@@ -1265,11 +1275,100 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 .bushing-results { flex: 1; min-width: 0; overflow: hidden; }
 .bushing-results-scroll { height: 100%; overflow-y: auto; overflow-x: hidden; padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-4); }
 
-.bushing-summary-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--space-3); }
+.bushing-section-view {
+    border: 1px solid var(--glass-border); border-radius: var(--radius-md);
+    background: var(--glass); padding: var(--space-2);
+}
+.bushing-section-svg { display: block; width: 100%; height: auto; }
+
+.bushing-viz-panes { display: flex; gap: var(--space-2); flex: none; }
+.bushing-viz-pane {
+    position: relative; border: 1px solid var(--glass-border); border-radius: var(--radius-md);
+    background: var(--glass); padding: var(--space-1); overflow: hidden;
+}
+.bushing-viz-overview { width: 96px; }
+.bushing-viz-detail { width: 200px; }
+.bushing-viz-img { display: block; width: 100%; height: auto; }
+.bushing-viz-tag {
+    position: absolute; top: var(--space-1); left: var(--space-1); z-index: 1;
+    font-size: 0.68em; font-weight: 650; text-transform: uppercase; letter-spacing: 0.02em;
+    color: var(--fg-muted); background: var(--bg-raised); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 1px 6px;
+}
+.bushing-viz-expand {
+    position: absolute; top: var(--space-1); right: var(--space-1); z-index: 1;
+    width: 22px; height: 22px; padding: 4px; line-height: 1;
+    border-radius: var(--radius-sm); background: var(--bg-raised); border: 1px solid var(--border-strong);
+    color: var(--fg-muted);
+}
+.bushing-viz-expand:hover { color: var(--fg); border-color: var(--accent); }
+.bushing-viz-expand svg { width: 100%; height: 100%; }
+
+.bushing-viz-lightbox-backdrop {
+    position: fixed; inset: 0; background: rgba(10, 12, 14, 0.6);
+    display: flex; align-items: center; justify-content: center; padding: var(--space-6);
+    z-index: 50;
+}
+.bushing-viz-lightbox-card {
+    /* A definite `width` (not `max-width`), on purpose: this card is a
+       flex item in a `justify-content:center; align-items:center` flex
+       container, i.e. shrink-to-fit-sized by its own content. The `img`
+       inside is `width:100%; height:auto` - a percentage width resolved
+       against a shrink-to-fit parent that in turn is sized BY that same
+       img is a circular case that (whether in Blitz's layout engine or
+       otherwise) has no reliable single-pass answer, and was the actual
+       cause of the lightbox rendering as an empty box: the dock's
+       overview/detail panes work precisely because their parent
+       (`.bushing-viz-pane`) has a definite pixel `width`, breaking the
+       same cycle. `max-width` alone (the first version of this rule)
+       keeps the container shrink-to-fit and reintroduces it. */
+    position: relative; width: 720px; max-width: 90vw; max-height: 88vh; overflow-y: auto;
+    background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md); padding: var(--space-4);
+}
+.bushing-viz-lightbox-close {
+    position: absolute; top: var(--space-3); right: var(--space-3); z-index: 1;
+    width: 30px; height: 30px; padding: 6px; line-height: 1; font-size: 1em;
+    border-radius: var(--radius-sm); background: var(--bg-sunken); border: 1px solid var(--border-strong);
+    color: var(--fg-muted);
+}
+.bushing-viz-lightbox-close:hover { color: var(--fg); }
+.bushing-viz-lightbox-close svg { width: 100%; height: 100%; }
+.bushing-viz-lightbox-img { display: block; width: 100%; height: auto; }
+
+.spec-table-wrap { overflow-x: auto; }
+.spec-table { width: 100%; border-collapse: collapse; font-size: 0.86em; }
+.spec-table th {
+    text-align: left; font-weight: 650; color: var(--fg-muted); font-size: 0.78em;
+    text-transform: uppercase; letter-spacing: 0.03em; padding: var(--space-1) var(--space-2);
+    border-bottom: 1px solid var(--border-strong);
+}
+.spec-table th.num, .spec-table td.num { text-align: right; }
+.spec-table td { padding: var(--space-1) var(--space-2); border-bottom: 1px solid var(--border); vertical-align: middle; }
+.spec-table tbody tr:last-child td { border-bottom: none; }
+.spec-table .spec-row-derived td { background: color-mix(in srgb, var(--fg-subtle) 12%, transparent); }
+.spec-input {
+    width: 72px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--bg-raised); color: var(--fg); padding: 3px 6px; font-size: 0.95em; text-align: right;
+}
+.spec-row-derived .spec-input { background: transparent; }
+.range-cell { font-weight: 650; }
+
+.src-chip {
+    font-size: 0.68em; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase;
+    padding: 1px 7px; border-radius: var(--radius-sm); white-space: nowrap;
+}
+.src-direct { background: color-mix(in srgb, var(--active) 20%, transparent); color: var(--active); }
+.src-derived { background: var(--bg-sunken); color: var(--fg-subtle); }
+.src-calculated { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent-strong); }
+
+.bushing-summary-band { display: flex; gap: var(--space-3); align-items: flex-start; flex-wrap: wrap; }
+.bushing-summary-row { flex: 1; min-width: 260px; display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--space-3); }
 .summary-card {
     display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-3);
     background: var(--glass); border: 1px solid var(--glass-border); border-radius: var(--radius-md);
 }
+.summary-card-label-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
 .summary-card-label { font-size: 0.76em; font-weight: 650; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.03em; }
 .summary-card-value { font-size: 1.15em; font-weight: 700; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 

@@ -53,6 +53,64 @@ pub(crate) fn Dropdown(field_label: String, selected_label: String, options: Vec
     }
 }
 
+/// Collapsible section - stands in for native `<details>`/`<summary>`,
+/// which `blitz-dom` implements only cosmetically (the
+/// `disclosure-open`/`disclosure-closed` marker glyph, copied from
+/// Gecko's real UA stylesheet - `blitz-dom-0.2.4/assets/default.css`).
+/// Two separate, compounding gaps, not one:
+///
+/// 1. **No click-to-toggle.** `handle_click` (`events/mouse.rs`) only
+///    special-cases `checkbox`/`radio`/`label`/`a`/`submit`/file `input`
+///    elements - a `<summary>` click falls through and does nothing.
+/// 2. **No content-hiding.** In a real browser, `<details>` collapsing
+///    its non-`<summary>` children when closed is native layout
+///    behavior baked into the engine (Gecko/Blink/WebKit each implement
+///    it in their own C++ frame/box code) - it is NOT a CSS rule a page
+///    (or a copied UA stylesheet) can express, and `blitz-dom` never
+///    reimplemented that native behavior: zero code anywhere in the
+///    crate references `details`/`summary` beyond the marker-glyph CSS.
+///    So even a correctly-toggling `open` attribute would only spin the
+///    chevron and restyle the border - the body content stays visible
+///    the entire time regardless of `open`.
+///
+/// Fixed by not depending on native `<details>` semantics for either
+/// behavior: `open` is driven by an explicit signal, toggled by a manual
+/// `onclick` on `summary` (fixes gap 1), and the body is conditionally
+/// rendered (`if open() { ... }`) rather than always present in the tree
+/// (fixes gap 2 - the actual reason a prior pass's toggle fix alone
+/// still didn't collapse anything). `<details>`/`<summary>` markup is
+/// kept, not replaced with plain `div`s, purely for the free marker-glyph
+/// styling and existing `details`/`summary`/`details[open]` CSS in
+/// `main.rs` - none of that markup is load-bearing for show/hide anymore.
+#[component]
+pub(crate) fn Expander(title: &'static str, default_open: bool, class: &'static str, body_class: &'static str, children: Element) -> Element {
+    let mut open = use_signal(move || default_open);
+    rsx! {
+        details { class: "{class}", open: open(),
+            summary { onclick: move |_| open.toggle(), "{title}" }
+            if open() {
+                div { class: "{body_class}", {children} }
+            }
+        }
+    }
+}
+
+/// A labeled, bordered sub-group of related fields - visually
+/// distinguishes a cluster of inputs (a tolerance +/- pair, a set of
+/// acceptance-criteria minimums) from unrelated fields sitting in the
+/// same `Expander`/section, without needing its own collapsible section.
+/// Always open (no toggle) - this is a grouping cue, not a
+/// show/hide control.
+#[component]
+pub(crate) fn FieldGroup(label: &'static str, children: Element) -> Element {
+    rsx! {
+        div { class: "field-group",
+            span { class: "field-group-label", "{label}" }
+            div { class: "field-group-body", {children} }
+        }
+    }
+}
+
 #[component]
 pub fn SettingsPanel(mut state: AppState) -> Element {
     let can_run = state.can_run();
@@ -223,9 +281,7 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                 }
             }
 
-            details {
-                summary { "Matching" }
-                div { class: "expander-body",
+            Expander { title: "Matching", default_open: false, class: "", body_class: "expander-body",
                     Dropdown {
                         field_label: "Match mode",
                         selected_label: match_mode_display(*state.match_mode.read()).to_string(),
@@ -307,12 +363,9 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                             on_select: move |v: String| state.exclude_scope.set(parse_exclude_scope(&v)),
                         }
                     }
-                }
             }
 
-            details {
-                summary { "Scope and output" }
-                div { class: "expander-body",
+            Expander { title: "Scope and output", default_open: false, class: "", body_class: "expander-body",
                     label { class: "field",
                         span { "File extensions - type to filter, tick to select" }
                         input {
@@ -429,12 +482,9 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                         }
                         span { "Export JSON" }
                     }
-                }
             }
 
-            details {
-                summary { "Performance and robustness" }
-                div { class: "expander-body",
+            Expander { title: "Performance and robustness", default_open: false, class: "", body_class: "expander-body",
                     label { class: "field-inline",
                         input {
                             r#type: "checkbox",
@@ -513,21 +563,18 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                             oninput: move |e| { if let Ok(v) = e.value().parse::<i32>() { state.max_retries.set(v.max(0)); } },
                         }
                     }
-                }
             }
 
-            details {
-                // Renamed from "Fast re-search (experimental)" - since
-                // issue #6 Phase 1, this isn't a side experiment anymore:
-                // Run Search itself routes through this index
-                // automatically for non-regex filters (see the hint text
-                // below). This section is just where the index itself is
-                // managed - the old separate "search the index directly"
-                // sub-panel (raw Tantivy query box + its own results list)
-                // was trimmed as redundant now that Run Search gives
-                // richer, index-accelerated results on its own.
-                summary { "Fast re-search index" }
-                div { class: "expander-body",
+            // Renamed from "Fast re-search (experimental)" - since
+            // issue #6 Phase 1, this isn't a side experiment anymore:
+            // Run Search itself routes through this index
+            // automatically for non-regex filters (see the hint text
+            // below). This section is just where the index itself is
+            // managed - the old separate "search the index directly"
+            // sub-panel (raw Tantivy query box + its own results list)
+            // was trimmed as redundant now that Run Search gives
+            // richer, index-accelerated results on its own.
+            Expander { title: "Fast re-search index", default_open: false, class: "", body_class: "expander-body",
                     label { class: "field-inline",
                         input {
                             r#type: "checkbox",
@@ -567,7 +614,6 @@ pub fn SettingsPanel(mut state: AppState) -> Element {
                     } else {
                         p { class: "caption", "Enable indexing above, then click \"Build/update index\" or run a search - either keeps this folder's index current." }
                     }
-                }
             }
 
             div { class: "row action-row",

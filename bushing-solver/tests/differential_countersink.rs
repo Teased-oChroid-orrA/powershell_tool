@@ -132,4 +132,25 @@ fn matches_real_ts_engine_output_for_a_countersink_and_flanged_fixture() {
     close(neck_candidate.margin, 0.11520533950482315, "neck wall thickness candidate margin");
 
     assert_eq!(out.tolerance_status, bushing_solver::tolerance::ToleranceStatus::Ok);
+
+    // Countersink derived-dimension tolerance propagation
+    // (`cs_dia_tolerance_from_base`/`cs_depth_tolerance_from_base`, wired
+    // into `compute` for the first time - previously computed in
+    // isolation by `countersink.rs`'s own unit tests but never actually
+    // reaching `BushingOutput`). `cs_mode`/`ext_cs_mode` are both
+    // `DepthAngle` in this fixture, so diameter is the derived dimension
+    // for both internal and external - depth is not derived here, and
+    // must just pass its own resolved input straight through.
+    let internal_dia = out.cs_internal_dia_tol.expect("id_type is Countersink");
+    close(internal_dia.lower, 0.5656805748150736, "cs_internal_dia_tol.lower");
+    close(internal_dia.upper, 0.5775981107410157, "cs_internal_dia_tol.upper");
+    let internal_depth = out.cs_internal_depth_tol.expect("id_type is Countersink");
+    close(internal_depth.lower, 0.08, "cs_internal_depth_tol.lower");
+    close(internal_depth.upper, 0.085, "cs_internal_depth_tol.upper");
+    let external_dia = out.cs_external_dia_tol.expect("bushing_type is Countersink");
+    close(external_dia.lower, 0.6445104311113051, "cs_external_dia_tol.lower");
+    close(external_dia.upper, 0.6564279670372473, "cs_external_dia_tol.upper");
+    let external_depth = out.cs_external_depth_tol.expect("bushing_type is Countersink");
+    close(external_depth.lower, 0.06, "cs_external_depth_tol.lower");
+    close(external_depth.upper, 0.065, "cs_external_depth_tol.upper");
 }

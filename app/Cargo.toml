@@ -74,3 +74,13 @@ notify-rust = "4"
 # (embedded via `include_bytes!`) into `data:image/png;base64,...` `<img>`
 # src strings - see bushing_workbench.rs's `formula_img_src`.
 base64 = "0.22"
+
+[dev-dependencies]
+# Diagnostic only: lets bushing_visualizer's tests actually run the same
+# `usvg::Tree::from_data` parse Blitz's own image loader
+# (`blitz-dom-0.2.4/src/util.rs`'s `parse_svg`) performs on an embedded
+# SVG `<img>` src, instead of only checking the SVG string looks
+# superficially sane (`starts_with("<svg")` etc.) - the actual bug class
+# under investigation is a render that's syntactically valid SVG text but
+# fails (or silently degrades) at that specific parse step.
+usvg = "0.45"
