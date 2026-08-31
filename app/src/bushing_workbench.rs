@@ -18,7 +18,7 @@ use bushing_solver::reamers::{self, ReamerEntry};
 use bushing_solver::solve::{compute, BushingInputs, EndConstraint};
 use bushing_solver::tolerance::{EnforcementPolicy, ToleranceStatus};
 
-use crate::components::{Dropdown, Expander, FieldGroup};
+use crate::components::{Dropdown, FieldGroup};
 
 /// Hand-drawn inline SVG, same convention `main.rs`'s nav-rail
 /// `icon_*` functions already use - not a Unicode glyph. A prior version
@@ -254,33 +254,143 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
     let mat_bushing_props = *bushing_solver::materials::get_material(&mat_bushing());
     let mat_housing_props = *bushing_solver::materials::get_material(&mat_housing());
 
+    let section_input = BushingSectionInput {
+        bore_dia: bore_dia(),
+        housing_len: housing_len(),
+        housing_width: housing_width(),
+        id_bushing: id_bushing(),
+        bushing_type: bushing_type(),
+        id_type: id_type(),
+        flange_od: flange_od(),
+        flange_thk: flange_thk(),
+        od_bushing: out.od_installed,
+        cs_external: out.cs_solved_od.map(|c| (c.dia, c.depth)),
+        cs_internal: out.cs_solved_id.map(|c| (c.dia, c.depth)),
+    };
+    let stress_overlay = bushing_visualizer::StressOverlay {
+        housing_stress_psi: out.stress_hoop_housing,
+        housing_ms: out.housing_ms,
+        bushing_stress_psi: out.stress_hoop_bushing,
+        bushing_ms: out.bushing_ms,
+        bushing_field: out.bushing_stress_field.clone(),
+        housing_field: out.housing_stress_field.clone(),
+    };
+    let neck_governs = id_type() == IdType::Countersink && out.wall_neck < out.wall_straight;
+    let section_params = bushing_solver::geometry::resolve_bushing_section_params(&section_input);
+    let crop = bushing_visualizer::detail_crop(&section_input, &section_params, neck_governs);
+    let detail_label = if neck_governs { "Detail \u{2014} neck wall (governing)" } else { "Detail \u{2014} straight wall" };
+
     rsx! {
-        div { class: "panel bushing-layout",
-            div { class: "bushing-inputs",
-                Expander { title: "Geometry", default_open: true, class: "bushing-section", body_class: "bushing-section-body",
-                    div { class: "field",
-                        span { class: "field-label", "OD geometry" }
-                        div { class: "chip-row",
-                            for (t , label) in [(BushingType::Straight, "Straight"), (BushingType::Flanged, "Flanged"), (BushingType::Countersink, "Countersink")] {
-                                span {
-                                    class: if bushing_type() == t { "chip selected" } else { "chip" },
-                                    onclick: move |_| bushing_type.set(t),
-                                    "{label}"
-                                }
+        // Single flowing column, matching the approved mockup exactly - no
+        // fixed-width sidebar, no independent inner scroll regions, no
+        // accordion/collapse chrome. `.stage`'s own page-level scroll
+        // (main.rs) is the only scrollbar for the whole tool.
+        div { class: "panel bushing-page",
+
+            div { class: "bushing-summary-band",
+                div { class: "bushing-viz-panes",
+                    div { class: "bushing-viz-pane bushing-viz-overview",
+                        span { class: "bushing-viz-tag", "Overview" }
+                        img { class: "bushing-viz-img", src: bushing_visualizer::geometry_crop_svg_data_uri(&section_input, dark(), None, 90.0) }
+                    }
+                    div { class: "bushing-viz-pane bushing-viz-detail",
+                        span { class: "bushing-viz-tag", "{detail_label}" }
+                        img { class: "bushing-viz-img", src: bushing_visualizer::geometry_crop_svg_data_uri(&section_input, dark(), Some(crop), 280.0) }
+                        button {
+                            class: "bushing-viz-expand",
+                            title: "Expand",
+                            onclick: move |_| visualizer_lightbox_open.set(true),
+                            {icon_expand()}
+                        }
+                    }
+                }
+                div { class: "bushing-summary-row",
+                    SummaryCard { label: "Contact pressure", value: fmt_ranged(out.pressure_range, 0, "psi") }
+                    SummaryCard { label: "Installed OD", value: format!("{:.4} in", out.od_installed) }
+                    SummaryCard { label: "Straight wall", value: fmt_ranged(out.wall_straight_range, 4, "in") }
+                    SummaryCard { label: "Neck wall", value: format!("{:.4} in", out.wall_neck) }
+                    SummaryCard {
+                        label: "Governing check",
+                        value: out.governing.name.to_string(),
+                        badge: Some((fmt_margin(out.governing.margin), margin_class(out.governing.margin))),
+                    }
+                }
+            }
+
+            if visualizer_lightbox_open() {
+                div {
+                    class: "bushing-viz-lightbox-backdrop",
+                    div {
+                        class: "bushing-viz-lightbox-card",
+                        button {
+                            class: "bushing-viz-lightbox-close",
+                            onclick: move |_| visualizer_lightbox_open.set(false),
+                            {icon_close()}
+                        }
+                        img {
+                            class: "bushing-viz-lightbox-img",
+                            src: bushing_visualizer::section_svg_data_uri(&section_input, out.achieved_interference_tol.nominal, stress_overlay, dark()),
+                        }
+                    }
+                }
+            }
+
+            div { class: "bushing-card",
+                h3 { class: "bushing-card-title", "Geometry" }
+                div { class: "field",
+                    span { class: "field-label", "OD geometry" }
+                    div { class: "chip-row",
+                        for (t , label) in [(BushingType::Straight, "Straight"), (BushingType::Flanged, "Flanged"), (BushingType::Countersink, "Countersink")] {
+                            span {
+                                class: if bushing_type() == t { "chip selected" } else { "chip" },
+                                onclick: move |_| bushing_type.set(t),
+                                "{label}"
                             }
                         }
                     }
-                    div { class: "field",
-                        span { class: "field-label", "ID geometry" }
-                        div { class: "chip-row",
-                            for (t , label) in [(IdType::Straight, "Straight"), (IdType::Countersink, "Countersink")] {
-                                span {
-                                    class: if id_type() == t { "chip selected" } else { "chip" },
-                                    onclick: move |_| id_type.set(t),
-                                    "{label}"
-                                }
+                }
+                div { class: "field",
+                    span { class: "field-label", "ID geometry" }
+                    div { class: "chip-row",
+                        for (t , label) in [(IdType::Straight, "Straight"), (IdType::Countersink, "Countersink")] {
+                            span {
+                                class: if id_type() == t { "chip selected" } else { "chip" },
+                                onclick: move |_| id_type.set(t),
+                                "{label}"
                             }
                         }
+                    }
+                }
+                div { class: "field-inline-row",
+                    button {
+                        class: "reamer-picker-trigger",
+                        onclick: move |_| reamer_picker_open.set(!reamer_picker_open()),
+                        "Pick reamer\u{2026}"
+                    }
+                    if reamer_picker_open() {
+                        ReamerPicker {
+                            target_in: bore_dia(),
+                            on_pick: move |entry: ReamerEntry| {
+                                bore_dia.set(entry.nominal_in);
+                                bore_tol_plus.set(entry.tool_tolerance_plus_in);
+                                bore_tol_minus.set(entry.tool_tolerance_minus_in);
+                                reamer_picker_open.set(false);
+                            },
+                            on_close: move |_| reamer_picker_open.set(false),
+                        }
+                    }
+                }
+                NumberField { label: "Bushing ID (in)", value: id_bushing, step: "0.001" }
+                NumberField { label: "Housing length (in)", value: housing_len, step: "0.01" }
+                NumberField { label: "Housing width (in)", value: housing_width, step: "0.01" }
+                NumberField { label: "Edge distance (in)", value: edge_dist, step: "0.01" }
+            }
+
+            if id_type() == IdType::Countersink {
+                div { class: "bushing-card",
+                    div { class: "bushing-card-head",
+                        h3 { class: "bushing-card-title", "Internal countersink (ID)" }
+                        CsModeField { mode: cs_mode }
                     }
                     div { class: "spec-table-wrap",
                         table { class: "spec-table",
@@ -295,37 +405,24 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                                 }
                             }
                             tbody {
-                                PlainSpecRow { label: "Bore, in", decimals: 4, step: "0.0001", value: bore_dia, tol_plus: bore_tol_plus, tol_minus: bore_tol_minus, range: out.bore_tol }
+                                CsSpecRow { mode: cs_mode(), which: CsField::Depth, label: "Depth, in", decimals: 4, step: "0.001", value: cs_depth, tol_plus: cs_depth_tol_plus, tol_minus: cs_depth_tol_minus, solved: out.cs_solved_id, range: out.cs_internal_depth_tol }
+                                CsSpecRow { mode: cs_mode(), which: CsField::Angle, label: "Angle, deg", decimals: 1, step: "0.1", value: cs_angle, tol_plus: cs_angle_tol_plus, tol_minus: cs_angle_tol_minus, solved: out.cs_solved_id, range: out.cs_internal_angle_tol }
+                                CsSpecRow { mode: cs_mode(), which: CsField::Dia, label: "Diameter, in", decimals: 4, step: "0.001", value: cs_dia, tol_plus: cs_dia_tol_plus, tol_minus: cs_dia_tol_minus, solved: out.cs_solved_id, range: out.cs_internal_dia_tol }
                             }
                         }
                     }
-                    div { class: "field-inline-row",
-                        button {
-                            class: "reamer-picker-trigger",
-                            onclick: move |_| reamer_picker_open.set(!reamer_picker_open()),
-                            "Pick reamer\u{2026}"
-                        }
-                        if reamer_picker_open() {
-                            ReamerPicker {
-                                target_in: bore_dia(),
-                                on_pick: move |entry: ReamerEntry| {
-                                    bore_dia.set(entry.nominal_in);
-                                    bore_tol_plus.set(entry.tool_tolerance_plus_in);
-                                    bore_tol_minus.set(entry.tool_tolerance_minus_in);
-                                    reamer_picker_open.set(false);
-                                },
-                                on_close: move |_| reamer_picker_open.set(false),
-                            }
-                        }
-                    }
-                    NumberField { label: "Bushing ID (in)", value: id_bushing, step: "0.001" }
-                    NumberField { label: "Housing length (in)", value: housing_len, step: "0.01" }
-                    NumberField { label: "Housing width (in)", value: housing_width, step: "0.01" }
-                    NumberField { label: "Edge distance (in)", value: edge_dist, step: "0.01" }
                 }
-                if id_type() == IdType::Countersink {
-                    Expander { title: "Internal countersink (ID)", default_open: true, class: "bushing-section", body_class: "bushing-section-body",
-                        CsModeField { mode: cs_mode }
+            }
+
+            if bushing_type() == BushingType::Countersink || bushing_type() == BushingType::Flanged {
+                div { class: "bushing-card",
+                    div { class: "bushing-card-head",
+                        h3 { class: "bushing-card-title", "External geometry (OD)" }
+                        if bushing_type() == BushingType::Countersink {
+                            CsModeField { mode: ext_cs_mode }
+                        }
+                    }
+                    if bushing_type() == BushingType::Countersink {
                         div { class: "spec-table-wrap",
                             table { class: "spec-table",
                                 thead {
@@ -339,285 +436,191 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                                     }
                                 }
                                 tbody {
-                                    CsSpecRow { mode: cs_mode(), which: CsField::Depth, label: "Depth, in", decimals: 4, step: "0.001", value: cs_depth, tol_plus: cs_depth_tol_plus, tol_minus: cs_depth_tol_minus, solved: out.cs_solved_id, range: out.cs_internal_depth_tol }
-                                    CsSpecRow { mode: cs_mode(), which: CsField::Angle, label: "Angle, deg", decimals: 1, step: "0.1", value: cs_angle, tol_plus: cs_angle_tol_plus, tol_minus: cs_angle_tol_minus, solved: out.cs_solved_id, range: out.cs_internal_angle_tol }
-                                    CsSpecRow { mode: cs_mode(), which: CsField::Dia, label: "Diameter, in", decimals: 4, step: "0.001", value: cs_dia, tol_plus: cs_dia_tol_plus, tol_minus: cs_dia_tol_minus, solved: out.cs_solved_id, range: out.cs_internal_dia_tol }
+                                    CsSpecRow { mode: ext_cs_mode(), which: CsField::Depth, label: "Depth, in", decimals: 4, step: "0.001", value: ext_cs_depth, tol_plus: ext_cs_depth_tol_plus, tol_minus: ext_cs_depth_tol_minus, solved: out.cs_solved_od, range: out.cs_external_depth_tol }
+                                    CsSpecRow { mode: ext_cs_mode(), which: CsField::Angle, label: "Angle, deg", decimals: 1, step: "0.1", value: ext_cs_angle, tol_plus: ext_cs_angle_tol_plus, tol_minus: ext_cs_angle_tol_minus, solved: out.cs_solved_od, range: out.cs_external_angle_tol }
+                                    CsSpecRow { mode: ext_cs_mode(), which: CsField::Dia, label: "Diameter, in", decimals: 4, step: "0.001", value: ext_cs_dia, tol_plus: ext_cs_dia_tol_plus, tol_minus: ext_cs_dia_tol_minus, solved: out.cs_solved_od, range: out.cs_external_dia_tol }
                                 }
+                            }
+                        }
+                    }
+                    if bushing_type() == BushingType::Flanged {
+                        NumberField { label: "Flange OD (in)", value: flange_od, step: "0.01" }
+                        NumberField { label: "Flange thickness (in)", value: flange_thk, step: "0.001" }
+                    }
+                }
+            }
+
+            div { class: "bushing-card",
+                h3 { class: "bushing-card-title", "Bore & interference tolerance" }
+                div { class: "spec-table-wrap",
+                    table { class: "spec-table",
+                        thead {
+                            tr {
+                                th { "Dimension" }
+                                th { class: "num", "Nominal" }
+                                th { class: "num", "Tol \u{2212}" }
+                                th { class: "num", "Tol +" }
+                                th { class: "num", "Range" }
+                                th { "Source" }
+                            }
+                        }
+                        tbody {
+                            PlainSpecRow { label: "Bore, in", decimals: 4, step: "0.0001", value: bore_dia, tol_plus: bore_tol_plus, tol_minus: bore_tol_minus, range: out.bore_tol }
+                            PlainSpecRow { label: "Interference, in", decimals: 4, step: "0.0001", value: interference, tol_plus: interference_tol_plus, tol_minus: interference_tol_minus, range: out.interference_tol }
+                        }
+                    }
+                }
+                label { class: "field field-checkbox",
+                    input {
+                        r#type: "checkbox",
+                        checked: enforcement_enabled(),
+                        oninput: move |e| enforcement_enabled.set(e.checked()),
+                    }
+                    span { "Auto-tighten bore tolerance to meet target interference" }
+                }
+            }
+
+            div { class: "bushing-card",
+                h3 { class: "bushing-card-title", "Acceptance criteria" }
+                FieldGroup { label: "Minimum wall thickness",
+                    div { class: "field-row",
+                        NumberField { label: "Straight wall (in)", value: min_wall_straight, step: "0.001" }
+                        NumberField { label: "Neck wall (in)", value: min_wall_neck, step: "0.001" }
+                    }
+                }
+            }
+
+            div { class: "bushing-card",
+                h3 { class: "bushing-card-title", "Materials" }
+                MaterialField { label: "Housing material", value: mat_housing }
+                MaterialField { label: "Bushing material", value: mat_bushing }
+            }
+
+            div { class: "bushing-card",
+                h3 { class: "bushing-card-title", "Environment & install" }
+                NumberField { label: "Friction coefficient", value: friction, step: "0.01" }
+                NumberField { label: "Temperature change, \u{0394}T (\u{00b0}F)", value: d_t, step: "1" }
+                div { class: "field",
+                    span { class: "field-label", "End constraint" }
+                    div { class: "chip-row",
+                        for (ec , label) in [(EndConstraint::Free, "Free"), (EndConstraint::OneEnd, "One end"), (EndConstraint::BothEnds, "Both ends")] {
+                            span {
+                                class: if end_constraint() == ec { "chip selected" } else { "chip" },
+                                onclick: move |_| end_constraint.set(ec),
+                                "{label}"
                             }
                         }
                     }
                 }
-                if bushing_type() == BushingType::Countersink || bushing_type() == BushingType::Flanged {
-                    Expander { title: "External geometry (OD)", default_open: true, class: "bushing-section", body_class: "bushing-section-body",
-                        if bushing_type() == BushingType::Countersink {
-                            CsModeField { mode: ext_cs_mode }
-                            div { class: "spec-table-wrap",
-                                table { class: "spec-table",
-                                    thead {
-                                        tr {
-                                            th { "Dimension" }
-                                            th { class: "num", "Nominal" }
-                                            th { class: "num", "Tol \u{2212}" }
-                                            th { class: "num", "Tol +" }
-                                            th { class: "num", "Range" }
-                                            th { "Source" }
-                                        }
-                                    }
-                                    tbody {
-                                        CsSpecRow { mode: ext_cs_mode(), which: CsField::Depth, label: "Depth, in", decimals: 4, step: "0.001", value: ext_cs_depth, tol_plus: ext_cs_depth_tol_plus, tol_minus: ext_cs_depth_tol_minus, solved: out.cs_solved_od, range: out.cs_external_depth_tol }
-                                        CsSpecRow { mode: ext_cs_mode(), which: CsField::Angle, label: "Angle, deg", decimals: 1, step: "0.1", value: ext_cs_angle, tol_plus: ext_cs_angle_tol_plus, tol_minus: ext_cs_angle_tol_minus, solved: out.cs_solved_od, range: out.cs_external_angle_tol }
-                                        CsSpecRow { mode: ext_cs_mode(), which: CsField::Dia, label: "Diameter, in", decimals: 4, step: "0.001", value: ext_cs_dia, tol_plus: ext_cs_dia_tol_plus, tol_minus: ext_cs_dia_tol_minus, solved: out.cs_solved_od, range: out.cs_external_dia_tol }
-                                    }
-                                }
-                            }
-                        }
-                        if bushing_type() == BushingType::Flanged {
-                            NumberField { label: "Flange OD (in)", value: flange_od, step: "0.01" }
-                            NumberField { label: "Flange thickness (in)", value: flange_thk, step: "0.001" }
-                        }
-                    }
-                }
-                Expander { title: "Interference & tolerance", default_open: true, class: "bushing-section", body_class: "bushing-section-body",
-                    div { class: "spec-table-wrap",
-                        table { class: "spec-table",
-                            thead {
-                                tr {
-                                    th { "Dimension" }
-                                    th { class: "num", "Nominal" }
-                                    th { class: "num", "Tol \u{2212}" }
-                                    th { class: "num", "Tol +" }
-                                    th { class: "num", "Range" }
-                                    th { "Source" }
-                                }
-                            }
-                            tbody {
-                                PlainSpecRow { label: "Interference, in", decimals: 4, step: "0.0001", value: interference, tol_plus: interference_tol_plus, tol_minus: interference_tol_minus, range: out.interference_tol }
-                            }
-                        }
-                    }
+                NumberField { label: "Edge load angle (deg)", value: edge_load_angle_deg, step: "1" }
+                NumberField { label: "Applied edge load (lbf)", value: load, step: "10" }
+                FieldGroup { label: "Shrink-fit install assist",
                     label { class: "field field-checkbox",
                         input {
                             r#type: "checkbox",
-                            checked: enforcement_enabled(),
-                            oninput: move |e| enforcement_enabled.set(e.checked()),
+                            checked: assembly_thermal_assist_enabled(),
+                            oninput: move |e| assembly_thermal_assist_enabled.set(e.checked()),
                         }
-                        span { "Auto-tighten bore tolerance to meet target interference" }
+                        span { "Bushing chilled / housing heated at install (distinct from in-service \u{0394}T above)" }
                     }
-                }
-                Expander { title: "Acceptance criteria", default_open: true, class: "bushing-section", body_class: "bushing-section-body",
-                    FieldGroup { label: "Minimum wall thickness",
+                    if assembly_thermal_assist_enabled() {
                         div { class: "field-row",
-                            NumberField { label: "Straight wall (in)", value: min_wall_straight, step: "0.001" }
-                            NumberField { label: "Neck wall (in)", value: min_wall_neck, step: "0.001" }
-                        }
-                    }
-                }
-                Expander { title: "Materials", default_open: true, class: "bushing-section", body_class: "bushing-section-body",
-                    MaterialField { label: "Housing material", value: mat_housing }
-                    MaterialField { label: "Bushing material", value: mat_bushing }
-                }
-                Expander { title: "Environment & install", default_open: true, class: "bushing-section", body_class: "bushing-section-body",
-                    NumberField { label: "Friction coefficient", value: friction, step: "0.01" }
-                    NumberField { label: "Temperature change, \u{0394}T (\u{00b0}F)", value: d_t, step: "1" }
-                    div { class: "field",
-                        span { class: "field-label", "End constraint" }
-                        div { class: "chip-row",
-                            for (ec , label) in [(EndConstraint::Free, "Free"), (EndConstraint::OneEnd, "One end"), (EndConstraint::BothEnds, "Both ends")] {
-                                span {
-                                    class: if end_constraint() == ec { "chip selected" } else { "chip" },
-                                    onclick: move |_| end_constraint.set(ec),
-                                    "{label}"
-                                }
-                            }
-                        }
-                    }
-                    NumberField { label: "Edge load angle (deg)", value: edge_load_angle_deg, step: "1" }
-                    NumberField { label: "Applied edge load (lbf)", value: load, step: "10" }
-                    FieldGroup { label: "Shrink-fit install assist",
-                        label { class: "field field-checkbox",
-                            input {
-                                r#type: "checkbox",
-                                checked: assembly_thermal_assist_enabled(),
-                                oninput: move |e| assembly_thermal_assist_enabled.set(e.checked()),
-                            }
-                            span { "Bushing chilled / housing heated at install (distinct from in-service \u{0394}T above)" }
-                        }
-                        if assembly_thermal_assist_enabled() {
-                            div { class: "field-row",
-                                NumberField { label: "Housing temp at install (\u{00b0}F)", value: assembly_housing_temperature, step: "1" }
-                                NumberField { label: "Bushing temp at install (\u{00b0}F)", value: assembly_bushing_temperature, step: "1" }
-                            }
+                            NumberField { label: "Housing temp at install (\u{00b0}F)", value: assembly_housing_temperature, step: "1" }
+                            NumberField { label: "Bushing temp at install (\u{00b0}F)", value: assembly_bushing_temperature, step: "1" }
                         }
                     }
                 }
             }
 
-            div { class: "bushing-results",
-                div { class: "bushing-results-scroll",
-                    {
-                        let section_input = BushingSectionInput {
-                            bore_dia: bore_dia(),
-                            housing_len: housing_len(),
-                            housing_width: housing_width(),
-                            id_bushing: id_bushing(),
-                            bushing_type: bushing_type(),
-                            id_type: id_type(),
-                            flange_od: flange_od(),
-                            flange_thk: flange_thk(),
-                            od_bushing: out.od_installed,
-                            cs_external: out.cs_solved_od.map(|c| (c.dia, c.depth)),
-                            cs_internal: out.cs_solved_id.map(|c| (c.dia, c.depth)),
-                        };
-                        let stress_overlay = bushing_visualizer::StressOverlay {
-                            housing_stress_psi: out.stress_hoop_housing,
-                            housing_ms: out.housing_ms,
-                            bushing_stress_psi: out.stress_hoop_bushing,
-                            bushing_ms: out.bushing_ms,
-                            bushing_field: out.bushing_stress_field.clone(),
-                            housing_field: out.housing_stress_field.clone(),
-                        };
-                        let neck_governs = id_type() == IdType::Countersink && out.wall_neck < out.wall_straight;
-                        let section_params = bushing_solver::geometry::resolve_bushing_section_params(&section_input);
-                        let crop = bushing_visualizer::detail_crop(&section_input, &section_params, neck_governs);
-                        let detail_label = if neck_governs { "Detail \u{2014} neck wall (governing)" } else { "Detail \u{2014} straight wall" };
+            if out.fail_straight {
+                div { class: "bushing-alert bushing-alert-fail",
+                    "Straight wall thickness ({out.wall_straight:.4} in) is below the minimum ({min_wall_straight():.4} in)."
+                }
+            }
+            if out.fail_neck {
+                div { class: "bushing-alert bushing-alert-fail",
+                    "Neck wall thickness ({out.wall_neck:.4} in) is below the minimum ({min_wall_neck():.4} in)."
+                }
+            }
+            if out.delta_total <= 0.0 {
+                div { class: "bushing-alert bushing-alert-warn",
+                    "Net interference is zero or negative after thermal correction - this is a clearance fit, not a press fit."
+                }
+            }
+            if out.tolerance_status == ToleranceStatus::Infeasible {
+                div { class: "bushing-alert bushing-alert-warn",
+                    "Bore and interference tolerance bands don't fully overlap - the achieved-interference range shown is collapsed to a point estimate, not a real tolerance band."
+                }
+            }
+            if out.tolerance_status == ToleranceStatus::Clamped {
+                div { class: "bushing-alert bushing-alert-warn",
+                    "OD nominal was clamped to keep the fit inside the requested interference tolerance window (bore tolerance auto-adjustment was applied)."
+                }
+            }
 
-                        rsx! {
-                            div { class: "bushing-summary-band",
-                                div { class: "bushing-viz-panes",
-                                    div { class: "bushing-viz-pane bushing-viz-overview",
-                                        span { class: "bushing-viz-tag", "Overview" }
-                                        img { class: "bushing-viz-img", src: bushing_visualizer::geometry_crop_svg_data_uri(&section_input, dark(), None, 90.0) }
-                                    }
-                                    div { class: "bushing-viz-pane bushing-viz-detail",
-                                        span { class: "bushing-viz-tag", "{detail_label}" }
-                                        img { class: "bushing-viz-img", src: bushing_visualizer::geometry_crop_svg_data_uri(&section_input, dark(), Some(crop), 280.0) }
-                                        button {
-                                            class: "bushing-viz-expand",
-                                            title: "Expand",
-                                            onclick: move |_| visualizer_lightbox_open.set(true),
-                                            {icon_expand()}
-                                        }
-                                    }
-                                }
-                                div { class: "bushing-summary-row",
-                                    SummaryCard { label: "Contact pressure", value: fmt_ranged(out.pressure_range, 0, "psi") }
-                                    SummaryCard { label: "Installed OD", value: format!("{:.4} in", out.od_installed) }
-                                    SummaryCard { label: "Straight wall", value: fmt_ranged(out.wall_straight_range, 4, "in") }
-                                    SummaryCard { label: "Neck wall", value: format!("{:.4} in", out.wall_neck) }
-                                    SummaryCard {
-                                        label: "Governing check",
-                                        value: out.governing.name.to_string(),
-                                        badge: Some((fmt_margin(out.governing.margin), margin_class(out.governing.margin))),
-                                    }
-                                }
-                            }
-
-                            if visualizer_lightbox_open() {
-                                div {
-                                    class: "bushing-viz-lightbox-backdrop",
-                                    div {
-                                        class: "bushing-viz-lightbox-card",
-                                        button {
-                                            class: "bushing-viz-lightbox-close",
-                                            onclick: move |_| visualizer_lightbox_open.set(false),
-                                            {icon_close()}
-                                        }
-                                        img {
-                                            class: "bushing-viz-lightbox-img",
-                                            src: bushing_visualizer::section_svg_data_uri(&section_input, out.achieved_interference_tol.nominal, stress_overlay, dark()),
-                                        }
-                                    }
-                                }
+            div { class: "bushing-card",
+                h3 { class: "bushing-card-title", "Results" }
+                div { class: "spec-table-wrap",
+                    table { class: "spec-table",
+                        thead {
+                            tr {
+                                th { "Quantity" }
+                                th { class: "num", "Nominal" }
+                                th { class: "num", "Min" }
+                                th { class: "num", "Max" }
+                                th { class: "num", "Allowable" }
+                                th { class: "num", "Margin" }
+                                th { "Status" }
                             }
                         }
+                        tbody {
+                            ResultSpecRow { label: "Housing hoop stress, psi", decimals: 0, nominal: out.stress_hoop_housing, range: Some((out.stress_hoop_housing_range.min, out.stress_hoop_housing_range.max)), allowable: mat_housing_props.sy_ksi * 1000.0, margin: out.housing_ms }
+                            ResultSpecRow { label: "Bushing hoop stress, psi", decimals: 0, nominal: out.stress_hoop_bushing, range: Some((out.stress_hoop_bushing_range.min, out.stress_hoop_bushing_range.max)), allowable: mat_bushing_props.sy_ksi * 1000.0, margin: out.bushing_ms }
+                            ResultSpecRow { label: "Edge distance (sequencing), in", decimals: 3, nominal: out.ed_actual, range: None, allowable: out.ed_min_sequence, margin: out.sequence_margin }
+                            ResultSpecRow { label: "Edge distance (strength), in", decimals: 3, nominal: out.ed_actual, range: None, allowable: out.ed_min_strength, margin: out.strength_margin }
+                            ResultSpecRow { label: "Straight wall thickness, in", decimals: 4, nominal: out.wall_straight, range: Some((out.wall_straight_range.min, out.wall_straight_range.max)), allowable: min_wall_straight(), margin: out.wall_straight / min_wall_straight() - 1.0 }
+                            ResultSpecRow { label: "Neck wall thickness, in", decimals: 4, nominal: out.wall_neck, range: None, allowable: min_wall_neck(), margin: out.wall_neck / min_wall_neck() - 1.0 }
+                        }
                     }
+                }
+            }
 
-                    if out.fail_straight {
-                        div { class: "bushing-alert bushing-alert-fail",
-                            "Straight wall thickness ({out.wall_straight:.4} in) is below the minimum ({min_wall_straight():.4} in)."
-                        }
+            div { class: "bushing-card",
+                h3 { class: "bushing-card-title", "Derived quantities" }
+                div { class: "bushing-detail-grid",
+                    DetailField { label: "Minimum straight wall (input)", value: format!("{:.4} in", min_wall_straight()) }
+                    DetailField { label: "Minimum neck wall (input)", value: format!("{:.4} in", min_wall_neck()) }
+                    DetailField { label: "Neck wall (worst-case)", value: format!("{:.4} in", out.wall_neck) }
+                    DetailField { label: "Neck wall (nominal)", value: format!("{:.4} in", out.wall_neck_nominal) }
+                    DetailField { label: "Retained install force (in-service)", value: fmt_ranged(out.retained_install_force_range, 0, "lbf") }
+                    DetailField { label: "Install force (at assembly)", value: fmt_ranged(out.install_force_range, 0, "lbf") }
+                    DetailField { label: "Install pressure (at assembly)", value: format!("{:.0} psi", out.install_pressure) }
+                    if assembly_thermal_assist_enabled() {
+                        DetailField { label: "Assembly thermal delta", value: format!("{:+.5} in", out.assembly_thermal_delta) }
                     }
-                    if out.fail_neck {
-                        div { class: "bushing-alert bushing-alert-fail",
-                            "Neck wall thickness ({out.wall_neck:.4} in) is below the minimum ({min_wall_neck():.4} in)."
-                        }
+                    DetailField { label: "Axial stress, housing", value: format!("{:.0} psi", out.stress_axial_housing) }
+                    DetailField { label: "Axial stress, bushing", value: format!("{:.0} psi", out.stress_axial_bushing) }
+                    DetailField { label: "Effective housing OD", value: format!("{:.4} in", out.effective_od_housing) }
+                    DetailField { label: "Finite-plate factor \u{03c8}", value: format!("{:.3}", out.psi) }
+                    DetailField { label: "Edge-distance ratio \u{03bb}", value: format!("{:.3}", out.lambda) }
+                    DetailField { label: "Achieved interference", value: fmt_tol_range(out.achieved_interference_tol, 4, "in") }
+                    DetailField { label: "Solved OD band", value: format!("{:.4}\u{2013}{:.4} in", out.od_tol.lower, out.od_tol.upper) }
+                    if let Some(id) = out.cs_solved_id {
+                        DetailField { label: "Internal CS (solved)", value: format!("\u{2300}{:.4} \u{00d7} {:.4} deep, {:.1}\u{00b0}", id.dia, id.depth, id.angle_deg) }
                     }
-                    if out.delta_total <= 0.0 {
-                        div { class: "bushing-alert bushing-alert-warn",
-                            "Net interference is zero or negative after thermal correction - this is a clearance fit, not a press fit."
-                        }
+                    if let Some(od) = out.cs_solved_od {
+                        DetailField { label: "External CS (solved)", value: format!("\u{2300}{:.4} \u{00d7} {:.4} deep, {:.1}\u{00b0}", od.dia, od.depth, od.angle_deg) }
                     }
-                    if out.tolerance_status == ToleranceStatus::Infeasible {
-                        div { class: "bushing-alert bushing-alert-warn",
-                            "Bore and interference tolerance bands don't fully overlap - the achieved-interference range shown is collapsed to a point estimate, not a real tolerance band."
-                        }
+                }
+                div { class: "bushing-derivation-toggle",
+                    button {
+                        class: "link-button",
+                        onclick: move |_| show_derivation.set(!show_derivation()),
+                        if show_derivation() { "Hide derivation" } else { "Show derivation" }
                     }
-                    if out.tolerance_status == ToleranceStatus::Clamped {
-                        div { class: "bushing-alert bushing-alert-warn",
-                            "OD nominal was clamped to keep the fit inside the requested interference tolerance window (bore tolerance auto-adjustment was applied)."
-                        }
-                    }
-
-                    div { class: "spec-table-wrap",
-                        table { class: "spec-table",
-                            thead {
-                                tr {
-                                    th { "Quantity" }
-                                    th { class: "num", "Nominal" }
-                                    th { class: "num", "Min" }
-                                    th { class: "num", "Max" }
-                                    th { class: "num", "Allowable" }
-                                    th { class: "num", "Margin" }
-                                    th { "Status" }
-                                }
-                            }
-                            tbody {
-                                ResultSpecRow { label: "Housing hoop stress, psi", decimals: 0, nominal: out.stress_hoop_housing, range: Some((out.stress_hoop_housing_range.min, out.stress_hoop_housing_range.max)), allowable: mat_housing_props.sy_ksi * 1000.0, margin: out.housing_ms }
-                                ResultSpecRow { label: "Bushing hoop stress, psi", decimals: 0, nominal: out.stress_hoop_bushing, range: Some((out.stress_hoop_bushing_range.min, out.stress_hoop_bushing_range.max)), allowable: mat_bushing_props.sy_ksi * 1000.0, margin: out.bushing_ms }
-                                ResultSpecRow { label: "Edge distance (sequencing), in", decimals: 3, nominal: out.ed_actual, range: None, allowable: out.ed_min_sequence, margin: out.sequence_margin }
-                                ResultSpecRow { label: "Edge distance (strength), in", decimals: 3, nominal: out.ed_actual, range: None, allowable: out.ed_min_strength, margin: out.strength_margin }
-                                ResultSpecRow { label: "Straight wall thickness, in", decimals: 4, nominal: out.wall_straight, range: Some((out.wall_straight_range.min, out.wall_straight_range.max)), allowable: min_wall_straight(), margin: out.wall_straight / min_wall_straight() - 1.0 }
-                                ResultSpecRow { label: "Neck wall thickness, in", decimals: 4, nominal: out.wall_neck, range: None, allowable: min_wall_neck(), margin: out.wall_neck / min_wall_neck() - 1.0 }
-                            }
-                        }
-                    }
-
-                    div { class: "bushing-detail-grid",
-                        DetailField { label: "Minimum straight wall (input)", value: format!("{:.4} in", min_wall_straight()) }
-                        DetailField { label: "Minimum neck wall (input)", value: format!("{:.4} in", min_wall_neck()) }
-                        DetailField { label: "Neck wall (worst-case)", value: format!("{:.4} in", out.wall_neck) }
-                        DetailField { label: "Neck wall (nominal)", value: format!("{:.4} in", out.wall_neck_nominal) }
-                        DetailField { label: "Retained install force (in-service)", value: fmt_ranged(out.retained_install_force_range, 0, "lbf") }
-                        DetailField { label: "Install force (at assembly)", value: fmt_ranged(out.install_force_range, 0, "lbf") }
-                        DetailField { label: "Install pressure (at assembly)", value: format!("{:.0} psi", out.install_pressure) }
-                        if assembly_thermal_assist_enabled() {
-                            DetailField { label: "Assembly thermal delta", value: format!("{:+.5} in", out.assembly_thermal_delta) }
-                        }
-                        DetailField { label: "Axial stress, housing", value: format!("{:.0} psi", out.stress_axial_housing) }
-                        DetailField { label: "Axial stress, bushing", value: format!("{:.0} psi", out.stress_axial_bushing) }
-                        DetailField { label: "Effective housing OD", value: format!("{:.4} in", out.effective_od_housing) }
-                        DetailField { label: "Finite-plate factor \u{03c8}", value: format!("{:.3}", out.psi) }
-                        DetailField { label: "Edge-distance ratio \u{03bb}", value: format!("{:.3}", out.lambda) }
-                        DetailField { label: "Achieved interference", value: fmt_tol_range(out.achieved_interference_tol, 4, "in") }
-                        DetailField { label: "Solved OD band", value: format!("{:.4}\u{2013}{:.4} in", out.od_tol.lower, out.od_tol.upper) }
-                        if let Some(id) = out.cs_solved_id {
-                            DetailField { label: "Internal CS (solved)", value: format!("\u{2300}{:.4} \u{00d7} {:.4} deep, {:.1}\u{00b0}", id.dia, id.depth, id.angle_deg) }
-                        }
-                        if let Some(od) = out.cs_solved_od {
-                            DetailField { label: "External CS (solved)", value: format!("\u{2300}{:.4} \u{00d7} {:.4} deep, {:.1}\u{00b0}", od.dia, od.depth, od.angle_deg) }
-                        }
-                    }
-
-                    div { class: "bushing-derivation-toggle",
-                        button {
-                            class: "link-button",
-                            onclick: move |_| show_derivation.set(!show_derivation()),
-                            if show_derivation() { "Hide derivation" } else { "Show derivation" }
-                        }
-                    }
-                    if show_derivation() {
-                        DerivationBlock { out: out.clone(), dark: dark() }
-                    }
+                }
+                if show_derivation() {
+                    DerivationBlock { out: out.clone(), dark: dark() }
                 }
             }
         }

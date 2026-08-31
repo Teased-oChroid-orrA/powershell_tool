@@ -1220,17 +1220,21 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 .preview-matchline { color: var(--fg); background: var(--bg-sunken); }
 .preview-context mark { background: color-mix(in srgb, var(--accent) 55%, transparent); color: var(--fg); border-radius: 2px; padding: 0 1px; }
 
-/* ---- Bushing Workbench (bushing_workbench.rs) ---- */
-.bushing-layout {
-    display: flex; height: 100%; min-height: 0; overflow: hidden;
-}
-.bushing-inputs {
-    flex: none; width: 340px; overflow-y: auto; overflow-x: hidden;
+/* ---- Bushing Workbench (bushing_workbench.rs) ----
+   Single flowing column, matching the approved mockup shape exactly - no
+   fixed-width sidebar, no independent inner scroll regions. `.stage`
+   (`overflow:auto`) already provides one page-level scrollbar for every
+   other tool in this app; this used to opt out of that with its own
+   `height:100%; overflow:hidden` two-pane shell, which was both a mockup
+   mismatch and a worse scrolling experience (two scrollbars instead of
+   one). `.bushing-page` intentionally sets no height/overflow at all. */
+.bushing-page { display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-4) 0; }
+.bushing-card {
+    background: var(--glass); border: 1px solid var(--glass-border); border-radius: var(--radius-md);
     padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3);
-    border-right: 1px solid var(--glass-border);
 }
-.bushing-section { margin: 0; }
-.bushing-section-body { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-1) 0 var(--space-4); }
+.bushing-card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
+.bushing-card-title { margin: 0; font-size: 1em; font-weight: 700; }
 .field-label { font-weight: 600; font-size: 0.78em; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.03em; }
 .field-row { display: flex; gap: var(--space-2); }
 .field-row .field { min-width: 0; }
@@ -1245,8 +1249,8 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 .field-group-body { display: flex; flex-direction: column; gap: var(--space-2); }
 .field-group-body .field-row { margin: 0; }
 
-.bushing-inputs .chip { cursor: pointer; transition: background-color 0.15s var(--ease), color 0.15s var(--ease), border-color 0.15s var(--ease); border: 1px solid transparent; }
-.bushing-inputs .chip.selected { background: var(--accent); color: var(--accent-fg); }
+.bushing-card .chip { cursor: pointer; transition: background-color 0.15s var(--ease), color 0.15s var(--ease), border-color 0.15s var(--ease); border: 1px solid transparent; }
+.bushing-card .chip.selected { background: var(--accent); color: var(--accent-fg); }
 
 .reamer-picker-trigger { flex: none; font-size: 0.82em; padding: var(--space-1) var(--space-3); }
 .reamer-picker {
@@ -1271,15 +1275,6 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 .reamer-picker-size { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .reamer-picker-nominal { flex: none; font-family: var(--mono); color: var(--fg-muted); font-size: 0.9em; }
 .reamer-picker-tier { flex: none; font-size: 0.72em; color: var(--fg-subtle); }
-
-.bushing-results { flex: 1; min-width: 0; overflow: hidden; }
-.bushing-results-scroll { height: 100%; overflow-y: auto; overflow-x: hidden; padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-4); }
-
-.bushing-section-view {
-    border: 1px solid var(--glass-border); border-radius: var(--radius-md);
-    background: var(--glass); padding: var(--space-2);
-}
-.bushing-section-svg { display: block; width: 100%; height: auto; }
 
 .bushing-viz-panes { display: flex; gap: var(--space-2); flex: none; }
 .bushing-viz-pane {
@@ -1387,14 +1382,6 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 }
 .bushing-alert-fail { background: var(--danger-bg); color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
 .bushing-alert-warn { background: color-mix(in srgb, var(--warning) 14%, transparent); color: var(--warning); border-color: color-mix(in srgb, var(--warning) 35%, transparent); }
-
-.bushing-margins { display: flex; flex-direction: column; gap: var(--space-2); }
-.margin-row {
-    display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3);
-    background: var(--glass); border: 1px solid var(--glass-border); border-radius: var(--radius-md);
-}
-.margin-row-label { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.margin-row-demand { flex: none; font-size: 0.82em; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
 
 .bushing-detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: var(--space-2) var(--space-4); }
 .detail-field { display: flex; flex-direction: column; gap: 2px; }
