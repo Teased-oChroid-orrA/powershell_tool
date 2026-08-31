@@ -1317,10 +1317,20 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
        (`.bushing-viz-pane`) has a definite pixel `width`, breaking the
        same cycle. `max-width` alone (the first version of this rule)
        keeps the container shrink-to-fit and reintroduces it. */
-    position: relative; width: 720px; max-width: 90vw; max-height: 88vh; overflow-y: auto;
+    position: relative; width: 720px; max-width: 90vw;
     background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius-lg);
     box-shadow: var(--shadow-md); padding: var(--space-4);
 }
+/* `max-height`/`overflow-y` live on this inner wrapper, not the card
+   itself - stacking them on the SAME flex item that also has to resolve
+   the image's own auto-height-from-intrinsic-aspect-ratio was still
+   producing an invisible/near-zero-height render even after the width
+   fix above. Splitting "the flex item's own width-driven sizing" from
+   "the scrollable image area" removes that combination entirely: the
+   card is now a simple width:720px block with auto height (no overflow,
+   no max-height), and only this already-width-constrained child does the
+   scroll/clamp. */
+.bushing-viz-lightbox-scroll { max-height: 80vh; overflow-y: auto; }
 .bushing-viz-lightbox-close {
     position: absolute; top: var(--space-3); right: var(--space-3); z-index: 1;
     width: 30px; height: 30px; padding: 6px; line-height: 1; font-size: 1em;
@@ -1329,7 +1339,10 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 }
 .bushing-viz-lightbox-close:hover { color: var(--fg); }
 .bushing-viz-lightbox-close svg { width: 100%; height: 100%; }
-.bushing-viz-lightbox-img { display: block; width: 100%; height: auto; }
+.bushing-viz-lightbox-img {
+    display: block; width: 100%; height: auto; min-height: 200px;
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
 
 .spec-table-wrap { overflow-x: auto; }
 .spec-table { width: 100%; border-collapse: collapse; font-size: 0.86em; }
