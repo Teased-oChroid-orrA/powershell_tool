@@ -1254,6 +1254,14 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 .bushing-card input[type="number"]:not(.spec-input),
 .bushing-card input[type="text"]:not(.spec-input) { width: 90px; flex: none; }
 .bushing-card .select-trigger { width: 230px; flex: none; }
+/* `.field` is `flex:1` app-wide (SettingsPanel etc. rely on it to fill a
+   row) - inside a `.bushing-card` field-row specifically, narrowing the
+   input above without this just moves the wasted space from "inside a
+   too-wide input" to "an empty gap after a now-narrow one," spread
+   across however many fields share the row. `flex:none` makes each
+   field hug its own label/input width instead, so a row of several
+   fields sits together instead of spreading out to fill it. */
+.bushing-card .field-row .field { flex: none; }
 
 /* ---- Workflow shell: top stepper + step-gated workspace + persistent
    design-status rail (Phase 1 of the workflow redesign - see the

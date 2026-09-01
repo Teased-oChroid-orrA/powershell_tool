@@ -489,10 +489,12 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                                         }
                                     }
                                 }
-                                NumberField { label: "Bushing ID (in)", value: id_bushing, step: "0.001" }
-                                NumberField { label: "Housing length (in)", value: housing_len, step: "0.01" }
-                                NumberField { label: "Housing width (in)", value: housing_width, step: "0.01" }
-                                NumberField { label: "Edge distance (in)", value: edge_dist, step: "0.01" }
+                                div { class: "field-row",
+                                    NumberField { label: "Bushing ID (in)", value: id_bushing, step: "0.001" }
+                                    NumberField { label: "Housing length (in)", value: housing_len, step: "0.01" }
+                                    NumberField { label: "Housing width (in)", value: housing_width, step: "0.01" }
+                                    NumberField { label: "Edge distance (in)", value: edge_dist, step: "0.01" }
+                                }
                             }
                         },
                         Step::Geometry => rsx! {
@@ -559,8 +561,10 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                                         }
                                     }
                                     if bushing_type() == BushingType::Flanged {
-                                        NumberField { label: "Flange OD (in)", value: flange_od, step: "0.01" }
-                                        NumberField { label: "Flange thickness (in)", value: flange_thk, step: "0.001" }
+                                        div { class: "field-row",
+                                            NumberField { label: "Flange OD (in)", value: flange_od, step: "0.01" }
+                                            NumberField { label: "Flange thickness (in)", value: flange_thk, step: "0.001" }
+                                        }
                                     }
                                 }
                             }
@@ -568,8 +572,10 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                         Step::Material => rsx! {
                             div { class: "bushing-card",
                                 h3 { class: "bushing-card-title", "03 \u{00b7} Material" }
-                                MaterialField { label: "Housing material", value: mat_housing }
-                                MaterialField { label: "Bushing material", value: mat_bushing }
+                                div { class: "field-row",
+                                    MaterialField { label: "Housing material", value: mat_housing }
+                                    MaterialField { label: "Bushing material", value: mat_bushing }
+                                }
                             }
                         },
                         Step::Fit => rsx! {
@@ -635,8 +641,10 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                             }
                             div { class: "bushing-card",
                                 h3 { class: "bushing-card-title", "05 \u{00b7} Analysis \u{2014} environment & install" }
-                                NumberField { label: "Friction coefficient", value: friction, step: "0.01" }
-                                NumberField { label: "Temperature change, \u{0394}T (\u{00b0}F)", value: d_t, step: "1" }
+                                div { class: "field-row",
+                                    NumberField { label: "Friction coefficient", value: friction, step: "0.01" }
+                                    NumberField { label: "Temperature change, \u{0394}T (\u{00b0}F)", value: d_t, step: "1" }
+                                }
                                 div { class: "field",
                                     span { class: "field-label", "End constraint" }
                                     div { class: "chip-row",
@@ -649,8 +657,10 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                                         }
                                     }
                                 }
-                                NumberField { label: "Edge load angle (deg)", value: edge_load_angle_deg, step: "1" }
-                                NumberField { label: "Applied edge load (lbf)", value: load, step: "10" }
+                                div { class: "field-row",
+                                    NumberField { label: "Edge load angle (deg)", value: edge_load_angle_deg, step: "1" }
+                                    NumberField { label: "Applied edge load (lbf)", value: load, step: "10" }
+                                }
                                 FieldGroup { label: "Shrink-fit install assist",
                                     label { class: "field field-checkbox",
                                         input {
