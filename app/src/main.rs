@@ -1237,6 +1237,24 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 .bushing-card-title { margin: 0; font-size: 1em; font-weight: 700; }
 .bushing-card-sub { margin: -6px 0 0; font-size: 0.82em; color: var(--fg-subtle); }
 
+/* Every plain number/text input inside the workbench sized to fit its
+   own content instead of the app-wide `input[type="number"] { width:
+   100% }` rule (main.rs's generic form-field styling, shared with every
+   other tool's settings panel - not touched here, scoped to
+   `.bushing-card` only). Numbers: ~7 characters ("-0.0500", "1000.00")
+   is enough for every value this tool actually shows - matches the
+   `.spec-input` convention the Fit step's tables already use (excluded
+   below so this rule can't win the specificity tie and un-narrow them).
+   Material dropdowns: sized to the longest real material name
+   (`bushing-solver::materials::MATERIALS`, "Al 7075-T6 (typical)" /
+   "Al 2024-T3 (typical)" are the longest at 21 characters) rather than
+   the panel width, and rather than resizing per-selection (`width:
+   max-content` would do that, and would visibly jump/jitter as the
+   selection changes - a fixed width sized to the worst case doesn't). */
+.bushing-card input[type="number"]:not(.spec-input),
+.bushing-card input[type="text"]:not(.spec-input) { width: 90px; flex: none; }
+.bushing-card .select-trigger { width: 230px; flex: none; }
+
 /* ---- Workflow shell: top stepper + step-gated workspace + persistent
    design-status rail (Phase 1 of the workflow redesign - see the
    session's approved plan). Only `current_step`'s cards render in

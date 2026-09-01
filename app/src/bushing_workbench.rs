@@ -131,10 +131,11 @@ enum Step {
     Material,
     Fit,
     Analysis,
+    Results,
     Report,
 }
 
-const STEPS: [Step; 6] = [Step::Repair, Step::Geometry, Step::Material, Step::Fit, Step::Analysis, Step::Report];
+const STEPS: [Step; 7] = [Step::Repair, Step::Geometry, Step::Material, Step::Fit, Step::Analysis, Step::Results, Step::Report];
 
 impl Step {
     fn label(self) -> &'static str {
@@ -144,6 +145,7 @@ impl Step {
             Step::Material => "Material",
             Step::Fit => "Fit",
             Step::Analysis => "Analysis",
+            Step::Results => "Results",
             Step::Report => "Report",
         }
     }
@@ -174,7 +176,7 @@ fn StepperNav(current: Signal<Step>) -> Element {
 /// which step is open) - pure aggregation over
 /// `bushing_solver::solve::BushingOutput.candidates` (already every named
 /// margin check the Results table shows) plus `tolerance_status`, no new
-/// engine data. Clicking any row jumps to the Analysis step, where the
+/// engine data. Clicking any row jumps to the Results step, where the
 /// full Results table and alerts already live - this is the one
 /// deliberately coarse piece of cross-step wiring in Phase 1 ("jump to
 /// where this is analyzed," not a per-field pinpoint - see the plan's own
@@ -666,6 +668,8 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                                     }
                                 }
                             }
+                        },
+                        Step::Results => rsx! {
                             if out.fail_straight {
                                 div { class: "bushing-alert bushing-alert-fail",
                                     "Straight wall thickness ({out.wall_straight:.4} in) is below the minimum ({min_wall_straight():.4} in)."
@@ -692,7 +696,7 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                                 }
                             }
                             div { class: "bushing-card",
-                                h3 { class: "bushing-card-title", "05 \u{00b7} Analysis \u{2014} results" }
+                                h3 { class: "bushing-card-title", "06 \u{00b7} Results" }
                                 div { class: "spec-table-wrap",
                                     table { class: "spec-table",
                                         thead {
@@ -720,7 +724,7 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                         },
                         Step::Report => rsx! {
                             div { class: "bushing-card",
-                                h3 { class: "bushing-card-title", "06 \u{00b7} Report \u{2014} derived quantities" }
+                                h3 { class: "bushing-card-title", "07 \u{00b7} Report \u{2014} derived quantities" }
                                 div { class: "bushing-detail-grid",
                                     DetailField { label: "Minimum straight wall (input)", value: format!("{:.4} in", min_wall_straight()) }
                                     DetailField { label: "Minimum neck wall (input)", value: format!("{:.4} in", min_wall_neck()) }
@@ -763,7 +767,7 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                 DesignStatusRail {
                     candidates: out.candidates.clone(),
                     tolerance_status: out.tolerance_status,
-                    on_jump: move |_| current_step.set(Step::Analysis),
+                    on_jump: move |_| current_step.set(Step::Results),
                 }
             }
         }
