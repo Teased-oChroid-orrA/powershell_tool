@@ -1347,13 +1347,17 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 .reamer-picker-nominal { flex: none; font-family: var(--mono); color: var(--fg-muted); font-size: 0.9em; }
 .reamer-picker-tier { flex: none; font-size: 0.72em; color: var(--fg-subtle); }
 
-.bushing-viz-panes { display: flex; gap: var(--space-2); flex: none; }
+/* Sized for their real home: the Results step's own "cross-section" card
+   (a full card of width to itself, not squeezed next to 5 stat cards at
+   the top of every step like the earlier always-visible version was -
+   "small... not useful" was the direct complaint that removed that). */
+.bushing-viz-panes { display: flex; gap: var(--space-3); flex: none; }
 .bushing-viz-pane {
     position: relative; border: 1px solid var(--glass-border); border-radius: var(--radius-md);
-    background: var(--glass); padding: var(--space-1); overflow: hidden;
+    background: var(--glass); padding: var(--space-2); overflow: hidden;
 }
-.bushing-viz-overview { width: 96px; }
-.bushing-viz-detail { width: 200px; }
+.bushing-viz-overview { width: 160px; }
+.bushing-viz-detail { width: 380px; }
 .bushing-viz-img { display: block; width: 100%; height: auto; }
 .bushing-viz-tag {
     position: absolute; top: var(--space-1); left: var(--space-1); z-index: 1;
@@ -1420,6 +1424,17 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 }
 
 .spec-table-wrap { overflow-x: auto; }
+/* Results table (7 columns, the widest spec-table in this app): must
+   only ever scroll vertically, never horizontally. `table-layout: fixed`
+   plus letting the Quantity column wrap onto a second line (instead of
+   forcing every column to stay on one row, which is what pushes a wide
+   table past its container and triggers the wrap's default
+   `overflow-x: auto`) keeps it within the workspace width regardless of
+   how long a check's name or how wide its numbers get. */
+.spec-table-wrap.no-hscroll { overflow-x: hidden; }
+.spec-table-wrap.no-hscroll .spec-table { table-layout: fixed; }
+.spec-table-wrap.no-hscroll .spec-table td:first-child,
+.spec-table-wrap.no-hscroll .spec-table th:first-child { white-space: normal; word-break: break-word; width: 30%; }
 .spec-table { width: 100%; border-collapse: collapse; font-size: 0.86em; }
 .spec-table th {
     text-align: left; font-weight: 650; color: var(--fg-muted); font-size: 0.78em;
@@ -1445,15 +1460,15 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 .src-derived { background: var(--bg-sunken); color: var(--fg-subtle); }
 .src-calculated { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent-strong); }
 
-.bushing-summary-band { display: flex; gap: var(--space-3); align-items: flex-start; flex-wrap: wrap; }
-.bushing-summary-row { flex: 1; min-width: 260px; display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--space-3); }
-.summary-card {
-    display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-3);
-    background: var(--glass); border: 1px solid var(--glass-border); border-radius: var(--radius-md);
+.bushing-governing { display: flex; align-items: center; gap: var(--space-2); font-size: 0.82em; color: var(--fg-subtle); }
+
+.bushing-alert-action { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; cursor: default; }
+.bushing-alert-msg { flex: 1; min-width: 200px; }
+.bushing-alert-action-btn {
+    flex: none; font-size: 0.86em; font-weight: 650; padding: var(--space-1) var(--space-3);
+    border-radius: var(--radius-pill); border: 1px solid currentColor; background: transparent; color: inherit;
 }
-.summary-card-label-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
-.summary-card-label { font-size: 0.76em; font-weight: 650; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.03em; }
-.summary-card-value { font-size: 1.15em; font-weight: 700; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bushing-alert-action-btn:hover { background: color-mix(in srgb, currentColor 14%, transparent); }
 
 .ms-pill {
     align-self: flex-start; font-size: 0.76em; font-weight: 700; padding: 2px var(--space-2);

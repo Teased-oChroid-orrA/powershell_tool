@@ -99,6 +99,26 @@ fn fmt_margin(margin: f64) -> String {
     }
 }
 
+/// The exact 6 checks the Results table's rows compute margins for -
+/// factored into one place so `DesignStatusRail` and the Results table
+/// can never silently disagree about which checks exist or what their
+/// margins are. This exact bug already happened once: an earlier version
+/// of the rail read `out.candidates` (a real engine field, but a
+/// different and narrower "governing check" set - edge distance and wall
+/// thickness only) and showed "PASS" while the Results table, built from
+/// these same 6 values independently, showed a real failing hoop-stress
+/// margin `out.candidates` never included at all.
+fn design_checks(out: &bushing_solver::solve::BushingOutput, min_wall_straight: f64, min_wall_neck: f64) -> Vec<(&'static str, f64)> {
+    vec![
+        ("Housing hoop stress", out.housing_ms),
+        ("Bushing hoop stress", out.bushing_ms),
+        ("Edge distance (sequencing)", out.sequence_margin),
+        ("Edge distance (strength)", out.strength_margin),
+        ("Straight wall thickness", out.wall_straight / min_wall_straight - 1.0),
+        ("Neck wall thickness", out.wall_neck / min_wall_neck - 1.0),
+    ]
+}
+
 /// Same thresholds as `margin_class`, as a bare status-dot class for the
 /// design-status rail's checklist rows (`DesignStatusRail`) - a compact
 /// colored dot rather than `margin_class`'s full text pill, since the
@@ -173,19 +193,25 @@ fn StepperNav(current: Signal<Step>) -> Element {
 
 /// Persistent design-health rail (per the source UX brief's \u{00a7}7: "a
 /// constant sense of where am I with this design," visible regardless of
-/// which step is open) - pure aggregation over
-/// `bushing_solver::solve::BushingOutput.candidates` (already every named
-/// margin check the Results table shows) plus `tolerance_status`, no new
-/// engine data. Clicking any row jumps to the Results step, where the
-/// full Results table and alerts already live - this is the one
-/// deliberately coarse piece of cross-step wiring in Phase 1 ("jump to
-/// where this is analyzed," not a per-field pinpoint - see the plan's own
-/// scoping note on diagram/error cross-linking).
+/// which step is open). Takes a plain `(name, margin)` list the caller
+/// builds - NOT `bushing_solver::solve::BushingOutput.candidates`
+/// directly. That field is a real, but narrower, thing: the engine's own
+/// "governing check" reduction (`solve.rs` - edge distance and wall-
+/// thickness margins only, matching the TS reference's own `governing`
+/// concept), not every check the Results table shows. A prior version of
+/// this rail used `.candidates` directly and was caught claiming PASS
+/// while the Results table showed a real failing hoop-stress margin
+/// (housing/bushing hoop stress margins were never in `.candidates` at
+/// all) - this rail must show the exact same 6 checks the Results table
+/// does, built from the same source values, or the two can silently
+/// disagree again. Clicking any row jumps to the Results step - this is
+/// the one deliberately coarse piece of cross-step wiring in Phase 1
+/// ("jump to where this is analyzed," not a per-field pinpoint).
 #[component]
-fn DesignStatusRail(candidates: Vec<bushing_solver::solve::MarginCandidate>, tolerance_status: ToleranceStatus, on_jump: EventHandler<()>) -> Element {
-    let total = candidates.len() + usize::from(tolerance_status == ToleranceStatus::Infeasible);
-    let passed = candidates.iter().filter(|c| c.margin.is_finite() && c.margin >= 0.0).count();
-    let all_pass = passed == candidates.len() && tolerance_status != ToleranceStatus::Infeasible;
+fn DesignStatusRail(checks: Vec<(&'static str, f64)>, tolerance_status: ToleranceStatus, on_jump: EventHandler<()>) -> Element {
+    let total = checks.len() + usize::from(tolerance_status == ToleranceStatus::Infeasible);
+    let passed = checks.iter().filter(|(_, margin)| margin.is_finite() && *margin >= 0.0).count();
+    let all_pass = passed == checks.len() && tolerance_status != ToleranceStatus::Infeasible;
     rsx! {
         div { class: "bushing-status-rail",
             div { class: if all_pass { "bushing-status-head bushing-status-pass" } else { "bushing-status-head bushing-status-review" },
@@ -196,13 +222,13 @@ fn DesignStatusRail(candidates: Vec<bushing_solver::solve::MarginCandidate>, tol
                 }
             }
             div { class: "bushing-checklist",
-                for c in candidates {
+                for (name , margin) in checks {
                     div {
-                        class: if c.margin.is_finite() && c.margin < 0.0 { "bushing-check-row bushing-check-attn" } else { "bushing-check-row" },
+                        class: if margin.is_finite() && margin < 0.0 { "bushing-check-row bushing-check-attn" } else { "bushing-check-row" },
                         onclick: move |_| on_jump.call(()),
-                        span { class: margin_dot_class(c.margin) }
-                        span { class: "bushing-check-name", "{c.name}" }
-                        span { class: "bushing-check-val mono", "{fmt_margin(c.margin)}" }
+                        span { class: margin_dot_class(margin) }
+                        span { class: "bushing-check-name", "{name}" }
+                        span { class: "bushing-check-val mono", "{fmt_margin(margin)}" }
                     }
                 }
                 if tolerance_status == ToleranceStatus::Infeasible {
@@ -215,6 +241,24 @@ fn DesignStatusRail(candidates: Vec<bushing_solver::solve::MarginCandidate>, tol
                     }
                 }
             }
+        }
+    }
+}
+
+/// A warning/failure banner that's actually actionable, not just
+/// informational text: names the step that owns the field most likely to
+/// fix it and jumps there on click - per explicit request ("provide
+/// options to fix the issue... takes me to the required section"). This
+/// doesn't compute a corrective *value* (that needs a closed-form inverse
+/// per check, real future work) - it gets you to the right place to fix
+/// it yourself, which is most of the value for a first pass.
+#[component]
+fn ActionAlert(is_fail: bool, message: String, action_label: &'static str, on_jump: EventHandler<()>) -> Element {
+    rsx! {
+        div {
+            class: if is_fail { "bushing-alert bushing-alert-fail bushing-alert-action" } else { "bushing-alert bushing-alert-warn bushing-alert-action" },
+            span { class: "bushing-alert-msg", "{message}" }
+            button { class: "bushing-alert-action-btn", onclick: move |_| on_jump.call(()), "{action_label}" }
         }
     }
 }
@@ -407,36 +451,6 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
         // accordion/collapse chrome. `.stage`'s own page-level scroll
         // (main.rs) is the only scrollbar for the whole tool.
         div { class: "panel bushing-page",
-
-            div { class: "bushing-summary-band",
-                div { class: "bushing-viz-panes",
-                    div { class: "bushing-viz-pane bushing-viz-overview",
-                        span { class: "bushing-viz-tag", "Overview" }
-                        img { class: "bushing-viz-img", src: bushing_visualizer::geometry_crop_svg_data_uri(&section_input, dark(), None, 90.0) }
-                    }
-                    div { class: "bushing-viz-pane bushing-viz-detail",
-                        span { class: "bushing-viz-tag", "{detail_label}" }
-                        img { class: "bushing-viz-img", src: bushing_visualizer::geometry_crop_svg_data_uri(&section_input, dark(), Some(crop), 280.0) }
-                        button {
-                            class: "bushing-viz-expand",
-                            title: "Expand",
-                            onclick: move |_| visualizer_lightbox_open.set(true),
-                            {icon_expand()}
-                        }
-                    }
-                }
-                div { class: "bushing-summary-row",
-                    SummaryCard { label: "Contact pressure", value: fmt_ranged(out.pressure_range, 0, "psi") }
-                    SummaryCard { label: "Installed OD", value: format!("{:.4} in", out.od_installed) }
-                    SummaryCard { label: "Straight wall", value: fmt_ranged(out.wall_straight_range, 4, "in") }
-                    SummaryCard { label: "Neck wall", value: format!("{:.4} in", out.wall_neck) }
-                    SummaryCard {
-                        label: "Governing check",
-                        value: out.governing.name.to_string(),
-                        badge: Some((fmt_margin(out.governing.margin), margin_class(out.governing.margin))),
-                    }
-                }
-            }
 
             if visualizer_lightbox_open() {
                 div {
@@ -680,34 +694,74 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                             }
                         },
                         Step::Results => rsx! {
+                            div { class: "bushing-card",
+                                div { class: "bushing-card-head",
+                                    h3 { class: "bushing-card-title", "06 \u{00b7} Results \u{2014} cross-section" }
+                                    div { class: "bushing-governing",
+                                        span { "Governing: {out.governing.name}" }
+                                        span { class: margin_class(out.governing.margin), "{fmt_margin(out.governing.margin)}" }
+                                    }
+                                }
+                                div { class: "bushing-viz-panes",
+                                    div { class: "bushing-viz-pane bushing-viz-overview",
+                                        span { class: "bushing-viz-tag", "Overview" }
+                                        img { class: "bushing-viz-img", src: bushing_visualizer::geometry_crop_svg_data_uri(&section_input, dark(), None, 130.0) }
+                                    }
+                                    div { class: "bushing-viz-pane bushing-viz-detail",
+                                        span { class: "bushing-viz-tag", "{detail_label}" }
+                                        img { class: "bushing-viz-img", src: bushing_visualizer::geometry_crop_svg_data_uri(&section_input, dark(), Some(crop), 340.0) }
+                                        button {
+                                            class: "bushing-viz-expand",
+                                            title: "Expand",
+                                            onclick: move |_| visualizer_lightbox_open.set(true),
+                                            {icon_expand()}
+                                        }
+                                    }
+                                }
+                            }
                             if out.fail_straight {
-                                div { class: "bushing-alert bushing-alert-fail",
-                                    "Straight wall thickness ({out.wall_straight:.4} in) is below the minimum ({min_wall_straight():.4} in)."
+                                ActionAlert {
+                                    is_fail: true,
+                                    message: format!("Straight wall thickness ({:.4} in) is below the minimum ({:.4} in).", out.wall_straight, min_wall_straight()),
+                                    action_label: "Adjust bushing ID \u{2192} Repair",
+                                    on_jump: move |_| current_step.set(Step::Repair),
                                 }
                             }
                             if out.fail_neck {
-                                div { class: "bushing-alert bushing-alert-fail",
-                                    "Neck wall thickness ({out.wall_neck:.4} in) is below the minimum ({min_wall_neck():.4} in)."
+                                ActionAlert {
+                                    is_fail: true,
+                                    message: format!("Neck wall thickness ({:.4} in) is below the minimum ({:.4} in).", out.wall_neck, min_wall_neck()),
+                                    action_label: "Adjust countersink \u{2192} Geometry",
+                                    on_jump: move |_| current_step.set(Step::Geometry),
                                 }
                             }
                             if out.delta_total <= 0.0 {
-                                div { class: "bushing-alert bushing-alert-warn",
-                                    "Net interference is zero or negative after thermal correction - this is a clearance fit, not a press fit."
+                                ActionAlert {
+                                    is_fail: false,
+                                    message: "Net interference is zero or negative after thermal correction - this is a clearance fit, not a press fit.".to_string(),
+                                    action_label: "Adjust interference \u{2192} Fit",
+                                    on_jump: move |_| current_step.set(Step::Fit),
                                 }
                             }
                             if out.tolerance_status == ToleranceStatus::Infeasible {
-                                div { class: "bushing-alert bushing-alert-warn",
-                                    "Bore and interference tolerance bands don't fully overlap - the achieved-interference range shown is collapsed to a point estimate, not a real tolerance band."
+                                ActionAlert {
+                                    is_fail: false,
+                                    message: "Bore and interference tolerance bands don't fully overlap - the achieved-interference range shown is collapsed to a point estimate, not a real tolerance band.".to_string(),
+                                    action_label: "Review tolerances \u{2192} Fit",
+                                    on_jump: move |_| current_step.set(Step::Fit),
                                 }
                             }
                             if out.tolerance_status == ToleranceStatus::Clamped {
-                                div { class: "bushing-alert bushing-alert-warn",
-                                    "OD nominal was clamped to keep the fit inside the requested interference tolerance window (bore tolerance auto-adjustment was applied)."
+                                ActionAlert {
+                                    is_fail: false,
+                                    message: "OD nominal was clamped to keep the fit inside the requested interference tolerance window (bore tolerance auto-adjustment was applied).".to_string(),
+                                    action_label: "Review auto-tighten \u{2192} Fit",
+                                    on_jump: move |_| current_step.set(Step::Fit),
                                 }
                             }
                             div { class: "bushing-card",
                                 h3 { class: "bushing-card-title", "06 \u{00b7} Results" }
-                                div { class: "spec-table-wrap",
+                                div { class: "spec-table-wrap no-hscroll",
                                     table { class: "spec-table",
                                         thead {
                                             tr {
@@ -736,6 +790,8 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                             div { class: "bushing-card",
                                 h3 { class: "bushing-card-title", "07 \u{00b7} Report \u{2014} derived quantities" }
                                 div { class: "bushing-detail-grid",
+                                    DetailField { label: "Contact pressure", value: fmt_ranged(out.pressure_range, 0, "psi") }
+                                    DetailField { label: "Installed OD", value: format!("{:.4} in", out.od_installed) }
                                     DetailField { label: "Minimum straight wall (input)", value: format!("{:.4} in", min_wall_straight()) }
                                     DetailField { label: "Minimum neck wall (input)", value: format!("{:.4} in", min_wall_neck()) }
                                     DetailField { label: "Neck wall (worst-case)", value: format!("{:.4} in", out.wall_neck) }
@@ -775,7 +831,7 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                     }
                 }
                 DesignStatusRail {
-                    candidates: out.candidates.clone(),
+                    checks: design_checks(&out, min_wall_straight(), min_wall_neck()),
                     tolerance_status: out.tolerance_status,
                     on_jump: move |_| current_step.set(Step::Results),
                 }
@@ -1024,21 +1080,6 @@ fn ResultSpecRow(label: &'static str, decimals: usize, nominal: f64, range: Opti
     }
 }
 
-#[component]
-fn SummaryCard(label: &'static str, value: String, badge: Option<(String, &'static str)>) -> Element {
-    rsx! {
-        div { class: "summary-card",
-            div { class: "summary-card-label-row",
-                span { class: "summary-card-label", "{label}" }
-                span { class: "src-chip src-calculated", "Calc" }
-            }
-            span { class: "summary-card-value", "{value}" }
-            if let Some((text, class)) = badge {
-                span { class: "{class}", "{text}" }
-            }
-        }
-    }
-}
 
 #[component]
 fn DetailField(label: &'static str, value: String) -> Element {
