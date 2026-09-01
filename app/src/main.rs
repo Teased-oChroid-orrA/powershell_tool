@@ -1344,15 +1344,29 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 .bushing-viz-expand:hover { color: var(--fg); border-color: var(--accent); }
 .bushing-viz-expand svg { width: 100%; height: 100%; }
 
+/* User report: the close button became unreachable once the rendered
+   drawing was taller than the viewport - `max-height`/`overflow-y:auto`
+   on an inner wrapper (the previous version of this rule) wasn't
+   reliably clipping/scrolling in this renderer (the same class of
+   layout surprise as the width-circularity bug two rounds earlier), so
+   the card just grew to its full content height and, centered by
+   `align-items:center`, extended above and below the viewport with no
+   way back to the top where the button (position:absolute on the card)
+   lived. Fixed by moving the scroll responsibility to the BACKDROP
+   itself (`overflow-y:auto` on the `position:fixed` element - proven
+   elsewhere in this app, `.stage` does exactly this) and pinning the
+   close button to the VIEWPORT (`position:fixed`, not `absolute` on the
+   card) so it is reachable regardless of how tall the card's content
+   grows or how far the backdrop is scrolled. */
 .bushing-viz-lightbox-backdrop {
     position: fixed; inset: 0; background: rgba(10, 12, 14, 0.6);
-    display: flex; align-items: center; justify-content: center; padding: var(--space-6);
+    display: flex; justify-content: center; align-items: flex-start;
+    overflow-y: auto; padding: var(--space-6);
     z-index: 50;
 }
 .bushing-viz-lightbox-card {
     /* A definite `width` (not `max-width`), on purpose: this card is a
-       flex item in a `justify-content:center; align-items:center` flex
-       container, i.e. shrink-to-fit-sized by its own content. The `img`
+       flex item, i.e. shrink-to-fit-sized by its own content. The `img`
        inside is `width:100%; height:auto` - a percentage width resolved
        against a shrink-to-fit parent that in turn is sized BY that same
        img is a circular case that (whether in Blitz's layout engine or
@@ -1360,27 +1374,17 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
        cause of the lightbox rendering as an empty box: the dock's
        overview/detail panes work precisely because their parent
        (`.bushing-viz-pane`) has a definite pixel `width`, breaking the
-       same cycle. `max-width` alone (the first version of this rule)
+       same cycle. `max-width` alone (an earlier version of this rule)
        keeps the container shrink-to-fit and reintroduces it. */
-    position: relative; width: 720px; max-width: 90vw;
+    position: relative; width: 720px; max-width: 90vw; margin: 0 0 var(--space-6);
     background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius-lg);
     box-shadow: var(--shadow-md); padding: var(--space-4);
 }
-/* `max-height`/`overflow-y` live on this inner wrapper, not the card
-   itself - stacking them on the SAME flex item that also has to resolve
-   the image's own auto-height-from-intrinsic-aspect-ratio was still
-   producing an invisible/near-zero-height render even after the width
-   fix above. Splitting "the flex item's own width-driven sizing" from
-   "the scrollable image area" removes that combination entirely: the
-   card is now a simple width:720px block with auto height (no overflow,
-   no max-height), and only this already-width-constrained child does the
-   scroll/clamp. */
-.bushing-viz-lightbox-scroll { max-height: 80vh; overflow-y: auto; }
 .bushing-viz-lightbox-close {
-    position: absolute; top: var(--space-3); right: var(--space-3); z-index: 1;
-    width: 30px; height: 30px; padding: 6px; line-height: 1; font-size: 1em;
+    position: fixed; top: var(--space-4); right: var(--space-4); z-index: 51;
+    width: 34px; height: 34px; padding: 7px; line-height: 1; font-size: 1em;
     border-radius: var(--radius-sm); background: var(--bg-sunken); border: 1px solid var(--border-strong);
-    color: var(--fg-muted);
+    color: var(--fg-muted); box-shadow: var(--shadow-md);
 }
 .bushing-viz-lightbox-close:hover { color: var(--fg); }
 .bushing-viz-lightbox-close svg { width: 100%; height: 100%; }

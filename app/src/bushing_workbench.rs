@@ -446,12 +446,9 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                             onclick: move |_| visualizer_lightbox_open.set(false),
                             {icon_close()}
                         }
-                        div {
-                            class: "bushing-viz-lightbox-scroll",
-                            img {
-                                class: "bushing-viz-lightbox-img",
-                                src: bushing_visualizer::section_svg_data_uri(&section_input, out.achieved_interference_tol.nominal, stress_overlay, dark()),
-                            }
+                        img {
+                            class: "bushing-viz-lightbox-img",
+                            src: bushing_visualizer::section_svg_data_uri(&section_input, out.achieved_interference_tol.nominal, stress_overlay, dark()),
                         }
                     }
                 }
