@@ -99,24 +99,178 @@ fn fmt_margin(margin: f64) -> String {
     }
 }
 
-/// The exact 6 checks the Results table's rows compute margins for -
-/// factored into one place so `DesignStatusRail` and the Results table
-/// can never silently disagree about which checks exist or what their
-/// margins are. This exact bug already happened once: an earlier version
-/// of the rail read `out.candidates` (a real engine field, but a
-/// different and narrower "governing check" set - edge distance and wall
-/// thickness only) and showed "PASS" while the Results table, built from
-/// these same 6 values independently, showed a real failing hoop-stress
-/// margin `out.candidates` never included at all.
-fn design_checks(out: &bushing_solver::solve::BushingOutput, min_wall_straight: f64, min_wall_neck: f64) -> Vec<(&'static str, f64)> {
+/// One of the 6 checks the design status rail and the Checks gauges both
+/// render - `at_least` says whether bigger-is-better (edge distance/wall
+/// thickness, margin = actual/allowable - 1) or smaller-magnitude-is-better
+/// (hoop stress, margin = allowable/|actual| - 1); `unit`/`decimals` drive
+/// display formatting only, never the margin math itself.
+#[derive(Clone, PartialEq)]
+struct CheckRowData {
+    label: &'static str,
+    at_least: bool,
+    decimals: usize,
+    unit: &'static str,
+    nominal: f64,
+    range: Option<(f64, f64)>,
+    allowable: f64,
+    margin: f64,
+}
+
+/// The exact 6 checks the Results view computes margins for - factored
+/// into one place so `DesignStatusRail` and the Checks gauges can never
+/// silently disagree about which checks exist or what their margins are.
+/// This exact bug already happened once: an earlier version of the rail
+/// read `out.candidates` (a real engine field, but a different and
+/// narrower "governing check" set - edge distance and wall thickness only)
+/// and showed "PASS" while the Results table, built from these same 6
+/// values independently, showed a real failing hoop-stress margin
+/// `out.candidates` never included at all.
+fn check_rows(
+    out: &bushing_solver::solve::BushingOutput,
+    mat_housing_sy_psi: f64,
+    mat_bushing_sy_psi: f64,
+    min_wall_straight: f64,
+    min_wall_neck: f64,
+) -> Vec<CheckRowData> {
     vec![
-        ("Housing hoop stress", out.housing_ms),
-        ("Bushing hoop stress", out.bushing_ms),
-        ("Edge distance (sequencing)", out.sequence_margin),
-        ("Edge distance (strength)", out.strength_margin),
-        ("Straight wall thickness", out.wall_straight / min_wall_straight - 1.0),
-        ("Neck wall thickness", out.wall_neck / min_wall_neck - 1.0),
+        CheckRowData {
+            label: "Housing hoop stress",
+            at_least: false,
+            decimals: 0,
+            unit: "psi",
+            nominal: out.stress_hoop_housing,
+            range: Some((out.stress_hoop_housing_range.min, out.stress_hoop_housing_range.max)),
+            allowable: mat_housing_sy_psi,
+            margin: out.housing_ms,
+        },
+        CheckRowData {
+            label: "Bushing hoop stress",
+            at_least: false,
+            decimals: 0,
+            unit: "psi",
+            nominal: out.stress_hoop_bushing,
+            range: Some((out.stress_hoop_bushing_range.min, out.stress_hoop_bushing_range.max)),
+            allowable: mat_bushing_sy_psi,
+            margin: out.bushing_ms,
+        },
+        CheckRowData {
+            label: "Edge distance (sequencing)",
+            at_least: true,
+            decimals: 3,
+            unit: "\u{00d7}D",
+            nominal: out.ed_actual,
+            range: None,
+            allowable: out.ed_min_sequence,
+            margin: out.sequence_margin,
+        },
+        CheckRowData {
+            label: "Edge distance (strength)",
+            at_least: true,
+            decimals: 3,
+            unit: "\u{00d7}D",
+            nominal: out.ed_actual,
+            range: None,
+            allowable: out.ed_min_strength,
+            margin: out.strength_margin,
+        },
+        CheckRowData {
+            label: "Straight wall thickness",
+            at_least: true,
+            decimals: 4,
+            unit: "in",
+            nominal: out.wall_straight,
+            range: Some((out.wall_straight_range.min, out.wall_straight_range.max)),
+            allowable: min_wall_straight,
+            margin: out.wall_straight / min_wall_straight - 1.0,
+        },
+        CheckRowData {
+            label: "Neck wall thickness",
+            at_least: true,
+            decimals: 4,
+            unit: "in",
+            nominal: out.wall_neck,
+            range: None,
+            allowable: min_wall_neck,
+            margin: out.wall_neck / min_wall_neck - 1.0,
+        },
     ]
+}
+
+fn design_checks(rows: &[CheckRowData]) -> Vec<(&'static str, f64)> {
+    rows.iter().map(|r| (r.label, r.margin)).collect()
+}
+
+/// Where a `CheckGauge` row's rail/whisker/allow-line land on its own
+/// private 0..100% track. Every row scales to its own quantity (a stress
+/// check in psi has nothing in common with an edge-distance ratio), so
+/// nothing here is shared across rows. `ok` is derived from the row's own
+/// `margin` (not re-derived from nominal/allowable independently) so the
+/// gauge's color can never disagree with the Results/rail margin - the
+/// same single-source-of-truth discipline `check_rows` exists for.
+struct GaugeLayout {
+    allow_pct: f64,
+    range_pct: Option<(f64, f64)>,
+    point_pct: f64,
+    ok: bool,
+}
+
+fn gauge_layout(row: &CheckRowData) -> GaugeLayout {
+    let mag = |v: f64| if row.at_least { v } else { v.abs() };
+    let allow_mag = mag(row.allowable);
+    let nominal_mag = mag(row.nominal);
+    let range_mag = row.range.map(|(lo, hi)| {
+        let (a, b) = (mag(lo), mag(hi));
+        (a.min(b), a.max(b))
+    });
+    let worst = range_mag.map(|(_, hi)| hi).unwrap_or(nominal_mag).max(nominal_mag).max(allow_mag);
+    let track_max = (worst * 1.15).max(1e-9);
+    let pct = |v: f64| (v / track_max * 100.0).clamp(0.0, 100.0);
+    GaugeLayout {
+        allow_pct: pct(allow_mag),
+        range_pct: range_mag.map(|(lo, hi)| (pct(lo), pct(hi))),
+        point_pct: pct(nominal_mag),
+        ok: row.margin.is_finite() && row.margin >= 0.0,
+    }
+}
+
+#[component]
+fn CheckGauge(row: CheckRowData) -> Element {
+    let layout = gauge_layout(&row);
+    let dot_class = if !row.margin.is_finite() {
+        "check-dot neutral"
+    } else if layout.ok {
+        "check-dot ok"
+    } else {
+        "check-dot fail"
+    };
+    let allow_word = if row.at_least { "min" } else { "limit" };
+    let fmt_val = |v: f64| format!("{:.*}", row.decimals, v);
+    rsx! {
+        div { class: "check-item",
+            span { class: dot_class }
+            span { class: "check-name", "{row.label}" }
+            div { class: "value-track",
+                div { class: "rail" }
+                div { class: "allow-line", style: "left:{layout.allow_pct}%" }
+                span { class: "allow-tag", style: "left:{layout.allow_pct}%", "{allow_word} {fmt_val(row.allowable)}" }
+                if let Some((lo_pct, hi_pct)) = layout.range_pct {
+                    div {
+                        class: if layout.ok { "whisker ok" } else { "whisker fail" },
+                        style: "left:{lo_pct}%; width:{(hi_pct - lo_pct).max(0.0)}%",
+                    }
+                    span { class: "end-label lo", style: "left:{lo_pct}%", "{fmt_val(row.range.unwrap().0)}" }
+                    span { class: "end-label hi", style: "left:{hi_pct}%", "{fmt_val(row.range.unwrap().1)}" }
+                } else {
+                    div {
+                        class: if layout.ok { "whisker-point ok" } else { "whisker-point fail" },
+                        style: "left:{layout.point_pct}%",
+                    }
+                    span { class: "end-label point", style: "left:{layout.point_pct}%", "{fmt_val(row.nominal)} {row.unit}" }
+                }
+            }
+            span { class: margin_class(row.margin), "{fmt_margin(row.margin)}" }
+        }
+    }
 }
 
 /// Same thresholds as `margin_class`, as a bare status-dot class for the
@@ -152,10 +306,9 @@ enum Step {
     Fit,
     Analysis,
     Results,
-    Report,
 }
 
-const STEPS: [Step; 7] = [Step::Repair, Step::Geometry, Step::Material, Step::Fit, Step::Analysis, Step::Results, Step::Report];
+const STEPS: [Step; 6] = [Step::Repair, Step::Geometry, Step::Material, Step::Fit, Step::Analysis, Step::Results];
 
 impl Step {
     fn label(self) -> &'static str {
@@ -166,7 +319,6 @@ impl Step {
             Step::Fit => "Fit",
             Step::Analysis => "Analysis",
             Step::Results => "Results",
-            Step::Report => "Report",
         }
     }
     fn number(self) -> u8 {
@@ -263,20 +415,6 @@ fn ActionAlert(is_fail: bool, message: String, action_label: &'static str, on_ju
     }
 }
 
-/// Same thresholds as `margin_class`, as a short status word for the
-/// Results spec table's Status column.
-fn margin_status_text(margin: f64) -> &'static str {
-    if !margin.is_finite() {
-        "\u{2014}"
-    } else if margin < 0.0 {
-        "Fails"
-    } else if margin < 0.15 {
-        "Marginal"
-    } else {
-        "OK"
-    }
-}
-
 /// Presents a result the same way its driving inputs were entered -
 /// nominal plus the range the tolerance bands actually propagate into
 /// (`bushing_solver::solve::RangedValue`) - not a bare point value, per
@@ -328,7 +466,7 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
     let load = use_signal(|| 1000.0_f64);
     let mut reamer_picker_open = use_signal(|| false);
     let mut visualizer_lightbox_open = use_signal(|| false);
-    let mut show_derivation = use_signal(|| false);
+    let mut show_more_detail = use_signal(|| false);
     let mut current_step = use_signal(Step::default);
 
     let mut bushing_type = use_signal(BushingType::default);
@@ -418,6 +556,31 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
 
     let mat_bushing_props = *bushing_solver::materials::get_material(&mat_bushing());
     let mat_housing_props = *bushing_solver::materials::get_material(&mat_housing());
+    let rows = check_rows(
+        &out,
+        mat_housing_props.sy_ksi * 1000.0,
+        mat_bushing_props.sy_ksi * 1000.0,
+        min_wall_straight(),
+        min_wall_neck(),
+    );
+    let checks_passed = rows.iter().filter(|r| r.margin.is_finite() && r.margin >= 0.0).count();
+    let checks_total = rows.len();
+    let all_checks_pass = checks_passed == checks_total;
+    let governing_str = format!("{} \u{00b7} {}", out.governing.name, fmt_margin(out.governing.margin));
+    let install_force_str = fmt_ranged(out.install_force_range, 0, "lbf");
+    let achieved_interference_str = fmt_tol_range(out.achieved_interference_tol, 4, "in");
+    let contact_pressure_str = fmt_ranged(out.pressure_range, 0, "psi");
+    let install_delta_label: &'static str = if out.install_delta > 0.0 { "Interference at install" } else { "Clearance at install" };
+    let install_delta_note = if out.install_delta > 0.0 { "still needs force to seat" } else { "slip fit, no press force needed" };
+    let install_method_str = if assembly_thermal_assist_enabled() {
+        format!(
+            "Shrink fit \u{2014} chill bushing to {:.0}\u{00b0}F, heat housing to {:.0}\u{00b0}F before assembly",
+            assembly_bushing_temperature(),
+            assembly_housing_temperature()
+        )
+    } else {
+        "Press fit \u{2014} no thermal assist".to_string()
+    };
 
     let section_input = BushingSectionInput {
         bore_dia: bore_dia(),
@@ -694,28 +857,30 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                             }
                         },
                         Step::Results => rsx! {
-                            div { class: "bushing-card",
-                                div { class: "bushing-card-head",
-                                    h3 { class: "bushing-card-title", "06 \u{00b7} Results \u{2014} cross-section" }
-                                    div { class: "bushing-governing",
-                                        span { "Governing: {out.governing.name}" }
-                                        span { class: margin_class(out.governing.margin), "{fmt_margin(out.governing.margin)}" }
+                            div { class: if all_checks_pass { "bushing-headline pass" } else { "bushing-headline review" },
+                                div { class: "bushing-headline-status",
+                                    span { class: "bushing-headline-dot" }
+                                    div {
+                                        span { class: "bushing-headline-text", if all_checks_pass { "PASS" } else { "REVIEW" } }
+                                        span { class: "bushing-headline-sub", "{checks_passed} / {checks_total} checks passed" }
                                     }
                                 }
-                                div { class: "bushing-viz-panes",
-                                    div { class: "bushing-viz-pane bushing-viz-overview",
-                                        span { class: "bushing-viz-tag", "Overview" }
-                                        img { class: "bushing-viz-img", src: bushing_visualizer::geometry_crop_svg_data_uri(&section_input, dark(), None, 130.0) }
+                                div { class: "bushing-mini-stats",
+                                    div { class: "bushing-mini-stat",
+                                        span { class: "bushing-mini-label", "Governing" }
+                                        span { class: margin_class(out.governing.margin), "{governing_str}" }
                                     }
-                                    div { class: "bushing-viz-pane bushing-viz-detail",
-                                        span { class: "bushing-viz-tag", "{detail_label}" }
-                                        img { class: "bushing-viz-img", src: bushing_visualizer::geometry_crop_svg_data_uri(&section_input, dark(), Some(crop), 340.0) }
-                                        button {
-                                            class: "bushing-viz-expand",
-                                            title: "Expand",
-                                            onclick: move |_| visualizer_lightbox_open.set(true),
-                                            {icon_expand()}
-                                        }
+                                    div { class: "bushing-mini-stat",
+                                        span { class: "bushing-mini-label", "Install force" }
+                                        span { class: "bushing-mini-val", "{install_force_str}" }
+                                    }
+                                    div { class: "bushing-mini-stat",
+                                        span { class: "bushing-mini-label", "Achieved interference" }
+                                        span { class: "bushing-mini-val", "{achieved_interference_str}" }
+                                    }
+                                    div { class: "bushing-mini-stat",
+                                        span { class: "bushing-mini-label", "Contact pressure" }
+                                        span { class: "bushing-mini-val", "{contact_pressure_str}" }
                                     }
                                 }
                             }
@@ -733,6 +898,14 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                                     message: format!("Neck wall thickness ({:.4} in) is below the minimum ({:.4} in).", out.wall_neck, min_wall_neck()),
                                     action_label: "Adjust countersink \u{2192} Geometry",
                                     on_jump: move |_| current_step.set(Step::Geometry),
+                                }
+                            }
+                            if out.sequence_margin < 0.0 {
+                                ActionAlert {
+                                    is_fail: true,
+                                    message: format!("Edge distance sequencing margin is {} - housing width needs to grow by roughly {:.3} in.", fmt_margin(out.sequence_margin), (out.ed_min_sequence - out.ed_actual) * out.bore_tol.nominal),
+                                    action_label: "Adjust housing width \u{2192} Repair",
+                                    on_jump: move |_| current_step.set(Step::Repair),
                                 }
                             }
                             if out.delta_total <= 0.0 {
@@ -759,39 +932,70 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                                     on_jump: move |_| current_step.set(Step::Fit),
                                 }
                             }
+                            div { class: "bushing-card fab-card",
+                                div { class: "bushing-card-head",
+                                    h3 { class: "bushing-card-title", "Fabrication \u{0026} install summary" }
+                                    span { class: if all_checks_pass { "fab-badge ready" } else { "fab-badge review" }, if all_checks_pass { "Ready to machine" } else { "Needs review" } }
+                                }
+                                div { class: "fab-grid",
+                                    DetailField { label: "Housing bore (ream to)", value: format!("\u{2300}{:.4} in ({:.4}\u{2013}{:.4})", out.bore_tol.nominal, out.bore_tol.lower, out.bore_tol.upper) }
+                                    DetailField { label: "Bushing OD (finish to)", value: format!("\u{2300}{:.4} in ({:.4}\u{2013}{:.4})", out.od_tol.nominal, out.od_tol.lower, out.od_tol.upper) }
+                                    DetailField { label: "Diametral interference (in-service)", value: fmt_tol_range(out.achieved_interference_tol, 4, "in") }
+                                    DetailField {
+                                        label: install_delta_label,
+                                        value: format!("{:.4} in \u{2014} {}", out.install_delta, install_delta_note),
+                                    }
+                                    DetailField {
+                                        label: "Edge distance",
+                                        value: format!("{:.3} in (needs \u{2265} {:.3} in)", edge_dist(), out.ed_min_sequence.max(out.ed_min_strength) * out.bore_tol.nominal),
+                                    }
+                                    div { class: "detail-field fab-item wide",
+                                        span { class: "detail-field-label", "Install method" }
+                                        span { class: "detail-field-value", "{install_method_str}" }
+                                    }
+                                    DetailField { label: "Install force", value: format!("{} at assembly temp", fmt_ranged(out.install_force_range, 0, "lbf")) }
+                                    DetailField { label: "Retained force (in-service)", value: fmt_ranged(out.retained_install_force_range, 0, "lbf") }
+                                    DetailField { label: "Housing material", value: mat_housing_props.name.to_string() }
+                                    DetailField { label: "Bushing material", value: mat_bushing_props.name.to_string() }
+                                }
+                                p { class: "fab-note", "Install figures assume a friction coefficient of {friction()}. Reamer-pick the housing bore to the band above before pressing; interference at install accounts for any shrink-fit thermal assist configured in Analysis." }
+                            }
                             div { class: "bushing-card",
-                                h3 { class: "bushing-card-title", "06 \u{00b7} Results" }
-                                div { class: "spec-table-wrap no-hscroll",
-                                    table { class: "spec-table",
-                                        thead {
-                                            tr {
-                                                th { "Quantity" }
-                                                th { class: "num", "Nominal" }
-                                                th { class: "num", "Min" }
-                                                th { class: "num", "Max" }
-                                                th { class: "num", "Allowable" }
-                                                th { class: "num", "Margin" }
-                                                th { "Status" }
-                                            }
-                                        }
-                                        tbody {
-                                            ResultSpecRow { label: "Housing hoop stress, psi", decimals: 0, nominal: out.stress_hoop_housing, range: Some((out.stress_hoop_housing_range.min, out.stress_hoop_housing_range.max)), allowable: mat_housing_props.sy_ksi * 1000.0, margin: out.housing_ms }
-                                            ResultSpecRow { label: "Bushing hoop stress, psi", decimals: 0, nominal: out.stress_hoop_bushing, range: Some((out.stress_hoop_bushing_range.min, out.stress_hoop_bushing_range.max)), allowable: mat_bushing_props.sy_ksi * 1000.0, margin: out.bushing_ms }
-                                            ResultSpecRow { label: "Edge distance (sequencing), in", decimals: 3, nominal: out.ed_actual, range: None, allowable: out.ed_min_sequence, margin: out.sequence_margin }
-                                            ResultSpecRow { label: "Edge distance (strength), in", decimals: 3, nominal: out.ed_actual, range: None, allowable: out.ed_min_strength, margin: out.strength_margin }
-                                            ResultSpecRow { label: "Straight wall thickness, in", decimals: 4, nominal: out.wall_straight, range: Some((out.wall_straight_range.min, out.wall_straight_range.max)), allowable: min_wall_straight(), margin: out.wall_straight / min_wall_straight() - 1.0 }
-                                            ResultSpecRow { label: "Neck wall thickness, in", decimals: 4, nominal: out.wall_neck, range: None, allowable: min_wall_neck(), margin: out.wall_neck / min_wall_neck() - 1.0 }
+                                h3 { class: "bushing-card-title", "Checks" }
+                                div { class: "checks-list",
+                                    for r in rows.iter() {
+                                        CheckGauge { row: r.clone() }
+                                    }
+                                }
+                            }
+                            div { class: "bushing-derivation-toggle",
+                                button {
+                                    class: "link-button",
+                                    onclick: move |_| show_more_detail.set(!show_more_detail()),
+                                    if show_more_detail() { "Hide detail (derived quantities + derivation) \u{25b4}" } else { "Show more detail (derived quantities + derivation) \u{25be}" }
+                                }
+                            }
+                            if show_more_detail() {
+                            div { class: "bushing-card",
+                                div { class: "bushing-viz-panes",
+                                    div { class: "bushing-viz-pane bushing-viz-overview",
+                                        span { class: "bushing-viz-tag", "Overview" }
+                                        img { class: "bushing-viz-img", src: bushing_visualizer::geometry_crop_svg_data_uri(&section_input, dark(), None, 130.0) }
+                                    }
+                                    div { class: "bushing-viz-pane bushing-viz-detail",
+                                        span { class: "bushing-viz-tag", "{detail_label}" }
+                                        img { class: "bushing-viz-img", src: bushing_visualizer::geometry_crop_svg_data_uri(&section_input, dark(), Some(crop), 340.0) }
+                                        button {
+                                            class: "bushing-viz-expand",
+                                            title: "Expand",
+                                            onclick: move |_| visualizer_lightbox_open.set(true),
+                                            {icon_expand()}
                                         }
                                     }
                                 }
                             }
-                        },
-                        Step::Report => rsx! {
-                            div { class: "bushing-card",
-                                h3 { class: "bushing-card-title", "07 \u{00b7} Report \u{2014} derived quantities" }
                                 div { class: "bushing-detail-grid",
                                     DetailField { label: "Contact pressure", value: fmt_ranged(out.pressure_range, 0, "psi") }
-                                    DetailField { label: "Installed OD", value: format!("{:.4} in", out.od_installed) }
                                     DetailField { label: "Minimum straight wall (input)", value: format!("{:.4} in", min_wall_straight()) }
                                     DetailField { label: "Minimum neck wall (input)", value: format!("{:.4} in", min_wall_neck()) }
                                     DetailField { label: "Neck wall (worst-case)", value: format!("{:.4} in", out.wall_neck) }
@@ -816,22 +1020,13 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                                         DetailField { label: "External CS (solved)", value: format!("\u{2300}{:.4} \u{00d7} {:.4} deep, {:.1}\u{00b0}", od.dia, od.depth, od.angle_deg) }
                                     }
                                 }
-                                div { class: "bushing-derivation-toggle",
-                                    button {
-                                        class: "link-button",
-                                        onclick: move |_| show_derivation.set(!show_derivation()),
-                                        if show_derivation() { "Hide derivation" } else { "Show derivation" }
-                                    }
-                                }
-                                if show_derivation() {
-                                    DerivationBlock { out: out.clone(), dark: dark() }
-                                }
+                                DerivationBlock { out: out.clone(), dark: dark() }
                             }
                         },
                     }
                 }
                 DesignStatusRail {
-                    checks: design_checks(&out, min_wall_straight(), min_wall_neck()),
+                    checks: design_checks(&rows),
                     tolerance_status: out.tolerance_status,
                     on_jump: move |_| current_step.set(Step::Results),
                 }
@@ -1051,35 +1246,6 @@ fn PlainSpecRow(label: &'static str, decimals: usize, step: &'static str, value:
         }
     }
 }
-
-/// A spec-table row for one governing/margin check - the same
-/// demand/allowable/margin numbers the previous list-row layout showed,
-/// laid out as a table row alongside the countersink/dimension tables
-/// above it so inputs and outputs read as one continuous sheet. Every row
-/// here is a physics-engine output (never a direct or derived dimension),
-/// so unlike `CsSpecRow`/`PlainSpecRow` there is no per-row Source badge
-/// - the table's own caption says so once instead of repeating an
-/// identical "Calc" badge six times.
-#[component]
-fn ResultSpecRow(label: &'static str, decimals: usize, nominal: f64, range: Option<(f64, f64)>, allowable: f64, margin: f64) -> Element {
-    let nominal_text = format!("{nominal:.*}", decimals);
-    let min_text = range.map(|(lo, _)| format!("{lo:.*}", decimals)).unwrap_or_else(|| "\u{2014}".to_string());
-    let max_text = range.map(|(_, hi)| format!("{hi:.*}", decimals)).unwrap_or_else(|| "\u{2014}".to_string());
-    let allowable_text = format!("{allowable:.*}", decimals);
-    let margin_text = fmt_margin(margin);
-    rsx! {
-        tr { class: "spec-row",
-            td { "{label}" }
-            td { class: "num mono", "{nominal_text}" }
-            td { class: "num mono", "{min_text}" }
-            td { class: "num mono", "{max_text}" }
-            td { class: "num mono", "{allowable_text}" }
-            td { class: "num mono", "{margin_text}" }
-            td { span { class: margin_class(margin), "{margin_status_text(margin)}" } }
-        }
-    }
-}
-
 
 #[component]
 fn DetailField(label: &'static str, value: String) -> Element {
