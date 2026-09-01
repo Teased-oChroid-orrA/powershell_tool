@@ -1235,6 +1235,51 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 }
 .bushing-card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
 .bushing-card-title { margin: 0; font-size: 1em; font-weight: 700; }
+.bushing-card-sub { margin: -6px 0 0; font-size: 0.82em; color: var(--fg-subtle); }
+
+/* ---- Workflow shell: top stepper + step-gated workspace + persistent
+   design-status rail (Phase 1 of the workflow redesign - see the
+   session's approved plan). Only `current_step`'s cards render in
+   `.bushing-workspace`; `.bushing-status-rail` stays visible regardless
+   of which step is open. */
+.bushing-stepper { display: flex; align-items: center; gap: 2px; overflow-x: auto; padding-bottom: 2px; }
+.bushing-step-pill {
+    flex: none; display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-pill); cursor: pointer; font-weight: 650; font-size: 0.86em; color: var(--fg-muted);
+    transition: background-color 0.15s var(--ease), color 0.15s var(--ease);
+}
+.bushing-step-pill:not(:last-child)::after { content: "\2014"; margin-left: var(--space-2); color: var(--border-strong); font-weight: 400; }
+.bushing-step-pill:hover { background: var(--panel-hover); }
+.bushing-step-pill.bushing-step-current { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-strong); }
+.bushing-step-num {
+    flex: none; width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    font-size: 0.72em; font-family: var(--mono); border: 1.5px solid var(--border-strong); color: var(--fg-subtle);
+}
+.bushing-step-current .bushing-step-num { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+
+.bushing-workspace-split { display: flex; align-items: flex-start; gap: var(--space-4); }
+.bushing-workspace { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--space-4); }
+
+.bushing-status-rail { flex: none; width: 240px; border: 1px solid var(--glass-border); border-radius: var(--radius-md); background: var(--glass); overflow: hidden; }
+.bushing-status-head { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3); border-bottom: 1px solid var(--glass-border); }
+.bushing-status-dot { flex: none; width: 11px; height: 11px; border-radius: 50%; }
+.bushing-status-pass .bushing-status-dot { background: var(--good); box-shadow: 0 0 0 3px var(--good-bg); }
+.bushing-status-review .bushing-status-dot { background: var(--warning); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 18%, transparent); }
+.bushing-status-text { font-weight: 700; font-size: 0.92em; }
+.bushing-status-pass .bushing-status-text { color: var(--good); }
+.bushing-status-review .bushing-status-text { color: var(--warning); }
+.bushing-status-sub { font-size: 0.76em; color: var(--fg-subtle); margin-top: 1px; }
+.bushing-checklist { display: flex; flex-direction: column; gap: 1px; padding: var(--space-2); }
+.bushing-check-row { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2); border-radius: var(--radius-sm); cursor: pointer; font-size: 0.82em; }
+.bushing-check-row:hover { background: var(--panel-hover); }
+.bushing-check-row.bushing-check-attn .bushing-check-name { color: var(--fg); font-weight: 650; }
+.bushing-check-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
+.bushing-check-dot.ok { background: var(--good); }
+.bushing-check-dot.warn { background: var(--warning); }
+.bushing-check-dot.crit { background: var(--danger); }
+.bushing-check-dot.neutral { background: var(--border-strong); }
+.bushing-check-name { flex: 1; min-width: 0; color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bushing-check-val { flex: none; font-size: 0.92em; color: var(--fg-subtle); }
 .field-label { font-weight: 600; font-size: 0.78em; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.03em; }
 .field-row { display: flex; gap: var(--space-2); }
 .field-row .field { min-width: 0; }
