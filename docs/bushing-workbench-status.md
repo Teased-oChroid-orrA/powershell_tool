@@ -46,12 +46,23 @@ Plain Rust library, zero GUI dependency (mirrors `search-core`'s own
   band is not ported - v1 always resolves tolerance bands as entered, and
   honestly reports `Infeasible` status when they don't overlap, rather
   than silently adjusting them).
-- `solve.rs` - the Lamé thick-wall interference-fit physics: contact
-  pressure, hoop stress in housing/bushing, installed OD, thermal
-  interference correction, install force, and the four margin-of-safety
-  candidates (housing hoop stress, bushing hoop stress, edge-distance
-  sequencing, edge-distance strength) with the governing (lowest-margin)
-  check selected automatically.
+- `lame.rs` - general, bushing-agnostic thick-wall (Lamé) pressure-vessel
+  primitives: `lame_stress_at_radius` (the full two-boundary-pressure
+  closed-form stress state at any radius, not a thin-wall or boundary-
+  only reduction), `radial_displacement`, `diametral_interference_compliance`
+  (the shrink-fit compliance term), and `sample_lame_field` (the per-radius
+  stress distribution used for the cross-section stress plot). Self-
+  contained - no bushing-specific types or fields - so a future non-
+  bushing pressure-vessel calculation can depend on it directly.
+- `solve.rs` - the bushing-specific interference-fit physics built on top
+  of `lame.rs`: contact pressure, hoop stress in housing/bushing, installed
+  OD, thermal interference correction, install force, and the four
+  margin-of-safety candidates (housing hoop stress, bushing hoop stress,
+  edge-distance sequencing, edge-distance strength) with the governing
+  (lowest-margin) check selected automatically. `term_b`/`term_h` and the
+  boundary hoop-stress values are derived from `lame.rs`'s general
+  functions, not re-derived inline - see `lame.rs`'s own module doc for
+  why that distinction matters.
 - `reamers.rs` - the aircraft reamer catalog (`data/aircraft_reamer_catalog.csv`,
   48 real, sourced entries extracted verbatim from the TS source's own
   `aircraftReamerCatalogData.ts`) and `nearest(target_in, count)` for the

@@ -59,7 +59,7 @@
 
 use base64::Engine;
 use bushing_solver::geometry::{resolve_bushing_section_params, BushingSectionInput, BushingSectionParams, BushingType, IdType};
-use bushing_solver::lame_field::LameSample;
+use bushing_solver::lame::LameSample;
 
 /// Real-world scale, in pixels per inch. The SVG's own `viewBox`/
 /// intrinsic size is derived directly from the actual geometry at this
@@ -295,7 +295,7 @@ pub fn geometry_crop_svg_data_uri(input: &BushingSectionInput, dark: bool, crop:
 /// palette (`main.rs`) so the drawing and the margin rows agree on what
 /// counts as marginal; and the actual hoop-stress *distribution* across
 /// each region's wall (`bushing_field`/`housing_field` -
-/// `bushing-solver::lame_field`'s real Lame closed-form solution sampled
+/// `bushing-solver::lame`'s real Lame closed-form solution sampled
 /// at 41 points, not an interpolation between the two boundary values) -
 /// what was actually requested: "the plot of stress distribution," not
 /// just the two boundary numbers annotated as text.
@@ -523,7 +523,7 @@ mod tests {
     }
 
     fn sample_stress() -> StressOverlay {
-        use bushing_solver::lame_field::sample_lame_field;
+        use bushing_solver::lame::sample_lame_field;
         StressOverlay {
             housing_stress_psi: 10475.0,
             housing_ms: 5.68,

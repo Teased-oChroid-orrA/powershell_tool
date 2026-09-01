@@ -4,7 +4,7 @@
 pub mod bearing;
 pub mod countersink;
 pub mod geometry;
-pub mod lame_field;
+pub mod lame;
 pub mod materials;
 pub mod reamers;
 pub mod solve;
