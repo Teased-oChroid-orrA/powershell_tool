@@ -18,7 +18,7 @@ use bushing_solver::reamers::{self, ReamerEntry};
 use bushing_solver::solve::{compute, BushingInputs, EndConstraint};
 use bushing_solver::tolerance::{EnforcementPolicy, ToleranceStatus};
 
-use crate::components::{Dropdown, FieldGroup};
+use crate::components::{fmt_margin, margin_class, margin_dot_class, CheckGauge, CheckRowData, Dropdown, FieldGroup};
 
 /// Hand-drawn inline SVG, same convention `main.rs`'s nav-rail
 /// `icon_*` functions already use - not a Unicode glyph. A prior version
@@ -84,43 +84,6 @@ fn formula_img_src(f: &Formula, dark: bool) -> String {
     use base64::Engine;
     let bytes = if dark { f.dark_png } else { f.light_png };
     format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes))
-}
-
-fn margin_class(margin: f64) -> &'static str {
-    if !margin.is_finite() {
-        "ms-pill ms-neutral"
-    } else if margin < 0.0 {
-        "ms-pill ms-fail"
-    } else if margin < 0.15 {
-        "ms-pill ms-marginal"
-    } else {
-        "ms-pill ms-pass"
-    }
-}
-
-fn fmt_margin(margin: f64) -> String {
-    if margin.is_infinite() {
-        "\u{2014}".to_string() // em dash - no governing demand for this check
-    } else {
-        format!("{:+.2}", margin)
-    }
-}
-
-/// One of the 6 checks the design status rail and the Checks gauges both
-/// render - `at_least` says whether bigger-is-better (edge distance/wall
-/// thickness, margin = actual/allowable - 1) or smaller-magnitude-is-better
-/// (hoop stress, margin = allowable/|actual| - 1); `unit`/`decimals` drive
-/// display formatting only, never the margin math itself.
-#[derive(Clone, PartialEq)]
-struct CheckRowData {
-    label: &'static str,
-    at_least: bool,
-    decimals: usize,
-    unit: &'static str,
-    nominal: f64,
-    range: Option<(f64, f64)>,
-    allowable: f64,
-    margin: f64,
 }
 
 /// The exact 6 checks the Results view computes margins for - factored
@@ -205,95 +168,6 @@ fn check_rows(
 
 fn design_checks(rows: &[CheckRowData]) -> Vec<(&'static str, f64)> {
     rows.iter().map(|r| (r.label, r.margin)).collect()
-}
-
-/// Where a `CheckGauge` row's rail/whisker/allow-line land on its own
-/// private 0..100% track. Every row scales to its own quantity (a stress
-/// check in psi has nothing in common with an edge-distance ratio), so
-/// nothing here is shared across rows. `ok` is derived from the row's own
-/// `margin` (not re-derived from nominal/allowable independently) so the
-/// gauge's color can never disagree with the Results/rail margin - the
-/// same single-source-of-truth discipline `check_rows` exists for.
-struct GaugeLayout {
-    allow_pct: f64,
-    range_pct: Option<(f64, f64)>,
-    point_pct: f64,
-    ok: bool,
-}
-
-fn gauge_layout(row: &CheckRowData) -> GaugeLayout {
-    let mag = |v: f64| if row.at_least { v } else { v.abs() };
-    let allow_mag = mag(row.allowable);
-    let nominal_mag = mag(row.nominal);
-    let range_mag = row.range.map(|(lo, hi)| {
-        let (a, b) = (mag(lo), mag(hi));
-        (a.min(b), a.max(b))
-    });
-    let worst = range_mag.map(|(_, hi)| hi).unwrap_or(nominal_mag).max(nominal_mag).max(allow_mag);
-    let track_max = (worst * 1.15).max(1e-9);
-    let pct = |v: f64| (v / track_max * 100.0).clamp(0.0, 100.0);
-    GaugeLayout {
-        allow_pct: pct(allow_mag),
-        range_pct: range_mag.map(|(lo, hi)| (pct(lo), pct(hi))),
-        point_pct: pct(nominal_mag),
-        ok: row.margin.is_finite() && row.margin >= 0.0,
-    }
-}
-
-#[component]
-fn CheckGauge(row: CheckRowData) -> Element {
-    let layout = gauge_layout(&row);
-    let dot_class = if !row.margin.is_finite() {
-        "check-dot neutral"
-    } else if layout.ok {
-        "check-dot ok"
-    } else {
-        "check-dot fail"
-    };
-    let allow_word = if row.at_least { "min" } else { "limit" };
-    let fmt_val = |v: f64| format!("{:.*}", row.decimals, v);
-    rsx! {
-        div { class: "check-item",
-            span { class: dot_class }
-            span { class: "check-name", "{row.label}" }
-            div { class: "value-track",
-                div { class: "rail" }
-                div { class: "allow-line", style: "left:{layout.allow_pct}%" }
-                span { class: "allow-tag", style: "left:{layout.allow_pct}%", "{allow_word} {fmt_val(row.allowable)}" }
-                if let Some((lo_pct, hi_pct)) = layout.range_pct {
-                    div {
-                        class: if layout.ok { "whisker ok" } else { "whisker fail" },
-                        style: "left:{lo_pct}%; width:{(hi_pct - lo_pct).max(0.0)}%",
-                    }
-                    span { class: "end-label lo", style: "left:{lo_pct}%", "{fmt_val(row.range.unwrap().0)}" }
-                    span { class: "end-label hi", style: "left:{hi_pct}%", "{fmt_val(row.range.unwrap().1)}" }
-                } else {
-                    div {
-                        class: if layout.ok { "whisker-point ok" } else { "whisker-point fail" },
-                        style: "left:{layout.point_pct}%",
-                    }
-                    span { class: "end-label point", style: "left:{layout.point_pct}%", "{fmt_val(row.nominal)} {row.unit}" }
-                }
-            }
-            span { class: margin_class(row.margin), "{fmt_margin(row.margin)}" }
-        }
-    }
-}
-
-/// Same thresholds as `margin_class`, as a bare status-dot class for the
-/// design-status rail's checklist rows (`DesignStatusRail`) - a compact
-/// colored dot rather than `margin_class`'s full text pill, since the
-/// margin number already sits right next to it in that layout.
-fn margin_dot_class(margin: f64) -> &'static str {
-    if !margin.is_finite() {
-        "bushing-check-dot neutral"
-    } else if margin < 0.0 {
-        "bushing-check-dot crit"
-    } else if margin < 0.15 {
-        "bushing-check-dot warn"
-    } else {
-        "bushing-check-dot ok"
-    }
 }
 
 /// The workflow steps the workspace is organized around - mirrors how a

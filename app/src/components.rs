@@ -95,6 +95,143 @@ pub(crate) fn Expander(title: &'static str, default_open: bool, class: &'static 
     }
 }
 
+/// Standard margin-of-safety color thresholds, as a text-pill CSS class -
+/// shared by every engineering-calculator tool (Bushing Workbench,
+/// Pressure Vessel Analyzer) so "what counts as marginal" reads the same
+/// way everywhere, not redefined per tool.
+pub(crate) fn margin_class(margin: f64) -> &'static str {
+    if !margin.is_finite() {
+        "ms-pill ms-neutral"
+    } else if margin < 0.0 {
+        "ms-pill ms-fail"
+    } else if margin < 0.15 {
+        "ms-pill ms-marginal"
+    } else {
+        "ms-pill ms-pass"
+    }
+}
+
+/// Same thresholds as [`margin_class`], as a compact status-dot class for
+/// a design-status rail's checklist rows, where the margin number already
+/// sits next to it.
+pub(crate) fn margin_dot_class(margin: f64) -> &'static str {
+    if !margin.is_finite() {
+        "bushing-check-dot neutral"
+    } else if margin < 0.0 {
+        "bushing-check-dot crit"
+    } else if margin < 0.15 {
+        "bushing-check-dot warn"
+    } else {
+        "bushing-check-dot ok"
+    }
+}
+
+pub(crate) fn fmt_margin(margin: f64) -> String {
+    if margin.is_infinite() {
+        "\u{2014}".to_string() // em dash - no governing demand for this check
+    } else {
+        format!("{:+.2}", margin)
+    }
+}
+
+/// One check/failure-mode row a value/whisker-vs-allowable gauge renders -
+/// generic across tools: `at_least` says whether bigger-is-better (e.g.
+/// wall thickness/edge distance, margin = actual/allowable - 1) or
+/// smaller-magnitude-is-better (e.g. stress vs. an allowable limit,
+/// margin = allowable/|actual| - 1); `unit`/`decimals` drive display
+/// formatting only, never the margin math itself, which the caller always
+/// computes and supplies via `margin` - this type never re-derives it.
+#[derive(Clone, PartialEq)]
+pub(crate) struct CheckRowData {
+    pub label: &'static str,
+    pub at_least: bool,
+    pub decimals: usize,
+    pub unit: &'static str,
+    pub nominal: f64,
+    pub range: Option<(f64, f64)>,
+    pub allowable: f64,
+    pub margin: f64,
+}
+
+/// Where a [`CheckGauge`] row's rail/whisker/allow-line land on its own
+/// private 0..100% track. Every row scales to its own quantity (a stress
+/// check in psi has nothing in common with an edge-distance ratio), so
+/// nothing here is shared across rows. `ok` is derived from the row's own
+/// `margin` (not re-derived from nominal/allowable independently) so the
+/// gauge's color can never disagree with whatever else displays that same
+/// margin.
+struct GaugeLayout {
+    allow_pct: f64,
+    range_pct: Option<(f64, f64)>,
+    point_pct: f64,
+    ok: bool,
+}
+
+fn gauge_layout(row: &CheckRowData) -> GaugeLayout {
+    let mag = |v: f64| if row.at_least { v } else { v.abs() };
+    let allow_mag = mag(row.allowable);
+    let nominal_mag = mag(row.nominal);
+    let range_mag = row.range.map(|(lo, hi)| {
+        let (a, b) = (mag(lo), mag(hi));
+        (a.min(b), a.max(b))
+    });
+    let worst = range_mag.map(|(_, hi)| hi).unwrap_or(nominal_mag).max(nominal_mag).max(allow_mag);
+    let track_max = (worst * 1.15).max(1e-9);
+    let pct = |v: f64| (v / track_max * 100.0).clamp(0.0, 100.0);
+    GaugeLayout {
+        allow_pct: pct(allow_mag),
+        range_pct: range_mag.map(|(lo, hi)| (pct(lo), pct(hi))),
+        point_pct: pct(nominal_mag),
+        ok: row.margin.is_finite() && row.margin >= 0.0,
+    }
+}
+
+/// A value/whisker-vs-allowable gauge row: a name, a horizontal track
+/// showing the allowable threshold and the actual value (or its min/max
+/// range) plotted against it, and the resulting margin - the shared
+/// visualization every engineering-calculator tool's "Checks" section
+/// uses (built for the Bushing Workbench, reused as-is for the Pressure
+/// Vessel Analyzer's failure-mode margins).
+#[component]
+pub(crate) fn CheckGauge(row: CheckRowData) -> Element {
+    let layout = gauge_layout(&row);
+    let dot_class = if !row.margin.is_finite() {
+        "check-dot neutral"
+    } else if layout.ok {
+        "check-dot ok"
+    } else {
+        "check-dot fail"
+    };
+    let allow_word = if row.at_least { "min" } else { "limit" };
+    let fmt_val = |v: f64| format!("{:.*}", row.decimals, v);
+    rsx! {
+        div { class: "check-item",
+            span { class: dot_class }
+            span { class: "check-name", "{row.label}" }
+            div { class: "value-track",
+                div { class: "rail" }
+                div { class: "allow-line", style: "left:{layout.allow_pct}%" }
+                span { class: "allow-tag", style: "left:{layout.allow_pct}%", "{allow_word} {fmt_val(row.allowable)}" }
+                if let Some((lo_pct, hi_pct)) = layout.range_pct {
+                    div {
+                        class: if layout.ok { "whisker ok" } else { "whisker fail" },
+                        style: "left:{lo_pct}%; width:{(hi_pct - lo_pct).max(0.0)}%",
+                    }
+                    span { class: "end-label lo", style: "left:{lo_pct}%", "{fmt_val(row.range.unwrap().0)}" }
+                    span { class: "end-label hi", style: "left:{hi_pct}%", "{fmt_val(row.range.unwrap().1)}" }
+                } else {
+                    div {
+                        class: if layout.ok { "whisker-point ok" } else { "whisker-point fail" },
+                        style: "left:{layout.point_pct}%",
+                    }
+                    span { class: "end-label point", style: "left:{layout.point_pct}%", "{fmt_val(row.nominal)} {row.unit}" }
+                }
+            }
+            span { class: margin_class(row.margin), "{fmt_margin(row.margin)}" }
+        }
+    }
+}
+
 /// A labeled, bordered sub-group of related fields - visually
 /// distinguishes a cluster of inputs (a tolerance +/- pair, a set of
 /// acceptance-criteria minimums) from unrelated fields sitting in the
