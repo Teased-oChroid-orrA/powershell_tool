@@ -13,7 +13,7 @@ use bushing_solver::countersink::CsMode;
 use bushing_solver::geometry::{BushingSectionInput, BushingType, IdType};
 
 use crate::bushing_visualizer;
-use bushing_solver::materials::MATERIALS;
+use mechanics_core::materials::MATERIALS;
 use bushing_solver::reamers::{self, ReamerEntry};
 use bushing_solver::solve::{compute, BushingInputs, EndConstraint};
 use bushing_solver::tolerance::{EnforcementPolicy, ToleranceStatus};
@@ -561,8 +561,8 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
     };
     let out = compute(&input);
 
-    let mat_bushing_props = *bushing_solver::materials::get_material(&mat_bushing());
-    let mat_housing_props = *bushing_solver::materials::get_material(&mat_housing());
+    let mat_bushing_props = *mechanics_core::materials::get_material(&mat_bushing());
+    let mat_housing_props = *mechanics_core::materials::get_material(&mat_housing());
     let rows = check_rows(
         &out,
         mat_housing_props.sy_ksi * 1000.0,
@@ -1099,7 +1099,7 @@ fn NumberField(label: &'static str, value: Signal<f64>, step: &'static str) -> E
 #[component]
 fn MaterialField(label: &'static str, value: Signal<String>) -> Element {
     let mut value = value;
-    let selected_label = bushing_solver::materials::get_material(&value()).name.to_string();
+    let selected_label = mechanics_core::materials::get_material(&value()).name.to_string();
     let options: Vec<(&'static str, &'static str)> = MATERIALS.iter().map(|m| (m.id, m.name)).collect();
     rsx! {
         Dropdown {
@@ -1356,8 +1356,8 @@ impl WorstCaseLame {
         let a_housing = out.housing_stress_field.first().map(|s| s.r).unwrap_or(0.0);
         let b_housing = out.housing_stress_field.last().map(|s| s.r).unwrap_or(0.0);
         let p_worst = out.pressure_range.max;
-        let (c1_bushing, c2_bushing) = bushing_solver::lame::lame_constants(a_bushing, b_bushing, 0.0, p_worst);
-        let (c1_housing, c2_housing) = bushing_solver::lame::lame_constants(a_housing, b_housing, p_worst, 0.0);
+        let (c1_bushing, c2_bushing) = mechanics_core::lame::lame_constants(a_bushing, b_bushing, 0.0, p_worst);
+        let (c1_housing, c2_housing) = mechanics_core::lame::lame_constants(a_housing, b_housing, p_worst, 0.0);
         // Housing hoop stress is tensile (>=0), so its worst case is the
         // numerically LARGEST value - `.max`. Bushing hoop stress is
         // compressive (<=0), so its worst case (largest magnitude) is

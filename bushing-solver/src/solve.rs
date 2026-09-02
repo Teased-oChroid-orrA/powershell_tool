@@ -13,7 +13,7 @@ use crate::bearing::{calculate_universal_bearing, BearingSegment};
 use crate::countersink::{cs_angle_tolerance_from_base, cs_depth_tolerance_from_base, cs_dia_tolerance_from_base, enumerate_countersink_corners, solve_countersink, CsCorner, CsMode};
 use crate::geometry::{compute_minimum_bushing_wall, resolve_bushing_section_params, BushingSectionInput};
 pub use crate::geometry::{BushingType, IdType};
-use crate::materials::{get_material, Material};
+use mechanics_core::materials::{get_material, Material};
 use crate::tolerance::{
     build_od_tolerance, clamp, containment_violations, enforce_bore_band_for_target, make_range, resolve_tolerance, BoreCapability, EnforcementPolicy,
     ResolveToleranceInput, ToleranceMode, ToleranceRange, ToleranceStatus,
@@ -207,8 +207,8 @@ pub struct BushingOutput {
     /// wall (`bore_tol.nominal/2` down to `id_bushing/2` for the bushing,
     /// `bore_tol.nominal/2` up to `effective_od_housing/2` for the
     /// housing) - not just the two boundary values above.
-    pub bushing_stress_field: Vec<crate::lame::LameSample>,
-    pub housing_stress_field: Vec<crate::lame::LameSample>,
+    pub bushing_stress_field: Vec<mechanics_core::lame::LameSample>,
+    pub housing_stress_field: Vec<mechanics_core::lame::LameSample>,
 
     pub install_force: f64,
     pub retained_install_force: f64,
@@ -326,12 +326,12 @@ struct DeltaDependent {
 fn delta_dependent_chain(delta: f64, inv: &DeltaInvariants) -> DeltaDependent {
     let pressure = if delta > 0.0 { delta / (inv.term_b + inv.term_h) } else { 0.0 };
     // Full Lamé thick-wall hoop stress at the shared bore interface -
-    // `crate::lame::lame_stress_at_radius` evaluated at r = interface,
+    // `mechanics_core::lame::lame_stress_at_radius` evaluated at r = interface,
     // same general function `compute`'s nominal-delta path and the
     // per-radius stress-field plot both use, never a separately
     // hand-rolled copy of the same closed-form expression.
-    let (_, stress_hoop_housing) = crate::lame::lame_stress_at_radius(inv.bore_nominal / 2.0, inv.bore_nominal / 2.0, inv.effective_od_housing / 2.0, pressure, 0.0);
-    let (_, stress_hoop_bushing) = crate::lame::lame_stress_at_radius(inv.bore_nominal / 2.0, inv.id_bushing / 2.0, inv.bore_nominal / 2.0, 0.0, pressure);
+    let (_, stress_hoop_housing) = mechanics_core::lame::lame_stress_at_radius(inv.bore_nominal / 2.0, inv.bore_nominal / 2.0, inv.effective_od_housing / 2.0, pressure, 0.0);
+    let (_, stress_hoop_bushing) = mechanics_core::lame::lame_stress_at_radius(inv.bore_nominal / 2.0, inv.id_bushing / 2.0, inv.bore_nominal / 2.0, 0.0, pressure);
     let install_force = inv.friction * pressure * std::f64::consts::PI * inv.bore_nominal * inv.housing_len;
     let fbru_eff = inv.fbru_base * 1000.0 + 0.8 * pressure;
     let e_required_seq = if inv.tau > 0.0 { (inv.bore_nominal * fbru_eff) / (2.0 * inv.tau * inv.sin_theta) } else { f64::INFINITY };
@@ -616,8 +616,8 @@ pub fn compute(input: &BushingInputs) -> BushingOutput {
     // housing correction above) is a bushing-specific geometry factor,
     // not part of the general pressure-vessel physics, so it's
     // multiplied in here rather than folded into the general function.
-    let term_b = crate::lame::diametral_interference_compliance(input.id_bushing / 2.0, bore_tol.nominal / 2.0, bore_tol.nominal / 2.0, 0.0, 1.0, eb, mat_bushing.nu);
-    let term_h = psi * crate::lame::diametral_interference_compliance(bore_tol.nominal / 2.0, effective_od_housing / 2.0, bore_tol.nominal / 2.0, 1.0, 0.0, eh, mat_housing.nu);
+    let term_b = mechanics_core::lame::diametral_interference_compliance(input.id_bushing / 2.0, bore_tol.nominal / 2.0, bore_tol.nominal / 2.0, 0.0, 1.0, eb, mat_bushing.nu);
+    let term_h = psi * mechanics_core::lame::diametral_interference_compliance(bore_tol.nominal / 2.0, effective_od_housing / 2.0, bore_tol.nominal / 2.0, 1.0, 0.0, eh, mat_housing.nu);
     let pressure = if delta > 0.0 { delta / (term_b + term_h) } else { 0.0 };
 
     // solveEngine.ts:435-448 - hoop stresses, axial estimate, install force.
@@ -626,8 +626,8 @@ pub fn compute(input: &BushingInputs) -> BushingOutput {
     // convention) `bushing_stress_field`/`housing_stress_field` below use
     // for the full per-radius plot, so the boundary value shown here and
     // the field's own boundary sample can never silently disagree.
-    let (_, stress_hoop_housing) = crate::lame::lame_stress_at_radius(bore_tol.nominal / 2.0, bore_tol.nominal / 2.0, effective_od_housing / 2.0, pressure, 0.0);
-    let (_, stress_hoop_bushing) = crate::lame::lame_stress_at_radius(bore_tol.nominal / 2.0, input.id_bushing / 2.0, bore_tol.nominal / 2.0, 0.0, pressure);
+    let (_, stress_hoop_housing) = mechanics_core::lame::lame_stress_at_radius(bore_tol.nominal / 2.0, bore_tol.nominal / 2.0, effective_od_housing / 2.0, pressure, 0.0);
+    let (_, stress_hoop_bushing) = mechanics_core::lame::lame_stress_at_radius(bore_tol.nominal / 2.0, input.id_bushing / 2.0, bore_tol.nominal / 2.0, 0.0, pressure);
     let axial_constraint_factor = end_constraint_factor(input.end_constraint);
     let axial_length_factor = clamp(input.housing_len / (4.0 * wall_straight).max(1e-6), 0.0, 1.0);
     // solveEngine.ts:443-444 - this is where `end_constraint` actually
@@ -716,8 +716,8 @@ pub fn compute(input: &BushingInputs) -> BushingOutput {
     // hoop/radial/axial stress *distribution* across each region's wall,
     // not just its two boundary values. `41` matches the TS source's own
     // default sample count.
-    let bushing_stress_field = crate::lame::sample_lame_field(input.id_bushing / 2.0, bore_tol.nominal / 2.0, 0.0, pressure, axial_scale, mat_bushing.nu, 41);
-    let housing_stress_field = crate::lame::sample_lame_field(bore_tol.nominal / 2.0, effective_od_housing / 2.0, pressure, 0.0, axial_scale, mat_housing.nu, 41);
+    let bushing_stress_field = mechanics_core::lame::sample_lame_field(input.id_bushing / 2.0, bore_tol.nominal / 2.0, 0.0, pressure, axial_scale, mat_bushing.nu, 41);
+    let housing_stress_field = mechanics_core::lame::sample_lame_field(bore_tol.nominal / 2.0, effective_od_housing / 2.0, pressure, 0.0, axial_scale, mat_housing.nu, 41);
 
     // Result ranges mirroring the input tolerance format (nominal +
     // min/max) - evaluated at the achieved-interference band's real

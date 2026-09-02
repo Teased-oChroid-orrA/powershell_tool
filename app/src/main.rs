@@ -1246,7 +1246,7 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
    `.spec-input` convention the Fit step's tables already use (excluded
    below so this rule can't win the specificity tie and un-narrow them).
    Material dropdowns: sized to the longest real material name
-   (`bushing-solver::materials::MATERIALS`, "Al 7075-T6 (typical)" /
+   (`mechanics-core::materials::MATERIALS`, "Al 7075-T6 (typical)" /
    "Al 2024-T3 (typical)" are the longest at 21 characters) rather than
    the panel width, and rather than resizing per-selection (`width:
    max-content` would do that, and would visibly jump/jitter as the

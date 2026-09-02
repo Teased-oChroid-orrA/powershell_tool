@@ -321,6 +321,7 @@ dependencies = [
  "chrono",
  "dioxus",
  "image",
+ "mechanics-core",
  "native-search",
  "notify",
  "notify-rust",
@@ -932,6 +933,9 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 [[package]]
 name = "bushing-solver"
 version = "0.1.0"
+dependencies = [
+ "mechanics-core",
+]
 
 [[package]]
 name = "bytemuck"
@@ -3993,6 +3997,10 @@ checksum = "51c55d61e72fc3ab704396c5fa16f4c184db37978ae4e94ca8959693a235fc0e"
 dependencies = [
  "log",
 ]
+
+[[package]]
+name = "mechanics-core"
+version = "0.1.0"
 
 [[package]]
 name = "memchr"

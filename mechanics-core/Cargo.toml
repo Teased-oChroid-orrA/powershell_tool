@@ -1,0 +1,26 @@
+[package]
+name = "mechanics-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# General, bushing-agnostic solid-mechanics primitives - extracted from
+# bushing-solver (issue #11's own "trust but verify" pass found lame.rs
+# and materials.rs already general enough to reuse as-is, just nested
+# inside a crate that also carries bushing-specific geometry/countersink/
+# bearing/reamer/tolerance code no other tool needs). See
+# docs/issue-11-status.md and docs/issue-11-phase-1.md in the
+# powershell_tool repo for the evidence and the extraction itself.
+#
+# lame.rs: closed-form thick-wall (Lame) pressure-vessel stress equations
+# - general radius/inner-outer-pressure solution, not specific to any one
+# problem. materials.rs: a real material property library (yield/
+# ultimate/bearing/shear/modulus/Poisson/thermal-expansion), zero UI
+# coupling.
+#
+# Zero dependencies, zero GUI dependency - a leaf crate other crates
+# (bushing-solver, pressure-vessel-solver) depend on, never the reverse.
+[dependencies]
+
+[dev-dependencies]

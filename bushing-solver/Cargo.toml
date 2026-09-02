@@ -26,6 +26,13 @@ publish = false
 #
 # Zero GUI dependency, deliberately - a pure calculation library `app/`
 # consumes, same shape as search-core's own "zero GUI dependency" rule.
+#
+# `lame`/`materials` moved out to `mechanics-core` (issue #11 Phase 1 -
+# see docs/issue-11-phase-1.md) - general, bushing-agnostic solid-
+# mechanics primitives a pressure-vessel tool can now depend on too,
+# without pulling in this crate's own bushing-specific geometry/
+# countersink/bearing/reamer/tolerance code.
 [dependencies]
+mechanics-core = { path = "../mechanics-core" }
 
 [dev-dependencies]
