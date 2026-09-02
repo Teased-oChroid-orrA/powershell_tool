@@ -150,3 +150,89 @@ Per this repo's own convention for large epics (a status doc plus one
 
 Each phase's `docs/issue-11-phase-N.md` records what was built, what was
 verified, and what evidence supports it.
+
+## Final completion report (v1 scope)
+
+```text
+PRESSURE VESSEL STRESS, FAILURE MODE &
+MINIMUM THICKNESS ANALYZER (v1)
+
+STATUS: COMPLETE (v1 scope - see explicit backlog above)
+
+Repository Analysis: PASS - existing Lame module and materials library
+  located, evaluated, and found already general enough to reuse verbatim
+  (better than the epic itself assumed).
+Research: PASS - closed-end axial stress derived from first principles
+  (axial force equilibrium) and verified against a cited textbook
+  reference case (Shigley, ID 4in/OD 6in/5000psi -> 4000psi axial,
+  13000psi hoop, exact match).
+Lame Validation: PASS - mechanics_core::lame unchanged from its own
+  prior verification (real TS engine golden output) plus 3 new tests for
+  closed_end_axial_stress.
+Materials Module: PASS - audited (Phase 3), confirmed sufficient,
+  no new fields added.
+Stress Analysis: PASS - internal, external, and combined pressure;
+  closed and open end conditions; inner and outer surface evaluation.
+Failure-Mode Validation: PASS - yield, Von Mises, Tresca, ultimate;
+  critical location genuinely evaluated per mode (a wrong assumption
+  about which surface governs was caught by running tests, not by
+  inspection - see docs/issue-11-phase-4.md).
+Thickness Solver: PASS - bisection, monotonicity verified before being
+  relied on, a genuine infeasibility case (asymptotic pressure limit)
+  confirmed correct.
+Precision Validation: PARTIAL - engineering-math (issue #10 Phase 1) was
+  built and is available; NOT yet wired into pressure-vessel-solver's own
+  calculations (v1 uses plain f64 + fixed-decimal display, same as
+  bushing-solver/bushing_workbench.rs already do) - a real, explicit gap,
+  not silently skipped. See "Known Issues" below.
+Regression Tests: PASS - full workspace suite green throughout every
+  phase, including both differential.rs/differential_countersink.rs
+  golden fixtures against real TS engine output (unaffected).
+UI Validation: PARTIAL - built and code-reviewed
+  (cargo build/test clean); actual rendering in the real dioxus-native
+  window NOT independently verified - no local GUI capability in this
+  environment (same standing limitation as every Bushing Workbench UI
+  phase this session). Needs a screenshot round-trip with the user.
+
+Controlling Failure Mode Analysis: VALIDATED (governing() picks the true
+  minimum across all four modes at both surfaces, per-mode, re-evaluated
+  at every thickness-solver candidate)
+
+Known Issues / explicit gaps (not silently dropped):
+- engineering-math (units/PrecisionPolicy/calc-trace) is built but not
+  yet consumed by pressure-vessel-solver or its UI - v1 uses the same
+  plain-f64-plus-fixed-decimals approach bushing-solver already uses.
+  Wiring it in is real follow-up work, not done here.
+- No formal calculation-trace UI (issue #11 Phase 11) - the derivation-
+  view pattern proven for the Bushing Workbench was not ported to this
+  tool in v1.
+- UI not visually verified (see UI Validation above).
+- CI not triggered for this epic's commits - per explicit user
+  instruction, deferred until the user says issue #11 is complete.
+- Explicit backlog (see "Verdict" above, unchanged): spherical vessels,
+  buckling/collapse, fatigue, creep, thermal stress, code-compliance
+  framing.
+
+Existing Modules Reused:
+  mechanics_core::lame (Lame thick-wall equations, already general)
+  mechanics_core::materials (material property library, already general)
+  app::components::{NumberField, MaterialField, CheckGauge, CheckRowData,
+    margin_class, fmt_margin, margin_dot_class} (extracted from
+    bushing_workbench.rs for this purpose)
+
+Existing Modules Refactored:
+  bushing-solver (lame.rs/materials.rs extracted out to mechanics-core;
+    every internal call site updated, zero behavior change, proven by
+    the existing test suite staying green)
+  app/src/bushing_workbench.rs (5 components extracted to components.rs,
+    zero behavior change, proven the same way)
+
+Existing Tools Migrated:
+  None required migration - bushing-solver was refactored to depend on
+  the extracted mechanics-core rather than "migrated" in the sense of
+  changing its own behavior.
+
+READY FOR USER REVIEW:
+YES - pending a screenshot round-trip to verify the UI actually renders
+as intended (this environment cannot run the app directly).
+```
