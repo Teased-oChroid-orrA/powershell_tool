@@ -71,15 +71,32 @@ pub struct LameSample {
     pub sigma_axial: f64,
 }
 
-/// Ported from `lameStressAtRadius` (`solveEngine.ts:108-124`).
-pub fn lame_stress_at_radius(r: f64, inner_radius: f64, outer_radius: f64, p_inner: f64, p_outer: f64) -> (f64, f64) {
+/// Solves the two Lamé integration constants `(C_1, C_2)` from the two
+/// boundary conditions `σ_r(a) = -p_inner`, `σ_r(b) = -p_outer` applied to
+/// the trial form `σ_r(r) = C_1 - C_2/r²`, `σ_θ(r) = C_1 + C_2/r²` - the
+/// step between "assume this functional form" and "here is the stress at
+/// any radius" in the derivation this module's doc comment walks through.
+/// Exposed publicly (not just an internal helper of
+/// [`lame_stress_at_radius`]) so a caller that wants to *show* the
+/// derivation step-by-step - not just consume the final stress numbers -
+/// can display the real, live `C_1`/`C_2` values rather than a static
+/// symbolic placeholder.
+pub fn lame_constants(inner_radius: f64, outer_radius: f64, p_inner: f64, p_outer: f64) -> (f64, f64) {
     let a2 = inner_radius.powi(2);
     let b2 = outer_radius.powi(2);
     let denom = (b2 - a2).max(1e-12);
-    let a = (a2 * p_inner - b2 * p_outer) / denom;
-    let b = (a2 * b2 * (p_inner - p_outer)) / denom;
+    let c1 = (a2 * p_inner - b2 * p_outer) / denom;
+    let c2 = (a2 * b2 * (p_inner - p_outer)) / denom;
+    (c1, c2)
+}
+
+/// Ported from `lameStressAtRadius` (`solveEngine.ts:108-124`) - the
+/// trial form `σ_r(r) = C_1 - C_2/r²`, `σ_θ(r) = C_1 + C_2/r²` with the
+/// constants from [`lame_constants`] substituted back in.
+pub fn lame_stress_at_radius(r: f64, inner_radius: f64, outer_radius: f64, p_inner: f64, p_outer: f64) -> (f64, f64) {
+    let (c1, c2) = lame_constants(inner_radius, outer_radius, p_inner, p_outer);
     let rr = r.powi(2).max(1e-12);
-    (a - b / rr, a + b / rr)
+    (c1 - c2 / rr, c1 + c2 / rr)
 }
 
 /// Radial displacement at radius `r` under a plane-stress Lamé stress

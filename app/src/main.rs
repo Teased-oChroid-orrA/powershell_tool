@@ -1555,6 +1555,8 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 .link-button:hover:not(:disabled) { background: none; color: var(--accent-strong); }
 
 .derivation-block { display: flex; flex-direction: column; gap: var(--space-3); padding-top: var(--space-1); }
+.derivation-note { font-size: 0.82em; color: var(--fg-subtle); line-height: 1.5; margin: 0 0 var(--space-2); }
+.derivation-note strong { color: var(--fg-muted); font-weight: 650; }
 .derivation-row {
     display: flex; align-items: center; gap: var(--space-4); padding: var(--space-2) 0;
     border-bottom: 1px solid var(--border);

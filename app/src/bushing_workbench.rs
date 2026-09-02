@@ -67,6 +67,13 @@ static FORMULAS: &[Formula] = &[
     formula!("thermal_delta_interference"),
     formula!("installed_outer_diameter"),
     formula!("contact_pressure"),
+    formula!("radial_equilibrium_ode"),
+    formula!("lame_trial_form"),
+    formula!("lame_boundary_conditions"),
+    formula!("lame_constants_solved"),
+    formula!("lame_radial_stress_field"),
+    formula!("lame_hoop_stress_field"),
+    formula!("lame_axial_stress"),
     formula!("hoop_stress_housing"),
     formula!("hoop_stress_bushing"),
     formula!("install_force"),
@@ -1020,7 +1027,7 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                                         DetailField { label: "External CS (solved)", value: format!("\u{2300}{:.4} \u{00d7} {:.4} deep, {:.1}\u{00b0}", od.dia, od.depth, od.angle_deg) }
                                     }
                                 }
-                                DerivationBlock { out: out.clone(), dark: dark() }
+                                DerivationBlock { out: out.clone(), dark: dark(), nu_housing: mat_housing_props.nu, nu_bushing: mat_bushing_props.nu }
                             }
                         },
                     }
@@ -1296,28 +1303,208 @@ fn tier_label(tier: reamers::AvailabilityTier) -> &'static str {
 }
 
 #[component]
-fn DerivationBlock(out: bushing_solver::solve::BushingOutput, dark: bool) -> Element {
+fn DerivationBlock(out: bushing_solver::solve::BushingOutput, dark: bool, nu_housing: f64, nu_bushing: f64) -> Element {
+    let worst = WorstCaseLame::compute(&out, nu_housing, nu_bushing);
     rsx! {
         div { class: "derivation-block",
+            p { class: "derivation-note",
+                "Steps 3\u{2013}9 below derive the full thick-wall (Lam\u{e9}) cylinder solution from first principles - radial equilibrium through the substituted stress fields - then evaluate it at the "
+                strong { "worst-case interference" }
+                " within the achieved-interference tolerance band (\u{0394} = {worst.delta_worst:.5} in, contact pressure p = {worst.p_worst:.0} psi), the same extreme the Checks gauges' upper whisker already shows, so the numbers here are never a separate, potentially-inconsistent worst case."
+            }
             for f in FORMULAS {
                 div { class: "derivation-row",
                     img { class: "derivation-formula", src: formula_img_src(f, dark) }
-                    span { class: "derivation-value", "{derivation_value(f.id, &out)}" }
+                    span { class: "derivation-value", "{derivation_value(f.id, &out, &worst)}" }
                 }
             }
         }
     }
 }
 
-fn derivation_value(id: &str, out: &bushing_solver::solve::BushingOutput) -> String {
+/// The full Lamé thick-wall derivation evaluated at the worst-case
+/// (maximum) interference within the achieved-interference tolerance
+/// band - the same extreme `out.pressure_range.max`/
+/// `out.stress_hoop_*_range.max` already represent, computed once here so
+/// every derivation step's displayed number is consistent with those
+/// existing fields rather than a separately re-derived worst case.
+/// Region radii come straight from the already-computed
+/// `bushing_stress_field`/`housing_stress_field` endpoints (their first/
+/// last sample's own `.r`) rather than a new input, so this can't drift
+/// from the geometry the rest of the app already displays.
+struct WorstCaseLame {
+    delta_worst: f64,
+    p_worst: f64,
+    a_bushing: f64,
+    b_bushing: f64,
+    a_housing: f64,
+    b_housing: f64,
+    c1_bushing: f64,
+    c2_bushing: f64,
+    c1_housing: f64,
+    c2_housing: f64,
+    sigma_theta_bushing_worst: f64,
+    sigma_theta_housing_worst: f64,
+    sigma_z_bushing_worst: f64,
+    sigma_z_housing_worst: f64,
+}
+
+impl WorstCaseLame {
+    fn compute(out: &bushing_solver::solve::BushingOutput, nu_housing: f64, nu_bushing: f64) -> Self {
+        let a_bushing = out.bushing_stress_field.first().map(|s| s.r).unwrap_or(0.0);
+        let b_bushing = out.bushing_stress_field.last().map(|s| s.r).unwrap_or(0.0);
+        let a_housing = out.housing_stress_field.first().map(|s| s.r).unwrap_or(0.0);
+        let b_housing = out.housing_stress_field.last().map(|s| s.r).unwrap_or(0.0);
+        let p_worst = out.pressure_range.max;
+        let (c1_bushing, c2_bushing) = bushing_solver::lame::lame_constants(a_bushing, b_bushing, 0.0, p_worst);
+        let (c1_housing, c2_housing) = bushing_solver::lame::lame_constants(a_housing, b_housing, p_worst, 0.0);
+        // Housing hoop stress is tensile (>=0), so its worst case is the
+        // numerically LARGEST value - `.max`. Bushing hoop stress is
+        // compressive (<=0), so its worst case (largest magnitude) is
+        // the numerically SMALLEST (most negative) value - `.min`, not
+        // `.max`. Both correspond to the exact same physical extreme
+        // (maximum achieved interference, i.e. `p_worst` above) - only
+        // which RangedValue field holds it differs, because `ranged()`
+        // orders by numeric value, not by which achieved-interference
+        // extreme produced it (see solve.rs's own `ranged()` doc).
+        let sigma_theta_bushing_worst = out.stress_hoop_bushing_range.min;
+        let sigma_theta_housing_worst = out.stress_hoop_housing_range.max;
+        let axial_scale = out.axial_constraint_factor * out.axial_length_factor;
+        // sigma_r at the loaded interface equals -p_worst by the very
+        // boundary condition that solved C1/C2 (step 3) - not
+        // independently computed, so this can never disagree with it.
+        let sigma_z_bushing_worst = axial_scale * nu_bushing * (-p_worst + sigma_theta_bushing_worst);
+        let sigma_z_housing_worst = axial_scale * nu_housing * (-p_worst + sigma_theta_housing_worst);
+        Self {
+            delta_worst: out.achieved_interference_tol.upper + out.delta_thermal,
+            p_worst,
+            a_bushing,
+            b_bushing,
+            a_housing,
+            b_housing,
+            c1_bushing,
+            c2_bushing,
+            c1_housing,
+            c2_housing,
+            sigma_theta_bushing_worst,
+            sigma_theta_housing_worst,
+            sigma_z_bushing_worst,
+            sigma_z_housing_worst,
+        }
+    }
+}
+
+fn derivation_value(id: &str, out: &bushing_solver::solve::BushingOutput, worst: &WorstCaseLame) -> String {
     match id {
         "thermal_delta_interference" => format!("= {:.6} in", out.delta_thermal),
         "installed_outer_diameter" => format!("= {:.4} in", out.od_installed),
         "contact_pressure" => format!("= {:.0} psi", out.pressure),
-        "hoop_stress_housing" => format!("= {:.0} psi", out.stress_hoop_housing),
-        "hoop_stress_bushing" => format!("= {:.0} psi", out.stress_hoop_bushing),
+        "radial_equilibrium_ode" => "governing ODE - no numeric substitution, always true.".to_string(),
+        "lame_trial_form" => "general form assumed for a thick-wall ring under uniform boundary pressure.".to_string(),
+        "lame_boundary_conditions" => format!(
+            "worst case: \u{0394} = {:.5} in \u{2192} p = {:.0} psi. Bushing ring: a={:.4} in, b={:.4} in, p_i=0, p_o=p. Housing ring: a={:.4} in, b={:.4} in, p_i=p, p_o=0.",
+            worst.delta_worst, worst.p_worst, worst.a_bushing, worst.b_bushing, worst.a_housing, worst.b_housing
+        ),
+        "lame_constants_solved" => format!(
+            "worst case: bushing C\u{2081}={:.1} psi, C\u{2082}={:.6} psi\u{00b7}in\u{00b2}. housing C\u{2081}={:.1} psi, C\u{2082}={:.6} psi\u{00b7}in\u{00b2}.",
+            worst.c1_bushing, worst.c2_bushing, worst.c1_housing, worst.c2_housing
+        ),
+        "lame_radial_stress_field" => format!("worst case: \u{03c3}r(interface) = \u{2212}{:.0} psi for both rings (boundary condition satisfied exactly).", worst.p_worst),
+        "lame_hoop_stress_field" => format!(
+            "worst case: \u{03c3}\u{03b8},housing = {:.0} psi, \u{03c3}\u{03b8},bushing = {:.0} psi.",
+            worst.sigma_theta_housing_worst, worst.sigma_theta_bushing_worst
+        ),
+        "lame_axial_stress" => format!(
+            "worst case: \u{03c3}z,housing = {:.0} psi, \u{03c3}z,bushing = {:.0} psi (k_constraint={:.2}, k_length={:.2}).",
+            worst.sigma_z_housing_worst, worst.sigma_z_bushing_worst, out.axial_constraint_factor, out.axial_length_factor
+        ),
+        "hoop_stress_housing" => format!("nominal = {:.0} psi (worst case = {:.0} psi)", out.stress_hoop_housing, worst.sigma_theta_housing_worst),
+        "hoop_stress_bushing" => format!("nominal = {:.0} psi (worst case = {:.0} psi)", out.stress_hoop_bushing, worst.sigma_theta_bushing_worst),
         "install_force" => format!("= {:.0} lbf", out.install_force),
         "margin_of_safety" => format!("governing: {} = {}", out.governing.name, fmt_margin(out.governing.margin)),
         _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod worst_case_lame_tests {
+    use super::WorstCaseLame;
+    use bushing_solver::solve::{compute, BushingInputs, EndConstraint};
+
+    fn fixture(end_constraint: EndConstraint) -> bushing_solver::solve::BushingOutput {
+        compute(&BushingInputs {
+            bore_dia: 0.5,
+            id_bushing: 0.375,
+            interference: 0.0015,
+            interference_tol_plus: 0.0008,
+            interference_tol_minus: 0.0008,
+            bore_tol_plus: 0.0002,
+            bore_tol_minus: 0.0002,
+            housing_len: 0.5,
+            housing_width: 1.5,
+            edge_dist: 0.75,
+            mat_housing: "al7075".to_string(),
+            mat_bushing: "bronze".to_string(),
+            friction: Some(0.15),
+            d_t: 0.0,
+            end_constraint,
+            min_wall_straight: 0.05,
+            ..Default::default()
+        })
+    }
+
+    /// The worst-case hoop stress this struct reports must be the exact
+    /// same number the Checks gauges' own worst-magnitude whisker end
+    /// already shows - a passthrough, but the one that matters most: if
+    /// this ever drifted, the derivation view would show a "worst case"
+    /// that disagreed with the rest of the app. Housing stress is
+    /// tensile (>=0), so its worst case is the range's numeric `.max`;
+    /// bushing stress is compressive (<=0), so its worst case (largest
+    /// magnitude) is the range's numeric `.min` - `ranged()` orders by
+    /// value, not by which interference extreme produced it, so these
+    /// are genuinely different fields, not a typo.
+    #[test]
+    fn worst_case_hoop_stress_matches_the_existing_range_fields() {
+        let out = fixture(EndConstraint::Free);
+        let worst = WorstCaseLame::compute(&out, 0.33, 0.34);
+        assert_eq!(worst.sigma_theta_housing_worst, out.stress_hoop_housing_range.max);
+        assert_eq!(worst.sigma_theta_bushing_worst, out.stress_hoop_bushing_range.min);
+        assert_eq!(worst.p_worst, out.pressure_range.max);
+    }
+
+    /// C1/C2 must satisfy the same Lamé trial form the derivation PNG
+    /// shows (`sigma_theta(r) = C1 + C2/r^2`) at each region's own
+    /// interface radius - proves the displayed constants aren't just
+    /// plausible-looking numbers but actually solve the equation the
+    /// adjacent formula image states.
+    #[test]
+    fn solved_constants_satisfy_the_lame_trial_form_at_the_interface() {
+        let out = fixture(EndConstraint::Free);
+        let worst = WorstCaseLame::compute(&out, 0.33, 0.34);
+        let sigma_theta_bushing_from_constants = worst.c1_bushing + worst.c2_bushing / worst.b_bushing.powi(2);
+        let sigma_theta_housing_from_constants = worst.c1_housing + worst.c2_housing / worst.a_housing.powi(2);
+        assert!((sigma_theta_bushing_from_constants - worst.sigma_theta_bushing_worst).abs() < 1e-6);
+        assert!((sigma_theta_housing_from_constants - worst.sigma_theta_housing_worst).abs() < 1e-6);
+    }
+
+    #[test]
+    fn zero_axial_scale_for_free_end_constraint_zeroes_worst_case_axial_stress() {
+        let out = fixture(EndConstraint::Free);
+        let worst = WorstCaseLame::compute(&out, 0.33, 0.34);
+        assert_eq!(worst.sigma_z_housing_worst, 0.0);
+        assert_eq!(worst.sigma_z_bushing_worst, 0.0);
+    }
+
+    /// With a real axial constraint, worst-case axial stress must be
+    /// nonzero and carry the sign Poisson coupling implies: housing hoop
+    /// stress is tensile (positive) so its axial companion is tensile
+    /// too; bushing hoop stress is compressive (negative) so its axial
+    /// companion is compressive too.
+    #[test]
+    fn both_ends_constrained_produces_nonzero_worst_case_axial_stress_with_the_expected_sign() {
+        let out = fixture(EndConstraint::BothEnds);
+        let worst = WorstCaseLame::compute(&out, 0.33, 0.34);
+        assert!(worst.sigma_z_housing_worst > 0.0, "expected tensile housing axial stress, got {}", worst.sigma_z_housing_worst);
+        assert!(worst.sigma_z_bushing_worst < 0.0, "expected compressive bushing axial stress, got {}", worst.sigma_z_bushing_worst);
     }
 }
