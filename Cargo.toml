@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["native-search", "search-core", "app", "cli", "bushing-solver"]
+members = ["native-search", "search-core", "app", "cli", "bushing-solver", "engineering-math"]
 
 # Moved here from native-search/Cargo.toml: Cargo ignores [profile.*]
 # sections in non-root workspace members. panic="unwind" (not "abort") is

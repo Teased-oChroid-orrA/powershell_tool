@@ -1,0 +1,25 @@
+[package]
+name = "engineering-math"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Shared units/precision/calculation-trace foundation - issue #10's own
+# Phase 1 ("engineering-math... prerequisite for all others"), built as a
+# standalone unit per direct user decision after issue #11 (a separate
+# pressure-vessel epic) surfaced the same gap independently. See
+# docs/issue-10-status.md in the powershell_tool repo for the trust-but-
+# verify pass this crate came out of, and docs/issue-10-phase-1.md for
+# what's actually implemented here vs. deferred.
+#
+# Zero engineering-domain dependencies (no bushing/pressure-vessel/GD&T
+# types) - deliberately a leaf crate other crates (mechanics-core,
+# pressure-vessel-solver, and any future toolbox) depend on, never the
+# reverse. Zero GUI dependency, same "pure calculation library" shape as
+# every other crate in this workspace.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
