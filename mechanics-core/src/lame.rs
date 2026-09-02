@@ -136,6 +136,42 @@ pub fn diametral_interference_compliance(inner_radius: f64, outer_radius: f64, i
     2.0 * radial_displacement(interface_radius, sigma_r, sigma_theta, e, nu).abs()
 }
 
+/// Longitudinal (axial) stress in a **closed-end** thick-wall cylinder
+/// under pressure - a genuinely different physical mechanism from
+/// [`radial_displacement`]'s Poisson-coupling estimate (that one models a
+/// mechanically end-*constrained* part, e.g. a press-fit bushing pinned
+/// by its housing; this one models pressure pushing on real end caps).
+///
+/// Derivation (classical, e.g. Timoshenko & Goodier, *Theory of
+/// Elasticity*; Shigley, *Mechanical Engineering Design*, thick-wall
+/// cylinder chapter): axial force equilibrium on the end cap. Internal
+/// pressure pushes outward on the bore's cross-sectional area (`p_inner *
+/// pi * a^2`); external pressure pushes inward on the full outer area
+/// (`p_outer * pi * b^2`). The wall's own annular cross-section (area `pi
+/// * (b^2 - a^2)`) reacts the net force uniformly:
+///
+/// ```text
+/// sigma_z * pi * (b^2 - a^2) = p_inner * pi * a^2 - p_outer * pi * b^2
+/// sigma_z = (p_inner * a^2 - p_outer * b^2) / (b^2 - a^2)
+/// ```
+///
+/// That expression is exactly [`lame_constants`]'s `C_1` - not a
+/// coincidence restated as a formula, but the same quantity: `C_1` is
+/// already the r-independent term shared by `sigma_r(r)` and
+/// `sigma_theta(r)`, and the equilibrium algebra above reduces to it
+/// directly. Verified against a standard reference case in this module's
+/// tests (ID 4 in, OD 6 in, 5000 psi internal pressure, no external
+/// pressure -> 4000 psi axial stress, the textbook value for this exact
+/// problem).
+///
+/// An **open-end** cylinder (free ends, or axial load reacted by an
+/// external structure rather than the wall itself) has zero pressure-
+/// induced axial stress - callers handle that case by simply not calling
+/// this function, no separate "open end" function needed.
+pub fn closed_end_axial_stress(inner_radius: f64, outer_radius: f64, p_inner: f64, p_outer: f64) -> f64 {
+    lame_constants(inner_radius, outer_radius, p_inner, p_outer).0
+}
+
 /// Ported from `buildLameRegionField` (`solveEngine.ts:126-158`) - just
 /// the sample array itself; the max-abs-hoop/axial tracking that
 /// function also does has no caller yet in this port, so it's left out
@@ -203,6 +239,40 @@ mod tests {
         let (r, sigma) = lame_stress_at_radius(eff_od_housing / 2.0, bore / 2.0, eff_od_housing / 2.0, pressure, 0.0);
         close(r, 0.0, "housing@outer sigma_r");
         close(sigma, 1681.6171103066717, "housing@outer sigma_theta");
+    }
+
+    /// Standard reference case (Shigley, *Mechanical Engineering Design*,
+    /// thick-wall cylinder chapter): a closed-end cylinder, ID 4 in
+    /// (a = 2 in), OD 6 in (b = 3 in), 5000 psi internal pressure, no
+    /// external pressure -> 4000 psi axial stress. Independently
+    /// computed by hand here (`p_inner * a^2 / (b^2 - a^2)`, the simpler
+    /// internal-pressure-only special case of the general formula) as
+    /// the textbook cross-check, not derived from the function under
+    /// test.
+    #[test]
+    fn closed_end_axial_stress_matches_the_textbook_reference_case() {
+        let a = 2.0;
+        let b = 3.0;
+        let p_inner = 5000.0;
+        let expected = p_inner * a * a / (b * b - a * a);
+        close(expected, 4000.0, "textbook expected value itself");
+        let actual = closed_end_axial_stress(a, b, p_inner, 0.0);
+        close(actual, expected, "closed_end_axial_stress vs. textbook formula");
+    }
+
+    #[test]
+    fn closed_end_axial_stress_equals_the_first_lame_constant() {
+        let (c1, _) = lame_constants(1.5, 2.75, 3200.0, 400.0);
+        let sigma_z = closed_end_axial_stress(1.5, 2.75, 3200.0, 400.0);
+        assert_eq!(sigma_z, c1, "closed-end axial stress must be exactly C_1, not an approximation of it");
+    }
+
+    #[test]
+    fn closed_end_axial_stress_with_external_pressure_only_is_compressive() {
+        // No internal pressure, only external (crushing) pressure -> the
+        // wall must be in axial compression (negative), not tension.
+        let sigma_z = closed_end_axial_stress(1.0, 2.0, 0.0, 500.0);
+        assert!(sigma_z < 0.0, "expected compressive axial stress under external-only pressure, got {sigma_z}");
     }
 
     /// Proves `diametral_interference_compliance` reproduces the

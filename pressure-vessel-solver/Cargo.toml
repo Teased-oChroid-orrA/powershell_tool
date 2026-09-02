@@ -1,0 +1,27 @@
+[package]
+name = "pressure-vessel-solver"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Pressure Vessel Stress, Failure Mode & Minimum Thickness Analyzer -
+# issue #11 (v1 scope: cylindrical vessels only - see
+# docs/issue-11-status.md for the full gap analysis and the explicit
+# backlog: spherical vessels, buckling/collapse, fatigue, creep, thermal
+# stress, code-compliance framing).
+#
+# Depends on mechanics-core for the actual Lame thick-wall stress
+# equations and material property library (issue #11 Phase 1 extracted
+# both out of bushing-solver specifically so this crate could reuse them
+# without pulling in bushing-specific geometry/countersink/bearing/
+# reamer/tolerance code), and on engineering-math for units/precision/
+# calculation-trace (issue #10 Phase 1).
+#
+# Zero GUI dependency, same "pure calculation library" shape as every
+# other crate in this workspace.
+[dependencies]
+mechanics-core = { path = "../mechanics-core" }
+engineering-math = { path = "../engineering-math" }
+
+[dev-dependencies]
