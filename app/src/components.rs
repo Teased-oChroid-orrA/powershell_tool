@@ -232,6 +232,72 @@ pub(crate) fn CheckGauge(row: CheckRowData) -> Element {
     }
 }
 
+/// A numeric field with its own display-text signal, decoupled from the
+/// numeric `value` signal it reads/writes - NOT the naive
+/// `value: "{value}"` pattern used elsewhere in this app (see `CLAUDE.md`'s
+/// "numeric `<input>` snap-back" note), because that pattern has a second
+/// failure mode beyond the one already documented there: even a
+/// *successful* parse can still clobber what the user is mid-typing.
+/// Engineering dimensions are routinely < 1 (e.g. `0.375`), so typing one
+/// means typing "0" then "." before any nonzero digit - "0".parse() and
+/// "0.".parse() both succeed as `Ok(0.0)`, and Rust's `f64` `Display`
+/// formats `0.0` back as `"0"`, not `"0."` - reformatting the controlled
+/// value from the parsed float on every keystroke silently deletes the
+/// decimal point the instant it's typed, making any value below 1
+/// unenterable. Keeping a separate `text` signal that only ever gets
+/// overwritten by what the user actually typed (never by reformatting a
+/// successful parse) fixes this for every fractional value, not just this
+/// one case. `text` is still resynced from `value` when it changes from
+/// *outside* this field (e.g. a picker setting the value directly) - the
+/// guard compares the current text's own parse against the new value so a
+/// self-triggered update (this field's own `oninput`) never clobbers
+/// itself, only a genuinely external change does.
+#[component]
+pub(crate) fn NumberField(label: &'static str, value: Signal<f64>, step: &'static str) -> Element {
+    let mut value = value;
+    let mut text = use_signal(|| format!("{}", value()));
+    use_effect(move || {
+        let v = value();
+        if text.peek().parse::<f64>().ok() != Some(v) {
+            text.set(format!("{v}"));
+        }
+    });
+    rsx! {
+        label { class: "field",
+            span { class: "field-label", "{label}" }
+            input {
+                r#type: "number",
+                step: "{step}",
+                value: "{text}",
+                oninput: move |e| {
+                    let s = e.value();
+                    if let Ok(v) = s.parse::<f64>() { value.set(v); }
+                    text.set(s);
+                },
+            }
+        }
+    }
+}
+
+/// A material-picker field: wraps [`Dropdown`] with
+/// `mechanics_core::materials::MATERIALS` as its option list - shared by
+/// every tool that picks a material (Bushing Workbench, Pressure Vessel
+/// Analyzer).
+#[component]
+pub(crate) fn MaterialField(label: &'static str, value: Signal<String>) -> Element {
+    let mut value = value;
+    let selected_label = mechanics_core::materials::get_material(&value()).name.to_string();
+    let options: Vec<(&'static str, &'static str)> = mechanics_core::materials::MATERIALS.iter().map(|m| (m.id, m.name)).collect();
+    rsx! {
+        Dropdown {
+            field_label: label.to_string(),
+            selected_label,
+            options,
+            on_select: move |v: String| value.set(v),
+        }
+    }
+}
+
 /// A labeled, bordered sub-group of related fields - visually
 /// distinguishes a cluster of inputs (a tolerance +/- pair, a set of
 /// acceptance-criteria minimums) from unrelated fields sitting in the

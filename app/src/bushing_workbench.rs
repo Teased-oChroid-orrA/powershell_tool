@@ -13,12 +13,11 @@ use bushing_solver::countersink::CsMode;
 use bushing_solver::geometry::{BushingSectionInput, BushingType, IdType};
 
 use crate::bushing_visualizer;
-use mechanics_core::materials::MATERIALS;
 use bushing_solver::reamers::{self, ReamerEntry};
 use bushing_solver::solve::{compute, BushingInputs, EndConstraint};
 use bushing_solver::tolerance::{EnforcementPolicy, ToleranceStatus};
 
-use crate::components::{fmt_margin, margin_class, margin_dot_class, CheckGauge, CheckRowData, Dropdown, FieldGroup};
+use crate::components::{fmt_margin, margin_class, margin_dot_class, CheckGauge, CheckRowData, FieldGroup, MaterialField, NumberField};
 
 /// Hand-drawn inline SVG, same convention `main.rs`'s nav-rail
 /// `icon_*` functions already use - not a Unicode glyph. A prior version
@@ -912,75 +911,6 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
                     on_jump: move |_| current_step.set(Step::Results),
                 }
             }
-        }
-    }
-}
-
-/// A numeric field with its own display-text signal, decoupled from the
-/// numeric `value` signal it reads/writes - NOT the naive
-/// `value: "{value}"` pattern used elsewhere in this app (see CLAUDE.md's
-/// "numeric `<input>` snap-back" note), because that pattern has a second
-/// failure mode beyond the one already documented there: even a
-/// *successful* parse can still clobber what the user is mid-typing.
-/// Bushing dimensions are routinely < 1 (e.g. `0.375`), so typing one
-/// means typing "0" then "." before any nonzero digit - "0".parse() and
-/// "0.".parse() both succeed as `Ok(0.0)`, and Rust's `f64` `Display`
-/// formats `0.0` back as `"0"`, not `"0."` - reformatting the controlled
-/// value from the parsed float on every keystroke silently deletes the
-/// decimal point the instant it's typed, making any value below 1
-/// unenterable. Keeping a separate `text` signal that only ever gets
-/// overwritten by what the user actually typed (never by reformatting a
-/// successful parse) fixes this for every fractional value, not just this
-/// one case. `text` is still resynced from `value` when it changes from
-/// *outside* this field (e.g. the reamer picker setting `bore_dia`) - the
-/// guard compares the current text's own parse against the new value so a
-/// self-triggered update (this field's own `oninput`) never clobbers
-/// itself, only a genuinely external change does.
-#[component]
-fn NumberField(label: &'static str, value: Signal<f64>, step: &'static str) -> Element {
-    let mut value = value;
-    let mut text = use_signal(|| format!("{}", value()));
-    use_effect(move || {
-        let v = value();
-        if text.peek().parse::<f64>().ok() != Some(v) {
-            text.set(format!("{v}"));
-        }
-    });
-    rsx! {
-        label { class: "field",
-            span { class: "field-label", "{label}" }
-            input {
-                r#type: "number",
-                step: "{step}",
-                value: "{text}",
-                oninput: move |e| {
-                    let s = e.value();
-                    if let Ok(v) = s.parse::<f64>() { value.set(v); }
-                    text.set(s);
-                },
-            }
-        }
-    }
-}
-
-/// `select`/`option` renders on `blitz-dom` as every option's text
-/// flattened together with no popup at all (see `components.rs`'s own
-/// `Dropdown` doc comment and `docs/epic-ui-performance-and-design.md`'s
-/// "Verified platform constraints" table) - the exact bug a user reported
-/// here ("hardcoded text of all materials" instead of a real picker).
-/// Reuses the same `Dropdown` component every other picker in this app
-/// already uses, rather than reinventing it.
-#[component]
-fn MaterialField(label: &'static str, value: Signal<String>) -> Element {
-    let mut value = value;
-    let selected_label = mechanics_core::materials::get_material(&value()).name.to_string();
-    let options: Vec<(&'static str, &'static str)> = MATERIALS.iter().map(|m| (m.id, m.name)).collect();
-    rsx! {
-        Dropdown {
-            field_label: label.to_string(),
-            selected_label,
-            options,
-            on_select: move |v: String| value.set(v),
         }
     }
 }
