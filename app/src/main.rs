@@ -18,6 +18,7 @@ mod fs_watch;
 mod net_provider;
 mod persistence;
 mod preview;
+mod pressure_vessel_workbench;
 mod state;
 
 use dioxus::html::{Code, Modifiers};
@@ -136,6 +137,7 @@ enum ResizeTarget {
 enum ToolId {
     Search,
     Bushing,
+    PressureVessel,
     Dupes,
     Rename,
     Logs,
@@ -188,6 +190,15 @@ fn icon_bushing() -> Element {
         svg { view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_linecap: "round", stroke_linejoin: "round",
             circle { cx: "12", cy: "12", r: "9" }
             circle { cx: "12", cy: "12", r: "4" }
+        }
+    }
+}
+
+fn icon_pressure_vessel() -> Element {
+    rsx! {
+        svg { view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_linecap: "round", stroke_linejoin: "round",
+            rect { x: "6", y: "4", width: "12", height: "16", rx: "6" }
+            line { x1: "6", y1: "10", x2: "18", y2: "10" }
         }
     }
 }
@@ -446,6 +457,15 @@ fn App() -> Element {
                             }
                         }
                         button {
+                            class: if active_tool() == ToolId::PressureVessel { "nav-item active" } else { "nav-item" },
+                            onclick: move |_| active_tool.set(ToolId::PressureVessel),
+                            span { class: "nav-icon", {icon_pressure_vessel()} }
+                            span { class: "nav-item-body",
+                                span { class: "nav-item-title", "Pressure Vessel Analyzer" }
+                                span { class: "nav-item-desc", "Lam\u{e9} stress, failure modes & min thickness" }
+                            }
+                        }
+                        button {
                             class: if active_tool() == ToolId::Dupes { "nav-item active" } else { "nav-item" },
                             onclick: move |_| active_tool.set(ToolId::Dupes),
                             span { class: "nav-icon", {icon_dupes()} }
@@ -493,6 +513,7 @@ fn App() -> Element {
                                 match active_tool() {
                                     ToolId::Search => "Search Files",
                                     ToolId::Bushing => "Bushing Workbench",
+                                    ToolId::PressureVessel => "Pressure Vessel Analyzer",
                                     ToolId::Dupes => "Duplicate Finder",
                                     ToolId::Rename => "Batch Rename",
                                     ToolId::Logs => "Log Analyzer",
@@ -502,6 +523,7 @@ fn App() -> Element {
                                 match active_tool() {
                                     ToolId::Search => "Recursively search a folder for keyword filters",
                                     ToolId::Bushing => "Straight-bushing interference-fit stress & margins",
+                                    ToolId::PressureVessel => "Full Lam\u{e9} stress, failure-mode margins & minimum wall thickness",
                                     ToolId::Dupes => "Find and clean up redundant files",
                                     ToolId::Rename => "Pattern-based bulk renaming",
                                     ToolId::Logs => "Parse and chart log files",
@@ -542,6 +564,8 @@ fn App() -> Element {
                             }
                         } else if active_tool() == ToolId::Bushing {
                             bushing_workbench::BushingWorkbench { dark }
+                        } else if active_tool() == ToolId::PressureVessel {
+                            pressure_vessel_workbench::PressureVesselWorkbench { dark }
                         } else if active_tool() == ToolId::Dupes {
                             PlaceholderTool {
                                 title: "Duplicate Finder",

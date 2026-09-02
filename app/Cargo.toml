@@ -12,6 +12,7 @@ search-core = { path = "../search-core", features = ["ocr"] }
 native-search = { path = "../native-search" }
 bushing-solver = { path = "../bushing-solver" }
 mechanics-core = { path = "../mechanics-core" }
+pressure-vessel-solver = { path = "../pressure-vessel-solver" }
 # "native" (not "desktop"): dioxus-native's Blitz renderer (WGPU+winit),
 # no WebView involved - avoids wry/WebView2's hard machine-wide-runtime
 # dependency (wry hardcodes browserExecutableFolder to null, so there is

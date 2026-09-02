@@ -326,6 +326,7 @@ dependencies = [
  "notify",
  "notify-rust",
  "open",
+ "pressure-vessel-solver",
  "rfd 0.15.4",
  "search-core",
  "serde",
