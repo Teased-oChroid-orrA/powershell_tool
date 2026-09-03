@@ -489,10 +489,14 @@ pub fn BushingWorkbench(dark: Signal<bool>) -> Element {
     let detail_label = if neck_governs { "Detail \u{2014} neck wall (governing)" } else { "Detail \u{2014} straight wall" };
 
     rsx! {
-        // Single flowing column, matching the approved mockup exactly - no
-        // fixed-width sidebar, no independent inner scroll regions, no
-        // accordion/collapse chrome. `.stage`'s own page-level scroll
-        // (main.rs) is the only scrollbar for the whole tool.
+        // No accordion/collapse chrome - matches the approved mockup.
+        // `.bushing-workspace` (inside `.bushing-workspace-split` below)
+        // is the one scrolling pane, not `.stage`: `DesignStatusRail`
+        // needs to stay visibly fixed while the workspace column scrolls,
+        // which requires `.bushing-page` to have a bounded height rather
+        // than growing to content height - see the `.bushing-page`/
+        // `.bushing-workspace` CSS comments in `main.rs` for why (and why
+        // `position:sticky` couldn't be used instead).
         div { class: "panel bushing-page",
 
             if visualizer_lightbox_open() {

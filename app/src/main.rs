@@ -802,29 +802,40 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
 /* Auto-hiding: taken out of `.shell`'s flex flow entirely (position:
    absolute against `.shell`'s own position:relative) so `.main` always
    gets the full shell width - hiding the rail actually reclaims that
-   width instead of just visually covering it. At rest, only a ~12px
-   sliver (232px - 220px translateX) sits at the left edge as the hover
-   target; `:hover` (proven working elsewhere in this file - `.nav-item`,
-   `.add-tool-btn`, `.theme-toggle` all already rely on it) slides the
-   full rail into view over the content. Built on :hover + transform +
-   position:absolute specifically because those are already proven on
-   this renderer - mouseenter/mouseleave are NOT (verified against
-   blitz-traits 0.2.0's `DomEventData` enum directly: only
-   MouseMove/MouseDown/MouseUp/Click/Key*/Input/Ime exist, no
-   Enter/Leave/Over/Out variant), so a JS-event-driven show/hide was
-   deliberately avoided in favor of pure CSS. */
+   width instead of just visually covering it.
+   First attempt at this animated `transform: translateX()` instead of
+   `width`, and it was broken: `blitz-dom-0.2.4`'s `Node::hit()`
+   (src/node/node.rs:716) computes hit bounds purely from
+   `final_layout.location`/`final_layout.size` - transform never enters
+   that math. The hoverable box stayed permanently at its untransformed
+   232px-wide position regardless of the transform, so the rail could
+   never actually stay closed. Animating real `width` instead means the
+   hit-test box - driven by actual layout - shrinks and grows along with
+   what's visually shown, so hover correctly only triggers over the
+   collapsed sliver. `:hover` itself is proven working elsewhere in this
+   file (`.nav-item`/`.add-tool-btn`/`.theme-toggle`); mouseenter/
+   mouseleave are NOT (verified against blitz-traits 0.2.0's
+   `DomEventData` enum directly: only MouseMove/MouseDown/MouseUp/Click/
+   Key*/Input/Ime exist, no Enter/Leave/Over/Out variant), so a
+   JS-event-driven show/hide was deliberately avoided in favor of pure
+   CSS. This is the first animated *layout-affecting* property in this
+   file (existing transitions are all paint-only: background-color/
+   color/border-color) - unlike `:hover`/`position:absolute`, this isn't
+   yet proven on this renderer, only reasoned from `stylo.rs`'s
+   generic (not compositor-only) transition handling. Verify with a
+   real screenshot. */
 .rail {
-    position: absolute; inset: 0 auto 0 0; z-index: 20; width: 232px;
+    position: absolute; inset: 0 auto 0 0; z-index: 20;
     display: flex; flex-direction: column;
     background: var(--glass-bg);
     border-right: 1px solid var(--glass-border);
     padding: var(--space-4) var(--space-3);
-    overflow-y: auto;
+    overflow-x: hidden; overflow-y: auto;
     box-shadow: var(--shadow-md);
-    transform: translateX(-220px);
-    transition: transform 0.18s var(--ease);
+    width: 12px;
+    transition: width 0.18s var(--ease);
 }
-.rail:hover { transform: translateX(0); }
+.rail:hover { width: 232px; }
 .brand {
     display: flex; align-items: center; gap: var(--space-2);
     padding: var(--space-2) var(--space-2) var(--space-5);
@@ -1263,14 +1274,28 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 .preview-context mark { background: color-mix(in srgb, var(--accent) 55%, transparent); color: var(--fg); border-radius: 2px; padding: 0 1px; }
 
 /* ---- Bushing Workbench (bushing_workbench.rs) ----
-   Single flowing column, matching the approved mockup shape exactly - no
-   fixed-width sidebar, no independent inner scroll regions. `.stage`
-   (`overflow:auto`) already provides one page-level scrollbar for every
-   other tool in this app; this used to opt out of that with its own
-   `height:100%; overflow:hidden` two-pane shell, which was both a mockup
-   mismatch and a worse scrolling experience (two scrollbars instead of
-   one). `.bushing-page` intentionally sets no height/overflow at all. */
-.bushing-page { display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-4) 0; }
+   `.bushing-page` used to intentionally set no height/overflow at all,
+   relying on `.stage` (`overflow:auto`) as this page's single page-level
+   scrollbar - matching the approved mockup shape and avoiding an earlier
+   two-scrollbar mistake (this page's own `height:100%;overflow:hidden`
+   two-pane shell fighting `.stage`'s own scrollbar).
+   Real screenshot feedback later asked for `.bushing-status-rail` to
+   stay visibly fixed while the workspace column scrolls - not achievable
+   with a single shared page scrollbar. `position:sticky` was tried and
+   confirmed dead on this renderer (`blitz-dom-0.2.4`'s `Position::Sticky`
+   is bucketed with `Static`/`Relative` for paint/z-order only - no
+   offset-on-scroll logic exists anywhere in the crate), so this now
+   gives `.bushing-page` a bounded height (`flex:1;min-height:0`) so
+   `.bushing-workspace` alone can be the one scrolling pane below,
+   reusing the same shape the Search tool's own
+   `.main-grid{overflow:hidden}` + `.settings-column/.results-column
+   {overflow-y:auto}` already proves works on this renderer. Only
+   `.bushing-workspace` gets its own scrollbar in the normal case (the
+   status rail's content fits without overflowing), so this isn't a
+   return to the old two-*visible*-scrollbar problem - both panes
+   independently overflowing at once - just a narrower, correctly-scoped
+   version of the pattern this comment used to reject outright. */
+.bushing-page { display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-4) 0; flex: 1; min-height: 0; overflow: hidden; }
 .bushing-card {
     background: var(--glass); border: 1px solid var(--glass-border); border-radius: var(--radius-md);
     padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3);
@@ -1326,20 +1351,16 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 }
 .bushing-step-current .bushing-step-num { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
 
-.bushing-workspace-split { display: flex; align-items: flex-start; gap: var(--space-4); }
-.bushing-workspace { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--space-4); }
+.bushing-workspace-split { display: flex; align-items: stretch; gap: var(--space-4); flex: 1; min-height: 0; }
+.bushing-workspace { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: var(--space-4); overflow-y: auto; }
 
-/* No `overflow:hidden` here on purpose - this file has a documented case
-   (the lightbox fix above) of nested overflow not reliably clipping/
-   scrolling on this renderer, and this rail has no content that needs
-   clipping anyway (`.bushing-status-head`/`.bushing-checklist` children
-   are already sized to fit). Screenshot feedback reported this rail not
-   scrolling together with `.bushing-workspace`; removing the unnecessary
-   overflow property is the low-risk fix in the direction that precedent
-   points, rather than adding more untested CSS (e.g. `position:sticky`,
-   which has zero prior verification on this renderer, unlike :hover/
-   transform/position:absolute above, which are already proven). */
-.bushing-status-rail { flex: none; width: 240px; border: 1px solid var(--glass-border); border-radius: var(--radius-md); background: var(--glass); }
+/* `align-items:stretch` on `.bushing-workspace-split` (above) now gives
+   this the full split height, so in the normal case its own content
+   fits without overflowing and it simply never scrolls - staying
+   visually fixed while `.bushing-workspace` scrolls independently
+   beside it. `max-height:100%;overflow-y:auto` is a safety net for an
+   unusually long checklist, not the primary mechanism. */
+.bushing-status-rail { flex: none; width: 240px; max-height: 100%; overflow-y: auto; border: 1px solid var(--glass-border); border-radius: var(--radius-md); background: var(--glass); }
 .bushing-status-head { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3); border-bottom: 1px solid var(--glass-border); }
 .bushing-status-dot { flex: none; width: 11px; height: 11px; border-radius: 50%; }
 .bushing-status-pass .bushing-status-dot { background: var(--good); box-shadow: 0 0 0 3px var(--good-bg); }
@@ -1555,6 +1576,12 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 .check-note { font-size: 0.78em; color: var(--fg-subtle); padding: var(--space-2) 2px 0; margin: 0; }
 
 .checks-list { display: flex; flex-direction: column; gap: var(--space-1); margin-top: var(--space-2); }
+/* Marks the check row clicked from `PvStatusRail` (pressure_vessel_workbench.rs
+   only - bushing's own DesignStatusRail doesn't use this wrapper class).
+   No JS engine on this renderer (dioxus-native/Blitz, not a WebView) means
+   no `scrollIntoView` - this transient highlight is the reachable
+   equivalent of "jump to". */
+.check-row-highlight .check-item { background: color-mix(in srgb, var(--accent) 12%, transparent); border-radius: var(--radius-sm); }
 /* 14px/2px, not the tighter var(--space-3)/var(--space-1) (12px/4px) this
    had drifted to - matches the approved mockup's own literal values,
    restoring the vertical buffer between one row's `.allow-tag` (top:-16px)

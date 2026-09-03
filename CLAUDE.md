@@ -372,6 +372,36 @@ looks cleaner - that regresses the exact problem this app was built to fix.
   `summary`, the same "replicate the missing native behavior by hand"
   fix shape as `Dropdown`. If you add a new collapsible section, use
   `Expander`, not a bare `details`/`summary`.
+- **`position: sticky` is parsed but never actually implemented on this
+  renderer - it behaves exactly like `position: static`.** Confirmed by
+  reading `blitz-dom` directly (`~/.cargo/registry/src/index.crates.io-.../
+  blitz-dom-0.2.4/src/layout/damage.rs:368` and `src/node/node.rs:190`):
+  both bucket `Position::Sticky` in with `Static`/`Relative` for paint/
+  z-ordering purposes only - there is no offset-on-scroll logic anywhere
+  in the crate. Found chasing a real screenshot report that a status
+  rail wasn't staying visible while its page scrolled; don't reach for
+  `position: sticky` to pin an element during scroll on this renderer -
+  it will silently do nothing. If you need something to stay fixed while
+  a sibling scrolls, give the scrolling sibling its own bounded height +
+  `overflow-y: auto` (see `.bushing-workspace` in `main.rs`, or the
+  pre-existing `.settings-column`/`.results-column` pattern) rather than
+  trying to pin the other element in place.
+- **CSS `transform` is invisible to hit-testing (hover/click) on this
+  renderer - only `final_layout.location`/`final_layout.size` are
+  consulted, never the transform matrix.** Confirmed by reading
+  `blitz-dom-0.2.4/src/node/node.rs:716`'s `Node::hit()` directly. An
+  element hidden via `transform: translateX(...)` (or any other
+  transform) keeps its full untransformed hit-test box exactly where it
+  would sit if the transform weren't applied - clicks/hover landing in
+  that invisible region still fire as if the element were sitting there
+  visibly. Found building an auto-hiding sidebar: `.rail:hover {
+  transform: translateX(0) }` never actually stayed collapsed, because
+  the always-present, always-full-size hit box kept re-triggering
+  `:hover` the moment the cursor crossed where the rail *would* be if
+  open. If you need a show/hide interaction driven by `:hover` (which
+  does work - see `.nav-item`/`.add-tool-btn`/`.theme-toggle`/`.rail`),
+  animate a real layout property (`width`, `height`, `max-height`), not
+  `transform`.
 - (Historical, C#-era, preserved for context) An XML comment containing
   `--` broke a `.csproj` file outright; a `zip -x "*.git*"` packaging
   command once silently excluded the entire `.github/` folder via

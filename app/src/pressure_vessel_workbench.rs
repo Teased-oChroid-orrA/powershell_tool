@@ -99,8 +99,15 @@ fn PvStepperNav(current: Signal<PvStep>) -> Element {
 /// open - same role as the Bushing Workbench's own `DesignStatusRail`,
 /// simplified: this tool has no tolerance-band concept, so it's just a
 /// plain `(name, margin)` checklist with a PASS/REVIEW header.
+///
+/// `on_jump` carries the clicked check's name (not just `()`) so the
+/// Results step can highlight that specific row - it can't scroll to it:
+/// this renderer has no JS engine at all (`dioxus-native`/Blitz, not a
+/// WebView), so a `scrollIntoView`-style call isn't available here the
+/// way it would be on `dioxus-desktop`. Highlighting is the closest
+/// renderer-safe equivalent to "jump to".
 #[component]
-fn PvStatusRail(checks: Vec<(&'static str, f64)>, on_jump: EventHandler<()>) -> Element {
+fn PvStatusRail(checks: Vec<(&'static str, f64)>, on_jump: EventHandler<&'static str>) -> Element {
     let total = checks.len();
     let passed = checks.iter().filter(|(_, margin)| margin.is_finite() && *margin >= 0.0).count();
     let all_pass = passed == total;
@@ -117,7 +124,7 @@ fn PvStatusRail(checks: Vec<(&'static str, f64)>, on_jump: EventHandler<()>) -> 
                 for (name , margin) in checks {
                     div {
                         class: if margin.is_finite() && margin < 0.0 { "bushing-check-row bushing-check-attn" } else { "bushing-check-row" },
-                        onclick: move |_| on_jump.call(()),
+                        onclick: move |_| on_jump.call(name),
                         span { class: if !margin.is_finite() { "bushing-check-dot neutral" } else if margin < 0.0 { "bushing-check-dot crit" } else if margin < 0.15 { "bushing-check-dot warn" } else { "bushing-check-dot ok" } }
                         span { class: "bushing-check-name", "{name}" }
                         span { class: "bushing-check-val mono", "{fmt_margin(margin)}" }
@@ -181,6 +188,7 @@ pub fn PressureVesselWorkbench(dark: Signal<bool>) -> Element {
     let required_ms = use_signal(|| 0.0_f64);
     let unsupported_length = use_signal(|| 0.0_f64);
     let show_more_detail = use_signal(|| false);
+    let highlighted_check = use_signal(|| None::<&'static str>);
 
     let outer_radius = (outer_diameter() / 2.0).max(0.0);
     let inner_radius = outer_radius - wall_thickness();
@@ -321,7 +329,10 @@ pub fn PressureVesselWorkbench(dark: Signal<bool>) -> Element {
                                             h3 { class: "bushing-card-title", "Checks" }
                                             div { class: "checks-list",
                                                 for r in rows.iter() {
-                                                    CheckGauge { row: margin_result_to_row(r) }
+                                                    div {
+                                                        class: if highlighted_check() == Some(r.name) { "check-row-highlight" } else { "" },
+                                                        CheckGauge { row: margin_result_to_row(r) }
+                                                    }
                                                 }
                                             }
                                             match buckling_result {
@@ -382,7 +393,11 @@ pub fn PressureVesselWorkbench(dark: Signal<bool>) -> Element {
                             }
                             PvStatusRail { checks, on_jump: {
                                 let mut current_step = current_step;
-                                move |_| current_step.set(PvStep::Results)
+                                let mut highlighted_check = highlighted_check;
+                                move |name| {
+                                    current_step.set(PvStep::Results);
+                                    highlighted_check.set(Some(name));
+                                }
                             } }
                         }
                     }
