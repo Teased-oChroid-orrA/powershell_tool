@@ -21,7 +21,9 @@ mod components;
 mod persistence;
 mod pressure_vessel;
 mod search;
+mod sketches;
 mod theme;
+mod widgets;
 
 use std::sync::Arc;
 
@@ -65,6 +67,16 @@ impl ToolId {
     }
     fn enabled(self) -> bool {
         matches!(self, ToolId::Search | ToolId::Bushing | ToolId::PressureVessel)
+    }
+    fn icon(self) -> &'static str {
+        match self {
+            ToolId::Search => "\u{1F50D}",
+            ToolId::Bushing => "\u{25C9}",
+            ToolId::PressureVessel => "\u{2B14}",
+            ToolId::Dupes => "\u{1F4D1}",
+            ToolId::Rename => "\u{270E}",
+            ToolId::Logs => "\u{1F4CA}",
+        }
     }
 }
 
@@ -291,17 +303,13 @@ impl ToolbenchApp {
         ui.add_space(12.0);
         ui.separator();
         ui.add_space(6.0);
-        ui.small("TOOLS");
+        ui.colored_label(tokens.fg_subtle, egui::RichText::new("TOOLS").size(10.5));
         for tool in NAV_ITEMS {
-            let selected = self.active_tool == tool;
-            ui.add_enabled_ui(tool.enabled(), |ui| {
-                let label = if tool.enabled() { tool.title().to_string() } else { format!("{}  \u{2022} soon", tool.title()) };
-                if ui.selectable_label(selected, label).clicked() && tool.enabled() {
-                    self.active_tool = tool;
-                }
-            });
+            if crate::widgets::nav_item(ui, tokens, tool.icon(), tool.title(), tool.desc(), self.active_tool == tool, tool.enabled()) {
+                self.active_tool = tool;
+            }
         }
-        ui.add_space(ui.available_height() - 70.0);
+        ui.add_space((ui.available_height() - 70.0).max(0.0));
         ui.separator();
         if ui.button(if self.rail_pinned { "\u{1F4CC} Unpin rail" } else { "\u{1F4CC} Pin rail open" }).clicked() {
             self.rail_pinned = !self.rail_pinned;

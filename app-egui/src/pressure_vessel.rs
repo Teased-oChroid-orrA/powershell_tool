@@ -1,4 +1,7 @@
-//! Pressure Vessel Analyzer - egui port of `app/src/pressure_vessel_workbench.rs`.
+//! Pressure Vessel Analyzer - egui port of `app/src/pressure_vessel_workbench.rs`,
+//! rebuilt to mirror the approved mockup artifact exactly: pill stepper,
+//! form + labeled cross-section sketch per step, frozen headline row,
+//! Stat Tiles checks, Ladder/Center-spine status rail.
 //!
 //! `pressure-vessel-solver`/`mechanics-core` are pure, framework-agnostic
 //! math - reused completely unchanged. Everything here recomputes every
@@ -6,12 +9,8 @@
 //! bounded-bisection solves, not iterative simulation), so there is no
 //! separate "run" step and no async bridge needed here, unlike Search.
 //!
-//! Not yet ported this pass (tracked, not dropped): the labeled
-//! engineering cross-section sketches (the mockup's hand-authored SVG
-//! drafting views - real geometry, real hatch/section conventions, would
-//! need a resvg rasterization path to render in egui and is a substantial
-//! follow-up on its own), the 8-step KaTeX derivation view, the buckling
-//! step's own explanatory copy trimmed to the essentials.
+//! Not yet ported (tracked, not dropped): the 8-step KaTeX derivation
+//! view.
 
 use eframe::egui;
 use mechanics_core::materials::{get_material, MATERIALS};
@@ -22,7 +21,9 @@ use pressure_vessel_solver::pressure::{EndCondition, PressureLoading};
 use pressure_vessel_solver::thickness::{solve_minimum_thickness, ThicknessSolverInputs, ThicknessSolverOutcome};
 
 use crate::components::{checks_tiles, status_rail, CheckRow};
+use crate::sketches::{pv_head_on, pv_side_view};
 use crate::theme::Tokens;
+use crate::widgets::{card, headline, stepper};
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 enum Step {
@@ -33,18 +34,8 @@ enum Step {
     Buckling,
     Results,
 }
-const STEPS: [Step; 5] = [Step::Geometry, Step::Pressure, Step::Material, Step::Buckling, Step::Results];
-impl Step {
-    fn label(self) -> &'static str {
-        match self {
-            Step::Geometry => "Geometry",
-            Step::Pressure => "Pressure",
-            Step::Material => "Material",
-            Step::Buckling => "Buckling",
-            Step::Results => "Results",
-        }
-    }
-}
+const STEPS: [(Step, &str); 5] =
+    [(Step::Geometry, "Geometry"), (Step::Pressure, "Pressure"), (Step::Material, "Material"), (Step::Buckling, "Buckling"), (Step::Results, "Results")];
 
 pub struct PressureVesselTool {
     step: Step,
@@ -74,15 +65,44 @@ impl Default for PressureVesselTool {
     }
 }
 
+/// Form (280px, matches the mockup's `.form-card` width) beside a
+/// labeled sketch pair (head-on + side view) flexing to fill the rest -
+/// the mockup's `.step-wrap` shape, exactly.
+fn form_and_sketch(
+    ui: &mut egui::Ui,
+    tokens: &Tokens,
+    title: &str,
+    emph: &str,
+    head_on: impl Fn(&mut egui::Ui, &Tokens, &str),
+    side: impl Fn(&mut egui::Ui, &Tokens, &str),
+    form: impl FnOnce(&mut egui::Ui),
+) {
+    ui.horizontal_top(|ui| {
+        ui.vertical(|ui| {
+            ui.set_width(280.0);
+            card(ui, tokens, |ui| {
+                ui.heading(title);
+                ui.add_space(4.0);
+                form(ui);
+            });
+        });
+        ui.add_space(16.0);
+        ui.vertical(|ui| {
+            ui.set_min_width(ui.available_width());
+            egui::Frame::default().fill(tokens.bg_sunken).stroke(egui::Stroke::new(1.0, tokens.border)).rounding(8.0).inner_margin(14.0).show(ui, |ui| {
+                ui.colored_label(tokens.fg_subtle, egui::RichText::new("HEAD-ON CROSS-SECTION").size(9.5).strong());
+                head_on(ui, tokens, emph);
+                ui.add_space(6.0);
+                ui.colored_label(tokens.fg_subtle, egui::RichText::new("SIDE (LONGITUDINAL) VIEW").size(9.5).strong());
+                side(ui, tokens, emph);
+            });
+        });
+    });
+}
+
 impl PressureVesselTool {
     pub fn ui(&mut self, ui: &mut egui::Ui, tokens: &Tokens) {
-        ui.horizontal(|ui| {
-            for s in STEPS {
-                if ui.selectable_label(self.step == s, s.label()).clicked() {
-                    self.step = s;
-                }
-            }
-        });
+        stepper(ui, tokens, &STEPS, &mut self.step);
         ui.add_space(10.0);
 
         let outer_radius = (self.outer_diameter / 2.0).max(0.0);
@@ -110,37 +130,43 @@ impl PressureVesselTool {
 
         match self.step {
             Step::Geometry => {
-                ui.heading("01 \u{b7} Geometry");
-                num_field(ui, "Outer diameter (in)", &mut self.outer_diameter);
-                num_field(ui, "Wall thickness (in)", &mut self.wall_thickness);
-                ui.colored_label(tokens.fg_subtle, format!("Derived inner diameter: {:.4} in", 2.0 * inner_radius));
+                let inner_d = 2.0 * inner_radius;
+                form_and_sketch(ui, tokens, "01 \u{b7} Geometry", "od", pv_head_on, pv_side_view, |ui| {
+                    num_field(ui, "Outer diameter (in)", &mut self.outer_diameter);
+                    num_field(ui, "Wall thickness (in)", &mut self.wall_thickness);
+                    ui.colored_label(tokens.fg_subtle, format!("Derived inner diameter: {inner_d:.4} in"));
+                });
             }
             Step::Pressure => {
-                ui.heading("02 \u{b7} Pressure & boundary condition");
-                num_field(ui, "Internal pressure (psi)", &mut self.internal_pressure);
-                num_field(ui, "External pressure (psi)", &mut self.external_pressure);
-                ui.horizontal(|ui| {
-                    if ui.selectable_label(self.closed_ends, "Closed ends").clicked() {
-                        self.closed_ends = true;
-                    }
-                    if ui.selectable_label(!self.closed_ends, "Open ends").clicked() {
-                        self.closed_ends = false;
-                    }
+                form_and_sketch(ui, tokens, "02 \u{b7} Pressure & boundary condition", "pressure", pv_head_on, pv_side_view, |ui| {
+                    num_field(ui, "Internal pressure (psi)", &mut self.internal_pressure);
+                    num_field(ui, "External pressure (psi)", &mut self.external_pressure);
+                    ui.horizontal(|ui| {
+                        if ui.selectable_label(self.closed_ends, "Closed ends").clicked() {
+                            self.closed_ends = true;
+                        }
+                        if ui.selectable_label(!self.closed_ends, "Open ends").clicked() {
+                            self.closed_ends = false;
+                        }
+                    });
                 });
             }
             Step::Material => {
-                ui.heading("03 \u{b7} Material & requirement");
-                egui::ComboBox::from_label("Material").selected_text(material.name).show_ui(ui, |ui| {
-                    for m in MATERIALS {
-                        ui.selectable_value(&mut self.material_id, m.id.to_string(), m.name);
-                    }
+                let name = material.name;
+                form_and_sketch(ui, tokens, "03 \u{b7} Material & requirement", "material", pv_head_on, pv_side_view, |ui| {
+                    egui::ComboBox::from_label("Material").selected_text(name).show_ui(ui, |ui| {
+                        for m in MATERIALS {
+                            ui.selectable_value(&mut self.material_id, m.id.to_string(), m.name);
+                        }
+                    });
+                    num_field(ui, "Required minimum MS", &mut self.required_ms);
                 });
-                num_field(ui, "Required minimum MS", &mut self.required_ms);
             }
             Step::Buckling => {
-                ui.heading("04 \u{b7} Support spacing (buckling)");
-                num_field(ui, "Unsupported length (in)", &mut self.unsupported_length);
-                ui.colored_label(tokens.fg_subtle, "Only affects the Buckling check, and only when external pressure is present.");
+                form_and_sketch(ui, tokens, "04 \u{b7} Support spacing (buckling)", "buckling", pv_head_on, pv_side_view, |ui| {
+                    num_field(ui, "Unsupported length (in)", &mut self.unsupported_length);
+                    ui.colored_label(tokens.fg_subtle, "Only affects the Buckling check, and only when external pressure is present.");
+                });
             }
             Step::Results => self.results(ui, tokens, &geometry, &pressure, &material),
         }
@@ -169,27 +195,27 @@ impl PressureVesselTool {
 
         let check_rows: Vec<CheckRow> =
             rows.iter().map(|r| CheckRow { name: r.name, applied: r.applied, allowable: r.allowable, margin: r.margin, unit: "psi" }).collect();
-        let all_pass = check_rows.iter().all(|r| r.margin.is_finite() && r.margin >= 0.0);
+        let passed = check_rows.iter().filter(|r| r.margin.is_finite() && r.margin >= 0.0).count();
+        let all_pass = passed == check_rows.len();
 
-        egui::Frame::default().fill(tokens.bg_raised).stroke(egui::Stroke::new(1.0, tokens.border)).rounding(8.0).inner_margin(12.0).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.colored_label(if all_pass { tokens.good } else { tokens.warning }, if all_pass { "PASS" } else { "REVIEW" });
-                ui.separator();
-                ui.label("Governing:");
-                ui.colored_label(tokens.fg, format!("{} ({:+.2})", governing_result.name, governing_result.margin));
-                ui.separator();
-                ui.label("Classification:");
-                ui.label(if classification == GeometryClassification::ThinWall { "Thin-wall" } else { "Thick-wall" });
-                ui.separator();
-                ui.label(format!("Wall thickness: {:.4} in", geometry.wall_thickness()));
-            });
-        });
+        headline(
+            ui,
+            tokens,
+            all_pass,
+            passed,
+            check_rows.len(),
+            &[
+                ("GOVERNING", format!("{} ({:+.2})", governing_result.name, governing_result.margin), None),
+                ("CLASSIFICATION", if classification == GeometryClassification::ThinWall { "Thin-wall".to_string() } else { "Thick-wall".to_string() }, None),
+                ("WALL THICKNESS", format!("{:.4} in", geometry.wall_thickness()), None),
+            ],
+        );
         ui.add_space(10.0);
 
         ui.horizontal_top(|ui| {
             ui.vertical(|ui| {
                 ui.set_min_width(ui.available_width() - 250.0);
-                egui::Frame::default().fill(tokens.bg_raised).stroke(egui::Stroke::new(1.0, tokens.border)).rounding(8.0).inner_margin(12.0).show(ui, |ui| {
+                card(ui, tokens, |ui| {
                     ui.heading("Vessel specification summary");
                     egui::Grid::new("pv_spec_grid").num_columns(2).spacing([20.0, 6.0]).show(ui, |ui| {
                         ui.colored_label(tokens.fg_muted, "Outer diameter");
@@ -215,7 +241,7 @@ impl PressureVesselTool {
                     }
                 });
                 ui.add_space(10.0);
-                egui::Frame::default().fill(tokens.bg_raised).stroke(egui::Stroke::new(1.0, tokens.border)).rounding(8.0).inner_margin(12.0).show(ui, |ui| {
+                card(ui, tokens, |ui| {
                     ui.heading("Checks");
                     checks_tiles(ui, tokens, &check_rows);
                     match buckling_result {
