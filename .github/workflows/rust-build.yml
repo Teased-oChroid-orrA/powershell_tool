@@ -146,3 +146,47 @@ jobs:
           name: search-cli-win-x64
           path: target/x86_64-pc-windows-msvc/release/search-cli.exe
           if-no-files-found: error
+
+  # app-egui is the in-progress egui/eframe migration (see
+  # docs/issue-11-phase-14.md for why) - a separate job, not folded into
+  # app-build-windows above, since it's a real win-x64 build of a
+  # different binary and this repo's own convention (search-core vs. app)
+  # is one job per distinct build target rather than widening an existing
+  # one. `app/` stays the shipping build until this reaches full parity;
+  # this job exists so a Windows compile regression in the new crate is
+  # caught here, the same guarantee `app-build-windows` already gives the
+  # Blitz build.
+  app-egui-build-windows:
+    runs-on: windows-latest
+    needs: search-core-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain (stable, MSVC)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Cargo registry/target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: cargo-app-egui-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build app-egui (release, win-x64)
+        run: cargo build --release -p app-egui --target x86_64-pc-windows-msvc
+
+      - name: List published exe (for manual review in build logs)
+        shell: pwsh
+        run: |
+          Get-Item "target/x86_64-pc-windows-msvc/release/app-egui.exe" | Format-List Name, Length, LastWriteTime
+
+      - name: Upload built app-egui exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: TextInFilesSearch-egui-app-win-x64
+          path: target/x86_64-pc-windows-msvc/release/app-egui.exe
+          if-no-files-found: error
