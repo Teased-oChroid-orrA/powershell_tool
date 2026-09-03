@@ -15,12 +15,17 @@
 //! so sibling content reflows automatically as it opens/closes - both
 //! properties Blitz could never deliver after three attempts.
 
+mod bushing;
+mod components;
+mod pressure_vessel;
 mod search;
 mod theme;
 
 use std::sync::Arc;
 
+use bushing::BushingTool;
 use eframe::egui;
+use pressure_vessel::PressureVesselTool;
 use search::SearchTool;
 use theme::Tokens;
 
@@ -74,6 +79,8 @@ struct ToolbenchApp {
     rail_pinned: bool,
     active_tool: ToolId,
     search: SearchTool,
+    pv: PressureVesselTool,
+    bushing: BushingTool,
 }
 
 impl Default for ToolbenchApp {
@@ -88,7 +95,14 @@ impl Default for ToolbenchApp {
         // built in, so this is the one piece of "framework glue" every
         // future async-backed tool will share.
         let runtime = Arc::new(tokio::runtime::Runtime::new().expect("failed to start tokio runtime"));
-        Self { dark: true, rail_pinned: false, active_tool: ToolId::Search, search: SearchTool::new(runtime) }
+        Self {
+            dark: true,
+            rail_pinned: false,
+            active_tool: ToolId::Search,
+            search: SearchTool::new(runtime),
+            pv: PressureVesselTool::default(),
+            bushing: BushingTool::default(),
+        }
     }
 }
 
@@ -131,12 +145,8 @@ impl eframe::App for ToolbenchApp {
             .frame(egui::Frame::default().fill(tokens.bg).inner_margin(egui::Margin::symmetric(28.0, 18.0)))
             .show(ctx, |ui| match self.active_tool {
                 ToolId::Search => self.search.ui(ui, tokens),
-                ToolId::Bushing => {
-                    ui.label("Bushing Workbench - port pending (Stage 4).");
-                }
-                ToolId::PressureVessel => {
-                    ui.label("Pressure Vessel Analyzer - port pending (Stage 5).");
-                }
+                ToolId::Bushing => self.bushing.ui(ui, tokens),
+                ToolId::PressureVessel => self.pv.ui(ui, tokens),
                 _ => {
                     ui.label("Coming soon.");
                 }
