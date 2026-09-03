@@ -10,15 +10,16 @@
 //!
 //! Scope of this pass (real, working): the straight-bushing case only -
 //! bore/ID/interference, housing length/width/edge distance, both
-//! materials, end constraint, delta-T, minimum straight wall, and the
-//! real Checks/governing margin from `compute()`'s own output. NOT yet
-//! ported (tracked, not dropped): flanged/countersink OD geometry,
-//! internal countersink ID geometry, friction/edge-load/install-thermal-
-//! assist fields, the cross-section visualizer + lightbox, the full
-//! worst-case-across-tolerance derivation view.
+//! materials, end constraint, delta-T, minimum straight wall, friction,
+//! edge load (angle + magnitude), optional thermally-assisted install,
+//! and the real Checks/governing margin from `compute()`'s own output.
+//! NOT yet ported (tracked, not dropped): flanged/countersink OD
+//! geometry, internal countersink ID geometry, the cross-section
+//! visualizer + lightbox, the full worst-case-across-tolerance
+//! derivation view.
 
 use eframe::egui;
-use bushing_solver::solve::{compute, BushingInputs};
+use bushing_solver::solve::{compute, BushingInputs, EndConstraint};
 use mechanics_core::materials::MATERIALS;
 
 use crate::components::{checks_tiles, status_rail, CheckRow};
@@ -30,15 +31,17 @@ enum Step {
     Geometry,
     Fit,
     Material,
+    Loads,
     Results,
 }
-const STEPS: [Step; 4] = [Step::Geometry, Step::Fit, Step::Material, Step::Results];
+const STEPS: [Step; 5] = [Step::Geometry, Step::Fit, Step::Material, Step::Loads, Step::Results];
 impl Step {
     fn label(self) -> &'static str {
         match self {
             Step::Geometry => "Geometry",
             Step::Fit => "Fit",
             Step::Material => "Material",
+            Step::Loads => "Loads",
             Step::Results => "Results",
         }
     }
@@ -56,6 +59,13 @@ pub struct BushingTool {
     pub mat_bushing: String,
     pub d_t: f64,
     pub min_wall_straight: f64,
+    pub friction: f64,
+    pub end_constraint: EndConstraint,
+    pub edge_load_angle_deg: f64,
+    pub load: f64,
+    pub assembly_thermal_assist: bool,
+    pub assembly_housing_temperature: f64,
+    pub assembly_bushing_temperature: f64,
 }
 
 impl Default for BushingTool {
@@ -72,6 +82,13 @@ impl Default for BushingTool {
             mat_bushing: "steel".to_string(),
             d_t: 0.0,
             min_wall_straight: 0.1875,
+            friction: 0.15,
+            end_constraint: EndConstraint::Free,
+            edge_load_angle_deg: 40.0,
+            load: 1000.0,
+            assembly_thermal_assist: false,
+            assembly_housing_temperature: 70.0,
+            assembly_bushing_temperature: 70.0,
         }
     }
 }
@@ -107,6 +124,29 @@ impl BushingTool {
                 material_combo(ui, "Housing material", &mut self.mat_housing);
                 material_combo(ui, "Bushing material", &mut self.mat_bushing);
             }
+            Step::Loads => {
+                ui.heading("04 \u{b7} Loads & install");
+                num_field(ui, "Friction coefficient", &mut self.friction);
+                ui.horizontal(|ui| {
+                    ui.label("End constraint");
+                    if ui.selectable_label(self.end_constraint == EndConstraint::Free, "Free").clicked() {
+                        self.end_constraint = EndConstraint::Free;
+                    }
+                    if ui.selectable_label(self.end_constraint == EndConstraint::OneEnd, "One end").clicked() {
+                        self.end_constraint = EndConstraint::OneEnd;
+                    }
+                    if ui.selectable_label(self.end_constraint == EndConstraint::BothEnds, "Both ends").clicked() {
+                        self.end_constraint = EndConstraint::BothEnds;
+                    }
+                });
+                num_field(ui, "Edge load angle (deg)", &mut self.edge_load_angle_deg);
+                num_field(ui, "Applied edge load (lbf)", &mut self.load);
+                ui.checkbox(&mut self.assembly_thermal_assist, "Thermally assisted install (shrink/expand fit)");
+                if self.assembly_thermal_assist {
+                    num_field(ui, "Housing temp at install (\u{b0}F)", &mut self.assembly_housing_temperature);
+                    num_field(ui, "Bushing temp at install (\u{b0}F)", &mut self.assembly_bushing_temperature);
+                }
+            }
             Step::Results => self.results(ui, tokens),
         }
     }
@@ -123,6 +163,12 @@ impl BushingTool {
             mat_bushing: self.mat_bushing.clone(),
             d_t: self.d_t,
             min_wall_straight: self.min_wall_straight,
+            friction: Some(self.friction),
+            end_constraint: self.end_constraint,
+            edge_load_angle_deg: Some(self.edge_load_angle_deg),
+            load: Some(self.load),
+            assembly_housing_temperature: self.assembly_thermal_assist.then_some(self.assembly_housing_temperature),
+            assembly_bushing_temperature: self.assembly_thermal_assist.then_some(self.assembly_bushing_temperature),
             min_wall_neck: self.min_wall_straight,
             ..BushingInputs::default()
         }

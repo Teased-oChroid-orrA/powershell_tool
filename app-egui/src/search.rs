@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex};
 use eframe::egui;
 use search_core::models::{FileSearchResult, FileSearchStatus, SearchProgressReport, SearchRunResult, SearchSettings};
 use search_core::orchestrator::{self, OrchestratorError};
+use search_core::report;
 use tokio_util::sync::CancellationToken;
 
 use crate::theme::Tokens;
@@ -39,6 +40,7 @@ pub struct SearchUiState {
     pub status_text: String,
     pub results: Vec<FileSearchResult>,
     pub summary_text: String,
+    pub report_path: Option<String>,
 }
 
 pub struct SearchTool {
@@ -104,6 +106,7 @@ impl SearchTool {
             *s = SearchUiState { is_running: true, status_text: "Starting...".to_string(), ..Default::default() };
         }
         let shared = self.shared.clone();
+        let report_settings = settings.clone();
         self.runtime.spawn(async move {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SearchProgressReport>();
             let run_cancellation = cancellation.clone();
@@ -114,14 +117,17 @@ impl SearchTool {
             }
 
             let outcome = join_handle.await;
-            let mut s = shared.lock().unwrap();
             match outcome {
-                Ok(Ok(result)) => finish(&mut s, result),
-                Ok(Err(OrchestratorError::Cancelled)) => s.status_text = "Cancelled.".to_string(),
-                Ok(Err(e)) => s.status_text = format!("Error: {e}"),
-                Err(join_err) => s.status_text = format!("Error: {join_err}"),
+                Ok(Ok(result)) => {
+                    let mut s = shared.lock().unwrap();
+                    finish(&mut s, &report_settings, result);
+                    let _ = notify_rust::Notification::new().summary("Search complete").body(&s.summary_text).show();
+                }
+                Ok(Err(OrchestratorError::Cancelled)) => shared.lock().unwrap().status_text = "Cancelled.".to_string(),
+                Ok(Err(e)) => shared.lock().unwrap().status_text = format!("Error: {e}"),
+                Err(join_err) => shared.lock().unwrap().status_text = format!("Error: {join_err}"),
             }
-            s.is_running = false;
+            shared.lock().unwrap().is_running = false;
         });
     }
 
@@ -189,6 +195,11 @@ impl SearchTool {
         if !s.summary_text.is_empty() {
             ui.colored_label(tokens.fg_muted, &s.summary_text);
         }
+        if let Some(path) = s.report_path.clone() {
+            if ui.button("\u{1F4C4} Open HTML report").clicked() {
+                let _ = open::that(&path);
+            }
+        }
 
         ui.add_space(10.0);
         ui.separator();
@@ -220,11 +231,21 @@ fn apply_progress(s: &mut SearchUiState, report: SearchProgressReport) {
     }
 }
 
-fn finish(s: &mut SearchUiState, result: SearchRunResult) {
+fn finish(s: &mut SearchUiState, settings: &SearchSettings, result: SearchRunResult) {
     if result.was_dry_run {
         s.status_text = "Dry run complete.".to_string();
         return;
     }
+
+    // Reuses search-core::report unchanged - it already only takes plain
+    // SearchSettings/SearchRunResult, never a Dioxus type.
+    let report_name = format!("SearchResults_{}.html", chrono::Local::now().format("%Y%m%d_%H%M%S"));
+    let report_path = std::path::Path::new(&settings.output_folder).join(&report_name);
+    match report::write_html_report(&report_path.display().to_string(), settings, &result) {
+        Ok(_) => s.report_path = Some(report_path.display().to_string()),
+        Err(e) => s.status_text = format!("Report write failed: {e}"),
+    }
+
     let hits: Vec<FileSearchResult> = result.file_results.into_iter().filter(|r| r.status == FileSearchStatus::Hit).collect();
     let total_hits: i32 = hits.iter().map(|r| r.hits.len() as i32).sum();
     s.summary_text = format!(
