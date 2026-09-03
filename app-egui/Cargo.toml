@@ -1,0 +1,43 @@
+[package]
+name = "app-egui"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+# egui/eframe replace dioxus-native (Blitz) - see docs/issue-11-phase-14.md
+# for why: position:sticky never implemented, transform invisible to
+# hit-testing, and a proven-pattern :hover width toggle still failed after
+# three attempts on that renderer. eframe wraps winit itself (same as
+# dioxus-native did) - no WebView involved either way, so the original
+# "no machine-wide runtime dependency" constraint (CLAUDE.md's "Why
+# dioxus-native, not dioxus-desktop") still holds.
+eframe = { version = "0.29", default-features = false, features = ["glow", "persistence"] }
+egui = "0.29"
+egui_extras = { version = "0.29", features = ["image"] }
+
+search-core = { path = "../search-core", features = ["ocr"] }
+native-search = { path = "../native-search" }
+bushing-solver = { path = "../bushing-solver" }
+mechanics-core = { path = "../mechanics-core" }
+pressure-vessel-solver = { path = "../pressure-vessel-solver" }
+
+rfd = "0.15"
+open = "5"
+tokio = { version = "1", features = ["fs", "rt-multi-thread", "sync"] }
+tokio-util = "0.7"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+arboard = "3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+notify = "6"
+image = { version = "0.25", default-features = false, features = ["png"] }
+notify-rust = "4"
+
+# SVG -> raster path for bushing_visualizer.rs's existing SVG-string output
+# (reused verbatim - it never touched Dioxus). egui has no native SVG
+# widget, so cross-section drawings rasterize through resvg/usvg into an
+# egui::ColorImage instead of an `<img src="data:...">`.
+resvg = "0.44"
+usvg = "0.44"
+tiny-skia = "0.11"
