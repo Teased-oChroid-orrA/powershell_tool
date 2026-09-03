@@ -81,7 +81,7 @@ fn form_and_sketch(
         ui.vertical(|ui| {
             ui.set_width(280.0);
             card(ui, tokens, |ui| {
-                ui.heading(title);
+                crate::widgets::card_title(ui, title);
                 ui.add_space(4.0);
                 form(ui);
             });
@@ -216,7 +216,7 @@ impl PressureVesselTool {
             ui.vertical(|ui| {
                 ui.set_min_width(ui.available_width() - 250.0);
                 card(ui, tokens, |ui| {
-                    ui.heading("Vessel specification summary");
+                    crate::widgets::card_title(ui, "Vessel specification summary");
                     egui::Grid::new("pv_spec_grid").num_columns(2).spacing([20.0, 6.0]).show(ui, |ui| {
                         ui.colored_label(tokens.fg_muted, "Outer diameter");
                         ui.label(format!("\u{2300}{:.4} in", 2.0 * geometry.outer_radius));
@@ -242,7 +242,7 @@ impl PressureVesselTool {
                 });
                 ui.add_space(10.0);
                 card(ui, tokens, |ui| {
-                    ui.heading("Checks");
+                    crate::widgets::card_title(ui, "Checks");
                     checks_tiles(ui, tokens, &check_rows);
                     match buckling_result {
                         BucklingApplicability::NotApplicable => {

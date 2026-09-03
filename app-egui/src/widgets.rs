@@ -13,8 +13,33 @@ use crate::theme::Tokens;
 /// `.card` - the base panel every section in the mockup sits in:
 /// `background:var(--panel); border:1px solid var(--border); border-
 /// radius:8px; padding:16px`.
+///
+/// A real bug found from the first live screenshot of this app, not a
+/// cosmetic nit: `egui::Frame` shrinks to its content's natural size by
+/// default - a card with sparse content (nothing running yet, no
+/// results yet) collapsed to a tiny orphaned box instead of filling its
+/// column, because nothing was forcing it to. Fixed the standard egui
+/// way: capture the available width *before* entering the frame, then
+/// `set_min_width` on the frame's own inner `Ui` as the first thing
+/// inside it - `Frame` paints its background to match its content Ui's
+/// final size, so this makes every card reliably fill its column
+/// regardless of how much content it happens to have this frame.
 pub fn card(ui: &mut egui::Ui, tokens: &Tokens, add_contents: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::default().fill(tokens.bg_raised).stroke(Stroke::new(1.0, tokens.border)).rounding(8.0).inner_margin(16.0).show(ui, add_contents);
+    let full_width = ui.available_width();
+    egui::Frame::default().fill(tokens.bg_raised).stroke(Stroke::new(1.0, tokens.border)).rounding(8.0).inner_margin(16.0).show(ui, |ui| {
+        ui.set_min_width((full_width - 32.0).max(0.0));
+        add_contents(ui);
+    });
+}
+
+/// `.card-title` - `font-size:1em; font-weight:700` in the mockup, i.e.
+/// barely bigger than body text. `ui.heading()` is NOT this - egui's
+/// heading style is roughly 1.5-2x body size, which is what made the
+/// first live screenshot's "Results"/card titles look oversized and the
+/// cards around them look sparser than they are. Use this for every
+/// card title instead of a raw `ui.heading()` call.
+pub fn card_title(ui: &mut egui::Ui, text: &str) {
+    ui.label(RichText::new(text).size(15.0).strong());
 }
 
 /// `.step-pill` row - step-number circle, label, em-dash separators,

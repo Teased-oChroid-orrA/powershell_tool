@@ -201,37 +201,55 @@ impl SearchTool {
             ui.vertical(|ui| {
                 ui.set_min_width(ui.available_width());
                 let s = self.shared.lock().unwrap();
-                card(ui, tokens, |ui| {
-                    if s.is_running || s.total_files > 0 {
-                        let frac = if s.total_files > 0 { s.files_completed as f32 / s.total_files as f32 } else { 0.0 };
-                        ui.horizontal(|ui| {
-                            ui.label(format!("{} / {} files", s.files_completed, s.total_files));
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.colored_label(tokens.fg_muted, format!("{} hits so far", s.hits_so_far));
+                // A card with genuinely nothing in it shrinks to a tiny
+                // orphaned box even with `card()`'s width fix (`card()`
+                // fills the *width* it's given, but an empty content
+                // closure still leaves it just tall enough for the
+                // padding - a real screenshot of this caught it looking
+                // broken, not just sparse). Only render the progress card
+                // once there's something to show; before that, the
+                // Results card's own empty-state message (below) is the
+                // whole right column, matching a normal "nothing run yet"
+                // screen instead of a stray floating square above it.
+                let has_progress_content = s.is_running || s.total_files > 0 || !s.status_text.is_empty() || !s.summary_text.is_empty() || s.report_path.is_some();
+                if has_progress_content {
+                    card(ui, tokens, |ui| {
+                        if s.is_running || s.total_files > 0 {
+                            let frac = if s.total_files > 0 { s.files_completed as f32 / s.total_files as f32 } else { 0.0 };
+                            ui.horizontal(|ui| {
+                                ui.label(format!("{} / {} files", s.files_completed, s.total_files));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.colored_label(tokens.fg_muted, format!("{} hits so far", s.hits_so_far));
+                                });
                             });
-                        });
-                        ui.add(egui::ProgressBar::new(frac.clamp(0.0, 1.0)));
-                    }
-                    if !s.status_text.is_empty() {
-                        ui.colored_label(tokens.fg_muted, &s.status_text);
-                    }
-                    if !s.summary_text.is_empty() {
-                        ui.colored_label(tokens.fg_muted, &s.summary_text);
-                    }
-                    if let Some(path) = s.report_path.clone() {
-                        if ui.button("\u{1F4C4} Open HTML report").clicked() {
-                            let _ = open::that(&path);
+                            ui.add(egui::ProgressBar::new(frac.clamp(0.0, 1.0)));
                         }
-                    }
-                });
-                ui.add_space(10.0);
-                card(ui, tokens, |ui| {
-                    ui.heading("Results");
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        for r in s.results.iter() {
-                            result_row(ui, tokens, r);
+                        if !s.status_text.is_empty() {
+                            ui.colored_label(tokens.fg_muted, &s.status_text);
+                        }
+                        if !s.summary_text.is_empty() {
+                            ui.colored_label(tokens.fg_muted, &s.summary_text);
+                        }
+                        if let Some(path) = s.report_path.clone() {
+                            if ui.button("\u{1F4C4} Open HTML report").clicked() {
+                                let _ = open::that(&path);
+                            }
                         }
                     });
+                    ui.add_space(10.0);
+                }
+                card(ui, tokens, |ui| {
+                    crate::widgets::card_title(ui, "Results");
+                    if s.results.is_empty() {
+                        ui.add_space(4.0);
+                        ui.colored_label(tokens.fg_subtle, "No results yet - set a search folder and run a search to see matches here.");
+                    } else {
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            for r in s.results.iter() {
+                                result_row(ui, tokens, r);
+                            }
+                        });
+                    }
                 });
             });
         });

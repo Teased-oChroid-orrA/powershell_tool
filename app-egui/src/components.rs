@@ -34,6 +34,25 @@ fn margin_color(tokens: &Tokens, margin: f64) -> Color32 {
     }
 }
 
+/// `.tile-chip` - the small Pass/Watch/Fail pill in each tile's top-right
+/// corner. A real gap found while wiring `good_bg`/`danger_bg` into
+/// actual use: this chip existed in the approved mockup and was missing
+/// entirely from the first working build.
+fn status_chip(ui: &mut egui::Ui, tokens: &Tokens, margin: f64) {
+    let (text, bg, fg) = if !margin.is_finite() {
+        ("\u{2014}", tokens.bg, tokens.fg_subtle)
+    } else if margin < 0.0 {
+        ("Fail", tokens.danger_bg, tokens.danger)
+    } else if margin < 0.15 {
+        ("Watch", tokens.warning.gamma_multiply(0.18), tokens.warning)
+    } else {
+        ("Pass", tokens.good_bg, tokens.good)
+    };
+    egui::Frame::default().fill(bg).rounding(10.0).inner_margin(egui::Margin::symmetric(7.0, 2.0)).show(ui, |ui| {
+        ui.colored_label(fg, RichText::new(text).size(9.0).strong());
+    });
+}
+
 fn fmt_margin(margin: f64) -> String {
     if margin.is_infinite() {
         "\u{2014}".to_string()
@@ -66,6 +85,9 @@ fn tile(ui: &mut egui::Ui, tokens: &Tokens, r: &CheckRow) {
             let color = margin_color(tokens, r.margin);
             ui.horizontal(|ui| {
                 ui.colored_label(tokens.fg_muted, r.name);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    status_chip(ui, tokens, r.margin);
+                });
             });
             ui.label(RichText::new(fmt_margin(r.margin)).monospace().size(22.0).color(color).strong());
             let frac = if r.allowable != 0.0 { (r.applied.abs() / r.allowable.abs()).clamp(0.0, 1.0) } else { 0.0 };
