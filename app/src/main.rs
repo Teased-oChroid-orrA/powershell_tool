@@ -803,27 +803,33 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
    absolute against `.shell`'s own position:relative) so `.main` always
    gets the full shell width - hiding the rail actually reclaims that
    width instead of just visually covering it.
-   First attempt at this animated `transform: translateX()` instead of
-   `width`, and it was broken: `blitz-dom-0.2.4`'s `Node::hit()`
+   Two attempts before this one. First used animated `transform:
+   translateX()` and was broken: `blitz-dom-0.2.4`'s `Node::hit()`
    (src/node/node.rs:716) computes hit bounds purely from
    `final_layout.location`/`final_layout.size` - transform never enters
-   that math. The hoverable box stayed permanently at its untransformed
-   232px-wide position regardless of the transform, so the rail could
-   never actually stay closed. Animating real `width` instead means the
-   hit-test box - driven by actual layout - shrinks and grows along with
-   what's visually shown, so hover correctly only triggers over the
-   collapsed sliver. `:hover` itself is proven working elsewhere in this
-   file (`.nav-item`/`.add-tool-btn`/`.theme-toggle`); mouseenter/
-   mouseleave are NOT (verified against blitz-traits 0.2.0's
-   `DomEventData` enum directly: only MouseMove/MouseDown/MouseUp/Click/
-   Key*/Input/Ime exist, no Enter/Leave/Over/Out variant), so a
-   JS-event-driven show/hide was deliberately avoided in favor of pure
-   CSS. This is the first animated *layout-affecting* property in this
-   file (existing transitions are all paint-only: background-color/
-   color/border-color) - unlike `:hover`/`position:absolute`, this isn't
-   yet proven on this renderer, only reasoned from `stylo.rs`'s
-   generic (not compositor-only) transition handling. Verify with a
-   real screenshot. */
+   that math, so the hoverable box stayed permanently at its
+   untransformed 232px-wide position and the rail could never stay
+   closed. Second switched to animating real `width` (12px collapsed,
+   232px on `:hover`, `transition: width 0.18s`) - real screenshot
+   feedback reported it "minimizes an insignificant amount," not the
+   full collapse to a thin sliver. `:hover` itself and explicit `width`
+   are each independently proven on this renderer elsewhere in this file
+   (`.nav-item`/`.add-tool-btn`/`.theme-toggle` for :hover; e.g.
+   `.bushing-status-rail` for width); the one part that's never been
+   used anywhere else in this app is animating a layout-affecting
+   property via `transition` (every other transition here is paint-only:
+   background-color/color/border-color) - dropped it here to isolate
+   whether the animation itself is what's not behaving as expected,
+   rather than layering more untested CSS on top of an already-uncertain
+   mechanism. This is now an instant, unanimated width toggle - a real
+   UX downgrade from the intended smooth slide, but built entirely from
+   primitives already proven in this file. mouseenter/mouseleave are
+   NOT available as an alternative (verified against blitz-traits
+   0.2.0's `DomEventData` enum directly: only MouseMove/MouseDown/
+   MouseUp/Click/Key*/Input/Ime exist, no Enter/Leave/Over/Out variant).
+   If this still doesn't collapse correctly, the bug is in `:hover`
+   matching or explicit-width layout for a `position:absolute` element
+   specifically, not in the transition - the next thing to isolate. */
 .rail {
     position: absolute; inset: 0 auto 0 0; z-index: 20;
     display: flex; flex-direction: column;
@@ -833,7 +839,6 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
     overflow-x: hidden; overflow-y: auto;
     box-shadow: var(--shadow-md);
     width: 12px;
-    transition: width 0.18s var(--ease);
 }
 .rail:hover { width: 232px; }
 .brand {
@@ -1285,17 +1290,33 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
    confirmed dead on this renderer (`blitz-dom-0.2.4`'s `Position::Sticky`
    is bucketed with `Static`/`Relative` for paint/z-order only - no
    offset-on-scroll logic exists anywhere in the crate), so this now
-   gives `.bushing-page` a bounded height (`flex:1;min-height:0`) so
-   `.bushing-workspace` alone can be the one scrolling pane below,
-   reusing the same shape the Search tool's own
-   `.main-grid{overflow:hidden}` + `.settings-column/.results-column
-   {overflow-y:auto}` already proves works on this renderer. Only
-   `.bushing-workspace` gets its own scrollbar in the normal case (the
-   status rail's content fits without overflowing), so this isn't a
-   return to the old two-*visible*-scrollbar problem - both panes
-   independently overflowing at once - just a narrower, correctly-scoped
-   version of the pattern this comment used to reject outright. */
-.bushing-page { display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-4) 0; flex: 1; min-height: 0; overflow: hidden; }
+   gives `.bushing-page` a bounded height so `.bushing-workspace` alone
+   can be the one scrolling pane below, reusing the same shape the
+   Search tool's own `.main-grid{overflow:hidden}` +
+   `.settings-column/.results-column{overflow-y:auto}` already proves
+   works on this renderer. Only `.bushing-workspace` gets its own
+   scrollbar in the normal case (the status rail's content fits without
+   overflowing), so this isn't a return to the old two-*visible*-
+   scrollbar problem - both panes independently overflowing at once -
+   just a narrower, correctly-scoped version of the pattern this comment
+   used to reject outright.
+   `height: 100%`, not `flex: 1` - a real authored bug in the first
+   attempt at this: `flex` properties only do anything on a flex *item*,
+   and `.stage` (this element's parent) is NOT `display:flex` (just
+   `overflow:auto` + padding), so `flex:1` here was silently a no-op.
+   `.bushing-page` never actually got a bounded height, so
+   `.bushing-workspace`'s `overflow-y:auto` never had anything to
+   overflow within, `.stage` stayed the real (only) scroller exactly as
+   before, and `align-items:stretch` on the split below stretched
+   `.bushing-status-rail` to match whatever height the *unbounded*
+   content happened to grow to - the entire page - which is exactly the
+   "dock is the length of the entire page" bug reported. `.stage` does
+   have a real, definite height of its own (from its own `flex:1;
+   min-height:0` inside `.main`'s flex column), so `height:100%` here
+   correctly resolves against it regardless of `.stage`'s own display
+   type - percentage heights don't require the parent to be a flex
+   container, only that it have a definite height. */
+.bushing-page { display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-4) 0; height: 100%; overflow: hidden; }
 .bushing-card {
     background: var(--glass); border: 1px solid var(--glass-border); border-radius: var(--radius-md);
     padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3);
@@ -1351,16 +1372,28 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 }
 .bushing-step-current .bushing-step-num { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
 
+/* `align-items:stretch` (container default) is what `.bushing-workspace`
+   needs: without a stretched cross-axis it has no bounded height of its
+   own to scroll within. `.bushing-status-rail` overrides back to
+   `align-self:flex-start` below specifically so it does NOT also
+   stretch - it should hug its own (short) content, not match the
+   workspace's full scrollable height. Stretching both was the second
+   authored bug in the first attempt: it made the status rail as tall as
+   the entire page even once the height-boundedness above is fixed. */
 .bushing-workspace-split { display: flex; align-items: stretch; gap: var(--space-4); flex: 1; min-height: 0; }
 .bushing-workspace { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: var(--space-4); overflow-y: auto; }
 
-/* `align-items:stretch` on `.bushing-workspace-split` (above) now gives
-   this the full split height, so in the normal case its own content
-   fits without overflowing and it simply never scrolls - staying
-   visually fixed while `.bushing-workspace` scrolls independently
-   beside it. `max-height:100%;overflow-y:auto` is a safety net for an
-   unusually long checklist, not the primary mechanism. */
-.bushing-status-rail { flex: none; width: 240px; max-height: 100%; overflow-y: auto; border: 1px solid var(--glass-border); border-radius: var(--radius-md); background: var(--glass); }
+/* `align-self:flex-start` overrides the split's own `align-items:stretch`
+   for this one child - it sizes to its own (short) content instead of
+   matching `.bushing-workspace`'s full scrollable height, per real
+   screenshot feedback that stretching it looked like "the dock is the
+   length of the entire page." Content-sized and positioned at the top
+   of the split, it simply never needs to scroll at all in the normal
+   case (`max-height`/`overflow-y:auto` remain as a safety net only for
+   an unusually long checklist) - staying visually fixed while
+   `.bushing-workspace`, a plain sibling, scrolls independently within
+   its own bounded pane beside it. */
+.bushing-status-rail { flex: none; width: 240px; align-self: flex-start; max-height: 100%; overflow-y: auto; border: 1px solid var(--glass-border); border-radius: var(--radius-md); background: var(--glass); }
 .bushing-status-head { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3); border-bottom: 1px solid var(--glass-border); }
 .bushing-status-dot { flex: none; width: 11px; height: 11px; border-radius: 50%; }
 .bushing-status-pass .bushing-status-dot { background: var(--good); box-shadow: 0 0 0 3px var(--good-bg); }
