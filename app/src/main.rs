@@ -1258,19 +1258,6 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
     padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3);
 }
 
-/* Fixed-width input rail + flexible results column - used where a tool's
-   inputs are few enough to stack one-per-row without feeling sparse
-   (Pressure Vessel Analyzer). A fixed-width rail can never overflow the
-   way a flex-row of several fields can at narrow widths (see the
-   `.field-row .field` note below) - each field gets its own full-width
-   row, so there is nothing to wrap or shrink in the first place. */
-.input-rail-layout { display: grid; grid-template-columns: 220px 1fr; gap: var(--space-4); align-items: start; }
-.input-rail { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
-.input-rail .bushing-card { gap: var(--space-3); }
-.results-column { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; }
-@media (max-width: 720px) {
-    .input-rail-layout { grid-template-columns: 1fr; }
-}
 .bushing-card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
 .bushing-card-title { margin: 0; font-size: 1em; font-weight: 700; }
 .bushing-card-sub { margin: -6px 0 0; font-size: 0.82em; color: var(--fg-subtle); }
@@ -1526,6 +1513,7 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 .fab-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--space-3) var(--space-4); margin-top: var(--space-3); }
 .fab-item.wide { grid-column: 1 / -1; }
 .fab-note { margin-top: var(--space-3); font-size: 0.78em; color: var(--fg-subtle); }
+.check-note { font-size: 0.78em; color: var(--fg-subtle); padding: var(--space-2) 2px 0; margin: 0; }
 
 .checks-list { display: flex; flex-direction: column; gap: var(--space-1); margin-top: var(--space-2); }
 .check-item { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-1); border-bottom: 1px solid var(--border); }
