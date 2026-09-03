@@ -30,6 +30,7 @@ use search_core::report;
 use tokio_util::sync::CancellationToken;
 
 use crate::theme::Tokens;
+use crate::widgets::card;
 
 #[derive(Default)]
 pub struct SearchUiState {
@@ -161,68 +162,99 @@ impl SearchTool {
             }
         }
 
-        ui.horizontal(|ui| {
-            ui.label("Search folder:");
-            ui.add(egui::TextEdit::singleline(&mut self.search_path).desired_width(360.0));
-            if ui.button("Browse\u{2026}").clicked() {
-                if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                    self.search_path = path.display().to_string();
-                }
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.label("Filters (comma-separated):");
-            ui.add(egui::TextEdit::singleline(&mut self.filters_text).desired_width(320.0).hint_text("e.g. invoice, overdue"));
-        });
-        ui.checkbox(&mut self.parallel, "Parallel processing");
-
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            if ui.add_enabled(!is_running, egui::Button::new("\u{25B6} Run search")).clicked() {
-                self.start();
-            }
-            if is_running && ui.button("Cancel").clicked() {
-                if let Some(t) = &self.cancel_token {
-                    t.cancel();
-                }
-            }
-        });
-
-        ui.add_space(10.0);
-        let s = self.shared.lock().unwrap();
-        if s.is_running || s.total_files > 0 {
-            let frac = if s.total_files > 0 { s.files_completed as f32 / s.total_files as f32 } else { 0.0 };
-            ui.horizontal(|ui| {
-                ui.label(format!("{} / {} files", s.files_completed, s.total_files));
-                ui.label(format!("{} hits so far", s.hits_so_far));
-            });
-            ui.add(egui::ProgressBar::new(frac.clamp(0.0, 1.0)));
-        }
-        if !s.status_text.is_empty() {
-            ui.colored_label(tokens.fg_muted, &s.status_text);
-        }
-        if !s.summary_text.is_empty() {
-            ui.colored_label(tokens.fg_muted, &s.summary_text);
-        }
-        if let Some(path) = s.report_path.clone() {
-            if ui.button("\u{1F4C4} Open HTML report").clicked() {
-                let _ = open::that(&path);
-            }
-        }
-
-        ui.add_space(10.0);
-        ui.separator();
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for r in s.results.iter() {
-                ui.horizontal(|ui| {
-                    ui.strong(file_name(&r.full_name));
-                    ui.colored_label(tokens.fg_subtle, format!("{} matches", r.hits.len()));
+        // Mirrors the mockup's `.search-split` shape: a fixed-width
+        // settings column (300px, matching `.settings-col`) beside a
+        // flexible results column (`.results-col`), each card-wrapped
+        // with the same `widgets::card` every other tool uses.
+        ui.horizontal_top(|ui| {
+            ui.vertical(|ui| {
+                ui.set_width(300.0);
+                card(ui, tokens, |ui| {
+                    ui.label("Search folder");
+                    ui.horizontal(|ui| {
+                        ui.add(egui::TextEdit::singleline(&mut self.search_path).desired_width(210.0));
+                        if ui.button("Browse\u{2026}").clicked() {
+                            if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                                self.search_path = path.display().to_string();
+                            }
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.label("Filters (comma-separated)");
+                    ui.add(egui::TextEdit::singleline(&mut self.filters_text).desired_width(f32::INFINITY).hint_text("e.g. invoice, overdue"));
+                    ui.add_space(6.0);
+                    if ui.add_enabled(!is_running, egui::Button::new("\u{25B6} Run search").min_size(egui::vec2(ui.available_width(), 0.0))).clicked() {
+                        self.start();
+                    }
                 });
-                ui.colored_label(tokens.fg_subtle, &r.full_name);
-                ui.separator();
-            }
+                ui.add_space(10.0);
+                card(ui, tokens, |ui| {
+                    ui.checkbox(&mut self.parallel, "Parallel processing");
+                    if is_running && ui.button("Cancel").clicked() {
+                        if let Some(t) = &self.cancel_token {
+                            t.cancel();
+                        }
+                    }
+                });
+            });
+            ui.add_space(16.0);
+            ui.vertical(|ui| {
+                ui.set_min_width(ui.available_width());
+                let s = self.shared.lock().unwrap();
+                card(ui, tokens, |ui| {
+                    if s.is_running || s.total_files > 0 {
+                        let frac = if s.total_files > 0 { s.files_completed as f32 / s.total_files as f32 } else { 0.0 };
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{} / {} files", s.files_completed, s.total_files));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.colored_label(tokens.fg_muted, format!("{} hits so far", s.hits_so_far));
+                            });
+                        });
+                        ui.add(egui::ProgressBar::new(frac.clamp(0.0, 1.0)));
+                    }
+                    if !s.status_text.is_empty() {
+                        ui.colored_label(tokens.fg_muted, &s.status_text);
+                    }
+                    if !s.summary_text.is_empty() {
+                        ui.colored_label(tokens.fg_muted, &s.summary_text);
+                    }
+                    if let Some(path) = s.report_path.clone() {
+                        if ui.button("\u{1F4C4} Open HTML report").clicked() {
+                            let _ = open::that(&path);
+                        }
+                    }
+                });
+                ui.add_space(10.0);
+                card(ui, tokens, |ui| {
+                    ui.heading("Results");
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for r in s.results.iter() {
+                            result_row(ui, tokens, r);
+                        }
+                    });
+                });
+            });
         });
     }
+}
+
+/// Icon-badge result row, matching the mockup's `.result-row`
+/// (`.result-icon` + name/meta + a right-aligned match count).
+fn result_row(ui: &mut egui::Ui, tokens: &Tokens, r: &FileSearchResult) {
+    ui.horizontal(|ui| {
+        let ext = std::path::Path::new(&r.full_name).extension().and_then(|e| e.to_str()).unwrap_or("").to_uppercase();
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 6.0, tokens.bg_sunken);
+        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, ext, egui::FontId::proportional(8.5), tokens.fg_subtle);
+        ui.vertical(|ui| {
+            ui.strong(file_name(&r.full_name));
+            ui.colored_label(tokens.fg_subtle, &r.full_name);
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.colored_label(tokens.fg_muted, egui::RichText::new(r.hits.len().to_string()).monospace());
+        });
+    });
+    ui.separator();
 }
 
 fn file_name(full_path: &str) -> &str {
