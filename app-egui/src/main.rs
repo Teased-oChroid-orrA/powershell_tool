@@ -97,6 +97,7 @@ struct ToolbenchApp {
     pv: PressureVesselTool,
     bushing: BushingTool,
     palette: CommandPalette,
+    last_rail_width: f32,
 }
 
 impl Default for ToolbenchApp {
@@ -119,6 +120,7 @@ impl Default for ToolbenchApp {
             pv: PressureVesselTool::default(),
             bushing: BushingTool::default(),
             palette: CommandPalette::default(),
+            last_rail_width: RAIL_COLLAPSED_W,
         };
         if let Some(p) = persistence::load() {
             app.dark = p.dark.unwrap_or(app.dark);
@@ -233,22 +235,43 @@ impl eframe::App for ToolbenchApp {
             }
         }
 
-        // Hover test is a plain rect check against the pointer position -
-        // real layout, real input, no renderer-specific pseudo-class.
-        let pointer_over_rail = ctx
-            .pointer_hover_pos()
-            .is_some_and(|p| p.x <= RAIL_EXPANDED_W);
+        // Hover test against the rail's *actual last-rendered width*, not
+        // a fixed "anywhere in the left third of the window" threshold -
+        // the mockup's own hover target was a persistent thin handle
+        // strip, not the full rail's eventual footprint. Using a fixed
+        // `x <= RAIL_EXPANDED_W` threshold here would mean hovering
+        // anywhere up to 232px from the left edge re-opens the rail even
+        // while it's fully collapsed to 10px - not what was approved, and
+        // uncomfortably close to the exact class of bug (a hoverable
+        // region bigger than what's visually there) this migration
+        // started specifically to get away from. One frame of lag between
+        // the rendered width and the hover test against it is
+        // imperceptible (well under 16ms) and still real-layout-based,
+        // not a hardcoded guess at the expanded width.
+        let pointer_over_rail = ctx.pointer_hover_pos().is_some_and(|p| p.x <= self.last_rail_width);
         let rail_open = self.rail_pinned || pointer_over_rail;
         let anim = ctx.animate_bool(egui::Id::new("rail_open"), rail_open);
         let rail_width = RAIL_COLLAPSED_W + (RAIL_EXPANDED_W - RAIL_COLLAPSED_W) * anim;
+        self.last_rail_width = rail_width;
 
+        // Mockup's `.rail-handle`: the collapsed sliver isn't blank - it
+        // tints toward the accent color and shows a chevron affordance,
+        // the same "this is hoverable" signal `.rail-handle:hover`/
+        // `.rail-zone.open .rail-handle` gave in the mockup.
+        let handle_bg = if pointer_over_rail { tokens.accent.gamma_multiply(0.14) } else { tokens.bg_raised };
         egui::SidePanel::left("rail")
             .resizable(false)
             .exact_width(rail_width)
-            .frame(egui::Frame::default().fill(tokens.bg_raised).inner_margin(egui::Margin::symmetric(if anim > 0.5 { 12.0 } else { 0.0 }, 16.0)))
+            .frame(egui::Frame::default().fill(if anim < 0.5 { handle_bg } else { tokens.bg_raised }).inner_margin(egui::Margin::symmetric(if anim > 0.5 { 12.0 } else { 0.0 }, 16.0)))
             .show(ctx, |ui| {
                 if anim > 0.5 {
                     self.rail_contents(ui, tokens);
+                } else {
+                    let chevron_color = if pointer_over_rail { tokens.accent_strong } else { tokens.fg_subtle };
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(ui.available_height() / 2.0 - 6.0);
+                        ui.colored_label(chevron_color, "\u{203A}");
+                    });
                 }
             });
 
