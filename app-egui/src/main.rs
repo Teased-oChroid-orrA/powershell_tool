@@ -16,6 +16,7 @@
 //! properties Blitz could never deliver after three attempts.
 
 mod bushing;
+mod command_palette;
 mod components;
 mod persistence;
 mod pressure_vessel;
@@ -25,6 +26,7 @@ mod theme;
 use std::sync::Arc;
 
 use bushing::BushingTool;
+use command_palette::{Command, CommandPalette};
 use eframe::egui;
 use pressure_vessel::PressureVesselTool;
 use search::SearchTool;
@@ -82,6 +84,7 @@ struct ToolbenchApp {
     search: SearchTool,
     pv: PressureVesselTool,
     bushing: BushingTool,
+    palette: CommandPalette,
 }
 
 impl Default for ToolbenchApp {
@@ -103,6 +106,7 @@ impl Default for ToolbenchApp {
             search: SearchTool::new(runtime),
             pv: PressureVesselTool::default(),
             bushing: BushingTool::default(),
+            palette: CommandPalette::default(),
         };
         if let Some(p) = persistence::load() {
             app.dark = p.dark.unwrap_or(app.dark);
@@ -204,6 +208,18 @@ impl eframe::App for ToolbenchApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let tokens = if self.dark { &Tokens::DARK } else { &Tokens::LIGHT };
         ctx.set_visuals(tokens.visuals());
+
+        if let Some(cmd) = self.palette.update(ctx) {
+            match cmd {
+                Command::SwitchToSearch => self.active_tool = ToolId::Search,
+                Command::SwitchToBushing => self.active_tool = ToolId::Bushing,
+                Command::SwitchToPressureVessel => self.active_tool = ToolId::PressureVessel,
+                Command::RunSearch => self.search.trigger_run(),
+                Command::CancelSearch => self.search.trigger_cancel(),
+                Command::ToggleTheme => self.dark = !self.dark,
+                Command::PinRail => self.rail_pinned = !self.rail_pinned,
+            }
+        }
 
         // Hover test is a plain rect check against the pointer position -
         // real layout, real input, no renderer-specific pseudo-class.

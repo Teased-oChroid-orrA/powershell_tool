@@ -94,6 +94,15 @@ impl SearchTool {
         self.parallel = parallel;
     }
 
+    pub fn trigger_run(&mut self) {
+        self.start();
+    }
+    pub fn trigger_cancel(&mut self) {
+        if let Some(t) = &self.cancel_token {
+            t.cancel();
+        }
+    }
+
     fn start(&mut self) {
         if self.search_path.trim().is_empty() {
             return;
