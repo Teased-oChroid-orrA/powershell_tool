@@ -799,14 +799,32 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
    just `.shell` - see that rule's own comment. ---- */
 .shell { position: relative; z-index: 1; display: flex; flex: 1; min-height: 0; overflow: hidden; }
 
+/* Auto-hiding: taken out of `.shell`'s flex flow entirely (position:
+   absolute against `.shell`'s own position:relative) so `.main` always
+   gets the full shell width - hiding the rail actually reclaims that
+   width instead of just visually covering it. At rest, only a ~12px
+   sliver (232px - 220px translateX) sits at the left edge as the hover
+   target; `:hover` (proven working elsewhere in this file - `.nav-item`,
+   `.add-tool-btn`, `.theme-toggle` all already rely on it) slides the
+   full rail into view over the content. Built on :hover + transform +
+   position:absolute specifically because those are already proven on
+   this renderer - mouseenter/mouseleave are NOT (verified against
+   blitz-traits 0.2.0's `DomEventData` enum directly: only
+   MouseMove/MouseDown/MouseUp/Click/Key*/Input/Ime exist, no
+   Enter/Leave/Over/Out variant), so a JS-event-driven show/hide was
+   deliberately avoided in favor of pure CSS. */
 .rail {
-    position: relative; z-index: 2; flex: none; width: 232px;
+    position: absolute; inset: 0 auto 0 0; z-index: 20; width: 232px;
     display: flex; flex-direction: column;
     background: var(--glass-bg);
     border-right: 1px solid var(--glass-border);
     padding: var(--space-4) var(--space-3);
     overflow-y: auto;
+    box-shadow: var(--shadow-md);
+    transform: translateX(-220px);
+    transition: transform 0.18s var(--ease);
 }
+.rail:hover { transform: translateX(0); }
 .brand {
     display: flex; align-items: center; gap: var(--space-2);
     padding: var(--space-2) var(--space-2) var(--space-5);
@@ -1311,7 +1329,17 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 .bushing-workspace-split { display: flex; align-items: flex-start; gap: var(--space-4); }
 .bushing-workspace { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--space-4); }
 
-.bushing-status-rail { flex: none; width: 240px; border: 1px solid var(--glass-border); border-radius: var(--radius-md); background: var(--glass); overflow: hidden; }
+/* No `overflow:hidden` here on purpose - this file has a documented case
+   (the lightbox fix above) of nested overflow not reliably clipping/
+   scrolling on this renderer, and this rail has no content that needs
+   clipping anyway (`.bushing-status-head`/`.bushing-checklist` children
+   are already sized to fit). Screenshot feedback reported this rail not
+   scrolling together with `.bushing-workspace`; removing the unnecessary
+   overflow property is the low-risk fix in the direction that precedent
+   points, rather than adding more untested CSS (e.g. `position:sticky`,
+   which has zero prior verification on this renderer, unlike :hover/
+   transform/position:absolute above, which are already proven). */
+.bushing-status-rail { flex: none; width: 240px; border: 1px solid var(--glass-border); border-radius: var(--radius-md); background: var(--glass); }
 .bushing-status-head { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3); border-bottom: 1px solid var(--glass-border); }
 .bushing-status-dot { flex: none; width: 11px; height: 11px; border-radius: 50%; }
 .bushing-status-pass .bushing-status-dot { background: var(--good); box-shadow: 0 0 0 3px var(--good-bg); }
@@ -1485,10 +1513,20 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 .src-derived { background: var(--bg-sunken); color: var(--fg-subtle); }
 .src-calculated { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent-strong); }
 
+/* `flex-wrap: nowrap` (not `wrap`, despite the approved mockup's own CSS
+   using `wrap`) - the mockup was approved against short placeholder mini-
+   stat text; the real Governing value
+   (`"{governing_result.name} \u{b7} {fmt_margin(...)}"`, e.g. "Von Mises
+   (Inner surface) \u{b7} MS +0.42") is real, variable-length content the
+   mockup never exercised, and wrapping it reads as a stacked table
+   instead of the intended single row. `overflow: hidden` plus the
+   ellipsis rule on `.bushing-mini-stat .ms-pill` below keep the row a
+   single line by truncating that value instead - same discipline as
+   `.check-name`/`.nav-item-title` already use elsewhere in this file. */
 .bushing-headline {
-    display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+    display: flex; align-items: center; justify-content: space-between; flex-wrap: nowrap;
     gap: var(--space-4); padding: var(--space-3) var(--space-4); border-radius: var(--radius-md);
-    border: 1px solid var(--glass-border); background: var(--glass);
+    border: 1px solid var(--glass-border); background: var(--glass); overflow: hidden;
 }
 .bushing-headline-status { display: flex; align-items: center; gap: var(--space-3); flex: none; }
 .bushing-headline-dot { flex: none; width: 12px; height: 12px; border-radius: 50%; }
@@ -1498,8 +1536,9 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 .bushing-headline.pass .bushing-headline-text { color: var(--good); }
 .bushing-headline.review .bushing-headline-text { color: var(--warning); }
 .bushing-headline-sub { display: block; font-size: 0.78em; color: var(--fg-subtle); margin-top: 1px; }
-.bushing-mini-stats { display: flex; gap: var(--space-5); flex-wrap: wrap; }
-.bushing-mini-stat { display: flex; flex-direction: column; gap: 2px; min-width: 110px; }
+.bushing-mini-stats { display: flex; gap: var(--space-5); flex-wrap: nowrap; min-width: 0; }
+.bushing-mini-stat { display: flex; flex-direction: column; gap: 2px; min-width: 110px; overflow: hidden; }
+.bushing-mini-stat .ms-pill { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bushing-mini-label { font-size: 0.72em; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.03em; }
 .bushing-mini-val { font-weight: 650; font-variant-numeric: tabular-nums; }
 
@@ -1516,7 +1555,11 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 .check-note { font-size: 0.78em; color: var(--fg-subtle); padding: var(--space-2) 2px 0; margin: 0; }
 
 .checks-list { display: flex; flex-direction: column; gap: var(--space-1); margin-top: var(--space-2); }
-.check-item { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-1); border-bottom: 1px solid var(--border); }
+/* 14px/2px, not the tighter var(--space-3)/var(--space-1) (12px/4px) this
+   had drifted to - matches the approved mockup's own literal values,
+   restoring the vertical buffer between one row's `.allow-tag` (top:-16px)
+   and the row above's `.end-label.point` (top:14px). */
+.check-item { display: flex; align-items: center; gap: var(--space-3); padding: 14px 2px; border-bottom: 1px solid var(--border); }
 .check-item:last-child { border-bottom: none; }
 .check-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
 .check-dot.ok { background: var(--good); }
@@ -1526,9 +1569,15 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 .value-track { position: relative; flex: 1; height: 16px; margin: 0 var(--space-2); }
 .value-track .rail { position: absolute; top: 50%; left: 0; right: 0; height: 3px; transform: translateY(-50%); background: var(--bg-sunken); border-radius: var(--radius-pill); }
 .value-track .allow-line { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--fg-subtle); }
+/* `width: max-content` is load-bearing, not decorative: real screenshots
+   showed this span's text ("limit 70000") wrapping onto two lines despite
+   `white-space: nowrap` - an absolutely-positioned inline element with no
+   explicit width isn't reliably shrink-to-fit sizing its content on this
+   renderer. Forcing max-content width sidesteps whatever that auto-width
+   bug is instead of trusting `nowrap` alone to prevent it. */
 .value-track .allow-tag {
     position: absolute; top: -16px; transform: translateX(-50%); font-size: 0.68em; color: var(--fg-subtle);
-    white-space: nowrap; font-variant-numeric: tabular-nums;
+    white-space: nowrap; width: max-content; font-variant-numeric: tabular-nums;
 }
 .value-track .whisker { position: absolute; top: 50%; height: 5px; transform: translateY(-50%); border-radius: var(--radius-pill); }
 .value-track .whisker.ok { background: var(--good); }
@@ -1536,8 +1585,10 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
 .value-track .whisker-point { position: absolute; top: 50%; width: 9px; height: 9px; margin-left: -4.5px; transform: translateY(-50%); border-radius: 50%; }
 .value-track .whisker-point.ok { background: var(--good); }
 .value-track .whisker-point.fail { background: var(--danger); }
+/* Same `width: max-content` fix as `.allow-tag` above, same evidence
+   (real screenshot: "13000 psi" wrapped onto two lines despite nowrap). */
 .value-track .end-label {
-    position: absolute; font-size: 0.68em; color: var(--fg-subtle); white-space: nowrap; font-variant-numeric: tabular-nums;
+    position: absolute; font-size: 0.68em; color: var(--fg-subtle); white-space: nowrap; width: max-content; font-variant-numeric: tabular-nums;
 }
 .value-track .end-label.lo { bottom: -15px; transform: translateX(-50%); }
 .value-track .end-label.hi { bottom: -15px; transform: translateX(-50%); }
