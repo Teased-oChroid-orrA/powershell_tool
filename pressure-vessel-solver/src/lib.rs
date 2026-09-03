@@ -3,6 +3,7 @@
 //! `docs/issue-11-status.md`/`docs/issue-11-phase-2.md` in the
 //! `powershell_tool` repo for the evidence and verification behind it.
 
+pub mod buckling;
 pub mod failure;
 pub mod geometry;
 pub mod pressure;

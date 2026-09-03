@@ -79,7 +79,11 @@ pub fn max_abs_principal_stress(s: &StressState) -> f64 {
 /// consistent across the tool"). `applied` of exactly zero (no stress at
 /// all under this mode) reports `f64::INFINITY` - an unbounded margin,
 /// not a division-by-zero panic or a fabricated number.
-fn margin_of_safety(allowable: f64, applied: f64) -> f64 {
+/// `pub(crate)`, not private - `buckling.rs` reuses this same convention
+/// for its own margin (checked before choosing it: issue #11's own "the
+/// chosen convention must be consistent across the tool" applies within
+/// this crate too, not just against `bushing-solver`).
+pub(crate) fn margin_of_safety(allowable: f64, applied: f64) -> f64 {
     if applied != 0.0 {
         allowable / applied - 1.0
     } else {
@@ -91,6 +95,12 @@ fn margin_of_safety(allowable: f64, applied: f64) -> f64 {
 pub enum CriticalLocation {
     InnerSurface,
     OuterSurface,
+    /// Buckling is a global-instability phenomenon, not a through-wall
+    /// stress location - neither `InnerSurface` nor `OuterSurface` means
+    /// anything for it, so it gets its own variant rather than being
+    /// forced into a label that would misrepresent what actually governs
+    /// (the unsupported span between supports, not a wall surface).
+    UnsupportedSpan,
 }
 
 impl CriticalLocation {
@@ -98,6 +108,7 @@ impl CriticalLocation {
         match self {
             CriticalLocation::InnerSurface => "inner surface",
             CriticalLocation::OuterSurface => "outer surface",
+            CriticalLocation::UnsupportedSpan => "unsupported span",
         }
     }
 }

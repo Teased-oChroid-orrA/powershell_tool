@@ -1257,6 +1257,20 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); border-c
     background: var(--glass); border: 1px solid var(--glass-border); border-radius: var(--radius-md);
     padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3);
 }
+
+/* Fixed-width input rail + flexible results column - used where a tool's
+   inputs are few enough to stack one-per-row without feeling sparse
+   (Pressure Vessel Analyzer). A fixed-width rail can never overflow the
+   way a flex-row of several fields can at narrow widths (see the
+   `.field-row .field` note below) - each field gets its own full-width
+   row, so there is nothing to wrap or shrink in the first place. */
+.input-rail-layout { display: grid; grid-template-columns: 220px 1fr; gap: var(--space-4); align-items: start; }
+.input-rail { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
+.input-rail .bushing-card { gap: var(--space-3); }
+.results-column { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; }
+@media (max-width: 720px) {
+    .input-rail-layout { grid-template-columns: 1fr; }
+}
 .bushing-card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
 .bushing-card-title { margin: 0; font-size: 1em; font-weight: 700; }
 .bushing-card-sub { margin: -6px 0 0; font-size: 0.82em; color: var(--fg-subtle); }

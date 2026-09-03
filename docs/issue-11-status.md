@@ -92,8 +92,13 @@ derivation view (generalizing the pattern just proven for the Bushing
 Workbench).
 
 **Explicit backlog (documented, not silently dropped):** spherical
-vessels, buckling/shell instability/collapse, fatigue, creep, thermal
-stress, code-compliance certification framing.
+vessels, fatigue, creep, thermal stress, code-compliance certification
+framing.
+
+**Update (Phase 9):** external-pressure shell buckling/instability was
+pulled in from this backlog by direct user request and built - see
+`docs/issue-11-phase-9.md`. Buckling is no longer deferred; the remaining
+backlog items above are unchanged.
 
 **Correction after cross-checking issue #10:** the paragraph above
 originally also put a shared `PrecisionPolicy`/units system in this
@@ -209,9 +214,10 @@ Known Issues / explicit gaps (not silently dropped):
 - UI not visually verified (see UI Validation above).
 - CI not triggered for this epic's commits - per explicit user
   instruction, deferred until the user says issue #11 is complete.
-- Explicit backlog (see "Verdict" above, unchanged): spherical vessels,
-  buckling/collapse, fatigue, creep, thermal stress, code-compliance
-  framing.
+- Explicit backlog (see "Verdict" above): spherical vessels, fatigue,
+  creep, thermal stress, code-compliance framing. Buckling/collapse was
+  pulled in and built in Phase 9 (external-pressure shell buckling with
+  a real unsupported-length input) - no longer in this backlog.
 
 Existing Modules Reused:
   mechanics_core::lame (Lame thick-wall equations, already general)
