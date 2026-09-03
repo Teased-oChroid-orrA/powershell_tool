@@ -77,6 +77,21 @@ impl SearchTool {
         self.shared.lock().unwrap().is_running
     }
 
+    pub fn search_path(&self) -> &str {
+        &self.search_path
+    }
+    pub fn filters_text(&self) -> &str {
+        &self.filters_text
+    }
+    pub fn parallel(&self) -> bool {
+        self.parallel
+    }
+    pub fn restore(&mut self, search_path: String, filters_text: String, parallel: bool) {
+        self.search_path = search_path;
+        self.filters_text = filters_text;
+        self.parallel = parallel;
+    }
+
     fn start(&mut self) {
         if self.search_path.trim().is_empty() {
             return;
@@ -112,6 +127,24 @@ impl SearchTool {
 
     pub fn ui(&mut self, ui: &mut egui::Ui, tokens: &Tokens) {
         let is_running = self.shared.lock().unwrap().is_running;
+
+        // Native dropped-file handling - `eframe` (via `winit`) already
+        // surfaces this on `RawInput` (`ctx.input(|i| &i.raw.dropped_files)`)
+        // with no hand-rolled interception needed. Blitz's own
+        // `blitz-shell` never forwarded `WindowEvent::DroppedFile` at all
+        // (see `app/src/drag_drop.rs`'s doc comment - `app/` had to wrap
+        // the whole application handler just to get this), so this is
+        // strictly simpler here, not just different.
+        let dropped: Vec<_> = ui.ctx().input(|i| i.raw.dropped_files.clone());
+        if let Some(f) = dropped.first() {
+            if let Some(path) = &f.path {
+                if path.is_dir() {
+                    self.search_path = path.display().to_string();
+                } else if let Some(parent) = path.parent() {
+                    self.search_path = parent.display().to_string();
+                }
+            }
+        }
 
         ui.horizontal(|ui| {
             ui.label("Search folder:");

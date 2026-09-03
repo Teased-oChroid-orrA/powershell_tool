@@ -46,16 +46,16 @@ impl Step {
 
 pub struct BushingTool {
     step: Step,
-    bore_dia: f64,
-    id_bushing: f64,
-    housing_len: f64,
-    housing_width: f64,
-    edge_dist: f64,
-    interference: f64,
-    mat_housing: String,
-    mat_bushing: String,
-    d_t: f64,
-    min_wall_straight: f64,
+    pub bore_dia: f64,
+    pub id_bushing: f64,
+    pub housing_len: f64,
+    pub housing_width: f64,
+    pub edge_dist: f64,
+    pub interference: f64,
+    pub mat_housing: String,
+    pub mat_bushing: String,
+    pub d_t: f64,
+    pub min_wall_straight: f64,
 }
 
 impl Default for BushingTool {

@@ -17,6 +17,7 @@
 
 mod bushing;
 mod components;
+mod persistence;
 mod pressure_vessel;
 mod search;
 mod theme;
@@ -95,13 +96,103 @@ impl Default for ToolbenchApp {
         // built in, so this is the one piece of "framework glue" every
         // future async-backed tool will share.
         let runtime = Arc::new(tokio::runtime::Runtime::new().expect("failed to start tokio runtime"));
-        Self {
+        let mut app = Self {
             dark: true,
             rail_pinned: false,
             active_tool: ToolId::Search,
             search: SearchTool::new(runtime),
             pv: PressureVesselTool::default(),
             bushing: BushingTool::default(),
+        };
+        if let Some(p) = persistence::load() {
+            app.dark = p.dark.unwrap_or(app.dark);
+            app.rail_pinned = p.rail_pinned.unwrap_or(app.rail_pinned);
+            app.search.restore(p.search_path, p.filters_text, p.parallel.unwrap_or(true));
+            if let Some(v) = p.pv_outer_diameter {
+                app.pv.outer_diameter = v;
+            }
+            if let Some(v) = p.pv_wall_thickness {
+                app.pv.wall_thickness = v;
+            }
+            if let Some(v) = p.pv_internal_pressure {
+                app.pv.internal_pressure = v;
+            }
+            if let Some(v) = p.pv_external_pressure {
+                app.pv.external_pressure = v;
+            }
+            if let Some(v) = p.pv_closed_ends {
+                app.pv.closed_ends = v;
+            }
+            if !p.pv_material_id.is_empty() {
+                app.pv.material_id = p.pv_material_id;
+            }
+            if let Some(v) = p.pv_required_ms {
+                app.pv.required_ms = v;
+            }
+            if let Some(v) = p.pv_unsupported_length {
+                app.pv.unsupported_length = v;
+            }
+            if let Some(v) = p.bu_bore_dia {
+                app.bushing.bore_dia = v;
+            }
+            if let Some(v) = p.bu_id_bushing {
+                app.bushing.id_bushing = v;
+            }
+            if let Some(v) = p.bu_housing_len {
+                app.bushing.housing_len = v;
+            }
+            if let Some(v) = p.bu_housing_width {
+                app.bushing.housing_width = v;
+            }
+            if let Some(v) = p.bu_edge_dist {
+                app.bushing.edge_dist = v;
+            }
+            if let Some(v) = p.bu_interference {
+                app.bushing.interference = v;
+            }
+            if !p.bu_mat_housing.is_empty() {
+                app.bushing.mat_housing = p.bu_mat_housing;
+            }
+            if !p.bu_mat_bushing.is_empty() {
+                app.bushing.mat_bushing = p.bu_mat_bushing;
+            }
+            if let Some(v) = p.bu_d_t {
+                app.bushing.d_t = v;
+            }
+            if let Some(v) = p.bu_min_wall_straight {
+                app.bushing.min_wall_straight = v;
+            }
+        }
+        app
+    }
+}
+
+impl ToolbenchApp {
+    fn snapshot(&self) -> persistence::PersistedState {
+        persistence::PersistedState {
+            dark: Some(self.dark),
+            rail_pinned: Some(self.rail_pinned),
+            search_path: self.search.search_path().to_string(),
+            filters_text: self.search.filters_text().to_string(),
+            parallel: Some(self.search.parallel()),
+            pv_outer_diameter: Some(self.pv.outer_diameter),
+            pv_wall_thickness: Some(self.pv.wall_thickness),
+            pv_internal_pressure: Some(self.pv.internal_pressure),
+            pv_external_pressure: Some(self.pv.external_pressure),
+            pv_closed_ends: Some(self.pv.closed_ends),
+            pv_material_id: self.pv.material_id.clone(),
+            pv_required_ms: Some(self.pv.required_ms),
+            pv_unsupported_length: Some(self.pv.unsupported_length),
+            bu_bore_dia: Some(self.bushing.bore_dia),
+            bu_id_bushing: Some(self.bushing.id_bushing),
+            bu_housing_len: Some(self.bushing.housing_len),
+            bu_housing_width: Some(self.bushing.housing_width),
+            bu_edge_dist: Some(self.bushing.edge_dist),
+            bu_interference: Some(self.bushing.interference),
+            bu_mat_housing: self.bushing.mat_housing.clone(),
+            bu_mat_bushing: self.bushing.mat_bushing.clone(),
+            bu_d_t: Some(self.bushing.d_t),
+            bu_min_wall_straight: Some(self.bushing.min_wall_straight),
         }
     }
 }
@@ -159,6 +250,14 @@ impl eframe::App for ToolbenchApp {
         if self.search.is_running() {
             ctx.request_repaint_after(std::time::Duration::from_millis(80));
         }
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Best-effort, same as every other persistence write in this
+        // app (see persistence.rs's own doc comment) - save once on
+        // exit rather than every frame, since these fields only change
+        // on user input, not continuously.
+        persistence::save(&self.snapshot());
     }
 }
 

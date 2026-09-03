@@ -48,14 +48,14 @@ impl Step {
 
 pub struct PressureVesselTool {
     step: Step,
-    outer_diameter: f64,
-    wall_thickness: f64,
-    internal_pressure: f64,
-    external_pressure: f64,
-    closed_ends: bool,
-    material_id: String,
-    required_ms: f64,
-    unsupported_length: f64,
+    pub outer_diameter: f64,
+    pub wall_thickness: f64,
+    pub internal_pressure: f64,
+    pub external_pressure: f64,
+    pub closed_ends: bool,
+    pub material_id: String,
+    pub required_ms: f64,
+    pub unsupported_length: f64,
 }
 
 impl Default for PressureVesselTool {
