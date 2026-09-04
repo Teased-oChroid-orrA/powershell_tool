@@ -282,15 +282,32 @@ older implementation.
   native_search index-per-folder/auto-exclude/skip-if-unchanged policy, and
   full end-to-end orchestrator runs against every real fixture. Add a new
   test here for any new behavior rather than trusting a passing build.
-- **The `app` crate (Dioxus UI) cannot be fully verified this way** - the
-  actual rendered window needs a real run. `dx serve` (or `cargo run -p
-  app`) locally is the fast feedback loop; unlike the old WinUI head, this
-  works on any platform including macOS/Linux, since `dioxus-native` has no
-  Windows-only rendering dependency. `.github/workflows/rust-build.yml` is
-  the CI gate for the actual win-x64 build: it builds `app` for
-  `x86_64-pc-windows-msvc` on a Windows runner and checks the published exe
-  for an accidental `WebView2Loader.dll` dependency creeping back in (see
-  "Why dioxus-native" above).
+- **The `app`/`app-egui` crates (Dioxus/egui UI) cannot be verified by
+  `cargo check`/`cargo test` alone** - the actual rendered window needs a
+  real run. `dx serve` (or `cargo run -p app`) / `cargo run -p app-egui`
+  locally is the fast feedback loop; unlike the old WinUI head, this works
+  on any platform including macOS/Linux, since neither `dioxus-native` nor
+  `egui`/`eframe` has a Windows-only rendering dependency.
+  **Many prior phases in this project's history claimed "not independently
+  verified on-screen, no local GUI capability in this environment" - that
+  assumption was WRONG for at least one real session** (confirmed:
+  `screencapture` and a real display are available here on macOS).
+  Multiple real, screenshot-confirmed layout bugs shipped across several
+  phases specifically because that assumption went unquestioned - see
+  `docs/app-egui-parity-checklist.md`'s top section for the two exact bug
+  classes this cost. **Before claiming any `app-egui`/`app` layout or
+  rendering fix works, actually try:** `cargo build -p app-egui &&
+  ./target/debug/app-egui &` then `screencapture -x <path>` and read the
+  result back - don't assume this is unavailable without testing it in
+  the current session first. If it genuinely isn't available in a given
+  environment, say so explicitly rather than reusing this note's old
+  wording as if it were still an untested assumption.
+  `.github/workflows/rust-build.yml` is the CI gate for the actual win-x64
+  build: it builds `app`/`app-egui` for `x86_64-pc-windows-msvc` on a
+  Windows runner and checks the published exe for an accidental
+  `WebView2Loader.dll` dependency creeping back in (see "Why
+  dioxus-native" above - `app-egui` never had this dependency to begin
+  with, but the same CI check stays harmless to keep passing for it too).
 - **`src/TextInFilesSearch(.Core)/` (the C#/WinUI reference app)** still
   has its own gate: `dotnet run --project tests/TextInFilesSearch.Tests`
   locally, `.github/workflows/build.yml` in CI (builds, tests, publishes
@@ -431,6 +448,102 @@ looks cleaner - that regresses the exact problem this app was built to fix.
   into a single line before pushing. If you touch PDF text extraction
   again, keep both fixes in mind - correct character mapping alone isn't
   enough if the result gets fragmented back into unsearchable pieces.
+
+## `app-egui` parity checklist is the tracked source of truth, not phase docs
+
+`app-egui/` (the egui/eframe migration target replacing `app/`'s
+dioxus-native UI - see `docs/issue-11-phase-11..13.md` for why) accumulated
+8 straight commits of chrome/cosmetic fixes (rail hover threshold, card
+sizing, title size, tile-status chip, sketches, stepper widgets) after
+Phase 14 explicitly documented a per-tool deferred-functionality list -
+zero of those commits touched that list, and it aged silently because it
+only ever lived as prose in `docs/issue-11-phase-14.md`/`-15.md`. See
+`docs/app-egui-parity-checklist.md` for the tracked table this replaces.
+
+**Standing rule: no chrome/cosmetic-only `app-egui` commit lands while a
+`P0` row in that checklist is OPEN**, unless the user explicitly asked for
+cosmetic work specifically. Update the checklist row-by-row as each item
+closes, citing the closing commit - it is the thing to check before
+starting new `app-egui` work, not the phase docs.
+
+- **A fixed bug recurred in a second UI implementation of the same
+  feature.** `app/src/state.rs::notify_search_complete`'s own doc comment
+  records a real, confirmed-on-Windows crash (~5s after every search
+  completes) from firing `notify_rust::Notification::...show()`
+  unconditionally on the async task that just finished a search - fixed
+  there by making it opt-in (`desktop_notification_when_done`, defaults
+  OFF) plus `spawn_blocking` + `catch_unwind`. `app-egui/src/search.rs`'s
+  first working build (Phase 14) reintroduced the exact same
+  unconditional, unprotected call when it built its own completion
+  notification from scratch instead of checking whether this feature
+  already had a documented fix elsewhere in the repo. Fixed by porting the
+  real fix (see `app-egui/src/search.rs::notify_search_complete`), not
+  re-deriving one. If you port a feature that already exists in the other
+  UI stack, check that stack's own doc comments for a "found and fixed"
+  history first - a feature name matching isn't enough assurance its
+  first implementation didn't already teach the project something.
+
+- **A `#[derive(Default)]` on a `#[serde(default)]`-heavy struct silently
+  discards every field's intended default.** `app-egui/src/persistence.rs`'s
+  `SearchFieldsSnap` gives each field a specific default via
+  `#[serde(default = "fn")]` (e.g. `max_file_size_mb` → 50.0,
+  `throttle_limit` → `default_throttle_limit()`) - but those attributes
+  only fire when a field is missing from an ALREADY-PRESENT JSON object.
+  When the whole `search` key is absent (any settings file saved before
+  this struct existed), `PersistedState.search`'s own `#[serde(default)]`
+  falls back to `SearchFieldsSnap::default()` - and a *derived* `Default`
+  impl ignores every `#[serde(default = "fn")]` function entirely, giving
+  `0`/`0.0`/`false` instead. Screenshot-confirmed real bug: every
+  Performance-section field read `0` on first load after this struct grew
+  past its original three fields. Fixed by hand-writing
+  `impl Default for SearchFieldsSnap` to call the same `default_*()`
+  functions, and having `SearchTool::new()` build its initial state from
+  `SearchFieldsSnap::default()` rather than a second, separately
+  maintained default list - one source of truth, so the two paths can't
+  diverge again. If you add a field with a non-zero/non-empty default to
+  a `#[serde(default)]`-per-field struct, verify `Self::default()` matches
+  by testing the "whole struct missing" path, not just individual missing
+  fields.
+- **An unannotated `dyn FnMut(...)` (or any `dyn Trait`) parameter is
+  never `Send`, even when every real closure passed to it is** - this
+  makes an `async fn` taking `Option<&mut dyn FnMut(...)>` structurally
+  `!Send` for ALL callers, a property of the function's own body, not of
+  what any particular caller passes. `search_core::native_index::
+  build_or_update_corpus_index` hit this: `app/`'s Dioxus caller works
+  fine (Dioxus's task spawner doesn't require `Send`), but `app-egui`'s
+  real `tokio::spawn` (a multi-thread `Runtime` always requires it) can't
+  await it at all - not a bug in the closure passed, a structural
+  mismatch between the `dyn`-typed API and a `Send`-requiring runtime.
+  Adding `+ Send` to the trait object bound would have fixed `app-egui`
+  but broken `app/`'s caller (its closure captures a Dioxus `Signal`,
+  which is `!Send` by design). Resolved by adding
+  `build_or_update_corpus_index_send<F: FnMut(...) + Send>` as a generic
+  sibling (both delegate to a shared `?Sized`-generic private impl) rather
+  than changing the shared function's bound either direction. If a
+  `search-core` function needs to serve both this project's UI stacks,
+  remember they have genuinely different `Send` requirements - don't
+  assume adding or removing `Send` is a no-op for the other caller.
+- **`app-egui` has no custom `FontDefinitions` - it renders with
+  egui's bundled default fonts only (`Ubuntu-Light`/`Hack-Regular`/
+  `NotoEmoji-Regular`/`emoji-icon-font`), and several Unicode symbols
+  used throughout the UI don't exist in ANY of them.** Confirmed by
+  directly inspecting each font's cmap with `fontTools` (a Python
+  venv + `TTFont(...).getBestCmap()`), not assumed from how a
+  screenshot happened to look: `⌀` U+2300 (diameter - used 10× across
+  Bushing/Pressure-Vessel dimension labels), `✕` U+2715, `⬔` U+2B14
+  (was the Pressure Vessel nav icon), `✓` U+2713, `✎` U+270E (was the
+  Rename nav icon), `☽` U+263D (was the dark-mode toggle icon) all
+  render as tofu boxes. `◉` U+25C9 (the Bushing nav icon) was present
+  in `Hack-Regular` only - broken too, since nav icon labels render
+  with the default proportional style, not monospace. Fixed by
+  substituting each for a confirmed-present equivalent rather than
+  bundling a new font asset for a handful of symbols: `Ø` U+00D8, `×`
+  U+00D7, `■` U+25A0, `✔` U+2714, `🖊` U+1F58A, `🌙` U+1F319, `⚙`
+  U+2699. **Before using any Unicode symbol outside common Latin-1/
+  typography punctuation in this crate, verify it against egui's
+  actual bundled fonts (`epaint_default_fonts` in the Cargo registry
+  cache) rather than assuming it will render** - this bug was old and
+  present across nearly every sketch label before anyone checked.
 
 ## Feature parity checklist (from the original PowerShell tool, via the C# port)
 

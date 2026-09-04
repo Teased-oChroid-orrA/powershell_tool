@@ -191,7 +191,37 @@ pub async fn build_or_update_corpus_index(
     settings: &SearchSettings,
     engine: &NativeSearchEngine,
     cancellation: &CancellationToken,
-    mut on_progress: Option<&mut dyn FnMut(CorpusIndexProgress)>,
+    on_progress: Option<&mut dyn FnMut(CorpusIndexProgress)>,
+) -> NsResult<CorpusIndexOutcome> {
+    build_or_update_corpus_index_impl(settings, engine, cancellation, on_progress).await
+}
+
+/// Same as [`build_or_update_corpus_index`], for callers that need the
+/// returned future to be `Send` - a real `tokio::spawn`'d task on a
+/// multi-thread `Runtime` (egui/eframe's async bridge) requires it,
+/// unlike Dioxus's own single-threaded task spawner (every existing
+/// caller of the plain function above). An unannotated `dyn FnMut`
+/// trait object never carries `Send` even when the concrete closure
+/// underneath does, so the plain function's future is unconditionally
+/// `!Send` regardless of what's passed to it - this generic sibling
+/// avoids the trait-object erasure entirely (monomorphized per caller),
+/// rather than adding `+ Send` to the shared function, which would
+/// force it onto callers (like Dioxus's) whose closures capture
+/// non-`Send` reactive state and don't need it.
+pub async fn build_or_update_corpus_index_send<F: FnMut(CorpusIndexProgress) + Send>(
+    settings: &SearchSettings,
+    engine: &NativeSearchEngine,
+    cancellation: &CancellationToken,
+    on_progress: Option<&mut F>,
+) -> NsResult<CorpusIndexOutcome> {
+    build_or_update_corpus_index_impl(settings, engine, cancellation, on_progress).await
+}
+
+async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Sized>(
+    settings: &SearchSettings,
+    engine: &NativeSearchEngine,
+    cancellation: &CancellationToken,
+    mut on_progress: Option<&mut F>,
 ) -> NsResult<CorpusIndexOutcome> {
     let (all_files, _enum_errors) = file_reader::enumerate_files_safely(
         &settings.search_path,

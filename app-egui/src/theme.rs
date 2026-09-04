@@ -4,7 +4,7 @@
 //! try to fake the CSS `--glass`/backdrop-filter look, matching the
 //! flatter aesthetic already called out in the approved mockup).
 
-use eframe::egui::{Color32, Visuals};
+use eframe::egui::{Color32, Rounding, Visuals};
 
 pub struct Tokens {
     pub bg: Color32,
@@ -21,6 +21,7 @@ pub struct Tokens {
     pub good: Color32,
     pub good_bg: Color32,
     pub warning: Color32,
+    pub warning_bg: Color32,
     pub danger: Color32,
     pub danger_bg: Color32,
 }
@@ -41,6 +42,7 @@ impl Tokens {
         good: Color32::from_rgb(0x52, 0xc9, 0x8a),
         good_bg: Color32::from_rgb(0x17, 0x3a, 0x2a),
         warning: Color32::from_rgb(0xe0, 0xb3, 0x55),
+        warning_bg: Color32::from_rgb(0x3a, 0x2f, 0x16), // `--warning-bg` in the approved artifact's CSS
         danger: Color32::from_rgb(0xe2, 0x65, 0x7a),
         danger_bg: Color32::from_rgb(0x3a, 0x1f, 0x24),
     };
@@ -77,6 +79,20 @@ impl Tokens {
         v.window_stroke.color = self.border;
         v.window_rounding = 8.0.into();
         v.menu_rounding = 8.0.into();
+        // `.field input, .field select { border-radius: 6px }` in the
+        // approved mockup CSS - egui's own default widget rounding (2px)
+        // read as flat/unstyled boxes next to this app's 6-8px card/
+        // button rounding elsewhere, a real user-reported "ugly, doesn't
+        // match" gap across every text/number input in every tool, not
+        // just one. Applied globally here (not per-widget) so every
+        // `DragValue`/`TextEdit`/`ComboBox`/checkbox in the app picks it
+        // up automatically instead of needing a style override at each
+        // of the (many) call sites.
+        let field_rounding: Rounding = 6.0.into();
+        v.widgets.inactive.rounding = field_rounding;
+        v.widgets.hovered.rounding = field_rounding;
+        v.widgets.active.rounding = field_rounding;
+        v.widgets.open.rounding = field_rounding;
         v
     }
 }

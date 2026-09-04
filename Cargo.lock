@@ -370,6 +370,7 @@ dependencies = [
  "search-core",
  "serde",
  "serde_json",
+ "tempfile",
  "tiny-skia",
  "tokio",
  "tokio-util",
