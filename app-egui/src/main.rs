@@ -204,6 +204,7 @@ impl Default for ToolbenchApp {
             app.rail_pinned = p.rail_pinned.unwrap_or(app.rail_pinned);
             app.search.apply_snapshot(p.search);
             app.search.set_recent_and_presets(p.recent_searches, p.saved_presets);
+            app.search.apply_graph_pinned_layout(p.graph_pinned_layout);
             if let Some(v) = p.pv_outer_diameter {
                 app.pv.outer_diameter = v;
             }
@@ -376,6 +377,7 @@ impl ToolbenchApp {
             search: self.search.to_snapshot(),
             recent_searches: self.search.recent_searches().to_vec(),
             saved_presets: self.search.saved_presets().to_vec(),
+            graph_pinned_layout: self.search.graph_pinned_layout(),
             pv_outer_diameter: Some(self.pv.outer_diameter),
             pv_wall_thickness: Some(self.pv.wall_thickness),
             pv_internal_pressure: Some(self.pv.internal_pressure),

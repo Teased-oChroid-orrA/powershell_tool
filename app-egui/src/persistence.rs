@@ -228,6 +228,11 @@ pub struct PersistedState {
     pub recent_searches: Vec<RecentSearch>,
     #[serde(default)]
     pub saved_presets: Vec<SavedPreset>,
+    /// Brain-map manually-pinned node positions, keyed by
+    /// `graph::Node::stable_id` - see that type's own doc comment for why
+    /// this needs to survive a restart, not just a re-search.
+    #[serde(default)]
+    pub graph_pinned_layout: std::collections::HashMap<String, (f32, f32)>,
 
     pub pv_outer_diameter: Option<f64>,
     pub pv_wall_thickness: Option<f64>,

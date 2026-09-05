@@ -560,6 +560,15 @@ impl SearchTool {
         &self.saved_presets
     }
 
+    /// Brain-map pinned-layout persistence - see
+    /// `graph::GraphState::pinned_layout_snapshot`'s own doc comment.
+    pub fn graph_pinned_layout(&self) -> std::collections::HashMap<String, (f32, f32)> {
+        self.graph.pinned_layout_snapshot()
+    }
+    pub fn apply_graph_pinned_layout(&mut self, layout: std::collections::HashMap<String, (f32, f32)>) {
+        self.graph.apply_pinned_layout(layout);
+    }
+
     fn set_selected_extensions(&mut self, selected: &[String]) {
         for e in self.extension_catalog.iter_mut() {
             e.is_selected = false;
@@ -1447,18 +1456,20 @@ impl SearchTool {
                     ResultsView::BrainMap => {
                         // Real bipartite graph (file <-> matched filter),
                         // not decoration - see `graph.rs`'s module doc.
-                        // Click syncs back into the list by scrolling
-                        // there isn't a stable per-row id to target
-                        // without restructuring `result_row`, so for now
-                        // this surfaces the clicked path as a status
-                        // caption instead of a silent no-op - a real,
-                        // disclosed interim behavior, not a fake control.
+                        // A file-node click now opens the file directly
+                        // (real click-to-open); syncing back into the
+                        // list by scrolling there isn't a stable per-row
+                        // id to target without restructuring
+                        // `result_row`, so the clicked path is still
+                        // surfaced as a status caption too - a real,
+                        // disclosed interim behavior for the list-sync
+                        // half, not a silent no-op.
                         if let Some(path) = crate::graph::brain_map(ui, tokens, &s.results, &mut self.graph, 420.0) {
                             self.last_clicked_graph_node = Some(path);
                         }
                         if let Some(path) = &self.last_clicked_graph_node {
                             ui.add_space(4.0);
-                            ui.colored_label(tokens.fg_muted, format!("Selected: {path}"));
+                            ui.colored_label(tokens.fg_muted, format!("Opened: {path}"));
                         }
                     }
                 }
