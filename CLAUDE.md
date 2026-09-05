@@ -498,6 +498,22 @@ looks cleaner - that regresses the exact problem this app was built to fix.
   of layering the new ones in front would have reintroduced that exact
   bug for four already-fixed symbols.
 
+- **`resvg`/`usvg`/`tiny-skia` were declared in `app-egui/Cargo.toml` since
+  early in this crate's history but sat completely unused until
+  `design/icons.rs`** - confirmed by grepping for any `resvg::`/`usvg::`/
+  `tiny_skia::` call anywhere in the crate before this landed; there
+  were none. If you're hunting for "why is this dependency here", check
+  `design/icons.rs` first now, not just `Cargo.toml`'s own comment (which
+  itself was aspirational, not a description of working code, until this
+  pass). Two non-obvious integration details if you touch icon
+  rasterization again: (1) every bundled Lucide SVG uses
+  `stroke="currentColor"` - `usvg` has no CSS cascade to resolve that
+  against, so it must be string-replaced with a real hex color before
+  `Tree::from_str`; (2) `tiny_skia::Pixmap::data()` is **premultiplied**
+  alpha - feed it to `egui::ColorImage::from_rgba_premultiplied`, not
+  `from_rgba_unmultiplied`, or every anti-aliased edge pixel renders too
+  dark.
+
 ## `app-egui` parity checklist is the tracked source of truth, not phase docs
 
 `app-egui/` (the egui/eframe migration target replacing `app/`'s
