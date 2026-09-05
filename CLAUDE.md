@@ -478,6 +478,26 @@ looks cleaner - that regresses the exact problem this app was built to fix.
   this attribute explicitly rather than assuming a fix already shipped in
   one binary automatically covers a new one.
 
+- **`app-egui` now bundles real fonts (Inter + JetBrains Mono,
+  `assets/fonts/`, wired in `design/typography.rs`) - egui's bundled
+  default fonts (`Ubuntu-Light`/`Hack-Regular`/`NotoEmoji-Regular`/
+  `emoji-icon-font`) are kept installed as FALLBACKS, never removed.**
+  Google Fonts only distributes Inter/JetBrains Mono as variable fonts
+  now, and `ab_glyph` (egui/epaint's rasterizer) has no variable-font
+  axis support - it would render every weight at the font's single
+  default named instance. Static Regular/Medium/SemiBold/Bold (Inter)
+  and Regular/Bold (JetBrains Mono) instances were produced with
+  `fonttools varLib.instancer` (`pip install fonttools` in a throwaway
+  venv) before bundling via `include_bytes!` - don't bundle a variable
+  font file directly here, it won't do what it looks like it should. The
+  fallback-fonts-stay-installed part matters for a reason already on
+  record: the "verify glyph coverage before using an uncommon Unicode
+  symbol" bug class below found that ✔/⚙/🖊/🌙 don't exist in Inter or
+  JetBrains Mono at all (re-confirmed via `fontTools` cmap inspection
+  before adopting these faces) - removing the old bundled fonts instead
+  of layering the new ones in front would have reintroduced that exact
+  bug for four already-fixed symbols.
+
 ## `app-egui` parity checklist is the tracked source of truth, not phase docs
 
 `app-egui/` (the egui/eframe migration target replacing `app/`'s

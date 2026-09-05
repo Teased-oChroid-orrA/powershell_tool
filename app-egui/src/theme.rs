@@ -6,6 +6,8 @@
 
 use eframe::egui::{Color32, Rounding, Visuals};
 
+use crate::design::radii;
+
 pub struct Tokens {
     pub bg: Color32,
     pub bg_raised: Color32,
@@ -88,7 +90,7 @@ impl Tokens {
         // `DragValue`/`TextEdit`/`ComboBox`/checkbox in the app picks it
         // up automatically instead of needing a style override at each
         // of the (many) call sites.
-        let field_rounding: Rounding = 6.0.into();
+        let field_rounding: Rounding = radii::md();
         v.widgets.inactive.rounding = field_rounding;
         v.widgets.hovered.rounding = field_rounding;
         v.widgets.active.rounding = field_rounding;

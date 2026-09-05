@@ -32,6 +32,7 @@
 mod bushing;
 mod command_palette;
 mod components;
+mod design;
 mod graph;
 mod persistence;
 mod pressure_vessel;
@@ -578,6 +579,15 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "GS Engineering - Toolbench",
         options,
-        Box::new(|_cc| Ok(Box::new(ToolbenchApp::default()))),
+        Box::new(|cc| {
+            // Design System Epic Phase 1: bundled Inter/JetBrains Mono
+            // fonts, installed once here (not per-frame in `update()` -
+            // ~1.6MB of font data is too expensive to rebuild every
+            // frame). See `design::typography` for why egui's bundled
+            // default fonts stay installed as fallbacks rather than
+            // being replaced.
+            cc.egui_ctx.set_fonts(design::typography::font_definitions());
+            Ok(Box::new(ToolbenchApp::default()))
+        }),
     )
 }

@@ -8,6 +8,7 @@
 
 use eframe::egui::{self, Color32, RichText, Sense, Stroke};
 
+use crate::design::{radii, shadows, typography};
 use crate::theme::Tokens;
 
 /// `.card` - the base panel every section in the mockup sits in:
@@ -26,10 +27,16 @@ use crate::theme::Tokens;
 /// regardless of how much content it happens to have this frame.
 pub fn card(ui: &mut egui::Ui, tokens: &Tokens, add_contents: impl FnOnce(&mut egui::Ui)) {
     let full_width = ui.available_width();
-    egui::Frame::default().fill(tokens.bg_raised).stroke(Stroke::new(1.0, tokens.border)).rounding(8.0).inner_margin(16.0).show(ui, |ui| {
-        ui.set_min_width((full_width - 32.0).max(0.0));
-        add_contents(ui);
-    });
+    egui::Frame::default()
+        .fill(tokens.bg_raised)
+        .stroke(Stroke::new(1.0, tokens.border))
+        .rounding(radii::lg())
+        .inner_margin(16.0)
+        .shadow(shadows::raised())
+        .show(ui, |ui| {
+            ui.set_min_width((full_width - 32.0).max(0.0));
+            add_contents(ui);
+        });
 }
 
 /// `.card-title` - `font-size:1em; font-weight:700` in the mockup, i.e.
@@ -39,7 +46,7 @@ pub fn card(ui: &mut egui::Ui, tokens: &Tokens, add_contents: impl FnOnce(&mut e
 /// cards around them look sparser than they are. Use this for every
 /// card title instead of a raw `ui.heading()` call.
 pub fn card_title(ui: &mut egui::Ui, text: &str) {
-    ui.label(RichText::new(text).size(15.0).strong());
+    ui.label(typography::card_title_text(text).strong());
 }
 
 /// `.step-pill` row - step-number circle, label, em-dash separators,
@@ -147,9 +154,9 @@ pub fn nav_item(ui: &mut egui::Ui, tokens: &Tokens, icon: &str, title: &str, des
     } else {
         Color32::TRANSPARENT
     };
-    ui.painter().rect_filled(rect, 6.0, bg);
+    ui.painter().rect_filled(rect, radii::MD, bg);
     if active {
-        ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.0, tokens.accent.gamma_multiply(0.5)));
+        ui.painter().rect_stroke(rect, radii::MD, Stroke::new(1.0, tokens.accent.gamma_multiply(0.5)));
     }
     let icon_color = if active { tokens.accent_strong } else { tokens.fg_muted };
     ui.painter().text(rect.left_center() + egui::vec2(14.0, 0.0), egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(15.0), icon_color);
