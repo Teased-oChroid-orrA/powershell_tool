@@ -24,10 +24,14 @@ pub enum Command {
     CancelSearch,
     ToggleTheme,
     PinRail,
+    BuildIndex,
+    RebuildIndex,
+    OpenLastReport,
+    ToggleResultsView,
 }
 
 impl Command {
-    const ALL: [Command; 7] = [
+    const ALL: [Command; 11] = [
         Command::SwitchToSearch,
         Command::SwitchToBushing,
         Command::SwitchToPressureVessel,
@@ -35,6 +39,10 @@ impl Command {
         Command::CancelSearch,
         Command::ToggleTheme,
         Command::PinRail,
+        Command::BuildIndex,
+        Command::RebuildIndex,
+        Command::OpenLastReport,
+        Command::ToggleResultsView,
     ];
 
     fn label(self) -> &'static str {
@@ -46,6 +54,10 @@ impl Command {
             Command::CancelSearch => "Cancel Search",
             Command::ToggleTheme => "Toggle theme (dark/light)",
             Command::PinRail => "Toggle rail pin",
+            Command::BuildIndex => "Build/update fast re-search index",
+            Command::RebuildIndex => "Rebuild fast re-search index from scratch",
+            Command::OpenLastReport => "Open last HTML report",
+            Command::ToggleResultsView => "Toggle results view (List / Brain Map)",
         }
     }
 }

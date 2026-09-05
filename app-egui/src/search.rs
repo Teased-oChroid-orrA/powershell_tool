@@ -698,6 +698,24 @@ impl SearchTool {
         self.build_or_rebuild_corpus_index(true);
     }
 
+    /// Command-palette entry point for the same "Open HTML report" button
+    /// `results_column` already has - no-ops until a search has actually
+    /// produced a report, matching that button's own `if let Some(path)`
+    /// guard rather than a disabled/greyed-out palette entry (the palette
+    /// has no per-entry enabled state to hang that on).
+    pub fn open_last_report(&self) {
+        if let Some(path) = self.shared.lock().unwrap().report_path.clone() {
+            let _ = open::that(&path);
+        }
+    }
+
+    pub fn toggle_results_view(&mut self) {
+        self.results_view = match self.results_view {
+            ResultsView::List => ResultsView::BrainMap,
+            ResultsView::BrainMap => ResultsView::List,
+        };
+    }
+
     /// Entry point for the Build/Rebuild buttons - warns and asks for
     /// confirmation first if an index already exists at the TARGET
     /// location (per the user's explicit "warn, then let user confirm"

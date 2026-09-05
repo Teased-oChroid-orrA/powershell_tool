@@ -458,6 +458,10 @@ impl eframe::App for ToolbenchApp {
                 Command::CancelSearch => self.search.trigger_cancel(),
                 Command::ToggleTheme => self.dark = !self.dark,
                 Command::PinRail => self.rail_pinned = !self.rail_pinned,
+                Command::BuildIndex => self.search.trigger_build_index(),
+                Command::RebuildIndex => self.search.trigger_rebuild_index(),
+                Command::OpenLastReport => self.search.open_last_report(),
+                Command::ToggleResultsView => self.search.toggle_results_view(),
             }
         }
 

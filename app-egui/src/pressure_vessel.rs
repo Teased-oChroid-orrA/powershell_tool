@@ -25,7 +25,7 @@ use crate::sketches::{pv_head_on, pv_isometric, pv_side_view, PvSketchCtx};
 use crate::theme::Tokens;
 use crate::widgets::{card, headline, side_by_side, stepper, MIN_FLEX_COL};
 
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 enum Step {
     #[default]
     Geometry,
@@ -181,6 +181,12 @@ impl PressureVesselTool {
             closed_ends: self.closed_ends,
             unsupported_length: self.unsupported_length,
         };
+        // Design System Epic Phase 5 - fade-in on first visit per step,
+        // same treatment and scope note as `bushing.rs::step_content`.
+        let fade_id = ui.id().with(("pv_step_fade", step));
+        let alpha = ui.ctx().animate_bool(fade_id, true);
+        ui.scope(|ui| {
+        ui.set_opacity(alpha);
         match step {
             Step::Geometry => {
                 let inner_d = 2.0 * geometry.inner_radius;
@@ -216,6 +222,7 @@ impl PressureVesselTool {
             }
             Step::Results => self.results_body(ui, tokens, ctx),
         }
+        });
     }
 
     fn results_body(&self, ui: &mut egui::Ui, tokens: &Tokens, ctx: &PvContext) {

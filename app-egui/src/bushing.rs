@@ -45,7 +45,7 @@ use crate::sketches::{bushing_head_on, bushing_isometric, bushing_side_view, Bus
 use crate::theme::Tokens;
 use crate::widgets::{card, headline, side_by_side, stepper, MIN_FLEX_COL};
 
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 enum Step {
     #[default]
     Repair,
@@ -292,10 +292,20 @@ impl BushingTool {
 
     fn step_content(&mut self, ui: &mut egui::Ui, tokens: &Tokens, step: Step, out: &bushing_solver::solve::BushingOutput, check_rows: &[CheckRow]) {
         let ctx = self.sketch_ctx(out);
+        // Design System Epic Phase 5 - a real fade-in when a step's
+        // content first appears, not a flat instant swap. Keyed on
+        // `step` itself (not a generation counter), so this plays once
+        // per step per session rather than re-triggering on every
+        // revisit - a deliberate, small scope cut: correct on first
+        // visit, and no state to persist for a purely cosmetic effect.
+        let fade_id = ui.id().with(("bushing_step_fade", step));
+        let alpha = ui.ctx().animate_bool(fade_id, true);
+        ui.scope(|ui| {
+        ui.set_opacity(alpha);
         match step {
             Step::Repair => form_and_sketch(ui, tokens, "01 \u{b7} Repair", "repair", &ctx, SPEC_FORM_W, |ui| {
-                spec_table(ui, "repair_bore_spec", |ui| {
-                    plain_spec_row(ui, tokens, "Bore, in", &mut self.bore_dia, &mut self.bore_tol_plus, &mut self.bore_tol_minus, out.bore_tol, 4);
+                spec_table(ui, "repair_bore_spec", |ui, w| {
+                    plain_spec_row(ui, tokens, 0, w, "Bore, in", &mut self.bore_dia, &mut self.bore_tol_plus, &mut self.bore_tol_minus, out.bore_tol, 4);
                 });
                 ui.horizontal(|ui| {
                     if ui.button("Pick reamer\u{2026}").clicked() {
@@ -333,18 +343,18 @@ impl BushingTool {
                     ui.add_space(4.0);
                     ui.label("External countersink mode");
                     cs_mode_picker(ui, tokens, &mut self.ext_cs_mode);
-                    spec_table(ui, "ext_cs_spec", |ui| {
+                    spec_table(ui, "ext_cs_spec", |ui, w| {
                         let mode = self.ext_cs_mode;
                         cs_spec_row(
-                            ui, tokens, "Depth, in", cs_field_is_direct(mode, CsField::Depth), &mut self.ext_cs_depth, &mut self.ext_cs_depth_tol_plus,
+                            ui, tokens, 0, w, "Depth, in", cs_field_is_direct(mode, CsField::Depth), &mut self.ext_cs_depth, &mut self.ext_cs_depth_tol_plus,
                             &mut self.ext_cs_depth_tol_minus, out.cs_solved_od.map(|c| c.depth), out.cs_external_depth_tol, 4,
                         );
                         cs_spec_row(
-                            ui, tokens, "Angle, deg", cs_field_is_direct(mode, CsField::Angle), &mut self.ext_cs_angle, &mut self.ext_cs_angle_tol_plus,
+                            ui, tokens, 1, w, "Angle, deg", cs_field_is_direct(mode, CsField::Angle), &mut self.ext_cs_angle, &mut self.ext_cs_angle_tol_plus,
                             &mut self.ext_cs_angle_tol_minus, out.cs_solved_od.map(|c| c.angle_deg), out.cs_external_angle_tol, 1,
                         );
                         cs_spec_row(
-                            ui, tokens, "Diameter, in", cs_field_is_direct(mode, CsField::Dia), &mut self.ext_cs_dia, &mut self.ext_cs_dia_tol_plus,
+                            ui, tokens, 2, w, "Diameter, in", cs_field_is_direct(mode, CsField::Dia), &mut self.ext_cs_dia, &mut self.ext_cs_dia_tol_plus,
                             &mut self.ext_cs_dia_tol_minus, out.cs_solved_od.map(|c| c.dia), out.cs_external_dia_tol, 4,
                         );
                     });
@@ -356,18 +366,18 @@ impl BushingTool {
                     ui.add_space(4.0);
                     ui.label("Internal countersink mode");
                     cs_mode_picker(ui, tokens, &mut self.cs_mode);
-                    spec_table(ui, "int_cs_spec", |ui| {
+                    spec_table(ui, "int_cs_spec", |ui, w| {
                         let mode = self.cs_mode;
                         cs_spec_row(
-                            ui, tokens, "Depth, in", cs_field_is_direct(mode, CsField::Depth), &mut self.cs_depth, &mut self.cs_depth_tol_plus,
+                            ui, tokens, 0, w, "Depth, in", cs_field_is_direct(mode, CsField::Depth), &mut self.cs_depth, &mut self.cs_depth_tol_plus,
                             &mut self.cs_depth_tol_minus, out.cs_solved_id.map(|c| c.depth), out.cs_internal_depth_tol, 4,
                         );
                         cs_spec_row(
-                            ui, tokens, "Angle, deg", cs_field_is_direct(mode, CsField::Angle), &mut self.cs_angle, &mut self.cs_angle_tol_plus,
+                            ui, tokens, 1, w, "Angle, deg", cs_field_is_direct(mode, CsField::Angle), &mut self.cs_angle, &mut self.cs_angle_tol_plus,
                             &mut self.cs_angle_tol_minus, out.cs_solved_id.map(|c| c.angle_deg), out.cs_internal_angle_tol, 1,
                         );
                         cs_spec_row(
-                            ui, tokens, "Diameter, in", cs_field_is_direct(mode, CsField::Dia), &mut self.cs_dia, &mut self.cs_dia_tol_plus,
+                            ui, tokens, 2, w, "Diameter, in", cs_field_is_direct(mode, CsField::Dia), &mut self.cs_dia, &mut self.cs_dia_tol_plus,
                             &mut self.cs_dia_tol_minus, out.cs_solved_id.map(|c| c.dia), out.cs_internal_dia_tol, 4,
                         );
                     });
@@ -391,8 +401,8 @@ impl BushingTool {
                 material_combo(ui, tokens, "Bushing material", &mut self.mat_bushing);
             }),
             Step::Fit => form_and_sketch(ui, tokens, "04 \u{b7} Fit", "fit", &ctx, SPEC_FORM_W, |ui| {
-                spec_table(ui, "fit_interference_spec", |ui| {
-                    plain_spec_row(ui, tokens, "Interference, in", &mut self.interference, &mut self.interference_tol_plus, &mut self.interference_tol_minus, out.interference_tol, 4);
+                spec_table(ui, "fit_interference_spec", |ui, w| {
+                    plain_spec_row(ui, tokens, 0, w, "Interference, in", &mut self.interference, &mut self.interference_tol_plus, &mut self.interference_tol_minus, out.interference_tol, 4);
                 });
                 ui.add_space(6.0);
                 ui.checkbox(&mut self.enforcement_enabled, "Auto-tighten bore tolerance to meet target interference");
@@ -428,6 +438,7 @@ impl BushingTool {
             }
             Step::Results => results_body(ui, tokens, out, check_rows),
         }
+        });
     }
 
     fn inputs(&self) -> BushingInputs {
@@ -592,14 +603,33 @@ fn cs_mode_picker(ui: &mut egui::Ui, tokens: &Tokens, mode: &mut CsMode) {
 /// matches `app/src/bushing_workbench.rs`'s `spec-table` HTML exactly,
 /// via the same `egui::Grid` pattern `results_body`'s
 /// `bushing_spec_grid` already uses elsewhere in this file.
-fn spec_table(ui: &mut egui::Ui, id: &str, rows: impl FnOnce(&mut egui::Ui)) {
+fn spec_table(ui: &mut egui::Ui, id: &str, rows: impl FnOnce(&mut egui::Ui, f32)) {
+    let width = ui.available_width();
     egui::Grid::new(id).num_columns(6).spacing([10.0, 4.0]).show(ui, |ui| {
         for h in ["Dimension", "Nominal", "Tol \u{2212}", "Tol +", "Range", "Source"] {
             ui.label(egui::RichText::new(h).size(9.0).strong());
         }
         ui.end_row();
-        rows(ui);
+        rows(ui, width);
     });
+}
+
+/// Design System Epic Phase 5 - zebra-striped spec tables. Paints a
+/// subtle full-row tint behind every ODD row (0-indexed, so the 2nd,
+/// 4th, ... row) before that row's cells are laid out - egui's painter
+/// draws in call order, so this rect ends up underneath the row's own
+/// `DragValue`/label widgets rather than covering them. A single-row
+/// table (Bore, Interference) never calls this with `row_index > 0`, so
+/// it stays a no-op there - striping has no visual meaning without at
+/// least 2 rows to alternate against.
+fn zebra_stripe(ui: &mut egui::Ui, tokens: &Tokens, row_index: usize, row_width: f32) {
+    if row_index % 2 == 0 {
+        return;
+    }
+    let top_left = ui.cursor().min;
+    let rect = egui::Rect::from_min_size(egui::pos2(top_left.x - 4.0, top_left.y - 3.0), egui::vec2(row_width + 8.0, 22.0));
+    let tint = tokens.bg_sunken;
+    ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(tint.r(), tint.g(), tint.b(), 110));
 }
 
 /// Bare "lower\u{2013}upper" (or a single value when the range is
@@ -616,7 +646,9 @@ fn format_range(r: ToleranceRange, decimals: usize) -> String {
 /// A spec-table row for a plain direct-input dimension with its own
 /// tolerance (bore, target interference) - always "Direct", no derived
 /// split to track (unlike `cs_spec_row`).
-fn plain_spec_row(ui: &mut egui::Ui, tokens: &Tokens, label: &str, value: &mut f64, tol_plus: &mut f64, tol_minus: &mut f64, range: ToleranceRange, decimals: usize) {
+#[allow(clippy::too_many_arguments)]
+fn plain_spec_row(ui: &mut egui::Ui, tokens: &Tokens, row_index: usize, row_width: f32, label: &str, value: &mut f64, tol_plus: &mut f64, tol_minus: &mut f64, range: ToleranceRange, decimals: usize) {
+    zebra_stripe(ui, tokens, row_index, row_width);
     ui.label(label);
     crate::widgets::styled_number(ui, value, 0.0005, decimals);
     crate::widgets::styled_number(ui, tol_minus, 0.0001, decimals);
@@ -638,6 +670,8 @@ fn plain_spec_row(ui: &mut egui::Ui, tokens: &Tokens, label: &str, value: &mut f
 fn cs_spec_row(
     ui: &mut egui::Ui,
     tokens: &Tokens,
+    row_index: usize,
+    row_width: f32,
     label: &str,
     is_direct: bool,
     value: &mut f64,
@@ -647,6 +681,7 @@ fn cs_spec_row(
     range: Option<ToleranceRange>,
     decimals: usize,
 ) {
+    zebra_stripe(ui, tokens, row_index, row_width);
     ui.label(label);
     if is_direct {
         crate::widgets::styled_number(ui, value, 0.0005, decimals);
