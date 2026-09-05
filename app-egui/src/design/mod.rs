@@ -12,6 +12,7 @@
 //! yet: type scale, spacing scale, radius scale, and elevation.
 
 pub mod components;
+pub mod icons;
 pub mod radii;
 pub mod shadows;
 pub mod spacing;

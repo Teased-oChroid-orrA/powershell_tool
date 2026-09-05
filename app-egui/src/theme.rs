@@ -9,6 +9,12 @@ use eframe::egui::{Color32, Rounding, Visuals};
 use crate::design::radii;
 
 pub struct Tokens {
+    /// Selects `Visuals::dark()` vs `Visuals::light()` as `visuals()`'s
+    /// base - egui's own base visuals differ in more than color (e.g.
+    /// default shadow tint, text-selection contrast handling), so picking
+    /// the wrong base would leave those un-overridden details backwards
+    /// even with every color field above set correctly for the theme.
+    pub dark_mode: bool,
     pub bg: Color32,
     pub bg_raised: Color32,
     pub bg_sunken: Color32,
@@ -30,6 +36,7 @@ pub struct Tokens {
 
 impl Tokens {
     pub const DARK: Tokens = Tokens {
+        dark_mode: true,
         bg: Color32::from_rgb(0x14, 0x16, 0x1b),
         bg_raised: Color32::from_rgb(0x1b, 0x1e, 0x25),
         bg_sunken: Color32::from_rgb(0x0e, 0x10, 0x13),
@@ -49,15 +56,38 @@ impl Tokens {
         danger_bg: Color32::from_rgb(0x3a, 0x1f, 0x24),
     };
 
-    /// Light variant is not yet ported (the real app's `--*-light` block
-    /// in `main.rs` has its own full set) - flagged as a known gap rather
-    /// than guessed. Dark is this app's default theme (`AppState`'s own
-    /// `dark_theme` persisted default is `true`), so it's the only one
-    /// that blocks Stage 2 from being useful to look at.
-    pub const LIGHT: Tokens = Tokens::DARK;
+    /// Design System Epic Phase 3: a real, distinct light palette - not
+    /// the dark colors left as-is (that placeholder shipped for several
+    /// phases; every color below is chosen for light-background
+    /// contrast, not copied from `DARK`). `accent`/`accent_strong` are
+    /// deliberately darker/more saturated than dark mode's bright cyan -
+    /// `DARK`'s `0x3fbfe8` fails contrast against a near-white
+    /// background (checked against WCAG AA's ~4.5:1 text-contrast
+    /// guideline, not just eyeballed), so light mode uses a deeper teal
+    /// that still reads as "the same brand accent," not a different hue.
+    pub const LIGHT: Tokens = Tokens {
+        dark_mode: false,
+        bg: Color32::from_rgb(0xf6, 0xf8, 0xfa),
+        bg_raised: Color32::from_rgb(0xff, 0xff, 0xff),
+        bg_sunken: Color32::from_rgb(0xec, 0xf0, 0xf3),
+        fg: Color32::from_rgb(0x16, 0x1a, 0x1f),
+        fg_muted: Color32::from_rgb(0x51, 0x59, 0x62),
+        fg_subtle: Color32::from_rgb(0x83, 0x8b, 0x94),
+        border: Color32::from_rgb(0xd6, 0xdc, 0xe2),
+        border_strong: Color32::from_rgb(0xb8, 0xc1, 0xca),
+        accent: Color32::from_rgb(0x0b, 0x7d, 0xa1),
+        accent_strong: Color32::from_rgb(0x08, 0x63, 0x82),
+        accent_fg: Color32::from_rgb(0xff, 0xff, 0xff),
+        good: Color32::from_rgb(0x1d, 0x82, 0x52),
+        good_bg: Color32::from_rgb(0xdd, 0xf2, 0xe6),
+        warning: Color32::from_rgb(0x8f, 0x64, 0x09),
+        warning_bg: Color32::from_rgb(0xfa, 0xec, 0xcf),
+        danger: Color32::from_rgb(0xb8, 0x2e, 0x49),
+        danger_bg: Color32::from_rgb(0xf9, 0xdf, 0xe3),
+    };
 
     pub fn visuals(&self) -> Visuals {
-        let mut v = Visuals::dark();
+        let mut v = if self.dark_mode { Visuals::dark() } else { Visuals::light() };
         v.override_text_color = Some(self.fg);
         v.panel_fill = self.bg_raised;
         v.window_fill = self.bg_raised;
@@ -81,6 +111,13 @@ impl Tokens {
         v.window_stroke.color = self.border;
         v.window_rounding = 8.0.into();
         v.menu_rounding = 8.0.into();
+        // The command palette (a `Window`) and every `ComboBox`/context
+        // menu popup get this app's own named elevation instead of
+        // egui's built-in default shadow - same `design::shadows` scale
+        // `widgets::card` uses, so overlay content and card content read
+        // as one consistent elevation system rather than two.
+        v.window_shadow = crate::design::shadows::overlay();
+        v.popup_shadow = crate::design::shadows::overlay();
         // `.field input, .field select { border-radius: 6px }` in the
         // approved mockup CSS - egui's own default widget rounding (2px)
         // read as flat/unstyled boxes next to this app's 6-8px card/

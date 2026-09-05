@@ -137,14 +137,18 @@ impl ToolId {
     fn enabled(self) -> bool {
         matches!(self, ToolId::Search | ToolId::Bushing | ToolId::PressureVessel)
     }
+    /// Bundled Lucide icon name (`design::icons::svg_source`'s key), NOT
+    /// a display glyph - see `design::icons`'s module doc for why every
+    /// tool-rail icon moved off the single-Unicode-glyph approach every
+    /// other icon in this app still uses.
     fn icon(self) -> &'static str {
         match self {
-            ToolId::Search => "\u{1F50D}",
-            ToolId::Bushing => "\u{2699}",
-            ToolId::PressureVessel => "\u{25a0}",
-            ToolId::Dupes => "\u{1F4D1}",
-            ToolId::Rename => "\u{1f58a}",
-            ToolId::Logs => "\u{1F4CA}",
+            ToolId::Search => "search",
+            ToolId::Bushing => "settings",
+            ToolId::PressureVessel => "cylinder",
+            ToolId::Dupes => "copy-check",
+            ToolId::Rename => "pencil-line",
+            ToolId::Logs => "chart-column",
         }
     }
 }
@@ -168,6 +172,7 @@ struct ToolbenchApp {
     palette: CommandPalette,
     last_rail_width: f32,
     toasts: design::components::ToastQueue,
+    icons: design::icons::IconCache,
 }
 
 impl Default for ToolbenchApp {
@@ -192,6 +197,7 @@ impl Default for ToolbenchApp {
             palette: CommandPalette::default(),
             last_rail_width: RAIL_COLLAPSED_W,
             toasts: design::components::ToastQueue::default(),
+            icons: design::icons::IconCache::default(),
         };
         if let Some(p) = persistence::load() {
             app.dark = p.dark.unwrap_or(app.dark);
@@ -549,7 +555,7 @@ impl ToolbenchApp {
         ui.add_space(6.0);
         ui.colored_label(tokens.fg_subtle, egui::RichText::new("TOOLS").size(10.5));
         for tool in NAV_ITEMS {
-            if crate::widgets::nav_item(ui, tokens, tool.icon(), tool.title(), tool.desc(), self.active_tool == tool, tool.enabled()) {
+            if crate::widgets::nav_item(ui, tokens, &mut self.icons, tool.icon(), tool.title(), tool.desc(), self.active_tool == tool, tool.enabled()) {
                 self.active_tool = tool;
             }
         }

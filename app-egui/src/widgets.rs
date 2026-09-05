@@ -142,9 +142,10 @@ pub fn side_by_side(
     });
 }
 
-/// `.nav-item` - icon glyph, two-line title+desc, active/hover states, an
+/// `.nav-item` - icon, two-line title+desc, active/hover states, an
 /// optional "Soon" pill for not-yet-enabled tools.
-pub fn nav_item(ui: &mut egui::Ui, tokens: &Tokens, icon: &str, title: &str, desc: &str, active: bool, enabled: bool) -> bool {
+#[allow(clippy::too_many_arguments)]
+pub fn nav_item(ui: &mut egui::Ui, tokens: &Tokens, icons: &mut crate::design::icons::IconCache, icon: &'static str, title: &str, desc: &str, active: bool, enabled: bool) -> bool {
     let width = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 40.0), if enabled { Sense::click() } else { Sense::hover() });
     let bg = if active {
@@ -158,8 +159,11 @@ pub fn nav_item(ui: &mut egui::Ui, tokens: &Tokens, icon: &str, title: &str, des
     if active {
         ui.painter().rect_stroke(rect, radii::MD, Stroke::new(1.0, tokens.accent.gamma_multiply(0.5)));
     }
-    let icon_color = if active { tokens.accent_strong } else { tokens.fg_muted };
-    ui.painter().text(rect.left_center() + egui::vec2(14.0, 0.0), egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(15.0), icon_color);
+    let icon_color = if active { tokens.accent_strong } else if enabled { tokens.fg_muted } else { tokens.fg_subtle };
+    let tex = icons.get(ui.ctx(), icon, icon_color, 18);
+    let icon_center = rect.left_center() + egui::vec2(14.0, 0.0);
+    let icon_rect = egui::Rect::from_center_size(icon_center, egui::vec2(18.0, 18.0));
+    ui.painter().image(tex.id(), icon_rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
     let title_color = if !enabled { tokens.fg_subtle } else if active { tokens.fg } else { tokens.fg };
     ui.painter().text(
         rect.left_top() + egui::vec2(30.0, 8.0),

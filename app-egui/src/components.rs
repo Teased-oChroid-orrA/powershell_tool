@@ -166,6 +166,7 @@ fn tile(ui: &mut egui::Ui, tokens: &Tokens, r: &CheckRow) {
         .stroke(egui::Stroke::new(1.0, tokens.border))
         .rounding(10.0)
         .inner_margin(12.0)
+        .shadow(crate::design::shadows::raised())
         .show(ui, |ui| {
             ui.set_width(TILE_WIDTH);
             let content_width = TILE_WIDTH - 24.0; // minus inner_margin(12.0) both sides
@@ -246,6 +247,7 @@ pub fn status_rail(ui: &mut egui::Ui, tokens: &Tokens, rows: &[CheckRow]) {
         .stroke(egui::Stroke::new(1.0, tokens.border))
         .rounding(8.0)
         .inner_margin(12.0)
+        .shadow(crate::design::shadows::raised())
         .show(ui, |ui| {
             ui.set_width(208.0); // 232px rail - 2*12px inner_margin; `set_width`, not `set_min_width` - see `tile`'s doc comment for why a floor isn't enough here either
             ui.horizontal(|ui| {
