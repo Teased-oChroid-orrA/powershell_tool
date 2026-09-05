@@ -11,6 +11,7 @@
 //! truth for the same palette; this module covers only what didn't exist
 //! yet: type scale, spacing scale, radius scale, and elevation.
 
+pub mod components;
 pub mod radii;
 pub mod shadows;
 pub mod spacing;

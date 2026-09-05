@@ -194,20 +194,13 @@ impl PressureVesselTool {
                 form_and_sketch(ui, tokens, "02 \u{b7} Pressure & boundary condition", "pressure", &sketch_ctx, pv_head_on, pv_side_view, |ui| {
                     num_field(ui, tokens, "Internal pressure (psi)", &mut self.internal_pressure);
                     num_field(ui, tokens, "External pressure (psi)", &mut self.external_pressure);
-                    ui.horizontal(|ui| {
-                        if ui.selectable_label(self.closed_ends, "Closed ends").clicked() {
-                            self.closed_ends = true;
-                        }
-                        if ui.selectable_label(!self.closed_ends, "Open ends").clicked() {
-                            self.closed_ends = false;
-                        }
-                    });
+                    crate::design::components::segmented(ui, tokens, &mut self.closed_ends, &[(true, "Closed ends"), (false, "Open ends")]);
                 });
             }
             Step::Material => {
                 let name = ctx.material.name;
                 form_and_sketch(ui, tokens, "03 \u{b7} Material & requirement", "material", &sketch_ctx, pv_head_on, pv_side_view, |ui| {
-                    egui::ComboBox::from_label("Material").selected_text(name).show_ui(ui, |ui| {
+                    crate::design::components::select_field(ui, tokens, "Material", name, |ui| {
                         for m in MATERIALS {
                             ui.selectable_value(&mut self.material_id, m.id.to_string(), m.name);
                         }

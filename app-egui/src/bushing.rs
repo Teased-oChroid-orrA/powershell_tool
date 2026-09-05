@@ -319,17 +319,12 @@ impl BushingTool {
             }),
             Step::Geometry => form_and_sketch(ui, tokens, "02 \u{b7} Geometry", "geom", &ctx, SPEC_FORM_W, |ui| {
                 ui.label("Head type (OD)");
-                ui.horizontal(|ui| {
-                    if ui.selectable_label(self.head_type == BushingType::Straight, "Slug (no head)").clicked() {
-                        self.head_type = BushingType::Straight;
-                    }
-                    if ui.selectable_label(self.head_type == BushingType::Countersink, "Countersunk").clicked() {
-                        self.head_type = BushingType::Countersink;
-                    }
-                    if ui.selectable_label(self.head_type == BushingType::Flanged, "Flanged").clicked() {
-                        self.head_type = BushingType::Flanged;
-                    }
-                });
+                crate::design::components::segmented(
+                    ui,
+                    tokens,
+                    &mut self.head_type,
+                    &[(BushingType::Straight, "Slug (no head)"), (BushingType::Countersink, "Countersunk"), (BushingType::Flanged, "Flanged")],
+                );
                 ui.add_enabled_ui(self.head_type == BushingType::Flanged, |ui| {
                     num_field(ui, tokens, "Flange OD (in)", &mut self.flange_od);
                     num_field(ui, tokens, "Flange thickness (in)", &mut self.flange_thk);
@@ -337,7 +332,7 @@ impl BushingTool {
                 if self.head_type == BushingType::Countersink {
                     ui.add_space(4.0);
                     ui.label("External countersink mode");
-                    cs_mode_picker(ui, &mut self.ext_cs_mode);
+                    cs_mode_picker(ui, tokens, &mut self.ext_cs_mode);
                     spec_table(ui, "ext_cs_spec", |ui| {
                         let mode = self.ext_cs_mode;
                         cs_spec_row(
@@ -356,18 +351,11 @@ impl BushingTool {
                 }
                 ui.add_space(8.0);
                 ui.label("ID geometry");
-                ui.horizontal(|ui| {
-                    if ui.selectable_label(self.id_type == IdType::Straight, "Straight").clicked() {
-                        self.id_type = IdType::Straight;
-                    }
-                    if ui.selectable_label(self.id_type == IdType::Countersink, "Countersunk").clicked() {
-                        self.id_type = IdType::Countersink;
-                    }
-                });
+                crate::design::components::segmented(ui, tokens, &mut self.id_type, &[(IdType::Straight, "Straight"), (IdType::Countersink, "Countersunk")]);
                 if self.id_type == IdType::Countersink {
                     ui.add_space(4.0);
                     ui.label("Internal countersink mode");
-                    cs_mode_picker(ui, &mut self.cs_mode);
+                    cs_mode_picker(ui, tokens, &mut self.cs_mode);
                     spec_table(ui, "int_cs_spec", |ui| {
                         let mode = self.cs_mode;
                         cs_spec_row(
@@ -399,8 +387,8 @@ impl BushingTool {
                 ui.colored_label(tokens.fg_subtle, egui::RichText::new("Chamfers + bushing length are drafting only \u{2014} not fed into the margin calculations below").size(9.5).italics());
             }),
             Step::Material => form_and_sketch(ui, tokens, "03 \u{b7} Material", "material", &ctx, FORM_W, |ui| {
-                material_combo(ui, "Housing material", &mut self.mat_housing);
-                material_combo(ui, "Bushing material", &mut self.mat_bushing);
+                material_combo(ui, tokens, "Housing material", &mut self.mat_housing);
+                material_combo(ui, tokens, "Bushing material", &mut self.mat_bushing);
             }),
             Step::Fit => form_and_sketch(ui, tokens, "04 \u{b7} Fit", "fit", &ctx, SPEC_FORM_W, |ui| {
                 spec_table(ui, "fit_interference_spec", |ui| {
@@ -421,15 +409,12 @@ impl BushingTool {
                     num_field(ui, tokens, "Friction coefficient", &mut self.friction);
                     ui.horizontal(|ui| {
                         ui.label("End constraint");
-                        if ui.selectable_label(self.end_constraint == EndConstraint::Free, "Free").clicked() {
-                            self.end_constraint = EndConstraint::Free;
-                        }
-                        if ui.selectable_label(self.end_constraint == EndConstraint::OneEnd, "One end").clicked() {
-                            self.end_constraint = EndConstraint::OneEnd;
-                        }
-                        if ui.selectable_label(self.end_constraint == EndConstraint::BothEnds, "Both ends").clicked() {
-                            self.end_constraint = EndConstraint::BothEnds;
-                        }
+                        crate::design::components::segmented(
+                            ui,
+                            tokens,
+                            &mut self.end_constraint,
+                            &[(EndConstraint::Free, "Free"), (EndConstraint::OneEnd, "One end"), (EndConstraint::BothEnds, "Both ends")],
+                        );
                     });
                     num_field(ui, tokens, "\u{394}T from install, \u{b0}F", &mut self.d_t);
                     num_field(ui, tokens, "Edge load angle (deg)", &mut self.edge_load_angle_deg);
@@ -594,18 +579,13 @@ fn cs_field_is_direct(mode: CsMode, which: CsField) -> bool {
     }
 }
 
-fn cs_mode_picker(ui: &mut egui::Ui, mode: &mut CsMode) {
-    ui.horizontal(|ui| {
-        if ui.selectable_label(*mode == CsMode::DepthAngle, "Depth + angle").clicked() {
-            *mode = CsMode::DepthAngle;
-        }
-        if ui.selectable_label(*mode == CsMode::DiaAngle, "Dia + angle").clicked() {
-            *mode = CsMode::DiaAngle;
-        }
-        if ui.selectable_label(*mode == CsMode::DiaDepth, "Dia + depth").clicked() {
-            *mode = CsMode::DiaDepth;
-        }
-    });
+fn cs_mode_picker(ui: &mut egui::Ui, tokens: &Tokens, mode: &mut CsMode) {
+    crate::design::components::segmented(
+        ui,
+        tokens,
+        mode,
+        &[(CsMode::DepthAngle, "Depth + angle"), (CsMode::DiaAngle, "Dia + angle"), (CsMode::DiaDepth, "Dia + depth")],
+    );
 }
 
 /// 6-column spec table (Dimension/Nominal/Tol−/Tol+/Range/Source) -
@@ -722,9 +702,9 @@ fn num_field(ui: &mut egui::Ui, tokens: &Tokens, label: &str, value: &mut f64) {
     crate::widgets::num_field(ui, tokens, label, value, 0.001, 6);
 }
 
-fn material_combo(ui: &mut egui::Ui, label: &str, id: &mut String) {
+fn material_combo(ui: &mut egui::Ui, tokens: &Tokens, label: &str, id: &mut String) {
     let current_name = MATERIALS.iter().find(|m| m.id == id.as_str()).map(|m| m.name).unwrap_or("select");
-    egui::ComboBox::from_label(label).selected_text(current_name).show_ui(ui, |ui| {
+    crate::design::components::select_field(ui, tokens, label, current_name, |ui| {
         for m in MATERIALS {
             ui.selectable_value(id, m.id.to_string(), m.name);
         }

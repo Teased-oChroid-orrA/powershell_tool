@@ -36,6 +36,7 @@ use search_core::orchestrator::{self, OrchestratorError};
 use search_core::report;
 use tokio_util::sync::CancellationToken;
 
+use crate::design::components::ToastKind;
 use crate::persistence::{IndexLocation, RecentSearch, SavedPreset, SearchFieldsSnap};
 use crate::theme::Tokens;
 use crate::widgets::card;
@@ -302,6 +303,11 @@ pub struct SearchTool {
     /// Which results view is showing - a plain display preference (not
     /// persisted; nothing about it changes what was searched for).
     results_view: ResultsView,
+    /// Edge-detects the index build's running->done transition (polled
+    /// each frame, since the background build reports through
+    /// `shared`/`SearchUiState`, not an egui event) so the completion
+    /// toast fires exactly once per build, not every frame it stays done.
+    index_build_was_running: bool,
     graph: crate::graph::GraphState,
     last_clicked_graph_node: Option<String>,
 
@@ -370,6 +376,7 @@ impl SearchTool {
             preset_name_input: String::new(),
 
             results_view: ResultsView::default(),
+            index_build_was_running: false,
             graph: crate::graph::GraphState::default(),
             last_clicked_graph_node: None,
 
@@ -990,7 +997,7 @@ impl SearchTool {
         });
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, tokens: &Tokens) {
+    pub fn ui(&mut self, ui: &mut egui::Ui, tokens: &Tokens, toasts: &mut crate::design::components::ToastQueue) {
         let is_running = self.shared.lock().unwrap().is_running;
 
         // Native dropped-file handling - `eframe` (via `winit`) already
@@ -1011,7 +1018,7 @@ impl SearchTool {
             ui.vertical(|ui| {
                 ui.set_width(300.0);
                 egui::ScrollArea::vertical().id_salt("search_settings_scroll").show(ui, |ui| {
-                    self.settings_column(ui, tokens, is_running);
+                    self.settings_column(ui, tokens, is_running, toasts);
                 });
             });
             ui.add_space(16.0);
@@ -1022,7 +1029,7 @@ impl SearchTool {
         });
     }
 
-    fn settings_column(&mut self, ui: &mut egui::Ui, tokens: &Tokens, is_running: bool) {
+    fn settings_column(&mut self, ui: &mut egui::Ui, tokens: &Tokens, is_running: bool, toasts: &mut crate::design::components::ToastQueue) {
         card(ui, tokens, |ui| {
             crate::widgets::card_title(ui, "Required");
             ui.add_space(4.0);
@@ -1124,17 +1131,15 @@ impl SearchTool {
         ui.add_space(10.0);
 
         egui::CollapsingHeader::new("Matching").show(ui, |ui| {
-            egui::ComboBox::from_label("Match mode")
-                .selected_text(match self.match_mode {
-                    MatchMode::AnyLine => "Any line",
-                    MatchMode::AllInFile => "All in file",
-                    MatchMode::Proximity => "Proximity",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.match_mode, MatchMode::AnyLine, "Any line");
-                    ui.selectable_value(&mut self.match_mode, MatchMode::AllInFile, "All in file");
-                    ui.selectable_value(&mut self.match_mode, MatchMode::Proximity, "Proximity");
-                });
+            ui.colored_label(tokens.fg_muted, egui::RichText::new("Match mode").font(crate::design::typography::label()));
+            ui.add_space(3.0);
+            crate::design::components::segmented(
+                ui,
+                tokens,
+                &mut self.match_mode,
+                &[(MatchMode::AnyLine, "Any line"), (MatchMode::AllInFile, "All in file"), (MatchMode::Proximity, "Proximity")],
+            );
+            ui.add_space(7.0);
             if self.match_mode == MatchMode::Proximity {
                 ui.horizontal(|ui| {
                     ui.label("Proximity lines");
@@ -1160,15 +1165,9 @@ impl SearchTool {
             ui.label("Exclude filters (comma-separated)");
             ui.text_edit_singleline(&mut self.exclude_filters_text);
             if !self.exclude_filters_text.trim().is_empty() {
-                egui::ComboBox::from_label("Exclude scope")
-                    .selected_text(match self.exclude_scope {
-                        ExcludeScope::Line => "Line",
-                        ExcludeScope::File => "File",
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.exclude_scope, ExcludeScope::Line, "Line");
-                        ui.selectable_value(&mut self.exclude_scope, ExcludeScope::File, "File");
-                    });
+                ui.colored_label(tokens.fg_muted, egui::RichText::new("Exclude scope").font(crate::design::typography::label()));
+                ui.add_space(3.0);
+                crate::design::components::segmented(ui, tokens, &mut self.exclude_scope, &[(ExcludeScope::Line, "Line"), (ExcludeScope::File, "File")]);
             }
         });
 
@@ -1209,17 +1208,15 @@ impl SearchTool {
                     }
                 }
             });
-            egui::ComboBox::from_label("Group by")
-                .selected_text(match self.group_by {
-                    GroupByMode::Created => "Created",
-                    GroupByMode::Modified => "Modified",
-                    GroupByMode::None => "None",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.group_by, GroupByMode::Created, "Created");
-                    ui.selectable_value(&mut self.group_by, GroupByMode::Modified, "Modified");
-                    ui.selectable_value(&mut self.group_by, GroupByMode::None, "None");
-                });
+            ui.colored_label(tokens.fg_muted, egui::RichText::new("Group by").font(crate::design::typography::label()));
+            ui.add_space(3.0);
+            crate::design::components::segmented(
+                ui,
+                tokens,
+                &mut self.group_by,
+                &[(GroupByMode::Created, "Created"), (GroupByMode::Modified, "Modified"), (GroupByMode::None, "None")],
+            );
+            ui.add_space(7.0);
             ui.checkbox(&mut self.export_html, "Generate HTML report");
             ui.checkbox(&mut self.open_report_when_done, "Open report when done");
             ui.checkbox(&mut self.desktop_notification_when_done, "Desktop notification when done (may be unstable on some Windows setups)");
@@ -1289,15 +1286,29 @@ impl SearchTool {
                 let has_path = !self.search_path.trim().is_empty();
                 let root = self.search_path.trim().to_string();
 
-                egui::ComboBox::from_label("Index location")
-                    .selected_text(match self.index_location {
+                // Design System Epic Phase 2 "Toast" component's one real
+                // wired usage - fires exactly once on the build's
+                // running->done edge (`index_build_was_running`), not
+                // every frame the index happens to sit idle-done.
+                if self.index_build_was_running && !is_building {
+                    let status = self.shared.lock().unwrap().index_build_status_text.clone();
+                    toasts.push(ToastKind::Success, if status.is_empty() { "Index build complete.".to_string() } else { status });
+                }
+                self.index_build_was_running = is_building;
+
+                crate::design::components::select_field(
+                    ui,
+                    tokens,
+                    "Index location",
+                    match self.index_location {
                         IndexLocation::SearchFolder => "Search folder (default)",
                         IndexLocation::OutputFolder => "Output folder",
-                    })
-                    .show_ui(ui, |ui| {
+                    },
+                    |ui| {
                         ui.selectable_value(&mut self.index_location, IndexLocation::SearchFolder, "Search folder (default)");
                         ui.selectable_value(&mut self.index_location, IndexLocation::OutputFolder, "Output folder");
-                    });
+                    },
+                );
                 if self.index_location == IndexLocation::OutputFolder {
                     ui.colored_label(tokens.fg_subtle, "Each searched folder gets its own index under the output folder - safe to point multiple, unrelated searches at the same output location.");
                 }
@@ -1338,11 +1349,8 @@ impl SearchTool {
                         if ui.add_enabled(has_path && !is_building, egui::Button::new(if is_building { "Indexing\u{2026}" } else { "Build/update index" })).clicked() {
                             self.request_build_or_rebuild(false);
                         }
-                        if ui
-                            .add_enabled(has_path && !is_building, egui::Button::new("Rebuild from scratch"))
-                            .on_hover_text("Delete and fully rebuild the index from scratch - use if results from the fast index look wrong or stale")
-                            .clicked()
-                        {
+                        let rebuild_resp = crate::design::components::button(ui, tokens, crate::design::components::ButtonVariant::Danger, "Rebuild from scratch", has_path && !is_building);
+                        if crate::design::components::tooltip(rebuild_resp, tokens, "Delete and fully rebuild the index from scratch - use if results from the fast index look wrong or stale").clicked() {
                             self.request_build_or_rebuild(true);
                         }
                     });
@@ -1360,7 +1368,8 @@ impl SearchTool {
 
         ui.add_space(10.0);
         ui.horizontal(|ui| {
-            if ui.add_enabled(!is_running, egui::Button::new("\u{25B6} Run search").min_size(egui::vec2(ui.available_width() * 0.6, 0.0))).clicked() {
+            let run_width = ui.available_width() * 0.6;
+            if crate::design::components::button_sized(ui, tokens, crate::design::components::ButtonVariant::Primary, "\u{25B6} Run search", !is_running, egui::vec2(run_width, 0.0)).clicked() {
                 self.start();
             }
             if is_running && ui.button("Cancel").clicked() {
@@ -1403,17 +1412,11 @@ impl SearchTool {
             ui.horizontal(|ui| {
                 crate::widgets::card_title(ui, "Results");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.selectable_label(self.results_view == ResultsView::BrainMap, "Brain Map").clicked() {
-                        self.results_view = ResultsView::BrainMap;
-                    }
-                    if ui.selectable_label(self.results_view == ResultsView::List, "List").clicked() {
-                        self.results_view = ResultsView::List;
-                    }
+                    crate::design::components::segmented(ui, tokens, &mut self.results_view, &[(ResultsView::BrainMap, "Brain Map"), (ResultsView::List, "List")]);
                 });
             });
             if s.results.is_empty() {
-                ui.add_space(4.0);
-                ui.colored_label(tokens.fg_subtle, "No results yet - set a search folder and run a search to see matches here.");
+                crate::design::components::empty_state(ui, tokens, "\u{1F50D}", "No results yet", "Set a search folder and run a search to see matches here.");
             } else {
                 match self.results_view {
                     ResultsView::List => {

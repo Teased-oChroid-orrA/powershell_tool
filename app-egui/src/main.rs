@@ -167,6 +167,7 @@ struct ToolbenchApp {
     bushing: BushingTool,
     palette: CommandPalette,
     last_rail_width: f32,
+    toasts: design::components::ToastQueue,
 }
 
 impl Default for ToolbenchApp {
@@ -190,6 +191,7 @@ impl Default for ToolbenchApp {
             bushing: BushingTool::default(),
             palette: CommandPalette::default(),
             last_rail_width: RAIL_COLLAPSED_W,
+            toasts: design::components::ToastQueue::default(),
         };
         if let Some(p) = persistence::load() {
             app.dark = p.dark.unwrap_or(app.dark);
@@ -504,13 +506,14 @@ impl eframe::App for ToolbenchApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::default().fill(tokens.bg).inner_margin(egui::Margin::symmetric(28.0, 18.0)))
             .show(ctx, |ui| match self.active_tool {
-                ToolId::Search => self.search.ui(ui, tokens),
+                ToolId::Search => self.search.ui(ui, tokens, &mut self.toasts),
                 ToolId::Bushing => self.bushing.ui(ui, tokens),
                 ToolId::PressureVessel => self.pv.ui(ui, tokens),
                 _ => {
                     ui.label("Coming soon.");
                 }
             });
+        self.toasts.show(ctx, tokens);
 
         // Background search progress doesn't originate from egui input, so
         // it wouldn't otherwise trigger a repaint - poll while a search is
