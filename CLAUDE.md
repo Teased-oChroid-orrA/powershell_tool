@@ -449,6 +449,35 @@ looks cleaner - that regresses the exact problem this app was built to fix.
   again, keep both fixes in mind - correct character mapping alone isn't
   enough if the result gets fragmented back into unsearchable pieces.
 
+- **A tantivy `IndexWriter` that hits `TantivyError::ErrorInThread` is
+  permanently dead - the same instance never recovers, only a fresh
+  `index.writer(budget)` does.** Confirmed by reading tantivy 0.26.1's own
+  source: a background segment-writer thread dying (io error, panic) sets
+  `index_writer_status` to not-alive, and every subsequent
+  `send_add_documents_batch` call raises exactly the user-reported
+  `"An index writer was killed."` text - this is a distinct failure mode
+  from Rust `Mutex` poisoning (already handled elsewhere via
+  `lock_writer()`'s `unwrap_or_else(|poisoned| poisoned.into_inner())`) and
+  must not be conflated with it. Fixed in `native-search/src/engine.rs` by
+  `with_writer_retry`: on `ErrorInThread`, rebuild the writer once and
+  retry; `search-core/src/native_index.rs`'s indexing loop also now
+  tolerates a per-document/per-commit failure
+  (`CorpusIndexOutcome::failed_files`) instead of aborting the whole run,
+  since a single dead worker thread shouldn't lose all indexing progress
+  made before it died.
+- **`#![windows_subsystem = "windows"]` is a per-binary-crate attribute,
+  not something a new binary target inherits from a sibling.** `app/`
+  (the dioxus-native predecessor) already carries
+  `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`,
+  with its own doc comment recording the exact bug it fixes (a Windows
+  console-owner-process window opening alongside the GUI window; closing
+  the console kills the whole process). `app-egui/` never got this
+  attribute when scaffolded as a new binary target - a real regression a
+  user hit on a real Windows machine, since the two binaries don't share
+  a `main.rs`. If this project ever adds a third binary target, check for
+  this attribute explicitly rather than assuming a fix already shipped in
+  one binary automatically covers a new one.
+
 ## `app-egui` parity checklist is the tracked source of truth, not phase docs
 
 `app-egui/` (the egui/eframe migration target replacing `app/`'s

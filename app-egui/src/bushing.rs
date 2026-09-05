@@ -254,7 +254,7 @@ fn form_and_sketch(
             ui.set_min_width(ui.available_width());
             egui::Frame::default().fill(tokens.bg_sunken).stroke(egui::Stroke::new(1.0, tokens.border)).rounding(8.0).inner_margin(14.0).show(ui, |ui| {
                 ui.colored_label(tokens.fg_subtle, egui::RichText::new("HEAD-ON CROSS-SECTION").size(9.5).strong());
-                bushing_head_on(ui, tokens, emph);
+                bushing_head_on(ui, tokens, emph, ctx);
                 ui.add_space(6.0);
                 ui.colored_label(tokens.fg_subtle, egui::RichText::new("SIDE (LONGITUDINAL) VIEW").size(9.5).strong());
                 bushing_side_view(ui, tokens, emph, ctx);
@@ -513,6 +513,9 @@ impl BushingTool {
         BushingSketchCtx {
             head_type: self.head_type,
             housing_len: self.housing_len,
+            housing_width: self.housing_width,
+            edge_dist: self.edge_dist,
+            id_bushing: self.id_bushing,
             bushing_length: self.bushing_length,
             flange_od: self.flange_od,
             flange_thk: self.flange_thk,

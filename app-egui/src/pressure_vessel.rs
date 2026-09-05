@@ -21,7 +21,7 @@ use pressure_vessel_solver::pressure::{EndCondition, PressureLoading};
 use pressure_vessel_solver::thickness::{solve_minimum_thickness, ThicknessSolverInputs, ThicknessSolverOutcome};
 
 use crate::components::{checks_tiles, status_rail, CheckRow};
-use crate::sketches::{pv_head_on, pv_isometric, pv_side_view};
+use crate::sketches::{pv_head_on, pv_isometric, pv_side_view, PvSketchCtx};
 use crate::theme::Tokens;
 use crate::widgets::{card, headline, side_by_side, stepper, MIN_FLEX_COL};
 
@@ -82,13 +82,15 @@ impl Default for PressureVesselTool {
 /// Form (280px, matches the mockup's `.form-card` width) beside a
 /// labeled sketch pair (head-on + side view) flexing to fill the rest -
 /// the mockup's `.step-wrap` shape, exactly.
+#[allow(clippy::too_many_arguments)]
 fn form_and_sketch(
     ui: &mut egui::Ui,
     tokens: &Tokens,
     title: &str,
     emph: &str,
-    head_on: impl Fn(&mut egui::Ui, &Tokens, &str),
-    side: impl Fn(&mut egui::Ui, &Tokens, &str),
+    sketch_ctx: &PvSketchCtx,
+    head_on: impl Fn(&mut egui::Ui, &Tokens, &str, &PvSketchCtx),
+    side: impl Fn(&mut egui::Ui, &Tokens, &str, &PvSketchCtx),
     form: impl FnOnce(&mut egui::Ui),
 ) {
     ui.horizontal_top(|ui| {
@@ -105,10 +107,10 @@ fn form_and_sketch(
             ui.set_min_width(ui.available_width());
             egui::Frame::default().fill(tokens.bg_sunken).stroke(egui::Stroke::new(1.0, tokens.border)).rounding(8.0).inner_margin(14.0).show(ui, |ui| {
                 ui.colored_label(tokens.fg_subtle, egui::RichText::new("HEAD-ON CROSS-SECTION").size(9.5).strong());
-                head_on(ui, tokens, emph);
+                head_on(ui, tokens, emph, sketch_ctx);
                 ui.add_space(6.0);
                 ui.colored_label(tokens.fg_subtle, egui::RichText::new("SIDE (LONGITUDINAL) VIEW").size(9.5).strong());
-                side(ui, tokens, emph);
+                side(ui, tokens, emph, sketch_ctx);
                 ui.add_space(6.0);
                 ui.colored_label(tokens.fg_subtle, egui::RichText::new("ISOMETRIC (SCHEMATIC)").size(9.5).strong());
                 pv_isometric(ui, tokens);
@@ -170,17 +172,26 @@ impl PressureVesselTool {
 
     fn step_content(&mut self, ui: &mut egui::Ui, tokens: &Tokens, step: Step, ctx: &PvContext) {
         let geometry = &ctx.geometry;
+        let sketch_ctx = PvSketchCtx {
+            outer_diameter: self.outer_diameter,
+            inner_diameter: 2.0 * geometry.inner_radius,
+            wall_thickness: self.wall_thickness,
+            internal_pressure: self.internal_pressure,
+            external_pressure: self.external_pressure,
+            closed_ends: self.closed_ends,
+            unsupported_length: self.unsupported_length,
+        };
         match step {
             Step::Geometry => {
                 let inner_d = 2.0 * geometry.inner_radius;
-                form_and_sketch(ui, tokens, "01 \u{b7} Geometry", "od", pv_head_on, pv_side_view, |ui| {
+                form_and_sketch(ui, tokens, "01 \u{b7} Geometry", "od", &sketch_ctx, pv_head_on, pv_side_view, |ui| {
                     num_field(ui, tokens, "Outer diameter (in)", &mut self.outer_diameter);
                     num_field(ui, tokens, "Wall thickness (in)", &mut self.wall_thickness);
                     ui.colored_label(tokens.fg_subtle, format!("Derived inner diameter: {inner_d:.4} in"));
                 });
             }
             Step::Pressure => {
-                form_and_sketch(ui, tokens, "02 \u{b7} Pressure & boundary condition", "pressure", pv_head_on, pv_side_view, |ui| {
+                form_and_sketch(ui, tokens, "02 \u{b7} Pressure & boundary condition", "pressure", &sketch_ctx, pv_head_on, pv_side_view, |ui| {
                     num_field(ui, tokens, "Internal pressure (psi)", &mut self.internal_pressure);
                     num_field(ui, tokens, "External pressure (psi)", &mut self.external_pressure);
                     ui.horizontal(|ui| {
@@ -195,7 +206,7 @@ impl PressureVesselTool {
             }
             Step::Material => {
                 let name = ctx.material.name;
-                form_and_sketch(ui, tokens, "03 \u{b7} Material & requirement", "material", pv_head_on, pv_side_view, |ui| {
+                form_and_sketch(ui, tokens, "03 \u{b7} Material & requirement", "material", &sketch_ctx, pv_head_on, pv_side_view, |ui| {
                     egui::ComboBox::from_label("Material").selected_text(name).show_ui(ui, |ui| {
                         for m in MATERIALS {
                             ui.selectable_value(&mut self.material_id, m.id.to_string(), m.name);
@@ -205,7 +216,7 @@ impl PressureVesselTool {
                 });
             }
             Step::Buckling => {
-                form_and_sketch(ui, tokens, "04 \u{b7} Support spacing (buckling)", "buckling", pv_head_on, pv_side_view, |ui| {
+                form_and_sketch(ui, tokens, "04 \u{b7} Support spacing (buckling)", "buckling", &sketch_ctx, pv_head_on, pv_side_view, |ui| {
                     num_field(ui, tokens, "Unsupported length (in)", &mut self.unsupported_length);
                     ui.colored_label(tokens.fg_subtle, "Only affects the Buckling check, and only when external pressure is present.");
                 });

@@ -15,6 +15,20 @@
 //! so sibling content reflows automatically as it opens/closes - both
 //! properties Blitz could never deliver after three attempts.
 
+// Suppresses the extra console window Windows opens for a normal
+// SUBSYSTEM:CONSOLE binary (the default for `fn main()` with no other
+// attribute) - without this, launching app-egui.exe on Windows opens a
+// second, blank console alongside the real window, and closing that
+// console window kills the whole process (console-owner-process
+// semantics; a GUI subsystem process has no such console to begin with).
+// `app/src/main.rs` (the dioxus-native predecessor) already carries this
+// exact fix - it never got ported over when `app-egui` was scaffolded as
+// a new binary target, a real regression a user hit on a real Windows
+// machine, not a hypothetical. Gated to release builds only - `cargo
+// run` during local development still wants the console for stdout/
+// stderr.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod bushing;
 mod command_palette;
 mod components;

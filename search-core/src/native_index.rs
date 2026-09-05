@@ -156,11 +156,20 @@ pub struct CorpusIndexProgress {
     pub current_file: String,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CorpusIndexOutcome {
     pub indexed_count: i32,
     pub skipped_count: i32,
     pub failed_count: i32,
+    /// One entry per failure ("path: error message" for a document, or
+    /// "commit at N files: error message" for a batch commit) - a real
+    /// end-of-run summary instead of one opaque error covering the whole
+    /// folder. Capped implicitly by `failed_count` staying small in
+    /// practice (a genuinely broken environment fails every remaining
+    /// file, at which point the caller should stop and investigate, not
+    /// receive an unbounded list) - not truncated here, since a caller
+    /// choosing to display only the first N is a presentation decision.
+    pub failed_files: Vec<String>,
 }
 
 /// How many newly-indexed documents accumulate before an intermediate
@@ -289,7 +298,17 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
 
         let file_name = file.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let body = lines.join("\n");
-        engine.index_document(DocumentInput {
+        // A single document/commit failure (most plausibly the
+        // Windows-only transient hazard `native_search::engine.rs`'s
+        // `with_writer_retry` doc comment describes - antivirus/OneDrive
+        // interference killing a Tantivy worker thread) used to abort
+        // this ENTIRE loop via a bare `?`, discarding every remaining
+        // file in the corpus even though thousands may have already
+        // indexed successfully. Degrade the same way the read/extraction
+        // failures two blocks above already do: count it, keep going.
+        // `engine.rs` itself now recovers a killed writer transparently,
+        // so this only fires for a genuinely unrecovered error.
+        if let Err(e) = engine.index_document(DocumentInput {
             id: &full_name,
             path: &full_name,
             filename: &file_name,
@@ -299,18 +318,28 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
             created_unix: file.created.timestamp(),
             size: file.length,
             body: &body,
-        })?;
+        }) {
+            outcome.failed_count += 1;
+            outcome.failed_files.push(format!("{full_name}: {e}"));
+            continue;
+        }
         outcome.indexed_count += 1;
         pending_commits += 1;
 
         if pending_commits >= COMMIT_BATCH_SIZE {
-            engine.commit()?;
+            if let Err(e) = engine.commit() {
+                outcome.failed_count += 1;
+                outcome.failed_files.push(format!("commit at {} files: {e}", outcome.indexed_count));
+            }
             pending_commits = 0;
         }
     }
 
     if pending_commits > 0 {
-        engine.commit()?;
+        if let Err(e) = engine.commit() {
+            outcome.failed_count += 1;
+            outcome.failed_files.push(format!("final commit: {e}"));
+        }
     }
 
     tracing::info!(

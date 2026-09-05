@@ -151,6 +151,23 @@ async fn index_one_root_with_progress(
 /// component for a human-readable prefix, so two DIFFERENT folders that
 /// happen to share a name (e.g. two drives' own "Projects" folder) still
 /// can't collide.
+/// Real recursive on-disk size of an index directory (Tantivy segment
+/// files) - used to surface an actual index-size stat rather than
+/// leaving the size/search-capability tradeoff (the trigram field's own
+/// cost) silent. Best-effort: an unreadable entry just doesn't count
+/// toward the total rather than failing the whole build.
+fn dir_size_bytes(dir: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    entries
+        .filter_map(|e| e.ok())
+        .map(|entry| match entry.file_type() {
+            Ok(ft) if ft.is_dir() => dir_size_bytes(&entry.path()),
+            Ok(_) => entry.metadata().map(|m| m.len()).unwrap_or(0),
+            Err(_) => 0,
+        })
+        .sum()
+}
+
 fn resolve_index_dir(location: IndexLocation, root: &str, output_folder: &str) -> std::path::PathBuf {
     match location {
         IndexLocation::SearchFolder => search_core::native_index::index_directory(root),
@@ -759,20 +776,48 @@ impl SearchTool {
                         total.indexed_count += outcome.indexed_count;
                         total.skipped_count += outcome.skipped_count;
                         total.failed_count += outcome.failed_count;
+                        total.failed_files.extend(outcome.failed_files);
                     }
                     Err(e) => root_errors.push(format!("{root}: {e}")),
                 }
             }
 
+            // Real on-disk size, not a guess - the trigram (substring-
+            // candidate) field indexes every file a second time at
+            // 3-character granularity, which is the actual dominant size
+            // driver for a large corpus, not stored text (already never
+            // stored). Surfacing this makes that tradeoff visible instead
+            // of a silently-growing folder nobody asked to see.
+            let index_size_mb: f64 = rebuilt_dirs.iter().map(|d| dir_size_bytes(d)).sum::<u64>() as f64 / (1024.0 * 1024.0);
+
             let msg = if !root_errors.is_empty() {
                 format!("Indexing failed for {} folder(s): {}", root_errors.len(), root_errors.join("; "))
             } else {
+                // "Failed" now covers read/extraction failures AND any
+                // document/commit that hit an unrecovered writer error
+                // (see `native_index.rs`'s own comment) - a real
+                // end-of-run summary instead of one opaque error covering
+                // every remaining file in the folder, which is what a
+                // single unhandled failure used to do here.
+                let failed_detail = if total.failed_files.is_empty() {
+                    String::new()
+                } else {
+                    let shown: Vec<&String> = total.failed_files.iter().take(5).collect();
+                    let more = total.failed_files.len().saturating_sub(shown.len());
+                    format!(
+                        " ({}{})",
+                        shown.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("; "),
+                        if more > 0 { format!("; +{more} more") } else { String::new() }
+                    )
+                };
                 format!(
-                    "Indexed {} file(s){}, {} already up to date{}.",
+                    "Indexed {} file(s){}, {} already up to date{}{}. Index size: {:.1} MB.",
                     total.indexed_count,
                     if roots.len() > 1 { format!(" across {} folder(s)", roots.len()) } else { String::new() },
                     total.skipped_count,
-                    if total.failed_count > 0 { format!(", {} failed to extract", total.failed_count) } else { String::new() }
+                    if total.failed_count > 0 { format!(", {} failed", total.failed_count) } else { String::new() },
+                    failed_detail,
+                    index_size_mb
                 )
             };
             let mut s = shared.lock().unwrap();
@@ -1302,11 +1347,12 @@ impl SearchTool {
                         }
                     });
                 }
-                let status = self.shared.lock().unwrap().index_build_status_text.clone();
-                if !status.is_empty() {
-                    ui.colored_label(tokens.fg_muted, status);
-                }
-                ui.colored_label(tokens.fg_subtle, "Run Search (left) uses this index automatically for non-regex filters, narrowing to candidate files before the real line-by-line scan, and keeps it current after every completed search.");
+                // Live/final index-build progress lives ONLY in the
+                // Timeline now (results_column, via
+                // `index_build_timeline_stage`) - showing it here too was
+                // the exact duplication a user reported (progress
+                // appearing under this dropdown instead of the Timeline).
+                ui.colored_label(tokens.fg_subtle, "Run Search (left) uses this index automatically for non-regex filters, narrowing to candidate files before the real line-by-line scan, and keeps it current after every completed search. Progress shows in the Timeline above the results.");
             } else {
                 ui.colored_label(tokens.fg_subtle, "Enable indexing above, then click \u{201c}Build/update index\u{201d} or run a search - either keeps this folder's index current.");
             }
@@ -1327,10 +1373,23 @@ impl SearchTool {
 
     fn results_column(&mut self, ui: &mut egui::Ui, tokens: &Tokens) {
         let s = self.shared.lock().unwrap();
-        let has_progress_content = s.is_running || s.total_files > 0 || !s.summary_text.is_empty() || s.report_path.is_some();
+        let index_stage = index_build_timeline_stage(&s);
+        let has_progress_content = s.is_running || s.total_files > 0 || !s.summary_text.is_empty() || s.report_path.is_some() || index_stage.is_some();
         if has_progress_content {
             card(ui, tokens, |ui| {
-                timeline(ui, tokens, &search_timeline_stages(&s));
+                // Index-build progress used to live ONLY inside the "Fast
+                // re-search index" section (a real, user-reported UX bug -
+                // the artifact's own "Search progress = Timeline" banner
+                // names this component by name, and indexing progress
+                // never touched it). Prepended here instead of a second,
+                // separate progress widget, so there's exactly one place
+                // any kind of progress ever shows up.
+                let mut stages = Vec::new();
+                if let Some(stage) = index_stage {
+                    stages.push(stage);
+                }
+                stages.extend(search_timeline_stages(&s));
+                timeline(ui, tokens, &stages);
                 if let Some(path) = s.report_path.clone() {
                     ui.add_space(6.0);
                     if ui.button("\u{1F4C4} Open HTML report").clicked() {
@@ -1473,6 +1532,22 @@ fn timeline(ui: &mut egui::Ui, tokens: &Tokens, stages: &[TimelineStage]) {
         if !stage.sub.is_empty() {
             painter.text(egui::pos2(text_x, cy + 8.0), egui::Align2::LEFT_CENTER, &stage.sub, egui::FontId::proportional(11.0), tokens.fg_subtle);
         }
+    }
+}
+
+/// `None` when no index build has happened yet this session - the
+/// Timeline shouldn't grow a permanent extra row for a feature that was
+/// never used. `Active` while `is_building_index`, `Done` afterward
+/// (carrying the same end-of-run summary text
+/// `build_or_rebuild_corpus_index` already writes to
+/// `index_build_status_text` - not a separate message).
+fn index_build_timeline_stage(s: &SearchUiState) -> Option<TimelineStage> {
+    if s.is_building_index {
+        Some(TimelineStage { state: StageState::Active, title: "Building index\u{2026}".to_string(), sub: s.index_build_status_text.clone() })
+    } else if !s.index_build_status_text.is_empty() {
+        Some(TimelineStage { state: StageState::Done, title: "Index updated".to_string(), sub: s.index_build_status_text.clone() })
+    } else {
+        None
     }
 }
 

@@ -34,6 +34,15 @@ use crate::theme::Tokens;
 pub struct BushingSketchCtx {
     pub head_type: BushingType,
     pub housing_len: f64,
+    /// Real repair/geometry inputs `bushing_head_on`'s dimension labels
+    /// need - a real, previously-shipped bug: that view's labels were
+    /// literal hardcoded strings ("Housing length - 1.25 in") regardless
+    /// of what these fields actually held, confirmed by reading its own
+    /// source. The calculation engine was never affected - only these
+    /// captions.
+    pub housing_width: f64,
+    pub edge_dist: f64,
+    pub id_bushing: f64,
     pub bushing_length: f64,
     pub flange_od: f64,
     pub flange_thk: f64,
@@ -340,7 +349,25 @@ impl<'a> Sketch<'a> {
 /// Pressure Vessel - head-on radial cross-section. `emph` selects which
 /// dimension group renders (`"od"`, `"wall"`, `"material"`) - matches
 /// `PvStep`'s step name 1:1 in `pressure_vessel.rs`.
-pub fn pv_head_on(ui: &mut egui::Ui, tokens: &Tokens, emph: &str) {
+/// Real geometry/pressure/material values `pv_head_on`/`pv_side_view`
+/// need. Both sketches previously drew entirely hardcoded illustrative
+/// numbers ("6.00 in," "5000 psi") regardless of what was actually in
+/// the Pressure Vessel form - confirmed by reading their source; the
+/// solver itself (`pressure_vessel_solver`) was never affected, only
+/// these captions. The ring/wall SHAPE stays schematic (same fixed-
+/// proportion convention `bushing_head_on`'s own shape already uses) -
+/// only the labeled numbers are real, live values.
+pub struct PvSketchCtx {
+    pub outer_diameter: f64,
+    pub inner_diameter: f64,
+    pub wall_thickness: f64,
+    pub internal_pressure: f64,
+    pub external_pressure: f64,
+    pub closed_ends: bool,
+    pub unsupported_length: f64,
+}
+
+pub fn pv_head_on(ui: &mut egui::Ui, tokens: &Tokens, emph: &str, ctx: &PvSketchCtx) {
     let sk = Sketch::new(ui, tokens, egui::vec2(380.0, 240.0), 220.0);
     sk.hatch_ring(170.0, 130.0, 68.0, 38.0, Material::Steel);
     sk.centerline_h(60.0, 280.0, 130.0);
@@ -350,12 +377,12 @@ pub fn pv_head_on(ui: &mut egui::Ui, tokens: &Tokens, emph: &str) {
 
     let accent = tokens.accent_strong;
     if emph == "od" || emph == "wall" {
-        sk.dim_h(102.0, 238.0, 32.0, 130.0, "\u{d8} 6.00 in — Outer diameter", accent);
+        sk.dim_h(102.0, 238.0, 32.0, 130.0, &format!("\u{d8} {:.3} in \u{2014} Outer diameter", ctx.outer_diameter), accent);
     }
     if emph == "wall" {
         sk.dim_h(208.0, 238.0, 130.0, 130.0, "", accent);
-        sk.text_at(248.0, 126.0, egui::Align2::LEFT_CENTER, "t = 1.00 in", accent);
-        sk.text_at(248.0, 140.0, egui::Align2::LEFT_CENTER, "\u{d8} 4.00 in bore", accent);
+        sk.text_at(248.0, 126.0, egui::Align2::LEFT_CENTER, &format!("t = {:.3} in", ctx.wall_thickness), accent);
+        sk.text_at(248.0, 140.0, egui::Align2::LEFT_CENTER, &format!("\u{d8} {:.3} in bore", ctx.inner_diameter), accent);
     }
     if emph == "material" {
         sk.leader_label(195.0, 160.0, 290.0, 215.0, "ANSI31 section hatch = material", egui::Align2::RIGHT_CENTER, accent);
@@ -364,7 +391,7 @@ pub fn pv_head_on(ui: &mut egui::Ui, tokens: &Tokens, emph: &str) {
 
 /// Pressure Vessel - longitudinal side view. `emph`: `"pressure"`,
 /// `"end"`, `"buckling"`.
-pub fn pv_side_view(ui: &mut egui::Ui, tokens: &Tokens, emph: &str) {
+pub fn pv_side_view(ui: &mut egui::Ui, tokens: &Tokens, emph: &str, ctx: &PvSketchCtx) {
     let sk = Sketch::new(ui, tokens, egui::vec2(420.0, 200.0), 190.0);
     sk.hatch_rect(70.0, 60.0, 280.0, 70.0, Material::Steel);
     sk.fill_rect(88.0, 69.0, 244.0, 52.0, 24.0, tokens.bg_raised);
@@ -378,14 +405,20 @@ pub fn pv_side_view(ui: &mut egui::Ui, tokens: &Tokens, emph: &str) {
             sk.arrow_label(x, 69.0, x, 50.0, accent);
             sk.arrow_label(x, 121.0, x, 140.0, accent);
         }
-        sk.text_at(190.0, 42.0, egui::Align2::CENTER_CENTER, "Pi = 5000 psi (acts outward on the wall)", accent);
+        sk.text_at(190.0, 42.0, egui::Align2::CENTER_CENTER, &format!("Pi = {:.0} psi (acts outward on the wall)", ctx.internal_pressure), accent);
     }
     if emph == "end" {
-        sk.leader_label(78.0, 95.0, 30.0, 165.0, "Closed end (dome cap)", egui::Align2::LEFT_CENTER, accent);
-        sk.leader_label(342.0, 95.0, 395.0, 165.0, "Po = 0 psi (external)", egui::Align2::RIGHT_CENTER, accent);
+        let end_label = if ctx.closed_ends { "Closed end (dome cap)" } else { "Open end (no axial cap load)" };
+        sk.leader_label(78.0, 95.0, 30.0, 165.0, end_label, egui::Align2::LEFT_CENTER, accent);
+        sk.leader_label(342.0, 95.0, 395.0, 165.0, &format!("Po = {:.0} psi (external)", ctx.external_pressure), egui::Align2::RIGHT_CENTER, accent);
     }
     if emph == "buckling" {
-        sk.dim_h(150.0, 270.0, 168.0, 130.0, "L = 0 in — no supports entered", accent);
+        let buckling_label = if ctx.unsupported_length > 0.0 {
+            format!("L = {:.3} in unsupported", ctx.unsupported_length)
+        } else {
+            "L = 0 in \u{2014} no supports entered".to_string()
+        };
+        sk.dim_h(150.0, 270.0, 168.0, 130.0, &buckling_label, accent);
     }
     sk.section_caption(225.0, 172.0, "SECTION A-A", Color32::from_rgb(0xc9, 0x76, 0x5f));
 }
@@ -425,7 +458,7 @@ pub fn pv_isometric(ui: &mut egui::Ui, tokens: &Tokens) {
 
 /// Bushing - head-on (top view of housing + bushing). `emph`: `"repair"`
 /// (housing length/width/edge distance), `"geom"` (bushing ID/OD).
-pub fn bushing_head_on(ui: &mut egui::Ui, tokens: &Tokens, emph: &str) {
+pub fn bushing_head_on(ui: &mut egui::Ui, tokens: &Tokens, emph: &str, ctx: &BushingSketchCtx) {
     let sk = Sketch::new(ui, tokens, egui::vec2(460.0, 250.0), 220.0);
     sk.hatch_rect(40.0, 35.0, 280.0, 170.0, Material::Steel);
     sk.outline_rect(40.0, 35.0, 280.0, 170.0, 8.0, Color32::from_rgb(0xaa, 0xb4, 0xbd));
@@ -441,13 +474,13 @@ pub fn bushing_head_on(ui: &mut egui::Ui, tokens: &Tokens, emph: &str) {
 
     let accent = tokens.accent_strong;
     if emph == "repair" {
-        sk.dim_h(40.0, 320.0, 18.0, 35.0, "Housing length — 1.25 in", accent);
-        sk.dim_v(35.0, 205.0, 20.0, 40.0, "Width — 2.00 in", accent);
-        sk.dim_h(40.0, 94.0, 178.0, 120.0, "edge — 0.375 in", accent);
+        sk.dim_h(40.0, 320.0, 18.0, 35.0, &format!("Housing length \u{2014} {:.3} in", ctx.housing_len), accent);
+        sk.dim_v(35.0, 205.0, 20.0, 40.0, &format!("Width \u{2014} {:.3} in", ctx.housing_width), accent);
+        sk.dim_h(40.0, 94.0, 178.0, 120.0, &format!("edge \u{2014} {:.3} in", ctx.edge_dist), accent);
     }
     if emph == "geom" {
-        sk.dim_h(114.0, 166.0, 55.0, 94.0, "\u{d8} 0.500 in — Bushing ID", accent);
-        sk.leader_label(140.0, 166.0, 255.0, 222.0, "\u{d8} 0.875 in — Bushing OD", egui::Align2::LEFT_CENTER, accent);
+        sk.dim_h(114.0, 166.0, 55.0, 94.0, &format!("\u{d8} {:.3} in \u{2014} Bushing ID", ctx.id_bushing), accent);
+        sk.leader_label(140.0, 166.0, 255.0, 222.0, &format!("\u{d8} {:.4} in \u{2014} Bushing OD", ctx.od_installed), egui::Align2::LEFT_CENTER, accent);
     }
 }
 

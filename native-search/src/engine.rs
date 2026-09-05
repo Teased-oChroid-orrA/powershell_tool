@@ -140,6 +140,15 @@ pub struct SearchHit {
 /// the full reasoning).
 const TRIGRAM_TOKENIZER_NAME: &str = "trigram3";
 
+/// `IndexWriter`'s indexing memory buffer. 50MB (the previous value) is
+/// Tantivy's own documented bare-minimum-viable default for a single
+/// writer - not tuned for real workloads. A small budget forces frequent
+/// small-segment flushes, which costs both final index size (more merge
+/// overhead) and, plausibly, some crash exposure (more flush/write events
+/// = more chances to hit a transient I/O hazard mid-write - see
+/// `with_writer_retry`'s doc comment for the crash this is paired with).
+const WRITER_MEMORY_BUDGET: usize = 100_000_000;
+
 struct Fields {
     id: tantivy::schema::Field,
     path: tantivy::schema::Field,
@@ -264,11 +273,8 @@ impl NativeSearchEngine {
             .build(),
         );
 
-        // 50 MB indexing buffer is tantivy's own documented minimum-viable
-        // default for a single-threaded writer; revisit once Section 13
-        // benchmarking exists.
         let writer: IndexWriter = index
-            .writer(50_000_000)
+            .writer(WRITER_MEMORY_BUDGET)
             .map_err(|e| NsError::index_error(format!("cannot create writer: {e}")))?;
 
         let reader = index
@@ -293,10 +299,9 @@ impl NativeSearchEngine {
         if doc.id.is_empty() {
             return Err(NsError::invalid_argument("document id must not be empty"));
         }
-        let writer = self.lock_writer();
-        writer.delete_term(Term::from_field_text(self.fields.id, doc.id));
-        writer
-            .add_document(doc!(
+        self.with_writer_retry(|writer| {
+            writer.delete_term(Term::from_field_text(self.fields.id, doc.id));
+            writer.add_document(doc!(
                 self.fields.id => doc.id,
                 self.fields.path => doc.path,
                 self.fields.filename => doc.filename,
@@ -308,7 +313,7 @@ impl NativeSearchEngine {
                 self.fields.body => doc.body,
                 self.fields.trigram => doc.body,
             ))
-            .map_err(|e| NsError::index_error(e.to_string()))?;
+        })?;
         Ok(())
     }
 
@@ -316,9 +321,56 @@ impl NativeSearchEngine {
         if id.is_empty() {
             return Err(NsError::invalid_argument("document id must not be empty"));
         }
-        let writer = self.lock_writer();
-        writer.delete_term(Term::from_field_text(self.fields.id, id));
+        self.with_writer_retry(|writer| Ok(writer.delete_term(Term::from_field_text(self.fields.id, id))))?;
         Ok(())
+    }
+
+    /// Runs `op` against the current writer; if it fails with Tantivy's
+    /// "index writer was killed" class of error (`TantivyError::
+    /// ErrorInThread` - confirmed by reading `IndexWriter::
+    /// send_add_documents_batch` directly: it checks `index_writer_status.
+    /// is_alive()` before every send and raises exactly this error,
+    /// verbatim-matching a real user-reported crash: "IndexError: An error
+    /// occurred in a thread: 'An index writer was killed.. A worker thread
+    /// encountered an error (io::Error most likely) or panicked.'"),
+    /// transparently reopens a fresh `IndexWriter` and retries `op` once.
+    ///
+    /// A killed writer is Tantivy's OWN internal state, not a Rust `Mutex`
+    /// poison (that's `lock_writer`'s separate, already-existing concern) -
+    /// once a worker thread dies, the writer object is permanently unusable
+    /// and nothing before this recovered it, so every index/commit call for
+    /// the rest of the process failed identically after the first hit. A
+    /// real Windows-only transient hazard (antivirus locking a segment file
+    /// mid-write, or a OneDrive-synced folder placeholder colliding with a
+    /// live mmap - the same hypothesis this crate already wrote down once
+    /// for a related crash, see `lock_writer`'s doc comment) is the likely
+    /// trigger, which is why it strikes at an arbitrary document count
+    /// rather than a reproducible one.
+    fn with_writer_retry<T>(&self, mut op: impl FnMut(&mut IndexWriter) -> tantivy::Result<T>) -> NsResult<T> {
+        {
+            let mut writer = self.lock_writer();
+            match op(&mut writer) {
+                Ok(v) => return Ok(v),
+                Err(TantivyError::ErrorInThread(_)) => {
+                    // Confirmed dead (see doc comment above) - fall through
+                    // and reopen. `native-search` has no logging dependency
+                    // of its own; the caller's own retry/failure counters
+                    // (`search-core::native_index`) are where this becomes
+                    // visible, not a log line here.
+                }
+                Err(e) => return Err(NsError::index_error(e.to_string())),
+            }
+        }
+        {
+            let mut writer = self.lock_writer();
+            let fresh = self
+                .index
+                .writer(WRITER_MEMORY_BUDGET)
+                .map_err(|e| NsError::index_error(format!("cannot reopen index writer after a worker thread died: {e}")))?;
+            *writer = fresh;
+        }
+        let mut writer = self.lock_writer();
+        op(&mut writer).map_err(|e| NsError::index_error(e.to_string()))
     }
 
     /// Locks `self.writer`, recovering the guard rather than panicking if
@@ -347,12 +399,7 @@ impl NativeSearchEngine {
     /// racing a reload timer - see the ViewModel test-flakiness lesson
     /// already learned once in this repo (commit 96f00df).
     pub fn commit(&self) -> NsResult<()> {
-        {
-            let mut writer = self.lock_writer();
-            writer
-                .commit()
-                .map_err(|e| NsError::index_error(e.to_string()))?;
-        }
+        self.with_writer_retry(|writer| writer.commit())?;
         self.reader
             .reload()
             .map_err(|e| NsError::index_error(e.to_string()))?;
