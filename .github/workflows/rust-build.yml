@@ -39,9 +39,34 @@ on:
 jobs:
   search-core-test:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: powerShell/powershell_tool
     steps:
-      - name: Checkout
+      # `app-egui` is a workspace member (root Cargo.toml's `[workspace] members`)
+      # whose Cargo.toml carries a path dependency on `pinn-core`/`pinn-solver` from
+      # the SEPARATE `NeuralNetwork-Stress-Solver` repo (`../../../NeuralNetwork-
+      # Stress-Solver/crates/...`, relative to `app-egui/`) - see that crate's own
+      # module doc for why (the Stress Solver tool reuses the PINN solver crates
+      # rather than duplicating them). Cargo resolves the FULL workspace manifest
+      # for ANY invocation in this repo, even `cargo test -p search-core`, so that
+      # sibling repo must be checked out too, at the exact relative location the
+      # path dependency expects - both checkouts land under the SAME
+      # `github.workspace` root, so this repo goes two directories deep
+      # (`powerShell/powershell_tool`) to make `app-egui/../../../` land exactly on
+      # `NeuralNetwork-Stress-Solver` below, matching this project's own local dev
+      # layout (`.../Projects/powerShell/powershell_tool` and `.../Projects/
+      # NeuralNetwork-Stress-Solver` as siblings under `Projects/`).
+      - name: Checkout powershell_tool
         uses: actions/checkout@v4
+        with:
+          path: powerShell/powershell_tool
+
+      - name: Checkout NeuralNetwork-Stress-Solver (sibling path dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: Teased-oChroid-orrA/NetworkNeuralNetworkStressSolver
+          path: NeuralNetwork-Stress-Solver
 
       - name: Setup Rust toolchain (stable)
         uses: dtolnay/rust-toolchain@stable
@@ -51,8 +76,8 @@ jobs:
         with:
           path: |
             ~/.cargo/registry
-            target
-          key: cargo-search-core-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+            powerShell/powershell_tool/target
+          key: cargo-search-core-${{ runner.os }}-${{ hashFiles('powerShell/powershell_tool/Cargo.lock') }}
 
       - name: cargo test -p search-core
         # search-core has zero GUI dependency by design (same invariant
@@ -73,9 +98,23 @@ jobs:
   app-build-windows:
     runs-on: windows-latest
     needs: search-core-test
+    defaults:
+      run:
+        working-directory: powerShell/powershell_tool
     steps:
-      - name: Checkout
+      # See search-core-test's own checkout steps for why both repos are needed
+      # here too (cargo resolves the full workspace manifest, including
+      # app-egui's sibling-repo path dependency, for ANY package build).
+      - name: Checkout powershell_tool
         uses: actions/checkout@v4
+        with:
+          path: powerShell/powershell_tool
+
+      - name: Checkout NeuralNetwork-Stress-Solver (sibling path dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: Teased-oChroid-orrA/NetworkNeuralNetworkStressSolver
+          path: NeuralNetwork-Stress-Solver
 
       - name: Setup Rust toolchain (stable, MSVC)
         uses: dtolnay/rust-toolchain@stable
@@ -87,8 +126,8 @@ jobs:
         with:
           path: |
             ~/.cargo/registry
-            target
-          key: cargo-app-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+            powerShell/powershell_tool/target
+          key: cargo-app-${{ runner.os }}-${{ hashFiles('powerShell/powershell_tool/Cargo.lock') }}
 
       - name: Build app (release, win-x64)
         run: cargo build --release -p app --target x86_64-pc-windows-msvc
@@ -137,14 +176,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: TextInFilesSearch-rust-app-win-x64
-          path: target/x86_64-pc-windows-msvc/release/app.exe
+          path: powerShell/powershell_tool/target/x86_64-pc-windows-msvc/release/app.exe
           if-no-files-found: error
 
       - name: Upload built search-cli exe
         uses: actions/upload-artifact@v4
         with:
           name: search-cli-win-x64
-          path: target/x86_64-pc-windows-msvc/release/search-cli.exe
+          path: powerShell/powershell_tool/target/x86_64-pc-windows-msvc/release/search-cli.exe
           if-no-files-found: error
 
   # app-egui is the in-progress egui/eframe migration (see
@@ -159,9 +198,23 @@ jobs:
   app-egui-build-windows:
     runs-on: windows-latest
     needs: search-core-test
+    defaults:
+      run:
+        working-directory: powerShell/powershell_tool
     steps:
-      - name: Checkout
+      # See search-core-test's own checkout steps for why both repos are
+      # needed - this job builds `app-egui` directly, the workspace member
+      # whose path dependency on pinn-core/pinn-solver requires it.
+      - name: Checkout powershell_tool
         uses: actions/checkout@v4
+        with:
+          path: powerShell/powershell_tool
+
+      - name: Checkout NeuralNetwork-Stress-Solver (sibling path dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: Teased-oChroid-orrA/NetworkNeuralNetworkStressSolver
+          path: NeuralNetwork-Stress-Solver
 
       - name: Setup Rust toolchain (stable, MSVC)
         uses: dtolnay/rust-toolchain@stable
@@ -173,8 +226,8 @@ jobs:
         with:
           path: |
             ~/.cargo/registry
-            target
-          key: cargo-app-egui-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+            powerShell/powershell_tool/target
+          key: cargo-app-egui-${{ runner.os }}-${{ hashFiles('powerShell/powershell_tool/Cargo.lock') }}
 
       - name: Build app-egui (release, win-x64)
         run: cargo build --release -p app-egui --target x86_64-pc-windows-msvc
@@ -188,5 +241,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: TextInFilesSearch-egui-app-win-x64
-          path: target/x86_64-pc-windows-msvc/release/app-egui.exe
+          path: powerShell/powershell_tool/target/x86_64-pc-windows-msvc/release/app-egui.exe
           if-no-files-found: error
