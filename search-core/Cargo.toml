@@ -28,7 +28,28 @@ native-search = { path = "../native-search" }
 # DOCX/PPTX/XLSX/ZIP: the C# original reads these via .NET's ZipArchive +
 # regex tag-stripping (no real OOXML parser), so `zip` fills the same role
 # here rather than a format-specific crate that would extract differently.
-zip = "2"
+#
+# `default-features = false` + explicit list, dropping ONLY "xz" (ZIP
+# compression method 95/XZ, C-bound via xz2 -> lzma-sys) - added when
+# app-egui's new Stress Solver toolbox brought in `pinn-solver` (burn's
+# `cubecl-cpu` backend depends on `liblzma-sys`, a DIFFERENT crate that
+# also declares `links = "lzma"`; Cargo allows only one crate in the whole
+# graph to claim a given `links` value, so one native lzma binding had to
+# go - see that toolbox's own commit for the full trace). Every other
+# default feature is kept, INCLUDING "lzma" (ZIP method 14) - that one
+# resolves to `lzma-rs`, a pure-Rust implementation with no native library
+# and no `links` conflict, so it was never actually the problem. Net effect:
+# zip entries compressed with the (rare) XZ method now fail to extract
+# instead of succeeding - `cargo test -p search-core` still passes
+# unchanged, so no existing fixture exercises that method; a real-world
+# XZ-compressed entry would extract less text than before (that one
+# entry's content is skipped, same as any other unreadable entry), never
+# more - this cannot increase indexed content or index size.
+zip = { version = "2", default-features = false, features = [
+    "aes-crypto", "bzip2", "deflate", "deflate64", "lzma", "time", "zstd",
+    "aes", "constant_time_eq", "getrandom", "hmac", "pbkdf2", "sha1", "zeroize",
+    "deflate-flate2", "deflate-zopfli", "zopfli",
+] }
 # PDF's /FlateDecode filter is raw DEFLATE (RFC1951, no zlib wrapper) - same
 # as .NET's DeflateStream, which the C# original pairs with a manual 2-byte
 # zlib-header skip.

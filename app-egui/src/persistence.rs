@@ -221,6 +221,12 @@ pub struct SavedPreset {
 pub struct PersistedState {
     pub dark: Option<bool>,
     pub rail_pinned: Option<bool>,
+    /// Stress Solver's global USCS/SI display toggle - a single cross-tool preference, same
+    /// tier as `dark`/`rail_pinned` above, not a per-tool settings bag. `UnitSystem` is a
+    /// same-crate-adjacent enum from `pinn-core` with its own native `Serialize`/`Deserialize`
+    /// (mirrors `IndexLocation`'s persisted-natively pattern above, not the stringified
+    /// pattern used for `bushing_solver`'s external enum).
+    pub unit_system: Option<pinn_core::units::UnitSystem>,
 
     #[serde(default)]
     pub search: SearchFieldsSnap,

@@ -38,6 +38,7 @@ mod persistence;
 mod pressure_vessel;
 mod search;
 mod sketches;
+mod stress_solver;
 mod theme;
 mod widgets;
 
@@ -101,6 +102,7 @@ fn cs_mode_from_str(s: &str) -> Option<CsMode> {
 }
 use pressure_vessel::PressureVesselTool;
 use search::SearchTool;
+use stress_solver::StressSolverTool;
 use theme::Tokens;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +110,7 @@ enum ToolId {
     Search,
     Bushing,
     PressureVessel,
+    StressSolver,
     Dupes,
     Rename,
     Logs,
@@ -119,6 +122,7 @@ impl ToolId {
             ToolId::Search => "Search Files",
             ToolId::Bushing => "Bushing Workbench",
             ToolId::PressureVessel => "Pressure Vessel Analyzer",
+            ToolId::StressSolver => "Stress Solver",
             ToolId::Dupes => "Duplicate Finder",
             ToolId::Rename => "Batch Rename",
             ToolId::Logs => "Log Analyzer",
@@ -129,13 +133,14 @@ impl ToolId {
             ToolId::Search => "Keyword & regex search",
             ToolId::Bushing => "Interference-fit stress & margins",
             ToolId::PressureVessel => "Lam\u{e9} stress, failure modes & min thickness",
+            ToolId::StressSolver => "PINN structural stress solver",
             ToolId::Dupes => "Find identical files",
             ToolId::Rename => "Pattern-based renaming",
             ToolId::Logs => "Parse & chart log files",
         }
     }
     fn enabled(self) -> bool {
-        matches!(self, ToolId::Search | ToolId::Bushing | ToolId::PressureVessel)
+        matches!(self, ToolId::Search | ToolId::Bushing | ToolId::PressureVessel | ToolId::StressSolver)
     }
     /// Bundled Lucide icon name (`design::icons::svg_source`'s key), NOT
     /// a display glyph - see `design::icons`'s module doc for why every
@@ -146,6 +151,7 @@ impl ToolId {
             ToolId::Search => "search",
             ToolId::Bushing => "settings",
             ToolId::PressureVessel => "cylinder",
+            ToolId::StressSolver => "activity",
             ToolId::Dupes => "copy-check",
             ToolId::Rename => "pencil-line",
             ToolId::Logs => "chart-column",
@@ -153,10 +159,11 @@ impl ToolId {
     }
 }
 
-const NAV_ITEMS: [ToolId; 6] = [
+const NAV_ITEMS: [ToolId; 7] = [
     ToolId::Search,
     ToolId::Bushing,
     ToolId::PressureVessel,
+    ToolId::StressSolver,
     ToolId::Dupes,
     ToolId::Rename,
     ToolId::Logs,
@@ -169,6 +176,7 @@ struct ToolbenchApp {
     search: SearchTool,
     pv: PressureVesselTool,
     bushing: BushingTool,
+    stress_solver: StressSolverTool,
     palette: CommandPalette,
     last_rail_width: f32,
     toasts: design::components::ToastQueue,
@@ -191,6 +199,7 @@ impl Default for ToolbenchApp {
             dark: true,
             rail_pinned: false,
             active_tool: ToolId::Search,
+            stress_solver: StressSolverTool::new(runtime.clone()),
             search: SearchTool::new(runtime),
             pv: PressureVesselTool::default(),
             bushing: BushingTool::default(),
@@ -202,6 +211,7 @@ impl Default for ToolbenchApp {
         if let Some(p) = persistence::load() {
             app.dark = p.dark.unwrap_or(app.dark);
             app.rail_pinned = p.rail_pinned.unwrap_or(app.rail_pinned);
+            app.stress_solver.unit_system = p.unit_system.unwrap_or(app.stress_solver.unit_system);
             app.search.apply_snapshot(p.search);
             app.search.set_recent_and_presets(p.recent_searches, p.saved_presets);
             app.search.apply_graph_pinned_layout(p.graph_pinned_layout);
@@ -374,6 +384,7 @@ impl ToolbenchApp {
         persistence::PersistedState {
             dark: Some(self.dark),
             rail_pinned: Some(self.rail_pinned),
+            unit_system: Some(self.stress_solver.unit_system),
             search: self.search.to_snapshot(),
             recent_searches: self.search.recent_searches().to_vec(),
             saved_presets: self.search.saved_presets().to_vec(),
@@ -456,6 +467,7 @@ impl eframe::App for ToolbenchApp {
                 Command::SwitchToSearch => self.active_tool = ToolId::Search,
                 Command::SwitchToBushing => self.active_tool = ToolId::Bushing,
                 Command::SwitchToPressureVessel => self.active_tool = ToolId::PressureVessel,
+                Command::SwitchToStressSolver => self.active_tool = ToolId::StressSolver,
                 Command::RunSearch => self.search.trigger_run(),
                 Command::CancelSearch => self.search.trigger_cancel(),
                 Command::ToggleTheme => self.dark = !self.dark,
@@ -521,6 +533,7 @@ impl eframe::App for ToolbenchApp {
                 ToolId::Search => self.search.ui(ui, tokens, &mut self.toasts),
                 ToolId::Bushing => self.bushing.ui(ui, tokens),
                 ToolId::PressureVessel => self.pv.ui(ui, tokens),
+                ToolId::StressSolver => self.stress_solver.ui(ui, tokens, ctx),
                 _ => {
                     ui.label("Coming soon.");
                 }

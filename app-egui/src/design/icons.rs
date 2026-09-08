@@ -32,6 +32,7 @@ fn svg_source(name: &str) -> &'static str {
         "search" => include_str!("../../assets/icons/search.svg"),
         "settings" => include_str!("../../assets/icons/settings.svg"),
         "cylinder" => include_str!("../../assets/icons/cylinder.svg"),
+        "activity" => include_str!("../../assets/icons/activity.svg"),
         "copy-check" => include_str!("../../assets/icons/copy-check.svg"),
         "pencil-line" => include_str!("../../assets/icons/pencil-line.svg"),
         "chart-column" => include_str!("../../assets/icons/chart-column.svg"),

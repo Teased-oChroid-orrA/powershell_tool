@@ -22,6 +22,19 @@ bushing-solver = { path = "../bushing-solver" }
 mechanics-core = { path = "../mechanics-core" }
 pressure-vessel-solver = { path = "../pressure-vessel-solver" }
 
+# Stress Solver toolbox: reuses the PINN structural stress solver from the
+# sibling NeuralNetwork-Stress-Solver checkout (a mature, separately-tested
+# project - see its own CLAUDE.md) as a path dependency, not vendored/copied
+# source - keeps ONE source of truth for the solver logic. `ndarray-backend`
+# avoids a GPU/wgpu driver dependency for this bundled desktop tool (CPU-only
+# burn backend, already a supported build configuration upstream).
+pinn-core = { path = "../../../NeuralNetwork-Stress-Solver/crates/pinn-core" }
+pinn-solver = { path = "../../../NeuralNetwork-Stress-Solver/crates/pinn-solver", features = ["ndarray-backend"] }
+egui_plot = "0.29"
+crossbeam-channel = "0.5"
+toml = "0.8"
+ndarray = "0.16"
+
 rfd = "0.15"
 open = "5"
 tokio = { version = "1", features = ["fs", "rt-multi-thread", "sync", "macros"] }

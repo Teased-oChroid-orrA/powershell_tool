@@ -20,6 +20,7 @@ pub enum Command {
     SwitchToSearch,
     SwitchToBushing,
     SwitchToPressureVessel,
+    SwitchToStressSolver,
     RunSearch,
     CancelSearch,
     ToggleTheme,
@@ -31,10 +32,11 @@ pub enum Command {
 }
 
 impl Command {
-    const ALL: [Command; 11] = [
+    const ALL: [Command; 12] = [
         Command::SwitchToSearch,
         Command::SwitchToBushing,
         Command::SwitchToPressureVessel,
+        Command::SwitchToStressSolver,
         Command::RunSearch,
         Command::CancelSearch,
         Command::ToggleTheme,
@@ -50,6 +52,7 @@ impl Command {
             Command::SwitchToSearch => "Go to: Search Files",
             Command::SwitchToBushing => "Go to: Bushing Workbench",
             Command::SwitchToPressureVessel => "Go to: Pressure Vessel Analyzer",
+            Command::SwitchToStressSolver => "Go to: Stress Solver",
             Command::RunSearch => "Run Search",
             Command::CancelSearch => "Cancel Search",
             Command::ToggleTheme => "Toggle theme (dark/light)",
