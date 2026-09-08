@@ -45,6 +45,17 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 notify = "6"
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(not(windows))'.dependencies]
+# Windows-only, NOT `[dependencies]`: `notify-rust`'s Windows backend,
+# `tauri-winrt-notification`, hard-requires `windows ^0.61` (no feature to
+# disable it - `cfg(target_os = "windows")`, `optional = false` per its own
+# Cargo.toml), which conflicts with the `windows-core ^0.62` this crate's
+# wgpu-based rendering stack (via pinn-solver -> wgpu-hal) requires on
+# Windows - a real upstream version conflict, not a local mistake (see
+# search.rs's `notify_search_complete` doc comment, which is a Windows
+# no-op for exactly this reason). Excluding it from the Windows dependency
+# graph entirely is the only currently-available fix.
 notify-rust = "4"
 
 # SVG -> raster path for bushing_visualizer.rs's existing SVG-string output

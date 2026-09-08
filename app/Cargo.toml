@@ -62,20 +62,27 @@ notify = "6"
 # needs - "png" only (default-features off) since that's the one format
 # actually used, not the full codec set.
 image = { version = "0.25", default-features = false, features = ["png"] }
-# Desktop completion notification (epic backlog #8) - native toast APIs
-# (WinRT toast on Windows, NSUserNotificationCenter/UNUserNotification on
-# macOS, D-Bus on Linux), not a custom in-app popup. Best-effort: a failed
-# notification (e.g. a Windows AppUserModelID quirk for unpackaged/
-# unsigned exes - a real, known rough edge for toast notifications from a
-# plain win32 exe, not yet verified against an actual signed build of this
-# app) is swallowed, same as this app's established pattern for the
-# settings file and incremental cache - never a reason to interrupt the
-# user or fail a search.
-notify-rust = "4"
 # Encodes the Bushing Workbench's pre-rendered LaTeX formula PNGs
 # (embedded via `include_bytes!`) into `data:image/png;base64,...` `<img>`
 # src strings - see bushing_workbench.rs's `formula_img_src`.
 base64 = "0.22"
+
+[target.'cfg(not(windows))'.dependencies]
+# Desktop completion notification (epic backlog #8) - native toast APIs
+# (NSUserNotificationCenter/UNUserNotification on macOS, D-Bus on Linux),
+# not a custom in-app popup. Best-effort: a failed notification is
+# swallowed, same as this app's established pattern for the settings file
+# and incremental cache - never a reason to interrupt the user or fail a
+# search. Windows-only, NOT `[dependencies]`: `notify-rust`'s Windows
+# backend, `tauri-winrt-notification`, hard-requires `windows ^0.61` (no
+# feature to disable it), which conflicts with the `windows-core ^0.62`
+# `app-egui`'s wgpu-based rendering stack requires - since this workspace
+# resolves one shared dependency graph for every member, that conflict
+# blocks every Windows build regardless of which crate needs which side.
+# See `state.rs`'s `notify_search_complete` for the full history (this
+# feature already defaults OFF and had documented Windows-specific
+# reliability concerns before this).
+notify-rust = "4"
 
 [dev-dependencies]
 # Diagnostic only: lets bushing_visualizer's tests actually run the same

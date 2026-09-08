@@ -218,6 +218,19 @@ fn format_relative_age(age: std::time::Duration) -> String {
 /// bug (unconditional `notify_rust::Notification::...show()` on the
 /// runtime task, no opt-in gate, no `spawn_blocking`, no `catch_unwind`)
 /// before this pass. Fixed by porting the real fix, not re-deriving one.
+///
+/// A no-op on Windows (`notify-rust` isn't even a Windows dependency of
+/// this crate - see its `Cargo.toml` entry's own comment): `notify-rust`'s
+/// Windows backend, `tauri-winrt-notification`, hard-requires `windows
+/// ^0.61` with no feature to disable it, which is flatly incompatible with
+/// the `windows-core ^0.62` this crate's own wgpu-based rendering stack
+/// (via the Stress Solver toolbox's `pinn-solver` -> `wgpu-hal`) requires -
+/// a real, currently-unresolvable upstream version conflict (confirmed via
+/// `cargo update -p windows@0.61.3 --precise 0.62.2`: "candidate versions
+/// found which didn't match"), not a local mistake. Toast notifications on
+/// completion remain a real feature on macOS/Linux, where this conflict
+/// doesn't exist.
+#[cfg(not(target_os = "windows"))]
 fn notify_search_complete(summary: String) {
     tokio::task::spawn_blocking(move || {
         let _ = std::panic::catch_unwind(|| {
@@ -225,6 +238,9 @@ fn notify_search_complete(summary: String) {
         });
     });
 }
+
+#[cfg(target_os = "windows")]
+fn notify_search_complete(_summary: String) {}
 
 #[derive(Default)]
 pub struct SearchUiState {

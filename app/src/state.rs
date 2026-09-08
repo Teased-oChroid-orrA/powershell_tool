@@ -1118,6 +1118,19 @@ impl AppState {
 /// fix against; `catch_unwind` below is defense-in-depth for the subset
 /// of failure modes that are ordinary Rust panics, not a claimed fix for
 /// the whole problem.
+///
+/// A no-op on Windows now, on top of everything above: `notify-rust`'s
+/// Windows backend, `tauri-winrt-notification`, hard-requires `windows
+/// ^0.61` with no feature to disable it, which conflicts with the
+/// `windows-core ^0.62` `app-egui`'s wgpu-based rendering stack requires -
+/// since both crates share this workspace's one resolved dependency graph,
+/// that conflict blocks EVERY Windows build in this workspace, not just
+/// app-egui's. Given the already-documented Windows-specific notification
+/// reliability concerns above (this feature already defaults OFF), cutting
+/// it entirely for Windows builds is a low-risk trade for an otherwise-
+/// unresolvable upstream version conflict - see `app-egui/src/search.rs`'s
+/// identical treatment for the fuller rationale.
+#[cfg(not(target_os = "windows"))]
 fn notify_search_complete(summary: String) {
     tokio::task::spawn_blocking(move || {
         let _ = std::panic::catch_unwind(|| {
@@ -1128,6 +1141,9 @@ fn notify_search_complete(summary: String) {
         });
     });
 }
+
+#[cfg(target_os = "windows")]
+fn notify_search_complete(_summary: String) {}
 
 /// Folds one root's `SearchRunResult` into the running multi-root total -
 /// concatenates the per-file results/warnings/dry-run candidates and sums
