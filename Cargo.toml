@@ -1,6 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["native-search", "search-core", "app", "app-egui", "cli", "bushing-solver", "engineering-math", "mechanics-core", "pressure-vessel-solver"]
+members = ["native-search", "search-core", "app", "cli", "bushing-solver", "engineering-math", "mechanics-core", "pressure-vessel-solver"]
+# `app-egui` is DELIBERATELY excluded, not a member - see its own Cargo.toml's
+# `[workspace]` stanza for why: it and `app` (this workspace) need genuinely
+# incompatible major versions of the `windows`/`windows-core` crate family on
+# Windows (fontique/parley - Blitz's font stack, an `app`-only dependency -
+# hard-requires `windows ^0.58.0`; `app-egui`'s wgpu-hal 29.x rendering stack
+# hard-requires `windows-core ^0.62`), so they cannot share one Cargo.lock.
+exclude = ["app-egui"]
 
 # Moved here from native-search/Cargo.toml: Cargo ignores [profile.*]
 # sections in non-root workspace members. panic="unwind" (not "abort") is

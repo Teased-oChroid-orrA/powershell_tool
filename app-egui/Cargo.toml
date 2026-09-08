@@ -4,6 +4,24 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+# Standalone workspace (own Cargo.lock/target/), NOT a member of the root
+# powershell_tool workspace (see root Cargo.toml's `exclude` entry for this
+# crate). Real, confirmed necessity, not a preference: on Windows, `app`
+# (dioxus-native/Blitz) pulls fontique/parley, which hard-requires
+# `windows ^0.58.0`, while this crate's wgpu-based rendering stack (via
+# egui-wgpu -> wgpu-hal 29.x, and pinn-solver's burn-wgpu) hard-requires
+# `windows-core ^0.62` - genuinely incompatible ranges that cannot both be
+# satisfied by one shared Cargo.lock (confirmed via `cargo update -p
+# windows@0.58.0 --precise 0.62.2`: "candidate versions found which didn't
+# match", required by fontique's `^0.58.0`). Splitting this crate into its
+# own workspace resolves each side's dependency graph independently -
+# `app`'s stays on the windows ~0.58 family, this crate's on ~0.62 - with
+# zero cross-contamination. Its path dependencies on sibling crates
+# (search-core, native-search, bushing-solver, etc.) still work unchanged;
+# each just gets resolved a second, independent time under this workspace's
+# own lock instead of sharing the root one.
+[workspace]
+
 [dependencies]
 # egui/eframe replace dioxus-native (Blitz) - see docs/issue-11-phase-14.md
 # for why: position:sticky never implemented, transform invisible to
