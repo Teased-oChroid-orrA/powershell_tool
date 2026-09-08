@@ -64,6 +64,14 @@ serde_json = "1"
 notify = "6"
 image = { version = "0.25", default-features = false, features = ["png"] }
 
+# SVG -> raster path for bushing_visualizer.rs's existing SVG-string output
+# (reused verbatim - it never touched Dioxus). egui has no native SVG
+# widget, so cross-section drawings rasterize through resvg/usvg into an
+# egui::ColorImage instead of an `<img src="data:...">`.
+resvg = "0.44"
+usvg = "0.44"
+tiny-skia = "0.11"
+
 [target.'cfg(not(windows))'.dependencies]
 # Windows-only, NOT `[dependencies]`: `notify-rust`'s Windows backend,
 # `tauri-winrt-notification`, hard-requires `windows ^0.61` (no feature to
@@ -75,14 +83,6 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # no-op for exactly this reason). Excluding it from the Windows dependency
 # graph entirely is the only currently-available fix.
 notify-rust = "4"
-
-# SVG -> raster path for bushing_visualizer.rs's existing SVG-string output
-# (reused verbatim - it never touched Dioxus). egui has no native SVG
-# widget, so cross-section drawings rasterize through resvg/usvg into an
-# egui::ColorImage instead of an `<img src="data:...">`.
-resvg = "0.44"
-usvg = "0.44"
-tiny-skia = "0.11"
 
 [dev-dependencies]
 tempfile = "3"
