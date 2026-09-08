@@ -77,7 +77,7 @@ jobs:
           path: |
             ~/.cargo/registry
             powerShell/powershell_tool/target
-          key: cargo-search-core-${{ runner.os }}-${{ hashFiles('powerShell/powershell_tool/Cargo.lock') }}
+          key: cargo-search-core-${{ runner.os }}-${{ hashFiles('powerShell/powershell_tool/Cargo.lock', 'NeuralNetwork-Stress-Solver/Cargo.lock') }}
 
       - name: cargo test -p search-core
         # search-core has zero GUI dependency by design (same invariant
@@ -127,7 +127,7 @@ jobs:
           path: |
             ~/.cargo/registry
             powerShell/powershell_tool/target
-          key: cargo-app-${{ runner.os }}-${{ hashFiles('powerShell/powershell_tool/Cargo.lock') }}
+          key: cargo-app-${{ runner.os }}-${{ hashFiles('powerShell/powershell_tool/Cargo.lock', 'NeuralNetwork-Stress-Solver/Cargo.lock') }}
 
       - name: Build app (release, win-x64)
         run: cargo build --release -p app --target x86_64-pc-windows-msvc
@@ -227,7 +227,7 @@ jobs:
           path: |
             ~/.cargo/registry
             powerShell/powershell_tool/target
-          key: cargo-app-egui-${{ runner.os }}-${{ hashFiles('powerShell/powershell_tool/Cargo.lock') }}
+          key: cargo-app-egui-${{ runner.os }}-${{ hashFiles('powerShell/powershell_tool/Cargo.lock', 'NeuralNetwork-Stress-Solver/Cargo.lock') }}
 
       - name: Build app-egui (release, win-x64)
         run: cargo build --release -p app-egui --target x86_64-pc-windows-msvc
