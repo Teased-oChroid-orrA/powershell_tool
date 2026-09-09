@@ -1879,6 +1879,239 @@ starting new `app-egui` work, not the phase docs.
   cache) rather than assuming it will render** - this bug was old and
   present across nearly every sketch label before anyone checked.
 
+## Follow-up pass: garbage-Kt investigation, graceful stop/resume, auto-stop, deformed shape
+
+A user ran `single_hole_plate.toml` for 20000 steps and reported: the elapsed timer kept
+counting after `Done`, "Save Trained Model" silently did nothing on Windows, and the converged
+result was physically wrong - max stress at the hole boundary read *below* the far-field nominal
+stress (Kt ≈ 0), the Hole Stress Analysis plot was flat-zero, and `PDE residual RMS/max` were
+huge (1.19e7 / 7.04e7 Pa) despite a tiny converged total loss. They also asked for: a graceful
+stop-and-resume workflow (stop mid-run, save, later load and continue for N more steps, with the
+step count user-editable), and confirmation that auto-stop-on-plateau (present on Kirsch's path)
+also existed for the plate path. Explicit standing instruction for all of this work: **"Kt is a
+byproduct, don't hunt for Kt, but the source"** - every fix below targets the underlying PDE
+residual/loss-formulation defect, never Kt directly; Kt is read only as a downstream sanity
+check. A second explicit instruction, once weight-tuning attempts stalled: **no case-specific
+hacks - the network should detect what's going wrong and adapt generally**, which is why the
+AMR-indicator generalization (below) reuses the existing, geometry-agnostic lock-zone/residual
+machinery rather than adding any "if there's a hole, do X" special case.
+
+### Timer-keeps-ticking and Save-does-nothing: already-fixed, pre-existing bugs
+
+Both were real, already fixed earlier in this project's history (not re-broken, but re-verified
+in this pass): `elapsed_secs()` used to always compute `train_started_at.elapsed()` against the
+live wall clock - fixed by a `training_finished_at: Option<Instant>` frozen once at `Done`/
+`Error`/`ParametricReady`. `TrainingMsg::Done`'s handler used to null `tx_control`/`rx_train`
+immediately even though the solver thread deliberately stays alive after `Done` to serve
+`SaveCheckpoint` - fixed by only tearing the channel down once it actually disconnects.
+
+### Graceful stop + resume (Stage: `run_training_user_problem_resume`)
+
+`ControlAction::StopAndFinish` was already graceful at the solver level (falls through to the
+same `Done` + checkpoint-serving tail a normal finish takes) - combined with the Save fix above,
+"click Stop, then Save" already worked with no new code. What was missing was *resume*:
+"Load Trained Model" only ever served inference, never continued training.
+
+- `runner::run_user_problem_training_from` is a new shared loop body factored out of
+  `run_training_user_problem`, parameterized by `step_offset` (`0` for a fresh run,
+  `steps_completed` for a resume) - `run_training_user_problem_resume(weights_path,
+  additional_steps, tx, stop_rx)` loads the checkpoint via a new `checkpoint::
+  load_checkpoint_for_training` (identical metadata/architecture reconstruction to
+  `load_checkpoint`, but returns a TRAINABLE `ElasticityNet<B>` instead of an inference-only
+  `BInner` one), sets `spec.training.max_steps = steps_completed + additional_steps`, and
+  resumes from there.
+- **Deliberately lightweight, not full-state**: only network weights carry over. Optimizer
+  momentum, SAW-BRDR's adapted weights, the LR schedule's phase, and the AMR grid all restart
+  fresh - the same cold-start cost any new run already pays through its own warmup, not a new
+  cost. Checkpoints only ever persisted weights + `CheckpointMeta` in the first place (no
+  optimizer/SAW/LR/AMR state existed to resume); building a full-state format would have been a
+  much larger, separate feature, and was explicitly not what was asked for.
+- **`app-egui/src/stress_solver.rs`**: `load_checkpoint()`'s `CheckpointSpec::Plate` branch no
+  longer immediately spawns a serve-only thread - it populates a new `pending_resume:
+  Option<PendingResume>` (path, spec, steps_completed, the already-loaded inference model, and a
+  user-editable `additional_steps` defaulting to the original spec's remaining steps) and shows
+  an inline "Resume Training?" card (Train step, right after the Start/Stop/Save row) with an
+  editable step count and two buttons. "Just View Results" spawns the exact same
+  `serve_loaded_plate_checkpoint` path `load_checkpoint` used to call immediately; "Resume
+  Training" spawns `runner::run_training_user_problem_resume`. Start/Browse/Load are disabled
+  while a resume choice is pending, so a second load can't silently orphan the first one.
+  Parametric checkpoints are explicitly out of scope (out-of-band error if attempted) - the
+  parametric path already has its own "stay alive, serve instant inference" design that covers
+  its own post-training use case.
+
+### Auto-stop-on-plateau (Stage: plate path gets what Kirsch's path already had)
+
+`NetworkSpec.auto_stop_on_plateau: bool` (new, `#[serde(default)]` true - every existing TOML
+spec keeps parsing unchanged) wires `controllers::ConvergenceTracker::for_metric` (already
+proven reusable this session for `ArchitectureController`, an unrelated generic-metric consumer)
+into `run_user_problem_training_from`'s existing vis-cadence block, fed `bc_residual_rms` (real,
+already-computed, no new probe). On `check_plateau()` firing, the SAME `break` path
+`StopAndFinish` already takes - a plain graceful stop, not Kirsch's own warm-restart-with-
+tightening-cap cascade (tuned specifically for Kirsch's K_t dynamics, a separate, larger feature
+not needed here).
+
+**A real bug found in this exact feature, not a pre-existing one**: `ConvergenceTracker::
+check_plateau` needs `PLATEAU_WINDOW * 2` (40) readings before it can even evaluate - fine for
+Kirsch, whose own usage pushes a reading once every 50 real steps (~2000-step warmup), but the
+plate path's vis cadence pushes every 10 steps, so the SAME 40-reading warmup fired at only
+~400 real steps - confirmed via a real run: auto-stop fired with `total_loss` still at ~4.0,
+nowhere near converged, killing training almost immediately. Fixed by throttling the push to
+once every 5 vis-cadence ticks (once per 50 real steps) inside `run_user_problem_training_from`
+- matches Kirsch's own real cadence-to-real-step ratio, without touching the shared, already-
+tested `ConvergenceTracker`/`PLATEAU_WINDOW` at all.
+
+### Deformed-shape visualization (new Results-step card)
+
+`stress_solver.rs::deformed_shape_card` draws the plate's outer boundary and every hole both
+undeformed (dashed, muted) and deformed (solid, accent/Free-Fixed color) by shifting sample
+points by the trained model's own displacement field, auto-exaggerated (target: the largest
+displacement anywhere maps to 15% of the plate's smaller half-dimension) since real
+displacements are imperceptibly small at true scale - the applied exaggeration factor is shown
+directly on the card so it's never mistaken for true scale. The outer boundary uses a new
+`sample_bilinear` helper against the existing `vis.disp_u`/`disp_v` grid (no exact per-point
+probe exists there); each hole's own outline uses `HoleAnalysis::profile`'s exact `ux`/`uy` at
+the ring (already computed, no new solver-side plumbing either way).
+
+### The garbage-Kt investigation: what was tried, what measurably helped, what didn't
+
+This was the deep part of the pass - four real, sequentially-tested hypotheses, each backed by
+an actual training run's numbers, not assumption. Per the user's explicit "don't hunt for Kt"
+instruction, the metric tracked throughout was the interior PDE/constitutive-consistency
+residual (`|σ_net - C:ε_fd|`, RMS/max), with Kt read only as a final sanity check.
+
+**Root cause, confirmed via the real 20000-step screenshots**: `step_physics_multi`'s
+constitutive-consistency term (ties the mDEM network's direct σ output to Hooke's law, evaluated
+on generic interior points) used a small FIXED weight (`LAM_CONSTITUTIVE_CONSISTENCY`, 5.0),
+while `hole_traction_loss_direct` (the traction-free hole-boundary condition - only 2 of 3
+stress DOF, leaving the hoop/tangential stress that IS the concentration unconstrained) had its
+SAW-BRDR-adapted weight left fully **uncapped** (`dynamic_lam_h_cap: f64::MAX`) in
+`run_user_problem_training_from`/the headless CLI path, unlike Kirsch's own real, tested,
+capped-and-cascading path. An outweighed boundary term has a strictly EASIER minimum available
+than the true elasticity solution: drive direct-stress output toward zero everywhere the
+boundary term is evaluated (trivially satisfies "traction ≈ 0" without satisfying "stress
+matches Hooke's law").
+
+1. **Cap `dynamic_lam_h_cap`/`dynamic_lam_d_cap` at 50.0** (Kirsch's own real starting value,
+   not an arbitrary guess) in both `run_user_problem_training_from`'s and the headless CLI
+   path's per-step `MultiStepCtx`. **Measured effect** (3000-step run): PDE residual RMS/max
+   dropped meaningfully from the original bug's numbers, but Kt stayed at ~0.02 - confirmed via
+   a real GUI-path training run (see "a stale test harness" below for why the FIRST such
+   measurement, via the headless CLI, was misleading).
+   - **A real methodology bug caught mid-investigation**: the headless CLI path
+     (`user_runner::run_headless_user_problem`) has **no AMR at all** - a completely separate,
+     never-updated implementation from the GUI path. Verifying against it several times gave
+     numbers that didn't reflect what the actual app does. Fixed the verification method (a new
+     `#[ignore]`d `runner::tests::run_training_user_problem_generalized_amr_indicator_diagnostic`
+     test that runs the REAL `run_training_user_problem` entry point on a background thread,
+     drains messages, and reports the same PDE-residual/Kt numbers from the real last `Update`)
+     before trusting any further numbers - not a fix to production code, but a correction to how
+     this investigation was gathering evidence, worth recording so it isn't repeated.
+2. **`MultiStepCtx.constitutive_consistency_weight: f64`** (new field, plain static per-caller
+   value, NOT adaptive/per-step) raises the constitutive weight to the SAME 50.0 ceiling for
+   `run_user_problem_training_from`'s real per-step ctx and the headless CLI path - every other
+   caller (Kirsch/pin-lug/tests) keeps `LAM_CONSTITUTIVE_CONSISTENCY` (5.0), byte-identical to
+   before this field existed. **A real regression caught before landing**: the first version of
+   this fix floored the weight per-step at whatever the step's largest active SAW-adapted weight
+   happened to be (not a static value) - broke
+   `step_physics_multi_single_domain_matches_step_physics_kirsch` (a real parity guard proving
+   the shared multi-domain step function reproduces `step_physics`'s exact formula for one
+   Kirsch-equivalent domain) whenever ANY unrelated term's SAW weight legitimately exceeded 5.0
+   in that test's own scenario - a real, ordinary Kirsch-path event, not a bug. Reverted in
+   favor of the plain static-per-caller design specifically because it can never touch Kirsch's
+   frozen reference behavior, regardless of what any term's SAW weight does at runtime.
+   **Measured effect** (8000-step run): PDE residual RMS improved further (~9x better than the
+   original bug's 1.19e7, at less than half the step count) - Kt still ~0.004-0.01.
+3. **Generalized AMR indicator**: `training_core::probe_interior_energy_residuals` (the signal
+   `AdaptiveGrid`'s residual-driven refine/coarsen decision uses) previously used only
+   `|dem_energy_per_point|` - a domain-MEAN Monte-Carlo estimator that gives a small feature's
+   local energy difference very little influence on the refinement decision unless heavily
+   oversampled. For mDEM domains specifically (`output_dim == 5`), added the constitutive-
+   consistency residual (`|σ_net - Hooke's-law(ε_fd)|`, same units - both Pa, dimensionally
+   sound to sum) on top - a domain-agnostic, geometry-agnostic generalization (gated purely on
+   `output_dim`, not "does this problem have a hole"), so it applies to any future local
+   physics-consistency failure, not just this one. Zero effect on Kirsch/pin-lug (non-mDEM or
+   out-of-scope). **Measured effect**: real, but small on its own - the hole-zone density metric
+   (`AmrSweepReport::hole_zone_density_*`) was already saturated at its structural lock-zone
+   floor both before and after this change, meaning the mechanism this generalization targets
+   wasn't actually the bottleneck for the hole ring specifically.
+4. **Deepened AMR resolution near locked zones**: `derive_amr_config`'s `SMALL_FEATURE_RATIO_
+   THRESHOLD` (hole-radius / plate-extent ratio below which a deeper quadtree level is used) was
+   0.04 - `single_hole_plate.toml`'s ratio is 0.1, missing the deeper tier even though it's an
+   entirely ordinary, not-unusually-small feature. Raised to 0.15 (Kirsch's own 0.025 ratio and
+   the no-hole 1.0 "ratio" both stay on the same side of the new threshold as before - both
+   regression tests for this function pass unchanged). **Measured effect**: hole-zone density
+   rose 2.47x (96000 → 236800) at 8000 steps - a real, substantial density increase - yet Kt
+   stayed at ~0.004. This measurement is what conclusively ruled out sampling/resolution as the
+   bottleneck: even a much denser hole ring didn't move Kt.
+5. **Positional-Fourier embedding** (`UserGeometry::n_fourier`/`net_input_dim`, `MultiStepCtx.
+   n_fourier`, threaded through every `user_problem.rs` probe + network construction site):
+   Kirsch's own problem uses `n_fourier = 8` specifically for its hole ("corrects spectral bias
+   near hole" per `engine.rs`'s own comment) and achieves real Kt convergence; the generalized
+   path never had it. After (3) and (4) ruled out weighting and density, this was the next
+   well-motivated step - MLPs have a well-documented spectral bias against sharp, localized,
+   high-frequency features, exactly what a stress concentration is. **Measured result: a real
+   regression, kept disabled.** Enabling it made the interior PDE residual RMS ~28x WORSE
+   (2.80e7 Pa vs. 9.85e5 Pa without it, same 8000-step config) while total_loss converged FASTER
+   and Kt stayed ~0 either way - the higher-frequency basis let the network fit boundary/
+   traction collocation points more precisely while oscillating between them, a known Fourier-
+   feature pitfall when embedding frequency outstrips collocation density. `UserGeometry::
+   n_fourier()` now always returns `0` - the infrastructure (every downstream consumer) is kept,
+   not deleted, so a future attempt (denser boundary-adjacent sampling paired with a lower
+   `n_fourier`, say) doesn't have to rebuild it or re-discover this pitfall blind.
+
+**Net honest result of this pass**: PDE residual RMS/max improved substantially and repeatably
+across independently-verified fixes (1)-(3) - roughly an order of magnitude better than the
+original bug report's numbers, at well under half the original 20000-step training length. Kt
+itself has NOT reached the true physical value (~3 for this geometry) in any run tested this
+session (all capped at 8000 steps for iteration speed - the original bug report's own 20000-step
+screenshots are the only real data point at full length, and predate every fix in this pass).
+**What's left unresolved, stated plainly rather than silently dropped**: whether the current
+combination of fixes reaches a physically-correct Kt given the FULL 20000+ step training length
+the original report used was not verified (each verification cycle costs real wall-clock time -
+compile ~9-15 min release/LTO plus the run itself). The most promising untried, well-reasoned
+next step (not built this pass): a dedicated near-ring point set with a boundary-safe (non-hole-
+crossing) FD stencil, giving the hoop stress a direct, LOCAL Hooke's-law anchor at the ring
+itself - `constitutive_consistency` currently never evaluates exactly there by design (FD
+stencils crossing the hole boundary are why `hole_traction_loss_direct` avoids FD entirely at
+the ring), which may be the real remaining gap now that weighting/density/embedding have each
+been tried and measured.
+
+### Generalized `MultiStepCtx` fields added this pass (mechanical, ~25 call sites each)
+
+Both new fields (`constitutive_consistency_weight: f64`, `n_fourier: usize`) follow the exact
+same pattern: added to `MultiStepCtx`/`FrozenMultiStepCtx` (+ its `from_ctx`/`as_multi_step_ctx`
+round-trip), every existing call site set to the pre-existing constant/`0` (byte-identical
+behavior), only `run_user_problem_training_from`'s real per-step ctx and the headless CLI path
+set non-default values. A real, caught-before-shipping consequence of the `n_fourier` field
+specifically: several `user_problem.rs` tests paired a geometry-agnostic `tiny_model()` test
+helper (fixed `input_dim: 3`) with a HOLED test geometry - once the 5 probe functions
+(`evaluate_user_vis_grid`, `probe_boundary_residuals`, `probe_reaction_force`,
+`probe_energy_balance`, `probe_hole_boundary_profile`) started deriving their own `n_fourier`
+from the geometry they're given, that pairing became a real tensor-shape mismatch (caught by
+running the actual test suite, not just `cargo build` - shape mismatches are a runtime panic,
+not a compile error). Fixed by giving `tiny_model` an explicit `n_fourier: usize` parameter and
+updating the 4 affected call sites; the same class of mismatch was independently caught and
+fixed in `checkpoint.rs`'s own round-trip test. Now that `n_fourier` always resolves to `0`
+(see the Fourier-embedding negative result above), none of these are live risks in practice, but
+the parameter/plumbing stays correct for whenever a non-zero value is tried again.
+
+### Heatmap-disappears-during-training: investigated, no code defect found
+
+User report: the Stress Field heatmap shows briefly when training starts, then disappears for
+the rest of the run. Traced the full data path: `self.vis` is only ever cleared in
+`start_training`/`load_checkpoint`/`resume_training`/`view_loaded_checkpoint` (never mid-run),
+vis-cadence sends fire unconditionally every 10 real steps in `run_user_problem_training_from`,
+and `drain_channel`'s "keep only the latest message" loop is a no-op concern for a
+`bounded(1)` channel (there is never more than one message queued for it to skip over). No
+plausible code-level cause found. Live visual verification was attempted and blocked by this
+environment's permissions, not skipped: `screencapture -x` on a running `app-egui` process
+captured only the desktop wallpaper (the window itself, though frontmost per the menu bar, never
+composited into the capture), and `osascript` (`tell application "System Events"...`) hung
+indefinitely on what is almost certainly an Accessibility/Automation permission prompt neither
+this session nor prior ones could interact with - the same class of limitation already on record
+elsewhere in this file for `screencapture`/window-focus. Left open, honestly, for the user's own
+next session to confirm visually - not marked fixed without evidence.
+
 ## Feature parity checklist (from the original PowerShell tool, via the C# port)
 
 If refactoring search/matching/reporting, confirm none of these regress:

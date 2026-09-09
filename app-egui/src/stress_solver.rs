@@ -65,6 +65,22 @@ enum LoadedSpec {
     Parametric(pinn_core::parametric_spec::ParametricProblemSpec),
 }
 
+/// Graceful-stop-and-resume: a loaded Plate checkpoint awaiting the user's choice between
+/// resuming training or just viewing the trained result. See `pending_resume`'s own doc
+/// comment on `StressSolverTool`.
+struct PendingResume {
+    path: std::path::PathBuf,
+    spec: ProblemSpec,
+    steps_completed: usize,
+    /// Only consumed by "Just View Results" - "Resume Training" re-reads `path` instead.
+    model: pinn_solver::network::ElasticityNet<pinn_solver::training_core::BInner>,
+    /// Editable in the UI, defaults to the original spec's remaining steps
+    /// (`spec.training.max_steps - steps_completed`, floored at a small positive default if
+    /// that's zero or negative - a checkpoint saved exactly at `max_steps` still has a
+    /// reasonable "train more" default instead of "train 0 more steps").
+    additional_steps: usize,
+}
+
 /// 8-breakpoint piecewise-linear Viridis colormap approximation - ported
 /// verbatim from `NeuralNetwork-Stress-Solver/crates/pinn-gui/src/colormap.rs`
 /// (a small, theme-independent pure function; not worth a shared crate for
@@ -88,6 +104,47 @@ fn viridis(t: f32) -> Color32 {
     let s = if (t1 - t0).abs() < 1e-6 { 0.0 } else { (t - t0) / (t1 - t0) };
     let lerp = |a: u8, b: u8| (a as f32 + s * (b as f32 - a as f32)) as u8;
     Color32::from_rgb(lerp(r0, r1), lerp(g0, g1), lerp(b0, b1))
+}
+
+/// Bilinearly interpolates `disp_u`/`disp_v` at a physical point `(x, y)` - used by
+/// `deformed_shape_card` to shift the outer-boundary outline, since (unlike the hole rings,
+/// which have exact per-point displacement from `HoleAnalysis::profile`) no exact probe
+/// exists for the outer boundary; the existing visualization grid is close enough for a
+/// qualitative deformed-shape picture. Grid layout matches `evaluate_user_vis_grid`'s own
+/// construction exactly: row `iy`/col `ix`, `x = -half_w + 2*half_w*ix/(nx-1)` (inclusive
+/// linspace, so the grid's edge cells sit exactly on the plate boundary - no extrapolation
+/// needed for points on the perimeter). Falls back to the nearest in-bounds corner's value
+/// when a neighbor is NaN (inside a hole) so the plate's own edges - always outside any
+/// hole - never silently return NaN just because a diagonal neighbor happened to graze one.
+fn sample_bilinear(disp_u: &ndarray::Array2<f32>, disp_v: &ndarray::Array2<f32>, x: f32, y: f32, half_w: f32, half_h: f32) -> (f32, f32) {
+    let (ny, nx) = disp_u.dim();
+    if nx < 2 || ny < 2 { return (0.0, 0.0); }
+    let fx = ((x / half_w * 0.5 + 0.5) * (nx - 1) as f32).clamp(0.0, (nx - 1) as f32);
+    let fy = ((y / half_h * 0.5 + 0.5) * (ny - 1) as f32).clamp(0.0, (ny - 1) as f32);
+    let (ix0, iy0) = (fx.floor() as usize, fy.floor() as usize);
+    let (ix1, iy1) = ((ix0 + 1).min(nx - 1), (iy0 + 1).min(ny - 1));
+    let (tx, ty) = (fx - ix0 as f32, fy - iy0 as f32);
+    let sample = |field: &ndarray::Array2<f32>| -> f32 {
+        let corners = [
+            (field[[iy0, ix0]], (1.0 - tx) * (1.0 - ty)),
+            (field[[iy0, ix1]], tx * (1.0 - ty)),
+            (field[[iy1, ix0]], (1.0 - tx) * ty),
+            (field[[iy1, ix1]], tx * ty),
+        ];
+        let (sum, weight): (f32, f32) = corners.iter()
+            .filter(|(v, _)| v.is_finite())
+            .fold((0.0, 0.0), |(s, w), &(v, wt)| (s + v * wt, w + wt));
+        if weight > 1e-6 { sum / weight } else { 0.0 }
+    };
+    (sample(disp_u), sample(disp_v))
+}
+
+/// Appends the first point to the end, so a `dashed_line` call over the result visually
+/// closes the loop (unlike `Shape::closed_line`, `dashed_line` takes a plain open path).
+fn close_loop(pts: &[egui::Pos2]) -> Vec<egui::Pos2> {
+    let mut v = pts.to_vec();
+    if let Some(&first) = pts.first() { v.push(first); }
+    v
 }
 
 /// Diverging blue-white-red colormap, zero-centered at `t=0.5` - `enhancement.md` Phase 28's
@@ -297,6 +354,15 @@ pub struct StressSolverTool {
     spec: Option<LoadedSpec>,
     load_error: Option<String>,
 
+    /// Graceful-stop-and-resume: set by `load_checkpoint` for a Plate checkpoint instead of
+    /// immediately spawning a serve-only thread, so the user can choose "Resume Training" or
+    /// "Just View Results" first. `None` the rest of the time. The already-loaded `model` is
+    /// only used by the "Just View Results" branch - "Resume Training" re-reads `path` itself
+    /// via `run_training_user_problem_resume` (needs a TRAINABLE model, a different backend
+    /// than this inference-only one - simplest to just read the small weights file twice than
+    /// convert between backends in memory).
+    pending_resume: Option<PendingResume>,
+
     tx_control: Option<crossbeam_channel::Sender<ControlMsg>>,
     rx_train: Option<crossbeam_channel::Receiver<TrainingMsg>>,
 
@@ -305,6 +371,16 @@ pub struct StressSolverTool {
     /// on a heavy spec can go tens of seconds between chart-visible changes,
     /// and a static number otherwise reads as "frozen" rather than "slow".
     train_started_at: Option<std::time::Instant>,
+    /// Set once training actually stops (`Done`/`Error`/`ParametricReady`) -
+    /// a real, reported bug fix: `elapsed_secs` used to always compute
+    /// `train_started_at.elapsed()` against the live wall clock, so the
+    /// displayed timer kept counting up forever after training finished
+    /// (every repaint - e.g. just moving the mouse over an already-`Done`
+    /// window - read a larger `now - train_started_at`). Once this is
+    /// `Some`, elapsed time is computed against THIS frozen instant instead,
+    /// so the displayed/report duration matches how long training actually
+    /// ran, not how long the window has been open since.
+    training_finished_at: Option<std::time::Instant>,
     step_num: usize,
     max_steps: usize,
     total_loss: Vec<f32>,
@@ -443,9 +519,11 @@ impl StressSolverTool {
             spec_path: "examples/problems/notched_plate.toml".to_string(),
             spec: None,
             load_error: None,
+            pending_resume: None,
             tx_control: None,
             rx_train: None,
             train_started_at: None,
+            training_finished_at: None,
             step_num: 0,
             max_steps: 0,
             total_loss: Vec::new(),
@@ -493,6 +571,15 @@ impl StressSolverTool {
         units::format_value(value_si, qty, self.unit_system)
     }
 
+    /// Seconds since training started - frozen at `training_finished_at` once training has
+    /// actually stopped, rather than always reading the live wall clock (see
+    /// `training_finished_at`'s doc comment for the bug this fixes).
+    fn elapsed_secs(&self) -> Option<f32> {
+        let started = self.train_started_at?;
+        let end = self.training_finished_at.unwrap_or_else(std::time::Instant::now);
+        Some(end.duration_since(started).as_secs_f32())
+    }
+
     /// Tries `BeamSpec` first (requires `bc`, which no plate spec carries), then
     /// `ParametricProblemSpec` (requires `e_range`/`nu_range`/`load_range`, which no plain
     /// plate spec carries), then falls back to `ProblemSpec` - see `LoadedSpec`'s doc comment.
@@ -534,6 +621,7 @@ impl StressSolverTool {
         self.status = Status::Training;
         self.error_msg = None;
         self.train_started_at = Some(std::time::Instant::now());
+        self.training_finished_at = None;
         self.step_num = 0;
         self.total_loss.clear();
         self.energy_loss.clear();
@@ -639,6 +727,7 @@ impl StressSolverTool {
                 self.error_msg = None;
                 self.load_error = None;
                 self.train_started_at = Some(std::time::Instant::now());
+                self.training_finished_at = None;
                 self.step_num = meta.steps_completed;
                 self.max_steps = meta.steps_completed;
                 self.total_loss.clear();
@@ -670,9 +759,20 @@ impl StressSolverTool {
 
                 match meta.spec {
                     pinn_solver::checkpoint::CheckpointSpec::Plate(spec) => {
+                        // Graceful-stop-and-resume: don't spawn anything yet - `self.pending_
+                        // resume` drives an inline prompt (rendered in `step_content`) that lets
+                        // the user pick "Resume Training" or "Just View Results" first. Undo the
+                        // `Status::Training`/channel setup above, which assumed an immediate spawn.
+                        self.status = Status::Idle;
                         self.spec = Some(LoadedSpec::Plate(spec.clone()));
-                        self.runtime.spawn_blocking(move || {
-                            pinn_solver::runner::serve_loaded_plate_checkpoint(spec, model, tx_train, rx_ctrl);
+                        let additional_steps =
+                            spec.training.max_steps.saturating_sub(meta.steps_completed).max(1000);
+                        self.pending_resume = Some(PendingResume {
+                            path,
+                            spec,
+                            steps_completed: meta.steps_completed,
+                            model,
+                            additional_steps,
                         });
                     }
                     pinn_solver::checkpoint::CheckpointSpec::Parametric(spec) => {
@@ -688,6 +788,73 @@ impl StressSolverTool {
             }
             Err(e) => self.load_error = Some(format!("checkpoint load error: {e}")),
         }
+    }
+
+    /// Graceful-stop-and-resume "Just View Results" branch - serves the already-loaded
+    /// inference model exactly the way `load_checkpoint` used to unconditionally, before the
+    /// resume prompt existed.
+    fn view_loaded_checkpoint(&mut self) {
+        let Some(pending) = self.pending_resume.take() else { return };
+        self.status = Status::Training;
+        self.train_started_at = Some(std::time::Instant::now());
+        self.training_finished_at = None;
+        self.step_num = pending.steps_completed;
+        self.max_steps = pending.steps_completed;
+
+        let (tx_train, rx_train) = crossbeam_channel::bounded(1);
+        let (tx_ctrl, rx_ctrl) = crossbeam_channel::unbounded();
+        self.rx_train = Some(rx_train);
+        self.tx_control = Some(tx_ctrl);
+
+        let spec = pending.spec;
+        let model = pending.model;
+        self.runtime.spawn_blocking(move || {
+            pinn_solver::runner::serve_loaded_plate_checkpoint(spec, model, tx_train, rx_ctrl);
+        });
+    }
+
+    /// Graceful-stop-and-resume "Resume Training" branch. Discards the already-loaded
+    /// inference model (unused here - `run_training_user_problem_resume` needs a TRAINABLE
+    /// model on a different backend, so it re-reads `pending.path` itself; see
+    /// `PendingResume`'s doc comment for why reading the small weights file twice is simpler
+    /// than converting between backends in memory) and spawns the solver's resume entry point
+    /// for `pending.additional_steps` more steps beyond `pending.steps_completed`.
+    fn resume_training(&mut self) {
+        let Some(pending) = self.pending_resume.take() else { return };
+        self.status = Status::Training;
+        self.error_msg = None;
+        self.train_started_at = Some(std::time::Instant::now());
+        self.training_finished_at = None;
+        self.step_num = pending.steps_completed;
+        self.max_steps = pending.steps_completed.saturating_add(pending.additional_steps);
+        self.total_loss.clear();
+        self.energy_loss.clear();
+        self.neumann_loss.clear();
+        self.lr_history.clear();
+        self.vis = None;
+        self.amr_sweeps.clear();
+        self.amr_marker_positions.clear();
+        self.architecture_events.clear();
+        self.architecture_event_marker_positions.clear();
+        self.hole_analyses.clear();
+        self.grad_norm_history.clear();
+        self.bc_residual_rms = 0.0;
+        self.bc_residual_max = 0.0;
+        self.reaction_force = None;
+        self.energy_balance = None;
+        self.checkpoint_status = None;
+        self.network_snapshot = None;
+
+        let (tx_train, rx_train) = crossbeam_channel::bounded(1);
+        let (tx_ctrl, rx_ctrl) = crossbeam_channel::unbounded();
+        self.rx_train = Some(rx_train);
+        self.tx_control = Some(tx_ctrl);
+
+        let path = pending.path;
+        let additional_steps = pending.additional_steps;
+        self.runtime.spawn_blocking(move || {
+            pinn_solver::runner::run_training_user_problem_resume(path, additional_steps, tx_train, rx_ctrl);
+        });
     }
 
     /// Stage F (exportable analysis report, `enhancement.md` Phase 40) - assembles a single
@@ -781,7 +948,7 @@ impl StressSolverTool {
             "training": {
                 "step": self.step_num,
                 "max_steps": self.max_steps,
-                "elapsed_secs": self.train_started_at.map(|t| t.elapsed().as_secs_f64()),
+                "elapsed_secs": self.elapsed_secs().map(|s| s as f64),
                 "final_total_loss": self.total_loss.last().copied().unwrap_or(0.0),
                 "final_optimization_loss_energy_term": self.energy_loss.last().copied().unwrap_or(0.0),
                 "final_grad_norm": self.grad_norm_history.last().copied().unwrap_or(0.0),
@@ -976,20 +1143,31 @@ impl StressSolverTool {
                 // instant-inference panel, distinct from an ordinary finished run.
                 self.status = Status::Done;
                 self.parametric_ready = true;
+                self.training_finished_at.get_or_insert_with(std::time::Instant::now);
             }
             TrainingMsg::ParametricInferResult(result) => {
                 self.infer_result = Some(*result);
             }
             TrainingMsg::Done => {
+                // The solver thread deliberately stays alive after `Done` to serve
+                // `ControlMsg::SaveCheckpoint` (mirrors the `ParametricReady` precedent right
+                // above, which never touches `tx_control`/`rx_train` either) - a real,
+                // reported bug: this used to null both out immediately here, which broke
+                // "Save Trained Model" silently (`save_checkpoint`'s `if let Some(tx) = &self.
+                // tx_control` found `None` and skipped sending entirely, and even had it sent,
+                // `drain_channel`'s `let Some(rx) = &self.rx_train else { return }` would never
+                // see the `CheckpointSaved` reply). The channel is correctly torn down only once
+                // it ACTUALLY disconnects (`drain_channel`'s own `disconnected` branch below),
+                // e.g. after the user clicks Stop or the process exits.
                 self.status = Status::Done;
-                self.tx_control = None;
-                self.rx_train = None;
+                self.training_finished_at.get_or_insert_with(std::time::Instant::now);
             }
             TrainingMsg::Error(e) => {
                 self.status = Status::Error;
                 self.error_msg = Some(e);
                 self.tx_control = None;
                 self.rx_train = None;
+                self.training_finished_at.get_or_insert_with(std::time::Instant::now);
             }
             // Pin-lug-only variants on the shared TrainingMsg enum - never
             // sent by run_training_user_problem (single-domain, no contact
@@ -1058,7 +1236,7 @@ impl StressSolverTool {
             step_num: self.step_num,
             max_steps: self.max_steps,
             error_msg: self.error_msg.clone(),
-            elapsed_secs: self.train_started_at.map(|t| t.elapsed().as_secs_f32()),
+            elapsed_secs: self.elapsed_secs(),
             telemetry,
         };
         // The content column (Stress Field card, field selector, Adaptive Refinement card,
@@ -1099,13 +1277,16 @@ impl StressSolverTool {
                 });
                 ui.add_space(8.0);
                 let running = self.status == Status::Training;
-                if ui.add_enabled(!running, egui::Button::new("Browse\u{2026}")).clicked() {
+                // Also locked while a resume prompt is pending - loading a second checkpoint
+                // or a fresh spec mid-prompt would silently orphan the first choice.
+                let locked = running || self.pending_resume.is_some();
+                if ui.add_enabled(!locked, egui::Button::new("Browse\u{2026}")).clicked() {
                     if let Some(path) = rfd::FileDialog::new().add_filter("TOML spec", &["toml"]).pick_file() {
                         self.spec_path = path.display().to_string();
                     }
                 }
                 ui.add_space(6.0);
-                if ui.add_enabled(!running, egui::Button::new("Load")).clicked() {
+                if ui.add_enabled(!locked, egui::Button::new("Load")).clicked() {
                     self.load_spec();
                 }
                 ui.add_space(14.0);
@@ -1114,7 +1295,7 @@ impl StressSolverTool {
                 // Stage H (model checkpoint save/load) - skips training entirely: reconstructs
                 // the saved architecture and serves it immediately (see `load_checkpoint`'s
                 // doc comment).
-                if ui.add_enabled(!running, egui::Button::new("Load Trained Model\u{2026}")).clicked() {
+                if ui.add_enabled(!locked, egui::Button::new("Load Trained Model\u{2026}")).clicked() {
                     self.load_checkpoint();
                 }
             });
@@ -1250,7 +1431,7 @@ impl StressSolverTool {
         ui.add_space(10.0);
 
         let running = self.status == Status::Training;
-        let can_start = self.spec.is_some() && !running;
+        let can_start = self.spec.is_some() && !running && self.pending_resume.is_none();
         ui.horizontal(|ui| {
             if crate::design::components::button(ui, tokens, crate::design::components::ButtonVariant::Primary, "\u{25b6} Start Training", can_start).clicked() {
                 self.start_training();
@@ -1276,6 +1457,44 @@ impl StressSolverTool {
         });
 
         ui.add_space(10.0);
+
+        // Graceful-stop-and-resume: shown whenever a loaded Plate checkpoint is awaiting the
+        // user's choice - see `pending_resume`'s doc comment. Click outcomes are captured as
+        // plain bools and acted on AFTER this borrow of `self.pending_resume` ends, since both
+        // handlers need `&mut self`.
+        let mut resume_clicked = false;
+        let mut view_clicked = false;
+        if let Some(pending) = &mut self.pending_resume {
+            card(ui, tokens, |ui| {
+                card_title(ui, "Resume Training?");
+                ui.label(format!(
+                    "Loaded checkpoint at step {} (original spec calls for {} total steps). \
+                     Optimizer momentum, SAW-BRDR weights, LR schedule, and AMR grid were not \
+                     saved - resuming restarts them fresh, the same warmup cost any new run \
+                     pays.",
+                    pending.steps_completed, pending.spec.training.max_steps
+                ));
+                ui.horizontal(|ui| {
+                    ui.label("Additional steps:");
+                    ui.add(egui::DragValue::new(&mut pending.additional_steps).range(1..=1_000_000));
+                });
+                ui.horizontal(|ui| {
+                    if crate::design::components::button(ui, tokens, crate::design::components::ButtonVariant::Primary, "\u{25b6} Resume Training", true).clicked() {
+                        resume_clicked = true;
+                    }
+                    if ui.button("Just View Results").clicked() {
+                        view_clicked = true;
+                    }
+                });
+            });
+            ui.add_space(10.0);
+        }
+        if resume_clicked {
+            self.resume_training();
+        }
+        if view_clicked {
+            self.view_loaded_checkpoint();
+        }
 
         let is_beam = matches!(self.spec, Some(LoadedSpec::Beam(_)));
         let loss_title = match step {
@@ -1340,6 +1559,8 @@ impl StressSolverTool {
                 self.solution_summary_card(ui, tokens);
                 ui.add_space(10.0);
                 self.hole_stress_analysis_card(ui, tokens);
+                ui.add_space(10.0);
+                self.deformed_shape_card(ui, tokens);
                 if self.parametric_ready {
                     ui.add_space(10.0);
                     self.parametric_envelope_card(ui, tokens);
@@ -1816,6 +2037,133 @@ impl StressSolverTool {
                 self.hole_profile_plot(ui, analysis);
             }
         });
+    }
+
+    /// Deformed-shape visualization (Results step) - the plate's outer boundary and every
+    /// hole, drawn both at their original (undeformed) position and shifted by the trained
+    /// model's own displacement field. Real displacements here are tiny relative to the plate
+    /// (e.g. ~1e-5 m against a ~0.2 m plate) so, matching standard FEA post-processor
+    /// convention, the shift is auto-exaggerated by a scale factor chosen so the largest
+    /// displacement reads as a fixed fraction of the plate's half-size - the factor itself is
+    /// shown so the drawing is never mistaken for true scale.
+    ///
+    /// Reuses data already flowing through the app: `vis.disp_u`/`disp_v` (the existing
+    /// visualization grid) for the outer boundary via bilinear interpolation, and each hole's
+    /// own `HoleAnalysis::profile` (`ux`/`uy`, already computed exactly at the hole ring - no
+    /// interpolation needed) for the hole outlines. No new solver-side computation.
+    fn deformed_shape_card(&self, ui: &mut egui::Ui, tokens: &Tokens) {
+        card(ui, tokens, |ui| {
+            card_title(ui, "Deformed Shape");
+            ui.add_space(4.0);
+            let Some(vis) = &self.vis else {
+                crate::design::components::empty_state(ui, tokens, "\u{25a1}", "No data yet", "Run training first (Train step)");
+                return;
+            };
+            let geometry = match &self.spec {
+                Some(LoadedSpec::Plate(spec)) => &spec.geometry,
+                Some(LoadedSpec::Parametric(spec)) => &spec.geometry,
+                _ => {
+                    crate::design::components::empty_state(ui, tokens, "\u{25a1}", "Not available", "Deformed shape is only shown for plate geometries");
+                    return;
+                }
+            };
+            let half_w = geometry.half_w as f32;
+            let half_h = geometry.half_h as f32;
+
+            // Auto-exaggeration: the largest displacement magnitude seen anywhere (outer
+            // boundary samples + every hole ring point) maps to `TARGET_FRACTION` of the
+            // plate's smaller half-dimension. Falls back to 1.0 (no exaggeration) if every
+            // displacement is exactly zero (an untrained/degenerate model) rather than
+            // dividing by zero.
+            const N_EDGE_SAMPLES: usize = 40;
+            const TARGET_FRACTION: f32 = 0.15;
+            let edge_points = Self::rectangle_boundary_points(half_w, half_h, N_EDGE_SAMPLES);
+            let edge_disp: Vec<(f32, f32)> = edge_points.iter()
+                .map(|&(x, y)| sample_bilinear(&vis.disp_u, &vis.disp_v, x, y, half_w, half_h))
+                .collect();
+            let mut max_disp = edge_disp.iter().fold(0.0_f32, |m, &(u, v)| m.max((u * u + v * v).sqrt()));
+            for analysis in &self.hole_analyses {
+                for p in &analysis.profile {
+                    max_disp = max_disp.max((p.ux * p.ux + p.uy * p.uy).sqrt());
+                }
+            }
+            let scale = if max_disp > 1e-12 { TARGET_FRACTION * half_w.min(half_h) / max_disp } else { 1.0 };
+
+            ui.colored_label(tokens.fg_muted, egui::RichText::new(
+                format!("Displacement exaggerated {scale:.0}\u{d7} for visibility - not true scale")
+            ).size(10.5));
+            ui.add_space(6.0);
+
+            let avail = ui.available_size();
+            let aspect = (half_w / half_h).max(1e-3);
+            let w = avail.x.max(1.0);
+            let h = (w / aspect).clamp(120.0, avail.y.max(240.0));
+            let (rect, _resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
+            let painter = ui.painter_at(rect);
+            painter.rect_filled(rect, crate::design::radii::sm(), tokens.bg_sunken);
+
+            // A small margin so a fully-exaggerated shape at the plate's own edge doesn't
+            // clip against the card's border.
+            let margin = 0.12;
+            let to_screen = |x: f32, y: f32| -> egui::Pos2 {
+                egui::pos2(
+                    rect.min.x + (x / half_w * 0.5 * (1.0 - margin) + 0.5) * rect.width(),
+                    rect.max.y - (y / half_h * 0.5 * (1.0 - margin) + 0.5) * rect.height(),
+                )
+            };
+
+            // Undeformed outline - dashed, muted.
+            let undeformed: Vec<egui::Pos2> = edge_points.iter().map(|&(x, y)| to_screen(x, y)).collect();
+            painter.extend(egui::Shape::dashed_line(&close_loop(&undeformed), egui::Stroke::new(1.0, tokens.fg_subtle), 4.0, 3.0));
+
+            // Deformed outline - solid, accent.
+            let deformed: Vec<egui::Pos2> = edge_points.iter().zip(edge_disp.iter())
+                .map(|(&(x, y), &(u, v))| to_screen(x + u * scale, y + v * scale))
+                .collect();
+            painter.add(egui::Shape::closed_line(deformed, egui::Stroke::new(2.0, tokens.accent_strong)));
+
+            // Every hole: undeformed circle (dashed, muted) + deformed outline from the real
+            // per-ring-point displacement (solid, same color convention `field_heatmap` uses
+            // for Free/Fixed).
+            for (hole_index, hole) in geometry.holes.iter().enumerate() {
+                let color = match hole.bc { HoleBc::Free => tokens.good, HoleBc::Fixed => tokens.danger };
+                let cx = hole.center[0] as f32;
+                let cy = hole.center[1] as f32;
+                let r = hole.radius as f32;
+                let n_ring = 48;
+                let undeformed_ring: Vec<egui::Pos2> = (0..=n_ring).map(|i| {
+                    let theta = std::f32::consts::TAU * i as f32 / n_ring as f32;
+                    to_screen(cx + r * theta.cos(), cy + r * theta.sin())
+                }).collect();
+                painter.extend(egui::Shape::dashed_line(&undeformed_ring, egui::Stroke::new(1.0, tokens.fg_subtle), 3.0, 2.0));
+
+                if let Some(analysis) = self.hole_analyses.iter().find(|a| a.hole_index == hole_index) {
+                    if !analysis.profile.is_empty() {
+                        let mut deformed_ring: Vec<egui::Pos2> = analysis.profile.iter().map(|p| {
+                            to_screen(p.x as f32 + p.ux * scale, p.y as f32 + p.uy * scale)
+                        }).collect();
+                        if let Some(&first) = deformed_ring.first() { deformed_ring.push(first); }
+                        painter.add(egui::Shape::line(deformed_ring, egui::Stroke::new(2.0, color)));
+                    }
+                }
+            }
+        });
+    }
+
+    /// Evenly-spaced points around the outer rectangle's perimeter, `total` points spread
+    /// proportionally to each edge's length. Used by `deformed_shape_card` for both the
+    /// undeformed outline and (after bilinear-sampling displacement at each point) the
+    /// deformed one.
+    fn rectangle_boundary_points(half_w: f32, half_h: f32, total: usize) -> Vec<(f32, f32)> {
+        let perimeter = 4.0 * (half_w + half_h);
+        let n_w = ((half_w / perimeter * 2.0 * total as f32).round() as usize).max(2);
+        let n_h = ((half_h / perimeter * 2.0 * total as f32).round() as usize).max(2);
+        let mut pts = Vec::with_capacity(2 * (n_w + n_h));
+        for i in 0..n_w { let t = i as f32 / n_w as f32; pts.push((-half_w + 2.0 * half_w * t, half_h)); }
+        for i in 0..n_h { let t = i as f32 / n_h as f32; pts.push((half_w, half_h - 2.0 * half_h * t)); }
+        for i in 0..n_w { let t = i as f32 / n_w as f32; pts.push((half_w - 2.0 * half_w * t, -half_h)); }
+        for i in 0..n_h { let t = i as f32 / n_h as f32; pts.push((-half_w, -half_h + 2.0 * half_h * t)); }
+        pts
     }
 
     fn hole_profile_plot(&self, ui: &mut egui::Ui, analysis: &pinn_core::messages::HoleAnalysis) {
