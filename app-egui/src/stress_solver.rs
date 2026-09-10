@@ -295,7 +295,11 @@ impl SpatialField {
             SpatialField::SigmaYy => "\u{03c3}yy",
             SpatialField::TauXy => "\u{03c4}xy",
             SpatialField::VonMises => "Von Mises",
-            SpatialField::PdeResidual => "PDE residual",
+            // Labeled "Constitutive residual" (not "PDE residual") - it measures
+            // ‖sigma_direct - Hooke's-law(strain_FD)‖, not an equilibrium/PDE residual, which
+            // this solver never computes for the plate path. See the Kt investigation writeup
+            // in this repo's CLAUDE.md for why that distinction matters.
+            SpatialField::PdeResidual => "Constitutive residual",
             SpatialField::BoundaryResidual => "Boundary residual",
             SpatialField::AmrScore => "AMR score",
             SpatialField::CollocationDensity => "Collocation density",
@@ -1625,9 +1629,9 @@ impl StressSolverTool {
                 row(ui, "Avg \u{3c3}VM", self.fmt(mean_of(&vm) as f64, PhysicalQuantity::Stress));
                 row(ui, "Max principal stress", self.fmt(if principal.is_empty() { 0.0 } else { max_of(&principal) as f64 }, PhysicalQuantity::Stress));
                 row(ui, "Optimization loss (energy term)", format!("{:.4e}", self.energy_loss.last().copied().unwrap_or(0.0)));
-                row(ui, "PDE residual RMS", format!("{:.4e}", pde_rms));
-                row(ui, "PDE residual max", format!("{:.4e}", if pde.is_empty() { 0.0 } else { max_of(&pde) }));
-                row(ui, "PDE residual P95", format!("{:.4e}", Self::percentile(&pde, 0.95)));
+                row(ui, "Constitutive residual RMS", format!("{:.4e}", pde_rms));
+                row(ui, "Constitutive residual max", format!("{:.4e}", if pde.is_empty() { 0.0 } else { max_of(&pde) }));
+                row(ui, "Constitutive residual P95", format!("{:.4e}", Self::percentile(&pde, 0.95)));
                 row(ui, "BC residual RMS", format!("{:.4e}", self.bc_residual_rms));
                 row(ui, "BC residual max", format!("{:.4e}", self.bc_residual_max));
                 row(ui, "Gradient norm (last step)", format!("{:.4e}", self.grad_norm_history.last().copied().unwrap_or(0.0)));
@@ -1791,7 +1795,7 @@ impl StressSolverTool {
                 "E={}   \u{3bd}={:.3}   Load={}", self.fmt(result.e, PhysicalQuantity::Stress), result.nu, self.fmt(result.px, PhysicalQuantity::Stress)
             )).size(10.5));
             ui.colored_label(tokens.fg_subtle, egui::RichText::new(format!(
-                "BC residual RMS={:.3e} (trained baseline {:.3e})  PDE residual RMS={:.3e} (trained baseline {:.3e})",
+                "BC residual RMS={:.3e} (trained baseline {:.3e})  Constitutive residual RMS={:.3e} (trained baseline {:.3e})",
                 result.bc_residual_rms, verdict.bc_baseline, verdict.pde_query, verdict.pde_baseline,
             )).size(10.0));
             ui.colored_label(tokens.fg_subtle, egui::RichText::new(format!(
@@ -2094,10 +2098,15 @@ impl StressSolverTool {
             ).size(10.5));
             ui.add_space(6.0);
 
-            let avail = ui.available_size();
+            // Same `available_size().y`-collapses-inside-ScrollArea class of bug as
+            // `field_heatmap` (see that fn's doc comment) - avoided here on principle even
+            // though the `.max(240.0)` floor on the old upper clamp happened to keep this
+            // particular card visible today. Fixed height cap instead, like every other
+            // chart in this file.
             let aspect = (half_w / half_h).max(1e-3);
-            let w = avail.x.max(1.0);
-            let h = (w / aspect).clamp(120.0, avail.y.max(240.0));
+            const MAX_H: f32 = 320.0;
+            let w = ui.available_width().max(1.0);
+            let h = (w / aspect).clamp(120.0, MAX_H);
             let (rect, _resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
             let painter = ui.painter_at(rect);
             painter.rect_filled(rect, crate::design::radii::sm(), tokens.bg_sunken);
@@ -2368,9 +2377,26 @@ impl StressSolverTool {
         let handle = ui.ctx().load_texture("stress_solver_field", img, TextureOptions::LINEAR);
         self.texture = Some(handle);
 
-        let avail = ui.available_size();
+        // Real bug, confirmed via a user-supplied mid-training screenshot: this card lives
+        // inside `step_content`'s `ScrollArea::vertical()`. egui 0.29's `ScrollArea` does NOT
+        // give its content `ui` an infinite-height `max_rect` on the scroll axis (see
+        // `egui-0.29.1/src/containers/scroll_area.rs`'s `show_viewport_dyn` - the
+        // infinite-height branch is dead code behind a literal `if true`; its own comment
+        // says the opposite of what you'd expect: "better to... shrink images than show a
+        // horizontal scrollbar"). So `ui.available_size().y` here reflects only the space
+        // left before the bottom of the CURRENTLY VISIBLE viewport, not the true scrollable
+        // extent - once the Loss Trajectory chart above grows past its first data point
+        // (`has_loss = total_loss.len() > 1`, true almost immediately after training starts),
+        // it permanently eats enough of that viewport budget that `avail.y` here collapses
+        // toward zero, flooring `w`/`h` at the `.max(1.0)` 1px clamp - an invisible sliver,
+        // not a missing render. Every other chart in this file (`loss_plot`,
+        // `beam_deflection_plot`, etc.) already avoids this by using a fixed `.height(...)`
+        // instead of `available_size().y` - do the same here: size off `available_width()`
+        // (stable regardless of scroll position) with a fixed height cap, never off the
+        // scroll-collapsing `available_size().y`.
         let aspect = nx as f32 / ny as f32;
-        let w = avail.x.min(avail.y * aspect).max(1.0);
+        const MAX_H: f32 = 480.0;
+        let w = ui.available_width().min(MAX_H * aspect).max(1.0);
         let h = w / aspect;
         let resp = ui.image((self.texture.as_ref().unwrap().id(), egui::vec2(w, h)));
         let rect = resp.rect;

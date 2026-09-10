@@ -2109,8 +2109,95 @@ captured only the desktop wallpaper (the window itself, though frontmost per the
 composited into the capture), and `osascript` (`tell application "System Events"...`) hung
 indefinitely on what is almost certainly an Accessibility/Automation permission prompt neither
 this session nor prior ones could interact with - the same class of limitation already on record
-elsewhere in this file for `screencapture`/window-focus. Left open, honestly, for the user's own
-next session to confirm visually - not marked fixed without evidence.
+elsewhere in this file for `screencapture`/window-focus.
+
+**Update, same session, later pass**: root cause found after the user supplied a real
+mid-training screenshot (previously blocked by the permissions issue above - this screenshot
+came from the user's own machine, not this environment). The screenshot showed the heatmap
+card's legend/color-scale text rendering normally but the image area itself compressed to
+almost nothing (~27px gap where a large square plot should be). `field_heatmap` (and the
+later-added `deformed_shape_card`) sized their image using `ui.available_size().y` - but egui
+0.29's `ScrollArea` (this card lives inside `step_content`'s `ScrollArea::vertical()`) does NOT
+give its content `ui` an infinite-height `max_rect` on the scroll axis (confirmed by reading
+`egui-0.29.1/src/containers/scroll_area.rs`'s `show_viewport_dyn` - the infinite-height branch
+is dead code behind a literal `if true`, and its own comment explains why: "better to...
+shrink images than show a horizontal scrollbar"). So `available_size().y` reflects only the
+space left before the bottom of the *currently visible* viewport, not the true scrollable
+extent - once the Loss Trajectory chart above grows past its first data point (near-immediately
+after training starts), it permanently eats enough of that budget that the heatmap's height
+collapses toward the `.max(1.0)` 1px floor. Every other chart in this file (`loss_plot`,
+`beam_deflection_plot`, etc.) already avoided this by using a fixed `.height(...)` instead of
+`available_size().y` - `field_heatmap`/`deformed_shape_card` were the only two exceptions.
+Fixed both to size off `available_width()` (stable regardless of scroll position) with a fixed
+height cap, matching the rest of the file's convention. Not yet re-confirmed visually by the
+user after this specific fix (the same permission limitation above still applies to this
+environment), but the root-cause mechanism is concrete and directly explains every symptom
+reported ("shows for an instant, then disappears").
+
+## Kt convergence: real equilibrium term, hole_free cap bug, and the honest current state
+
+Continuing directly from the investigation above (near-ring constitutive anchor, FD-safe
+collocation margin - both real, kept, neither moved Kt). A user-supplied deep-dive analysis
+(`bugSource.txt`, verified line-by-line against the actual source, not taken on faith)
+identified the real structural gap, confirmed by direct code reading:
+
+- **`single_hole_plate.toml` never enforced `∇·σ=0` anywhere.** `InteriorEnergyTerm` minimizes
+  strain energy `U[u]` alone, not total potential energy `Π=U-W_ext` (whose Euler-Lagrange
+  equation *is* equilibrium). Nothing forced the stress state at the (well-satisfied) loaded
+  edges to propagate consistently through the interior - confirmed via a real signed per-edge
+  traction check and a horizontal centerline profile from a trained model: left/right edges hit
+  +69 MPa within <1% error, but centerline sigma_xx flipped sign between mirror-symmetric
+  points and top/bottom edges (unconstrained by any traction term there) sat near zero instead
+  of the expected +69 MPa far-field value. Not a sign bug - an underconstrained interior with
+  nothing enforcing physical consistency between the tightly-constrained boundaries.
+- **The "PDE residual" diagnostic was mislabeled the whole session.** It's `‖σ_direct −
+  C:ε_FD‖` - the constitutive-consistency residual, confirmed by reading `evaluate_user_vis_
+  grid`'s exact computation. Every prior "PDE residual improved 9-28x" claim this session
+  proved the two stress *representations* became more mutually consistent, never that
+  equilibrium improved - there was never an equilibrium residual being measured for the plate
+  path at all. This also explains why the near-ring constitutive anchor failed: it only tied
+  σ_direct to σ_FD(ε(u)), and since `InteriorEnergyTerm` already pushes ε→0 everywhere, the
+  anchor was satisfied just as well by σ→0 as by the true Kirsch curvature. Relabeled every
+  user-visible "PDE residual" string (GUI field selector/solution-summary rows in
+  `app-egui/src/stress_solver.rs`, diagnostic `println!`s in the solver) to "constitutive
+  residual" - the underlying `VisFields.pde_residual` Rust field name is left as-is (a rename
+  there touches serialization-adjacent code for a label-only concern, not worth the blast
+  radius).
+- **Real, separate bug**: `HoleBcTerm::name()` returns `"hole_free"`/`"hole_fixed"` for the
+  plate path, but `step_physics_multi`'s dynamic-cap match only recognized
+  `"hole_traction"`/`"lug_free_edge_traction"` (Kirsch/pin-lug's own names). `dynamic_lam_h_
+  cap`/`dynamic_lam_d_cap` - the very first fix of this entire investigation, believed to cap
+  the hole term at 50 - had **never actually applied to the plate path**, the whole session.
+  Fixed by adding `"hole_free"`/`"hole_fixed"` to the same match arms.
+
+**Fix implemented**: exposed Kirsch's own already-proven equilibrium mechanism
+(`energy::equilibrium_residual_loss`, confirmed by reading `training_core::step_physics`'s mDEM
+branch to differentiate the network's *direct* σ output via central difference at 4 points
+shifted ±hx/±hy - not a second-derivative-of-displacement chain) to `UserDefinedProblem`
+generically, as a new `EquilibriumTerm` (`user_problem.rs`) registered on the `"interior"`
+point set (already FD-margin-safe from the earlier collocation fix). The 4 shifted-σ values it
+needs were already sitting unused inside `compute_domain_forwards`'s existing stencil pass
+(`Computed`/`DomainForwardOutputs` gained a `shifted_stress` field, populated for mDEM domains
+by slicing columns 2..5 from the same rows already computed for FD strains) - zero extra
+forward passes. `kirsch_problem.rs`/`pinlug_problem.rs` untouched; full suite (291 passed, 0
+failed, 14 ignored) confirms zero regression, Kirsch/pin-lug parity tests included.
+
+**Honest result of the no-hole sanity test** (per bugSource.txt's own recommendation: validate
+the base formulation on the trivial exact-solution case - uniform tension, no hole - before
+trusting anything about the hole case). At 3000 steps: real, qualitative improvement over every
+prior attempt - sigma_xx is now uniformly *positive* and smoothly varying across the whole
+interior grid (no more sign-flips or wild asymmetric oscillation, the exact pathology
+`bugSource.txt` predicted this fix should eliminate) - but the magnitude is still ~56% short of
+the 69 MPa target (mean ~30 MPa) and sigma_yy isn't yet near zero (~15% of nominal). Most
+likely explanation: 3000 steps isn't enough for `interior_energy`/`equilibrium`/`outer_
+traction` - three real, now mutually-constraining SAW-adaptive terms - to fully converge
+together; this is a step-budget/tuning question, not evidence the formulation is wrong (the
+*qualitative* signature that would indicate a wrong formulation - asymmetry, sign flips - is
+gone). Not yet re-tested at a longer step count or against the hole case - left as the explicit
+next step for a future session, exactly as honestly reported as every other result this
+session. The no-hole test itself (`run_training_user_problem_no_hole_plate_recovers_uniform_
+uniaxial_tension`, `#[ignore]`d like every other real-training diagnostic) is a permanent
+regression fixture for this question, not a one-off script.
 
 ## Feature parity checklist (from the original PowerShell tool, via the C# port)
 
