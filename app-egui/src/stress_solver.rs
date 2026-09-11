@@ -478,6 +478,13 @@ pub struct StressSolverTool {
     /// zero cost to the training hot loop.
     network_snapshot: Option<pinn_core::messages::NetworkSnapshot>,
 
+    /// General-PINN architecture recommendations §15/§30 (Kt investigation follow-up) - which
+    /// active loss term's gradient dominates optimization, and which are functionally inert.
+    /// Same "only updated on the vis cadence, `None` between updates is a real absence" rule
+    /// as `bc_residual_rms`/`reaction_force` above - see `pinn_core::messages::
+    /// GradientShareSummary`'s doc comment.
+    gradient_share_report: Option<pinn_core::messages::GradientShareSummary>,
+
     /// Stage A (`enhancement.md` Phases 43-65) - global USCS/SI display toggle, persisted via
     /// `PersistedState.unit_system` (read/written directly by `main.rs`, mirroring
     /// `pv.outer_diameter`'s own `pub` field convention for cross-module persistence access).
@@ -564,6 +571,7 @@ impl StressSolverTool {
             checkpoint_status: None,
             export_status: None,
             network_snapshot: None,
+            gradient_share_report: None,
             unit_system: UnitSystem::default(),
         }
     }
@@ -653,6 +661,7 @@ impl StressSolverTool {
         self.checkpoint_status = None;
         self.export_status = None;
         self.network_snapshot = None;
+        self.gradient_share_report = None;
 
         let (tx_train, rx_train) = crossbeam_channel::bounded(1); // latest-value channel, matches pinn-gui's own convention
         let (tx_ctrl, rx_ctrl) = crossbeam_channel::unbounded();
@@ -755,6 +764,7 @@ impl StressSolverTool {
                 self.energy_balance = None;
                 self.checkpoint_status = None;
                 self.network_snapshot = None;
+                self.gradient_share_report = None;
 
                 let (tx_train, rx_train) = crossbeam_channel::bounded(1);
                 let (tx_ctrl, rx_ctrl) = crossbeam_channel::unbounded();
@@ -848,6 +858,7 @@ impl StressSolverTool {
         self.energy_balance = None;
         self.checkpoint_status = None;
         self.network_snapshot = None;
+        self.gradient_share_report = None;
 
         let (tx_train, rx_train) = crossbeam_channel::bounded(1);
         let (tx_ctrl, rx_ctrl) = crossbeam_channel::unbounded();
@@ -1099,6 +1110,7 @@ impl StressSolverTool {
                     self.reaction_force = upd.reaction_force;
                     self.energy_balance = upd.energy_balance;
                     self.network_snapshot = upd.network_snapshot;
+                    self.gradient_share_report = upd.gradient_share_report;
                 }
             }
             TrainingMsg::BeamUpdate(upd) => {
@@ -1126,6 +1138,10 @@ impl StressSolverTool {
                     self.reaction_force = upd.reaction_force;
                     self.energy_balance = upd.energy_balance;
                     self.network_snapshot = upd.network_snapshot;
+                    // `ParametricTrainingUpdate` has no `gradient_share_report` field -
+                    // `step_parametric` is a separate, hand-written step function from
+                    // `step_physics_multi` and never computes `term_grad_norms` at all.
+                    self.gradient_share_report = None;
                     // Keep the LATEST training snapshot as the "Training Case" comparison
                     // baseline (item 16) - overwritten every vis-cadence update rather than
                     // frozen at the first one, so a comparison always reads against what the
@@ -1652,6 +1668,29 @@ impl StressSolverTool {
                 ui.colored_label(tokens.fg_subtle, egui::RichText::new(
                     "Reaction force / force-equilibrium error appear once training reaches its first vis-cadence update."
                 ).size(10.0));
+            }
+            // General-PINN architecture recommendations §15/§30 - which active loss term's
+            // gradient actually dominates optimization, and which are functionally inert. Same
+            // "term is registered ≠ term is exerting real optimization pressure" question this
+            // session's own Kt investigation had to answer by hand before this existed.
+            if let Some(report) = &self.gradient_share_report {
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(6.0);
+                ui.strong("Gradient share by term");
+                ui.add_space(4.0);
+                let mut shares = report.shares.clone();
+                shares.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                egui::Grid::new("stress_solver_gradient_share_grid").num_columns(2).spacing([20.0, 4.0]).show(ui, |ui| {
+                    for (name, share) in &shares {
+                        let flag = if report.dominant == Some(*name) { " (dominant)" }
+                            else if report.inert.contains(name) { " (inert)" }
+                            else { "" };
+                        ui.label(format!("{name}{flag}"));
+                        ui.strong(format!("{:.1}%", share * 100.0));
+                        ui.end_row();
+                    }
+                });
             }
         });
     }
