@@ -485,6 +485,11 @@ pub struct StressSolverTool {
     /// GradientShareSummary`'s doc comment.
     gradient_share_report: Option<pinn_core::messages::GradientShareSummary>,
 
+    /// General-PINN architecture recommendations §17 (Priority 4, "gradient conflict
+    /// diagnostics") - pairwise gradient cosine similarity between active loss terms. Same
+    /// vis-cadence-gated convention as `gradient_share_report` immediately above.
+    gradient_conflict_report: Option<pinn_core::messages::GradientConflictSummary>,
+
     /// General-PINN architecture recommendations §4 (Priority 1, "physics dependency graph") -
     /// which stress representation each active loss term reads, see `pinn_core::messages::
     /// TrainingUpdate::stress_source_report`'s doc comment. Static per problem, so this is
@@ -579,6 +584,7 @@ impl StressSolverTool {
             export_status: None,
             network_snapshot: None,
             gradient_share_report: None,
+            gradient_conflict_report: None,
             stress_source_report: Vec::new(),
             unit_system: UnitSystem::default(),
         }
@@ -670,6 +676,7 @@ impl StressSolverTool {
         self.export_status = None;
         self.network_snapshot = None;
         self.gradient_share_report = None;
+        self.gradient_conflict_report = None;
         self.stress_source_report = Vec::new();
 
         let (tx_train, rx_train) = crossbeam_channel::bounded(1); // latest-value channel, matches pinn-gui's own convention
@@ -774,6 +781,7 @@ impl StressSolverTool {
                 self.checkpoint_status = None;
                 self.network_snapshot = None;
                 self.gradient_share_report = None;
+                self.gradient_conflict_report = None;
                 self.stress_source_report = Vec::new();
 
                 let (tx_train, rx_train) = crossbeam_channel::bounded(1);
@@ -869,6 +877,7 @@ impl StressSolverTool {
         self.checkpoint_status = None;
         self.network_snapshot = None;
         self.gradient_share_report = None;
+        self.gradient_conflict_report = None;
         self.stress_source_report = Vec::new();
 
         let (tx_train, rx_train) = crossbeam_channel::bounded(1);
@@ -1125,6 +1134,7 @@ impl StressSolverTool {
                     self.energy_balance = upd.energy_balance;
                     self.network_snapshot = upd.network_snapshot;
                     self.gradient_share_report = upd.gradient_share_report;
+                    self.gradient_conflict_report = upd.gradient_conflict_report;
                 }
             }
             TrainingMsg::BeamUpdate(upd) => {
@@ -1156,6 +1166,7 @@ impl StressSolverTool {
                     // `step_parametric` is a separate, hand-written step function from
                     // `step_physics_multi` and never computes `term_grad_norms` at all.
                     self.gradient_share_report = None;
+                    self.gradient_conflict_report = None;
                     self.stress_source_report = Vec::new();
                     // Keep the LATEST training snapshot as the "Training Case" comparison
                     // baseline (item 16) - overwritten every vis-cadence update rather than
@@ -1703,6 +1714,38 @@ impl StressSolverTool {
                             else { "" };
                         ui.label(format!("{name}{flag}"));
                         ui.strong(format!("{:.1}%", share * 100.0));
+                        ui.end_row();
+                    }
+                });
+            }
+            // General-PINN architecture recommendations §17 (Priority 4, "gradient conflict
+            // diagnostics") - pairwise cosine similarity between active terms' own gradients.
+            // A negative reading means the two terms are, to first order, actively working
+            // against each other this step (reducing one increases the other) - §17's own
+            // worked example ("traction gradient · energy gradient < 0").
+            if let Some(report) = &self.gradient_conflict_report {
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(6.0);
+                ui.strong("Gradient conflict between terms");
+                ui.add_space(4.0);
+                if let Some((a, b, cos)) = report.most_conflicting {
+                    ui.colored_label(tokens.danger, format!(
+                        "Most conflicting: {a} vs {b} (cosine = {cos:.2}) - these objectives are actively competing"
+                    ));
+                    ui.add_space(4.0);
+                } else {
+                    ui.colored_label(tokens.good, "No conflicting term pairs this step - every active term's gradient at least weakly agrees.");
+                    ui.add_space(4.0);
+                }
+                let mut pairs = report.pairs.clone();
+                pairs.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+                egui::Grid::new("stress_solver_gradient_conflict_grid").num_columns(3).spacing([20.0, 4.0]).show(ui, |ui| {
+                    for (term_a, term_b, cosine) in &pairs {
+                        ui.label(*term_a);
+                        ui.label(*term_b);
+                        let color = if *cosine < 0.0 { tokens.danger } else { tokens.fg };
+                        ui.colored_label(color, format!("{cosine:.2}"));
                         ui.end_row();
                     }
                 });
