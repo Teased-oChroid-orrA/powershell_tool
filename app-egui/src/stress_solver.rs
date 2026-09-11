@@ -503,6 +503,12 @@ pub struct StressSolverTool {
     /// comment. Same "static per problem, never gated" treatment as `stress_source_report`.
     boundary_operator_report: Vec<(&'static str, &'static str)>,
 
+    /// General-PINN architecture recommendations §10 (Priority 6, "generic derivative
+    /// backend") - which order of spatial derivative each active loss term needs, see
+    /// `pinn_core::messages::TrainingUpdate::derivative_order_report`'s doc comment. Same
+    /// "static per problem, never gated" treatment as `boundary_operator_report`.
+    derivative_order_report: Vec<(&'static str, &'static str)>,
+
     /// Stage A (`enhancement.md` Phases 43-65) - global USCS/SI display toggle, persisted via
     /// `PersistedState.unit_system` (read/written directly by `main.rs`, mirroring
     /// `pv.outer_diameter`'s own `pub` field convention for cross-module persistence access).
@@ -593,6 +599,7 @@ impl StressSolverTool {
             gradient_conflict_report: None,
             stress_source_report: Vec::new(),
             boundary_operator_report: Vec::new(),
+            derivative_order_report: Vec::new(),
             unit_system: UnitSystem::default(),
         }
     }
@@ -686,6 +693,7 @@ impl StressSolverTool {
         self.gradient_conflict_report = None;
         self.stress_source_report = Vec::new();
         self.boundary_operator_report = Vec::new();
+        self.derivative_order_report = Vec::new();
 
         let (tx_train, rx_train) = crossbeam_channel::bounded(1); // latest-value channel, matches pinn-gui's own convention
         let (tx_ctrl, rx_ctrl) = crossbeam_channel::unbounded();
@@ -792,6 +800,7 @@ impl StressSolverTool {
                 self.gradient_conflict_report = None;
                 self.stress_source_report = Vec::new();
                 self.boundary_operator_report = Vec::new();
+                self.derivative_order_report = Vec::new();
 
                 let (tx_train, rx_train) = crossbeam_channel::bounded(1);
                 let (tx_ctrl, rx_ctrl) = crossbeam_channel::unbounded();
@@ -889,6 +898,7 @@ impl StressSolverTool {
         self.gradient_conflict_report = None;
         self.stress_source_report = Vec::new();
         self.boundary_operator_report = Vec::new();
+        self.derivative_order_report = Vec::new();
 
         let (tx_train, rx_train) = crossbeam_channel::bounded(1);
         let (tx_ctrl, rx_ctrl) = crossbeam_channel::unbounded();
@@ -1116,6 +1126,7 @@ impl StressSolverTool {
                 // `TrainingUpdate::stress_source_report`'s doc comment.
                 self.stress_source_report = upd.stress_source_report;
                 self.boundary_operator_report = upd.boundary_operator_report;
+                self.derivative_order_report = upd.derivative_order_report;
                 if let Some(vis) = upd.vis {
                     self.vis = Some(vis);
                 }
@@ -1180,6 +1191,7 @@ impl StressSolverTool {
                     self.gradient_conflict_report = None;
                     self.stress_source_report = Vec::new();
                     self.boundary_operator_report = Vec::new();
+                    self.derivative_order_report = Vec::new();
                     // Keep the LATEST training snapshot as the "Training Case" comparison
                     // baseline (item 16) - overwritten every vis-cadence update rather than
                     // frozen at the first one, so a comparison always reads against what the
@@ -1796,6 +1808,24 @@ impl StressSolverTool {
                     for (name, kind) in &self.boundary_operator_report {
                         ui.label(*name);
                         ui.strong(*kind);
+                        ui.end_row();
+                    }
+                });
+            }
+            // General-PINN architecture recommendations §10 (Priority 6, "generic derivative
+            // backend") - which order of spatial derivative each active term needs
+            // (first-order strain vs. second-order Hessian). Static per problem, same
+            // "always shown once known, never gated" treatment as the cards above.
+            if !self.derivative_order_report.is_empty() {
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(6.0);
+                ui.strong("Derivative order by term");
+                ui.add_space(4.0);
+                egui::Grid::new("stress_solver_derivative_order_grid").num_columns(2).spacing([20.0, 4.0]).show(ui, |ui| {
+                    for (name, order) in &self.derivative_order_report {
+                        ui.label(*name);
+                        ui.strong(*order);
                         ui.end_row();
                     }
                 });
