@@ -509,6 +509,12 @@ pub struct StressSolverTool {
     /// "static per problem, never gated" treatment as `boundary_operator_report`.
     derivative_order_report: Vec<(&'static str, &'static str)>,
 
+    /// General-PINN architecture recommendations §39 (Priority 9, "weak/variational
+    /// formulation API") - Strong (pointwise residual) vs. Weak (energy functional) per term,
+    /// see `pinn_core::messages::TrainingUpdate::formulation_kind_report`'s doc comment. Same
+    /// "static per problem, never gated" treatment as `derivative_order_report`.
+    formulation_kind_report: Vec<(&'static str, &'static str)>,
+
     /// Stage A (`enhancement.md` Phases 43-65) - global USCS/SI display toggle, persisted via
     /// `PersistedState.unit_system` (read/written directly by `main.rs`, mirroring
     /// `pv.outer_diameter`'s own `pub` field convention for cross-module persistence access).
@@ -600,6 +606,7 @@ impl StressSolverTool {
             stress_source_report: Vec::new(),
             boundary_operator_report: Vec::new(),
             derivative_order_report: Vec::new(),
+            formulation_kind_report: Vec::new(),
             unit_system: UnitSystem::default(),
         }
     }
@@ -694,6 +701,7 @@ impl StressSolverTool {
         self.stress_source_report = Vec::new();
         self.boundary_operator_report = Vec::new();
         self.derivative_order_report = Vec::new();
+        self.formulation_kind_report = Vec::new();
 
         let (tx_train, rx_train) = crossbeam_channel::bounded(1); // latest-value channel, matches pinn-gui's own convention
         let (tx_ctrl, rx_ctrl) = crossbeam_channel::unbounded();
@@ -801,6 +809,7 @@ impl StressSolverTool {
                 self.stress_source_report = Vec::new();
                 self.boundary_operator_report = Vec::new();
                 self.derivative_order_report = Vec::new();
+                self.formulation_kind_report = Vec::new();
 
                 let (tx_train, rx_train) = crossbeam_channel::bounded(1);
                 let (tx_ctrl, rx_ctrl) = crossbeam_channel::unbounded();
@@ -899,6 +908,7 @@ impl StressSolverTool {
         self.stress_source_report = Vec::new();
         self.boundary_operator_report = Vec::new();
         self.derivative_order_report = Vec::new();
+        self.formulation_kind_report = Vec::new();
 
         let (tx_train, rx_train) = crossbeam_channel::bounded(1);
         let (tx_ctrl, rx_ctrl) = crossbeam_channel::unbounded();
@@ -1127,6 +1137,7 @@ impl StressSolverTool {
                 self.stress_source_report = upd.stress_source_report;
                 self.boundary_operator_report = upd.boundary_operator_report;
                 self.derivative_order_report = upd.derivative_order_report;
+                self.formulation_kind_report = upd.formulation_kind_report;
                 if let Some(vis) = upd.vis {
                     self.vis = Some(vis);
                 }
@@ -1192,6 +1203,7 @@ impl StressSolverTool {
                     self.stress_source_report = Vec::new();
                     self.boundary_operator_report = Vec::new();
                     self.derivative_order_report = Vec::new();
+                    self.formulation_kind_report = Vec::new();
                     // Keep the LATEST training snapshot as the "Training Case" comparison
                     // baseline (item 16) - overwritten every vis-cadence update rather than
                     // frozen at the first one, so a comparison always reads against what the
@@ -1826,6 +1838,24 @@ impl StressSolverTool {
                     for (name, order) in &self.derivative_order_report {
                         ui.label(*name);
                         ui.strong(*order);
+                        ui.end_row();
+                    }
+                });
+            }
+            // General-PINN architecture recommendations §39 (Priority 9, "weak/variational
+            // formulation API") - Strong (pointwise residual) vs. Weak (energy functional,
+            // the Deep Energy Method's Π=U-W_ext) per term. Static per problem, same
+            // "always shown once known, never gated" treatment as the cards above.
+            if !self.formulation_kind_report.is_empty() {
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(6.0);
+                ui.strong("Formulation kind by term");
+                ui.add_space(4.0);
+                egui::Grid::new("stress_solver_formulation_kind_grid").num_columns(2).spacing([20.0, 4.0]).show(ui, |ui| {
+                    for (name, kind) in &self.formulation_kind_report {
+                        ui.label(*name);
+                        ui.strong(*kind);
                         ui.end_row();
                     }
                 });
