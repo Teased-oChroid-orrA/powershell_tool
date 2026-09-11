@@ -485,6 +485,13 @@ pub struct StressSolverTool {
     /// GradientShareSummary`'s doc comment.
     gradient_share_report: Option<pinn_core::messages::GradientShareSummary>,
 
+    /// General-PINN architecture recommendations §4 (Priority 1, "physics dependency graph") -
+    /// which stress representation each active loss term reads, see `pinn_core::messages::
+    /// TrainingUpdate::stress_source_report`'s doc comment. Static per problem, so this is
+    /// never gated/reset to empty mid-run the way `gradient_share_report` is - overwritten
+    /// wholesale on every update, always reflecting the current run's real terms.
+    stress_source_report: Vec<(&'static str, &'static str)>,
+
     /// Stage A (`enhancement.md` Phases 43-65) - global USCS/SI display toggle, persisted via
     /// `PersistedState.unit_system` (read/written directly by `main.rs`, mirroring
     /// `pv.outer_diameter`'s own `pub` field convention for cross-module persistence access).
@@ -572,6 +579,7 @@ impl StressSolverTool {
             export_status: None,
             network_snapshot: None,
             gradient_share_report: None,
+            stress_source_report: Vec::new(),
             unit_system: UnitSystem::default(),
         }
     }
@@ -662,6 +670,7 @@ impl StressSolverTool {
         self.export_status = None;
         self.network_snapshot = None;
         self.gradient_share_report = None;
+        self.stress_source_report = Vec::new();
 
         let (tx_train, rx_train) = crossbeam_channel::bounded(1); // latest-value channel, matches pinn-gui's own convention
         let (tx_ctrl, rx_ctrl) = crossbeam_channel::unbounded();
@@ -765,6 +774,7 @@ impl StressSolverTool {
                 self.checkpoint_status = None;
                 self.network_snapshot = None;
                 self.gradient_share_report = None;
+                self.stress_source_report = Vec::new();
 
                 let (tx_train, rx_train) = crossbeam_channel::bounded(1);
                 let (tx_ctrl, rx_ctrl) = crossbeam_channel::unbounded();
@@ -859,6 +869,7 @@ impl StressSolverTool {
         self.checkpoint_status = None;
         self.network_snapshot = None;
         self.gradient_share_report = None;
+        self.stress_source_report = Vec::new();
 
         let (tx_train, rx_train) = crossbeam_channel::bounded(1);
         let (tx_ctrl, rx_ctrl) = crossbeam_channel::unbounded();
@@ -1082,6 +1093,9 @@ impl StressSolverTool {
                 // last REAL reading between vis-cadence updates instead of flickering to the
                 // `0.0` sentinel every non-vis step.
                 let had_vis = upd.vis.is_some();
+                // Static per problem, sent on every update (never vis-cadence-gated) - see
+                // `TrainingUpdate::stress_source_report`'s doc comment.
+                self.stress_source_report = upd.stress_source_report;
                 if let Some(vis) = upd.vis {
                     self.vis = Some(vis);
                 }
@@ -1142,6 +1156,7 @@ impl StressSolverTool {
                     // `step_parametric` is a separate, hand-written step function from
                     // `step_physics_multi` and never computes `term_grad_norms` at all.
                     self.gradient_share_report = None;
+                    self.stress_source_report = Vec::new();
                     // Keep the LATEST training snapshot as the "Training Case" comparison
                     // baseline (item 16) - overwritten every vis-cadence update rather than
                     // frozen at the first one, so a comparison always reads against what the
@@ -1688,6 +1703,25 @@ impl StressSolverTool {
                             else { "" };
                         ui.label(format!("{name}{flag}"));
                         ui.strong(format!("{:.1}%", share * 100.0));
+                        ui.end_row();
+                    }
+                });
+            }
+            // General-PINN architecture recommendations §4 (Priority 1, "physics dependency
+            // graph") - which stress representation each active term actually reads, the
+            // generalized answer to a question this session's Kt investigation had to resolve
+            // by hand repeatedly (is a term using the network's direct output, or stress
+            // derived from strain?). Empty for Kirsch's own path (documented, not a bug).
+            if !self.stress_source_report.is_empty() {
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(6.0);
+                ui.strong("Stress source by term");
+                ui.add_space(4.0);
+                egui::Grid::new("stress_solver_stress_source_grid").num_columns(2).spacing([20.0, 4.0]).show(ui, |ui| {
+                    for (name, source) in &self.stress_source_report {
+                        ui.label(*name);
+                        ui.strong(*source);
                         ui.end_row();
                     }
                 });
