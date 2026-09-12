@@ -541,6 +541,13 @@ pub struct StressSolverTool {
     /// own module doc comment).
     ad_fd_strain_diagnostic: Option<pinn_core::messages::AdFdStrainAgreementSummary>,
 
+    /// Issue #62 PH3-10 - real, multi-signal (loss/gradient-norm/BC-residual trend) convergence
+    /// verdict, see `pinn_core::messages::TrainingUpdate::convergence_evidence`'s doc comment.
+    /// `Some` only on the FINAL update of a run - the plan's own explicit rule ("SHALL NOT be
+    /// declared converged merely because step == max_steps") is why this is a whole-run verdict
+    /// computed from collected history, not a per-step field.
+    convergence_evidence: Option<pinn_core::messages::ConvergenceEvidenceSummary>,
+
     /// Stage A (`enhancement.md` Phases 43-65) - global USCS/SI display toggle, persisted via
     /// `PersistedState.unit_system` (read/written directly by `main.rs`, mirroring
     /// `pv.outer_diameter`'s own `pub` field convention for cross-module persistence access).
@@ -636,6 +643,7 @@ impl StressSolverTool {
             constraint_report: Vec::new(),
             no_hole_benchmark: None,
             ad_fd_strain_diagnostic: None,
+            convergence_evidence: None,
             unit_system: UnitSystem::default(),
         }
     }
@@ -734,6 +742,7 @@ impl StressSolverTool {
         self.constraint_report = Vec::new();
         self.no_hole_benchmark = None;
         self.ad_fd_strain_diagnostic = None;
+        self.convergence_evidence = None;
 
         let (tx_train, rx_train) = crossbeam_channel::bounded(1); // latest-value channel, matches pinn-gui's own convention
         let (tx_ctrl, rx_ctrl) = crossbeam_channel::unbounded();
@@ -1116,6 +1125,17 @@ impl StressSolverTool {
                 let is_no_hole = matches!(&self.spec, Some(LoadedSpec::Plate(s)) if s.geometry.holes.is_empty());
                 if is_no_hole { Some("INVALID") } else { None }
             }),
+            // Issue #62 PH3-10 - real, multi-signal convergence verdict (issue #62 §14). `null`
+            // until the run reaches its final update (no per-step field exists - see
+            // `ConvergenceEvidenceSummary`'s own doc comment for why this is a whole-run
+            // verdict, not something evaluated every tick).
+            "convergence_evidence": self.convergence_evidence.as_ref().map(|c| json!({
+                "n_samples": c.n_samples,
+                "loss_trend": c.loss_trend,
+                "grad_norm_trend": c.grad_norm_trend,
+                "bc_residual_trend": c.bc_residual_trend,
+                "plausibly_converged": c.plausibly_converged,
+            })),
             "model_validity": self.infer_result.as_ref().map(|r| {
                 let verdict = self.classify_infer_result(r);
                 json!({
@@ -1240,6 +1260,14 @@ impl StressSolverTool {
                     self.gradient_conflict_report = upd.gradient_conflict_report;
                     self.no_hole_benchmark = upd.no_hole_benchmark;
                     self.ad_fd_strain_diagnostic = upd.ad_fd_strain_diagnostic;
+                }
+                // `convergence_evidence` is `Some` only on the run's FINAL update - `if let`,
+                // not a plain overwrite, so it's never clobbered back to `None` by every other
+                // `had_vis` tick between now and then (unlike `no_hole_benchmark`/
+                // `ad_fd_strain_diagnostic` above, which are meant to always reflect the LATEST
+                // vis-cadence reading).
+                if let Some(evidence) = upd.convergence_evidence {
+                    self.convergence_evidence = Some(evidence);
                 }
             }
             TrainingMsg::BeamUpdate(upd) => {
@@ -1819,6 +1847,17 @@ impl StressSolverTool {
                         "\u{3b5}xx={:.2e}  \u{3b5}yy={:.2e}  \u{3b5}xy={:.2e}",
                         a.eps_xx_rms_relative_diff, a.eps_yy_rms_relative_diff, a.eps_xy_rms_relative_diff,
                     ));
+                }
+                // Issue #62 PH3-10 - real, multi-signal convergence verdict computed from this
+                // run's own collected loss/gradient-norm/BC-residual history, not merely "step
+                // reached max_steps" (see `ConvergenceEvidenceSummary`'s own doc comment for
+                // why `plausibly_converged` deliberately ignores a noisy grad-norm trend).
+                if let Some(c) = &self.convergence_evidence {
+                    let verdict = if c.plausibly_converged { "Plausibly converged" } else { "NOT plausibly converged" };
+                    row(ui, "Convergence verdict", format!("{verdict} ({} samples)", c.n_samples));
+                    row(ui, "  loss trend", c.loss_trend.to_string());
+                    row(ui, "  gradient-norm trend", c.grad_norm_trend.to_string());
+                    row(ui, "  BC-residual trend", c.bc_residual_trend.to_string());
                 }
             });
             if self.reaction_force.is_none() {
