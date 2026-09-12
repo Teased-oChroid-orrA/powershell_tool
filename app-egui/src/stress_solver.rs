@@ -522,6 +522,17 @@ pub struct StressSolverTool {
     /// real constraint terms (e.g. the plate path), a genuine absence, not a bug.
     constraint_report: Vec<(&'static str, &'static str)>,
 
+    /// Issue #62 PH3-02 - the real, hard P2-14 no-hole benchmark result (issue #61's own
+    /// numeric-threshold gate), see `pinn_core::messages::TrainingUpdate::no_hole_benchmark`'s
+    /// doc comment. Closes a real gap: before this, `build_analysis_report`'s only "is this run
+    /// valid" signal was `model_validity` below, which is an UNRELATED parametric-surrogate
+    /// query classification (`self.infer_result`) - never the actual hard benchmark, and always
+    /// `null` for a direct (non-parametric) plate solve like this one. `None` for a holed
+    /// geometry (not applicable) - same "static per problem, never gated to empty mid-run"
+    /// treatment as `stress_source_report`, since it's overwritten wholesale on the same vis
+    /// cadence `energy_balance`/`reaction_force` already use.
+    no_hole_benchmark: Option<pinn_core::messages::NoHoleBenchmarkSummary>,
+
     /// Stage A (`enhancement.md` Phases 43-65) - global USCS/SI display toggle, persisted via
     /// `PersistedState.unit_system` (read/written directly by `main.rs`, mirroring
     /// `pv.outer_diameter`'s own `pub` field convention for cross-module persistence access).
@@ -615,6 +626,7 @@ impl StressSolverTool {
             derivative_order_report: Vec::new(),
             formulation_kind_report: Vec::new(),
             constraint_report: Vec::new(),
+            no_hole_benchmark: None,
             unit_system: UnitSystem::default(),
         }
     }
@@ -711,6 +723,7 @@ impl StressSolverTool {
         self.derivative_order_report = Vec::new();
         self.formulation_kind_report = Vec::new();
         self.constraint_report = Vec::new();
+        self.no_hole_benchmark = None;
 
         let (tx_train, rx_train) = crossbeam_channel::bounded(1); // latest-value channel, matches pinn-gui's own convention
         let (tx_ctrl, rx_ctrl) = crossbeam_channel::unbounded();
@@ -1058,6 +1071,29 @@ impl StressSolverTool {
                 "kt": h.concentration.kt,
                 "peak_theta_deg": h.concentration.max_theta_deg,
             })).collect::<Vec<_>>(),
+            // Issue #62 PH3-02: the REAL, hard P2-14 benchmark result - see `no_hole_benchmark`
+            // field's own doc comment for why this is distinct from (and was missing entirely
+            // before) `model_validity` below. `None` for a holed geometry (the no-hole
+            // reference solution doesn't apply there - see PH3-15 for the future hole/Kt gate).
+            "benchmark": self.no_hole_benchmark.as_ref().map(|b| json!({
+                "level": b.level,
+                "name": b.name,
+                "passed": b.passed,
+                "sigma_xx_relative_error": b.sigma_xx_relative_error,
+                "sigma_yy_over_reference": b.sigma_yy_over_reference,
+                "sigma_xy_over_reference": b.sigma_xy_over_reference,
+                "traction_rms_over_reference": b.traction_rms_over_reference,
+                "load_transfer_ratio": b.load_transfer_ratio,
+                "thresholds": {
+                    "sigma_xx_relative_error_max": b.thresholds.sigma_xx_relative_error_max,
+                    "sigma_yy_over_reference_max": b.thresholds.sigma_yy_over_reference_max,
+                    "sigma_xy_over_reference_max": b.thresholds.sigma_xy_over_reference_max,
+                    "traction_rms_over_reference_max": b.thresholds.traction_rms_over_reference_max,
+                    "load_transfer_ratio_min": b.thresholds.load_transfer_ratio_min,
+                    "load_transfer_ratio_max": b.thresholds.load_transfer_ratio_max,
+                },
+                "failure_reasons": b.failure_reasons,
+            })),
             "model_validity": self.infer_result.as_ref().map(|r| {
                 let verdict = self.classify_infer_result(r);
                 json!({
@@ -1180,6 +1216,7 @@ impl StressSolverTool {
                     self.network_snapshot = upd.network_snapshot;
                     self.gradient_share_report = upd.gradient_share_report;
                     self.gradient_conflict_report = upd.gradient_conflict_report;
+                    self.no_hole_benchmark = upd.no_hole_benchmark;
                 }
             }
             TrainingMsg::BeamUpdate(upd) => {
@@ -1217,6 +1254,11 @@ impl StressSolverTool {
                     self.derivative_order_report = Vec::new();
                     self.formulation_kind_report = Vec::new();
                     self.constraint_report = Vec::new();
+                    // Parametric path has no `NoHoleBenchmarkSummary` equivalent -
+                    // `ParametricTrainingUpdate` is a separate message type in `pinn-core` that
+                    // never gained this field (issue #62 PH3-02 only closes the gap for the
+                    // direct, non-parametric plate path).
+                    self.no_hole_benchmark = None;
                     // Keep the LATEST training snapshot as the "Training Case" comparison
                     // baseline (item 16) - overwritten every vis-cadence update rather than
                     // frozen at the first one, so a comparison always reads against what the
@@ -1736,6 +1778,13 @@ impl StressSolverTool {
                     row(ui, "Internal energy", self.fmt(eb.internal_energy, PhysicalQuantity::Energy));
                     row(ui, "External work", self.fmt(eb.external_work, PhysicalQuantity::Energy));
                     row(ui, "Energy-balance error", format!("{:.2}%", eb.energy_balance_error * 100.0));
+                }
+                // Issue #62 PH3-02 - the real, hard P2-14 gate this run PASSED/FAILED, not a
+                // parametric-surrogate query classification (see `Model Validity Envelope`
+                // elsewhere on this step for that unrelated concept).
+                if let Some(b) = &self.no_hole_benchmark {
+                    let verdict = if b.passed { "PASS".to_string() } else { format!("FAIL ({})", b.failure_reasons.join(", ")) };
+                    row(ui, &format!("No-hole benchmark ({})", b.level), verdict);
                 }
             });
             if self.reaction_force.is_none() {
