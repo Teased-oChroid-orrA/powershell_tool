@@ -1093,7 +1093,19 @@ impl StressSolverTool {
                     "load_transfer_ratio_max": b.thresholds.load_transfer_ratio_max,
                 },
                 "failure_reasons": b.failure_reasons,
+                "l0_passed": b.l0_passed,
             })),
+            // Issue #62 PH3-03: the machine-enforced PASS/FAIL/INVALID verdict (issue #62 §7) -
+            // combines L0 (mandatory analytic sanity gate) and L4 (the benchmark above). Only
+            // "INVALID" when this IS a no-hole run but training hasn't reached its first
+            // vis-cadence probe yet (so L4 genuinely hasn't run) - a holed geometry reports
+            // `null` here honestly (this specific PASS/FAIL/INVALID gate doesn't apply to a
+            // hole run at all; see PH3-15 for that gate), which is a real "not applicable", not
+            // the "unevaluated benchmark" gap this epic closes.
+            "operational_status": self.no_hole_benchmark.as_ref().map(|b| b.operational_status).or_else(|| {
+                let is_no_hole = matches!(&self.spec, Some(LoadedSpec::Plate(s)) if s.geometry.holes.is_empty());
+                if is_no_hole { Some("INVALID") } else { None }
+            }),
             "model_validity": self.infer_result.as_ref().map(|r| {
                 let verdict = self.classify_infer_result(r);
                 json!({
@@ -1779,12 +1791,14 @@ impl StressSolverTool {
                     row(ui, "External work", self.fmt(eb.external_work, PhysicalQuantity::Energy));
                     row(ui, "Energy-balance error", format!("{:.2}%", eb.energy_balance_error * 100.0));
                 }
-                // Issue #62 PH3-02 - the real, hard P2-14 gate this run PASSED/FAILED, not a
-                // parametric-surrogate query classification (see `Model Validity Envelope`
-                // elsewhere on this step for that unrelated concept).
+                // Issue #62 PH3-02/PH3-03 - the real, hard P2-14 gate this run PASSED/FAILED
+                // (combined with the mandatory L0 sanity gate into one operational verdict),
+                // not a parametric-surrogate query classification (see `Model Validity
+                // Envelope` elsewhere on this step for that unrelated concept).
                 if let Some(b) = &self.no_hole_benchmark {
                     let verdict = if b.passed { "PASS".to_string() } else { format!("FAIL ({})", b.failure_reasons.join(", ")) };
                     row(ui, &format!("No-hole benchmark ({})", b.level), verdict);
+                    row(ui, "Operational gate (L0+L4)", b.operational_status.to_string());
                 }
             });
             if self.reaction_force.is_none() {
