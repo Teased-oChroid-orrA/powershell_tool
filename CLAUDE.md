@@ -2224,6 +2224,44 @@ low-confidence flagging, and match highlighting, and (issue #2) the
 native_search fast re-search index: per-folder placement, auto-exclusion,
 and skip-reindex-if-unchanged.
 
+## `burn`'s `Backend::seed`: real, non-obvious gotchas found while adding it (PH3-11)
+
+Issue #62 PH3-11 added real model-weight-initialization seeding to the Stress Solver's plate/
+parametric training entry points (`B::seed(&device, spec.network.model_init_seed)` immediately
+before `ElasticityNetConfig::init`). Three real, non-obvious burn (0.21) behaviors were found
+and worked around while verifying this actually works - worth knowing before touching seeding,
+random init, or cross-run determinism claims again in this codebase:
+
+1. **`Backend::seed` on the `Wgpu` backend doesn't reliably reproduce weights, even with a
+   `Backend::sync` call in between.** Traced to burn-wgpu's fusion/cubecl execution layer:
+   `Backend::seed`'s mutation of `cubek::random`'s global `SEED` static is a plain side effect,
+   not tracked by the lazy op-fusion graph, so its ordering relative to queued `float_random`
+   kernel dispatches isn't guaranteed by program order alone. `NdArray` (this project's own
+   SHIPPED backend, per the "Debug vs release" section above) has no such concern - eager,
+   single-threaded CPU execution, its own separate `SEED` static in `burn-ndarray`. Any future
+   determinism test in this codebase should use `training_core::BInner`
+   (`--features ndarray-backend`), never this file's own test-only hardcoded `Wgpu` alias, for
+   anything claiming reproducibility.
+2. **`Param` values are LAZILY initialized - the actual random draw happens on first `.val()`
+   access, not at `ElasticityNetConfig::init()` call time.** Building two models back-to-back
+   and reading their weights only afterward interleaves the two models' random draws against
+   the ONE shared global RNG stream in ACCESS order, not construction order - a real,
+   reproducible false failure when comparing "two identically-seeded models," fixed by
+   materializing (`.val().into_data()`) each model's full parameter set immediately after
+   building it, before re-seeding for the next. Has no bearing on a real single-model training
+   run (nothing else contends for the lazy-realization window between construction and that
+   model's own first forward pass).
+3. **`Backend::seed` mutates a PROCESS-GLOBAL static, and `cargo test` runs `#[test]` fns
+   concurrently by default.** An end-to-end determinism test that spawns two full training runs
+   sequentially from ONE test thread can still fail if another test's OWN training thread runs
+   concurrently in a sibling OS thread and reseeds/draws from the same global RNG in between -
+   confirmed directly (passed alone, failed once as part of the full module). `pinn_solver::
+   runner::tests::same_model_init_seed_reproduces_an_identical_step_zero_update_across_two_
+   independent_runs` is `#[ignore]`d for exactly this reason (run it alone, or with
+   `--test-threads=1`, to verify it directly) - not a flaw in the seeding fix itself, which the
+   isolated run and `network.rs`'s own two unit tests both independently confirm works. This
+   has no bearing on a real desktop app session (one training run at a time, one process).
+
 ## Target environment (do not relax these without discussion)
 
 Windows 10 1809+ / Windows 11, `win-x64`. No internet access, no admin
