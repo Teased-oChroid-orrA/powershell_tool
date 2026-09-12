@@ -1090,52 +1090,40 @@ impl StressSolverTool {
                 "kt": h.concentration.kt,
                 "peak_theta_deg": h.concentration.max_theta_deg,
             })).collect::<Vec<_>>(),
-            // Issue #62 PH3-02: the REAL, hard P2-14 benchmark result - see `no_hole_benchmark`
-            // field's own doc comment for why this is distinct from (and was missing entirely
-            // before) `model_validity` below. `None` for a holed geometry (the no-hole
-            // reference solution doesn't apply there - see PH3-15 for the future hole/Kt gate).
-            "benchmark": self.no_hole_benchmark.as_ref().map(|b| json!({
-                "level": b.level,
-                "name": b.name,
-                "passed": b.passed,
-                "sigma_xx_relative_error": b.sigma_xx_relative_error,
-                "sigma_yy_over_reference": b.sigma_yy_over_reference,
-                "sigma_xy_over_reference": b.sigma_xy_over_reference,
-                "traction_rms_over_reference": b.traction_rms_over_reference,
-                "load_transfer_ratio": b.load_transfer_ratio,
-                "thresholds": {
-                    "sigma_xx_relative_error_max": b.thresholds.sigma_xx_relative_error_max,
-                    "sigma_yy_over_reference_max": b.thresholds.sigma_yy_over_reference_max,
-                    "sigma_xy_over_reference_max": b.thresholds.sigma_xy_over_reference_max,
-                    "traction_rms_over_reference_max": b.thresholds.traction_rms_over_reference_max,
-                    "load_transfer_ratio_min": b.thresholds.load_transfer_ratio_min,
-                    "load_transfer_ratio_max": b.thresholds.load_transfer_ratio_max,
-                },
-                "failure_reasons": b.failure_reasons,
-                "l0_passed": b.l0_passed,
-            })),
-            // Issue #62 PH3-03: the machine-enforced PASS/FAIL/INVALID verdict (issue #62 §7) -
-            // combines L0 (mandatory analytic sanity gate) and L4 (the benchmark above). Only
-            // "INVALID" when this IS a no-hole run but training hasn't reached its first
-            // vis-cadence probe yet (so L4 genuinely hasn't run) - a holed geometry reports
-            // `null` here honestly (this specific PASS/FAIL/INVALID gate doesn't apply to a
-            // hole run at all; see PH3-15 for that gate), which is a real "not applicable", not
-            // the "unevaluated benchmark" gap this epic closes.
+            // Issue #62 PH3-03: still exported directly (not folded into `authoritative_report`
+            // below) purely as a convenience top-level field for tools that only care about
+            // this one verdict - the SOURCE of truth is still `authoritative_report.l0_passed`
+            // + `.l4_no_hole_benchmark`, computed by the same shared function.
             "operational_status": self.no_hole_benchmark.as_ref().map(|b| b.operational_status).or_else(|| {
                 let is_no_hole = matches!(&self.spec, Some(LoadedSpec::Plate(s)) if s.geometry.holes.is_empty());
                 if is_no_hole { Some("INVALID") } else { None }
             }),
-            // Issue #62 PH3-10 - real, multi-signal convergence verdict (issue #62 §14). `null`
-            // until the run reaches its final update (no per-step field exists - see
-            // `ConvergenceEvidenceSummary`'s own doc comment for why this is a whole-run
-            // verdict, not something evaluated every tick).
-            "convergence_evidence": self.convergence_evidence.as_ref().map(|c| json!({
-                "n_samples": c.n_samples,
-                "loss_trend": c.loss_trend,
-                "grad_norm_trend": c.grad_norm_trend,
-                "bc_residual_trend": c.bc_residual_trend,
-                "plausibly_converged": c.plausibly_converged,
-            })),
+            // Issue #62 PH3-13: the ONE authoritative report - run identity (git SHA/dirty/
+            // problem+config hash/seeds/formulation/derivative backend), integration/sampling
+            // mode, AMR state, L0-L5 verdicts, energy balance, reaction force, and convergence
+            // evidence, all assembled by the SAME `pinn_solver::provenance::
+            // build_authoritative_report` function `checkpoint::CheckpointMeta` calls at save
+            // time (issue #62 §17's own "no duplicate reporting logic may produce contradictory
+            // statuses" rule, enforced by construction - one function, two callers). `null` for
+            // a Parametric/Beam spec or no loaded spec at all (this report is scoped to the
+            // plate path this pass - see that function's own doc comment).
+            "authoritative_report": match &self.spec {
+                Some(LoadedSpec::Plate(spec)) => {
+                    let provenance = pinn_solver::provenance::compute_run_provenance(
+                        spec, Some(format!("{:?}", spec.formulation)), Some(spec.network.model_init_seed),
+                        &spec.network, &spec.training,
+                    );
+                    let convergence_evidence = self.convergence_evidence.as_ref().map(pinn_solver::provenance::PersistedConvergenceEvidence::from);
+                    let no_hole_benchmark = self.no_hole_benchmark.as_ref().map(pinn_solver::provenance::PersistedNoHoleBenchmark::from);
+                    let last_amr_sweep_step = self.amr_sweeps.last().map(|s| s.step);
+                    Some(pinn_solver::provenance::build_authoritative_report(
+                        provenance, spec.training.measure_aware_training, spec.training.amr_enabled,
+                        last_amr_sweep_step, no_hole_benchmark, self.energy_balance, self.reaction_force,
+                        convergence_evidence,
+                    ))
+                }
+                _ => None,
+            },
             "model_validity": self.infer_result.as_ref().map(|r| {
                 let verdict = self.classify_infer_result(r);
                 json!({
