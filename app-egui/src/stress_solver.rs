@@ -2351,6 +2351,21 @@ impl StressSolverTool {
         card(ui, tokens, |ui| {
             card_title(ui, "Hole Stress Analysis");
             ui.add_space(4.0);
+            // Issue #62 PH3-15: "the hole benchmark SHALL NOT be considered operational merely
+            // because Kt can be computed" - the SAME gate (`verification_ladder::
+            // evaluate_hole_activation_gate_for_this_project`, backed by `current_phase_3_
+            // evidence`'s named, dated constants) `runner.rs`'s own regression test asserts
+            // against. Real Kt numbers below are computed by real, tested code either way -
+            // this banner is a visibility/honesty layer, not a computation gate.
+            let gate = pinn_solver::verification_ladder::evaluate_hole_activation_gate_for_this_project();
+            if !gate.eligible {
+                let failed = gate.failed_conditions().join(", ");
+                crate::design::components::empty_state(
+                    ui, tokens, "\u{26a0}", "Not yet operational (issue #62 PH3-15)",
+                    &format!("Kt below is real and computed, but this project's own Phase 3 verification has NOT yet cleared the hole/Kt path for operational use. Unmet precondition(s): {failed}."),
+                );
+                ui.add_space(8.0);
+            }
             if self.hole_analyses.is_empty() {
                 crate::design::components::empty_state(
                     ui, tokens, "\u{25cb}", "No data yet",
@@ -2384,8 +2399,22 @@ impl StressSolverTool {
                 });
                 ui.add_space(6.0);
                 ui.colored_label(tokens.fg_subtle, egui::RichText::new(
-                    format!("peak at \u{3b8}={:.0}\u{b0}", analysis.concentration.max_theta_deg)
+                    format!("peak at \u{3b8}={:.0}\u{b0}  \u{b7}  {} projection  \u{b7}  {}",
+                        analysis.concentration.max_theta_deg, analysis.concentration.stress_projection, analysis.concentration.domain_classification)
                 ).size(10.5));
+                // Issue #62 PH3-15 ("Kt SHALL report... angular refinement, radial offset
+                // refinement") - real values from `user_problem::kt_convergence_check` (P2-10),
+                // `None` only for the parametric path (see that field's own doc comment).
+                if let (Some(ang), Some(rad), Some(converged)) = (
+                    analysis.concentration.angular_refinement_relative_change,
+                    analysis.concentration.radial_offset_refinement_relative_change,
+                    analysis.concentration.refinement_converged,
+                ) {
+                    ui.colored_label(if converged { tokens.fg_subtle } else { tokens.warning }, egui::RichText::new(
+                        format!("refinement: angular \u{394}={:.1}%  radial \u{394}={:.1}%  {}",
+                            ang * 100.0, rad * 100.0, if converged { "converged" } else { "NOT converged" })
+                    ).size(10.5));
+                }
                 ui.add_space(8.0);
                 self.hole_profile_plot(ui, analysis);
             }
