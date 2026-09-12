@@ -533,6 +533,14 @@ pub struct StressSolverTool {
     /// cadence `energy_balance`/`reaction_force` already use.
     no_hole_benchmark: Option<pinn_core::messages::NoHoleBenchmarkSummary>,
 
+    /// Issue #62 PH3-06 - live AD-vs-FD strain cross-validation diagnostic, see `pinn_core::
+    /// messages::TrainingUpdate::ad_fd_strain_diagnostic`'s doc comment. `None` unless
+    /// `spec.training.derivative_operator_diagnostic` is enabled (opt-in, real extra cost) -
+    /// NOT a claim that AD replaces FD as the live training backend, which is structurally
+    /// impossible with this codebase's burn-autodiff version (see `differential_operator.rs`'s
+    /// own module doc comment).
+    ad_fd_strain_diagnostic: Option<pinn_core::messages::AdFdStrainAgreementSummary>,
+
     /// Stage A (`enhancement.md` Phases 43-65) - global USCS/SI display toggle, persisted via
     /// `PersistedState.unit_system` (read/written directly by `main.rs`, mirroring
     /// `pv.outer_diameter`'s own `pub` field convention for cross-module persistence access).
@@ -627,6 +635,7 @@ impl StressSolverTool {
             formulation_kind_report: Vec::new(),
             constraint_report: Vec::new(),
             no_hole_benchmark: None,
+            ad_fd_strain_diagnostic: None,
             unit_system: UnitSystem::default(),
         }
     }
@@ -724,6 +733,7 @@ impl StressSolverTool {
         self.formulation_kind_report = Vec::new();
         self.constraint_report = Vec::new();
         self.no_hole_benchmark = None;
+        self.ad_fd_strain_diagnostic = None;
 
         let (tx_train, rx_train) = crossbeam_channel::bounded(1); // latest-value channel, matches pinn-gui's own convention
         let (tx_ctrl, rx_ctrl) = crossbeam_channel::unbounded();
@@ -1229,6 +1239,7 @@ impl StressSolverTool {
                     self.gradient_share_report = upd.gradient_share_report;
                     self.gradient_conflict_report = upd.gradient_conflict_report;
                     self.no_hole_benchmark = upd.no_hole_benchmark;
+                    self.ad_fd_strain_diagnostic = upd.ad_fd_strain_diagnostic;
                 }
             }
             TrainingMsg::BeamUpdate(upd) => {
@@ -1271,6 +1282,7 @@ impl StressSolverTool {
                     // never gained this field (issue #62 PH3-02 only closes the gap for the
                     // direct, non-parametric plate path).
                     self.no_hole_benchmark = None;
+                    self.ad_fd_strain_diagnostic = None;
                     // Keep the LATEST training snapshot as the "Training Case" comparison
                     // baseline (item 16) - overwritten every vis-cadence update rather than
                     // frozen at the first one, so a comparison always reads against what the
@@ -1799,6 +1811,14 @@ impl StressSolverTool {
                     let verdict = if b.passed { "PASS".to_string() } else { format!("FAIL ({})", b.failure_reasons.join(", ")) };
                     row(ui, &format!("No-hole benchmark ({})", b.level), verdict);
                     row(ui, "Operational gate (L0+L4)", b.operational_status.to_string());
+                }
+                // Issue #62 PH3-06 - real, live AD-vs-FD strain agreement (never a claim that
+                // AD replaces FD as the training backend - see this field's own doc comment).
+                if let Some(a) = &self.ad_fd_strain_diagnostic {
+                    row(ui, "AD-vs-FD strain agreement (relative diff)", format!(
+                        "\u{3b5}xx={:.2e}  \u{3b5}yy={:.2e}  \u{3b5}xy={:.2e}",
+                        a.eps_xx_rms_relative_diff, a.eps_yy_rms_relative_diff, a.eps_xy_rms_relative_diff,
+                    ));
                 }
             });
             if self.reaction_force.is_none() {
