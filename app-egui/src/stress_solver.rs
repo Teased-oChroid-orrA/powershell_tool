@@ -2657,9 +2657,10 @@ impl StressSolverTool {
     fn loss_plot(&self, ui: &mut egui::Ui) {
         use egui_plot::{Line, Plot, PlotPoints, VLine};
         let series = |hist: &[f32]| -> PlotPoints {
-            hist.iter().enumerate().map(|(i, &v)| [i as f64, v.max(1e-12).log10() as f64]).collect()
+            hist.iter().enumerate().filter(|(_, v)| v.is_finite())
+                .map(|(i, &v)| [i as f64, (v as f64).signum() * (v as f64).abs().ln_1p()]).collect()
         };
-        Plot::new("stress_solver_total_loss").height(150.0).y_axis_label("log10(total loss)").x_axis_label("step").show(ui, |pui| {
+        Plot::new("stress_solver_total_loss").height(150.0).y_axis_label("sign(loss) × ln(1+|loss|)").x_axis_label("step").show(ui, |pui| {
             pui.line(Line::new(series(&self.total_loss)).name("Total").width(2.0).color(Color32::from_rgb(0x6a, 0xd2, 0xf2)));
             // Phase 15 (Neural-Network-Wide Adaptive Collocation epic): mark every AMR sweep
             // directly on the training timeline, so the causal link (sweep -> refinement ->
@@ -2675,10 +2676,10 @@ impl StressSolverTool {
         });
         ui.add_space(4.0);
         ui.colored_label(ui.visuals().weak_text_color(), egui::RichText::new(
-            "Loss components (own scale - Boundary and Energy can differ by orders of magnitude)"
+            "Legacy loss channels: signed values; Other/BC can include external work and is not a traction residual"
         ).size(10.0));
-        Plot::new("stress_solver_loss_components").height(90.0).y_axis_label("log10(loss)").x_axis_label("step").show(ui, |pui| {
-            pui.line(Line::new(series(&self.neumann_loss)).name("Boundary").width(1.3).color(Color32::from_rgb(0xe0, 0xb3, 0x55)));
+        Plot::new("stress_solver_loss_components").height(90.0).y_axis_label("sign(loss) × ln(1+|loss|)").x_axis_label("sample").show(ui, |pui| {
+            pui.line(Line::new(series(&self.neumann_loss)).name("Other / BC (legacy)").width(1.3).color(Color32::from_rgb(0xe0, 0xb3, 0x55)));
             pui.line(Line::new(series(&self.energy_loss)).name("Energy").width(1.3).color(Color32::from_rgb(0x3f, 0xbf, 0xe8)));
         });
     }
@@ -3147,7 +3148,7 @@ fn status_rail(ui: &mut egui::Ui, tokens: &Tokens, rail: &RailSnapshot) {
             RailTelemetry::Plate { total_loss, energy_loss, neumann_loss, lr } => {
                 stat(ui, "TOTAL LOSS", format!("{total_loss:.3e}"), tokens.accent_strong, true);
                 stat(ui, "ENERGY TERM", format!("{energy_loss:.3e}"), tokens.fg, false);
-                stat(ui, "BOUNDARY TERM", format!("{neumann_loss:.3e}"), tokens.fg, false);
+                stat(ui, "OTHER / BC (LEGACY)", format!("{neumann_loss:.3e}"), tokens.fg, false);
                 stat(ui, "LEARNING RATE", format!("{lr:.3e}"), tokens.fg_muted, false);
             }
             RailTelemetry::Beam { loss, max_abs_error, max_abs_deflection } => {
