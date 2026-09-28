@@ -1,0 +1,157 @@
+# app-tui/ — ratatui Terminal GUI ("Toolbench")
+
+> TL;DR: A third GUI head — ratatui/crossterm terminal UI, alongside `app/` (dioxus-native) and `app-egui/` (egui/eframe). New and additive: Search Files is at full parity with both existing heads, including fast re-search indexing (native-search/Tantivy), a per-extension checkbox catalog seeded by scanning the actual search folder (a capability neither existing head has), and named presets (save/apply/delete). The rail lists all six tools `app/` lists (Search Files, Bushing Workbench, Pressure Vessel Analyzer, Duplicate Finder, Batch Rename, Log Analyzer) - only Search Files is enabled, the rest are inert "Soon" placeholders, matching both existing heads' own convention for their own not-yet-built tools. `app-egui/`'s seventh tool, Stress Solver, is deliberately excluded (not a missing seventh rail entry) - see its own section below. Neither existing head is retired by this crate's addition. Business logic lives in `search-core`/`native-search`, consumed exactly as the other two heads and `cli/` already do.
+
+## Purpose
+Owns: terminal lifecycle (`main.rs`), the shell chrome (topbar/rail/status bar/command palette/help overlay/toasts, `widgets/`), and the Search Files toolbox's UI (`toolboxes/search/`).
+Does not own: search/matching/extraction (`search-core`) or the fast-index engine itself (`native-search`) — this crate only orchestrates and renders `search-core`'s/`native-search`'s existing public API (including the fast re-search index, consumed via `toolboxes/search/indexing.rs`), unchanged.
+
+**Status vs `app/`/`app-egui/`**: this crate is new and intentionally incomplete — it is not a competing "real" head yet, just Search Files. Unlike `app-egui/`, it has no `windows`-crate version conflict (no wgpu/Blitz dependency at all — pure terminal I/O), so it's a normal root-workspace member, not `exclude`d. See root `CLAUDE.md`'s Subsystems table for current status language.
+
+## Code Map
+
+### Find It Fast
+| Looking for... | Go to |
+|---|---|
+| Terminal init/teardown, async event loop, `Effect` execution | `src/main.rs` |
+| `AppState`/`AppEvent`/`Effect`/`handle_event` — the whole decision layer | `src/app.rs` |
+| `ToolId`, `NavigationState`, `FocusState`/`FocusArea`, responsive breakpoints | `src/nav.rs` |
+| Design tokens (`Theme`), `NO_COLOR` handling, reduced-color fallback palette | `src/theme.rs` |
+| Modal overlay state (palette/help/confirm) | `src/modal.rs` |
+| Toast queue | `src/notifications.rs` |
+| `Command` enum + fuzzy-filter palette state/render | `src/command_palette.rs` |
+| Global, toolbox-agnostic chrome widgets (topbar/rail/status-bar composition, help overlay, spinner, empty-state, gauge) | `src/widgets/` |
+| Search Files: pure business logic (`SearchToolConfig`/`SearchRunState`/`build_settings`/`apply_progress`) | `src/toolboxes/search/model.rs` |
+| Search Files: `settings-tui.json` persistence, recent searches, presets | `src/toolboxes/search/persistence.rs` |
+| Search Files: match-highlighting + preview metadata | `src/toolboxes/search/preview.rs` |
+| Search Files: async search execution + report writing (real `#[tokio::test]` coverage lives here) | `src/toolboxes/search/runner.rs` |
+| Search Files: `SearchToolState`, pane constants, toolbox-local key routing | `src/toolboxes/search/mod.rs` |
+| Search Files: Run workspace render (path/filters/progress/in-flight/results/preview) | `src/toolboxes/search/run_view.rs` |
+| Byte-size/elapsed-time formatting, extension-breakdown aggregation | `src/format.rs` |
+
+## Key Relationships
+- `main.rs` builds one multi-thread tokio runtime, initializes the terminal via `ratatui::init()`, and runs one async loop: a spawned task forwards crossterm's `EventStream` + a 200ms tick into a single `mpsc::unbounded_channel::<AppEvent>`; the main loop drains it, calls `app::handle_event`, executes whatever `Effect`s it returned, and redraws via `widgets::shell::draw`.
+- `handle_event` is the **only** place `AppState` (chrome/nav) or `SearchToolState` (the one real toolbox) is ever mutated. It never touches the terminal, the async runtime, the filesystem, or the OS — it returns `Effect` values instead, and `main.rs`'s `execute_effect` is the only code that spawns tasks, writes files, or shells out (`open`/`arboard`). This is deliberately narrower than either sibling head's own pattern: `app/`'s `AppState` is a flat `Copy` struct of Dioxus `Signal<T>` (reactive, auto-rerendering); `app-egui/`'s `SearchUiState` is an `Arc<Mutex<_>>` written by a background task and polled once per immediate-mode frame. Here there is exactly one synchronous mutation point, full stop — see `app.rs`'s own module doc comment.
+- `toolboxes/search::runner::run_search` mirrors `app/`'s `run_search` orchestration: a raw `tokio::spawn` runs `search_core::orchestrator::run`/`run_candidates` and only ever writes into its own progress channel; the *caller* (`runner::run_search` itself) drains that channel and forwards each report into the app-wide `AppEvent` channel as `AppEvent::SearchProgress`. It lives in the library, not `main.rs`, specifically so it has real `#[tokio::test]` integration coverage against tempdir fixtures (see its own test module) rather than only being exercisable by actually running the binary.
+- `toolboxes/search::model::apply_progress` is ported from `app/src/state.rs::AppState::apply_progress` — the FULLER of the two existing heads' implementations, not `app-egui/`'s thinner one (`app-egui/`'s own `apply_progress` drops `in_flight_files`/`last_completed_result` entirely, a documented parity gap on that head). Root `CLAUDE.md` calls per-file in-flight status "a hard requirement, not a nice-to-have" — this crate's parity target follows `app/`'s behavior, not `app-egui/`'s, for exactly this reason. See Contracts.
+
+## External Dependencies
+| Dep | Used for | Note |
+|---|---|---|
+| `search-core` (path) | Search/matching/extraction/report | Same crate `app/`/`app-egui/`/`cli/` consume; zero changes made to it by this crate |
+| `ratatui` | Rendering | Pulls in `crossterm` transitively at a matching pinned version |
+| `crossterm` (`event-stream` feature) | Terminal input as an async `Stream` (`EventStream`), merged with the tick timer via `tokio::select!` | |
+| `tokio` (`rt-multi-thread`, `macros`, `time`, `sync`), `tokio-util` | Async runtime + `CancellationToken` | Same cancellation mechanism `app/`/`app-egui/`/`cli/` already use over `search-core`'s API |
+| `futures-util` | `.next()` on crossterm's `EventStream` (a `futures_core::Stream`, not a tokio-native type) | |
+| `open`, `arboard` | Opening a result / copying a path — same OS-integration calls both existing heads already use | |
+| `serde`, `serde_json` | `settings-tui.json` persistence | |
+| `tempfile`, `chrono` (dev-only) | Test fixtures — `chrono` is needed as a *direct* dev-dependency only because Rust requires naming a crate directly to construct a `chrono::DateTime<Local>` test fixture value, even though it's already resolved transitively via `search-core` | |
+
+`native-search = { path = "../native-search" }` is a direct dependency — fast re-search indexing (`toolboxes/search/indexing.rs`) uses `search_core::native_index::build_or_update_corpus_index_send` (the `Send`-bounded variant, required for this crate's multi-threaded tokio runtime, same reason `app-egui/` documents) and `NativeSearchEngine::trigram_candidate_paths` for query-time narrowing.
+
+## Decisions
+| Decision | Why | Rejected |
+|---|---|---|
+| `AppState`/`SearchToolState` are plain (non-reactive) structs mutated only inside `handle_event`, which returns `Effect`s as data instead of executing them inline | Testability with no terminal/tokio runtime at all (`cargo test -p app-tui --lib` covers the whole decision layer), and a narrower state-mutation surface than either sibling head's pattern | A `Signal<T>`-per-field struct (no reactivity system exists in ratatui to drive it) or an `Arc<Mutex<_>>` polled per frame (works, but has two independent access patterns instead of one) |
+| `lib.rs` + a thin `main.rs`, rather than one binary crate | Every module's tests — including `runner.rs`'s real `#[tokio::test]` search-execution tests — run via `cargo test -p app-tui --lib` with no terminal | Putting the event loop and search-runner logic directly in `main.rs`, untestable without actually launching the binary |
+| `FocusState::default()` starts on `FocusArea::Rail`, not `Workspace(0)` | Search Files puts a text-entry field at workspace pane 0; defaulting keyboard focus straight into a text field would silently swallow the very first keypress (e.g. `q` typed to quit) as a character instead of a global shortcut — see `nav.rs`'s own doc comment on `FocusState::default` | Defaulting into the first workspace pane (broke 4 Phase-1 shortcut tests when tried) |
+| Toolbox-local key routing (`toolboxes/search::handle_key`) lives inside the toolbox module, called from `app::handle_key` before global bindings, rather than behind a `Toolbox` trait | Only one real toolbox exists in this phase; a trait abstraction is worth adding once a second toolbox needs the same treatment, not before | A generic `Toolbox` trait now |
+| Settings form (where built) uses one flat field-index `match` rather than a generic field/widget descriptor framework | Same "don't abstract prematurely" reasoning — one toolbox, ~28 fields, a big but simple match is more legible than a generic form engine built for a consumer count of one | A reusable `FormField` widget abstraction |
+| Extension catalog is a fresh folder scan (`extension_picker::scan_extensions`) rather than a call into `search-core`, and shows only extensions actually present rather than a static built-in list | `search-core` exposes no public "just enumerate, don't extract" API shaped for this; scanning the real folder is also a genuine improvement over both existing heads (which only offer a static default list) | Reusing a private `search-core` walk function (not exported); keeping the plain comma-separated text field as the only option |
+| Extension picker's filter (`/`) narrows an *already-scanned* list rather than triggering a fresh scan per keystroke, and `Enter` while filtering both filters and can add a not-yet-present extension in one step | Scanning is the (relatively) expensive part; filtering an in-memory `Vec<String>` is free, and reusing one key for "narrow" + "add if not found" avoids a second dedicated "add custom" keybinding | A live re-scan per keystroke; a separate `Ctrl+A`-style "add custom" binding distinct from the filter's own `Enter` |
+| Fast re-search's index-narrowed search (`runner.rs::narrow_via_index`) only activates when the index directory already exists on disk - a missing index is treated as "not available yet", never as an error, and silently falls back to a full scan | Avoids ever creating a query-time index as a side effect of a search, and avoids narrowing against an index later found to be for stale/wrong content | Auto-creating an index on first use whenever the toggle is on |
+
+## Entry Points
+| Task | Start Here |
+|---|---|
+| Add a new global keybinding or overlay | `src/app.rs` (`handle_key`/`handle_modal_key`) + `src/widgets/shell.rs` (render + help-overlay hint list) |
+| Add/change a Search Files setting | `src/toolboxes/search/model.rs` (`SearchToolConfig` field + `build_settings`) → wherever it's editable in the UI (`run_view.rs` for Path/Filters; the Settings view, if present — check current state, see Boundaries) → `persistence.rs` (`PersistedSearchSettings`, with `#[serde(default)]`/`Option<T>` for the new field) |
+| Add a real tool behind the `Bushing`/`PressureVessel` rail placeholder | `src/nav.rs` (`ToolId::enabled()`) + a new `src/toolboxes/<tool>/` module following `toolboxes/search/`'s split (pure `model.rs`, a `mod.rs` owning state + key routing, a `*_view.rs` for rendering) + wire the match arms in `widgets/shell.rs::draw_workspace` and `app::AppState::workspace_pane_count` |
+| Change progress/live-run behavior | `src/toolboxes/search/model.rs` (`apply_progress`, `SearchRunState`) — preserve full `in_flight_files`/incremental-`results` fidelity, see Contracts |
+| Change the async search/report-writing flow | `src/toolboxes/search/runner.rs` — has its own `#[tokio::test]` suite against tempdir fixtures; extend those tests alongside any behavior change |
+| Debug settings not persisting/loading correctly | `src/toolboxes/search/persistence.rs` (`PersistedSearchSettings`/`PersistedFile`, `load`/`save`) — check the `#[serde(default)]`/`Option<T>` shape on any new field first |
+
+## Contracts
+- `handle_event` (and everything it calls transitively: `app::execute_command`, `toolboxes::search::handle_key`, `model::apply_progress`, etc.) must never touch the terminal, the tokio runtime, the filesystem, or the OS. Anything that needs to is expressed as an `Effect` variant and executed only in `main.rs::execute_effect`. Adding a new side-effecting action means adding an `Effect` variant, not calling out directly from inside the reducer.
+- `toolboxes::search::model::apply_progress` must keep consuming the FULL `search_core::models::SearchProgressReport` — `in_flight_files` overwritten wholesale every report, `last_completed_result` appended into `results` (case-insensitive dedup by `full_name`) whenever its status is `Hit` — never collapsed into a coarser aggregate-only update. This is root `CLAUDE.md`'s "per-file in-flight status is a hard requirement" invariant, and the one place this crate could silently regress to `app-egui/`'s known-thinner behavior.
+- `toolboxes::search::run_or_notify` is the single entry point for starting a run (both the Path/Filters field's Enter key and the command palette's "Run search" command call it) — do not call `start_run` directly from a new call site, or the two invocation paths can drift into inconsistent failure messaging (this happened once already during Phase 2/3 wiring: the palette path skipped the "enter a path first" toast until unified).
+- Text-field key routing (`toolboxes/search::edit_buffer_key` and the `PANE_PATH`/`PANE_FILTERS` match arms in `handle_key`) must only consume `KeyCode::Char` when `key.modifiers.is_empty()` (or `SHIFT` only) — a `Ctrl`-modified character must fall through unconsumed so global bindings (Ctrl+P above all) keep working while a text field has focus. Enter is handled by the caller (submits), never inside the shared buffer-editing helper, because closing over `state` for both the buffer mutation and a submit callback in the same expression does not borrow-check (a real error hit while building this: "closure requires unique access to `*state` but it is already borrowed") — keep Enter's `run_or_notify(state, ...)` call as a separate match arm ahead of the generic edit helper, not folded into it.
+- `main.rs` installs no custom panic hook — `ratatui::init()` already installs one that restores the terminal before any panic propagates, and must be called (not a raw `Terminal::new`) for that guarantee to hold.
+
+## Pitfalls
+- **Disk space**: this session hit a real `ENOSPC` (disk full) from a bare `cargo build --workspace` — other crates in this workspace (OCR/`rten`/`burn-wgpu`-adjacent dependency trees) make a full-workspace build far heavier than this crate alone needs. **Always scope commands to `-p app-tui`** (`cargo check -p app-tui --bins --lib --tests`, `cargo test -p app-tui --lib`) when working in this crate. If disk space is ever suspiciously tight, `target/` can be safely removed and rebuilt (see root `CLAUDE.md`'s own Global Pitfalls entry on shared Cargo target directories — this is the same class of incident, not a new one).
+- Ratatui's `Gauge::ratio` panics on a value outside `0.0..=1.0` — `widgets/gauge_row.rs`'s private `ratio()` helper clamps `percent` before dividing by 100 specifically because progress data arriving from a background task should never be trusted to already be in range; don't bypass it by calling `Gauge` directly elsewhere.
+- Every render function that takes a `Rect` must guard degenerate sizes (0 width/height) explicitly rather than assume space exists — `empty_state::render`, `gauge_row`-adjacent layout, and `help::render_overlay`/`render_status_hints` all check this and have a `TestBackend`-driven regression test at small/zero sizes. A new widget should follow the same pattern; ratatui's `Layout` does not itself guarantee panic-free behavior at 0-sized areas for arbitrary constraint combinations.
+- Every selectable list in this crate (Results, Settings' Fields/Recents/Presets, the extension picker's checkbox catalog, the `Ctrl+P` command palette) used to render through a *stateless* `List` (`frame.render_widget(List::new(items), area)`, or `List::new(items).block(...)` for the palette), which always starts painting at item 0 and never scrolls. Each call site tracked its own `selected` index and styled that row manually, so moving the selection past the visible height kept changing `selected` (and whatever else read it - e.g. the Results list driving the Preview pane) while the rendered list itself never moved: the highlighted row silently scrolled off-screen with no visual trace it still existed. Fixed by routing every one of those six call sites through `widgets/scroll_list.rs`, which renders via ratatui's *stateful* `List`/`ListState` path instead (`ListState::select` + `render_stateful_widget`) - ratatui computes the scroll offset itself. None of these call sites ever set `List::highlight_style`/`highlight_symbol`, so this only changed scrolling, not the existing manual per-row styling; the palette's list-block border is now rendered separately (`Block::inner` computed, then `scroll_list::render` into that inner `Rect`) since `scroll_list::render` takes plain items, not a pre-built `List` to attach a block to. If a future toolbox (or the palette, if its command count grows further) adds another selectable list, use `scroll_list::render` from the start rather than reaching for `List::new(items)` directly - a grep for `List::new(` before adding one is cheap insurance.
+- `s` (open Settings, Results pane only) and `Esc` (back out of Settings) were discoverable only through the `?` help overlay - a separate modal you had to already know to open; the always-visible bottom status bar hardcoded a fixed 4-hint list (`Ctrl+P`/`Tab`/`?`/`q`) with no awareness of toolbox/pane/screen state at all. A user with the Settings screen full of exactly the fields they were looking for (Match mode, Output folder, Index location, ...) had no on-screen indication `s` was how they got there. Fixed via `shell.rs::contextual_hint`, which inserts one extra `KeyHint` into the status bar based on `state.nav.active_tool`/`state.search.screen`/`state.focus.area`: `s Settings` only while `ToolId::Search` + `ToolboxScreen::Run` + `FocusArea::Workspace(PANE_RESULTS)`, `Esc Back` only while `ToolboxScreen::Settings`, nothing for any other toolbox (none of the placeholders have bindings of their own yet) or pane. Verified live via a real `tmux` session (not just `TestBackend` unit tests) - see `tests/rendering.rs`'s "Status bar's contextual hint" section for the regression coverage. If Bushing/PressureVessel/etc. ever gain real bindings, extend `contextual_hint`'s match rather than reverting to a static hint list.
+- `nav.rs::ToolId` used to list only 3 tools (`Search`/`Bushing`/`PressureVessel`) - both `app/` and `app-egui/` show 6-7 (also `Dupes`/`Rename`/`Logs`, `app-egui/` additionally `StressSolver`), all but their first real tool(s) rendered as inert placeholders. The missing three weren't a deliberate scope cut like Stress Solver is (see the TL;DR) - they were simply never added, so the rail visibly had fewer entries than either sibling head for no documented reason. Fixed by adding `ToolId::Dupes`/`Rename`/`Logs` (disabled, same as `Bushing`/`PressureVessel`) and matching `Command::SwitchToDupes`/`SwitchToRename`/`SwitchToLogs` palette entries - `shell.rs::draw_workspace`'s `_ => "Coming soon"` fallback needed no changes, it already covers any non-`Search` `ToolId`.
+- `runner::tests::cancelling_mid_run_stops_promptly_and_reports_cancelled` used to be intermittently flaky (failed roughly 1 in 5-8 full-suite runs): it raced a fixed `sleep(1ms)` against real orchestrator work over a 20-tiny-file fixture, and on a fast/loaded run the whole search could finish before the sleep elapsed, so cancellation landed too late and the run reported success instead of `Cancelled`. Fixed by synchronizing on the first real `AppEvent::SearchProgress` event instead of a guessed duration - `orchestrator::run` unconditionally sends an `is_enumerating` progress report before any file work starts, so waiting for it is a deterministic "the run is genuinely in flight" signal with no risk of hanging. Verified stable across 20 consecutive full-suite runs after the fix. If any other test in this crate uses a fixed `sleep` to race a background task, prefer the same pattern (wait on real evidence via the event/progress channel) over tuning the duration.
+- The exact rendering fidelity of rounded borders / braille spinner glyphs / color depth on the actual shipping target (Windows Terminal/ConHost) has **not** been verified from this development environment (macOS) — `theme.rs`'s reduced-color fallback and `spinner.rs`'s ASCII fallback exist for this reason, but real verification on Windows is still outstanding.
+
+## Patterns
+
+### Adding a real tool behind a placeholder rail slot (`Bushing`/`PressureVessel`)
+1. Add a `src/toolboxes/<tool>/` module mirroring `toolboxes/search/`'s split: a pure `model.rs` (zero ratatui/crossterm imports), a `mod.rs` owning the tool's own state struct + toolbox-local key routing (returning `(bool, Vec<Effect>)` the same way `search::handle_key` does), and a `*_view.rs` for rendering.
+2. In `src/nav.rs`: add the variant to `ToolId::enabled()`'s `matches!`.
+3. In `src/app.rs`: add the new toolbox's state as an `AppState` field, extend `workspace_pane_count` for the new `ToolId`, and route its `handle_key` call the same way `ToolId::Search` is routed in `handle_key`.
+4. In `src/widgets/shell.rs::draw_workspace`: render the new tool's view instead of falling through to the `empty_state`/"Coming soon" placeholder.
+5. If it needs persisted settings, give it its own `settings-tui-<tool>.json` (or extend the existing file's top-level struct) with the same `#[serde(default)]`/`Option<T>` forward-compatibility discipline as `toolboxes/search/persistence.rs`.
+
+## Boundaries
+
+### Always
+- Scope `cargo` invocations to `-p app-tui` in this crate (see Pitfalls — disk space).
+- Route new side effects through the `Effect` enum (`app.rs`) and execute them only in `main.rs`/`runner.rs` — never call the filesystem, the OS, or spawn a task from inside `handle_event`.
+- Preserve `apply_progress`'s full `in_flight_files`/incremental-`results` fidelity when touching Search Files progress handling.
+
+### Never
+- Call `search_core::orchestrator::run`/`run_candidates` with `progress: None` from this crate — that's `cli/`'s deliberate headless shortcut ("a terminal can't easily redraw anyway" — except this crate is exactly the head that can); always thread a real progress channel.
+- Call `native_index::build_or_update_corpus_index` (the plain, non-`Send` variant) from this crate — always use `build_or_update_corpus_index_send`, since this crate's tokio runtime is multi-threaded (same reason `app-egui/` documents).
+- Have `runner.rs::narrow_via_index` create/rebuild an index as a side effect of a plain search — index-narrowing must only ever read an index that already exists; building one is a separate, explicit user action (`Command::BuildIndex`/`RebuildIndex`).
+
+### Verify First
+- Current test count/coverage (`cargo test -p app-tui --lib` and `cargo test -p app-tui --test rendering`) before citing a specific number anywhere — it changes every phase.
+
+## Settings View
+
+`toolboxes/search/settings_view.rs` exists: a full scrollable form over every
+`SearchToolConfig` field (`s` from the Results pane to open, `Esc` to leave -
+only when nothing is mid-edit, since `Esc` also cancels an in-progress field
+edit). One flat field-index `match` (`FIELDS: &[FieldDef]` + parallel
+`field_value_string`/`apply_text_edit`/`apply_toggle`/`bool_field(_mut)`
+functions keyed by array index) rather than a generic field/widget
+abstraction - deliberate, since only one toolbox needs a settings form so
+far (see the "don't abstract prematurely" note elsewhere in this file).
+Text/number fields use an explicit edit-mode (`Enter` to start, prefilled
+with the current value; `Enter` commits, `Esc` cancels) - invalid numeric
+input on commit is silently ignored, leaving the previous value in place,
+rather than blocking the whole form. Bool/enum fields toggle/cycle
+immediately on `Space` or `Enter`, no edit mode. Extensions have their own
+modal picker (`extension_picker.rs`): `Enter` on the Extensions field fires
+`Effect::ScanExtensions`, which walks the configured search folder
+(`scan_extensions`, mirroring `search-core::file_reader::enumerate_files_safely`'s
+walk semantics) and opens a checkbox catalog of only the extensions actually
+present - a real improvement over both `app/`'s and `app-egui/`'s static
+built-in extension lists, not a scope cut.
+
+The Settings screen also has two more sections - Recent searches and Saved
+presets - reached by `Tab`/`Shift+Tab` (a `Section` enum: `Fields` ->
+`Recents` -> `Presets` -> wraps). `Enter` on a recent search copies its
+`search_path`/`filters_text` onto the live config; `Enter` on a preset calls
+`PersistedSearchSettings::apply_to`, applying every field. Neither section
+starts a run or touches disk by itself - applying only changes what a
+subsequent Run would use, mirroring both existing heads' "apply preset"
+semantics. Both sections collapse (Fields-only) below a ~12-row minimum
+height rather than attempting a cramped 3-way split. In the Presets section, `a` starts naming a new preset
+(`view.naming_preset`, own text-edit mode, `Enter` commits and pushes a
+`SavedPreset` snapshot of the live config, `Esc` cancels), `r` renames the
+selected preset in place (`view.renaming_preset`, same text-edit mode
+prefilled with the preset's current name, `Enter` commits by mutating that
+preset's `name` rather than pushing a new one), and `d` deletes the
+selected preset - `a`/`d` ported from `app/`'s
+`save_current_as_preset`/`delete_preset`; `r` has no equivalent in either
+existing head. All three mutating actions return `Effect::PersistSearchSettings`
+to flush `settings-tui.json`.
+
+## Downlinks
+Leaf node — no children yet (no per-toolbox sub-nodes; `toolboxes/search/` is small enough to stay documented here rather than splitting out its own `AGENTS.md`, per this repo's "child node only once a subtree is substantial" convention — reconsider if a second toolbox and its own model/persistence/view files land here). Depends on sibling node `search-core/AGENTS.md` (the only other crate this one's business logic touches).

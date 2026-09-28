@@ -1,0 +1,51 @@
+[package]
+name = "app-tui"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Third GUI head (ratatui/crossterm terminal UI), alongside `app/`
+# (dioxus-native) and `app-egui/` (egui/eframe). Unlike `app-egui`, this
+# crate pulls in neither Blitz's font stack nor a wgpu-hal renderer, so it
+# has none of the `windows`/`windows-core` version conflict that forces
+# `app-egui` out of the root workspace - it's a normal member here.
+[lib]
+name = "app_tui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "app-tui"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.30"
+crossterm = { version = "0.29", features = ["event-stream"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio-util = "0.7"
+# Needed to `.next().await` crossterm's `EventStream` (a `futures_core::Stream`,
+# not a tokio-native type) inside the `tokio::select!` event-forwarding loop.
+futures-util = "0.3"
+search-core = { path = "../search-core" }
+# Fast re-search indexing (Tantivy-backed) - consumed the same way `app/`
+# and `app-egui/` do, through `search_core::native_index`'s policy layer,
+# with direct `native_search::engine::NativeSearchEngine` access only for
+# trigram-candidate narrowing (mirrors both existing heads' own split).
+native-search = { path = "../native-search" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Same OS-integration calls both `app/` and `app-egui/` already use for
+# opening a result / copying a path - reused as-is, not reimplemented.
+open = "5"
+arboard = "3"
+
+[dev-dependencies]
+tempfile = "3"
+# Test-only: constructing a `search_core::models::FileSearchResult` fixture
+# needs a `chrono::DateTime<Local>` value for `created`/`modified`, and
+# Rust 2018+ requires the crate be a direct dependency to name it at all -
+# `chrono` is already resolved into this workspace's dependency graph
+# transitively via `search-core`, so this adds no new crate, just a name
+# for one already being compiled. Kept dev-only since production code never
+# needs to name `chrono` directly (calling `.format()` on an
+# already-typed field is an inherent-method call, not a `use`).
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }

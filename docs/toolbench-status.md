@@ -67,3 +67,29 @@ exactly and what didn't.
   implied by "match the mockup."
 - No persistence of which tool was last open (see `ToolId`'s doc comment
   above for why).
+
+## A third dashboard shell: `app-tui/` (ratatui/crossterm)
+
+A terminal-UI Toolbench dashboard (`app-tui/`, new root-workspace member)
+is being built alongside `app/` and `app-egui/`, not replacing either -
+same rail/topbar/workspace/status-bar shell shape as this document
+describes for `app/`, reimplemented for a terminal renderer. As of this
+writing:
+
+- **Search Files** is the only migrated toolbox: live progress (aggregate
+  percent + per-file in-flight status, matching `app/`'s full
+  `SearchProgressReport` fidelity, not `app-egui`'s thinner subset),
+  incremental results, preview with match highlighting, cancellation, HTML/
+  CSV/JSON export, and per-result actions (open/copy path/reveal folder/
+  export hits) are implemented and unit/integration-tested.
+- Bushing Workbench and Pressure Vessel Analyzer are inert rail
+  placeholders only, same treatment `Dupes`/`Rename`/`Logs` get here -
+  nothing behind them is implemented yet.
+- Fast re-search indexing (native-search/Tantivy-backed) is explicitly
+  deferred to a later phase - not present in `app-tui/` at all yet.
+- Keyboard-only in this phase; no mouse support.
+
+See `app-tui/AGENTS.md` for the crate's own architecture (`AppState`/
+`AppEvent`/`Effect` event-reducer pattern, module map, testing approach).
+This does not change either `app/`'s or `app-egui/`'s status above - both
+remain fully active, shipping heads.
