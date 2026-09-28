@@ -1,0 +1,50 @@
+name: Build app-tui Windows executable
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - feature/pinn-numerics-tui-integration-20260923
+
+jobs:
+  build-app-tui-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain (stable, MSVC)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: cargo-app-tui-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-app-tui-${{ runner.os }}-
+
+      - name: Build app-tui (release, win-x64)
+        run: cargo build --release -p app-tui --target x86_64-pc-windows-msvc
+
+      - name: Verify and list app-tui.exe
+        shell: pwsh
+        run: |
+          $exePath = "target/x86_64-pc-windows-msvc/release/app-tui.exe"
+          if (-not (Test-Path $exePath)) {
+            Write-Error "app-tui.exe was not found at $exePath - the release build did not produce the expected output."
+            exit 1
+          }
+          Get-Item $exePath | Format-List Name, Length, LastWriteTime
+
+      - name: Upload app-tui.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-tui-win-x64
+          path: target/x86_64-pc-windows-msvc/release/app-tui.exe
+          if-no-files-found: error
