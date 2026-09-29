@@ -425,15 +425,21 @@ pub fn draw(
 }
 
 fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, config: &SearchToolConfig, view: &SettingsView, regions: &mut crate::mouse::MouseRegions) {
-    // Live regex validation, computed on the same path a real run takes -
+    // Live regex validation takes priority over the static per-field Hint
+    // below when present (it's actionable/urgent); both share the same
+    // reserved bottom area, computed on the same path a real run takes -
     // shown as a reserved bottom line so it doesn't shift the field list
     // around as it appears/disappears.
     let validation_error = regex_validation_error(config);
-    let (list_area, error_area) = if area.height > 1 {
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(1)])
-            .split(area);
+    let bottom_text = match &validation_error {
+        Some(error) => format!("Regex error: {error}"),
+        None => field_hint(view.selected).to_string(),
+    };
+    let bottom_style = if validation_error.is_some() { theme.status_style(StatusTone::Danger) } else { theme.disabled_style() };
+    let max_hint_lines = area.height.saturating_sub(4).max(1);
+    let bottom_height = crate::widgets::hint_panel::hint_panel_height(&bottom_text, area.width, max_hint_lines);
+    let (list_area, bottom_area) = if area.height > bottom_height + 1 {
+        let rows = Layout::default().direction(Direction::Vertical).constraints([Constraint::Min(1), Constraint::Length(bottom_height)]).split(area);
         (rows[0], Some(rows[1]))
     } else {
         (area, None)
@@ -464,11 +470,60 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, config: &SearchTool
     let offset = crate::widgets::scroll_list::render(frame, list_area, items, focused.then_some(view.selected));
     regions.settings_field_rows.extend(crate::mouse::list_row_regions(list_area, offset, FIELDS.len()));
 
-    if let (Some(area), Some(error)) = (error_area, validation_error) {
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(format!("Regex error: {error}"), theme.status_style(StatusTone::Danger)))),
-            area,
-        );
+    if let Some(bottom_area) = bottom_area {
+        frame.render_widget(Paragraph::new(Line::from(Span::styled(bottom_text, bottom_style))).wrap(ratatui::widgets::Wrap { trim: true }), bottom_area);
+    }
+}
+
+/// One-line description shown in the bottom Hint panel while this field is
+/// selected (superseded by the live regex-validation error, when one is
+/// present) - same purpose as `toolboxes/bushing/model.rs::field_hint`.
+/// This toolbox keeps `FIELDS`'s existing flat, index-based structure
+/// rather than adopting the `Header`-row grouping the four engineering
+/// toolboxes use: `Section` (Fields/Recents/Presets) already gives this
+/// screen real navigational structure the others lack, and `FIELDS` is
+/// read by raw index from five separate call sites
+/// (`EXTENSIONS_FIELD`, `field_value_string`, `apply_text_edit`,
+/// `apply_toggle`, `display_value`) - inserting non-selectable rows into
+/// that same index space would require reworking every one of them for a
+/// smaller benefit than the ~9-45-field engineering toolboxes get from
+/// grouping solver parameters. A static per-field Hint still adds real
+/// value on its own, so that part is implemented; the `Header` dividers are
+/// deliberately not.
+fn field_hint(index: usize) -> &'static str {
+    match index {
+        0 => "Root folder to search recursively.",
+        1 => "Additional root folders to search alongside the main path, comma-separated.",
+        2 => "Keywords/phrases to match, comma-separated (or one regex per Use Regex).",
+        3 => "Keywords/phrases that exclude an otherwise-matching file, comma-separated.",
+        4 => "How Filters are combined - match any filter, match all filters, or proximity (all filters within N lines of each other).",
+        5 => "For Proximity match mode: how many lines apart matched filters may be and still count as one match.",
+        6 => "Treat each filter as a regular expression instead of a literal/whole-word match.",
+        7 => "Require filters to match whole words only, not substrings within a larger word.",
+        8 => "Which folders Exclude filters apply to - just filenames, or the full path.",
+        9 => "Which file extensions to search - blank searches the built-in default catalog; Enter opens a scanned per-extension checkbox picker.",
+        10 => "Folder names to skip entirely during the recursive walk, comma-separated.",
+        11 => "Include hidden files/folders (dotfiles on Unix, the Hidden attribute on Windows) in the search.",
+        12 => "Skip any file larger than this size - keeps a single huge file from dominating scan time.",
+        13 => "How results are organized in the report - by file, by filter, or ungrouped.",
+        14 => "Folder the HTML/CSV/JSON report is written to.",
+        15 => "Base filename for the generated report (before its extension).",
+        16 => "Generate the HTML report.",
+        17 => "Generate a CSV export alongside the report.",
+        18 => "Generate a JSON export alongside the report.",
+        19 => "Open the generated report automatically when the search finishes.",
+        20 => "Search files concurrently rather than one at a time.",
+        21 => "Maximum concurrent file-processing tasks for ordinary files.",
+        22 => "Maximum concurrent tasks for heavy formats (PDF/archive extraction) - kept lower than Throttle Limit since these cost more per file.",
+        23 => "Where the fast re-search index's own cache file lives on disk.",
+        24 => "Preview which files would be searched without actually reading/matching their contents.",
+        25 => "Give up on a single PDF after this many seconds rather than let one huge/corrupt file stall the whole run.",
+        26 => "Run OCR on scanned (image-only) PDF pages that have no extractable text layer - slower, but finds text a scan alone would miss.",
+        27 => "Give up on any single file after this many seconds, PDFs included (in addition to the PDF-specific timeout above).",
+        28 => "How many times to retry a file after a transient read/extraction failure before giving up on it.",
+        29 => "Build/use the fast Tantivy-backed re-search index for near-instant repeat searches of the same folder.",
+        30 => "Where the fast re-search index itself is stored on disk.",
+        _ => "",
     }
 }
 
@@ -1070,6 +1125,57 @@ mod tests {
         match &effects[0] {
             Effect::ScanExtensions { root, .. } => assert_eq!(root, &config.search_path),
             other => panic!("expected ScanExtensions, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn every_field_has_a_nonempty_hint() {
+        for i in 0..FIELDS.len() {
+            assert!(!field_hint(i).is_empty(), "field {i} (`{}`) has no hint text", FIELDS[i].label);
+        }
+    }
+
+    /// Regression test for the hint-truncation bug (see `bushing/view.rs`'s
+    /// twin test): selects the field with the single longest hint and
+    /// asserts every word of it appears somewhere in the rendered buffer,
+    /// across a range of widths including narrow ones.
+    #[test]
+    fn the_longest_hint_is_never_truncated_across_a_range_of_widths() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let (longest_index, longest_hint) = (0..FIELDS.len()).map(|i| (i, field_hint(i))).max_by_key(|(_, hint)| hint.len()).expect("at least one field");
+        assert!(!longest_hint.is_empty());
+
+        for width in [40u16, 50, 60, 84, 98, 140] {
+            let view = SettingsView { selected: longest_index, ..Default::default() };
+            let config = SearchToolConfig::default();
+            let backend = TestBackend::new(width, 40);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let mut regions = crate::mouse::MouseRegions::default();
+            terminal.draw(|f| draw(f, f.area(), &Theme::default_palette(), &config, &[], &[], &view, &mut regions)).unwrap();
+
+            let buffer = terminal.backend().buffer().clone();
+            let rendered: String = (0..buffer.area.height).map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>() + "\n").collect();
+
+            for word in longest_hint.split_whitespace() {
+                assert!(rendered.contains(word), "word `{word}` from the longest hint missing at width {width}:\n{rendered}");
+            }
+        }
+    }
+
+    #[test]
+    fn draw_does_not_panic_at_degenerate_sizes() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let view = SettingsView::default();
+        let config = SearchToolConfig::default();
+        for (w, h) in [(0u16, 0u16), (1, 1), (40, 0), (0, 10)] {
+            let backend = TestBackend::new(w.max(1), h.max(1));
+            let mut terminal = Terminal::new(backend).unwrap();
+            let mut regions = crate::mouse::MouseRegions::default();
+            terminal.draw(|f| draw(f, ratatui::layout::Rect { x: 0, y: 0, width: w, height: h }, &Theme::default_palette(), &config, &[], &[], &view, &mut regions)).unwrap();
         }
     }
 }

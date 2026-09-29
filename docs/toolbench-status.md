@@ -108,16 +108,26 @@ writing:
   stress state at three sections, service-load/separation/slip checks, and
   both spec-required uncertainty engines (deterministic worst-case corner
   search and seeded Monte Carlo sampling, over the same five tolerance
-  bounds) - deliberately scoped without advanced per-thread spring-coupled
-  load-distribution modeling, labeled optional/advanced in the toolbox's own
-  originating spec (see `fastened-joint-solver/src/lib.rs`'s doc comment).
-  An AN3-AN20 aerospace bolt picker auto-fills thread geometry from ASME
-  B1.1 basic-dimension formulas; Bushing Workbench's own Bore Diameter field
-  is similarly reamer-catalog-driven (`toolboxes/bushing/reamer_picker.rs`)
+  bounds), the advanced per-thread spring-coupled load-distribution solve
+  (opt-in, validated against the continuum closed-form solution), separate
+  head-side/nut-side bearing geometry (`Tightening From` now genuinely
+  changes the solve), embedment/settlement, and a thread-shear margin check
+  - one deliberate cut remains (locking-feature prevailing torque as a
+  function of rotation, labeled a future enhancement in the toolbox's own
+  originating spec - see `fastened-joint-solver/src/lib.rs`'s doc comment).
+  A sectioned bolt picker covers five sourced catalogs - AN3-AN20, NAS
+  tension/shear bolts, NAS machine bolts, MS21250, and Hi-Lok HL18 pins
+  (UNJ thread form, reduced major diameter) - auto-filling thread geometry
+  from the correct ASME B1.1 (UN/UNF) or ASME B1.15 (UNJ) basic-dimension
+  formulas per catalog; Bushing Workbench's own Bore Diameter field is
+  similarly reamer-catalog-driven (`toolboxes/bushing/reamer_picker.rs`)
   rather than a free-typed decimal with a separate "nearest reamer" lookup.
-  Both Bushing Workbench's and Preload Analysis's field lists are grouped
-  under section headers with a bottom per-field "Hint" panel. All five
-  toolboxes are unit/integration-tested.
+  All four engineering toolboxes' (Bushing/Fastener Holes/Pressure Vessel
+  Analyzer/Preload Analysis) field lists are grouped under section headers
+  with a bottom per-field "Hint" panel, dynamically sized to the wrapped
+  hint text; Search Settings keeps its existing flat, tab-grouped field
+  list but gained the same per-field Hint panel. All five toolboxes are
+  unit/integration-tested.
 - Duplicate Finder, Batch Rename, and Log Analyzer are inert rail
   placeholders only - nothing behind them is implemented yet.
 - Both keyboard and mouse navigation are supported (click/scroll on the
