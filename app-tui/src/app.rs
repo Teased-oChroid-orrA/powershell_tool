@@ -8,15 +8,19 @@
 //! either existing GUI head's own pattern (see the migration plan's Event
 //! and State Model section).
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use std::time::{Duration, Instant};
+
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use search_core::models::{SearchRunResult, SearchSettings};
 use search_core::orchestrator::OrchestratorError;
 
 use crate::command_palette::{Command, CommandPalette};
 use crate::modal::{ConfirmAction, ConfirmDialog, ModalState};
+use crate::mouse::{self, ClickTarget, MouseRegions};
 use crate::nav::{FocusArea, FocusState, NavigationState, ToolId};
 use crate::notifications::NotificationQueue;
 use crate::theme::{StatusTone, Theme};
+use crate::toolboxes::fastener_hole::{self, FastenerHoleState};
 use crate::toolboxes::search::{self, SearchToolState};
 
 pub struct AppState {
@@ -27,6 +31,12 @@ pub struct AppState {
     pub notifications: NotificationQueue,
     pub should_quit: bool,
     pub search: SearchToolState,
+    pub fastener_hole: FastenerHoleState,
+    /// What the last left-click landed on and when - compared against the
+    /// next click to detect a double-click (see `mouse` module doc and
+    /// `handle_mouse` below). Not persisted, not meaningful outside the
+    /// live session.
+    pub last_click: Option<(Instant, ClickTarget)>,
 }
 
 impl Default for AppState {
@@ -39,6 +49,8 @@ impl Default for AppState {
             notifications: NotificationQueue::default(),
             should_quit: false,
             search: SearchToolState::default(),
+            fastener_hole: FastenerHoleState::default(),
+            last_click: None,
         }
     }
 }
@@ -49,6 +61,7 @@ impl AppState {
     pub fn workspace_pane_count(&self) -> u8 {
         match self.nav.active_tool {
             ToolId::Search => search::PANE_COUNT,
+            ToolId::FastenerHole => fastener_hole::PANE_COUNT,
             _ => 0,
         }
     }
@@ -135,7 +148,24 @@ pub fn handle_event(state: &mut AppState, event: AppEvent) -> Vec<Effect> {
                         outcome.indexed_count, outcome.skipped_count, outcome.failed_count
                     );
                     state.search.index_run.last_error = None;
-                    state.notifications.push("Index build finished", StatusTone::Success);
+                    if outcome.failed_count > 0 {
+                        // `failed_count` alone told the user something broke but
+                        // never why - surface the actual per-file reason (first
+                        // failure is usually representative of a systemic cause:
+                        // permissions, AV lock, unsupported format) instead of
+                        // leaving them to guess.
+                        let detail = outcome
+                            .failed_files
+                            .first()
+                            .map(|f| format!(" - e.g. {f}"))
+                            .unwrap_or_default();
+                        state.notifications.push(
+                            format!("Index build: {} file(s) failed{detail}", outcome.failed_count),
+                            StatusTone::Warning,
+                        );
+                    } else {
+                        state.notifications.push("Index build finished", StatusTone::Success);
+                    }
                 }
                 Err(e) => {
                     state.search.index_run.last_error = Some(e.to_string());
@@ -209,12 +239,21 @@ fn handle_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     // focused, so e.g. typing "quit" into the search path field never
     // triggers the global `q` quit binding. See `toolboxes::search::handle_key`.
     if let FocusArea::Workspace(pane) = state.focus.area {
-        if state.nav.active_tool == ToolId::Search {
-            let (consumed, effects) =
-                search::handle_key(&mut state.search, &mut state.notifications, pane, key);
-            if consumed {
-                return effects;
+        match state.nav.active_tool {
+            ToolId::Search => {
+                let (consumed, effects) =
+                    search::handle_key(&mut state.search, &mut state.notifications, pane, key);
+                if consumed {
+                    return effects;
+                }
             }
+            ToolId::FastenerHole => {
+                let (consumed, effects) = fastener_hole::handle_key(&mut state.fastener_hole, key);
+                if consumed {
+                    return effects;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -285,10 +324,267 @@ fn handle_modal_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     Vec::new()
 }
 
+const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(400);
+
+fn synthetic_key(code: KeyCode) -> KeyEvent {
+    KeyEvent { code, modifiers: KeyModifiers::NONE, kind: KeyEventKind::Press, state: KeyEventState::NONE }
+}
+
+/// True if this click landed on the same logical target (not just the same
+/// pixel) as the immediately preceding one, within `DOUBLE_CLICK_WINDOW` -
+/// and always records this click as the new "last click" regardless.
+/// Comparing by `ClickTarget` rather than raw coordinates means a human's
+/// slightly-different click position on the same row still counts.
+fn is_double_click(last_click: &mut Option<(Instant, ClickTarget)>, target: ClickTarget) -> bool {
+    let now = Instant::now();
+    let is_double =
+        matches!(last_click, Some((t, last_target)) if *last_target == target && now.duration_since(*t) < DOUBLE_CLICK_WINDOW);
+    *last_click = Some((now, target));
+    is_double
+}
+
+/// Mouse event routing - sibling to `handle_key`, same `Effect`-returning
+/// pure-function contract, called directly from `main.rs` for
+/// `Event::Mouse` (see that module's doc comment for why this bypasses
+/// `handle_event`). `regions` is the hit-test geometry the most recent
+/// render published (`widgets::shell::draw` via `mouse::MouseRegions`).
+pub fn handle_mouse(state: &mut AppState, regions: &MouseRegions, event: MouseEvent) -> Vec<Effect> {
+    let (col, row) = (event.column, event.row);
+    match event.kind {
+        MouseEventKind::Down(MouseButton::Left) => handle_click(state, regions, col, row),
+        MouseEventKind::ScrollUp => {
+            handle_scroll(state, regions, col, row, -1);
+            Vec::new()
+        }
+        MouseEventKind::ScrollDown => {
+            handle_scroll(state, regions, col, row, 1);
+            Vec::new()
+        }
+        // Right/middle click, drag, and plain movement have no bound
+        // action in this phase - explicitly ignored rather than falling
+        // through to an unrelated handler.
+        _ => Vec::new(),
+    }
+}
+
+fn handle_click(state: &mut AppState, regions: &MouseRegions, col: u16, row: u16) -> Vec<Effect> {
+    // Modal input takes priority over every other target while open, same
+    // as `handle_key`'s own priority order.
+    if state.modal.is_open() {
+        return handle_modal_click(state, regions, col, row);
+    }
+
+    // Toolbox-local overlay (not a global `ModalState`) - takes priority
+    // over the rail/workspace behind it while open, same as a modal would.
+    if state.search.extension_picker.open {
+        if let Some(i) = mouse::hit(&regions.extension_rows, col, row) {
+            state.search.extension_picker.cursor = i;
+            search::extension_picker::handle_key(&mut state.search.extension_picker, synthetic_key(KeyCode::Char(' ')));
+        }
+        return Vec::new();
+    }
+
+    if let Some(tool) = mouse::hit(&regions.rail, col, row) {
+        state.nav.activate(tool);
+        state.focus.area = FocusArea::Rail;
+        return Vec::new();
+    }
+
+    match state.nav.active_tool {
+        ToolId::Search => handle_search_click(state, regions, col, row),
+        ToolId::FastenerHole => handle_fastener_click(state, regions, col, row),
+        _ => Vec::new(),
+    }
+}
+
+fn handle_modal_click(state: &mut AppState, regions: &MouseRegions, col: u16, row: u16) -> Vec<Effect> {
+    match &state.modal {
+        ModalState::Palette(_) => {
+            let Some(i) = mouse::hit(&regions.palette_rows, col, row) else {
+                return Vec::new();
+            };
+            if let ModalState::Palette(palette) = &mut state.modal {
+                palette.selected = i;
+            }
+            // A command palette is menu-like - a single click executes it,
+            // the same as pressing Enter on the already-selected row.
+            handle_modal_key(state, synthetic_key(KeyCode::Enter))
+        }
+        ModalState::Confirm(_) => {
+            if regions.confirm_yes.is_some_and(|r| mouse::contains(r, col, row)) {
+                return handle_modal_key(state, synthetic_key(KeyCode::Char('y')));
+            }
+            if regions.confirm_no.is_some_and(|r| mouse::contains(r, col, row)) {
+                return handle_modal_key(state, synthetic_key(KeyCode::Char('n')));
+            }
+            Vec::new()
+        }
+        ModalState::Help => {
+            // No interactive elements inside - any click anywhere closes it,
+            // same as Esc/`?`.
+            if regions.help_overlay.is_some_and(|r| mouse::contains(r, col, row)) {
+                return handle_modal_key(state, synthetic_key(KeyCode::Esc));
+            }
+            Vec::new()
+        }
+        ModalState::None => Vec::new(),
+    }
+}
+
+fn handle_search_click(state: &mut AppState, regions: &MouseRegions, col: u16, row: u16) -> Vec<Effect> {
+    match state.search.screen {
+        search::ToolboxScreen::Run => {
+            if let Some(i) = mouse::hit(&regions.results_rows, col, row) {
+                state.focus.area = FocusArea::Workspace(search::PANE_RESULTS);
+                state.search.selected_result = i;
+                if is_double_click(&mut state.last_click, ClickTarget::ResultRow(i)) {
+                    let (_, effects) = search::handle_key(
+                        &mut state.search,
+                        &mut state.notifications,
+                        search::PANE_RESULTS,
+                        synthetic_key(KeyCode::Enter),
+                    );
+                    return effects;
+                }
+                return Vec::new();
+            }
+            if let Some(pane) = mouse::hit(&regions.workspace_panes, col, row) {
+                state.focus.area = FocusArea::Workspace(pane);
+            }
+            Vec::new()
+        }
+        search::ToolboxScreen::Settings => handle_settings_click(state, regions, col, row),
+    }
+}
+
+fn handle_settings_click(state: &mut AppState, regions: &MouseRegions, col: u16, row: u16) -> Vec<Effect> {
+    use crate::toolboxes::search::settings_view::Section;
+
+    if let Some(i) = mouse::hit(&regions.settings_field_rows, col, row) {
+        state.search.settings.section = Section::Fields;
+        state.search.settings.selected = i;
+        if is_double_click(&mut state.last_click, ClickTarget::SettingsFieldRow(i)) {
+            let (_, effects) = search::settings_view::handle_key(
+                &mut state.search.settings,
+                &mut state.search.config,
+                &state.search.recent_searches,
+                &mut state.search.saved_presets,
+                synthetic_key(KeyCode::Enter),
+            );
+            return effects;
+        }
+        return Vec::new();
+    }
+    if let Some(i) = mouse::hit(&regions.recents_rows, col, row) {
+        state.search.settings.section = Section::Recents;
+        state.search.settings.recent_selected = i;
+        if is_double_click(&mut state.last_click, ClickTarget::RecentRow(i)) {
+            let (_, effects) = search::settings_view::handle_key(
+                &mut state.search.settings,
+                &mut state.search.config,
+                &state.search.recent_searches,
+                &mut state.search.saved_presets,
+                synthetic_key(KeyCode::Enter),
+            );
+            return effects;
+        }
+        return Vec::new();
+    }
+    if let Some(i) = mouse::hit(&regions.presets_rows, col, row) {
+        state.search.settings.section = Section::Presets;
+        state.search.settings.preset_selected = i;
+        if is_double_click(&mut state.last_click, ClickTarget::PresetRow(i)) {
+            let (_, effects) = search::settings_view::handle_key(
+                &mut state.search.settings,
+                &mut state.search.config,
+                &state.search.recent_searches,
+                &mut state.search.saved_presets,
+                synthetic_key(KeyCode::Enter),
+            );
+            return effects;
+        }
+        return Vec::new();
+    }
+    if let Some(section) = mouse::hit(&regions.settings_section_panes, col, row) {
+        state.search.settings.section = section;
+    }
+    Vec::new()
+}
+
+fn handle_fastener_click(state: &mut AppState, regions: &MouseRegions, col: u16, row: u16) -> Vec<Effect> {
+    if let Some(i) = mouse::hit(&regions.fastener_rows, col, row) {
+        state.focus.area = FocusArea::Workspace(fastener_hole::PANE_MAIN);
+        state.fastener_hole.selected = i;
+        if is_double_click(&mut state.last_click, ClickTarget::FastenerRow(i)) {
+            let (_, effects) = fastener_hole::handle_key(&mut state.fastener_hole, synthetic_key(KeyCode::Enter));
+            return effects;
+        }
+        return Vec::new();
+    }
+    if let Some(pane) = mouse::hit(&regions.workspace_panes, col, row) {
+        state.focus.area = FocusArea::Workspace(pane);
+    }
+    Vec::new()
+}
+
+/// Scroll wheel routing: moves whatever list the cursor is currently over
+/// by one row, reusing each toolbox's existing Up/Down keyboard handling
+/// verbatim (via a synthetic key) rather than re-deriving the same
+/// wrap/clamp logic a third time. Never produces an `Effect` - none of the
+/// reused Up/Down arms do either.
+fn handle_scroll(state: &mut AppState, regions: &MouseRegions, col: u16, row: u16, delta: i32) {
+    let key = synthetic_key(if delta < 0 { KeyCode::Up } else { KeyCode::Down });
+
+    if state.modal.is_open() {
+        if let ModalState::Palette(palette) = &mut state.modal {
+            if mouse::hit(&regions.palette_rows, col, row).is_some() {
+                palette.move_selection(delta);
+            }
+        }
+        return;
+    }
+
+    if state.search.extension_picker.open {
+        if mouse::hit(&regions.extension_rows, col, row).is_some() {
+            search::extension_picker::handle_key(&mut state.search.extension_picker, key);
+        }
+        return;
+    }
+
+    match state.nav.active_tool {
+        ToolId::Search => {
+            if mouse::hit(&regions.results_rows, col, row).is_some() {
+                search::handle_key(&mut state.search, &mut state.notifications, search::PANE_RESULTS, key);
+            } else if mouse::hit(&regions.settings_field_rows, col, row).is_some()
+                || mouse::hit(&regions.recents_rows, col, row).is_some()
+                || mouse::hit(&regions.presets_rows, col, row).is_some()
+            {
+                search::settings_view::handle_key(
+                    &mut state.search.settings,
+                    &mut state.search.config,
+                    &state.search.recent_searches,
+                    &mut state.search.saved_presets,
+                    key,
+                );
+            }
+        }
+        ToolId::FastenerHole => {
+            if mouse::hit(&regions.fastener_rows, col, row).is_some() {
+                fastener_hole::handle_key(&mut state.fastener_hole, key);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn execute_command(state: &mut AppState, cmd: Command) -> Vec<Effect> {
     match cmd {
         Command::SwitchToSearch => {
             state.nav.activate(ToolId::Search);
+            Vec::new()
+        }
+        Command::SwitchToFastenerHole => {
+            state.nav.activate(ToolId::FastenerHole);
             Vec::new()
         }
         Command::SwitchToBushing => {
@@ -570,5 +866,279 @@ mod tests {
         );
         assert!(!state.search.index_run.is_building);
         assert!(state.search.index_run.last_error.is_none());
+    }
+
+    // -------------------------------------------------------------
+    // Mouse navigation
+    // -------------------------------------------------------------
+
+    use crate::mouse::MouseRegions;
+    use ratatui::layout::Rect;
+
+    fn click(col: u16, row: u16) -> MouseEvent {
+        MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: col, row, modifiers: KeyModifiers::NONE }
+    }
+
+    fn scroll(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
+        MouseEvent { kind, column: col, row, modifiers: KeyModifiers::NONE }
+    }
+
+    #[test]
+    fn clicking_a_rail_item_switches_the_active_tool() {
+        let mut state = AppState::default();
+        let mut regions = MouseRegions::default();
+        regions.rail.push((Rect::new(0, 0, 10, 1), ToolId::Search));
+        regions.rail.push((Rect::new(0, 1, 10, 1), ToolId::FastenerHole));
+
+        handle_mouse(&mut state, &regions, click(2, 1));
+        assert_eq!(state.nav.active_tool, ToolId::FastenerHole);
+        assert_eq!(state.focus.area, FocusArea::Rail);
+    }
+
+    #[test]
+    fn clicking_a_disabled_rail_item_is_a_no_op() {
+        let mut state = AppState::default();
+        let mut regions = MouseRegions::default();
+        regions.rail.push((Rect::new(0, 0, 10, 1), ToolId::Bushing));
+
+        handle_mouse(&mut state, &regions, click(2, 0));
+        assert_eq!(state.nav.active_tool, ToolId::Search, "activate() already ignores disabled tools");
+    }
+
+    #[test]
+    fn clicking_outside_every_region_never_panics_and_changes_nothing() {
+        let mut state = AppState::default();
+        let regions = MouseRegions::default();
+        let before = state.nav.active_tool;
+        handle_mouse(&mut state, &regions, click(500, 500));
+        assert_eq!(state.nav.active_tool, before);
+    }
+
+    #[test]
+    fn clicking_a_result_row_selects_it_without_opening() {
+        let mut state = AppState::default();
+        state.search.run.results = vec![
+            search_core::models::FileSearchResult {
+                full_name: "a.txt".into(),
+                status: search_core::models::FileSearchStatus::Hit,
+                hits: Vec::new(),
+                created: chrono::Local::now(),
+                modified: chrono::Local::now(),
+                file_length: 0,
+                lines_cache: Vec::new(),
+                total_line_count: 0,
+                proximity_min_range: None,
+                low_confidence_pdf: false,
+                error_message: None,
+            },
+            search_core::models::FileSearchResult {
+                full_name: "b.txt".into(),
+                status: search_core::models::FileSearchStatus::Hit,
+                hits: Vec::new(),
+                created: chrono::Local::now(),
+                modified: chrono::Local::now(),
+                file_length: 0,
+                lines_cache: Vec::new(),
+                total_line_count: 0,
+                proximity_min_range: None,
+                low_confidence_pdf: false,
+                error_message: None,
+            },
+        ];
+        let mut regions = MouseRegions::default();
+        regions.results_rows.push((Rect::new(0, 0, 20, 1), 0));
+        regions.results_rows.push((Rect::new(0, 1, 20, 1), 1));
+
+        let effects = handle_mouse(&mut state, &regions, click(5, 1));
+        assert!(effects.is_empty(), "a single click selects, it doesn't open");
+        assert_eq!(state.search.selected_result, 1);
+        assert_eq!(state.focus.area, FocusArea::Workspace(search::PANE_RESULTS));
+    }
+
+    #[test]
+    fn double_clicking_a_result_row_opens_it() {
+        let mut state = AppState::default();
+        state.search.run.results = vec![search_core::models::FileSearchResult {
+            full_name: "a.txt".into(),
+            status: search_core::models::FileSearchStatus::Hit,
+            hits: Vec::new(),
+            created: chrono::Local::now(),
+            modified: chrono::Local::now(),
+            file_length: 0,
+            lines_cache: Vec::new(),
+            total_line_count: 0,
+            proximity_min_range: None,
+            low_confidence_pdf: false,
+            error_message: None,
+        }];
+        let mut regions = MouseRegions::default();
+        regions.results_rows.push((Rect::new(0, 0, 20, 1), 0));
+
+        handle_mouse(&mut state, &regions, click(5, 0));
+        let effects = handle_mouse(&mut state, &regions, click(5, 0));
+        assert_eq!(effects.len(), 1);
+        assert!(matches!(effects[0], Effect::OpenPath(ref p) if p == "a.txt"));
+    }
+
+    #[test]
+    fn a_slow_second_click_is_not_treated_as_a_double_click() {
+        let mut state = AppState::default();
+        state.search.run.results = vec![search_core::models::FileSearchResult {
+            full_name: "a.txt".into(),
+            status: search_core::models::FileSearchStatus::Hit,
+            hits: Vec::new(),
+            created: chrono::Local::now(),
+            modified: chrono::Local::now(),
+            file_length: 0,
+            lines_cache: Vec::new(),
+            total_line_count: 0,
+            proximity_min_range: None,
+            low_confidence_pdf: false,
+            error_message: None,
+        }];
+        let mut regions = MouseRegions::default();
+        regions.results_rows.push((Rect::new(0, 0, 20, 1), 0));
+
+        handle_mouse(&mut state, &regions, click(5, 0));
+        // Simulate real elapsed time by back-dating the recorded click.
+        if let Some((t, _)) = state.last_click.as_mut() {
+            *t -= DOUBLE_CLICK_WINDOW * 2;
+        }
+        let effects = handle_mouse(&mut state, &regions, click(5, 0));
+        assert!(effects.is_empty(), "clicks far apart in time must not count as a double-click");
+    }
+
+    #[test]
+    fn clicking_a_settings_pane_switches_section_without_a_row_hit() {
+        let mut state = AppState::default();
+        state.nav.activate(ToolId::Search);
+        state.search.screen = search::ToolboxScreen::Settings;
+        let mut regions = MouseRegions::default();
+        regions.settings_section_panes.push((Rect::new(0, 0, 20, 5), search::settings_view::Section::Recents));
+
+        handle_mouse(&mut state, &regions, click(5, 2));
+        assert_eq!(state.search.settings.section, search::settings_view::Section::Recents);
+    }
+
+    #[test]
+    fn double_clicking_a_settings_field_row_starts_editing() {
+        let mut state = AppState::default();
+        state.nav.activate(ToolId::Search);
+        state.search.screen = search::ToolboxScreen::Settings;
+        let mut regions = MouseRegions::default();
+        regions.settings_field_rows.push((Rect::new(0, 0, 20, 1), 0)); // "Search path" - a Text field
+
+        handle_mouse(&mut state, &regions, click(5, 0));
+        handle_mouse(&mut state, &regions, click(5, 0));
+        assert!(state.search.settings.editing);
+    }
+
+    #[test]
+    fn clicking_confirm_yes_quits_and_confirm_no_cancels() {
+        let mut state = AppState::default();
+        state.modal = ModalState::Confirm(ConfirmDialog {
+            title: "Quit?".into(),
+            message: "still running".into(),
+            on_confirm: ConfirmAction::Quit,
+        });
+        let mut regions = MouseRegions::default();
+        regions.confirm_no = Some(Rect::new(0, 0, 8, 1));
+
+        handle_mouse(&mut state, &regions, click(2, 0));
+        assert!(!state.modal.is_open(), "clicking No dismisses the dialog");
+        assert!(!state.should_quit, "clicking No must not quit the app");
+
+        state.modal = ModalState::Confirm(ConfirmDialog {
+            title: "Quit?".into(),
+            message: "still running".into(),
+            on_confirm: ConfirmAction::Quit,
+        });
+        regions.confirm_no = None;
+        regions.confirm_yes = Some(Rect::new(0, 0, 9, 1));
+        handle_mouse(&mut state, &regions, click(2, 0));
+        assert!(state.should_quit);
+    }
+
+    #[test]
+    fn clicking_anywhere_on_the_help_overlay_closes_it() {
+        let mut state = AppState::default();
+        state.modal = ModalState::Help;
+        let mut regions = MouseRegions::default();
+        regions.help_overlay = Some(Rect::new(0, 0, 80, 24));
+
+        handle_mouse(&mut state, &regions, click(40, 12));
+        assert!(!state.modal.is_open());
+    }
+
+    #[test]
+    fn clicking_an_extension_row_toggles_its_selection() {
+        let mut state = AppState::default();
+        state.search.extension_picker =
+            search::extension_picker::ExtensionPicker::open_with(vec![".txt".to_string(), ".rs".to_string()], None);
+        let mut regions = MouseRegions::default();
+        regions.extension_rows.push((Rect::new(0, 0, 10, 1), 0));
+
+        handle_mouse(&mut state, &regions, click(2, 0));
+        assert!(state.search.extension_picker.selected.contains(".txt"));
+    }
+
+    #[test]
+    fn scrolling_over_the_results_list_moves_selection() {
+        let mut state = AppState::default();
+        state.search.run.results = vec![
+            search_core::models::FileSearchResult {
+                full_name: "a.txt".into(),
+                status: search_core::models::FileSearchStatus::Hit,
+                hits: Vec::new(),
+                created: chrono::Local::now(),
+                modified: chrono::Local::now(),
+                file_length: 0,
+                lines_cache: Vec::new(),
+                total_line_count: 0,
+                proximity_min_range: None,
+                low_confidence_pdf: false,
+                error_message: None,
+            },
+            search_core::models::FileSearchResult {
+                full_name: "b.txt".into(),
+                status: search_core::models::FileSearchStatus::Hit,
+                hits: Vec::new(),
+                created: chrono::Local::now(),
+                modified: chrono::Local::now(),
+                file_length: 0,
+                lines_cache: Vec::new(),
+                total_line_count: 0,
+                proximity_min_range: None,
+                low_confidence_pdf: false,
+                error_message: None,
+            },
+        ];
+        let mut regions = MouseRegions::default();
+        regions.results_rows.push((Rect::new(0, 0, 20, 1), 0));
+        regions.results_rows.push((Rect::new(0, 1, 20, 1), 1));
+
+        handle_mouse(&mut state, &regions, scroll(MouseEventKind::ScrollDown, 5, 0));
+        assert_eq!(state.search.selected_result, 1);
+    }
+
+    #[test]
+    fn scrolling_outside_any_list_is_a_no_op() {
+        let mut state = AppState::default();
+        state.search.run.results = vec![search_core::models::FileSearchResult {
+            full_name: "a.txt".into(),
+            status: search_core::models::FileSearchStatus::Hit,
+            hits: Vec::new(),
+            created: chrono::Local::now(),
+            modified: chrono::Local::now(),
+            file_length: 0,
+            lines_cache: Vec::new(),
+            total_line_count: 0,
+            proximity_min_range: None,
+            low_confidence_pdf: false,
+            error_message: None,
+        }];
+        let regions = MouseRegions::default();
+        handle_mouse(&mut state, &regions, scroll(MouseEventKind::ScrollDown, 5, 0));
+        assert_eq!(state.search.selected_result, 0);
     }
 }

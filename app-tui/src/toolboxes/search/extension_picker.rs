@@ -333,7 +333,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         .split(vertical[1])[1]
 }
 
-pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &ExtensionPicker) {
+pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &ExtensionPicker, regions: &mut crate::mouse::MouseRegions) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -392,7 +392,8 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &ExtensionPi
                 ListItem::new(Line::from(Span::styled(format!("{marker}{checked} {ext}"), style)))
             })
             .collect();
-        crate::widgets::scroll_list::render(frame, list_area, items, Some(picker.cursor));
+        let offset = crate::widgets::scroll_list::render(frame, list_area, items, Some(picker.cursor));
+        regions.extension_rows.extend(crate::mouse::list_row_regions(list_area, offset, visible.len()));
     }
 
     if let Some(area) = filter_area {
@@ -679,10 +680,11 @@ mod tests {
     fn render_at(picker: &ExtensionPicker, width: u16, height: u16) {
         let backend = TestBackend::new(width.max(1), height.max(1));
         let mut terminal = Terminal::new(backend).unwrap();
+        let mut regions = crate::mouse::MouseRegions::default();
         terminal
             .draw(|frame| {
                 let area = Rect { x: 0, y: 0, width, height };
-                render(frame, area, &Theme::default(), picker);
+                render(frame, area, &Theme::default(), picker, &mut regions);
             })
             .unwrap();
     }

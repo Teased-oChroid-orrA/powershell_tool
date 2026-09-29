@@ -13,12 +13,22 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph};
 
+use crate::mouse::MouseRegions;
 use crate::theme::{StatusTone, Theme};
 use crate::widgets::{empty_state, gauge_row, scroll_list};
 
 use super::{index_view, preview, SearchToolState, PANE_FILTERS, PANE_PATH, PANE_RESULTS};
 
-pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &SearchToolState, focused_pane: Option<u8>, tick: u64) {
+#[allow(clippy::too_many_arguments)]
+pub fn draw(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    state: &SearchToolState,
+    focused_pane: Option<u8>,
+    tick: u64,
+    regions: &mut MouseRegions,
+) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -32,8 +42,8 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &SearchToolStat
         ])
         .split(area);
 
-    draw_field(frame, rows[0], theme, "Path", &state.config.search_path, focused_pane == Some(PANE_PATH));
-    draw_field(frame, rows[1], theme, "Filters", &state.config.filters_text, focused_pane == Some(PANE_FILTERS));
+    draw_field(frame, rows[0], theme, "Path", &state.config.search_path, focused_pane == Some(PANE_PATH), PANE_PATH, regions);
+    draw_field(frame, rows[1], theme, "Filters", &state.config.filters_text, focused_pane == Some(PANE_FILTERS), PANE_FILTERS, regions);
     // "s" is only bound while the Results pane has focus (see
     // `toolboxes::search::handle_key`) - typing "s" into Path/Filters must
     // insert a literal character, not open Settings.
@@ -41,13 +51,14 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &SearchToolStat
     draw_gauge(frame, rows[3], theme, state);
     index_view::render_status_line(frame, rows[4], theme, tick, &state.index_run);
     draw_in_flight(frame, rows[5], theme, state);
-    draw_results(frame, rows[6], theme, state, focused_pane == Some(PANE_RESULTS));
+    draw_results(frame, rows[6], theme, state, focused_pane == Some(PANE_RESULTS), regions);
 }
 
-fn draw_field(frame: &mut Frame, area: Rect, theme: &Theme, label: &str, value: &str, focused: bool) {
+fn draw_field(frame: &mut Frame, area: Rect, theme: &Theme, label: &str, value: &str, focused: bool, pane: u8, regions: &mut MouseRegions) {
     let cursor = if focused { Span::styled("_", theme.title_style(true)) } else { Span::raw("") };
     let line = Line::from(vec![Span::styled(format!("{label}: "), theme.title_style(focused)), Span::raw(value), cursor]);
     frame.render_widget(Paragraph::new(line), area);
+    regions.workspace_panes.push((area, pane));
 }
 
 fn draw_run_hint(frame: &mut Frame, area: Rect, theme: &Theme, state: &SearchToolState) {
@@ -106,17 +117,17 @@ fn draw_in_flight(frame: &mut Frame, area: Rect, theme: &Theme, state: &SearchTo
     frame.render_widget(List::new(items), inner);
 }
 
-fn draw_results(frame: &mut Frame, area: Rect, theme: &Theme, state: &SearchToolState, focused: bool) {
+fn draw_results(frame: &mut Frame, area: Rect, theme: &Theme, state: &SearchToolState, focused: bool, regions: &mut MouseRegions) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
         .split(area);
 
-    draw_results_list(frame, cols[0], theme, state, focused);
+    draw_results_list(frame, cols[0], theme, state, focused, regions);
     draw_preview(frame, cols[1], theme, state);
 }
 
-fn draw_results_list(frame: &mut Frame, area: Rect, theme: &Theme, state: &SearchToolState, focused: bool) {
+fn draw_results_list(frame: &mut Frame, area: Rect, theme: &Theme, state: &SearchToolState, focused: bool, regions: &mut MouseRegions) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -124,6 +135,7 @@ fn draw_results_list(frame: &mut Frame, area: Rect, theme: &Theme, state: &Searc
         .title(format!(" Results ({}) ", state.run.results.len()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    regions.workspace_panes.push((area, PANE_RESULTS));
 
     if state.run.results.is_empty() {
         let message = if state.run.is_running {
@@ -158,7 +170,8 @@ fn draw_results_list(frame: &mut Frame, area: Rect, theme: &Theme, state: &Searc
             ListItem::new(Line::from(Span::styled(format!("{marker}{name}  {} {hit_word}", r.hits.len()), style)))
         })
         .collect();
-    scroll_list::render(frame, inner, items, Some(state.selected_result));
+    let offset = scroll_list::render(frame, inner, items, Some(state.selected_result));
+    regions.results_rows.extend(crate::mouse::list_row_regions(inner, offset, state.run.results.len()));
 }
 
 fn draw_preview(frame: &mut Frame, area: Rect, theme: &Theme, state: &SearchToolState) {

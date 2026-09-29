@@ -248,11 +248,11 @@ pub fn handle_key(
                 state.move_selection(1);
                 (true, Vec::new())
             }
-            KeyCode::Char('c') if state.run.is_running && key.modifiers.is_empty() => {
+            KeyCode::Char('c' | 'C') if state.run.is_running && is_plain_char(key) => {
                 request_cancel(state);
                 (true, Vec::new())
             }
-            KeyCode::Char('s') if key.modifiers.is_empty() => {
+            KeyCode::Char('s' | 'S') if is_plain_char(key) => {
                 state.screen = ToolboxScreen::Settings;
                 (true, Vec::new())
             }
@@ -260,7 +260,7 @@ pub fn handle_key(
                 Some(result) => (true, vec![Effect::OpenPath(result.full_name.clone())]),
                 None => (true, Vec::new()),
             },
-            KeyCode::Char('y') if key.modifiers.is_empty() => match state.run.results.get(state.selected_result) {
+            KeyCode::Char('y' | 'Y') if is_plain_char(key) => match state.run.results.get(state.selected_result) {
                 Some(result) => (true, vec![Effect::CopyToClipboard(result.full_name.clone())]),
                 None => (true, Vec::new()),
             },
@@ -269,7 +269,7 @@ pub fn handle_key(
             // than `app/`'s own `open::that(parent)` did on the desktop
             // (see the plan's parity notes); it just opens the parent
             // folder in the OS default handler.
-            KeyCode::Char('r') if key.modifiers.is_empty() => match state.run.results.get(state.selected_result) {
+            KeyCode::Char('r' | 'R') if is_plain_char(key) => match state.run.results.get(state.selected_result) {
                 Some(result) => {
                     let parent = std::path::Path::new(&result.full_name)
                         .parent()
@@ -285,7 +285,7 @@ pub fn handle_key(
             // it - ported behavior from `app/`'s per-row "Export hits"
             // action (`hits_as_text`), now a keybinding since there's no
             // mouse/context-menu in this phase.
-            KeyCode::Char('e') if key.modifiers.is_empty() => match state.run.results.get(state.selected_result) {
+            KeyCode::Char('e' | 'E') if is_plain_char(key) => match state.run.results.get(state.selected_result) {
                 Some(result) => {
                     let contents = model::hits_as_text(result);
                     let stem = std::path::Path::new(&result.full_name)
@@ -309,6 +309,18 @@ pub fn handle_key(
     }
 }
 
+/// True for a character keypress with no Ctrl/Alt held. Shift alone must
+/// still count as "plain" - crossterm reports Shift+s (or a physical key
+/// typed with Caps Lock on) as `Char('S')` with `KeyModifiers::SHIFT` set,
+/// not as `Char('s')` with empty modifiers, so a bare `.is_empty()` guard
+/// silently drops every single-key shortcut whenever Shift/Caps Lock is
+/// involved. Ctrl/Alt combinations are still excluded so e.g. Ctrl+P keeps
+/// reaching the global command-palette binding instead of being consumed
+/// here.
+pub(crate) fn is_plain_char(key: KeyEvent) -> bool {
+    key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT
+}
+
 /// Shared "plain character edits this buffer, everything else falls
 /// through to global bindings" behavior for the two single-line text
 /// fields (Enter is handled by the caller, since it submits rather than
@@ -322,7 +334,7 @@ fn edit_buffer_key(buffer: &mut String, key: KeyEvent) -> Option<bool> {
             buffer.pop();
             Some(true)
         }
-        KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
+        KeyCode::Char(c) if is_plain_char(key) => {
             buffer.push(c);
             Some(true)
         }
@@ -354,6 +366,22 @@ mod tests {
 
     fn ctrl_key(code: KeyCode) -> KeyEvent {
         KeyEvent { code, modifiers: KeyModifiers::CONTROL, kind: KeyEventKind::Press, state: KeyEventState::NONE }
+    }
+
+    fn shift_key(code: KeyCode) -> KeyEvent {
+        KeyEvent { code, modifiers: KeyModifiers::SHIFT, kind: KeyEventKind::Press, state: KeyEventState::NONE }
+    }
+
+    // Regression: crossterm reports Shift+s (or a physical `s` typed with
+    // Caps Lock on) as `Char('S')` with `SHIFT` set, not `Char('s')` with
+    // empty modifiers. `s`/`S` must both open Settings from the Results pane.
+    #[test]
+    fn shift_or_caps_s_opens_settings_same_as_plain_s() {
+        let mut state = SearchToolState::default();
+        let mut notifications = NotificationQueue::default();
+        let (consumed, _) = handle_key(&mut state, &mut notifications, PANE_RESULTS, shift_key(KeyCode::Char('S')));
+        assert!(consumed);
+        assert_eq!(state.screen, ToolboxScreen::Settings);
     }
 
     #[test]

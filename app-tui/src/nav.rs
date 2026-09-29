@@ -7,6 +7,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolId {
     Search,
+    FastenerHole,
     Bushing,
     PressureVessel,
     Dupes,
@@ -19,12 +20,15 @@ impl ToolId {
     /// permanent exclusion (its PINN/AMR dependency would force the same
     /// `windows`-crate workspace-exclusion problem `app-egui` has, see
     /// `app-tui/AGENTS.md`), not an oversight like the other three were.
-    pub const ALL: [ToolId; 6] =
-        [ToolId::Search, ToolId::Bushing, ToolId::PressureVessel, ToolId::Dupes, ToolId::Rename, ToolId::Logs];
+    /// `FastenerHole` has no equivalent in either existing GUI head - it's
+    /// a toolbox unique to this crate, not a ported placeholder.
+    pub const ALL: [ToolId; 7] =
+        [ToolId::Search, ToolId::FastenerHole, ToolId::Bushing, ToolId::PressureVessel, ToolId::Dupes, ToolId::Rename, ToolId::Logs];
 
     pub fn title(self) -> &'static str {
         match self {
             ToolId::Search => "Search Files",
+            ToolId::FastenerHole => "Fastener Holes",
             ToolId::Bushing => "Bushing Workbench",
             ToolId::PressureVessel => "Pressure Vessel Analyzer",
             ToolId::Dupes => "Duplicate Finder",
@@ -33,14 +37,14 @@ impl ToolId {
         }
     }
 
-    /// Only Search Files is migrated in this phase - the others render as
-    /// dimmed "Soon" rail entries, mirroring both existing heads' inert
-    /// placeholder convention (in `app`/`app-egui`, Bushing/PressureVessel
-    /// are real but Dupes/Rename/Logs are themselves still inert
-    /// `PlaceholderTool` entries there too - not a regression specific to
-    /// this crate).
+    /// Search Files and Fastener Holes are migrated in this phase - the
+    /// others render as dimmed "Soon" rail entries, mirroring both existing
+    /// heads' inert placeholder convention (in `app`/`app-egui`, Bushing/
+    /// PressureVessel are real but Dupes/Rename/Logs are themselves still
+    /// inert `PlaceholderTool` entries there too - not a regression
+    /// specific to this crate).
     pub fn enabled(self) -> bool {
-        matches!(self, ToolId::Search)
+        matches!(self, ToolId::Search | ToolId::FastenerHole)
     }
 }
 
@@ -139,14 +143,15 @@ mod tests {
         // `app-egui/` show as inert placeholders - `ALL` must list every
         // variant, `enabled()` must gate them exactly like Bushing/
         // PressureVessel already were.
-        assert_eq!(ToolId::ALL.len(), 6);
+        assert_eq!(ToolId::ALL.len(), 7);
         let titles: Vec<&str> = ToolId::ALL.iter().map(|t| t.title()).collect();
         let mut distinct = titles.clone();
         distinct.sort_unstable();
         distinct.dedup();
         assert_eq!(distinct.len(), titles.len(), "every ToolId must have a distinct title: {titles:?}");
         for tool in ToolId::ALL {
-            assert_eq!(tool.enabled(), tool == ToolId::Search, "{tool:?} enabled state");
+            let expected = matches!(tool, ToolId::Search | ToolId::FastenerHole);
+            assert_eq!(tool.enabled(), expected, "{tool:?} enabled state");
         }
     }
 

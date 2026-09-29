@@ -12,14 +12,17 @@
 //! wires it up.
 
 use std::io;
+use std::io::stdout;
 use std::time::Duration;
 
-use crossterm::event::EventStream;
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream};
+use crossterm::execute;
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use app_tui::app::{handle_event, AppEvent, AppState, Effect};
+use app_tui::app::{handle_event, handle_mouse, AppEvent, AppState, Effect};
+use app_tui::mouse::MouseRegions;
 use app_tui::toolboxes::search::{extension_picker, indexing, persistence, runner};
 use app_tui::widgets::shell;
 
@@ -30,9 +33,32 @@ fn main() -> io::Result<()> {
         .expect("failed to build tokio runtime");
 
     let mut terminal = ratatui::init();
+    enable_mouse_capture_failsafe();
     let result = runtime.block_on(run(&mut terminal));
+    disable_mouse_capture_best_effort();
     ratatui::restore();
     result
+}
+
+/// Enables mouse input and makes sure it can never survive the process -
+/// `ratatui::init()`/`restore()` already chain a panic hook that restores
+/// raw mode/the alternate screen, but they know nothing about mouse capture
+/// since it's never been enabled before now. A terminal left in mouse
+/// capture mode after this process dies prints raw escape sequences into
+/// the user's shell on every subsequent click - this hook (and the
+/// matching explicit disable on normal exit, in `main()`) is what prevents
+/// that, on both the panic path and the ordinary-exit path.
+fn enable_mouse_capture_failsafe() {
+    let _ = execute!(stdout(), EnableMouseCapture);
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(stdout(), DisableMouseCapture);
+        previous_hook(info);
+    }));
+}
+
+fn disable_mouse_capture_best_effort() {
+    let _ = execute!(stdout(), DisableMouseCapture);
 }
 
 async fn run(terminal: &mut ratatui::DefaultTerminal) -> io::Result<()> {
@@ -68,15 +94,27 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> io::Result<()> {
 
     let mut state = AppState::default();
     let mut tick_count: u64 = 0;
+    // Render-derived hit-test scratch, rebuilt every frame by
+    // `shell::draw` - deliberately not part of `AppState` (see
+    // `app_tui::mouse`'s module doc).
+    let mut mouse_regions = MouseRegions::default();
 
-    terminal.draw(|frame| shell::draw(frame, &state, tick_count))?;
+    terminal.draw(|frame| shell::draw(frame, &state, tick_count, &mut mouse_regions))?;
 
     while let Some(event) = rx.recv().await {
         if matches!(event, AppEvent::Tick) {
             tick_count = tick_count.wrapping_add(1);
         }
 
-        let effects = handle_event(&mut state, event);
+        // Mouse events are dispatched directly against the region set the
+        // most recent render just published, bypassing `handle_event`
+        // (whose `AppEvent::Terminal(_) => Vec::new()` catch-all stays the
+        // safe default for anyone else still handing it a raw Mouse event).
+        let effects = if let AppEvent::Terminal(Event::Mouse(mouse_event)) = event {
+            handle_mouse(&mut state, &mouse_regions, mouse_event)
+        } else {
+            handle_event(&mut state, event)
+        };
         for effect in effects {
             execute_effect(&tx, &mut state, effect);
         }
@@ -85,7 +123,7 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> io::Result<()> {
             break;
         }
 
-        terminal.draw(|frame| shell::draw(frame, &state, tick_count))?;
+        terminal.draw(|frame| shell::draw(frame, &state, tick_count, &mut mouse_regions))?;
     }
 
     // Best-effort - a failed settings save is never a reason to interrupt

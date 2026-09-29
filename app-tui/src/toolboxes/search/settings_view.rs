@@ -346,7 +346,7 @@ pub fn handle_key(
             }
             // Save the current live config as a brand-new named preset -
             // ported behavior from `app/`'s `save_current_as_preset`.
-            KeyCode::Char('a') if key.modifiers.is_empty() => {
+            KeyCode::Char('a' | 'A') if super::is_plain_char(key) => {
                 view.naming_preset = true;
                 view.edit_buffer.clear();
                 (true, Vec::new())
@@ -355,14 +355,14 @@ pub fn handle_key(
             // editor with its current name (unlike `a`, which starts
             // blank), committing mutates that preset's `name` rather than
             // pushing a new one.
-            KeyCode::Char('r') if key.modifiers.is_empty() && !presets.is_empty() => {
+            KeyCode::Char('r' | 'R') if super::is_plain_char(key) && !presets.is_empty() => {
                 view.renaming_preset = true;
                 view.edit_buffer = presets[view.preset_selected].name.clone();
                 (true, Vec::new())
             }
             // Delete the selected preset - ported behavior from `app/`'s
             // `delete_preset`.
-            KeyCode::Char('d') if key.modifiers.is_empty() && !presets.is_empty() => {
+            KeyCode::Char('d' | 'D') if super::is_plain_char(key) && !presets.is_empty() => {
                 let removed = view.preset_selected.min(presets.len() - 1);
                 presets.remove(removed);
                 if view.preset_selected > 0 && view.preset_selected >= presets.len() {
@@ -375,6 +375,7 @@ pub fn handle_key(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw(
     frame: &mut Frame,
     area: Rect,
@@ -383,6 +384,7 @@ pub fn draw(
     recents: &[RecentSearch],
     presets: &[SavedPreset],
     view: &SettingsView,
+    regions: &mut crate::mouse::MouseRegions,
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -411,15 +413,18 @@ pub fn draw(
         (inner, None)
     };
 
-    draw_fields(frame, fields_area, theme, config, view);
+    regions.settings_section_panes.push((fields_area, Section::Fields));
+    draw_fields(frame, fields_area, theme, config, view, regions);
 
     if let Some((recents_area, presets_area)) = history_area {
-        draw_recents(frame, recents_area, theme, recents, view);
-        draw_presets(frame, presets_area, theme, presets, view);
+        regions.settings_section_panes.push((recents_area, Section::Recents));
+        regions.settings_section_panes.push((presets_area, Section::Presets));
+        draw_recents(frame, recents_area, theme, recents, view, regions);
+        draw_presets(frame, presets_area, theme, presets, view, regions);
     }
 }
 
-fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, config: &SearchToolConfig, view: &SettingsView) {
+fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, config: &SearchToolConfig, view: &SettingsView, regions: &mut crate::mouse::MouseRegions) {
     // Live regex validation, computed on the same path a real run takes -
     // shown as a reserved bottom line so it doesn't shift the field list
     // around as it appears/disappears.
@@ -456,7 +461,8 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, config: &SearchTool
         })
         .collect();
 
-    crate::widgets::scroll_list::render(frame, list_area, items, focused.then_some(view.selected));
+    let offset = crate::widgets::scroll_list::render(frame, list_area, items, focused.then_some(view.selected));
+    regions.settings_field_rows.extend(crate::mouse::list_row_regions(list_area, offset, FIELDS.len()));
 
     if let (Some(area), Some(error)) = (error_area, validation_error) {
         frame.render_widget(
@@ -466,7 +472,7 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, config: &SearchTool
     }
 }
 
-fn draw_recents(frame: &mut Frame, area: Rect, theme: &Theme, recents: &[RecentSearch], view: &SettingsView) {
+fn draw_recents(frame: &mut Frame, area: Rect, theme: &Theme, recents: &[RecentSearch], view: &SettingsView, regions: &mut crate::mouse::MouseRegions) {
     let focused = view.section == Section::Recents;
     let block = Block::default()
         .borders(Borders::ALL)
@@ -494,10 +500,11 @@ fn draw_recents(frame: &mut Frame, area: Rect, theme: &Theme, recents: &[RecentS
             ListItem::new(Line::from(Span::styled(format!("{marker}{}", recent.label()), style)))
         })
         .collect();
-    crate::widgets::scroll_list::render(frame, inner, items, focused.then_some(view.recent_selected));
+    let offset = crate::widgets::scroll_list::render(frame, inner, items, focused.then_some(view.recent_selected));
+    regions.recents_rows.extend(crate::mouse::list_row_regions(inner, offset, recents.len()));
 }
 
-fn draw_presets(frame: &mut Frame, area: Rect, theme: &Theme, presets: &[SavedPreset], view: &SettingsView) {
+fn draw_presets(frame: &mut Frame, area: Rect, theme: &Theme, presets: &[SavedPreset], view: &SettingsView, regions: &mut crate::mouse::MouseRegions) {
     let focused = view.section == Section::Presets;
     let block = Block::default()
         .borders(Borders::ALL)
@@ -534,7 +541,8 @@ fn draw_presets(frame: &mut Frame, area: Rect, theme: &Theme, presets: &[SavedPr
                 ListItem::new(Line::from(Span::styled(format!("{marker}{}", preset.name), style)))
             })
             .collect();
-        crate::widgets::scroll_list::render(frame, list_area, items, focused.then_some(view.preset_selected));
+        let offset = crate::widgets::scroll_list::render(frame, list_area, items, focused.then_some(view.preset_selected));
+        regions.presets_rows.extend(crate::mouse::list_row_regions(list_area, offset, presets.len()));
     }
 
     if let Some(area) = naming_area {
@@ -725,6 +733,22 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent { code, modifiers: KeyModifiers::NONE, kind: KeyEventKind::Press, state: KeyEventState::NONE }
+    }
+
+    fn shift_key(code: KeyCode) -> KeyEvent {
+        KeyEvent { code, modifiers: KeyModifiers::SHIFT, kind: KeyEventKind::Press, state: KeyEventState::NONE }
+    }
+
+    // Regression: crossterm reports Shift+a (or Caps Lock) as `Char('A')`
+    // with `SHIFT` set, not `Char('a')` with empty modifiers - same class
+    // of bug as Shift+S failing to open Settings (see search/mod.rs).
+    #[test]
+    fn shift_or_caps_a_starts_naming_a_new_preset_same_as_plain_a() {
+        let mut view = SettingsView { section: Section::Presets, ..Default::default() };
+        let mut config = SearchToolConfig::default();
+        let mut presets = Vec::new();
+        handle_key(&mut view, &mut config, &[], &mut presets, shift_key(KeyCode::Char('A')));
+        assert!(view.naming_preset);
     }
 
     #[test]

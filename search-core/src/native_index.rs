@@ -280,8 +280,9 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
         .await
         {
             Ok(b) => b,
-            Err(_) => {
+            Err(e) => {
                 outcome.failed_count += 1;
+                outcome.failed_files.push(format!("{full_name}: {e}"));
                 continue;
             }
         };
@@ -290,8 +291,9 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
         let extracted = extraction::extract_lines_by_extension(&ext, &bytes, settings.pdf_timeout_seconds as u64, None, settings.ocr_scanned_pdfs);
         let lines = match extracted {
             Ok(e) => e.lines,
-            Err(_) => {
+            Err(e) => {
                 outcome.failed_count += 1;
+                outcome.failed_files.push(format!("{full_name}: {e:?}"));
                 continue;
             }
         };

@@ -30,11 +30,18 @@ use ratatui::widgets::{List, ListItem, ListState};
 /// `items` the caller used to decide which row got that styling; `None`
 /// renders the list with no scroll-to-selection (equivalent to the old
 /// stateless behavior, for an empty or no-selection case).
-pub fn render(frame: &mut Frame, area: Rect, items: Vec<ListItem>, selected: Option<usize>) {
+///
+/// Returns the real scroll offset ratatui settled on (the index of the
+/// first visible item) - callers with clickable rows feed this straight
+/// into `mouse::list_row_regions` so hit-test geometry can never drift from
+/// what was actually painted (there is no independent offset computation
+/// anywhere else).
+pub fn render(frame: &mut Frame, area: Rect, items: Vec<ListItem>, selected: Option<usize>) -> usize {
     let list = List::new(items);
     let mut state = ListState::default();
     state.select(selected);
     frame.render_stateful_widget(list, area, &mut state);
+    state.offset()
 }
 
 #[cfg(test)]
@@ -54,7 +61,7 @@ mod tests {
             let backend = TestBackend::new(w.max(1), h.max(1));
             let mut terminal = Terminal::new(backend).unwrap();
             let area = Rect::new(0, 0, w, h);
-            terminal.draw(|f| render(f, area, items(50), Some(49))).unwrap();
+            terminal.draw(|f| { render(f, area, items(50), Some(49)); }).unwrap();
         }
     }
 
@@ -68,7 +75,7 @@ mod tests {
         let backend = TestBackend::new(20, 5);
         let mut terminal = Terminal::new(backend).unwrap();
         let area = Rect::new(0, 0, 20, 5);
-        terminal.draw(|f| render(f, area, items(50), Some(49))).unwrap();
+        terminal.draw(|f| { render(f, area, items(50), Some(49)); }).unwrap();
 
         let buffer = terminal.backend().buffer().clone();
         let rendered: String = (0..buffer.area.height)

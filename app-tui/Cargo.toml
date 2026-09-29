@@ -25,7 +25,12 @@ tokio-util = "0.7"
 # Needed to `.next().await` crossterm's `EventStream` (a `futures_core::Stream`,
 # not a tokio-native type) inside the `tokio::select!` event-forwarding loop.
 futures-util = "0.3"
-search-core = { path = "../search-core" }
+# "ocr" enables OCR fallback for image-only/scanned PDFs (search-core's
+# `ocr_scanned_pdfs` setting is otherwise silently a no-op - see
+# search-core/Cargo.toml's feature doc comment). Both `app/` and
+# `app-egui/` already enable it; this crate must match or its PDF OCR
+# toggle does nothing regardless of user setting.
+search-core = { path = "../search-core", features = ["ocr"] }
 # Fast re-search indexing (Tantivy-backed) - consumed the same way `app/`
 # and `app-egui/` do, through `search_core::native_index`'s policy layer,
 # with direct `native_search::engine::NativeSearchEngine` access only for

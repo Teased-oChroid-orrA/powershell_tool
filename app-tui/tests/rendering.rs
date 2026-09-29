@@ -36,9 +36,14 @@ fn buffer_text(buffer: &Buffer) -> String {
 }
 
 fn render_shell(state: &AppState, width: u16, height: u16) -> Buffer {
+    let mut regions = app_tui::mouse::MouseRegions::default();
+    render_shell_with_regions(state, width, height, &mut regions)
+}
+
+fn render_shell_with_regions(state: &AppState, width: u16, height: u16, regions: &mut app_tui::mouse::MouseRegions) -> Buffer {
     let backend = TestBackend::new(width.max(1), height.max(1));
     let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|frame| shell::draw(frame, state, 0)).unwrap();
+    terminal.draw(|frame| shell::draw(frame, state, 0, regions)).unwrap();
     terminal.backend().buffer().clone()
 }
 
@@ -234,8 +239,9 @@ fn render_run_view(tool: &SearchToolState, focused_pane: Option<u8>, width: u16,
     let backend = TestBackend::new(width.max(1), height.max(1));
     let mut terminal = Terminal::new(backend).unwrap();
     let theme = app_tui::theme::Theme::default();
+    let mut regions = app_tui::mouse::MouseRegions::default();
     terminal
-        .draw(|frame| run_view::draw(frame, frame.area(), &theme, tool, focused_pane, 0))
+        .draw(|frame| run_view::draw(frame, frame.area(), &theme, tool, focused_pane, 0, &mut regions))
         .unwrap();
     terminal.backend().buffer().clone()
 }
@@ -315,4 +321,80 @@ fn resize_events_through_handle_event_never_panic_on_the_next_render() {
         assert!(effects.is_empty(), "a resize event should never itself produce an Effect");
         let _ = render_shell(&state, w, h);
     }
+}
+
+// ---------------------------------------------------------------------
+// 6. Mouse hit-test round trip: render for real, then click at the exact
+// geometry the render just published. Catches drift between rendered
+// layout and hit-test math directly, rather than assuming they agree (see
+// the mouse navigation plan's verification section).
+// ---------------------------------------------------------------------
+
+fn click_at(rect: ratatui::layout::Rect) -> Event {
+    Event::Mouse(crossterm::event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        column: rect.x,
+        row: rect.y,
+        modifiers: crossterm::event::KeyModifiers::NONE,
+    })
+}
+
+#[test]
+fn clicking_the_rendered_fastener_hole_rail_entry_switches_to_it() {
+    let state = AppState::default();
+    let mut regions = app_tui::mouse::MouseRegions::default();
+    let _ = render_shell_with_regions(&state, 120, 40, &mut regions);
+
+    let rect = regions
+        .rail
+        .iter()
+        .find(|(_, tool)| *tool == app_tui::nav::ToolId::FastenerHole)
+        .map(|(rect, _)| *rect)
+        .expect("wide layout must publish a rail region for Fastener Holes");
+
+    let mut state = state;
+    if let Event::Mouse(mouse_event) = click_at(rect) {
+        app_tui::app::handle_mouse(&mut state, &regions, mouse_event);
+    }
+    assert_eq!(state.nav.active_tool, app_tui::nav::ToolId::FastenerHole);
+}
+
+#[test]
+fn clicking_the_rendered_second_result_row_selects_it() {
+    let mut state = AppState::default();
+    state.nav.activate(app_tui::nav::ToolId::Search);
+    state.focus.area = app_tui::nav::FocusArea::Workspace(PANE_RESULTS);
+    state.search.run.results = vec![hit_result("a.txt"), hit_result("b.txt")];
+
+    let mut regions = app_tui::mouse::MouseRegions::default();
+    let _ = render_shell_with_regions(&state, 120, 40, &mut regions);
+
+    let rect = regions
+        .results_rows
+        .iter()
+        .find(|(_, idx)| *idx == 1)
+        .map(|(rect, _)| *rect)
+        .expect("results list must publish a region for the second row");
+
+    if let Event::Mouse(mouse_event) = click_at(rect) {
+        app_tui::app::handle_mouse(&mut state, &regions, mouse_event);
+    }
+    assert_eq!(state.search.selected_result, 1);
+}
+
+#[test]
+fn clicking_outside_every_published_region_never_panics() {
+    let state = AppState::default();
+    let mut regions = app_tui::mouse::MouseRegions::default();
+    let _ = render_shell_with_regions(&state, 120, 40, &mut regions);
+
+    let mut state = state;
+    let mouse_event = crossterm::event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        column: 5000,
+        row: 5000,
+        modifiers: crossterm::event::KeyModifiers::NONE,
+    };
+    let effects = app_tui::app::handle_mouse(&mut state, &regions, mouse_event);
+    assert!(effects.is_empty());
 }

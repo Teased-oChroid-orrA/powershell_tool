@@ -33,9 +33,11 @@ either one is dead or safe to skip** — verify current status in
 one as the "real" head. See `app/AGENTS.md` and `app-egui/AGENTS.md`.
 
 **A third head, `app-tui/` (ratatui/crossterm terminal UI), is being added
-alongside both** — new, additive, and partial (Search Files toolbox only so
-far; fast re-search deferred) — neither existing head is being retired by
-its addition. See `app-tui/AGENTS.md`.
+alongside both** — new, additive, and partial (Search Files and Fastener
+Holes toolboxes so far; Bushing/PressureVessel/Dupes/Rename/Logs remain
+placeholders) — neither existing head is being retired by its addition.
+Fastener Holes is unique to `app-tui/` (no equivalent in `app`/`app-egui`).
+See `app-tui/AGENTS.md`.
 
 ## Intent Layer
 
@@ -52,7 +54,7 @@ its addition. See `app-tui/AGENTS.md`.
 | Fast re-search index engine | `native-search/` | `native-search/AGENTS.md` | Active. Tantivy-backed. |
 | Dioxus-native GUI head | `app/` | `app/AGENTS.md` | Active (not superseded). |
 | egui GUI head | `app-egui/` | `app-egui/AGENTS.md` | Active (not superseded). Standalone Cargo workspace. |
-| ratatui GUI head | `app-tui/` | `app-tui/AGENTS.md` | New. Search Files toolbox only; other toolboxes and fast re-search not yet migrated. |
+| ratatui GUI head | `app-tui/` | `app-tui/AGENTS.md` | New. Search Files + Fastener Holes toolboxes; other toolboxes and fast re-search (beyond Search Files) not yet migrated. |
 | Bushing press-fit solver | `bushing-solver/` | `bushing-solver/AGENTS.md` | Active. Consumed by both GUI heads. |
 | Legacy C#/WinUI app | `src/` | `src/AGENTS.md` | Frozen reference, do not extend. |
 | Design/history docs + ADRs | `docs/` | `docs/AGENTS.md` | Append-only historical record + navigation index. |

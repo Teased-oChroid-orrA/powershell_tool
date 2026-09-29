@@ -12,11 +12,13 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use crate::app::AppState;
 use crate::command_palette;
 use crate::modal::{ConfirmDialog, ModalState};
+use crate::mouse::MouseRegions;
 use crate::nav::{Breakpoint, FocusArea, ToolId, pick_breakpoint};
 use crate::theme::StatusTone;
 use crate::widgets::{empty_state, help, spinner};
 
-pub fn draw(frame: &mut Frame, state: &AppState, tick: u64) {
+pub fn draw(frame: &mut Frame, state: &AppState, tick: u64, regions: &mut MouseRegions) {
+    regions.clear();
     let area = frame.area();
     let breakpoint = pick_breakpoint(area.width);
 
@@ -26,20 +28,20 @@ pub fn draw(frame: &mut Frame, state: &AppState, tick: u64) {
         .split(area);
 
     draw_topbar(frame, root[0], state);
-    draw_body(frame, root[1], state, breakpoint, tick);
+    draw_body(frame, root[1], state, breakpoint, tick, regions);
     draw_status_bar(frame, root[2], state, tick);
 
     match &state.modal {
-        ModalState::Palette(palette) => command_palette::render(frame, area, &state.theme, palette),
-        ModalState::Help => draw_help(frame, area, state),
-        ModalState::Confirm(dialog) => draw_confirm(frame, area, state, dialog),
+        ModalState::Palette(palette) => command_palette::render(frame, area, &state.theme, palette, regions),
+        ModalState::Help => draw_help(frame, area, state, regions),
+        ModalState::Confirm(dialog) => draw_confirm(frame, area, state, dialog, regions),
         ModalState::None => {}
     }
 
     // Toolbox-local overlay (not a global `ModalState`, since only Search
     // Files has one) - drawn on top of everything but the toasts.
     if state.search.extension_picker.open {
-        crate::toolboxes::search::extension_picker::render(frame, area, &state.theme, &state.search.extension_picker);
+        crate::toolboxes::search::extension_picker::render(frame, area, &state.theme, &state.search.extension_picker, regions);
     }
 
     draw_toasts(frame, area, state);
@@ -62,7 +64,7 @@ fn draw_topbar(frame: &mut Frame, area: Rect, state: &AppState) {
     );
 }
 
-fn draw_body(frame: &mut Frame, area: Rect, state: &AppState, breakpoint: Breakpoint, tick: u64) {
+fn draw_body(frame: &mut Frame, area: Rect, state: &AppState, breakpoint: Breakpoint, tick: u64, regions: &mut MouseRegions) {
     // Narrow terminals drop the persistent rail entirely - the command
     // palette becomes the only way to switch toolboxes (see the plan's
     // responsive-breakpoint design).
@@ -73,7 +75,7 @@ fn draw_body(frame: &mut Frame, area: Rect, state: &AppState, breakpoint: Breakp
     };
 
     if rail_width == 0 {
-        draw_workspace(frame, area, state, tick);
+        draw_workspace(frame, area, state, tick, regions);
         return;
     }
 
@@ -81,11 +83,11 @@ fn draw_body(frame: &mut Frame, area: Rect, state: &AppState, breakpoint: Breakp
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(rail_width), Constraint::Min(1)])
         .split(area);
-    draw_rail(frame, cols[0], state, breakpoint);
-    draw_workspace(frame, cols[1], state, tick);
+    draw_rail(frame, cols[0], state, breakpoint, regions);
+    draw_workspace(frame, cols[1], state, tick, regions);
 }
 
-fn draw_rail(frame: &mut Frame, area: Rect, state: &AppState, breakpoint: Breakpoint) {
+fn draw_rail(frame: &mut Frame, area: Rect, state: &AppState, breakpoint: Breakpoint, regions: &mut MouseRegions) {
     let focused = state.focus.area == FocusArea::Rail;
     let block = Block::default().borders(Borders::RIGHT).border_style(state.theme.border_style(focused));
     let inner = block.inner(area);
@@ -121,10 +123,11 @@ fn draw_rail(frame: &mut Frame, area: Rect, state: &AppState, breakpoint: Breakp
             format!("{marker}{}", tool.title())
         };
         frame.render_widget(Paragraph::new(Line::from(Span::styled(text, style))), rows[i]);
+        regions.rail.push((rows[i], *tool));
     }
 }
 
-fn draw_workspace(frame: &mut Frame, area: Rect, state: &AppState, tick: u64) {
+fn draw_workspace(frame: &mut Frame, area: Rect, state: &AppState, tick: u64, regions: &mut MouseRegions) {
     match state.nav.active_tool {
         ToolId::Search => {
             let focused_pane = match state.focus.area {
@@ -134,7 +137,7 @@ fn draw_workspace(frame: &mut Frame, area: Rect, state: &AppState, tick: u64) {
             let search = &state.search;
             match search.screen {
                 crate::toolboxes::search::ToolboxScreen::Run => {
-                    crate::toolboxes::search::run_view::draw(frame, area, &state.theme, search, focused_pane, tick);
+                    crate::toolboxes::search::run_view::draw(frame, area, &state.theme, search, focused_pane, tick, regions);
                 }
                 crate::toolboxes::search::ToolboxScreen::Settings => {
                     crate::toolboxes::search::settings_view::draw(
@@ -145,9 +148,14 @@ fn draw_workspace(frame: &mut Frame, area: Rect, state: &AppState, tick: u64) {
                         &search.recent_searches,
                         &search.saved_presets,
                         &search.settings,
+                        regions,
                     );
                 }
             }
+        }
+        ToolId::FastenerHole => {
+            let focused = matches!(state.focus.area, FocusArea::Workspace(_));
+            crate::toolboxes::fastener_hole::view::draw(frame, area, &state.theme, &state.fastener_hole, focused, regions);
         }
         _ => empty_state::render(frame, area, &state.theme, "Coming soon", None),
     }
@@ -199,7 +207,8 @@ fn contextual_hint(state: &AppState) -> Option<help::KeyHint> {
     }
 }
 
-fn draw_help(frame: &mut Frame, area: Rect, state: &AppState) {
+fn draw_help(frame: &mut Frame, area: Rect, state: &AppState, regions: &mut MouseRegions) {
+    regions.help_overlay = Some(area);
     let global: &[help::KeyHint] = &[
         help::KeyHint { key: "Ctrl+P", label: "Command palette" },
         help::KeyHint { key: "?", label: "Toggle this help" },
@@ -220,11 +229,24 @@ fn draw_help(frame: &mut Frame, area: Rect, state: &AppState) {
         help::KeyHint { key: "Up/Down", label: "Move selection (Results pane)" },
         help::KeyHint { key: "Backspace", label: "Edit Path/Filters field" },
     ];
-    let sections: [(&str, &[help::KeyHint]); 2] = [("Global", global), ("Search Files", search)];
+    let fastener_hole: &[help::KeyHint] = &[
+        help::KeyHint { key: "Up/Down", label: "Move field selection" },
+        help::KeyHint { key: "Space/Enter", label: "Toggle Hole Type/Tolerance Input/Solve For/Method, or edit a value" },
+        help::KeyHint { key: "Enter/Esc", label: "While editing: commit / cancel" },
+        help::KeyHint { key: "Hole Type", label: "Regular: two toleranced diameters and their fit. Countersunk: D/d/h/angle geometry" },
+        help::KeyHint { key: "Fit sign", label: "Fit = Hole 2 - Hole 1: positive = clearance, negative = interference" },
+        help::KeyHint { key: "Classification", label: "Min>0 Clearance; Max<0 Interference; otherwise Transition (boundary zero = Transition)" },
+        help::KeyHint { key: "Solve For", label: "Countersink: pick which of Outer/Hole/Depth/Angle is solved from the other three" },
+        help::KeyHint { key: "Preserve Depth", label: "Secondary countersink keeps the same depth+angle; outer diameter is solved" },
+        help::KeyHint { key: "Preserve Area", label: "Secondary countersink keeps the same angle+lateral area; outer diameter and depth are solved" },
+        help::KeyHint { key: "Lateral Area", label: "Always calculated, always read-only - never a direct input, even in Preserve Area mode" },
+        help::KeyHint { key: "[TAG]s", label: "INPUT/CALCULATED/TRANSFERRED/PRESERVED/DERIVED/INVALID mark every value's origin" },
+    ];
+    let sections: [(&str, &[help::KeyHint]); 3] = [("Global", global), ("Search Files", search), ("Fastener Holes", fastener_hole)];
     help::render_overlay(frame, area, &state.theme, &sections);
 }
 
-fn draw_confirm(frame: &mut Frame, area: Rect, state: &AppState, dialog: &ConfirmDialog) {
+fn draw_confirm(frame: &mut Frame, area: Rect, state: &AppState, dialog: &ConfirmDialog, regions: &mut MouseRegions) {
     let popup = command_palette::centered_rect(40, 20, area);
     frame.render_widget(Clear, popup);
     let block = Block::default()
@@ -234,12 +256,30 @@ fn draw_confirm(frame: &mut Frame, area: Rect, state: &AppState, dialog: &Confir
         .title(format!(" {} ", dialog.title));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
+    const BUTTON_LINE: &str = "y confirm   n cancel";
+    const YES_LABEL: &str = "y confirm";
+    const NO_LABEL: &str = "n cancel";
     let text = Paragraph::new(vec![
         Line::from(dialog.message.as_str()),
         Line::from(""),
-        Line::from(Span::styled("y confirm   n cancel", state.theme.disabled_style())),
+        Line::from(Span::styled(BUTTON_LINE, state.theme.disabled_style())),
     ]);
     frame.render_widget(text, inner);
+
+    // Button rects derived from the literal button line rather than
+    // hardcoded column numbers, so they can never silently drift from what
+    // was actually painted if that string is ever edited.
+    if inner.height >= 3 && inner.width > 0 {
+        let button_row = inner.y + 2;
+        if let Some(yes_col) = BUTTON_LINE.find(YES_LABEL) {
+            regions.confirm_yes =
+                Some(Rect { x: inner.x + yes_col as u16, y: button_row, width: YES_LABEL.len() as u16, height: 1 });
+        }
+        if let Some(no_col) = BUTTON_LINE.find(NO_LABEL) {
+            regions.confirm_no =
+                Some(Rect { x: inner.x + no_col as u16, y: button_row, width: NO_LABEL.len() as u16, height: 1 });
+        }
+    }
 }
 
 fn draw_toasts(frame: &mut Frame, area: Rect, state: &AppState) {

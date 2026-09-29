@@ -17,6 +17,7 @@ use crate::theme::Theme;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     SwitchToSearch,
+    SwitchToFastenerHole,
     SwitchToBushing,
     SwitchToPressureVessel,
     SwitchToDupes,
@@ -40,6 +41,7 @@ pub enum Command {
 impl Command {
     pub const ALL: &'static [Command] = &[
         Command::SwitchToSearch,
+        Command::SwitchToFastenerHole,
         Command::SwitchToBushing,
         Command::SwitchToPressureVessel,
         Command::SwitchToDupes,
@@ -60,6 +62,7 @@ impl Command {
     pub fn label(self) -> &'static str {
         match self {
             Command::SwitchToSearch => "Switch to: Search Files",
+            Command::SwitchToFastenerHole => "Switch to: Fastener Holes",
             Command::SwitchToBushing => "Switch to: Bushing Workbench (soon)",
             Command::SwitchToPressureVessel => "Switch to: Pressure Vessel Analyzer (soon)",
             Command::SwitchToDupes => "Switch to: Duplicate Finder (soon)",
@@ -144,7 +147,7 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         .split(vertical[1])[1]
 }
 
-pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, palette: &CommandPalette) {
+pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, palette: &CommandPalette, regions: &mut crate::mouse::MouseRegions) {
     let popup = centered_rect(60, 60, area);
     frame.render_widget(Clear, popup);
 
@@ -201,7 +204,10 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, palette: &CommandPal
     // the popup's fixed height with no visible highlighted row. `None`
     // when there are no matches - nothing to keep in view.
     let selected = if matches.is_empty() { None } else { Some(palette.selected) };
-    crate::widgets::scroll_list::render(frame, list_inner, items, selected);
+    let offset = crate::widgets::scroll_list::render(frame, list_inner, items, selected);
+    if !matches.is_empty() {
+        regions.palette_rows.extend(crate::mouse::list_row_regions(list_inner, offset, matches.len()));
+    }
 }
 
 #[cfg(test)]
@@ -225,7 +231,8 @@ mod tests {
 
         let backend = TestBackend::new(40, 10);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| render(f, f.area(), &Theme::default_palette(), &palette)).unwrap();
+        let mut regions = crate::mouse::MouseRegions::default();
+        terminal.draw(|f| render(f, f.area(), &Theme::default_palette(), &palette, &mut regions)).unwrap();
 
         let buffer = terminal.backend().buffer().clone();
         let rendered: String =
@@ -241,7 +248,8 @@ mod tests {
             let backend = TestBackend::new(w.max(1), h.max(1));
             let mut terminal = Terminal::new(backend).unwrap();
             let area = Rect::new(0, 0, w, h);
-            terminal.draw(|f| render(f, area, &Theme::default_palette(), &palette)).unwrap();
+            let mut regions = crate::mouse::MouseRegions::default();
+            terminal.draw(|f| render(f, area, &Theme::default_palette(), &palette, &mut regions)).unwrap();
         }
     }
 
@@ -263,7 +271,7 @@ mod tests {
         let mut palette = CommandPalette::default();
         "switch to".chars().for_each(|c| palette.push_char(c));
         let match_count = palette.matches().len();
-        assert_eq!(match_count, 6, "one \"Switch to: ...\" entry per ToolId variant");
+        assert_eq!(match_count, 7, "one \"Switch to: ...\" entry per ToolId variant");
         palette.move_selection(-1);
         assert_eq!(palette.selected, match_count - 1);
         palette.move_selection(1);
