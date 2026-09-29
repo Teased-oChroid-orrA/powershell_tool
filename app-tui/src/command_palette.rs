@@ -20,6 +20,7 @@ pub enum Command {
     SwitchToFastenerHole,
     SwitchToBushing,
     SwitchToPressureVessel,
+    SwitchToPreloadAnalysis,
     SwitchToDupes,
     SwitchToRename,
     SwitchToLogs,
@@ -44,6 +45,7 @@ impl Command {
         Command::SwitchToFastenerHole,
         Command::SwitchToBushing,
         Command::SwitchToPressureVessel,
+        Command::SwitchToPreloadAnalysis,
         Command::SwitchToDupes,
         Command::SwitchToRename,
         Command::SwitchToLogs,
@@ -63,8 +65,9 @@ impl Command {
         match self {
             Command::SwitchToSearch => "Switch to: Search Files",
             Command::SwitchToFastenerHole => "Switch to: Fastener Holes",
-            Command::SwitchToBushing => "Switch to: Bushing Workbench (soon)",
-            Command::SwitchToPressureVessel => "Switch to: Pressure Vessel Analyzer (soon)",
+            Command::SwitchToBushing => "Switch to: Bushing Workbench",
+            Command::SwitchToPressureVessel => "Switch to: Pressure Vessel Analyzer",
+            Command::SwitchToPreloadAnalysis => "Switch to: Preload Analysis",
             Command::SwitchToDupes => "Switch to: Duplicate Finder (soon)",
             Command::SwitchToRename => "Switch to: Batch Rename (soon)",
             Command::SwitchToLogs => "Switch to: Log Analyzer (soon)",
@@ -271,7 +274,7 @@ mod tests {
         let mut palette = CommandPalette::default();
         "switch to".chars().for_each(|c| palette.push_char(c));
         let match_count = palette.matches().len();
-        assert_eq!(match_count, 7, "one \"Switch to: ...\" entry per ToolId variant");
+        assert_eq!(match_count, 8, "one \"Switch to: ...\" entry per ToolId variant");
         palette.move_selection(-1);
         assert_eq!(palette.selected, match_count - 1);
         palette.move_selection(1);

@@ -23,6 +23,9 @@ use tokio_util::sync::CancellationToken;
 
 use app_tui::app::{handle_event, handle_mouse, AppEvent, AppState, Effect};
 use app_tui::mouse::MouseRegions;
+use app_tui::toolboxes::bushing::persistence as bushing_persistence;
+use app_tui::toolboxes::preload_analysis::persistence as preload_persistence;
+use app_tui::toolboxes::pressure_vessel::persistence as pv_persistence;
 use app_tui::toolboxes::search::{extension_picker, indexing, persistence, runner};
 use app_tui::widgets::shell;
 
@@ -189,6 +192,49 @@ fn execute_effect(tx: &mpsc::UnboundedSender<AppEvent>, state: &mut AppState, ef
                 }
                 let found = extension_picker::scan_extensions(path, &exclude_folders, include_hidden);
                 let _ = tx.send(AppEvent::ExtensionsScanned(Ok(found)));
+            });
+        }
+        Effect::ExportPressureVesselReport(contents) => {
+            tokio::task::spawn_blocking(move || {
+                let Some(path) = pv_persistence::report_path() else { return };
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if std::fs::write(&path, contents).is_ok() {
+                    let _ = open::that(&path);
+                }
+            });
+        }
+        Effect::PersistPressureVesselMaterials => {
+            let materials: Vec<pv_persistence::PersistedMaterial> = state
+                .pressure_vessel
+                .model
+                .custom_materials
+                .iter()
+                .map(|m| pv_persistence::PersistedMaterial { name: m.name.to_string(), e_ksi: m.e_ksi, sy_ksi: m.sy_ksi, ftu_ksi: m.ftu_ksi, nu: m.nu, alpha_u_f: m.alpha_u_f })
+                .collect();
+            tokio::task::spawn_blocking(move || pv_persistence::save(&materials));
+        }
+        Effect::ExportBushingReport(contents) => {
+            tokio::task::spawn_blocking(move || {
+                let Some(path) = bushing_persistence::report_path() else { return };
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if std::fs::write(&path, contents).is_ok() {
+                    let _ = open::that(&path);
+                }
+            });
+        }
+        Effect::ExportPreloadAnalysisReport(contents) => {
+            tokio::task::spawn_blocking(move || {
+                let Some(path) = preload_persistence::report_path() else { return };
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if std::fs::write(&path, contents).is_ok() {
+                    let _ = open::that(&path);
+                }
             });
         }
     }

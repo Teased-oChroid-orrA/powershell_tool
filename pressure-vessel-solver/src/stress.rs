@@ -8,6 +8,7 @@
 
 use crate::geometry::CylinderGeometry;
 use crate::pressure::{EndCondition, PressureLoading};
+use crate::thermal::ThermalLoading;
 
 /// The full stress state at one radius: radial, hoop (circumferential),
 /// and axial (longitudinal). Sign convention matches
@@ -46,6 +47,32 @@ pub fn stress_at_inner_surface(geometry: &CylinderGeometry, pressure: &PressureL
 
 pub fn stress_at_outer_surface(geometry: &CylinderGeometry, pressure: &PressureLoading) -> StressState {
     stress_at_radius(geometry, pressure, geometry.outer_radius)
+}
+
+/// Superposes thermal stress (if any) onto the pressure-only Lamé stress
+/// at the same radius - exact linear superposition of two independent
+/// load cases on the same geometry, not an approximation. Axial stress is
+/// left untouched by the thermal contribution: `thermal.rs`'s own doc
+/// comment states plainly that axial thermal stress is out of scope for
+/// this crate (both the free-ends and constrained-ends cases need an
+/// additional boundary assumption this crate does not take a position on)
+/// - this function does not silently guess at one.
+pub fn stress_at_radius_with_thermal(geometry: &CylinderGeometry, pressure: &PressureLoading, thermal: Option<&ThermalLoading>, r: f64) -> StressState {
+    let mut state = stress_at_radius(geometry, pressure, r);
+    if let Some(t) = thermal {
+        let thermal_stress = t.stress_at_radius(geometry, r);
+        state.radial += thermal_stress.radial;
+        state.hoop += thermal_stress.hoop;
+    }
+    state
+}
+
+pub fn stress_at_inner_surface_with_thermal(geometry: &CylinderGeometry, pressure: &PressureLoading, thermal: Option<&ThermalLoading>) -> StressState {
+    stress_at_radius_with_thermal(geometry, pressure, thermal, geometry.inner_radius)
+}
+
+pub fn stress_at_outer_surface_with_thermal(geometry: &CylinderGeometry, pressure: &PressureLoading, thermal: Option<&ThermalLoading>) -> StressState {
+    stress_at_radius_with_thermal(geometry, pressure, thermal, geometry.outer_radius)
 }
 
 #[cfg(test)]
@@ -105,6 +132,29 @@ mod tests {
         let inner = stress_at_inner_surface(&geometry, &pressure);
         let outer = stress_at_outer_surface(&geometry, &pressure);
         assert!(inner.hoop > outer.hoop, "expected hoop stress to decrease from bore to OD under internal-only pressure");
+    }
+
+    #[test]
+    fn with_thermal_none_reproduces_the_pressure_only_result_exactly() {
+        let geometry = CylinderGeometry::new(2.0, 3.0).unwrap();
+        let pressure = PressureLoading::new(5000.0, 0.0, EndCondition::Closed).unwrap();
+        assert_eq!(stress_at_inner_surface_with_thermal(&geometry, &pressure, None), stress_at_inner_surface(&geometry, &pressure));
+        assert_eq!(stress_at_outer_surface_with_thermal(&geometry, &pressure, None), stress_at_outer_surface(&geometry, &pressure));
+    }
+
+    #[test]
+    fn with_thermal_some_adds_thermal_radial_and_hoop_but_leaves_axial_untouched() {
+        let geometry = CylinderGeometry::new(2.0, 3.0).unwrap();
+        let pressure = PressureLoading::new(5000.0, 0.0, EndCondition::Closed).unwrap();
+        let thermal = crate::thermal::ThermalLoading { delta_t: 200.0, alpha_per_f: 12.8e-6, e_psi: 10_300_000.0, nu: 0.33 };
+
+        let pressure_only = stress_at_inner_surface(&geometry, &pressure);
+        let combined = stress_at_inner_surface_with_thermal(&geometry, &pressure, Some(&thermal));
+        let thermal_only = thermal.stress_at_radius(&geometry, geometry.inner_radius);
+
+        close(combined.radial, pressure_only.radial + thermal_only.radial, "combined radial");
+        close(combined.hoop, pressure_only.hoop + thermal_only.hoop, "combined hoop");
+        assert_eq!(combined.axial, pressure_only.axial, "axial must be untouched by thermal (out of scope, see thermal.rs)");
     }
 
     #[test]

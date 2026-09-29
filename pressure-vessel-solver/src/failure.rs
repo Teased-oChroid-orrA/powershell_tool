@@ -32,7 +32,8 @@
 
 use crate::geometry::CylinderGeometry;
 use crate::pressure::PressureLoading;
-use crate::stress::{stress_at_inner_surface, stress_at_outer_surface, StressState};
+use crate::stress::{stress_at_inner_surface, stress_at_inner_surface_with_thermal, stress_at_outer_surface, stress_at_outer_surface_with_thermal, StressState};
+use crate::thermal::ThermalLoading;
 use mechanics_core::materials::Material;
 
 /// The three principal stresses at a point in this crate's stress state -
@@ -150,14 +151,30 @@ fn worst_of(
 pub fn evaluate_failure_modes(geometry: &CylinderGeometry, pressure: &PressureLoading, material: &Material) -> Vec<MarginResult> {
     let inner = stress_at_inner_surface(geometry, pressure);
     let outer = stress_at_outer_surface(geometry, pressure);
+    evaluate_from_states(&inner, &outer, material)
+}
+
+/// Same four v1 failure modes as [`evaluate_failure_modes`], but with
+/// thermal stress (if any) superposed onto the pressure stress at each
+/// surface before evaluation - `thermal: None` reproduces
+/// `evaluate_failure_modes`'s own result exactly (proven in this module's
+/// tests), so this is a strict superset, not a parallel/possibly-drifting
+/// implementation of the same four criteria.
+pub fn evaluate_failure_modes_with_thermal(geometry: &CylinderGeometry, pressure: &PressureLoading, material: &Material, thermal: Option<&ThermalLoading>) -> Vec<MarginResult> {
+    let inner = stress_at_inner_surface_with_thermal(geometry, pressure, thermal);
+    let outer = stress_at_outer_surface_with_thermal(geometry, pressure, thermal);
+    evaluate_from_states(&inner, &outer, material)
+}
+
+fn evaluate_from_states(inner: &StressState, outer: &StressState, material: &Material) -> Vec<MarginResult> {
     let sy_psi = material.sy_ksi * 1000.0;
     let ftu_psi = material.ftu_ksi * 1000.0;
 
     vec![
-        worst_of("Yield (maximum stress)", max_abs_principal_stress, sy_psi, &inner, &outer),
-        worst_of("Von Mises yield", von_mises_stress, sy_psi, &inner, &outer),
-        worst_of("Tresca (maximum shear)", tresca_stress, sy_psi, &inner, &outer),
-        worst_of("Ultimate", max_abs_principal_stress, ftu_psi, &inner, &outer),
+        worst_of("Yield (maximum stress)", max_abs_principal_stress, sy_psi, inner, outer),
+        worst_of("Von Mises yield", von_mises_stress, sy_psi, inner, outer),
+        worst_of("Tresca (maximum shear)", tresca_stress, sy_psi, inner, outer),
+        worst_of("Ultimate", max_abs_principal_stress, ftu_psi, inner, outer),
     ]
 }
 
@@ -261,6 +278,25 @@ mod tests {
             results.iter().all(|r| r.critical_location == CriticalLocation::InnerSurface),
             "expected every mode to be governed by the inner surface under external-only pressure for this geometry"
         );
+    }
+
+    #[test]
+    fn evaluate_failure_modes_with_thermal_none_matches_evaluate_failure_modes_exactly() {
+        let geometry = CylinderGeometry::new(2.0, 3.0).unwrap();
+        let pressure = PressureLoading::new(5000.0, 0.0, EndCondition::Closed).unwrap();
+        let material = *mechanics_core::materials::get_material("al7075");
+        assert_eq!(evaluate_failure_modes_with_thermal(&geometry, &pressure, &material, None), evaluate_failure_modes(&geometry, &pressure, &material));
+    }
+
+    #[test]
+    fn evaluate_failure_modes_with_thermal_some_changes_the_result() {
+        let geometry = CylinderGeometry::new(2.0, 3.0).unwrap();
+        let pressure = PressureLoading::new(5000.0, 0.0, EndCondition::Closed).unwrap();
+        let material = *mechanics_core::materials::get_material("al7075");
+        let thermal = crate::thermal::ThermalLoading { delta_t: 300.0, alpha_per_f: material.alpha_u_f * 1e-6, e_psi: material.e_ksi * 1000.0, nu: material.nu };
+        let without = evaluate_failure_modes_with_thermal(&geometry, &pressure, &material, None);
+        let with = evaluate_failure_modes_with_thermal(&geometry, &pressure, &material, Some(&thermal));
+        assert_ne!(without, with, "a real 300F bore-to-OD differential must change at least one margin");
     }
 
     #[test]

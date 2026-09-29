@@ -10,6 +10,7 @@ pub enum ToolId {
     FastenerHole,
     Bushing,
     PressureVessel,
+    PreloadAnalysis,
     Dupes,
     Rename,
     Logs,
@@ -20,10 +21,11 @@ impl ToolId {
     /// permanent exclusion (its PINN/AMR dependency would force the same
     /// `windows`-crate workspace-exclusion problem `app-egui` has, see
     /// `app-tui/AGENTS.md`), not an oversight like the other three were.
-    /// `FastenerHole` has no equivalent in either existing GUI head - it's
-    /// a toolbox unique to this crate, not a ported placeholder.
-    pub const ALL: [ToolId; 7] =
-        [ToolId::Search, ToolId::FastenerHole, ToolId::Bushing, ToolId::PressureVessel, ToolId::Dupes, ToolId::Rename, ToolId::Logs];
+    /// `FastenerHole`/`PreloadAnalysis` have no equivalent in either
+    /// existing GUI head - both are toolboxes unique to this crate, not
+    /// ported placeholders.
+    pub const ALL: [ToolId; 8] =
+        [ToolId::Search, ToolId::FastenerHole, ToolId::Bushing, ToolId::PressureVessel, ToolId::PreloadAnalysis, ToolId::Dupes, ToolId::Rename, ToolId::Logs];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -31,20 +33,20 @@ impl ToolId {
             ToolId::FastenerHole => "Fastener Holes",
             ToolId::Bushing => "Bushing Workbench",
             ToolId::PressureVessel => "Pressure Vessel Analyzer",
+            ToolId::PreloadAnalysis => "Preload Analysis",
             ToolId::Dupes => "Duplicate Finder",
             ToolId::Rename => "Batch Rename",
             ToolId::Logs => "Log Analyzer",
         }
     }
 
-    /// Search Files and Fastener Holes are migrated in this phase - the
-    /// others render as dimmed "Soon" rail entries, mirroring both existing
-    /// heads' inert placeholder convention (in `app`/`app-egui`, Bushing/
-    /// PressureVessel are real but Dupes/Rename/Logs are themselves still
-    /// inert `PlaceholderTool` entries there too - not a regression
-    /// specific to this crate).
+    /// Search Files, Fastener Holes, Bushing Workbench, Pressure Vessel
+    /// Analyzer, and Preload Analysis are migrated - Dupes/Rename/Logs
+    /// still render as dimmed "Soon" rail entries, mirroring both existing
+    /// heads' own inert-placeholder convention for their own not-yet-built
+    /// tools.
     pub fn enabled(self) -> bool {
-        matches!(self, ToolId::Search | ToolId::FastenerHole)
+        matches!(self, ToolId::Search | ToolId::FastenerHole | ToolId::Bushing | ToolId::PressureVessel | ToolId::PreloadAnalysis)
     }
 }
 
@@ -137,20 +139,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_tool_has_a_distinct_title_and_only_search_is_enabled() {
+    fn every_tool_has_a_distinct_title_and_the_migrated_toolboxes_are_enabled() {
         // Regression guard for the rail once genuinely missing three
         // entries (`Dupes`/`Rename`/`Logs`) that both `app/` and
         // `app-egui/` show as inert placeholders - `ALL` must list every
-        // variant, `enabled()` must gate them exactly like Bushing/
-        // PressureVessel already were.
-        assert_eq!(ToolId::ALL.len(), 7);
+        // variant, `enabled()` must gate them correctly.
+        assert_eq!(ToolId::ALL.len(), 8);
         let titles: Vec<&str> = ToolId::ALL.iter().map(|t| t.title()).collect();
         let mut distinct = titles.clone();
         distinct.sort_unstable();
         distinct.dedup();
         assert_eq!(distinct.len(), titles.len(), "every ToolId must have a distinct title: {titles:?}");
         for tool in ToolId::ALL {
-            let expected = matches!(tool, ToolId::Search | ToolId::FastenerHole);
+            let expected = matches!(tool, ToolId::Search | ToolId::FastenerHole | ToolId::Bushing | ToolId::PressureVessel | ToolId::PreloadAnalysis);
             assert_eq!(tool.enabled(), expected, "{tool:?} enabled state");
         }
     }
@@ -168,7 +169,7 @@ mod tests {
     #[test]
     fn navigation_ignores_disabled_tools() {
         let mut nav = NavigationState::default();
-        nav.activate(ToolId::Bushing);
+        nav.activate(ToolId::Dupes);
         assert_eq!(nav.active_tool, ToolId::Search);
     }
 

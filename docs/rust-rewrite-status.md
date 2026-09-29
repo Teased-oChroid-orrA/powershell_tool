@@ -31,11 +31,13 @@ A third head, `app-tui/` (ratatui/crossterm terminal UI), is now also being
 built on top of the same `search-core` - it reuses `orchestrator::run`/
 `run_candidates`, the `SearchProgressReport` progress contract, and
 `report::{write_html_report, build_export_rows, write_csv, write_json}`
-unchanged, the same way `app`/`app-egui`/`cli` already do. Only the Search
-Files toolbox is implemented there so far (fast re-search indexing
-deferred); see `app-tui/AGENTS.md` and `docs/toolbench-status.md`'s
-"A third dashboard shell" section for its own status. This section
-otherwise describes `app`'s status specifically, not `app-tui`'s.
+unchanged, the same way `app`/`app-egui`/`cli` already do. Search Files
+(including fast re-search indexing), Fastener Holes, Bushing Workbench,
+Pressure Vessel Analyzer, and Preload Analysis are implemented there so
+far; see `app-tui/AGENTS.md` and
+`docs/toolbench-status.md`'s "A third dashboard shell" section for its own
+status. This section otherwise describes `app`'s status specifically, not
+`app-tui`'s.
 
 Not yet done:
 - The C#/WinUI app (`src/TextInFilesSearch(.Core)/`) has not been retired.

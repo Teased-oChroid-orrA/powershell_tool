@@ -33,11 +33,27 @@ either one is dead or safe to skip** — verify current status in
 one as the "real" head. See `app/AGENTS.md` and `app-egui/AGENTS.md`.
 
 **A third head, `app-tui/` (ratatui/crossterm terminal UI), is being added
-alongside both** — new, additive, and partial (Search Files and Fastener
-Holes toolboxes so far; Bushing/PressureVessel/Dupes/Rename/Logs remain
-placeholders) — neither existing head is being retired by its addition.
-Fastener Holes is unique to `app-tui/` (no equivalent in `app`/`app-egui`).
-See `app-tui/AGENTS.md`.
+alongside both** — new, additive, and partial (Search Files, Fastener
+Holes, Bushing Workbench, Pressure Vessel Analyzer, and Preload Analysis
+toolboxes so far; Dupes/Rename/Logs remain placeholders) — neither
+existing head is being retired by its addition. Fastener Holes and Preload
+Analysis are unique to `app-tui/` (no equivalent in `app`/`app-egui`) —
+Preload Analysis is a fastened-joint installation/preload mechanics solver
+(`fastened-joint-solver/`, a new solver crate: full V-thread torque
+equation, uniform-pressure/uniform-wear bearing friction, Brent-root-solved
+torque-preload equilibrium, fastener/member elastic compliance including a
+numerically-integrated Rotscher pressure-cone member model, nut rotation,
+stress state, and service-load/separation/slip checks). Bushing Workbench
+and Pressure Vessel Analyzer are ported from both existing heads' own
+`bushing-solver`/`pressure-vessel-solver`-backed tools, minus their
+cross-section sketches and (for Pressure Vessel Analyzer) derivation view
+(visual presentation with no terminal equivalent), plus several
+capabilities neither existing head has: thermal stress (a real addition to
+`pressure-vessel-solver` itself, not just new UI — see
+`pressure-vessel-solver/src/thermal.rs`), a text-only Numbers panel per
+toolbox, inline field validation hints, report export, and (Pressure
+Vessel Analyzer only) a filterable material picker with a persisted "add
+custom material" form. See `app-tui/AGENTS.md`.
 
 ## Intent Layer
 
@@ -54,13 +70,14 @@ See `app-tui/AGENTS.md`.
 | Fast re-search index engine | `native-search/` | `native-search/AGENTS.md` | Active. Tantivy-backed. |
 | Dioxus-native GUI head | `app/` | `app/AGENTS.md` | Active (not superseded). |
 | egui GUI head | `app-egui/` | `app-egui/AGENTS.md` | Active (not superseded). Standalone Cargo workspace. |
-| ratatui GUI head | `app-tui/` | `app-tui/AGENTS.md` | New. Search Files + Fastener Holes toolboxes; other toolboxes and fast re-search (beyond Search Files) not yet migrated. |
+| ratatui GUI head | `app-tui/` | `app-tui/AGENTS.md` | Active. Search Files + Fastener Holes + Bushing Workbench + Pressure Vessel Analyzer + Preload Analysis toolboxes; Dupes/Rename/Logs not yet migrated. |
 | Bushing press-fit solver | `bushing-solver/` | `bushing-solver/AGENTS.md` | Active. Consumed by both GUI heads. |
 | Legacy C#/WinUI app | `src/` | `src/AGENTS.md` | Frozen reference, do not extend. |
 | Design/history docs + ADRs | `docs/` | `docs/AGENTS.md` | Append-only historical record + navigation index. |
 | CLI | `cli/` | *(no node — small)* | Second `search-core` consumer, proves it's GUI-free-usable. |
 | Shared math (Lamé, materials) | `engineering-math/`, `mechanics-core/` | *(no node — small)* | Extracted from `bushing-solver`; no re-export shim, import directly. |
 | Pressure vessel solver | `pressure-vessel-solver/` | *(no node — small)* | Sibling pattern to `bushing-solver`. |
+| Fastened joint preload solver | `fastened-joint-solver/` | *(no node — small)* | Sibling pattern to `bushing-solver`/`pressure-vessel-solver`; consumed only by `app-tui`'s Preload Analysis toolbox so far. |
 | Original PowerShell tool | `powershell/` | *(no node — reference only)* | Never called from Rust; diff-only artifact. |
 
 ## Downlinks
@@ -71,7 +88,7 @@ See `app-tui/AGENTS.md`.
 | native-search | `native-search/AGENTS.md` | Tantivy engine, `ErrorInThread` recovery, FFI (legacy-only) |
 | app | `app/AGENTS.md` | Dioxus dashboard, AppState pattern, Blitz renderer gaps (onchange/details/sticky/transform) |
 | app-egui | `app-egui/AGENTS.md` | egui dashboard, font/icon rasterization gotchas, external PINN dependency, standalone-workspace reason |
-| app-tui | `app-tui/AGENTS.md` | ratatui dashboard, AppState/AppEvent/Effect event-reducer pattern, Search Files toolbox (partial parity) |
+| app-tui | `app-tui/AGENTS.md` | ratatui dashboard, AppState/AppEvent/Effect event-reducer pattern, Search Files (partial parity)/Fastener Holes/Bushing Workbench/Pressure Vessel Analyzer/Preload Analysis toolboxes |
 | bushing-solver | `bushing-solver/AGENTS.md` | Press-fit/Lamé math, imperial-only unit risk, differential-test-against-TS-original discipline |
 | src | `src/AGENTS.md` | Frozen C#/WinUI reference, its own test gate, fixture-sharing contract with search-core |
 | docs | `docs/AGENTS.md` | ADR index, epic/issue phase-history index, live-vs-closed doc classification |

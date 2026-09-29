@@ -38,10 +38,13 @@ pub fn draw(frame: &mut Frame, state: &AppState, tick: u64, regions: &mut MouseR
         ModalState::None => {}
     }
 
-    // Toolbox-local overlay (not a global `ModalState`, since only Search
-    // Files has one) - drawn on top of everything but the toasts.
+    // Toolbox-local overlays (not a global `ModalState`) - drawn on top of
+    // everything but the toasts.
     if state.search.extension_picker.open {
         crate::toolboxes::search::extension_picker::render(frame, area, &state.theme, &state.search.extension_picker, regions);
+    }
+    if state.pressure_vessel.material_picker.open {
+        crate::toolboxes::pressure_vessel::material_picker::render(frame, area, &state.theme, &state.pressure_vessel.material_picker, &state.pressure_vessel.model, regions);
     }
 
     draw_toasts(frame, area, state);
@@ -157,6 +160,18 @@ fn draw_workspace(frame: &mut Frame, area: Rect, state: &AppState, tick: u64, re
             let focused = matches!(state.focus.area, FocusArea::Workspace(_));
             crate::toolboxes::fastener_hole::view::draw(frame, area, &state.theme, &state.fastener_hole, focused, regions);
         }
+        ToolId::PressureVessel => {
+            let focused = matches!(state.focus.area, FocusArea::Workspace(_));
+            crate::toolboxes::pressure_vessel::view::draw(frame, area, &state.theme, &state.pressure_vessel, focused, regions);
+        }
+        ToolId::Bushing => {
+            let focused = matches!(state.focus.area, FocusArea::Workspace(_));
+            crate::toolboxes::bushing::view::draw(frame, area, &state.theme, &state.bushing, focused, regions);
+        }
+        ToolId::PreloadAnalysis => {
+            let focused = matches!(state.focus.area, FocusArea::Workspace(_));
+            crate::toolboxes::preload_analysis::view::draw(frame, area, &state.theme, &state.preload_analysis, focused, regions);
+        }
         _ => empty_state::render(frame, area, &state.theme, "Coming soon", None),
     }
 }
@@ -194,16 +209,31 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, state: &AppState, tick: u64) {
 /// so it never claims a key does something it won't actually do given the
 /// current focus/screen.
 fn contextual_hint(state: &AppState) -> Option<help::KeyHint> {
-    if state.nav.active_tool != ToolId::Search {
-        return None;
-    }
-    match state.search.screen {
-        crate::toolboxes::search::ToolboxScreen::Run => {
-            let results_focused =
-                matches!(state.focus.area, FocusArea::Workspace(n) if n == crate::toolboxes::search::PANE_RESULTS);
-            results_focused.then_some(help::KeyHint { key: "s", label: "Settings" })
+    match state.nav.active_tool {
+        ToolId::Search => match state.search.screen {
+            crate::toolboxes::search::ToolboxScreen::Run => {
+                let results_focused =
+                    matches!(state.focus.area, FocusArea::Workspace(n) if n == crate::toolboxes::search::PANE_RESULTS);
+                results_focused.then_some(help::KeyHint { key: "s", label: "Settings" })
+            }
+            crate::toolboxes::search::ToolboxScreen::Settings => Some(help::KeyHint { key: "Esc", label: "Back" }),
+        },
+        // `e` (export report) is the one binding on this toolbox with no
+        // on-screen affordance elsewhere - discoverable only via `?`
+        // otherwise, same reasoning as Search's own `s Settings` hint above.
+        // Only shown while the workspace itself has focus and no overlay
+        // is covering it, so the hint never claims a key does something it
+        // won't actually do right now.
+        ToolId::PressureVessel if !state.pressure_vessel.material_picker.open && matches!(state.focus.area, FocusArea::Workspace(_)) => {
+            Some(help::KeyHint { key: "e", label: "Export" })
         }
-        crate::toolboxes::search::ToolboxScreen::Settings => Some(help::KeyHint { key: "Esc", label: "Back" }),
+        ToolId::Bushing
+            if !state.bushing.material_picker.open && !state.bushing.reamer_picker.open && matches!(state.focus.area, FocusArea::Workspace(_)) =>
+        {
+            Some(help::KeyHint { key: "e", label: "Export" })
+        }
+        ToolId::PreloadAnalysis if matches!(state.focus.area, FocusArea::Workspace(_)) => Some(help::KeyHint { key: "e", label: "Export" }),
+        _ => None,
     }
 }
 
@@ -242,7 +272,20 @@ fn draw_help(frame: &mut Frame, area: Rect, state: &AppState, regions: &mut Mous
         help::KeyHint { key: "Lateral Area", label: "Always calculated, always read-only - never a direct input, even in Preserve Area mode" },
         help::KeyHint { key: "[TAG]s", label: "INPUT/CALCULATED/TRANSFERRED/PRESERVED/DERIVED/INVALID mark every value's origin" },
     ];
-    let sections: [(&str, &[help::KeyHint]); 3] = [("Global", global), ("Search Files", search), ("Fastener Holes", fastener_hole)];
+    let pressure_vessel: &[help::KeyHint] = &[
+        help::KeyHint { key: "Up/Down", label: "Move field selection" },
+        help::KeyHint { key: "Space/Enter", label: "Toggle End Condition, open the Material picker, or edit a value" },
+        help::KeyHint { key: "Enter/Esc", label: "While editing: commit / cancel" },
+        help::KeyHint { key: "d", label: "Toggle the Numbers panel (Lame constants + per-surface stress breakdown)" },
+        help::KeyHint { key: "e", label: "Export a plain-text report and open it" },
+        help::KeyHint { key: "Governing", label: "The failure mode with the lowest margin, at whichever surface is worse" },
+        help::KeyHint { key: "Classification", label: "Thin-wall vs. thick-wall is engineering interpretation only - both use the full Lame solution" },
+        help::KeyHint { key: "Buckling", label: "Only evaluated with external pressure and a nonzero unsupported length, within OD/t >= 40" },
+        help::KeyHint { key: "Thermal", label: "Only evaluated with a nonzero temperature differential - folded into the four checks, not a separate row" },
+        help::KeyHint { key: "Material picker", label: "/ filters by name, n opens a blank template to add a custom material, Enter selects" },
+    ];
+    let sections: [(&str, &[help::KeyHint]); 4] =
+        [("Global", global), ("Search Files", search), ("Fastener Holes", fastener_hole), ("Pressure Vessel Analyzer", pressure_vessel)];
     help::render_overlay(frame, area, &state.theme, &sections);
 }
 

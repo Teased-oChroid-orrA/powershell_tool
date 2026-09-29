@@ -34,20 +34,31 @@ pub struct FastenerHoleState {
 
 impl Default for FastenerHoleState {
     fn default() -> Self {
-        Self { model: FastenerHoleModel::default(), selected: 0, editing: false, edit_buffer: String::new() }
+        let mut state = Self { model: FastenerHoleModel::default(), selected: 0, editing: false, edit_buffer: String::new() };
+        // Row 0 is always a `Header` - land on the first real field instead
+        // of an unselectable row (same technique `toolboxes/bushing/mod.rs`
+        // uses).
+        state.clamp_selection();
+        state
     }
 }
 
 impl FastenerHoleState {
-    fn clamp_selection(&mut self) {
-        let len = model::field_rows(&self.model).len();
-        if len == 0 {
+    pub(crate) fn clamp_selection(&mut self) {
+        let rows = model::field_rows(&self.model);
+        if rows.is_empty() {
             self.selected = 0;
-        } else {
-            self.selected = self.selected.min(len - 1);
+            return;
+        }
+        self.selected = self.selected.min(rows.len() - 1);
+        if matches!(rows[self.selected], FieldRow::Header(_)) {
+            self.move_selection(1);
         }
     }
 
+    /// Steps `delta` rows at a time, skipping non-selectable `Header` rows -
+    /// same technique `toolboxes/bushing/mod.rs::BushingState::move_selection`
+    /// uses.
     fn move_selection(&mut self, delta: i32) {
         let rows = model::field_rows(&self.model);
         if rows.is_empty() {
@@ -55,7 +66,14 @@ impl FastenerHoleState {
             return;
         }
         let len = rows.len() as i32;
-        self.selected = ((self.selected as i32 + delta).rem_euclid(len)) as usize;
+        let mut next = self.selected as i32;
+        for _ in 0..rows.len() {
+            next = (next + delta).rem_euclid(len);
+            if !matches!(rows[next as usize], FieldRow::Header(_)) {
+                break;
+            }
+        }
+        self.selected = next as usize;
     }
 
     fn toggle_selected(&mut self) {
@@ -68,7 +86,7 @@ impl FastenerHoleState {
             Some(FieldRow::ToggleToleranceMode) => self.model.tolerance_mode = self.model.tolerance_mode.cycle(),
             Some(FieldRow::ToggleSolveFor) => self.model.countersink.solve_for = self.model.countersink.solve_for.cycle(),
             Some(FieldRow::ToggleSecondaryMethod) => self.model.countersink.secondary_method = self.model.countersink.secondary_method.cycle(),
-            _ => return,
+            Some(FieldRow::Header(_)) | Some(FieldRow::Number(..)) | None => return,
         }
         self.model.recompute();
         self.clamp_selection();
@@ -167,11 +185,12 @@ mod tests {
     #[test]
     fn up_down_navigation_wraps() {
         let mut state = FastenerHoleState::default();
+        let first_real_row = state.selected;
         handle_key(&mut state, key(KeyCode::Up));
         let last = model::field_rows(&state.model).len() - 1;
         assert_eq!(state.selected, last);
         handle_key(&mut state, key(KeyCode::Down));
-        assert_eq!(state.selected, 0);
+        assert_eq!(state.selected, first_real_row);
     }
 
     #[test]
@@ -180,13 +199,15 @@ mod tests {
         assert_eq!(state.model.hole_type, HoleType::Regular);
         handle_key(&mut state, key(KeyCode::Char(' ')));
         assert_eq!(state.model.hole_type, HoleType::Countersunk);
-        assert_eq!(state.selected, 0);
+        // Resets toward the top of the (now very different) row list, but
+        // never onto the unselectable Header row 0.
+        assert!(!matches!(model::field_rows(&state.model)[state.selected], model::FieldRow::Header(_)));
     }
 
     #[test]
     fn enter_on_a_number_row_starts_editing_prefilled_with_the_current_value() {
         let mut state = FastenerHoleState::default();
-        state.selected = 2; // Hole 1 Diameter / Nominal (first dimension row after the two toggles)
+        state.selected = 4; // Hole 1 Diameter / Nominal (first dimension row after Hole Setup's header+toggles)
         handle_key(&mut state, key(KeyCode::Enter));
         assert!(state.editing);
         assert_eq!(state.edit_buffer, "0.25");
@@ -195,7 +216,7 @@ mod tests {
     #[test]
     fn editing_and_committing_updates_the_model_and_recomputes() {
         let mut state = FastenerHoleState::default();
-        state.selected = 2; // Hole 1 Diameter / Nominal
+        state.selected = 4; // Hole 1 Diameter / Nominal
         handle_key(&mut state, key(KeyCode::Enter));
         state.edit_buffer.clear();
         for c in "0.240".chars() {
@@ -209,7 +230,7 @@ mod tests {
     #[test]
     fn esc_cancels_an_edit_without_committing() {
         let mut state = FastenerHoleState::default();
-        state.selected = 2;
+        state.selected = 4;
         handle_key(&mut state, key(KeyCode::Enter));
         handle_key(&mut state, key(KeyCode::Char('9')));
         handle_key(&mut state, key(KeyCode::Esc));
@@ -220,7 +241,7 @@ mod tests {
     #[test]
     fn invalid_numeric_text_is_ignored_on_commit_not_panicking() {
         let mut state = FastenerHoleState::default();
-        state.selected = 2;
+        state.selected = 4;
         handle_key(&mut state, key(KeyCode::Enter));
         state.edit_buffer.clear();
         for c in "not-a-number".chars() {
@@ -233,7 +254,7 @@ mod tests {
     #[test]
     fn ctrl_modified_char_is_not_consumed_while_editing() {
         let mut state = FastenerHoleState::default();
-        state.selected = 2;
+        state.selected = 4;
         handle_key(&mut state, key(KeyCode::Enter));
         let mut ctrl_p = key(KeyCode::Char('p'));
         ctrl_p.modifiers = KeyModifiers::CONTROL;
@@ -244,11 +265,11 @@ mod tests {
     #[test]
     fn navigation_is_ignored_while_editing() {
         let mut state = FastenerHoleState::default();
-        state.selected = 2;
+        state.selected = 4;
         handle_key(&mut state, key(KeyCode::Enter));
         let (consumed, _) = handle_key(&mut state, key(KeyCode::Down));
         assert!(!consumed);
-        assert_eq!(state.selected, 2);
+        assert_eq!(state.selected, 4);
     }
 
     #[test]

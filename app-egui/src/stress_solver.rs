@@ -427,6 +427,15 @@ pub struct StressSolverTool {
     // Phase 16 (Neural-Network-Wide Adaptive Collocation epic) - real per-hole stress
     // analysis (nominal/max stress, Kt, full angular profile), latest received.
     hole_analyses: Vec<pinn_core::messages::HoleAnalysis>,
+    /// Issue #77 PH4-45: real Kt for `run_training_user_problem`'s two-domain annular-
+    /// decomposition dispatch paths (`AnnularDecompositionProblem`'s Joint/SequentialTwoStage
+    /// procedures - selected via a loaded spec's `[architecture]` table, or a geometry that
+    /// naturally qualifies even without one). Those paths always leave `hole_analyses` above
+    /// empty (no per-hole boundary profile exists for a two-domain split), so without this
+    /// field the Kt card below would show "No data yet" FOREVER on any spec that dispatches
+    /// there, even though real numbers stream in via `TrainingUpdate::kt_estimate` the whole
+    /// time.
+    kt_estimate: Option<f32>,
 
     // Parametric PINN (`enhancement.txt` items 7/8/17-18) - only meaningful for
     // `LoadedSpec::Parametric`. `parametric_ready` flips true on `TrainingMsg::
@@ -619,6 +628,7 @@ impl StressSolverTool {
             architecture_events: Vec::new(),
             architecture_event_marker_positions: Vec::new(),
             hole_analyses: Vec::new(),
+            kt_estimate: None,
             parametric_ready: false,
             parametric_param_history: Vec::new(),
             infer_e: 0.0,
@@ -721,6 +731,7 @@ impl StressSolverTool {
         self.architecture_events.clear();
         self.architecture_event_marker_positions.clear();
         self.hole_analyses.clear();
+        self.kt_estimate = None;
         self.parametric_ready = false;
         self.parametric_param_history.clear();
         self.infer_result = None;
@@ -834,6 +845,7 @@ impl StressSolverTool {
                 self.architecture_events.clear();
                 self.architecture_event_marker_positions.clear();
                 self.hole_analyses.clear();
+                self.kt_estimate = None;
                 self.parametric_ready = false;
                 self.parametric_param_history.clear();
                 self.infer_result = None;
@@ -938,6 +950,7 @@ impl StressSolverTool {
         self.architecture_events.clear();
         self.architecture_event_marker_positions.clear();
         self.hole_analyses.clear();
+        self.kt_estimate = None;
         self.grad_norm_history.clear();
         self.bc_residual_rms = 0.0;
         self.bc_residual_max = 0.0;
@@ -1090,6 +1103,10 @@ impl StressSolverTool {
                 "kt": h.concentration.kt,
                 "peak_theta_deg": h.concentration.max_theta_deg,
             })).collect::<Vec<_>>(),
+            // Issue #77 PH4-45: real Kt for the annular-decomposition dispatch paths - see
+            // `kt_estimate`'s own field doc comment. Always `null` when `hole_analyses` above
+            // is non-empty (the two Kt sources are mutually exclusive per dispatch path).
+            "annular_kt": self.kt_estimate,
             // Issue #62 PH3-03: still exported directly (not folded into `authoritative_report`
             // below) purely as a convenience top-level field for tools that only care about
             // this one verdict - the SOURCE of truth is still `authoritative_report.l0_passed`
@@ -1116,10 +1133,9 @@ impl StressSolverTool {
                     let convergence_evidence = self.convergence_evidence.as_ref().map(pinn_solver::provenance::PersistedConvergenceEvidence::from);
                     let no_hole_benchmark = self.no_hole_benchmark.as_ref().map(pinn_solver::provenance::PersistedNoHoleBenchmark::from);
                     let last_amr_sweep_step = self.amr_sweeps.last().map(|s| s.step);
-                    Some(pinn_solver::provenance::build_authoritative_report(
-                        provenance, spec.training.measure_aware_training, spec.training.amr_enabled,
-                        last_amr_sweep_step, no_hole_benchmark, self.energy_balance, self.reaction_force,
-                        convergence_evidence,
+                    Some(pinn_solver::provenance::build_plate_authoritative_report(
+                        spec, provenance, last_amr_sweep_step, no_hole_benchmark,
+                        self.energy_balance, self.reaction_force, convergence_evidence, None,
                     ))
                 }
                 _ => None,
@@ -1221,6 +1237,11 @@ impl StressSolverTool {
                 }
                 if !upd.hole_analyses.is_empty() {
                     self.hole_analyses = upd.hole_analyses;
+                }
+                // Issue #77 PH4-45: see `kt_estimate`'s own field doc comment - the annular-
+                // decomposition dispatch paths populate THIS instead of `hole_analyses` above.
+                if upd.kt_estimate.is_some() {
+                    self.kt_estimate = upd.kt_estimate;
                 }
                 if let Some(report) = upd.amr_sweep {
                     // Chart marker position uses the just-pushed `total_loss` INDEX, not
@@ -1539,6 +1560,37 @@ impl StressSolverTool {
                                 ui.colored_label(color, format!("\u{25cf} {label} r={}", fmt(hole.radius, PhysicalQuantity::Length)));
                             }
                         });
+                        // Issue #77 PH4-45: read-only summary of which corrected architecture
+                        // this spec's `[architecture]` table selected - only shown when it
+                        // differs from the pre-#77 default, matching this branch's own "just
+                        // summarize what the TOML said" convention (formulation/training
+                        // schedule aren't editable in-app either, and aren't shown here by
+                        // default for the same reason - this is the one exception because
+                        // silently training a different architecture than the loaded TOML
+                        // implies is worth surfacing).
+                        {
+                            use pinn_core::problem_spec::{CoordinateEmbeddingSelection, TrainingProcedure};
+                            let a = &spec.architecture;
+                            if a.hard_constraint_ansatz
+                                || a.coordinate_embedding != CoordinateEmbeddingSelection::Cartesian
+                                || !matches!(a.training_procedure, TrainingProcedure::Joint)
+                            {
+                                let procedure = match a.training_procedure {
+                                    TrainingProcedure::Joint => "Joint".to_string(),
+                                    TrainingProcedure::SingleDomain => "SingleDomain".to_string(),
+                                    TrainingProcedure::SequentialTwoStage { stage_a_steps, stage_b_steps } =>
+                                        format!("SequentialTwoStage({stage_a_steps}+{stage_b_steps})"),
+                                };
+                                let embedding = match a.coordinate_embedding {
+                                    CoordinateEmbeddingSelection::Cartesian => "Cartesian",
+                                    CoordinateEmbeddingSelection::LogPolar => "LogPolar",
+                                };
+                                ui.colored_label(tokens.fg_muted, egui::RichText::new(format!(
+                                    "Architecture: hard-constraint={}  hole-bias={:.2}  embedding={embedding}  procedure={procedure}",
+                                    if a.hard_constraint_ansatz { "on" } else { "off" }, a.hole_bias_fraction,
+                                )).size(10.5));
+                            }
+                        }
                     }
                 }
                 Some(LoadedSpec::Beam(spec)) => {
@@ -2367,6 +2419,27 @@ impl StressSolverTool {
                 ui.add_space(8.0);
             }
             if self.hole_analyses.is_empty() {
+                // Issue #77 PH4-45: `run_training_user_problem` also dispatches specs to
+                // `AnnularDecompositionProblem`'s two-domain Joint/SequentialTwoStage
+                // procedures (any spec whose geometry qualifies - a single, safely-contained
+                // Free hole under a Variational + measure-aware-training formulation - or that
+                // explicitly requests one via `[architecture]`). Those paths compute Kt from a
+                // real, splined two-model field rather than one model's own boundary profile,
+                // so no per-hole `HoleAnalysis` exists to populate `hole_analyses` above - the
+                // single scalar in `kt_estimate` is that path's real, complete answer.
+                if let Some(kt) = self.kt_estimate {
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.colored_label(tokens.fg_muted, egui::RichText::new("Kt").size(10.5));
+                            ui.colored_label(tokens.accent_strong, egui::RichText::new(format!("{kt:.2}")).strong());
+                        });
+                    });
+                    ui.add_space(6.0);
+                    ui.colored_label(tokens.fg_subtle, egui::RichText::new(
+                        "Annular-decomposition training path - no per-hole boundary profile available"
+                    ).size(10.5));
+                    return;
+                }
                 crate::design::components::empty_state(
                     ui, tokens, "\u{25cb}", "No data yet",
                     "Populates once training produces its first stress-field sample",
@@ -3158,4 +3231,65 @@ fn status_rail(ui: &mut egui::Ui, tokens: &Tokens, rail: &RailSnapshot) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod kt_estimate_tests {
+    use super::*;
+    use pinn_core::messages::TrainingUpdate;
+
+    fn empty_update(kt_estimate: Option<f32>, hole_analyses: Vec<pinn_core::messages::HoleAnalysis>) -> TrainingUpdate {
+        TrainingUpdate {
+            objective: None,
+            step: 0, total_loss: 0.0, energy_loss: 0.0, neumann_loss: 0.0, lr: 0.0,
+            lam_energy: 0.0, lam_neumann: 0.0, n_colloc: 0,
+            kt_estimate, vis: None, amr_sweep: None, hole_analyses,
+            grad_norm: None, bc_residual_rms: 0.0, bc_residual_max: 0.0,
+            reaction_force: None, energy_balance: None, network_snapshot: None,
+            architecture_event: None, gradient_share_report: None, gradient_conflict_report: None,
+            stress_source_report: Vec::new(), boundary_operator_report: Vec::new(),
+            derivative_order_report: Vec::new(), formulation_kind_report: Vec::new(),
+            constraint_report: Vec::new(), no_hole_benchmark: None,
+            ad_fd_strain_diagnostic: None, convergence_evidence: None,
+        }
+    }
+
+    /// Issue #77 PH4-45: real regression guard for the exact gap this session's own repo
+    /// audit found - `apply_msg`'s `TrainingMsg::Update` arm used to never read `upd.
+    /// kt_estimate` at all, so any spec dispatching through `AnnularDecompositionProblem`'s
+    /// Joint/SequentialTwoStage procedures (which always leave `hole_analyses` empty and
+    /// report Kt via `kt_estimate` instead) would silently show no Kt in this toolbox forever,
+    /// despite the upstream solver streaming a real number the whole time.
+    #[test]
+    fn apply_msg_populates_kt_estimate_for_the_annular_decomposition_dispatch_path() {
+        let runtime = Arc::new(tokio::runtime::Builder::new_current_thread().build().unwrap());
+        let mut tool = StressSolverTool::new(runtime);
+        assert_eq!(tool.kt_estimate, None, "starts unset");
+
+        tool.apply_msg(TrainingMsg::Update(Box::new(empty_update(Some(2.46), Vec::new()))));
+        assert_eq!(tool.kt_estimate, Some(2.46), "kt_estimate must be threaded through when hole_analyses is empty (the annular-decomposition path's own shape)");
+        assert!(tool.hole_analyses.is_empty());
+    }
+
+    /// A later update with `kt_estimate: None` (any non-vis-cadence tick) must NOT clobber the
+    /// last real reading back to `None` - same "only ever moves forward" convention `hole_
+    /// analyses`'s own `if !upd.hole_analyses.is_empty()` guard already established.
+    #[test]
+    fn apply_msg_does_not_clobber_kt_estimate_on_a_tick_without_one() {
+        let runtime = Arc::new(tokio::runtime::Builder::new_current_thread().build().unwrap());
+        let mut tool = StressSolverTool::new(runtime);
+        tool.apply_msg(TrainingMsg::Update(Box::new(empty_update(Some(2.46), Vec::new()))));
+        tool.apply_msg(TrainingMsg::Update(Box::new(empty_update(None, Vec::new()))));
+        assert_eq!(tool.kt_estimate, Some(2.46), "a tick with no kt_estimate must not erase the last real reading");
+    }
+
+    /// The plain single-domain dispatch path (real `hole_analyses`, no `kt_estimate`) must
+    /// keep working exactly as before this change - `kt_estimate` stays `None` throughout.
+    #[test]
+    fn apply_msg_leaves_kt_estimate_none_for_the_single_domain_dispatch_path() {
+        let runtime = Arc::new(tokio::runtime::Builder::new_current_thread().build().unwrap());
+        let mut tool = StressSolverTool::new(runtime);
+        tool.apply_msg(TrainingMsg::Update(Box::new(empty_update(None, Vec::new()))));
+        assert_eq!(tool.kt_estimate, None);
+    }
 }

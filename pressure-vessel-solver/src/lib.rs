@@ -8,4 +8,5 @@ pub mod failure;
 pub mod geometry;
 pub mod pressure;
 pub mod stress;
+pub mod thermal;
 pub mod thickness;

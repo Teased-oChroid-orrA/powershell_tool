@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["native-search", "search-core", "app", "app-tui", "cli", "bushing-solver", "engineering-math", "mechanics-core", "pressure-vessel-solver"]
+members = ["native-search", "search-core", "app", "app-tui", "cli", "bushing-solver", "engineering-math", "mechanics-core", "pressure-vessel-solver", "fastened-joint-solver"]
 # `app-egui` is DELIBERATELY excluded, not a member - see its own Cargo.toml's
 # `[workspace]` stanza for why: it and `app` (this workspace) need genuinely
 # incompatible major versions of the `windows`/`windows-core` crate family on

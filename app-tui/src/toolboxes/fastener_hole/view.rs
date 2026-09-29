@@ -6,8 +6,9 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, ListItem, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, ListItem, Paragraph, Wrap};
 
 use crate::theme::{StatusTone, Theme};
 
@@ -56,13 +57,8 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &FastenerHoleSt
 /// pane that holds them), so the two can never drift apart.
 fn compute_label_width(rows: &[FieldRow]) -> u16 {
     rows.iter()
-        .map(|r| match r {
-            FieldRow::Number(_, part, label) => label.len() + 1 + part.suffix().len(),
-            FieldRow::ToggleHoleType => "Hole Type".len(),
-            FieldRow::ToggleToleranceMode => "Tolerance Input".len(),
-            FieldRow::ToggleSolveFor => "Solve For".len(),
-            FieldRow::ToggleSecondaryMethod => "Secondary Method".len(),
-        })
+        .filter(|r| !matches!(r, FieldRow::Header(_)))
+        .map(|r| row_label(*r).len())
         .max()
         .unwrap_or(0) as u16
         + 2
@@ -117,12 +113,25 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, state: &FastenerHol
     }
 
     let rows = model::field_rows(&state.model);
+    let hint = rows.get(state.selected).map(|r| model::field_hint(*r)).unwrap_or("");
+    let max_hint_lines = inner.height.saturating_sub(4).max(1);
+    let hint_height = crate::widgets::hint_panel::hint_panel_height(hint, inner.width, max_hint_lines);
+    let (list_area, hint_area) = if inner.height > hint_height + 1 {
+        let split = Layout::default().direction(Direction::Vertical).constraints([Constraint::Min(1), Constraint::Length(hint_height)]).split(inner);
+        (split[0], Some(split[1]))
+    } else {
+        (inner, None)
+    };
+
     let label_width = compute_label_width(&rows) as usize;
 
     let items: Vec<ListItem> = rows
         .iter()
         .enumerate()
         .map(|(i, row)| {
+            if let FieldRow::Header(text) = row {
+                return ListItem::new(Line::from(Span::styled(format!("-- {text} --"), theme.title_style(false).add_modifier(Modifier::BOLD))));
+            }
             let selected = focused && i == state.selected;
             let value = if selected && state.editing {
                 format!("{}_", state.edit_buffer)
@@ -136,12 +145,17 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, state: &FastenerHol
         })
         .collect();
 
-    let offset = crate::widgets::scroll_list::render(frame, inner, items, focused.then_some(state.selected));
-    regions.fastener_rows.extend(crate::mouse::list_row_regions(inner, offset, rows.len()));
+    let offset = crate::widgets::scroll_list::render(frame, list_area, items, focused.then_some(state.selected));
+    regions.fastener_rows.extend(crate::mouse::list_row_regions(list_area, offset, rows.len()));
+
+    if let Some(hint_area) = hint_area {
+        frame.render_widget(Paragraph::new(Line::from(Span::styled(hint, theme.disabled_style()))).wrap(Wrap { trim: true }), hint_area);
+    }
 }
 
 fn row_label(row: FieldRow) -> String {
     match row {
+        FieldRow::Header(text) => text.to_string(),
         FieldRow::ToggleHoleType => "Hole Type".to_string(),
         FieldRow::ToggleToleranceMode => "Tolerance Input".to_string(),
         FieldRow::ToggleSolveFor => "Solve For".to_string(),
@@ -152,6 +166,7 @@ fn row_label(row: FieldRow) -> String {
 
 fn display_value(model: &FastenerHoleModel, row: FieldRow) -> String {
     match row {
+        FieldRow::Header(_) => String::new(),
         FieldRow::ToggleHoleType => model.hole_type.label().to_string(),
         FieldRow::ToggleToleranceMode => model.tolerance_mode.label().to_string(),
         FieldRow::ToggleSolveFor => model.countersink.solve_for.label().to_string(),
@@ -330,6 +345,37 @@ mod tests {
         terminal.draw(|f| draw(f, f.area(), &Theme::default_palette(), &state, true, &mut regions)).unwrap();
     }
 
+    /// Regression test for the hint-truncation bug (see `bushing/view.rs`'s
+    /// twin test): selects the field with the single longest `field_hint()`
+    /// string and asserts every word of it appears somewhere in the
+    /// rendered buffer, across a range of widths including narrow ones.
+    #[test]
+    fn the_longest_hint_is_never_truncated_across_a_range_of_widths() {
+        let mut everything_on = FastenerHoleState::default();
+        everything_on.model.hole_type = HoleType::Countersunk;
+        let rows = model::field_rows(&everything_on.model);
+        let (longest_index, longest_hint) =
+            rows.iter().enumerate().map(|(i, r)| (i, model::field_hint(*r))).max_by_key(|(_, hint)| hint.len()).expect("at least one field row");
+        assert!(!longest_hint.is_empty());
+
+        for width in [40u16, 50, 60, 84, 98, 140] {
+            let mut state = FastenerHoleState::default();
+            state.model.hole_type = HoleType::Countersunk;
+            state.selected = longest_index;
+            let backend = TestBackend::new(width, 40);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let mut regions = crate::mouse::MouseRegions::default();
+            terminal.draw(|f| draw(f, f.area(), &Theme::default_palette(), &state, true, &mut regions)).unwrap();
+
+            let buffer = terminal.backend().buffer().clone();
+            let rendered: String = (0..buffer.area.height).map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>() + "\n").collect();
+
+            for word in longest_hint.split_whitespace() {
+                assert!(rendered.contains(word), "word `{word}` from the longest hint missing at width {width}:\n{rendered}");
+            }
+        }
+    }
+
     /// Regression test for the reported bug: at widths that used to land in
     /// the old fixed-45%/`MIN_WIDE_WIDTH = 84` split's failure zone (roughly
     /// 84-98 inner columns - wide enough to trigger the horizontal split,
@@ -353,6 +399,9 @@ mod tests {
                 let label_width = compute_label_width(&rows) as usize;
 
                 for (i, row) in rows.iter().enumerate() {
+                    if matches!(row, FieldRow::Header(_)) {
+                        continue; // rendered as "-- text --", not "label + value"
+                    }
                     state.selected = i;
 
                     let backend = TestBackend::new(width, 40);

@@ -116,11 +116,34 @@ impl NumberPart {
 /// source of truth for both concerns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldRow {
+    /// A non-selectable section divider - see `toolboxes/bushing/model.rs::FieldRow::Header`'s
+    /// doc comment for the same reasoning, applied here.
+    Header(&'static str),
     ToggleHoleType,
     ToggleToleranceMode,
     ToggleSolveFor,
     ToggleSecondaryMethod,
     Number(NumberTarget, NumberPart, &'static str),
+}
+
+/// One-line description shown in the bottom "Hint" panel while this row is
+/// selected - same purpose as `toolboxes/bushing/model.rs::field_hint`.
+pub fn field_hint(row: FieldRow) -> &'static str {
+    match row {
+        FieldRow::Header(_) => "",
+        FieldRow::ToggleHoleType => "Regular (two plain round holes) or Countersunk (a flared entry over a straight hole).",
+        FieldRow::ToggleToleranceMode => "How each dimension below is entered - a nominal value with +/- tolerances, or an explicit min/max pair.",
+        FieldRow::ToggleSolveFor => "Which countersink dimension is calculated from the other three - that dimension never appears as an editable row.",
+        FieldRow::ToggleSecondaryMethod => "How the secondary countersink's depth/angle is derived from the primary: preserve depth (recompute angle) or preserve lateral surface area (recompute depth and angle together).",
+        FieldRow::Number(NumberTarget::RegularHole1, _, _) => "First hole's diameter.",
+        FieldRow::Number(NumberTarget::RegularHole2, _, _) => "Second hole's diameter - compared against the first to determine the resulting fit.",
+        FieldRow::Number(NumberTarget::RegularReference, _, _) => "Secondary reference hole diameter, checked against the derived fit for consistency.",
+        FieldRow::Number(NumberTarget::CsOuterDiameter, _, _) => "Countersink outer (flared) diameter.",
+        FieldRow::Number(NumberTarget::CsHoleDiameter, _, _) => "Straight-hole diameter below the countersink.",
+        FieldRow::Number(NumberTarget::CsDepth, _, _) => "Countersink depth from the surface to the straight-hole transition.",
+        FieldRow::Number(NumberTarget::CsAngle, _, _) => "Countersink included angle.",
+        FieldRow::Number(NumberTarget::CsSecondaryHoleDiameter, _, _) => "Secondary (opposite-face) countersink's hole diameter - its depth/angle are derived per the Secondary Method above.",
+    }
 }
 
 fn dimension_rows(mode: ToleranceInputMode, target: NumberTarget, label: &'static str) -> Vec<FieldRow> {
@@ -137,14 +160,16 @@ fn dimension_rows(mode: ToleranceInputMode, target: NumberTarget, label: &'stati
 /// TRANSFERRED/PRESERVED value is never added to this list, so it can
 /// never receive editing focus (spec section 32).
 pub fn field_rows(model: &FastenerHoleModel) -> Vec<FieldRow> {
-    let mut rows = vec![FieldRow::ToggleHoleType, FieldRow::ToggleToleranceMode];
+    let mut rows = vec![FieldRow::Header("Hole Setup"), FieldRow::ToggleHoleType, FieldRow::ToggleToleranceMode];
     match model.hole_type {
         HoleType::Regular => {
+            rows.push(FieldRow::Header("Regular Hole Dimensions"));
             rows.extend(dimension_rows(model.tolerance_mode, NumberTarget::RegularHole1, "Hole 1 Diameter"));
             rows.extend(dimension_rows(model.tolerance_mode, NumberTarget::RegularHole2, "Hole 2 Diameter"));
             rows.extend(dimension_rows(model.tolerance_mode, NumberTarget::RegularReference, "Secondary Reference Hole"));
         }
         HoleType::Countersunk => {
+            rows.push(FieldRow::Header("Countersink Geometry"));
             rows.push(FieldRow::ToggleSolveFor);
             let cs = &model.countersink;
             if cs.solve_for != CountersinkSolveFor::OuterDiameter {
@@ -159,6 +184,7 @@ pub fn field_rows(model: &FastenerHoleModel) -> Vec<FieldRow> {
             if cs.solve_for != CountersinkSolveFor::Angle {
                 rows.extend(dimension_rows(model.tolerance_mode, NumberTarget::CsAngle, "Angle"));
             }
+            rows.push(FieldRow::Header("Secondary Countersink"));
             rows.push(FieldRow::ToggleSecondaryMethod);
             rows.extend(dimension_rows(model.tolerance_mode, NumberTarget::CsSecondaryHoleDiameter, "Secondary Hole Diameter"));
         }

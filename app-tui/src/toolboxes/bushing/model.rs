@@ -1,0 +1,916 @@
+//! Bridges the pure `bushing-solver`/`mechanics-core` engine into UI-facing
+//! state, the same split `toolboxes/pressure_vessel/model.rs` uses: zero
+//! `ratatui`/`crossterm` here - only `mod.rs` (key routing) and `view.rs`
+//! (rendering) know about the terminal.
+//!
+//! **Deliberately not ported** from `app`'s/`app-egui`'s own Bushing
+//! Workbench: the axial cross-section sketch (`app-egui/src/sketches.rs`'s
+//! `bushing_cross_section`, `app/src/bushing_visualizer.rs`) - visual
+//! presentation with no terminal equivalent, same call `pressure_vessel`
+//! already made for its own cross-section sketches. Every numeric result
+//! either GUI head computes is still exposed here.
+//!
+//! Every field maps 1:1 onto `bushing_solver::solve::BushingInputs` - see
+//! that type's own doc comment for units (imperial only: in, psi/ksi, lbf,
+//! degF) and the "every new field defaults through `..Default::default()`"
+//! contract this module's `Default` impl mirrors by construction (each
+//! field here is set to the exact value that produces the same
+//! `BushingInputs` default would).
+
+use bushing_solver::countersink::CsMode;
+use bushing_solver::geometry::{BushingType, IdType};
+use bushing_solver::reamers::ReamerEntry;
+use bushing_solver::solve::{compute, BushingInputs, BushingOutput, EndConstraint};
+use bushing_solver::tolerance::{BoreCapability, EnforcementPolicy};
+use mechanics_core::materials::{Material, MATERIALS};
+
+pub fn cycle_bushing_type(t: BushingType) -> BushingType {
+    match t {
+        BushingType::Straight => BushingType::Flanged,
+        BushingType::Flanged => BushingType::Countersink,
+        BushingType::Countersink => BushingType::Straight,
+    }
+}
+
+pub fn label_bushing_type(t: BushingType) -> &'static str {
+    match t {
+        BushingType::Straight => "Straight",
+        BushingType::Flanged => "Flanged",
+        BushingType::Countersink => "Countersink (OD)",
+    }
+}
+
+pub fn cycle_id_type(t: IdType) -> IdType {
+    match t {
+        IdType::Straight => IdType::Countersink,
+        IdType::Countersink => IdType::Straight,
+    }
+}
+
+pub fn label_id_type(t: IdType) -> &'static str {
+    match t {
+        IdType::Straight => "Straight",
+        IdType::Countersink => "Countersink (ID)",
+    }
+}
+
+pub fn cycle_end_constraint(e: EndConstraint) -> EndConstraint {
+    match e {
+        EndConstraint::Free => EndConstraint::OneEnd,
+        EndConstraint::OneEnd => EndConstraint::BothEnds,
+        EndConstraint::BothEnds => EndConstraint::Free,
+    }
+}
+
+pub fn label_end_constraint(e: EndConstraint) -> &'static str {
+    match e {
+        EndConstraint::Free => "Free",
+        EndConstraint::OneEnd => "One End",
+        EndConstraint::BothEnds => "Both Ends",
+    }
+}
+
+pub fn cycle_cs_mode(m: CsMode) -> CsMode {
+    match m {
+        CsMode::DepthAngle => CsMode::DiaAngle,
+        CsMode::DiaAngle => CsMode::DiaDepth,
+        CsMode::DiaDepth => CsMode::DepthAngle,
+    }
+}
+
+pub fn label_cs_mode(m: CsMode) -> &'static str {
+    match m {
+        CsMode::DepthAngle => "Depth+Angle -> Dia",
+        CsMode::DiaAngle => "Dia+Angle -> Depth",
+        CsMode::DiaDepth => "Dia+Depth -> Angle",
+    }
+}
+
+/// Which physical quantity a numeric row edits - every variant maps 1:1
+/// onto a `BushingInputs` field (see this module's own doc comment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumberTarget {
+    BoreDia,
+    BoreTolPlus,
+    BoreTolMinus,
+    IdBushing,
+    Interference,
+    InterferenceTolPlus,
+    InterferenceTolMinus,
+    HousingLen,
+    HousingWidth,
+    EdgeDist,
+    Friction,
+    DeltaT,
+    MinWallStraight,
+    EdgeLoadAngleDeg,
+    Load,
+    FlangeOd,
+    FlangeThk,
+    MinWallNeck,
+    CsDia,
+    CsDepth,
+    CsAngle,
+    CsDiaTolPlus,
+    CsDiaTolMinus,
+    CsDepthTolPlus,
+    CsDepthTolMinus,
+    CsAngleTolPlus,
+    CsAngleTolMinus,
+    ExtCsDia,
+    ExtCsDepth,
+    ExtCsAngle,
+    ExtCsDiaTolPlus,
+    ExtCsDiaTolMinus,
+    ExtCsDepthTolPlus,
+    ExtCsDepthTolMinus,
+    ExtCsAngleTolPlus,
+    ExtCsAngleTolMinus,
+    MaxBoreNominalShift,
+    BoreCapabilityMinWidth,
+    AssemblyHousingTemp,
+    AssemblyBushingTemp,
+}
+
+impl NumberTarget {
+    pub fn label(self) -> &'static str {
+        match self {
+            NumberTarget::BoreDia => "Bore Diameter",
+            NumberTarget::BoreTolPlus => "Bore Tol +",
+            NumberTarget::BoreTolMinus => "Bore Tol -",
+            NumberTarget::IdBushing => "Bushing ID",
+            NumberTarget::Interference => "Target Interference",
+            NumberTarget::InterferenceTolPlus => "Interference Tol +",
+            NumberTarget::InterferenceTolMinus => "Interference Tol -",
+            NumberTarget::HousingLen => "Housing Length",
+            NumberTarget::HousingWidth => "Housing Width",
+            NumberTarget::EdgeDist => "Edge Distance",
+            NumberTarget::Friction => "Friction Coefficient",
+            NumberTarget::DeltaT => "Service Temp Change",
+            NumberTarget::MinWallStraight => "Min Straight Wall",
+            NumberTarget::EdgeLoadAngleDeg => "Edge Load Angle",
+            NumberTarget::Load => "Applied Edge Load",
+            NumberTarget::FlangeOd => "Flange OD",
+            NumberTarget::FlangeThk => "Flange Thickness",
+            NumberTarget::MinWallNeck => "Min Neck Wall",
+            NumberTarget::CsDia => "Internal CS Diameter",
+            NumberTarget::CsDepth => "Internal CS Depth",
+            NumberTarget::CsAngle => "Internal CS Angle",
+            NumberTarget::CsDiaTolPlus => "Internal CS Dia Tol +",
+            NumberTarget::CsDiaTolMinus => "Internal CS Dia Tol -",
+            NumberTarget::CsDepthTolPlus => "Internal CS Depth Tol +",
+            NumberTarget::CsDepthTolMinus => "Internal CS Depth Tol -",
+            NumberTarget::CsAngleTolPlus => "Internal CS Angle Tol +",
+            NumberTarget::CsAngleTolMinus => "Internal CS Angle Tol -",
+            NumberTarget::ExtCsDia => "External CS Diameter",
+            NumberTarget::ExtCsDepth => "External CS Depth",
+            NumberTarget::ExtCsAngle => "External CS Angle",
+            NumberTarget::ExtCsDiaTolPlus => "External CS Dia Tol +",
+            NumberTarget::ExtCsDiaTolMinus => "External CS Dia Tol -",
+            NumberTarget::ExtCsDepthTolPlus => "External CS Depth Tol +",
+            NumberTarget::ExtCsDepthTolMinus => "External CS Depth Tol -",
+            NumberTarget::ExtCsAngleTolPlus => "External CS Angle Tol +",
+            NumberTarget::ExtCsAngleTolMinus => "External CS Angle Tol -",
+            NumberTarget::MaxBoreNominalShift => "Max Bore Nominal Shift",
+            NumberTarget::BoreCapabilityMinWidth => "Bore Capability Min Width",
+            NumberTarget::AssemblyHousingTemp => "Assembly Housing Temp",
+            NumberTarget::AssemblyBushingTemp => "Assembly Bushing Temp",
+        }
+    }
+
+    fn is_angle(self) -> bool {
+        matches!(
+            self,
+            NumberTarget::CsAngle | NumberTarget::CsAngleTolPlus | NumberTarget::CsAngleTolMinus | NumberTarget::ExtCsAngle | NumberTarget::ExtCsAngleTolPlus | NumberTarget::ExtCsAngleTolMinus | NumberTarget::EdgeLoadAngleDeg
+        )
+    }
+
+    fn is_temperature(self) -> bool {
+        matches!(self, NumberTarget::DeltaT | NumberTarget::AssemblyHousingTemp | NumberTarget::AssemblyBushingTemp)
+    }
+
+    pub fn format_value(self, value: f64) -> String {
+        match self {
+            NumberTarget::Friction => format!("{value:.3}"),
+            NumberTarget::Load => format!("{value:.1} lbf"),
+            _ if self.is_angle() => format!("{value:.3} deg"),
+            _ if self.is_temperature() => format!("{value:+.1} \u{b0}F"),
+            _ => format!("{value:.4} in"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldRow {
+    /// A non-selectable section divider - navigation skips over it (see
+    /// `BushingState::move_selection`). Purely organizational: splits the
+    /// ~45-field list into the same logical groups an engineer would fill
+    /// out on a paper bushing-fit worksheet, so the list reads as a form
+    /// with sections rather than one long undifferentiated column.
+    Header(&'static str),
+    ToggleBushingType,
+    ToggleIdType,
+    ToggleEndConstraint,
+    ToggleCsMode,
+    ToggleExtCsMode,
+    ToggleEnforcementEnabled,
+    ToggleLockBore,
+    TogglePreserveBoreNominal,
+    ToggleAllowBoreNominalShift,
+    ToggleAssemblyThermalEnabled,
+    OpenHousingMaterialPicker,
+    OpenBushingMaterialPicker,
+    Number(NumberTarget),
+}
+
+pub fn row_label(row: FieldRow) -> &'static str {
+    match row {
+        FieldRow::Header(text) => text,
+        FieldRow::ToggleBushingType => "OD Geometry",
+        FieldRow::ToggleIdType => "ID Geometry",
+        FieldRow::ToggleEndConstraint => "End Constraint",
+        FieldRow::ToggleCsMode => "Internal CS Mode",
+        FieldRow::ToggleExtCsMode => "External CS Mode",
+        FieldRow::ToggleEnforcementEnabled => "Strict Interference Enforcement",
+        FieldRow::ToggleLockBore => "Bore Locked (Reamer-Fixed)",
+        FieldRow::TogglePreserveBoreNominal => "Preserve Bore Nominal",
+        FieldRow::ToggleAllowBoreNominalShift => "Allow Bore Nominal Shift",
+        FieldRow::ToggleAssemblyThermalEnabled => "Install Thermal Assist",
+        FieldRow::OpenHousingMaterialPicker => "Housing Material",
+        FieldRow::OpenBushingMaterialPicker => "Bushing Material",
+        FieldRow::Number(target) => target.label(),
+    }
+}
+
+/// One-line description shown in the bottom "Hint" panel while this row is
+/// selected - orientation for a field whose name alone (e.g. "Lambda"
+/// wouldn't be, but "Edge Load Angle" still benefits from stating units/
+/// defaults/consequences) doesn't fully explain what it does or how it's
+/// used downstream. `Header` rows are never selectable, so they have no
+/// hint.
+pub fn field_hint(row: FieldRow) -> &'static str {
+    match row {
+        FieldRow::Header(_) => "",
+        FieldRow::Number(NumberTarget::BoreDia) => "Housing bore nominal diameter. Enter opens the aircraft reamer catalog to pick a real reamed size; press 'm' inside that picker to type an exact value instead.",
+        FieldRow::Number(NumberTarget::BoreTolPlus) | FieldRow::Number(NumberTarget::BoreTolMinus) => "Bore tolerance band. A band wider than the interference tolerance band makes the fit Infeasible (see Tolerance status in Results).",
+        FieldRow::Number(NumberTarget::IdBushing) => "Bushing inner (through) diameter - the finished bore the installed part/shaft actually uses.",
+        FieldRow::Number(NumberTarget::Interference) => "Target nominal diametral interference (Bore - Bushing OD, negative). Drives contact pressure and every downstream stress/margin.",
+        FieldRow::Number(NumberTarget::InterferenceTolPlus) | FieldRow::Number(NumberTarget::InterferenceTolMinus) => "Interference tolerance band - must be at least as wide as the bore tolerance band for a feasible fit.",
+        FieldRow::Number(NumberTarget::HousingLen) => "Housing length along the bushing axis - drives install force, axial stress scaling, and the edge-distance sequencing thickness.",
+        FieldRow::Number(NumberTarget::HousingWidth) => "Available surrounding housing material width - bounds the finite-plate stress correction (psi/lambda in the Numbers panel).",
+        FieldRow::Number(NumberTarget::EdgeDist) => "Distance from bore center to the nearest free edge - compared against the sequencing/strength minimums in the Edge Distance results.",
+        FieldRow::OpenHousingMaterialPicker => "Housing material - drives modulus, yield strength, and thermal expansion for the outer (housing) region.",
+        FieldRow::OpenBushingMaterialPicker => "Bushing material - drives modulus, yield strength, and thermal expansion for the inner (bushing) region.",
+        FieldRow::Number(NumberTarget::Friction) => "Installation friction coefficient between bushing OD and housing bore - drives install/retained force.",
+        FieldRow::Number(NumberTarget::DeltaT) => "In-service uniform temperature change from the install condition - adds a thermal interference delta from the two materials' differing expansion.",
+        FieldRow::ToggleEndConstraint => "How the bushing is axially restrained - governs how much of the hoop stress converts into an estimated axial stress (Free = none).",
+        FieldRow::Number(NumberTarget::MinWallStraight) => "Minimum acceptable straight-section wall thickness - Straight Wall in Results fails below this.",
+        FieldRow::Number(NumberTarget::EdgeLoadAngleDeg) => "Angle of the applied edge load relative to the bore axis - shallower angles demand more edge distance.",
+        FieldRow::Number(NumberTarget::Load) => "Applied edge load used by the edge-distance strength check.",
+        FieldRow::ToggleBushingType => "Outer-diameter geometry: Straight (uniform OD), Flanged (adds a flange beyond the housing), or Countersink (OD chamfer cut into the housing end).",
+        FieldRow::Number(NumberTarget::FlangeOd) | FieldRow::Number(NumberTarget::FlangeThk) => "Flange geometry - extends axially beyond the housing only, does not thin the in-housing wall.",
+        FieldRow::Number(NumberTarget::MinWallNeck) => "Minimum acceptable neck wall thickness once countersink/flange geometry is accounted for - equals the straight wall minimum when neither ID nor OD is countersunk.",
+        FieldRow::ToggleIdType => "Inner-diameter geometry: Straight bore, or Countersink (a chamfer cut into the bushing ID, thinning the neck wall at that end).",
+        FieldRow::ToggleCsMode | FieldRow::ToggleExtCsMode => "Which two countersink dimensions are the direct inputs - the third is solved from the other two plus the base diameter it's cut into.",
+        FieldRow::Number(NumberTarget::CsDia) | FieldRow::Number(NumberTarget::ExtCsDia) => "Countersink diameter at its widest point.",
+        FieldRow::Number(NumberTarget::CsDepth) | FieldRow::Number(NumberTarget::ExtCsDepth) => "Countersink depth along the bore axis.",
+        FieldRow::Number(NumberTarget::CsAngle) | FieldRow::Number(NumberTarget::ExtCsAngle) => "Full included countersink angle.",
+        FieldRow::Number(NumberTarget::CsDiaTolPlus)
+        | FieldRow::Number(NumberTarget::CsDiaTolMinus)
+        | FieldRow::Number(NumberTarget::CsDepthTolPlus)
+        | FieldRow::Number(NumberTarget::CsDepthTolMinus)
+        | FieldRow::Number(NumberTarget::CsAngleTolPlus)
+        | FieldRow::Number(NumberTarget::CsAngleTolMinus)
+        | FieldRow::Number(NumberTarget::ExtCsDiaTolPlus)
+        | FieldRow::Number(NumberTarget::ExtCsDiaTolMinus)
+        | FieldRow::Number(NumberTarget::ExtCsDepthTolPlus)
+        | FieldRow::Number(NumberTarget::ExtCsDepthTolMinus)
+        | FieldRow::Number(NumberTarget::ExtCsAngleTolPlus)
+        | FieldRow::Number(NumberTarget::ExtCsAngleTolMinus) => "Tolerance on this countersink dimension - only meaningful when it's a direct input for the current mode; feeds the worst-case neck-wall corner search either way.",
+        FieldRow::ToggleEnforcementEnabled => "When enabled, an infeasible bore/interference fit is auto-tightened toward feasibility instead of just being reported Infeasible.",
+        FieldRow::ToggleLockBore => "A reamer-fixed bore can't be auto-tightened at all - enforcement is blocked with a note instead.",
+        FieldRow::TogglePreserveBoreNominal => "Keep the entered bore nominal fixed while tightening the band, rather than letting the nominal shift.",
+        FieldRow::ToggleAllowBoreNominalShift => "Allow the bore nominal itself to shift (up to Max Bore Nominal Shift) when tightening isn't enough alone.",
+        FieldRow::Number(NumberTarget::MaxBoreNominalShift) => "Maximum amount the bore nominal is allowed to shift during enforcement.",
+        FieldRow::Number(NumberTarget::BoreCapabilityMinWidth) => "Process-capability floor on the bore's achievable tolerance width - 0 means no floor is enforced.",
+        FieldRow::ToggleAssemblyThermalEnabled => "Model a shrink-fit install assist (e.g. chilling the bushing or heating the housing) as a separate install-time temperature, distinct from the in-service Service Temp Change above.",
+        FieldRow::Number(NumberTarget::AssemblyHousingTemp) | FieldRow::Number(NumberTarget::AssemblyBushingTemp) => "Absolute part temperature at the moment of installation (reference is 70 deg F).",
+    }
+}
+
+/// The complete navigable row list for the current geometry/enforcement
+/// selection - only fields relevant to the current mode are ever shown,
+/// same "only the mode's direct inputs are editable" discipline
+/// `toolboxes/fastener_hole/model.rs::field_rows` established. Grouped
+/// under `Header` rows so the ~40+ possible fields read as a sectioned
+/// form (Bore & Fit / Housing Geometry / Materials & Friction /
+/// Installation / OD Geometry / ID Geometry / external-countersink-only /
+/// Tolerance Enforcement / Install Thermal Assist) rather than one long
+/// undifferentiated list.
+pub fn field_rows(model: &BushingModel) -> Vec<FieldRow> {
+    let mut rows = vec![
+        FieldRow::Header("Bore & Fit"),
+        FieldRow::Number(NumberTarget::BoreDia),
+        FieldRow::Number(NumberTarget::BoreTolPlus),
+        FieldRow::Number(NumberTarget::BoreTolMinus),
+        FieldRow::Number(NumberTarget::IdBushing),
+        FieldRow::Number(NumberTarget::Interference),
+        FieldRow::Number(NumberTarget::InterferenceTolPlus),
+        FieldRow::Number(NumberTarget::InterferenceTolMinus),
+        FieldRow::Header("Housing Geometry"),
+        FieldRow::Number(NumberTarget::HousingLen),
+        FieldRow::Number(NumberTarget::HousingWidth),
+        FieldRow::Number(NumberTarget::EdgeDist),
+        FieldRow::Header("Materials & Friction"),
+        FieldRow::OpenHousingMaterialPicker,
+        FieldRow::OpenBushingMaterialPicker,
+        FieldRow::Number(NumberTarget::Friction),
+        FieldRow::Number(NumberTarget::DeltaT),
+        FieldRow::Header("Installation"),
+        FieldRow::ToggleEndConstraint,
+        FieldRow::Number(NumberTarget::MinWallStraight),
+        FieldRow::Number(NumberTarget::EdgeLoadAngleDeg),
+        FieldRow::Number(NumberTarget::Load),
+        FieldRow::Header("OD Geometry"),
+        FieldRow::ToggleBushingType,
+    ];
+    if model.bushing_type == BushingType::Flanged {
+        rows.push(FieldRow::Number(NumberTarget::FlangeOd));
+        rows.push(FieldRow::Number(NumberTarget::FlangeThk));
+    }
+    rows.push(FieldRow::Number(NumberTarget::MinWallNeck));
+    rows.push(FieldRow::Header("ID Geometry"));
+    rows.push(FieldRow::ToggleIdType);
+    if model.id_type == IdType::Countersink {
+        rows.push(FieldRow::ToggleCsMode);
+        if model.cs_mode != CsMode::DepthAngle {
+            rows.push(FieldRow::Number(NumberTarget::CsDia));
+            rows.push(FieldRow::Number(NumberTarget::CsDiaTolPlus));
+            rows.push(FieldRow::Number(NumberTarget::CsDiaTolMinus));
+        }
+        if model.cs_mode != CsMode::DiaAngle {
+            rows.push(FieldRow::Number(NumberTarget::CsDepth));
+            rows.push(FieldRow::Number(NumberTarget::CsDepthTolPlus));
+            rows.push(FieldRow::Number(NumberTarget::CsDepthTolMinus));
+        }
+        if model.cs_mode != CsMode::DiaDepth {
+            rows.push(FieldRow::Number(NumberTarget::CsAngle));
+            rows.push(FieldRow::Number(NumberTarget::CsAngleTolPlus));
+            rows.push(FieldRow::Number(NumberTarget::CsAngleTolMinus));
+        }
+    }
+    if model.bushing_type == BushingType::Countersink {
+        rows.push(FieldRow::Header("External Countersink"));
+        rows.push(FieldRow::ToggleExtCsMode);
+        if model.ext_cs_mode != CsMode::DepthAngle {
+            rows.push(FieldRow::Number(NumberTarget::ExtCsDia));
+            rows.push(FieldRow::Number(NumberTarget::ExtCsDiaTolPlus));
+            rows.push(FieldRow::Number(NumberTarget::ExtCsDiaTolMinus));
+        }
+        if model.ext_cs_mode != CsMode::DiaAngle {
+            rows.push(FieldRow::Number(NumberTarget::ExtCsDepth));
+            rows.push(FieldRow::Number(NumberTarget::ExtCsDepthTolPlus));
+            rows.push(FieldRow::Number(NumberTarget::ExtCsDepthTolMinus));
+        }
+        if model.ext_cs_mode != CsMode::DiaDepth {
+            rows.push(FieldRow::Number(NumberTarget::ExtCsAngle));
+            rows.push(FieldRow::Number(NumberTarget::ExtCsAngleTolPlus));
+            rows.push(FieldRow::Number(NumberTarget::ExtCsAngleTolMinus));
+        }
+    }
+    rows.push(FieldRow::Header("Tolerance Enforcement"));
+    rows.push(FieldRow::ToggleEnforcementEnabled);
+    if model.enforcement_enabled {
+        rows.push(FieldRow::ToggleLockBore);
+        rows.push(FieldRow::TogglePreserveBoreNominal);
+        rows.push(FieldRow::ToggleAllowBoreNominalShift);
+        if model.allow_bore_nominal_shift {
+            rows.push(FieldRow::Number(NumberTarget::MaxBoreNominalShift));
+        }
+        rows.push(FieldRow::Number(NumberTarget::BoreCapabilityMinWidth));
+    }
+    rows.push(FieldRow::Header("Install Thermal Assist"));
+    rows.push(FieldRow::ToggleAssemblyThermalEnabled);
+    if model.assembly_thermal_enabled {
+        rows.push(FieldRow::Number(NumberTarget::AssemblyHousingTemp));
+        rows.push(FieldRow::Number(NumberTarget::AssemblyBushingTemp));
+    }
+    rows
+}
+
+/// The whole toolbox's engineering state, plus every derived result -
+/// recomputed fresh on every field mutation via [`BushingModel::recompute`],
+/// mirroring `PressureVesselModel`'s own discipline. Defaults reproduce
+/// `bushing_solver::solve`'s own differential-tested fixture
+/// (`tests/differential.rs`'s base input), not an arbitrary guess.
+pub struct BushingModel {
+    pub bore_dia: f64,
+    pub bore_tol_plus: f64,
+    pub bore_tol_minus: f64,
+    pub id_bushing: f64,
+    pub interference: f64,
+    pub interference_tol_plus: f64,
+    pub interference_tol_minus: f64,
+    pub housing_len: f64,
+    pub housing_width: f64,
+    pub edge_dist: f64,
+    pub housing_material_index: usize,
+    pub bushing_material_index: usize,
+    pub friction: f64,
+    pub delta_t: f64,
+    pub end_constraint: EndConstraint,
+    pub min_wall_straight: f64,
+    pub edge_load_angle_deg: f64,
+    pub load: f64,
+
+    pub bushing_type: BushingType,
+    pub id_type: IdType,
+    pub flange_od: f64,
+    pub flange_thk: f64,
+    pub min_wall_neck: f64,
+
+    pub cs_mode: CsMode,
+    pub cs_dia: f64,
+    pub cs_depth: f64,
+    pub cs_angle: f64,
+    pub cs_dia_tol_plus: f64,
+    pub cs_dia_tol_minus: f64,
+    pub cs_depth_tol_plus: f64,
+    pub cs_depth_tol_minus: f64,
+    pub cs_angle_tol_plus: f64,
+    pub cs_angle_tol_minus: f64,
+
+    pub ext_cs_mode: CsMode,
+    pub ext_cs_dia: f64,
+    pub ext_cs_depth: f64,
+    pub ext_cs_angle: f64,
+    pub ext_cs_dia_tol_plus: f64,
+    pub ext_cs_dia_tol_minus: f64,
+    pub ext_cs_depth_tol_plus: f64,
+    pub ext_cs_depth_tol_minus: f64,
+    pub ext_cs_angle_tol_plus: f64,
+    pub ext_cs_angle_tol_minus: f64,
+
+    pub enforcement_enabled: bool,
+    pub lock_bore: bool,
+    pub preserve_bore_nominal: bool,
+    pub allow_bore_nominal_shift: bool,
+    pub max_bore_nominal_shift: f64,
+    pub bore_capability_min_width: f64,
+
+    pub assembly_thermal_enabled: bool,
+    pub assembly_housing_temp: f64,
+    pub assembly_bushing_temp: f64,
+
+    pub output: BushingOutput,
+}
+
+impl Default for BushingModel {
+    fn default() -> Self {
+        let mut model = Self {
+            bore_dia: 0.5,
+            bore_tol_plus: 0.0,
+            bore_tol_minus: 0.0,
+            id_bushing: 0.375,
+            interference: 0.0015,
+            interference_tol_plus: 0.0,
+            interference_tol_minus: 0.0,
+            housing_len: 0.5,
+            housing_width: 1.5,
+            edge_dist: 0.75,
+            housing_material_index: MATERIALS.iter().position(|m| m.id == "al7075").unwrap_or(0),
+            bushing_material_index: MATERIALS.iter().position(|m| m.id == "bronze").unwrap_or(0),
+            friction: 0.15,
+            delta_t: 0.0,
+            end_constraint: EndConstraint::Free,
+            min_wall_straight: 0.05,
+            edge_load_angle_deg: 40.0,
+            load: 1000.0,
+            bushing_type: BushingType::Straight,
+            id_type: IdType::Straight,
+            flange_od: 0.75,
+            flange_thk: 0.06,
+            min_wall_neck: 0.05,
+            cs_mode: CsMode::default(),
+            cs_dia: 0.5,
+            cs_depth: 0.125,
+            cs_angle: 100.0,
+            cs_dia_tol_plus: 0.0,
+            cs_dia_tol_minus: 0.0,
+            cs_depth_tol_plus: 0.0,
+            cs_depth_tol_minus: 0.0,
+            cs_angle_tol_plus: 0.0,
+            cs_angle_tol_minus: 0.0,
+            ext_cs_mode: CsMode::default(),
+            ext_cs_dia: 0.6,
+            ext_cs_depth: 0.06,
+            ext_cs_angle: 100.0,
+            ext_cs_dia_tol_plus: 0.0,
+            ext_cs_dia_tol_minus: 0.0,
+            ext_cs_depth_tol_plus: 0.0,
+            ext_cs_depth_tol_minus: 0.0,
+            ext_cs_angle_tol_plus: 0.0,
+            ext_cs_angle_tol_minus: 0.0,
+            enforcement_enabled: false,
+            lock_bore: true,
+            preserve_bore_nominal: true,
+            allow_bore_nominal_shift: false,
+            max_bore_nominal_shift: 0.0,
+            bore_capability_min_width: 0.0,
+            assembly_thermal_enabled: false,
+            assembly_housing_temp: 70.0,
+            assembly_bushing_temp: 70.0,
+            output: compute(&BushingInputs::default()),
+        };
+        model.recompute();
+        model
+    }
+}
+
+impl BushingModel {
+    pub fn material_catalog(&self) -> &'static [Material] {
+        MATERIALS
+    }
+
+    pub fn housing_material(&self) -> &'static Material {
+        MATERIALS.get(self.housing_material_index).unwrap_or(&MATERIALS[0])
+    }
+
+    pub fn bushing_material(&self) -> &'static Material {
+        MATERIALS.get(self.bushing_material_index).unwrap_or(&MATERIALS[0])
+    }
+
+    pub fn select_housing_material(&mut self, index: usize) {
+        if index < MATERIALS.len() {
+            self.housing_material_index = index;
+            self.recompute();
+        }
+    }
+
+    pub fn select_bushing_material(&mut self, index: usize) {
+        if index < MATERIALS.len() {
+            self.bushing_material_index = index;
+            self.recompute();
+        }
+    }
+
+    fn build_inputs(&self) -> BushingInputs {
+        BushingInputs {
+            bore_dia: self.bore_dia,
+            bore_tol_plus: self.bore_tol_plus,
+            bore_tol_minus: self.bore_tol_minus,
+            id_bushing: self.id_bushing,
+            interference: self.interference,
+            interference_tol_plus: self.interference_tol_plus,
+            interference_tol_minus: self.interference_tol_minus,
+            housing_len: self.housing_len,
+            housing_width: self.housing_width,
+            edge_dist: self.edge_dist,
+            mat_housing: self.housing_material().id.to_string(),
+            mat_bushing: self.bushing_material().id.to_string(),
+            friction: Some(self.friction),
+            d_t: self.delta_t,
+            end_constraint: self.end_constraint,
+            min_wall_straight: self.min_wall_straight,
+            edge_load_angle_deg: Some(self.edge_load_angle_deg),
+            load: Some(self.load),
+            bushing_type: self.bushing_type,
+            id_type: self.id_type,
+            flange_od: self.flange_od,
+            flange_thk: self.flange_thk,
+            min_wall_neck: self.min_wall_neck,
+            cs_mode: self.cs_mode,
+            cs_dia: self.cs_dia,
+            cs_depth: self.cs_depth,
+            cs_angle: self.cs_angle,
+            cs_dia_tol_plus: self.cs_dia_tol_plus,
+            cs_dia_tol_minus: self.cs_dia_tol_minus,
+            cs_depth_tol_plus: self.cs_depth_tol_plus,
+            cs_depth_tol_minus: self.cs_depth_tol_minus,
+            cs_angle_tol_plus: self.cs_angle_tol_plus,
+            cs_angle_tol_minus: self.cs_angle_tol_minus,
+            ext_cs_mode: self.ext_cs_mode,
+            ext_cs_dia: self.ext_cs_dia,
+            ext_cs_depth: self.ext_cs_depth,
+            ext_cs_angle: self.ext_cs_angle,
+            ext_cs_dia_tol_plus: self.ext_cs_dia_tol_plus,
+            ext_cs_dia_tol_minus: self.ext_cs_dia_tol_minus,
+            ext_cs_depth_tol_plus: self.ext_cs_depth_tol_plus,
+            ext_cs_depth_tol_minus: self.ext_cs_depth_tol_minus,
+            ext_cs_angle_tol_plus: self.ext_cs_angle_tol_plus,
+            ext_cs_angle_tol_minus: self.ext_cs_angle_tol_minus,
+            enforcement: EnforcementPolicy {
+                enabled: self.enforcement_enabled,
+                lock_bore: self.lock_bore,
+                preserve_bore_nominal: self.preserve_bore_nominal,
+                allow_bore_nominal_shift: self.allow_bore_nominal_shift,
+                max_bore_nominal_shift: self.max_bore_nominal_shift,
+            },
+            bore_capability: (self.bore_capability_min_width > 0.0).then_some(BoreCapability { min_achievable_tol_width: Some(self.bore_capability_min_width) }),
+            assembly_housing_temperature: self.assembly_thermal_enabled.then_some(self.assembly_housing_temp),
+            assembly_bushing_temperature: self.assembly_thermal_enabled.then_some(self.assembly_bushing_temp),
+        }
+    }
+
+    pub fn recompute(&mut self) {
+        self.output = compute(&self.build_inputs());
+    }
+
+    pub fn number_value(&self, target: NumberTarget) -> f64 {
+        match target {
+            NumberTarget::BoreDia => self.bore_dia,
+            NumberTarget::BoreTolPlus => self.bore_tol_plus,
+            NumberTarget::BoreTolMinus => self.bore_tol_minus,
+            NumberTarget::IdBushing => self.id_bushing,
+            NumberTarget::Interference => self.interference,
+            NumberTarget::InterferenceTolPlus => self.interference_tol_plus,
+            NumberTarget::InterferenceTolMinus => self.interference_tol_minus,
+            NumberTarget::HousingLen => self.housing_len,
+            NumberTarget::HousingWidth => self.housing_width,
+            NumberTarget::EdgeDist => self.edge_dist,
+            NumberTarget::Friction => self.friction,
+            NumberTarget::DeltaT => self.delta_t,
+            NumberTarget::MinWallStraight => self.min_wall_straight,
+            NumberTarget::EdgeLoadAngleDeg => self.edge_load_angle_deg,
+            NumberTarget::Load => self.load,
+            NumberTarget::FlangeOd => self.flange_od,
+            NumberTarget::FlangeThk => self.flange_thk,
+            NumberTarget::MinWallNeck => self.min_wall_neck,
+            NumberTarget::CsDia => self.cs_dia,
+            NumberTarget::CsDepth => self.cs_depth,
+            NumberTarget::CsAngle => self.cs_angle,
+            NumberTarget::CsDiaTolPlus => self.cs_dia_tol_plus,
+            NumberTarget::CsDiaTolMinus => self.cs_dia_tol_minus,
+            NumberTarget::CsDepthTolPlus => self.cs_depth_tol_plus,
+            NumberTarget::CsDepthTolMinus => self.cs_depth_tol_minus,
+            NumberTarget::CsAngleTolPlus => self.cs_angle_tol_plus,
+            NumberTarget::CsAngleTolMinus => self.cs_angle_tol_minus,
+            NumberTarget::ExtCsDia => self.ext_cs_dia,
+            NumberTarget::ExtCsDepth => self.ext_cs_depth,
+            NumberTarget::ExtCsAngle => self.ext_cs_angle,
+            NumberTarget::ExtCsDiaTolPlus => self.ext_cs_dia_tol_plus,
+            NumberTarget::ExtCsDiaTolMinus => self.ext_cs_dia_tol_minus,
+            NumberTarget::ExtCsDepthTolPlus => self.ext_cs_depth_tol_plus,
+            NumberTarget::ExtCsDepthTolMinus => self.ext_cs_depth_tol_minus,
+            NumberTarget::ExtCsAngleTolPlus => self.ext_cs_angle_tol_plus,
+            NumberTarget::ExtCsAngleTolMinus => self.ext_cs_angle_tol_minus,
+            NumberTarget::MaxBoreNominalShift => self.max_bore_nominal_shift,
+            NumberTarget::BoreCapabilityMinWidth => self.bore_capability_min_width,
+            NumberTarget::AssemblyHousingTemp => self.assembly_housing_temp,
+            NumberTarget::AssemblyBushingTemp => self.assembly_bushing_temp,
+        }
+    }
+
+    /// Commits one edited numeric field. A non-finite result is silently
+    /// ignored, leaving the previous value in place - same convention every
+    /// other toolbox in this crate uses.
+    pub fn commit_number(&mut self, target: NumberTarget, raw: f64) {
+        if !raw.is_finite() {
+            return;
+        }
+        match target {
+            NumberTarget::BoreDia => self.bore_dia = raw,
+            NumberTarget::BoreTolPlus => self.bore_tol_plus = raw,
+            NumberTarget::BoreTolMinus => self.bore_tol_minus = raw,
+            NumberTarget::IdBushing => self.id_bushing = raw,
+            NumberTarget::Interference => self.interference = raw,
+            NumberTarget::InterferenceTolPlus => self.interference_tol_plus = raw,
+            NumberTarget::InterferenceTolMinus => self.interference_tol_minus = raw,
+            NumberTarget::HousingLen => self.housing_len = raw,
+            NumberTarget::HousingWidth => self.housing_width = raw,
+            NumberTarget::EdgeDist => self.edge_dist = raw,
+            NumberTarget::Friction => self.friction = raw,
+            NumberTarget::DeltaT => self.delta_t = raw,
+            NumberTarget::MinWallStraight => self.min_wall_straight = raw,
+            NumberTarget::EdgeLoadAngleDeg => self.edge_load_angle_deg = raw,
+            NumberTarget::Load => self.load = raw,
+            NumberTarget::FlangeOd => self.flange_od = raw,
+            NumberTarget::FlangeThk => self.flange_thk = raw,
+            NumberTarget::MinWallNeck => self.min_wall_neck = raw,
+            NumberTarget::CsDia => self.cs_dia = raw,
+            NumberTarget::CsDepth => self.cs_depth = raw,
+            NumberTarget::CsAngle => self.cs_angle = raw,
+            NumberTarget::CsDiaTolPlus => self.cs_dia_tol_plus = raw,
+            NumberTarget::CsDiaTolMinus => self.cs_dia_tol_minus = raw,
+            NumberTarget::CsDepthTolPlus => self.cs_depth_tol_plus = raw,
+            NumberTarget::CsDepthTolMinus => self.cs_depth_tol_minus = raw,
+            NumberTarget::CsAngleTolPlus => self.cs_angle_tol_plus = raw,
+            NumberTarget::CsAngleTolMinus => self.cs_angle_tol_minus = raw,
+            NumberTarget::ExtCsDia => self.ext_cs_dia = raw,
+            NumberTarget::ExtCsDepth => self.ext_cs_depth = raw,
+            NumberTarget::ExtCsAngle => self.ext_cs_angle = raw,
+            NumberTarget::ExtCsDiaTolPlus => self.ext_cs_dia_tol_plus = raw,
+            NumberTarget::ExtCsDiaTolMinus => self.ext_cs_dia_tol_minus = raw,
+            NumberTarget::ExtCsDepthTolPlus => self.ext_cs_depth_tol_plus = raw,
+            NumberTarget::ExtCsDepthTolMinus => self.ext_cs_depth_tol_minus = raw,
+            NumberTarget::ExtCsAngleTolPlus => self.ext_cs_angle_tol_plus = raw,
+            NumberTarget::ExtCsAngleTolMinus => self.ext_cs_angle_tol_minus = raw,
+            NumberTarget::MaxBoreNominalShift => self.max_bore_nominal_shift = raw,
+            NumberTarget::BoreCapabilityMinWidth => self.bore_capability_min_width = raw,
+            NumberTarget::AssemblyHousingTemp => self.assembly_housing_temp = raw,
+            NumberTarget::AssemblyBushingTemp => self.assembly_bushing_temp = raw,
+        }
+        self.recompute();
+    }
+
+    pub fn toggle_bushing_type(&mut self) {
+        self.bushing_type = cycle_bushing_type(self.bushing_type);
+        self.recompute();
+    }
+
+    pub fn toggle_id_type(&mut self) {
+        self.id_type = cycle_id_type(self.id_type);
+        self.recompute();
+    }
+
+    pub fn toggle_end_constraint(&mut self) {
+        self.end_constraint = cycle_end_constraint(self.end_constraint);
+        self.recompute();
+    }
+
+    pub fn toggle_cs_mode(&mut self) {
+        self.cs_mode = cycle_cs_mode(self.cs_mode);
+        self.recompute();
+    }
+
+    pub fn toggle_ext_cs_mode(&mut self) {
+        self.ext_cs_mode = cycle_cs_mode(self.ext_cs_mode);
+        self.recompute();
+    }
+
+    pub fn toggle_enforcement_enabled(&mut self) {
+        self.enforcement_enabled = !self.enforcement_enabled;
+        self.recompute();
+    }
+
+    pub fn toggle_lock_bore(&mut self) {
+        self.lock_bore = !self.lock_bore;
+        self.recompute();
+    }
+
+    pub fn toggle_preserve_bore_nominal(&mut self) {
+        self.preserve_bore_nominal = !self.preserve_bore_nominal;
+        self.recompute();
+    }
+
+    pub fn toggle_allow_bore_nominal_shift(&mut self) {
+        self.allow_bore_nominal_shift = !self.allow_bore_nominal_shift;
+        self.recompute();
+    }
+
+    pub fn toggle_assembly_thermal_enabled(&mut self) {
+        self.assembly_thermal_enabled = !self.assembly_thermal_enabled;
+        self.recompute();
+    }
+
+    pub fn select_reamer(&mut self, entry: &ReamerEntry) {
+        self.bore_dia = entry.nominal_in;
+        self.recompute();
+    }
+}
+
+/// Trims a fixed-decimal formatted number for the edit buffer - same helper
+/// every other toolbox in this crate provides as its own small copy.
+pub fn format_for_edit(value: f64) -> String {
+    let s = format!("{value:.6}");
+    let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+    if trimmed.is_empty() { "0".to_string() } else { trimmed.to_string() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_model_matches_the_bushing_solver_differential_fixture() {
+        let model = BushingModel::default();
+        assert_eq!(model.bore_dia, 0.5);
+        assert_eq!(model.id_bushing, 0.375);
+        assert_eq!(model.interference, 0.0015);
+        assert_eq!(model.housing_len, 0.5);
+        assert_eq!(model.housing_width, 1.5);
+        assert_eq!(model.edge_dist, 0.75);
+        assert_eq!(model.housing_material().id, "al7075");
+        assert_eq!(model.bushing_material().id, "bronze");
+        assert_eq!(model.friction, 0.15);
+    }
+
+    #[test]
+    fn default_model_produces_positive_pressure_and_opposite_signed_hoop_stresses() {
+        let model = BushingModel::default();
+        assert!(model.output.pressure > 0.0);
+        assert!(model.output.stress_hoop_housing > 0.0);
+        assert!(model.output.stress_hoop_bushing < 0.0);
+    }
+
+    #[test]
+    fn commit_number_updates_field_and_recomputes() {
+        let mut model = BushingModel::default();
+        model.commit_number(NumberTarget::Interference, 0.0);
+        assert_eq!(model.interference, 0.0);
+        assert_eq!(model.output.pressure, 0.0);
+    }
+
+    #[test]
+    fn commit_number_silently_ignores_a_non_finite_result() {
+        let mut model = BushingModel::default();
+        let before = model.bore_dia;
+        model.commit_number(NumberTarget::BoreDia, f64::NAN);
+        assert_eq!(model.bore_dia, before);
+    }
+
+    #[test]
+    fn toggle_bushing_type_cycles_through_all_three_variants() {
+        let mut model = BushingModel::default();
+        assert_eq!(model.bushing_type, BushingType::Straight);
+        model.toggle_bushing_type();
+        assert_eq!(model.bushing_type, BushingType::Flanged);
+        model.toggle_bushing_type();
+        assert_eq!(model.bushing_type, BushingType::Countersink);
+        model.toggle_bushing_type();
+        assert_eq!(model.bushing_type, BushingType::Straight);
+    }
+
+    #[test]
+    fn field_rows_shows_flange_fields_only_when_flanged() {
+        let mut model = BushingModel::default();
+        assert!(!field_rows(&model).contains(&FieldRow::Number(NumberTarget::FlangeOd)));
+        model.bushing_type = BushingType::Flanged;
+        assert!(field_rows(&model).contains(&FieldRow::Number(NumberTarget::FlangeOd)));
+    }
+
+    #[test]
+    fn field_rows_hides_the_derived_countersink_dimension() {
+        let mut model = BushingModel::default();
+        model.id_type = IdType::Countersink;
+        model.cs_mode = CsMode::DepthAngle;
+        let rows = field_rows(&model);
+        assert!(!rows.contains(&FieldRow::Number(NumberTarget::CsDia)), "dia is derived in DepthAngle mode");
+        assert!(rows.contains(&FieldRow::Number(NumberTarget::CsDepth)));
+        assert!(rows.contains(&FieldRow::Number(NumberTarget::CsAngle)));
+    }
+
+    #[test]
+    fn field_rows_hides_enforcement_sub_fields_until_enabled() {
+        let mut model = BushingModel::default();
+        assert!(!field_rows(&model).contains(&FieldRow::ToggleLockBore));
+        model.enforcement_enabled = true;
+        assert!(field_rows(&model).contains(&FieldRow::ToggleLockBore));
+    }
+
+    #[test]
+    fn field_rows_hides_assembly_thermal_fields_until_enabled() {
+        let mut model = BushingModel::default();
+        assert!(!field_rows(&model).contains(&FieldRow::Number(NumberTarget::AssemblyHousingTemp)));
+        model.assembly_thermal_enabled = true;
+        assert!(field_rows(&model).contains(&FieldRow::Number(NumberTarget::AssemblyHousingTemp)));
+    }
+
+    #[test]
+    fn select_housing_material_switches_and_recomputes() {
+        let mut model = BushingModel::default();
+        let steel_index = MATERIALS.iter().position(|m| m.id == "steel").unwrap();
+        model.select_housing_material(steel_index);
+        assert_eq!(model.housing_material().id, "steel");
+    }
+
+    #[test]
+    fn select_material_out_of_range_is_ignored() {
+        let mut model = BushingModel::default();
+        let before = model.housing_material_index;
+        model.select_housing_material(9999);
+        assert_eq!(model.housing_material_index, before);
+    }
+
+    #[test]
+    fn select_reamer_sets_bore_dia_and_recomputes() {
+        let mut model = BushingModel::default();
+        let reamer = &bushing_solver::reamers::all_reamers()[0];
+        let target = reamer.nominal_in;
+        model.select_reamer(reamer);
+        assert_eq!(model.bore_dia, target);
+    }
+
+    #[test]
+    fn assembly_thermal_assist_matches_the_bushing_solver_install_state_physics() {
+        // Same golden fixture `bushing-solver/src/solve.rs`'s own
+        // `assembly_temperature_assist_matches_real_ts_install_state_physics`
+        // test proves against the real TS engine - proof this UI bridge
+        // wires the assembly-thermal-assist fields through correctly, not
+        // just that the underlying crate is correct in isolation.
+        let mut model = BushingModel::default();
+        model.assembly_thermal_enabled = true;
+        model.assembly_housing_temp = 70.0;
+        model.assembly_bushing_temp = -20.0;
+        model.recompute();
+        assert!((model.output.assembly_thermal_delta - (-0.000405)).abs() < 1e-9);
+        assert!((model.output.install_force - 756.3063714026035).abs() < 1e-6);
+    }
+
+    #[test]
+    fn format_for_edit_round_trips_through_parse() {
+        let s = format_for_edit(0.25);
+        assert_eq!(s.parse::<f64>().unwrap(), 0.25);
+        assert_eq!(format_for_edit(0.0), "0");
+    }
+}

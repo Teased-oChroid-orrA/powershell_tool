@@ -20,7 +20,10 @@ use crate::mouse::{self, ClickTarget, MouseRegions};
 use crate::nav::{FocusArea, FocusState, NavigationState, ToolId};
 use crate::notifications::NotificationQueue;
 use crate::theme::{StatusTone, Theme};
+use crate::toolboxes::bushing::{self, BushingState};
 use crate::toolboxes::fastener_hole::{self, FastenerHoleState};
+use crate::toolboxes::preload_analysis::{self, PreloadAnalysisState};
+use crate::toolboxes::pressure_vessel::{self, PressureVesselState};
 use crate::toolboxes::search::{self, SearchToolState};
 
 pub struct AppState {
@@ -32,6 +35,9 @@ pub struct AppState {
     pub should_quit: bool,
     pub search: SearchToolState,
     pub fastener_hole: FastenerHoleState,
+    pub pressure_vessel: PressureVesselState,
+    pub bushing: BushingState,
+    pub preload_analysis: PreloadAnalysisState,
     /// What the last left-click landed on and when - compared against the
     /// next click to detect a double-click (see `mouse` module doc and
     /// `handle_mouse` below). Not persisted, not meaningful outside the
@@ -50,6 +56,9 @@ impl Default for AppState {
             should_quit: false,
             search: SearchToolState::default(),
             fastener_hole: FastenerHoleState::default(),
+            pressure_vessel: PressureVesselState::default(),
+            bushing: BushingState::default(),
+            preload_analysis: PreloadAnalysisState::default(),
             last_click: None,
         }
     }
@@ -62,6 +71,9 @@ impl AppState {
         match self.nav.active_tool {
             ToolId::Search => search::PANE_COUNT,
             ToolId::FastenerHole => fastener_hole::PANE_COUNT,
+            ToolId::PressureVessel => pressure_vessel::PANE_COUNT,
+            ToolId::Bushing => bushing::PANE_COUNT,
+            ToolId::PreloadAnalysis => preload_analysis::PANE_COUNT,
             _ => 0,
         }
     }
@@ -109,6 +121,23 @@ pub enum Effect {
     PersistSearchSettings,
     BuildIndex { settings: SearchSettings, index_dir: std::path::PathBuf, force_rebuild: bool },
     ScanExtensions { root: String, exclude_folders: Vec<String>, include_hidden: bool },
+    /// Writes the Pressure Vessel Analyzer's plain-text report
+    /// (`pressure_vessel::view::build_report_text`, already fully built by
+    /// the time this effect is constructed - pure text generation, no I/O)
+    /// to its fixed report path and opens it.
+    ExportPressureVesselReport(String),
+    /// Snapshots `state.pressure_vessel.model.custom_materials` and writes
+    /// it to disk - same "derive from current state at execution time"
+    /// pattern as `PersistSearchSettings`.
+    PersistPressureVesselMaterials,
+    /// Writes the Bushing Workbench's plain-text report
+    /// (`bushing::view::build_report_text`) to its fixed report path and
+    /// opens it - same pattern as `ExportPressureVesselReport`.
+    ExportBushingReport(String),
+    /// Writes the Preload Analysis toolbox's plain-text report to its
+    /// fixed report path and opens it - same pattern as
+    /// `ExportPressureVesselReport`/`ExportBushingReport`.
+    ExportPreloadAnalysisReport(String),
 }
 
 pub fn handle_event(state: &mut AppState, event: AppEvent) -> Vec<Effect> {
@@ -253,6 +282,24 @@ fn handle_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                     return effects;
                 }
             }
+            ToolId::PressureVessel => {
+                let (consumed, effects) = pressure_vessel::handle_key(&mut state.pressure_vessel, key);
+                if consumed {
+                    return effects;
+                }
+            }
+            ToolId::Bushing => {
+                let (consumed, effects) = bushing::handle_key(&mut state.bushing, key);
+                if consumed {
+                    return effects;
+                }
+            }
+            ToolId::PreloadAnalysis => {
+                let (consumed, effects) = preload_analysis::handle_key(&mut state.preload_analysis, key);
+                if consumed {
+                    return effects;
+                }
+            }
             _ => {}
         }
     }
@@ -274,12 +321,27 @@ fn handle_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
         KeyCode::Left | KeyCode::Right if state.focus.area == FocusArea::Rail => {
             let idx = ToolId::ALL.iter().position(|t| *t == state.nav.active_tool).unwrap_or(0);
             let len = ToolId::ALL.len();
-            let next = if key.code == KeyCode::Left {
-                (idx + len - 1) % len
-            } else {
-                (idx + 1) % len
-            };
-            state.nav.activate(ToolId::ALL[next]);
+            let step: i32 = if key.code == KeyCode::Left { -1 } else { 1 };
+            // Skip past disabled entries to the nearest enabled one in the
+            // pressed direction (wrapping), rather than stopping at the
+            // first (possibly disabled) neighbor - `idx` is recomputed from
+            // `state.nav.active_tool` every keypress, and `activate` is a
+            // no-op on a disabled target, so landing on a disabled neighbor
+            // once would otherwise permanently block reaching any enabled
+            // tool beyond it (a real bug this exposed, back when `Bushing`
+            // was still disabled: `PressureVessel` became unreachable via
+            // Left/Right once enabled, since disabled `Bushing` sat
+            // directly between it and `FastenerHole` in `ToolId::ALL` -
+            // now all five migrated toolboxes are enabled, but the same
+            // skip logic still matters for the remaining disabled
+            // `Dupes`/`Rename`/`Logs` run at the end of the list).
+            for offset in 1..=len {
+                let next = ((idx as i32 + step * offset as i32).rem_euclid(len as i32)) as usize;
+                if ToolId::ALL[next].enabled() {
+                    state.nav.activate(ToolId::ALL[next]);
+                    break;
+                }
+            }
         }
         _ => {}
     }
@@ -384,6 +446,39 @@ fn handle_click(state: &mut AppState, regions: &MouseRegions, col: u16, row: u16
         return Vec::new();
     }
 
+    if state.pressure_vessel.material_picker.open {
+        if let Some(i) = mouse::hit(&regions.material_rows, col, row) {
+            state.pressure_vessel.material_picker.cursor = i;
+            if is_double_click(&mut state.last_click, ClickTarget::MaterialRow(i)) {
+                let (_, effects) = pressure_vessel::material_picker::handle_key(&mut state.pressure_vessel.material_picker, &mut state.pressure_vessel.model, synthetic_key(KeyCode::Enter));
+                return effects;
+            }
+        }
+        return Vec::new();
+    }
+
+    if state.bushing.material_picker.open {
+        if let Some(i) = mouse::hit(&regions.material_rows, col, row) {
+            state.bushing.material_picker.cursor = i;
+            if is_double_click(&mut state.last_click, ClickTarget::MaterialRow(i)) {
+                let (_, effects) = bushing::material_picker::handle_key(&mut state.bushing.material_picker, &mut state.bushing.model, synthetic_key(KeyCode::Enter));
+                return effects;
+            }
+        }
+        return Vec::new();
+    }
+
+    if state.bushing.reamer_picker.open {
+        if let Some(i) = mouse::hit(&regions.reamer_rows, col, row) {
+            state.bushing.reamer_picker.cursor = i;
+            if is_double_click(&mut state.last_click, ClickTarget::ReamerRow(i)) {
+                let (_, effects) = bushing::reamer_picker::handle_key(&mut state.bushing.reamer_picker, &mut state.bushing.model, synthetic_key(KeyCode::Enter));
+                return effects;
+            }
+        }
+        return Vec::new();
+    }
+
     if let Some(tool) = mouse::hit(&regions.rail, col, row) {
         state.nav.activate(tool);
         state.focus.area = FocusArea::Rail;
@@ -393,6 +488,9 @@ fn handle_click(state: &mut AppState, regions: &MouseRegions, col: u16, row: u16
     match state.nav.active_tool {
         ToolId::Search => handle_search_click(state, regions, col, row),
         ToolId::FastenerHole => handle_fastener_click(state, regions, col, row),
+        ToolId::PressureVessel => handle_pressure_vessel_click(state, regions, col, row),
+        ToolId::Bushing => handle_bushing_click(state, regions, col, row),
+        ToolId::PreloadAnalysis => handle_preload_analysis_click(state, regions, col, row),
         _ => Vec::new(),
     }
 }
@@ -515,8 +613,60 @@ fn handle_fastener_click(state: &mut AppState, regions: &MouseRegions, col: u16,
     if let Some(i) = mouse::hit(&regions.fastener_rows, col, row) {
         state.focus.area = FocusArea::Workspace(fastener_hole::PANE_MAIN);
         state.fastener_hole.selected = i;
+        state.fastener_hole.clamp_selection();
         if is_double_click(&mut state.last_click, ClickTarget::FastenerRow(i)) {
             let (_, effects) = fastener_hole::handle_key(&mut state.fastener_hole, synthetic_key(KeyCode::Enter));
+            return effects;
+        }
+        return Vec::new();
+    }
+    if let Some(pane) = mouse::hit(&regions.workspace_panes, col, row) {
+        state.focus.area = FocusArea::Workspace(pane);
+    }
+    Vec::new()
+}
+
+fn handle_pressure_vessel_click(state: &mut AppState, regions: &MouseRegions, col: u16, row: u16) -> Vec<Effect> {
+    if let Some(i) = mouse::hit(&regions.pressure_vessel_rows, col, row) {
+        state.focus.area = FocusArea::Workspace(pressure_vessel::PANE_MAIN);
+        state.pressure_vessel.selected = i;
+        state.pressure_vessel.clamp_selection();
+        if is_double_click(&mut state.last_click, ClickTarget::PressureVesselRow(i)) {
+            let (_, effects) = pressure_vessel::handle_key(&mut state.pressure_vessel, synthetic_key(KeyCode::Enter));
+            return effects;
+        }
+        return Vec::new();
+    }
+    if let Some(pane) = mouse::hit(&regions.workspace_panes, col, row) {
+        state.focus.area = FocusArea::Workspace(pane);
+    }
+    Vec::new()
+}
+
+fn handle_bushing_click(state: &mut AppState, regions: &MouseRegions, col: u16, row: u16) -> Vec<Effect> {
+    if let Some(i) = mouse::hit(&regions.bushing_rows, col, row) {
+        state.focus.area = FocusArea::Workspace(bushing::PANE_MAIN);
+        state.bushing.selected = i;
+        state.bushing.clamp_selection();
+        if is_double_click(&mut state.last_click, ClickTarget::BushingRow(i)) {
+            let (_, effects) = bushing::handle_key(&mut state.bushing, synthetic_key(KeyCode::Enter));
+            return effects;
+        }
+        return Vec::new();
+    }
+    if let Some(pane) = mouse::hit(&regions.workspace_panes, col, row) {
+        state.focus.area = FocusArea::Workspace(pane);
+    }
+    Vec::new()
+}
+
+fn handle_preload_analysis_click(state: &mut AppState, regions: &MouseRegions, col: u16, row: u16) -> Vec<Effect> {
+    if let Some(i) = mouse::hit(&regions.preload_analysis_rows, col, row) {
+        state.focus.area = FocusArea::Workspace(preload_analysis::PANE_MAIN);
+        state.preload_analysis.selected = i;
+        state.preload_analysis.clamp_selection();
+        if is_double_click(&mut state.last_click, ClickTarget::PreloadAnalysisRow(i)) {
+            let (_, effects) = preload_analysis::handle_key(&mut state.preload_analysis, synthetic_key(KeyCode::Enter));
             return effects;
         }
         return Vec::new();
@@ -551,6 +701,27 @@ fn handle_scroll(state: &mut AppState, regions: &MouseRegions, col: u16, row: u1
         return;
     }
 
+    if state.pressure_vessel.material_picker.open {
+        if mouse::hit(&regions.material_rows, col, row).is_some() {
+            pressure_vessel::material_picker::handle_key(&mut state.pressure_vessel.material_picker, &mut state.pressure_vessel.model, key);
+        }
+        return;
+    }
+
+    if state.bushing.material_picker.open {
+        if mouse::hit(&regions.material_rows, col, row).is_some() {
+            bushing::material_picker::handle_key(&mut state.bushing.material_picker, &mut state.bushing.model, key);
+        }
+        return;
+    }
+
+    if state.bushing.reamer_picker.open {
+        if mouse::hit(&regions.reamer_rows, col, row).is_some() {
+            bushing::reamer_picker::handle_key(&mut state.bushing.reamer_picker, &mut state.bushing.model, key);
+        }
+        return;
+    }
+
     match state.nav.active_tool {
         ToolId::Search => {
             if mouse::hit(&regions.results_rows, col, row).is_some() {
@@ -573,6 +744,21 @@ fn handle_scroll(state: &mut AppState, regions: &MouseRegions, col: u16, row: u1
                 fastener_hole::handle_key(&mut state.fastener_hole, key);
             }
         }
+        ToolId::PressureVessel => {
+            if mouse::hit(&regions.pressure_vessel_rows, col, row).is_some() {
+                pressure_vessel::handle_key(&mut state.pressure_vessel, key);
+            }
+        }
+        ToolId::Bushing => {
+            if mouse::hit(&regions.bushing_rows, col, row).is_some() {
+                bushing::handle_key(&mut state.bushing, key);
+            }
+        }
+        ToolId::PreloadAnalysis => {
+            if mouse::hit(&regions.preload_analysis_rows, col, row).is_some() {
+                preload_analysis::handle_key(&mut state.preload_analysis, key);
+            }
+        }
         _ => {}
     }
 }
@@ -593,6 +779,10 @@ fn execute_command(state: &mut AppState, cmd: Command) -> Vec<Effect> {
         }
         Command::SwitchToPressureVessel => {
             state.nav.activate(ToolId::PressureVessel);
+            Vec::new()
+        }
+        Command::SwitchToPreloadAnalysis => {
+            state.nav.activate(ToolId::PreloadAnalysis);
             Vec::new()
         }
         Command::SwitchToDupes => {
@@ -686,6 +876,37 @@ mod tests {
         let mut state = AppState::default();
         handle_event(&mut state, press(KeyCode::Char('q')));
         assert!(state.should_quit);
+    }
+
+    #[test]
+    fn rail_right_skips_past_disabled_tools_to_reach_the_next_enabled_one() {
+        // Regression test: `ToolId::ALL` is Search, FastenerHole, Bushing,
+        // PressureVessel, PreloadAnalysis (all enabled), then Dupes/Rename/
+        // Logs (disabled), then wraps back to Search. Pressing Right from
+        // PreloadAnalysis must land on Search, skipping the three disabled
+        // entries between them - not get permanently stuck re-selecting one
+        // of them on every subsequent Right press (the bug this test
+        // guards against: `activate` is a no-op on a disabled target, and
+        // `idx` is recomputed from `active_tool` each keypress, so a naive
+        // next-neighbor-only step can never progress past a disabled run).
+        let mut state = AppState::default();
+        state.nav.activate(ToolId::PreloadAnalysis);
+        state.focus.area = FocusArea::Rail;
+        handle_event(&mut state, press(KeyCode::Right));
+        assert_eq!(state.nav.active_tool, ToolId::Search);
+        // Left from Search must walk backward through the same disabled
+        // run and land on PreloadAnalysis, proving the skip works in both
+        // directions, not just forward.
+        handle_event(&mut state, press(KeyCode::Left));
+        assert_eq!(state.nav.active_tool, ToolId::PreloadAnalysis);
+    }
+
+    #[test]
+    fn rail_left_from_search_wraps_around_to_the_last_enabled_tool() {
+        let mut state = AppState::default();
+        state.focus.area = FocusArea::Rail;
+        handle_event(&mut state, press(KeyCode::Left));
+        assert_eq!(state.nav.active_tool, ToolId::PreloadAnalysis, "Dupes/Rename/Logs are disabled, so wrapping left from Search lands on the last enabled tool");
     }
 
     #[test]
@@ -899,7 +1120,7 @@ mod tests {
     fn clicking_a_disabled_rail_item_is_a_no_op() {
         let mut state = AppState::default();
         let mut regions = MouseRegions::default();
-        regions.rail.push((Rect::new(0, 0, 10, 1), ToolId::Bushing));
+        regions.rail.push((Rect::new(0, 0, 10, 1), ToolId::Dupes));
 
         handle_mouse(&mut state, &regions, click(2, 0));
         assert_eq!(state.nav.active_tool, ToolId::Search, "activate() already ignores disabled tools");

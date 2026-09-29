@@ -1,0 +1,19 @@
+[package]
+name = "fastened-joint-solver"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Fastened Joint Preload Analysis: models a threaded fastener tightened to
+# a specified installation torque and solves the coupled mechanical state
+# of the fastener and clamped joint stack - thread + bearing friction
+# torque equilibrium, preload, fastener/member elastic compliance, nut
+# rotation, installation stress state, and service-load/separation
+# behavior. Zero UI dependency (pure library), same pattern as
+# `bushing-solver`/`pressure-vessel-solver`.
+[lib]
+name = "fastened_joint_solver"
+path = "src/lib.rs"
+
+[dependencies]
+mechanics-core = { path = "../mechanics-core" }

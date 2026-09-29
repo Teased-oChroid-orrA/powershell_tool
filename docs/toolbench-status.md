@@ -76,18 +76,52 @@ same rail/topbar/workspace/status-bar shell shape as this document
 describes for `app/`, reimplemented for a terminal renderer. As of this
 writing:
 
-- **Search Files** is the only migrated toolbox: live progress (aggregate
-  percent + per-file in-flight status, matching `app/`'s full
-  `SearchProgressReport` fidelity, not `app-egui`'s thinner subset),
-  incremental results, preview with match highlighting, cancellation, HTML/
-  CSV/JSON export, and per-result actions (open/copy path/reveal folder/
-  export hits) are implemented and unit/integration-tested.
-- Bushing Workbench and Pressure Vessel Analyzer are inert rail
-  placeholders only, same treatment `Dupes`/`Rename`/`Logs` get here -
-  nothing behind them is implemented yet.
-- Fast re-search indexing (native-search/Tantivy-backed) is explicitly
-  deferred to a later phase - not present in `app-tui/` at all yet.
-- Keyboard-only in this phase; no mouse support.
+- **Search Files**, **Fastener Holes**, **Bushing Workbench**, **Pressure
+  Vessel Analyzer**, and **Preload Analysis** are the migrated toolboxes.
+  Search Files has live progress (aggregate percent + per-file in-flight
+  status, matching `app/`'s full `SearchProgressReport` fidelity, not
+  `app-egui`'s thinner subset), incremental results, preview with match
+  highlighting, cancellation, HTML/CSV/JSON export, per-result actions
+  (open/copy path/reveal folder/export hits), and fast re-search indexing
+  (native-search/Tantivy-backed, including a per-extension checkbox
+  catalog seeded by scanning the actual search folder - a capability
+  neither existing head has). Fastener Holes is a regular/countersunk
+  fastener-hole design and analysis tool unique to this crate (no
+  equivalent in `app`/`app-egui`). Bushing Workbench is ported from
+  `app`'s/`app-egui`'s own `bushing-solver`-backed tool (full straight/
+  flanged/countersunk geometry, tolerance-stack, margin-of-safety, install-
+  force, and aircraft reamer catalog) minus their cross-section sketch -
+  visual presentation with no terminal equivalent - plus a full per-radius
+  hoop/radial/axial stress-field breakdown neither existing head exposes as
+  plain numbers. Pressure Vessel Analyzer is ported from `app`'s/
+  `app-egui`'s own `pressure-vessel-solver`-backed tool (full geometry/
+  pressure/material/buckling inputs, full failure-mode and minimum-
+  thickness results) minus their cross-section sketches and KaTeX
+  derivation view - visual presentation with no terminal equivalent.
+  Preload Analysis is a fastened-joint installation/preload mechanics
+  solver (`fastened-joint-solver`, a new solver crate) unique to this
+  crate - full V-thread torque equation, uniform-pressure/uniform-wear
+  bearing friction (both cross-checked against numerical quadrature),
+  Brent-root-solved torque-preload equilibrium, piecewise-exact fastener
+  axial/torsional compliance plus a numerically-integrated Rotscher
+  pressure-cone member compliance, nut rotation/torsional twist, full
+  stress state at three sections, service-load/separation/slip checks, and
+  both spec-required uncertainty engines (deterministic worst-case corner
+  search and seeded Monte Carlo sampling, over the same five tolerance
+  bounds) - deliberately scoped without advanced per-thread spring-coupled
+  load-distribution modeling, labeled optional/advanced in the toolbox's own
+  originating spec (see `fastened-joint-solver/src/lib.rs`'s doc comment).
+  An AN3-AN20 aerospace bolt picker auto-fills thread geometry from ASME
+  B1.1 basic-dimension formulas; Bushing Workbench's own Bore Diameter field
+  is similarly reamer-catalog-driven (`toolboxes/bushing/reamer_picker.rs`)
+  rather than a free-typed decimal with a separate "nearest reamer" lookup.
+  Both Bushing Workbench's and Preload Analysis's field lists are grouped
+  under section headers with a bottom per-field "Hint" panel. All five
+  toolboxes are unit/integration-tested.
+- Duplicate Finder, Batch Rename, and Log Analyzer are inert rail
+  placeholders only - nothing behind them is implemented yet.
+- Both keyboard and mouse navigation are supported (click/scroll on the
+  rail, workspace panes, results/field rows, and every modal).
 
 See `app-tui/AGENTS.md` for the crate's own architecture (`AppState`/
 `AppEvent`/`Effect` event-reducer pattern, module map, testing approach).

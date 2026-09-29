@@ -5,6 +5,7 @@
 pub mod empty_state;
 pub mod gauge_row;
 pub mod help;
+pub mod hint_panel;
 pub mod scroll_list;
 pub mod shell;
 pub mod spinner;
