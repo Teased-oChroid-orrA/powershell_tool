@@ -17,6 +17,16 @@ pub struct Material {
     pub alpha_u_f: f64,
 }
 
+impl Default for Material {
+    /// `MATERIALS[0]` (al7075) - matches [`get_material`]'s own fallback on
+    /// an unknown id, so a caller building a `Material`-typed input via
+    /// `..Default::default()` gets the exact same material a bad/missing id
+    /// string used to silently fall back to.
+    fn default() -> Self {
+        MATERIALS[0]
+    }
+}
+
 pub static MATERIALS: &[Material] = &[
     Material { id: "al7075", name: "Al 7075-T6 (typical)", e_ksi: 10300.0, sy_ksi: 70.0, fbru_ksi: 121.0, fsu_ksi: 48.0, ftu_ksi: 77.0, nu: 0.33, alpha_u_f: 12.8 },
     Material { id: "al2024", name: "Al 2024-T3 (typical)", e_ksi: 10500.0, sy_ksi: 47.0, fbru_ksi: 98.0, fsu_ksi: 41.0, ftu_ksi: 64.0, nu: 0.33, alpha_u_f: 12.5 },

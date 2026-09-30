@@ -24,6 +24,23 @@ use bushing_solver::solve::{compute, BushingInputs, BushingOutput, EndConstraint
 use bushing_solver::tolerance::{BoreCapability, EnforcementPolicy};
 use mechanics_core::materials::{Material, MATERIALS};
 
+/// Leaks a user-added material's owned `String` fields into `&'static str`
+/// so it can be stored as an ordinary `&'static Material` alongside the
+/// built-in `MATERIALS` table - same technique
+/// `pressure_vessel::model::leak_custom_material` uses, extended with the
+/// `fbru_ksi`/`fsu_ksi` (bearing/shear ultimate) fields that toolbox
+/// deliberately zeroes because `pressure-vessel-solver` never reads them;
+/// `bushing_solver::solve::compute` *does* read both (edge-bearing/shear
+/// margin checks), so this toolbox's own add-material form must collect
+/// them for real. The leak is bounded by how many materials a user
+/// manually adds in a session, same reasoning as that toolbox's own
+/// comment.
+fn leak_custom_material(name: String, e_ksi: f64, sy_ksi: f64, fbru_ksi: f64, fsu_ksi: f64, ftu_ksi: f64, nu: f64, alpha_u_f: f64) -> &'static Material {
+    let id: &'static str = Box::leak(format!("custom:{name}").into_boxed_str());
+    let name: &'static str = Box::leak(name.into_boxed_str());
+    Box::leak(Box::new(Material { id, name, e_ksi, sy_ksi, fbru_ksi, fsu_ksi, ftu_ksi, nu, alpha_u_f }))
+}
+
 pub fn cycle_bushing_type(t: BushingType) -> BushingType {
     match t {
         BushingType::Straight => BushingType::Flanged,
@@ -200,6 +217,38 @@ impl NumberTarget {
     }
 }
 
+/// A UI-level classification/preset, not a new solver input -
+/// `bushing_solver::solve` already fully models the underlying mechanics
+/// (positive `interference` = press/shrink; near-zero/negative = clearance/
+/// slip) via `interference`/`assembly_thermal_enabled`. See
+/// `cycle_fit_type`'s doc comment for what each variant actually changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FitType {
+    #[default]
+    Press,
+    Shrink,
+    Clearance,
+    Slip,
+}
+
+pub fn cycle_fit_type(t: FitType) -> FitType {
+    match t {
+        FitType::Press => FitType::Shrink,
+        FitType::Shrink => FitType::Clearance,
+        FitType::Clearance => FitType::Slip,
+        FitType::Slip => FitType::Press,
+    }
+}
+
+pub fn label_fit_type(t: FitType) -> &'static str {
+    match t {
+        FitType::Press => "Press Fit",
+        FitType::Shrink => "Shrink Fit",
+        FitType::Clearance => "Clearance Fit",
+        FitType::Slip => "Slip Fit",
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldRow {
     /// A non-selectable section divider - navigation skips over it (see
@@ -208,6 +257,7 @@ pub enum FieldRow {
     /// out on a paper bushing-fit worksheet, so the list reads as a form
     /// with sections rather than one long undifferentiated column.
     Header(&'static str),
+    ToggleFitType,
     ToggleBushingType,
     ToggleIdType,
     ToggleEndConstraint,
@@ -226,6 +276,7 @@ pub enum FieldRow {
 pub fn row_label(row: FieldRow) -> &'static str {
     match row {
         FieldRow::Header(text) => text,
+        FieldRow::ToggleFitType => "Fit Type",
         FieldRow::ToggleBushingType => "OD Geometry",
         FieldRow::ToggleIdType => "ID Geometry",
         FieldRow::ToggleEndConstraint => "End Constraint",
@@ -251,9 +302,10 @@ pub fn row_label(row: FieldRow) -> &'static str {
 pub fn field_hint(row: FieldRow) -> &'static str {
     match row {
         FieldRow::Header(_) => "",
+        FieldRow::ToggleFitType => "Press/Shrink relabel the same interference-fit mechanics already modeled below; Shrink additionally enables Install Thermal Assist. Clearance/Slip are informational - entering a positive Target Interference while one is selected surfaces a warning in Results, but is never blocked.",
         FieldRow::Number(NumberTarget::BoreDia) => "Housing bore nominal diameter. Enter opens the aircraft reamer catalog to pick a real reamed size; press 'm' inside that picker to type an exact value instead.",
         FieldRow::Number(NumberTarget::BoreTolPlus) | FieldRow::Number(NumberTarget::BoreTolMinus) => "Bore tolerance band. A band wider than the interference tolerance band makes the fit Infeasible (see Tolerance status in Results).",
-        FieldRow::Number(NumberTarget::IdBushing) => "Bushing inner (through) diameter - the finished bore the installed part/shaft actually uses.",
+        FieldRow::Number(NumberTarget::IdBushing) => "Bushing inner (through) diameter - the finished bore the installed part/shaft actually uses. Enter opens a user-saved library of past values ('n' saves the current one); 'm' inside it types an exact value instead.",
         FieldRow::Number(NumberTarget::Interference) => "Target nominal diametral interference (Bore - Bushing OD, negative). Drives contact pressure and every downstream stress/margin.",
         FieldRow::Number(NumberTarget::InterferenceTolPlus) | FieldRow::Number(NumberTarget::InterferenceTolMinus) => "Interference tolerance band - must be at least as wide as the bore tolerance band for a feasible fit.",
         FieldRow::Number(NumberTarget::HousingLen) => "Housing length along the bushing axis - drives install force, axial stress scaling, and the edge-distance sequencing thickness.",
@@ -261,7 +313,7 @@ pub fn field_hint(row: FieldRow) -> &'static str {
         FieldRow::Number(NumberTarget::EdgeDist) => "Distance from bore center to the nearest free edge - compared against the sequencing/strength minimums in the Edge Distance results.",
         FieldRow::OpenHousingMaterialPicker => "Housing material - drives modulus, yield strength, and thermal expansion for the outer (housing) region.",
         FieldRow::OpenBushingMaterialPicker => "Bushing material - drives modulus, yield strength, and thermal expansion for the inner (bushing) region.",
-        FieldRow::Number(NumberTarget::Friction) => "Installation friction coefficient between bushing OD and housing bore - drives install/retained force.",
+        FieldRow::Number(NumberTarget::Friction) => "Installation friction coefficient between bushing OD and housing bore - drives install/retained force. Enter opens a list of typical values with usage notes; 'm' inside it types an exact value instead. Still editable afterward like any other number.",
         FieldRow::Number(NumberTarget::DeltaT) => "In-service uniform temperature change from the install condition - adds a thermal interference delta from the two materials' differing expansion.",
         FieldRow::ToggleEndConstraint => "How the bushing is axially restrained - governs how much of the hoop stress converts into an estimated axial stress (Free = none).",
         FieldRow::Number(NumberTarget::MinWallStraight) => "Minimum acceptable straight-section wall thickness - Straight Wall in Results fails below this.",
@@ -310,6 +362,7 @@ pub fn field_hint(row: FieldRow) -> &'static str {
 pub fn field_rows(model: &BushingModel) -> Vec<FieldRow> {
     let mut rows = vec![
         FieldRow::Header("Bore & Fit"),
+        FieldRow::ToggleFitType,
         FieldRow::Number(NumberTarget::BoreDia),
         FieldRow::Number(NumberTarget::BoreTolPlus),
         FieldRow::Number(NumberTarget::BoreTolMinus),
@@ -404,6 +457,7 @@ pub fn field_rows(model: &BushingModel) -> Vec<FieldRow> {
 /// `bushing_solver::solve`'s own differential-tested fixture
 /// (`tests/differential.rs`'s base input), not an arbitrary guess.
 pub struct BushingModel {
+    pub fit_type: FitType,
     pub bore_dia: f64,
     pub bore_tol_plus: f64,
     pub bore_tol_minus: f64,
@@ -462,12 +516,20 @@ pub struct BushingModel {
     pub assembly_housing_temp: f64,
     pub assembly_bushing_temp: f64,
 
+    /// User-added/imported materials, appended to the built-in `MATERIALS`
+    /// table by [`BushingModel::material_catalog`] - `housing_material_index`/
+    /// `bushing_material_index` index into that combined sequence, built-ins
+    /// first. Loaded from `material_persistence.rs` at construction, same
+    /// pattern `PressureVesselModel::custom_materials` already established.
+    pub custom_materials: Vec<&'static Material>,
+
     pub output: BushingOutput,
 }
 
 impl Default for BushingModel {
     fn default() -> Self {
         let mut model = Self {
+            fit_type: FitType::default(),
             bore_dia: 0.5,
             bore_tol_plus: 0.0,
             bore_tol_minus: 0.0,
@@ -520,6 +582,10 @@ impl Default for BushingModel {
             assembly_thermal_enabled: false,
             assembly_housing_temp: 70.0,
             assembly_bushing_temp: 70.0,
+            custom_materials: super::material_persistence::load()
+                .into_iter()
+                .map(|li| leak_custom_material(li.item.name, li.item.e_ksi, li.item.sy_ksi, li.item.fbru_ksi, li.item.fsu_ksi, li.item.ftu_ksi, li.item.nu, li.item.alpha_u_f))
+                .collect(),
             output: compute(&BushingInputs::default()),
         };
         model.recompute();
@@ -528,30 +594,63 @@ impl Default for BushingModel {
 }
 
 impl BushingModel {
-    pub fn material_catalog(&self) -> &'static [Material] {
-        MATERIALS
+    /// Built-in materials first, then user-added/imported custom ones, in
+    /// the order they were added - `housing_material_index`/
+    /// `bushing_material_index` are indices into exactly this sequence.
+    pub fn material_catalog(&self) -> Vec<&'static Material> {
+        MATERIALS.iter().chain(self.custom_materials.iter().copied()).collect()
     }
 
     pub fn housing_material(&self) -> &'static Material {
-        MATERIALS.get(self.housing_material_index).unwrap_or(&MATERIALS[0])
+        self.material_catalog().get(self.housing_material_index).copied().unwrap_or(&MATERIALS[0])
     }
 
     pub fn bushing_material(&self) -> &'static Material {
-        MATERIALS.get(self.bushing_material_index).unwrap_or(&MATERIALS[0])
+        self.material_catalog().get(self.bushing_material_index).copied().unwrap_or(&MATERIALS[0])
     }
 
     pub fn select_housing_material(&mut self, index: usize) {
-        if index < MATERIALS.len() {
+        if index < self.material_catalog().len() {
             self.housing_material_index = index;
             self.recompute();
         }
     }
 
     pub fn select_bushing_material(&mut self, index: usize) {
-        if index < MATERIALS.len() {
+        if index < self.material_catalog().len() {
             self.bushing_material_index = index;
             self.recompute();
         }
+    }
+
+    /// Rebuilds `custom_materials` entirely from `library` (fresh leak per
+    /// entry) - called after an import merges new/overwritten entries into
+    /// `MaterialPickerState::library`, since a leaked `&'static Material`
+    /// can't be mutated in place to reflect an overwrite. Leaking is
+    /// bounded by how often a user actually imports a library file in a
+    /// session, not by anything that scales with runtime.
+    pub fn sync_custom_materials_from_library(&mut self, library: &[crate::library::LibraryItem<super::material_persistence::PersistedMaterial>]) {
+        self.custom_materials = library.iter().map(|li| leak_custom_material(li.item.name.clone(), li.item.e_ksi, li.item.sy_ksi, li.item.fbru_ksi, li.item.fsu_ksi, li.item.ftu_ksi, li.item.nu, li.item.alpha_u_f)).collect();
+        self.housing_material_index = self.housing_material_index.min(self.material_catalog().len().saturating_sub(1));
+        self.bushing_material_index = self.bushing_material_index.min(self.material_catalog().len().saturating_sub(1));
+        self.recompute();
+    }
+
+    /// Adds a user-entered material to the catalog and selects it into
+    /// `target` immediately - validation (non-empty name, finite/positive
+    /// numeric fields) is the caller's job
+    /// (`material_picker.rs::AddMaterialForm::validate`), not this
+    /// method's; it trusts its inputs, same discipline
+    /// `PressureVesselModel::add_custom_material` documents.
+    pub fn add_custom_material(&mut self, target: super::material_picker::MaterialTarget, name: String, e_ksi: f64, sy_ksi: f64, fbru_ksi: f64, fsu_ksi: f64, ftu_ksi: f64, nu: f64, alpha_u_f: f64) {
+        let material = leak_custom_material(name, e_ksi, sy_ksi, fbru_ksi, fsu_ksi, ftu_ksi, nu, alpha_u_f);
+        self.custom_materials.push(material);
+        let index = self.material_catalog().len() - 1;
+        match target {
+            super::material_picker::MaterialTarget::Housing => self.housing_material_index = index,
+            super::material_picker::MaterialTarget::Bushing => self.bushing_material_index = index,
+        }
+        self.recompute();
     }
 
     fn build_inputs(&self) -> BushingInputs {
@@ -566,8 +665,8 @@ impl BushingModel {
             housing_len: self.housing_len,
             housing_width: self.housing_width,
             edge_dist: self.edge_dist,
-            mat_housing: self.housing_material().id.to_string(),
-            mat_bushing: self.bushing_material().id.to_string(),
+            mat_housing: *self.housing_material(),
+            mat_bushing: *self.bushing_material(),
             friction: Some(self.friction),
             d_t: self.delta_t,
             end_constraint: self.end_constraint,
@@ -713,6 +812,19 @@ impl BushingModel {
         self.recompute();
     }
 
+    /// Shrink Fit turns on `assembly_thermal_enabled` (surfacing Install
+    /// Thermal Assist's own fields in `field_rows`) - the solver's existing
+    /// thermally-assisted-install modeling *is* what a shrink fit means.
+    /// Press/Clearance/Slip are pure relabeling - see `FitType`'s own doc
+    /// comment for why this is a UI-level preset, not a new solver input.
+    pub fn toggle_fit_type(&mut self) {
+        self.fit_type = cycle_fit_type(self.fit_type);
+        if self.fit_type == FitType::Shrink {
+            self.assembly_thermal_enabled = true;
+        }
+        self.recompute();
+    }
+
     pub fn toggle_bushing_type(&mut self) {
         self.bushing_type = cycle_bushing_type(self.bushing_type);
         self.recompute();
@@ -763,8 +875,14 @@ impl BushingModel {
         self.recompute();
     }
 
+    /// Selecting a reamer auto-populates Bore Tolerance +/- from the
+    /// reamer's own tool tolerance, not just the nominal bore diameter -
+    /// a real installed bore's achievable tolerance band comes from the
+    /// reamer that cut it, not a separately-guessed value.
     pub fn select_reamer(&mut self, entry: &ReamerEntry) {
         self.bore_dia = entry.nominal_in;
+        self.bore_tol_plus = entry.tool_tolerance_plus_in;
+        self.bore_tol_minus = entry.tool_tolerance_minus_in;
         self.recompute();
     }
 }
@@ -817,6 +935,29 @@ mod tests {
         let before = model.bore_dia;
         model.commit_number(NumberTarget::BoreDia, f64::NAN);
         assert_eq!(model.bore_dia, before);
+    }
+
+    #[test]
+    fn toggle_fit_type_cycles_through_all_four_variants_and_wraps() {
+        let mut model = BushingModel::default();
+        assert_eq!(model.fit_type, FitType::Press);
+        model.toggle_fit_type();
+        assert_eq!(model.fit_type, FitType::Shrink);
+        model.toggle_fit_type();
+        assert_eq!(model.fit_type, FitType::Clearance);
+        model.toggle_fit_type();
+        assert_eq!(model.fit_type, FitType::Slip);
+        model.toggle_fit_type();
+        assert_eq!(model.fit_type, FitType::Press);
+    }
+
+    #[test]
+    fn shrink_fit_turns_on_assembly_thermal_assist() {
+        let mut model = BushingModel::default();
+        assert!(!model.assembly_thermal_enabled);
+        model.toggle_fit_type(); // Press -> Shrink
+        assert_eq!(model.fit_type, FitType::Shrink);
+        assert!(model.assembly_thermal_enabled);
     }
 
     #[test]

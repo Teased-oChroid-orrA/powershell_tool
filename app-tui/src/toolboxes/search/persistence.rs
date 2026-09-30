@@ -1,34 +1,23 @@
-//! Cross-relaunch settings persistence for the Search Files toolbox.
-//! Hand-rolled per-OS path resolution (no `dirs`/`directories` crate),
-//! matching `app/src/persistence.rs` and `app-egui/src/persistence.rs`'s
-//! own documented reasoning: Windows is the only real shipping target
-//! (root CLAUDE.md's "Target environment" invariant), so the other
-//! branches exist only to make local development also persist settings.
+//! Cross-relaunch settings persistence for the Search Files toolbox. Uses
+//! `crate::paths::app_data_dir` (shared with every other toolbox's
+//! persistence module) - Windows is the only real shipping target (root
+//! CLAUDE.md's "Target environment" invariant), so the other branches
+//! exist only to make local development also persist settings.
 //!
-//! File name is deliberately a THIRD one, distinct from `app/`'s
-//! `settings.json` and `app-egui/`'s `settings-egui.json`, under the
-//! shared `"GSEngineeringToolbench"` folder `app-egui` already
-//! established - all three heads' settings coexist without clobbering
-//! each other.
+//! File name is its own, distinct from every other toolbox's own settings
+//! file under the same shared `"GSEngineeringToolbench"` folder - all
+//! coexist without clobbering each other.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use super::model::SearchToolConfig;
+use crate::paths::app_data_dir;
 use search_core::models::{ExcludeScope, GroupByMode, MatchMode};
 
 fn config_path() -> Option<PathBuf> {
-    let base = if cfg!(target_os = "windows") {
-        std::env::var_os("APPDATA").map(PathBuf::from)
-    } else if cfg!(target_os = "macos") {
-        std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support"))
-    } else {
-        std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-    };
-    base.map(|b| b.join("GSEngineeringToolbench").join("settings-tui.json"))
+    app_data_dir().map(|d| d.join("settings-tui.json"))
 }
 
 /// Every `SearchToolConfig` field, `#[serde(default)]`/`Option<T>` for
@@ -252,6 +241,13 @@ pub struct PersistedFile {
     pub recent_searches: Vec<RecentSearch>,
     #[serde(default)]
     pub saved_presets: Vec<SavedPreset>,
+    /// Individually-selected extensions from the extension picker, most-
+    /// recently-selected first - independent of `settings.selected_extensions`
+    /// (the *current* search's active filter, which can be cleared/changed
+    /// per run) and of `recent_searches` above (whole path+filters
+    /// snapshots). See [`remember_recent_extensions`].
+    #[serde(default)]
+    pub recent_extensions: Vec<String>,
 }
 
 pub fn load() -> Option<PersistedFile> {
@@ -301,10 +297,66 @@ pub fn remember_recent_search(recents: &mut Vec<RecentSearch>, search_path: Stri
     recents.truncate(8);
 }
 
+/// Most-recent-first, deduplicated case-insensitively, capped at 8 - same
+/// convention as [`remember_recent_search`], applied per-extension rather
+/// than per-search. Each newly-selected extension (in the order the caller
+/// passes them) is moved to the front; already-recent entries not
+/// reselected this time keep their relative order behind the new ones.
+pub fn remember_recent_extensions(recents: &mut Vec<String>, newly_selected: &[String]) {
+    for ext in newly_selected {
+        let ext = ext.trim();
+        if ext.is_empty() {
+            continue;
+        }
+        recents.retain(|r| !r.eq_ignore_ascii_case(ext));
+        recents.insert(0, ext.to_string());
+    }
+    recents.truncate(8);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn remember_recent_extensions_moves_reselected_entries_to_front() {
+        let mut recents = vec![".rs".to_string(), ".txt".to_string()];
+        remember_recent_extensions(&mut recents, &[".txt".to_string()]);
+        assert_eq!(recents, vec![".txt".to_string(), ".rs".to_string()]);
+    }
+
+    #[test]
+    fn remember_recent_extensions_dedupes_case_insensitively() {
+        let mut recents = vec![".TXT".to_string()];
+        remember_recent_extensions(&mut recents, &[".txt".to_string()]);
+        assert_eq!(recents, vec![".txt".to_string()]);
+    }
+
+    #[test]
+    fn remember_recent_extensions_caps_at_eight() {
+        let mut recents = Vec::new();
+        for i in 0..10 {
+            remember_recent_extensions(&mut recents, &[format!(".e{i}")]);
+        }
+        assert_eq!(recents.len(), 8);
+        assert_eq!(recents[0], ".e9");
+    }
+
+    #[test]
+    fn recent_extensions_field_round_trips_and_defaults_on_old_files() {
+        let file = PersistedFile { recent_extensions: vec![".pdf".to_string()], ..Default::default() };
+        let json = serde_json::to_string(&file).unwrap();
+        let restored: PersistedFile = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.recent_extensions, vec![".pdf".to_string()]);
+
+        // Old file with no `recent_extensions` key at all must not fail to
+        // parse - defaults to empty, same discipline as every other field
+        // added to this struct after its first release.
+        let old_json = r#"{"settings":null,"recent_searches":[],"saved_presets":[]}"#;
+        let old: PersistedFile = serde_json::from_str(old_json).unwrap();
+        assert!(old.recent_extensions.is_empty());
+    }
 
     #[test]
     fn persisted_settings_round_trip_through_config() {
@@ -340,6 +392,7 @@ mod tests {
             settings: Some(PersistedSearchSettings::from(&SearchToolConfig::default())),
             recent_searches: vec![RecentSearch { search_path: "/a".into(), filters_text: "x".into() }],
             saved_presets: Vec::new(),
+            recent_extensions: Vec::new(),
         };
         save_to(&path, &file);
         assert!(path.exists());

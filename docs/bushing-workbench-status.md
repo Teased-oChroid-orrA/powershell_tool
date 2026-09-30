@@ -1,5 +1,13 @@
 # Bushing Workbench: straight-bushing interference-fit calculator
 
+**CLOSED / OBSOLETE**: this document describes `app/`'s (dioxus-native)
+Bushing Workbench specifically. `app/` has been deleted from this
+repository, along with `app-egui/` — `app-tui/`'s own Bushing Workbench
+(`app-tui/src/toolboxes/bushing/`, see `app-tui/AGENTS.md`) is the current,
+actively-developed implementation. Kept only as a historical record.
+
+---
+
 A new Toolbench tool (`app/src/bushing_workbench.rs`, backed by the new
 `bushing-solver` crate) ported from
 `~/Claude/Projects/engineering.toolbox`'s much larger aerospace-grade

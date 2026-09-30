@@ -1,28 +1,32 @@
 //! Filterable material picker, mirroring
-//! `toolboxes/pressure_vessel/material_picker.rs`'s pattern minus the
-//! "add new material" sub-form and cross-relaunch persistence -
-//! `bushing_solver::solve::compute` looks a material up by a fixed `&str`
-//! id from `mechanics_core::materials::MATERIALS` only
-//! (`get_material`'s own doc comment: falls back to `al7075` on an unknown
-//! id), with no custom-material concept anywhere in its public API, so
-//! adding one here would be new functionality this toolbox's underlying
-//! solver has no way to honor - not a scope cut, a faithful match to what
-//! actually exists.
+//! `toolboxes/pressure_vessel/material_picker.rs`'s pattern (an "add new
+//! material" sub-form plus a `crate::library`-backed custom-material
+//! catalog with import/export/duplicate-pruning/conflict-resolution/
+//! labeling - see that module's own doc comment for the JSON schema).
+//! `bushing_solver::solve::BushingInputs` takes a resolved
+//! `mechanics_core::materials::Material` value directly (not a `&str` id
+//! looked up internally), so a custom material flows into the solver
+//! exactly like a built-in one. One picker instance is reused for both the
+//! housing and the bushing material rows - `target` says which
+//! `BushingModel` field Enter commits into.
 //!
-//! One picker instance is reused for both the housing and the bushing
-//! material rows - `target` says which `BushingModel` field Enter commits
-//! into.
+//! Extended beyond the Pressure Vessel version with the two fields that
+//! toolbox's own add-material form zeroes because it never reads them
+//! (`fbru_ksi`/`fsu_ksi`, bearing/shear ultimate) - this toolbox's
+//! `compute()` does read both.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, ListItem, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::theme::Theme;
+use crate::library::{ConflictQueue, ConflictResolution, LibraryItem};
+use crate::theme::{StatusTone, Theme};
 use crate::widgets::empty_state;
 
+use super::material_persistence::{self, PersistedMaterial};
 use super::model::BushingModel;
 use crate::app::Effect;
 
@@ -32,18 +36,177 @@ pub enum MaterialTarget {
     Bushing,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddMaterialField {
+    Name,
+    E,
+    Sy,
+    Fbru,
+    Fsu,
+    Ftu,
+    Nu,
+    Alpha,
+    Save,
+}
+
+pub const ADD_MATERIAL_FIELDS: [AddMaterialField; 9] = [
+    AddMaterialField::Name,
+    AddMaterialField::E,
+    AddMaterialField::Sy,
+    AddMaterialField::Fbru,
+    AddMaterialField::Fsu,
+    AddMaterialField::Ftu,
+    AddMaterialField::Nu,
+    AddMaterialField::Alpha,
+    AddMaterialField::Save,
+];
+
+impl AddMaterialField {
+    pub fn label(self) -> &'static str {
+        match self {
+            AddMaterialField::Name => "Name",
+            AddMaterialField::E => "E (ksi)",
+            AddMaterialField::Sy => "Yield Strength Sy (ksi)",
+            AddMaterialField::Fbru => "Bearing Ultimate Fbru (ksi)",
+            AddMaterialField::Fsu => "Shear Ultimate Fsu (ksi)",
+            AddMaterialField::Ftu => "Ultimate Strength Ftu (ksi)",
+            AddMaterialField::Nu => "Poisson's Ratio",
+            AddMaterialField::Alpha => "Thermal Expansion (\u{b5}strain/\u{b0}F)",
+            AddMaterialField::Save => "[Save]",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
+pub struct AddMaterialForm {
+    pub selected: usize,
+    pub editing: bool,
+    pub edit_buffer: String,
+    pub name: String,
+    pub e_ksi: String,
+    pub sy_ksi: String,
+    pub fbru_ksi: String,
+    pub fsu_ksi: String,
+    pub ftu_ksi: String,
+    pub nu: String,
+    pub alpha_u_f: String,
+    pub error: Option<String>,
+}
+
+impl AddMaterialForm {
+    fn field_text(&self, field: AddMaterialField) -> &str {
+        match field {
+            AddMaterialField::Name => &self.name,
+            AddMaterialField::E => &self.e_ksi,
+            AddMaterialField::Sy => &self.sy_ksi,
+            AddMaterialField::Fbru => &self.fbru_ksi,
+            AddMaterialField::Fsu => &self.fsu_ksi,
+            AddMaterialField::Ftu => &self.ftu_ksi,
+            AddMaterialField::Nu => &self.nu,
+            AddMaterialField::Alpha => &self.alpha_u_f,
+            AddMaterialField::Save => "",
+        }
+    }
+
+    fn set_field_text(&mut self, field: AddMaterialField, text: String) {
+        match field {
+            AddMaterialField::Name => self.name = text,
+            AddMaterialField::E => self.e_ksi = text,
+            AddMaterialField::Sy => self.sy_ksi = text,
+            AddMaterialField::Fbru => self.fbru_ksi = text,
+            AddMaterialField::Fsu => self.fsu_ksi = text,
+            AddMaterialField::Ftu => self.ftu_ksi = text,
+            AddMaterialField::Nu => self.nu = text,
+            AddMaterialField::Alpha => self.alpha_u_f = text,
+            AddMaterialField::Save => {}
+        }
+    }
+
+    /// Same validation discipline as
+    /// `pressure_vessel::material_picker::AddMaterialForm::validate` -
+    /// permissive on exact bounds (user-entered, not a curated catalog
+    /// entry) but strict on unusable text and on ranges that would make
+    /// downstream formulas divide by a near-zero/negative quantity.
+    /// `Fbru`/`Fsu` are allowed to be blank/zero (this toolbox's own
+    /// `compute()` falls back to `Sy` when either is zero, same as the
+    /// built-in materials that don't set them).
+    fn validate(&self) -> Result<PersistedMaterial, String> {
+        let name = self.name.trim();
+        if name.is_empty() {
+            return Err("Name must not be blank".to_string());
+        }
+        let e_ksi = parse_positive(&self.e_ksi, "E")?;
+        let sy_ksi = parse_positive(&self.sy_ksi, "Yield strength")?;
+        let fbru_ksi = parse_non_negative_or_blank(&self.fbru_ksi, "Bearing ultimate")?;
+        let fsu_ksi = parse_non_negative_or_blank(&self.fsu_ksi, "Shear ultimate")?;
+        let ftu_ksi = parse_positive(&self.ftu_ksi, "Ultimate strength")?;
+        let nu: f64 = self.nu.trim().parse().map_err(|_| "Poisson's ratio must be a number".to_string())?;
+        if !(0.0..0.5).contains(&nu) {
+            return Err("Poisson's ratio must be between 0 and 0.5".to_string());
+        }
+        let alpha_u_f: f64 = self.alpha_u_f.trim().parse().map_err(|_| "Thermal expansion must be a number".to_string())?;
+        if !alpha_u_f.is_finite() || alpha_u_f < 0.0 {
+            return Err("Thermal expansion must be \u{2265} 0".to_string());
+        }
+        Ok(PersistedMaterial { name: name.to_string(), e_ksi, sy_ksi, fbru_ksi, fsu_ksi, ftu_ksi, nu, alpha_u_f })
+    }
+}
+
+fn parse_positive(text: &str, label: &str) -> Result<f64, String> {
+    let value: f64 = text.trim().parse().map_err(|_| format!("{label} must be a number"))?;
+    if !value.is_finite() || value <= 0.0 {
+        return Err(format!("{label} must be > 0"));
+    }
+    Ok(value)
+}
+
+fn parse_non_negative_or_blank(text: &str, label: &str) -> Result<f64, String> {
+    if text.trim().is_empty() {
+        return Ok(0.0);
+    }
+    let value: f64 = text.trim().parse().map_err(|_| format!("{label} must be a number (or blank)"))?;
+    if !value.is_finite() || value < 0.0 {
+        return Err(format!("{label} must be \u{2265} 0"));
+    }
+    Ok(value)
+}
+
+enum PathPromptKind {
+    Import,
+    Export,
+}
+
+struct PathPrompt {
+    kind: PathPromptKind,
+    buffer: String,
+}
+
 pub struct MaterialPickerState {
     pub open: bool,
     pub target: Option<MaterialTarget>,
     pub cursor: usize,
     pub filter_text: String,
     pub filtering: bool,
+    pub add_form: Option<AddMaterialForm>,
+    /// User-added/imported materials, merged into `BushingModel`'s own
+    /// combined catalog once added via the form or an import - this
+    /// picker's own view of the same library, kept for import/export/
+    /// conflict handling independent of which of the two target fields is
+    /// currently open.
+    pub library: Vec<LibraryItem<PersistedMaterial>>,
+    pub pending_conflicts: Option<ConflictQueue<PersistedMaterial>>,
+    path_prompt: Option<PathPrompt>,
+}
+
+impl Default for MaterialPickerState {
+    fn default() -> Self {
+        Self { open: false, target: None, cursor: 0, filter_text: String::new(), filtering: false, add_form: None, library: Vec::new(), pending_conflicts: None, path_prompt: None }
+    }
 }
 
 impl MaterialPickerState {
     pub fn open_for(target: MaterialTarget) -> Self {
-        Self { open: true, target: Some(target), ..Default::default() }
+        Self { open: true, target: Some(target), library: material_persistence::load(), ..Default::default() }
     }
 
     fn visible_indices(&self, model: &BushingModel) -> Vec<usize> {
@@ -67,6 +230,60 @@ impl MaterialPickerState {
 }
 
 pub fn handle_key(picker: &mut MaterialPickerState, model: &mut BushingModel, key: KeyEvent) -> (bool, Vec<Effect>) {
+    if let Some(queue) = &mut picker.pending_conflicts {
+        let (consumed, _) = handle_conflict_key(queue, &mut picker.library, key);
+        if !consumed {
+            return (false, Vec::new());
+        }
+        model.sync_custom_materials_from_library(&picker.library);
+        return (true, vec![Effect::PersistBushingMaterialLibrary]);
+    }
+
+    if let Some(prompt) = &mut picker.path_prompt {
+        return match key.code {
+            KeyCode::Enter => {
+                let path = prompt.buffer.trim().to_string();
+                let kind_is_export = matches!(prompt.kind, PathPromptKind::Export);
+                picker.path_prompt = None;
+                if path.is_empty() {
+                    return (true, Vec::new());
+                }
+                if kind_is_export {
+                    let mut items: Vec<LibraryItem<PersistedMaterial>> = mechanics_core::materials::MATERIALS
+                        .iter()
+                        .map(|m| LibraryItem::new(PersistedMaterial { name: m.name.to_string(), e_ksi: m.e_ksi, sy_ksi: m.sy_ksi, fbru_ksi: m.fbru_ksi, fsu_ksi: m.fsu_ksi, ftu_ksi: m.ftu_ksi, nu: m.nu, alpha_u_f: m.alpha_u_f }))
+                        .collect();
+                    items.extend(picker.library.iter().cloned());
+                    let contents = crate::library::export_json(&items);
+                    (true, vec![Effect::ExportBushingMaterialLibraryFile { path, contents }])
+                } else {
+                    (true, vec![Effect::ImportBushingMaterialLibraryFile(path)])
+                }
+            }
+            KeyCode::Esc => {
+                picker.path_prompt = None;
+                (true, Vec::new())
+            }
+            KeyCode::Delete => {
+                prompt.buffer.clear();
+                (true, Vec::new())
+            }
+            KeyCode::Backspace => {
+                prompt.buffer.pop();
+                (true, Vec::new())
+            }
+            KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
+                prompt.buffer.push(c);
+                (true, Vec::new())
+            }
+            _ => (false, Vec::new()),
+        };
+    }
+
+    if picker.add_form.is_some() {
+        return handle_add_form_key(picker, model, key);
+    }
+
     if picker.filtering {
         return match key.code {
             KeyCode::Enter | KeyCode::Esc => {
@@ -76,6 +293,11 @@ pub fn handle_key(picker: &mut MaterialPickerState, model: &mut BushingModel, ke
             }
             KeyCode::Backspace => {
                 picker.filter_text.pop();
+                picker.cursor = 0;
+                (true, Vec::new())
+            }
+            KeyCode::Delete => {
+                picker.filter_text.clear();
                 picker.cursor = 0;
                 (true, Vec::new())
             }
@@ -91,6 +313,18 @@ pub fn handle_key(picker: &mut MaterialPickerState, model: &mut BushingModel, ke
     match key.code {
         KeyCode::Char('/') => {
             picker.filtering = true;
+            (true, Vec::new())
+        }
+        KeyCode::Char('n' | 'N') => {
+            picker.add_form = Some(AddMaterialForm::default());
+            (true, Vec::new())
+        }
+        KeyCode::Char('i' | 'I') => {
+            picker.path_prompt = Some(PathPrompt { kind: PathPromptKind::Import, buffer: default_material_library_path() });
+            (true, Vec::new())
+        }
+        KeyCode::Char('x' | 'X') => {
+            picker.path_prompt = Some(PathPrompt { kind: PathPromptKind::Export, buffer: default_material_library_path() });
             (true, Vec::new())
         }
         KeyCode::Up => {
@@ -125,6 +359,113 @@ pub fn handle_key(picker: &mut MaterialPickerState, model: &mut BushingModel, ke
     }
 }
 
+fn default_material_library_path() -> String {
+    crate::paths::app_data_dir().unwrap_or_default().join("bushing-material-library.json").to_string_lossy().into_owned()
+}
+
+fn handle_conflict_key(queue: &mut ConflictQueue<PersistedMaterial>, library: &mut Vec<LibraryItem<PersistedMaterial>>, key: KeyEvent) -> (bool, Vec<Effect>) {
+    let resolved = match key.code {
+        KeyCode::Char('k' | 'K') => Some((ConflictResolution::KeepExisting, false)),
+        KeyCode::Char('o' | 'O') => Some((ConflictResolution::Overwrite, false)),
+        KeyCode::Char('z' | 'Z') => Some((ConflictResolution::KeepExisting, true)),
+        KeyCode::Char('a' | 'A') => Some((ConflictResolution::Overwrite, true)),
+        _ => None,
+    };
+    let Some((resolution, apply_all)) = resolved else {
+        return (false, Vec::new());
+    };
+    queue.resolve(library, resolution, apply_all);
+    (true, Vec::new())
+}
+
+fn move_add_form_selection(form: &mut AddMaterialForm, delta: i32) {
+    let len = ADD_MATERIAL_FIELDS.len() as i32;
+    form.selected = ((form.selected as i32 + delta).rem_euclid(len)) as usize;
+}
+
+fn handle_add_form_key(picker: &mut MaterialPickerState, model: &mut BushingModel, key: KeyEvent) -> (bool, Vec<Effect>) {
+    let editing = picker.add_form.as_ref().is_some_and(|f| f.editing);
+    if editing {
+        let form = picker.add_form.as_mut().expect("editing is only true when add_form is Some");
+        return match key.code {
+            KeyCode::Enter => {
+                let field = ADD_MATERIAL_FIELDS[form.selected];
+                let text = std::mem::take(&mut form.edit_buffer);
+                form.set_field_text(field, text);
+                form.editing = false;
+                (true, Vec::new())
+            }
+            KeyCode::Esc => {
+                form.editing = false;
+                form.edit_buffer.clear();
+                (true, Vec::new())
+            }
+            KeyCode::Delete => {
+                form.edit_buffer.clear();
+                (true, Vec::new())
+            }
+            KeyCode::Backspace => {
+                form.edit_buffer.pop();
+                (true, Vec::new())
+            }
+            KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
+                form.edit_buffer.push(c);
+                (true, Vec::new())
+            }
+            _ => (false, Vec::new()),
+        };
+    }
+
+    match key.code {
+        KeyCode::Up => {
+            if let Some(form) = picker.add_form.as_mut() {
+                move_add_form_selection(form, -1);
+            }
+            (true, Vec::new())
+        }
+        KeyCode::Down => {
+            if let Some(form) = picker.add_form.as_mut() {
+                move_add_form_selection(form, 1);
+            }
+            (true, Vec::new())
+        }
+        KeyCode::Esc => {
+            picker.add_form = None;
+            (true, Vec::new())
+        }
+        KeyCode::Enter => {
+            let Some(field) = picker.add_form.as_ref().map(|f| ADD_MATERIAL_FIELDS[f.selected]) else {
+                return (false, Vec::new());
+            };
+            if field == AddMaterialField::Save {
+                let validation = picker.add_form.as_ref().expect("checked above").validate();
+                match validation {
+                    Ok(persisted) => {
+                        let Some(target) = picker.target else { return (true, Vec::new()) };
+                        model.add_custom_material(target, persisted.name.clone(), persisted.e_ksi, persisted.sy_ksi, persisted.fbru_ksi, persisted.fsu_ksi, persisted.ftu_ksi, persisted.nu, persisted.alpha_u_f);
+                        picker.library.push(LibraryItem::new(persisted));
+                        picker.add_form = None;
+                        (true, vec![Effect::PersistBushingMaterialLibrary])
+                    }
+                    Err(e) => {
+                        if let Some(form) = picker.add_form.as_mut() {
+                            form.error = Some(e);
+                        }
+                        (true, Vec::new())
+                    }
+                }
+            } else {
+                if let Some(form) = picker.add_form.as_mut() {
+                    form.editing = true;
+                    form.edit_buffer = form.field_text(field).to_string();
+                }
+                (true, Vec::new())
+            }
+        }
+        _ => (false, Vec::new()),
+    }
+}
+
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let vertical = Layout::default()
         .direction(Direction::Vertical)
@@ -140,8 +481,18 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &MaterialPic
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let popup = centered_rect(60, 60, area);
+    let popup = centered_rect(64, 64, area);
     frame.render_widget(Clear, popup);
+
+    if let Some(queue) = &picker.pending_conflicts {
+        render_conflict_prompt(frame, popup, theme, queue);
+        return;
+    }
+
+    if let Some(form) = &picker.add_form {
+        render_add_form(frame, popup, theme, form);
+        return;
+    }
 
     let catalog = model.material_catalog();
     let visible = picker.visible_indices(model);
@@ -150,7 +501,7 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &MaterialPic
         Some(MaterialTarget::Bushing) => "Bushing",
         None => "",
     };
-    let title = format!(" {which} Material ({} of {}) ", visible.len(), catalog.len());
+    let title = format!(" {which} Material ({} of {}) - n: add \u{b7} i: import \u{b7} x: export ", visible.len(), catalog.len());
     let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.border_style(true)).title(title);
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
@@ -158,12 +509,7 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &MaterialPic
         return;
     }
 
-    let (list_area, filter_area) = if (picker.filtering || !picker.filter_text.is_empty()) && inner.height > 1 {
-        let rows = Layout::default().direction(Direction::Vertical).constraints([Constraint::Min(1), Constraint::Length(1)]).split(inner);
-        (rows[0], Some(rows[1]))
-    } else {
-        (inner, None)
-    };
+    let (list_area, bottom_area) = if inner.height > 1 { let rows = Layout::default().direction(Direction::Vertical).constraints([Constraint::Min(1), Constraint::Length(1)]).split(inner); (rows[0], Some(rows[1])) } else { (inner, None) };
 
     if visible.is_empty() {
         empty_state::render(frame, list_area, theme, "No materials match the filter", Some("Esc to clear the filter"));
@@ -173,22 +519,85 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &MaterialPic
             .enumerate()
             .map(|(display_i, &idx)| {
                 let material = catalog[idx];
+                let is_custom = idx >= mechanics_core::materials::MATERIALS.len();
+                let labels = if is_custom { picker.library.iter().find(|li| li.item.name == material.name).map(|li| li.labels.clone()).unwrap_or_default() } else { Vec::new() };
+                let tag = if is_custom { " [custom]".to_string() } else { String::new() };
+                let labels_tag = if labels.is_empty() { String::new() } else { format!(" {{{}}}", labels.join(", ")) };
                 let selected_row = display_i == picker.cursor;
                 let marker = if selected_row { "> " } else { "  " };
                 let style = if selected_row { theme.selected_row_style() } else { Style::default() };
-                ListItem::new(Line::from(Span::styled(format!("{marker}{}", material.name), style)))
+                ListItem::new(Line::from(Span::styled(format!("{marker}{}{tag}{labels_tag}", material.name), style)))
             })
             .collect();
         let offset = crate::widgets::scroll_list::render(frame, list_area, items, Some(picker.cursor));
         regions.material_rows.extend(crate::mouse::list_row_regions(list_area, offset, visible.len()));
     }
 
-    if let Some(area) = filter_area {
-        let label = if picker.filtering { "Filter (Enter/Esc to stop): " } else { "Filter: " };
-        let cursor_glyph = if picker.filtering { "_" } else { "" };
-        let line = Line::from(vec![Span::styled(label, theme.title_style(true)), Span::raw(picker.filter_text.as_str()), Span::styled(cursor_glyph, theme.title_style(true))]);
-        frame.render_widget(Paragraph::new(line), area);
+    if let Some(area) = bottom_area {
+        if let Some(prompt) = &picker.path_prompt {
+            let label = match prompt.kind {
+                PathPromptKind::Import => "Import from (Enter to confirm, Esc to cancel): ",
+                PathPromptKind::Export => "Export to (Enter to confirm, Esc to cancel): ",
+            };
+            let line = Line::from(vec![Span::styled(label, theme.title_style(true)), Span::raw(prompt.buffer.as_str()), Span::styled("_", theme.title_style(true))]);
+            frame.render_widget(Paragraph::new(line), area);
+        } else if picker.filtering || !picker.filter_text.is_empty() {
+            let label = if picker.filtering { "Filter (Enter/Esc to stop): " } else { "Filter: " };
+            let cursor_glyph = if picker.filtering { "_" } else { "" };
+            let line = Line::from(vec![Span::styled(label, theme.title_style(true)), Span::raw(picker.filter_text.as_str()), Span::styled(cursor_glyph, theme.title_style(true))]);
+            frame.render_widget(Paragraph::new(line), area);
+        }
     }
+}
+
+fn render_conflict_prompt(frame: &mut Frame, area: Rect, theme: &Theme, queue: &ConflictQueue<PersistedMaterial>) {
+    let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.border_style(true)).title(" Material import conflict ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let Some((_, incoming)) = queue.current() else { return };
+    let lines = vec![
+        Line::from(format!("Material \"{}\" already exists with different data.", incoming.item.name)),
+        Line::from(""),
+        Line::from(format!("Imported: E={:.0} ksi  Sy={:.0} ksi  Ftu={:.0} ksi", incoming.item.e_ksi, incoming.item.sy_ksi, incoming.item.ftu_ksi)),
+        Line::from(""),
+        Line::from(Span::styled("k: keep existing    o: overwrite    z: keep all remaining    a: overwrite all remaining", theme.disabled_style())),
+    ];
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+}
+
+fn render_add_form(frame: &mut Frame, popup: Rect, theme: &Theme, form: &AddMaterialForm) {
+    let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.border_style(true)).title(" Add Material - blank template ");
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let label_width = ADD_MATERIAL_FIELDS.iter().map(|f| f.label().len()).max().unwrap_or(0);
+    let mut lines: Vec<Line> = ADD_MATERIAL_FIELDS
+        .iter()
+        .enumerate()
+        .map(|(i, &field)| {
+            let selected = i == form.selected;
+            let value = if selected && form.editing { format!("{}_", form.edit_buffer) } else { form.field_text(field).to_string() };
+            let marker = if selected { "> " } else { "  " };
+            let style = if selected { theme.selected_row_style() } else { Style::default() };
+            let label = field.label();
+            Line::from(Span::styled(format!("{marker}{label:<label_width$}  {value}"), style))
+        })
+        .collect();
+
+    lines.push(Line::from(""));
+    if let Some(error) = &form.error {
+        lines.push(Line::from(Span::styled(error.as_str(), theme.status_style(StatusTone::Danger))));
+    } else {
+        lines.push(Line::from(Span::styled("Up/Down select \u{b7} Enter edit/save \u{b7} Esc cancel field or close form \u{b7} Delete clears while editing", theme.disabled_style())));
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 #[cfg(test)]
@@ -251,6 +660,97 @@ mod tests {
         assert!(!picker.open);
     }
 
+    #[test]
+    fn n_opens_the_add_material_form() {
+        let mut picker = MaterialPickerState::open_for(MaterialTarget::Housing);
+        let mut model = BushingModel::default();
+        handle_key(&mut picker, &mut model, key(KeyCode::Char('n')));
+        assert!(picker.add_form.is_some());
+    }
+
+    fn save_selected_form() -> AddMaterialForm {
+        let mut form = AddMaterialForm::default();
+        form.selected = ADD_MATERIAL_FIELDS.iter().position(|f| *f == AddMaterialField::Save).unwrap();
+        form
+    }
+
+    #[test]
+    fn add_form_save_with_valid_fields_adds_the_material_persists_and_selects_it() {
+        let mut form = save_selected_form();
+        form.name = "Test Alloy".to_string();
+        form.e_ksi = "12000".to_string();
+        form.sy_ksi = "55".to_string();
+        form.fbru_ksi = "120".to_string();
+        form.fsu_ksi = "45".to_string();
+        form.ftu_ksi = "65".to_string();
+        form.nu = "0.31".to_string();
+        form.alpha_u_f = "7.0".to_string();
+        let mut picker = MaterialPickerState { add_form: Some(form), ..MaterialPickerState::open_for(MaterialTarget::Housing) };
+        let mut model = BushingModel::default();
+        let (consumed, effects) = handle_add_form_key(&mut picker, &mut model, key(KeyCode::Enter));
+        assert!(consumed);
+        assert!(matches!(effects.as_slice(), [Effect::PersistBushingMaterialLibrary]));
+        assert!(picker.add_form.is_none());
+        assert_eq!(model.housing_material().name, "Test Alloy");
+        assert_eq!(model.housing_material().fbru_ksi, 120.0);
+        assert_eq!(picker.library.len(), 1);
+    }
+
+    #[test]
+    fn add_form_rejects_a_blank_name() {
+        let mut form = save_selected_form();
+        form.e_ksi = "10000".to_string();
+        form.sy_ksi = "50".to_string();
+        form.ftu_ksi = "60".to_string();
+        form.nu = "0.3".to_string();
+        form.alpha_u_f = "6.5".to_string();
+        let mut picker = MaterialPickerState { add_form: Some(form), ..MaterialPickerState::open_for(MaterialTarget::Housing) };
+        let mut model = BushingModel::default();
+        let (consumed, effects) = handle_add_form_key(&mut picker, &mut model, key(KeyCode::Enter));
+        assert!(consumed);
+        assert!(effects.is_empty());
+        assert!(picker.add_form.unwrap().error.is_some());
+    }
+
+    #[test]
+    fn add_form_allows_blank_fbru_and_fsu() {
+        let mut form = save_selected_form();
+        form.name = "Simple Alloy".to_string();
+        form.e_ksi = "10000".to_string();
+        form.sy_ksi = "50".to_string();
+        form.ftu_ksi = "60".to_string();
+        form.nu = "0.3".to_string();
+        form.alpha_u_f = "6.5".to_string();
+        let result = form.validate();
+        assert!(result.is_ok(), "blank Fbru/Fsu must be accepted (falls back to Sy downstream): {result:?}");
+        let material = result.unwrap();
+        assert_eq!(material.fbru_ksi, 0.0);
+        assert_eq!(material.fsu_ksi, 0.0);
+    }
+
+    #[test]
+    fn i_opens_an_import_prompt_prefilled_with_the_default_path() {
+        let mut picker = MaterialPickerState::open_for(MaterialTarget::Housing);
+        let mut model = BushingModel::default();
+        handle_key(&mut picker, &mut model, key(KeyCode::Char('i')));
+        assert!(picker.path_prompt.is_some());
+    }
+
+    #[test]
+    fn conflict_resolution_overwrites_on_o() {
+        let mut picker = MaterialPickerState::open_for(MaterialTarget::Housing);
+        let existing = PersistedMaterial { name: "Custom X".to_string(), e_ksi: 10000.0, sy_ksi: 50.0, fbru_ksi: 0.0, fsu_ksi: 0.0, ftu_ksi: 60.0, nu: 0.3, alpha_u_f: 6.5 };
+        picker.library.push(LibraryItem::new(existing.clone()));
+        let incoming = PersistedMaterial { sy_ksi: 999.0, ..existing };
+        let outcomes = crate::library::classify_import(&picker.library, vec![LibraryItem::new(incoming)], |m| m.name.clone());
+        let (queue, _, _) = ConflictQueue::new(outcomes, &mut picker.library);
+        picker.pending_conflicts = Some(queue);
+        let mut model = BushingModel::default();
+        let (consumed, _) = handle_key(&mut picker, &mut model, key(KeyCode::Char('o')));
+        assert!(consumed);
+        assert_eq!(picker.library[0].item.sy_ksi, 999.0);
+    }
+
     fn render_at(picker: &MaterialPickerState, model: &BushingModel, width: u16, height: u16) {
         let backend = TestBackend::new(width.max(1), height.max(1));
         let mut terminal = Terminal::new(backend).unwrap();
@@ -265,5 +765,13 @@ mod tests {
         render_at(&picker, &model, 80, 24);
         render_at(&picker, &model, 0, 0);
         render_at(&picker, &model, 1, 1);
+    }
+
+    #[test]
+    fn render_of_add_form_does_not_panic() {
+        let mut picker = MaterialPickerState::open_for(MaterialTarget::Housing);
+        picker.add_form = Some(AddMaterialForm::default());
+        let model = BushingModel::default();
+        render_at(&picker, &model, 80, 24);
     }
 }

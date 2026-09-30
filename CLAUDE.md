@@ -7,6 +7,41 @@ no memory of how it got here. Read this before making changes.
 Downlinks below). This file only covers what's true project-wide; every
 crate's own contracts, pitfalls, and code map live in its own node.
 
+## Bug-Fix Policy (overrides default scope control for this project)
+
+Any bug or issue discovered while working a user prompt in this repository
+must be **fixed in the same session**, not merely documented for later -
+even when it is unrelated to the task the user actually asked for, provided
+it is a genuine, verified defect (not a speculative "would be nice") and the
+fix is safe (no destructive/irreversible action, no scope requiring product
+judgment only the user can make).
+
+This is a deliberate, explicit override of the general "don't fix unrelated
+things, document and move on" scope-control default (root
+`~/.claude/CLAUDE.md`'s engineering-orchestrator routing still applies for
+*how* to fix it - investigate, verify, test - just not for *whether*). The
+project has already shipped at least one same-root-cause bug in multiple
+places (the Windows Caps-Lock/Ctrl-key `KeyCode::Char` case bug, see
+`app-tui/AGENTS.md`'s Pitfalls) because a prior fix documented the remaining
+instances instead of fixing them, and they stayed broken until the next
+session happened to look.
+
+Practical effect:
+- If CodeGraph/grep/review surfaces the same bug class elsewhere while fixing
+  the one the user reported, fix all confirmed instances in the same pass,
+  not just the reported one.
+- Still classify and verify each instance before fixing it (don't
+  mass-apply an unverified pattern-match) - "fix, don't document" is about
+  not deferring known-good fixes, not about skipping verification.
+- Still respects "Ask First" / "Never" boundaries in this file and in each
+  crate's `AGENTS.md` - fixing everything found does not mean bypassing
+  those.
+- If a found issue is too large/risky to fix safely in-session (needs a
+  product decision, touches a frozen reference tier, requires Windows
+  hardware access, etc.), that is the exception: document it clearly
+  (`AGENTS.md` Pitfalls or `docs/`) and say so explicitly, rather than
+  silently fixing a smaller version of it.
+
 ## What this project is
 
 A native Windows desktop app that recursively searches a folder for keyword
@@ -23,20 +58,25 @@ Rust.** Each older tier is kept as a working, byte-for-byte-tested reference
 during the transition, never deleted, never called into from the newer tier.
 See `src/AGENTS.md` for the C#/WinUI tier's rules.
 
-**There are TWO actively-developed Rust GUI heads right now, not one**:
-`app/` (dioxus-native/Blitz) and `app-egui/` (egui/eframe). `app-egui` was
-started to work around confirmed Blitz rendering bugs, but `app/` kept
-getting real feature work after that point, and `app-egui` has since grown
-a large PINN Stress Solver tool `app/` has no equivalent of. **Do not assume
-either one is dead or safe to skip** — verify current status in
-`docs/toolbench-status.md` / `docs/rust-rewrite-status.md` before treating
-one as the "real" head. See `app/AGENTS.md` and `app-egui/AGENTS.md`.
+**`app-tui/` (ratatui/crossterm terminal UI) is now the sole actively-
+developed GUI head.** Two earlier Rust GUI heads, `app/` (dioxus-native/
+Blitz) and `app-egui/` (egui/eframe, including its own PINN/AMR Stress
+Solver integration), have been deleted from this repository entirely — a
+deliberate decision, not an oversight, made once `app-tui/` reached feature
+parity on everything it implements. This is a real, accepted feature loss
+in two areas `app-tui/` deliberately does not replicate (a terminal can't
+render them the same way): the axial cross-section sketches /
+Pressure-Vessel derivation view both former heads had, and `app-egui/`'s
+PINN/AMR Stress Solver tool (its actual solver source lives entirely in the
+separate sibling repo `NeuralNetwork-Stress-Solver`, untouched by this
+removal — `app-egui/` only ever consumed it as a path-dependency library).
+If either capability is ever wanted again, it would need a fresh port into
+`app-tui/` or a new GUI head — there is nothing left in this repository to
+resurrect.
 
-**A third head, `app-tui/` (ratatui/crossterm terminal UI), is being added
-alongside both** — new, additive, and partial (Search Files, Fastener
+`app-tui/` is additive and partial in its own right (Search Files, Fastener
 Holes, Bushing Workbench, Pressure Vessel Analyzer, and Preload Analysis
-toolboxes so far; Dupes/Rename/Logs remain placeholders) — neither
-existing head is being retired by its addition. Fastener Holes and Preload
+toolboxes so far; Dupes/Rename/Logs remain placeholders). Fastener Holes and Preload
 Analysis are unique to `app-tui/` (no equivalent in `app`/`app-egui`) —
 Preload Analysis is a fastened-joint installation/preload mechanics solver
 (`fastened-joint-solver/`, a new solver crate: full V-thread torque
@@ -58,8 +98,8 @@ custom material" form. See `app-tui/AGENTS.md`.
 ## Intent Layer
 
 > TL;DR: Rust-first, GS Engineering "Toolbench" desktop app (search + engineering
-> solvers), migrating PowerShell -> C#/WinUI -> Rust with two active GUI heads
-> plus a new, partial third (terminal) head.
+> solvers), migrating PowerShell -> C#/WinUI -> Rust, with `app-tui` (terminal
+> UI) as the sole active GUI head.
 > Find your area in Subsystems, then read its `AGENTS.md`.
 
 ### Subsystems
@@ -68,10 +108,8 @@ custom material" form. See `app-tui/AGENTS.md`.
 |------|----------|------|--------|
 | Search/matching/extraction core | `search-core/` | `search-core/AGENTS.md` | Active. Zero GUI deps. |
 | Fast re-search index engine | `native-search/` | `native-search/AGENTS.md` | Active. Tantivy-backed. |
-| Dioxus-native GUI head | `app/` | `app/AGENTS.md` | Active (not superseded). |
-| egui GUI head | `app-egui/` | `app-egui/AGENTS.md` | Active (not superseded). Standalone Cargo workspace. |
-| ratatui GUI head | `app-tui/` | `app-tui/AGENTS.md` | Active. Search Files + Fastener Holes + Bushing Workbench + Pressure Vessel Analyzer + Preload Analysis toolboxes; Dupes/Rename/Logs not yet migrated. |
-| Bushing press-fit solver | `bushing-solver/` | `bushing-solver/AGENTS.md` | Active. Consumed by both GUI heads. |
+| ratatui GUI head (sole active GUI head) | `app-tui/` | `app-tui/AGENTS.md` | Active. Search Files + Fastener Holes + Bushing Workbench + Pressure Vessel Analyzer + Preload Analysis toolboxes; Dupes/Rename/Logs not yet migrated. |
+| Bushing press-fit solver | `bushing-solver/` | `bushing-solver/AGENTS.md` | Active. Consumed by `app-tui`. |
 | Legacy C#/WinUI app | `src/` | `src/AGENTS.md` | Frozen reference, do not extend. |
 | Design/history docs + ADRs | `docs/` | `docs/AGENTS.md` | Append-only historical record + navigation index. |
 | CLI | `cli/` | *(no node — small)* | Second `search-core` consumer, proves it's GUI-free-usable. |
@@ -86,8 +124,6 @@ custom material" form. See `app-tui/AGENTS.md`.
 |------|------|--------------|
 | search-core | `search-core/AGENTS.md` | matching/extraction/orchestrator internals, PDF CID-font pitfall, testing gate |
 | native-search | `native-search/AGENTS.md` | Tantivy engine, `ErrorInThread` recovery, FFI (legacy-only) |
-| app | `app/AGENTS.md` | Dioxus dashboard, AppState pattern, Blitz renderer gaps (onchange/details/sticky/transform) |
-| app-egui | `app-egui/AGENTS.md` | egui dashboard, font/icon rasterization gotchas, external PINN dependency, standalone-workspace reason |
 | app-tui | `app-tui/AGENTS.md` | ratatui dashboard, AppState/AppEvent/Effect event-reducer pattern, Search Files (partial parity)/Fastener Holes/Bushing Workbench/Pressure Vessel Analyzer/Preload Analysis toolboxes |
 | bushing-solver | `bushing-solver/AGENTS.md` | Press-fit/Lamé math, imperial-only unit risk, differential-test-against-TS-original discipline |
 | src | `src/AGENTS.md` | Frozen C#/WinUI reference, its own test gate, fixture-sharing contract with search-core |
@@ -99,10 +135,14 @@ WinUI 3 cannot run, build, or be debugged on a non-Windows machine at all —
 every UI iteration needed a Windows CI round-trip (tens of minutes each). A
 real bug (`EnableMsixTooling=false` silently disabling `resources.pri`
 generation) took three blind CI round-trips to diagnose — local reproduction
-would have caught it in seconds. Rust + Dioxus (later, also egui) was chosen
-specifically to close that loop: build, run, and debug the whole app on any
-platform. See `app/AGENTS.md` ("Why dioxus-native, not dioxus-desktop") for
-the specific dependency-level decision this drove.
+would have caught it in seconds. Rust was chosen specifically to close that
+loop: build, run, and debug the whole app on any platform. Two earlier Rust
+GUI heads (`app/`, dioxus-native/Blitz, and `app-egui/`, egui/eframe) were
+tried and later deleted once `app-tui/` (a terminal UI, which needs no GUI
+toolkit or windowing system at all — the simplest possible way to satisfy
+"build/run/debug on any platform") reached feature parity on everything it
+implements; see root `CLAUDE.md`'s "What this project is" section above for
+what was and wasn't carried forward.
 
 ## Reference-only tiers — hard boundary
 
@@ -110,9 +150,10 @@ Neither `powershell/` nor `src/` (the C#/WinUI app) has a runtime or build
 dependency from the active Rust stack, and nothing in Rust calls out to
 either. **Never** add a PowerShell invocation, a C#/.NET reference, or any
 shell-out to either from Rust code. **Never** add new features to `src/` —
-if something's missing from the Rust port, port it into `search-core`/`app`
-instead. They exist only so behavior can be diffed against if a discrepancy
-is ever suspected. See `src/AGENTS.md` for the full rule set and test gate.
+if something's missing from the Rust port, port it into `search-core`/
+`app-tui` instead. They exist only so behavior can be diffed against if a
+discrepancy is ever suspected. See `src/AGENTS.md` for the full rule set and
+test gate.
 
 ## Global Invariants
 
@@ -121,8 +162,7 @@ is ever suspected. See `src/AGENTS.md` for the full rule set and test gate.
   pre-installed runtime of any kind required on the machine running the
   *built* app. Build-time internet access (crates.io/NuGet restore in CI) is
   fine — only the published, running application must be fully
-  self-contained and offline-capable. This requirement is what ruled out
-  `dioxus-desktop`/WebView2 for `app/` — see `app/AGENTS.md`.
+  self-contained and offline-capable.
 - **Live progress reporting is a hard requirement, not a nice-to-have**: this
   app exists partly because the original PowerShell tool's PDF processing
   would go silent for many seconds with no way to tell "still working" from
@@ -130,13 +170,12 @@ is ever suspected. See `src/AGENTS.md` for the full rule set and test gate.
   progress reporting, a background ticker during parallel runs, and per-file
   in-flight status — never collapse this into a simpler "start/done" event
   model. Full detail in `search-core/AGENTS.md`.
-- **`app-egui`'s PINN/AMR/Stress-Solver internals are NOT documented in this
-  repo, by design.** That logic lives in a separate sibling repository,
-  `NeuralNetwork-Stress-Solver` (path-dependency, not a submodule/workspace
-  member) — `app-egui` only consumes it as a library. If you need to
-  understand or change PINN training/AMR/Kt-convergence behavior, that work
-  happens in the sibling repo, not here. See `app-egui/AGENTS.md`'s External
-  Dependencies section for the failure mode this creates.
+- **A PINN/AMR Stress-Solver tool no longer exists anywhere in this repo.**
+  It was previously integrated into the now-deleted `app-egui/` GUI head,
+  which consumed the actual solver as a path dependency on a separate
+  sibling repository, `NeuralNetwork-Stress-Solver` — that sibling repo,
+  and its PINN training/AMR/Kt-convergence internals, are untouched by
+  `app-egui/`'s removal, but nothing in this repo consumes it anymore.
 
 ## Global Pitfalls
 
@@ -169,8 +208,8 @@ been used**. For applicable tasks, CodeGraph must be explicitly consulted
 before making implementation decisions.
 
 The goal is not to use CodeGraph mechanically. The goal is to use it to
-understand the existing system — three migration tiers, two active GUI
-heads, and several shared solver crates — before changing it.
+understand the existing system — three migration tiers, one active GUI
+head, and several shared solver crates — before changing it.
 
 ---
 
@@ -179,8 +218,8 @@ heads, and several shared solver crates — before changing it.
 Use CodeGraph before making decisions involving:
 
 * architecture
-* crate/module boundaries (`app` vs `app-egui`, `search-core` vs
-  `native-search`, solver crates vs shared math crates)
+* crate/module boundaries (`search-core` vs `native-search`, solver crates
+  vs shared math crates)
 * dependencies
 * call relationships
 * data flow
@@ -188,7 +227,7 @@ Use CodeGraph before making decisions involving:
 * numerical computation flow (Lamé/press-fit/pressure-vessel calculations)
 * solver behavior
 * convergence/tolerance behavior
-* state management (`AppState` in `app`, dashboard state in `app-egui`)
+* state management (`AppState` in `app-tui`)
 * UI-to-backend interactions
 * refactoring
 * API changes
@@ -201,7 +240,7 @@ Use CodeGraph before making decisions involving:
   solvers)
 * modifying shared numerical/materials/precision infrastructure
   (`engineering-math`, `mechanics-core`)
-* changing behavior that may affect multiple tools or both GUI heads
+* changing behavior that may affect multiple toolboxes
 
 CodeGraph should be treated as the **primary source for understanding code
 relationships**, while normal repository inspection remains necessary for
@@ -229,7 +268,7 @@ For any substantial coding task, follow this sequence:
 4. Inspect the actual source files involved.
 5. Identify existing functionality that may already solve part or all of
    the problem — check `search-core`, `engineering-math`/`mechanics-core`,
-   and both GUI heads before writing new code.
+   and `app-tui` before writing new code.
 
 Do not begin implementation merely because a file with a matching name has
 been found.
@@ -242,10 +281,9 @@ Determine:
 
 * What the existing architecture is actually doing.
 * Which existing abstractions should be reused.
-* Whether the requested functionality already exists in another form (in
-  the other GUI head, in a shared crate, or in the frozen `src/`/
-  `powershell/` reference tiers — read-only, never a source to port live
-  code from).
+* Whether the requested functionality already exists in another form (in a
+  shared crate, or in the frozen `src/`/`powershell/` reference tiers —
+  read-only, never a source to port live code from).
 * Whether apparently separate implementations are actually duplicates.
 * What code will be affected by the proposed change.
 * Whether the proposed change crosses crate/API boundaries.
@@ -286,8 +324,7 @@ The plan should identify:
 * modules requiring modification,
 * affected callers,
 * affected dependents,
-* potential duplicate implementations (especially between `app` and
-  `app-egui`),
+* potential duplicate implementations,
 * likely regression areas,
 * and required validation.
 
@@ -340,8 +377,7 @@ exist:
    module.
 5. Update existing consumers as appropriate.
 6. Only create a parallel implementation when there is a documented
-   technical reason (e.g. `app` vs `app-egui`'s genuinely incompatible
-   `windows`/`windows-core` crate versions — see the root `Cargo.toml`).
+   technical reason.
 
 Avoid parallel implementations of the same engineering or numerical
 concept.
@@ -360,7 +396,7 @@ Examples include:
 * common validation
 * shared UI components
 * search/extraction logic (must live in `search-core`, never duplicated
-  per-GUI-head)
+  into a GUI head)
 
 Prefer one authoritative implementation with well-defined interfaces.
 
@@ -458,7 +494,7 @@ execution path before changing code.
 For example, for a solver correctness problem, trace:
 
 ```text
-GUI input (app or app-egui)
+GUI input (app-tui)
         ↓
 solver construction (bushing-solver / pressure-vessel-solver)
         ↓
@@ -525,7 +561,7 @@ Before modifying numerical behavior, determine:
 * precision handling,
 * convergence/tolerance behavior,
 * failure modes,
-* and downstream consumers (both GUI heads).
+* and downstream consumers (`app-tui`).
 
 Do not infer mathematical correctness from code structure alone.
 
@@ -580,11 +616,10 @@ Before adding or modifying precision/display behavior:
 4. Keep mathematical precision separate from presentation precision.
 5. Preserve full precision for intermediate calculations.
 6. Apply display rounding only at the appropriate final-display boundary.
-7. Avoid duplicating precision policy inside individual toolboxes or GUI
-   heads.
+7. Avoid duplicating precision policy inside individual toolboxes.
 
 Changes to the shared precision system must be evaluated for downstream
-effects on both `app` and `app-egui`.
+effects on `app-tui`.
 
 ---
 
@@ -621,8 +656,7 @@ Verify:
 * and architectural consistency.
 
 Then run the appropriate tests and validation (`cargo test -p search-core`
-at minimum; both GUI heads' own build/screenshot verification where UI
-changed).
+at minimum; `app-tui`'s own build/rendering verification where UI changed).
 
 CodeGraph verification does **not** replace testing.
 
@@ -666,8 +700,7 @@ For every substantial task, before implementation, answer these questions:
 * Did I use CodeGraph?
 * Did I use it on the relevant local repository state?
 * Did I identify callers/dependents of the code I intend to change?
-* Did I check for existing implementations that should be reused
-  (including the other GUI head)?
+* Did I check for existing implementations that should be reused?
 * Did I identify potentially affected components?
 * Did I inspect the actual source after the graph analysis?
 * Did I validate important CodeGraph findings against the source?
@@ -709,20 +742,14 @@ Use all of these together to make engineering decisions.
 ### Always
 - Run `cargo test -p search-core` before considering any `search-core`
   change done (zero GUI dependency, runs anywhere).
-- Check both `app/` and `app-egui/` before assuming one is safe to ignore —
-  both are actively developed (see Subsystems above).
-- Actually run/screenshot `app`/`app-egui` before claiming a layout or
-  rendering fix works — `cargo check`/`cargo test` alone cannot verify a
-  rendered GUI. `screencapture` + a real display has been confirmed
-  available in this environment before; don't assume otherwise without
-  testing it first in the current session.
+- Actually run/screenshot `app-tui` before claiming a layout or rendering
+  fix works — `cargo check`/`cargo test` alone cannot verify a rendered
+  TUI, and a `TestBackend` unit test can miss real-terminal-only failure
+  zones (see `app-tui/AGENTS.md`'s Pitfalls for a confirmed example). A
+  real `tmux` session has been used for this before; don't assume
+  `TestBackend` coverage alone proves a rendering fix without checking.
 
 ### Ask First
-- Switching `app/`'s dioxus feature from `"native"` back to `"desktop"` —
-  re-verify the WebView2-bundling constraint hasn't changed upstream first
-  (see `app/AGENTS.md`).
-- Removing any of egui's bundled fallback fonts in `app-egui/` — several UI
-  glyphs only render via those fallbacks (see `app-egui/AGENTS.md`).
 - Deleting anything under `docs/` — it's an append-only historical record
   (see `docs/AGENTS.md`).
 
@@ -730,11 +757,12 @@ Use all of these together to make engineering decisions.
 - Add a PowerShell invocation, C#/.NET reference, or shell-out to `src/` or
   `powershell/` from Rust code.
 - Add new features to `src/` (the frozen C#/WinUI reference app).
-- Re-derive or duplicate `app-egui`'s PINN/AMR narrative into this repo's
-  docs — that content belongs in the `NeuralNetwork-Stress-Solver` sibling
-  repo. (This root file itself used to violate this rule — over 1400 lines
-  of PINN/AMR epic history accumulated here before this restructuring. Don't
-  let it happen again: durable per-crate facts go in that crate's
+- Re-derive or duplicate the PINN/AMR narrative (now entirely in the
+  separate `NeuralNetwork-Stress-Solver` sibling repo, with no consumer left
+  in this one — see "What this project is" above) into this repo's docs.
+  (This root file itself used to violate this rule — over 1400 lines of
+  PINN/AMR epic history accumulated here before an earlier restructuring.
+  Don't let it happen again: durable per-crate facts go in that crate's
   `AGENTS.md`; one-off epic narratives go in `docs/issue-N-*.md`, never
   here.)
 
@@ -751,8 +779,7 @@ full index mapping decision topics to ADR numbers.
 |------|------------|
 | Change search/matching/extraction logic | `search-core/AGENTS.md` |
 | Change the fast re-search index | `native-search/AGENTS.md` |
-| Change the Dioxus GUI | `app/AGENTS.md` |
-| Change the egui GUI | `app-egui/AGENTS.md` |
+| Change the terminal (app-tui) GUI | `app-tui/AGENTS.md` |
 | Change bushing/pressure-vessel solvers | `bushing-solver/AGENTS.md` |
 | Understand why an architecture decision was made | `docs/AGENTS.md` -> `docs/adr/` |
 | Understand a past epic's implementation history | `docs/AGENTS.md` -> `docs/issue-N-*.md` |

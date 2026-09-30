@@ -12,6 +12,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, ListItem, Paragraph};
 
+use crate::nav::ToolId;
 use crate::theme::Theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +37,20 @@ pub enum Command {
     ToggleFastReSearchIndex,
     BuildIndex,
     RebuildIndex,
+    /// Fastener Holes has no Numbers panel (see `app-tui/AGENTS.md`'s
+    /// Pitfalls for why) - `e` export is its only palette-worthy action.
+    ExportFastenerHoleReport,
+    ToggleBushingNumbersPanel,
+    ExportBushingReport,
+    OpenReamerPicker,
+    OpenHousingMaterialPicker,
+    OpenBushingMaterialPicker,
+    TogglePressureVesselNumbersPanel,
+    ExportPressureVesselReport,
+    OpenPressureVesselMaterialPicker,
+    TogglePreloadAnalysisNumbersPanel,
+    ExportPreloadAnalysisReport,
+    OpenBoltPicker,
     Quit,
 }
 
@@ -58,6 +73,18 @@ impl Command {
         Command::ToggleFastReSearchIndex,
         Command::BuildIndex,
         Command::RebuildIndex,
+        Command::ExportFastenerHoleReport,
+        Command::ToggleBushingNumbersPanel,
+        Command::ExportBushingReport,
+        Command::OpenReamerPicker,
+        Command::OpenHousingMaterialPicker,
+        Command::OpenBushingMaterialPicker,
+        Command::TogglePressureVesselNumbersPanel,
+        Command::ExportPressureVesselReport,
+        Command::OpenPressureVesselMaterialPicker,
+        Command::TogglePreloadAnalysisNumbersPanel,
+        Command::ExportPreloadAnalysisReport,
+        Command::OpenBoltPicker,
         Command::Quit,
     ];
 
@@ -80,7 +107,52 @@ impl Command {
             Command::ToggleFastReSearchIndex => "Toggle fast re-search index",
             Command::BuildIndex => "Build fast re-search index",
             Command::RebuildIndex => "Rebuild fast re-search index from scratch",
+            Command::ExportFastenerHoleReport => "Export report",
+            Command::ToggleBushingNumbersPanel => "Toggle Numbers panel",
+            Command::ExportBushingReport => "Export report",
+            Command::OpenReamerPicker => "Open reamer catalog (Bore Diameter)",
+            Command::OpenHousingMaterialPicker => "Open Housing Material picker",
+            Command::OpenBushingMaterialPicker => "Open Bushing Material picker",
+            Command::TogglePressureVesselNumbersPanel => "Toggle Numbers panel",
+            Command::ExportPressureVesselReport => "Export report",
+            Command::OpenPressureVesselMaterialPicker => "Open Material picker",
+            Command::TogglePreloadAnalysisNumbersPanel => "Toggle Numbers panel",
+            Command::ExportPreloadAnalysisReport => "Export report",
+            Command::OpenBoltPicker => "Open Bolt (AN Standard) catalog",
             Command::Quit => "Quit",
+        }
+    }
+
+    /// Which toolbox this command is scoped to - `None` means always
+    /// visible regardless of the active tool (global navigation/app-level
+    /// actions), `Some(tool)` means it only appears in the palette while
+    /// that toolbox is active. See `CommandPalette::matches`.
+    pub fn scope(self) -> Option<ToolId> {
+        match self {
+            Command::SwitchToSearch
+            | Command::SwitchToFastenerHole
+            | Command::SwitchToBushing
+            | Command::SwitchToPressureVessel
+            | Command::SwitchToPreloadAnalysis
+            | Command::SwitchToDupes
+            | Command::SwitchToRename
+            | Command::SwitchToLogs
+            | Command::ToggleTheme
+            | Command::Quit => None,
+            Command::RunSearch
+            | Command::CancelSearch
+            | Command::OpenReport
+            | Command::FocusPathField
+            | Command::ClearRecentSearches
+            | Command::ToggleFastReSearchIndex
+            | Command::BuildIndex
+            | Command::RebuildIndex => Some(ToolId::Search),
+            Command::ExportFastenerHoleReport => Some(ToolId::FastenerHole),
+            Command::ToggleBushingNumbersPanel | Command::ExportBushingReport | Command::OpenReamerPicker | Command::OpenHousingMaterialPicker | Command::OpenBushingMaterialPicker => {
+                Some(ToolId::Bushing)
+            }
+            Command::TogglePressureVesselNumbersPanel | Command::ExportPressureVesselReport | Command::OpenPressureVesselMaterialPicker => Some(ToolId::PressureVessel),
+            Command::TogglePreloadAnalysisNumbersPanel | Command::ExportPreloadAnalysisReport | Command::OpenBoltPicker => Some(ToolId::PreloadAnalysis),
         }
     }
 }
@@ -92,11 +164,16 @@ pub struct CommandPalette {
 }
 
 impl CommandPalette {
-    pub fn matches(&self) -> Vec<Command> {
+    /// Commands visible right now: always-global ones (`Command::scope() ==
+    /// None`) plus whichever toolbox-scoped ones belong to `active_tool`,
+    /// narrowed further by the typed query - so switching tabs never shows
+    /// a Search-only command while on the Bushing tab, and vice versa.
+    pub fn matches(&self, active_tool: ToolId) -> Vec<Command> {
         let q = self.query.to_lowercase();
         Command::ALL
             .iter()
             .copied()
+            .filter(|c| c.scope().is_none() || c.scope() == Some(active_tool))
             .filter(|c| q.is_empty() || c.label().to_lowercase().contains(&q))
             .collect()
     }
@@ -111,8 +188,8 @@ impl CommandPalette {
         self.selected = 0;
     }
 
-    pub fn move_selection(&mut self, delta: i32) {
-        let len = self.matches().len();
+    pub fn move_selection(&mut self, active_tool: ToolId, delta: i32) {
+        let len = self.matches(active_tool).len();
         if len == 0 {
             self.selected = 0;
             return;
@@ -123,8 +200,8 @@ impl CommandPalette {
     }
 
     /// The command currently highlighted, if any commands match the query.
-    pub fn picked(&self) -> Option<Command> {
-        self.matches().get(self.selected).copied()
+    pub fn picked(&self, active_tool: ToolId) -> Option<Command> {
+        self.matches(active_tool).get(self.selected).copied()
     }
 }
 
@@ -150,7 +227,7 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         .split(vertical[1])[1]
 }
 
-pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, palette: &CommandPalette, regions: &mut crate::mouse::MouseRegions) {
+pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, palette: &CommandPalette, active_tool: ToolId, regions: &mut crate::mouse::MouseRegions) {
     let popup = centered_rect(60, 60, area);
     frame.render_widget(Clear, popup);
 
@@ -171,7 +248,7 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, palette: &CommandPal
     .block(input_block);
     frame.render_widget(input, layout[0]);
 
-    let matches = palette.matches();
+    let matches = palette.matches(active_tool);
     let items: Vec<ListItem> = if matches.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
             "No matching commands",
@@ -235,7 +312,7 @@ mod tests {
         let backend = TestBackend::new(40, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut regions = crate::mouse::MouseRegions::default();
-        terminal.draw(|f| render(f, f.area(), &Theme::default_palette(), &palette, &mut regions)).unwrap();
+        terminal.draw(|f| render(f, f.area(), &Theme::default_palette(), &palette, ToolId::Search, &mut regions)).unwrap();
 
         let buffer = terminal.backend().buffer().clone();
         let rendered: String =
@@ -252,32 +329,48 @@ mod tests {
             let mut terminal = Terminal::new(backend).unwrap();
             let area = Rect::new(0, 0, w, h);
             let mut regions = crate::mouse::MouseRegions::default();
-            terminal.draw(|f| render(f, area, &Theme::default_palette(), &palette, &mut regions)).unwrap();
+            terminal.draw(|f| render(f, area, &Theme::default_palette(), &palette, ToolId::Search, &mut regions)).unwrap();
         }
     }
 
     #[test]
-    fn empty_query_matches_every_command() {
+    fn empty_query_matches_every_global_command_plus_the_active_tools_own() {
         let palette = CommandPalette::default();
-        assert_eq!(palette.matches().len(), Command::ALL.len());
+        let global_count = Command::ALL.iter().filter(|c| c.scope().is_none()).count();
+        let bushing_count = Command::ALL.iter().filter(|c| c.scope() == Some(ToolId::Bushing)).count();
+        assert_eq!(palette.matches(ToolId::Bushing).len(), global_count + bushing_count);
+    }
+
+    #[test]
+    fn a_toolbox_scoped_command_is_absent_while_a_different_tool_is_active() {
+        let palette = CommandPalette::default();
+        assert!(!palette.matches(ToolId::Search).contains(&Command::ExportBushingReport), "Bushing-only command must not show while Search is active");
+        assert!(palette.matches(ToolId::Bushing).contains(&Command::ExportBushingReport), "Bushing-only command must show while Bushing is active");
+    }
+
+    #[test]
+    fn a_global_command_is_present_regardless_of_active_tool() {
+        let palette = CommandPalette::default();
+        assert!(palette.matches(ToolId::Search).contains(&Command::Quit));
+        assert!(palette.matches(ToolId::Bushing).contains(&Command::Quit));
     }
 
     #[test]
     fn query_filters_by_label_substring() {
         let mut palette = CommandPalette::default();
         "cancel".chars().for_each(|c| palette.push_char(c));
-        assert_eq!(palette.matches(), vec![Command::CancelSearch]);
+        assert_eq!(palette.matches(ToolId::Search), vec![Command::CancelSearch]);
     }
 
     #[test]
     fn move_selection_wraps_both_directions() {
         let mut palette = CommandPalette::default();
         "switch to".chars().for_each(|c| palette.push_char(c));
-        let match_count = palette.matches().len();
+        let match_count = palette.matches(ToolId::Search).len();
         assert_eq!(match_count, 8, "one \"Switch to: ...\" entry per ToolId variant");
-        palette.move_selection(-1);
+        palette.move_selection(ToolId::Search, -1);
         assert_eq!(palette.selected, match_count - 1);
-        palette.move_selection(1);
+        palette.move_selection(ToolId::Search, 1);
         assert_eq!(palette.selected, 0);
     }
 
@@ -285,13 +378,13 @@ mod tests {
     fn picked_reflects_current_selection() {
         let mut palette = CommandPalette::default();
         "quit".chars().for_each(|c| palette.push_char(c));
-        assert_eq!(palette.picked(), Some(Command::Quit));
+        assert_eq!(palette.picked(ToolId::Search), Some(Command::Quit));
     }
 
     #[test]
     fn picked_is_none_when_nothing_matches() {
         let mut palette = CommandPalette::default();
         "zzz-no-such-command".chars().for_each(|c| palette.push_char(c));
-        assert_eq!(palette.picked(), None);
+        assert_eq!(palette.picked(ToolId::Search), None);
     }
 }

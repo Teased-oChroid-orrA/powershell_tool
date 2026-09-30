@@ -1,26 +1,15 @@
 //! Cross-relaunch persistence for the Pressure Vessel Analyzer toolbox -
 //! currently just user-added custom materials (`material_picker.rs`'s
-//! "add new material" flow). Mirrors `toolboxes/search/persistence.rs`'s
-//! per-OS path resolution exactly (same reasoning: Windows is the only
-//! real shipping target, the other branches only help local development),
-//! under a fourth, distinct filename so this toolbox's settings never
-//! collide with Search Files' `settings-tui.json` or either other head's
-//! own settings file.
+//! "add new material" flow). Uses `crate::paths::app_data_dir` (shared with
+//! every other toolbox's persistence module) under a fourth, distinct
+//! filename so this toolbox's settings never collide with Search Files'
+//! `settings-tui.json` or either other toolbox's own settings file.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-fn app_data_dir() -> Option<PathBuf> {
-    let base = if cfg!(target_os = "windows") {
-        std::env::var_os("APPDATA").map(PathBuf::from)
-    } else if cfg!(target_os = "macos") {
-        std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support"))
-    } else {
-        std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-    };
-    base.map(|b| b.join("GSEngineeringToolbench"))
-}
+use crate::paths::app_data_dir;
 
 fn config_path() -> Option<PathBuf> {
     app_data_dir().map(|d| d.join("settings-tui-pressure-vessel.json"))

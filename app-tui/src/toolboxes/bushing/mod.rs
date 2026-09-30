@@ -20,15 +20,22 @@
 //! stress field (`d` numbers panel) and the aircraft reamer catalog
 //! (`reamer_picker.rs`).
 
+pub mod bushing_id_persistence;
+pub mod bushing_id_picker;
+pub mod friction_picker;
+pub mod material_persistence;
 pub mod material_picker;
 pub mod model;
 pub mod persistence;
+pub mod reamer_persistence;
 pub mod reamer_picker;
 pub mod view;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 
+use bushing_id_picker::BushingIdPickerState;
 use crate::app::Effect;
+use friction_picker::FrictionPickerState;
 use material_picker::{MaterialPickerState, MaterialTarget};
 use model::{BushingModel, FieldRow, NumberTarget};
 use reamer_picker::ReamerPickerState;
@@ -43,10 +50,17 @@ pub struct BushingState {
     pub edit_buffer: String,
     pub material_picker: MaterialPickerState,
     pub reamer_picker: ReamerPickerState,
+    pub friction_picker: FrictionPickerState,
+    pub bushing_id_picker: BushingIdPickerState,
     /// `d` toggles a text-only panel (Lamé constants + full per-radius
     /// hoop/radial/axial stress field breakdown) - same reasoning as
     /// `PressureVesselState::show_numbers`.
     pub show_numbers: bool,
+    /// PageUp/PageDown-adjusted scroll offset into the Results pane -
+    /// clamped on every render by `widgets::scroll_paragraph::render`, so
+    /// it's safe to let this grow past the actual content height (e.g.
+    /// after toggling `show_numbers` off shrinks the content).
+    pub results_scroll: u16,
 }
 
 impl Default for BushingState {
@@ -58,7 +72,10 @@ impl Default for BushingState {
             edit_buffer: String::new(),
             material_picker: MaterialPickerState::default(),
             reamer_picker: ReamerPickerState::default(),
+            friction_picker: FrictionPickerState::default(),
+            bushing_id_picker: BushingIdPickerState::default(),
             show_numbers: false,
+            results_scroll: 0,
         };
         // Row 0 is always a `Header` (the first section divider) - land on
         // the first real field instead of an unselectable row.
@@ -103,6 +120,7 @@ impl BushingState {
     fn activate_selected(&mut self) {
         let rows = model::field_rows(&self.model);
         match rows.get(self.selected).copied() {
+            Some(FieldRow::ToggleFitType) => self.model.toggle_fit_type(),
             Some(FieldRow::ToggleBushingType) => self.model.toggle_bushing_type(),
             Some(FieldRow::ToggleIdType) => self.model.toggle_id_type(),
             Some(FieldRow::ToggleEndConstraint) => self.model.toggle_end_constraint(),
@@ -138,7 +156,7 @@ pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>
         // itself being text-filtered, so typing "m" while filtering still
         // filters.
         if !state.reamer_picker.filtering {
-            if let KeyCode::Char('m') = key.code {
+            if let KeyCode::Char('m' | 'M') = key.code {
                 state.reamer_picker.open = false;
                 state.editing = true;
                 state.edit_buffer = model::format_for_edit(state.model.bore_dia);
@@ -146,6 +164,25 @@ pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>
             }
         }
         return reamer_picker::handle_key(&mut state.reamer_picker, &mut state.model, key);
+    }
+    if state.friction_picker.open {
+        // Same 'm' manual-entry escape hatch as the reamer picker.
+        if let KeyCode::Char('m' | 'M') = key.code {
+            state.friction_picker.open = false;
+            state.editing = true;
+            state.edit_buffer = model::format_for_edit(state.model.friction);
+            return (true, Vec::new());
+        }
+        return friction_picker::handle_key(&mut state.friction_picker, &mut state.model, key);
+    }
+    if state.bushing_id_picker.open {
+        if let KeyCode::Char('m' | 'M') = key.code {
+            state.bushing_id_picker.open = false;
+            state.editing = true;
+            state.edit_buffer = model::format_for_edit(state.model.id_bushing);
+            return (true, Vec::new());
+        }
+        return bushing_id_picker::handle_key(&mut state.bushing_id_picker, &mut state.model, key);
     }
 
     if state.editing {
@@ -159,16 +196,28 @@ pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>
                 state.edit_buffer.clear();
                 (true, Vec::new())
             }
-            KeyCode::Backspace => {
-                state.edit_buffer.pop();
-                (true, Vec::new())
-            }
-            KeyCode::Char(c) if (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) && (c.is_ascii_digit() || c == '.' || c == '-') => {
-                state.edit_buffer.push(c);
-                (true, Vec::new())
-            }
+            _ if crate::widgets::number_edit::handle_buffer_key(&mut state.edit_buffer, &key) => (true, Vec::new()),
             _ => (false, Vec::new()),
         };
+    }
+
+    // Typing a digit/'.'/'-' directly on an already-selected `Number` row
+    // starts editing immediately, buffer seeded from that character (not
+    // prefilled) - "once you hover it and start typing it updates
+    // accordingly". `Enter` (below) still exists too, prefilled with the
+    // current value, for tweaking rather than retyping. Picker-backed rows
+    // (Bore Diameter/Friction/Bushing ID) are excluded - `Enter` still
+    // activates their selection process exactly as before; a bare typed
+    // character on those rows is a no-op, matching every other non-`Number`
+    // row.
+    if let Some(c) = crate::widgets::number_edit::number_char(&key) {
+        if let Some(FieldRow::Number(target)) = model::field_rows(&state.model).get(state.selected).copied() {
+            if !matches!(target, NumberTarget::BoreDia | NumberTarget::Friction | NumberTarget::IdBushing) {
+                state.editing = true;
+                state.edit_buffer = c.to_string();
+                return (true, Vec::new());
+            }
+        }
     }
 
     match key.code {
@@ -199,6 +248,25 @@ pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>
                     state.reamer_picker = ReamerPickerState::open_near(&state.model);
                     (true, Vec::new())
                 }
+                // Friction's own Enter opens the typical-coefficient picker
+                // rather than the ordinary numeric text-edit mode, same
+                // "pick a real reference value first, free-type only when
+                // genuinely needed" pattern as Bore Diameter's reamer
+                // picker - 'm' (handled above) reaches the plain numeric
+                // editor.
+                Some(FieldRow::Number(NumberTarget::Friction)) => {
+                    state.friction_picker = FrictionPickerState::open_now();
+                    (true, Vec::new())
+                }
+                // Bushing ID's own Enter opens its user library picker
+                // (same selection/library functionality as Bore Diameter's
+                // reamer picker) rather than the ordinary numeric text-edit
+                // mode - 'm' (handled above) reaches the plain numeric
+                // editor.
+                Some(FieldRow::Number(NumberTarget::IdBushing)) => {
+                    state.bushing_id_picker = BushingIdPickerState::open_near(&state.model);
+                    (true, Vec::new())
+                }
                 Some(FieldRow::Number(target)) => {
                     state.editing = true;
                     state.edit_buffer = model::format_for_edit(state.model.number_value(target));
@@ -211,11 +279,19 @@ pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>
                 None => (false, Vec::new()),
             }
         }
-        KeyCode::Char('d') => {
+        KeyCode::Char('d' | 'D') => {
             state.show_numbers = !state.show_numbers;
             (true, Vec::new())
         }
-        KeyCode::Char('e') => (true, vec![Effect::ExportBushingReport(view::build_report_text(&state.model))]),
+        KeyCode::Char('e' | 'E') => (true, vec![Effect::ExportBushingReport(view::build_report_text(&state.model))]),
+        KeyCode::PageUp => {
+            state.results_scroll = state.results_scroll.saturating_sub(crate::widgets::scroll_paragraph::SCROLL_STEP);
+            (true, Vec::new())
+        }
+        KeyCode::PageDown => {
+            state.results_scroll = state.results_scroll.saturating_add(crate::widgets::scroll_paragraph::SCROLL_STEP);
+            (true, Vec::new())
+        }
         _ => (false, Vec::new()),
     }
 }
@@ -234,7 +310,7 @@ fn commit_edit(state: &mut BushingState) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyEventKind, KeyEventState};
+    use crossterm::event::{KeyEventKind, KeyEventState, KeyModifiers};
     use model::NumberTarget;
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -253,6 +329,15 @@ mod tests {
         assert_eq!(state.selected, last);
         handle_key(&mut state, key(KeyCode::Down));
         assert_eq!(state.selected, first_real_row);
+    }
+
+    #[test]
+    fn space_on_fit_type_toggle_cycles_it_without_entering_edit_mode() {
+        let mut state = BushingState::default();
+        state.selected = model::field_rows(&state.model).iter().position(|r| *r == FieldRow::ToggleFitType).unwrap();
+        handle_key(&mut state, key(KeyCode::Char(' ')));
+        assert_eq!(state.model.fit_type, model::FitType::Shrink);
+        assert!(!state.editing);
     }
 
     #[test]
@@ -313,6 +398,21 @@ mod tests {
     }
 
     #[test]
+    fn uppercase_m_from_caps_lock_still_switches_to_manual_numeric_entry() {
+        // Regression: crossterm's Windows backend reports Caps-Lock-typed
+        // letters as uppercase even with no Shift held (see
+        // `app-tui/AGENTS.md`'s Pitfalls) - a bare `'m'` pattern silently
+        // drops this binding on Windows whenever Caps Lock is on.
+        let mut state = BushingState::default();
+        state.selected = model::field_rows(&state.model).iter().position(|r| *r == FieldRow::Number(NumberTarget::BoreDia)).unwrap();
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert!(state.reamer_picker.open);
+        handle_key(&mut state, key(KeyCode::Char('M')));
+        assert!(!state.reamer_picker.open);
+        assert!(state.editing);
+    }
+
+    #[test]
     fn m_while_filtering_the_reamer_picker_types_into_the_filter_instead() {
         let mut state = BushingState::default();
         state.reamer_picker.open = true;
@@ -320,6 +420,35 @@ mod tests {
         handle_key(&mut state, key(KeyCode::Char('m')));
         assert!(state.reamer_picker.open, "'m' must filter, not exit to manual entry, while the filter text field has focus");
         assert_eq!(state.reamer_picker.filter_text, "m");
+    }
+
+    #[test]
+    fn typing_a_digit_on_a_number_row_starts_editing_from_just_that_digit() {
+        let mut state = BushingState::default();
+        state.selected = model::field_rows(&state.model).iter().position(|r| *r == FieldRow::Number(NumberTarget::HousingLen)).unwrap();
+        handle_key(&mut state, key(KeyCode::Char('7')));
+        assert!(state.editing);
+        assert_eq!(state.edit_buffer, "7", "buffer must start fresh from the typed digit, not prefilled with the old value");
+    }
+
+    #[test]
+    fn typing_a_digit_on_a_picker_backed_number_row_is_a_no_op() {
+        let mut state = BushingState::default();
+        state.selected = model::field_rows(&state.model).iter().position(|r| *r == FieldRow::Number(NumberTarget::BoreDia)).unwrap();
+        let (consumed, _) = handle_key(&mut state, key(KeyCode::Char('7')));
+        assert!(!consumed, "Bore Diameter is picker-backed - Enter must still be required to reach it");
+        assert!(!state.editing);
+    }
+
+    #[test]
+    fn delete_clears_the_edit_buffer_while_editing() {
+        let mut state = BushingState::default();
+        state.selected = model::field_rows(&state.model).iter().position(|r| *r == FieldRow::Number(NumberTarget::HousingLen)).unwrap();
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert!(!state.edit_buffer.is_empty());
+        handle_key(&mut state, key(KeyCode::Delete));
+        assert_eq!(state.edit_buffer, "");
+        assert!(state.editing, "Delete clears the buffer but stays in edit mode");
     }
 
     #[test]
@@ -386,6 +515,30 @@ mod tests {
         assert!(!state.show_numbers);
         handle_key(&mut state, key(KeyCode::Char('d')));
         assert!(state.show_numbers);
+    }
+
+    #[test]
+    fn page_down_and_page_up_adjust_the_results_scroll() {
+        let mut state = BushingState::default();
+        assert_eq!(state.results_scroll, 0);
+        handle_key(&mut state, key(KeyCode::PageDown));
+        assert_eq!(state.results_scroll, crate::widgets::scroll_paragraph::SCROLL_STEP);
+        handle_key(&mut state, key(KeyCode::PageUp));
+        assert_eq!(state.results_scroll, 0);
+        // Never underflows past zero.
+        handle_key(&mut state, key(KeyCode::PageUp));
+        assert_eq!(state.results_scroll, 0);
+    }
+
+    #[test]
+    fn uppercase_d_and_e_from_caps_lock_still_work() {
+        let mut state = BushingState::default();
+        assert!(!state.show_numbers);
+        handle_key(&mut state, key(KeyCode::Char('D')));
+        assert!(state.show_numbers);
+        let (consumed, effects) = handle_key(&mut state, key(KeyCode::Char('E')));
+        assert!(consumed);
+        assert!(matches!(effects.as_slice(), [Effect::ExportBushingReport(text)] if !text.is_empty()));
     }
 
     #[test]

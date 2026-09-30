@@ -95,6 +95,18 @@ pub enum AppEvent {
     IndexBuildProgress(search_core::native_index::CorpusIndexProgress),
     IndexBuildFinished(native_search::error::NsResult<search_core::native_index::CorpusIndexOutcome>),
     ExtensionsScanned(Result<Vec<String>, String>),
+    /// Result of reading a user-typed path for the reamer-library "Import"
+    /// action (`toolboxes/bushing/reamer_picker.rs`) - file I/O, so it goes
+    /// through the same `Effect`-request / `AppEvent`-response round trip
+    /// as `ScanExtensions`/`ExtensionsScanned`, never a direct filesystem
+    /// read from inside `handle_key`.
+    ReamerLibraryFileRead(Result<String, String>),
+    /// Same round trip as `ReamerLibraryFileRead`, for the Bushing material
+    /// library's own "Import" prompt (`toolboxes/bushing/material_picker.rs`).
+    BushingMaterialLibraryFileRead(Result<String, String>),
+    /// Same round trip, for the Bushing ID library
+    /// (`toolboxes/bushing/bushing_id_picker.rs`).
+    BushingIdLibraryFileRead(Result<String, String>),
     Quit,
 }
 
@@ -138,6 +150,34 @@ pub enum Effect {
     /// fixed report path and opens it - same pattern as
     /// `ExportPressureVesselReport`/`ExportBushingReport`.
     ExportPreloadAnalysisReport(String),
+    /// Writes the Fastener Holes toolbox's plain-text report to its fixed
+    /// report path and opens it - same pattern as the other three
+    /// toolboxes' own `Export*Report` effects.
+    ExportFastenerHoleReport(String),
+    /// Reads the file at `path` (a user-typed path from the reamer
+    /// library's "Import" prompt) and reports the result via
+    /// `AppEvent::ReamerLibraryFileRead` - reading is I/O, so it can't
+    /// happen synchronously inside `handle_key`.
+    ImportReamerLibraryFile(String),
+    /// Writes `contents` (already-built JSON, pure and synchronous - see
+    /// `library::export_json`) to `path`, creating the parent directory if
+    /// needed - the reamer library's "Export" action.
+    ExportReamerLibraryFile { path: String, contents: String },
+    /// Snapshots `state.bushing.reamer_picker.library` and writes it to
+    /// disk - same "derive from current state at execution time" pattern
+    /// as `PersistPressureVesselMaterials`.
+    PersistReamerLibrary,
+    /// Same trio as the three `*ReamerLibraryFile`/`PersistReamerLibrary`
+    /// effects above, for the Bushing material library
+    /// (`toolboxes/bushing/material_picker.rs`).
+    ImportBushingMaterialLibraryFile(String),
+    ExportBushingMaterialLibraryFile { path: String, contents: String },
+    PersistBushingMaterialLibrary,
+    /// Same trio, for the Bushing ID library
+    /// (`toolboxes/bushing/bushing_id_picker.rs`).
+    ImportBushingIdLibraryFile(String),
+    ExportBushingIdLibraryFile { path: String, contents: String },
+    PersistBushingIdLibrary,
 }
 
 pub fn handle_event(state: &mut AppState, event: AppEvent) -> Vec<Effect> {
@@ -205,18 +245,122 @@ pub fn handle_event(state: &mut AppState, event: AppEvent) -> Vec<Effect> {
         }
         AppEvent::ExtensionsScanned(result) => {
             state.search.extension_picker = match result {
-                Ok(available) => {
+                Ok(mut available) => {
+                    // Recently-selected extensions stay pickable even when
+                    // this particular folder doesn't happen to contain one
+                    // right now - appended (not merged-and-resorted, which
+                    // would change `scan_extensions`' existing alphabetical
+                    // output order for a plain scan with nothing to add)
+                    // after the scanned list, most-recent first, before
+                    // `open_with` so its own selection-seeding logic
+                    // (unaffected by this) still just sees one plain
+                    // `available` list.
+                    for ext in &state.search.recent_extensions {
+                        if !available.iter().any(|e| e.eq_ignore_ascii_case(ext)) {
+                            available.push(ext.clone());
+                        }
+                    }
                     search::extension_picker::ExtensionPicker::open_with(available, state.search.config.selected_extensions.as_deref())
                 }
                 Err(e) => search::extension_picker::ExtensionPicker::open_with_error(e),
             };
             Vec::new()
         }
+        AppEvent::ReamerLibraryFileRead(result) => handle_reamer_library_file_read(state, result),
+        AppEvent::BushingMaterialLibraryFileRead(result) => handle_bushing_material_library_file_read(state, result),
+        AppEvent::BushingIdLibraryFileRead(result) => handle_bushing_id_library_file_read(state, result),
         AppEvent::Quit => {
             request_quit(state);
             Vec::new()
         }
     }
+}
+
+/// Applies a just-read reamer-library import file: parses it, classifies
+/// every item against the existing library (`library::classify_import`),
+/// immediately applies additions/label-merges, and queues any real
+/// conflicts for interactive resolution (`ReamerPickerState::handle_key`).
+/// A parse failure or unreadable file surfaces as a toast, never a panic or
+/// a silently-dropped import.
+fn handle_reamer_library_file_read(state: &mut AppState, result: Result<String, String>) -> Vec<Effect> {
+    let text = match result {
+        Ok(text) => text,
+        Err(e) => {
+            state.notifications.push(e, StatusTone::Danger);
+            return Vec::new();
+        }
+    };
+    let incoming = match crate::library::import_json::<crate::toolboxes::bushing::reamer_persistence::PersistedReamer>(&text) {
+        Ok(items) => items,
+        Err(e) => {
+            state.notifications.push(e, StatusTone::Danger);
+            return Vec::new();
+        }
+    };
+    let outcomes = crate::library::classify_import(&state.bushing.reamer_picker.library, incoming, |p| p.size_label.clone());
+    let (queue, added, merged) = crate::library::ConflictQueue::new(outcomes, &mut state.bushing.reamer_picker.library);
+    let conflicts_remaining = !queue.is_empty();
+    state.bushing.reamer_picker.pending_conflicts = if conflicts_remaining { Some(queue) } else { None };
+    let suffix = if conflicts_remaining { " - conflicts need review (k: keep, o: overwrite, a/z: apply to all)" } else { "" };
+    state.notifications.push(format!("Reamer library: {added} added, {merged} label update(s){suffix}"), StatusTone::Success);
+    vec![Effect::PersistReamerLibrary]
+}
+
+/// Same shape as `handle_reamer_library_file_read`, for the Bushing
+/// material library - additionally re-syncs `BushingModel::custom_materials`
+/// from the merged library, since a leaked `&'static Material` can't be
+/// mutated in place to reflect an overwrite (see
+/// `BushingModel::sync_custom_materials_from_library`'s own doc comment).
+fn handle_bushing_material_library_file_read(state: &mut AppState, result: Result<String, String>) -> Vec<Effect> {
+    let text = match result {
+        Ok(text) => text,
+        Err(e) => {
+            state.notifications.push(e, StatusTone::Danger);
+            return Vec::new();
+        }
+    };
+    let incoming = match crate::library::import_json::<crate::toolboxes::bushing::material_persistence::PersistedMaterial>(&text) {
+        Ok(items) => items,
+        Err(e) => {
+            state.notifications.push(e, StatusTone::Danger);
+            return Vec::new();
+        }
+    };
+    let outcomes = crate::library::classify_import(&state.bushing.material_picker.library, incoming, |p| p.name.clone());
+    let (queue, added, merged) = crate::library::ConflictQueue::new(outcomes, &mut state.bushing.material_picker.library);
+    let conflicts_remaining = !queue.is_empty();
+    state.bushing.material_picker.pending_conflicts = if conflicts_remaining { Some(queue) } else { None };
+    state.bushing.model.sync_custom_materials_from_library(&state.bushing.material_picker.library);
+    let suffix = if conflicts_remaining { " - conflicts need review (k: keep, o: overwrite, a/z: apply to all)" } else { "" };
+    state.notifications.push(format!("Material library: {added} added, {merged} label update(s){suffix}"), StatusTone::Success);
+    vec![Effect::PersistBushingMaterialLibrary]
+}
+
+/// Same shape as `handle_reamer_library_file_read`, for the Bushing ID
+/// library - no combined-catalog re-sync needed (unlike materials), since
+/// this library has no built-in catalog to merge against.
+fn handle_bushing_id_library_file_read(state: &mut AppState, result: Result<String, String>) -> Vec<Effect> {
+    let text = match result {
+        Ok(text) => text,
+        Err(e) => {
+            state.notifications.push(e, StatusTone::Danger);
+            return Vec::new();
+        }
+    };
+    let incoming = match crate::library::import_json::<crate::toolboxes::bushing::bushing_id_persistence::PersistedBushingId>(&text) {
+        Ok(items) => items,
+        Err(e) => {
+            state.notifications.push(e, StatusTone::Danger);
+            return Vec::new();
+        }
+    };
+    let outcomes = crate::library::classify_import(&state.bushing.bushing_id_picker.library, incoming, |p| p.label.clone());
+    let (queue, added, merged) = crate::library::ConflictQueue::new(outcomes, &mut state.bushing.bushing_id_picker.library);
+    let conflicts_remaining = !queue.is_empty();
+    state.bushing.bushing_id_picker.pending_conflicts = if conflicts_remaining { Some(queue) } else { None };
+    let suffix = if conflicts_remaining { " - conflicts need review (k: keep, o: overwrite, a/z: apply to all)" } else { "" };
+    state.notifications.push(format!("Bushing ID library: {added} added, {merged} label update(s){suffix}"), StatusTone::Success);
+    vec![Effect::PersistBushingIdLibrary]
 }
 
 fn handle_search_finished(state: &mut AppState, result: Result<SearchRunResult, OrchestratorError>) -> Vec<Effect> {
@@ -305,11 +449,22 @@ fn handle_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     }
 
     match key.code {
-        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        // `'p' | 'P'`, not a bare `'p'`: crossterm's Windows backend derives
+        // the char's case from Shift XOR Caps Lock even for control-code
+        // keys (see `get_char_for_key` in crossterm's
+        // `event/sys/windows/parse.rs`), so with Caps Lock on, Ctrl+P
+        // arrives as `Char('P')` with only `CONTROL` set - a bare `'p'`
+        // silently drops the binding on Windows only (never reproduces on
+        // macOS/Linux, where Ctrl+letter is always reported lowercase).
+        // Same root cause, same fix shape as the Shift/Caps-Lock nav-key
+        // bug already fixed in `search::is_plain_char` - that fix never
+        // touched this global match block, which is why this one slipped
+        // through.
+        KeyCode::Char('p' | 'P') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.modal = ModalState::Palette(CommandPalette::default());
         }
         KeyCode::Char('?') => state.modal = ModalState::Help,
-        KeyCode::Char('q') => request_quit(state),
+        KeyCode::Char('q' | 'Q') => request_quit(state),
         KeyCode::Tab => {
             let panes = state.workspace_pane_count();
             state.focus.cycle_forward(panes);
@@ -349,18 +504,21 @@ fn handle_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
 }
 
 fn handle_modal_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
+    // Read before the `&mut state.modal` borrow below - `ToolId` is `Copy`,
+    // so this is a cheap snapshot, not a lingering borrow conflict.
+    let active_tool = state.nav.active_tool;
     match &mut state.modal {
         ModalState::Palette(palette) => match key.code {
             KeyCode::Esc => state.modal.close(),
             KeyCode::Enter => {
-                let picked = palette.picked();
+                let picked = palette.picked(active_tool);
                 state.modal.close();
                 if let Some(cmd) = picked {
                     return execute_command(state, cmd);
                 }
             }
-            KeyCode::Up => palette.move_selection(-1),
-            KeyCode::Down => palette.move_selection(1),
+            KeyCode::Up => palette.move_selection(active_tool, -1),
+            KeyCode::Down => palette.move_selection(active_tool, 1),
             KeyCode::Backspace => palette.backspace(),
             KeyCode::Char(c) => palette.push_char(c),
             _ => {}
@@ -561,6 +719,7 @@ fn handle_settings_click(state: &mut AppState, regions: &MouseRegions, col: u16,
     if let Some(i) = mouse::hit(&regions.settings_field_rows, col, row) {
         state.search.settings.section = Section::Fields;
         state.search.settings.selected = i;
+        state.search.settings.clamp_selection();
         if is_double_click(&mut state.last_click, ClickTarget::SettingsFieldRow(i)) {
             let (_, effects) = search::settings_view::handle_key(
                 &mut state.search.settings,
@@ -686,9 +845,10 @@ fn handle_scroll(state: &mut AppState, regions: &MouseRegions, col: u16, row: u1
     let key = synthetic_key(if delta < 0 { KeyCode::Up } else { KeyCode::Down });
 
     if state.modal.is_open() {
+        let active_tool = state.nav.active_tool;
         if let ModalState::Palette(palette) = &mut state.modal {
             if mouse::hit(&regions.palette_rows, col, row).is_some() {
-                palette.move_selection(delta);
+                palette.move_selection(active_tool, delta);
             }
         }
         return;
@@ -840,6 +1000,50 @@ fn execute_command(state: &mut AppState, cmd: Command) -> Vec<Effect> {
         }
         Command::BuildIndex => search::start_index_build(&mut state.search, false),
         Command::RebuildIndex => search::start_index_build(&mut state.search, true),
+        Command::ExportFastenerHoleReport => {
+            vec![Effect::ExportFastenerHoleReport(fastener_hole::view::build_report_text(&state.fastener_hole.model))]
+        }
+        Command::ToggleBushingNumbersPanel => {
+            state.bushing.show_numbers = !state.bushing.show_numbers;
+            Vec::new()
+        }
+        Command::ExportBushingReport => {
+            vec![Effect::ExportBushingReport(bushing::view::build_report_text(&state.bushing.model))]
+        }
+        Command::OpenReamerPicker => {
+            state.bushing.reamer_picker = bushing::reamer_picker::ReamerPickerState::open_near(&state.bushing.model);
+            Vec::new()
+        }
+        Command::OpenHousingMaterialPicker => {
+            state.bushing.material_picker = bushing::material_picker::MaterialPickerState::open_for(bushing::material_picker::MaterialTarget::Housing);
+            Vec::new()
+        }
+        Command::OpenBushingMaterialPicker => {
+            state.bushing.material_picker = bushing::material_picker::MaterialPickerState::open_for(bushing::material_picker::MaterialTarget::Bushing);
+            Vec::new()
+        }
+        Command::TogglePressureVesselNumbersPanel => {
+            state.pressure_vessel.show_numbers = !state.pressure_vessel.show_numbers;
+            Vec::new()
+        }
+        Command::ExportPressureVesselReport => {
+            vec![Effect::ExportPressureVesselReport(pressure_vessel::view::build_report_text(&state.pressure_vessel.model))]
+        }
+        Command::OpenPressureVesselMaterialPicker => {
+            state.pressure_vessel.material_picker = pressure_vessel::material_picker::MaterialPickerState::open_now();
+            Vec::new()
+        }
+        Command::TogglePreloadAnalysisNumbersPanel => {
+            state.preload_analysis.show_numbers = !state.preload_analysis.show_numbers;
+            Vec::new()
+        }
+        Command::ExportPreloadAnalysisReport => {
+            vec![Effect::ExportPreloadAnalysisReport(preload_analysis::view::build_report_text(&state.preload_analysis.model))]
+        }
+        Command::OpenBoltPicker => {
+            state.preload_analysis.bolt_picker = preload_analysis::bolt_picker::BoltPickerState::open_for(&state.preload_analysis.model);
+            Vec::new()
+        }
         Command::Quit => {
             request_quit(state);
             Vec::new()
@@ -872,9 +1076,56 @@ mod tests {
     }
 
     #[test]
+    fn command_palette_is_toolbox_scoped_end_to_end() {
+        // Regression guard for the Ctrl+P palette used to show every
+        // Search-only command regardless of the active toolbox - see
+        // `Command::scope`/`CommandPalette::matches`'s own doc comments.
+        let mut state = AppState::default();
+        state.nav.activate(ToolId::Bushing);
+        handle_event(&mut state, press_with(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        let ModalState::Palette(palette) = &state.modal else { panic!("expected the palette to be open") };
+        let matches = palette.matches(ToolId::Bushing);
+        assert!(matches.contains(&Command::ToggleBushingNumbersPanel));
+        assert!(!matches.contains(&Command::RunSearch), "a Search-only command must not appear while Bushing is active");
+    }
+
+    #[test]
+    fn executing_a_toolbox_scoped_command_via_the_palette_applies_it() {
+        let mut state = AppState::default();
+        state.nav.activate(ToolId::Bushing);
+        assert!(!state.bushing.show_numbers);
+        handle_event(&mut state, press_with(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        for c in "toggle numbers".chars() {
+            handle_event(&mut state, press(KeyCode::Char(c)));
+        }
+        handle_event(&mut state, press(KeyCode::Enter));
+        assert!(!state.modal.is_open());
+        assert!(state.bushing.show_numbers);
+    }
+
+    #[test]
     fn q_quits_immediately_when_not_busy() {
         let mut state = AppState::default();
         handle_event(&mut state, press(KeyCode::Char('q')));
+        assert!(state.should_quit);
+    }
+
+    #[test]
+    fn ctrl_p_opens_palette_when_caps_lock_reports_uppercase_p() {
+        // Regression test: crossterm's Windows backend derives the char's
+        // case from Shift XOR Caps Lock even for Ctrl+<letter> combos, so
+        // with Caps Lock on, Ctrl+P arrives as `Char('P')` with only
+        // `CONTROL` set (never `SHIFT`). This previously fell through to
+        // the catch-all `_ => {}` arm and silently did nothing on Windows.
+        let mut state = AppState::default();
+        handle_event(&mut state, press_with(KeyCode::Char('P'), KeyModifiers::CONTROL));
+        assert!(matches!(state.modal, ModalState::Palette(_)));
+    }
+
+    #[test]
+    fn q_quits_when_caps_lock_reports_uppercase_q() {
+        let mut state = AppState::default();
+        handle_event(&mut state, press(KeyCode::Char('Q')));
         assert!(state.should_quit);
     }
 
@@ -1039,6 +1290,22 @@ mod tests {
         let effects = handle_event(&mut state, AppEvent::ExtensionsScanned(Ok(vec![".txt".to_string(), ".rs".to_string()])));
         assert!(effects.is_empty());
         assert!(state.search.extension_picker.open);
+        assert_eq!(state.search.extension_picker.available, vec![".txt".to_string(), ".rs".to_string()]);
+    }
+
+    #[test]
+    fn extensions_scanned_appends_recent_extensions_not_found_by_the_scan() {
+        let mut state = AppState::default();
+        state.search.recent_extensions = vec![".pdf".to_string()];
+        handle_event(&mut state, AppEvent::ExtensionsScanned(Ok(vec![".txt".to_string()])));
+        assert_eq!(state.search.extension_picker.available, vec![".txt".to_string(), ".pdf".to_string()]);
+    }
+
+    #[test]
+    fn extensions_scanned_does_not_duplicate_a_recent_extension_already_in_the_scan() {
+        let mut state = AppState::default();
+        state.search.recent_extensions = vec![".txt".to_string()];
+        handle_event(&mut state, AppEvent::ExtensionsScanned(Ok(vec![".txt".to_string(), ".rs".to_string()])));
         assert_eq!(state.search.extension_picker.available, vec![".txt".to_string(), ".rs".to_string()]);
     }
 

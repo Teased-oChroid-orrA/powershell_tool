@@ -246,6 +246,11 @@ pub fn handle_key(picker: &mut ExtensionPicker, key: KeyEvent) -> bool {
                 picker.cursor = 0;
                 true
             }
+            KeyCode::Delete => {
+                picker.filter_text.clear();
+                picker.cursor = 0;
+                true
+            }
             KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
                 picker.filter_text.push(c);
                 picker.cursor = 0;
@@ -281,13 +286,13 @@ pub fn handle_key(picker: &mut ExtensionPicker, key: KeyEvent) -> bool {
         // the list to (the whole catalog when no filter is active) - a
         // folder can easily have dozens of distinct extensions, and
         // toggling each one individually would be tedious.
-        KeyCode::Char('a') => {
+        KeyCode::Char('a' | 'A') => {
             for idx in picker.visible_indices() {
                 picker.selected.insert(picker.available[idx].clone());
             }
             true
         }
-        KeyCode::Char('n') => {
+        KeyCode::Char('n' | 'N') => {
             for idx in picker.visible_indices() {
                 picker.selected.remove(&picker.available[idx]);
             }
@@ -510,6 +515,18 @@ mod tests {
         handle_key(&mut picker, key(KeyCode::Char('a')));
         assert_eq!(picker.selected.len(), 2);
         handle_key(&mut picker, key(KeyCode::Char('n')));
+        assert!(picker.selected.is_empty());
+    }
+
+    #[test]
+    fn select_all_and_select_none_work_with_uppercase_from_caps_lock() {
+        // Regression: crossterm's Windows backend reports Caps-Lock-typed
+        // letters as uppercase with no Shift held - a bare-lowercase
+        // pattern silently drops the binding on Windows only.
+        let mut picker = ExtensionPicker::open_with(vec![".txt".to_string(), ".rs".to_string()], None);
+        handle_key(&mut picker, key(KeyCode::Char('A')));
+        assert_eq!(picker.selected.len(), 2);
+        handle_key(&mut picker, key(KeyCode::Char('N')));
         assert!(picker.selected.is_empty());
     }
 

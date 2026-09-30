@@ -49,6 +49,10 @@ pub struct SearchToolState {
     pub run: SearchRunState,
     pub recent_searches: Vec<RecentSearch>,
     pub saved_presets: Vec<SavedPreset>,
+    /// Most-recently-selected extensions from the extension picker,
+    /// independent of `config.selected_extensions` (the current run's
+    /// active filter) - see `persistence::remember_recent_extensions`.
+    pub recent_extensions: Vec<String>,
     pub cancel_token: Option<CancellationToken>,
     pub selected_result: usize,
     pub screen: ToolboxScreen,
@@ -68,6 +72,8 @@ impl Default for SearchToolState {
         let mut recent_searches = Vec::new();
         #[cfg_attr(test, allow(unused_mut))]
         let mut saved_presets = Vec::new();
+        #[cfg_attr(test, allow(unused_mut))]
+        let mut recent_extensions = Vec::new();
         // Never read the real on-disk settings file from a test build - a
         // dev machine's actual `settings-tui.json` (written by a real,
         // interactive run) would otherwise leak into `cargo test`, making
@@ -82,12 +88,14 @@ impl Default for SearchToolState {
             }
             recent_searches = file.recent_searches;
             saved_presets = file.saved_presets;
+            recent_extensions = file.recent_extensions;
         }
         Self {
             config,
             run: SearchRunState::default(),
             recent_searches,
             saved_presets,
+            recent_extensions,
             cancel_token: None,
             selected_result: 0,
             screen: ToolboxScreen::default(),
@@ -109,6 +117,7 @@ impl SearchToolState {
             settings: Some(PersistedSearchSettings::from(&self.config)),
             recent_searches: self.recent_searches.clone(),
             saved_presets: self.saved_presets.clone(),
+            recent_extensions: self.recent_extensions.clone(),
         }
     }
 
@@ -197,7 +206,9 @@ pub fn handle_key(
         if consumed && !state.extension_picker.open {
             let mut selected: Vec<String> = state.extension_picker.selected.iter().cloned().collect();
             selected.sort();
-            state.config.selected_extensions = if selected.is_empty() { None } else { Some(selected) };
+            persistence::remember_recent_extensions(&mut state.recent_extensions, &selected);
+            state.config.selected_extensions = if selected.is_empty() { None } else { Some(selected.clone()) };
+            return (consumed, if selected.is_empty() { Vec::new() } else { vec![Effect::PersistSearchSettings] });
         }
         return (consumed, Vec::new());
     }
@@ -334,6 +345,13 @@ fn edit_buffer_key(buffer: &mut String, key: KeyEvent) -> Option<bool> {
             buffer.pop();
             Some(true)
         }
+        // Clears the whole buffer in one press ("start fresh") - same
+        // convention every other text/number buffer in this crate now
+        // follows (see `widgets/number_edit.rs`'s own doc comment).
+        KeyCode::Delete => {
+            buffer.clear();
+            Some(true)
+        }
         KeyCode::Char(c) if is_plain_char(key) => {
             buffer.push(c);
             Some(true)
@@ -382,6 +400,31 @@ mod tests {
         let (consumed, _) = handle_key(&mut state, &mut notifications, PANE_RESULTS, shift_key(KeyCode::Char('S')));
         assert!(consumed);
         assert_eq!(state.screen, ToolboxScreen::Settings);
+    }
+
+    #[test]
+    fn closing_the_extension_picker_with_a_selection_remembers_it_and_persists() {
+        let mut state = SearchToolState::default();
+        let mut notifications = NotificationQueue::default();
+        state.extension_picker = extension_picker::ExtensionPicker::open_with(vec![".txt".to_string()], None);
+        // Space selects the sole visible row, Enter closes the picker.
+        handle_key(&mut state, &mut notifications, PANE_PATH, key(KeyCode::Char(' ')));
+        let (consumed, effects) = handle_key(&mut state, &mut notifications, PANE_PATH, key(KeyCode::Enter));
+        assert!(consumed);
+        assert!(!state.extension_picker.open);
+        assert_eq!(state.recent_extensions, vec![".txt".to_string()]);
+        assert!(matches!(effects.as_slice(), [Effect::PersistSearchSettings]));
+    }
+
+    #[test]
+    fn closing_the_extension_picker_with_nothing_selected_does_not_persist() {
+        let mut state = SearchToolState::default();
+        let mut notifications = NotificationQueue::default();
+        state.extension_picker = extension_picker::ExtensionPicker::open_with(vec![".txt".to_string()], None);
+        let (consumed, effects) = handle_key(&mut state, &mut notifications, PANE_PATH, key(KeyCode::Enter));
+        assert!(consumed);
+        assert!(effects.is_empty());
+        assert!(state.recent_extensions.is_empty());
     }
 
     #[test]

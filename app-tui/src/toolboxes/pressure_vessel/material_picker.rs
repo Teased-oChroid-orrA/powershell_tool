@@ -208,6 +208,11 @@ pub fn handle_key(picker: &mut MaterialPickerState, model: &mut PressureVesselMo
                 picker.cursor = 0;
                 (true, Vec::new())
             }
+            KeyCode::Delete => {
+                picker.filter_text.clear();
+                picker.cursor = 0;
+                (true, Vec::new())
+            }
             KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
                 picker.filter_text.push(c);
                 picker.cursor = 0;
@@ -222,7 +227,7 @@ pub fn handle_key(picker: &mut MaterialPickerState, model: &mut PressureVesselMo
             picker.filtering = true;
             (true, Vec::new())
         }
-        KeyCode::Char('n') => {
+        KeyCode::Char('n' | 'N') => {
             picker.add_form = Some(AddMaterialForm::default());
             (true, Vec::new())
         }
@@ -282,6 +287,10 @@ fn handle_add_form_key(picker: &mut MaterialPickerState, model: &mut PressureVes
             }
             KeyCode::Backspace => {
                 form.edit_buffer.pop();
+                (true, Vec::new())
+            }
+            KeyCode::Delete => {
+                form.edit_buffer.clear();
                 (true, Vec::new())
             }
             KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
@@ -501,6 +510,17 @@ mod tests {
         let mut picker = MaterialPickerState::open_now();
         let mut model = PressureVesselModel::default();
         handle_key(&mut picker, &mut model, key(KeyCode::Char('n')));
+        assert!(picker.add_form.is_some());
+    }
+
+    #[test]
+    fn uppercase_n_from_caps_lock_still_opens_the_add_material_form() {
+        // Regression: crossterm's Windows backend reports Caps-Lock-typed
+        // letters as uppercase with no Shift held - a bare-lowercase
+        // pattern silently drops the binding on Windows only.
+        let mut picker = MaterialPickerState::open_now();
+        let mut model = PressureVesselModel::default();
+        handle_key(&mut picker, &mut model, key(KeyCode::Char('N')));
         assert!(picker.add_form.is_some());
     }
 

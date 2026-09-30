@@ -41,10 +41,10 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 ### Find It Fast — by current/live status
 | Looking for current status of... | Go to |
 |---|---|
-| app-egui feature parity vs. `app/` and the approved mockup | `docs/app-egui-parity-checklist.md` — **LIVE**, "tracked source of truth" (its own words), not a phase doc |
-| Rust/Dioxus rewrite, overall | `docs/rust-rewrite-status.md` — **LIVE**, narrative companion to root `CLAUDE.md` ("functionally complete, not yet feature-frozen") |
-| Toolbench (multi-tool dashboard shell) | `docs/toolbench-status.md` — **LIVE**, standalone |
-| Bushing Workbench tool | `docs/bushing-workbench-status.md` — **LIVE**, standalone |
+| app-egui feature parity vs. `app/` and the approved mockup | `docs/app-egui-parity-checklist.md` — **CLOSED/OBSOLETE**, `app/`+`app-egui/` both deleted (see root `CLAUDE.md`) |
+| Rust/Dioxus rewrite, overall (`app/`-specific) | `docs/rust-rewrite-status.md` — **CLOSED/OBSOLETE**, `app/` deleted |
+| Toolbench (multi-tool dashboard shell, `app/`-specific) | `docs/toolbench-status.md` — **CLOSED/OBSOLETE**, `app/` deleted; current dashboard shell is `app-tui/src/widgets/` |
+| Bushing Workbench tool (`app/`-specific) | `docs/bushing-workbench-status.md` — **CLOSED/OBSOLETE**, `app/` deleted; current implementation is `app-tui/src/toolboxes/bushing/` |
 | UI performance / visual-polish rework | `docs/epic-ui-performance-and-design.md` — epic doc that fed the issue-11 phase 10-15 UI rework and supersedes rust-rewrite-status's old polish TODOs |
 
 ### Find It Fast — standalone topic docs

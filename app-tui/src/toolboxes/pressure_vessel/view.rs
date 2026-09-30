@@ -55,7 +55,7 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &PressureVessel
 
     regions.workspace_panes.push((area, super::PANE_MAIN));
     draw_fields(frame, fields_area, theme, state, focused, regions);
-    draw_readout(frame, readout_area, theme, &state.model, state.show_numbers);
+    draw_readout(frame, readout_area, theme, &state.model, state.show_numbers, state.results_scroll);
 }
 
 fn compute_label_width(rows: &[FieldRow]) -> u16 {
@@ -184,7 +184,7 @@ fn fmt_margin(margin: f64) -> String {
     if margin.is_infinite() { "\u{2014}".to_string() } else { format!("{margin:+.2}") }
 }
 
-fn draw_readout(frame: &mut Frame, area: Rect, theme: &Theme, model: &PressureVesselModel, show_numbers: bool) {
+fn draw_readout(frame: &mut Frame, area: Rect, theme: &Theme, model: &PressureVesselModel, show_numbers: bool, scroll: u16) {
     let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.border_style(false)).title(" Results ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -193,7 +193,7 @@ fn draw_readout(frame: &mut Frame, area: Rect, theme: &Theme, model: &PressureVe
     }
 
     let lines = readout_lines(theme, model, show_numbers);
-    frame.render_widget(Paragraph::new(lines), inner);
+    crate::widgets::scroll_paragraph::render(frame, inner, theme, lines, scroll);
 }
 
 fn readout_lines<'a>(theme: &'a Theme, model: &'a PressureVesselModel, show_numbers: bool) -> Vec<Line<'a>> {
@@ -313,14 +313,22 @@ fn tone_color(tone: StatusTone) -> Color {
     }
 }
 
-/// Text-only partial substitute for the KaTeX derivation view neither GUI
-/// head's own port carries over here (see this toolbox's `mod.rs` doc
-/// comment) - the live Lamé constants and the full per-surface stress
-/// breakdown (radial/hoop/axial/von Mises/Tresca), toggled by `d`. Thermal
-/// stress (when a temperature differential is entered) is folded into the
-/// shown radial/hoop values via the same `*_with_thermal` functions
-/// `PressureVesselModel::recompute` itself uses, so this panel never drifts
-/// from what the Checks above actually evaluated.
+/// Text-only substitute for the KaTeX derivation view neither GUI head's
+/// own port carries over here (see this toolbox's `mod.rs` doc comment) -
+/// the actual cross-section sketch stays cut (genuinely impossible in a
+/// terminal), but the derivation's real content - formula substitution
+/// with the vessel's live numbers - is real to port: the formula labels
+/// and substitution shape below mirror `app/src/pressure_vessel_workbench.rs`'s
+/// `pv_derivation_value` (its `lame_constants_solved`/`pv_hoop_at_inner_surface`/
+/// `pv_closed_end_axial_stress`/`pv_von_mises_stress`/`pv_tresca_stress`/
+/// `pv_windenburg_trilling` cases), reused as plain text instead of that
+/// function's PNG-formula-image + substituted-string pairing - no new
+/// solver math, every value already flows from `pressure-vessel-solver`
+/// into this model. Thermal stress (when a temperature differential is
+/// entered) is folded into the shown radial/hoop values via the same
+/// `*_with_thermal` functions `PressureVesselModel::recompute` itself
+/// uses, so this panel never drifts from what the Checks above actually
+/// evaluated.
 fn numbers_panel_lines<'a>(
     theme: &'a Theme,
     model: &'a PressureVesselModel,
@@ -330,16 +338,68 @@ fn numbers_panel_lines<'a>(
     let mut lines = Vec::new();
     lines.push(Line::from(Span::styled("Numbers (d to hide)", theme.title_style(false))));
 
-    let (c1, c2) = lame_constants(geometry.inner_radius, geometry.outer_radius, pressure.internal_pressure, pressure.external_pressure);
-    lines.push(Line::from(format!("  Lam\u{e9} constants: C1 = {c1:.1} psi, C2 = {c2:.1} psi\u{b7}in\u{b2}")));
+    let a = geometry.inner_radius;
+    let b = geometry.outer_radius;
+    let (c1, c2) = lame_constants(a, b, pressure.internal_pressure, pressure.external_pressure);
+    lines.push(Line::from(Span::styled("  sigma_theta(r) = C1 + C2/r^2,  sigma_r(r) = C1 - C2/r^2", theme.disabled_style())));
+    lines.push(Line::from(format!(
+        "  a = {a:.4} in, b = {b:.4} in, p_i = {:.0} psi, p_o = {:.0} psi -> C1 = {c1:.1} psi, C2 = {c2:.1} psi\u{b7}in\u{b2}",
+        pressure.internal_pressure, pressure.external_pressure
+    )));
     lines.push(Line::from(""));
 
     let thermal = model.thermal_loading(model.material());
     let inner = stress_at_inner_surface_with_thermal(geometry, pressure, thermal.as_ref());
     let outer = stress_at_outer_surface_with_thermal(geometry, pressure, thermal.as_ref());
+
+    lines.push(Line::from(format!(
+        "  Inner surface: hoop = C1 + C2/a^2 = {inner_hoop:.0} psi; radial = C1 - C2/a^2 = {inner_radial:.0} psi (boundary condition: -p_i)",
+        inner_hoop = inner.hoop,
+        inner_radial = inner.radial
+    )));
+    if model.closed_ends {
+        lines.push(Line::from(format!(
+            "  Closed-end axial stress (force equilibrium on the end cap, = C1) = {:.0} psi",
+            inner.axial
+        )));
+    }
+    lines.push(Line::from(format!(
+        "  von Mises: sigma1={:.0} (radial), sigma2={:.0} (hoop), sigma3={:.0} (axial) -> sigma_vm = {:.0} psi",
+        inner.radial,
+        inner.hoop,
+        inner.axial,
+        von_mises_stress(&inner)
+    )));
+    let governing_result = governing(&model.rows).clone();
+    lines.push(Line::from(format!(
+        "  Tresca: max - min of the three principal stresses = {:.0} psi{}",
+        tresca_stress(&inner),
+        if governing_result.name == "Tresca (max shear)" { " (governs - lowest margin for this vessel)" } else { "" }
+    )));
+    lines.push(Line::from(""));
+
     for (label, s) in [("Inner surface", inner), ("Outer surface", outer)] {
         lines.push(Line::from(Span::styled(label, theme.title_style(false))));
         lines.extend(surface_breakdown_lines(s));
+    }
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(Span::styled(
+        "  Buckling: p_cr = D(n^2-1)/r^3 (n=2 ring limit), via max() with the Windenburg-Trilling short-span formula",
+        theme.disabled_style(),
+    )));
+    match &model.buckling {
+        BucklingApplicability::Evaluated(result) => {
+            lines.push(Line::from(format!(
+                "  Governing critical pressure = {:.0} psi (applied {:.0} psi, MS = {})",
+                result.allowable,
+                result.applied,
+                fmt_margin(result.margin)
+            )));
+        }
+        BucklingApplicability::NotApplicable => lines.push(Line::from("  Not evaluated: no external pressure entered.")),
+        BucklingApplicability::InsufficientData => lines.push(Line::from("  Not evaluated: no unsupported length entered.")),
+        BucklingApplicability::OutsideValidityRange => lines.push(Line::from("  Not evaluated: outside the formulas' thin-shell validity range (OD/t < 40).")),
     }
 
     lines
@@ -496,6 +556,50 @@ mod tests {
         state.show_numbers = true;
         draw_at(140, 40, &state);
         draw_at(50, 40, &state);
+    }
+
+    fn rendered_lines(width: u16, height: u16, state: &PressureVesselState) -> Vec<String> {
+        let backend = TestBackend::new(width.max(1), height.max(1));
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = Rect::new(0, 0, width, height);
+        let mut regions = crate::mouse::MouseRegions::default();
+        terminal.draw(|f| draw(f, area, &Theme::default_palette(), state, true, &mut regions)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..buffer.area.height).map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>()).collect()
+    }
+
+    /// Regression test for the derivation-formula text added to the
+    /// Numbers panel (formula substitution reused from
+    /// `app/src/pressure_vessel_workbench.rs::pv_derivation_value` as plain
+    /// text) - asserts the formula labels and the boundary-condition/
+    /// von-Mises/Tresca substitution lines actually reach the rendered
+    /// panel, not just that rendering doesn't panic.
+    #[test]
+    fn numbers_panel_shows_lame_and_stress_formula_substitution() {
+        let mut state = PressureVesselState::default();
+        state.show_numbers = true;
+        let lines = rendered_lines(160, 60, &state);
+        let joined = lines.join("\n");
+        assert!(joined.contains("sigma_theta(r) = C1 + C2/r^2"), "missing Lame formula label:\n{joined}");
+        assert!(joined.contains("boundary condition"), "missing boundary-condition substitution:\n{joined}");
+        assert!(joined.contains("sigma_vm"), "missing von Mises formula substitution:\n{joined}");
+        assert!(joined.contains("Tresca: max - min"), "missing Tresca formula substitution:\n{joined}");
+        assert!(joined.contains("Buckling: p_cr = D(n^2-1)/r^3"), "missing buckling formula label:\n{joined}");
+    }
+
+    #[test]
+    fn numbers_panel_buckling_line_shows_governing_pressure_when_evaluated() {
+        let mut state = PressureVesselState::default();
+        state.show_numbers = true;
+        // Thin-wall geometry (OD/t >= 40) is required for buckling to be
+        // evaluated at all - the default 6in OD / 1in wall (OD/t = 6) is
+        // deliberately outside that validity range.
+        state.model.commit_number(NumberTarget::WallThickness, 0.1);
+        state.model.commit_number(NumberTarget::ExternalPressure, 5.0);
+        state.model.commit_number(NumberTarget::UnsupportedLength, 20.0);
+        let lines = rendered_lines(160, 60, &state);
+        let joined = lines.join("\n");
+        assert!(joined.contains("Governing critical pressure"), "expected an evaluated buckling result:\n{joined}");
     }
 
     #[test]

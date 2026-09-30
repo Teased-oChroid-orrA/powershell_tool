@@ -1,5 +1,13 @@
 # Toolbench: multi-tool dashboard shell
 
+**CLOSED / OBSOLETE**: this document describes `app/`'s (dioxus-native)
+Toolbench shell specifically. `app/` has been deleted from this repository,
+along with `app-egui/` — `app-tui/` is now the sole GUI head and has its own
+dashboard shell (`app-tui/src/widgets/`, see `app-tui/AGENTS.md`). Kept only
+as a historical record.
+
+---
+
 `app/` is becoming a dashboard shell ("Toolbench") that hosts multiple
 independent tools behind one left-hand tool-switcher rail, not a single-
 purpose search window - the search app (this repo's whole reason for

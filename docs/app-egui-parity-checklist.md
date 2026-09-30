@@ -1,5 +1,12 @@
 # app-egui parity checklist
 
+**CLOSED / OBSOLETE**: `app-egui/` and `app/` have both been deleted from
+this repository — `app-tui/` is now the sole GUI head (see root `CLAUDE.md`'s
+"What this project is"). This document is kept only as a historical record
+of what `app-egui/` once owed `app/`; nothing below is actionable.
+
+---
+
 Single source of truth for what `app-egui` (the egui/eframe migration
 target) still owes vs. `app/` (the dioxus-native app it's replacing) and
 vs. the approved mockup artifact. Supersedes the deferred-item prose in

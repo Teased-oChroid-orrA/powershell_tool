@@ -12,7 +12,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, ListItem, Paragraph};
 
@@ -82,6 +82,67 @@ const FIELDS: &[FieldDef] = &[
     FieldDef { label: "Index location", kind: FieldKind::FastIndexLocation },
 ];
 
+/// A row in the rendered/navigable Fields list - either a non-selectable
+/// section divider or a real `FIELDS` entry, same `Header`/real-row split
+/// the four engineering toolboxes' own `FieldRow` enums use (see
+/// `toolboxes/bushing/model.rs::FieldRow`). `FIELDS` itself stays a flat,
+/// index-addressed array (unchanged - `EXTENSIONS_FIELD`/`field_value_string`/
+/// `apply_text_edit`/`apply_toggle`/`display_value` all still take a plain
+/// `FIELDS` index); this enum and [`settings_field_rows`] only add a
+/// grouped VIEW over it for navigation/rendering, translated back to a
+/// `FIELDS` index via [`SettingsView::field_index`] everywhere a real field
+/// is read or edited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsFieldRow {
+    Header(&'static str),
+    Field(usize),
+}
+
+/// `(FIELDS index a header precedes, header text)` - `FIELDS`'s own
+/// ordering is already logically grouped (visible from its literal order
+/// above), so grouping only needs a header inserted at these fixed
+/// breakpoints, never a reorder.
+const SETTINGS_HEADERS: &[(usize, &str)] = &[
+    (0, "Search"),
+    (2, "Filters"),
+    (9, "Extensions & Exclusions"),
+    (14, "Output"),
+    (20, "Concurrency & Diagnostics"),
+    (29, "Fast Re-search Index"),
+];
+
+fn settings_field_rows() -> Vec<SettingsFieldRow> {
+    let mut rows = Vec::with_capacity(FIELDS.len() + SETTINGS_HEADERS.len());
+    for i in 0..FIELDS.len() {
+        if let Some((_, label)) = SETTINGS_HEADERS.iter().find(|(idx, _)| *idx == i) {
+            rows.push(SettingsFieldRow::Header(label));
+        }
+        rows.push(SettingsFieldRow::Field(i));
+    }
+    rows
+}
+
+/// The `FIELDS` index for `rows[row_selected]` - `0` if that row is
+/// somehow a `Header` (never happens in practice: [`SettingsView::move_selection`]
+/// and click handling both nudge off `Header` rows the same way the
+/// engineering toolboxes' own `clamp_selection` does).
+fn resolve_field_index(rows: &[SettingsFieldRow], row_selected: usize) -> usize {
+    match rows.get(row_selected) {
+        Some(SettingsFieldRow::Field(i)) => *i,
+        _ => 0,
+    }
+}
+
+/// The inverse of [`resolve_field_index`] - which row position a `FIELDS`
+/// index appears at once headers are inserted. Test-only: lets tests that
+/// used to set `SettingsView { selected: <FIELDS index>, .. }` directly
+/// keep expressing intent as a `FIELDS` index without duplicating the
+/// header-breakpoint math themselves.
+#[cfg(test)]
+fn row_index_for_field(field_index: usize) -> usize {
+    settings_field_rows().iter().position(|r| matches!(r, SettingsFieldRow::Field(i) if *i == field_index)).unwrap_or(0)
+}
+
 /// Which list within the Settings screen `Up`/`Down`/`Enter` currently act
 /// on - `Tab`/`Shift+Tab` cycle between them (mirrors the shell's own
 /// pane-focus-cycling pattern, scoped to this one screen).
@@ -111,9 +172,11 @@ impl Section {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SettingsView {
     pub section: Section,
+    /// Row position into [`settings_field_rows`] (headers included), not a
+    /// `FIELDS` index - see [`SettingsView::field_index`].
     pub selected: usize,
     pub recent_selected: usize,
     pub preset_selected: usize,
@@ -132,13 +195,64 @@ pub struct SettingsView {
     pub edit_buffer: String,
 }
 
+impl Default for SettingsView {
+    /// Not a bare `#[derive(Default)]`: row 0 of [`settings_field_rows`] is
+    /// the first `Header`, so a naive `selected: 0` would start the
+    /// selection highlight on a non-selectable divider instead of the
+    /// first real field - `clamp_selection` nudges it onto `Search path`
+    /// the same way `FastenerHoleState`'s own `Default` impl does for its
+    /// row-0-is-a-Header case.
+    fn default() -> Self {
+        let mut view =
+            Self { section: Section::default(), selected: 0, recent_selected: 0, preset_selected: 0, editing: false, naming_preset: false, renaming_preset: false, edit_buffer: String::new() };
+        view.clamp_selection();
+        view
+    }
+}
+
 impl SettingsView {
+    /// `self.selected` is a row position into [`settings_field_rows`]
+    /// (headers included), not a `FIELDS` index directly - see
+    /// [`field_index`](Self::field_index) for the translation.
     pub fn move_selection(&mut self, delta: i32) {
         if self.editing {
             return;
         }
-        let len = FIELDS.len() as i32;
-        self.selected = (self.selected as i32 + delta).rem_euclid(len) as usize;
+        let rows = settings_field_rows();
+        if rows.is_empty() {
+            self.selected = 0;
+            return;
+        }
+        let len = rows.len() as i32;
+        let mut next = self.selected as i32;
+        for _ in 0..rows.len() {
+            next = (next + delta).rem_euclid(len);
+            if matches!(rows[next as usize], SettingsFieldRow::Field(_)) {
+                break;
+            }
+        }
+        self.selected = next as usize;
+    }
+
+    /// Nudges off a `Header` row - same technique
+    /// `toolboxes/bushing/mod.rs::BushingState::clamp_selection` uses.
+    /// Needed after a mouse click lands exactly on a header (arrow-key
+    /// navigation via `move_selection` already never stops on one).
+    pub(crate) fn clamp_selection(&mut self) {
+        let rows = settings_field_rows();
+        if rows.is_empty() {
+            self.selected = 0;
+            return;
+        }
+        self.selected = self.selected.min(rows.len() - 1);
+        if matches!(rows[self.selected], SettingsFieldRow::Header(_)) {
+            self.move_selection(1);
+        }
+    }
+
+    /// The `FIELDS` index the current selection actually refers to.
+    fn field_index(&self) -> usize {
+        resolve_field_index(&settings_field_rows(), self.selected)
     }
 
     fn move_list_selection(current: usize, delta: i32, len: usize) -> usize {
@@ -150,7 +264,7 @@ impl SettingsView {
 
     fn start_edit(&mut self, config: &SearchToolConfig) {
         self.editing = true;
-        self.edit_buffer = field_value_string(config, self.selected);
+        self.edit_buffer = field_value_string(config, self.field_index());
     }
 
     fn cancel_edit(&mut self) {
@@ -159,7 +273,7 @@ impl SettingsView {
     }
 
     fn commit_edit(&mut self, config: &mut SearchToolConfig) {
-        apply_text_edit(config, self.selected, &self.edit_buffer);
+        apply_text_edit(config, self.field_index(), &self.edit_buffer);
         self.editing = false;
         self.edit_buffer.clear();
     }
@@ -202,6 +316,10 @@ pub fn handle_key(
                 view.edit_buffer.pop();
                 (true, Vec::new())
             }
+            KeyCode::Delete => {
+                view.edit_buffer.clear();
+                (true, Vec::new())
+            }
             KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
                 view.edit_buffer.push(c);
                 (true, Vec::new())
@@ -234,6 +352,10 @@ pub fn handle_key(
                 view.edit_buffer.pop();
                 (true, Vec::new())
             }
+            KeyCode::Delete => {
+                view.edit_buffer.clear();
+                (true, Vec::new())
+            }
             KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
                 view.edit_buffer.push(c);
                 (true, Vec::new())
@@ -256,6 +378,10 @@ pub fn handle_key(
                 view.edit_buffer.pop();
                 (true, Vec::new())
             }
+            KeyCode::Delete => {
+                view.edit_buffer.clear();
+                (true, Vec::new())
+            }
             KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
                 view.edit_buffer.push(c);
                 (true, Vec::new())
@@ -275,7 +401,8 @@ pub fn handle_key(
 
     match view.section {
         Section::Fields => {
-            let kind = FIELDS[view.selected].kind;
+            let field_i = view.field_index();
+            let kind = FIELDS[field_i].kind;
             match key.code {
                 KeyCode::Up => {
                     view.move_selection(-1);
@@ -286,10 +413,10 @@ pub fn handle_key(
                     (true, Vec::new())
                 }
                 KeyCode::Char(' ') => {
-                    apply_toggle(config, view.selected, kind);
+                    apply_toggle(config, field_i, kind);
                     (true, Vec::new())
                 }
-                KeyCode::Enter if view.selected == EXTENSIONS_FIELD => (
+                KeyCode::Enter if field_i == EXTENSIONS_FIELD => (
                     true,
                     vec![Effect::ScanExtensions {
                         root: config.search_path.clone(),
@@ -304,7 +431,7 @@ pub fn handle_key(
                         | FieldKind::MatchMode
                         | FieldKind::ExcludeScope
                         | FieldKind::GroupBy
-                        | FieldKind::FastIndexLocation => apply_toggle(config, view.selected, kind),
+                        | FieldKind::FastIndexLocation => apply_toggle(config, field_i, kind),
                     }
                     (true, Vec::new())
                 }
@@ -430,17 +557,18 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, config: &SearchTool
     // reserved bottom area, computed on the same path a real run takes -
     // shown as a reserved bottom line so it doesn't shift the field list
     // around as it appears/disappears.
+    let rows = settings_field_rows();
     let validation_error = regex_validation_error(config);
     let bottom_text = match &validation_error {
         Some(error) => format!("Regex error: {error}"),
-        None => field_hint(view.selected).to_string(),
+        None => field_hint(view.field_index()).to_string(),
     };
     let bottom_style = if validation_error.is_some() { theme.status_style(StatusTone::Danger) } else { theme.disabled_style() };
     let max_hint_lines = area.height.saturating_sub(4).max(1);
     let bottom_height = crate::widgets::hint_panel::hint_panel_height(&bottom_text, area.width, max_hint_lines);
     let (list_area, bottom_area) = if area.height > bottom_height + 1 {
-        let rows = Layout::default().direction(Direction::Vertical).constraints([Constraint::Min(1), Constraint::Length(bottom_height)]).split(area);
-        (rows[0], Some(rows[1]))
+        let split = Layout::default().direction(Direction::Vertical).constraints([Constraint::Min(1), Constraint::Length(bottom_height)]).split(area);
+        (split[0], Some(split[1]))
     } else {
         (area, None)
     };
@@ -448,15 +576,20 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, config: &SearchTool
     let label_width = FIELDS.iter().map(|f| f.label.len()).max().unwrap_or(0) + 2;
     let focused = view.section == Section::Fields;
 
-    let items: Vec<ListItem> = FIELDS
+    let items: Vec<ListItem> = rows
         .iter()
         .enumerate()
-        .map(|(i, field)| {
-            let selected = focused && i == view.selected;
+        .map(|(pos, row)| {
+            if let SettingsFieldRow::Header(text) = row {
+                return ListItem::new(Line::from(Span::styled(format!("-- {text} --"), theme.title_style(false).add_modifier(Modifier::BOLD))));
+            }
+            let SettingsFieldRow::Field(i) = row else { unreachable!() };
+            let field = &FIELDS[*i];
+            let selected = focused && pos == view.selected;
             let value = if selected && view.editing {
                 format!("{}_", view.edit_buffer)
             } else {
-                display_value(config, i, field.kind)
+                display_value(config, *i, field.kind)
             };
             let marker = if selected { "> " } else { "  " };
             let style = if selected { theme.selected_row_style() } else { Style::default() };
@@ -468,7 +601,7 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, config: &SearchTool
         .collect();
 
     let offset = crate::widgets::scroll_list::render(frame, list_area, items, focused.then_some(view.selected));
-    regions.settings_field_rows.extend(crate::mouse::list_row_regions(list_area, offset, FIELDS.len()));
+    regions.settings_field_rows.extend(crate::mouse::list_row_regions(list_area, offset, rows.len()));
 
     if let Some(bottom_area) = bottom_area {
         frame.render_widget(Paragraph::new(Line::from(Span::styled(bottom_text, bottom_style))).wrap(ratatui::widgets::Wrap { trim: true }), bottom_area);
@@ -478,18 +611,14 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, config: &SearchTool
 /// One-line description shown in the bottom Hint panel while this field is
 /// selected (superseded by the live regex-validation error, when one is
 /// present) - same purpose as `toolboxes/bushing/model.rs::field_hint`.
-/// This toolbox keeps `FIELDS`'s existing flat, index-based structure
-/// rather than adopting the `Header`-row grouping the four engineering
-/// toolboxes use: `Section` (Fields/Recents/Presets) already gives this
-/// screen real navigational structure the others lack, and `FIELDS` is
-/// read by raw index from five separate call sites
+/// This toolbox now also groups `FIELDS` under `Header` dividers
+/// ([`SettingsFieldRow`]/[`settings_field_rows`]), the same pattern the
+/// four engineering toolboxes use - `FIELDS` itself stays the flat,
+/// index-addressed source of truth every other call site
 /// (`EXTENSIONS_FIELD`, `field_value_string`, `apply_text_edit`,
-/// `apply_toggle`, `display_value`) - inserting non-selectable rows into
-/// that same index space would require reworking every one of them for a
-/// smaller benefit than the ~9-45-field engineering toolboxes get from
-/// grouping solver parameters. A static per-field Hint still adds real
-/// value on its own, so that part is implemented; the `Header` dividers are
-/// deliberately not.
+/// `apply_toggle`, `display_value`) already read by raw index; only
+/// navigation and rendering go through the grouped row list, translated
+/// back to a `FIELDS` index via `SettingsView::field_index`.
 fn field_hint(index: usize) -> &'static str {
     match index {
         0 => "Root folder to search recursively.",
@@ -807,6 +936,48 @@ mod tests {
     }
 
     #[test]
+    fn move_selection_never_lands_on_a_header_row_across_a_full_lap() {
+        let rows = settings_field_rows();
+        let mut view = SettingsView::default();
+        for _ in 0..rows.len() * 2 {
+            view.move_selection(1);
+            assert!(matches!(rows[view.selected], SettingsFieldRow::Field(_)), "landed on row {} which is a Header", view.selected);
+        }
+        for _ in 0..rows.len() * 2 {
+            view.move_selection(-1);
+            assert!(matches!(rows[view.selected], SettingsFieldRow::Field(_)), "landed on row {} which is a Header", view.selected);
+        }
+    }
+
+    #[test]
+    fn clamp_selection_nudges_off_a_header_row() {
+        // Simulates a mouse click landing exactly on a header divider
+        // (`app.rs::handle_settings_click` sets `selected` directly from
+        // the clicked row before calling this).
+        let rows = settings_field_rows();
+        let header_pos = rows.iter().position(|r| matches!(r, SettingsFieldRow::Header(_))).expect("at least one header exists");
+        let mut view = SettingsView { selected: header_pos, ..Default::default() };
+        view.clamp_selection();
+        assert!(matches!(rows[view.selected], SettingsFieldRow::Field(_)));
+    }
+
+    #[test]
+    fn draw_fields_renders_every_header_divider() {
+        let mut regions = crate::mouse::MouseRegions::default();
+        let backend = ratatui::backend::TestBackend::new(60, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let view = SettingsView::default();
+        let config = SearchToolConfig::default();
+        terminal.draw(|f| draw_fields(f, f.area(), &Theme::default_palette(), &config, &view, &mut regions)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let rendered: Vec<String> = (0..buffer.area.height).map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>()).collect();
+        let joined = rendered.join("\n");
+        for (_, label) in SETTINGS_HEADERS {
+            assert!(joined.contains(&format!("-- {label} --")), "missing header `{label}`:\n{joined}");
+        }
+    }
+
+    #[test]
     fn tab_cycles_through_all_three_sections_and_wraps() {
         let mut view = SettingsView::default();
         let mut config = SearchToolConfig::default();
@@ -1010,7 +1181,7 @@ mod tests {
 
     #[test]
     fn space_toggles_a_boolean_field() {
-        let mut view = SettingsView { selected: 6, ..Default::default() }; // Use regex
+        let mut view = SettingsView { selected: row_index_for_field(6), ..Default::default() }; // Use regex
         let mut config = SearchToolConfig::default();
         assert!(!config.use_regex);
         handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Char(' ')));
@@ -1019,7 +1190,7 @@ mod tests {
 
     #[test]
     fn enter_cycles_match_mode() {
-        let mut view = SettingsView { selected: 4, ..Default::default() }; // Match mode
+        let mut view = SettingsView { selected: row_index_for_field(4), ..Default::default() }; // Match mode
         let mut config = SearchToolConfig::default();
         assert_eq!(config.match_mode, MatchMode::AnyLine);
         handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Enter));
@@ -1032,7 +1203,7 @@ mod tests {
 
     #[test]
     fn enter_on_a_text_field_starts_editing_prefilled_with_the_current_value() {
-        let mut view = SettingsView { selected: 0, ..Default::default() }; // Search path
+        let mut view = SettingsView { selected: row_index_for_field(0), ..Default::default() }; // Search path
         let mut config = SearchToolConfig { search_path: "/tmp/x".to_string(), ..Default::default() };
         handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Enter));
         assert!(view.editing);
@@ -1041,7 +1212,7 @@ mod tests {
 
     #[test]
     fn editing_and_committing_a_text_field_updates_config() {
-        let mut view = SettingsView { selected: 0, ..Default::default() };
+        let mut view = SettingsView { selected: row_index_for_field(0), ..Default::default() };
         let mut config = SearchToolConfig::default();
         handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Enter));
         for c in "/tmp/new".chars() {
@@ -1054,7 +1225,7 @@ mod tests {
 
     #[test]
     fn esc_cancels_an_edit_without_committing() {
-        let mut view = SettingsView { selected: 0, ..Default::default() };
+        let mut view = SettingsView { selected: row_index_for_field(0), ..Default::default() };
         let mut config = SearchToolConfig { search_path: "/original".to_string(), ..Default::default() };
         handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Enter));
         handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Char('x')));
@@ -1093,19 +1264,21 @@ mod tests {
     #[test]
     fn up_down_navigation_wraps() {
         let mut view = SettingsView::default();
+        let start = view.selected;
+        assert_eq!(start, row_index_for_field(0), "default selection must land on the first real field, not a Header row");
         view.move_selection(-1);
-        assert_eq!(view.selected, FIELDS.len() - 1);
+        assert_eq!(view.selected, row_index_for_field(FIELDS.len() - 1), "must wrap to the last real field, skipping any trailing Header");
         view.move_selection(1);
-        assert_eq!(view.selected, 0);
+        assert_eq!(view.selected, start);
     }
 
     #[test]
     fn navigation_is_ignored_while_editing() {
-        let mut view = SettingsView { selected: 0, ..Default::default() };
+        let mut view = SettingsView { selected: row_index_for_field(0), ..Default::default() };
         let mut config = SearchToolConfig::default();
         handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Enter));
         handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Down));
-        assert_eq!(view.selected, 0);
+        assert_eq!(view.selected, row_index_for_field(0));
     }
 
     #[test]
@@ -1116,7 +1289,7 @@ mod tests {
         // is exercised in `mod.rs`'s own integration test, since committing
         // the picker's selection into `config.selected_extensions` happens
         // one layer up (`toolboxes::search::handle_key`), not here.
-        let mut view = SettingsView { selected: EXTENSIONS_FIELD, ..Default::default() };
+        let mut view = SettingsView { selected: row_index_for_field(EXTENSIONS_FIELD), ..Default::default() };
         let mut config = SearchToolConfig::default();
         let (consumed, effects) = handle_key(&mut view, &mut config, &[], &mut Vec::new(), key(KeyCode::Enter));
         assert!(consumed);
@@ -1148,7 +1321,7 @@ mod tests {
         assert!(!longest_hint.is_empty());
 
         for width in [40u16, 50, 60, 84, 98, 140] {
-            let view = SettingsView { selected: longest_index, ..Default::default() };
+            let view = SettingsView { selected: row_index_for_field(longest_index), ..Default::default() };
             let config = SearchToolConfig::default();
             let backend = TestBackend::new(width, 40);
             let mut terminal = Terminal::new(backend).unwrap();

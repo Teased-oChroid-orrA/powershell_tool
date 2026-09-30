@@ -28,7 +28,7 @@ pub mod model;
 pub mod persistence;
 pub mod view;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::Effect;
 use material_picker::MaterialPickerState;
@@ -48,6 +48,9 @@ pub struct PressureVesselState {
     /// own top doc comment for why this exists instead of the derivation
     /// view.
     pub show_numbers: bool,
+    /// PageUp/PageDown-adjusted scroll offset into the Results pane -
+    /// clamped on every render by `widgets::scroll_paragraph::render`.
+    pub results_scroll: u16,
 }
 
 impl Default for PressureVesselState {
@@ -59,6 +62,7 @@ impl Default for PressureVesselState {
             edit_buffer: String::new(),
             material_picker: MaterialPickerState::default(),
             show_numbers: false,
+            results_scroll: 0,
         };
         // Row 0 is always a `Header` - land on the first real field instead
         // of an unselectable row (same technique `toolboxes/bushing/mod.rs`
@@ -132,20 +136,22 @@ pub fn handle_key(state: &mut PressureVesselState, key: KeyEvent) -> (bool, Vec<
                 state.edit_buffer.clear();
                 (true, Vec::new())
             }
-            KeyCode::Backspace => {
-                state.edit_buffer.pop();
-                (true, Vec::new())
-            }
-            // Only characters a floating-point literal can contain are
-            // accepted - malformed text never reaches the domain layer at
-            // all, not merely "ignored on commit" (same discipline as
-            // `fastener_hole::handle_key`).
-            KeyCode::Char(c) if (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) && (c.is_ascii_digit() || c == '.' || c == '-') => {
-                state.edit_buffer.push(c);
-                (true, Vec::new())
-            }
+            _ if crate::widgets::number_edit::handle_buffer_key(&mut state.edit_buffer, &key) => (true, Vec::new()),
             _ => (false, Vec::new()),
         };
+    }
+
+    // Typing a digit/'.'/'-' directly on an already-selected `Number` row
+    // starts editing immediately, buffer seeded from that character - see
+    // `bushing::handle_key`'s own comment for the interaction rationale.
+    // No picker-backed `Number` row exists in this toolbox, so every
+    // `Number` row qualifies.
+    if let Some(c) = crate::widgets::number_edit::number_char(&key) {
+        if matches!(model::field_rows().get(state.selected).copied(), Some(FieldRow::Number(_))) {
+            state.editing = true;
+            state.edit_buffer = c.to_string();
+            return (true, Vec::new());
+        }
     }
 
     match key.code {
@@ -173,11 +179,19 @@ pub fn handle_key(state: &mut PressureVesselState, key: KeyEvent) -> (bool, Vec<
             }
             Some(FieldRow::Header(_)) | None => (false, Vec::new()),
         },
-        KeyCode::Char('d') => {
+        KeyCode::Char('d' | 'D') => {
             state.show_numbers = !state.show_numbers;
             (true, Vec::new())
         }
-        KeyCode::Char('e') => (true, vec![Effect::ExportPressureVesselReport(view::build_report_text(&state.model))]),
+        KeyCode::Char('e' | 'E') => (true, vec![Effect::ExportPressureVesselReport(view::build_report_text(&state.model))]),
+        KeyCode::PageUp => {
+            state.results_scroll = state.results_scroll.saturating_sub(crate::widgets::scroll_paragraph::SCROLL_STEP);
+            (true, Vec::new())
+        }
+        KeyCode::PageDown => {
+            state.results_scroll = state.results_scroll.saturating_add(crate::widgets::scroll_paragraph::SCROLL_STEP);
+            (true, Vec::new())
+        }
         _ => (false, Vec::new()),
     }
 }
@@ -197,7 +211,7 @@ fn commit_edit(state: &mut PressureVesselState) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyEventKind, KeyEventState};
+    use crossterm::event::{KeyEventKind, KeyEventState, KeyModifiers};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent { code, modifiers: KeyModifiers::NONE, kind: KeyEventKind::Press, state: KeyEventState::NONE }
@@ -239,6 +253,26 @@ mod tests {
         handle_key(&mut state, key(KeyCode::Enter));
         assert!(!state.material_picker.open);
         assert_eq!(state.model.material().id, "steel");
+    }
+
+    #[test]
+    fn typing_a_digit_on_a_number_row_starts_editing_from_just_that_digit() {
+        let mut state = PressureVesselState::default();
+        state.selected = model::field_rows().iter().position(|r| *r == FieldRow::Number(model::NumberTarget::OuterDiameter)).unwrap();
+        handle_key(&mut state, key(KeyCode::Char('9')));
+        assert!(state.editing);
+        assert_eq!(state.edit_buffer, "9", "buffer must start fresh from the typed digit, not prefilled with the old value");
+    }
+
+    #[test]
+    fn delete_clears_the_edit_buffer_while_editing() {
+        let mut state = PressureVesselState::default();
+        state.selected = model::field_rows().iter().position(|r| *r == FieldRow::Number(model::NumberTarget::OuterDiameter)).unwrap();
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert!(!state.edit_buffer.is_empty());
+        handle_key(&mut state, key(KeyCode::Delete));
+        assert_eq!(state.edit_buffer, "");
+        assert!(state.editing);
     }
 
     #[test]
@@ -316,6 +350,23 @@ mod tests {
         assert!(state.show_numbers);
         handle_key(&mut state, key(KeyCode::Char('d')));
         assert!(!state.show_numbers);
+    }
+
+    #[test]
+    fn uppercase_d_and_e_from_caps_lock_still_work() {
+        // Regression: crossterm's Windows backend reports Caps-Lock-typed
+        // letters as uppercase with no Shift held - a bare-lowercase
+        // pattern silently drops the binding on Windows only.
+        let mut state = PressureVesselState::default();
+        assert!(!state.show_numbers);
+        handle_key(&mut state, key(KeyCode::Char('D')));
+        assert!(state.show_numbers);
+        let (consumed, effects) = handle_key(&mut state, key(KeyCode::Char('E')));
+        assert!(consumed);
+        match effects.as_slice() {
+            [Effect::ExportPressureVesselReport(text)] => assert!(!text.is_empty()),
+            other => panic!("expected exactly one ExportPressureVesselReport effect, got {other:?}"),
+        }
     }
 
     #[test]

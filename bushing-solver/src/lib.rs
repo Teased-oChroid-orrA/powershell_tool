@@ -3,6 +3,7 @@
 
 pub mod bearing;
 pub mod countersink;
+pub mod friction;
 pub mod geometry;
 pub mod reamers;
 pub mod solve;

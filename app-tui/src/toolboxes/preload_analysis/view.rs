@@ -42,7 +42,7 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &PreloadAnalysi
 
     regions.workspace_panes.push((area, super::PANE_MAIN));
     draw_fields(frame, fields_area, theme, state, focused, regions);
-    draw_readout(frame, readout_area, theme, &state.model, state.show_numbers);
+    draw_readout(frame, readout_area, theme, &state.model, state.show_numbers, state.results_scroll);
 
     if state.bolt_picker.open {
         super::bolt_picker::render(frame, area, theme, &state.bolt_picker, regions);
@@ -179,7 +179,7 @@ fn tone_color(tone: StatusTone) -> ratatui::style::Color {
     }
 }
 
-fn draw_readout(frame: &mut Frame, area: Rect, theme: &Theme, model: &PreloadModel, show_numbers: bool) {
+fn draw_readout(frame: &mut Frame, area: Rect, theme: &Theme, model: &PreloadModel, show_numbers: bool, scroll: u16) {
     let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.border_style(false)).title(" Results ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -187,7 +187,7 @@ fn draw_readout(frame: &mut Frame, area: Rect, theme: &Theme, model: &PreloadMod
         return;
     }
     let lines = readout_lines(theme, model, show_numbers);
-    frame.render_widget(Paragraph::new(lines), inner);
+    crate::widgets::scroll_paragraph::render(frame, inner, theme, lines, scroll);
 }
 
 fn readout_lines<'a>(theme: &'a Theme, model: &'a PreloadModel, show_numbers: bool) -> Vec<Line<'a>> {

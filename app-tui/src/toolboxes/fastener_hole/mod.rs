@@ -15,9 +15,10 @@
 
 pub mod domain;
 pub mod model;
+pub mod persistence;
 pub mod view;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::Effect;
 use model::{FastenerHoleModel, FieldRow};
@@ -30,11 +31,14 @@ pub struct FastenerHoleState {
     pub selected: usize,
     pub editing: bool,
     pub edit_buffer: String,
+    /// PageUp/PageDown-adjusted scroll offset into the Results pane -
+    /// clamped on every render by `widgets::scroll_paragraph::render`.
+    pub results_scroll: u16,
 }
 
 impl Default for FastenerHoleState {
     fn default() -> Self {
-        let mut state = Self { model: FastenerHoleModel::default(), selected: 0, editing: false, edit_buffer: String::new() };
+        let mut state = Self { model: FastenerHoleModel::default(), selected: 0, editing: false, edit_buffer: String::new(), results_scroll: 0 };
         // Row 0 is always a `Header` - land on the first real field instead
         // of an unselectable row (same technique `toolboxes/bushing/mod.rs`
         // uses).
@@ -95,10 +99,9 @@ impl FastenerHoleState {
 
 /// Toolbox-local key routing, called from `app.rs::handle_key` whenever
 /// this toolbox's workspace pane has focus - same `(consumed, effects)`
-/// contract as `toolboxes::search::handle_key`. This toolbox performs no
-/// filesystem/OS side effects, so it never returns a non-empty `Effect`
-/// list, but keeps the same return shape as every other toolbox for a
-/// consistent `app.rs` routing pattern.
+/// contract as `toolboxes::search::handle_key`. `e` (export report) is the
+/// only binding that returns a non-empty `Effect` list - everything else
+/// is a plain state mutation, same as before this was added.
 pub fn handle_key(state: &mut FastenerHoleState, key: KeyEvent) -> (bool, Vec<Effect>) {
     if state.editing {
         return match key.code {
@@ -111,19 +114,21 @@ pub fn handle_key(state: &mut FastenerHoleState, key: KeyEvent) -> (bool, Vec<Ef
                 state.edit_buffer.clear();
                 (true, Vec::new())
             }
-            KeyCode::Backspace => {
-                state.edit_buffer.pop();
-                (true, Vec::new())
-            }
-            // Only characters a floating-point literal can contain are
-            // accepted - malformed text never reaches the domain layer at
-            // all (spec section 31), not merely "ignored on commit".
-            KeyCode::Char(c) if (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) && (c.is_ascii_digit() || c == '.' || c == '-') => {
-                state.edit_buffer.push(c);
-                (true, Vec::new())
-            }
+            _ if crate::widgets::number_edit::handle_buffer_key(&mut state.edit_buffer, &key) => (true, Vec::new()),
             _ => (false, Vec::new()),
         };
+    }
+
+    // Typing a digit/'.'/'-' directly on an already-selected `Number` row
+    // starts editing immediately, buffer seeded from that character - see
+    // `bushing::handle_key`'s own comment for the interaction rationale.
+    // No picker-backed `Number` row exists in this toolbox.
+    if let Some(c) = crate::widgets::number_edit::number_char(&key) {
+        if matches!(model::field_rows(&state.model).get(state.selected).copied(), Some(FieldRow::Number(..))) {
+            state.editing = true;
+            state.edit_buffer = c.to_string();
+            return (true, Vec::new());
+        }
     }
 
     match key.code {
@@ -154,6 +159,15 @@ pub fn handle_key(state: &mut FastenerHoleState, key: KeyEvent) -> (bool, Vec<Ef
                 None => (false, Vec::new()),
             }
         }
+        KeyCode::Char('e' | 'E') => (true, vec![Effect::ExportFastenerHoleReport(view::build_report_text(&state.model))]),
+        KeyCode::PageUp => {
+            state.results_scroll = state.results_scroll.saturating_sub(crate::widgets::scroll_paragraph::SCROLL_STEP);
+            (true, Vec::new())
+        }
+        KeyCode::PageDown => {
+            state.results_scroll = state.results_scroll.saturating_add(crate::widgets::scroll_paragraph::SCROLL_STEP);
+            (true, Vec::new())
+        }
         _ => (false, Vec::new()),
     }
 }
@@ -175,11 +189,42 @@ fn commit_edit(state: &mut FastenerHoleState) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyEventKind, KeyEventState};
+    use crossterm::event::{KeyEventKind, KeyEventState, KeyModifiers};
     use model::{HoleType, NumberTarget};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent { code, modifiers: KeyModifiers::NONE, kind: KeyEventKind::Press, state: KeyEventState::NONE }
+    }
+
+    #[test]
+    fn e_returns_an_export_effect_with_nonempty_report_text() {
+        let mut state = FastenerHoleState::default();
+        let (consumed, effects) = handle_key(&mut state, key(KeyCode::Char('e')));
+        assert!(consumed);
+        match effects.as_slice() {
+            [Effect::ExportFastenerHoleReport(text)] => assert!(!text.is_empty()),
+            other => panic!("expected exactly one ExportFastenerHoleReport effect, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn uppercase_e_from_caps_lock_still_exports() {
+        let mut state = FastenerHoleState::default();
+        let (consumed, effects) = handle_key(&mut state, key(KeyCode::Char('E')));
+        assert!(consumed);
+        assert!(matches!(effects.as_slice(), [Effect::ExportFastenerHoleReport(_)]));
+    }
+
+    #[test]
+    fn build_report_text_contains_both_hole_types_content() {
+        for hole_type in [HoleType::Regular, HoleType::Countersunk] {
+            let mut model = model::FastenerHoleModel::default();
+            model.hole_type = hole_type;
+            model.recompute();
+            let text = view::build_report_text(&model);
+            assert!(text.contains("Fastener Holes Report"));
+            assert!(!text.is_empty());
+        }
     }
 
     #[test]
@@ -202,6 +247,26 @@ mod tests {
         // Resets toward the top of the (now very different) row list, but
         // never onto the unselectable Header row 0.
         assert!(!matches!(model::field_rows(&state.model)[state.selected], model::FieldRow::Header(_)));
+    }
+
+    #[test]
+    fn typing_a_digit_on_a_number_row_starts_editing_from_just_that_digit() {
+        let mut state = FastenerHoleState::default();
+        state.selected = 4; // Hole 1 Diameter / Nominal
+        handle_key(&mut state, key(KeyCode::Char('9')));
+        assert!(state.editing);
+        assert_eq!(state.edit_buffer, "9", "buffer must start fresh from the typed digit, not prefilled with the old value");
+    }
+
+    #[test]
+    fn delete_clears_the_edit_buffer_while_editing() {
+        let mut state = FastenerHoleState::default();
+        state.selected = 4;
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert!(!state.edit_buffer.is_empty());
+        handle_key(&mut state, key(KeyCode::Delete));
+        assert_eq!(state.edit_buffer, "");
+        assert!(state.editing);
     }
 
     #[test]

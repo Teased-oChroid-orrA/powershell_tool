@@ -8,10 +8,12 @@
 pub mod app;
 pub mod command_palette;
 pub mod format;
+pub mod library;
 pub mod modal;
 pub mod mouse;
 pub mod nav;
 pub mod notifications;
+pub mod paths;
 pub mod theme;
 pub mod toolboxes;
 pub mod widgets;

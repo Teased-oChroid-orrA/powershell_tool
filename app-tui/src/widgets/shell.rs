@@ -32,7 +32,7 @@ pub fn draw(frame: &mut Frame, state: &AppState, tick: u64, regions: &mut MouseR
     draw_status_bar(frame, root[2], state, tick);
 
     match &state.modal {
-        ModalState::Palette(palette) => command_palette::render(frame, area, &state.theme, palette, regions),
+        ModalState::Palette(palette) => command_palette::render(frame, area, &state.theme, palette, state.nav.active_tool, regions),
         ModalState::Help => draw_help(frame, area, state, regions),
         ModalState::Confirm(dialog) => draw_confirm(frame, area, state, dialog, regions),
         ModalState::None => {}
@@ -181,9 +181,7 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, state: &AppState, tick: u64) {
         help::KeyHint { key: "Ctrl+P", label: "Commands" },
         help::KeyHint { key: "Tab", label: "Focus" },
     ];
-    if let Some(hint) = contextual_hint(state) {
-        hints.push(hint);
-    }
+    hints.extend(contextual_hint(state));
     hints.push(help::KeyHint { key: "?", label: "Help" });
     hints.push(help::KeyHint { key: "q", label: "Quit" });
     let layout = Layout::default()
@@ -200,40 +198,53 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, state: &AppState, tick: u64) {
     frame.render_widget(Paragraph::new(status).alignment(Alignment::Right), layout[1]);
 }
 
-/// One extra, always-visible status-bar hint for whatever single
-/// non-obvious key actually does something right now - e.g. `s` opening
-/// Settings was previously discoverable only via the `?` help overlay (a
-/// separate modal you had to already know to open), with no hint on the
-/// always-visible chrome that the binding existed at all. Toolbox-specific
-/// (only `Search` has any of these bindings today) and pane/screen-aware,
-/// so it never claims a key does something it won't actually do given the
-/// current focus/screen.
-fn contextual_hint(state: &AppState) -> Option<help::KeyHint> {
+/// Extra, always-visible status-bar hints for whatever non-obvious keys
+/// actually do something right now - e.g. `s` opening Settings was
+/// previously discoverable only via the `?` help overlay (a separate modal
+/// you had to already know to open), with no hint on the always-visible
+/// chrome that the binding existed at all. Toolbox-specific and
+/// pane/screen-aware, so a hint never claims a key does something it won't
+/// actually do given the current focus/screen. Returns zero, one, or two
+/// hints - `draw_status_bar` appends whatever comes back to its own
+/// always-shown hints, so there's no single-hint constraint to work around.
+fn contextual_hint(state: &AppState) -> Vec<help::KeyHint> {
     match state.nav.active_tool {
         ToolId::Search => match state.search.screen {
             crate::toolboxes::search::ToolboxScreen::Run => {
                 let results_focused =
                     matches!(state.focus.area, FocusArea::Workspace(n) if n == crate::toolboxes::search::PANE_RESULTS);
-                results_focused.then_some(help::KeyHint { key: "s", label: "Settings" })
+                if !results_focused {
+                    return Vec::new();
+                }
+                let mut hints = vec![help::KeyHint { key: "s", label: "Settings" }];
+                if !state.search.run.results.is_empty() {
+                    hints.push(help::KeyHint { key: "e", label: "Export hits" });
+                }
+                hints
             }
-            crate::toolboxes::search::ToolboxScreen::Settings => Some(help::KeyHint { key: "Esc", label: "Back" }),
+            crate::toolboxes::search::ToolboxScreen::Settings => vec![help::KeyHint { key: "Esc", label: "Back" }],
         },
-        // `e` (export report) is the one binding on this toolbox with no
-        // on-screen affordance elsewhere - discoverable only via `?`
-        // otherwise, same reasoning as Search's own `s Settings` hint above.
-        // Only shown while the workspace itself has focus and no overlay
-        // is covering it, so the hint never claims a key does something it
-        // won't actually do right now.
+        // `e` (export report) and `d` (Numbers panel) are the two bindings
+        // on these toolboxes with no on-screen affordance elsewhere -
+        // discoverable only via `?` otherwise, same reasoning as Search's
+        // own `s Settings` hint above. Only shown while the workspace
+        // itself has focus and no overlay is covering it, so a hint never
+        // claims a key does something it won't actually do right now.
+        ToolId::FastenerHole if matches!(state.focus.area, FocusArea::Workspace(_)) => {
+            vec![help::KeyHint { key: "e", label: "Export" }]
+        }
         ToolId::PressureVessel if !state.pressure_vessel.material_picker.open && matches!(state.focus.area, FocusArea::Workspace(_)) => {
-            Some(help::KeyHint { key: "e", label: "Export" })
+            vec![help::KeyHint { key: "d", label: "Numbers" }, help::KeyHint { key: "e", label: "Export" }]
         }
         ToolId::Bushing
             if !state.bushing.material_picker.open && !state.bushing.reamer_picker.open && matches!(state.focus.area, FocusArea::Workspace(_)) =>
         {
-            Some(help::KeyHint { key: "e", label: "Export" })
+            vec![help::KeyHint { key: "d", label: "Numbers" }, help::KeyHint { key: "e", label: "Export" }]
         }
-        ToolId::PreloadAnalysis if matches!(state.focus.area, FocusArea::Workspace(_)) => Some(help::KeyHint { key: "e", label: "Export" }),
-        _ => None,
+        ToolId::PreloadAnalysis if matches!(state.focus.area, FocusArea::Workspace(_)) => {
+            vec![help::KeyHint { key: "d", label: "Numbers" }, help::KeyHint { key: "e", label: "Export" }]
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -263,6 +274,7 @@ fn draw_help(frame: &mut Frame, area: Rect, state: &AppState, regions: &mut Mous
         help::KeyHint { key: "Up/Down", label: "Move field selection" },
         help::KeyHint { key: "Space/Enter", label: "Toggle Hole Type/Tolerance Input/Solve For/Method, or edit a value" },
         help::KeyHint { key: "Enter/Esc", label: "While editing: commit / cancel" },
+        help::KeyHint { key: "e", label: "Export a plain-text report and open it" },
         help::KeyHint { key: "Hole Type", label: "Regular: two toleranced diameters and their fit. Countersunk: D/d/h/angle geometry" },
         help::KeyHint { key: "Fit sign", label: "Fit = Hole 2 - Hole 1: positive = clearance, negative = interference" },
         help::KeyHint { key: "Classification", label: "Min>0 Clearance; Max<0 Interference; otherwise Transition (boundary zero = Transition)" },
@@ -284,8 +296,35 @@ fn draw_help(frame: &mut Frame, area: Rect, state: &AppState, regions: &mut Mous
         help::KeyHint { key: "Thermal", label: "Only evaluated with a nonzero temperature differential - folded into the four checks, not a separate row" },
         help::KeyHint { key: "Material picker", label: "/ filters by name, n opens a blank template to add a custom material, Enter selects" },
     ];
-    let sections: [(&str, &[help::KeyHint]); 4] =
-        [("Global", global), ("Search Files", search), ("Fastener Holes", fastener_hole), ("Pressure Vessel Analyzer", pressure_vessel)];
+    let bushing: &[help::KeyHint] = &[
+        help::KeyHint { key: "Up/Down", label: "Move field selection" },
+        help::KeyHint { key: "Space/Enter", label: "Toggle OD/ID Geometry etc., open a material/reamer picker, or edit a value" },
+        help::KeyHint { key: "Enter/Esc", label: "While editing: commit / cancel" },
+        help::KeyHint { key: "d", label: "Toggle the Numbers panel (per-radius hoop/radial/axial stress breakdown)" },
+        help::KeyHint { key: "e", label: "Export a plain-text report and open it" },
+        help::KeyHint { key: "Bore Diameter", label: "Enter opens the aircraft reamer catalog; m inside it types an exact value instead" },
+        help::KeyHint { key: "Reamer/Material picker", label: "/ filters the list, Enter selects, Esc closes without changing anything" },
+        help::KeyHint { key: "Reamer picker", label: "i: import a library file, x: export current + built-in catalog, n: tag the highlighted size Preferred" },
+        help::KeyHint { key: "Friction/Fit Type", label: "Enter on Friction opens typical values with usage notes ('m' types an exact value); Fit Type is a label - Shrink also enables Install Thermal Assist" },
+        help::KeyHint { key: "Bushing ID/Material pickers", label: "n saves the current value/opens the add-material form, i: import a library file, x: export it" },
+    ];
+    let preload_analysis: &[help::KeyHint] = &[
+        help::KeyHint { key: "Up/Down", label: "Move field selection" },
+        help::KeyHint { key: "Space/Enter", label: "Toggle Mode/Tightening From etc., open the bolt picker, or edit a value" },
+        help::KeyHint { key: "Enter/Esc", label: "While editing: commit / cancel" },
+        help::KeyHint { key: "d", label: "Toggle the Numbers panel (torque/deformation/rotation/stress breakdown)" },
+        help::KeyHint { key: "e", label: "Export a plain-text report and open it" },
+        help::KeyHint { key: "Bolt (AN Standard)", label: "Enter opens the AN/NAS/MS/Hi-Lok catalog and auto-fills thread geometry" },
+        help::KeyHint { key: "Uncertainty Analysis", label: "Worst-case corner search and/or a seeded Monte Carlo sampler, toggled together" },
+    ];
+    let sections: [(&str, &[help::KeyHint]); 6] = [
+        ("Global", global),
+        ("Search Files", search),
+        ("Fastener Holes", fastener_hole),
+        ("Bushing Workbench", bushing),
+        ("Pressure Vessel Analyzer", pressure_vessel),
+        ("Preload Analysis", preload_analysis),
+    ];
     help::render_overlay(frame, area, &state.theme, &sections);
 }
 

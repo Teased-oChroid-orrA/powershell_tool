@@ -56,6 +56,12 @@ pub struct MouseRegions {
     pub preload_analysis_rows: Vec<(Rect, usize)>,
     pub bolt_rows: Vec<(Rect, usize)>,
     pub material_rows: Vec<(Rect, usize)>,
+    /// Row regions for the Bushing friction-coefficient picker - navigable
+    /// by keyboard (Up/Down/Enter) only for now, tracked here purely so
+    /// `friction_picker::render` can call `list_row_regions` the same way
+    /// every other picker in this crate does.
+    pub friction_rows: Vec<(Rect, usize)>,
+    pub bushing_id_rows: Vec<(Rect, usize)>,
     pub palette_rows: Vec<(Rect, usize)>,
     pub extension_rows: Vec<(Rect, usize)>,
     pub confirm_yes: Option<Rect>,

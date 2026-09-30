@@ -42,13 +42,19 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingState, 
 
     regions.workspace_panes.push((area, super::PANE_MAIN));
     draw_fields(frame, fields_area, theme, state, focused, regions);
-    draw_readout(frame, readout_area, theme, &state.model, state.show_numbers);
+    draw_readout(frame, readout_area, theme, &state.model, state.show_numbers, state.results_scroll);
 
     if state.material_picker.open {
         super::material_picker::render(frame, area, theme, &state.material_picker, &state.model, regions);
     }
     if state.reamer_picker.open {
         super::reamer_picker::render(frame, area, theme, &state.reamer_picker, &state.model, regions);
+    }
+    if state.friction_picker.open {
+        super::friction_picker::render(frame, area, theme, &state.friction_picker, regions);
+    }
+    if state.bushing_id_picker.open {
+        super::bushing_id_picker::render(frame, area, theme, &state.bushing_id_picker, &state.model, regions);
     }
 }
 
@@ -59,6 +65,7 @@ fn compute_label_width(rows: &[FieldRow]) -> u16 {
 fn display_value(model: &BushingModel, row: FieldRow) -> String {
     match row {
         FieldRow::Header(_) => String::new(),
+        FieldRow::ToggleFitType => model::label_fit_type(model.fit_type).to_string(),
         FieldRow::ToggleBushingType => model::label_bushing_type(model.bushing_type).to_string(),
         FieldRow::ToggleIdType => model::label_id_type(model.id_type).to_string(),
         FieldRow::ToggleEndConstraint => model::label_end_constraint(model.end_constraint).to_string(),
@@ -176,7 +183,7 @@ fn tone_color(tone: StatusTone) -> ratatui::style::Color {
     }
 }
 
-fn draw_readout(frame: &mut Frame, area: Rect, theme: &Theme, model: &BushingModel, show_numbers: bool) {
+fn draw_readout(frame: &mut Frame, area: Rect, theme: &Theme, model: &BushingModel, show_numbers: bool, scroll: u16) {
     let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.border_style(false)).title(" Results ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -184,7 +191,7 @@ fn draw_readout(frame: &mut Frame, area: Rect, theme: &Theme, model: &BushingMod
         return;
     }
     let lines = readout_lines(theme, model, show_numbers);
-    frame.render_widget(Paragraph::new(lines), inner);
+    crate::widgets::scroll_paragraph::render(frame, inner, theme, lines, scroll);
 }
 
 fn readout_lines<'a>(theme: &'a Theme, model: &'a BushingModel, show_numbers: bool) -> Vec<Line<'a>> {
@@ -211,6 +218,12 @@ fn readout_lines<'a>(theme: &'a Theme, model: &'a BushingModel, show_numbers: bo
     )));
     for note in &out.tolerance_notes {
         lines.push(Line::from(Span::styled(format!("  \u{26a0} {note}"), theme.status_style(StatusTone::Warning))));
+    }
+    if matches!(model.fit_type, model::FitType::Clearance | model::FitType::Slip) && model.interference > 0.0 {
+        lines.push(Line::from(Span::styled(
+            format!("  \u{26a0} Fit Type is {} but Target Interference is positive ({:.4} in) - informational only, not blocked.", model::label_fit_type(model.fit_type), model.interference),
+            theme.status_style(StatusTone::Warning),
+        )));
     }
     lines.push(Line::from(""));
 
@@ -447,6 +460,46 @@ mod tests {
         state.material_picker.open = false;
         state.reamer_picker.open = true;
         draw_at(120, 40, &state);
+    }
+
+    /// Regression test for the Results-pane clipping bug: `draw_readout`
+    /// used to render via a bare `Paragraph::new(lines)` with no `.wrap()`
+    /// and no scroll, so content taller than the pane (e.g. the Numbers
+    /// panel's full stress-field breakdown) was silently dropped off the
+    /// bottom with no way to reach it. Forces a short terminal height with
+    /// the Numbers panel on, scrolls to the bottom via a very large
+    /// PageDown-equivalent offset (which `scroll_paragraph::render` must
+    /// clamp, not blank out), and asserts the last readout line is visible.
+    #[test]
+    fn scrolling_the_results_pane_reaches_content_past_a_short_pane_height() {
+        let mut state = BushingState::default();
+        state.show_numbers = true;
+        state.results_scroll = u16::MAX;
+        draw_at(160, 12, &state);
+        // Re-render into a buffer we can inspect directly.
+        let backend = TestBackend::new(160, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = Rect::new(0, 0, 160, 12);
+        let mut regions = crate::mouse::MouseRegions::default();
+        terminal.draw(|f| draw(f, area, &Theme::default_palette(), &state, true, &mut regions)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let rendered: String = (0..buffer.area.height).map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>() + "\n").collect();
+        assert!(rendered.contains("Housing stress field"), "last section of the readout must be reachable by scrolling, not silently dropped:\n{rendered}");
+    }
+
+    #[test]
+    fn clearance_fit_with_positive_interference_shows_a_non_blocking_warning() {
+        let mut state = BushingState::default();
+        state.model.fit_type = model::FitType::Clearance;
+        state.model.recompute();
+        let backend = TestBackend::new(160, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = Rect::new(0, 0, 160, 40);
+        let mut regions = crate::mouse::MouseRegions::default();
+        terminal.draw(|f| draw(f, area, &Theme::default_palette(), &state, true, &mut regions)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let rendered: String = (0..buffer.area.height).map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>() + "\n").collect();
+        assert!(rendered.contains("Clearance Fit"), "warning must name the selected fit type:\n{rendered}");
     }
 
     #[test]

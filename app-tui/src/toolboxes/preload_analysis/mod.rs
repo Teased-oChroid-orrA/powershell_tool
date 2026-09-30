@@ -25,7 +25,7 @@ pub mod model;
 pub mod persistence;
 pub mod view;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 
 use bolt_picker::BoltPickerState;
 use crate::app::Effect;
@@ -45,11 +45,15 @@ pub struct PreloadAnalysisState {
     /// substitute for spec section 84's optional Load-Preload curve, which
     /// has no meaningful terminal-chart equivalent at this phase).
     pub show_numbers: bool,
+    /// PageUp/PageDown-adjusted scroll offset into the Results pane -
+    /// clamped on every render by `widgets::scroll_paragraph::render`.
+    pub results_scroll: u16,
 }
 
 impl Default for PreloadAnalysisState {
     fn default() -> Self {
-        let mut state = Self { model: PreloadModel::default(), selected: 0, editing: false, edit_buffer: String::new(), bolt_picker: BoltPickerState::default(), show_numbers: false };
+        let mut state =
+            Self { model: PreloadModel::default(), selected: 0, editing: false, edit_buffer: String::new(), bolt_picker: BoltPickerState::default(), show_numbers: false, results_scroll: 0 };
         // Row 0 is always a `Header` - land on the first real field instead
         // of an unselectable row.
         state.clamp_selection();
@@ -133,16 +137,22 @@ pub fn handle_key(state: &mut PreloadAnalysisState, key: KeyEvent) -> (bool, Vec
                 state.edit_buffer.clear();
                 (true, Vec::new())
             }
-            KeyCode::Backspace => {
-                state.edit_buffer.pop();
-                (true, Vec::new())
-            }
-            KeyCode::Char(c) if (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) && (c.is_ascii_digit() || c == '.' || c == '-') => {
-                state.edit_buffer.push(c);
-                (true, Vec::new())
-            }
+            _ if crate::widgets::number_edit::handle_buffer_key(&mut state.edit_buffer, &key) => (true, Vec::new()),
             _ => (false, Vec::new()),
         };
+    }
+
+    // Typing a digit/'.'/'-' directly on an already-selected `Number` row
+    // starts editing immediately, buffer seeded from that character - see
+    // `bushing::handle_key`'s own comment for the interaction rationale.
+    // `OpenBoltPicker` is its own `FieldRow` variant (not `Number`), so no
+    // exclusion is needed here.
+    if let Some(c) = crate::widgets::number_edit::number_char(&key) {
+        if matches!(model::field_rows(&state.model).get(state.selected).copied(), Some(FieldRow::Number(_))) {
+            state.editing = true;
+            state.edit_buffer = c.to_string();
+            return (true, Vec::new());
+        }
     }
 
     match key.code {
@@ -173,11 +183,19 @@ pub fn handle_key(state: &mut PreloadAnalysisState, key: KeyEvent) -> (bool, Vec
                 None => (false, Vec::new()),
             }
         }
-        KeyCode::Char('d') => {
+        KeyCode::Char('d' | 'D') => {
             state.show_numbers = !state.show_numbers;
             (true, Vec::new())
         }
-        KeyCode::Char('e') => (true, vec![Effect::ExportPreloadAnalysisReport(view::build_report_text(&state.model))]),
+        KeyCode::Char('e' | 'E') => (true, vec![Effect::ExportPreloadAnalysisReport(view::build_report_text(&state.model))]),
+        KeyCode::PageUp => {
+            state.results_scroll = state.results_scroll.saturating_sub(crate::widgets::scroll_paragraph::SCROLL_STEP);
+            (true, Vec::new())
+        }
+        KeyCode::PageDown => {
+            state.results_scroll = state.results_scroll.saturating_add(crate::widgets::scroll_paragraph::SCROLL_STEP);
+            (true, Vec::new())
+        }
         _ => (false, Vec::new()),
     }
 }
@@ -196,7 +214,7 @@ fn commit_edit(state: &mut PreloadAnalysisState) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyEventKind, KeyEventState};
+    use crossterm::event::{KeyEventKind, KeyEventState, KeyModifiers};
     use model::NumberTarget;
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -224,6 +242,26 @@ mod tests {
         handle_key(&mut state, key(KeyCode::Char(' ')));
         assert_eq!(state.model.mode, model::Mode::PreloadControlled);
         assert!(!state.editing);
+    }
+
+    #[test]
+    fn typing_a_digit_on_a_number_row_starts_editing_from_just_that_digit() {
+        let mut state = PreloadAnalysisState::default();
+        state.selected = model::field_rows(&state.model).iter().position(|r| *r == FieldRow::Number(NumberTarget::AppliedTorque)).unwrap();
+        handle_key(&mut state, key(KeyCode::Char('9')));
+        assert!(state.editing);
+        assert_eq!(state.edit_buffer, "9", "buffer must start fresh from the typed digit, not prefilled with the old value");
+    }
+
+    #[test]
+    fn delete_clears_the_edit_buffer_while_editing() {
+        let mut state = PreloadAnalysisState::default();
+        state.selected = model::field_rows(&state.model).iter().position(|r| *r == FieldRow::Number(NumberTarget::AppliedTorque)).unwrap();
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert!(!state.edit_buffer.is_empty());
+        handle_key(&mut state, key(KeyCode::Delete));
+        assert_eq!(state.edit_buffer, "");
+        assert!(state.editing);
     }
 
     #[test]
@@ -297,6 +335,20 @@ mod tests {
         assert!(!state.show_numbers);
         handle_key(&mut state, key(KeyCode::Char('d')));
         assert!(state.show_numbers);
+    }
+
+    #[test]
+    fn uppercase_d_and_e_from_caps_lock_still_work() {
+        let mut state = PreloadAnalysisState::default();
+        assert!(!state.show_numbers);
+        handle_key(&mut state, key(KeyCode::Char('D')));
+        assert!(state.show_numbers);
+        let (consumed, effects) = handle_key(&mut state, key(KeyCode::Char('E')));
+        assert!(consumed);
+        match effects.as_slice() {
+            [Effect::ExportPreloadAnalysisReport(text)] => assert!(!text.is_empty()),
+            other => panic!("expected exactly one ExportPreloadAnalysisReport effect, got {other:?}"),
+        }
     }
 
     #[test]

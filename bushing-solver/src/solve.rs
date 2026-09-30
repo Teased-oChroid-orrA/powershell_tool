@@ -13,7 +13,7 @@ use crate::bearing::{calculate_universal_bearing, BearingSegment};
 use crate::countersink::{cs_angle_tolerance_from_base, cs_depth_tolerance_from_base, cs_dia_tolerance_from_base, enumerate_countersink_corners, solve_countersink, CsCorner, CsMode};
 use crate::geometry::{compute_minimum_bushing_wall, resolve_bushing_section_params, BushingSectionInput};
 pub use crate::geometry::{BushingType, IdType};
-use mechanics_core::materials::{get_material, Material};
+use mechanics_core::materials::Material;
 use crate::tolerance::{
     build_od_tolerance, clamp, containment_violations, enforce_bore_band_for_target, make_range, resolve_tolerance, BoreCapability, EnforcementPolicy,
     ResolveToleranceInput, ToleranceMode, ToleranceRange, ToleranceStatus,
@@ -75,8 +75,12 @@ pub struct BushingInputs {
     pub housing_width: f64,
     /// Edge distance from bore center to nearest free edge, in.
     pub edge_dist: f64,
-    pub mat_housing: String,
-    pub mat_bushing: String,
+    /// Housing material, resolved by the caller - not looked up by id
+    /// inside `compute()`, so a caller-supplied custom material (not in
+    /// `mechanics_core::materials::MATERIALS`) works identically to a
+    /// built-in one.
+    pub mat_housing: Material,
+    pub mat_bushing: Material,
     /// Installation friction coefficient. `None` falls back to 0.15,
     /// matching the TS source's own fallback.
     pub friction: Option<f64>,
@@ -366,8 +370,8 @@ fn end_constraint_factor(ec: EndConstraint) -> f64 {
 /// (`toOutput`'s `hoop`/`edgeDistance`/`physics`/`governing` sections) for
 /// the original this mirrors.
 pub fn compute(input: &BushingInputs) -> BushingOutput {
-    let mat_housing: &Material = get_material(&input.mat_housing);
-    let mat_bushing: &Material = get_material(&input.mat_bushing);
+    let mat_housing: &Material = &input.mat_housing;
+    let mat_bushing: &Material = &input.mat_bushing;
 
     // solveEngine.ts:187-204 - bore/interference tolerance resolution
     // (nominal_tol mode only - v1 doesn't expose the `limits`-mode entry
@@ -847,8 +851,8 @@ mod tests {
             housing_len: 0.5,
             housing_width: 1.5,
             edge_dist: 0.75,
-            mat_housing: "al7075".to_string(),
-            mat_bushing: "bronze".to_string(),
+            mat_housing: *mechanics_core::materials::get_material("al7075"),
+            mat_bushing: *mechanics_core::materials::get_material("bronze"),
             friction: Some(0.15),
             d_t: 0.0,
             end_constraint: EndConstraint::Free,

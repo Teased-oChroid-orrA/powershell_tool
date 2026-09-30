@@ -1,5 +1,13 @@
 # Rust/Dioxus rewrite status
 
+**CLOSED / OBSOLETE**: this document tracks the `app/` (dioxus-native)
+rewrite specifically. `app/` has been deleted from this repository, along
+with `app-egui/` — `app-tui/` is now the sole GUI head (see root
+`CLAUDE.md`'s "What this project is" and `app-tui/AGENTS.md`). Kept only as
+a historical record.
+
+---
+
 Referenced from several `search-core`/`app` source doc comments. This is
 the narrative/status companion to `CLAUDE.md`'s architecture section - read
 that first for the "what goes where" map; this doc is "what's done, what
