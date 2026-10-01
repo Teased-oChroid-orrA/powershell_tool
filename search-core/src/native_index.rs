@@ -199,6 +199,10 @@ pub struct CorpusIndexOutcome {
     /// receive an unbounded list) - not truncated here, since a caller
     /// choosing to display only the first N is a presentation decision.
     pub failed_files: Vec<String>,
+    /// Failure counts keyed by `ext=<extension>: <error with paths removed>` -
+    /// contains no file or folder names, so it is safe to write to a
+    /// diagnostic log (unlike `failed_files`, which names every file).
+    pub failure_summary: std::collections::BTreeMap<String, u32>,
     /// Files found by the folder walk (before extension filtering).
     pub enumerated_count: i32,
     /// Files left after extension filtering - the set the index covers.
@@ -214,6 +218,63 @@ pub struct CorpusIndexOutcome {
     /// The build was cancelled part-way; everything indexed before the
     /// cancel was committed and is usable.
     pub cancelled: bool,
+}
+
+/// Replaces anything path-like in `text` with `<path>`: a whitespace/quote-
+/// delimited token containing `/` or `\\`, or starting with a drive letter
+/// (`C:`), and any quoted segment containing a separator. Backstop for text
+/// that may embed a path (OS/library error strings) before it is logged.
+pub fn redact_paths(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut token = String::new();
+    let mut quote: Option<char> = None;
+    let mut quoted = String::new();
+    let is_pathy = |t: &str| {
+        t.contains('/') || t.contains('\\') || {
+            let b = t.as_bytes();
+            b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
+        }
+    };
+    let flush = |token: &mut String, out: &mut String| {
+        if !token.is_empty() {
+            out.push_str(if is_pathy(token) { "<path>" } else { token });
+            token.clear();
+        }
+    };
+    for c in text.chars() {
+        if let Some(q) = quote {
+            if c == q {
+                out.push(q);
+                out.push_str(if is_pathy(&quoted) { "<path>" } else { &quoted });
+                out.push(q);
+                quote = None;
+                quoted.clear();
+            } else {
+                quoted.push(c);
+            }
+        } else if c == '"' || c == '\'' {
+            flush(&mut token, &mut out);
+            quote = Some(c);
+        } else if c.is_whitespace() || matches!(c, '(' | ')' | ',' | '[' | ']' | '{' | '}' | '=') {
+            flush(&mut token, &mut out);
+            out.push(c);
+        } else {
+            token.push(c);
+        }
+    }
+    if let Some(q) = quote {
+        // Unterminated quote: treat the remainder as one token.
+        out.push(q);
+        out.push_str(if is_pathy(&quoted) { "<path>" } else { &quoted });
+    }
+    flush(&mut token, &mut out);
+    out
+}
+
+fn record_failure(outcome: &mut CorpusIndexOutcome, full_name: &str, ext: &str, error: &str) {
+    outcome.failed_count += 1;
+    outcome.failed_files.push(format!("{full_name}: {error}"));
+    *outcome.failure_summary.entry(format!("ext={ext}: {}", redact_paths(error))).or_insert(0) += 1;
 }
 
 /// How many newly-indexed documents accumulate before an intermediate
@@ -409,13 +470,11 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
             let lines = match handle.await {
                 Ok(Ok(l)) => l,
                 Ok(Err(e)) => {
-                    outcome.failed_count += 1;
-                    outcome.failed_files.push(format!("{full_name}: {e}"));
+                    record_failure(&mut outcome, &full_name, &ext, &e);
                     continue;
                 }
                 Err(e) => {
-                    outcome.failed_count += 1;
-                    outcome.failed_files.push(format!("{full_name}: read task failed: {e}"));
+                    record_failure(&mut outcome, &full_name, &ext, &format!("read task failed: {e}"));
                     continue;
                 }
             };
@@ -440,8 +499,7 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
                 size: file.length,
                 body: &body,
             }) {
-                outcome.failed_count += 1;
-                outcome.failed_files.push(format!("{full_name}: {e}"));
+                record_failure(&mut outcome, &full_name, &ext, &e.to_string());
                 continue;
             }
             outcome.indexed_count += 1;
@@ -452,6 +510,7 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
                 if let Err(e) = engine.commit() {
                     outcome.failed_count += 1;
                     outcome.failed_files.push(format!("commit at {} files: {e}", outcome.indexed_count));
+                    *outcome.failure_summary.entry(format!("commit: {}", redact_paths(&e.to_string()))).or_insert(0) += 1;
                 }
                 pending_commits = 0;
             }
@@ -466,6 +525,7 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
         if let Err(e) = engine.commit() {
             outcome.failed_count += 1;
             outcome.failed_files.push(format!("final commit: {e}"));
+            *outcome.failure_summary.entry(format!("final commit: {}", redact_paths(&e.to_string()))).or_insert(0) += 1;
         }
     }
 
@@ -1230,5 +1290,22 @@ mod tests {
         settings.throttle_limit = 4;
         let engine = built_engine(dir.path(), &settings).await;
         assert_eq!(engine.num_docs(), 30);
+    }
+
+    #[test]
+    fn redact_paths_removes_unix_windows_and_quoted_paths_but_keeps_plain_text() {
+        let r = redact_paths(r#"cannot open "C:\Users\Jo Smith\secret plan.docx" at /home/jo/x.txt (os error 5) D:\a\b"#);
+        assert!(!r.contains("Smith") && !r.contains("secret") && !r.contains("jo/") && !r.contains("D:\\a"), "{r}");
+        assert!(r.contains("os error 5") && r.contains("cannot open"));
+        assert_eq!(redact_paths("access denied"), "access denied");
+    }
+
+    #[test]
+    fn failure_summary_never_contains_the_file_name() {
+        let mut o = CorpusIndexOutcome::default();
+        record_failure(&mut o, "/home/jo/Secret Plan.docx", ".docx", "failed reading /home/jo/Secret Plan.docx: permission denied");
+        let joined = o.failure_summary.keys().cloned().collect::<Vec<_>>().join("|");
+        assert!(!joined.contains("Secret") && !joined.contains("/home"), "{joined}");
+        assert!(joined.contains("ext=.docx") && joined.contains("permission denied"));
     }
 }

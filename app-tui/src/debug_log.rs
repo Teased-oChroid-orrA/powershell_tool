@@ -13,8 +13,11 @@
 //! flushed per line (a crash must not lose the last line - the last line IS
 //! the evidence) and rotated to `.old` once it passes [`MAX_BYTES`].
 //!
-//! Never log file *contents* or secrets - paths, counts, sizes, timings and
-//! error strings only.
+//! **Privacy rule: no file names, folder names, paths, search terms or file
+//! contents - ever.** Only counts, sizes, timings, extensions, OS error
+//! codes and error text. `log` additionally passes every message through
+//! `search_core::native_index::redact_paths` as a backstop, but callers must
+//! not rely on it: do not put a path in a message in the first place.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -32,6 +35,8 @@ struct Sink {
 }
 
 static SINK: OnceLock<Option<Mutex<Sink>>> = OnceLock::new();
+/// Which candidate folder the log landed in - a label, never the path.
+static LOCATION: OnceLock<&'static str> = OnceLock::new();
 
 /// Opens the log (idempotent), writes the environment banner and installs a
 /// panic hook that records the panic before the previous hook runs.
@@ -49,10 +54,26 @@ pub fn init() {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             let bt = std::backtrace::Backtrace::force_capture();
-            log("PANIC", format!("{info}\nbacktrace:\n{bt}"));
+            let location = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
+            let payload = info.payload().downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| info.payload().downcast_ref::<String>().cloned()).unwrap_or_default();
+            // Frames only: the `at <path>` lines of a backtrace name build-machine folders.
+            let frames: String = bt.to_string().lines().filter(|l| !l.trim_start().starts_with("at ")).collect::<Vec<_>>().join("\n");
+            log("PANIC", format!("at {location}: {payload}\nbacktrace:\n{frames}"));
             previous(info);
         }));
     }
+}
+
+/// Test seam: logs into `dir` instead of the launch folder. First caller wins.
+#[cfg(test)]
+pub fn init_in(dir: &Path) {
+    SINK.get_or_init(|| {
+        let path = dir.join(LOG_FILE_NAME);
+        let file = OpenOptions::new().create(true).append(true).open(&path).ok()?;
+        let _ = LOCATION.set("test folder");
+        Some(Mutex::new(Sink { file, path, started: Instant::now() }))
+    });
+    write_banner();
 }
 
 /// Where the log is being written, if enabled.
@@ -64,25 +85,26 @@ fn lock(m: &Mutex<Sink>) -> std::sync::MutexGuard<'_, Sink> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-fn candidate_dirs() -> Vec<PathBuf> {
+fn candidate_dirs() -> Vec<(&'static str, PathBuf)> {
     let mut dirs = Vec::new();
     if let Ok(d) = std::env::current_dir() {
-        dirs.push(d);
+        dirs.push(("launch folder", d));
     }
     if let Some(d) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
-        dirs.push(d);
+        dirs.push(("exe folder", d));
     }
-    dirs.push(std::env::temp_dir());
+    dirs.push(("temp folder", std::env::temp_dir()));
     dirs
 }
 
 fn open_first_writable() -> Option<(File, PathBuf)> {
-    for dir in candidate_dirs() {
+    for (label, dir) in candidate_dirs() {
         let path = dir.join(LOG_FILE_NAME);
         if std::fs::metadata(&path).map(|m| m.len() > MAX_BYTES).unwrap_or(false) {
             let _ = std::fs::rename(&path, dir.join(format!("{LOG_FILE_NAME}.old")));
         }
         if let Ok(file) = OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = LOCATION.set(label);
             return Some((file, path));
         }
     }
@@ -92,12 +114,8 @@ fn open_first_writable() -> Option<(File, PathBuf)> {
 fn write_banner() {
     log("SESSION", "==================== new session ====================");
     log("ENV", format!("app-tui {} | os={} arch={} family={}", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH, std::env::consts::FAMILY));
-    log("ENV", format!("cwd={:?} exe={:?}", std::env::current_dir().ok(), std::env::current_exe().ok()));
     log("ENV", format!("cpus={:?} debug_build={}", std::thread::available_parallelism().map(|n| n.get()).ok(), cfg!(debug_assertions)));
-    log("ENV", format!("log_file={:?}", path()));
-    if let Ok(v) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
-        log("ENV", format!("home={v}"));
-    }
+    log("ENV", format!("log_location={}", LOCATION.get().copied().unwrap_or("unknown")));
 }
 
 /// Appends one line. A no-op when logging is disabled/unavailable.
@@ -110,7 +128,7 @@ pub fn log(component: &str, message: impl AsRef<str>) {
         sink.started.elapsed().as_secs_f64(),
         std::thread::current().name().unwrap_or("worker"),
         component,
-        message.as_ref()
+        search_core::native_index::redact_paths(message.as_ref())
     );
     let _ = sink.file.write_all(line.as_bytes());
     let _ = sink.file.flush();

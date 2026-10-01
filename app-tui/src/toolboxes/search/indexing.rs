@@ -201,18 +201,23 @@ fn sanitized_root_key(root: &str) -> String {
 /// settings. Pure diagnostics - never changes behavior.
 fn log_preflight(settings: &SearchSettings, index_dir: &Path, force_rebuild: bool) {
     let root = Path::new(&settings.search_path);
+    // Privacy: shapes and booleans only - never the path itself.
+    let canonical = std::fs::canonicalize(root);
     log(
         "INDEX",
         format!(
-            "preflight: search_path={:?} exists={} is_dir={} chars={} canonical={:?}",
-            settings.search_path,
+            "preflight: search_path exists={} is_dir={} chars={} canonicalize={} verbatim_prefix={}",
             root.exists(),
             root.is_dir(),
             settings.search_path.chars().count(),
-            std::fs::canonicalize(root).map_err(|e| e.to_string())
+            match &canonical {
+                Ok(_) => "ok".to_string(),
+                Err(e) => format!("failed (os error {:?})", e.raw_os_error()),
+            },
+            canonical.as_ref().map(|c| c.to_string_lossy().starts_with("\\\\?\\")).unwrap_or(false)
         ),
     );
-    log("INDEX", format!("preflight: index_dir={:?} chars={} force_rebuild={force_rebuild}", index_dir, index_dir.as_os_str().len()));
+    log("INDEX", format!("preflight: index_dir chars={} force_rebuild={force_rebuild}", index_dir.as_os_str().len()));
     let lower = index_dir.to_string_lossy().to_lowercase();
     if index_dir.as_os_str().len() > 200 {
         log("WARN", "index path is longer than 200 chars - Windows MAX_PATH (260) can break Tantivy segment file names");
@@ -247,9 +252,6 @@ fn log_preflight(settings: &SearchSettings, index_dir: &Path, force_rebuild: boo
                 let len = entry.metadata().map(|m| m.len()).unwrap_or(0);
                 total += len;
                 count += 1;
-                if count <= 40 {
-                    log("INDEX", format!("preflight: existing {:?} {len} bytes", entry.file_name()));
-                }
             }
             log("INDEX", format!("preflight: index dir holds {count} entries, {total} bytes (lock file present: {})", index_dir.join(".tantivy-writer.lock").exists()));
         }
@@ -259,9 +261,9 @@ fn log_preflight(settings: &SearchSettings, index_dir: &Path, force_rebuild: boo
     log(
         "INDEX",
         format!(
-            "preflight: settings extensions={} exclude_folders={:?} include_hidden={} max_file_size_mb={} parallel={} throttle={} ocr={} timeout_s={} retries={}",
+            "preflight: settings extensions={} exclude_folders={} include_hidden={} max_file_size_mb={} parallel={} throttle={} ocr={} timeout_s={} retries={}",
             settings.extensions.as_ref().map(|e| e.len().to_string()).unwrap_or_else(|| "default-catalog".to_string()),
-            settings.exclude_folders,
+            settings.exclude_folders.len(),
             settings.include_hidden,
             settings.max_file_size_mb,
             settings.parallel,
@@ -305,7 +307,7 @@ pub async fn build_or_rebuild_index(
     force_rebuild: bool,
     cancel: CancellationToken,
 ) {
-    log("INDEX", format!("=== build start: root={:?} index_dir={:?} force_rebuild={force_rebuild}", settings.search_path, index_dir));
+    log("INDEX", format!("=== build start: force_rebuild={force_rebuild}"));
     let _ = tx.send(AppEvent::IndexBuildProgress(CorpusIndexProgress {
         current_file: "Starting…".to_string(),
         ..Default::default()
@@ -385,7 +387,7 @@ async fn build_or_rebuild_index_inner(
         let bucket = i64::from(p.files_processed) / 500;
         if p.stage == IndexStage::Indexing && bucket != last_logged_bucket {
             last_logged_bucket = bucket;
-            log("INDEX", format!("progress {}/{} indexed={} failed={} at {:?}", p.files_processed, p.total_files, p.indexed_count, p.failed_count, p.current_file));
+            log("INDEX", format!("progress {}/{} indexed={} failed={}", p.files_processed, p.total_files, p.indexed_count, p.failed_count));
         }
         // The UI only redraws a few times a second; flooding the event
         // channel with one message per file just queues stale redraws.
@@ -398,12 +400,9 @@ async fn build_or_rebuild_index_inner(
 
     let mut outcome = build_or_update_corpus_index_send(settings, &engine, cancel, Some(&mut on_progress)).await?;
 
-    for (i, f) in outcome.failed_files.iter().enumerate() {
-        if i < 500 {
-            log("INDEX-FAIL", f);
-        } else if i == 500 {
-            log("INDEX-FAIL", format!("... {} more failures not listed", outcome.failed_files.len() - 500));
-        }
+    // Aggregated by extension + error text; never per-file (no file names in the log).
+    for (kind, count) in &outcome.failure_summary {
+        log("INDEX-FAIL", format!("{count} x {kind}"));
     }
 
     if !outcome.cancelled {
@@ -439,7 +438,7 @@ fn verify_built_index(index_dir: &Path, outcome: &CorpusIndexOutcome) -> NsResul
     }
     if let Some(id) = engine.all_document_ids()?.into_iter().next() {
         let found = engine.get_document_metadata(&id)?.is_some();
-        log("INDEX", format!("verify: lookup of {id:?} -> {found}"));
+        log("INDEX", format!("verify: sample document lookup -> {found}"));
         if !found {
             return Err(NsError::index_error("index verification failed: a stored document cannot be looked up after reopen"));
         }
@@ -623,5 +622,40 @@ mod tests {
             }
         }
         assert!(finished.unwrap().unwrap().cancelled);
+    }
+
+    /// Privacy contract: whatever a build and a search do, the debug log must
+    /// not contain file names, folder names or search terms.
+    #[tokio::test]
+    async fn the_debug_log_contains_no_file_names_folder_names_or_search_terms() {
+        let logs = tempfile::tempdir().unwrap();
+        crate::debug_log::init_in(logs.path());
+
+        let root = tempfile::tempdir().unwrap();
+        let secret_dir = root.path().join("ConfidentialClientFolderQ7");
+        std::fs::create_dir_all(&secret_dir).unwrap();
+        std::fs::write(secret_dir.join("SecretProjectNameXyz.txt"), "needle ZebraTermQ9 here\n").unwrap();
+        // Corrupt office file: exercises the per-file failure path.
+        std::fs::write(secret_dir.join("BrokenBudgetXyz.docx"), b"not a real docx").unwrap();
+
+        let settings = SearchSettings {
+            search_path: root.path().to_string_lossy().into_owned(),
+            filters: vec!["ZebraTermQ9".to_string()],
+            ..Default::default()
+        };
+        let index_dir = index_directory(IndexLocation::SearchFolder, &settings.search_path, "");
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        build_or_rebuild_index(tx, settings.clone(), index_dir.clone(), true, CancellationToken::new()).await;
+        // Also a failing build (missing folder) so the error path is covered.
+        let (tx2, _rx2) = tokio::sync::mpsc::unbounded_channel();
+        let bad = SearchSettings { search_path: root.path().join("MissingFolderZz").to_string_lossy().into_owned(), ..Default::default() };
+        build_or_rebuild_index(tx2, bad, index_dir, false, CancellationToken::new()).await;
+
+        let log = std::fs::read_to_string(logs.path().join(crate::debug_log::LOG_FILE_NAME)).unwrap();
+        assert!(log.contains("build start") && log.contains("build finished"), "log must still be useful:\n{log}");
+        let root_name = root.path().file_name().unwrap().to_string_lossy().into_owned();
+        for forbidden in ["SecretProjectNameXyz", "BrokenBudgetXyz", "ConfidentialClientFolderQ7", "ZebraTermQ9", "MissingFolderZz", root_name.as_str()] {
+            assert!(!log.contains(forbidden), "debug log leaked `{forbidden}`:\n{log}");
+        }
     }
 }

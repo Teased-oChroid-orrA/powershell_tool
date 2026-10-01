@@ -39,7 +39,7 @@ pub async fn run_search(
     base_settings: SearchSettings,
     index: IndexSettings,
 ) {
-    log("SEARCH", format!("run start: roots={roots:?} filters={:?} use_index={}", base_settings.filters, index.enabled));
+    log("SEARCH", format!("run start: roots={} filters={} regex={} use_index={}", roots.len(), base_settings.filters.len(), base_settings.use_regex, index.enabled));
     let mut accumulated = SearchRunResult::default();
     let mut cancelled = false;
 
@@ -115,7 +115,8 @@ async fn narrow_via_index(
         return None;
     }
     let note = |text: String| {
-        log("SEARCH", format!("index: {text}"));
+        // The on-screen note may name the index folder; the log gets counts only.
+        log("SEARCH", format!("index: {}", text.split(" [").next().unwrap_or("")));
         let _ = tx.send(AppEvent::IndexNarrowed(text));
     };
 
@@ -130,7 +131,7 @@ async fn narrow_via_index(
     let engine = match opened {
         Ok(Ok(engine)) => engine,
         Ok(Err(e)) => {
-            log("ERROR", format!("search: cannot open index at {:?}: {e:?}", index_dir));
+            log("ERROR", format!("search: cannot open index: {e:?}"));
             note(format!("Index unreadable - full scan ({e}); rebuild it from the command palette"));
             return None;
         }

@@ -52,7 +52,7 @@ Does not own: search/matching/extraction (`search-core`) or the index engine (`n
 - **`IndexBuildFinished` is always sent**, even if the build task panics (`build_or_rebuild_index` runs the build in its own task and maps a `JoinError`). A build is only "ready" after the finished index is reopened and a document looked up (`verify_built_index`).
 - Query-time opens must not take the Tantivy writer lock: `NativeSearchEngine` creates its writer lazily on first write.
 - Build is cancellable (`Command::CancelIndexBuild`); a cancel commits what was indexed and reports `cancelled`.
-- Windows-only index failures are not reproducible on the dev machine: read `toolbench-debug.log` (preflight probes the index folder with a real write, flags UNC/OneDrive/long paths, logs the OS error code of every failure) before theorizing.
+- Windows-only index failures are not reproducible on the dev machine: read `toolbench-debug.log` (preflight probes the index folder with a real write, flags UNC/OneDrive/long paths, logs OS error codes; never paths or file names) before theorizing.
 
 ## Boundaries
 ### Always
