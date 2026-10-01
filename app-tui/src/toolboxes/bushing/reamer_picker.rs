@@ -111,12 +111,21 @@ impl ReamerPickerState {
         }
         if !needle.is_empty() {
             if super::size_filter::is_numeric(&needle) {
-                all.retain(|(e, _)| super::size_filter::decimal_matches(&needle, e.nominal_in));
+                all = super::size_filter::select_numeric(all, &needle, |(e, _)| e.nominal_in);
             } else {
                 all.retain(|(e, _)| e.size_label.to_lowercase().contains(&needle));
             }
         }
         all
+    }
+
+    /// While a number is typed, put the cursor on the size closest to it.
+    fn cursor_to_nearest(&mut self) {
+        let needle = self.filter_text.trim().to_lowercase();
+        if super::size_filter::typed_value(&needle).is_some() {
+            let visible = self.visible();
+            self.cursor = super::size_filter::nearest_index(&visible, &needle, |(e, _)| e.nominal_in);
+        }
     }
 
     fn move_cursor(&mut self, delta: i32) {
@@ -183,6 +192,7 @@ pub fn handle_key(picker: &mut ReamerPickerState, model: &mut BushingModel, key:
             KeyCode::Backspace => {
                 picker.filter_text.pop();
                 picker.cursor = 0;
+                picker.cursor_to_nearest();
                 (true, Vec::new())
             }
             KeyCode::Delete => {
@@ -204,6 +214,7 @@ pub fn handle_key(picker: &mut ReamerPickerState, model: &mut BushingModel, key:
         picker.filtering = true;
         picker.filter_text.push(c);
         picker.cursor = 0;
+        picker.cursor_to_nearest();
         return (true, Vec::new());
     }
 
@@ -357,7 +368,7 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &ReamerPicke
                         entry.tool_tolerance_plus_in,
                         entry.tool_tolerance_minus_in,
                         tier_tag(entry.availability_tier),
-                        labels_tag(labels),
+                        format!("{}{}", labels_tag(labels), if super::size_filter::is_neighbour(&picker.filter_text.trim().to_lowercase(), entry.nominal_in) { " ~near" } else { "" }),
                         delta
                     ),
                     style,
@@ -647,6 +658,20 @@ mod tests {
         assert!(picker.filtering && picker.filter_text == "0.37");
         let vis = picker.visible();
         assert!(!vis.is_empty() && vis.len() < all);
-        assert!(vis.iter().all(|(e, _)| format!("{:.4}", e.nominal_in).contains("0.37")));
+        let others: Vec<f64> = vis.iter().map(|(e, _)| e.nominal_in).filter(|v| !format!("{v:.4}").contains("0.37")).collect();
+        assert!(others.len() <= 6, "only the 3+3 neighbours besides the matches: {others:?}");
+        assert!(vis.iter().any(|(e, _)| format!("{:.4}", e.nominal_in).contains("0.37")));
+    }
+
+    #[test]
+    fn reamer_numbers_with_no_exact_hit_show_three_below_and_three_above() {
+        let mut model = BushingModel::default();
+        let mut picker = ReamerPickerState::open_near(&model);
+        for c in "0.2628".chars() {
+            handle_key(&mut picker, &mut model, key(KeyCode::Char(c)));
+        }
+        let sizes: Vec<f64> = picker.visible().iter().map(|(e, _)| e.nominal_in).collect();
+        assert!(sizes.iter().filter(|v| **v < 0.2628).count() <= 3 && sizes.iter().filter(|v| **v >= 0.2628).count() <= 3);
+        assert!(sizes.iter().any(|v| *v < 0.2628) && sizes.iter().any(|v| *v >= 0.2628), "{sizes:?}");
     }
 }

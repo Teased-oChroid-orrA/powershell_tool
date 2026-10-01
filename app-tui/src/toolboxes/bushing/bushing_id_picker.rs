@@ -100,9 +100,21 @@ impl BushingIdPickerState {
         let user = self.library.iter().map(IdRow::User);
         let drills = drills::all_drills().into_iter().map(IdRow::Drill);
         let numeric = super::size_filter::is_numeric(&needle);
-        user.chain(drills)
-            .filter(|r| needle.is_empty() || if numeric { super::size_filter::decimal_matches(&needle, r.id_in()) } else { r.search_text().contains(&needle) })
-            .collect()
+        let all = user.chain(drills);
+        if numeric {
+            super::size_filter::select_numeric(all.collect(), &needle, |r| r.id_in())
+        } else {
+            all.filter(|r| needle.is_empty() || r.search_text().contains(&needle)).collect()
+        }
+    }
+
+    /// While a number is typed, put the cursor on the size closest to it.
+    fn cursor_to_nearest(&mut self) {
+        let needle = self.filter_text.trim().to_lowercase();
+        if super::size_filter::typed_value(&needle).is_some() {
+            let visible = self.visible();
+            self.cursor = super::size_filter::nearest_index(&visible, &needle, |r| r.id_in());
+        }
     }
 
     fn move_cursor(&mut self, delta: i32) {
@@ -166,6 +178,7 @@ pub fn handle_key(picker: &mut BushingIdPickerState, model: &mut BushingModel, k
             KeyCode::Backspace => {
                 picker.filter_text.pop();
                 picker.cursor = 0;
+                picker.cursor_to_nearest();
                 (true, Vec::new())
             }
             KeyCode::Delete => {
@@ -176,6 +189,7 @@ pub fn handle_key(picker: &mut BushingIdPickerState, model: &mut BushingModel, k
             KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
                 picker.filter_text.push(c);
                 picker.cursor = 0;
+                picker.cursor_to_nearest();
                 (true, Vec::new())
             }
             _ => (false, Vec::new()),
@@ -187,6 +201,7 @@ pub fn handle_key(picker: &mut BushingIdPickerState, model: &mut BushingModel, k
         picker.filtering = true;
         picker.filter_text.push(c);
         picker.cursor = 0;
+        picker.cursor_to_nearest();
         return (true, Vec::new());
     }
 
@@ -312,14 +327,14 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &BushingIdPi
                 let text = match row {
                     IdRow::User(li) => {
                         let labels_tag = if li.labels.is_empty() { String::new() } else { format!(" {{{}}}", li.labels.join(", ")) };
-                        format!("{marker}{:<10} {:.4} in{}  \u{394} {:+.4}", li.item.label, li.item.id_in, labels_tag, delta)
+                        format!("{marker}{:<10} {:.4} in{}{}  \u{394} {:+.4}", li.item.label, li.item.id_in, labels_tag, if super::size_filter::is_neighbour(&picker.filter_text.trim().to_lowercase(), li.item.id_in) { " ~near" } else { "" }, delta)
                     }
                     IdRow::Drill(d) => format!(
                         "{marker}{:<10} {:.4} in  {:<10}{}  \u{394} {:+.4}",
                         d.label,
                         d.nominal_in,
                         d.kind.name(),
-                        if d.common { " [common]" } else { "" },
+                        format!("{}{}", if d.common { " [common]" } else { "" }, if super::size_filter::is_neighbour(&picker.filter_text.trim().to_lowercase(), d.nominal_in) { " ~near" } else { "" }),
                         delta
                     ),
                 };
@@ -490,7 +505,9 @@ mod tests {
         assert!(p.filtering && p.filter_text == "0.26");
         let vis = p.visible();
         assert!(!vis.is_empty());
-        assert!(vis.iter().all(|r| format!("{:.4}", r.id_in()).contains("0.26")), "only sizes containing 0.26");
+        let near_only: Vec<f64> = vis.iter().map(|r| r.id_in()).filter(|v| !format!("{v:.4}").contains("0.26")).collect();
+        assert!(near_only.len() <= 6, "everything else is one of at most 3+3 neighbours: {near_only:?}");
+        assert!(near_only.iter().all(|v| (v - 0.26).abs() < 0.02), "neighbours are the closest sizes: {near_only:?}");
         for want in ["G", "17/64 in", "H"] {
             assert!(vis.iter().any(|r| matches!(r, IdRow::Drill(d) if d.label == want)), "{want} (0.261/0.2656/0.266) must be listed");
         }
@@ -511,5 +528,28 @@ mod tests {
         let buffer = terminal.backend().buffer().clone();
         let text: String = (0..buffer.area.height).map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>() + "\n").collect();
         assert!(!text.contains(" mm"), "{text}");
+    }
+
+    #[test]
+    fn a_number_with_no_exact_hit_still_shows_three_below_and_three_above_with_the_cursor_on_the_closest() {
+        let mut model = BushingModel::default();
+        let mut p = BushingIdPickerState { open: true, ..Default::default() };
+        for c in "0.2628".chars() {
+            handle_key(&mut p, &mut model, key(KeyCode::Char(c)));
+        }
+        let vis = p.visible();
+        let sizes: Vec<f64> = vis.iter().map(|r| r.id_in()).collect();
+        assert_eq!(sizes.iter().filter(|v| **v < 0.2628).count(), 3, "{sizes:?}");
+        assert_eq!(sizes.iter().filter(|v| **v >= 0.2628).count(), 3, "{sizes:?}");
+        let closest = sizes.iter().cloned().min_by(|a, b| (a - 0.2628).abs().partial_cmp(&(b - 0.2628).abs()).unwrap()).unwrap();
+        assert_eq!(vis[p.cursor].id_in(), closest);
+
+        let backend = TestBackend::new(110, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut regions = crate::mouse::MouseRegions::default();
+        terminal.draw(|f| render(f, f.area(), &Theme::default_palette(), &p, &model, &mut regions)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let text: String = (0..buffer.area.height).map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>() + "\n").collect();
+        assert!(text.contains("~near"), "{text}");
     }
 }
