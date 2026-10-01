@@ -63,6 +63,7 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 | Task | Start Here |
 |------|------------|
 | Onboarding to this repo's history/architecture | `docs/architecture.md`, then `docs/adr/README.md` |
+| Full CodeGraph-first engineering runbook (summarized in root `CLAUDE.md`) | `docs/codegraph-workflow.md` |
 | Checking if a proposed change conflicts with a past decision | `docs/adr/README.md` (status column) before writing code |
 | Finding what's still outstanding on app-egui | `docs/app-egui-parity-checklist.md` (not the issue-11 phase docs) |
 | Understanding why root `CLAUDE.md`'s epic-#11 section is short | This file's Contracts section, then `docs/issue-11-status.md` |

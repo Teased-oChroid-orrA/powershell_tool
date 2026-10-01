@@ -38,7 +38,7 @@ for the physics/material data. The dependency only goes one direction.
 - **Core insight**: ported line-for-line against real captured TS golden output
   (`tests/differential*.rs`, from actually executing `computeBushing` via `npx tsx`), not
   re-derived from formulas - catches silent porting bugs a "looks right" review would miss.
-- **Constraints**: zero GUI dependency (pure library `app`/`app-egui` consume); imperial units
+- **Constraints**: zero GUI dependency (pure library; `app-tui` is the only consumer - `app`/`app-egui` were deleted); imperial units
   only for v1 (in, psi/ksi, lbf, °F) - no metric input path exists.
 
 ## Public API
@@ -136,8 +136,9 @@ closed-form derivation.
 - Hand-roll a second Lamé stress/compliance formula - always go through `mechanics_core::lame`.
 
 ### Ask First
-- Changing what an existing `BushingInputs` field defaults to, or its type - both UI consumers
-  read many fields by name and existing tests assume current defaults.
+- Changing `BushingInputs.mat_housing`/`mat_bushing` back to string ids: they are resolved `mechanics_core::materials::Material` values (same pattern as `pressure-vessel-solver`), which is what makes custom/library materials work in `app-tui`. Callers resolve the material first; this crate does no id lookup.
+- Changing what an existing `BushingInputs` field defaults to, or its type - its UI consumer (`app-tui`)
+  reads many fields by name and existing tests assume current defaults.
 
 ## Pitfalls
 - **Root `docs/bushing-workbench-status.md` still describes `materials.rs`/`lame.rs` as living
