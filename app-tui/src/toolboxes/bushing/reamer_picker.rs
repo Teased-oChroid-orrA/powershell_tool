@@ -110,7 +110,11 @@ impl ReamerPickerState {
             }
         }
         if !needle.is_empty() {
-            all.retain(|(e, _)| e.size_label.to_lowercase().contains(&needle));
+            if super::size_filter::is_numeric(&needle) {
+                all.retain(|(e, _)| super::size_filter::decimal_matches(&needle, e.nominal_in));
+            } else {
+                all.retain(|(e, _)| e.size_label.to_lowercase().contains(&needle));
+            }
         }
         all
     }
@@ -193,6 +197,14 @@ pub fn handle_key(picker: &mut ReamerPickerState, model: &mut BushingModel, key:
             }
             _ => (false, Vec::new()),
         };
+    }
+
+    // Typing a number starts filtering immediately (see `size_filter`).
+    if let Some(c) = super::size_filter::numeric_start_char(&key) {
+        picker.filtering = true;
+        picker.filter_text.push(c);
+        picker.cursor = 0;
+        return (true, Vec::new());
     }
 
     match key.code {
@@ -622,5 +634,19 @@ mod tests {
             let rendered: String = (0..buffer.area.height).map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>() + "\n").collect();
             assert!(rendered.contains("reamer-library-final.json_"), "tail + cursor must be visible at width {width}:\n{rendered}");
         }
+    }
+
+    #[test]
+    fn typing_a_number_filters_reamers_live_by_decimal_size() {
+        let mut model = BushingModel::default();
+        let mut picker = ReamerPickerState::open_near(&model);
+        let all = picker.visible().len();
+        for c in "0.37".chars() {
+            handle_key(&mut picker, &mut model, key(KeyCode::Char(c)));
+        }
+        assert!(picker.filtering && picker.filter_text == "0.37");
+        let vis = picker.visible();
+        assert!(!vis.is_empty() && vis.len() < all);
+        assert!(vis.iter().all(|(e, _)| format!("{:.4}", e.nominal_in).contains("0.37")));
     }
 }

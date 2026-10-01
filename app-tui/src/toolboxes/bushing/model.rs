@@ -726,7 +726,7 @@ impl BushingModel {
     /// Every real tool size a fix may snap to: the aircraft reamer catalog,
     /// the standard drill bit catalog and the user's own library, ascending,
     /// one entry per distinct nominal. On a tie a reamer wins, then a drill
-    /// (common, then fractional/metric before letter/number), then a saved
+    /// (common, then fractional, letter, number), then a saved
     /// entry. Drills are for finished IDs only - a recommendation for the
     /// housing bore never uses one (a bore is reamed, not drilled).
     pub fn catalog_sizes(&self) -> Vec<CatalogSize> {
@@ -738,9 +738,8 @@ impl BushingModel {
         let mut drills = all_drills();
         let rank = |k: DrillKind| match k {
             DrillKind::Fraction => 0,
-            DrillKind::Metric => 1,
-            DrillKind::Letter => 2,
-            DrillKind::Number => 3,
+            DrillKind::Letter => 1,
+            DrillKind::Number => 2,
         };
         drills.sort_by_key(|d| (!d.common, rank(d.kind)));
         for d in drills {

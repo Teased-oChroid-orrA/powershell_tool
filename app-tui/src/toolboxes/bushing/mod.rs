@@ -30,6 +30,7 @@ pub mod model;
 pub mod persistence;
 pub mod reamer_persistence;
 pub mod reamer_picker;
+pub mod size_filter;
 pub mod view;
 
 use crossterm::event::{KeyCode, KeyEvent};

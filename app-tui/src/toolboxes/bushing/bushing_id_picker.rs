@@ -54,8 +54,8 @@ impl IdRow<'_> {
 
     fn search_text(&self) -> String {
         match self {
-            IdRow::User(li) => format!("{} {:.4} saved {}", li.item.label, li.item.id_in, li.labels.join(" ")).to_lowercase(),
-            IdRow::Drill(d) => format!("{} {:.4} {} drill {}", d.label, d.nominal_in, d.kind.name(), if d.common { "common" } else { "" }).to_lowercase(),
+            IdRow::User(li) => format!("{} saved {}", li.item.label, li.labels.join(" ")).to_lowercase(),
+            IdRow::Drill(d) => format!("{} {} drill {}", d.label, d.kind.name(), if d.common { "common" } else { "" }).to_lowercase(),
         }
     }
 }
@@ -99,7 +99,10 @@ impl BushingIdPickerState {
         let needle = self.filter_text.trim().to_lowercase();
         let user = self.library.iter().map(IdRow::User);
         let drills = drills::all_drills().into_iter().map(IdRow::Drill);
-        user.chain(drills).filter(|r| needle.is_empty() || r.search_text().contains(&needle)).collect()
+        let numeric = super::size_filter::is_numeric(&needle);
+        user.chain(drills)
+            .filter(|r| needle.is_empty() || if numeric { super::size_filter::decimal_matches(&needle, r.id_in()) } else { r.search_text().contains(&needle) })
+            .collect()
     }
 
     fn move_cursor(&mut self, delta: i32) {
@@ -177,6 +180,14 @@ pub fn handle_key(picker: &mut BushingIdPickerState, model: &mut BushingModel, k
             }
             _ => (false, Vec::new()),
         };
+    }
+
+    // Typing a number starts filtering immediately (see `size_filter`).
+    if let Some(c) = super::size_filter::numeric_start_char(&key) {
+        picker.filtering = true;
+        picker.filter_text.push(c);
+        picker.cursor = 0;
+        return (true, Vec::new());
     }
 
     match key.code {
@@ -304,10 +315,9 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &BushingIdPi
                         format!("{marker}{:<10} {:.4} in{}  \u{394} {:+.4}", li.item.label, li.item.id_in, labels_tag, delta)
                     }
                     IdRow::Drill(d) => format!(
-                        "{marker}{:<10} {:.4} in  {:>7.3} mm  {:<10}{}  \u{394} {:+.4}",
+                        "{marker}{:<10} {:.4} in  {:<10}{}  \u{394} {:+.4}",
                         d.label,
                         d.nominal_in,
-                        d.nominal_mm,
                         d.kind.name(),
                         if d.common { " [common]" } else { "" },
                         delta
@@ -375,7 +385,7 @@ mod tests {
         let mut regions = crate::mouse::MouseRegions::default();
         let mut p = BushingIdPickerState { open: true, ..Default::default() };
         p.filter_text = "common".to_string();
-        assert_eq!(p.visible().len(), 28, "exactly the common sizes");
+        assert_eq!(p.visible().len(), 17, "exactly the common sizes");
         terminal.draw(|f| render(f, f.area(), &Theme::default_palette(), &p, &BushingModel::default(), &mut regions)).unwrap();
         let buffer = terminal.backend().buffer().clone();
         let text: String = (0..buffer.area.height).map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>() + "\n").collect();
@@ -387,8 +397,6 @@ mod tests {
         let mut p = BushingIdPickerState { open: true, ..Default::default() };
         p.filter_text = "letter".to_string();
         assert_eq!(p.visible().len(), 26);
-        p.filter_text = "0.3320".to_string();
-        assert!(p.visible().iter().any(|r| matches!(r, IdRow::Drill(d) if d.label == "Q")));
         p.filter_text = "#60".to_string();
         assert_eq!(p.visible().len(), 1);
     }
@@ -470,5 +478,38 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut regions = crate::mouse::MouseRegions::default();
         terminal.draw(|f| render(f, Rect { x: 0, y: 0, width: 100, height: 30 }, &Theme::default_palette(), &picker, &model, &mut regions)).unwrap();
+    }
+
+    #[test]
+    fn typing_a_number_filters_live_to_sizes_containing_it_without_pressing_slash() {
+        let mut model = BushingModel::default();
+        let mut p = BushingIdPickerState { open: true, ..Default::default() };
+        for c in "0.26".chars() {
+            handle_key(&mut p, &mut model, key(KeyCode::Char(c)));
+        }
+        assert!(p.filtering && p.filter_text == "0.26");
+        let vis = p.visible();
+        assert!(!vis.is_empty());
+        assert!(vis.iter().all(|r| format!("{:.4}", r.id_in()).contains("0.26")), "only sizes containing 0.26");
+        for want in ["G", "17/64 in", "H"] {
+            assert!(vis.iter().any(|r| matches!(r, IdRow::Drill(d) if d.label == want)), "{want} (0.261/0.2656/0.266) must be listed");
+        }
+        // Backspace widens it again as you edit.
+        let narrowed = vis.len();
+        handle_key(&mut p, &mut model, key(KeyCode::Backspace));
+        assert!(p.visible().len() > narrowed);
+    }
+
+    #[test]
+    fn the_id_list_never_shows_millimetres() {
+        let mut p = BushingIdPickerState { open: true, ..Default::default() };
+        p.filter_text = "0.1".to_string();
+        let backend = TestBackend::new(110, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut regions = crate::mouse::MouseRegions::default();
+        terminal.draw(|f| render(f, f.area(), &Theme::default_palette(), &p, &BushingModel::default(), &mut regions)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let text: String = (0..buffer.area.height).map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>() + "\n").collect();
+        assert!(!text.contains(" mm"), "{text}");
     }
 }

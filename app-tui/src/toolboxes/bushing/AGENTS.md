@@ -36,7 +36,7 @@ Does not own: any Lamé/press-fit/tolerance math (`bushing-solver/AGENTS.md`).
 - Results show Δ interference from service temperature and from install thermal assist (solver `delta_thermal`, `assembly_thermal_delta`, `install_delta`).
 
 ## Drill bit catalog
-- `bushing_solver::drills` embeds the AFT Fasteners drill chart (`bushing-solver/data/drill_bit_catalog.csv`: fractional, #1-#107, A-Z, metric; two source typos corrected, see its module doc) with RapidDirect's "most common" sizes flagged. The Bushing ID picker lists the user's saved sizes first, then every drill (`[common]` tag like the reamer list's `[preferred]`; filter by label, decimal, `letter`/`metric`/`common`...). Fix recommendations may snap an ID to a drill; a **bore** never snaps to a drill (it is reamed) - `advice::bisect_fix` filters `source == "drill"` for `BoreDia`.
+- `bushing_solver::drills` embeds the AFT Fasteners drill chart (`bushing-solver/data/drill_bit_catalog.csv`: fractional, #1-#107, A-Z - inches only, metric rows removed; two source typos corrected, see its module doc) with RapidDirect's "most common" sizes flagged. The Bushing ID picker lists the user's saved sizes first, then every drill (`[common]` tag like the reamer list's `[preferred]`; filter by label or kind (`letter`/`common`...); **typing digits/`.` filters live by decimal inches** in both the Bushing ID and reamer pickers (`size_filter.rs`: `0.26` lists 0.2600, 0.2624, 0.2652...)). Fix recommendations may snap an ID to a drill; a **bore** never snaps to a drill (it is reamed) - `advice::bisect_fix` filters `source == "drill"` for `BoreDia`.
 
 ## Pitfalls
 - Reamer catalog, material library, and Bushing ID library are `src/library.rs` consumers; conflict/duplicate handling lives there, not here.
