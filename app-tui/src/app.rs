@@ -604,6 +604,23 @@ fn handle_click(state: &mut AppState, regions: &MouseRegions, col: u16, row: u16
         return Vec::new();
     }
 
+    // Bushing Fixes window: modal for the mouse - only its own tabs, rows and
+    // buttons react; a click anywhere else is swallowed.
+    if state.nav.active_tool == ToolId::Bushing && state.bushing.advice.open {
+        if let Some(action) = mouse::hit(&regions.bushing_actions, col, row) {
+            if let bushing::BushingAction::AdviceRow(i) = action {
+                let double = is_double_click(&mut state.last_click, ClickTarget::BushingAdviceRow(i));
+                state.bushing.perform(action);
+                if double {
+                    return state.bushing.perform(bushing::BushingAction::AdviceApply);
+                }
+                return Vec::new();
+            }
+            return state.bushing.perform(action);
+        }
+        return Vec::new();
+    }
+
     if state.pressure_vessel.material_picker.open {
         if let Some(i) = mouse::hit(&regions.material_rows, col, row) {
             state.pressure_vessel.material_picker.cursor = i;
@@ -803,6 +820,11 @@ fn handle_pressure_vessel_click(state: &mut AppState, regions: &MouseRegions, co
 }
 
 fn handle_bushing_click(state: &mut AppState, regions: &MouseRegions, col: u16, row: u16) -> Vec<Effect> {
+    // Results pane: action-bar buttons and flagged check lines.
+    if let Some(action) = mouse::hit(&regions.bushing_actions, col, row) {
+        state.focus.area = FocusArea::Workspace(bushing::PANE_MAIN);
+        return state.bushing.perform(action);
+    }
     if let Some(i) = mouse::hit(&regions.bushing_rows, col, row) {
         state.focus.area = FocusArea::Workspace(bushing::PANE_MAIN);
         state.bushing.selected = i;
@@ -861,6 +883,13 @@ fn handle_scroll(state: &mut AppState, regions: &MouseRegions, col: u16, row: u1
         return;
     }
 
+    if state.nav.active_tool == ToolId::Bushing && state.bushing.advice.open {
+        if regions.advice_window.map(|r| mouse::contains(r, col, row)).unwrap_or(false) {
+            bushing::handle_key(&mut state.bushing, key);
+        }
+        return;
+    }
+
     if state.pressure_vessel.material_picker.open {
         if mouse::hit(&regions.material_rows, col, row).is_some() {
             pressure_vessel::material_picker::handle_key(&mut state.pressure_vessel.material_picker, &mut state.pressure_vessel.model, key);
@@ -912,6 +941,10 @@ fn handle_scroll(state: &mut AppState, regions: &MouseRegions, col: u16, row: u1
         ToolId::Bushing => {
             if mouse::hit(&regions.bushing_rows, col, row).is_some() {
                 bushing::handle_key(&mut state.bushing, key);
+            } else if regions.bushing_results.map(|r| mouse::contains(r, col, row)).unwrap_or(false) {
+                // Wheel over the Results readout scrolls it (3 rows a notch).
+                let step = 3u16;
+                state.bushing.results_scroll = if delta < 0 { state.bushing.results_scroll.saturating_sub(step) } else { state.bushing.results_scroll.saturating_add(step) };
             }
         }
         ToolId::PreloadAnalysis => {

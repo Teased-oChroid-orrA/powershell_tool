@@ -22,6 +22,7 @@ pub enum ClickTarget {
     FastenerRow(usize),
     PressureVesselRow(usize),
     BushingRow(usize),
+    BushingAdviceRow(usize),
     ReamerRow(usize),
     PreloadAnalysisRow(usize),
     BoltRow(usize),
@@ -52,6 +53,14 @@ pub struct MouseRegions {
     pub fastener_rows: Vec<(Rect, usize)>,
     pub pressure_vessel_rows: Vec<(Rect, usize)>,
     pub bushing_rows: Vec<(Rect, usize)>,
+    /// Everything clickable in the Bushing Results pane (action bar buttons,
+    /// failing-check lines) - or, while the Fixes window is open, only that
+    /// window's tabs/rows/buttons.
+    pub bushing_actions: Vec<(Rect, crate::toolboxes::bushing::BushingAction)>,
+    /// The Bushing Results pane body, for mouse-wheel scrolling.
+    pub bushing_results: Option<Rect>,
+    /// The Fixes window's outer rect while it is open.
+    pub advice_window: Option<Rect>,
     pub reamer_rows: Vec<(Rect, usize)>,
     pub preload_analysis_rows: Vec<(Rect, usize)>,
     pub bolt_rows: Vec<(Rect, usize)>,

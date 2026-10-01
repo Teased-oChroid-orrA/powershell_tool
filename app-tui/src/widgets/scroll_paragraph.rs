@@ -48,8 +48,28 @@ pub fn wrapped_height(lines: &[Line], width: u16) -> u16 {
 /// reserved (but left blank) once scrolled all the way to the bottom, so
 /// the layout doesn't jump between scroll positions.
 pub fn render<'a>(frame: &mut Frame, area: Rect, theme: &Theme, lines: Vec<Line<'a>>, scroll: u16) {
+    render_interactive::<()>(frame, area, theme, lines, scroll, &[]);
+}
+
+/// [`render`], additionally returning a click region for each tagged line:
+/// `tags` is `(line index, tag)`; the result has one `(Rect, tag)` per tagged
+/// line that is (at least partly) visible, covering the rows the line really
+/// occupies after word-wrap and scrolling.
+pub fn render_interactive<'a, T: Copy>(frame: &mut Frame, area: Rect, theme: &Theme, lines: Vec<Line<'a>>, scroll: u16, tags: &[(usize, T)]) -> Vec<(Rect, T)> {
     if area.width == 0 || area.height == 0 {
-        return;
+        return Vec::new();
+    }
+    // Start row + height of every tagged line, measured before `lines` is consumed.
+    let mut tagged: Vec<(u16, u16, T)> = Vec::new();
+    if !tags.is_empty() {
+        let mut row = 0u16;
+        for (i, l) in lines.iter().enumerate() {
+            let h = wrapped_line_count(&line_plain_text(l), area.width).max(1);
+            if let Some((_, tag)) = tags.iter().find(|(idx, _)| *idx == i) {
+                tagged.push((row, h, *tag));
+            }
+            row = row.saturating_add(h);
+        }
     }
     let total_height = wrapped_height(&lines, area.width);
 
@@ -72,6 +92,16 @@ pub fn render<'a>(frame: &mut Frame, area: Rect, theme: &Theme, lines: Vec<Line<
             frame.render_widget(Paragraph::new(Line::styled(text, theme.disabled_style())), indicator_area);
         }
     }
+
+    tagged
+        .into_iter()
+        .filter_map(|(start, height, tag)| {
+            let top = i32::from(start) - i32::from(applied);
+            let bottom = top + i32::from(height);
+            let (top, bottom) = (top.max(0), bottom.min(i32::from(body_area.height)));
+            (bottom > top).then(|| (Rect { x: body_area.x, y: body_area.y + top as u16, width: body_area.width, height: (bottom - top) as u16 }, tag))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -121,5 +151,23 @@ mod tests {
         let buffer = terminal.backend().buffer().clone();
         let rendered: String = (0..buffer.area.height).map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>() + "\n").collect();
         assert!(rendered.contains("line 29"), "an out-of-range scroll must clamp to the last valid position, not render blank:\n{rendered}");
+    }
+
+    #[test]
+    fn tagged_lines_get_regions_that_follow_wrapping_and_scroll() {
+        let backend = TestBackend::new(20, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::default_palette();
+        let mut ls = lines(3); // rows 0,1,2
+        ls.push(Line::from("this line is long enough to wrap onto several rows")); // starts at row 3
+        let mut regions = Vec::new();
+        terminal.draw(|f| regions = render_interactive(f, Rect::new(0, 0, 20, 6), &theme, ls.clone(), 0, &[(1, 'a'), (3, 'b')])).unwrap();
+        assert_eq!(regions[0], (Rect::new(0, 1, 20, 1), 'a'));
+        assert_eq!(regions[1].1, 'b');
+        assert_eq!(regions[1].0.y, 3);
+        // Scrolled by 2: line 1 is above the viewport (gone), line 3 moves up.
+        terminal.draw(|f| regions = render_interactive(f, Rect::new(0, 0, 20, 4), &theme, ls.clone(), 2, &[(1, 'a'), (3, 'b')])).unwrap();
+        assert!(regions.iter().all(|(_, t)| *t != 'a'));
+        assert_eq!(regions.iter().find(|(_, t)| *t == 'b').unwrap().0.y, 1);
     }
 }

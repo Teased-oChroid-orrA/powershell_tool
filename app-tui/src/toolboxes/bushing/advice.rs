@@ -361,6 +361,19 @@ pub fn recommend(model: &BushingModel) -> Vec<Recommendation> {
         }
     }
 
+    // OD clamped (a warning, not a failure): make each side of the interference
+    // window cover the matching side of the bore band so the OD can be centred.
+    if severity_of(&checks, CheckKind::Tolerance) == Severity::Warn {
+        let edits = vec![
+            Edit { target: NumberTarget::InterferenceTolPlus, value: model.interference_tol_plus.max(model.bore_tol_minus) },
+            Edit { target: NumberTarget::InterferenceTolMinus, value: model.interference_tol_minus.max(model.bore_tol_plus) },
+        ];
+        let changes = edits.iter().any(|e| (model.number_value(e.target) - e.value).abs() > 1e-12);
+        if changes && model.trial(&edits).output.tolerance_status == ToleranceStatus::Ok {
+            push_edits(&mut recs, CheckKind::Tolerance, edits);
+        }
+    }
+
     if checks.iter().any(|c| c.kind == CheckKind::FitType) {
         let (interference, tol_plus, tol_minus) = model.fit_type_preset();
         let edits = vec![
@@ -384,6 +397,89 @@ fn verified(model: &BushingModel, base_fails: &[CheckKind], kind: CheckKind, edi
     }
     let fails = failing_kinds(&model.trial(edits));
     !fails.contains(&kind) && fails.iter().all(|k| base_fails.contains(k))
+}
+
+/// Plain-language explanation of why the OD tolerance came out Clamped (or
+/// Infeasible), built from the actual numbers in the current model - the
+/// same quantities `bushing_solver::tolerance::build_od_tolerance` compares.
+/// `None` when the tolerance status is Ok. The result alternates heading,
+/// body, heading, body... (the Fixes window relies on that pairing).
+///
+/// The rule it explains: the OD must keep the *achieved* interference inside
+/// the interference window at every bore-tolerance extreme, so the OD
+/// nominal may only lie in `[bore max + interference min, bore min +
+/// interference max]`. Wanting `bore nominal + target interference` outside
+/// that range (an asymmetric bore band vs. interference band) forces the OD
+/// nominal to be pulled to the nearest edge: Clamped. A bore band wider than
+/// the whole interference band leaves no range at all: Infeasible.
+pub fn explain_tolerance(model: &BushingModel) -> Option<Vec<String>> {
+    let out = &model.output;
+    if out.tolerance_status == ToleranceStatus::Ok {
+        return None;
+    }
+    let (bore, int, od) = (&out.bore_tol, &out.interference_tol, &out.od_tol);
+    let f = |v: f64| format!("{v:.4}");
+    let desired = bore.nominal + int.nominal;
+    let req_lo = bore.upper + int.lower;
+    let req_hi = bore.lower + int.upper;
+    let bore_plus = bore.upper - bore.nominal;
+    let bore_minus = bore.nominal - bore.lower;
+    let int_plus = int.upper - int.nominal;
+    let int_minus = int.nominal - int.lower;
+    let bore_width = bore.upper - bore.lower;
+    let int_width = int.upper - int.lower;
+    let mut p = Vec::new();
+
+    p.push("How the OD is chosen".to_string());
+    p.push(format!(
+        "The bushing OD is not simply Bore + Target Interference. It has to keep the achieved interference inside your interference window ({} to {} in) for EVERY bore size the bore tolerance allows ({} to {} in). That limits the OD to a range: from (largest bore + smallest interference) = {} in up to (smallest bore + largest interference) = {} in.",
+        f(int.lower), f(int.upper), f(bore.lower), f(bore.upper), f(req_lo), f(req_hi)
+    ));
+
+    if out.tolerance_status == ToleranceStatus::Infeasible {
+        p.push("Why it is INFEASIBLE".to_string());
+        p.push(format!(
+            "The bore band is {} in wide but the interference band is only {} in wide. Whatever OD is chosen, the bore's own variation uses up more than the whole allowed interference spread, so no OD can keep every part inside the window (the lower end of the OD range, {} in, is above the upper end, {} in).",
+            f(bore_width), f(int_width), f(req_lo), f(req_hi)
+        ));
+        p.push("Inputs that cause it".to_string());
+        p.push(format!(
+            "Bore Tol + ({}) + Bore Tol - ({}) is larger than Interference Tol + ({}) + Interference Tol - ({}). Widen the interference tolerances or tighten the bore tolerances until the bore band is no wider than the interference band.",
+            f(bore_plus), f(bore_minus), f(int_plus), f(int_minus)
+        ));
+    } else {
+        let shift = od.nominal - desired;
+        p.push("Why it is CLAMPED".to_string());
+        p.push(format!(
+            "The OD you would get from the nominals is Bore nominal {} + Target Interference {} = {} in. That value falls outside the allowed OD range ({} to {} in), so the OD nominal was moved to {} in ({:+.4} in).",
+            f(bore.nominal), f(int.nominal), f(desired), f(req_lo), f(req_hi), f(od.nominal), shift
+        ));
+        p.push("Inputs that cause it".to_string());
+        if desired < req_lo {
+            p.push(format!(
+                "The bore tolerance is lopsided toward the large side: Bore Tol + is {} in but Interference Tol - is only {} in. At the largest bore the OD would have to be {} in bigger than the nominal fit gives just to keep the minimum interference. Total widths still fit ({} in bore vs {} in interference), so a valid OD exists - it just cannot be centred.",
+                f(bore_plus), f(int_minus), f(bore_plus - int_minus), f(bore_width), f(int_width)
+            ));
+        } else {
+            p.push(format!(
+                "The bore tolerance is lopsided toward the small side: Bore Tol - is {} in but Interference Tol + is only {} in. At the smallest bore the OD would have to be {} in smaller than the nominal fit gives to stay under the maximum interference. Total widths still fit ({} in bore vs {} in interference), so a valid OD exists - it just cannot be centred.",
+                f(bore_minus), f(int_plus), f(bore_minus - int_plus), f(bore_width), f(int_width)
+            ));
+        }
+        p.push("What it means for the result".to_string());
+        p.push(format!(
+            "The nominal interference actually achieved is {} in instead of the {} in you entered; across the tolerance band it ranges {} to {} in. Every part still stays inside your window - only the centre moved. This is a warning, not a failure.",
+            f(od.nominal - bore.nominal), f(int.nominal), f(out.achieved_interference_tol.lower), f(out.achieved_interference_tol.upper)
+        ));
+    }
+    p.push("How to clear it".to_string());
+    p.push("Make the bore tolerance sit inside the interference window on each side separately (Bore Tol + <= Interference Tol -, Bore Tol - <= Interference Tol +), or move the Target Interference so the window re-centres on the bore band. The Fixes list offers verified edits where one exists.".to_string());
+    if model.enforcement_enabled {
+        if let Some(last) = p.last_mut() {
+            last.push_str(" Note: Strict Interference Enforcement is on - the solver may already have tightened the bore band to reach this state; the bore tolerance shown above is the tightened one.");
+        }
+    }
+    Some(p)
 }
 
 #[cfg(test)]
@@ -460,5 +556,43 @@ mod tests {
     fn candidate_names_map_to_checks() {
         assert_eq!(CheckKind::from_candidate_name("Straight wall thickness"), Some(CheckKind::StraightWall));
         assert_eq!(CheckKind::from_candidate_name("nonsense"), None);
+    }
+
+    #[test]
+    fn clamped_tolerance_is_explained_with_the_inputs_that_cause_it() {
+        let mut m = model();
+        // Bore band lopsided to the large side but total width still fits the interference band.
+        m.commit_number(NumberTarget::BoreTolPlus, 0.002);
+        m.commit_number(NumberTarget::InterferenceTolPlus, 0.001);
+        m.commit_number(NumberTarget::InterferenceTolMinus, 0.001);
+        assert_eq!(m.output.tolerance_status, ToleranceStatus::Clamped);
+        let text = explain_tolerance(&m).expect("explanation").join("\n");
+        assert!(text.contains("CLAMPED"));
+        assert!(text.contains("Bore Tol + is 0.0020 in but Interference Tol - is only 0.0010 in"), "{text}");
+        assert!(text.contains("0.0010 in bigger"));
+    }
+
+    #[test]
+    fn infeasible_tolerance_is_explained_by_the_band_widths() {
+        let mut m = model();
+        m.commit_number(NumberTarget::BoreTolPlus, 0.003);
+        let text = explain_tolerance(&m).expect("explanation").join("\n");
+        assert!(text.contains("INFEASIBLE") && text.contains("0.0030 in wide"), "{text}");
+    }
+
+    #[test]
+    fn no_explanation_when_the_tolerance_is_ok() {
+        assert!(explain_tolerance(&model()).is_none());
+    }
+
+    #[test]
+    fn a_clamped_od_gets_a_verified_fix_that_centres_it() {
+        let mut m = model();
+        m.commit_number(NumberTarget::BoreTolPlus, 0.002);
+        m.commit_number(NumberTarget::InterferenceTolPlus, 0.001);
+        m.commit_number(NumberTarget::InterferenceTolMinus, 0.001);
+        let idx = m.recommendations.iter().position(|r| r.fixes == CheckKind::Tolerance).expect("fix for clamped OD");
+        m.apply_recommendation(idx);
+        assert_eq!(m.output.tolerance_status, ToleranceStatus::Ok);
     }
 }

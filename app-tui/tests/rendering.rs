@@ -398,3 +398,103 @@ fn clicking_outside_every_published_region_never_panics() {
     let effects = app_tui::app::handle_mouse(&mut state, &regions, mouse_event);
     assert!(effects.is_empty());
 }
+
+// ---------------------------------------------------------------------
+// Bushing Results pane / Fixes window: mouse
+// ---------------------------------------------------------------------
+
+fn bushing_state_with_failing_wall() -> AppState {
+    let mut state = AppState::default();
+    state.nav.activate(app_tui::nav::ToolId::Bushing);
+    state.bushing.model.commit_number(app_tui::toolboxes::bushing::model::NumberTarget::MinWallStraight, 0.2);
+    state
+}
+
+fn click_action(state: &mut AppState, action: app_tui::toolboxes::bushing::BushingAction) {
+    let mut regions = app_tui::mouse::MouseRegions::default();
+    let _ = render_shell_with_regions(state, 170, 55, &mut regions);
+    let rect = regions.bushing_actions.iter().find(|(_, a)| *a == action).map(|(r, _)| *r).unwrap_or_else(|| panic!("{action:?} not clickable; regions: {:?}", regions.bushing_actions));
+    if let Event::Mouse(m) = click_at(rect) {
+        app_tui::app::handle_mouse(state, &regions, m);
+    }
+}
+
+#[test]
+fn clicking_the_fixes_button_opens_the_window_and_clicking_apply_changes_the_input() {
+    use app_tui::toolboxes::bushing::BushingAction;
+    let mut state = bushing_state_with_failing_wall();
+    let before = state.bushing.model.id_bushing;
+    click_action(&mut state, BushingAction::OpenFixes);
+    assert!(state.bushing.advice.open, "clicking Fixes must open the window");
+    let idx = state.bushing.model.recommendations.iter().position(|r| r.edits.iter().any(|e| e.target == app_tui::toolboxes::bushing::model::NumberTarget::IdBushing)).unwrap();
+    click_action(&mut state, BushingAction::AdviceRow(idx));
+    assert_eq!(state.bushing.rec_selected, idx);
+    click_action(&mut state, BushingAction::AdviceApply);
+    assert!(state.bushing.model.id_bushing < before, "Apply must edit the Bushing ID input");
+    click_action(&mut state, BushingAction::AdviceClose);
+    assert!(!state.bushing.advice.open);
+}
+
+#[test]
+fn clicking_a_failing_result_line_opens_the_fixes_for_that_check() {
+    use app_tui::toolboxes::bushing::BushingAction;
+    let mut state = bushing_state_with_failing_wall();
+    click_action(&mut state, BushingAction::OpenFixesFor(app_tui::toolboxes::bushing::advice::CheckKind::StraightWall));
+    assert!(state.bushing.advice.open);
+    assert_eq!(state.bushing.model.recommendations[state.bushing.rec_selected].fixes, app_tui::toolboxes::bushing::advice::CheckKind::StraightWall);
+}
+
+#[test]
+fn clicking_outside_the_window_while_it_is_open_does_not_reach_the_inputs_behind_it() {
+    use app_tui::toolboxes::bushing::BushingAction;
+    let mut state = bushing_state_with_failing_wall();
+    click_action(&mut state, BushingAction::OpenFixes);
+    let selected = state.bushing.selected;
+    let before = state.bushing.model.id_bushing;
+    let mut regions = app_tui::mouse::MouseRegions::default();
+    let _ = render_shell_with_regions(&state, 170, 55, &mut regions);
+    // Top-left corner of the screen is outside the centered window.
+    if let Event::Mouse(m) = click_at(ratatui::layout::Rect::new(0, 0, 1, 1)) {
+        app_tui::app::handle_mouse(&mut state, &regions, m);
+    }
+    assert!(state.bushing.advice.open && state.bushing.selected == selected && state.bushing.model.id_bushing == before);
+}
+
+#[test]
+fn clicking_the_numbers_and_export_buttons_work_like_their_keys() {
+    use app_tui::toolboxes::bushing::BushingAction;
+    let mut state = bushing_state_with_failing_wall();
+    click_action(&mut state, BushingAction::ToggleNumbers);
+    assert!(state.bushing.show_numbers);
+
+    let mut regions = app_tui::mouse::MouseRegions::default();
+    let _ = render_shell_with_regions(&state, 170, 55, &mut regions);
+    let rect = regions.bushing_actions.iter().find(|(_, a)| *a == BushingAction::Export).map(|(r, _)| *r).unwrap();
+    let effects = if let Event::Mouse(m) = click_at(rect) { app_tui::app::handle_mouse(&mut state, &regions, m) } else { vec![] };
+    assert!(effects.iter().any(|e| matches!(e, app_tui::app::Effect::ExportBushingReport(_))));
+}
+
+#[test]
+fn clicking_the_clamped_warning_opens_the_explanation() {
+    use app_tui::toolboxes::bushing::{AdviceTab, BushingAction};
+    use app_tui::toolboxes::bushing::model::NumberTarget;
+    let mut state = AppState::default();
+    state.nav.activate(app_tui::nav::ToolId::Bushing);
+    state.bushing.model.commit_number(NumberTarget::BoreTolPlus, 0.002);
+    state.bushing.model.commit_number(NumberTarget::InterferenceTolPlus, 0.001);
+    state.bushing.model.commit_number(NumberTarget::InterferenceTolMinus, 0.001);
+    click_action(&mut state, BushingAction::OpenExplain);
+    assert!(state.bushing.advice.open && state.bushing.advice.tab == AdviceTab::Explain);
+}
+
+#[test]
+fn mouse_wheel_over_the_results_readout_scrolls_it() {
+    let mut state = bushing_state_with_failing_wall();
+    state.bushing.show_numbers = true;
+    let mut regions = app_tui::mouse::MouseRegions::default();
+    let _ = render_shell_with_regions(&state, 170, 30, &mut regions);
+    let r = regions.bushing_results.expect("results body region");
+    let ev = crossterm::event::MouseEvent { kind: crossterm::event::MouseEventKind::ScrollDown, column: r.x + 1, row: r.y + 1, modifiers: crossterm::event::KeyModifiers::NONE };
+    app_tui::app::handle_mouse(&mut state, &regions, ev);
+    assert_eq!(state.bushing.results_scroll, 3);
+}

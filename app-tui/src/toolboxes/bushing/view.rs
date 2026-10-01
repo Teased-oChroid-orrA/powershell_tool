@@ -16,7 +16,7 @@ use bushing_solver::tolerance::ToleranceStatus;
 
 use super::advice::{self, CheckKind, Severity};
 use super::model::{self, BushingModel, FieldRow};
-use super::BushingState;
+use super::{AdviceTab, BushingAction, BushingState};
 
 const MIN_READOUT_WIDTH: u16 = 40;
 
@@ -43,7 +43,7 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingState, 
 
     regions.workspace_panes.push((area, super::PANE_MAIN));
     draw_fields(frame, fields_area, theme, state, focused, regions);
-    draw_readout(frame, readout_area, theme, state);
+    draw_readout(frame, readout_area, theme, state, regions);
 
     if state.material_picker.open {
         super::material_picker::render(frame, area, theme, &state.material_picker, &state.model, regions);
@@ -56,6 +56,9 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingState, 
     }
     if state.bushing_id_picker.open {
         super::bushing_id_picker::render(frame, area, theme, &state.bushing_id_picker, &state.model, regions);
+    }
+    if state.advice.open {
+        draw_advice_window(frame, area, theme, state, regions);
     }
 }
 
@@ -191,15 +194,206 @@ fn tone_color(tone: StatusTone) -> ratatui::style::Color {
     }
 }
 
-fn draw_readout(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingState) {
+fn draw_readout(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingState, regions: &mut crate::mouse::MouseRegions) {
     let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.border_style(false)).title(" Results ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    let lines = readout_lines(theme, &state.model, state.show_numbers, state.rec_selected, state.last_applied.as_deref());
-    crate::widgets::scroll_paragraph::render(frame, inner, theme, lines, state.results_scroll);
+    // Fixed action bar on top (never scrolls), scrolling readout below.
+    let (bar_area, body_area) = if inner.height > 2 {
+        let rows = Layout::default().direction(Direction::Vertical).constraints([Constraint::Length(1), Constraint::Min(1)]).split(inner);
+        (Some(rows[0]), rows[1])
+    } else {
+        (None, inner)
+    };
+    // While the Fixes window is open it owns the mouse: publish only its regions.
+    let interactive = !state.advice.open;
+    if let Some(bar) = bar_area {
+        draw_action_bar(frame, bar, theme, state, interactive.then_some(&mut *regions));
+    }
+    let (lines, tags) = readout_lines(theme, &state.model, state.show_numbers, state.last_applied.as_deref());
+    let clicks = crate::widgets::scroll_paragraph::render_interactive(frame, body_area, theme, lines, state.results_scroll, &tags);
+    if interactive {
+        regions.bushing_actions.extend(clicks);
+        regions.bushing_results = Some(body_area);
+    }
+}
+
+/// `[ Fixes (3) ] [ Why OD clamped? ] [ Numbers: off ] [ Export ]` - each a
+/// mouse button (and each has a key: `f`/`a`, `w`, `d`, `e`).
+fn draw_action_bar(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingState, mut regions: Option<&mut crate::mouse::MouseRegions>) {
+    let model = &state.model;
+    let any_fail = model.checks.iter().any(|c| c.severity == Severity::Fail);
+    let n = model.recommendations.len();
+    let explain = advice::explain_tolerance(model).is_some();
+    let mut buttons: Vec<(String, BushingAction, Style)> = Vec::new();
+    let active = |tone: StatusTone| theme.status_style(tone).add_modifier(Modifier::REVERSED | Modifier::BOLD);
+    buttons.push((
+        format!(" Fixes ({n}) "),
+        BushingAction::OpenFixes,
+        if n > 0 { active(if any_fail { StatusTone::Danger } else { StatusTone::Warning }) } else { theme.disabled_style() },
+    ));
+    if explain {
+        let label = if model.output.tolerance_status == ToleranceStatus::Infeasible { " Why infeasible? " } else { " Why OD clamped? " };
+        buttons.push((label.to_string(), BushingAction::OpenExplain, active(StatusTone::Warning)));
+    }
+    buttons.push((format!(" Numbers: {} ", if state.show_numbers { "on" } else { "off" }), BushingAction::ToggleNumbers, Style::default().add_modifier(Modifier::REVERSED)));
+    buttons.push((" Export ".to_string(), BushingAction::Export, Style::default().add_modifier(Modifier::REVERSED)));
+
+    let mut spans = Vec::new();
+    let mut x = area.x;
+    let right = area.x + area.width;
+    for (label, action, style) in buttons {
+        let w = label.chars().count() as u16;
+        if x + w > right {
+            break;
+        }
+        if let Some(r) = regions.as_deref_mut() {
+            r.bushing_actions.push((Rect { x, y: area.y, width: w, height: 1 }, action));
+        }
+        spans.push(Span::styled(label, style));
+        spans.push(Span::raw(" "));
+        x += w + 1;
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Centered pop-up: tab 1 lists the verified fixes (click a row to select,
+/// double-click or `Apply` to apply it), tab 2 explains *why* the OD
+/// tolerance was clamped/infeasible with the user's own numbers. Every
+/// element is a mouse region; `Esc`/`Close` dismisses it.
+fn draw_advice_window(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingState, regions: &mut crate::mouse::MouseRegions) {
+    use ratatui::widgets::Clear;
+
+    if area.width < 30 || area.height < 9 {
+        return;
+    }
+    let width = area.width.saturating_sub(4).min(100);
+    // Fit the window to its content on the Fixes tab (tab row + list + detail + buttons + border);
+    // the Explain tab is long-form text and takes the full height.
+    let wanted = if state.advice.tab == AdviceTab::Fixes {
+        (state.model.recommendations.len().clamp(1, 12) as u16) + 11
+    } else {
+        28
+    };
+    let height = area.height.saturating_sub(2).min(wanted.max(12));
+    let popup = Rect { x: area.x + (area.width - width) / 2, y: area.y + (area.height - height) / 2, width, height };
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(theme.border_style(true))
+        .title(" Fixes & explanations \u{b7} Up/Down select \u{b7} Enter apply \u{b7} Tab switch \u{b7} Esc close ");
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    if inner.height < 5 || inner.width < 10 {
+        return;
+    }
+    regions.advice_window = Some(popup);
+
+    let model = &state.model;
+    let explanation = advice::explain_tolerance(model);
+    let rows = Layout::default().direction(Direction::Vertical).constraints([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)]).split(inner);
+    let (tab_row, body, button_row) = (rows[0], rows[1], rows[2]);
+
+    // Tabs.
+    let mut tabs: Vec<(String, AdviceTab)> = vec![(format!(" Recommended fixes ({}) ", model.recommendations.len()), AdviceTab::Fixes)];
+    if explanation.is_some() {
+        let label = if model.output.tolerance_status == ToleranceStatus::Infeasible { " Why is the tolerance infeasible? " } else { " Why is the OD clamped? " };
+        tabs.push((label.to_string(), AdviceTab::Explain));
+    }
+    let mut spans = Vec::new();
+    let mut x = tab_row.x;
+    for (label, tab) in tabs {
+        let w = label.chars().count() as u16;
+        if x + w > tab_row.x + tab_row.width {
+            break;
+        }
+        let style = if state.advice.tab == tab { theme.selected_row_style().add_modifier(Modifier::BOLD) } else { theme.disabled_style() };
+        regions.bushing_actions.push((Rect { x, y: tab_row.y, width: w, height: 1 }, BushingAction::AdviceTab(tab)));
+        spans.push(Span::styled(label, style));
+        spans.push(Span::raw(" "));
+        x += w + 1;
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), tab_row);
+
+    let tab = if explanation.is_none() { AdviceTab::Fixes } else { state.advice.tab };
+    match tab {
+        AdviceTab::Fixes => {
+            if model.recommendations.is_empty() {
+                frame.render_widget(Paragraph::new(Line::from(Span::styled("No failing checks - nothing to fix.", theme.status_style(StatusTone::Success)))), body);
+            } else {
+                let detail_height = 6.min(body.height.saturating_sub(2));
+                let parts = Layout::default().direction(Direction::Vertical).constraints([Constraint::Min(1), Constraint::Length(detail_height)]).split(body);
+                let selected = state.rec_selected.min(model.recommendations.len() - 1);
+                let items: Vec<ListItem> = model
+                    .recommendations
+                    .iter()
+                    .enumerate()
+                    .map(|(i, rec)| {
+                        let marker = if i == selected { "> " } else { "  " };
+                        let style = if i == selected { theme.selected_row_style() } else { Style::default() };
+                        ListItem::new(Line::from(Span::styled(format!("{marker}{}. [{}] {}{}", i + 1, rec.fixes.label(), rec.summary, if rec.is_applicable() { "" } else { "  (manual)" }), style)))
+                    })
+                    .collect();
+                let offset = crate::widgets::scroll_list::render(frame, parts[0], items, Some(selected));
+                for (rect, i) in crate::mouse::list_row_regions(parts[0], offset, model.recommendations.len()) {
+                    regions.bushing_actions.push((rect, BushingAction::AdviceRow(i)));
+                }
+                let rec = &model.recommendations[selected];
+                let mut detail = vec![
+                    Line::from(Span::styled(format!("Fixes: {}", rec.fixes.label()), theme.title_style(false))),
+                    Line::from(format!("Change: {}", rec.summary)),
+                    Line::from(format!("Solver result with this change: {}", rec.outcome)),
+                ];
+                if !rec.is_applicable() {
+                    detail.push(Line::from(Span::styled("Manual change - cannot be applied automatically.", theme.status_style(StatusTone::Warning))));
+                }
+                if let Some(applied) = &state.last_applied {
+                    detail.push(Line::from(Span::styled(format!("\u{2713} Applied: {applied}"), theme.status_style(StatusTone::Success))));
+                }
+                frame.render_widget(Paragraph::new(detail).wrap(Wrap { trim: true }), parts[1]);
+            }
+        }
+        AdviceTab::Explain => {
+            let mut lines: Vec<Line> = Vec::new();
+            for (i, para) in explanation.unwrap_or_default().into_iter().enumerate() {
+                // Paragraphs alternate heading / body (see `explain_tolerance`).
+                if i % 2 == 0 {
+                    if i > 0 {
+                        lines.push(Line::from(""));
+                    }
+                    lines.push(Line::from(Span::styled(para, theme.title_style(true).add_modifier(Modifier::BOLD))));
+                } else {
+                    lines.push(Line::from(para));
+                }
+            }
+            crate::widgets::scroll_paragraph::render(frame, body, theme, lines, state.advice.scroll);
+        }
+    }
+
+    // Buttons.
+    let mut buttons: Vec<(&str, BushingAction, Style)> = Vec::new();
+    let can_apply = tab == AdviceTab::Fixes && model.recommendations.get(state.rec_selected.min(model.recommendations.len().saturating_sub(1))).map(|r| r.is_applicable()).unwrap_or(false);
+    if can_apply {
+        buttons.push((" Apply selected ", BushingAction::AdviceApply, theme.status_style(StatusTone::Success).add_modifier(Modifier::REVERSED | Modifier::BOLD)));
+    }
+    buttons.push((" Close ", BushingAction::AdviceClose, Style::default().add_modifier(Modifier::REVERSED)));
+    let mut spans = Vec::new();
+    let mut x = button_row.x;
+    for (label, action, style) in buttons {
+        let w = label.chars().count() as u16;
+        if x + w > button_row.x + button_row.width {
+            break;
+        }
+        regions.bushing_actions.push((Rect { x, y: button_row.y, width: w, height: 1 }, action));
+        spans.push(Span::styled(label, style));
+        spans.push(Span::raw("  "));
+        x += w + 2;
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), button_row);
 }
 
 /// A result line for a check: plain when it passes, otherwise the whole line
@@ -214,9 +408,25 @@ fn flag_line<'a>(theme: &Theme, severity: Severity, text: String) -> Line<'a> {
     }
 }
 
-fn readout_lines<'a>(theme: &'a Theme, model: &'a BushingModel, show_numbers: bool, rec_selected: usize, last_applied: Option<&str>) -> Vec<Line<'a>> {
+/// Pushes a (possibly flagged) check line; a flagged one is also made
+/// clickable (`action`) and gets a trailing `▸` hint.
+fn push_check<'a>(theme: &Theme, lines: &mut Vec<Line<'a>>, tags: &mut Vec<(usize, BushingAction)>, severity: Severity, action: BushingAction, text: String) {
+    if severity == Severity::Pass {
+        lines.push(flag_line(theme, severity, text));
+        return;
+    }
+    tags.push((lines.len(), action));
+    lines.push(flag_line(theme, severity, format!("{text}  \u{25b8}")));
+}
+
+/// The scrollable readout plus, for each clickable line, `(line index, action)`.
+fn readout_lines<'a>(theme: &'a Theme, model: &'a BushingModel, show_numbers: bool, last_applied: Option<&str>) -> (Vec<Line<'a>>, Vec<(usize, BushingAction)>) {
     let out = &model.output;
     let mut lines = Vec::new();
+    let mut tags: Vec<(usize, BushingAction)> = Vec::new();
+    let explain = advice::explain_tolerance(model).is_some();
+    let fixes_for = |kind: CheckKind| BushingAction::OpenFixesFor(kind);
+    let tolerance_action = if explain { BushingAction::OpenExplain } else { BushingAction::OpenFixesFor(CheckKind::Tolerance) };
     let sev = |kind: CheckKind| advice::severity_of(&model.checks, kind);
     let failing: Vec<&advice::Check> = model.checks.iter().filter(|c| c.severity == Severity::Fail).collect();
 
@@ -226,26 +436,19 @@ fn readout_lines<'a>(theme: &'a Theme, model: &'a BushingModel, show_numbers: bo
         Span::raw(format!("  governing: {} ({})", out.governing.name, fmt_margin(out.governing.margin))),
         if failing.is_empty() { Span::raw("") } else { Span::styled(format!("  {} check(s) failing", failing.len()), theme.status_style(StatusTone::Danger)) },
     ]));
-    for check in model.checks.iter().filter(|c| c.severity != Severity::Pass) {
-        lines.push(flag_line(theme, check.severity, format!("  {}: {}", check.kind.label(), check.detail)));
+    // The Tolerance check has its own (clickable) line further down.
+    for check in model.checks.iter().filter(|c| c.severity != Severity::Pass && c.kind != CheckKind::Tolerance) {
+        push_check(theme, &mut lines, &mut tags, check.severity, fixes_for(check.kind), format!("  {}: {}", check.kind.label(), check.detail));
     }
     if let Some(applied) = last_applied {
         lines.push(Line::from(Span::styled(format!("\u{2713} Applied: {applied}"), theme.status_style(StatusTone::Success))));
     }
-    if !model.recommendations.is_empty() {
-        lines.push(Line::from(Span::styled("Recommendations  (r: next \u{b7} a: apply selected)", theme.title_style(false))));
-        let selected = rec_selected.min(model.recommendations.len() - 1);
-        for (i, rec) in model.recommendations.iter().enumerate() {
-            let marker = if i == selected { ">" } else { " " };
-            let head = format!("{marker} {}. {}{}", i + 1, rec.summary, if rec.is_applicable() { "" } else { "  (manual)" });
-            let style = if i == selected { theme.selected_row_style() } else { Style::default() };
-            lines.push(Line::from(Span::styled(head, style)));
-            lines.push(Line::from(Span::styled(format!("     result: {}", rec.outcome), theme.disabled_style())));
-        }
-    }
-    lines.push(flag_line(
+    push_check(
         theme,
+        &mut lines,
+        &mut tags,
         sev(CheckKind::Tolerance),
+        tolerance_action,
         format!(
             "  Tolerance: {} ({} note(s))",
             match out.tolerance_status {
@@ -255,9 +458,12 @@ fn readout_lines<'a>(theme: &'a Theme, model: &'a BushingModel, show_numbers: bo
             },
             out.tolerance_notes.len()
         ),
-    ));
+    );
     for note in &out.tolerance_notes {
-        lines.push(Line::from(Span::styled(format!("  \u{26a0} {note}"), theme.status_style(StatusTone::Warning))));
+        if explain {
+            tags.push((lines.len(), BushingAction::OpenExplain));
+        }
+        lines.push(Line::from(Span::styled(format!("  \u{26a0} {note}{}", if explain { "  \u{25b8} why?" } else { "" }), theme.status_style(StatusTone::Warning))));
     }
     if matches!(model.fit_type, model::FitType::Clearance | model::FitType::Slip) && model.interference > 0.0 {
         lines.push(Line::from(Span::styled(
@@ -273,9 +479,12 @@ fn readout_lines<'a>(theme: &'a Theme, model: &'a BushingModel, show_numbers: bo
         "  Interference        target {:.4} in, achieved {:.4} in (range {:.4}..{:.4})",
         model.interference, out.delta_total, out.achieved_interference_tol.lower, out.achieved_interference_tol.upper
     )));
-    lines.push(flag_line(
+    push_check(
         theme,
+        &mut lines,
+        &mut tags,
         sev(CheckKind::StraightWall),
+        fixes_for(CheckKind::StraightWall),
         format!(
             "  Straight wall       {:.4} in  ({}, range {:.4}..{:.4})",
             out.wall_straight,
@@ -283,8 +492,8 @@ fn readout_lines<'a>(theme: &'a Theme, model: &'a BushingModel, show_numbers: bo
             out.wall_straight_range.min,
             out.wall_straight_range.max
         ),
-    ));
-    lines.push(flag_line(theme, sev(CheckKind::NeckWall), format!("  Neck wall           {:.4} in  ({})", out.wall_neck, if out.fail_neck { "FAIL vs min" } else { "OK" })));
+    );
+    push_check(theme, &mut lines, &mut tags, sev(CheckKind::NeckWall), fixes_for(CheckKind::NeckWall), format!("  Neck wall           {:.4} in  ({})", out.wall_neck, if out.fail_neck { "FAIL vs min" } else { "OK" }));
     lines.push(Line::from(""));
 
     lines.push(Line::from(Span::styled("Contact / Stress", theme.title_style(false))));
@@ -294,7 +503,7 @@ fn readout_lines<'a>(theme: &'a Theme, model: &'a BushingModel, show_numbers: bo
         (CheckKind::BushingStress, "Bushing", out.stress_hoop_bushing, out.bushing_ms),
     ] {
         if sev(kind) == Severity::Fail {
-            lines.push(flag_line(theme, Severity::Fail, format!("  {name} hoop stress {stress:>10.0} psi  MS {}", fmt_margin(ms))));
+            push_check(theme, &mut lines, &mut tags, Severity::Fail, fixes_for(kind), format!("  {name} hoop stress {stress:>10.0} psi  MS {}", fmt_margin(ms)));
         } else {
             lines.push(Line::from(vec![
                 Span::raw(format!("  {name} hoop stress {stress:>10.0} psi  MS ")),
@@ -320,7 +529,7 @@ fn readout_lines<'a>(theme: &'a Theme, model: &'a BushingModel, show_numbers: bo
         (CheckKind::EdgeStrength, "Strength margin   ", out.ed_min_strength, out.strength_margin),
     ] {
         if sev(kind) == Severity::Fail {
-            lines.push(flag_line(theme, Severity::Fail, format!("  {label} min {min:.3}  actual/min {}", fmt_margin(margin))));
+            push_check(theme, &mut lines, &mut tags, Severity::Fail, fixes_for(kind), format!("  {label} min {min:.3}  actual/min {}", fmt_margin(margin)));
         } else {
             lines.push(Line::from(vec![
                 Span::raw(format!("  {label} min {min:.3}  actual/min ")),
@@ -334,7 +543,9 @@ fn readout_lines<'a>(theme: &'a Theme, model: &'a BushingModel, show_numbers: bo
     for c in &out.candidates {
         let kind_sev = CheckKind::from_candidate_name(c.name).map(sev).unwrap_or(Severity::Pass);
         if kind_sev == Severity::Fail {
-            lines.push(flag_line(theme, Severity::Fail, format!("  {:<28}{}", c.name, fmt_margin(c.margin))));
+            if let Some(k) = CheckKind::from_candidate_name(c.name) {
+                push_check(theme, &mut lines, &mut tags, Severity::Fail, fixes_for(k), format!("  {:<28}{}", c.name, fmt_margin(c.margin)));
+            }
         } else {
             lines.push(Line::from(vec![
                 Span::raw(format!("  {:<28}", c.name)),
@@ -348,7 +559,7 @@ fn readout_lines<'a>(theme: &'a Theme, model: &'a BushingModel, show_numbers: bo
         lines.extend(numbers_panel_lines(theme, model));
     }
 
-    lines
+    (lines, tags)
 }
 
 /// Text-only partial substitute for the cross-section sketch neither GUI
@@ -591,14 +802,15 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_check_is_marked_and_recommendations_are_listed() {
+    fn a_failing_check_is_marked_and_the_fixes_button_is_shown() {
         let mut state = BushingState::default();
         state.model.commit_number(model::NumberTarget::MinWallStraight, 0.2);
         let text = rendered_text(&state, 170, 60);
         assert!(text.contains("\u{2717} Straight wall"), "failing straight wall line must carry the fail marker:\n{text}");
         assert!(text.contains("REVIEW"));
-        assert!(text.contains("Recommendations"));
-        assert!(text.contains("Bushing ID"));
+        assert!(text.contains("Fixes ("), "action bar shows the Fixes button:\n{text}");
+        assert!(!text.contains("Recommendations"), "recommendations live in the pop-up window, not the results pane:\n{text}");
+        assert!(text.contains("\u{25b8}"), "failing lines carry the click hint");
     }
 
     #[test]
@@ -636,5 +848,60 @@ mod tests {
         let text = rendered_text(&state, 170, 60);
         assert!(!text.contains('\u{2717}'));
         assert!(text.contains("PASS"));
+    }
+
+    #[test]
+    fn the_fixes_window_lists_recommendations_and_the_selected_ones_detail() {
+        let mut state = BushingState::default();
+        state.model.commit_number(model::NumberTarget::MinWallStraight, 0.2);
+        state.perform(BushingAction::OpenFixes);
+        let text = rendered_text(&state, 150, 50);
+        assert!(text.contains("Fixes & explanations"));
+        assert!(text.contains("Recommended fixes ("));
+        assert!(text.contains("Bushing ID"));
+        assert!(text.contains("Solver result with this change"));
+        assert!(text.contains("Apply selected") && text.contains("Close"));
+    }
+
+    #[test]
+    fn the_explain_tab_describes_why_the_od_is_clamped_with_the_users_numbers() {
+        let mut state = BushingState::default();
+        state.model.commit_number(model::NumberTarget::BoreTolPlus, 0.002);
+        state.model.commit_number(model::NumberTarget::InterferenceTolPlus, 0.001);
+        state.model.commit_number(model::NumberTarget::InterferenceTolMinus, 0.001);
+        state.perform(BushingAction::OpenExplain);
+        let text = rendered_text(&state, 150, 50);
+        assert!(text.contains("Why is the OD clamped?"));
+        assert!(text.contains("Why it is CLAMPED"));
+        assert!(text.contains("lopsided toward the large side"), "{text}");
+        assert!(text.contains("Inputs that cause it"));
+    }
+
+    #[test]
+    fn results_action_bar_regions_exist_and_only_the_window_owns_the_mouse_while_open() {
+        let mut state = BushingState::default();
+        state.model.commit_number(model::NumberTarget::MinWallStraight, 0.2);
+        let backend = TestBackend::new(170, 50);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut regions = crate::mouse::MouseRegions::default();
+        terminal.draw(|f| draw(f, f.area(), &Theme::default_palette(), &state, true, &mut regions)).unwrap();
+        for wanted in [BushingAction::OpenFixes, BushingAction::ToggleNumbers, BushingAction::Export, BushingAction::OpenFixesFor(CheckKind::StraightWall)] {
+            assert!(regions.bushing_actions.iter().any(|(_, a)| *a == wanted), "{wanted:?} must be clickable");
+        }
+        state.perform(BushingAction::OpenFixes);
+        let mut regions = crate::mouse::MouseRegions::default();
+        terminal.draw(|f| draw(f, f.area(), &Theme::default_palette(), &state, true, &mut regions)).unwrap();
+        assert!(regions.advice_window.is_some());
+        assert!(regions.bushing_actions.iter().all(|(_, a)| matches!(a, BushingAction::AdviceTab(_) | BushingAction::AdviceRow(_) | BushingAction::AdviceApply | BushingAction::AdviceClose)));
+    }
+
+    #[test]
+    fn the_fixes_window_survives_degenerate_sizes() {
+        let mut state = BushingState::default();
+        state.model.commit_number(model::NumberTarget::MinWallStraight, 0.2);
+        state.perform(BushingAction::OpenFixes);
+        for (w, h) in [(0, 0), (20, 6), (40, 12), (60, 20), (200, 80)] {
+            draw_at(w, h, &state);
+        }
     }
 }

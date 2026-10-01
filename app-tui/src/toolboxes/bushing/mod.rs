@@ -41,6 +41,42 @@ use material_picker::{MaterialPickerState, MaterialTarget};
 use model::{BushingModel, FieldRow, NumberTarget};
 use reamer_picker::ReamerPickerState;
 
+/// The two tabs of the Fixes window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdviceTab {
+    Fixes,
+    Explain,
+}
+
+/// Everything clickable in the Results pane and the Fixes window. One enum so
+/// the mouse and the keyboard run exactly the same `BushingState::perform`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BushingAction {
+    OpenFixes,
+    OpenFixesFor(advice::CheckKind),
+    OpenExplain,
+    ToggleNumbers,
+    Export,
+    AdviceTab(AdviceTab),
+    AdviceRow(usize),
+    AdviceApply,
+    AdviceClose,
+}
+
+/// The pop-up window listing recommended fixes and the OD-clamp explanation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdviceWindow {
+    pub open: bool,
+    pub tab: AdviceTab,
+    pub scroll: u16,
+}
+
+impl Default for AdviceWindow {
+    fn default() -> Self {
+        Self { open: false, tab: AdviceTab::Fixes, scroll: 0 }
+    }
+}
+
 pub const PANE_MAIN: u8 = 0;
 pub const PANE_COUNT: u8 = 1;
 
@@ -67,6 +103,7 @@ pub struct BushingState {
     /// What the last applied recommendation changed - shown atop Results
     /// until the next edit.
     pub last_applied: Option<String>,
+    pub advice: AdviceWindow,
 }
 
 impl Default for BushingState {
@@ -84,6 +121,7 @@ impl Default for BushingState {
             results_scroll: 0,
             rec_selected: 0,
             last_applied: None,
+            advice: AdviceWindow::default(),
         };
         // Row 0 is always a `Header` (the first section divider) - land on
         // the first real field instead of an unselectable row.
@@ -123,6 +161,95 @@ impl BushingState {
             }
         }
         self.selected = next as usize;
+    }
+
+    /// Runs one Results-pane / Fixes-window action - the single code path for
+    /// both mouse clicks and keys.
+    pub fn perform(&mut self, action: BushingAction) -> Vec<Effect> {
+        match action {
+            BushingAction::OpenFixes => {
+                if !self.model.recommendations.is_empty() {
+                    self.open_advice(AdviceTab::Fixes);
+                } else if advice::explain_tolerance(&self.model).is_some() {
+                    self.open_advice(AdviceTab::Explain);
+                } else {
+                    self.last_applied = Some("nothing to fix - no failing check".to_string());
+                }
+            }
+            BushingAction::OpenFixesFor(kind) => {
+                if let Some(i) = self.model.recommendations.iter().position(|r| r.fixes == kind) {
+                    self.rec_selected = i;
+                    self.open_advice(AdviceTab::Fixes);
+                } else if kind == advice::CheckKind::Tolerance && advice::explain_tolerance(&self.model).is_some() {
+                    self.open_advice(AdviceTab::Explain);
+                } else {
+                    self.last_applied = Some(format!("{}: no automatic fix available", kind.label()));
+                }
+            }
+            BushingAction::OpenExplain => {
+                if advice::explain_tolerance(&self.model).is_some() {
+                    self.open_advice(AdviceTab::Explain);
+                }
+            }
+            BushingAction::ToggleNumbers => self.show_numbers = !self.show_numbers,
+            BushingAction::Export => return vec![Effect::ExportBushingReport(view::build_report_text(&self.model))],
+            BushingAction::AdviceTab(tab) => {
+                self.advice.tab = tab;
+                self.advice.scroll = 0;
+            }
+            BushingAction::AdviceRow(i) => self.rec_selected = i.min(self.model.recommendations.len().saturating_sub(1)),
+            BushingAction::AdviceApply => {
+                self.apply_selected_recommendation();
+                if self.model.recommendations.is_empty() && advice::explain_tolerance(&self.model).is_none() {
+                    self.advice.open = false;
+                }
+            }
+            BushingAction::AdviceClose => self.advice.open = false,
+        }
+        Vec::new()
+    }
+
+    fn open_advice(&mut self, tab: AdviceTab) {
+        self.advice = AdviceWindow { open: true, tab, scroll: 0 };
+        self.last_applied = None;
+        self.rec_selected = self.rec_selected.min(self.model.recommendations.len().saturating_sub(1));
+    }
+
+    /// Keys while the Fixes window is open (it is modal).
+    fn handle_advice_key(&mut self, key: KeyEvent) -> (bool, Vec<Effect>) {
+        let has_explain = advice::explain_tolerance(&self.model).is_some();
+        match key.code {
+            KeyCode::Esc => return (true, self.perform(BushingAction::AdviceClose)),
+            KeyCode::Tab | KeyCode::Left | KeyCode::Right if has_explain && !self.model.recommendations.is_empty() => {
+                let next = if self.advice.tab == AdviceTab::Fixes { AdviceTab::Explain } else { AdviceTab::Fixes };
+                return (true, self.perform(BushingAction::AdviceTab(next)));
+            }
+            KeyCode::Up => match self.advice.tab {
+                AdviceTab::Fixes => {
+                    let n = self.model.recommendations.len();
+                    if n > 0 {
+                        self.rec_selected = (self.rec_selected + n - 1) % n;
+                    }
+                }
+                AdviceTab::Explain => self.advice.scroll = self.advice.scroll.saturating_sub(1),
+            },
+            KeyCode::Down => match self.advice.tab {
+                AdviceTab::Fixes => {
+                    let n = self.model.recommendations.len();
+                    if n > 0 {
+                        self.rec_selected = (self.rec_selected + 1) % n;
+                    }
+                }
+                AdviceTab::Explain => self.advice.scroll = self.advice.scroll.saturating_add(1),
+            },
+            KeyCode::PageUp => self.advice.scroll = self.advice.scroll.saturating_sub(crate::widgets::scroll_paragraph::SCROLL_STEP),
+            KeyCode::PageDown => self.advice.scroll = self.advice.scroll.saturating_add(crate::widgets::scroll_paragraph::SCROLL_STEP),
+            KeyCode::Enter | KeyCode::Char('a' | 'A') if self.advice.tab == AdviceTab::Fixes => {
+                return (true, self.perform(BushingAction::AdviceApply));
+            }
+            _ => {}
+        }
+        (true, Vec::new())
     }
 
     /// Applies the selected recommendation to the real input fields, moves
@@ -175,6 +302,9 @@ impl BushingState {
 /// this toolbox's workspace pane has focus - same `(consumed, effects)`
 /// contract as every other toolbox in this crate.
 pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>) {
+    if state.advice.open {
+        return state.handle_advice_key(key);
+    }
     if state.material_picker.open {
         return material_picker::handle_key(&mut state.material_picker, &mut state.model, key);
     }
@@ -315,17 +445,8 @@ pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>
             state.show_numbers = !state.show_numbers;
             (true, Vec::new())
         }
-        KeyCode::Char('r' | 'R') => {
-            let n = state.model.recommendations.len();
-            if n > 0 {
-                state.rec_selected = (state.rec_selected + 1) % n;
-            }
-            (true, Vec::new())
-        }
-        KeyCode::Char('a' | 'A') => {
-            state.apply_selected_recommendation();
-            (true, Vec::new())
-        }
+        KeyCode::Char('f' | 'F' | 'a' | 'A') => (true, state.perform(BushingAction::OpenFixes)),
+        KeyCode::Char('w' | 'W') => (true, state.perform(BushingAction::OpenExplain)),
         KeyCode::Char('e' | 'E') => (true, vec![Effect::ExportBushingReport(view::build_report_text(&state.model))]),
         KeyCode::PageUp => {
             state.results_scroll = state.results_scroll.saturating_sub(crate::widgets::scroll_paragraph::SCROLL_STEP);
@@ -603,14 +724,15 @@ mod tests {
     }
 
     #[test]
-    fn a_applies_the_selected_recommendation_to_the_input_field_and_clears_the_failure() {
+    fn a_opens_the_fixes_window_and_enter_applies_the_selected_fix_to_the_input_field() {
         let mut state = failing_wall_state();
         assert_eq!(advice::severity_of(&state.model.checks, advice::CheckKind::StraightWall), advice::Severity::Fail);
-        let idx = state.model.recommendations.iter().position(|r| r.fixes == advice::CheckKind::StraightWall).unwrap();
-        state.rec_selected = idx;
+        state.rec_selected = state.model.recommendations.iter().position(|r| r.fixes == advice::CheckKind::StraightWall).unwrap();
         let before = state.model.id_bushing;
-        let (consumed, _) = handle_key(&mut state, key(KeyCode::Char('a')));
-        assert!(consumed);
+        handle_key(&mut state, key(KeyCode::Char('a')));
+        assert!(state.advice.open, "a opens the window, it does not silently change inputs");
+        assert_eq!(state.model.id_bushing, before);
+        handle_key(&mut state, key(KeyCode::Enter));
         assert!(state.model.id_bushing < before, "the Bushing ID input must have changed");
         assert_eq!(advice::severity_of(&state.model.checks, advice::CheckKind::StraightWall), advice::Severity::Pass);
         assert!(state.last_applied.as_deref().unwrap().contains("Bushing ID"));
@@ -619,24 +741,59 @@ mod tests {
     }
 
     #[test]
-    fn caps_lock_a_and_r_work_too_and_r_cycles_recommendations() {
+    fn the_fixes_window_is_modal_and_navigable_by_keyboard() {
         let mut state = failing_wall_state();
-        let n = state.model.recommendations.len();
-        assert!(n >= 2);
-        handle_key(&mut state, key(KeyCode::Char('R')));
+        assert!(state.model.recommendations.len() >= 2);
+        handle_key(&mut state, key(KeyCode::Char('F'))); // Caps Lock
+        assert!(state.advice.open);
+        handle_key(&mut state, key(KeyCode::Down));
         assert_eq!(state.rec_selected, 1);
-        handle_key(&mut state, key(KeyCode::Char('A')));
-        assert!(state.last_applied.is_some());
+        handle_key(&mut state, key(KeyCode::Up));
+        assert_eq!(state.rec_selected, 0);
+        let before = state.selected;
+        handle_key(&mut state, key(KeyCode::Char('d'))); // must not leak to the field list
+        assert_eq!(state.selected, before);
+        assert!(!state.show_numbers);
+        handle_key(&mut state, key(KeyCode::Esc));
+        assert!(!state.advice.open);
     }
 
     #[test]
-    fn apply_with_nothing_failing_reports_that_instead_of_changing_anything() {
+    fn opening_fixes_with_nothing_to_fix_says_so_instead_of_opening_an_empty_window() {
         let mut state = BushingState::default();
         state.model.commit_number(NumberTarget::EdgeDist, 5.0);
         assert!(state.model.recommendations.is_empty());
-        let before = state.model.id_bushing;
         handle_key(&mut state, key(KeyCode::Char('a')));
-        assert_eq!(state.model.id_bushing, before);
-        assert!(state.last_applied.as_deref().unwrap().contains("nothing to apply"));
+        assert!(!state.advice.open);
+        assert!(state.last_applied.as_deref().unwrap().contains("nothing to fix"));
+    }
+
+    #[test]
+    fn perform_actions_match_their_keyboard_equivalents() {
+        let mut state = failing_wall_state();
+        state.perform(BushingAction::ToggleNumbers);
+        assert!(state.show_numbers);
+        let effects = state.perform(BushingAction::Export);
+        assert!(matches!(effects.as_slice(), [Effect::ExportBushingReport(_)]));
+        state.perform(BushingAction::OpenFixesFor(advice::CheckKind::StraightWall));
+        assert!(state.advice.open && state.advice.tab == AdviceTab::Fixes);
+        assert_eq!(state.model.recommendations[state.rec_selected].fixes, advice::CheckKind::StraightWall);
+        state.perform(BushingAction::AdviceClose);
+        assert!(!state.advice.open);
+    }
+
+    #[test]
+    fn clamped_tolerance_offers_a_fix_and_an_explanation_tab() {
+        let mut state = BushingState::default();
+        state.model.commit_number(NumberTarget::BoreTolPlus, 0.002);
+        state.model.commit_number(NumberTarget::InterferenceTolPlus, 0.001);
+        state.model.commit_number(NumberTarget::InterferenceTolMinus, 0.001);
+        state.perform(BushingAction::OpenFixesFor(advice::CheckKind::Tolerance));
+        assert!(state.advice.open && state.advice.tab == AdviceTab::Fixes, "a verified fix exists, so Fixes opens first");
+        handle_key(&mut state, key(KeyCode::Tab));
+        assert_eq!(state.advice.tab, AdviceTab::Explain, "Tab reaches the explanation");
+        state.perform(BushingAction::AdviceClose);
+        handle_key(&mut state, key(KeyCode::Char('w')));
+        assert!(state.advice.open && state.advice.tab == AdviceTab::Explain);
     }
 }
