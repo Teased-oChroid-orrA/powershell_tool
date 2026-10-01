@@ -1,7 +1,9 @@
 //! Bushing ID picker - same selection/library functionality as the reamer
-//! picker (`reamer_picker.rs`), minus "nearest real size" preseeding: there
-//! is no industry catalog for a finished bushing ID the way there is for
-//! reamer tool sizes, so this list is purely user-defined/imported entries.
+//! picker (`reamer_picker.rs`): the user's own saved/imported entries first,
+//! then the standard drill bit catalog (fractional, number, letter and
+//! metric - `bushing_solver::drills`), with the most common sizes tagged
+//! `[common]` the way the reamer list tags `[preferred]`. Picking a real
+//! drill size means the finished ID needs no custom tool.
 //! `n` adds the current Bushing ID value as a new labeled entry (tagged
 //! "Preferred"), `i`/`x` import/export a library file, `m` drops to plain
 //! numeric entry. Import/export/duplicate-pruning/conflict-resolution/
@@ -14,6 +16,8 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
+
+use bushing_solver::drills::{self, DrillEntry};
 
 use crate::library::{ConflictQueue, ConflictResolution, LibraryItem};
 use crate::theme::Theme;
@@ -33,6 +37,29 @@ struct PathPrompt {
     buffer: String,
 }
 
+/// One selectable row: a user-saved size or a standard drill.
+#[derive(Clone, Copy)]
+enum IdRow<'a> {
+    User(&'a LibraryItem<PersistedBushingId>),
+    Drill(&'static DrillEntry),
+}
+
+impl IdRow<'_> {
+    fn id_in(&self) -> f64 {
+        match self {
+            IdRow::User(li) => li.item.id_in,
+            IdRow::Drill(d) => d.nominal_in,
+        }
+    }
+
+    fn search_text(&self) -> String {
+        match self {
+            IdRow::User(li) => format!("{} {:.4} saved {}", li.item.label, li.item.id_in, li.labels.join(" ")).to_lowercase(),
+            IdRow::Drill(d) => format!("{} {:.4} {} drill {}", d.label, d.nominal_in, d.kind.name(), if d.common { "common" } else { "" }).to_lowercase(),
+        }
+    }
+}
+
 pub struct BushingIdPickerState {
     pub open: bool,
     pub cursor: usize,
@@ -50,22 +77,29 @@ impl Default for BushingIdPickerState {
 }
 
 impl BushingIdPickerState {
-    /// Opens at the closest *saved* entry to the current Bushing ID, if any
-    /// exist - otherwise an empty state (there's no built-in catalog to
-    /// fall back to).
+    /// Opens on the entry closest to the current Bushing ID (saved entries
+    /// and standard drills alike).
     pub fn open_near(model: &BushingModel) -> Self {
         let library = bushing_id_persistence::load();
         let mut state = Self { open: true, library, ..Default::default() };
-        if !state.library.is_empty() {
-            let target = model.id_bushing;
-            state.cursor = state.library.iter().enumerate().min_by(|(_, a), (_, b)| (a.item.id_in - target).abs().partial_cmp(&(b.item.id_in - target).abs()).unwrap()).map(|(i, _)| i).unwrap_or(0);
-        }
+        let target = model.id_bushing;
+        state.cursor = state
+            .visible()
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| (a.id_in() - target).abs().partial_cmp(&(b.id_in() - target).abs()).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
         state
     }
 
-    fn visible(&self) -> Vec<&LibraryItem<PersistedBushingId>> {
+    /// The user's saved entries first, then every standard drill size, both
+    /// narrowed by the filter (label, decimal size, kind or `common`).
+    fn visible(&self) -> Vec<IdRow<'_>> {
         let needle = self.filter_text.trim().to_lowercase();
-        self.library.iter().filter(|li| needle.is_empty() || li.item.label.to_lowercase().contains(&needle)).collect()
+        let user = self.library.iter().map(IdRow::User);
+        let drills = drills::all_drills().into_iter().map(IdRow::Drill);
+        user.chain(drills).filter(|r| needle.is_empty() || r.search_text().contains(&needle)).collect()
     }
 
     fn move_cursor(&mut self, delta: i32) {
@@ -181,7 +215,7 @@ pub fn handle_key(picker: &mut BushingIdPickerState, model: &mut BushingModel, k
         }
         KeyCode::Enter => {
             if let Some(entry) = picker.visible().get(picker.cursor) {
-                model.id_bushing = entry.item.id_in;
+                model.id_bushing = entry.id_in();
                 model.recompute();
             }
             picker.open = false;
@@ -243,7 +277,7 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &BushingIdPi
     }
 
     let visible = picker.visible();
-    let title = format!(" Bushing ID library ({} of {}) - n: save current \u{b7} i: import \u{b7} x: export \u{b7} m: type exact value ", visible.len(), picker.library.len());
+    let title = format!(" Bushing ID - saved sizes + standard drills ({} of {}) - n: save current \u{b7} i: import \u{b7} x: export \u{b7} m: type exact value ", visible.len(), picker.library.len() + drills::all_drills().len());
     let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.border_style(true)).title(title);
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
@@ -254,18 +288,32 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &BushingIdPi
     let (list_area, bottom_area) = if inner.height > 1 { let rows = Layout::default().direction(Direction::Vertical).constraints([Constraint::Min(1), Constraint::Length(1)]).split(inner); (rows[0], Some(rows[1])) } else { (inner, None) };
 
     if visible.is_empty() {
-        empty_state::render(frame, list_area, theme, "No saved Bushing ID entries yet", Some("n saves the current value here \u{b7} m types an exact value directly"));
+        empty_state::render(frame, list_area, theme, "No sizes match the filter", Some("Esc to clear the filter \u{b7} m types an exact value directly"));
     } else {
         let items: Vec<ListItem> = visible
             .iter()
             .enumerate()
-            .map(|(i, li)| {
+            .map(|(i, row)| {
                 let selected = i == picker.cursor;
                 let marker = if selected { "> " } else { "  " };
                 let style = if selected { theme.selected_row_style() } else { Style::default() };
-                let labels_tag = if li.labels.is_empty() { String::new() } else { format!(" {{{}}}", li.labels.join(", ")) };
-                let delta = li.item.id_in - model.id_bushing;
-                ListItem::new(Line::from(Span::styled(format!("{marker}{:<16} {:.4} in{}  \u{394} {:+.4}", li.item.label, li.item.id_in, labels_tag, delta), style)))
+                let delta = row.id_in() - model.id_bushing;
+                let text = match row {
+                    IdRow::User(li) => {
+                        let labels_tag = if li.labels.is_empty() { String::new() } else { format!(" {{{}}}", li.labels.join(", ")) };
+                        format!("{marker}{:<10} {:.4} in{}  \u{394} {:+.4}", li.item.label, li.item.id_in, labels_tag, delta)
+                    }
+                    IdRow::Drill(d) => format!(
+                        "{marker}{:<10} {:.4} in  {:>7.3} mm  {:<10}{}  \u{394} {:+.4}",
+                        d.label,
+                        d.nominal_in,
+                        d.nominal_mm,
+                        d.kind.name(),
+                        if d.common { " [common]" } else { "" },
+                        delta
+                    ),
+                };
+                ListItem::new(Line::from(Span::styled(text, style)))
             })
             .collect();
         let offset = crate::widgets::scroll_list::render(frame, list_area, items, Some(picker.cursor));
@@ -319,6 +367,53 @@ mod tests {
     }
 
     #[test]
+    fn the_standard_drill_catalog_is_listed_and_common_sizes_are_tagged() {
+        let picker = BushingIdPickerState { open: true, ..Default::default() };
+        assert_eq!(picker.visible().len(), drills::all_drills().len());
+        let backend = TestBackend::new(110, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut regions = crate::mouse::MouseRegions::default();
+        let mut p = BushingIdPickerState { open: true, ..Default::default() };
+        p.filter_text = "common".to_string();
+        assert_eq!(p.visible().len(), 28, "exactly the common sizes");
+        terminal.draw(|f| render(f, f.area(), &Theme::default_palette(), &p, &BushingModel::default(), &mut regions)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let text: String = (0..buffer.area.height).map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>() + "\n").collect();
+        assert!(text.contains("[common]") && text.contains("standard drills"), "{text}");
+    }
+
+    #[test]
+    fn filtering_by_kind_label_or_size_finds_drills() {
+        let mut p = BushingIdPickerState { open: true, ..Default::default() };
+        p.filter_text = "letter".to_string();
+        assert_eq!(p.visible().len(), 26);
+        p.filter_text = "0.3320".to_string();
+        assert!(p.visible().iter().any(|r| matches!(r, IdRow::Drill(d) if d.label == "Q")));
+        p.filter_text = "#60".to_string();
+        assert_eq!(p.visible().len(), 1);
+    }
+
+    #[test]
+    fn enter_on_a_drill_sets_the_id_to_that_drill_size() {
+        let mut model = BushingModel::default();
+        let mut p = BushingIdPickerState { open: true, ..Default::default() };
+        p.filter_text = "q".to_string();
+        let idx = p.visible().iter().position(|r| matches!(r, IdRow::Drill(d) if d.label == "Q")).unwrap();
+        p.cursor = idx;
+        handle_key(&mut p, &mut model, key(KeyCode::Enter));
+        assert_eq!(model.id_bushing, 0.332);
+        assert!(!p.open);
+    }
+
+    #[test]
+    fn open_near_lands_on_the_closest_size() {
+        let mut model = BushingModel::default();
+        model.id_bushing = 0.3750;
+        let p = BushingIdPickerState::open_near(&model);
+        assert!((p.visible()[p.cursor].id_in() - 0.375).abs() < 1e-9);
+    }
+
+    #[test]
     fn empty_library_opens_with_no_entries() {
         let model = BushingModel::default();
         let picker = BushingIdPickerState::open_near(&model);
@@ -343,6 +438,7 @@ mod tests {
     fn enter_selects_the_highlighted_entry_and_closes() {
         let mut picker = BushingIdPickerState::open_near(&BushingModel::default());
         picker.library.push(LibraryItem::new(PersistedBushingId { label: "0.4000".to_string(), id_in: 0.4 }));
+        picker.cursor = 0; // saved entries are listed first
         let mut model = BushingModel::default();
         handle_key(&mut picker, &mut model, key(KeyCode::Enter));
         assert!(!picker.open);

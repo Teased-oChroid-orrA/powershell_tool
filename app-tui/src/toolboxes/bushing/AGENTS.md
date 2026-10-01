@@ -35,6 +35,9 @@ Does not own: any Lamé/press-fit/tolerance math (`bushing-solver/AGENTS.md`).
 - Recommendations that change a drilled/reamed size (`IdBushing`, and `BoreDia` only ever *smaller*) are snapped to the nearest real catalog size on the passing side (`BushingModel::catalog_sizes` = built-in aircraft reamers + the user's reamer library, synced via `sync_user_reamers`); a bore change also takes the reamer's tolerance and widens the interference band to cover it. If no catalog size passes, the fix says it needs custom tooling. Every recommendation carries `impact` (bore line first, then metrics that moved, then newly-warning checks), computed from the trial solve; several alternatives per failure are offered, including ones that leave the bore alone.
 - Results show Δ interference from service temperature and from install thermal assist (solver `delta_thermal`, `assembly_thermal_delta`, `install_delta`).
 
+## Drill bit catalog
+- `bushing_solver::drills` embeds the AFT Fasteners drill chart (`bushing-solver/data/drill_bit_catalog.csv`: fractional, #1-#107, A-Z, metric; two source typos corrected, see its module doc) with RapidDirect's "most common" sizes flagged. The Bushing ID picker lists the user's saved sizes first, then every drill (`[common]` tag like the reamer list's `[preferred]`; filter by label, decimal, `letter`/`metric`/`common`...). Fix recommendations may snap an ID to a drill; a **bore** never snaps to a drill (it is reamed) - `advice::bisect_fix` filters `source == "drill"` for `BoreDia`.
+
 ## Pitfalls
 - Reamer catalog, material library, and Bushing ID library are `src/library.rs` consumers; conflict/duplicate handling lives there, not here.
 - `m` inside the reamer picker reaches manual numeric entry; Bore Diameter's `Enter` opens the catalog (a real bore is reamed to a real size).

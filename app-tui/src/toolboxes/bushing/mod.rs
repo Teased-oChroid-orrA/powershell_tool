@@ -343,7 +343,9 @@ pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>
         return friction_picker::handle_key(&mut state.friction_picker, &mut state.model, key);
     }
     if state.bushing_id_picker.open {
-        if let KeyCode::Char('m' | 'M') = key.code {
+        // Typing "m" while the filter has focus must filter, not leave for manual entry
+        // (same rule as the reamer picker above).
+        if let (false, KeyCode::Char('m' | 'M')) = (state.bushing_id_picker.filtering, key.code) {
             state.bushing_id_picker.open = false;
             state.editing = true;
             state.edit_buffer = model::format_for_edit(state.model.id_bushing);
@@ -912,5 +914,22 @@ mod tests {
         assert!(rows.contains(&FieldRow::Tol(model::TolGroup::Bore)) && rows.contains(&FieldRow::Tol(model::TolGroup::Interference)));
         assert!(!rows.iter().any(|r| matches!(r, FieldRow::Number(NumberTarget::BoreTolPlus | NumberTarget::BoreTolMinus | NumberTarget::InterferenceTolPlus | NumberTarget::InterferenceTolMinus))));
         assert!(!rows.contains(&FieldRow::Tol(model::TolGroup::CsDia)), "countersink tolerance rows only exist for countersunk geometry");
+    }
+
+    #[test]
+    fn m_while_filtering_the_bushing_id_picker_types_into_the_filter() {
+        let mut state = BushingState::default();
+        state.bushing_id_picker.open = true;
+        handle_key(&mut state, key(KeyCode::Char('/')));
+        assert!(state.bushing_id_picker.filtering);
+        for c in "common".chars() {
+            handle_key(&mut state, key(KeyCode::Char(c)));
+        }
+        assert!(state.bushing_id_picker.open && !state.editing, "the m in 'common' must not open manual entry");
+        assert_eq!(state.bushing_id_picker.filter_text, "common");
+        // Outside the filter, m still reaches manual entry.
+        handle_key(&mut state, key(KeyCode::Esc));
+        handle_key(&mut state, key(KeyCode::Char('m')));
+        assert!(state.editing && !state.bushing_id_picker.open);
     }
 }

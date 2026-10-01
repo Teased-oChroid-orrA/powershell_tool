@@ -285,6 +285,8 @@ fn bisect_fix(model: &BushingModel, base_fails: &[CheckKind], kind: CheckKind, t
             .catalog_sizes()
             .into_iter()
             .filter(|c| c.nominal > lo + 1e-9 && c.nominal <= hi + 1e-9)
+            // A bore is reamed, never drilled: drills are for finished IDs only.
+            .filter(|c| !(target == NumberTarget::BoreDia && c.source == "drill"))
             // On the passing side of the boundary found above.
             .filter(|c| if dir > 0.0 { c.nominal >= ok - 1e-9 } else { c.nominal <= ok + 1e-9 })
             .collect();
@@ -293,7 +295,13 @@ fn bisect_fix(model: &BushingModel, base_fails: &[CheckKind], kind: CheckKind, t
         for size in sizes.into_iter().take(8) {
             let edits = edits_for_size(model, target, &size);
             if good(&edits) {
-                return Some(Fix { edits, note: Some(format!("snapped to catalog size {} ({:.4} in) - no new tooling needed", size.label, size.nominal)) });
+                return Some(Fix { edits, note: Some(format!(
+                        "snapped to {}{} size {} ({:.4} in) - no new tooling needed",
+                        if size.common { "common " } else { "" },
+                        size.source,
+                        size.label,
+                        size.nominal
+                    )) });
             }
         }
     }
@@ -748,7 +756,7 @@ mod tests {
         let id = rec.edits[0].value;
         assert!(id < m.id_bushing, "ID only ever shrinks to fix a thin wall");
         assert!(m.catalog_sizes().iter().any(|c| (c.nominal - id).abs() < 1e-9), "{id} must be a catalog reamer/drill size; note={:?}", rec.note);
-        assert!(rec.note.as_deref().unwrap().contains("no new tooling"));
+        assert!(rec.note.as_deref().unwrap().contains("no new tooling"), "{:?}", rec.note);
         let mut applied = m.clone();
         applied.apply_recommendation(m.recommendations.iter().position(|r| r == rec).unwrap());
         assert!(!applied.output.fail_straight);
@@ -793,6 +801,43 @@ mod tests {
         let rec = m.recommendations.iter().find(|r| r.edits.iter().any(|e| e.target == NumberTarget::IdBushing)).unwrap();
         let text = rec.impact.join("\n");
         assert!(text.contains("Contact pressure") || text.contains("Install force"), "{text}");
+    }
+
+    #[test]
+    fn the_snap_catalog_includes_standard_drills_but_a_bore_never_snaps_to_one() {
+        let m = model();
+        let sizes = m.catalog_sizes();
+        assert!(sizes.iter().any(|c| c.source == "drill" && c.label == "Q" && (c.nominal - 0.332).abs() < 1e-9), "letter drill present");
+        assert!(sizes.iter().any(|c| c.source == "drill" && c.common), "common drills flagged");
+        assert!(sizes.iter().any(|c| c.source == "reamer"));
+        // Reamer wins a tie on the same nominal.
+        for r in bushing_solver::reamers::all_reamers() {
+            let at: Vec<_> = sizes.iter().filter(|c| (c.nominal - r.nominal_in).abs() < 1e-6).collect();
+            assert_eq!(at.len(), 1);
+            assert_eq!(at[0].source, "reamer");
+        }
+        assert!(sizes.windows(2).all(|w| w[0].nominal <= w[1].nominal));
+
+        // Smaller-bore fixes only ever use reamers.
+        let mut m = model();
+        m.commit_number(NumberTarget::IdBushing, 0.15);
+        for r in &m.recommendations {
+            if let Some(b) = r.edits.iter().find(|e| e.target == NumberTarget::BoreDia) {
+                let c = sizes.iter().find(|c| (c.nominal - b.value).abs() < 1e-9).expect("catalog bore");
+                assert_ne!(c.source, "drill", "{r:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn id_fixes_can_now_land_on_a_drill_size_that_no_reamer_covers() {
+        let mut m = model();
+        m.commit_number(NumberTarget::MinWallStraight, 0.07);
+        let rec = m.recommendations.iter().find(|r| r.edits.len() == 1 && r.edits[0].target == NumberTarget::IdBushing).unwrap();
+        let id = rec.edits[0].value;
+        let size = m.catalog_sizes().into_iter().find(|c| (c.nominal - id).abs() < 1e-9).expect("a catalog size");
+        assert!(["reamer", "drill", "saved"].contains(&size.source));
+        assert!(rec.note.as_deref().unwrap().contains(size.source));
     }
 }
 

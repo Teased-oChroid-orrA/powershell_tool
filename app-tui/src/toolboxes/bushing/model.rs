@@ -546,6 +546,10 @@ pub struct CatalogSize {
     pub nominal: f64,
     pub tol_plus: f64,
     pub tol_minus: f64,
+    /// `"reamer"`, `"drill"` or `"saved"` (the user's own library).
+    pub source: &'static str,
+    /// A most-common standard drill size.
+    pub common: bool,
 }
 
 #[derive(Clone)]
@@ -715,18 +719,35 @@ impl Default for BushingModel {
 }
 
 fn catalog_size_from(r: &super::reamer_persistence::PersistedReamer) -> CatalogSize {
-    CatalogSize { label: r.size_label.clone(), nominal: r.nominal_in, tol_plus: r.tool_tolerance_plus_in, tol_minus: r.tool_tolerance_minus_in }
+    CatalogSize { label: r.size_label.clone(), nominal: r.nominal_in, tol_plus: r.tool_tolerance_plus_in, tol_minus: r.tool_tolerance_minus_in, source: "saved", common: false }
 }
 
 impl BushingModel {
-    /// Every real reamer/drill size: the built-in aircraft catalog plus the
-    /// user's library, ascending by size, one entry per distinct nominal
-    /// (built-in wins a tie).
+    /// Every real tool size a fix may snap to: the aircraft reamer catalog,
+    /// the standard drill bit catalog and the user's own library, ascending,
+    /// one entry per distinct nominal. On a tie a reamer wins, then a drill
+    /// (common, then fractional/metric before letter/number), then a saved
+    /// entry. Drills are for finished IDs only - a recommendation for the
+    /// housing bore never uses one (a bore is reamed, not drilled).
     pub fn catalog_sizes(&self) -> Vec<CatalogSize> {
+        use bushing_solver::drills::{all_drills, DrillKind};
         let mut all: Vec<CatalogSize> = bushing_solver::reamers::all_reamers()
             .into_iter()
-            .map(|r| CatalogSize { label: r.size_label.clone(), nominal: r.nominal_in, tol_plus: r.tool_tolerance_plus_in, tol_minus: r.tool_tolerance_minus_in })
+            .map(|r| CatalogSize { label: r.size_label.clone(), nominal: r.nominal_in, tol_plus: r.tool_tolerance_plus_in, tol_minus: r.tool_tolerance_minus_in, source: "reamer", common: false })
             .collect();
+        let mut drills = all_drills();
+        let rank = |k: DrillKind| match k {
+            DrillKind::Fraction => 0,
+            DrillKind::Metric => 1,
+            DrillKind::Letter => 2,
+            DrillKind::Number => 3,
+        };
+        drills.sort_by_key(|d| (!d.common, rank(d.kind)));
+        for d in drills {
+            if !all.iter().any(|c| (c.nominal - d.nominal_in).abs() < 1e-6) {
+                all.push(CatalogSize { label: d.label.clone(), nominal: d.nominal_in, tol_plus: 0.0, tol_minus: 0.0, source: "drill", common: d.common });
+            }
+        }
         for u in &self.user_reamers {
             if !all.iter().any(|c| (c.nominal - u.nominal).abs() < 1e-6) {
                 all.push(u.clone());
