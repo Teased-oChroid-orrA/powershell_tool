@@ -14,6 +14,7 @@ use crate::theme::{StatusTone, Theme};
 
 use bushing_solver::tolerance::ToleranceStatus;
 
+use super::advice::{self, CheckKind, Severity};
 use super::model::{self, BushingModel, FieldRow};
 use super::BushingState;
 
@@ -42,7 +43,7 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingState, 
 
     regions.workspace_panes.push((area, super::PANE_MAIN));
     draw_fields(frame, fields_area, theme, state, focused, regions);
-    draw_readout(frame, readout_area, theme, &state.model, state.show_numbers, state.results_scroll);
+    draw_readout(frame, readout_area, theme, state);
 
     if state.material_picker.open {
         super::material_picker::render(frame, area, theme, &state.material_picker, &state.model, regions);
@@ -139,7 +140,14 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingStat
             let value = if selected && state.editing { format!("{}_", state.edit_buffer) } else { display_value(&state.model, *row) };
             let marker = if selected { "> " } else { "  " };
             let label = model::row_label(*row);
-            let style = if selected { theme.selected_row_style() } else { Style::default() };
+            let failing = matches!(row, FieldRow::Number(t) if state.model.checks.iter().any(|c| c.severity == Severity::Fail && c.kind.related_inputs().contains(t)));
+            let style = if selected {
+                theme.selected_row_style()
+            } else if failing {
+                theme.status_style(StatusTone::Danger)
+            } else {
+                Style::default()
+            };
             ListItem::new(Line::from(Span::styled(format!("{marker}{label:<label_width$}{value}"), style)))
         })
         .collect();
@@ -183,39 +191,71 @@ fn tone_color(tone: StatusTone) -> ratatui::style::Color {
     }
 }
 
-fn draw_readout(frame: &mut Frame, area: Rect, theme: &Theme, model: &BushingModel, show_numbers: bool, scroll: u16) {
+fn draw_readout(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingState) {
     let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.border_style(false)).title(" Results ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    let lines = readout_lines(theme, model, show_numbers);
-    crate::widgets::scroll_paragraph::render(frame, inner, theme, lines, scroll);
+    let lines = readout_lines(theme, &state.model, state.show_numbers, state.rec_selected, state.last_applied.as_deref());
+    crate::widgets::scroll_paragraph::render(frame, inner, theme, lines, state.results_scroll);
 }
 
-fn readout_lines<'a>(theme: &'a Theme, model: &'a BushingModel, show_numbers: bool) -> Vec<Line<'a>> {
+/// A result line for a check: plain when it passes, otherwise the whole line
+/// (name and value) in the failure/warning colour with a leading marker that
+/// keeps the column alignment of the two-space indent it replaces.
+fn flag_line<'a>(theme: &Theme, severity: Severity, text: String) -> Line<'a> {
+    let body = text.strip_prefix("  ").unwrap_or(&text).to_string();
+    match severity {
+        Severity::Fail => Line::from(Span::styled(format!("\u{2717} {body}"), theme.status_style(StatusTone::Danger).add_modifier(Modifier::BOLD))),
+        Severity::Warn => Line::from(Span::styled(format!("! {body}"), theme.status_style(StatusTone::Warning))),
+        Severity::Pass => Line::from(text),
+    }
+}
+
+fn readout_lines<'a>(theme: &'a Theme, model: &'a BushingModel, show_numbers: bool, rec_selected: usize, last_applied: Option<&str>) -> Vec<Line<'a>> {
     let out = &model.output;
     let mut lines = Vec::new();
+    let sev = |kind: CheckKind| advice::severity_of(&model.checks, kind);
+    let failing: Vec<&advice::Check> = model.checks.iter().filter(|c| c.severity == Severity::Fail).collect();
 
-    let (headline, tone) = if out.enforcement_satisfied && !out.fail_straight && !out.fail_neck && out.governing.margin >= 0.0 {
-        ("PASS", StatusTone::Success)
-    } else {
-        ("REVIEW", StatusTone::Danger)
-    };
+    let (headline, tone) = if failing.is_empty() { ("PASS", StatusTone::Success) } else { ("REVIEW", StatusTone::Danger) };
     lines.push(Line::from(vec![
         Span::styled(headline, theme.status_style(tone).add_modifier(Modifier::BOLD)),
         Span::raw(format!("  governing: {} ({})", out.governing.name, fmt_margin(out.governing.margin))),
+        if failing.is_empty() { Span::raw("") } else { Span::styled(format!("  {} check(s) failing", failing.len()), theme.status_style(StatusTone::Danger)) },
     ]));
-    lines.push(Line::from(format!(
-        "Tolerance: {} ({} note(s))",
-        match out.tolerance_status {
-            ToleranceStatus::Ok => "OK",
-            ToleranceStatus::Clamped => "Clamped",
-            ToleranceStatus::Infeasible => "INFEASIBLE",
-        },
-        out.tolerance_notes.len()
-    )));
+    for check in model.checks.iter().filter(|c| c.severity != Severity::Pass) {
+        lines.push(flag_line(theme, check.severity, format!("  {}: {}", check.kind.label(), check.detail)));
+    }
+    if let Some(applied) = last_applied {
+        lines.push(Line::from(Span::styled(format!("\u{2713} Applied: {applied}"), theme.status_style(StatusTone::Success))));
+    }
+    if !model.recommendations.is_empty() {
+        lines.push(Line::from(Span::styled("Recommendations  (r: next \u{b7} a: apply selected)", theme.title_style(false))));
+        let selected = rec_selected.min(model.recommendations.len() - 1);
+        for (i, rec) in model.recommendations.iter().enumerate() {
+            let marker = if i == selected { ">" } else { " " };
+            let head = format!("{marker} {}. {}{}", i + 1, rec.summary, if rec.is_applicable() { "" } else { "  (manual)" });
+            let style = if i == selected { theme.selected_row_style() } else { Style::default() };
+            lines.push(Line::from(Span::styled(head, style)));
+            lines.push(Line::from(Span::styled(format!("     result: {}", rec.outcome), theme.disabled_style())));
+        }
+    }
+    lines.push(flag_line(
+        theme,
+        sev(CheckKind::Tolerance),
+        format!(
+            "  Tolerance: {} ({} note(s))",
+            match out.tolerance_status {
+                ToleranceStatus::Ok => "OK",
+                ToleranceStatus::Clamped => "Clamped",
+                ToleranceStatus::Infeasible => "INFEASIBLE",
+            },
+            out.tolerance_notes.len()
+        ),
+    ));
     for note in &out.tolerance_notes {
         lines.push(Line::from(Span::styled(format!("  \u{26a0} {note}"), theme.status_style(StatusTone::Warning))));
     }
@@ -233,26 +273,35 @@ fn readout_lines<'a>(theme: &'a Theme, model: &'a BushingModel, show_numbers: bo
         "  Interference        target {:.4} in, achieved {:.4} in (range {:.4}..{:.4})",
         model.interference, out.delta_total, out.achieved_interference_tol.lower, out.achieved_interference_tol.upper
     )));
-    lines.push(Line::from(format!(
-        "  Straight wall       {:.4} in  ({}, range {:.4}..{:.4})",
-        out.wall_straight,
-        if out.fail_straight { "FAIL vs min" } else { "OK" },
-        out.wall_straight_range.min,
-        out.wall_straight_range.max
-    )));
-    lines.push(Line::from(format!("  Neck wall           {:.4} in  ({})", out.wall_neck, if out.fail_neck { "FAIL vs min" } else { "OK" })));
+    lines.push(flag_line(
+        theme,
+        sev(CheckKind::StraightWall),
+        format!(
+            "  Straight wall       {:.4} in  ({}, range {:.4}..{:.4})",
+            out.wall_straight,
+            if out.fail_straight { "FAIL vs min" } else { "OK" },
+            out.wall_straight_range.min,
+            out.wall_straight_range.max
+        ),
+    ));
+    lines.push(flag_line(theme, sev(CheckKind::NeckWall), format!("  Neck wall           {:.4} in  ({})", out.wall_neck, if out.fail_neck { "FAIL vs min" } else { "OK" })));
     lines.push(Line::from(""));
 
     lines.push(Line::from(Span::styled("Contact / Stress", theme.title_style(false))));
     lines.push(Line::from(format!("  Contact pressure    {:.0} psi  (range {:.0}..{:.0})", out.pressure, out.pressure_range.min, out.pressure_range.max)));
-    lines.push(Line::from(vec![
-        Span::raw(format!("  Housing hoop stress {:>10.0} psi  MS ", out.stress_hoop_housing)),
-        Span::styled(fmt_margin(out.housing_ms), Style::default().fg(tone_color(tone_for_margin(out.housing_ms)))),
-    ]));
-    lines.push(Line::from(vec![
-        Span::raw(format!("  Bushing hoop stress {:>10.0} psi  MS ", out.stress_hoop_bushing)),
-        Span::styled(fmt_margin(out.bushing_ms), Style::default().fg(tone_color(tone_for_margin(out.bushing_ms)))),
-    ]));
+    for (kind, name, stress, ms) in [
+        (CheckKind::HousingStress, "Housing", out.stress_hoop_housing, out.housing_ms),
+        (CheckKind::BushingStress, "Bushing", out.stress_hoop_bushing, out.bushing_ms),
+    ] {
+        if sev(kind) == Severity::Fail {
+            lines.push(flag_line(theme, Severity::Fail, format!("  {name} hoop stress {stress:>10.0} psi  MS {}", fmt_margin(ms))));
+        } else {
+            lines.push(Line::from(vec![
+                Span::raw(format!("  {name} hoop stress {stress:>10.0} psi  MS ")),
+                Span::styled(fmt_margin(ms), Style::default().fg(tone_color(tone_for_margin(ms)))),
+            ]));
+        }
+    }
     if out.axial_constraint_factor > 0.0 {
         lines.push(Line::from(format!("  Housing axial stress {:>9.0} psi", out.stress_axial_housing)));
         lines.push(Line::from(format!("  Bushing axial stress {:>9.0} psi", out.stress_axial_bushing)));
@@ -266,22 +315,32 @@ fn readout_lines<'a>(theme: &'a Theme, model: &'a BushingModel, show_numbers: bo
 
     lines.push(Line::from(Span::styled("Edge Distance", theme.title_style(false))));
     lines.push(Line::from(format!("  Actual e/D          {:.3}", out.ed_actual)));
-    lines.push(Line::from(vec![
-        Span::raw(format!("  Sequencing margin   min {:.3}  actual/min ", out.ed_min_sequence)),
-        Span::styled(fmt_margin(out.sequence_margin), Style::default().fg(tone_color(tone_for_margin(out.sequence_margin)))),
-    ]));
-    lines.push(Line::from(vec![
-        Span::raw(format!("  Strength margin     min {:.3}  actual/min ", out.ed_min_strength)),
-        Span::styled(fmt_margin(out.strength_margin), Style::default().fg(tone_color(tone_for_margin(out.strength_margin)))),
-    ]));
+    for (kind, label, min, margin) in [
+        (CheckKind::EdgeSequencing, "Sequencing margin ", out.ed_min_sequence, out.sequence_margin),
+        (CheckKind::EdgeStrength, "Strength margin   ", out.ed_min_strength, out.strength_margin),
+    ] {
+        if sev(kind) == Severity::Fail {
+            lines.push(flag_line(theme, Severity::Fail, format!("  {label} min {min:.3}  actual/min {}", fmt_margin(margin))));
+        } else {
+            lines.push(Line::from(vec![
+                Span::raw(format!("  {label} min {min:.3}  actual/min ")),
+                Span::styled(fmt_margin(margin), Style::default().fg(tone_color(tone_for_margin(margin)))),
+            ]));
+        }
+    }
     lines.push(Line::from(""));
 
     lines.push(Line::from(Span::styled("Governing Candidates", theme.title_style(false))));
     for c in &out.candidates {
-        lines.push(Line::from(vec![
-            Span::raw(format!("  {:<28}", c.name)),
-            Span::styled(fmt_margin(c.margin), Style::default().fg(tone_color(tone_for_margin(c.margin)))),
-        ]));
+        let kind_sev = CheckKind::from_candidate_name(c.name).map(sev).unwrap_or(Severity::Pass);
+        if kind_sev == Severity::Fail {
+            lines.push(flag_line(theme, Severity::Fail, format!("  {:<28}{}", c.name, fmt_margin(c.margin))));
+        } else {
+            lines.push(Line::from(vec![
+                Span::raw(format!("  {:<28}", c.name)),
+                Span::styled(fmt_margin(c.margin), Style::default().fg(tone_color(tone_for_margin(c.margin)))),
+            ]));
+        }
     }
 
     if show_numbers {
@@ -365,6 +424,17 @@ pub fn build_report_text(model: &BushingModel) -> String {
         s.push_str(&format!("  {:<28} {}\n", c.name, fmt_margin(c.margin)));
     }
     s.push('\n');
+    let failing: Vec<_> = model.checks.iter().filter(|c| c.severity != Severity::Pass).collect();
+    if !failing.is_empty() {
+        s.push_str("Checks needing attention:\n");
+        for c in failing {
+            s.push_str(&format!("  [{}] {}: {}\n", if c.severity == Severity::Fail { "FAIL" } else { "WARN" }, c.kind.label(), c.detail));
+        }
+        for (i, r) in model.recommendations.iter().enumerate() {
+            s.push_str(&format!("  recommendation {}: {} ({})\n", i + 1, r.summary, r.outcome));
+        }
+        s.push('\n');
+    }
     s.push_str(&format!(
         "Tolerance status: {:?}\n",
         out.tolerance_status
@@ -508,5 +578,63 @@ mod tests {
         let text = build_report_text(&model);
         assert!(text.contains("Governing:"));
         assert!(text.contains(model.output.governing.name));
+    }
+
+    fn rendered_text(state: &BushingState, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = Rect::new(0, 0, width, height);
+        let mut regions = crate::mouse::MouseRegions::default();
+        terminal.draw(|f| draw(f, area, &Theme::default_palette(), state, true, &mut regions)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..buffer.area.height).map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>() + "\n").collect()
+    }
+
+    #[test]
+    fn a_failing_check_is_marked_and_recommendations_are_listed() {
+        let mut state = BushingState::default();
+        state.model.commit_number(model::NumberTarget::MinWallStraight, 0.2);
+        let text = rendered_text(&state, 170, 60);
+        assert!(text.contains("\u{2717} Straight wall"), "failing straight wall line must carry the fail marker:\n{text}");
+        assert!(text.contains("REVIEW"));
+        assert!(text.contains("Recommendations"));
+        assert!(text.contains("Bushing ID"));
+    }
+
+    #[test]
+    fn failing_check_name_and_value_are_drawn_in_the_danger_colour() {
+        let mut state = BushingState::default();
+        state.model.commit_number(model::NumberTarget::MinWallStraight, 0.2);
+        let backend = TestBackend::new(170, 60);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = Rect::new(0, 0, 170, 60);
+        let mut regions = crate::mouse::MouseRegions::default();
+        let theme = Theme::default_palette();
+        terminal.draw(|f| draw(f, area, &theme, &state, true, &mut regions)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let danger = theme.status_style(StatusTone::Danger).fg;
+        let mut found = false;
+        for y in 0..buffer.area.height {
+            let row: String = (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect();
+            if let Some(col) = row.find("Straight wall       ") {
+                // `find` yields a byte index; this row is ASCII up to the marker column's neighbours.
+                let x = row[..col].chars().count() as u16;
+                let name_fg = buffer[(x, y)].fg;
+                let value_fg = buffer[(x + 20, y)].fg;
+                assert_eq!(Some(name_fg), danger, "name must be highlighted");
+                assert_eq!(Some(value_fg), danger, "value must be highlighted");
+                found = true;
+            }
+        }
+        assert!(found, "straight wall result line not found");
+    }
+
+    #[test]
+    fn passing_results_carry_no_failure_marker() {
+        let mut state = BushingState::default();
+        state.model.commit_number(model::NumberTarget::EdgeDist, 5.0);
+        let text = rendered_text(&state, 170, 60);
+        assert!(!text.contains('\u{2717}'));
+        assert!(text.contains("PASS"));
     }
 }

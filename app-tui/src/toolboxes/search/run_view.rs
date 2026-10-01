@@ -55,8 +55,8 @@ pub fn draw(
 }
 
 fn draw_field(frame: &mut Frame, area: Rect, theme: &Theme, label: &str, value: &str, focused: bool, pane: u8, regions: &mut MouseRegions) {
-    let cursor = if focused { Span::styled("_", theme.title_style(true)) } else { Span::raw("") };
-    let line = Line::from(vec![Span::styled(format!("{label}: "), theme.title_style(focused)), Span::raw(value), cursor]);
+    // Tail-keeping: a long path must never push the cursor off the row.
+    let line = crate::widgets::input_line::line(theme, &format!("{label}: "), value, if focused { "_" } else { "" }, area.width);
     frame.render_widget(Paragraph::new(line), area);
     regions.workspace_panes.push((area, pane));
 }

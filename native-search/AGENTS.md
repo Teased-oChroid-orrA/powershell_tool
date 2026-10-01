@@ -70,6 +70,8 @@ Does not own: file discovery, text extraction, or change-detection policy (all `
 - **Query-time and index-time trigram splitting must use the same registered tokenizer instance** (`index.tokenizers().get(...)`), never a second hand-built one - the safe-superset guarantee depends on it.
 - **No `unsafe`/FFI types outside `src/ffi.rs`; every `ns_*` export must run inside `guard`/`guard_readonly`** - no panic may unwind into .NET (issue #2 Section 16/18).
 
+- **The `IndexWriter` is created lazily on the first write**, not in `open_or_create`: a query-only open (re-search narrowing, `verify_index`) must not take `.tantivy-writer.lock` or spawn indexing threads. `commit()` with no writer only reloads the reader.
+
 ## Patterns
 
 ### Adding a new `ns_*` FFI export

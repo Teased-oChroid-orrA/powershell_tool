@@ -25,6 +25,11 @@ Does not own: any Lamé/press-fit/tolerance math (`bushing-solver/AGENTS.md`).
 - Picker-backed `Number` rows (Bore Diameter, Friction, Bushing ID: `Enter` opens a catalog/library) must be excluded from type-to-start-editing in `bushing::handle_key`; see parent Contracts. Add any new picker-backed row to that same exclusion list.
 - Material inputs reach the solver as resolved `Material` values (see `bushing-solver/AGENTS.md`); resolve built-in vs library/custom materials in `model.rs` before solving.
 
+## Pass/fail checks and recommendations (`advice.rs`)
+- `BushingModel::recompute` also fills `checks` (Pass/Warn/Fail per `CheckKind`) and `recommendations`; the Results pane highlights a failing check's name+value (red, `✗`) and the related input rows. `r` cycles, `a` applies the selected recommendation to the real input fields and jumps the cursor to the first changed one.
+- Every recommendation is **verified by trial-solving a clone** (`BushingModel::trial`): bisect from the current value toward a limit, then require the failing check to clear (preferring no warning) and *no other check to newly fail*. The advice search calls `recompute_output`, never `recompute` (it would recurse). Do not hand-derive fixes here - the solver stays the authority.
+- Changing Fit Type loads `fit_type_preset()` (interference ~0.003xD press / 0.005xD shrink / negative for clearance and slip; tolerance band never narrower than the bore band). Leaving Shrink only turns Install Thermal Assist off if Shrink turned it on.
+
 ## Pitfalls
 - Reamer catalog, material library, and Bushing ID library are `src/library.rs` consumers; conflict/duplicate handling lives there, not here.
 - `m` inside the reamer picker reaches manual numeric entry; Bore Diameter's `Enter` opens the catalog (a real bore is reamed to a real size).

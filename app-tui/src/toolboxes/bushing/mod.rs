@@ -20,6 +20,7 @@
 //! stress field (`d` numbers panel) and the aircraft reamer catalog
 //! (`reamer_picker.rs`).
 
+pub mod advice;
 pub mod bushing_id_persistence;
 pub mod bushing_id_picker;
 pub mod friction_picker;
@@ -61,6 +62,11 @@ pub struct BushingState {
     /// it's safe to let this grow past the actual content height (e.g.
     /// after toggling `show_numbers` off shrinks the content).
     pub results_scroll: u16,
+    /// Which recommendation `a` applies (`r` cycles it).
+    pub rec_selected: usize,
+    /// What the last applied recommendation changed - shown atop Results
+    /// until the next edit.
+    pub last_applied: Option<String>,
 }
 
 impl Default for BushingState {
@@ -76,6 +82,8 @@ impl Default for BushingState {
             bushing_id_picker: BushingIdPickerState::default(),
             show_numbers: false,
             results_scroll: 0,
+            rec_selected: 0,
+            last_applied: None,
         };
         // Row 0 is always a `Header` (the first section divider) - land on
         // the first real field instead of an unselectable row.
@@ -117,7 +125,31 @@ impl BushingState {
         self.selected = next as usize;
     }
 
+    /// Applies the selected recommendation to the real input fields, moves
+    /// the field cursor to the first field it changed, and records what
+    /// happened for the Results pane.
+    fn apply_selected_recommendation(&mut self) {
+        let index = self.rec_selected.min(self.model.recommendations.len().saturating_sub(1));
+        let Some(rec) = self.model.recommendations.get(index).cloned() else {
+            self.last_applied = Some("nothing to apply - no failing check".to_string());
+            return;
+        };
+        match self.model.apply_recommendation(index) {
+            Some(summary) => {
+                self.last_applied = Some(summary);
+                self.rec_selected = 0;
+                if let Some(first) = rec.edits.first() {
+                    if let Some(row) = model::field_rows(&self.model).iter().position(|r| *r == FieldRow::Number(first.target)) {
+                        self.selected = row;
+                    }
+                }
+            }
+            None => self.last_applied = Some(format!("manual change needed: {}", rec.summary)),
+        }
+    }
+
     fn activate_selected(&mut self) {
+        self.last_applied = None;
         let rows = model::field_rows(&self.model);
         match rows.get(self.selected).copied() {
             Some(FieldRow::ToggleFitType) => self.model.toggle_fit_type(),
@@ -283,6 +315,17 @@ pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>
             state.show_numbers = !state.show_numbers;
             (true, Vec::new())
         }
+        KeyCode::Char('r' | 'R') => {
+            let n = state.model.recommendations.len();
+            if n > 0 {
+                state.rec_selected = (state.rec_selected + 1) % n;
+            }
+            (true, Vec::new())
+        }
+        KeyCode::Char('a' | 'A') => {
+            state.apply_selected_recommendation();
+            (true, Vec::new())
+        }
         KeyCode::Char('e' | 'E') => (true, vec![Effect::ExportBushingReport(view::build_report_text(&state.model))]),
         KeyCode::PageUp => {
             state.results_scroll = state.results_scroll.saturating_sub(crate::widgets::scroll_paragraph::SCROLL_STEP);
@@ -301,6 +344,7 @@ fn commit_edit(state: &mut BushingState) {
     if let Some(FieldRow::Number(target)) = rows.get(state.selected).copied() {
         if let Ok(raw) = state.edit_buffer.trim().parse::<f64>() {
             state.model.commit_number(target, raw);
+            state.last_applied = None;
         }
     }
     state.editing = false;
@@ -550,5 +594,49 @@ mod tests {
             [Effect::ExportBushingReport(text)] => assert!(!text.is_empty()),
             other => panic!("expected exactly one ExportBushingReport effect, got {other:?}"),
         }
+    }
+
+    fn failing_wall_state() -> BushingState {
+        let mut state = BushingState::default();
+        state.model.commit_number(NumberTarget::MinWallStraight, 0.2);
+        state
+    }
+
+    #[test]
+    fn a_applies_the_selected_recommendation_to_the_input_field_and_clears_the_failure() {
+        let mut state = failing_wall_state();
+        assert_eq!(advice::severity_of(&state.model.checks, advice::CheckKind::StraightWall), advice::Severity::Fail);
+        let idx = state.model.recommendations.iter().position(|r| r.fixes == advice::CheckKind::StraightWall).unwrap();
+        state.rec_selected = idx;
+        let before = state.model.id_bushing;
+        let (consumed, _) = handle_key(&mut state, key(KeyCode::Char('a')));
+        assert!(consumed);
+        assert!(state.model.id_bushing < before, "the Bushing ID input must have changed");
+        assert_eq!(advice::severity_of(&state.model.checks, advice::CheckKind::StraightWall), advice::Severity::Pass);
+        assert!(state.last_applied.as_deref().unwrap().contains("Bushing ID"));
+        let rows = model::field_rows(&state.model);
+        assert_eq!(rows[state.selected], FieldRow::Number(NumberTarget::IdBushing), "cursor jumps to the field that changed");
+    }
+
+    #[test]
+    fn caps_lock_a_and_r_work_too_and_r_cycles_recommendations() {
+        let mut state = failing_wall_state();
+        let n = state.model.recommendations.len();
+        assert!(n >= 2);
+        handle_key(&mut state, key(KeyCode::Char('R')));
+        assert_eq!(state.rec_selected, 1);
+        handle_key(&mut state, key(KeyCode::Char('A')));
+        assert!(state.last_applied.is_some());
+    }
+
+    #[test]
+    fn apply_with_nothing_failing_reports_that_instead_of_changing_anything() {
+        let mut state = BushingState::default();
+        state.model.commit_number(NumberTarget::EdgeDist, 5.0);
+        assert!(state.model.recommendations.is_empty());
+        let before = state.model.id_bushing;
+        handle_key(&mut state, key(KeyCode::Char('a')));
+        assert_eq!(state.model.id_bushing, before);
+        assert!(state.last_applied.as_deref().unwrap().contains("nothing to apply"));
     }
 }

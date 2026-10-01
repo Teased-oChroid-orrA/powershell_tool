@@ -10,6 +10,8 @@
 
 use std::time::{Duration, Instant};
 
+use tokio_util::sync::CancellationToken;
+
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use search_core::models::{SearchRunResult, SearchSettings};
 use search_core::orchestrator::OrchestratorError;
@@ -94,6 +96,8 @@ pub enum AppEvent {
     ReportWritten(Option<String>),
     IndexBuildProgress(search_core::native_index::CorpusIndexProgress),
     IndexBuildFinished(native_search::error::NsResult<search_core::native_index::CorpusIndexOutcome>),
+    /// One-line description of how the latest search used the fast index.
+    IndexNarrowed(String),
     ExtensionsScanned(Result<Vec<String>, String>),
     /// Result of reading a user-typed path for the reamer-library "Import"
     /// action (`toolboxes/bushing/reamer_picker.rs`) - file I/O, so it goes
@@ -131,7 +135,7 @@ pub enum Effect {
     /// result action.
     WriteTextFileAndOpen { path: String, contents: String },
     PersistSearchSettings,
-    BuildIndex { settings: SearchSettings, index_dir: std::path::PathBuf, force_rebuild: bool },
+    BuildIndex { settings: SearchSettings, index_dir: std::path::PathBuf, force_rebuild: bool, cancel: CancellationToken },
     ScanExtensions { root: String, exclude_folders: Vec<String>, include_hidden: bool },
     /// Writes the Pressure Vessel Analyzer's plain-text report
     /// (`pressure_vessel::view::build_report_text`, already fully built by
@@ -200,45 +204,41 @@ pub fn handle_event(state: &mut AppState, event: AppEvent) -> Vec<Effect> {
             Vec::new()
         }
         AppEvent::IndexBuildProgress(progress) => {
-            state.search.index_run.is_building = true;
-            state.search.index_run.status_text = if progress.total_files > 0 {
-                format!("Indexing {} of {}: {}", progress.files_processed, progress.total_files, progress.current_file)
-            } else {
-                progress.current_file
-            };
+            state.search.index_run.apply_progress(&progress);
+            Vec::new()
+        }
+        AppEvent::IndexNarrowed(note) => {
+            state.search.index_run.last_narrow = Some(note);
             Vec::new()
         }
         AppEvent::IndexBuildFinished(result) => {
-            state.search.index_run.is_building = false;
+            state.search.index_cancel = None;
             match result {
                 Ok(outcome) => {
-                    state.search.index_run.status_text = format!(
-                        "Indexed {} file(s) ({} skipped, {} failed)",
-                        outcome.indexed_count, outcome.skipped_count, outcome.failed_count
-                    );
-                    state.search.index_run.last_error = None;
+                    state.search.index_run.apply_outcome(&outcome);
                     if outcome.failed_count > 0 {
                         // `failed_count` alone told the user something broke but
                         // never why - surface the actual per-file reason (first
                         // failure is usually representative of a systemic cause:
                         // permissions, AV lock, unsupported format) instead of
-                        // leaving them to guess.
-                        let detail = outcome
-                            .failed_files
-                            .first()
-                            .map(|f| format!(" - e.g. {f}"))
-                            .unwrap_or_default();
+                        // leaving them to guess. Every failure is in the debug log.
+                        let detail = outcome.failed_files.first().map(|f| format!(" - e.g. {f}")).unwrap_or_default();
                         state.notifications.push(
                             format!("Index build: {} file(s) failed{detail}", outcome.failed_count),
                             StatusTone::Warning,
                         );
+                    } else if outcome.cancelled {
+                        state.notifications.push("Index build cancelled (partial index kept)", StatusTone::Info);
                     } else {
-                        state.notifications.push("Index build finished", StatusTone::Success);
+                        state.notifications.push(
+                            format!("Index ready: {} documents", outcome.index_docs),
+                            StatusTone::Success,
+                        );
                     }
                 }
                 Err(e) => {
-                    state.search.index_run.last_error = Some(e.to_string());
-                    state.notifications.push("Index build failed", StatusTone::Danger);
+                    state.search.index_run.apply_error(e.to_string());
+                    state.notifications.push(format!("Index build failed: {e}"), StatusTone::Danger);
                 }
             }
             Vec::new()
@@ -1000,6 +1000,22 @@ fn execute_command(state: &mut AppState, cmd: Command) -> Vec<Effect> {
         }
         Command::BuildIndex => search::start_index_build(&mut state.search, false),
         Command::RebuildIndex => search::start_index_build(&mut state.search, true),
+        Command::CancelIndexBuild => {
+            if let Some(token) = &state.search.index_cancel {
+                token.cancel();
+                state.notifications.push("Cancelling index build…", StatusTone::Info);
+            } else {
+                state.notifications.push("No index build is running", StatusTone::Info);
+            }
+            Vec::new()
+        }
+        Command::OpenDebugLog => match crate::debug_log::path() {
+            Some(path) => vec![Effect::OpenPath(path.to_string_lossy().into_owned())],
+            None => {
+                state.notifications.push("Debug log is disabled (TOOLBENCH_DEBUG=0) or not writable", StatusTone::Warning);
+                Vec::new()
+            }
+        },
         Command::ExportFastenerHoleReport => {
             vec![Effect::ExportFastenerHoleReport(fastener_hole::view::build_report_text(&state.fastener_hole.model))]
         }
@@ -1335,13 +1351,15 @@ mod tests {
         handle_event(
             &mut state,
             AppEvent::IndexBuildProgress(search_core::native_index::CorpusIndexProgress {
+                stage: search_core::native_index::IndexStage::Indexing,
                 files_processed: 3,
                 total_files: 10,
                 current_file: "a.txt".to_string(),
+                ..Default::default()
             }),
         );
         assert!(state.search.index_run.is_building);
-        assert!(state.search.index_run.status_text.contains("3 of 10"));
+        assert!(state.search.index_run.status_text.contains("3/10"));
 
         handle_event(
             &mut state,
@@ -1350,6 +1368,7 @@ mod tests {
                 skipped_count: 0,
                 failed_count: 0,
                 failed_files: Vec::new(),
+                ..Default::default()
             })),
         );
         assert!(!state.search.index_run.is_building);

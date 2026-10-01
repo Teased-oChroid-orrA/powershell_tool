@@ -175,6 +175,14 @@ Binding rules:
 - **Verify after**: re-check callers/dependents, then run tests. Neither
   replaces the other.
 
+## Branching
+
+Work happens on `main`. Use a short-lived sub-branch only for genuinely risky or long-running work, and delete it once merged. Do not leave stale branches on the remote.
+
+## Diagnosing Windows-only failures
+
+The app writes `toolbench-debug.log` into the folder it was launched from (`app-tui/src/debug_log.rs`). Ask for it first for any index/search report that does not reproduce on macOS.
+
 ## Boundaries
 
 ### Always

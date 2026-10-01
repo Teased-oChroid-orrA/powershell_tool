@@ -419,7 +419,7 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &MaterialPic
     if let Some(area) = filter_area {
         let label = if picker.filtering { "Filter (Enter/Esc to stop): " } else { "Filter: " };
         let cursor_glyph = if picker.filtering { "_" } else { "" };
-        let line = Line::from(vec![Span::styled(label, theme.title_style(true)), Span::raw(picker.filter_text.as_str()), Span::styled(cursor_glyph, theme.title_style(true))]);
+        let line = crate::widgets::input_line::line(theme, label, picker.filter_text.as_str(), cursor_glyph, area.width);
         frame.render_widget(Paragraph::new(line), area);
     }
 }

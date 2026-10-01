@@ -58,6 +58,7 @@ pub struct SearchToolState {
     pub screen: ToolboxScreen,
     pub settings: SettingsView,
     pub index_run: indexing::IndexRunState,
+    pub index_cancel: Option<CancellationToken>,
     pub extension_picker: extension_picker::ExtensionPicker,
 }
 
@@ -101,6 +102,7 @@ impl Default for SearchToolState {
             screen: ToolboxScreen::default(),
             settings: SettingsView::default(),
             index_run: indexing::IndexRunState::default(),
+            index_cancel: None,
             extension_picker: extension_picker::ExtensionPicker::default(),
         }
     }
@@ -183,8 +185,10 @@ pub fn start_index_build(state: &mut SearchToolState, force_rebuild: bool) -> Ve
     let settings = model::build_settings(&state.config);
     let index_dir =
         indexing::index_directory(state.config.index.location, &state.config.search_path, &state.config.output_folder);
-    state.index_run = indexing::IndexRunState { is_building: true, status_text: "Starting…".to_string(), last_error: None };
-    vec![Effect::BuildIndex { settings, index_dir, force_rebuild }]
+    state.index_run.begin();
+    let cancel = CancellationToken::new();
+    state.index_cancel = Some(cancel.clone());
+    vec![Effect::BuildIndex { settings, index_dir, force_rebuild, cancel }]
 }
 
 /// Toolbox-local key routing for whichever workspace pane currently has

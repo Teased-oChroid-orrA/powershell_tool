@@ -9,3 +9,6 @@ nuget.config
 # Rust workspace (native-search/, search-core/, app/)
 /target/
 **/target/
+
+# Diagnostic log written next to wherever the app is launched
+toolbench-debug.log*

@@ -34,6 +34,8 @@ use app_tui::toolboxes::search::{extension_picker, indexing, persistence, runner
 use app_tui::widgets::shell;
 
 fn main() -> io::Result<()> {
+    // Before anything else so a panic during startup is recorded too.
+    app_tui::debug_log::init();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -183,8 +185,8 @@ fn execute_effect(tx: &mpsc::UnboundedSender<AppEvent>, state: &mut AppState, ef
             let persisted = state.search.to_persisted_file();
             tokio::task::spawn_blocking(move || persistence::save(&persisted));
         }
-        Effect::BuildIndex { settings, index_dir, force_rebuild } => {
-            tokio::spawn(indexing::build_or_rebuild_index(tx.clone(), settings, index_dir, force_rebuild));
+        Effect::BuildIndex { settings, index_dir, force_rebuild, cancel } => {
+            tokio::spawn(indexing::build_or_rebuild_index(tx.clone(), settings, index_dir, force_rebuild, cancel));
         }
         Effect::ScanExtensions { root, exclude_folders, include_hidden } => {
             let tx = tx.clone();

@@ -206,7 +206,12 @@ fn build_schema() -> (Schema, Fields) {
 pub struct NativeSearchEngine {
     index: Index,
     fields: Fields,
-    writer: Mutex<IndexWriter>,
+    /// Created lazily on the first write (`with_writer_retry`): a query-only
+    /// open (re-search narrowing, verify, stats) must not take Tantivy's
+    /// exclusive `.tantivy-writer.lock` or spin up indexing worker threads -
+    /// on Windows the lock file also collides with a concurrent index build
+    /// and with antivirus scans of the index folder.
+    writer: Mutex<Option<IndexWriter>>,
     reader: IndexReader,
 }
 
@@ -273,10 +278,6 @@ impl NativeSearchEngine {
             .build(),
         );
 
-        let writer: IndexWriter = index
-            .writer(WRITER_MEMORY_BUDGET)
-            .map_err(|e| NsError::index_error(format!("cannot create writer: {e}")))?;
-
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
@@ -286,7 +287,7 @@ impl NativeSearchEngine {
         Ok(Self {
             index,
             fields,
-            writer: Mutex::new(writer),
+            writer: Mutex::new(None),
             reader,
         })
     }
@@ -348,8 +349,16 @@ impl NativeSearchEngine {
     /// rather than a reproducible one.
     fn with_writer_retry<T>(&self, mut op: impl FnMut(&mut IndexWriter) -> tantivy::Result<T>) -> NsResult<T> {
         {
-            let mut writer = self.lock_writer();
-            match op(&mut writer) {
+            let mut guard = self.lock_writer();
+            if guard.is_none() {
+                *guard = Some(
+                    self.index
+                        .writer(WRITER_MEMORY_BUDGET)
+                        .map_err(|e| NsError::index_error(format!("cannot create writer: {e}")))?,
+                );
+            }
+            let writer = guard.as_mut().expect("writer just ensured");
+            match op(writer) {
                 Ok(v) => return Ok(v),
                 Err(TantivyError::ErrorInThread(_)) => {
                     // Confirmed dead (see doc comment above) - fall through
@@ -361,16 +370,16 @@ impl NativeSearchEngine {
                 Err(e) => return Err(NsError::index_error(e.to_string())),
             }
         }
-        {
-            let mut writer = self.lock_writer();
-            let fresh = self
-                .index
-                .writer(WRITER_MEMORY_BUDGET)
-                .map_err(|e| NsError::index_error(format!("cannot reopen index writer after a worker thread died: {e}")))?;
-            *writer = fresh;
-        }
-        let mut writer = self.lock_writer();
-        op(&mut writer).map_err(|e| NsError::index_error(e.to_string()))
+        let mut guard = self.lock_writer();
+        // Drop the dead writer first so its lock file is released before the
+        // replacement tries to acquire it (matters on Windows).
+        *guard = None;
+        let fresh = self
+            .index
+            .writer(WRITER_MEMORY_BUDGET)
+            .map_err(|e| NsError::index_error(format!("cannot reopen index writer after a worker thread died: {e}")))?;
+        let writer = guard.insert(fresh);
+        op(writer).map_err(|e| NsError::index_error(e.to_string()))
     }
 
     /// Locks `self.writer`, recovering the guard rather than panicking if
@@ -389,7 +398,7 @@ impl NativeSearchEngine {
     /// of poisoning propagation) can't undo whatever caused the original
     /// panic, but it stops one bad write from taking every future
     /// index/search action down with it.
-    fn lock_writer(&self) -> std::sync::MutexGuard<'_, IndexWriter> {
+    fn lock_writer(&self) -> std::sync::MutexGuard<'_, Option<IndexWriter>> {
         self.writer.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
@@ -399,7 +408,12 @@ impl NativeSearchEngine {
     /// racing a reload timer - see the ViewModel test-flakiness lesson
     /// already learned once in this repo (commit 96f00df).
     pub fn commit(&self) -> NsResult<()> {
-        self.with_writer_retry(|writer| writer.commit())?;
+        // No writer yet means nothing was ever staged through this engine -
+        // there is nothing to commit, but the reader may still need a reload.
+        let has_writer = self.lock_writer().is_some();
+        if has_writer {
+            self.with_writer_retry(|writer| writer.commit())?;
+        }
         self.reader
             .reload()
             .map_err(|e| NsError::index_error(e.to_string()))?;
@@ -616,6 +630,12 @@ impl NativeSearchEngine {
             paths.push(text_value(&retrieved, self.fields.path));
         }
         Ok(Some(paths))
+    }
+
+    /// Number of searchable segments - a diagnostics figure (many tiny
+    /// segments after a big build means merging has not caught up).
+    pub fn segment_count(&self) -> usize {
+        self.reader.searcher().segment_readers().len()
     }
 
     pub fn num_docs(&self) -> u64 {
@@ -1242,5 +1262,20 @@ mod tests {
         assert_eq!(engine.search("survives", 10, None).unwrap().len(), 1);
         engine.delete_document("1").unwrap();
         engine.commit().unwrap();
+    }
+
+    /// A query-only open must not take the exclusive writer lock: while one
+    /// engine is writing, a second can still open the same directory and
+    /// read what has been committed (re-search narrowing during a build).
+    #[test]
+    fn query_only_open_does_not_contend_for_the_writer_lock() {
+        let dir = tempdir().unwrap();
+        let writer_engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        writer_engine.index_document(sample("1", "alpha beta")).unwrap();
+        writer_engine.commit().unwrap();
+
+        let reader_engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+        assert_eq!(reader_engine.num_docs(), 1);
+        assert!(reader_engine.segment_count() >= 1);
     }
 }

@@ -195,7 +195,7 @@ impl NumberTarget {
         }
     }
 
-    fn is_angle(self) -> bool {
+    pub(super) fn is_angle(self) -> bool {
         matches!(
             self,
             NumberTarget::CsAngle | NumberTarget::CsAngleTolPlus | NumberTarget::CsAngleTolMinus | NumberTarget::ExtCsAngle | NumberTarget::ExtCsAngleTolPlus | NumberTarget::ExtCsAngleTolMinus | NumberTarget::EdgeLoadAngleDeg
@@ -302,7 +302,7 @@ pub fn row_label(row: FieldRow) -> &'static str {
 pub fn field_hint(row: FieldRow) -> &'static str {
     match row {
         FieldRow::Header(_) => "",
-        FieldRow::ToggleFitType => "Press/Shrink relabel the same interference-fit mechanics already modeled below; Shrink additionally enables Install Thermal Assist. Clearance/Slip are informational - entering a positive Target Interference while one is selected surfaces a warning in Results, but is never blocked.",
+        FieldRow::ToggleFitType => "Selecting a fit type loads its typical Target Interference and tolerance band for the current bore (Press ~0.003 x D, Shrink ~0.005 x D plus Install Thermal Assist, Clearance/Slip negative). Everything stays editable afterward; a mismatch between fit type and interference sign is flagged in Results.",
         FieldRow::Number(NumberTarget::BoreDia) => "Housing bore nominal diameter. Enter opens the aircraft reamer catalog to pick a real reamed size; press 'm' inside that picker to type an exact value instead.",
         FieldRow::Number(NumberTarget::BoreTolPlus) | FieldRow::Number(NumberTarget::BoreTolMinus) => "Bore tolerance band. A band wider than the interference tolerance band makes the fit Infeasible (see Tolerance status in Results).",
         FieldRow::Number(NumberTarget::IdBushing) => "Bushing inner (through) diameter - the finished bore the installed part/shaft actually uses. Enter opens a user-saved library of past values ('n' saves the current one); 'm' inside it types an exact value instead.",
@@ -456,6 +456,7 @@ pub fn field_rows(model: &BushingModel) -> Vec<FieldRow> {
 /// mirroring `PressureVesselModel`'s own discipline. Defaults reproduce
 /// `bushing_solver::solve`'s own differential-tested fixture
 /// (`tests/differential.rs`'s base input), not an arbitrary guess.
+#[derive(Clone)]
 pub struct BushingModel {
     pub fit_type: FitType,
     pub bore_dia: f64,
@@ -524,6 +525,14 @@ pub struct BushingModel {
     pub custom_materials: Vec<&'static Material>,
 
     pub output: BushingOutput,
+
+    /// Pass/warn/fail per check and verified fixes for whatever fails -
+    /// refreshed by every `recompute` (see `advice.rs`).
+    pub checks: Vec<super::advice::Check>,
+    pub recommendations: Vec<super::advice::Recommendation>,
+    /// `toggle_fit_type` switched Install Thermal Assist on for Shrink Fit;
+    /// leaving Shrink Fit switches it back off only in that case.
+    thermal_enabled_by_fit: bool,
 }
 
 impl Default for BushingModel {
@@ -587,6 +596,9 @@ impl Default for BushingModel {
                 .map(|li| leak_custom_material(li.item.name, li.item.e_ksi, li.item.sy_ksi, li.item.fbru_ksi, li.item.fsu_ksi, li.item.ftu_ksi, li.item.nu, li.item.alpha_u_f))
                 .collect(),
             output: compute(&BushingInputs::default()),
+            checks: Vec::new(),
+            recommendations: Vec::new(),
+            thermal_enabled_by_fit: false,
         };
         model.recompute();
         model
@@ -711,8 +723,60 @@ impl BushingModel {
         }
     }
 
-    pub fn recompute(&mut self) {
+    /// Solver only - no advice. What trial evaluations use (the advice
+    /// search itself calls this, so it must not recurse into `recompute`).
+    fn recompute_output(&mut self) {
         self.output = compute(&self.build_inputs());
+    }
+
+    pub fn recompute(&mut self) {
+        self.recompute_output();
+        self.checks = super::advice::evaluate(self);
+        self.recommendations = super::advice::recommend(self);
+    }
+
+    /// A scratch copy with `edits` applied and the solver re-run - never
+    /// touches `self`, never recurses into the advice search.
+    pub(super) fn trial(&self, edits: &[super::advice::Edit]) -> BushingModel {
+        let mut copy = self.clone();
+        copy.checks = Vec::new();
+        copy.recommendations = Vec::new();
+        for e in edits {
+            copy.set_number_raw(e.target, e.value);
+        }
+        copy.recompute_output();
+        copy
+    }
+
+    /// Applies a recommendation's edits through the normal commit path and
+    /// returns a one-line description of what changed, or `None` for an
+    /// advice-only recommendation.
+    pub fn apply_recommendation(&mut self, index: usize) -> Option<String> {
+        let rec = self.recommendations.get(index)?.clone();
+        if !rec.is_applicable() {
+            return None;
+        }
+        for e in &rec.edits {
+            self.set_number_raw(e.target, e.value);
+        }
+        self.recompute();
+        Some(rec.summary)
+    }
+
+    /// Typical `(target interference, tol +, tol -)` for the selected fit
+    /// type at the current bore diameter (inches). Positive interference is
+    /// press/shrink, negative is clearance. The interference band is never
+    /// narrower than the bore band, so a preset is never itself Infeasible.
+    pub fn fit_type_preset(&self) -> (f64, f64, f64) {
+        let d = self.bore_dia.abs();
+        let round4 = |v: f64| (v * 10_000.0).round() / 10_000.0;
+        let (interference, min_tol): (f64, f64) = match self.fit_type {
+            FitType::Press => (round4(0.003 * d), 0.0005),
+            FitType::Shrink => (round4(0.005 * d), 0.0005),
+            FitType::Clearance => (-round4((0.004 * d).max(0.001)), 0.0005),
+            FitType::Slip => (-round4((0.001 * d).max(0.0005)), 0.0003),
+        };
+        (interference, min_tol.max(self.bore_tol_plus), min_tol.max(self.bore_tol_minus))
     }
 
     pub fn number_value(&self, target: NumberTarget) -> f64 {
@@ -767,6 +831,11 @@ impl BushingModel {
         if !raw.is_finite() {
             return;
         }
+        self.set_number_raw(target, raw);
+        self.recompute();
+    }
+
+    fn set_number_raw(&mut self, target: NumberTarget, raw: f64) {
         match target {
             NumberTarget::BoreDia => self.bore_dia = raw,
             NumberTarget::BoreTolPlus => self.bore_tol_plus = raw,
@@ -809,7 +878,6 @@ impl BushingModel {
             NumberTarget::AssemblyHousingTemp => self.assembly_housing_temp = raw,
             NumberTarget::AssemblyBushingTemp => self.assembly_bushing_temp = raw,
         }
-        self.recompute();
     }
 
     /// Shrink Fit turns on `assembly_thermal_enabled` (surfacing Install
@@ -818,10 +886,24 @@ impl BushingModel {
     /// Press/Clearance/Slip are pure relabeling - see `FitType`'s own doc
     /// comment for why this is a UI-level preset, not a new solver input.
     pub fn toggle_fit_type(&mut self) {
+        let previous = self.fit_type;
         self.fit_type = cycle_fit_type(self.fit_type);
         if self.fit_type == FitType::Shrink {
-            self.assembly_thermal_enabled = true;
+            if !self.assembly_thermal_enabled {
+                self.assembly_thermal_enabled = true;
+                self.thermal_enabled_by_fit = true;
+            }
+        } else if previous == FitType::Shrink && self.thermal_enabled_by_fit {
+            self.assembly_thermal_enabled = false;
+            self.thermal_enabled_by_fit = false;
         }
+        // A fit type is defined by its interference: selecting one loads the
+        // typical target interference and tolerance band for the current
+        // bore (all still editable afterwards).
+        let (interference, tol_plus, tol_minus) = self.fit_type_preset();
+        self.interference = interference;
+        self.interference_tol_plus = tol_plus;
+        self.interference_tol_minus = tol_minus;
         self.recompute();
     }
 
@@ -958,6 +1040,56 @@ mod tests {
         model.toggle_fit_type(); // Press -> Shrink
         assert_eq!(model.fit_type, FitType::Shrink);
         assert!(model.assembly_thermal_enabled);
+    }
+
+    #[test]
+    fn changing_fit_type_loads_that_fits_interference_and_tolerances() {
+        let mut model = BushingModel::default();
+        // Press at the default 0.5 in bore reproduces the solver fixture's own 0.0015 in.
+        assert!((model.interference - 0.0015).abs() < 1e-9);
+        let press = model.interference;
+
+        model.toggle_fit_type(); // Shrink
+        let shrink = model.interference;
+        assert!(shrink > press, "shrink fit carries more interference than press fit");
+        assert!(model.interference_tol_plus > 0.0 && model.interference_tol_minus > 0.0);
+
+        model.toggle_fit_type(); // Clearance
+        assert!(model.interference < 0.0, "clearance fit is negative interference");
+        let clearance = model.interference;
+
+        model.toggle_fit_type(); // Slip
+        assert!(model.interference < 0.0 && model.interference > clearance, "slip is a tighter clearance than clearance fit");
+
+        model.toggle_fit_type(); // back to Press
+        assert!((model.interference - press).abs() < 1e-9);
+        assert!(!model.assembly_thermal_enabled, "leaving Shrink undoes the thermal assist Shrink itself enabled");
+    }
+
+    #[test]
+    fn fit_type_presets_scale_with_bore_and_stay_feasible_for_any_bore_tolerance() {
+        let mut model = BushingModel::default();
+        model.commit_number(NumberTarget::BoreDia, 1.0);
+        model.commit_number(NumberTarget::BoreTolPlus, 0.002);
+        model.commit_number(NumberTarget::BoreTolMinus, 0.001);
+        for _ in 0..4 {
+            model.toggle_fit_type();
+            assert_ne!(model.output.tolerance_status, bushing_solver::tolerance::ToleranceStatus::Infeasible, "{:?}", model.fit_type);
+            assert!(model.output.pressure.is_finite() && model.output.install_force.is_finite(), "{:?}", model.fit_type);
+        }
+        model.commit_number(NumberTarget::BoreDia, 1.0);
+        model.toggle_fit_type();
+        assert!(model.interference.abs() > 0.0015, "preset scales with bore diameter");
+    }
+
+    #[test]
+    fn a_manually_entered_thermal_assist_survives_leaving_shrink_fit() {
+        let mut model = BushingModel::default();
+        model.toggle_assembly_thermal_enabled();
+        assert!(model.assembly_thermal_enabled);
+        model.toggle_fit_type(); // Shrink: already on, not enabled by the fit
+        model.toggle_fit_type(); // Clearance
+        assert!(model.assembly_thermal_enabled, "the user turned it on, the fit type must not turn it off");
     }
 
     #[test]

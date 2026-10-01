@@ -37,6 +37,9 @@ pub enum Command {
     ToggleFastReSearchIndex,
     BuildIndex,
     RebuildIndex,
+    CancelIndexBuild,
+    /// Opens `toolbench-debug.log` (written next to where the app was launched).
+    OpenDebugLog,
     /// Fastener Holes has no Numbers panel (see `app-tui/AGENTS.md`'s
     /// Pitfalls for why) - `e` export is its only palette-worthy action.
     ExportFastenerHoleReport,
@@ -73,6 +76,8 @@ impl Command {
         Command::ToggleFastReSearchIndex,
         Command::BuildIndex,
         Command::RebuildIndex,
+        Command::CancelIndexBuild,
+        Command::OpenDebugLog,
         Command::ExportFastenerHoleReport,
         Command::ToggleBushingNumbersPanel,
         Command::ExportBushingReport,
@@ -107,6 +112,8 @@ impl Command {
             Command::ToggleFastReSearchIndex => "Toggle fast re-search index",
             Command::BuildIndex => "Build fast re-search index",
             Command::RebuildIndex => "Rebuild fast re-search index from scratch",
+            Command::CancelIndexBuild => "Stop running index build",
+            Command::OpenDebugLog => "Open debug log (toolbench-debug.log)",
             Command::ExportFastenerHoleReport => "Export report",
             Command::ToggleBushingNumbersPanel => "Toggle Numbers panel",
             Command::ExportBushingReport => "Export report",
@@ -138,6 +145,7 @@ impl Command {
             | Command::SwitchToRename
             | Command::SwitchToLogs
             | Command::ToggleTheme
+            | Command::OpenDebugLog
             | Command::Quit => None,
             Command::RunSearch
             | Command::CancelSearch
@@ -146,7 +154,8 @@ impl Command {
             | Command::ClearRecentSearches
             | Command::ToggleFastReSearchIndex
             | Command::BuildIndex
-            | Command::RebuildIndex => Some(ToolId::Search),
+            | Command::RebuildIndex
+            | Command::CancelIndexBuild => Some(ToolId::Search),
             Command::ExportFastenerHoleReport => Some(ToolId::FastenerHole),
             Command::ToggleBushingNumbersPanel | Command::ExportBushingReport | Command::OpenReamerPicker | Command::OpenHousingMaterialPicker | Command::OpenBushingMaterialPicker => {
                 Some(ToolId::Bushing)

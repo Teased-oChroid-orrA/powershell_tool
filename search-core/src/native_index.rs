@@ -146,14 +146,43 @@ pub fn index_hits_for_fast_search(engine: &NativeSearchEngine, hits: &[FileSearc
     Ok(outcome)
 }
 
+/// Coarse phase of a corpus index build - lets a UI (and the debug log)
+/// say *what* is slow instead of showing one opaque percentage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IndexStage {
+    #[default]
+    Enumerating,
+    /// Comparing each file's modified time/size against the index to find
+    /// the ones that actually need (re)indexing.
+    Checking,
+    /// Reading + extracting + indexing the files that changed.
+    Indexing,
+    Committing,
+}
+
+impl IndexStage {
+    pub fn label(self) -> &'static str {
+        match self {
+            IndexStage::Enumerating => "Scanning folder",
+            IndexStage::Checking => "Checking for changes",
+            IndexStage::Indexing => "Indexing",
+            IndexStage::Committing => "Committing",
+        }
+    }
+}
+
 /// Live status while [`build_or_update_corpus_index`] is running - handed
 /// to the caller's progress callback, same shape/spirit as
 /// `orchestrator::SearchProgressReport` but scoped to what indexing
 /// actually has to report (no match-mode/hit-count concepts here).
+#[derive(Debug, Clone, Default)]
 pub struct CorpusIndexProgress {
+    pub stage: IndexStage,
     pub files_processed: i32,
     pub total_files: i32,
     pub current_file: String,
+    pub indexed_count: i32,
+    pub failed_count: i32,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -170,6 +199,21 @@ pub struct CorpusIndexOutcome {
     /// receive an unbounded list) - not truncated here, since a caller
     /// choosing to display only the first N is a presentation decision.
     pub failed_files: Vec<String>,
+    /// Files found by the folder walk (before extension filtering).
+    pub enumerated_count: i32,
+    /// Files left after extension filtering - the set the index covers.
+    pub candidate_count: i32,
+    /// Files skipped because they exceed `max_file_size_mb`.
+    pub too_large_count: i32,
+    /// Directories the walk could not enter (permissions, broken links,
+    /// path-length limits) - their contents are NOT in the index.
+    pub enumeration_errors: i32,
+    pub elapsed_ms: u64,
+    /// Documents in the index after the build (all files, not just this run's).
+    pub index_docs: u64,
+    /// The build was cancelled part-way; everything indexed before the
+    /// cancel was committed and is usable.
+    pub cancelled: bool,
 }
 
 /// How many newly-indexed documents accumulate before an intermediate
@@ -196,6 +240,11 @@ const COMMIT_BATCH_SIZE: i32 = 200;
 /// skipped, never aborts the whole indexing run - matches this app's
 /// established per-file error isolation (`process_one_file`'s own
 /// behavior, epic §17's "a bad file must never stop indexing").
+///
+/// Read + extraction of changed files runs concurrently (bounded by
+/// `settings.throttle_limit` when `settings.parallel`), writes to the index
+/// stay serialized on this task. Cancelling commits what was indexed so far
+/// and returns `Ok` with `cancelled = true`.
 pub async fn build_or_update_corpus_index(
     settings: &SearchSettings,
     engine: &NativeSearchEngine,
@@ -226,41 +275,94 @@ pub async fn build_or_update_corpus_index_send<F: FnMut(CorpusIndexProgress) + S
     build_or_update_corpus_index_impl(settings, engine, cancellation, on_progress).await
 }
 
+/// Owned, `Copy` slice of `SearchSettings` the per-file read+extract task
+/// needs - a spawned task must be `'static`, so it cannot borrow `settings`.
+#[derive(Clone, Copy)]
+struct ReadParams {
+    file_timeout_seconds: u64,
+    max_retries: i32,
+    retry_delay_ms: u64,
+    pdf_timeout_seconds: u64,
+    ocr_scanned_pdfs: bool,
+}
+
+/// Reads one file and extracts its text lines. Errors are pre-formatted
+/// strings (the failure list is display-only).
+async fn read_and_extract(full_name: String, ext: String, p: ReadParams, cancellation: CancellationToken) -> Result<Vec<String>, String> {
+    let bytes = file_reader::read_file_bytes_robust(&full_name, p.file_timeout_seconds, p.max_retries, p.retry_delay_ms, None, &cancellation)
+        .await
+        .map_err(|e| e.to_string())?;
+    // Extraction is synchronous and CPU-bound (PDF/OOXML/zip) - keep it off
+    // the async worker threads so concurrent reads are never starved by it.
+    tokio::task::spawn_blocking(move || {
+        extraction::extract_lines_by_extension(&ext, &bytes, p.pdf_timeout_seconds, None, p.ocr_scanned_pdfs)
+            .map(|e| e.lines)
+            .map_err(|e| format!("{e:?}"))
+    })
+    .await
+    .map_err(|e| format!("extraction task failed: {e}"))?
+}
+
 async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Sized>(
     settings: &SearchSettings,
     engine: &NativeSearchEngine,
     cancellation: &CancellationToken,
     mut on_progress: Option<&mut F>,
 ) -> NsResult<CorpusIndexOutcome> {
-    let (all_files, _enum_errors) = file_reader::enumerate_files_safely(
-        &settings.search_path,
-        settings.include_hidden,
-        &settings.exclude_folders,
-        cancellation,
-        None,
-    )
-    .map_err(|_| NsError::cancelled("corpus indexing cancelled during directory enumeration"))?;
+    let started = std::time::Instant::now();
+    let mut outcome = CorpusIndexOutcome::default();
+    let mut report = |outcome: &CorpusIndexOutcome, stage: IndexStage, done: i32, total: i32, current: &str| {
+        if let Some(cb) = on_progress.as_deref_mut() {
+            cb(CorpusIndexProgress {
+                stage,
+                files_processed: done,
+                total_files: total,
+                current_file: current.to_string(),
+                indexed_count: outcome.indexed_count,
+                failed_count: outcome.failed_count,
+            });
+        }
+    };
+
+    report(&outcome, IndexStage::Enumerating, 0, 0, &settings.search_path);
+    // The directory walk is blocking filesystem work; running it inline would
+    // park an async worker thread for the whole walk of a large tree.
+    let walk_settings = (settings.search_path.clone(), settings.include_hidden, settings.exclude_folders.clone());
+    let walk_cancel = cancellation.clone();
+    let walked = tokio::task::spawn_blocking(move || {
+        file_reader::enumerate_files_safely(&walk_settings.0, walk_settings.1, &walk_settings.2, &walk_cancel, None)
+    })
+    .await
+    .map_err(|e| NsError::index_error(format!("directory walk task failed: {e}")))?;
+    let Ok((all_files, enum_errors)) = walked else {
+        // Cancelled before anything was written: nothing to commit.
+        outcome.cancelled = true;
+        outcome.elapsed_ms = started.elapsed().as_millis() as u64;
+        return Ok(outcome);
+    };
+    outcome.enumerated_count = all_files.len() as i32;
+    outcome.enumeration_errors = enum_errors;
 
     let candidates = filter_by_extension(all_files, settings);
     let max_bytes = (settings.max_file_size_mb * 1024.0 * 1024.0) as i64;
     let total_files = candidates.len() as i32;
+    outcome.candidate_count = total_files;
 
-    let mut outcome = CorpusIndexOutcome::default();
-    let mut pending_commits = 0i32;
-
+    // Pass 1: decide which files need work (cheap index lookups only).
+    let mut work: Vec<(file_reader::EnumeratedFile, String, String)> = Vec::new();
     for (i, file) in candidates.into_iter().enumerate() {
         if cancellation.is_cancelled() {
-            return Err(NsError::cancelled("corpus indexing cancelled"));
+            outcome.cancelled = true;
+            break;
         }
         let full_name = file.path.to_string_lossy().into_owned();
-        if let Some(cb) = on_progress.as_deref_mut() {
-            cb(CorpusIndexProgress { files_processed: i as i32, total_files, current_file: full_name.clone() });
+        if i % 256 == 0 {
+            report(&outcome, IndexStage::Checking, i as i32, total_files, &full_name);
         }
-
         if file.length > max_bytes {
+            outcome.too_large_count += 1;
             continue;
         }
-
         let modified_unix = file.modified.timestamp();
         if let Ok(Some((existing_modified, existing_size))) = engine.get_document_metadata(&full_name) {
             if existing_modified == modified_unix && existing_size == file.length {
@@ -268,89 +370,210 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
                 continue;
             }
         }
+        let ext = file.path.extension().map(|e| format!(".{}", e.to_string_lossy().to_lowercase())).unwrap_or_default();
+        work.push((file, full_name, ext));
+    }
 
-        let bytes = match file_reader::read_file_bytes_robust(
-            &full_name,
-            settings.file_timeout_seconds as u64,
-            settings.max_retries,
-            settings.retry_delay_ms as u64,
-            None,
-            cancellation,
-        )
-        .await
-        {
-            Ok(b) => b,
-            Err(e) => {
+    // Pass 2: read+extract concurrently in order-preserving windows, index serially.
+    let params = ReadParams {
+        file_timeout_seconds: settings.file_timeout_seconds as u64,
+        max_retries: settings.max_retries,
+        retry_delay_ms: settings.retry_delay_ms as u64,
+        pdf_timeout_seconds: settings.pdf_timeout_seconds as u64,
+        ocr_scanned_pdfs: settings.ocr_scanned_pdfs,
+    };
+    let concurrency = if settings.parallel { settings.throttle_limit.clamp(1, 16) as usize } else { 1 };
+    let work_total = work.len() as i32;
+    let mut pending_commits = 0i32;
+    let mut done = 0i32;
+    let mut work_iter = work.into_iter();
+
+    'outer: while !outcome.cancelled {
+        let window: Vec<_> = work_iter.by_ref().take(concurrency).collect();
+        if window.is_empty() {
+            break;
+        }
+        let handles: Vec<_> = window
+            .iter()
+            .map(|(_, full_name, ext)| tokio::spawn(read_and_extract(full_name.clone(), ext.clone(), params, cancellation.clone())))
+            .collect();
+
+        for ((file, full_name, ext), handle) in window.into_iter().zip(handles) {
+            if cancellation.is_cancelled() {
+                outcome.cancelled = true;
+                handle.abort();
+                continue;
+            }
+            report(&outcome, IndexStage::Indexing, done, work_total, &full_name);
+            done += 1;
+            let lines = match handle.await {
+                Ok(Ok(l)) => l,
+                Ok(Err(e)) => {
+                    outcome.failed_count += 1;
+                    outcome.failed_files.push(format!("{full_name}: {e}"));
+                    continue;
+                }
+                Err(e) => {
+                    outcome.failed_count += 1;
+                    outcome.failed_files.push(format!("{full_name}: read task failed: {e}"));
+                    continue;
+                }
+            };
+
+            let file_name = file.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let body = lines.join("\n");
+            // A single document/commit failure (most plausibly the
+            // Windows-only transient hazard `native_search::engine.rs`'s
+            // `with_writer_retry` doc comment describes - antivirus/OneDrive
+            // interference killing a Tantivy worker thread) must not abort
+            // the loop and discard every remaining file: count it, keep
+            // going. `engine.rs` itself recovers a killed writer
+            // transparently, so this only fires for an unrecovered error.
+            if let Err(e) = engine.index_document(DocumentInput {
+                id: &full_name,
+                path: &full_name,
+                filename: &file_name,
+                extension: &ext,
+                title: "",
+                modified_unix: file.modified.timestamp(),
+                created_unix: file.created.timestamp(),
+                size: file.length,
+                body: &body,
+            }) {
                 outcome.failed_count += 1;
                 outcome.failed_files.push(format!("{full_name}: {e}"));
                 continue;
             }
-        };
+            outcome.indexed_count += 1;
+            pending_commits += 1;
 
-        let ext = file.path.extension().map(|e| format!(".{}", e.to_string_lossy().to_lowercase())).unwrap_or_default();
-        let extracted = extraction::extract_lines_by_extension(&ext, &bytes, settings.pdf_timeout_seconds as u64, None, settings.ocr_scanned_pdfs);
-        let lines = match extracted {
-            Ok(e) => e.lines,
-            Err(e) => {
-                outcome.failed_count += 1;
-                outcome.failed_files.push(format!("{full_name}: {e:?}"));
-                continue;
+            if pending_commits >= COMMIT_BATCH_SIZE {
+                report(&outcome, IndexStage::Committing, done, work_total, &full_name);
+                if let Err(e) = engine.commit() {
+                    outcome.failed_count += 1;
+                    outcome.failed_files.push(format!("commit at {} files: {e}", outcome.indexed_count));
+                }
+                pending_commits = 0;
             }
-        };
-
-        let file_name = file.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let body = lines.join("\n");
-        // A single document/commit failure (most plausibly the
-        // Windows-only transient hazard `native_search::engine.rs`'s
-        // `with_writer_retry` doc comment describes - antivirus/OneDrive
-        // interference killing a Tantivy worker thread) used to abort
-        // this ENTIRE loop via a bare `?`, discarding every remaining
-        // file in the corpus even though thousands may have already
-        // indexed successfully. Degrade the same way the read/extraction
-        // failures two blocks above already do: count it, keep going.
-        // `engine.rs` itself now recovers a killed writer transparently,
-        // so this only fires for a genuinely unrecovered error.
-        if let Err(e) = engine.index_document(DocumentInput {
-            id: &full_name,
-            path: &full_name,
-            filename: &file_name,
-            extension: &ext,
-            title: "",
-            modified_unix,
-            created_unix: file.created.timestamp(),
-            size: file.length,
-            body: &body,
-        }) {
-            outcome.failed_count += 1;
-            outcome.failed_files.push(format!("{full_name}: {e}"));
-            continue;
         }
-        outcome.indexed_count += 1;
-        pending_commits += 1;
-
-        if pending_commits >= COMMIT_BATCH_SIZE {
-            if let Err(e) = engine.commit() {
-                outcome.failed_count += 1;
-                outcome.failed_files.push(format!("commit at {} files: {e}", outcome.indexed_count));
-            }
-            pending_commits = 0;
+        if outcome.cancelled {
+            break 'outer;
         }
     }
 
     if pending_commits > 0 {
+        report(&outcome, IndexStage::Committing, done, work_total, "");
         if let Err(e) = engine.commit() {
             outcome.failed_count += 1;
             outcome.failed_files.push(format!("final commit: {e}"));
         }
     }
 
+    outcome.elapsed_ms = started.elapsed().as_millis() as u64;
+    outcome.index_docs = engine.num_docs();
     tracing::info!(
         indexed = outcome.indexed_count,
         skipped = outcome.skipped_count,
         failed = outcome.failed_count,
+        cancelled = outcome.cancelled,
         "corpus index build complete"
     );
     Ok(outcome)
+}
+
+/// Result of [`narrow_candidates`] - the candidate list plus the numbers a
+/// UI/debug log needs to explain *why* a search did or did not use the index.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct NarrowOutcome {
+    /// `None` = no safe narrowing possible (no usable trigrams, regex with no
+    /// required literals, ...) - the caller must do a normal full scan.
+    pub candidates: Option<Vec<String>>,
+    pub index_docs: u64,
+    /// Files a full scan would have processed under the current settings.
+    pub scannable: usize,
+    pub from_index: usize,
+    /// Files in scope that the index did not cover or has out of date
+    /// (added/changed since the last build) - always included.
+    pub stale_or_new: usize,
+}
+
+/// Case-insensitive, separator-insensitive comparison key for a file path:
+/// the index stores the exact string the walk produced, and on Windows the
+/// same file may be reported with different case or `/` vs `\`.
+fn path_key(p: &str) -> String {
+    if cfg!(windows) {
+        p.replace('\\', "/").to_lowercase()
+    } else {
+        p.to_string()
+    }
+}
+
+/// Narrows a re-search to the files that can possibly match, using the
+/// trigram index - **without ever dropping a real match**:
+///
+/// * the trigram query is a safe superset of the files containing the filter
+///   (regex mode uses only the literal chunks every match must contain, and
+///   falls back to a full scan when none can be proven);
+/// * the result is intersected with what a full scan would walk *right now*
+///   (current extension/exclude/hidden settings), so a settings change since
+///   the last build cannot resurrect files the user excluded;
+/// * every in-scope file that is missing from the index, or whose modified
+///   time/size no longer matches it (added or edited after the build) is
+///   included regardless, so a stale index can never hide a file.
+pub async fn narrow_candidates(
+    settings: &SearchSettings,
+    engine: &NativeSearchEngine,
+    cancellation: &CancellationToken,
+) -> NsResult<NarrowOutcome> {
+    let mut out = NarrowOutcome { index_docs: engine.num_docs(), ..Default::default() };
+
+    let indexed_paths = if settings.use_regex {
+        let mut chunk_sets = Vec::with_capacity(settings.filters.len());
+        for f in &settings.filters {
+            match crate::regex_literals::required_literal_chunks(f) {
+                Some(chunks) if !chunks.is_empty() => chunk_sets.push(chunks),
+                _ => return Ok(out),
+            }
+        }
+        engine.trigram_candidate_paths_for_chunk_sets(&chunk_sets)?
+    } else {
+        engine.trigram_candidate_paths(&settings.filters)?
+    };
+    let Some(indexed_paths) = indexed_paths else {
+        return Ok(out);
+    };
+    let from_index: std::collections::HashSet<String> = indexed_paths.iter().map(|p| path_key(p)).collect();
+
+    let walk = (settings.search_path.clone(), settings.include_hidden, settings.exclude_folders.clone());
+    let walk_cancel = cancellation.clone();
+    let walked = tokio::task::spawn_blocking(move || file_reader::enumerate_files_safely(&walk.0, walk.1, &walk.2, &walk_cancel, None))
+        .await
+        .map_err(|e| NsError::index_error(format!("directory walk task failed: {e}")))?;
+    let Ok((all_files, _)) = walked else {
+        return Err(NsError::cancelled("candidate narrowing cancelled"));
+    };
+    let in_scope = filter_by_extension(all_files, settings);
+    out.scannable = in_scope.len();
+
+    let mut chosen = Vec::new();
+    for file in in_scope {
+        let full_name = file.path.to_string_lossy().into_owned();
+        if from_index.contains(&path_key(&full_name)) {
+            out.from_index += 1;
+            chosen.push(full_name);
+            continue;
+        }
+        let up_to_date = matches!(
+            engine.get_document_metadata(&full_name),
+            Ok(Some((m, sz))) if m == file.modified.timestamp() && sz == file.length
+        );
+        if !up_to_date {
+            out.stale_or_new += 1;
+            chosen.push(full_name);
+        }
+    }
+    out.candidates = Some(chosen);
+    Ok(out)
 }
 
 /// Searches whatever's currently in the native_search index (built up via
@@ -895,5 +1118,117 @@ mod tests {
         std::fs::write(dir.path().join("meta.json"), "not valid json at all").unwrap();
 
         assert!(verify_index(dir.path()).is_err(), "a corrupt index must surface as an error, not silently rebuild");
+    }
+
+    async fn built_engine(dir: &Path, settings: &SearchSettings) -> NativeSearchEngine {
+        let index_dir = dir.join(".idx-test");
+        ensure_index_directory_exists(&index_dir).unwrap();
+        let engine = open_or_create_with_rebuild(&index_dir).unwrap();
+        let mut noop = |_p: CorpusIndexProgress| {};
+        let out = build_or_update_corpus_index_send(settings, &engine, &CancellationToken::new(), Some(&mut noop)).await.unwrap();
+        assert_eq!(out.failed_count, 0, "{:?}", out.failed_files);
+        engine
+    }
+
+    fn narrow_settings(dir: &Path, filter: &str) -> SearchSettings {
+        let mut s = SearchSettings { search_path: dir.to_string_lossy().into_owned(), filters: vec![filter.to_string()], ..Default::default() };
+        ensure_index_folder_excluded(&mut s.exclude_folders);
+        s.exclude_folders.push(".idx-test".to_string());
+        s
+    }
+
+    #[tokio::test]
+    async fn narrowing_includes_files_added_after_the_index_was_built() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("old.txt"), "needle in old\n").unwrap();
+        std::fs::write(dir.path().join("other.txt"), "nothing\n").unwrap();
+        let settings = narrow_settings(dir.path(), "needle");
+        let engine = built_engine(dir.path(), &settings).await;
+
+        std::fs::write(dir.path().join("new.txt"), "needle in new\n").unwrap();
+        let out = narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap();
+        let names: Vec<String> = out.candidates.unwrap().iter().map(|p| Path::new(p).file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert!(names.contains(&"old.txt".to_string()));
+        assert!(names.contains(&"new.txt".to_string()), "a file added after the build must never be hidden by the index");
+        assert!(!names.contains(&"other.txt".to_string()), "unchanged non-matching file must be narrowed away");
+        assert_eq!(out.stale_or_new, 1);
+    }
+
+    #[tokio::test]
+    async fn narrowing_includes_files_modified_after_the_index_was_built() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "nothing here\n").unwrap();
+        let settings = narrow_settings(dir.path(), "needle");
+        let engine = built_engine(dir.path(), &settings).await;
+
+        // Different length => different size => detected as stale regardless of mtime granularity.
+        std::fs::write(dir.path().join("a.txt"), "now it has the needle word\n").unwrap();
+        let out = narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap();
+        assert_eq!(out.candidates.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn narrowing_respects_the_current_extension_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "needle\n").unwrap();
+        std::fs::write(dir.path().join("b.log"), "needle\n").unwrap();
+        let mut settings = narrow_settings(dir.path(), "needle");
+        settings.extensions = Some(vec![".txt".to_string(), ".log".to_string()]);
+        let engine = built_engine(dir.path(), &settings).await;
+
+        settings.extensions = Some(vec![".txt".to_string()]);
+        let out = narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap();
+        let cands = out.candidates.unwrap();
+        assert_eq!(cands.len(), 1);
+        assert!(cands[0].ends_with("a.txt"));
+    }
+
+    #[tokio::test]
+    async fn narrowing_in_regex_mode_never_uses_the_raw_pattern_as_a_literal() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "engine mount\n").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "nothing\n").unwrap();
+        let mut settings = narrow_settings(dir.path(), "eng.*mount");
+        settings.use_regex = true;
+        let engine = built_engine(dir.path(), &settings).await;
+
+        let out = narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap();
+        let cands = out.candidates.expect("literal chunks 'eng' and 'mount' allow narrowing");
+        assert!(cands.iter().any(|p| p.ends_with("a.txt")), "the raw pattern as a literal would have dropped this real match");
+        assert!(!cands.iter().any(|p| p.ends_with("b.txt")));
+
+        settings.filters = vec![".*".to_string()];
+        let out = narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap();
+        assert!(out.candidates.is_none(), "no provable literal => full scan");
+    }
+
+    #[tokio::test]
+    async fn cancelled_build_commits_partial_work_and_reports_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..5 {
+            std::fs::write(dir.path().join(format!("f{i}.txt")), "x\n").unwrap();
+        }
+        let settings = narrow_settings(dir.path(), "x");
+        let index_dir = dir.path().join(".idx-test");
+        ensure_index_directory_exists(&index_dir).unwrap();
+        let engine = open_or_create_with_rebuild(&index_dir).unwrap();
+        let token = CancellationToken::new();
+        token.cancel();
+        let out = build_or_update_corpus_index_send(&settings, &engine, &token, None::<&mut fn(CorpusIndexProgress)>).await.unwrap();
+        assert!(out.cancelled);
+        assert_eq!(out.indexed_count, 0);
+    }
+
+    #[tokio::test]
+    async fn parallel_build_indexes_the_same_documents_as_sequential() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..30 {
+            std::fs::write(dir.path().join(format!("f{i}.txt")), format!("content {i}\n")).unwrap();
+        }
+        let mut settings = narrow_settings(dir.path(), "content");
+        settings.parallel = true;
+        settings.throttle_limit = 4;
+        let engine = built_engine(dir.path(), &settings).await;
+        assert_eq!(engine.num_docs(), 30);
     }
 }

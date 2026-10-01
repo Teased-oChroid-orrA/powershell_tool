@@ -28,10 +28,17 @@ pub fn render_status_line(frame: &mut Frame, area: Rect, theme: &Theme, tick: u6
         ])
     } else if let Some(error) = &state.last_error {
         Line::from(Span::styled(format!("Index error: {error}"), theme.status_style(StatusTone::Danger)))
-    } else if !state.status_text.is_empty() {
-        Line::from(Span::styled(state.status_text.clone(), theme.disabled_style()))
+    } else if !state.status_text.is_empty() || state.last_narrow.is_some() {
+        let mut text = state.status_text.clone();
+        if let Some(note) = &state.last_narrow {
+            if !text.is_empty() {
+                text.push_str(" │ ");
+            }
+            text.push_str(note);
+        }
+        Line::from(Span::styled(text, theme.disabled_style()))
     } else {
-        Line::from(Span::styled("Index: not built", theme.disabled_style()))
+        Line::from(Span::styled("Index: not built (Ctrl+P → Build fast re-search index)", theme.disabled_style()))
     };
 
     frame.render_widget(Paragraph::new(line), area);
@@ -78,13 +85,13 @@ mod tests {
 
     #[test]
     fn building_state_renders_without_panicking() {
-        let state = IndexRunState { is_building: true, status_text: "Indexing 3 of 10: a.txt".to_string(), last_error: None };
+        let state = IndexRunState { is_building: true, status_text: "Indexing 3 of 10: a.txt".to_string(), ..Default::default() };
         render_at(40, 1, &state);
     }
 
     #[test]
     fn error_state_renders_without_panicking() {
-        let state = IndexRunState { is_building: false, status_text: String::new(), last_error: Some("disk full".to_string()) };
+        let state = IndexRunState { last_error: Some("disk full".to_string()), ..Default::default() };
         render_at(40, 1, &state);
     }
 

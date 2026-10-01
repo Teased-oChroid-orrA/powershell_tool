@@ -362,12 +362,12 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &ReamerPicke
                 PathPromptKind::Import => "Import from (Enter to confirm, Esc to cancel): ",
                 PathPromptKind::Export => "Export to (Enter to confirm, Esc to cancel): ",
             };
-            let line = Line::from(vec![Span::styled(label, theme.title_style(true)), Span::raw(prompt.buffer.as_str()), Span::styled("_", theme.title_style(true))]);
+            let line = crate::widgets::input_line::line(theme, label, prompt.buffer.as_str(), "_", area.width);
             frame.render_widget(Paragraph::new(line), area);
         } else if picker.filtering || !picker.filter_text.is_empty() {
             let label = if picker.filtering { "Filter (Enter/Esc to stop): " } else { "Filter: " };
             let cursor_glyph = if picker.filtering { "_" } else { "" };
-            let line = Line::from(vec![Span::styled(label, theme.title_style(true)), Span::raw(picker.filter_text.as_str()), Span::styled(cursor_glyph, theme.title_style(true))]);
+            let line = crate::widgets::input_line::line(theme, label, picker.filter_text.as_str(), cursor_glyph, area.width);
             frame.render_widget(Paragraph::new(line), area);
         }
     }
@@ -584,7 +584,8 @@ mod tests {
         let (consumed, _) = handle_key(&mut picker, &mut model, key(KeyCode::Char('k')));
         assert!(consumed);
         assert!(picker.pending_conflicts.as_ref().unwrap().is_empty());
-        assert_eq!(picker.library[0].item.nominal_in, 0.332);
+        let kept = picker.library.iter().find(|i| i.item.size_label == "Q").expect("existing entry must remain");
+        assert_eq!(kept.item.nominal_in, 0.332);
     }
 
     #[test]
@@ -601,5 +602,25 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut regions = crate::mouse::MouseRegions::default();
         terminal.draw(|f| render(f, f.area(), &Theme::default_palette(), &picker, &model, &mut regions)).unwrap();
+    }
+
+    /// Regression test for the import-path overflow bug: a long file
+    /// location typed into the Import prompt used to run past the right edge
+    /// of the popup, hiding the cursor and everything just typed.
+    #[test]
+    fn a_long_import_path_keeps_its_tail_and_cursor_visible() {
+        let model = BushingModel::default();
+        let mut picker = ReamerPickerState::open_near(&model);
+        let long = format!("C:\\Users\\someone\\Documents\\{}\\reamer-library-final.json", "very-long-folder-name".repeat(4));
+        picker.path_prompt = Some(PathPrompt { kind: PathPromptKind::Import, buffer: long });
+        for width in [60u16, 90, 140] {
+            let backend = TestBackend::new(width, 30);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let mut regions = crate::mouse::MouseRegions::default();
+            terminal.draw(|f| render(f, f.area(), &Theme::default_palette(), &picker, &model, &mut regions)).unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            let rendered: String = (0..buffer.area.height).map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>() + "\n").collect();
+            assert!(rendered.contains("reamer-library-final.json_"), "tail + cursor must be visible at width {width}:\n{rendered}");
+        }
     }
 }

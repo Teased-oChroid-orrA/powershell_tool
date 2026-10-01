@@ -6,6 +6,7 @@ pub mod empty_state;
 pub mod gauge_row;
 pub mod help;
 pub mod hint_panel;
+pub mod input_line;
 pub mod number_edit;
 pub mod scroll_list;
 pub mod scroll_paragraph;

@@ -7,6 +7,7 @@
 
 pub mod app;
 pub mod command_palette;
+pub mod debug_log;
 pub mod format;
 pub mod library;
 pub mod modal;

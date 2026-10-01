@@ -14,6 +14,7 @@ use search_core::models::{SearchRunResult, SearchSettings};
 use search_core::orchestrator::OrchestratorError;
 
 use crate::app::AppEvent;
+use crate::debug_log::log;
 
 use super::indexing::{self, IndexSettings};
 
@@ -38,6 +39,7 @@ pub async fn run_search(
     base_settings: SearchSettings,
     index: IndexSettings,
 ) {
+    log("SEARCH", format!("run start: roots={roots:?} filters={:?} use_index={}", base_settings.filters, index.enabled));
     let mut accumulated = SearchRunResult::default();
     let mut cancelled = false;
 
@@ -50,7 +52,7 @@ pub async fn run_search(
         let mut root_settings = base_settings.clone();
         root_settings.search_path = root.clone();
 
-        let candidates = narrow_via_index(index, &root, &base_settings.output_folder, &root_settings.filters).await;
+        let candidates = narrow_via_index(&tx, index, &root, &root_settings, &cancellation).await;
 
         let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
         let run_cancellation = cancellation.clone();
@@ -94,32 +96,71 @@ pub async fn run_search(
 }
 
 /// Opens the fast re-search index for `root` (if one already exists - a
-/// missing index is "not available yet", not an error) and asks it for a
-/// safe-superset candidate list. Runs on a blocking-pool thread since
-/// opening a Tantivy index is a blocking filesystem operation, mirroring
-/// `app/`'s own "wrap Tantivy opens in `spawn_blocking`" rule.
+/// missing index is "not available yet", not an error) and asks
+/// `search_core::native_index::narrow_candidates` for a candidate list that
+/// is guaranteed not to hide a real match (regex-aware, intersected with the
+/// current scope, always including files added/changed since the last
+/// build). Reports how the index was used via `AppEvent::IndexNarrowed` so
+/// the status line and debug log can explain a slow or unexpectedly full
+/// scan. Never creates or rebuilds an index: a schema mismatch or any open
+/// error just means "no narrowing" (building is an explicit user action).
 async fn narrow_via_index(
+    tx: &mpsc::UnboundedSender<AppEvent>,
     index: IndexSettings,
     root: &str,
-    output_folder: &str,
-    filters: &[String],
+    settings: &SearchSettings,
+    cancellation: &CancellationToken,
 ) -> Option<Vec<String>> {
     if !index.enabled {
         return None;
     }
+    let note = |text: String| {
+        log("SEARCH", format!("index: {text}"));
+        let _ = tx.send(AppEvent::IndexNarrowed(text));
+    };
 
-    let index_dir = indexing::index_directory(index.location, root, output_folder);
+    let index_dir = indexing::index_directory(index.location, root, &settings.output_folder);
     if !index_dir.exists() {
+        note(format!("Index enabled but not built for this folder - full scan (Ctrl+P → Build fast re-search index) [{}]", index_dir.display()));
         return None;
     }
 
-    let filters = filters.to_vec();
-    tokio::task::spawn_blocking(move || {
-        let engine = search_core::native_index::open_or_create_with_rebuild(&index_dir).ok()?;
-        indexing::trigram_candidates(&engine, &filters).ok().flatten()
-    })
-    .await
-    .unwrap_or(None)
+    let dir = index_dir.clone();
+    let opened = tokio::task::spawn_blocking(move || native_search::engine::NativeSearchEngine::open_or_create(&dir)).await;
+    let engine = match opened {
+        Ok(Ok(engine)) => engine,
+        Ok(Err(e)) => {
+            log("ERROR", format!("search: cannot open index at {:?}: {e:?}", index_dir));
+            note(format!("Index unreadable - full scan ({e}); rebuild it from the command palette"));
+            return None;
+        }
+        Err(e) => {
+            log("ERROR", format!("search: index open task failed: {e}"));
+            return None;
+        }
+    };
+
+    match search_core::native_index::narrow_candidates(settings, &engine, cancellation).await {
+        Ok(out) => {
+            match &out.candidates {
+                Some(c) => note(format!(
+                    "Index narrowed {} → {} file(s) ({} from index, {} new/changed since build, {} docs indexed)",
+                    out.scannable,
+                    c.len(),
+                    out.from_index,
+                    out.stale_or_new,
+                    out.index_docs
+                )),
+                None => note("Index cannot narrow this query (short/regex filter) - full scan".to_string()),
+            }
+            out.candidates
+        }
+        Err(e) => {
+            log("ERROR", format!("search: narrowing failed: {e:?}"));
+            note(format!("Index query failed - full scan ({e})"));
+            None
+        }
+    }
 }
 
 /// Writes the HTML/CSV/JSON export(s) for a finished run, then reports the
@@ -200,6 +241,61 @@ mod tests {
         });
         let Some(Ok(run_result)) = finished else { panic!("expected a successful SearchFinished event") };
         assert_eq!(run_result.file_results.iter().filter(|f| f.status == search_core::models::FileSearchStatus::Hit).count(), 1);
+    }
+
+    /// End to end through the real app path: build the index, then add a new
+    /// file and change none of the others - an index-enabled search must
+    /// still find the new file (a stale index must never hide it) and must
+    /// report that it narrowed.
+    #[tokio::test]
+    async fn an_index_enabled_search_still_finds_files_added_after_the_build() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "hello world\nneedle here\n").unwrap();
+        fs::write(dir.path().join("b.txt"), "nothing interesting\n").unwrap();
+
+        let mut config = SearchToolConfig { search_path: dir.path().to_string_lossy().into_owned(), ..Default::default() };
+        config.filters_text = "needle".to_string();
+        config.index.enabled = true;
+        let settings = build_settings(&config);
+
+        let index_dir = indexing::index_directory(config.index.location, &config.search_path, "");
+        let (itx, mut irx) = mpsc::unbounded_channel();
+        indexing::build_or_rebuild_index(itx, settings.clone(), index_dir, false, CancellationToken::new()).await;
+        let built = drain_progress(&mut irx).into_iter().find_map(|e| match e {
+            AppEvent::IndexBuildFinished(r) => Some(r),
+            _ => None,
+        });
+        built.expect("finished event").expect("build ok");
+
+        fs::write(dir.path().join("c.txt"), "a brand new needle file\n").unwrap();
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        run_search(tx, CancellationToken::new(), vec![config.search_path.clone()], settings, config.index).await;
+        let events = drain_progress(&mut rx);
+        let note = events.iter().find_map(|e| match e {
+            AppEvent::IndexNarrowed(n) => Some(n.clone()),
+            _ => None,
+        });
+        assert!(note.expect("narrowing note").contains("narrowed"), "index must have been used");
+        let Some(AppEvent::SearchFinished(Ok(run_result))) = events.iter().find(|e| matches!(e, AppEvent::SearchFinished(_))) else { panic!("expected success") };
+        let hits: Vec<_> = run_result.file_results.iter().filter(|f| f.status == search_core::models::FileSearchStatus::Hit).map(|f| f.full_name.clone()).collect();
+        assert_eq!(hits.len(), 2, "a.txt (indexed) and c.txt (added after the build): {hits:?}");
+        assert!(hits.iter().any(|h| h.ends_with("c.txt")));
+    }
+
+    #[tokio::test]
+    async fn an_index_enabled_search_without_a_built_index_falls_back_to_a_full_scan_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "needle\n").unwrap();
+        let mut config = SearchToolConfig { search_path: dir.path().to_string_lossy().into_owned(), ..Default::default() };
+        config.filters_text = "needle".to_string();
+        config.index.enabled = true;
+        let settings = build_settings(&config);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        run_search(tx, CancellationToken::new(), vec![config.search_path.clone()], settings, config.index).await;
+        let events = drain_progress(&mut rx);
+        assert!(events.iter().any(|e| matches!(e, AppEvent::IndexNarrowed(n) if n.contains("not built"))));
+        assert!(matches!(events.last(), Some(AppEvent::SearchFinished(Ok(_)))));
     }
 
     #[tokio::test]

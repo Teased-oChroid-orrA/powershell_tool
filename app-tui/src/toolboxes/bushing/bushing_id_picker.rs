@@ -278,12 +278,12 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &BushingIdPi
                 PathPromptKind::Import => "Import from (Enter to confirm, Esc to cancel): ",
                 PathPromptKind::Export => "Export to (Enter to confirm, Esc to cancel): ",
             };
-            let line = Line::from(vec![Span::styled(label, theme.title_style(true)), Span::raw(prompt.buffer.as_str()), Span::styled("_", theme.title_style(true))]);
+            let line = crate::widgets::input_line::line(theme, label, prompt.buffer.as_str(), "_", area.width);
             frame.render_widget(Paragraph::new(line), area);
         } else if picker.filtering || !picker.filter_text.is_empty() {
             let label = if picker.filtering { "Filter (Enter/Esc to stop): " } else { "Filter: " };
             let cursor_glyph = if picker.filtering { "_" } else { "" };
-            let line = Line::from(vec![Span::styled(label, theme.title_style(true)), Span::raw(picker.filter_text.as_str()), Span::styled(cursor_glyph, theme.title_style(true))]);
+            let line = crate::widgets::input_line::line(theme, label, picker.filter_text.as_str(), cursor_glyph, area.width);
             frame.render_widget(Paragraph::new(line), area);
         }
     }
