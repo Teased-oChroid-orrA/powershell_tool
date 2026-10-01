@@ -23,6 +23,7 @@ pub enum ClickTarget {
     PressureVesselRow(usize),
     BushingRow(usize),
     BushingAdviceRow(usize),
+    TemplateRow(usize),
     ReamerRow(usize),
     PreloadAnalysisRow(usize),
     BoltRow(usize),
@@ -61,6 +62,9 @@ pub struct MouseRegions {
     pub bushing_results: Option<Rect>,
     /// The Fixes window's outer rect while it is open.
     pub advice_window: Option<Rect>,
+    /// Preload Analysis joint-template window: rows/buttons and outer rect.
+    pub template_actions: Vec<(Rect, crate::toolboxes::preload_analysis::template_picker::TemplateAction)>,
+    pub template_window: Option<Rect>,
     pub reamer_rows: Vec<(Rect, usize)>,
     pub preload_analysis_rows: Vec<(Rect, usize)>,
     pub bolt_rows: Vec<(Rect, usize)>,

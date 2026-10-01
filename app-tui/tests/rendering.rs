@@ -498,3 +498,70 @@ fn mouse_wheel_over_the_results_readout_scrolls_it() {
     app_tui::app::handle_mouse(&mut state, &regions, ev);
     assert_eq!(state.bushing.results_scroll, 3);
 }
+
+// ---------------------------------------------------------------------
+// Preload Analysis joint templates: mouse + results
+// ---------------------------------------------------------------------
+
+fn preload_state_with_picker() -> AppState {
+    let mut state = AppState::default();
+    state.nav.activate(app_tui::nav::ToolId::PreloadAnalysis);
+    state.preload_analysis.template_picker = app_tui::toolboxes::preload_analysis::template_picker::TemplatePickerState::open_with_seed(11);
+    state
+}
+
+fn click_template_action(state: &mut AppState, action: app_tui::toolboxes::preload_analysis::template_picker::TemplateAction) {
+    let mut regions = app_tui::mouse::MouseRegions::default();
+    let _ = render_shell_with_regions(state, 170, 55, &mut regions);
+    let rect = regions.template_actions.iter().find(|(_, a)| *a == action).map(|(r, _)| *r).unwrap_or_else(|| panic!("{action:?} not clickable: {:?}", regions.template_actions));
+    if let Event::Mouse(m) = click_at(rect) {
+        app_tui::app::handle_mouse(state, &regions, m);
+    }
+}
+
+#[test]
+fn clicking_apply_in_the_template_window_loads_the_stack_and_shows_the_diagram_in_results() {
+    use app_tui::toolboxes::preload_analysis::template_picker::TemplateAction;
+    let mut state = preload_state_with_picker();
+    click_template_action(&mut state, TemplateAction::Row(3)); // "2 plates, no washers"
+    assert_eq!(state.preload_analysis.template_picker.cursor, 3);
+    click_template_action(&mut state, TemplateAction::Apply);
+    assert!(!state.preload_analysis.template_picker.open);
+    assert_eq!(state.preload_analysis.model.members.len(), 2);
+    assert!(state.preload_analysis.message.as_deref().unwrap().contains("no washers"));
+    let text = buffer_text(&render_shell(&state, 170, 55));
+    assert!(text.contains("Joint Stack") && text.contains("bolt head") && text.contains("Joint template applied"), "{text}");
+}
+
+#[test]
+fn clicking_next_random_cycles_candidates_and_apply_analyzes_the_shown_one() {
+    use app_tui::toolboxes::preload_analysis::template_picker::TemplateAction;
+    let mut state = preload_state_with_picker();
+    click_template_action(&mut state, TemplateAction::Generate);
+    let first = state.preload_analysis.template_picker.selected_template().unwrap();
+    click_template_action(&mut state, TemplateAction::Generate);
+    let second = state.preload_analysis.template_picker.selected_template().unwrap();
+    assert_ne!(first, second);
+    click_template_action(&mut state, TemplateAction::Previous);
+    assert_eq!(state.preload_analysis.template_picker.selected_template().unwrap(), first);
+    click_template_action(&mut state, TemplateAction::Apply);
+    assert!(state.preload_analysis.model.output.is_ok());
+    assert_eq!(state.preload_analysis.model.members.len(), first.layers.len());
+}
+
+#[test]
+fn the_t_key_opens_the_template_window_and_a_click_outside_it_is_swallowed() {
+    let mut state = AppState::default();
+    state.nav.activate(app_tui::nav::ToolId::PreloadAnalysis);
+    state.focus.area = app_tui::nav::FocusArea::Workspace(0);
+    let key = crossterm::event::KeyEvent { code: crossterm::event::KeyCode::Char('t'), modifiers: crossterm::event::KeyModifiers::NONE, kind: crossterm::event::KeyEventKind::Press, state: crossterm::event::KeyEventState::NONE };
+    app_tui::app::handle_event(&mut state, app_tui::app::AppEvent::Terminal(Event::Key(key)));
+    assert!(state.preload_analysis.template_picker.open);
+    let mut regions = app_tui::mouse::MouseRegions::default();
+    let _ = render_shell_with_regions(&state, 170, 55, &mut regions);
+    let before = state.preload_analysis.selected;
+    if let Event::Mouse(m) = click_at(ratatui::layout::Rect::new(0, 0, 1, 1)) {
+        app_tui::app::handle_mouse(&mut state, &regions, m);
+    }
+    assert!(state.preload_analysis.template_picker.open && state.preload_analysis.selected == before);
+}

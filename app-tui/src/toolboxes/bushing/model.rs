@@ -249,6 +249,89 @@ pub fn label_fit_type(t: FitType) -> &'static str {
     }
 }
 
+/// How every toleranced dimension is entered (like Fastener Holes): a nominal
+/// with `+tol / -tol`, or absolute `min / max` limits. Display and editing
+/// only - the model always stores nominal + plus + minus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToleranceMode {
+    #[default]
+    PlusMinus,
+    MinMax,
+}
+
+impl ToleranceMode {
+    pub fn toggled(self) -> Self {
+        match self {
+            ToleranceMode::PlusMinus => ToleranceMode::MinMax,
+            ToleranceMode::MinMax => ToleranceMode::PlusMinus,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ToleranceMode::PlusMinus => "Nominal +/- Tol",
+            ToleranceMode::MinMax => "Min / Max",
+        }
+    }
+}
+
+/// A dimension that carries a tolerance band - one compact row in the field
+/// list instead of separate `+tol` and `-tol` rows. The bushing ID is
+/// deliberately not one: it is a single drilled/reamed size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TolGroup {
+    Bore,
+    Interference,
+    CsDia,
+    CsDepth,
+    CsAngle,
+    ExtCsDia,
+    ExtCsDepth,
+    ExtCsAngle,
+}
+
+impl TolGroup {
+    pub fn targets(self) -> (NumberTarget, NumberTarget, NumberTarget) {
+        use NumberTarget as N;
+        match self {
+            TolGroup::Bore => (N::BoreDia, N::BoreTolPlus, N::BoreTolMinus),
+            TolGroup::Interference => (N::Interference, N::InterferenceTolPlus, N::InterferenceTolMinus),
+            TolGroup::CsDia => (N::CsDia, N::CsDiaTolPlus, N::CsDiaTolMinus),
+            TolGroup::CsDepth => (N::CsDepth, N::CsDepthTolPlus, N::CsDepthTolMinus),
+            TolGroup::CsAngle => (N::CsAngle, N::CsAngleTolPlus, N::CsAngleTolMinus),
+            TolGroup::ExtCsDia => (N::ExtCsDia, N::ExtCsDiaTolPlus, N::ExtCsDiaTolMinus),
+            TolGroup::ExtCsDepth => (N::ExtCsDepth, N::ExtCsDepthTolPlus, N::ExtCsDepthTolMinus),
+            TolGroup::ExtCsAngle => (N::ExtCsAngle, N::ExtCsAngleTolPlus, N::ExtCsAngleTolMinus),
+        }
+    }
+
+    pub fn label(self, mode: ToleranceMode) -> &'static str {
+        let (pm, mm) = match self {
+            TolGroup::Bore => ("Bore Tol", "Bore Limits"),
+            TolGroup::Interference => ("Interference Tol", "Interference Limits"),
+            TolGroup::CsDia => ("Internal CS Dia Tol", "Internal CS Dia Limits"),
+            TolGroup::CsDepth => ("Internal CS Depth Tol", "Internal CS Depth Limits"),
+            TolGroup::CsAngle => ("Internal CS Angle Tol", "Internal CS Angle Limits"),
+            TolGroup::ExtCsDia => ("External CS Dia Tol", "External CS Dia Limits"),
+            TolGroup::ExtCsDepth => ("External CS Depth Tol", "External CS Depth Limits"),
+            TolGroup::ExtCsAngle => ("External CS Angle Tol", "External CS Angle Limits"),
+        };
+        if mode == ToleranceMode::PlusMinus { pm } else { mm }
+    }
+
+    fn is_angle(self) -> bool {
+        matches!(self, TolGroup::CsAngle | TolGroup::ExtCsAngle)
+    }
+}
+
+/// Parses the numbers out of a tolerance edit string: whitespace, `/`, `,`
+/// and `;` separate values; a `..` between two numbers is a range.
+fn tolerance_tokens(text: &str) -> Vec<&str> {
+    let text = text.trim();
+    let parts: Vec<&str> = if let Some((a, b)) = text.split_once("..") { vec![a, b] } else { text.split(|c: char| c.is_whitespace() || matches!(c, '/' | ',' | ';')).collect() };
+    parts.into_iter().map(|t| t.trim().trim_start_matches('\u{b1}')).filter(|t| !t.is_empty()).collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldRow {
     /// A non-selectable section divider - navigation skips over it (see
@@ -258,6 +341,9 @@ pub enum FieldRow {
     /// with sections rather than one long undifferentiated column.
     Header(&'static str),
     ToggleFitType,
+    ToggleToleranceMode,
+    /// One compact row for a dimension's whole tolerance band.
+    Tol(TolGroup),
     ToggleBushingType,
     ToggleIdType,
     ToggleEndConstraint,
@@ -277,6 +363,8 @@ pub fn row_label(row: FieldRow) -> &'static str {
     match row {
         FieldRow::Header(text) => text,
         FieldRow::ToggleFitType => "Fit Type",
+        FieldRow::ToggleToleranceMode => "Tolerance Entry",
+        FieldRow::Tol(_) => "Tolerance",
         FieldRow::ToggleBushingType => "OD Geometry",
         FieldRow::ToggleIdType => "ID Geometry",
         FieldRow::ToggleEndConstraint => "End Constraint",
@@ -302,10 +390,12 @@ pub fn row_label(row: FieldRow) -> &'static str {
 pub fn field_hint(row: FieldRow) -> &'static str {
     match row {
         FieldRow::Header(_) => "",
+        FieldRow::ToggleToleranceMode => "How every tolerance row is entered and shown: nominal with +tol / -tol, or absolute min / max limits. Switching only changes the view - the same band is kept.",
+        FieldRow::Tol(_) => "Tolerance band of the dimension above. Enter or just type: '+0.0005 -0.0003' (plus then minus; one value = symmetric), or in Min / Max mode '0.4995 0.5005'. The nominal stays put when it is inside the limits. A bore band wider than the interference band makes the fit Infeasible.",
         FieldRow::ToggleFitType => "Selecting a fit type loads its typical Target Interference and tolerance band for the current bore (Press ~0.003 x D, Shrink ~0.005 x D plus Install Thermal Assist, Clearance/Slip negative). Everything stays editable afterward; a mismatch between fit type and interference sign is flagged in Results.",
         FieldRow::Number(NumberTarget::BoreDia) => "Housing bore nominal diameter. Enter opens the aircraft reamer catalog to pick a real reamed size; press 'm' inside that picker to type an exact value instead.",
         FieldRow::Number(NumberTarget::BoreTolPlus) | FieldRow::Number(NumberTarget::BoreTolMinus) => "Bore tolerance band. A band wider than the interference tolerance band makes the fit Infeasible (see Tolerance status in Results).",
-        FieldRow::Number(NumberTarget::IdBushing) => "Bushing inner (through) diameter - the finished bore the installed part/shaft actually uses. Enter opens a user-saved library of past values ('n' saves the current one); 'm' inside it types an exact value instead.",
+        FieldRow::Number(NumberTarget::IdBushing) => "Bushing inner (through) diameter - a single drilled/reamed size with no tolerance band; fix recommendations snap it to a real catalog reamer/drill. The finished bore the installed part/shaft actually uses. Enter opens a user-saved library of past values ('n' saves the current one); 'm' inside it types an exact value instead.",
         FieldRow::Number(NumberTarget::Interference) => "Target nominal diametral interference (Bore - Bushing OD, negative). Drives contact pressure and every downstream stress/margin.",
         FieldRow::Number(NumberTarget::InterferenceTolPlus) | FieldRow::Number(NumberTarget::InterferenceTolMinus) => "Interference tolerance band - must be at least as wide as the bore tolerance band for a feasible fit.",
         FieldRow::Number(NumberTarget::HousingLen) => "Housing length along the bushing axis - drives install force, axial stress scaling, and the edge-distance sequencing thickness.",
@@ -363,13 +453,12 @@ pub fn field_rows(model: &BushingModel) -> Vec<FieldRow> {
     let mut rows = vec![
         FieldRow::Header("Bore & Fit"),
         FieldRow::ToggleFitType,
+        FieldRow::ToggleToleranceMode,
         FieldRow::Number(NumberTarget::BoreDia),
-        FieldRow::Number(NumberTarget::BoreTolPlus),
-        FieldRow::Number(NumberTarget::BoreTolMinus),
+        FieldRow::Tol(TolGroup::Bore),
         FieldRow::Number(NumberTarget::IdBushing),
         FieldRow::Number(NumberTarget::Interference),
-        FieldRow::Number(NumberTarget::InterferenceTolPlus),
-        FieldRow::Number(NumberTarget::InterferenceTolMinus),
+        FieldRow::Tol(TolGroup::Interference),
         FieldRow::Header("Housing Geometry"),
         FieldRow::Number(NumberTarget::HousingLen),
         FieldRow::Number(NumberTarget::HousingWidth),
@@ -398,18 +487,15 @@ pub fn field_rows(model: &BushingModel) -> Vec<FieldRow> {
         rows.push(FieldRow::ToggleCsMode);
         if model.cs_mode != CsMode::DepthAngle {
             rows.push(FieldRow::Number(NumberTarget::CsDia));
-            rows.push(FieldRow::Number(NumberTarget::CsDiaTolPlus));
-            rows.push(FieldRow::Number(NumberTarget::CsDiaTolMinus));
+            rows.push(FieldRow::Tol(TolGroup::CsDia));
         }
         if model.cs_mode != CsMode::DiaAngle {
             rows.push(FieldRow::Number(NumberTarget::CsDepth));
-            rows.push(FieldRow::Number(NumberTarget::CsDepthTolPlus));
-            rows.push(FieldRow::Number(NumberTarget::CsDepthTolMinus));
+            rows.push(FieldRow::Tol(TolGroup::CsDepth));
         }
         if model.cs_mode != CsMode::DiaDepth {
             rows.push(FieldRow::Number(NumberTarget::CsAngle));
-            rows.push(FieldRow::Number(NumberTarget::CsAngleTolPlus));
-            rows.push(FieldRow::Number(NumberTarget::CsAngleTolMinus));
+            rows.push(FieldRow::Tol(TolGroup::CsAngle));
         }
     }
     if model.bushing_type == BushingType::Countersink {
@@ -417,18 +503,15 @@ pub fn field_rows(model: &BushingModel) -> Vec<FieldRow> {
         rows.push(FieldRow::ToggleExtCsMode);
         if model.ext_cs_mode != CsMode::DepthAngle {
             rows.push(FieldRow::Number(NumberTarget::ExtCsDia));
-            rows.push(FieldRow::Number(NumberTarget::ExtCsDiaTolPlus));
-            rows.push(FieldRow::Number(NumberTarget::ExtCsDiaTolMinus));
+            rows.push(FieldRow::Tol(TolGroup::ExtCsDia));
         }
         if model.ext_cs_mode != CsMode::DiaAngle {
             rows.push(FieldRow::Number(NumberTarget::ExtCsDepth));
-            rows.push(FieldRow::Number(NumberTarget::ExtCsDepthTolPlus));
-            rows.push(FieldRow::Number(NumberTarget::ExtCsDepthTolMinus));
+            rows.push(FieldRow::Tol(TolGroup::ExtCsDepth));
         }
         if model.ext_cs_mode != CsMode::DiaDepth {
             rows.push(FieldRow::Number(NumberTarget::ExtCsAngle));
-            rows.push(FieldRow::Number(NumberTarget::ExtCsAngleTolPlus));
-            rows.push(FieldRow::Number(NumberTarget::ExtCsAngleTolMinus));
+            rows.push(FieldRow::Tol(TolGroup::ExtCsAngle));
         }
     }
     rows.push(FieldRow::Header("Tolerance Enforcement"));
@@ -456,9 +539,19 @@ pub fn field_rows(model: &BushingModel) -> Vec<FieldRow> {
 /// mirroring `PressureVesselModel`'s own discipline. Defaults reproduce
 /// `bushing_solver::solve`'s own differential-tested fixture
 /// (`tests/differential.rs`'s base input), not an arbitrary guess.
+/// One real reamer/drill size a recommendation may snap to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CatalogSize {
+    pub label: String,
+    pub nominal: f64,
+    pub tol_plus: f64,
+    pub tol_minus: f64,
+}
+
 #[derive(Clone)]
 pub struct BushingModel {
     pub fit_type: FitType,
+    pub tolerance_mode: ToleranceMode,
     pub bore_dia: f64,
     pub bore_tol_plus: f64,
     pub bore_tol_minus: f64,
@@ -533,12 +626,16 @@ pub struct BushingModel {
     /// `toggle_fit_type` switched Install Thermal Assist on for Shrink Fit;
     /// leaving Shrink Fit switches it back off only in that case.
     thermal_enabled_by_fit: bool,
+    /// User-added/imported reamer sizes (the reamer library), merged with the
+    /// built-in aircraft catalog by [`BushingModel::catalog_sizes`].
+    user_reamers: Vec<CatalogSize>,
 }
 
 impl Default for BushingModel {
     fn default() -> Self {
         let mut model = Self {
             fit_type: FitType::default(),
+            tolerance_mode: ToleranceMode::default(),
             bore_dia: 0.5,
             bore_tol_plus: 0.0,
             bore_tol_minus: 0.0,
@@ -599,13 +696,52 @@ impl Default for BushingModel {
             checks: Vec::new(),
             recommendations: Vec::new(),
             thermal_enabled_by_fit: false,
+            // Never read the real on-disk library from a test build (same reason as
+            // `SearchToolState::default`).
+            user_reamers: {
+                #[cfg(not(test))]
+                {
+                    super::reamer_persistence::load().iter().map(|li| catalog_size_from(&li.item)).collect()
+                }
+                #[cfg(test)]
+                {
+                    Vec::new()
+                }
+            },
         };
         model.recompute();
         model
     }
 }
 
+fn catalog_size_from(r: &super::reamer_persistence::PersistedReamer) -> CatalogSize {
+    CatalogSize { label: r.size_label.clone(), nominal: r.nominal_in, tol_plus: r.tool_tolerance_plus_in, tol_minus: r.tool_tolerance_minus_in }
+}
+
 impl BushingModel {
+    /// Every real reamer/drill size: the built-in aircraft catalog plus the
+    /// user's library, ascending by size, one entry per distinct nominal
+    /// (built-in wins a tie).
+    pub fn catalog_sizes(&self) -> Vec<CatalogSize> {
+        let mut all: Vec<CatalogSize> = bushing_solver::reamers::all_reamers()
+            .into_iter()
+            .map(|r| CatalogSize { label: r.size_label.clone(), nominal: r.nominal_in, tol_plus: r.tool_tolerance_plus_in, tol_minus: r.tool_tolerance_minus_in })
+            .collect();
+        for u in &self.user_reamers {
+            if !all.iter().any(|c| (c.nominal - u.nominal).abs() < 1e-6) {
+                all.push(u.clone());
+            }
+        }
+        all.sort_by(|a, b| a.nominal.partial_cmp(&b.nominal).unwrap_or(std::cmp::Ordering::Equal));
+        all
+    }
+
+    /// Re-reads the user reamer library after an import (see `app.rs`).
+    pub fn sync_user_reamers(&mut self, library: &[crate::library::LibraryItem<super::reamer_persistence::PersistedReamer>]) {
+        self.user_reamers = library.iter().map(|li| catalog_size_from(&li.item)).collect();
+        self.recompute();
+    }
+
     /// Built-in materials first, then user-added/imported custom ones, in
     /// the order they were added - `housing_material_index`/
     /// `bushing_material_index` are indices into exactly this sequence.
@@ -907,6 +1043,84 @@ impl BushingModel {
         self.recompute();
     }
 
+    pub fn toggle_tolerance_mode(&mut self) {
+        self.tolerance_mode = self.tolerance_mode.toggled();
+    }
+
+    /// Compact one-row text for a tolerance band in the current entry mode:
+    /// `+0.0005 / -0.0003` or `0.4995 .. 0.5005`.
+    pub fn tolerance_display(&self, group: TolGroup) -> String {
+        let (n, p, m) = group.targets();
+        let (nominal, plus, minus) = (self.number_value(n), self.number_value(p), self.number_value(m));
+        let dp = if group.is_angle() { 3 } else { 4 };
+        match self.tolerance_mode {
+            ToleranceMode::PlusMinus => format!("+{plus:.dp$} / -{minus:.dp$}"),
+            ToleranceMode::MinMax => format!("{:.dp$} .. {:.dp$}", nominal - minus, nominal + plus),
+        }
+    }
+
+    /// The text to prefill the editor with (same grammar `commit_tolerance_text` reads).
+    pub fn tolerance_edit_text(&self, group: TolGroup) -> String {
+        let (n, p, m) = group.targets();
+        let (nominal, plus, minus) = (self.number_value(n), self.number_value(p), self.number_value(m));
+        match self.tolerance_mode {
+            ToleranceMode::PlusMinus => format!("+{} -{}", format_for_edit(plus), format_for_edit(minus)),
+            ToleranceMode::MinMax => format!("{} {}", format_for_edit(nominal - minus), format_for_edit(nominal + plus)),
+        }
+    }
+
+    /// Reads an edited tolerance and stores it as nominal + plus + minus.
+    /// `+/-` mode: `+p -m` (signs say which is which when both given, else
+    /// plus then minus), or one value for a symmetric band. `Min / Max` mode:
+    /// two limits; the nominal is kept if it lies between them, else it moves
+    /// to the midpoint. Returns an explanation instead of changing anything
+    /// when the text cannot be read.
+    pub fn commit_tolerance_text(&mut self, group: TolGroup, text: &str) -> Result<(), String> {
+        let (n, p, m) = group.targets();
+        let tokens = tolerance_tokens(text);
+        let parse = |t: &str| t.parse::<f64>().map_err(|_| format!("'{t}' is not a number"));
+        let (nominal, plus, minus) = match self.tolerance_mode {
+            ToleranceMode::PlusMinus => {
+                let nominal = self.number_value(n);
+                match tokens.as_slice() {
+                    [] => return Err("enter a tolerance, e.g. +0.0005 -0.0003".to_string()),
+                    [one] => {
+                        let v = parse(one)?.abs();
+                        (nominal, v, v)
+                    }
+                    [a, b] => {
+                        let (va, vb) = (parse(a)?, parse(b)?);
+                        // Explicit signs decide which side is which ("-0.0003 +0.0005" works too).
+                        if a.starts_with('-') && b.starts_with('+') {
+                            (nominal, vb.abs(), va.abs())
+                        } else {
+                            (nominal, va.abs(), vb.abs())
+                        }
+                    }
+                    _ => return Err("expected at most two values: +plus -minus".to_string()),
+                }
+            }
+            ToleranceMode::MinMax => match tokens.as_slice() {
+                [a, b] => {
+                    let (x, y) = (parse(a)?, parse(b)?);
+                    let (lo, hi) = (x.min(y), x.max(y));
+                    let current = self.number_value(n);
+                    let nominal = if current >= lo - 1e-12 && current <= hi + 1e-12 { current } else { (lo + hi) / 2.0 };
+                    (nominal, hi - nominal, nominal - lo)
+                }
+                _ => return Err("enter two limits, e.g. 0.4995 0.5005".to_string()),
+            },
+        };
+        if ![nominal, plus, minus].iter().all(|v| v.is_finite()) {
+            return Err("values must be finite numbers".to_string());
+        }
+        self.set_number_raw(n, nominal);
+        self.set_number_raw(p, plus);
+        self.set_number_raw(m, minus);
+        self.recompute();
+        Ok(())
+    }
+
     pub fn toggle_bushing_type(&mut self) {
         self.bushing_type = cycle_bushing_type(self.bushing_type);
         self.recompute();
@@ -1185,5 +1399,52 @@ mod tests {
         let s = format_for_edit(0.25);
         assert_eq!(s.parse::<f64>().unwrap(), 0.25);
         assert_eq!(format_for_edit(0.0), "0");
+    }
+
+    #[test]
+    fn tolerance_text_grammar() {
+        let mut m = BushingModel::default();
+        // one value = symmetric
+        m.commit_tolerance_text(TolGroup::Bore, "0.0004").unwrap();
+        assert_eq!((m.bore_tol_plus, m.bore_tol_minus), (0.0004, 0.0004));
+        // explicit signs decide the sides regardless of order
+        m.commit_tolerance_text(TolGroup::Bore, "-0.0003 +0.0005").unwrap();
+        assert_eq!((m.bore_tol_plus, m.bore_tol_minus), (0.0005, 0.0003));
+        // plus-minus sign, slash and comma separators
+        m.commit_tolerance_text(TolGroup::Interference, "\u{b1}0.001").unwrap();
+        assert_eq!((m.interference_tol_plus, m.interference_tol_minus), (0.001, 0.001));
+        m.commit_tolerance_text(TolGroup::Interference, "0.002/0.0005").unwrap();
+        assert_eq!((m.interference_tol_plus, m.interference_tol_minus), (0.002, 0.0005));
+        assert!(m.commit_tolerance_text(TolGroup::Bore, "").is_err());
+        assert!(m.commit_tolerance_text(TolGroup::Bore, "1 2 3").is_err());
+        assert_eq!((m.bore_tol_plus, m.bore_tol_minus), (0.0005, 0.0003), "failed edits change nothing");
+    }
+
+    #[test]
+    fn min_max_entry_moves_the_nominal_to_the_midpoint_only_when_it_falls_outside() {
+        let mut m = BushingModel::default();
+        m.toggle_tolerance_mode();
+        m.commit_tolerance_text(TolGroup::Bore, "0.52 0.50").unwrap(); // order-insensitive; nominal 0.5 is on the limit
+        assert_eq!(m.bore_dia, 0.5);
+        assert!((m.bore_tol_plus - 0.02).abs() < 1e-12 && m.bore_tol_minus.abs() < 1e-12);
+        m.commit_tolerance_text(TolGroup::Bore, "0.60 0.62").unwrap(); // nominal outside -> midpoint
+        assert!((m.bore_dia - 0.61).abs() < 1e-12);
+        assert!((m.bore_tol_plus - 0.01).abs() < 1e-12 && (m.bore_tol_minus - 0.01).abs() < 1e-12);
+        m.commit_tolerance_text(TolGroup::Interference, "0.001..0.002").unwrap();
+        assert!((m.interference_tol_plus + m.interference_tol_minus - 0.001).abs() < 1e-12);
+    }
+
+    #[test]
+    fn tolerance_display_round_trips_through_its_own_edit_text() {
+        let mut m = BushingModel::default();
+        m.commit_tolerance_text(TolGroup::Bore, "+0.0007 -0.0002").unwrap();
+        for mode in [ToleranceMode::PlusMinus, ToleranceMode::MinMax] {
+            m.tolerance_mode = mode;
+            let before = (m.bore_dia, m.bore_tol_plus, m.bore_tol_minus);
+            let text = m.tolerance_edit_text(TolGroup::Bore);
+            m.commit_tolerance_text(TolGroup::Bore, &text).unwrap();
+            let after = (m.bore_dia, m.bore_tol_plus, m.bore_tol_minus);
+            assert!((before.0 - after.0).abs() < 1e-9 && (before.1 - after.1).abs() < 1e-9 && (before.2 - after.2).abs() < 1e-9, "{mode:?}: {before:?} vs {after:?}");
+        }
     }
 }

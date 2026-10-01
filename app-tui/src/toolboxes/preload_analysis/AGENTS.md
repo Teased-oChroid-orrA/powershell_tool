@@ -25,6 +25,11 @@ Does not own: any preload mechanics (`fastened-joint-solver/AGENTS.md`).
 - `model.rs` only bridges `solve::compute`; member-stack fields are indexed (`NumberTarget::MemberThickness(usize)` etc.), added/removed up to `MAX_MEMBERS`.
 - `Tightening From` (Nut/Bolt Head) must reach `JointInputs.tightening_from`; it was once a dead toggle.
 
+## Joint templates (`joint_templates.rs`, `template_picker.rs`)
+- `joint_templates.rs` (pure) holds preset stack-ups (washer/plate/shim/doubler/fitting layers, head-to-nut) and a seeded random generator; `PreloadModel::apply_template` turns one into ordinary editable fields (members incl. washers as members, bearing radii from the washer annulus or ~1.3 d face, shank length = grip, nut data, K=0.2 / 50% of 125 ksi typical torque+preload) and re-solves. All sizes are *typical*, not drawings. `MAX_MEMBERS` is 6 because washers are members. `MemberUi::name` is a label for the stack diagram only.
+- Window: `t` or the `Joint Template` row; Up/Down choose, Enter apply, `g` next random, `b` previous, Esc close; every row/button is a mouse target (`MouseRegions::template_actions`, double-click applies). Same seed = same random joint (`random_joints_are_always_valid_and_analyzable` sweeps 300 seeds - keep it green when changing the generator).
+- Results show the head-to-nut stack picture (`stack_diagram`) for any stack, template or hand-built.
+
 ## Pitfalls
 - Before assuming a feature is missing, read `fastened-joint-solver/src/lib.rs`: scope cuts and catalog sourcing exclusions are deliberate.
 

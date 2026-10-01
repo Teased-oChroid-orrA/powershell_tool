@@ -62,14 +62,24 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingState, 
     }
 }
 
-fn compute_label_width(rows: &[FieldRow]) -> u16 {
-    rows.iter().filter(|r| !matches!(r, FieldRow::Header(_))).map(|r| model::row_label(*r).len()).max().unwrap_or(0) as u16 + 2
+/// Label of a row; tolerance rows read "... Tol" or "... Limits" by entry mode.
+fn row_text(mode: model::ToleranceMode, row: FieldRow) -> &'static str {
+    match row {
+        FieldRow::Tol(group) => group.label(mode),
+        other => model::row_label(other),
+    }
+}
+
+fn compute_label_width(mode: model::ToleranceMode, rows: &[FieldRow]) -> u16 {
+    rows.iter().filter(|r| !matches!(r, FieldRow::Header(_))).map(|r| row_text(mode, *r).len()).max().unwrap_or(0) as u16 + 2
 }
 
 fn display_value(model: &BushingModel, row: FieldRow) -> String {
     match row {
         FieldRow::Header(_) => String::new(),
         FieldRow::ToggleFitType => model::label_fit_type(model.fit_type).to_string(),
+        FieldRow::ToggleToleranceMode => model.tolerance_mode.label().to_string(),
+        FieldRow::Tol(group) => model.tolerance_display(group),
         FieldRow::ToggleBushingType => model::label_bushing_type(model.bushing_type).to_string(),
         FieldRow::ToggleIdType => model::label_id_type(model.id_type).to_string(),
         FieldRow::ToggleEndConstraint => model::label_end_constraint(model.end_constraint).to_string(),
@@ -92,7 +102,7 @@ fn bool_label(b: bool) -> String {
 
 fn fields_required_width(state: &BushingState) -> u16 {
     let rows = model::field_rows(&state.model);
-    let label_width = compute_label_width(&rows);
+    let label_width = compute_label_width(state.model.tolerance_mode, &rows);
     let max_value_width = rows
         .iter()
         .enumerate()
@@ -130,7 +140,7 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingStat
         (inner, None)
     };
 
-    let label_width = compute_label_width(&rows) as usize;
+    let label_width = compute_label_width(state.model.tolerance_mode, &rows) as usize;
 
     let items: Vec<ListItem> = rows
         .iter()
@@ -142,8 +152,18 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingStat
             let selected = focused && i == state.selected;
             let value = if selected && state.editing { format!("{}_", state.edit_buffer) } else { display_value(&state.model, *row) };
             let marker = if selected { "> " } else { "  " };
-            let label = model::row_label(*row);
-            let failing = matches!(row, FieldRow::Number(t) if state.model.checks.iter().any(|c| c.severity == Severity::Fail && c.kind.related_inputs().contains(t)));
+            let label = row_text(state.model.tolerance_mode, *row);
+            let failing = state.model.checks.iter().any(|c| {
+                c.severity == Severity::Fail
+                    && match row {
+                        FieldRow::Number(t) => c.kind.related_inputs().contains(t),
+                        FieldRow::Tol(g) => {
+                            let (_, plus, minus) = g.targets();
+                            c.kind.related_inputs().contains(&plus) || c.kind.related_inputs().contains(&minus)
+                        }
+                        _ => false,
+                    }
+            });
             let style = if selected {
                 theme.selected_row_style()
             } else if failing {
@@ -213,7 +233,7 @@ fn draw_readout(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingSta
     if let Some(bar) = bar_area {
         draw_action_bar(frame, bar, theme, state, interactive.then_some(&mut *regions));
     }
-    let (lines, tags) = readout_lines(theme, &state.model, state.show_numbers, state.last_applied.as_deref());
+    let (lines, tags) = readout_lines(theme, &state.model, state.show_numbers, state.last_applied.as_deref(), state.input_error.as_deref());
     let clicks = crate::widgets::scroll_paragraph::render_interactive(frame, body_area, theme, lines, state.results_scroll, &tags);
     if interactive {
         regions.bushing_actions.extend(clicks);
@@ -274,7 +294,7 @@ fn draw_advice_window(frame: &mut Frame, area: Rect, theme: &Theme, state: &Bush
     // Fit the window to its content on the Fixes tab (tab row + list + detail + buttons + border);
     // the Explain tab is long-form text and takes the full height.
     let wanted = if state.advice.tab == AdviceTab::Fixes {
-        (state.model.recommendations.len().clamp(1, 12) as u16) + 11
+        (state.model.recommendations.len().clamp(1, 10) as u16) + 18
     } else {
         28
     };
@@ -325,7 +345,7 @@ fn draw_advice_window(frame: &mut Frame, area: Rect, theme: &Theme, state: &Bush
             if model.recommendations.is_empty() {
                 frame.render_widget(Paragraph::new(Line::from(Span::styled("No failing checks - nothing to fix.", theme.status_style(StatusTone::Success)))), body);
             } else {
-                let detail_height = 6.min(body.height.saturating_sub(2));
+                let detail_height = 13.min(body.height.saturating_sub(2));
                 let parts = Layout::default().direction(Direction::Vertical).constraints([Constraint::Min(1), Constraint::Length(detail_height)]).split(body);
                 let selected = state.rec_selected.min(model.recommendations.len() - 1);
                 let items: Vec<ListItem> = model
@@ -335,7 +355,8 @@ fn draw_advice_window(frame: &mut Frame, area: Rect, theme: &Theme, state: &Bush
                     .map(|(i, rec)| {
                         let marker = if i == selected { "> " } else { "  " };
                         let style = if i == selected { theme.selected_row_style() } else { Style::default() };
-                        ListItem::new(Line::from(Span::styled(format!("{marker}{}. [{}] {}{}", i + 1, rec.fixes.label(), rec.summary, if rec.is_applicable() { "" } else { "  (manual)" }), style)))
+                        let bore = if !rec.is_applicable() { "" } else if rec.touches_bore { "  [CHANGES BORE]" } else { "  [bore unchanged]" };
+                        ListItem::new(Line::from(Span::styled(format!("{marker}{}. [{}] {}{bore}{}", i + 1, rec.fixes.label(), rec.summary, if rec.is_applicable() { "" } else { "  (manual)" }), style)))
                     })
                     .collect();
                 let offset = crate::widgets::scroll_list::render(frame, parts[0], items, Some(selected));
@@ -348,6 +369,16 @@ fn draw_advice_window(frame: &mut Frame, area: Rect, theme: &Theme, state: &Bush
                     Line::from(format!("Change: {}", rec.summary)),
                     Line::from(format!("Solver result with this change: {}", rec.outcome)),
                 ];
+                if let Some(note) = &rec.note {
+                    detail.push(Line::from(Span::styled(format!("Note: {note}"), theme.status_style(StatusTone::Info))));
+                }
+                if !rec.impact.is_empty() {
+                    detail.push(Line::from(Span::styled("Impact of applying it:", theme.title_style(false))));
+                    for line in &rec.impact {
+                        let style = if line.starts_with("Warning") { theme.status_style(StatusTone::Warning) } else { Style::default() };
+                        detail.push(Line::from(Span::styled(format!("  \u{2022} {line}"), style)));
+                    }
+                }
                 if !rec.is_applicable() {
                     detail.push(Line::from(Span::styled("Manual change - cannot be applied automatically.", theme.status_style(StatusTone::Warning))));
                 }
@@ -420,7 +451,7 @@ fn push_check<'a>(theme: &Theme, lines: &mut Vec<Line<'a>>, tags: &mut Vec<(usiz
 }
 
 /// The scrollable readout plus, for each clickable line, `(line index, action)`.
-fn readout_lines<'a>(theme: &'a Theme, model: &'a BushingModel, show_numbers: bool, last_applied: Option<&str>) -> (Vec<Line<'a>>, Vec<(usize, BushingAction)>) {
+fn readout_lines<'a>(theme: &'a Theme, model: &'a BushingModel, show_numbers: bool, last_applied: Option<&str>, input_error: Option<&str>) -> (Vec<Line<'a>>, Vec<(usize, BushingAction)>) {
     let out = &model.output;
     let mut lines = Vec::new();
     let mut tags: Vec<(usize, BushingAction)> = Vec::new();
@@ -439,6 +470,9 @@ fn readout_lines<'a>(theme: &'a Theme, model: &'a BushingModel, show_numbers: bo
     // The Tolerance check has its own (clickable) line further down.
     for check in model.checks.iter().filter(|c| c.severity != Severity::Pass && c.kind != CheckKind::Tolerance) {
         push_check(theme, &mut lines, &mut tags, check.severity, fixes_for(check.kind), format!("  {}: {}", check.kind.label(), check.detail));
+    }
+    if let Some(err) = input_error {
+        lines.push(Line::from(Span::styled(format!("\u{2717} {err}"), theme.status_style(StatusTone::Danger))));
     }
     if let Some(applied) = last_applied {
         lines.push(Line::from(Span::styled(format!("\u{2713} Applied: {applied}"), theme.status_style(StatusTone::Success))));
@@ -479,6 +513,17 @@ fn readout_lines<'a>(theme: &'a Theme, model: &'a BushingModel, show_numbers: bo
         "  Interference        target {:.4} in, achieved {:.4} in (range {:.4}..{:.4})",
         model.interference, out.delta_total, out.achieved_interference_tol.lower, out.achieved_interference_tol.upper
     )));
+    // Interference change caused by temperature (differential expansion of the two materials).
+    lines.push(Line::from(format!(
+        "  \u{394} interference, service \u{394}T {:+.1} \u{b0}F  {:+.5} in  \u{2192} in service {:.5} in",
+        model.delta_t, out.delta_thermal + 0.0, out.delta_total
+    )));
+    if model.assembly_thermal_enabled {
+        lines.push(Line::from(format!(
+            "  \u{394} interference, install thermal assist  {:+.5} in  \u{2192} at install {:.5} in",
+            out.assembly_thermal_delta + 0.0, out.install_delta
+        )));
+    }
     push_check(
         theme,
         &mut lines,
@@ -618,7 +663,12 @@ pub fn build_report_text(model: &BushingModel) -> String {
     s.push_str(&format!("Bushing material: {}\n", model.bushing_material().name));
     s.push_str(&format!("Bore diameter:    {:.4} in\n", model.bore_dia));
     s.push_str(&format!("Bushing ID:       {:.4} in\n", model.id_bushing));
-    s.push_str(&format!("Target interference: {:.4} in\n\n", model.interference));
+    s.push_str(&format!("Target interference: {:.4} in\n", model.interference));
+    s.push_str(&format!("Delta interference, service temp change {:+.1} F: {:+.5} in (in service {:.5} in)\n", model.delta_t, out.delta_thermal, out.delta_total));
+    if model.assembly_thermal_enabled {
+        s.push_str(&format!("Delta interference, install thermal assist: {:+.5} in (at install {:.5} in)\n", out.assembly_thermal_delta, out.install_delta));
+    }
+    s.push('\n');
 
     s.push_str(&format!("OD installed:     {:.4} in\n", out.od_installed));
     s.push_str(&format!("Straight wall:    {:.4} in ({})\n", out.wall_straight, if out.fail_straight { "FAIL" } else { "OK" }));
@@ -903,5 +953,31 @@ mod tests {
         for (w, h) in [(0, 0), (20, 6), (40, 12), (60, 20), (200, 80)] {
             draw_at(w, h, &state);
         }
+    }
+
+    #[test]
+    fn results_show_delta_interference_from_service_temperature_and_install_thermal_assist() {
+        let mut state = BushingState::default();
+        state.model.commit_number(model::NumberTarget::DeltaT, 100.0);
+        let text = rendered_text(&state, 190, 60);
+        assert!(text.contains("service \u{394}T +100.0"), "{text}");
+        assert!(!text.contains("install thermal assist"));
+        state.model.toggle_assembly_thermal_enabled();
+        state.model.commit_number(model::NumberTarget::AssemblyBushingTemp, -100.0);
+        let text = rendered_text(&state, 190, 60);
+        assert!(text.contains("install thermal assist"), "{text}");
+        let report = build_report_text(&state.model);
+        assert!(report.contains("Delta interference, service temp change") && report.contains("install thermal assist"));
+    }
+
+    #[test]
+    fn the_fixes_window_shows_impact_bore_tag_and_catalog_note() {
+        let mut state = BushingState::default();
+        state.model.commit_number(model::NumberTarget::MinWallStraight, 0.2);
+        state.perform(BushingAction::OpenFixes);
+        let text = rendered_text(&state, 190, 60);
+        assert!(text.contains("[bore unchanged]"), "{text}");
+        assert!(text.contains("Impact of applying it"), "{text}");
+        assert!(text.contains("Bore unchanged - no re-reaming"));
     }
 }

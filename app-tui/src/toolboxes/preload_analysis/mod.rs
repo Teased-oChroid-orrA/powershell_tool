@@ -21,6 +21,8 @@
 //! presentation to compare against or deliberately omit.
 
 pub mod bolt_picker;
+pub mod joint_templates;
+pub mod template_picker;
 pub mod model;
 pub mod persistence;
 pub mod view;
@@ -28,6 +30,7 @@ pub mod view;
 use crossterm::event::{KeyCode, KeyEvent};
 
 use bolt_picker::BoltPickerState;
+use template_picker::TemplatePickerState;
 use crate::app::Effect;
 use model::{FieldRow, PreloadModel};
 
@@ -40,6 +43,9 @@ pub struct PreloadAnalysisState {
     pub editing: bool,
     pub edit_buffer: String,
     pub bolt_picker: BoltPickerState,
+    pub template_picker: TemplatePickerState,
+    /// What the last applied joint template was, shown atop Results.
+    pub message: Option<String>,
     /// `d` toggles a text-only panel breaking down torque work vs. elastic
     /// strain energy and the full stress-section table (a partial
     /// substitute for spec section 84's optional Load-Preload curve, which
@@ -53,7 +59,7 @@ pub struct PreloadAnalysisState {
 impl Default for PreloadAnalysisState {
     fn default() -> Self {
         let mut state =
-            Self { model: PreloadModel::default(), selected: 0, editing: false, edit_buffer: String::new(), bolt_picker: BoltPickerState::default(), show_numbers: false, results_scroll: 0 };
+            Self { model: PreloadModel::default(), selected: 0, editing: false, edit_buffer: String::new(), bolt_picker: BoltPickerState::default(), template_picker: TemplatePickerState::default(), message: None, show_numbers: false, results_scroll: 0 };
         // Row 0 is always a `Header` - land on the first real field instead
         // of an unselectable row.
         state.clamp_selection();
@@ -97,11 +103,20 @@ impl PreloadAnalysisState {
         self.selected = next as usize;
     }
 
+    /// Bookkeeping after the template window applied something (or not).
+    pub fn after_template(&mut self, applied: Option<String>) {
+        if let Some(name) = applied {
+            self.message = Some(format!("Joint template applied: {name}"));
+            self.clamp_selection();
+        }
+    }
+
     fn activate_selected(&mut self) {
         let rows = model::field_rows(&self.model);
         match rows.get(self.selected).copied() {
             Some(FieldRow::ToggleMode) => self.model.toggle_mode(),
             Some(FieldRow::OpenBoltPicker) => self.bolt_picker = BoltPickerState::open_for(&self.model),
+            Some(FieldRow::OpenTemplatePicker) => self.template_picker = TemplatePickerState::open(),
             Some(FieldRow::ToggleTighteningFrom) => self.model.toggle_tightening_from(),
             Some(FieldRow::ToggleBearingModel) => self.model.toggle_bearing_model(),
             Some(FieldRow::ToggleExternalLoadEnabled) => self.model.toggle_external_load_enabled(),
@@ -124,6 +139,11 @@ impl PreloadAnalysisState {
 pub fn handle_key(state: &mut PreloadAnalysisState, key: KeyEvent) -> (bool, Vec<Effect>) {
     if state.bolt_picker.open {
         return bolt_picker::handle_key(&mut state.bolt_picker, &mut state.model, key);
+    }
+    if state.template_picker.open {
+        let (consumed, applied) = template_picker::handle_key(&mut state.template_picker, &mut state.model, key);
+        state.after_template(applied);
+        return (consumed, Vec::new());
     }
 
     if state.editing {
@@ -185,6 +205,10 @@ pub fn handle_key(state: &mut PreloadAnalysisState, key: KeyEvent) -> (bool, Vec
         }
         KeyCode::Char('d' | 'D') => {
             state.show_numbers = !state.show_numbers;
+            (true, Vec::new())
+        }
+        KeyCode::Char('t' | 'T') => {
+            state.template_picker = TemplatePickerState::open();
             (true, Vec::new())
         }
         KeyCode::Char('e' | 'E') => (true, vec![Effect::ExportPreloadAnalysisReport(view::build_report_text(&state.model))]),

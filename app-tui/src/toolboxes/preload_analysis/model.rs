@@ -23,7 +23,7 @@ use fastened_joint_solver::thread::ThreadGeometry;
 use fastened_joint_solver::thread_catalog::{find_matching, BoltCatalogEntry, AN_BOLT_CATALOG};
 use fastened_joint_solver::validation::ValidationError;
 
-pub const MAX_MEMBERS: usize = 4;
+pub const MAX_MEMBERS: usize = 6;
 pub const MIN_MEMBERS: usize = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -82,6 +82,9 @@ pub fn label_bearing_model(m: BearingPressureModel) -> &'static str {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MemberUi {
+    /// Display role (`Plate`, `Washer`, `Shim`, ...) - a label for the stack
+    /// diagram only; the solver sees thickness/modulus/hole/outer diameter.
+    pub name: &'static str,
     pub thickness: f64,
     pub e: f64,
     pub hole_diameter: f64,
@@ -93,7 +96,7 @@ pub struct MemberUi {
 
 impl Default for MemberUi {
     fn default() -> Self {
-        Self { thickness: 10.0, e: 70_000.0, hole_diameter: 11.0, outer_diameter: 0.0 }
+        Self { name: "Plate", thickness: 10.0, e: 70_000.0, hole_diameter: 11.0, outer_diameter: 0.0 }
     }
 }
 
@@ -242,6 +245,7 @@ pub enum FieldRow {
     Header(&'static str),
     ToggleMode,
     OpenBoltPicker,
+    OpenTemplatePicker,
     ToggleTighteningFrom,
     ToggleBearingModel,
     ToggleExternalLoadEnabled,
@@ -260,6 +264,7 @@ pub fn row_label(row: FieldRow) -> &'static str {
         FieldRow::Header(text) => text,
         FieldRow::ToggleMode => "Analysis Mode",
         FieldRow::OpenBoltPicker => "Bolt (AN Standard)",
+        FieldRow::OpenTemplatePicker => "Joint Template",
         FieldRow::ToggleTighteningFrom => "Tightening From",
         FieldRow::ToggleBearingModel => "Bearing Pressure Model",
         FieldRow::ToggleExternalLoadEnabled => "External Service Load",
@@ -281,6 +286,7 @@ pub fn field_hint(row: FieldRow) -> &'static str {
         FieldRow::Header(_) => "",
         FieldRow::ToggleMode => "Torque Controlled solves preload from applied torque (the physical installation process). Preload Controlled and Nut Rotation Controlled invert the solve for design studies.",
         FieldRow::OpenBoltPicker => "Pick a standard AN3-AN20 aerospace bolt to auto-fill every thread dimension and the shank diameter below - Esc closes without changing anything, and every filled-in value can still be hand-edited afterward.",
+        FieldRow::OpenTemplatePicker => "Pick a common bolted-joint stack-up (washers, plates, shim, fitting, nut...) or press g in the window to generate random joints until one looks right. Applying it fills the member stack, bearing radii, shank length, nut data and a typical torque, then analyzes it - everything stays editable.",
         FieldRow::ToggleTighteningFrom => "Which component actually rotates during installation - the friction torque path (and which bearing surface's diameter matters) differs between the two.",
         FieldRow::Number(NumberTarget::AppliedTorque) => "Installation torque applied at the wrench. The solver finds the preload whose full thread+bearing+prevailing torque equilibrium matches this value.",
         FieldRow::Number(NumberTarget::TargetPreload) => "Desired clamping force - the solver reports the installation torque that would produce it.",
@@ -318,7 +324,7 @@ pub fn field_hint(row: FieldRow) -> &'static str {
         FieldRow::Number(NumberTarget::MemberModulus(_)) => "This member's elastic modulus.",
         FieldRow::Number(NumberTarget::MemberHoleDiameter(_)) => "This member's clearance-hole diameter.",
         FieldRow::Number(NumberTarget::MemberOuterDiameter(_)) => "This member's own available outer geometry - truncates the pressure cone if narrower than its ideal growth; 0 means unbounded.",
-        FieldRow::ToggleAddMember => "Append another member to the clamped stack (up to 4).",
+        FieldRow::ToggleAddMember => "Append another member to the clamped stack (up to 6 - washers count as members).",
         FieldRow::ToggleRemoveMember => "Remove the last member in the clamped stack (at least 1 must remain).",
         FieldRow::ToggleUncertaintyEnabled => "Evaluate a worst-case preload range across friction/geometry/torque tolerance - deterministic, exhaustive over every +/- corner (only meaningful in Torque Controlled mode).",
         FieldRow::Number(NumberTarget::MuThreadTolPct) => "Thread friction +/- tolerance as a percent of its nominal value.",
@@ -340,6 +346,7 @@ pub fn field_hint(row: FieldRow) -> &'static str {
     }
 }
 
+#[derive(Clone)]
 pub struct PreloadModel {
     pub mode: Mode,
     pub applied_torque: f64,
@@ -459,7 +466,7 @@ impl Default for PreloadModel {
             shank_length: 1.0,
             shank_diameter: g.d,
             embedment_settlement: 0.0,
-            members: vec![MemberUi { thickness: 0.75, e: 10_300_000.0, hole_diameter: 0.406, outer_diameter: 0.0 }],
+            members: vec![MemberUi { name: "Plate", thickness: 0.75, e: 10_300_000.0, hole_diameter: 0.406, outer_diameter: 0.0 }],
             external_load_enabled: false,
             external_axial_load: 500.0,
             slip_enabled: false,
@@ -545,6 +552,7 @@ pub fn field_rows(model: &PreloadModel) -> Vec<FieldRow> {
     rows.push(FieldRow::Number(NumberTarget::ShankDiameter));
 
     rows.push(FieldRow::Header("Joint Stack"));
+    rows.push(FieldRow::OpenTemplatePicker);
     for i in 0..model.members.len() {
         rows.push(FieldRow::Number(NumberTarget::MemberThickness(i)));
         rows.push(FieldRow::Number(NumberTarget::MemberModulus(i)));

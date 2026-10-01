@@ -104,6 +104,8 @@ pub struct BushingState {
     /// until the next edit.
     pub last_applied: Option<String>,
     pub advice: AdviceWindow,
+    /// Why the last tolerance edit was rejected; shown atop Results until the next edit.
+    pub input_error: Option<String>,
 }
 
 impl Default for BushingState {
@@ -122,6 +124,7 @@ impl Default for BushingState {
             rec_selected: 0,
             last_applied: None,
             advice: AdviceWindow::default(),
+            input_error: None,
         };
         // Row 0 is always a `Header` (the first section divider) - land on
         // the first real field instead of an unselectable row.
@@ -277,9 +280,11 @@ impl BushingState {
 
     fn activate_selected(&mut self) {
         self.last_applied = None;
+        self.input_error = None;
         let rows = model::field_rows(&self.model);
         match rows.get(self.selected).copied() {
             Some(FieldRow::ToggleFitType) => self.model.toggle_fit_type(),
+            Some(FieldRow::ToggleToleranceMode) => self.model.toggle_tolerance_mode(),
             Some(FieldRow::ToggleBushingType) => self.model.toggle_bushing_type(),
             Some(FieldRow::ToggleIdType) => self.model.toggle_id_type(),
             Some(FieldRow::ToggleEndConstraint) => self.model.toggle_end_constraint(),
@@ -292,7 +297,7 @@ impl BushingState {
             Some(FieldRow::ToggleAssemblyThermalEnabled) => self.model.toggle_assembly_thermal_enabled(),
             Some(FieldRow::OpenHousingMaterialPicker) => self.material_picker = MaterialPickerState::open_for(MaterialTarget::Housing),
             Some(FieldRow::OpenBushingMaterialPicker) => self.material_picker = MaterialPickerState::open_for(MaterialTarget::Bushing),
-            Some(FieldRow::Header(_)) | Some(FieldRow::Number(_)) | None => return,
+            Some(FieldRow::Header(_)) | Some(FieldRow::Number(_)) | Some(FieldRow::Tol(_)) | None => return,
         }
         self.clamp_selection();
     }
@@ -358,6 +363,7 @@ pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>
                 state.edit_buffer.clear();
                 (true, Vec::new())
             }
+            _ if matches!(model::field_rows(&state.model).get(state.selected), Some(FieldRow::Tol(_))) && tol_buffer_key(&mut state.edit_buffer, &key) => (true, Vec::new()),
             _ if crate::widgets::number_edit::handle_buffer_key(&mut state.edit_buffer, &key) => (true, Vec::new()),
             _ => (false, Vec::new()),
         };
@@ -372,6 +378,14 @@ pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>
     // activates their selection process exactly as before; a bare typed
     // character on those rows is a no-op, matching every other non-`Number`
     // row.
+    // A tolerance row starts editing on a digit, '.', '-' or '+'.
+    if let KeyCode::Char(c @ ('+' | '-' | '.' | '0'..='9')) = key.code {
+        if (key.modifiers.is_empty() || key.modifiers == crossterm::event::KeyModifiers::SHIFT) && matches!(model::field_rows(&state.model).get(state.selected), Some(FieldRow::Tol(_))) {
+            state.editing = true;
+            state.edit_buffer = c.to_string();
+            return (true, Vec::new());
+        }
+    }
     if let Some(c) = crate::widgets::number_edit::number_char(&key) {
         if let Some(FieldRow::Number(target)) = model::field_rows(&state.model).get(state.selected).copied() {
             if !matches!(target, NumberTarget::BoreDia | NumberTarget::Friction | NumberTarget::IdBushing) {
@@ -429,6 +443,11 @@ pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>
                     state.bushing_id_picker = BushingIdPickerState::open_near(&state.model);
                     (true, Vec::new())
                 }
+                Some(FieldRow::Tol(group)) => {
+                    state.editing = true;
+                    state.edit_buffer = state.model.tolerance_edit_text(group);
+                    (true, Vec::new())
+                }
                 Some(FieldRow::Number(target)) => {
                     state.editing = true;
                     state.edit_buffer = model::format_for_edit(state.model.number_value(target));
@@ -460,12 +479,44 @@ pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>
     }
 }
 
+/// Edit-buffer keys for a tolerance row: digits, `.`, signs, separators.
+fn tol_buffer_key(buffer: &mut String, key: &KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Backspace => {
+            buffer.pop();
+            true
+        }
+        KeyCode::Delete => {
+            buffer.clear();
+            true
+        }
+        KeyCode::Char(c) if (key.modifiers.is_empty() || key.modifiers == crossterm::event::KeyModifiers::SHIFT) && (c.is_ascii_digit() || matches!(c, '.' | '+' | '-' | ' ' | '/' | ',' | '\u{b1}')) => {
+            buffer.push(c);
+            true
+        }
+        _ => false,
+    }
+}
+
 fn commit_edit(state: &mut BushingState) {
     let rows = model::field_rows(&state.model);
+    if let Some(FieldRow::Tol(group)) = rows.get(state.selected).copied() {
+        match state.model.commit_tolerance_text(group, &state.edit_buffer) {
+            Ok(()) => {
+                state.last_applied = None;
+                state.input_error = None;
+            }
+            Err(why) => state.input_error = Some(format!("tolerance not changed: {why}")),
+        }
+        state.editing = false;
+        state.edit_buffer.clear();
+        return;
+    }
     if let Some(FieldRow::Number(target)) = rows.get(state.selected).copied() {
         if let Ok(raw) = state.edit_buffer.trim().parse::<f64>() {
             state.model.commit_number(target, raw);
             state.last_applied = None;
+            state.input_error = None;
         }
     }
     state.editing = false;
@@ -795,5 +846,71 @@ mod tests {
         state.perform(BushingAction::AdviceClose);
         handle_key(&mut state, key(KeyCode::Char('w')));
         assert!(state.advice.open && state.advice.tab == AdviceTab::Explain);
+    }
+
+    fn select(state: &mut BushingState, row: FieldRow) {
+        state.selected = model::field_rows(&state.model).iter().position(|r| *r == row).expect("row present");
+    }
+
+    fn type_text(state: &mut BushingState, text: &str) {
+        for c in text.chars() {
+            handle_key(state, key(KeyCode::Char(c)));
+        }
+    }
+
+    #[test]
+    fn typing_on_a_tolerance_row_edits_plus_and_minus_in_one_row() {
+        let mut state = BushingState::default();
+        select(&mut state, FieldRow::Tol(model::TolGroup::Bore));
+        type_text(&mut state, "+0.0005 -0.0003");
+        assert!(state.editing);
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert!(!state.editing);
+        assert_eq!((state.model.bore_tol_plus, state.model.bore_tol_minus), (0.0005, 0.0003));
+        assert!(state.input_error.is_none());
+    }
+
+    #[test]
+    fn min_max_mode_reads_two_limits_and_keeps_the_nominal_when_inside() {
+        let mut state = BushingState::default();
+        state.model.toggle_tolerance_mode();
+        select(&mut state, FieldRow::Tol(model::TolGroup::Bore));
+        handle_key(&mut state, key(KeyCode::Enter));
+        state.edit_buffer = "0.4995 0.5005".to_string();
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert_eq!(state.model.bore_dia, 0.5, "nominal 0.5 lies inside the limits - kept");
+        assert!((state.model.bore_tol_plus - 0.0005).abs() < 1e-12 && (state.model.bore_tol_minus - 0.0005).abs() < 1e-12);
+        assert_eq!(state.model.tolerance_display(model::TolGroup::Bore), "0.4995 .. 0.5005");
+    }
+
+    #[test]
+    fn an_unreadable_tolerance_is_rejected_with_a_reason_and_changes_nothing() {
+        let mut state = BushingState::default();
+        select(&mut state, FieldRow::Tol(model::TolGroup::Interference));
+        handle_key(&mut state, key(KeyCode::Enter));
+        state.edit_buffer = "abc".to_string();
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert!(state.input_error.as_deref().unwrap().contains("not a number"));
+        assert_eq!(state.model.interference_tol_plus, 0.0);
+    }
+
+    #[test]
+    fn tolerance_entry_row_toggles_mode_without_changing_the_band() {
+        let mut state = BushingState::default();
+        state.model.commit_tolerance_text(model::TolGroup::Bore, "+0.001 -0.0005").unwrap();
+        select(&mut state, FieldRow::ToggleToleranceMode);
+        handle_key(&mut state, key(KeyCode::Char(' ')));
+        assert_eq!(state.model.tolerance_mode, model::ToleranceMode::MinMax);
+        assert_eq!(state.model.tolerance_display(model::TolGroup::Bore), "0.4995 .. 0.5010");
+        handle_key(&mut state, key(KeyCode::Char(' ')));
+        assert_eq!(state.model.tolerance_display(model::TolGroup::Bore), "+0.0010 / -0.0005");
+    }
+
+    #[test]
+    fn tolerance_rows_replace_the_separate_plus_and_minus_rows() {
+        let rows = model::field_rows(&BushingState::default().model);
+        assert!(rows.contains(&FieldRow::Tol(model::TolGroup::Bore)) && rows.contains(&FieldRow::Tol(model::TolGroup::Interference)));
+        assert!(!rows.iter().any(|r| matches!(r, FieldRow::Number(NumberTarget::BoreTolPlus | NumberTarget::BoreTolMinus | NumberTarget::InterferenceTolPlus | NumberTarget::InterferenceTolMinus))));
+        assert!(!rows.contains(&FieldRow::Tol(model::TolGroup::CsDia)), "countersink tolerance rows only exist for countersunk geometry");
     }
 }

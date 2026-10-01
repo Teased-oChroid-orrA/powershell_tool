@@ -24,7 +24,7 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &PreloadAnalysi
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(theme.border_style(focused))
-        .title(" Preload Analysis - Space/Enter: toggle/edit \u{b7} d: details \u{b7} e: export ");
+        .title(" Preload Analysis - Space/Enter: toggle/edit \u{b7} t: joint templates \u{b7} d: details \u{b7} e: export ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -42,10 +42,13 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &PreloadAnalysi
 
     regions.workspace_panes.push((area, super::PANE_MAIN));
     draw_fields(frame, fields_area, theme, state, focused, regions);
-    draw_readout(frame, readout_area, theme, &state.model, state.show_numbers, state.results_scroll);
+    draw_readout(frame, readout_area, theme, &state.model, state.show_numbers, state.results_scroll, state.message.as_deref());
 
     if state.bolt_picker.open {
         super::bolt_picker::render(frame, area, theme, &state.bolt_picker, regions);
+    }
+    if state.template_picker.open {
+        super::template_picker::render(frame, area, theme, &state.template_picker, &state.model, regions);
     }
 }
 
@@ -66,6 +69,7 @@ fn display_value(model: &PreloadModel, row: model::FieldRow) -> String {
         model::FieldRow::Header(_) => String::new(),
         model::FieldRow::ToggleMode => model.mode.label().to_string(),
         model::FieldRow::OpenBoltPicker => model.matching_bolt().map(|b| b.designation.to_string()).unwrap_or_else(|| "Custom".to_string()),
+        model::FieldRow::OpenTemplatePicker => format!("{} member(s) - Enter to choose", model.members.len()),
         model::FieldRow::ToggleTighteningFrom => model::label_tightening_from(model.tightening_from).to_string(),
         model::FieldRow::ToggleBearingModel => model::label_bearing_model(model.bearing_model).to_string(),
         model::FieldRow::ToggleExternalLoadEnabled => bool_label(model.external_load_enabled),
@@ -179,19 +183,34 @@ fn tone_color(tone: StatusTone) -> ratatui::style::Color {
     }
 }
 
-fn draw_readout(frame: &mut Frame, area: Rect, theme: &Theme, model: &PreloadModel, show_numbers: bool, scroll: u16) {
+fn draw_readout(frame: &mut Frame, area: Rect, theme: &Theme, model: &PreloadModel, show_numbers: bool, scroll: u16, message: Option<&str>) {
     let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.border_style(false)).title(" Results ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    let lines = readout_lines(theme, model, show_numbers);
+    let lines = readout_lines(theme, model, show_numbers, message);
     crate::widgets::scroll_paragraph::render(frame, inner, theme, lines, scroll);
 }
 
-fn readout_lines<'a>(theme: &'a Theme, model: &'a PreloadModel, show_numbers: bool) -> Vec<Line<'a>> {
+/// The clamped stack as a picture (head, each member, nut) - shown above the
+/// numbers so a template's or hand-built stack-up is visible at a glance.
+fn stack_lines<'a>(theme: &Theme, model: &PreloadModel) -> Vec<Line<'a>> {
+    let mut lines = vec![Line::from(Span::styled("Joint Stack", theme.title_style(false)))];
+    for row in super::joint_templates::stack_diagram(model) {
+        let style = if row.is_washer { theme.disabled_style() } else { Style::default() };
+        lines.push(Line::from(vec![Span::styled(row.bar, style), Span::raw("  "), Span::raw(row.caption)]));
+    }
+    lines.push(Line::from(""));
+    lines
+}
+
+fn readout_lines<'a>(theme: &'a Theme, model: &'a PreloadModel, show_numbers: bool, message: Option<&str>) -> Vec<Line<'a>> {
     let mut lines = Vec::new();
+    if let Some(m) = message {
+        lines.push(Line::from(Span::styled(format!("\u{2713} {m}"), theme.status_style(StatusTone::Success))));
+    }
     let solution = match &model.output {
         Ok(s) => s,
         Err(e) => {
@@ -212,6 +231,7 @@ fn readout_lines<'a>(theme: &'a Theme, model: &'a PreloadModel, show_numbers: bo
         Span::raw(format!("   Residual: {:.4}", solution.torque.residual)),
     ]));
     lines.push(Line::from(""));
+    lines.extend(stack_lines(theme, model));
 
     lines.push(Line::from(Span::styled("Preload / Torque Breakdown", theme.title_style(false))));
     lines.push(Line::from(format!("  Applied torque       {:.4}", solution.torque.applied)));

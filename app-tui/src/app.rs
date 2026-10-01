@@ -301,6 +301,7 @@ fn handle_reamer_library_file_read(state: &mut AppState, result: Result<String, 
     let (queue, added, merged) = crate::library::ConflictQueue::new(outcomes, &mut state.bushing.reamer_picker.library);
     let conflicts_remaining = !queue.is_empty();
     state.bushing.reamer_picker.pending_conflicts = if conflicts_remaining { Some(queue) } else { None };
+    state.bushing.model.sync_user_reamers(&state.bushing.reamer_picker.library);
     let suffix = if conflicts_remaining { " - conflicts need review (k: keep, o: overwrite, a/z: apply to all)" } else { "" };
     state.notifications.push(format!("Reamer library: {added} added, {merged} label update(s){suffix}"), StatusTone::Success);
     vec![Effect::PersistReamerLibrary]
@@ -621,6 +622,20 @@ fn handle_click(state: &mut AppState, regions: &MouseRegions, col: u16, row: u16
         return Vec::new();
     }
 
+    // Preload joint-template window: modal for the mouse.
+    if state.nav.active_tool == ToolId::PreloadAnalysis && state.preload_analysis.template_picker.open {
+        if let Some(action) = mouse::hit(&regions.template_actions, col, row) {
+            let double = matches!(action, preload_analysis::template_picker::TemplateAction::Row(i) if is_double_click(&mut state.last_click, ClickTarget::TemplateRow(i)));
+            let pa = &mut state.preload_analysis;
+            let mut applied = pa.template_picker.perform(action, &mut pa.model);
+            if double && applied.is_none() {
+                applied = pa.template_picker.perform(preload_analysis::template_picker::TemplateAction::Apply, &mut pa.model);
+            }
+            pa.after_template(applied);
+        }
+        return Vec::new();
+    }
+
     if state.pressure_vessel.material_picker.open {
         if let Some(i) = mouse::hit(&regions.material_rows, col, row) {
             state.pressure_vessel.material_picker.cursor = i;
@@ -879,6 +894,13 @@ fn handle_scroll(state: &mut AppState, regions: &MouseRegions, col: u16, row: u1
     if state.search.extension_picker.open {
         if mouse::hit(&regions.extension_rows, col, row).is_some() {
             search::extension_picker::handle_key(&mut state.search.extension_picker, key);
+        }
+        return;
+    }
+
+    if state.nav.active_tool == ToolId::PreloadAnalysis && state.preload_analysis.template_picker.open {
+        if regions.template_window.map(|r| mouse::contains(r, col, row)).unwrap_or(false) {
+            preload_analysis::handle_key(&mut state.preload_analysis, key);
         }
         return;
     }

@@ -170,6 +170,14 @@ pub struct Recommendation {
     pub outcome: String,
     /// Empty = advice only (nothing safe to auto-apply).
     pub edits: Vec<Edit>,
+    /// Side effects of applying it, from solving a copy of the model: the
+    /// bore line first, then the metrics that move the most, then any other
+    /// check that changes status.
+    pub impact: Vec<String>,
+    /// E.g. which catalog reamer/drill the value was snapped to.
+    pub note: Option<String>,
+    /// True when the housing bore itself changes (a different reamer).
+    pub touches_bore: bool,
 }
 
 impl Recommendation {
@@ -192,50 +200,113 @@ fn step_for(target: NumberTarget) -> f64 {
     }
 }
 
+/// A proposed set of edits plus an explanatory note.
+struct Fix {
+    edits: Vec<Edit>,
+    note: Option<String>,
+}
+
+/// Targets whose value is a drilled/reamed size: a recommendation for them is
+/// snapped to a real catalog reamer/drill so no new tool has to be made.
+fn is_tooled(target: NumberTarget) -> bool {
+    matches!(target, NumberTarget::IdBushing | NumberTarget::BoreDia)
+}
+
+/// Edits that set a tooled dimension to catalog size `size` (a bore also
+/// takes the tool's own tolerance, like picking it in the reamer picker).
+fn edits_for_size(model: &BushingModel, target: NumberTarget, size: &super::model::CatalogSize) -> Vec<Edit> {
+    if target == NumberTarget::BoreDia {
+        // The reamer's own tolerance becomes the bore band, so the interference
+        // window must cover it on each side or the new bore would make the fit
+        // infeasible/clamped.
+        let mut edits = vec![
+            Edit { target, value: size.nominal },
+            Edit { target: NumberTarget::BoreTolPlus, value: size.tol_plus },
+            Edit { target: NumberTarget::BoreTolMinus, value: size.tol_minus },
+        ];
+        let want_minus = model.interference_tol_minus.max(size.tol_plus);
+        let want_plus = model.interference_tol_plus.max(size.tol_minus);
+        if want_minus > model.interference_tol_minus + 1e-12 {
+            edits.push(Edit { target: NumberTarget::InterferenceTolMinus, value: want_minus });
+        }
+        if want_plus > model.interference_tol_plus + 1e-12 {
+            edits.push(Edit { target: NumberTarget::InterferenceTolPlus, value: want_plus });
+        }
+        edits
+    } else {
+        vec![Edit { target, value: size.nominal }]
+    }
+}
+
 /// Finds a value for `target`, between its current value and `limit`, that
 /// makes `kind` pass without breaking any other check. Bisects toward the
-/// current value (so the proposal is the smallest change found), then rounds
-/// to the input's natural resolution toward the passing side and re-verifies.
-/// `None` when even `limit` does not fix it.
-fn smallest_fix(model: &BushingModel, base_fails: &[CheckKind], kind: CheckKind, target: NumberTarget, limit: f64) -> Option<f64> {
+/// current value (so the proposal is the smallest change found); for a
+/// drilled/reamed dimension it then moves to the nearest *catalog* size on
+/// the passing side, so nothing new has to be fabricated.
+fn smallest_fix(model: &BushingModel, base_fails: &[CheckKind], kind: CheckKind, target: NumberTarget, limit: f64) -> Option<Fix> {
     // Prefer a fix that leaves the check comfortably passing (no warning);
     // fall back to one that merely clears the failure if that is all the
     // allowed range can offer.
     bisect_fix(model, base_fails, kind, target, limit, true).or_else(|| bisect_fix(model, base_fails, kind, target, limit, false))
 }
 
-fn bisect_fix(model: &BushingModel, base_fails: &[CheckKind], kind: CheckKind, target: NumberTarget, limit: f64, strict: bool) -> Option<f64> {
+fn bisect_fix(model: &BushingModel, base_fails: &[CheckKind], kind: CheckKind, target: NumberTarget, limit: f64, strict: bool) -> Option<Fix> {
     let v0 = model.number_value(target);
     if !limit.is_finite() || (limit - v0).abs() < 1e-12 {
         return None;
     }
-    let good = |v: f64| {
-        let trial = model.trial(&[Edit { target, value: v }]);
+    let good = |edits: &[Edit]| {
+        let trial = model.trial(edits);
         let checks = evaluate(&trial);
         let own = severity_of(&checks, kind);
         let cleared = if strict { own == Severity::Pass } else { own != Severity::Fail };
         cleared && checks.iter().all(|c| c.severity != Severity::Fail || base_fails.contains(&c.kind))
     };
-    if !good(limit) {
-        return None;
-    }
+    let one = |v: f64| [Edit { target, value: v }];
+    // The far limit may overshoot (e.g. a bore so small the wall vanishes):
+    // pull it back toward the current value until something passes. The
+    // snap-to-catalog step below keeps the search inside [v0, limit].
+    let far = limit;
+    let limit = [1.0, 0.75, 0.5, 0.35, 0.2, 0.1, 0.05].iter().map(|f| v0 + (far - v0) * f).find(|v| good(&one(*v)))?;
     let dir = (limit - v0).signum();
     let (mut bad, mut ok) = (v0, limit);
     for _ in 0..40 {
         let mid = (bad + ok) / 2.0;
-        if good(mid) {
+        if good(&one(mid)) {
             ok = mid;
         } else {
             bad = mid;
         }
     }
+
+    if is_tooled(target) {
+        let (lo, hi) = (v0.min(limit), v0.max(limit));
+        let mut sizes: Vec<super::model::CatalogSize> = model
+            .catalog_sizes()
+            .into_iter()
+            .filter(|c| c.nominal > lo + 1e-9 && c.nominal <= hi + 1e-9)
+            // On the passing side of the boundary found above.
+            .filter(|c| if dir > 0.0 { c.nominal >= ok - 1e-9 } else { c.nominal <= ok + 1e-9 })
+            .collect();
+        // Closest to the boundary first = the smallest change that is a real tool.
+        sizes.sort_by(|a, b| (a.nominal - ok).abs().partial_cmp(&(b.nominal - ok).abs()).unwrap_or(std::cmp::Ordering::Equal));
+        for size in sizes.into_iter().take(8) {
+            let edits = edits_for_size(model, target, &size);
+            if good(&edits) {
+                return Some(Fix { edits, note: Some(format!("snapped to catalog size {} ({:.4} in) - no new tooling needed", size.label, size.nominal)) });
+            }
+        }
+    }
+
     let step = step_for(target);
     let mut v = if dir > 0.0 { (ok / step).ceil() * step } else { (ok / step).floor() * step };
     for _ in 0..4 {
-        if good(v) {
+        if good(&one(v)) {
             // Round away float fuzz (1.0389000000000002 -> 1.0389) without changing the verified value.
             let clean = ((v / step).round() * step * 1e6).round() / 1e6;
-            return Some(if good(clean) { clean } else { v });
+            let value = if good(&one(clean)) { clean } else { v };
+            let note = is_tooled(target).then(|| "no catalog reamer/drill size passes - this needs a custom-size tool".to_string());
+            return Some(Fix { edits: vec![Edit { target, value }], note });
         }
         v += dir * step;
     }
@@ -257,26 +328,97 @@ fn outcome_of(model: &BushingModel, edits: &[Edit], kind: CheckKind) -> String {
     format!("{}: {detail}", kind.label())
 }
 
+/// What applying `edits` does besides fixing the check, from solving a copy:
+/// bore change, the results that move the most, and checks that change status.
+fn impact_of(model: &BushingModel, edits: &[Edit], fixed: CheckKind) -> Vec<String> {
+    let after = model.trial(edits);
+    let (a, b) = (&model.output, &after.output);
+    let mut lines = Vec::new();
+
+    if let Some(bore) = edits.iter().find(|e| e.target == NumberTarget::BoreDia) {
+        lines.push(format!("Bore {:.4} \u{2192} {:.4} in - needs a different reamer ({})", model.bore_dia, bore.value, if bore.value < model.bore_dia { "smaller, never enlarged" } else { "LARGER" }));
+    } else {
+        lines.push("Bore unchanged - no re-reaming".to_string());
+    }
+
+    // (label, before, after, decimals, unit, is a margin - compared by difference)
+    let metrics: [(&str, f64, f64, usize, &str, bool); 10] = [
+        ("Contact pressure", a.pressure, b.pressure, 0, "psi", false),
+        ("Install force", a.install_force, b.install_force, 1, "lbf", false),
+        ("Retained force", a.retained_install_force, b.retained_install_force, 1, "lbf", false),
+        ("OD installed", a.od_installed, b.od_installed, 4, "in", false),
+        ("Straight wall", a.wall_straight, b.wall_straight, 4, "in", false),
+        ("Neck wall", a.wall_neck, b.wall_neck, 4, "in", false),
+        ("Housing stress MS", a.housing_ms, b.housing_ms, 2, "", true),
+        ("Bushing stress MS", a.bushing_ms, b.bushing_ms, 2, "", true),
+        ("Edge sequencing margin", a.sequence_margin, b.sequence_margin, 2, "", true),
+        ("Edge strength margin", a.strength_margin, b.strength_margin, 2, "", true),
+    ];
+    let mut moved: Vec<(f64, String)> = Vec::new();
+    for (label, before, now, dp, unit, is_margin) in metrics {
+        if !before.is_finite() || !now.is_finite() {
+            continue;
+        }
+        let (score, text) = if is_margin {
+            let d = now - before;
+            if d.abs() < 0.01 {
+                continue;
+            }
+            (d.abs(), format!("{label} {before:+.dp$} \u{2192} {now:+.dp$} ({d:+.2})"))
+        } else {
+            let rel = if before.abs() > 1e-12 { (now - before) / before.abs() } else { 0.0 };
+            if rel.abs() < 0.005 {
+                continue;
+            }
+            (rel.abs(), format!("{label} {before:.dp$} \u{2192} {now:.dp$} {unit} ({:+.0}%)", rel * 100.0))
+        };
+        moved.push((score, text));
+    }
+    moved.sort_by(|x, y| y.0.partial_cmp(&x.0).unwrap_or(std::cmp::Ordering::Equal));
+    lines.extend(moved.into_iter().take(5).map(|(_, t)| t));
+
+    let (before_checks, after_checks) = (evaluate(model), evaluate(&after));
+    for c in &after_checks {
+        let was = severity_of(&before_checks, c.kind);
+        if c.kind != fixed && c.severity > was {
+            lines.push(format!("Warning: {} goes {:?} \u{2192} {:?}", c.kind.label(), was, c.severity));
+        }
+    }
+    lines
+}
+
 /// Verified fixes for every failing check (plus fit-type mismatch warnings),
-/// most important first. Cheap enough to run on every recompute: each
-/// recommendation costs ~45 solver evaluations.
+/// most important first. Several alternatives are offered per failure -
+/// including ones that leave the housing bore alone, since a bore usually
+/// cannot be enlarged - each with its impact. The bore is only ever
+/// proposed smaller, and only to a real catalog reamer. Cheap enough to run
+/// on every recompute: each recommendation costs ~45 solver evaluations.
 pub fn recommend(model: &BushingModel) -> Vec<Recommendation> {
     let checks = evaluate(model);
     let base_fails: Vec<CheckKind> = checks.iter().filter(|c| c.severity == Severity::Fail).map(|c| c.kind).collect();
     let mut recs: Vec<Recommendation> = Vec::new();
 
-    let push_edits = |recs: &mut Vec<Recommendation>, kind: CheckKind, edits: Vec<Edit>| {
-        if edits.is_empty() {
+    let push_fix = |recs: &mut Vec<Recommendation>, kind: CheckKind, fix: Option<Fix>| {
+        let Some(Fix { edits, note }) = fix else { return };
+        if edits.is_empty() || recs.iter().any(|r| r.edits == edits) {
             return;
         }
-        let rec = Recommendation { fixes: kind, summary: describe(model, &edits), outcome: outcome_of(model, &edits, kind), edits };
-        if !recs.iter().any(|r| r.edits == rec.edits) {
-            recs.push(rec);
-        }
+        recs.push(Recommendation {
+            fixes: kind,
+            summary: describe(model, &edits),
+            outcome: outcome_of(model, &edits, kind),
+            impact: impact_of(model, &edits, kind),
+            touches_bore: edits.iter().any(|e| e.target == NumberTarget::BoreDia),
+            note,
+            edits,
+        });
     };
-    let single = |kind: CheckKind, target: NumberTarget, limit: f64| -> Vec<Edit> {
-        smallest_fix(model, &base_fails, kind, target, limit).map(|value| vec![Edit { target, value }]).unwrap_or_default()
-    };
+    let direct = |edits: Vec<Edit>| Some(Fix { edits, note: None });
+    let fix_by = |kind: CheckKind, target: NumberTarget, limit: f64| smallest_fix(model, &base_fails, kind, target, limit);
+    // More interference = a bigger OD (thicker wall) without touching the bore.
+    let more_interference = model.interference + (model.interference.abs() * 3.0).max(0.004);
+    // A smaller bore needs a smaller reamer; never proposed larger.
+    let smaller_bore = model.bore_dia * 0.5;
 
     for kind in &base_fails {
         let kind = *kind;
@@ -288,7 +430,7 @@ pub fn recommend(model: &BushingModel) -> Vec<Recommendation> {
                     Edit { target: NumberTarget::InterferenceTolMinus, value: model.interference_tol_minus.max(model.bore_tol_minus) },
                 ];
                 if verified(model, &base_fails, kind, &widen) {
-                    push_edits(&mut recs, kind, widen);
+                    push_fix(&mut recs, kind, direct(widen));
                 }
                 // ...or tighten the bore band to fit inside the interference band.
                 let tighten = vec![
@@ -296,58 +438,54 @@ pub fn recommend(model: &BushingModel) -> Vec<Recommendation> {
                     Edit { target: NumberTarget::BoreTolMinus, value: model.bore_tol_minus.min(model.interference_tol_minus) },
                 ];
                 if verified(model, &base_fails, kind, &tighten) {
-                    push_edits(&mut recs, kind, tighten);
+                    push_fix(&mut recs, kind, direct(tighten));
                 }
             }
-            CheckKind::StraightWall => {
-                push_edits(&mut recs, kind, single(kind, NumberTarget::IdBushing, 0.01));
-                let floor = (model.output.wall_straight / 0.0001).floor() * 0.0001;
+            CheckKind::StraightWall | CheckKind::NeckWall => {
+                let (wall, min_target) = if kind == CheckKind::StraightWall { (model.output.wall_straight, NumberTarget::MinWallStraight) } else { (model.output.wall_neck, NumberTarget::MinWallNeck) };
+                push_fix(&mut recs, kind, fix_by(kind, NumberTarget::IdBushing, 0.01));
+                push_fix(&mut recs, kind, fix_by(kind, NumberTarget::Interference, more_interference));
+                if kind == CheckKind::NeckWall {
+                    if model.id_type == IdType::Countersink {
+                        if model.cs_mode != CsMode::DepthAngle {
+                            push_fix(&mut recs, kind, fix_by(kind, NumberTarget::CsDia, 0.0));
+                        }
+                        if model.cs_mode != CsMode::DiaAngle {
+                            push_fix(&mut recs, kind, fix_by(kind, NumberTarget::CsDepth, 0.0));
+                        }
+                    }
+                    if model.bushing_type == BushingType::Countersink {
+                        if model.ext_cs_mode != CsMode::DepthAngle {
+                            push_fix(&mut recs, kind, fix_by(kind, NumberTarget::ExtCsDia, 0.0));
+                        }
+                        if model.ext_cs_mode != CsMode::DiaAngle {
+                            push_fix(&mut recs, kind, fix_by(kind, NumberTarget::ExtCsDepth, 0.0));
+                        }
+                    }
+                }
+                let floor = (wall / 0.0001).floor() * 0.0001;
                 if floor > 0.0 {
-                    let relax = vec![Edit { target: NumberTarget::MinWallStraight, value: floor }];
+                    let relax = vec![Edit { target: min_target, value: floor }];
                     if verified(model, &base_fails, kind, &relax) {
-                        push_edits(&mut recs, kind, relax);
-                    }
-                }
-            }
-            CheckKind::NeckWall => {
-                push_edits(&mut recs, kind, single(kind, NumberTarget::IdBushing, 0.01));
-                if model.id_type == IdType::Countersink {
-                    if model.cs_mode != CsMode::DepthAngle {
-                        push_edits(&mut recs, kind, single(kind, NumberTarget::CsDia, 0.0));
-                    }
-                    if model.cs_mode != CsMode::DiaAngle {
-                        push_edits(&mut recs, kind, single(kind, NumberTarget::CsDepth, 0.0));
-                    }
-                }
-                if model.bushing_type == BushingType::Countersink {
-                    if model.ext_cs_mode != CsMode::DepthAngle {
-                        push_edits(&mut recs, kind, single(kind, NumberTarget::ExtCsDia, 0.0));
-                    }
-                    if model.ext_cs_mode != CsMode::DiaAngle {
-                        push_edits(&mut recs, kind, single(kind, NumberTarget::ExtCsDepth, 0.0));
-                    }
-                }
-                let floor = (model.output.wall_neck / 0.0001).floor() * 0.0001;
-                if floor > 0.0 {
-                    let relax = vec![Edit { target: NumberTarget::MinWallNeck, value: floor }];
-                    if verified(model, &base_fails, kind, &relax) {
-                        push_edits(&mut recs, kind, relax);
+                        push_fix(&mut recs, kind, direct(relax));
                     }
                 }
             }
             CheckKind::HousingStress => {
-                push_edits(&mut recs, kind, single(kind, NumberTarget::Interference, 0.0001));
-                push_edits(&mut recs, kind, single(kind, NumberTarget::HousingWidth, model.housing_width * 4.0));
+                push_fix(&mut recs, kind, fix_by(kind, NumberTarget::Interference, 0.0001));
+                push_fix(&mut recs, kind, fix_by(kind, NumberTarget::HousingWidth, model.housing_width * 4.0));
             }
             CheckKind::BushingStress => {
-                push_edits(&mut recs, kind, single(kind, NumberTarget::Interference, 0.0001));
+                push_fix(&mut recs, kind, fix_by(kind, NumberTarget::Interference, 0.0001));
+                push_fix(&mut recs, kind, fix_by(kind, NumberTarget::IdBushing, 0.01));
             }
-            CheckKind::EdgeSequencing => {
-                push_edits(&mut recs, kind, single(kind, NumberTarget::EdgeDist, (model.edge_dist * 5.0).max(model.bore_dia * 10.0)));
-            }
-            CheckKind::EdgeStrength => {
-                push_edits(&mut recs, kind, single(kind, NumberTarget::EdgeDist, (model.edge_dist * 5.0).max(model.bore_dia * 10.0)));
-                push_edits(&mut recs, kind, single(kind, NumberTarget::Load, 0.0));
+            CheckKind::EdgeSequencing | CheckKind::EdgeStrength => {
+                let far = (model.edge_dist * 5.0).max(model.bore_dia * 10.0);
+                push_fix(&mut recs, kind, fix_by(kind, NumberTarget::EdgeDist, far));
+                if kind == CheckKind::EdgeStrength {
+                    push_fix(&mut recs, kind, fix_by(kind, NumberTarget::Load, 0.0));
+                }
+                push_fix(&mut recs, kind, fix_by(kind, NumberTarget::BoreDia, smaller_bore));
             }
             CheckKind::Enforcement => {
                 recs.push(Recommendation {
@@ -355,6 +493,9 @@ pub fn recommend(model: &BushingModel) -> Vec<Recommendation> {
                     summary: "Enable Allow Bore Nominal Shift (and unlock the bore), or widen the interference tolerance".to_string(),
                     outcome: "manual change - toggles are not auto-applied".to_string(),
                     edits: Vec::new(),
+                    impact: Vec::new(),
+                    note: None,
+                    touches_bore: false,
                 });
             }
             CheckKind::FitType => {}
@@ -370,7 +511,7 @@ pub fn recommend(model: &BushingModel) -> Vec<Recommendation> {
         ];
         let changes = edits.iter().any(|e| (model.number_value(e.target) - e.value).abs() > 1e-12);
         if changes && model.trial(&edits).output.tolerance_status == ToleranceStatus::Ok {
-            push_edits(&mut recs, CheckKind::Tolerance, edits);
+            push_fix(&mut recs, CheckKind::Tolerance, direct(edits));
         }
     }
 
@@ -385,6 +526,9 @@ pub fn recommend(model: &BushingModel) -> Vec<Recommendation> {
             fixes: CheckKind::FitType,
             summary: describe(model, &edits),
             outcome: format!("typical values for a {}", super::model::label_fit_type(model.fit_type)),
+            impact: impact_of(model, &edits, CheckKind::FitType),
+            note: None,
+            touches_bore: false,
             edits,
         });
     }
@@ -595,4 +739,60 @@ mod tests {
         m.apply_recommendation(idx);
         assert_eq!(m.output.tolerance_status, ToleranceStatus::Ok);
     }
+
+    #[test]
+    fn id_recommendations_snap_to_a_real_catalog_size_on_the_passing_side() {
+        let mut m = model();
+        m.commit_number(NumberTarget::MinWallStraight, 0.07);
+        let rec = m.recommendations.iter().find(|r| r.edits.len() == 1 && r.edits[0].target == NumberTarget::IdBushing).expect("ID fix");
+        let id = rec.edits[0].value;
+        assert!(id < m.id_bushing, "ID only ever shrinks to fix a thin wall");
+        assert!(m.catalog_sizes().iter().any(|c| (c.nominal - id).abs() < 1e-9), "{id} must be a catalog reamer/drill size; note={:?}", rec.note);
+        assert!(rec.note.as_deref().unwrap().contains("no new tooling"));
+        let mut applied = m.clone();
+        applied.apply_recommendation(m.recommendations.iter().position(|r| r == rec).unwrap());
+        assert!(!applied.output.fail_straight);
+    }
+
+    #[test]
+    fn a_thin_wall_offers_alternatives_that_leave_the_bore_alone_and_never_enlarge_it() {
+        let mut m = model();
+        m.commit_number(NumberTarget::MinWallStraight, 0.065);
+        let wall: Vec<_> = m.recommendations.iter().filter(|r| r.fixes == CheckKind::StraightWall).collect();
+        assert!(wall.len() >= 2, "more than one way to fix it: {wall:?}");
+        assert!(wall.iter().any(|r| r.edits.iter().any(|e| e.target == NumberTarget::IdBushing)), "smaller ID alternative");
+        assert!(wall.iter().any(|r| r.edits.iter().any(|e| e.target == NumberTarget::MinWallStraight)), "accept-thinner-wall alternative");
+        for r in &m.recommendations {
+            for e in &r.edits {
+                if e.target == NumberTarget::BoreDia {
+                    assert!(e.value < m.bore_dia, "bore may only be reduced: {r:?}");
+                }
+            }
+            assert!(r.impact.first().map(|l| l.starts_with("Bore")).unwrap_or(true), "every applicable fix states its bore impact: {r:?}");
+        }
+        assert!(wall.iter().filter(|r| !r.touches_bore).count() >= 2);
+    }
+
+    #[test]
+    fn edge_distance_offers_a_smaller_catalog_reamer_alternative_with_its_impact() {
+        let mut m = model(); // default fails edge sequencing; a thinner bushing leaves room for a smaller bore
+        m.commit_number(NumberTarget::IdBushing, 0.15);
+        let rec = m.recommendations.iter().find(|r| r.touches_bore).expect("smaller-bore alternative");
+        let bore = rec.edits.iter().find(|e| e.target == NumberTarget::BoreDia).unwrap().value;
+        assert!(bore < m.bore_dia);
+        assert!(m.catalog_sizes().iter().any(|c| (c.nominal - bore).abs() < 1e-9));
+        assert!(rec.edits.iter().any(|e| e.target == NumberTarget::BoreTolPlus), "takes the reamer's own tolerance");
+        assert!(rec.impact[0].contains("smaller, never enlarged"), "{:?}", rec.impact);
+        assert!(rec.impact.len() > 1, "metrics that move are listed: {:?}", rec.impact);
+    }
+
+    #[test]
+    fn impact_lists_the_metrics_that_move() {
+        let mut m = model();
+        m.commit_number(NumberTarget::MinWallStraight, 0.065);
+        let rec = m.recommendations.iter().find(|r| r.edits.iter().any(|e| e.target == NumberTarget::IdBushing)).unwrap();
+        let text = rec.impact.join("\n");
+        assert!(text.contains("Contact pressure") || text.contains("Install force"), "{text}");
+    }
 }
+
