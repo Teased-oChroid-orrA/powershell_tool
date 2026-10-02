@@ -162,7 +162,7 @@ pub fn start_run(state: &mut SearchToolState) -> Vec<Effect> {
         state.config.search_path.clone(),
         state.config.filters_text.clone(),
     );
-    state.run = SearchRunState { is_running: true, ..SearchRunState::default() };
+    state.run = SearchRunState { is_running: true, started: Some(std::time::Instant::now()), ..SearchRunState::default() };
     state.cancel_token = None;
     vec![Effect::StartSearch { roots, settings, index: state.config.index }]
 }
@@ -178,7 +178,7 @@ pub fn request_cancel(state: &SearchToolState) {
 /// `SearchSettings`/index directory, marks live state, and returns the
 /// `Effect` `main.rs` executes - `handle_event`'s call graph never touches
 /// the async runtime directly.
-pub fn start_index_build(state: &mut SearchToolState, force_rebuild: bool) -> Vec<Effect> {
+pub fn start_index_build(state: &mut SearchToolState) -> Vec<Effect> {
     if state.index_run.is_building || state.config.search_path.trim().is_empty() {
         return Vec::new();
     }
@@ -188,7 +188,7 @@ pub fn start_index_build(state: &mut SearchToolState, force_rebuild: bool) -> Ve
     state.index_run.begin();
     let cancel = CancellationToken::new();
     state.index_cancel = Some(cancel.clone());
-    vec![Effect::BuildIndex { settings, index_dir, force_rebuild, cancel }]
+    vec![Effect::BuildIndex { settings, index_dir, cancel }]
 }
 
 /// Toolbox-local key routing for whichever workspace pane currently has
@@ -369,7 +369,12 @@ fn edit_buffer_key(buffer: &mut String, key: KeyEvent) -> Option<bool> {
 /// key and the command palette's "Run search" command go through, so the
 /// two invocation paths can't drift into inconsistent failure behavior.
 pub fn run_or_notify(state: &mut SearchToolState, notifications: &mut NotificationQueue) -> Vec<Effect> {
-    if state.can_run() {
+    if state.can_run() && state.config.index.enabled && state.index_run.is_building {
+        // A search would try to build the same index concurrently (one
+        // Tantivy writer per index folder).
+        notifications.push("Fast index is still building - wait for it or stop it (Ctrl+P)", StatusTone::Warning);
+        Vec::new()
+    } else if state.can_run() {
         start_run(state)
     } else {
         notifications.push("Enter a search path first", StatusTone::Warning);
@@ -554,16 +559,16 @@ mod tests {
     fn start_index_build_marks_building_and_returns_an_effect() {
         let mut state = SearchToolState::default();
         state.config.search_path = "/tmp/project".to_string();
-        let effects = start_index_build(&mut state, false);
+        let effects = start_index_build(&mut state);
         assert!(state.index_run.is_building);
         assert_eq!(effects.len(), 1);
-        assert!(matches!(effects[0], Effect::BuildIndex { force_rebuild: false, .. }));
+        assert!(matches!(effects[0], Effect::BuildIndex { .. }));
     }
 
     #[test]
     fn start_index_build_is_a_no_op_without_a_search_path() {
         let mut state = SearchToolState::default();
-        let effects = start_index_build(&mut state, false);
+        let effects = start_index_build(&mut state);
         assert!(!state.index_run.is_building);
         assert!(effects.is_empty());
     }
@@ -573,7 +578,7 @@ mod tests {
         let mut state = SearchToolState::default();
         state.config.search_path = "/tmp/project".to_string();
         state.index_run.is_building = true;
-        let effects = start_index_build(&mut state, true);
+        let effects = start_index_build(&mut state);
         assert!(effects.is_empty());
     }
 

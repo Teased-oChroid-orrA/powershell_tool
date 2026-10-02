@@ -31,6 +31,23 @@ pub enum GroupByMode {
     None,
 }
 
+/// An extra filter group: its own filters matched with its own mode, or
+/// excluded (see `exclude`) (e.g.
+/// "house" anywhere in the file AND "floor, two" within 3 lines). A file is a
+/// hit only when the primary filters AND every group pass. Groups share the
+/// primary's literal/regex/whole-word and exclude settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilterGroup {
+    pub filters: Vec<String>,
+    pub match_mode: MatchMode,
+    pub proximity_lines: i32,
+    /// `Some(scope)` turns the group into an exclusion: a file containing
+    /// any of its filters is dropped (`File`), or just those lines are
+    /// ignored (`Line`). `match_mode`/`proximity_lines` are unused then.
+    #[serde(default)]
+    pub exclude: Option<ExcludeScope>,
+}
+
 /// Every user-configurable setting for a search run - also the shape used
 /// to fingerprint the incremental cache (see `cache.rs`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +57,10 @@ pub struct SearchSettings {
     pub output_name: Option<String>,
 
     pub filters: Vec<String>,
+    /// Additional filter groups, each with its own match mode (see
+    /// [`FilterGroup`]); every group must pass for a file to be a hit.
+    #[serde(default)]
+    pub filter_groups: Vec<FilterGroup>,
     pub exclude_filters: Vec<String>,
 
     pub match_mode: MatchMode,
@@ -136,6 +157,14 @@ pub fn default_heavy_throttle_limit() -> i32 {
     (cores as i32).clamp(2, 16)
 }
 
+impl SearchSettings {
+    /// Every *searched-for* filter text: the primary filters, then each
+    /// non-exclusion group's.
+    pub fn all_filters(&self) -> impl Iterator<Item = &String> {
+        self.filters.iter().chain(self.filter_groups.iter().filter(|g| g.exclude.is_none()).flat_map(|g| g.filters.iter()))
+    }
+}
+
 impl Default for SearchSettings {
     fn default() -> Self {
         Self {
@@ -143,6 +172,7 @@ impl Default for SearchSettings {
             output_folder: String::new(),
             output_name: None,
             filters: Vec::new(),
+            filter_groups: Vec::new(),
             exclude_filters: Vec::new(),
             match_mode: MatchMode::default(),
             proximity_lines: 5,

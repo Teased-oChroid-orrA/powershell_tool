@@ -209,6 +209,10 @@ pub struct CorpusIndexOutcome {
     pub candidate_count: i32,
     /// Files skipped because they exceed `max_file_size_mb`.
     pub too_large_count: i32,
+    /// Files that are binary or yielded no extractable text (e.g. scanned
+    /// PDFs). Stored as empty documents - not failures - so the index knows
+    /// their modified time/size and never reports them as stale.
+    pub no_text_count: i32,
     /// Directories the walk could not enter (permissions, broken links,
     /// path-length limits) - their contents are NOT in the index.
     pub enumeration_errors: i32,
@@ -347,21 +351,96 @@ struct ReadParams {
     ocr_scanned_pdfs: bool,
 }
 
+/// Why [`read_and_extract`] produced no lines.
+enum ReadFail {
+    /// Binary file or a format that yielded no text - indexed as an empty doc.
+    NoText(&'static str),
+    Error(String),
+}
+
 /// Reads one file and extracts its text lines. Errors are pre-formatted
 /// strings (the failure list is display-only).
-async fn read_and_extract(full_name: String, ext: String, p: ReadParams, cancellation: CancellationToken) -> Result<Vec<String>, String> {
+async fn read_and_extract(full_name: String, ext: String, p: ReadParams, cancellation: CancellationToken) -> Result<Vec<String>, ReadFail> {
     let bytes = file_reader::read_file_bytes_robust(&full_name, p.file_timeout_seconds, p.max_retries, p.retry_delay_ms, None, &cancellation)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| ReadFail::Error(e.to_string()))?;
     // Extraction is synchronous and CPU-bound (PDF/OOXML/zip) - keep it off
     // the async worker threads so concurrent reads are never starved by it.
     tokio::task::spawn_blocking(move || {
         extraction::extract_lines_by_extension(&ext, &bytes, p.pdf_timeout_seconds, None, p.ocr_scanned_pdfs)
             .map(|e| e.lines)
-            .map_err(|e| format!("{e:?}"))
+            .map_err(|e| match e {
+                extraction::ExtractLinesError::Binary => ReadFail::NoText("binary file"),
+                extraction::ExtractLinesError::Failed => ReadFail::NoText("no extractable text"),
+            })
     })
     .await
-    .map_err(|e| format!("extraction task failed: {e}"))?
+    .map_err(|e| ReadFail::Error(format!("extraction task failed: {e}")))?
+}
+
+/// One staged-but-uncommitted document, kept so a failed commit (the writer
+/// and its uncommitted documents are discarded) can be replayed.
+struct PendingDoc {
+    id: String,
+    filename: String,
+    ext: String,
+    modified: i64,
+    created: i64,
+    size: i64,
+    body: String,
+}
+
+impl PendingDoc {
+    fn stage(&self, engine: &NativeSearchEngine) -> NsResult<()> {
+        engine.index_document(DocumentInput {
+            id: &self.id,
+            path: &self.id,
+            filename: &self.filename,
+            extension: &self.ext,
+            title: "",
+            modified_unix: self.modified,
+            created_unix: self.created,
+            size: self.size,
+            body: &self.body,
+        })
+    }
+}
+
+/// Commit attempts per batch. Windows antivirus/sync clients can deny the
+/// creation of a segment file for a moment (`os error 5`); a commit that
+/// fails discards the batch, so each retry re-stages it first.
+const COMMIT_ATTEMPTS: u32 = 4;
+/// Intermediate commit also triggers on staged body bytes so replay memory
+/// stays bounded when documents are large.
+const COMMIT_BATCH_BYTES: usize = 32 * 1024 * 1024;
+
+async fn commit_with_replay(engine: &NativeSearchEngine, pending: &[PendingDoc]) -> Result<(), String> {
+    let mut last = match engine.commit() {
+        Ok(()) => return Ok(()),
+        Err(e) => e.to_string(),
+    };
+    for attempt in 2..=COMMIT_ATTEMPTS {
+        tokio::time::sleep(std::time::Duration::from_millis(250 * u64::from(attempt))).await;
+        let result = pending.iter().try_for_each(|d| d.stage(engine)).and_then(|()| engine.commit());
+        match result {
+            Ok(()) => return Ok(()),
+            Err(e) => last = e.to_string(),
+        }
+    }
+    Err(last)
+}
+
+/// Commits `pending` (replaying on failure) and records the outcome: on a
+/// permanent failure the batch's documents move from indexed to failed.
+async fn commit_pending(engine: &NativeSearchEngine, pending: &mut Vec<PendingDoc>, outcome: &mut CorpusIndexOutcome, label: &str) {
+    if let Err(e) = commit_with_replay(engine, pending).await {
+        let n = pending.len() as i32;
+        outcome.indexed_count -= n;
+        outcome.failed_count += n;
+        outcome.failed_files.push(format!("{label} ({n} document(s) lost): {e}"));
+        *outcome.failure_summary.entry(format!("{label}: {}", redact_paths(&e))).or_insert(0) += n as u32;
+    }
+    pending.clear();
 }
 
 async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Sized>(
@@ -445,7 +524,8 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
     };
     let concurrency = if settings.parallel { settings.throttle_limit.clamp(1, 16) as usize } else { 1 };
     let work_total = work.len() as i32;
-    let mut pending_commits = 0i32;
+    let mut pending: Vec<PendingDoc> = Vec::new();
+    let mut pending_bytes = 0usize;
     let mut done = 0i32;
     let mut work_iter = work.into_iter();
 
@@ -469,7 +549,12 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
             done += 1;
             let lines = match handle.await {
                 Ok(Ok(l)) => l,
-                Ok(Err(e)) => {
+                Ok(Err(ReadFail::NoText(why))) => {
+                    outcome.no_text_count += 1;
+                    *outcome.failure_summary.entry(format!("ext={ext}: {why} (indexed empty)")).or_insert(0) += 1;
+                    Vec::new()
+                }
+                Ok(Err(ReadFail::Error(e))) => {
                     record_failure(&mut outcome, &full_name, &ext, &e);
                     continue;
                 }
@@ -479,40 +564,29 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
                 }
             };
 
-            let file_name = file.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let body = lines.join("\n");
-            // A single document/commit failure (most plausibly the
-            // Windows-only transient hazard `native_search::engine.rs`'s
-            // `with_writer_retry` doc comment describes - antivirus/OneDrive
-            // interference killing a Tantivy worker thread) must not abort
-            // the loop and discard every remaining file: count it, keep
-            // going. `engine.rs` itself recovers a killed writer
-            // transparently, so this only fires for an unrecovered error.
-            if let Err(e) = engine.index_document(DocumentInput {
-                id: &full_name,
-                path: &full_name,
-                filename: &file_name,
-                extension: &ext,
-                title: "",
-                modified_unix: file.modified.timestamp(),
-                created_unix: file.created.timestamp(),
+            let doc = PendingDoc {
+                filename: file.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                id: full_name.clone(),
+                ext: ext.clone(),
+                modified: file.modified.timestamp(),
+                created: file.created.timestamp(),
                 size: file.length,
-                body: &body,
-            }) {
+                body: lines.join("\n"),
+            };
+            // A single document failure must not abort the loop and discard
+            // every remaining file: count it, keep going.
+            if let Err(e) = doc.stage(engine) {
                 record_failure(&mut outcome, &full_name, &ext, &e.to_string());
                 continue;
             }
             outcome.indexed_count += 1;
-            pending_commits += 1;
+            pending_bytes += doc.body.len();
+            pending.push(doc);
 
-            if pending_commits >= COMMIT_BATCH_SIZE {
+            if pending.len() as i32 >= COMMIT_BATCH_SIZE || pending_bytes >= COMMIT_BATCH_BYTES {
                 report(&outcome, IndexStage::Committing, done, work_total, &full_name);
-                if let Err(e) = engine.commit() {
-                    outcome.failed_count += 1;
-                    outcome.failed_files.push(format!("commit at {} files: {e}", outcome.indexed_count));
-                    *outcome.failure_summary.entry(format!("commit: {}", redact_paths(&e.to_string()))).or_insert(0) += 1;
-                }
-                pending_commits = 0;
+                commit_pending(engine, &mut pending, &mut outcome, "commit").await;
+                pending_bytes = 0;
             }
         }
         if outcome.cancelled {
@@ -520,13 +594,9 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
         }
     }
 
-    if pending_commits > 0 {
+    if !pending.is_empty() {
         report(&outcome, IndexStage::Committing, done, work_total, "");
-        if let Err(e) = engine.commit() {
-            outcome.failed_count += 1;
-            outcome.failed_files.push(format!("final commit: {e}"));
-            *outcome.failure_summary.entry(format!("final commit: {}", redact_paths(&e.to_string()))).or_insert(0) += 1;
-        }
+        commit_pending(engine, &mut pending, &mut outcome, "final commit").await;
     }
 
     outcome.elapsed_ms = started.elapsed().as_millis() as u64;
@@ -555,6 +625,18 @@ pub struct NarrowOutcome {
     /// Files in scope that the index did not cover or has out of date
     /// (added/changed since the last build) - always included.
     pub stale_or_new: usize,
+    /// Subset of `stale_or_new` an index update would actually (re)index
+    /// (excludes files over `max_file_size_mb`, which are never indexed).
+    pub needs_update: usize,
+    /// Indexed documents whose file no longer exists on disk.
+    pub removed: usize,
+}
+
+impl NarrowOutcome {
+    /// The folder changed since the build in a way an update would fix.
+    pub fn is_stale(&self) -> bool {
+        self.needs_update > 0 || self.removed > 0
+    }
 }
 
 /// Case-insensitive, separator-insensitive comparison key for a file path:
@@ -587,6 +669,40 @@ pub async fn narrow_candidates(
 ) -> NsResult<NarrowOutcome> {
     let mut out = NarrowOutcome { index_docs: engine.num_docs(), ..Default::default() };
 
+    let walk = (settings.search_path.clone(), settings.include_hidden, settings.exclude_folders.clone());
+    let walk_cancel = cancellation.clone();
+    let walked = tokio::task::spawn_blocking(move || file_reader::enumerate_files_safely(&walk.0, walk.1, &walk.2, &walk_cancel, None))
+        .await
+        .map_err(|e| NsError::index_error(format!("directory walk task failed: {e}")))?;
+    let Ok((all_files, _)) = walked else {
+        return Err(NsError::cancelled("candidate narrowing cancelled"));
+    };
+    let in_scope = filter_by_extension(all_files, settings);
+    out.scannable = in_scope.len();
+    let max_bytes = (settings.max_file_size_mb * 1024.0 * 1024.0) as i64;
+
+    // Freshness: which in-scope files the index lacks or has out of date.
+    let mut stale: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut scope_keys: std::collections::HashSet<String> = std::collections::HashSet::with_capacity(in_scope.len());
+    for file in &in_scope {
+        let full_name = file.path.to_string_lossy().into_owned();
+        scope_keys.insert(path_key(&full_name));
+        let up_to_date = matches!(
+            engine.get_document_metadata(&full_name),
+            Ok(Some((m, sz))) if m == file.modified.timestamp() && sz == file.length
+        );
+        if !up_to_date {
+            out.stale_or_new += 1;
+            if file.length <= max_bytes {
+                out.needs_update += 1;
+            }
+            stale.insert(path_key(&full_name));
+        }
+    }
+    if let Ok(ids) = engine.all_document_ids() {
+        out.removed = ids.iter().filter(|id| !scope_keys.contains(&path_key(id)) && !Path::new(id.as_str()).exists()).count();
+    }
+
     let indexed_paths = if settings.use_regex {
         let mut chunk_sets = Vec::with_capacity(settings.filters.len());
         for f in &settings.filters {
@@ -604,31 +720,14 @@ pub async fn narrow_candidates(
     };
     let from_index: std::collections::HashSet<String> = indexed_paths.iter().map(|p| path_key(p)).collect();
 
-    let walk = (settings.search_path.clone(), settings.include_hidden, settings.exclude_folders.clone());
-    let walk_cancel = cancellation.clone();
-    let walked = tokio::task::spawn_blocking(move || file_reader::enumerate_files_safely(&walk.0, walk.1, &walk.2, &walk_cancel, None))
-        .await
-        .map_err(|e| NsError::index_error(format!("directory walk task failed: {e}")))?;
-    let Ok((all_files, _)) = walked else {
-        return Err(NsError::cancelled("candidate narrowing cancelled"));
-    };
-    let in_scope = filter_by_extension(all_files, settings);
-    out.scannable = in_scope.len();
-
     let mut chosen = Vec::new();
     for file in in_scope {
         let full_name = file.path.to_string_lossy().into_owned();
-        if from_index.contains(&path_key(&full_name)) {
+        let key = path_key(&full_name);
+        if from_index.contains(&key) {
             out.from_index += 1;
             chosen.push(full_name);
-            continue;
-        }
-        let up_to_date = matches!(
-            engine.get_document_metadata(&full_name),
-            Ok(Some((m, sz))) if m == file.modified.timestamp() && sz == file.length
-        );
-        if !up_to_date {
-            out.stale_or_new += 1;
+        } else if stale.contains(&key) {
             chosen.push(full_name);
         }
     }
@@ -1225,6 +1324,43 @@ mod tests {
         std::fs::write(dir.path().join("a.txt"), "now it has the needle word\n").unwrap();
         let out = narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap();
         assert_eq!(out.candidates.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn freshly_built_index_is_not_stale_and_edits_adds_deletes_make_it_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "needle one\n").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "needle two\n").unwrap();
+        let settings = narrow_settings(dir.path(), "needle");
+        let engine = built_engine(dir.path(), &settings).await;
+        let token = CancellationToken::new();
+
+        assert!(!narrow_candidates(&settings, &engine, &token).await.unwrap().is_stale());
+
+        std::fs::write(dir.path().join("c.txt"), "added later\n").unwrap();
+        let out = narrow_candidates(&settings, &engine, &token).await.unwrap();
+        assert_eq!((out.needs_update, out.removed), (1, 0));
+
+        std::fs::remove_file(dir.path().join("a.txt")).unwrap();
+        let out = narrow_candidates(&settings, &engine, &token).await.unwrap();
+        assert_eq!((out.needs_update, out.removed), (1, 1));
+        assert!(out.is_stale());
+    }
+
+    #[tokio::test]
+    async fn files_without_extractable_text_are_indexed_empty_and_never_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "needle\n").unwrap();
+        std::fs::write(dir.path().join("blob.txt"), b"bin\0ary\0data").unwrap();
+        std::fs::write(dir.path().join("scan.pdf"), b"not a pdf").unwrap();
+        let mut settings = narrow_settings(dir.path(), "needle");
+        settings.extensions = Some(vec![".txt".to_string(), ".pdf".to_string()]);
+        let engine = built_engine(dir.path(), &settings).await;
+        assert_eq!(engine.num_docs(), 3, "no-text files are stored so their mtime/size are known");
+
+        let out = narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap();
+        assert!(!out.is_stale(), "no-text files must not be reported as needing an update");
+        assert_eq!(out.candidates.unwrap().len(), 1, "only the file that contains the needle");
     }
 
     #[tokio::test]

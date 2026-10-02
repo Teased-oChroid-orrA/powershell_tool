@@ -5,14 +5,14 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::theme::{StatusTone, Theme};
 
 use super::indexing::{IndexLocation, IndexRunState};
 
-/// One status line meant to slot into the Run view's existing vertical
-/// layout as one more `Constraint::Length(1)` row (the parent session owns
+/// Status text meant to slot into the Run view's existing vertical
+/// layout as one more `Constraint::Length(2)` row (the parent session owns
 /// that wiring). Quiet when idle with no error, so it doesn't add visual
 /// noise for users who never enable fast re-search.
 pub fn render_status_line(frame: &mut Frame, area: Rect, theme: &Theme, tick: u64, state: &IndexRunState) {
@@ -24,7 +24,9 @@ pub fn render_status_line(frame: &mut Frame, area: Rect, theme: &Theme, tick: u6
         Line::from(vec![
             crate::widgets::spinner::spinner_span(tick, theme, StatusTone::Info),
             Span::raw(" "),
-            Span::styled(state.status_text.clone(), theme.status_style(StatusTone::Info)),
+            // Progress/ETA live in the Run view's progress panel; this row only
+            // says what is being built.
+            Span::styled("Building fast re-search index", theme.status_style(StatusTone::Info)),
         ])
     } else if let Some(error) = &state.last_error {
         Line::from(Span::styled(format!("Index error: {error}"), theme.status_style(StatusTone::Danger)))
@@ -38,10 +40,12 @@ pub fn render_status_line(frame: &mut Frame, area: Rect, theme: &Theme, tick: u6
         }
         Line::from(Span::styled(text, theme.disabled_style()))
     } else {
-        Line::from(Span::styled("Index: not built (Ctrl+P → Build fast re-search index)", theme.disabled_style()))
+        Line::from(Span::styled("Index: not built (Ctrl+P → Build / update fast re-search index)", theme.disabled_style()))
     };
 
-    frame.render_widget(Paragraph::new(line), area);
+    // Wrapped (the row is two lines tall) so a long status or search note is
+    // readable instead of cut off at the edge.
+    frame.render_widget(Paragraph::new(line).wrap(Wrap { trim: false }), area);
 }
 
 /// Display strings for the Settings screen's index fields - the parent

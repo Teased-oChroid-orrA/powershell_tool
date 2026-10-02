@@ -15,7 +15,8 @@ use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph};
 
 use crate::mouse::MouseRegions;
 use crate::theme::{StatusTone, Theme};
-use crate::widgets::{empty_state, gauge_row, scroll_list};
+use crate::widgets::progress_bar::{self, BarState, ProgressView};
+use crate::widgets::{empty_state, scroll_list};
 
 use super::{index_view, preview, SearchToolState, PANE_FILTERS, PANE_PATH, PANE_RESULTS};
 
@@ -35,8 +36,8 @@ pub fn draw(
             Constraint::Length(1), // path field
             Constraint::Length(1), // filters field
             Constraint::Length(1), // run/cancel hint + status
-            Constraint::Length(3), // progress gauge
-            Constraint::Length(1), // fast re-search index status (quiet when idle/disabled)
+            Constraint::Length(2), // progress bar + live stats
+            Constraint::Length(2), // fast re-search index status (wraps; quiet when idle/disabled)
             Constraint::Length(4), // in-flight ticker
             Constraint::Min(3),    // results + preview
         ])
@@ -47,8 +48,8 @@ pub fn draw(
     // "s" is only bound while the Results pane has focus (see
     // `toolboxes::search::handle_key`) - typing "s" into Path/Filters must
     // insert a literal character, not open Settings.
-    draw_run_hint(frame, rows[2], theme, state);
-    draw_gauge(frame, rows[3], theme, state);
+    draw_run_hint(frame, rows[2], theme, state, focused_pane == Some(PANE_FILTERS));
+    draw_progress(frame, rows[3], theme, state, tick);
     index_view::render_status_line(frame, rows[4], theme, tick, &state.index_run);
     draw_in_flight(frame, rows[5], theme, state);
     draw_results(frame, rows[6], theme, state, focused_pane == Some(PANE_RESULTS), regions);
@@ -61,36 +62,105 @@ fn draw_field(frame: &mut Frame, area: Rect, theme: &Theme, label: &str, value: 
     regions.workspace_panes.push((area, pane));
 }
 
-fn draw_run_hint(frame: &mut Frame, area: Rect, theme: &Theme, state: &SearchToolState) {
+fn draw_run_hint(frame: &mut Frame, area: Rect, theme: &Theme, state: &SearchToolState, filters_focused: bool) {
     let hint = if state.run.is_running { "c Cancel" } else { "Enter Run" };
-    let tone = if state.run.status_text.starts_with("Error") {
-        StatusTone::Danger
-    } else if state.run.is_running {
-        StatusTone::Info
-    } else {
-        StatusTone::Neutral
-    };
+    // Always the group summary/tip - run status lives in the progress panel
+    // below, so it can never hide this.
     let line = Line::from(vec![
         Span::styled(hint, theme.disabled_style()),
         Span::raw("   "),
-        Span::styled(state.run.status_text.clone(), theme.status_style(tone)),
+        Span::styled(filter_group_hint(&state.config, filters_focused), theme.status_style(StatusTone::Neutral)),
     ]);
     frame.render_widget(Paragraph::new(line), area);
 }
 
-fn draw_gauge(frame: &mut Frame, area: Rect, theme: &Theme, state: &SearchToolState) {
-    let tone = if state.run.is_running {
-        gauge_row::GaugeTone::Running
-    } else if state.run.status_text.starts_with("Error") {
-        gauge_row::GaugeTone::Danger
+/// "house [any line] + draft [exclude file]" once the Filters field has more
+/// than one `;`-group; a one-line syntax tip while it is focused. Shown
+/// whenever it applies (not only before the first run).
+fn filter_group_hint(config: &super::model::SearchToolConfig, filters_focused: bool) -> String {
+    use super::model::{effective_mode, mode_label, parse_filter_groups, GroupMode};
+    let groups = parse_filter_groups(&config.filters_text);
+    if groups.len() > 1 {
+        let mut text = groups
+            .iter()
+            .map(|g| format!("{} [{}]", g.filters.join(", "), mode_label(effective_mode(g, config), config.proximity_lines)))
+            .collect::<Vec<_>>()
+            .join(" + ");
+        if groups.iter().all(|g| matches!(g.mode, Some(GroupMode::Exclude(_)))) {
+            text.push_str("  ⚠ add a filter that is not [not]");
+        }
+        return text;
+    }
+    if filters_focused {
+        return "; adds a group: house ; floor, two [near 3] ; draft [not]   tags: any all near N not | not line".to_string();
+    }
+    String::new()
+}
+
+fn draw_progress(frame: &mut Frame, area: Rect, theme: &Theme, state: &SearchToolState, tick: u64) {
+    let view = if state.index_run.is_building {
+        // An index build (manual, or started by a search that needed the
+        // index) owns the panel while it runs.
+        let building = state.index_run.percent > 0.0;
+        ProgressView {
+            percent: building.then_some(state.index_run.percent),
+            state: BarState::Running,
+            segments: vec![state.index_run.status_text.clone()],
+            tick,
+            tone: None,
+        }
     } else {
-        gauge_row::GaugeTone::Success
+        let run = &state.run;
+        let failed = run.status_text.starts_with("Error");
+        let cancelled = run.status_text == "Cancelled.";
+        let bar_state = if run.is_running {
+            BarState::Running
+        } else if failed || cancelled {
+            BarState::Failed
+        } else if run.started.is_some() {
+            BarState::Done
+        } else {
+            BarState::Idle
+        };
+        let scanning = run.is_running && run.total_files == 0 && run.progress_percent == 0.0;
+        let elapsed = run.elapsed_secs();
+        let mut segments = vec![run.status_text.clone()];
+        if let Some(secs) = elapsed.filter(|s| *s >= 1.0 && run.files_completed > 0) {
+            segments.push(format!("{:.1} files/s", f64::from(run.files_completed) / secs));
+            if run.is_running && run.progress_percent >= 1.0 {
+                segments.push(format!("ETA {}", super::indexing::format_eta(secs * (100.0 - run.progress_percent) / run.progress_percent)));
+            }
+        }
+        if let Some(secs) = elapsed {
+            segments.push(format!("{} elapsed", super::indexing::format_eta(secs)));
+        }
+        ProgressView {
+            percent: if scanning { None } else { Some(if bar_state == BarState::Idle { 0.0 } else { run.progress_percent }) },
+            state: bar_state,
+            segments,
+            tick,
+            tone: failed.then_some(StatusTone::Danger),
+        }
     };
-    let label = format!("{:.0}%", state.run.progress_percent);
-    gauge_row::render(frame, area, theme, state.run.progress_percent, &label, tone);
+    progress_bar::render(frame, area, theme, &view);
 }
 
 fn draw_in_flight(frame: &mut Frame, area: Rect, theme: &Theme, state: &SearchToolState) {
+    if state.index_run.is_building && !state.index_run.current_file.is_empty() {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(theme.border_style(false))
+            .title(" Indexing ");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        if inner.height > 0 {
+            // Wrapped so a long path is readable instead of cut off at the edge.
+            let file = Paragraph::new(state.index_run.current_file.clone()).wrap(ratatui::widgets::Wrap { trim: false });
+            frame.render_widget(file, inner);
+        }
+        return;
+    }
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)

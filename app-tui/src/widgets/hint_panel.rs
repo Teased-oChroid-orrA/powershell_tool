@@ -40,6 +40,16 @@ pub fn wrapped_line_count(text: &str, width: u16) -> u16 {
     lines.min(u16::MAX as u32) as u16
 }
 
+/// Rows `text` needs at `width` when ratatui wraps it with `Wrap`: word
+/// wrapping as [`wrapped_line_count`], plus the extra rows an overlong
+/// unbreakable token (a file path) is split across. Never under-counts, so a
+/// box sized with it cannot truncate the text. Empty text needs 1 row.
+pub fn wrapped_height(text: &str, width: u16) -> u16 {
+    let w = width.max(1) as usize;
+    let extra: usize = text.split_whitespace().map(|word| word.chars().count().saturating_sub(1) / w).sum();
+    (wrapped_line_count(text, width).max(1) as usize + extra).min(u16::MAX as usize) as u16
+}
+
 /// The `Constraint::Length` value the bottom Hint panel should use for
 /// `hint` at the given inner width - the wrapped line count, clamped to
 /// `1..=max_lines` so a blank hint still reserves one line (keeps the field
@@ -52,6 +62,15 @@ pub fn hint_panel_height(hint: &str, width: u16, max_lines: u16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrapped_height_accounts_for_overlong_unbreakable_tokens() {
+        assert_eq!(wrapped_height("", 10), 1);
+        assert_eq!(wrapped_height("ab cd", 10), 1);
+        // 25-char token at width 10 is split over 3 rows.
+        assert!(wrapped_height("aaaaaaaaaaaaaaaaaaaaaaaaa", 10) >= 3);
+        assert!(wrapped_height("lead aaaaaaaaaaaaaaaaaaaaaaaaa", 10) >= 3);
+    }
 
     #[test]
     fn empty_text_needs_no_lines() {

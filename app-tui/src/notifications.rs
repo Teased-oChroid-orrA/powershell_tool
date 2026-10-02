@@ -21,10 +21,13 @@ pub struct NotificationQueue {
 
 impl NotificationQueue {
     pub fn push(&mut self, message: impl Into<String>, tone: StatusTone) {
+        let message = message.into();
+        // Longer messages need longer to read: +1s per ~40 chars, capped.
+        let lifetime = Duration::from_secs((4 + message.chars().count() as u64 / 40).min(12));
         self.toasts.push(Toast {
-            message: message.into(),
+            message,
             tone,
-            expires_at: Instant::now() + Duration::from_secs(4),
+            expires_at: Instant::now() + lifetime,
         });
     }
 

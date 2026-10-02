@@ -275,6 +275,26 @@ fn run_view_running_state_shows_in_flight_file_and_gauge() {
 }
 
 #[test]
+fn filter_group_summary_stays_visible_after_a_run_completes() {
+    let mut tool = SearchToolState::default();
+    tool.config.filters_text = "house ; floor, two [near 3] ; draft [not]".to_string();
+    tool.run = SearchRunState {
+        is_running: false,
+        progress_percent: 100.0,
+        status_text: "7 of 7 file(s) - 3 hit(s) so far".to_string(),
+        files_completed: 7,
+        total_files: 7,
+        started: Some(std::time::Instant::now()),
+        elapsed: Some(std::time::Duration::from_secs(2)),
+        ..Default::default()
+    };
+    let text = buffer_text(&render_run_view(&tool, None, 120, 30));
+    assert!(text.contains("floor, two [within 3 lines]"), "group summary must not be replaced by run status:\n{text}");
+    assert!(text.contains("draft [exclude file]"), "{text}");
+    assert!(text.contains("100%") && text.contains("7 of 7 file(s)") && text.contains("elapsed"), "{text}");
+}
+
+#[test]
 fn run_view_results_state_shows_hit_count_and_preview() {
     let mut tool = SearchToolState::default();
     tool.run.results = vec![hit_result("notes.txt")];

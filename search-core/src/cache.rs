@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
-use crate::models::{ExcludeScope, FileSearchResult, FileSearchStatus, LineHit, MatchMode, SearchSettings};
+use crate::models::{ExcludeScope, FileSearchResult, FileSearchStatus, FilterGroup, LineHit, MatchMode, SearchSettings};
 
 /// One cached file's prior result, keyed by full path in [`CacheFile`].
 ///
@@ -71,6 +71,9 @@ pub struct CandidateMetadata {
 #[derive(Serialize)]
 struct FingerprintFields<'a> {
     filters: &'a [String],
+    // Skipped when empty so caches written before filter groups existed stay valid.
+    #[serde(skip_serializing_if = "<[FilterGroup]>::is_empty")]
+    filter_groups: &'a [FilterGroup],
     exclude_filters: &'a [String],
     match_mode: MatchMode,
     proximity_lines: i32,
@@ -95,6 +98,7 @@ pub fn ticks_from_modified(modified: DateTime<Local>) -> i64 {
 pub fn compute_fingerprint(settings: &SearchSettings) -> String {
     let fp = FingerprintFields {
         filters: &settings.filters,
+        filter_groups: &settings.filter_groups,
         exclude_filters: &settings.exclude_filters,
         match_mode: settings.match_mode,
         proximity_lines: settings.proximity_lines,

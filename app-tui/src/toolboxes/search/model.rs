@@ -127,6 +127,107 @@ pub fn parse_list(text: &str) -> Vec<String> {
     text.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
 }
 
+/// How one filter group is applied (its trailing `[tag]` in the Filters field).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupMode {
+    /// `[any]` / `[all]` / `[near N]` (N lines; plain `[near]` = the global range).
+    Match(MatchMode, Option<i32>),
+    /// `[not]` drops files containing any of the filters; `[not line]` only
+    /// ignores the matching lines.
+    Exclude(ExcludeScope),
+}
+
+/// One `;`-separated part of the Filters field: comma-separated filters plus
+/// an optional trailing mode tag. `None` = the global mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedGroup {
+    pub filters: Vec<String>,
+    pub mode: Option<GroupMode>,
+}
+
+/// Splits the Filters field into groups: `house ; floor, two [near 3] ;
+/// draft [not]` is three groups - "house" (global mode), "floor"+"two" within
+/// 3 lines, and files containing "draft" excluded. Without a `;` it is one
+/// group, exactly as before, so the feature costs no screen space until it is
+/// used. Empty groups are dropped. A tag needs leading whitespace (or the
+/// group start) so a regex ending in a character class such as `x[abc]` is
+/// not mistaken for one.
+pub fn parse_filter_groups(text: &str) -> Vec<ParsedGroup> {
+    text.split(';')
+        .filter_map(|part| {
+            let part = part.trim();
+            let (body, mode) = split_mode_tag(part);
+            let filters = parse_list(body);
+            (!filters.is_empty()).then_some(ParsedGroup { filters, mode })
+        })
+        .collect()
+}
+
+fn split_mode_tag(part: &str) -> (&str, Option<GroupMode>) {
+    let Some(open) = part.rfind('[') else { return (part, None) };
+    if !part.ends_with(']') || (open > 0 && !part[..open].ends_with(char::is_whitespace)) {
+        return (part, None);
+    }
+    let tag = part[open + 1..part.len() - 1].trim().to_lowercase();
+    let mode = match tag.as_str() {
+        "any" => Some(GroupMode::Match(MatchMode::AnyLine, None)),
+        "all" => Some(GroupMode::Match(MatchMode::AllInFile, None)),
+        "near" => Some(GroupMode::Match(MatchMode::Proximity, None)),
+        "not" => Some(GroupMode::Exclude(ExcludeScope::File)),
+        "not line" => Some(GroupMode::Exclude(ExcludeScope::Line)),
+        t => t
+            .strip_prefix("near")
+            .and_then(|n| n.trim().parse::<i32>().ok())
+            .map(|n| GroupMode::Match(MatchMode::Proximity, Some(n.max(0)))),
+    };
+    match mode {
+        Some(m) => (part[..open].trim_end(), Some(m)),
+        None => (part, None),
+    }
+}
+
+/// Short label for a group's mode, as shown in the Run view's group summary.
+pub fn mode_label(mode: GroupMode, global_proximity: i32) -> String {
+    let (mode, n) = match mode {
+        GroupMode::Exclude(ExcludeScope::File) => return "exclude file".to_string(),
+        GroupMode::Exclude(ExcludeScope::Line) => return "exclude lines".to_string(),
+        GroupMode::Match(m, n) => (m, n.unwrap_or(global_proximity)),
+    };
+    match mode {
+        MatchMode::AnyLine => "any line".to_string(),
+        MatchMode::AllInFile => "all in file".to_string(),
+        MatchMode::Proximity => format!("within {n} lines"),
+    }
+}
+
+/// Group's mode with the global default filled in (for the summary line).
+pub fn effective_mode(group: &ParsedGroup, config: &SearchToolConfig) -> GroupMode {
+    group.mode.unwrap_or(GroupMode::Match(config.match_mode, None))
+}
+
+/// Primary filters/mode and extra groups for `config`, resolved against the
+/// global mode (Settings) - the single place the Filters field is interpreted.
+/// The primary is the first group that is not an exclusion.
+fn resolve_filters(config: &SearchToolConfig) -> (Vec<String>, MatchMode, i32, Vec<search_core::models::FilterGroup>) {
+    let groups = parse_filter_groups(&config.filters_text);
+    let primary_idx = groups.iter().position(|g| !matches!(g.mode, Some(GroupMode::Exclude(_))));
+    let mut primary = (Vec::new(), config.match_mode, config.proximity_lines);
+    let mut extra = Vec::new();
+    for (i, g) in groups.into_iter().enumerate() {
+        let (match_mode, proximity_lines, exclude) = match g.mode {
+            Some(GroupMode::Match(m, n)) => (m, n.unwrap_or(config.proximity_lines), None),
+            Some(GroupMode::Exclude(scope)) => (config.match_mode, config.proximity_lines, Some(scope)),
+            None => (config.match_mode, config.proximity_lines, None),
+        };
+        if Some(i) == primary_idx {
+            primary = (g.filters, match_mode, proximity_lines);
+        } else {
+            extra.push(search_core::models::FilterGroup { filters: g.filters, match_mode, proximity_lines, exclude });
+        }
+    }
+    (primary.0, primary.1, primary.2, extra)
+}
+
 /// Ported from `app/src/state.rs::AppState::build_settings` (state.rs:437-485),
 /// field-for-field. `max_embed_lines` (4000) and `retry_delay_ms` (250) are
 /// not exposed in any Search Files UI in either existing head either - same
@@ -143,6 +244,8 @@ pub fn build_settings(config: &SearchToolConfig) -> SearchSettings {
     // as searchable content.
     search_core::native_index::ensure_index_folder_excluded(&mut exclude_folders);
 
+    let (filters, match_mode, proximity_lines, filter_groups) = resolve_filters(config);
+
     SearchSettings {
         search_path: config.search_path.trim().to_string(),
         output_folder: config.output_folder.trim().to_string(),
@@ -151,10 +254,11 @@ pub fn build_settings(config: &SearchToolConfig) -> SearchSettings {
         } else {
             Some(sanitize_file_name(&output_name_raw))
         },
-        filters: parse_list(&config.filters_text),
+        filters,
+        filter_groups,
         exclude_filters: parse_list(&config.exclude_filters_text),
-        match_mode: config.match_mode,
-        proximity_lines: config.proximity_lines,
+        match_mode,
+        proximity_lines,
         exclude_scope: config.exclude_scope,
         whole_word: config.whole_word,
         use_regex: config.use_regex,
@@ -199,8 +303,12 @@ pub fn regex_validation_error(config: &SearchToolConfig) -> Option<String> {
     if !config.use_regex {
         return None;
     }
+    let (filters, match_mode, proximity_lines, filter_groups) = resolve_filters(config);
     let settings = SearchSettings {
-        filters: parse_list(&config.filters_text),
+        filters,
+        filter_groups,
+        match_mode,
+        proximity_lines,
         exclude_filters: parse_list(&config.exclude_filters_text),
         use_regex: true,
         ..Default::default()
@@ -242,6 +350,19 @@ pub struct SearchRunState {
     pub results_summary_text: String,
     pub has_results: bool,
     pub last_report_path: Option<String>,
+    /// When the run began (drives elapsed/rate/ETA in the progress panel).
+    pub started: Option<std::time::Instant>,
+    /// Final wall-clock time, set when the run ends.
+    pub elapsed: Option<std::time::Duration>,
+    pub files_completed: i32,
+    pub total_files: i32,
+}
+
+impl SearchRunState {
+    /// Seconds since the run began, or its final duration once finished.
+    pub fn elapsed_secs(&self) -> Option<f64> {
+        self.elapsed.or_else(|| self.started.map(|s| s.elapsed())).map(|d| d.as_secs_f64())
+    }
 }
 
 /// Ported EXACTLY from `app/src/state.rs::AppState::apply_progress`
@@ -260,6 +381,8 @@ pub fn apply_progress(run: &mut SearchRunState, report: SearchProgressReport) {
     }
 
     if report.total_files > 0 {
+        run.files_completed = report.files_completed;
+        run.total_files = report.total_files;
         run.progress_percent = 100.0 * report.files_completed as f64 / report.total_files as f64;
         run.status_text = format!(
             "{} of {} file(s) - {} hit(s) so far",
@@ -395,6 +518,65 @@ mod tests {
 
     fn no_hit_result(full_name: &str) -> FileSearchResult {
         FileSearchResult { status: FileSearchStatus::NoHit, ..hit_result(full_name) }
+    }
+
+    #[test]
+    fn filters_without_a_semicolon_are_one_group_exactly_as_before() {
+        let g = parse_filter_groups("apple, banana");
+        assert_eq!(g, vec![ParsedGroup { filters: vec!["apple".into(), "banana".into()], mode: None }]);
+    }
+
+    #[test]
+    fn semicolons_split_groups_and_trailing_tags_set_the_mode() {
+        let g = parse_filter_groups("house ; floor, two [near 3] ;; all, of [all] ; x [NEAR]");
+        assert_eq!(g.len(), 4);
+        assert_eq!(g[0].mode, None);
+        assert_eq!(g[1].filters, vec!["floor", "two"]);
+        assert_eq!(g[1].mode, Some(GroupMode::Match(MatchMode::Proximity, Some(3))));
+        assert_eq!(g[2].mode, Some(GroupMode::Match(MatchMode::AllInFile, None)));
+        assert_eq!(g[3].mode, Some(GroupMode::Match(MatchMode::Proximity, None)));
+    }
+
+    #[test]
+    fn not_tags_make_exclusion_groups_and_never_become_the_primary() {
+        let config = SearchToolConfig { filters_text: "draft [not] ; house ; wip [not line]".to_string(), ..Default::default() };
+        let s = build_settings(&config);
+        assert_eq!(s.filters, vec!["house"], "the first non-exclusion group is the primary");
+        assert_eq!(s.filter_groups.len(), 2);
+        assert_eq!(s.filter_groups[0].exclude, Some(ExcludeScope::File));
+        assert_eq!(s.filter_groups[1].exclude, Some(ExcludeScope::Line));
+
+        let only_not = build_settings(&SearchToolConfig { filters_text: "draft [not]".to_string(), ..Default::default() });
+        assert!(only_not.filters.is_empty(), "an exclusion alone is not a search");
+    }
+
+    #[test]
+    fn a_regex_character_class_is_not_mistaken_for_a_mode_tag() {
+        let g = parse_filter_groups("colou[ru]");
+        assert_eq!(g[0].filters, vec!["colou[ru]"]);
+        assert_eq!(g[0].mode, None);
+        let g = parse_filter_groups("a [near x]");
+        assert_eq!(g[0].filters, vec!["a [near x]"], "unknown tag text stays part of the filter");
+    }
+
+    #[test]
+    fn build_settings_resolves_primary_mode_and_extra_groups_against_the_global_mode() {
+        let config = SearchToolConfig {
+            filters_text: "house ; floor, two [near 3] ; roof".to_string(),
+            match_mode: MatchMode::AllInFile,
+            proximity_lines: 7,
+            ..Default::default()
+        };
+        let s = build_settings(&config);
+        assert_eq!(s.filters, vec!["house"]);
+        assert_eq!(s.match_mode, MatchMode::AllInFile, "untagged primary uses the global mode");
+        assert_eq!(s.filter_groups.len(), 2);
+        assert_eq!((s.filter_groups[0].match_mode, s.filter_groups[0].proximity_lines), (MatchMode::Proximity, 3));
+        assert_eq!((s.filter_groups[1].match_mode, s.filter_groups[1].proximity_lines), (MatchMode::AllInFile, 7));
+
+        let tagged = SearchToolConfig { filters_text: "a, b [near 2]".to_string(), ..Default::default() };
+        let s = build_settings(&tagged);
+        assert_eq!((s.match_mode, s.proximity_lines), (MatchMode::Proximity, 2), "a tag on the first group sets the primary mode");
     }
 
     #[test]

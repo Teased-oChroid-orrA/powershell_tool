@@ -95,15 +95,21 @@ pub async fn run_search(
     let _ = tx.send(AppEvent::SearchFinished(outcome));
 }
 
-/// Opens the fast re-search index for `root` (if one already exists - a
-/// missing index is "not available yet", not an error) and asks
+/// Makes the fast re-search index usable for `root`, then asks
 /// `search_core::native_index::narrow_candidates` for a candidate list that
 /// is guaranteed not to hide a real match (regex-aware, intersected with the
 /// current scope, always including files added/changed since the last
-/// build). Reports how the index was used via `AppEvent::IndexNarrowed` so
-/// the status line and debug log can explain a slow or unexpectedly full
-/// scan. Never creates or rebuilds an index: a schema mismatch or any open
-/// error just means "no narrowing" (building is an explicit user action).
+/// build).
+///
+/// * Index missing, empty or unreadable (e.g. older schema): it is built
+///   first, streaming the same progress events as a manual build. A cancelled
+///   run cancels that build too.
+/// * Index present: used as-is. If the folder changed since the build, an
+///   `AppEvent::IndexStale` asks the UI to offer an update once the search
+///   finishes - the search itself never waits for it and is still exact.
+///
+/// Reports how the index was used via `AppEvent::IndexNarrowed`. Any failure
+/// degrades to a full scan, never to a wrong or empty result.
 async fn narrow_via_index(
     tx: &mpsc::UnboundedSender<AppEvent>,
     index: IndexSettings,
@@ -121,28 +127,31 @@ async fn narrow_via_index(
     };
 
     let index_dir = indexing::index_directory(index.location, root, &settings.output_folder);
-    if !index_dir.exists() {
-        note(format!("Index enabled but not built for this folder - full scan (Ctrl+P → Build fast re-search index) [{}]", index_dir.display()));
-        return None;
+    let mut just_built = false;
+    let mut engine = if indexing::index_is_built(&index_dir) { open_engine(&index_dir).await.ok() } else { None };
+    if engine.is_none() {
+        log("SEARCH", "index missing or unreadable - building it before searching");
+        let built = indexing::build_or_rebuild_index(tx.clone(), settings.clone(), index_dir.clone(), cancellation.clone()).await;
+        if cancellation.is_cancelled() {
+            return None;
+        }
+        if !built {
+            note(format!("Index could not be built - full scan (details in the debug log) [{}]", index_dir.display()));
+            return None;
+        }
+        just_built = true;
+        engine = open_engine(&index_dir).await.ok();
     }
-
-    let dir = index_dir.clone();
-    let opened = tokio::task::spawn_blocking(move || native_search::engine::NativeSearchEngine::open_or_create(&dir)).await;
-    let engine = match opened {
-        Ok(Ok(engine)) => engine,
-        Ok(Err(e)) => {
-            log("ERROR", format!("search: cannot open index: {e:?}"));
-            note(format!("Index unreadable - full scan ({e}); rebuild it from the command palette"));
-            return None;
-        }
-        Err(e) => {
-            log("ERROR", format!("search: index open task failed: {e}"));
-            return None;
-        }
+    let Some(engine) = engine else {
+        note(format!("Index unreadable - full scan; run Build / update from the command palette (Ctrl+P) [{}]", index_dir.display()));
+        return None;
     };
 
     match search_core::native_index::narrow_candidates(settings, &engine, cancellation).await {
         Ok(out) => {
+            if out.is_stale() && !just_built {
+                let _ = tx.send(AppEvent::IndexStale { new_or_changed: out.needs_update, removed: out.removed });
+            }
             match &out.candidates {
                 Some(c) => note(format!(
                     "Index narrowed {} → {} file(s) ({} from index, {} new/changed since build, {} docs indexed)",
@@ -160,6 +169,21 @@ async fn narrow_via_index(
             log("ERROR", format!("search: narrowing failed: {e:?}"));
             note(format!("Index query failed - full scan ({e})"));
             None
+        }
+    }
+}
+
+async fn open_engine(index_dir: &Path) -> Result<native_search::engine::NativeSearchEngine, ()> {
+    let dir = index_dir.to_path_buf();
+    match tokio::task::spawn_blocking(move || native_search::engine::NativeSearchEngine::open_or_create(&dir)).await {
+        Ok(Ok(engine)) => Ok(engine),
+        Ok(Err(e)) => {
+            log("ERROR", format!("search: cannot open index: {e:?}"));
+            Err(())
+        }
+        Err(e) => {
+            log("ERROR", format!("search: index open task failed: {e}"));
+            Err(())
         }
     }
 }
@@ -261,7 +285,7 @@ mod tests {
 
         let index_dir = indexing::index_directory(config.index.location, &config.search_path, "");
         let (itx, mut irx) = mpsc::unbounded_channel();
-        indexing::build_or_rebuild_index(itx, settings.clone(), index_dir, false, CancellationToken::new()).await;
+        indexing::build_or_rebuild_index(itx, settings.clone(), index_dir, CancellationToken::new()).await;
         let built = drain_progress(&mut irx).into_iter().find_map(|e| match e {
             AppEvent::IndexBuildFinished(r) => Some(r),
             _ => None,
@@ -282,21 +306,92 @@ mod tests {
         let hits: Vec<_> = run_result.file_results.iter().filter(|f| f.status == search_core::models::FileSearchStatus::Hit).map(|f| f.full_name.clone()).collect();
         assert_eq!(hits.len(), 2, "a.txt (indexed) and c.txt (added after the build): {hits:?}");
         assert!(hits.iter().any(|h| h.ends_with("c.txt")));
+        assert!(
+            events.iter().any(|e| matches!(e, AppEvent::IndexStale { new_or_changed: 1, removed: 0 })),
+            "the added file must make the index report itself stale"
+        );
+    }
+
+    /// Filter groups end to end through the real runner: primary + a proximity
+    /// group + a file-scope exclusion, with the index enabled.
+    #[tokio::test]
+    async fn filter_groups_with_an_exclusion_work_through_the_real_search_path() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("keep.txt"), "a needle line\nzxq marker\n").unwrap();
+        fs::write(dir.path().join("excluded.txt"), "a needle line\nzxq marker\nadded later\n").unwrap();
+        fs::write(dir.path().join("nogroup.txt"), "a needle line\n").unwrap();
+        for index_enabled in [false, true] {
+            let mut config = SearchToolConfig { search_path: dir.path().to_string_lossy().into_owned(), ..Default::default() };
+            config.filters_text = "needle ; zxq [near 2] ; added [not]".to_string();
+            config.index.enabled = index_enabled;
+            let settings = build_settings(&config);
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            run_search(tx, CancellationToken::new(), vec![config.search_path.clone()], settings, config.index).await;
+            let events = drain_progress(&mut rx);
+            let Some(AppEvent::SearchFinished(Ok(run_result))) = events.iter().find(|e| matches!(e, AppEvent::SearchFinished(_))) else { panic!("expected success") };
+            let hits: Vec<_> = run_result.file_results.iter().filter(|f| f.status == search_core::models::FileSearchStatus::Hit).map(|f| f.full_name.clone()).collect();
+            assert_eq!(hits.len(), 1, "index_enabled={index_enabled}: {hits:?}");
+            assert!(hits[0].ends_with("keep.txt"));
+        }
     }
 
     #[tokio::test]
-    async fn an_index_enabled_search_without_a_built_index_falls_back_to_a_full_scan_and_says_so() {
+    async fn an_up_to_date_index_is_used_without_a_stale_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "needle here\n").unwrap();
+        let mut config = SearchToolConfig { search_path: dir.path().to_string_lossy().into_owned(), ..Default::default() };
+        config.filters_text = "needle".to_string();
+        config.index.enabled = true;
+        let settings = build_settings(&config);
+        let index_dir = indexing::index_directory(config.index.location, &config.search_path, "");
+        let (itx, _irx) = mpsc::unbounded_channel();
+        assert!(indexing::build_or_rebuild_index(itx, settings.clone(), index_dir, CancellationToken::new()).await);
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        run_search(tx, CancellationToken::new(), vec![config.search_path.clone()], settings, config.index).await;
+        let events = drain_progress(&mut rx);
+        assert!(events.iter().any(|e| matches!(e, AppEvent::IndexNarrowed(n) if n.contains("narrowed"))));
+        assert!(!events.iter().any(|e| matches!(e, AppEvent::IndexStale { .. })), "nothing changed since the build");
+        assert!(!events.iter().any(|e| matches!(e, AppEvent::IndexBuildProgress(_))), "an existing index must not be rebuilt");
+    }
+
+    #[tokio::test]
+    async fn an_index_enabled_search_without_a_built_index_builds_it_then_uses_it() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "needle\n").unwrap();
+        fs::write(dir.path().join("b.txt"), "other\n").unwrap();
+        let mut config = SearchToolConfig { search_path: dir.path().to_string_lossy().into_owned(), ..Default::default() };
+        config.filters_text = "needle".to_string();
+        config.index.enabled = true;
+        let settings = build_settings(&config);
+        let index_dir = indexing::index_directory(config.index.location, &config.search_path, "");
+        assert!(!index_dir.exists());
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        run_search(tx, CancellationToken::new(), vec![config.search_path.clone()], settings, config.index).await;
+        let events = drain_progress(&mut rx);
+        assert!(indexing::index_is_built(&index_dir), "the index must have been generated");
+        assert!(events.iter().any(|e| matches!(e, AppEvent::IndexBuildProgress(_))));
+        assert!(events.iter().any(|e| matches!(e, AppEvent::IndexBuildFinished(Ok(_)))));
+        assert!(events.iter().any(|e| matches!(e, AppEvent::IndexNarrowed(n) if n.contains("narrowed 2 → 1"))), "{:?}", events.iter().filter_map(|e| match e { AppEvent::IndexNarrowed(n) => Some(n.clone()), _ => None }).collect::<Vec<_>>());
+        assert!(!events.iter().any(|e| matches!(e, AppEvent::IndexStale { .. })), "a just-built index is not stale");
+        assert!(matches!(events.last(), Some(AppEvent::SearchFinished(Ok(_)))));
+    }
+
+    #[tokio::test]
+    async fn an_empty_index_folder_counts_as_not_built_and_is_generated() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("a.txt"), "needle\n").unwrap();
         let mut config = SearchToolConfig { search_path: dir.path().to_string_lossy().into_owned(), ..Default::default() };
         config.filters_text = "needle".to_string();
         config.index.enabled = true;
+        let index_dir = indexing::index_directory(config.index.location, &config.search_path, "");
+        fs::create_dir_all(&index_dir).unwrap();
         let settings = build_settings(&config);
         let (tx, mut rx) = mpsc::unbounded_channel();
         run_search(tx, CancellationToken::new(), vec![config.search_path.clone()], settings, config.index).await;
-        let events = drain_progress(&mut rx);
-        assert!(events.iter().any(|e| matches!(e, AppEvent::IndexNarrowed(n) if n.contains("not built"))));
-        assert!(matches!(events.last(), Some(AppEvent::SearchFinished(Ok(_)))));
+        drain_progress(&mut rx);
+        assert!(indexing::index_is_built(&index_dir));
     }
 
     #[tokio::test]

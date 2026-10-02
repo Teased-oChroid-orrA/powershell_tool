@@ -189,7 +189,7 @@ fn write_report_to_sink(sink: &mut ReportSink, settings: &SearchSettings, run: &
     if !aggregate_counts.is_empty() {
         let max_count = *aggregate_counts.values().max().unwrap();
         out.push_str("<div style=\"margin-top:0.6em;\"><strong>Hits by filter:</strong></div>\n");
-        for f in &settings.filters {
+        for f in settings.all_filters() {
             let c = *aggregate_counts.get(&f.to_lowercase()).unwrap_or(&0);
             let pct = if max_count > 0 { (100.0 * c as f64 / max_count as f64) as i32 } else { 0 };
             let f_html = html_escape(f);
@@ -356,8 +356,7 @@ fn append_file_block(out: &mut String, r: &crate::models::FileSearchResult, sett
 
     if !per_filter_counts.is_empty() {
         let parts: Vec<String> = settings
-            .filters
-            .iter()
+            .all_filters()
             .filter(|f| per_filter_counts.contains_key(&f.to_lowercase()))
             .map(|f| format!("{}: {}", html_escape(f), per_filter_counts[&f.to_lowercase()]))
             .collect();

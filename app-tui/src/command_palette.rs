@@ -36,7 +36,6 @@ pub enum Command {
     ClearRecentSearches,
     ToggleFastReSearchIndex,
     BuildIndex,
-    RebuildIndex,
     CancelIndexBuild,
     /// Opens `toolbench-debug.log` (written next to where the app was launched).
     OpenDebugLog,
@@ -75,7 +74,6 @@ impl Command {
         Command::ClearRecentSearches,
         Command::ToggleFastReSearchIndex,
         Command::BuildIndex,
-        Command::RebuildIndex,
         Command::CancelIndexBuild,
         Command::OpenDebugLog,
         Command::ExportFastenerHoleReport,
@@ -110,8 +108,7 @@ impl Command {
             Command::FocusPathField => "Focus search path field",
             Command::ClearRecentSearches => "Clear recent searches",
             Command::ToggleFastReSearchIndex => "Toggle fast re-search index",
-            Command::BuildIndex => "Build fast re-search index",
-            Command::RebuildIndex => "Rebuild fast re-search index from scratch",
+            Command::BuildIndex => "Build / update fast re-search index",
             Command::CancelIndexBuild => "Stop running index build",
             Command::OpenDebugLog => "Open debug log (toolbench-debug.log)",
             Command::ExportFastenerHoleReport => "Export report",
@@ -154,7 +151,6 @@ impl Command {
             | Command::ClearRecentSearches
             | Command::ToggleFastReSearchIndex
             | Command::BuildIndex
-            | Command::RebuildIndex
             | Command::CancelIndexBuild => Some(ToolId::Search),
             Command::ExportFastenerHoleReport => Some(ToolId::FastenerHole),
             Command::ToggleBushingNumbersPanel | Command::ExportBushingReport | Command::OpenReamerPicker | Command::OpenHousingMaterialPicker | Command::OpenBushingMaterialPicker => {

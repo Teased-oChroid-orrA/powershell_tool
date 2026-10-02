@@ -98,6 +98,9 @@ pub enum AppEvent {
     IndexBuildFinished(native_search::error::NsResult<search_core::native_index::CorpusIndexOutcome>),
     /// One-line description of how the latest search used the fast index.
     IndexNarrowed(String),
+    /// A search found the fast index out of date (files added/changed/removed
+    /// since the build); the UI offers an update once the search finishes.
+    IndexStale { new_or_changed: usize, removed: usize },
     ExtensionsScanned(Result<Vec<String>, String>),
     /// Result of reading a user-typed path for the reamer-library "Import"
     /// action (`toolboxes/bushing/reamer_picker.rs`) - file I/O, so it goes
@@ -135,7 +138,7 @@ pub enum Effect {
     /// result action.
     WriteTextFileAndOpen { path: String, contents: String },
     PersistSearchSettings,
-    BuildIndex { settings: SearchSettings, index_dir: std::path::PathBuf, force_rebuild: bool, cancel: CancellationToken },
+    BuildIndex { settings: SearchSettings, index_dir: std::path::PathBuf, cancel: CancellationToken },
     ScanExtensions { root: String, exclude_folders: Vec<String>, include_hidden: bool },
     /// Writes the Pressure Vessel Analyzer's plain-text report
     /// (`pressure_vessel::view::build_report_text`, already fully built by
@@ -200,11 +203,18 @@ pub fn handle_event(state: &mut AppState, event: AppEvent) -> Vec<Effect> {
         }
         AppEvent::SearchFinished(result) => handle_search_finished(state, result),
         AppEvent::ReportWritten(path) => {
-            state.search.run.last_report_path = path;
-            Vec::new()
+            state.search.run.last_report_path = path.clone();
+            match path {
+                Some(p) if state.search.config.open_report_when_done => vec![Effect::OpenPath(p)],
+                _ => Vec::new(),
+            }
         }
         AppEvent::IndexBuildProgress(progress) => {
             state.search.index_run.apply_progress(&progress);
+            Vec::new()
+        }
+        AppEvent::IndexStale { new_or_changed, removed } => {
+            state.search.index_run.stale = Some((new_or_changed, removed));
             Vec::new()
         }
         AppEvent::IndexNarrowed(note) => {
@@ -366,14 +376,17 @@ fn handle_bushing_id_library_file_read(state: &mut AppState, result: Result<Stri
 
 fn handle_search_finished(state: &mut AppState, result: Result<SearchRunResult, OrchestratorError>) -> Vec<Effect> {
     state.search.run.is_running = false;
+    state.search.run.elapsed = state.search.run.started.map(|s| s.elapsed());
     state.search.run.in_flight_files.clear();
     state.search.cancel_token = None;
+    offer_index_update(state);
 
     match result {
         Ok(run_result) => {
             state.search.run.results_summary_text = search::model::summarize(&run_result.summary);
             state.notifications.push("Search finished", StatusTone::Success);
-            let write_html = state.search.config.export_html;
+            // Opening the report needs the HTML file even if HTML export is off.
+            let write_html = state.search.config.export_html || state.search.config.open_report_when_done;
             let settings = search::model::build_settings(&state.search.config);
             vec![Effect::WriteReport { settings, run_result, write_html }]
         }
@@ -388,6 +401,28 @@ fn handle_search_finished(state: &mut AppState, result: Result<SearchRunResult, 
             Vec::new()
         }
     }
+}
+
+/// If the search that just ended found the fast index out of date, asks
+/// whether to update it. Deferred to the end of the run so a prompt never
+/// interrupts a search in progress; never replaces an already-open modal.
+fn offer_index_update(state: &mut AppState) {
+    let Some((new_or_changed, removed)) = state.search.index_run.stale.take() else { return };
+    if state.modal.is_open() || state.search.index_run.is_building {
+        return;
+    }
+    let mut parts = Vec::new();
+    if new_or_changed > 0 {
+        parts.push(format!("{new_or_changed} new/changed"));
+    }
+    if removed > 0 {
+        parts.push(format!("{removed} removed"));
+    }
+    state.modal = ModalState::Confirm(ConfirmDialog {
+        title: "Fast index is out of date".into(),
+        message: format!("{} file(s) since the index was built. Update the index now?", parts.join(", ")),
+        on_confirm: ConfirmAction::UpdateIndex,
+    });
 }
 
 fn request_quit(state: &mut AppState) {
@@ -535,6 +570,7 @@ fn handle_modal_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                 state.modal.close();
                 match action {
                     ConfirmAction::Quit => state.should_quit = true,
+                    ConfirmAction::UpdateIndex => return search::start_index_build(&mut state.search),
                 }
             }
             KeyCode::Char('n') | KeyCode::Esc => state.modal.close(),
@@ -1053,8 +1089,7 @@ fn execute_command(state: &mut AppState, cmd: Command) -> Vec<Effect> {
             state.notifications.push(message, tone);
             Vec::new()
         }
-        Command::BuildIndex => search::start_index_build(&mut state.search, false),
-        Command::RebuildIndex => search::start_index_build(&mut state.search, true),
+        Command::BuildIndex => search::start_index_build(&mut state.search),
         Command::CancelIndexBuild => {
             if let Some(token) = &state.search.index_cancel {
                 token.cancel();
@@ -1398,6 +1433,58 @@ mod tests {
         }
         handle_event(&mut state, press(KeyCode::Enter));
         assert!(state.search.config.index.enabled);
+    }
+
+    #[test]
+    fn open_report_when_done_opens_the_written_report_and_forces_html_output() {
+        let mut state = AppState::default();
+        state.search.config.export_html = false;
+        state.search.config.open_report_when_done = true;
+        let effects = handle_event(&mut state, AppEvent::SearchFinished(Ok(SearchRunResult::default())));
+        assert!(matches!(effects.as_slice(), [Effect::WriteReport { write_html: true, .. }]), "the HTML report is needed to open it");
+
+        let effects = handle_event(&mut state, AppEvent::ReportWritten(Some("/tmp/report.html".to_string())));
+        assert!(matches!(effects.as_slice(), [Effect::OpenPath(p)] if p == "/tmp/report.html"));
+    }
+
+    #[test]
+    fn a_written_report_is_not_opened_when_the_setting_is_off() {
+        let mut state = AppState::default();
+        state.search.config.open_report_when_done = false;
+        let effects = handle_event(&mut state, AppEvent::ReportWritten(Some("/tmp/report.html".to_string())));
+        assert!(effects.is_empty());
+        assert_eq!(state.search.run.last_report_path.as_deref(), Some("/tmp/report.html"));
+    }
+
+    #[test]
+    fn a_stale_index_prompts_for_an_update_when_the_search_finishes_and_yes_starts_a_build() {
+        let mut state = AppState::default();
+        state.search.config.search_path = "/tmp/some-folder".to_string();
+        state.search.config.index.enabled = true;
+        handle_event(&mut state, AppEvent::IndexStale { new_or_changed: 3, removed: 1 });
+        assert!(!state.modal.is_open(), "the prompt must not interrupt a search in progress");
+
+        handle_event(&mut state, AppEvent::SearchFinished(Ok(SearchRunResult::default())));
+        let ModalState::Confirm(dialog) = &state.modal else { panic!("expected the update prompt") };
+        assert_eq!(dialog.on_confirm, ConfirmAction::UpdateIndex);
+        assert!(dialog.message.contains("3 new/changed") && dialog.message.contains("1 removed"), "{}", dialog.message);
+
+        let effects = handle_event(&mut state, press(KeyCode::Char('y')));
+        assert!(matches!(effects.as_slice(), [Effect::BuildIndex { .. }]), "one build/update path");
+        assert!(state.search.index_run.is_building);
+    }
+
+    #[test]
+    fn declining_the_index_update_prompt_starts_nothing_and_does_not_reprompt() {
+        let mut state = AppState::default();
+        state.search.config.search_path = "/tmp/some-folder".to_string();
+        handle_event(&mut state, AppEvent::IndexStale { new_or_changed: 1, removed: 0 });
+        handle_event(&mut state, AppEvent::SearchFinished(Ok(SearchRunResult::default())));
+        let effects = handle_event(&mut state, press(KeyCode::Char('n')));
+        assert!(effects.is_empty());
+        assert!(!state.search.index_run.is_building);
+        handle_event(&mut state, AppEvent::SearchFinished(Ok(SearchRunResult::default())));
+        assert!(!state.modal.is_open(), "the prompt is per stale search, not sticky");
     }
 
     #[test]

@@ -38,6 +38,8 @@ pub struct ConfirmDialog {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmAction {
     Quit,
+    /// Incrementally update the fast re-search index (a search found it stale).
+    UpdateIndex,
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@
 //! toolbox type - so any future toolbox can reuse them.
 
 pub mod empty_state;
-pub mod gauge_row;
+pub mod progress_bar;
 pub mod help;
 pub mod hint_panel;
 pub mod input_line;

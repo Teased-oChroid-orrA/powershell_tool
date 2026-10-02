@@ -412,7 +412,15 @@ impl NativeSearchEngine {
         // there is nothing to commit, but the reader may still need a reload.
         let has_writer = self.lock_writer().is_some();
         if has_writer {
-            self.with_writer_retry(|writer| writer.commit())?;
+            if let Err(e) = self.with_writer_retry(|writer| writer.commit()) {
+                // A failed commit (Windows: access denied creating a segment
+                // file) leaves the writer in an undefined state and the
+                // uncommitted documents are gone. Drop it so the next write
+                // starts from a fresh writer; the caller must re-stage the
+                // lost documents (see `native_index` batch replay).
+                *self.lock_writer() = None;
+                return Err(e);
+            }
         }
         self.reader
             .reload()

@@ -7,7 +7,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 
 use crate::app::AppState;
 use crate::command_palette;
@@ -15,7 +15,7 @@ use crate::modal::{ConfirmDialog, ModalState};
 use crate::mouse::MouseRegions;
 use crate::nav::{Breakpoint, FocusArea, ToolId, pick_breakpoint};
 use crate::theme::StatusTone;
-use crate::widgets::{empty_state, help, spinner};
+use crate::widgets::{empty_state, help, hint_panel, spinner};
 
 pub fn draw(frame: &mut Frame, state: &AppState, tick: u64, regions: &mut MouseRegions) {
     regions.clear();
@@ -329,7 +329,17 @@ fn draw_help(frame: &mut Frame, area: Rect, state: &AppState, regions: &mut Mous
 }
 
 fn draw_confirm(frame: &mut Frame, area: Rect, state: &AppState, dialog: &ConfirmDialog, regions: &mut MouseRegions) {
-    let popup = command_palette::centered_rect(40, 20, area);
+    // Sized from the wrapped message so a long message is never truncated.
+    let width = area.width.min(64).max(area.width.min(20));
+    let inner_width = width.saturating_sub(2).max(1);
+    let message_rows = hint_panel::wrapped_height(&dialog.message, inner_width);
+    let height = (message_rows + 2 + 2).min(area.height); // message + blank + buttons + borders
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
     frame.render_widget(Clear, popup);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -341,18 +351,18 @@ fn draw_confirm(frame: &mut Frame, area: Rect, state: &AppState, dialog: &Confir
     const BUTTON_LINE: &str = "y confirm   n cancel";
     const YES_LABEL: &str = "y confirm";
     const NO_LABEL: &str = "n cancel";
-    let text = Paragraph::new(vec![
-        Line::from(dialog.message.as_str()),
-        Line::from(""),
-        Line::from(Span::styled(BUTTON_LINE, state.theme.disabled_style())),
-    ]);
-    frame.render_widget(text, inner);
+    let button_row = inner.y + message_rows + 1;
+    let message_area = Rect { height: message_rows.min(inner.height), ..inner };
+    frame.render_widget(Paragraph::new(dialog.message.as_str()).wrap(Wrap { trim: false }), message_area);
+    if button_row < inner.y + inner.height {
+        let buttons = Rect { y: button_row, height: 1, ..inner };
+        frame.render_widget(Paragraph::new(Span::styled(BUTTON_LINE, state.theme.disabled_style())), buttons);
+    }
 
     // Button rects derived from the literal button line rather than
     // hardcoded column numbers, so they can never silently drift from what
     // was actually painted if that string is ever edited.
-    if inner.height >= 3 && inner.width > 0 {
-        let button_row = inner.y + 2;
+    if button_row < inner.y + inner.height && inner.width > 0 {
         if let Some(yes_col) = BUTTON_LINE.find(YES_LABEL) {
             regions.confirm_yes =
                 Some(Rect { x: inner.x + yes_col as u16, y: button_row, width: YES_LABEL.len() as u16, height: 1 });
@@ -369,23 +379,70 @@ fn draw_toasts(frame: &mut Frame, area: Rect, state: &AppState) {
     if toasts.is_empty() || area.height == 0 {
         return;
     }
-    let height = (toasts.len() as u16).min(area.height);
-    let width = 40u16.min(area.width);
+    let width = 60u16.min(area.width);
     if width == 0 {
         return;
     }
-    let toast_area = Rect {
-        x: area.width.saturating_sub(width),
-        y: area.height.saturating_sub(height),
-        width,
-        height,
-    };
-    let lines: Vec<Line> = toasts
-        .iter()
-        .rev()
-        .take(height as usize)
-        .map(|t| Line::from(Span::styled(t.message.clone(), state.theme.status_style(t.tone))))
-        .collect();
-    frame.render_widget(Clear, toast_area);
-    frame.render_widget(Paragraph::new(lines), toast_area);
+    // Newest first, stacked up from the bottom-right corner; each toast is
+    // wrapped to its full height instead of being cut to one 40-column row.
+    let mut bottom = area.height;
+    for toast in toasts.iter().rev() {
+        let rows = hint_panel::wrapped_height(&toast.message, width).min(bottom);
+        if rows == 0 {
+            break;
+        }
+        let rect = Rect { x: area.width.saturating_sub(width), y: bottom - rows, width, height: rows };
+        frame.render_widget(Clear, rect);
+        frame.render_widget(
+            Paragraph::new(Span::styled(toast.message.clone(), state.theme.status_style(toast.tone))).wrap(Wrap { trim: false }),
+            rect,
+        );
+        bottom -= rows;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn screen_text(terminal: &Terminal<TestBackend>) -> String {
+        let buf = terminal.backend().buffer();
+        (0..buf.area.height)
+            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn a_long_toast_is_wrapped_not_truncated() {
+        let mut state = AppState::default();
+        let message = "Index build: 3 file(s) failed - e.g. C:/some/deeply/nested/folder/report.pdf: IndexError: Failed to open file for write";
+        state.notifications.push(message, StatusTone::Warning);
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        terminal.draw(|f| draw_toasts(f, f.area(), &state)).unwrap();
+        let text = screen_text(&terminal);
+        let squashed: String = text.split_whitespace().collect();
+        let expected: String = message.split_whitespace().collect();
+        assert!(squashed.contains(&expected), "full toast text must be visible:\n{text}");
+    }
+
+    #[test]
+    fn a_long_confirm_message_is_wrapped_and_buttons_stay_visible() {
+        let mut state = AppState::default();
+        let dialog = ConfirmDialog {
+            title: "Fast index is out of date".into(),
+            message: "1234 new/changed, 56 removed file(s) since the index was built. Update the index now?".into(),
+            on_confirm: crate::modal::ConfirmAction::UpdateIndex,
+        };
+        state.modal = ModalState::Confirm(dialog.clone());
+        let mut regions = MouseRegions::default();
+        let mut terminal = Terminal::new(TestBackend::new(50, 20)).unwrap();
+        terminal.draw(|f| draw_confirm(f, f.area(), &state, &dialog, &mut regions)).unwrap();
+        let text = screen_text(&terminal);
+        assert!(text.contains("Update the index now?"), "{text}");
+        assert!(text.contains("y confirm"), "{text}");
+        assert!(regions.confirm_yes.is_some() && regions.confirm_no.is_some());
+    }
 }

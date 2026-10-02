@@ -56,7 +56,7 @@ use std::collections::HashMap;
 
 use fancy_regex::{Regex as FancyRegex, RegexBuilder as FancyRegexBuilder};
 
-use crate::models::{ExcludeScope, LineHit, MatchMode, SearchSettings};
+use crate::models::{ExcludeScope, FilterGroup, LineHit, MatchMode, SearchSettings};
 
 /// One regex filter that failed to compile, paired with why - mirrors the
 /// C# side's `(string Filter, string Error)` tuple list.
@@ -148,10 +148,67 @@ pub struct CompiledMatchState {
     /// old PowerShell tool" regression.
     filters_lower: Vec<String>,
     exclude_filters_lower: Vec<String>,
+
+    /// One derived (settings, state) pair per extra (non-exclusion) filter group.
+    groups: Vec<(SearchSettings, CompiledMatchState)>,
+
+    /// Only when exclusion groups exist: file-scope exclusions are checked as
+    /// a separate pre-pass, and `effective` is the settings every other pass
+    /// uses (line-scope exclusions only, no exclusion groups). Absent in the
+    /// common case, which keeps the single-pass hot path unchanged.
+    file_exclude: Option<(SearchSettings, Box<CompiledMatchState>)>,
+    effective: Option<SearchSettings>,
+}
+
+/// The settings a filter group is matched with: the primary's, with the
+/// group's own filters/mode and no further groups.
+fn group_settings(base: &SearchSettings, g: &FilterGroup) -> SearchSettings {
+    SearchSettings {
+        filters: g.filters.clone(),
+        filter_groups: Vec::new(),
+        match_mode: g.match_mode,
+        proximity_lines: g.proximity_lines,
+        ..base.clone()
+    }
 }
 
 impl CompiledMatchState {
     pub fn build(settings: &SearchSettings) -> Result<Self, InvalidFilterRegexError> {
+        if !settings.filter_groups.iter().any(|g| g.exclude.is_some()) {
+            return Self::build_single(settings);
+        }
+        // Exclusion groups: pool every exclusion by scope (global ones included).
+        let mut line_ex = Vec::new();
+        let mut file_ex = Vec::new();
+        let global = if settings.exclude_scope == ExcludeScope::File { &mut file_ex } else { &mut line_ex };
+        global.extend(settings.exclude_filters.iter().cloned());
+        for g in settings.filter_groups.iter().filter_map(|g| g.exclude.map(|scope| (g, scope))) {
+            let target = if g.1 == ExcludeScope::File { &mut file_ex } else { &mut line_ex };
+            target.extend(g.0.filters.iter().cloned());
+        }
+        let effective = SearchSettings {
+            filter_groups: settings.filter_groups.iter().filter(|g| g.exclude.is_none()).cloned().collect(),
+            exclude_filters: line_ex,
+            exclude_scope: ExcludeScope::Line,
+            ..settings.clone()
+        };
+        let mut state = Self::build_single(&effective)?;
+        if !file_ex.is_empty() {
+            let file_settings = SearchSettings {
+                filters: Vec::new(),
+                filter_groups: Vec::new(),
+                exclude_filters: file_ex,
+                exclude_scope: ExcludeScope::File,
+                ..settings.clone()
+            };
+            let file_state = Self::build_single(&file_settings)?;
+            state.file_exclude = Some((file_settings, Box::new(file_state)));
+        }
+        state.effective = Some(effective);
+        Ok(state)
+    }
+
+    fn build_single(settings: &SearchSettings) -> Result<Self, InvalidFilterRegexError> {
         let mut state = CompiledMatchState {
             compiled_filter_regex: HashMap::new(),
             compiled_exclude_regex: HashMap::new(),
@@ -161,6 +218,9 @@ impl CompiledMatchState {
             combined_exclude_regex: None,
             filters_lower: Vec::new(),
             exclude_filters_lower: Vec::new(),
+            groups: Vec::new(),
+            file_exclude: None,
+            effective: None,
         };
 
         if settings.use_regex {
@@ -231,6 +291,18 @@ impl CompiledMatchState {
             };
         }
 
+        let mut invalid_in_groups = Vec::new();
+        for g in &settings.filter_groups {
+            let gs = group_settings(settings, g);
+            match CompiledMatchState::build(&gs) {
+                Ok(gstate) => state.groups.push((gs, gstate)),
+                Err(e) => invalid_in_groups.extend(e.invalid_filters),
+            }
+        }
+        if !invalid_in_groups.is_empty() {
+            return Err(InvalidFilterRegexError { invalid_filters: invalid_in_groups });
+        }
+
         Ok(state)
     }
 }
@@ -276,6 +348,53 @@ pub struct LineMatchOutcome {
 /// matches, then applies the AllInFile/Proximity gating rules. A direct
 /// port of `Invoke-SingleFileSearch`'s line-matching loop.
 pub fn apply_line_matching(
+    lines: &[String],
+    settings: &SearchSettings,
+    state: &CompiledMatchState,
+) -> LineMatchOutcome {
+    if let Some((file_settings, file_state)) = &state.file_exclude {
+        if apply_filter_group(lines, file_settings, file_state).excluded_by_file {
+            return LineMatchOutcome { excluded_by_file: true, ..Default::default() };
+        }
+    }
+    let settings = state.effective.as_ref().unwrap_or(settings);
+    let mut outcome = apply_filter_group(lines, settings, state);
+    if outcome.excluded_by_file || state.groups.is_empty() || outcome.hits.is_empty() {
+        // (no primary hit => the file cannot satisfy primary AND groups)
+        return outcome;
+    }
+    // Extra groups: every one must have a hit AND satisfy its own mode.
+    // Their hit lines are merged in so the preview/report highlight them.
+    for (group_settings, group_state) in &state.groups {
+        let g = apply_filter_group(lines, group_settings, group_state);
+        if g.excluded_by_file {
+            outcome.excluded_by_file = true;
+            return outcome;
+        }
+        if g.hits.is_empty() || !g.passes_mode {
+            outcome.passes_mode = false;
+        }
+        outcome.proximity_min_range = outcome.proximity_min_range.or(g.proximity_min_range);
+        for hit in g.hits {
+            match outcome.hits.iter_mut().find(|h| h.line_number == hit.line_number) {
+                Some(existing) => {
+                    for f in hit.matched_filters {
+                        if !existing.matched_filters.contains(&f) {
+                            existing.matched_filters.push(f);
+                        }
+                    }
+                }
+                None => outcome.hits.push(hit),
+            }
+        }
+    }
+    outcome.hits.sort_by_key(|h| h.line_number);
+    outcome
+}
+
+/// Line matching + mode gating for ONE filter group (`settings.filters` with
+/// `settings.match_mode`); [`apply_line_matching`] combines groups.
+fn apply_filter_group(
     lines: &[String],
     settings: &SearchSettings,
     state: &CompiledMatchState,
@@ -513,6 +632,87 @@ mod tests {
         assert_eq!(outcome.hits[0].line_number, 2);
         assert!(outcome.passes_mode);
         assert!(!outcome.excluded_by_file);
+    }
+
+    fn grouped(primary: &[&str], mode: MatchMode, groups: Vec<(&[&str], MatchMode, i32)>) -> SearchSettings {
+        let mut s = settings_with_filters(primary);
+        s.match_mode = mode;
+        s.filter_groups = groups
+            .into_iter()
+            .map(|(f, m, n)| crate::models::FilterGroup { filters: f.iter().map(|x| x.to_string()).collect(), match_mode: m, proximity_lines: n, exclude: None })
+            .collect();
+        s
+    }
+
+    fn run(settings: &SearchSettings, text: &[&str]) -> LineMatchOutcome {
+        let state = CompiledMatchState::build(settings).unwrap();
+        apply_line_matching(&lines_of(text), settings, &state)
+    }
+
+    #[test]
+    fn a_group_in_proximity_mode_gates_the_file_alongside_a_primary_any_line_filter() {
+        // "house" anywhere AND "floor"+"two" within 1 line of each other.
+        let s = grouped(&["house"], MatchMode::AnyLine, vec![(&["floor", "two"], MatchMode::Proximity, 1)]);
+
+        let near = run(&s, &["a house", "x", "floor one", "two here"]);
+        assert!(near.passes_mode && !near.hits.is_empty());
+        assert_eq!(near.hits.iter().map(|h| h.line_number).collect::<Vec<_>>(), vec![1, 3, 4], "group hits are merged in line order");
+
+        let far = run(&s, &["a house", "floor", "x", "y", "two"]);
+        assert!(!far.passes_mode, "floor/two are 4 lines apart");
+        assert!(!far.hits.is_empty(), "hits remain so the file reports ModeExcluded, not NoHit");
+
+        let no_group = run(&s, &["a house", "nothing else"]);
+        assert!(!no_group.passes_mode, "an extra group with no hit fails the file");
+
+        let no_primary = run(&s, &["floor", "two"]);
+        assert!(no_primary.hits.is_empty(), "no primary hit => NoHit");
+    }
+
+    #[test]
+    fn exclusion_groups_drop_files_or_lines_per_their_own_scope() {
+        use crate::models::FilterGroup;
+        let ex = |f: &str, scope| FilterGroup { filters: vec![f.to_string()], match_mode: MatchMode::AnyLine, proximity_lines: 0, exclude: Some(scope) };
+
+        // File scope: any line containing "draft" drops the whole file.
+        let mut s = settings_with_filters(&["house"]);
+        s.filter_groups = vec![ex("draft", ExcludeScope::File)];
+        assert!(run(&s, &["a house", "DRAFT copy"]).excluded_by_file);
+        let ok = run(&s, &["a house", "final"]);
+        assert!(!ok.excluded_by_file && ok.passes_mode && ok.hits.len() == 1);
+
+        // Line scope: only the excluded line is ignored; the file still hits elsewhere.
+        let mut s = settings_with_filters(&["house"]);
+        s.filter_groups = vec![ex("draft", ExcludeScope::Line)];
+        let out = run(&s, &["house draft", "house final"]);
+        assert!(!out.excluded_by_file);
+        assert_eq!(out.hits.iter().map(|h| h.line_number).collect::<Vec<_>>(), vec![2]);
+
+        // Both scopes at once, alongside the global exclude and a match group.
+        let mut s = settings_with_filters(&["house"]);
+        s.exclude_filters = vec!["secret".to_string()];
+        s.exclude_scope = ExcludeScope::File;
+        s.filter_groups = vec![ex("draft", ExcludeScope::Line), ex("confidential", ExcludeScope::File)];
+        assert!(run(&s, &["house", "a secret"]).excluded_by_file, "global file-scope exclude still applies");
+        assert!(run(&s, &["house", "confidential"]).excluded_by_file);
+        assert_eq!(run(&s, &["house draft", "house"]).hits.len(), 1);
+    }
+
+    #[test]
+    fn a_group_that_matches_a_line_also_matched_by_the_primary_merges_matched_filters() {
+        let s = grouped(&["house"], MatchMode::AnyLine, vec![(&["red"], MatchMode::AnyLine, 0)]);
+        let out = run(&s, &["red house"]);
+        assert!(out.passes_mode);
+        assert_eq!(out.hits.len(), 1);
+        assert_eq!(out.hits[0].matched_filters, vec!["house", "red"]);
+    }
+
+    #[test]
+    fn invalid_regex_inside_a_group_is_reported() {
+        let mut s = grouped(&["ok"], MatchMode::AnyLine, vec![(&["(bad"], MatchMode::AnyLine, 0)]);
+        s.use_regex = true;
+        let err = CompiledMatchState::build(&s).err().expect("must fail");
+        assert!(err.invalid_filters.iter().any(|f| f.filter == "(bad"));
     }
 
     #[test]
