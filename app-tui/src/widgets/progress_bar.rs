@@ -73,20 +73,28 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, view: &ProgressView)
     if area.height == 0 || area.width < 8 {
         return;
     }
-    let (glyph, glyph_style) = match view.state {
+    // Windows consoles (ConHost, Consolas) lack ✔ ✘ braille and the 1/8
+    // block glyphs and show "?" boxes: use only ASCII icons and the CP437
+    // blocks (█ ▌ ░) there, and in reduced-colour mode.
+    let plain = theme.reduced_color || cfg!(windows);
+    let (glyph, glyph_style): (String, Style) = match view.state {
         BarState::Running => {
-            let g = if theme.reduced_color { crate::widgets::spinner::ascii_frame(view.tick) } else { crate::widgets::spinner::frame(view.tick) };
-            (g, Style::default().fg(theme.accent))
+            let g = if plain { crate::widgets::spinner::ascii_frame(view.tick) } else { crate::widgets::spinner::frame(view.tick) };
+            (g.to_string(), Style::default().fg(theme.accent))
         }
-        BarState::Done => ('✔', Style::default().fg(theme.success)),
-        BarState::Failed => ('✘', Style::default().fg(theme.danger)),
-        BarState::Idle => ('•', theme.disabled_style()),
+        BarState::Done if plain => ("OK".to_string(), Style::default().fg(theme.success)),
+        BarState::Failed if plain => ("!!".to_string(), Style::default().fg(theme.danger)),
+        BarState::Idle if plain => ("--".to_string(), theme.disabled_style()),
+        BarState::Done => ("✔".to_string(), Style::default().fg(theme.success)),
+        BarState::Failed => ("✘".to_string(), Style::default().fg(theme.danger)),
+        BarState::Idle => ("•".to_string(), theme.disabled_style()),
     };
+    let icon_width = glyph.chars().count() + 1;
     let label = match view.percent {
         Some(p) => format!(" {:>3.0}%", p.clamp(0.0, 100.0)),
-        None => "  …  ".to_string(),
+        None => if plain { " ... ".to_string() } else { "  …  ".to_string() },
     };
-    let width = (area.width as usize).saturating_sub(2 + label.chars().count()).max(1);
+    let width = (area.width as usize).saturating_sub(icon_width + label.chars().count()).max(1);
     let (fill, track) = if theme.reduced_color { ('#', '-') } else { ('█', '░') };
 
     let mut spans = vec![Span::styled(format!("{glyph} "), glyph_style)];
@@ -99,8 +107,19 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, view: &ProgressView)
                 spans.push(Span::styled(fill.to_string(), Style::default().fg(color)));
             }
             if let Some(ch) = partial {
-                let ch = if theme.reduced_color { '=' } else { ch };
-                spans.push(Span::styled(ch.to_string(), Style::default().fg(gradient(theme, full as f64 / denom))));
+                // Reduced: '='. Windows: only the half block exists in CP437;
+                // below half the cell stays track.
+                let ch = if theme.reduced_color {
+                    Some('=')
+                } else if plain {
+                    matches!(ch, '▌' | '▋' | '▊' | '▉').then_some('▌')
+                } else {
+                    Some(ch)
+                };
+                match ch {
+                    Some(ch) => spans.push(Span::styled(ch.to_string(), Style::default().fg(gradient(theme, full as f64 / denom)))),
+                    None => spans.push(Span::styled(track.to_string(), Style::default().fg(theme.fg_subtle))),
+                }
             }
             spans.push(Span::styled(track.to_string().repeat(empty), Style::default().fg(theme.fg_subtle)));
         }
@@ -122,7 +141,7 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, view: &ProgressView)
     frame.render_widget(Paragraph::new(Line::from(spans)), Rect { height: 1, ..area });
 
     if area.height >= 2 {
-        let text = fit_segments(&view.segments, area.width as usize - 2);
+        let text = fit_segments(&view.segments, (area.width as usize).saturating_sub(2));
         let style = match view.tone {
             Some(tone) => theme.status_style(tone),
             None => theme.disabled_style(),
@@ -181,9 +200,18 @@ mod tests {
             }
         }
         let out = draw(60, &view(Some(100.0), BarState::Done, &["done"]), false);
-        assert!(out.contains('✔') && out.contains("100%") && out.contains("done"), "{out}");
+        let icon = if cfg!(windows) { "OK" } else { "✔" };
+        assert!(out.contains(icon) && out.contains("100%") && out.contains("done"), "{out}");
         let out = draw(60, &view(None, BarState::Running, &["Scanning"]), false);
         assert!(out.contains('…') && out.contains("Scanning"), "{out}");
+    }
+
+    #[test]
+    fn reduced_palette_uses_only_ascii_icons_and_bar_glyphs() {
+        for state in [BarState::Running, BarState::Done, BarState::Failed, BarState::Idle] {
+            let out = draw(40, &view(Some(37.0), state, &["stats"]), true);
+            assert!(out.is_ascii(), "{state:?} must be pure ASCII in reduced mode: {out}");
+        }
     }
 
     #[test]

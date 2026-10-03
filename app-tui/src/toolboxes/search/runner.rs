@@ -335,6 +335,27 @@ mod tests {
         }
     }
 
+    /// Reported case: two files share "Test 1/2/3", one also has "Test 4", the
+    /// other "Test 5"; `Test 1; Test 2; Test 4[not]` must hit only the second.
+    #[tokio::test]
+    async fn a_not_tag_glued_to_the_filter_text_excludes_only_the_matching_file() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("with4.txt"), "Test 1\nTest 2\nTest 3\nTest 4\n").unwrap();
+        fs::write(dir.path().join("with5.txt"), "Test 1\nTest 2\nTest 3\nTest 5\n").unwrap();
+        let mut config = SearchToolConfig { search_path: dir.path().to_string_lossy().into_owned(), ..Default::default() };
+        config.filters_text = "Test 1; Test 2; Test 4[not]".to_string();
+        for whole_word in [false, true] {
+            config.whole_word = whole_word;
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            run_search(tx, CancellationToken::new(), vec![config.search_path.clone()], build_settings(&config), config.index).await;
+            let events = drain_progress(&mut rx);
+            let Some(AppEvent::SearchFinished(Ok(r))) = events.iter().find(|e| matches!(e, AppEvent::SearchFinished(_))) else { panic!("expected success") };
+            let hits: Vec<_> = r.file_results.iter().filter(|f| f.status == search_core::models::FileSearchStatus::Hit).map(|f| f.full_name.clone()).collect();
+            assert_eq!(hits.len(), 1, "whole_word={whole_word}: {hits:?}");
+            assert!(hits[0].ends_with("with5.txt"));
+        }
+    }
+
     #[tokio::test]
     async fn an_up_to_date_index_is_used_without_a_stale_prompt() {
         let dir = tempfile::tempdir().unwrap();

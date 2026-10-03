@@ -149,9 +149,9 @@ pub struct ParsedGroup {
 /// draft [not]` is three groups - "house" (global mode), "floor"+"two" within
 /// 3 lines, and files containing "draft" excluded. Without a `;` it is one
 /// group, exactly as before, so the feature costs no screen space until it is
-/// used. Empty groups are dropped. A tag needs leading whitespace (or the
-/// group start) so a regex ending in a character class such as `x[abc]` is
-/// not mistaken for one.
+/// used. Empty groups are dropped. Only the exact tags above count (with or
+/// without a space before them: `Test 4[not]` works), so a regex ending in a
+/// character class such as `x[abc]` is not mistaken for one.
 pub fn parse_filter_groups(text: &str) -> Vec<ParsedGroup> {
     text.split(';')
         .filter_map(|part| {
@@ -165,7 +165,7 @@ pub fn parse_filter_groups(text: &str) -> Vec<ParsedGroup> {
 
 fn split_mode_tag(part: &str) -> (&str, Option<GroupMode>) {
     let Some(open) = part.rfind('[') else { return (part, None) };
-    if !part.ends_with(']') || (open > 0 && !part[..open].ends_with(char::is_whitespace)) {
+    if !part.ends_with(']') {
         return (part, None);
     }
     let tag = part[open + 1..part.len() - 1].trim().to_lowercase();
@@ -548,6 +548,15 @@ mod tests {
 
         let only_not = build_settings(&SearchToolConfig { filters_text: "draft [not]".to_string(), ..Default::default() });
         assert!(only_not.filters.is_empty(), "an exclusion alone is not a search");
+    }
+
+    #[test]
+    fn a_tag_directly_after_the_filter_text_is_recognized() {
+        let g = parse_filter_groups("Test 1; Test 2; Test 4[not]");
+        assert_eq!(g.len(), 3);
+        assert_eq!(g[2].filters, vec!["Test 4"]);
+        assert_eq!(g[2].mode, Some(GroupMode::Exclude(ExcludeScope::File)));
+        assert_eq!(parse_filter_groups("a[near 2]")[0].mode, Some(GroupMode::Match(MatchMode::Proximity, Some(2))));
     }
 
     #[test]
