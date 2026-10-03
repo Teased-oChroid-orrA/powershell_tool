@@ -56,6 +56,10 @@ bushing-solver = { path = "../bushing-solver" }
 # dependencies, same "reused unchanged by every GUI head" pattern.
 fastened-joint-solver = { path = "../fastened-joint-solver" }
 
+# Windows-only: embeds the .exe icon via build.rs (rc.exe from the Windows SDK).
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
 [dev-dependencies]
 tempfile = "3"
 # Test-only: constructing a `search_core::models::FileSearchResult` fixture

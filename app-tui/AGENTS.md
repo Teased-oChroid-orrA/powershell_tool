@@ -78,6 +78,7 @@ Does not own: search/matching/extraction (`search-core`), the index engine (`nat
 
 - **Debug log**: `src/debug_log.rs` writes `toolbench-debug.log` into the launch folder (cwd; falls back to the exe folder, then temp; `TOOLBENCH_DEBUG=0` disables) - environment banner, index stages with timings, failures aggregated by extension + error text, search narrowing counts, panics (frames only). **Privacy contract: never any file/folder name, path, search term or file content** (`log()` also redacts path-like text as a backstop; a test asserts a build+failure leaves none of them in the log). First thing to ask a Windows user for on any index/search report; palette command "Open debug log". Log counts, sizes, timings, extensions and OS error codes only.
 - **Text-input rows must use `widgets::input_line::line`**, not a bare `Paragraph` of `label + text + "_"`: a long path pushed the cursor off the row (the reamer-import overflow bug). It keeps the tail + cursor visible and drops the label before squeezing the text.
+- **The Windows exe icon comes from `build.rs` (`winresource`), host-Windows only.** Verified compile of the non-Windows path only; the embed itself must be checked on a CI-built `app-tui.exe`. See `docs/deployment-rust.md` "Windows .exe icon".
 
 ## Patterns
 

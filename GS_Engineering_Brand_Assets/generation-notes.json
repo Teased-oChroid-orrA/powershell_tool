@@ -1,0 +1,21 @@
+{
+  "method": "Built-in image generation, then deterministic format/size exports",
+  "icon_prompt": "Refine approved silver turbine G and blue S; preserve silhouette; improve polished edges, turbine detail and alpha transparency.",
+  "banner_prompt": "Enhance supplied navy/silver/cyan GS Engineering banner; preserve logo, aircraft, clouds and exact wording.",
+  "header_prompt": "Adapt banner to 9.6:1 slim full-page header with complete logo and lettering.",
+  "native_dimensions": {
+    "icon": [
+      1254,
+      1254
+    ],
+    "banner": [
+      2172,
+      724
+    ],
+    "slim_source": [
+      2172,
+      724
+    ]
+  },
+  "export_note": "Exports larger than native dimensions are resampled; native masters are included. Slim headers preserve the complete centrally composed strip with navy side padding, without stretching the logo."
+}

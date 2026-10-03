@@ -49,6 +49,10 @@ single, self-contained `.exe`.
   regression guard for that constraint, run on every CI build rather
   than trusted to stay true.
 
+## Windows .exe icon
+
+`app-tui/build.rs` and `cli/build.rs` embed `GS_Engineering_Brand_Assets/windows/GS_Engineering.ico` (plus ProductName/CompanyName) into `app-tui.exe` / `search-cli.exe` via the `winresource` crate. It runs only when the build host is Windows (MSVC `rc.exe` from the Windows SDK; present on `windows-latest`) and the target is Windows; macOS/Linux dev builds skip it. A failed embed panics the build rather than silently shipping an icon-less exe. Not verified on Windows from the macOS dev machine - check the CI-built exe in Explorer after changing the icon or `build.rs`.
+
 ## Why this is simpler than the C# deployment story
 
 The C# deployment doc (`docs/deployment.md`) spends most of its length on
