@@ -424,3 +424,17 @@ No special setup beyond what `cargo build`/`cargo test` already need (see
 `docs/ffi.md`). Numbers will vary machine to machine — that's expected and
 is exactly why this document states the caveats above rather than
 presenting the numbers as a fixed target.
+
+
+## Scale/incremental sweep (2026-10-02, Apple Silicon macOS, scratch harness, not committed)
+
+Synthetic Zipf corpus, mixed doc sizes (60% ~100 words .. 1% ~40k), 8 extensions, deep paths.
+Corpus 13MB/120MB/1.2GB for 1k/10k/100k files.
+
+- Index on disk: 0.84x / 0.82x / 0.58x corpus (7-11KB per file). Peak RSS 250MB / 520MB / 710MB.
+- Reopen: 2ms / 11ms / 49ms (measured mid-merge; settled index reopens in ~1ms). Query p50 (hit/miss mix) measured WHILE background merges were still running: 20-130us @1k, 65-175us @10k, 0.6-2.0ms @100k. Once merges settled (100k: 256 segs -> 4 in ~15s) `extension:` and rare-token queries were ~84us p50 and per-id metadata lookup ~13us.
+- Trigram candidate narrowing: rare token 1.9ms; common token (20% of corpus) 40-54ms @100k.
+- Incremental commit (1/10/100/1000 changed): ~0.15 / 0.44 / 0.75-0.9 / 2.9-3.1s @100k - dominated by commit fixed cost, not file count.
+- Segment merging is async and converges (see native-search/AGENTS.md); earlier 'high segment count' reading was a measurement artifact.
+- **Found + fixed:** per-file `get_document_metadata` freshness checks = ~150-180us each @100k (~18s/folder) -> `all_document_metadata()` 254ms.
+- Cold-cache not measured (macOS `purge` needs sudo); reopen time above is warm. 100k indexing add-rate (1.4k docs/s) is dominated by the harness's own text generator, not the engine.

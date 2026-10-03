@@ -488,7 +488,10 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
     let total_files = candidates.len() as i32;
     outcome.candidate_count = total_files;
 
-    // Pass 1: decide which files need work (cheap index lookups only).
+    // Pass 1: decide which files need work. One bulk read of the index's
+    // stored (modified, size) per id - per-file term lookups cost ~0.6us per
+    // segment each, ~18s for 100k files.
+    let known = engine.all_document_metadata().unwrap_or_default();
     let mut work: Vec<(file_reader::EnumeratedFile, String, String)> = Vec::new();
     for (i, file) in candidates.into_iter().enumerate() {
         if cancellation.is_cancelled() {
@@ -504,7 +507,7 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
             continue;
         }
         let modified_unix = file.modified.timestamp();
-        if let Ok(Some((existing_modified, existing_size))) = engine.get_document_metadata(&full_name) {
+        if let Some(&(existing_modified, existing_size)) = known.get(&full_name) {
             if existing_modified == modified_unix && existing_size == file.length {
                 outcome.skipped_count += 1;
                 continue;
@@ -682,14 +685,15 @@ pub async fn narrow_candidates(
     let max_bytes = (settings.max_file_size_mb * 1024.0 * 1024.0) as i64;
 
     // Freshness: which in-scope files the index lacks or has out of date.
+    let known = engine.all_document_metadata().unwrap_or_default();
     let mut stale: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut scope_keys: std::collections::HashSet<String> = std::collections::HashSet::with_capacity(in_scope.len());
     for file in &in_scope {
         let full_name = file.path.to_string_lossy().into_owned();
         scope_keys.insert(path_key(&full_name));
         let up_to_date = matches!(
-            engine.get_document_metadata(&full_name),
-            Ok(Some((m, sz))) if m == file.modified.timestamp() && sz == file.length
+            known.get(&full_name),
+            Some(&(m, sz)) if m == file.modified.timestamp() && sz == file.length
         );
         if !up_to_date {
             out.stale_or_new += 1;
