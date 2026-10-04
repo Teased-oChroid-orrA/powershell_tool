@@ -126,6 +126,12 @@ pub struct BushingState {
     /// cancelled); closed by Esc, a click, or after [`EDGE_NOTICE_SECS`].
     pub edge_notice: Option<EdgeNotice>,
     next_edge_job: u64,
+    /// Whether `c` (false) or `C` (true) ran last: the automatic re-runs use the same set.
+    edge_deep_pref: bool,
+    /// The live input signature last seen and when it last changed (debounce).
+    edge_seen: Option<(edge_check::EdgeSig, std::time::Instant)>,
+    /// A change was seen after start-up: automatic runs are on (also on once the user has run a check).
+    edge_armed: bool,
 }
 
 /// How long the completion tooltip stays up unless dismissed.
@@ -136,8 +142,15 @@ pub const EDGE_NOTICE_SECS: u64 = 20;
 pub struct EdgeJob {
     pub id: u64,
     pub deep: bool,
+    /// Started by the app because the inputs changed, not by the user.
+    pub auto: bool,
     pub started: std::time::Instant,
+    /// What the job was started for; a later change cancels it.
+    pub sig: edge_check::EdgeSig,
 }
+
+/// How long the inputs must stay unchanged before an automatic re-run starts.
+pub const EDGE_AUTO_DEBOUNCE_MS: u64 = 400;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EdgeNoticeKind {
@@ -179,6 +192,9 @@ impl Default for BushingState {
             edge_job: None,
             edge_notice: None,
             next_edge_job: 1,
+            edge_deep_pref: false,
+            edge_seen: None,
+            edge_armed: false,
         };
         // Row 0 is always a `Header` (the first section divider) - land on
         // the first real field instead of an unselectable row.
@@ -279,21 +295,56 @@ impl BushingState {
             self.set_notice(EdgeNoticeKind::Info, "Edge check already running", vec![format!("The {} run started {:.1} s ago is still going; wait for it or press Esc to cancel it.", if job.deep { "contact FE" } else { "quick" }, job.started.elapsed().as_secs_f64())]);
             return Vec::new();
         }
-        match edge_check::prepare(&self.model, deep) {
-            Ok((input, cfg)) => {
-                let id = self.next_edge_job;
-                self.next_edge_job += 1;
-                self.edge_job = Some(EdgeJob { id, deep, started: std::time::Instant::now() });
-                self.edge_notice = None;
-                self.last_applied = None;
-                self.input_error = None;
-                vec![Effect::RunEdgeCheck { id, input, cfg, deep }]
-            }
+        self.edge_deep_pref = deep;
+        match self.launch_edge_check(deep, false) {
+            Ok(effects) => effects,
             Err(why) => {
                 self.input_error = Some(format!("edge-distance check not run: {why}"));
                 Vec::new()
             }
         }
+    }
+
+    fn launch_edge_check(&mut self, deep: bool, auto: bool) -> Result<Vec<Effect>, String> {
+        let (input, cfg) = edge_check::prepare(&self.model, deep)?;
+        let id = self.next_edge_job;
+        self.next_edge_job += 1;
+        self.edge_job = Some(EdgeJob { id, deep, auto, started: std::time::Instant::now(), sig: (input.clone(), cfg.bushing) });
+        if !auto {
+            self.edge_notice = None;
+            self.last_applied = None;
+            self.input_error = None;
+        }
+        Ok(vec![Effect::RunEdgeCheck { id, input, cfg, deep }])
+    }
+
+    /// Called every `Tick` while this toolbox is on screen: when an input has
+    /// changed (anything the check depends on, the bushing included) and then
+    /// stayed unchanged for `EDGE_AUTO_DEBOUNCE_MS`, re-runs the check
+    /// (the same set as the last manual run) so the table is never stale for
+    /// long. A change cancels a run for older inputs. Does nothing at
+    /// start-up (until a value changes or the user has run a check once) and
+    /// never reports an invalid input as an error (the manual run does).
+    pub fn auto_edge_check(&mut self) -> Vec<Effect> {
+        let Some(sig) = edge_check::live_signature(&self.model, self.edge_deep_pref) else { return Vec::new() };
+        match &self.edge_seen {
+            None => self.edge_seen = Some((sig.clone(), std::time::Instant::now())),
+            Some((seen, _)) if *seen != sig => {
+                self.edge_seen = Some((sig.clone(), std::time::Instant::now()));
+                self.edge_armed = true;
+                if self.edge_job.as_ref().is_some_and(|j| j.sig != sig) {
+                    self.edge_job = None; // its result would be stale on arrival; restart once settled
+                }
+            }
+            _ => {}
+        }
+        let settled = self.edge_seen.as_ref().is_some_and(|(_, at)| at.elapsed().as_millis() as u64 >= EDGE_AUTO_DEBOUNCE_MS);
+        let armed = self.edge_armed || self.edge_check.is_some();
+        let up_to_date = self.edge_check.as_ref().is_some_and(|run| (run.input.clone(), run.bushing) == sig);
+        if !settled || !armed || up_to_date || self.edge_job.is_some() {
+            return Vec::new();
+        }
+        self.launch_edge_check(self.edge_deep_pref, true).unwrap_or_default()
     }
 
     /// A worker finished job `id`. Results of a cancelled or superseded job
@@ -305,7 +356,10 @@ impl BushingState {
         let short = lines.iter().any(|l| l.contains("SHORT"));
         let title = format!("Edge check finished in {secs:.1} s ({})", if job.deep { "quick set + contact FE" } else { "quick set" });
         self.edge_check = Some(run);
-        self.set_notice(if short { EdgeNoticeKind::Short } else { EdgeNoticeKind::Done }, &title, lines);
+        // A quick automatic re-run is silent (the table just updates); a manual or deep one says what it found.
+        if !job.auto || job.deep {
+            self.set_notice(if short { EdgeNoticeKind::Short } else { EdgeNoticeKind::Done }, &title, lines);
+        }
     }
 
     /// Esc while a run is going: forget it (the worker finishes on its own;

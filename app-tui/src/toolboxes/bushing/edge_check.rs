@@ -156,7 +156,25 @@ fn short_name(id: &str) -> &'static str {
 #[derive(Debug, Clone)]
 pub struct EdgeCheckRun {
     pub input: EdgeInput,
+    /// The bushing the contact model saw (it is not part of `input`).
+    pub bushing: Option<BushingSpec>,
+    /// Whether the contact FE was included.
+    pub deep: bool,
     pub report: EdgeReport,
+}
+
+/// What a run depends on: the plate/load/fit input and the bushing.
+pub type EdgeSig = (EdgeInput, Option<BushingSpec>);
+
+/// The signature of a run for the live inputs, or `None` if they cannot be checked.
+pub fn live_signature(model: &BushingModel, deep: bool) -> Option<EdgeSig> {
+    prepare(model, deep).ok().map(|(input, cfg)| (input, cfg.bushing))
+}
+
+/// A finished run no longer matches the live inputs (including the bushing
+/// the contact model uses, which `EdgeInput` does not carry).
+pub fn is_stale(model: &BushingModel, run: &EdgeCheckRun) -> bool {
+    live_signature(model, run.deep).as_ref() != Some(&(run.input.clone(), run.bushing))
 }
 
 /// Builds the cross-check input from the live model, or says why it can't.
@@ -211,7 +229,7 @@ pub fn prepare(model: &BushingModel, deep: bool) -> Result<(EdgeInput, EdgeConfi
 /// compiled optimised even in dev builds). Blocking; call from a worker.
 pub fn execute(input: EdgeInput, cfg: &EdgeConfig) -> EdgeCheckRun {
     let report = run(&default_models(cfg), &input, cfg);
-    EdgeCheckRun { input, report }
+    EdgeCheckRun { input, bushing: cfg.bushing, deep: cfg.include_plastic, report }
 }
 
 /// `deep` also runs the elastic-plastic contact FE. Blocking (tests, scripts);
@@ -365,7 +383,7 @@ pub fn section_lines_with<'a>(theme: &Theme, run: Option<&EdgeCheckRun>, stale: 
     };
     let r = &run.report;
     if stale {
-        lines.push(Line::from(Span::styled("  inputs changed since this run - press c (or C) to refresh", theme.status_style(StatusTone::Warning))));
+        lines.push(Line::from(Span::styled("  inputs changed since this run - recalculating automatically (c / C runs it now)", theme.status_style(StatusTone::Warning))));
     }
     lines.push(Line::from(Span::styled(
         format!("  e/D {:.2} \u{b7} load {:.0} lbf \u{b7} bearing limit {:.0} lbf \u{b7} fit {:.0} psi", r.edge / r.bore_diameter, r.applied_load, r.bearing_limit_load, r.fit_pressure),
@@ -390,16 +408,16 @@ pub fn section_lines_with<'a>(theme: &Theme, run: Option<&EdgeCheckRun>, stale: 
     tags.push((lines.len(), EdgeTopic::Legacy));
     let out = &model.output;
     let legacy = |min_e_over_d: f64| (format!("{min_e_over_d:.2}"), min_e_over_d.is_finite() && min_e_over_d > r.edge / r.bore_diameter + 1e-9);
-    lines.push(table_row(theme, "Legacy (solver)", [legacy(out.ed_min_strength), legacy(out.ed_min_sequence), ("-".to_string(), false)], "-"));
+    lines.push(table_row(theme, "Legacy solver", [legacy(out.ed_min_strength), legacy(out.ed_min_sequence), ("-".to_string(), false)], "-"));
 
     // The conservative recommendation: e/D at which the failure probability
     // under the full variability is 10 / 5 / 1 %, for the applied load (it
     // responds to the housing length) and for the bearing-limit load (a
     // ratio, independent of length).
     let actual = r.edge / r.bore_diameter;
-    lines.push(Line::from(Span::styled(format!("  {:<14}{:^19}{:^19}", "recommended e/D", "applied load", "bearing limit"), theme.disabled_style())));
+    lines.push(Line::from(Span::styled(format!("  {:<14}{:^18}  {:^18}", "recommended", "applied load", "bearing limit"), theme.disabled_style())));
     tags.push((lines.len() - 1, EdgeTopic::Recommended));
-    lines.push(Line::from(Span::styled(format!("  {:<14}{:>6}{:>6}{:>6}  {:>6}{:>6}{:>6}", "", "P90", "P95", "P99", "P90", "P95", "P99"), theme.disabled_style())));
+    lines.push(Line::from(Span::styled(format!("  {:<14}{:>6}{:>6}{:>6}  {:>6}{:>6}{:>6}", "e/D at", "P90", "P95", "P99", "P90", "P95", "P99"), theme.disabled_style())));
     for m in r.models.iter().filter(|m| m.error.is_none()) {
         let Some(topic) = EdgeTopic::for_model(m.id) else { continue };
         if m.level(0).is_none() {
@@ -542,9 +560,78 @@ pub fn report_text(run: &EdgeCheckRun) -> String {
     s
 }
 
+/// Test helper: every column label of the Results tables must sit over its
+/// column. `text` is the section as lines of characters, from the spans or
+/// from the rendered buffer (the latter catches renderer trimming).
+#[cfg(test)]
+pub(crate) fn assert_columns_align(text: &[Vec<char>]) {
+    // Words of a line, keeping the given multi-word labels whole: (start, end, text).
+    fn words(line: &[char], labels: &[&str]) -> Vec<(usize, usize, String)> {
+        let text: String = line.iter().collect();
+        let mut out = Vec::new();
+        let mut taken = vec![false; line.len()];
+        for l in labels {
+            if let Some(p) = text.find(l) {
+                let start = text[..p].chars().count();
+                let end = start + l.chars().count();
+                out.push((start, end, l.to_string()));
+                taken[start..end].iter_mut().for_each(|t| *t = true);
+            }
+        }
+        let mut k = 0;
+        while k < line.len() {
+            if line[k] != ' ' && !taken[k] {
+                let st = k;
+                while k < line.len() && line[k] != ' ' && !taken[k] {
+                    k += 1;
+                }
+                out.push((st, k, line[st..k].iter().collect()));
+            } else {
+                k += 1;
+            }
+        }
+        out.sort();
+        out
+    }
+    let flat = |l: &Vec<char>| l.iter().collect::<String>();
+    let find = |needle: &str| text.iter().position(|l| flat(l).contains(needle)).unwrap_or_else(|| panic!("no line with {needle:?}"));
+    let row_after = |from: usize, name: &str| (from..text.len()).find(|&i| flat(&text[i]).contains(name)).unwrap_or_else(|| panic!("no {name} row after {from}"));
+    let right_edges = |header: usize, labels: &[&str], skip: &[&str], rows: &[usize]| {
+        for (_, end, label) in words(&text[header], labels).into_iter().filter(|w| !skip.contains(&w.2.as_str())) {
+            for &r in rows {
+                let row = &text[r];
+                assert!(end <= row.len() && row[end - 1] != ' ' && row.get(end).is_none_or(|c| *c == ' ' || *c == '\u{2502}' || *c == '\u{2551}'), "label {label:?} (ends at {end}) is not over the right edge of a cell in row {:?}", flat(row));
+            }
+        }
+    };
+    // 1. min e/D
+    let h1 = find("min e/D");
+    let rows1: Vec<usize> = ["Superposition", "Allowables", "Contact FE", "Legacy solver"].iter().map(|n| row_after(h1, n)).collect();
+    right_edges(h1, &["min e/D", "P(fail) Bearing", "1st yield"], &["min e/D"], &rows1);
+    // 2. recommended: group labels inside their three columns, P-labels over the cells
+    let g = find("applied load  ");
+    let hp = g + 1;
+    assert!(flat(&text[hp]).contains("P99"), "sub-header missing: {:?}", flat(&text[hp]));
+    let rows2: Vec<usize> = ["Superposition", "Allowables", "Contact FE"].iter().map(|n| row_after(hp, n)).collect();
+    right_edges(hp, &["e/D at"], &["e/D at"], &rows2);
+    let base = words(&text[g], &["recommended", "applied load", "bearing limit"]).iter().find(|w| w.2 == "recommended").unwrap().0 + 14;
+    let groups = [(base, base + 18), (base + 20, base + 38)];
+    let gw = words(&text[g], &["recommended", "applied load", "bearing limit"]);
+    for ((start, end, label), (lo, hi)) in gw.iter().filter(|w| w.2 != "recommended").zip(groups) {
+        assert!(*start >= lo && *end <= hi, "group label {label:?} [{start},{end}) not inside its columns [{lo},{hi})");
+    }
+    // 3. capacity lbf
+    let h3 = find("capacity lbf");
+    let rows3: Vec<usize> = ["Superposition", "Contact FE"].iter().map(|n| row_after(h3, n)).collect();
+    right_edges(h3, &["capacity lbf", "1st yield", "fit uses"], &["capacity lbf"], &rows3);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::Effect;
+    use crate::toolboxes::bushing::BushingState;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     #[test]
     fn default_model_runs_and_every_model_reports_something() {
@@ -639,6 +726,76 @@ mod tests {
         assert!(long.0 < 0.6 * short.0, "applied-load P99 should fall with length: {short:?} -> {long:?}");
         assert!((long.1 - short.1).abs() < 0.03, "bearing-limit P99 is a ratio, independent of length: {short:?} -> {long:?}");
         assert_eq!(long.2, TARGET_BEARING, "for a long housing the bearing limit governs");
+    }
+
+    /// Flattened text of the Results section.
+    fn section_text(run: &EdgeCheckRun, model: &BushingModel) -> Vec<Vec<char>> {
+        let (lines, _) = section_lines(&Theme::default_palette(), Some(run), false, model);
+        lines.iter().map(|l| l.spans.iter().map(|s| s.content.to_string()).collect::<String>().chars().collect()).collect()
+    }
+
+    #[test]
+    fn column_labels_line_up_with_their_columns_in_every_table() {
+        let model = BushingModel::default();
+        let run = run_check(&model, true).unwrap();
+        super::assert_columns_align(&section_text(&run, &model));
+    }
+
+    #[test]
+    fn changing_a_value_re_runs_the_check_automatically_after_it_settles() {
+        let mut state = BushingState::default();
+        // Start-up: nothing happens until something changes or a check has been run.
+        assert!(state.auto_edge_check().is_empty() && state.edge_job.is_none());
+        std::thread::sleep(std::time::Duration::from_millis(crate::toolboxes::bushing::EDGE_AUTO_DEBOUNCE_MS + 50));
+        assert!(state.auto_edge_check().is_empty(), "no automatic run at start-up");
+
+        // The user runs a check; it is current, so no re-run.
+        let (_, effects) = crate::toolboxes::bushing::handle_key(&mut state, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        for e in effects {
+            if let Effect::RunEdgeCheck { id, input, cfg, .. } = e {
+                state.finish_edge_check(id, execute(input, &cfg));
+            }
+        }
+        assert!(!is_stale(&state.model, state.edge_check.as_ref().unwrap()));
+        assert!(state.auto_edge_check().is_empty());
+
+        state.edge_notice = None; // the manual run's completion tooltip
+        // An edit makes it stale; nothing runs until the value has settled.
+        state.model.edge_dist = 0.9;
+        state.model.recompute();
+        assert!(is_stale(&state.model, state.edge_check.as_ref().unwrap()));
+        assert!(state.auto_edge_check().is_empty(), "debounce: just changed");
+        assert!(state.edge_job.is_none());
+        std::thread::sleep(std::time::Duration::from_millis(crate::toolboxes::bushing::EDGE_AUTO_DEBOUNCE_MS + 50));
+        let effects = state.auto_edge_check();
+        assert!(matches!(effects.as_slice(), [Effect::RunEdgeCheck { deep: false, .. }]), "{effects:?}");
+        assert!(state.edge_job.as_ref().is_some_and(|j| j.auto));
+
+        // A further change while it runs cancels it and restarts once settled.
+        state.model.edge_dist = 1.1;
+        state.model.recompute();
+        assert!(state.auto_edge_check().is_empty() && state.edge_job.is_none(), "stale job dropped");
+        std::thread::sleep(std::time::Duration::from_millis(crate::toolboxes::bushing::EDGE_AUTO_DEBOUNCE_MS + 50));
+        let effects = state.auto_edge_check();
+        assert_eq!(effects.len(), 1);
+        for e in effects {
+            if let Effect::RunEdgeCheck { id, input, cfg, .. } = e {
+                state.finish_edge_check(id, execute(input, &cfg));
+            }
+        }
+        assert!(!is_stale(&state.model, state.edge_check.as_ref().unwrap()));
+        assert!(state.edge_notice.is_none(), "a quick automatic re-run is silent");
+        assert!(state.auto_edge_check().is_empty(), "up to date: nothing more to do");
+    }
+
+    #[test]
+    fn a_bushing_only_change_also_makes_the_run_stale() {
+        let mut model = BushingModel::default();
+        let run = run_check(&model, true).unwrap();
+        assert!(!is_stale(&model, &run));
+        model.friction = 0.4; // used only by the contact FE, not by EdgeInput
+        model.recompute();
+        assert!(is_stale(&model, &run), "the contact model's bushing/friction input must count");
     }
 
     #[test]

@@ -206,7 +206,11 @@ pub fn handle_event(state: &mut AppState, event: AppEvent) -> Vec<Effect> {
         AppEvent::Tick => {
             state.notifications.expire();
             state.bushing.expire_edge_notice();
-            Vec::new()
+            if state.nav.active_tool == crate::nav::ToolId::Bushing {
+                state.bushing.auto_edge_check()
+            } else {
+                Vec::new()
+            }
         }
         AppEvent::SearchProgress(report) => {
             search::model::apply_progress(&mut state.search.run, report);
@@ -295,7 +299,8 @@ pub fn handle_event(state: &mut AppState, event: AppEvent) -> Vec<Effect> {
         AppEvent::BushingMaterialLibraryFileRead(result) => handle_bushing_material_library_file_read(state, result),
         AppEvent::BushingIdLibraryFileRead(result) => handle_bushing_id_library_file_read(state, result),
         AppEvent::EdgeCheckFinished { id, run } => {
-            let was_running = state.bushing.edge_job.as_ref().is_some_and(|j| j.id == id);
+            // A quick automatic re-run is silent; manual and deep runs get a toast.
+            let was_running = state.bushing.edge_job.as_ref().is_some_and(|j| j.id == id && (!j.auto || j.deep));
             state.bushing.finish_edge_check(id, *run);
             if was_running {
                 state.notifications.push("Edge check finished - see the Edge-Distance Cross-Check in Bushing Results", StatusTone::Success);

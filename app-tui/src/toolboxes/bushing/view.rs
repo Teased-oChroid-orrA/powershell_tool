@@ -73,7 +73,7 @@ fn draw_edge_status(frame: &mut Frame, area: Rect, theme: &Theme, state: &Bushin
     if area.width < 30 || area.height < 8 {
         return;
     }
-    let (title, tone, lines, hint): (String, StatusTone, Vec<String>, &str) = if let Some(job) = &state.edge_job {
+    let (title, tone, lines, hint): (String, StatusTone, Vec<String>, &str) = if let Some(job) = state.edge_job.as_ref().filter(|j| !j.auto || j.deep || j.started.elapsed().as_secs_f64() > 0.6) {
         let secs = job.started.elapsed().as_secs_f64();
         let what = if job.deep {
             "Solving the bushing + housing contact FE on parallel threads (typically 2-4 s), plus the quick set."
@@ -331,7 +331,7 @@ fn draw_readout(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingSta
     if let Some(bar) = bar_area {
         draw_action_bar(frame, bar, theme, state, interactive.then_some(&mut *regions));
     }
-    let stale = state.edge_check.as_ref().is_some_and(|run| super::edge_check::build_input(&state.model).as_ref() != Ok(&run.input));
+    let stale = state.edge_check.as_ref().is_some_and(|run| super::edge_check::is_stale(&state.model, run));
     let running = state.edge_job.as_ref().map(|j| (j.started.elapsed().as_secs_f64(), j.deep));
     let edge_section = super::edge_check::section_lines_with(theme, state.edge_check.as_ref(), stale, &state.model, running);
     let advisories = super::edge_check::advisories(state.edge_check.as_ref(), stale);
@@ -879,7 +879,7 @@ mod tests {
         assert!(flat(&super::super::edge_check::section_lines(&theme, None, false, &state.model).0).contains("Not run"));
         state.run_edge_check(false);
         let fresh = flat(&super::super::edge_check::section_lines(&theme, state.edge_check.as_ref(), false, &state.model).0);
-        assert!(fresh.contains("Superposition") && fresh.contains("Allowables") && fresh.contains("Legacy (solver)"), "{fresh}");
+        assert!(fresh.contains("Superposition") && fresh.contains("Allowables") && fresh.contains("Legacy solver"), "{fresh}");
         assert!(!fresh.contains("inputs changed"));
         let stale = flat(&super::super::edge_check::section_lines(&theme, state.edge_check.as_ref(), true, &state.model).0);
         assert!(stale.contains("inputs changed"));
@@ -1112,6 +1112,20 @@ mod tests {
         terminal.draw(|f| draw(f, area, &Theme::default_palette(), state, true, &mut regions)).unwrap();
         let buffer = terminal.backend().buffer().clone();
         (0..buffer.area.height).map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>() + "\n").collect()
+    }
+
+    /// The same alignment check on what is actually drawn: the pane trims
+    /// leading blanks of a wrapped line, which would shift a header whose
+    /// first column is empty.
+    #[test]
+    fn rendered_column_labels_line_up_with_their_columns() {
+        let mut state = BushingState::default();
+        state.run_edge_check(true);
+        let text = rendered_text(&state, 170, 120);
+        // Crop to the Results pane: it starts at the column of the section title.
+        let col = text.lines().find_map(|l| l.find("Edge-Distance Cross-Check").map(|b| l[..b].chars().count())).expect("the section is drawn");
+        let lines: Vec<Vec<char>> = text.lines().map(|l| l.chars().skip(col).collect()).collect();
+        super::super::edge_check::assert_columns_align(&lines);
     }
 
     #[test]
