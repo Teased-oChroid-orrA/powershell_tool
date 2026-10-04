@@ -10,7 +10,7 @@
 use super::model::BushingModel;
 use crate::theme::{StatusTone, Theme};
 use edge_check::models::default_models;
-use edge_check::runner::{run, Case, EdgeConfig, EdgeInput, EdgeMin, EdgeReport, TargetResult, TARGETS};
+use edge_check::runner::{run, Case, EdgeConfig, EdgeInput, EdgeMin, EdgeReport, TargetResult, TARGETS, TARGET_APPLIED, TARGET_BEARING};
 use edge_check::types::{BushingSpec, Geometry, Strengths};
 use ratatui::text::{Line, Span};
 
@@ -86,7 +86,7 @@ pub fn tip(topic: EdgeTopic) -> Tip {
         EdgeTopic::Recommended => Tip {
             title: "Recommended edge distance (P90 / P95 / P99)",
             sections: &[
-                ("What it does", "Re-runs every check over the variability the nominal margin ignores (fit pressure over its tolerance band, material strength scatter, each model's own error, bearing strength) and finds the e/D where the chance of failing is 10 % / 5 % / 1 %. The recommendation is the largest over the models, at P99."),
+                ("What it does", "Re-runs every check over the variability the nominal margin ignores (fit pressure over its tolerance band, material strength scatter, each model's own error, bearing strength) and finds the e/D where the chance of failing is 10 % / 5 % / 1 %, once for the applied load (falls as the housing gets longer) and once for the bearing-limit load (the edge must outlast the bearing; a ratio, independent of length). The recommendation is the larger of the two over the models, at P99."),
                 ("Strengths", "Covers all the scatters at once, so a pass here means failure is unlikely even at the worst of them. Assumed: strength CV 5 % (typical handbook values, not your data); model error contact FE 9 % (spread of its 12 NACA test points), superposition 15 % (judgement, unvalidated), allowables 0 % (already statistical); fit pressure uniform over the band; normal independent factors clipped at 3 sigma."),
                 ("Weaknesses", "The scatter inputs are assumptions, not measurements: other CVs move the numbers. No applied-load variability. 800 Monte-Carlo samples (about 1 % of an e/D unit of noise at P99)."),
                 ("Restrictions", "A design guide, not a certification value. The legacy solver check has no variability and is shown for comparison only."),
@@ -252,12 +252,12 @@ pub fn completion_lines(run: &EdgeCheckRun) -> Vec<String> {
         };
         out.push(format!("{}: {verdict}.", short_name(m.id)));
     }
-    if let Some((e, who)) = r.recommended(2) {
+    if let Some((e, who, target)) = r.recommended_governing(2) {
         let (text, short) = fmt_cell(r, Some(e));
-        out.push(format!("Recommended (P99, conservative): e/D {text}, set by {}; actual {:.2} is {}.", short_name(who), r.edge / r.bore_diameter, if short { "SHORT" } else { "enough" }));
-        if let (Some((p90, _)), Some((p95, _))) = (r.recommended(0), r.recommended(1)) {
-            out.push(format!("P90 {}, P95 {}.", fmt_cell(r, Some(p90)).0, fmt_cell(r, Some(p95)).0));
-        }
+        let crit = if target == TARGET_APPLIED { "applied load" } else { "bearing limit" };
+        out.push(format!("Recommended (P99, conservative): e/D {text}, {crit} governs (set by {}); actual {:.2} is {}.", short_name(who), r.edge / r.bore_diameter, if short { "SHORT" } else { "enough" }));
+        let both = |l: usize, t: usize| r.recommended_for(t, l).map_or("-".to_string(), |(e, _)| fmt_cell(r, Some(e)).0);
+        out.push(format!("Applied load P90/P95/P99: {} / {} / {}; bearing limit: {} / {} / {}.", both(0, TARGET_APPLIED), both(1, TARGET_APPLIED), both(2, TARGET_APPLIED), both(0, TARGET_BEARING), both(1, TARGET_BEARING), both(2, TARGET_BEARING)));
     }
     out.push("Hover a row in Results for the numbers behind it.".to_string());
     out
@@ -393,30 +393,43 @@ pub fn section_lines_with<'a>(theme: &Theme, run: Option<&EdgeCheckRun>, stale: 
     lines.push(table_row(theme, "Legacy (solver)", [legacy(out.ed_min_strength), legacy(out.ed_min_sequence), ("-".to_string(), false)], "-"));
 
     // The conservative recommendation: e/D at which the failure probability
-    // under the full variability is 10 / 5 / 1 %.
-    let level_cell = |m: &edge_check::runner::ModelReport, l: usize| fmt_cell(r, m.level(l));
-    lines.push(Line::from(Span::styled(format!("  {:<14}{:>8}{:>9}{:>10}{:>16}", "recommended", "P90", "P95", "P99", "variability"), theme.disabled_style())));
+    // under the full variability is 10 / 5 / 1 %, for the applied load (it
+    // responds to the housing length) and for the bearing-limit load (a
+    // ratio, independent of length).
+    let actual = r.edge / r.bore_diameter;
+    lines.push(Line::from(Span::styled(format!("  {:<14}{:^19}{:^19}", "recommended e/D", "applied load", "bearing limit"), theme.disabled_style())));
     tags.push((lines.len() - 1, EdgeTopic::Recommended));
+    lines.push(Line::from(Span::styled(format!("  {:<14}{:>6}{:>6}{:>6}  {:>6}{:>6}{:>6}", "", "P90", "P95", "P99", "P90", "P95", "P99"), theme.disabled_style())));
     for m in r.models.iter().filter(|m| m.error.is_none()) {
         let Some(topic) = EdgeTopic::for_model(m.id) else { continue };
         if m.level(0).is_none() {
             continue;
         }
         tags.push((lines.len(), topic));
-        let tail = format!("{:.0}% str {:.0}% mod", 100.0 * r.strength_cv, 100.0 * m.model_cv);
-        lines.push(table_row(theme, short_name(m.id), [level_cell(m, 0), level_cell(m, 1), level_cell(m, 2)], &tail));
+        let mut spans = vec![Span::raw(format!("  {:<14}", short_name(m.id)))];
+        for (group, target) in [TARGET_APPLIED, TARGET_BEARING].into_iter().enumerate() {
+            if group == 1 {
+                spans.push(Span::raw("  "));
+            }
+            for l in 0..3 {
+                let (text, short) = fmt_cell(r, m.level_at(target, l));
+                let style = if short { theme.status_style(StatusTone::Danger) } else { ratatui::style::Style::default() };
+                spans.push(Span::styled(format!("{text:>6}"), style));
+            }
+        }
+        lines.push(Line::from(spans));
     }
-    if let Some((e, who)) = r.recommended(2) {
+    if let Some((e, who, target)) = r.recommended_governing(2) {
         tags.push((lines.len(), EdgeTopic::Recommended));
         let (text, short) = fmt_cell(r, Some(e));
-        let actual = r.edge / r.bore_diameter;
         let inches = match e {
-            EdgeMin::Value(v) | EdgeMin::AtMost(v) | EdgeMin::Exceeds(v) => format!("{:.3} in", v),
+            EdgeMin::Value(v) | EdgeMin::AtMost(v) | EdgeMin::Exceeds(v) => format!("{v:.3} in"),
             EdgeMin::NotSearched => "-".to_string(),
         };
+        let crit = if target == TARGET_APPLIED { "applied load" } else { "bearing limit" };
         let verdict = if short { format!("actual {actual:.2} is SHORT") } else { format!("actual {actual:.2} is enough") };
         let style = if short { theme.status_style(StatusTone::Danger) } else { theme.status_style(StatusTone::Success) };
-        lines.push(Line::from(Span::styled(format!("  Recommended e/D {text} ({inches}) at P99, set by {}; {verdict}", short_name(who)), style.add_modifier(ratatui::style::Modifier::BOLD))));
+        lines.push(Line::from(Span::styled(format!("  Recommended e/D {text} ({inches}) at P99: {crit} governs (set by {}); {verdict}", short_name(who)), style.add_modifier(ratatui::style::Modifier::BOLD))));
     }
 
     // What each check can carry at the actual edge distance, against the
@@ -451,10 +464,10 @@ pub fn detail_lines(topic: EdgeTopic, run: Option<&EdgeCheckRun>, model: &Bushin
     if topic == EdgeTopic::Recommended {
         let mut out = vec![format!("Fit pressure band {:.0}-{:.0} psi (nominal {:.0}); strength CV {:.0} %.", run.input.fit_pressure_min, run.input.fit_pressure_max, r.fit_pressure, 100.0 * r.strength_cv)];
         for (l, name) in ["P90", "P95", "P99"].iter().enumerate() {
-            if let Some((e, who)) = r.recommended(l) {
-                out.push(format!("{name}: e/D {} (set by {}); actual {:.2}.", fmt_cell(r, Some(e)).0, short_name(who), r.edge / r.bore_diameter));
-            }
+            let cell = |t: usize| r.recommended_for(t, l).map_or("-".to_string(), |(e, who)| format!("{} ({})", fmt_cell(r, Some(e)).0, short_name(who)));
+            out.push(format!("{name}: applied load e/D {}; bearing limit e/D {}; actual {:.2}.", cell(TARGET_APPLIED), cell(TARGET_BEARING), r.edge / r.bore_diameter));
         }
+        out.push("The applied-load column falls as the housing gets longer (capacity grows with length, the load does not). The bearing-limit column does not: the load it must carry grows with length too, so the length cancels.".to_string());
         return out;
     }
     let Some(m) = r.models.iter().find(|m| EdgeTopic::for_model(m.id) == Some(topic)) else {
@@ -519,7 +532,8 @@ pub fn report_text(run: &EdgeCheckRun) -> String {
             ));
         }
         if let (Some(a), Some(b), Some(c)) = (m.level(0), m.level(1), m.level(2)) {
-            s.push_str(&format!("    recommended e/D (fail prob <= 10%/5%/1%): {} / {} / {}  (strength CV {:.0}%, model CV {:.0}%)\n", fmt_e_min(r, a), fmt_e_min(r, b), fmt_e_min(r, c), 100.0 * r.strength_cv, 100.0 * m.model_cv));
+            let at = |t: usize, l: usize| m.level_at(t, l).map_or("-".to_string(), |e| fmt_e_min(r, e));
+            s.push_str(&format!("    recommended e/D (fail prob <= 10%/5%/1%): applied load {} / {} / {}; bearing limit {} / {} / {}  (strength CV {:.0}%, model CV {:.0}%; overall {} / {} / {})\n", at(TARGET_APPLIED, 0), at(TARGET_APPLIED, 1), at(TARGET_APPLIED, 2), at(TARGET_BEARING, 0), at(TARGET_BEARING, 1), at(TARGET_BEARING, 2), 100.0 * r.strength_cv, 100.0 * m.model_cv, fmt_e_min(r, a), fmt_e_min(r, b), fmt_e_min(r, c)));
         }
         for n in &m.notes {
             s.push_str(&format!("    note: {n}\n"));
@@ -549,11 +563,11 @@ mod tests {
         assert!(text.iter().any(|l| l.contains("Bearing") && l.contains("P(fail) Bearing")), "{text:?}");
         assert!(!text.iter().any(|l| l.contains("Sequencing")), "{text:?}");
         assert!(text.iter().any(|l| l.contains("capacity lbf")) && text.iter().any(|l| l.contains("must carry")));
-        assert!(text.iter().any(|l| l.contains("P90") && l.contains("P95") && l.contains("P99")), "{text:?}");
+        assert!(text.iter().any(|l| l.contains("applied load") && l.contains("bearing limit")) && text.iter().any(|l| l.contains("P90") && l.contains("P95") && l.contains("P99")), "{text:?}");
         assert!(text.iter().any(|l| l.contains("Recommended e/D") && l.contains("at P99")), "{text:?}");
         assert!(report_text(&run).contains("recommended e/D (fail prob"));
         let d = detail_lines(EdgeTopic::Recommended, Some(&run), &model).join("\n");
-        assert!(d.contains("P99:") && d.contains("strength CV"), "{d}");
+        assert!(d.contains("P99:") && d.contains("strength CV") && d.contains("applied load e/D") && d.contains("bearing limit e/D"), "{d}");
         // Tooltip: capacity vs need, and the fit's share of it (stress models charge the fit).
         let d = detail_lines(EdgeTopic::StressSuperposition, Some(&run), &model).join("\n");
         assert!(d.contains("can carry") && d.contains("lbf needed") && d.contains("The fit uses") && d.contains("Bearing (bearing-limit load)"), "{d}");
@@ -602,6 +616,29 @@ mod tests {
         model.recompute();
         let run = run_check(&model, false).unwrap();
         assert!(!note(&run), "the e/D 1.5 value must be picked up from the material record");
+    }
+
+    #[test]
+    fn a_longer_housing_lowers_the_applied_load_recommendation_but_not_the_bearing_limit_one() {
+        let p99 = |len: f64| {
+            let mut m = BushingModel::default();
+            m.housing_len = len;
+            m.load = 25_000.0; // large enough that the applied load matters
+            m.recompute();
+            let run = run_check(&m, false).unwrap();
+            // The stress model: the tabulated allowables' e/D >= 2.0 rule (no Fbru below
+            // it) is a load-independent floor that would mask the length effect.
+            let stress = run.report.models.iter().find(|m| m.id == "analytic").unwrap();
+            let e = |t| match stress.level_at(t, 2).unwrap() {
+                EdgeMin::Value(v) | EdgeMin::AtMost(v) | EdgeMin::Exceeds(v) => v / run.report.bore_diameter,
+                EdgeMin::NotSearched => panic!("not searched"),
+            };
+            (e(TARGET_APPLIED), e(TARGET_BEARING), run.report.recommended_governing(2).unwrap().2)
+        };
+        let (short, long) = (p99(0.5), p99(2.0));
+        assert!(long.0 < 0.6 * short.0, "applied-load P99 should fall with length: {short:?} -> {long:?}");
+        assert!((long.1 - short.1).abs() < 0.03, "bearing-limit P99 is a ratio, independent of length: {short:?} -> {long:?}");
+        assert_eq!(long.2, TARGET_BEARING, "for a long housing the bearing limit governs");
     }
 
     #[test]

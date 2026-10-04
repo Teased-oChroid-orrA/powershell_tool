@@ -70,6 +70,11 @@ pub struct Target {
     pub modes: &'static [Mode],
 }
 
+/// Index of the applied-load strength target in [`TARGETS`].
+pub const TARGET_APPLIED: usize = 0;
+/// Index of the bearing-limit (sequencing) target in [`TARGETS`].
+pub const TARGET_BEARING: usize = 1;
+
 pub const TARGETS: [Target; 3] = [
     Target { label: "Strength (applied load)", case: Case::Applied, modes: &[Mode::ShearOut, Mode::Splitting, Mode::Bearing, Mode::Collapse] },
     Target { label: "Bearing (bearing-limit load)", case: Case::BearingLimit, modes: &[Mode::ShearOut, Mode::Splitting, Mode::Collapse] },
@@ -156,7 +161,13 @@ impl ModelReport {
     /// This model's edge distance at survival level `level`: the larger of
     /// its strength and bearing targets. `None` if it has none.
     pub fn level(&self, level: usize) -> Option<EdgeMin> {
-        self.targets.iter().flatten().filter(|t| recommends(&t.target)).map(|t| t.e_levels[level]).filter(|e| *e != EdgeMin::NotSearched).reduce(EdgeMin::larger)
+        [TARGET_APPLIED, TARGET_BEARING].into_iter().filter_map(|t| self.level_at(t, level)).reduce(EdgeMin::larger)
+    }
+
+    /// The edge distance at survival level `level` for one target (index into
+    /// [`TARGETS`]: [`TARGET_APPLIED`] or [`TARGET_BEARING`]).
+    pub fn level_at(&self, target: usize, level: usize) -> Option<EdgeMin> {
+        self.targets.get(target)?.as_ref().map(|t| t.e_levels[level]).filter(|e| *e != EdgeMin::NotSearched)
     }
 }
 
@@ -178,9 +189,26 @@ impl EdgeReport {
     /// the strength / bearing targets, with the model that sets it. `None`
     /// if no model produced one.
     pub fn recommended(&self, level: usize) -> Option<(EdgeMin, &'static str)> {
+        self.recommended_governing(level).map(|(e, id, _)| (e, id))
+    }
+
+    /// [`recommended`](Self::recommended) plus the target that sets it
+    /// (`TARGET_APPLIED` or `TARGET_BEARING`).
+    pub fn recommended_governing(&self, level: usize) -> Option<(EdgeMin, &'static str, usize)> {
+        let (a, b) = (self.recommended_for(TARGET_APPLIED, level), self.recommended_for(TARGET_BEARING, level));
+        match (a, b) {
+            (Some(a), Some(b)) => Some(if a.0.rank() > b.0.rank() { (a.0, a.1, TARGET_APPLIED) } else { (b.0, b.1, TARGET_BEARING) }),
+            (Some(a), None) => Some((a.0, a.1, TARGET_APPLIED)),
+            (None, Some(b)) => Some((b.0, b.1, TARGET_BEARING)),
+            (None, None) => None,
+        }
+    }
+
+    /// The largest edge distance over the models for one target at `level`.
+    pub fn recommended_for(&self, target: usize, level: usize) -> Option<(EdgeMin, &'static str)> {
         let mut best: Option<(EdgeMin, &'static str)> = None;
         for m in self.models.iter().filter(|m| m.error.is_none()) {
-            if let Some(e) = m.level(level) {
+            if let Some(e) = m.level_at(target, level) {
                 if best.is_none_or(|(b, _)| e.rank() > b.rank()) {
                     best = Some((e, m.id));
                 }
