@@ -137,7 +137,7 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, state: &PreloadAnal
                 return ListItem::new(Line::from(Span::styled(format!("-- {text} --"), theme.title_style(false).add_modifier(Modifier::BOLD))));
             }
             let selected = focused && i == state.selected;
-            let value = if selected && state.editing { format!("{}_", state.edit_buffer) } else { display_value(&state.model, *row) };
+            let value = if selected && state.editing { state.edit_buffer.with_cursor() } else { display_value(&state.model, *row) };
             let marker = if selected { "> " } else { "  " };
             let label = match row {
                 model::FieldRow::Number(target) => target.label(),

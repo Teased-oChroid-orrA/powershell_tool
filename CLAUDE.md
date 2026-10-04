@@ -81,6 +81,7 @@ nodes.
 | ratatui GUI head | `app-tui/` | `app-tui/AGENTS.md` + per-toolbox `app-tui/src/toolboxes/{search,fastener_hole,bushing,pressure_vessel,preload_analysis}/AGENTS.md` | Active. Sole GUI head. |
 | Bushing press-fit solver | `bushing-solver/` | `bushing-solver/AGENTS.md` | Active. Consumed by `app-tui`. |
 | Fastened joint preload solver | `fastened-joint-solver/` | `fastened-joint-solver/AGENTS.md` | Active. Consumed by `app-tui` Preload Analysis. |
+| Edge-distance cross-checks (stress superposition / FE / allowables) | `edge-check/` | `edge-check/AGENTS.md` | Active on branch `edge-distance-stress-check` (not merged). Consumed by `app-tui` Bushing `c`. |
 | Pressure vessel solver | `pressure-vessel-solver/` | *(no node)* | Sibling pattern to `bushing-solver`. |
 | Shared math (Lamé, materials) | `engineering-math/`, `mechanics-core/` | *(no node)* | No re-export shim; import directly. |
 | CLI | `cli/` | *(no node)* | Second `search-core` consumer. |
@@ -227,6 +228,7 @@ full index mapping decision topics to ADR numbers.
 | Change the fast re-search index | `native-search/AGENTS.md` |
 | Change the terminal (app-tui) GUI | `app-tui/AGENTS.md` |
 | Change bushing/pressure-vessel solvers | `bushing-solver/AGENTS.md` |
+| Change the edge-distance cross-checks | `edge-check/AGENTS.md` |
 | Understand why an architecture decision was made | `docs/AGENTS.md` -> `docs/adr/` |
 | Understand a past epic's implementation history | `docs/AGENTS.md` -> `docs/issue-N-*.md` |
 | Run the C#/WinUI reference app's own tests | `src/AGENTS.md` |

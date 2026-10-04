@@ -23,6 +23,7 @@
 pub mod advice;
 pub mod bushing_id_persistence;
 pub mod bushing_id_picker;
+pub mod edge_check;
 pub mod friction_picker;
 pub mod material_persistence;
 pub mod material_picker;
@@ -57,6 +58,12 @@ pub enum BushingAction {
     OpenFixesFor(advice::CheckKind),
     OpenExplain,
     ToggleNumbers,
+    /// Run the independent edge-distance cross-check (`c`).
+    EdgeCheck,
+    /// Same, plus the elastic-plastic FE limit load (`C`, ~1-2 s).
+    EdgeCheckDeep,
+    /// Pin/unpin the tooltip for one cross-check (also shown on hover).
+    EdgeInfo(edge_check::EdgeTopic),
     Export,
     AdviceTab(AdviceTab),
     AdviceRow(usize),
@@ -85,7 +92,7 @@ pub struct BushingState {
     pub model: BushingModel,
     pub selected: usize,
     pub editing: bool,
-    pub edit_buffer: String,
+    pub edit_buffer: crate::widgets::number_edit::EditBuffer,
     pub material_picker: MaterialPickerState,
     pub reamer_picker: ReamerPickerState,
     pub friction_picker: FrictionPickerState,
@@ -107,6 +114,12 @@ pub struct BushingState {
     pub advice: AdviceWindow,
     /// Why the last tolerance edit was rejected; shown atop Results until the next edit.
     pub input_error: Option<String>,
+    /// The last edge-distance cross-check (key `c`) and the input it ran for.
+    pub edge_check: Option<edge_check::EdgeCheckRun>,
+    /// Tooltip topic under the mouse (and where), set from `Moved` events.
+    pub edge_hover: Option<(edge_check::EdgeTopic, u16, u16)>,
+    /// Tooltip pinned by a click (for terminals without mouse motion); Esc closes.
+    pub edge_info_pinned: Option<edge_check::EdgeTopic>,
 }
 
 impl Default for BushingState {
@@ -115,7 +128,7 @@ impl Default for BushingState {
             model: BushingModel::default(),
             selected: 0,
             editing: false,
-            edit_buffer: String::new(),
+            edit_buffer: Default::default(),
             material_picker: MaterialPickerState::default(),
             reamer_picker: ReamerPickerState::default(),
             friction_picker: FrictionPickerState::default(),
@@ -126,6 +139,9 @@ impl Default for BushingState {
             last_applied: None,
             advice: AdviceWindow::default(),
             input_error: None,
+            edge_check: None,
+            edge_hover: None,
+            edge_info_pinned: None,
         };
         // Row 0 is always a `Header` (the first section divider) - land on
         // the first real field instead of an unselectable row.
@@ -196,7 +212,10 @@ impl BushingState {
                 }
             }
             BushingAction::ToggleNumbers => self.show_numbers = !self.show_numbers,
-            BushingAction::Export => return vec![Effect::ExportBushingReport(view::build_report_text(&self.model))],
+            BushingAction::EdgeCheck => self.run_edge_check(false),
+            BushingAction::EdgeCheckDeep => self.run_edge_check(true),
+            BushingAction::EdgeInfo(topic) => self.edge_info_pinned = if self.edge_info_pinned == Some(topic) { None } else { Some(topic) },
+            BushingAction::Export => return vec![Effect::ExportBushingReport(self.report_text())],
             BushingAction::AdviceTab(tab) => {
                 self.advice.tab = tab;
                 self.advice.scroll = 0;
@@ -211,6 +230,30 @@ impl BushingState {
             BushingAction::AdviceClose => self.advice.open = false,
         }
         Vec::new()
+    }
+
+    /// Runs the edge-distance cross-check for the current inputs (a few
+    /// hundred ms, ~1-2 s with the plastic model when `deep`; `edge-check` is
+    /// compiled optimised even in dev builds).
+    pub fn run_edge_check(&mut self, deep: bool) {
+        match edge_check::run_check(&self.model, deep) {
+            Ok(run) => {
+                self.edge_check = Some(run);
+                self.last_applied = None;
+                self.input_error = None;
+            }
+            Err(why) => self.input_error = Some(format!("edge-distance check not run: {why}")),
+        }
+    }
+
+    /// The exported report: the model's own text plus the cross-check, if it
+    /// has been run for the current inputs.
+    pub fn report_text(&self) -> String {
+        let mut text = view::build_report_text(&self.model);
+        if let Some(run) = &self.edge_check {
+            text.push_str(&edge_check::report_text(run));
+        }
+        text
     }
 
     fn open_advice(&mut self, tab: AdviceTab) {
@@ -308,6 +351,10 @@ impl BushingState {
 /// this toolbox's workspace pane has focus - same `(consumed, effects)`
 /// contract as every other toolbox in this crate.
 pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>) {
+    if state.edge_info_pinned.is_some() && key.code == KeyCode::Esc {
+        state.edge_info_pinned = None;
+        return (true, Vec::new());
+    }
     if state.advice.open {
         return state.handle_advice_key(key);
     }
@@ -327,7 +374,7 @@ pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>
             if let KeyCode::Char('m' | 'M') = key.code {
                 state.reamer_picker.open = false;
                 state.editing = true;
-                state.edit_buffer = model::format_for_edit(state.model.bore_dia);
+                state.edit_buffer.set(model::format_for_edit(state.model.bore_dia));
                 return (true, Vec::new());
             }
         }
@@ -338,7 +385,7 @@ pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>
         if let KeyCode::Char('m' | 'M') = key.code {
             state.friction_picker.open = false;
             state.editing = true;
-            state.edit_buffer = model::format_for_edit(state.model.friction);
+            state.edit_buffer.set(model::format_for_edit(state.model.friction));
             return (true, Vec::new());
         }
         return friction_picker::handle_key(&mut state.friction_picker, &mut state.model, key);
@@ -349,7 +396,7 @@ pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>
         if let (false, KeyCode::Char('m' | 'M')) = (state.bushing_id_picker.filtering, key.code) {
             state.bushing_id_picker.open = false;
             state.editing = true;
-            state.edit_buffer = model::format_for_edit(state.model.id_bushing);
+            state.edit_buffer.set(model::format_for_edit(state.model.id_bushing));
             return (true, Vec::new());
         }
         return bushing_id_picker::handle_key(&mut state.bushing_id_picker, &mut state.model, key);
@@ -385,7 +432,7 @@ pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>
     if let KeyCode::Char(c @ ('+' | '-' | '.' | '0'..='9')) = key.code {
         if (key.modifiers.is_empty() || key.modifiers == crossterm::event::KeyModifiers::SHIFT) && matches!(model::field_rows(&state.model).get(state.selected), Some(FieldRow::Tol(_))) {
             state.editing = true;
-            state.edit_buffer = c.to_string();
+            state.edit_buffer.set(c.to_string());
             return (true, Vec::new());
         }
     }
@@ -393,7 +440,7 @@ pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>
         if let Some(FieldRow::Number(target)) = model::field_rows(&state.model).get(state.selected).copied() {
             if !matches!(target, NumberTarget::BoreDia | NumberTarget::Friction | NumberTarget::IdBushing) {
                 state.editing = true;
-                state.edit_buffer = c.to_string();
+                state.edit_buffer.set(c.to_string());
                 return (true, Vec::new());
             }
         }
@@ -448,12 +495,12 @@ pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>
                 }
                 Some(FieldRow::Tol(group)) => {
                     state.editing = true;
-                    state.edit_buffer = state.model.tolerance_edit_text(group);
+                    state.edit_buffer.set(state.model.tolerance_edit_text(group));
                     (true, Vec::new())
                 }
                 Some(FieldRow::Number(target)) => {
                     state.editing = true;
-                    state.edit_buffer = model::format_for_edit(state.model.number_value(target));
+                    state.edit_buffer.set(model::format_for_edit(state.model.number_value(target)));
                     (true, Vec::new())
                 }
                 Some(_) => {
@@ -469,7 +516,15 @@ pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>
         }
         KeyCode::Char('f' | 'F' | 'a' | 'A') => (true, state.perform(BushingAction::OpenFixes)),
         KeyCode::Char('w' | 'W') => (true, state.perform(BushingAction::OpenExplain)),
-        KeyCode::Char('e' | 'E') => (true, vec![Effect::ExportBushingReport(view::build_report_text(&state.model))]),
+        KeyCode::Char('c') => {
+            state.run_edge_check(false);
+            (true, Vec::new())
+        }
+        KeyCode::Char('C') => {
+            state.run_edge_check(true);
+            (true, Vec::new())
+        }
+        KeyCode::Char('e' | 'E') => (true, vec![Effect::ExportBushingReport(state.report_text())]),
         KeyCode::PageUp => {
             state.results_scroll = state.results_scroll.saturating_sub(crate::widgets::scroll_paragraph::SCROLL_STEP);
             (true, Vec::new())
@@ -483,22 +538,8 @@ pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>
 }
 
 /// Edit-buffer keys for a tolerance row: digits, `.`, signs, separators.
-fn tol_buffer_key(buffer: &mut String, key: &KeyEvent) -> bool {
-    match key.code {
-        KeyCode::Backspace => {
-            buffer.pop();
-            true
-        }
-        KeyCode::Delete => {
-            buffer.clear();
-            true
-        }
-        KeyCode::Char(c) if (key.modifiers.is_empty() || key.modifiers == crossterm::event::KeyModifiers::SHIFT) && (c.is_ascii_digit() || matches!(c, '.' | '+' | '-' | ' ' | '/' | ',' | '\u{b1}')) => {
-            buffer.push(c);
-            true
-        }
-        _ => false,
-    }
+fn tol_buffer_key(buffer: &mut crate::widgets::number_edit::EditBuffer, key: &KeyEvent) -> bool {
+    buffer.handle_key(key, |c| c.is_ascii_digit() || matches!(c, '.' | '+' | '-' | ' ' | '/' | ',' | '\u{b1}'))
 }
 
 fn commit_edit(state: &mut BushingState) {
@@ -660,14 +701,25 @@ mod tests {
     }
 
     #[test]
-    fn delete_clears_the_edit_buffer_while_editing() {
+    fn arrow_keys_move_the_cursor_and_delete_removes_one_character_while_editing() {
         let mut state = BushingState::default();
         state.selected = model::field_rows(&state.model).iter().position(|r| *r == FieldRow::Number(NumberTarget::HousingLen)).unwrap();
         handle_key(&mut state, key(KeyCode::Enter));
-        assert!(!state.edit_buffer.is_empty());
+        let before = state.edit_buffer.to_string();
+        assert!(before.chars().count() >= 2, "prefilled value needs two characters for this test: {before}");
+        // Home + Delete removes only the first character (not the whole buffer).
+        handle_key(&mut state, key(KeyCode::Home));
         handle_key(&mut state, key(KeyCode::Delete));
-        assert_eq!(state.edit_buffer, "");
-        assert!(state.editing, "Delete clears the buffer but stays in edit mode");
+        assert_eq!(state.edit_buffer.to_string(), before.chars().skip(1).collect::<String>());
+        // Right then Backspace removes the new first character.
+        handle_key(&mut state, key(KeyCode::Right));
+        handle_key(&mut state, key(KeyCode::Backspace));
+        assert_eq!(state.edit_buffer.to_string(), before.chars().skip(2).collect::<String>());
+        // Left then typing inserts at the start, not the end.
+        handle_key(&mut state, key(KeyCode::Left));
+        handle_key(&mut state, key(KeyCode::Char('7')));
+        assert!(state.edit_buffer.starts_with('7'));
+        assert!(state.editing);
     }
 
     #[test]
@@ -823,6 +875,47 @@ mod tests {
     }
 
     #[test]
+    fn c_runs_the_edge_check_and_the_export_includes_it() {
+        let mut state = BushingState::default();
+        assert!(!state.report_text().contains("Edge-Distance Cross-Check"), "no cross-check before it is run");
+        let (consumed, effects) = handle_key(&mut state, key(KeyCode::Char('c')));
+        assert!(consumed && effects.is_empty());
+        let run = state.edge_check.as_ref().expect("c runs the check");
+        assert_eq!(run.input, edge_check::build_input(&state.model).unwrap(), "the run records the input it was for");
+        assert!(state.report_text().contains("Edge-Distance Cross-Check"));
+        let effects = state.perform(BushingAction::Export);
+        assert!(matches!(effects.as_slice(), [Effect::ExportBushingReport(t)] if t.contains("Stress superposition")));
+    }
+
+    #[test]
+    fn capital_c_runs_the_deep_check_including_the_plastic_model() {
+        let mut state = BushingState::default();
+        handle_key(&mut state, KeyEvent { code: KeyCode::Char('C'), modifiers: KeyModifiers::SHIFT, kind: KeyEventKind::Press, state: KeyEventState::NONE });
+        let run = state.edge_check.as_ref().expect("C runs the check");
+        assert!(run.report.models.iter().any(|m| m.id == "plastic"));
+        handle_key(&mut state, key(KeyCode::Char('c')));
+        assert!(!state.edge_check.as_ref().unwrap().report.models.iter().any(|m| m.id == "plastic"), "c re-runs the quick set");
+    }
+
+    #[test]
+    fn esc_closes_a_pinned_tooltip_before_anything_else() {
+        let mut state = BushingState::default();
+        state.perform(BushingAction::EdgeInfo(edge_check::EdgeTopic::Allowables));
+        assert!(state.edge_info_pinned.is_some());
+        let (consumed, _) = handle_key(&mut state, key(KeyCode::Esc));
+        assert!(consumed && state.edge_info_pinned.is_none());
+    }
+
+    #[test]
+    fn an_unusable_edge_distance_reports_why_instead_of_running() {
+        let mut state = BushingState::default();
+        state.model.commit_number(NumberTarget::EdgeDist, 0.01);
+        state.perform(BushingAction::EdgeCheck);
+        assert!(state.edge_check.is_none());
+        assert!(state.input_error.as_deref().is_some_and(|m| m.contains("edge-distance check not run")));
+    }
+
+    #[test]
     fn perform_actions_match_their_keyboard_equivalents() {
         let mut state = failing_wall_state();
         state.perform(BushingAction::ToggleNumbers);
@@ -879,7 +972,7 @@ mod tests {
         state.model.toggle_tolerance_mode();
         select(&mut state, FieldRow::Tol(model::TolGroup::Bore));
         handle_key(&mut state, key(KeyCode::Enter));
-        state.edit_buffer = "0.4995 0.5005".to_string();
+        state.edit_buffer.set("0.4995 0.5005".to_string());
         handle_key(&mut state, key(KeyCode::Enter));
         assert_eq!(state.model.bore_dia, 0.5, "nominal 0.5 lies inside the limits - kept");
         assert!((state.model.bore_tol_plus - 0.0005).abs() < 1e-12 && (state.model.bore_tol_minus - 0.0005).abs() < 1e-12);
@@ -891,7 +984,7 @@ mod tests {
         let mut state = BushingState::default();
         select(&mut state, FieldRow::Tol(model::TolGroup::Interference));
         handle_key(&mut state, key(KeyCode::Enter));
-        state.edit_buffer = "abc".to_string();
+        state.edit_buffer.set("abc".to_string());
         handle_key(&mut state, key(KeyCode::Enter));
         assert!(state.input_error.as_deref().unwrap().contains("not a number"));
         assert_eq!(state.model.interference_tol_plus, 0.0);

@@ -52,6 +52,9 @@ mechanics-core = { path = "../mechanics-core" }
 # Bushing Workbench toolbox - same crate `app`/`app-egui` already consume
 # unchanged (see `bushing-solver/AGENTS.md`'s Public API table).
 bushing-solver = { path = "../bushing-solver" }
+# Independent edge-distance cross-checks (stress superposition / FE / allowables);
+# pure function of the bushing inputs - delete the crate and the one `c` hook to remove.
+edge-check = { path = "../edge-check" }
 # Fastened Joint Preload Analysis toolbox - a new solver crate, zero UI
 # dependencies, same "reused unchanged by every GUI head" pattern.
 fastened-joint-solver = { path = "../fastened-joint-solver" }

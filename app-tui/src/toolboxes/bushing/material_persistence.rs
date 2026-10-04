@@ -23,6 +23,9 @@ pub struct PersistedMaterial {
     pub e_ksi: f64,
     pub sy_ksi: f64,
     pub fbru_ksi: f64,
+    /// Bearing ultimate at e/D = 1.5 (MMPDS); absent in older files = not tabulated.
+    #[serde(default)]
+    pub fbru_e15_ksi: f64,
     pub fsu_ksi: f64,
     pub ftu_ksi: f64,
     pub nu: f64,
@@ -64,7 +67,7 @@ mod tests {
 
     fn sample() -> LibraryItem<PersistedMaterial> {
         LibraryItem {
-            item: PersistedMaterial { name: "Unobtainium".to_string(), e_ksi: 99999.0, sy_ksi: 5000.0, fbru_ksi: 6000.0, fsu_ksi: 4000.0, ftu_ksi: 6000.0, nu: 0.25, alpha_u_f: 3.0 },
+            item: PersistedMaterial { name: "Unobtainium".to_string(), e_ksi: 99999.0, sy_ksi: 5000.0, fbru_ksi: 6000.0, fbru_e15_ksi: 5000.0, fsu_ksi: 4000.0, ftu_ksi: 6000.0, nu: 0.25, alpha_u_f: 3.0 },
             labels: vec!["Preferred".to_string()],
         }
     }
@@ -82,5 +85,12 @@ mod tests {
     #[test]
     fn load_from_missing_file_returns_none() {
         assert!(load_from(Path::new("/this/does/not/exist/bushing-material-library.json")).is_none());
+    }
+
+    #[test]
+    fn a_library_file_saved_before_the_e15_field_still_loads_with_it_unset() {
+        let old = r#"{"name":"Old","e_ksi":10000.0,"sy_ksi":50.0,"fbru_ksi":100.0,"fsu_ksi":40.0,"ftu_ksi":60.0,"nu":0.3,"alpha_u_f":6.0}"#;
+        let m: PersistedMaterial = serde_json::from_str(old).unwrap();
+        assert_eq!(m.fbru_e15_ksi, 0.0);
     }
 }

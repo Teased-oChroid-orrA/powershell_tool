@@ -7,6 +7,7 @@ pub mod progress_bar;
 pub mod help;
 pub mod hint_panel;
 pub mod input_line;
+pub mod material_detail;
 pub mod number_edit;
 pub mod scroll_list;
 pub mod scroll_paragraph;

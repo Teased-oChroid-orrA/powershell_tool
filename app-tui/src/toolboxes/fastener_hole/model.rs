@@ -413,6 +413,25 @@ pub fn format_area(value: f64) -> String {
     format!("{value:.AREA_DECIMALS$}")
 }
 
+/// Compact toleranced form `nominal -minus/+plus` (e.g. `0.2500 -0.0020/+0.0040`),
+/// formatting every part with `fmt`. Used for every calculated value so the
+/// tolerance band sits next to the nominal instead of on extra lines.
+pub fn format_band(nominal: f64, min: f64, max: f64, fmt: impl Fn(f64) -> String) -> String {
+    format!("{} -{}/+{}", fmt(nominal), fmt((nominal - min).max(0.0)), fmt((max - nominal).max(0.0)))
+}
+
+pub fn format_linear_band(v: &TolerancedValue) -> String {
+    format_band(v.nominal, v.min, v.max, format_linear)
+}
+
+pub fn format_angle_band(v: &TolerancedValue) -> String {
+    format_band(v.nominal, v.min, v.max, format_angle)
+}
+
+pub fn format_area_band(v: &TolerancedValue) -> String {
+    format_band(v.nominal, v.min, v.max, format_area)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,6 +505,11 @@ mod tests {
         model.countersink.secondary_method = SecondaryCountersinkMethod::PreserveLateralArea;
         model.recompute();
         assert!(model.countersink_area_check.is_some());
+    }
+
+    #[test]
+    fn format_band_puts_minus_and_plus_tolerance_next_to_nominal() {
+        assert_eq!(format_band(0.25, 0.248, 0.254, format_linear), "0.2500 -0.0020/+0.0040");
     }
 
     #[test]

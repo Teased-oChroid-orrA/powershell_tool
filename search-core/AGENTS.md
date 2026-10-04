@@ -96,6 +96,12 @@ enumerate_files_safely → read_file_bytes_robust → extract_lines_by_extension
 3. Add a real fixture (reused from the C# test harness where possible) and a case in `tests/fixtures.rs`.
 4. Update `orchestrator::is_heavy_extension` if the format warrants the separate heavy-throttle semaphore (`heavy_throttle_limit` vs `throttle_limit` are independent semaphores, so light/heavy file mixes don't starve each other).
 
+- **Index freshness is `(modified in ns, size)` per document, nothing stronger** (`native_index.rs`, `cache::ticks_from_modified`; no content hash, no filesystem watcher). A same-size edit that restores the original mtime to the nanosecond is invisible to it. Changing what the index stores or how text is extracted/normalised means bumping `INDEX_SEMANTIC_VERSION` (stamp file in the index folder; mismatch rebuilds on open).
+- `build_or_update_corpus_index` keeps a sliding window of extractions in a `JoinSet` and indexes in completion order - do not go back to awaiting a fixed window in order (one slow file stalled its whole window; measured in `docs/index-audit-2026-10.md`).
+- `CorpusIndexOutcome.failed_files` is capped (`MAX_FAILURE_DETAILS`); use `failed_count` / `failure_summary` for totals.
+- Index metadata that cannot be read must never be treated as an empty index (`read_known`).
+- `remove_orphaned_documents` is global and must keep per-id `exists()`: an id outside the current scan scope may be merely excluded by settings. `narrow_candidates` already subtracts the scope first.
+
 ## Boundaries
 
 ### Always

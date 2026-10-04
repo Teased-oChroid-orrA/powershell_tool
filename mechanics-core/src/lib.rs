@@ -2,5 +2,6 @@
 //! equations, material property library) - see `Cargo.toml`'s module doc
 //! for scope and provenance.
 
+pub mod handbook;
 pub mod lame;
 pub mod materials;

@@ -60,7 +60,7 @@ impl AddMaterialField {
 pub struct AddMaterialForm {
     pub selected: usize,
     pub editing: bool,
-    pub edit_buffer: String,
+    pub edit_buffer: crate::widgets::number_edit::EditBuffer,
     pub name: String,
     pub e_ksi: String,
     pub sy_ksi: String,
@@ -75,7 +75,7 @@ impl Default for AddMaterialForm {
         Self {
             selected: 0,
             editing: false,
-            edit_buffer: String::new(),
+            edit_buffer: Default::default(),
             name: String::new(),
             e_ksi: String::new(),
             sy_ksi: String::new(),
@@ -157,7 +157,6 @@ pub struct MaterialPickerState {
     /// `PressureVesselModel::material_catalog()`.
     pub cursor: usize,
     pub filter_text: String,
-    pub filtering: bool,
     pub add_form: Option<AddMaterialForm>,
 }
 
@@ -172,8 +171,14 @@ impl MaterialPickerState {
         if needle.is_empty() {
             (0..catalog.len()).collect()
         } else {
-            catalog.iter().enumerate().filter(|(_, m)| m.name.to_lowercase().contains(&needle)).map(|(i, _)| i).collect()
+            catalog.iter().enumerate().filter(|(_, m)| crate::widgets::material_detail::matches(m, &needle)).map(|(i, _)| i).collect()
         }
+    }
+
+    /// Moves by `delta` rows, clamped (no wrap): paging a long list.
+    fn jump_cursor(&mut self, model: &PressureVesselModel, delta: i32) {
+        let len = self.visible_indices(model).len() as i32;
+        self.cursor = if len == 0 { 0 } else { (self.cursor as i32 + delta).clamp(0, len - 1) as usize };
     }
 
     fn move_cursor(&mut self, model: &PressureVesselModel, delta: i32) {
@@ -196,38 +201,11 @@ pub fn handle_key(picker: &mut MaterialPickerState, model: &mut PressureVesselMo
         return handle_add_form_key(picker, model, key);
     }
 
-    if picker.filtering {
-        return match key.code {
-            KeyCode::Enter | KeyCode::Esc => {
-                picker.filtering = false;
-                picker.cursor = 0;
-                (true, Vec::new())
-            }
-            KeyCode::Backspace => {
-                picker.filter_text.pop();
-                picker.cursor = 0;
-                (true, Vec::new())
-            }
-            KeyCode::Delete => {
-                picker.filter_text.clear();
-                picker.cursor = 0;
-                (true, Vec::new())
-            }
-            KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
-                picker.filter_text.push(c);
-                picker.cursor = 0;
-                (true, Vec::new())
-            }
-            _ => (false, Vec::new()),
-        };
-    }
-
+    // Always-on search: printable keys type into the search box (so the
+    // add action is a Ctrl chord); the list narrows as you type.
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
-        KeyCode::Char('/') => {
-            picker.filtering = true;
-            (true, Vec::new())
-        }
-        KeyCode::Char('n' | 'N') => {
+        KeyCode::Char('n') if ctrl => {
             picker.add_form = Some(AddMaterialForm::default());
             (true, Vec::new())
         }
@@ -237,6 +215,22 @@ pub fn handle_key(picker: &mut MaterialPickerState, model: &mut PressureVesselMo
         }
         KeyCode::Down => {
             picker.move_cursor(model, 1);
+            (true, Vec::new())
+        }
+        KeyCode::PageUp => {
+            picker.jump_cursor(model, -10);
+            (true, Vec::new())
+        }
+        KeyCode::PageDown => {
+            picker.jump_cursor(model, 10);
+            (true, Vec::new())
+        }
+        KeyCode::Home => {
+            picker.cursor = 0;
+            (true, Vec::new())
+        }
+        KeyCode::End => {
+            picker.cursor = picker.visible_indices(model).len().saturating_sub(1);
             (true, Vec::new())
         }
         KeyCode::Enter => {
@@ -255,7 +249,14 @@ pub fn handle_key(picker: &mut MaterialPickerState, model: &mut PressureVesselMo
             }
             (true, Vec::new())
         }
-        _ => (false, Vec::new()),
+        _ => {
+            if crate::widgets::material_detail::search_edit(&mut picker.filter_text, &key) {
+                picker.cursor = 0;
+                (true, Vec::new())
+            } else {
+                (false, Vec::new())
+            }
+        }
     }
 }
 
@@ -275,7 +276,7 @@ fn handle_add_form_key(picker: &mut MaterialPickerState, model: &mut PressureVes
         return match key.code {
             KeyCode::Enter => {
                 let field = ADD_MATERIAL_FIELDS[form.selected];
-                let text = std::mem::take(&mut form.edit_buffer);
+                let text = form.edit_buffer.take();
                 form.set_field_text(field, text);
                 form.editing = false;
                 (true, Vec::new())
@@ -285,18 +286,7 @@ fn handle_add_form_key(picker: &mut MaterialPickerState, model: &mut PressureVes
                 form.edit_buffer.clear();
                 (true, Vec::new())
             }
-            KeyCode::Backspace => {
-                form.edit_buffer.pop();
-                (true, Vec::new())
-            }
-            KeyCode::Delete => {
-                form.edit_buffer.clear();
-                (true, Vec::new())
-            }
-            KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
-                form.edit_buffer.push(c);
-                (true, Vec::new())
-            }
+            _ if form.edit_buffer.handle_key(&key, |_| true) => (true, Vec::new()),
             _ => (false, Vec::new()),
         };
     }
@@ -343,7 +333,7 @@ fn handle_add_form_key(picker: &mut MaterialPickerState, model: &mut PressureVes
             } else {
                 if let Some(form) = picker.add_form.as_mut() {
                     form.editing = true;
-                    form.edit_buffer = form.field_text(field).to_string();
+                    form.edit_buffer.set(form.field_text(field).to_string());
                 }
                 (true, Vec::new())
             }
@@ -378,9 +368,9 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &MaterialPic
     let catalog = model.material_catalog();
     let visible = picker.visible_indices(model);
     let title = if picker.filter_text.is_empty() {
-        format!(" Material ({} available) - n: add new ", catalog.len())
+        format!(" Material ({} available) \u{b7} Enter select \u{b7} PgUp/PgDn \u{b7} Esc clear/close ", catalog.len())
     } else {
-        format!(" Material ({} shown of {}) - n: add new ", visible.len(), catalog.len())
+        format!(" Material ({} shown of {}) \u{b7} Enter select \u{b7} PgUp/PgDn \u{b7} Esc clear/close ", visible.len(), catalog.len())
     };
     let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.border_style(true)).title(title);
     let inner = block.inner(popup);
@@ -389,7 +379,23 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &MaterialPic
         return;
     }
 
-    let (list_area, filter_area) = if (picker.filtering || !picker.filter_text.is_empty()) && inner.height > 1 {
+    // Property panel for the highlighted material (dropped on short terminals).
+    let selected = visible.get(picker.cursor).map(|&i| catalog[i]);
+    let panel = match selected {
+        Some(m) if inner.height >= 16 => if m.extra.is_some() { 8 } else { 2 },
+        _ => 0,
+    };
+    let (inner, detail_area) = if panel > 0 {
+        let rows = Layout::default().direction(Direction::Vertical).constraints([Constraint::Min(1), Constraint::Length(panel)]).split(inner);
+        (rows[0], Some(rows[1]))
+    } else {
+        (inner, None)
+    };
+    if let (Some(area), Some(m)) = (detail_area, selected) {
+        frame.render_widget(Paragraph::new(crate::widgets::material_detail::lines(theme, m)).wrap(ratatui::widgets::Wrap { trim: true }), area);
+    }
+
+    let (list_area, filter_area) = if inner.height > 1 {
         let rows = Layout::default().direction(Direction::Vertical).constraints([Constraint::Min(1), Constraint::Length(1)]).split(inner);
         (rows[0], Some(rows[1]))
     } else {
@@ -404,7 +410,7 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &MaterialPic
             .enumerate()
             .map(|(display_i, &idx)| {
                 let material = catalog[idx];
-                let is_custom = idx >= mechanics_core::materials::MATERIALS.len();
+                let is_custom = idx >= mechanics_core::materials::builtin_len();
                 let selected_row = display_i == picker.cursor;
                 let marker = if selected_row { "> " } else { "  " };
                 let tag = if is_custom { " [custom]" } else { "" };
@@ -417,10 +423,7 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &MaterialPic
     }
 
     if let Some(area) = filter_area {
-        let label = if picker.filtering { "Filter (Enter/Esc to stop): " } else { "Filter: " };
-        let cursor_glyph = if picker.filtering { "_" } else { "" };
-        let line = crate::widgets::input_line::line(theme, label, picker.filter_text.as_str(), cursor_glyph, area.width);
-        frame.render_widget(Paragraph::new(line), area);
+        frame.render_widget(Paragraph::new(crate::widgets::material_detail::search_line(theme, &picker.filter_text, "Ctrl+N add", area.width)), area);
     }
 }
 
@@ -438,7 +441,7 @@ fn render_add_form(frame: &mut Frame, popup: Rect, theme: &Theme, form: &AddMate
         .enumerate()
         .map(|(i, &field)| {
             let selected = i == form.selected;
-            let value = if selected && form.editing { format!("{}_", form.edit_buffer) } else { form.field_text(field).to_string() };
+            let value = if selected && form.editing { form.edit_buffer.with_cursor() } else { form.field_text(field).to_string() };
             let marker = if selected { "> " } else { "  " };
             let style = if selected { theme.selected_row_style() } else { Style::default() };
             let label = field.label();
@@ -462,6 +465,10 @@ mod tests {
     use crossterm::event::{KeyEventKind, KeyEventState};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+
+    fn ctrl_key(c: char) -> KeyEvent {
+        KeyEvent { code: KeyCode::Char(c), modifiers: KeyModifiers::CONTROL, kind: KeyEventKind::Press, state: KeyEventState::NONE }
+    }
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent { code, modifiers: KeyModifiers::NONE, kind: KeyEventKind::Press, state: KeyEventState::NONE }
@@ -493,42 +500,43 @@ mod tests {
     }
 
     #[test]
-    fn slash_then_typing_narrows_the_visible_list() {
+    fn typing_narrows_the_visible_list_without_a_slash() {
         let mut picker = MaterialPickerState::open_now();
         let mut model = PressureVesselModel::default();
-        handle_key(&mut picker, &mut model, key(KeyCode::Char('/')));
         for c in "steel".chars() {
             handle_key(&mut picker, &mut model, key(KeyCode::Char(c)));
         }
         let visible = picker.visible_indices(&model);
-        assert!(visible.iter().all(|&i| model.material_catalog()[i].name.to_lowercase().contains("steel")));
+        // Matches the family too ("Low-Alloy Steels"), not just the name.
+        assert!(visible.iter().all(|&i| crate::widgets::material_detail::matches(model.material_catalog()[i], "steel")));
+        assert!(visible.len() > model.material_catalog().iter().filter(|m| m.name.to_lowercase().contains("steel")).count() / 2);
         assert!(!visible.is_empty());
     }
 
     #[test]
-    fn n_opens_the_add_material_form() {
+    fn ctrl_n_opens_the_add_material_form() {
         let mut picker = MaterialPickerState::open_now();
         let mut model = PressureVesselModel::default();
-        handle_key(&mut picker, &mut model, key(KeyCode::Char('n')));
+        handle_key(&mut picker, &mut model, ctrl_key('n'));
         assert!(picker.add_form.is_some());
     }
 
     #[test]
-    fn uppercase_n_from_caps_lock_still_opens_the_add_material_form() {
-        // Regression: crossterm's Windows backend reports Caps-Lock-typed
-        // letters as uppercase with no Shift held - a bare-lowercase
-        // pattern silently drops the binding on Windows only.
+    fn plain_n_and_capital_n_are_search_text_not_actions() {
+        // Type-to-search: letters that used to be action keys must just search.
         let mut picker = MaterialPickerState::open_now();
         let mut model = PressureVesselModel::default();
+        handle_key(&mut picker, &mut model, key(KeyCode::Char('n')));
         handle_key(&mut picker, &mut model, key(KeyCode::Char('N')));
-        assert!(picker.add_form.is_some());
+        assert!(picker.add_form.is_none());
+        assert_eq!(picker.filter_text, "nN");
     }
 
     #[test]
     fn esc_on_the_add_form_cancels_it_without_closing_the_picker() {
         let mut picker = MaterialPickerState::open_now();
         let mut model = PressureVesselModel::default();
-        handle_key(&mut picker, &mut model, key(KeyCode::Char('n')));
+        handle_key(&mut picker, &mut model, ctrl_key('n'));
         assert!(picker.add_form.is_some());
         handle_key(&mut picker, &mut model, key(KeyCode::Esc));
         assert!(picker.add_form.is_none());

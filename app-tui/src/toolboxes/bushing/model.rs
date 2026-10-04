@@ -35,10 +35,10 @@ use mechanics_core::materials::{Material, MATERIALS};
 /// them for real. The leak is bounded by how many materials a user
 /// manually adds in a session, same reasoning as that toolbox's own
 /// comment.
-fn leak_custom_material(name: String, e_ksi: f64, sy_ksi: f64, fbru_ksi: f64, fsu_ksi: f64, ftu_ksi: f64, nu: f64, alpha_u_f: f64) -> &'static Material {
+fn leak_custom_material(name: String, e_ksi: f64, sy_ksi: f64, fbru_ksi: f64, fbru_e15_ksi: f64, fsu_ksi: f64, ftu_ksi: f64, nu: f64, alpha_u_f: f64) -> &'static Material {
     let id: &'static str = Box::leak(format!("custom:{name}").into_boxed_str());
     let name: &'static str = Box::leak(name.into_boxed_str());
-    Box::leak(Box::new(Material { id, name, e_ksi, sy_ksi, fbru_ksi, fsu_ksi, ftu_ksi, nu, alpha_u_f }))
+    Box::leak(Box::new(Material { id, name, e_ksi, sy_ksi, fbru_ksi, fbru_e15_ksi, fsu_ksi, ftu_ksi, nu, alpha_u_f, extra: None }))
 }
 
 pub fn cycle_bushing_type(t: BushingType) -> BushingType {
@@ -694,7 +694,7 @@ impl Default for BushingModel {
             assembly_bushing_temp: 70.0,
             custom_materials: super::material_persistence::load()
                 .into_iter()
-                .map(|li| leak_custom_material(li.item.name, li.item.e_ksi, li.item.sy_ksi, li.item.fbru_ksi, li.item.fsu_ksi, li.item.ftu_ksi, li.item.nu, li.item.alpha_u_f))
+                .map(|li| leak_custom_material(li.item.name, li.item.e_ksi, li.item.sy_ksi, li.item.fbru_ksi, li.item.fbru_e15_ksi, li.item.fsu_ksi, li.item.ftu_ksi, li.item.nu, li.item.alpha_u_f))
                 .collect(),
             output: compute(&BushingInputs::default()),
             checks: Vec::new(),
@@ -766,7 +766,7 @@ impl BushingModel {
     /// the order they were added - `housing_material_index`/
     /// `bushing_material_index` are indices into exactly this sequence.
     pub fn material_catalog(&self) -> Vec<&'static Material> {
-        MATERIALS.iter().chain(self.custom_materials.iter().copied()).collect()
+        mechanics_core::materials::builtin_catalog().chain(self.custom_materials.iter().copied()).collect()
     }
 
     pub fn housing_material(&self) -> &'static Material {
@@ -798,7 +798,7 @@ impl BushingModel {
     /// bounded by how often a user actually imports a library file in a
     /// session, not by anything that scales with runtime.
     pub fn sync_custom_materials_from_library(&mut self, library: &[crate::library::LibraryItem<super::material_persistence::PersistedMaterial>]) {
-        self.custom_materials = library.iter().map(|li| leak_custom_material(li.item.name.clone(), li.item.e_ksi, li.item.sy_ksi, li.item.fbru_ksi, li.item.fsu_ksi, li.item.ftu_ksi, li.item.nu, li.item.alpha_u_f)).collect();
+        self.custom_materials = library.iter().map(|li| leak_custom_material(li.item.name.clone(), li.item.e_ksi, li.item.sy_ksi, li.item.fbru_ksi, li.item.fbru_e15_ksi, li.item.fsu_ksi, li.item.ftu_ksi, li.item.nu, li.item.alpha_u_f)).collect();
         self.housing_material_index = self.housing_material_index.min(self.material_catalog().len().saturating_sub(1));
         self.bushing_material_index = self.bushing_material_index.min(self.material_catalog().len().saturating_sub(1));
         self.recompute();
@@ -810,8 +810,8 @@ impl BushingModel {
     /// (`material_picker.rs::AddMaterialForm::validate`), not this
     /// method's; it trusts its inputs, same discipline
     /// `PressureVesselModel::add_custom_material` documents.
-    pub fn add_custom_material(&mut self, target: super::material_picker::MaterialTarget, name: String, e_ksi: f64, sy_ksi: f64, fbru_ksi: f64, fsu_ksi: f64, ftu_ksi: f64, nu: f64, alpha_u_f: f64) {
-        let material = leak_custom_material(name, e_ksi, sy_ksi, fbru_ksi, fsu_ksi, ftu_ksi, nu, alpha_u_f);
+    pub fn add_custom_material(&mut self, target: super::material_picker::MaterialTarget, name: String, e_ksi: f64, sy_ksi: f64, fbru_ksi: f64, fbru_e15_ksi: f64, fsu_ksi: f64, ftu_ksi: f64, nu: f64, alpha_u_f: f64) {
+        let material = leak_custom_material(name, e_ksi, sy_ksi, fbru_ksi, fbru_e15_ksi, fsu_ksi, ftu_ksi, nu, alpha_u_f);
         self.custom_materials.push(material);
         let index = self.material_catalog().len() - 1;
         match target {

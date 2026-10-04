@@ -30,7 +30,7 @@ pub struct FastenerHoleState {
     pub model: FastenerHoleModel,
     pub selected: usize,
     pub editing: bool,
-    pub edit_buffer: String,
+    pub edit_buffer: crate::widgets::number_edit::EditBuffer,
     /// PageUp/PageDown-adjusted scroll offset into the Results pane -
     /// clamped on every render by `widgets::scroll_paragraph::render`.
     pub results_scroll: u16,
@@ -38,7 +38,7 @@ pub struct FastenerHoleState {
 
 impl Default for FastenerHoleState {
     fn default() -> Self {
-        let mut state = Self { model: FastenerHoleModel::default(), selected: 0, editing: false, edit_buffer: String::new(), results_scroll: 0 };
+        let mut state = Self { model: FastenerHoleModel::default(), selected: 0, editing: false, edit_buffer: Default::default(), results_scroll: 0 };
         // Row 0 is always a `Header` - land on the first real field instead
         // of an unselectable row (same technique `toolboxes/bushing/mod.rs`
         // uses).
@@ -126,7 +126,7 @@ pub fn handle_key(state: &mut FastenerHoleState, key: KeyEvent) -> (bool, Vec<Ef
     if let Some(c) = crate::widgets::number_edit::number_char(&key) {
         if matches!(model::field_rows(&state.model).get(state.selected).copied(), Some(FieldRow::Number(..))) {
             state.editing = true;
-            state.edit_buffer = c.to_string();
+            state.edit_buffer.set(c.to_string());
             return (true, Vec::new());
         }
     }
@@ -149,7 +149,7 @@ pub fn handle_key(state: &mut FastenerHoleState, key: KeyEvent) -> (bool, Vec<Ef
             match rows.get(state.selected).copied() {
                 Some(FieldRow::Number(target, part, _)) => {
                     state.editing = true;
-                    state.edit_buffer = model::format_for_edit(model::part_value(&state.model.get_toleranced(target), part));
+                    state.edit_buffer.set(model::format_for_edit(model::part_value(&state.model.get_toleranced(target), part)));
                     (true, Vec::new())
                 }
                 Some(_) => {
@@ -259,13 +259,24 @@ mod tests {
     }
 
     #[test]
-    fn delete_clears_the_edit_buffer_while_editing() {
+    fn arrow_keys_move_the_cursor_and_delete_removes_one_character_while_editing() {
         let mut state = FastenerHoleState::default();
         state.selected = 4;
         handle_key(&mut state, key(KeyCode::Enter));
-        assert!(!state.edit_buffer.is_empty());
+        let before = state.edit_buffer.to_string();
+        assert!(before.chars().count() >= 2, "prefilled value needs two characters for this test: {before}");
+        // Home + Delete removes only the first character (not the whole buffer).
+        handle_key(&mut state, key(KeyCode::Home));
         handle_key(&mut state, key(KeyCode::Delete));
-        assert_eq!(state.edit_buffer, "");
+        assert_eq!(state.edit_buffer.to_string(), before.chars().skip(1).collect::<String>());
+        // Right then Backspace removes the new first character.
+        handle_key(&mut state, key(KeyCode::Right));
+        handle_key(&mut state, key(KeyCode::Backspace));
+        assert_eq!(state.edit_buffer.to_string(), before.chars().skip(2).collect::<String>());
+        // Left then typing inserts at the start, not the end.
+        handle_key(&mut state, key(KeyCode::Left));
+        handle_key(&mut state, key(KeyCode::Char('7')));
+        assert!(state.edit_buffer.starts_with('7'));
         assert!(state.editing);
     }
 

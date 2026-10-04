@@ -9,7 +9,7 @@
 //! (`extension_picker.rs`) instead of a plain text edit - see
 //! `EXTENSIONS_FIELD` below.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -192,7 +192,7 @@ pub struct SettingsView {
     /// preset's `name` rather than pushing a new one. Mutually exclusive
     /// with `naming_preset`/`editing`.
     pub renaming_preset: bool,
-    pub edit_buffer: String,
+    pub edit_buffer: crate::widgets::number_edit::EditBuffer,
 }
 
 impl Default for SettingsView {
@@ -204,7 +204,7 @@ impl Default for SettingsView {
     /// row-0-is-a-Header case.
     fn default() -> Self {
         let mut view =
-            Self { section: Section::default(), selected: 0, recent_selected: 0, preset_selected: 0, editing: false, naming_preset: false, renaming_preset: false, edit_buffer: String::new() };
+            Self { section: Section::default(), selected: 0, recent_selected: 0, preset_selected: 0, editing: false, naming_preset: false, renaming_preset: false, edit_buffer: Default::default() };
         view.clamp_selection();
         view
     }
@@ -264,7 +264,7 @@ impl SettingsView {
 
     fn start_edit(&mut self, config: &SearchToolConfig) {
         self.editing = true;
-        self.edit_buffer = field_value_string(config, self.field_index());
+        self.edit_buffer.set(field_value_string(config, self.field_index()));
     }
 
     fn cancel_edit(&mut self) {
@@ -312,18 +312,7 @@ pub fn handle_key(
                 view.edit_buffer.clear();
                 (true, Vec::new())
             }
-            KeyCode::Backspace => {
-                view.edit_buffer.pop();
-                (true, Vec::new())
-            }
-            KeyCode::Delete => {
-                view.edit_buffer.clear();
-                (true, Vec::new())
-            }
-            KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
-                view.edit_buffer.push(c);
-                (true, Vec::new())
-            }
+            _ if view.edit_buffer.handle_key(&key, |_| true) => (true, Vec::new()),
             _ => (false, Vec::new()),
         };
     }
@@ -348,18 +337,7 @@ pub fn handle_key(
                 view.edit_buffer.clear();
                 (true, Vec::new())
             }
-            KeyCode::Backspace => {
-                view.edit_buffer.pop();
-                (true, Vec::new())
-            }
-            KeyCode::Delete => {
-                view.edit_buffer.clear();
-                (true, Vec::new())
-            }
-            KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
-                view.edit_buffer.push(c);
-                (true, Vec::new())
-            }
+            _ if view.edit_buffer.handle_key(&key, |_| true) => (true, Vec::new()),
             _ => (false, Vec::new()),
         };
     }
@@ -374,18 +352,7 @@ pub fn handle_key(
                 view.cancel_edit();
                 (true, Vec::new())
             }
-            KeyCode::Backspace => {
-                view.edit_buffer.pop();
-                (true, Vec::new())
-            }
-            KeyCode::Delete => {
-                view.edit_buffer.clear();
-                (true, Vec::new())
-            }
-            KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
-                view.edit_buffer.push(c);
-                (true, Vec::new())
-            }
+            _ if view.edit_buffer.handle_key(&key, |_| true) => (true, Vec::new()),
             _ => (false, Vec::new()),
         };
     }
@@ -484,7 +451,7 @@ pub fn handle_key(
             // pushing a new one.
             KeyCode::Char('r' | 'R') if super::is_plain_char(key) && !presets.is_empty() => {
                 view.renaming_preset = true;
-                view.edit_buffer = presets[view.preset_selected].name.clone();
+                view.edit_buffer.set(presets[view.preset_selected].name.clone());
                 (true, Vec::new())
             }
             // Delete the selected preset - ported behavior from `app/`'s
@@ -587,7 +554,7 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, config: &SearchTool
             let field = &FIELDS[*i];
             let selected = focused && pos == view.selected;
             let value = if selected && view.editing {
-                format!("{}_", view.edit_buffer)
+                view.edit_buffer.with_cursor()
             } else {
                 display_value(config, *i, field.kind)
             };
@@ -733,8 +700,7 @@ fn draw_presets(frame: &mut Frame, area: Rect, theme: &Theme, presets: &[SavedPr
         let label = if view.renaming_preset { "Rename preset: " } else { "New preset name: " };
         let line = Line::from(vec![
             Span::styled(label, theme.title_style(true)),
-            Span::raw(view.edit_buffer.as_str()),
-            Span::styled("_", theme.title_style(true)),
+            Span::raw(view.edit_buffer.with_cursor()),
         ]);
         frame.render_widget(Paragraph::new(line), area);
     }
@@ -912,6 +878,7 @@ fn display_value(config: &SearchToolConfig, idx: usize, kind: FieldKind) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::KeyModifiers;
     use super::super::persistence::PersistedSearchSettings;
     use crossterm::event::{KeyEventKind, KeyEventState};
 

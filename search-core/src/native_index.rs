@@ -12,12 +12,15 @@
 //! workarounds, no `SafeHandle` - the whole class of bug that plumbing
 //! existed to guard against doesn't exist here.
 
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use native_search::engine::{DocumentInput, NativeSearchEngine, SearchHit};
 use native_search::error::{NsError, NsResult};
 use tokio_util::sync::CancellationToken;
 
+use crate::cache::ticks_from_modified;
 use crate::extraction;
 use crate::file_reader;
 use crate::models::{FileSearchResult, SearchSettings};
@@ -52,17 +55,51 @@ pub fn index_directory(search_path: &str) -> PathBuf {
 /// workaround, since a from-scratch rebuild really is the only valid
 /// recovery here and there's no reason to make the user do it by hand.
 pub fn open_or_create_with_rebuild(index_directory: &Path) -> NsResult<NativeSearchEngine> {
-    match NativeSearchEngine::open_or_create(index_directory) {
-        Ok(engine) => Ok(engine),
-        Err(e) if e.status == native_search::error::NsStatus::CorruptIndex => {
-            std::fs::remove_dir_all(index_directory)
-                .map_err(|io_err| NsError::index_error(format!("could not remove outdated index at {}: {io_err}", index_directory.display())))?;
-            std::fs::create_dir_all(index_directory)
-                .map_err(|io_err| NsError::index_error(format!("could not recreate index directory at {}: {io_err}", index_directory.display())))?;
-            NativeSearchEngine::open_or_create(index_directory)
-        }
-        Err(e) => Err(e),
+    let wipe_and_recreate = || -> NsResult<()> {
+        std::fs::remove_dir_all(index_directory)
+            .map_err(|io_err| NsError::index_error(format!("could not remove outdated index at {}: {io_err}", index_directory.display())))?;
+        std::fs::create_dir_all(index_directory)
+            .map_err(|io_err| NsError::index_error(format!("could not recreate index directory at {}: {io_err}", index_directory.display())))
+    };
+    if !semantic_version_current(index_directory) {
+        wipe_and_recreate()?;
     }
+    let engine = match NativeSearchEngine::open_or_create(index_directory) {
+        Ok(engine) => engine,
+        Err(e) if e.status == native_search::error::NsStatus::CorruptIndex => {
+            wipe_and_recreate()?;
+            NativeSearchEngine::open_or_create(index_directory)?
+        }
+        Err(e) => return Err(e),
+    };
+    std::fs::write(index_directory.join(SEMANTIC_VERSION_FILE), INDEX_SEMANTIC_VERSION.to_string())
+        .map_err(|io_err| NsError::index_error(format!("could not record the index version in {}: {io_err}", index_directory.display())))?;
+    Ok(engine)
+}
+
+/// Version of what the index *means*, which the Tantivy schema check cannot
+/// see: how text is extracted/normalized, how trigrams are built, and what
+/// the stored `modified` value is. Bump it whenever a change would leave an
+/// existing index structurally valid but wrong or stale; every index
+/// carrying a different (or no) version is then rebuilt on next open.
+///
+/// History: 2 = `modified` stored as nanoseconds (was whole seconds, which
+/// could not tell apart two same-size edits inside one second).
+pub const INDEX_SEMANTIC_VERSION: u32 = 2;
+const SEMANTIC_VERSION_FILE: &str = "semantic-version";
+
+/// `true` when the index at `index_directory` can be used as-is: it does
+/// not exist yet (a fresh one gets stamped on creation) or it was built
+/// under [`INDEX_SEMANTIC_VERSION`]. An index with no version stamp predates
+/// versioning and counts as outdated.
+pub fn semantic_version_current(index_directory: &Path) -> bool {
+    if !index_directory.join("meta.json").is_file() {
+        return true;
+    }
+    std::fs::read_to_string(index_directory.join(SEMANTIC_VERSION_FILE))
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        == Some(INDEX_SEMANTIC_VERSION)
 }
 
 /// Creates the index directory if it doesn't already exist -
@@ -108,7 +145,7 @@ pub fn index_hits_for_fast_search(engine: &NativeSearchEngine, hits: &[FileSearc
     let mut outcome = IndexOutcome::default();
 
     for r in hits {
-        let modified_unix = r.modified.timestamp();
+        let modified_unix = ticks_from_modified(r.modified);
         if let Some((existing_modified, existing_size)) = engine.get_document_metadata(&r.full_name)? {
             if existing_modified == modified_unix && existing_size == r.file_length {
                 outcome.skipped_count += 1;
@@ -190,14 +227,11 @@ pub struct CorpusIndexOutcome {
     pub indexed_count: i32,
     pub skipped_count: i32,
     pub failed_count: i32,
-    /// One entry per failure ("path: error message" for a document, or
-    /// "commit at N files: error message" for a batch commit) - a real
-    /// end-of-run summary instead of one opaque error covering the whole
-    /// folder. Capped implicitly by `failed_count` staying small in
-    /// practice (a genuinely broken environment fails every remaining
-    /// file, at which point the caller should stop and investigate, not
-    /// receive an unbounded list) - not truncated here, since a caller
-    /// choosing to display only the first N is a presentation decision.
+    /// The first [`MAX_FAILURE_DETAILS`] failures ("path: error message"
+    /// for a document, or "commit: error message" for a batch commit) - a
+    /// systemic failure over a huge corpus would otherwise hold one string
+    /// per file. `failed_count` is always the full total and
+    /// `failure_summary` aggregates every failure.
     pub failed_files: Vec<String>,
     /// Failure counts keyed by `ext=<extension>: <error with paths removed>` -
     /// contains no file or folder names, so it is safe to write to a
@@ -275,9 +309,18 @@ pub fn redact_paths(text: &str) -> String {
     out
 }
 
+/// Cap on [`CorpusIndexOutcome::failed_files`] entries.
+pub const MAX_FAILURE_DETAILS: usize = 100;
+
+fn push_failure_detail(outcome: &mut CorpusIndexOutcome, detail: impl FnOnce() -> String) {
+    if outcome.failed_files.len() < MAX_FAILURE_DETAILS {
+        outcome.failed_files.push(detail());
+    }
+}
+
 fn record_failure(outcome: &mut CorpusIndexOutcome, full_name: &str, ext: &str, error: &str) {
     outcome.failed_count += 1;
-    outcome.failed_files.push(format!("{full_name}: {error}"));
+    push_failure_detail(outcome, || format!("{full_name}: {error}"));
     *outcome.failure_summary.entry(format!("ext={ext}: {}", redact_paths(error))).or_insert(0) += 1;
 }
 
@@ -437,7 +480,7 @@ async fn commit_pending(engine: &NativeSearchEngine, pending: &mut Vec<PendingDo
         let n = pending.len() as i32;
         outcome.indexed_count -= n;
         outcome.failed_count += n;
-        outcome.failed_files.push(format!("{label} ({n} document(s) lost): {e}"));
+        push_failure_detail(outcome, || format!("{label} ({n} document(s) lost): {e}"));
         *outcome.failure_summary.entry(format!("{label}: {}", redact_paths(&e))).or_insert(0) += n as u32;
     }
     pending.clear();
@@ -491,7 +534,17 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
     // Pass 1: decide which files need work. One bulk read of the index's
     // stored (modified, size) per id - per-file term lookups cost ~0.6us per
     // segment each, ~18s for 100k files.
-    let known = engine.all_document_metadata().unwrap_or_default();
+    // If the metadata cannot be read, re-index every file (documents are
+    // replaced by id, so this is safe) and say so - never silently treat an
+    // unreadable index as an empty one.
+    let known = read_known(engine).unwrap_or_else(|e| {
+        tracing::warn!(error = %redact_paths(&e.to_string()), "index metadata unreadable - re-indexing every file");
+        *outcome
+            .failure_summary
+            .entry(format!("index metadata unreadable ({}) - every file re-indexed", redact_paths(&e.to_string())))
+            .or_insert(0) += 1;
+        HashMap::new()
+    });
     let mut work: Vec<(file_reader::EnumeratedFile, String, String)> = Vec::new();
     for (i, file) in candidates.into_iter().enumerate() {
         if cancellation.is_cancelled() {
@@ -506,8 +559,8 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
             outcome.too_large_count += 1;
             continue;
         }
-        let modified_unix = file.modified.timestamp();
-        if let Some(&(existing_modified, existing_size)) = known.get(&full_name) {
+        let modified_unix = ticks_from_modified(file.modified);
+        if let Some(&(existing_modified, existing_size)) = known.get(path_key(&full_name).as_ref()) {
             if existing_modified == modified_unix && existing_size == file.length {
                 outcome.skipped_count += 1;
                 continue;
@@ -532,70 +585,83 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
     let mut done = 0i32;
     let mut work_iter = work.into_iter();
 
-    'outer: while !outcome.cancelled {
-        let window: Vec<_> = work_iter.by_ref().take(concurrency).collect();
-        if window.is_empty() {
+    // Sliding window: keep `concurrency` extractions in flight and take
+    // results in completion order, so one slow file (PDF, stalled network
+    // read) never holds back the already-finished files behind it. Writes
+    // to the index stay serialized on this task. Dropping the set (on
+    // cancel) aborts whatever is still running.
+    type Extracted = (file_reader::EnumeratedFile, String, String, Result<Vec<String>, ReadFail>);
+    let mut in_flight: tokio::task::JoinSet<Extracted> = tokio::task::JoinSet::new();
+    let mut in_flight_names: std::collections::HashMap<tokio::task::Id, (String, String)> = std::collections::HashMap::new();
+
+    loop {
+        while !outcome.cancelled && in_flight.len() < concurrency {
+            let Some((file, full_name, ext)) = work_iter.next() else { break };
+            let (cancel, names) = (cancellation.clone(), (full_name.clone(), ext.clone()));
+            let handle = in_flight.spawn(async move {
+                let result = read_and_extract(full_name.clone(), ext.clone(), params, cancel).await;
+                (file, full_name, ext, result)
+            });
+            in_flight_names.insert(handle.id(), names);
+        }
+        if outcome.cancelled || cancellation.is_cancelled() {
+            outcome.cancelled = true;
             break;
         }
-        let handles: Vec<_> = window
-            .iter()
-            .map(|(_, full_name, ext)| tokio::spawn(read_and_extract(full_name.clone(), ext.clone(), params, cancellation.clone())))
-            .collect();
-
-        for ((file, full_name, ext), handle) in window.into_iter().zip(handles) {
-            if cancellation.is_cancelled() {
-                outcome.cancelled = true;
-                handle.abort();
+        let Some(joined) = in_flight.join_next_with_id().await else { break };
+        let (file, full_name, ext, extracted) = match joined {
+            Ok((id, item)) => {
+                in_flight_names.remove(&id);
+                item
+            }
+            Err(e) => {
+                let (name, ext) = in_flight_names.remove(&e.id()).unwrap_or_default();
+                done += 1;
+                record_failure(&mut outcome, &name, &ext, &format!("read task failed: {e}"));
                 continue;
             }
-            report(&outcome, IndexStage::Indexing, done, work_total, &full_name);
-            done += 1;
-            let lines = match handle.await {
-                Ok(Ok(l)) => l,
-                Ok(Err(ReadFail::NoText(why))) => {
-                    outcome.no_text_count += 1;
-                    *outcome.failure_summary.entry(format!("ext={ext}: {why} (indexed empty)")).or_insert(0) += 1;
-                    Vec::new()
-                }
-                Ok(Err(ReadFail::Error(e))) => {
-                    record_failure(&mut outcome, &full_name, &ext, &e);
-                    continue;
-                }
-                Err(e) => {
-                    record_failure(&mut outcome, &full_name, &ext, &format!("read task failed: {e}"));
-                    continue;
-                }
-            };
-
-            let doc = PendingDoc {
-                filename: file.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-                id: full_name.clone(),
-                ext: ext.clone(),
-                modified: file.modified.timestamp(),
-                created: file.created.timestamp(),
-                size: file.length,
-                body: lines.join("\n"),
-            };
-            // A single document failure must not abort the loop and discard
-            // every remaining file: count it, keep going.
-            if let Err(e) = doc.stage(engine) {
-                record_failure(&mut outcome, &full_name, &ext, &e.to_string());
+        };
+        report(&outcome, IndexStage::Indexing, done, work_total, &full_name);
+        done += 1;
+        let lines = match extracted {
+            Ok(l) => l,
+            Err(ReadFail::NoText(why)) => {
+                outcome.no_text_count += 1;
+                *outcome.failure_summary.entry(format!("ext={ext}: {why} (indexed empty)")).or_insert(0) += 1;
+                Vec::new()
+            }
+            Err(ReadFail::Error(e)) => {
+                record_failure(&mut outcome, &full_name, &ext, &e);
                 continue;
             }
-            outcome.indexed_count += 1;
-            pending_bytes += doc.body.len();
-            pending.push(doc);
+        };
 
-            if pending.len() as i32 >= COMMIT_BATCH_SIZE || pending_bytes >= COMMIT_BATCH_BYTES {
-                report(&outcome, IndexStage::Committing, done, work_total, &full_name);
-                commit_pending(engine, &mut pending, &mut outcome, "commit").await;
-                pending_bytes = 0;
-            }
+        let doc = PendingDoc {
+            filename: file.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            id: full_name.clone(),
+            ext: ext.clone(),
+            modified: ticks_from_modified(file.modified),
+            created: file.created.timestamp(),
+            size: file.length,
+            body: lines.join("\n"),
+        };
+        // A single document failure must not abort the loop and discard
+        // every remaining file: count it, keep going.
+        if let Err(e) = doc.stage(engine) {
+            record_failure(&mut outcome, &full_name, &ext, &e.to_string());
+            continue;
         }
-        if outcome.cancelled {
-            break 'outer;
+        outcome.indexed_count += 1;
+        pending_bytes += doc.body.len();
+        pending.push(doc);
+
+        if pending.len() as i32 >= COMMIT_BATCH_SIZE || pending_bytes >= COMMIT_BATCH_BYTES {
+            report(&outcome, IndexStage::Committing, done, work_total, &full_name);
+            commit_pending(engine, &mut pending, &mut outcome, "commit").await;
+            pending_bytes = 0;
         }
     }
+    drop(in_flight);
 
     if !pending.is_empty() {
         report(&outcome, IndexStage::Committing, done, work_total, "");
@@ -633,6 +699,14 @@ pub struct NarrowOutcome {
     pub needs_update: usize,
     /// Indexed documents whose file no longer exists on disk.
     pub removed: usize,
+    /// Tantivy segments in the index (transiently high right after a big
+    /// build while background merges converge - queries are slower until then).
+    pub segments: usize,
+    /// Phase timings, for the on-screen note and performance evidence:
+    /// directory walk, freshness check against the index, trigram lookup.
+    pub walk_ms: u64,
+    pub freshness_ms: u64,
+    pub query_ms: u64,
 }
 
 impl NarrowOutcome {
@@ -645,12 +719,33 @@ impl NarrowOutcome {
 /// Case-insensitive, separator-insensitive comparison key for a file path:
 /// the index stores the exact string the walk produced, and on Windows the
 /// same file may be reported with different case or `/` vs `\`.
-fn path_key(p: &str) -> String {
-    if cfg!(windows) {
-        p.replace('\\', "/").to_lowercase()
+fn path_key(p: &str) -> Cow<'_, str> {
+    path_key_folded(p, cfg!(windows))
+}
+
+fn path_key_folded(p: &str, fold: bool) -> Cow<'_, str> {
+    if fold {
+        Cow::Owned(p.replace('\\', "/").to_lowercase())
     } else {
-        p.to_string()
+        Cow::Borrowed(p)
     }
+}
+
+/// The index's stored `(modified, size)` per id, re-keyed by [`path_key`] so
+/// every freshness lookup compares like with like. A no-op off Windows.
+fn known_by_key(known: HashMap<String, (i64, i64)>, fold: bool) -> HashMap<String, (i64, i64)> {
+    if fold {
+        known.into_iter().map(|(id, v)| (path_key_folded(&id, true).into_owned(), v)).collect()
+    } else {
+        known
+    }
+}
+
+/// Reads the index's stored metadata for a freshness check. A read failure
+/// is returned, never replaced by an empty map: "index unreadable" must not
+/// look the same as "index empty".
+fn read_known(engine: &NativeSearchEngine) -> NsResult<HashMap<String, (i64, i64)>> {
+    engine.all_document_metadata().map(|known| known_by_key(known, cfg!(windows)))
 }
 
 /// Narrows a re-search to the files that can possibly match, using the
@@ -670,7 +765,8 @@ pub async fn narrow_candidates(
     engine: &NativeSearchEngine,
     cancellation: &CancellationToken,
 ) -> NsResult<NarrowOutcome> {
-    let mut out = NarrowOutcome { index_docs: engine.num_docs(), ..Default::default() };
+    let mut out = NarrowOutcome { index_docs: engine.num_docs(), segments: engine.segment_count(), ..Default::default() };
+    let phase = std::time::Instant::now();
 
     let walk = (settings.search_path.clone(), settings.include_hidden, settings.exclude_folders.clone());
     let walk_cancel = cancellation.clone();
@@ -682,31 +778,37 @@ pub async fn narrow_candidates(
     };
     let in_scope = filter_by_extension(all_files, settings);
     out.scannable = in_scope.len();
+    out.walk_ms = phase.elapsed().as_millis() as u64;
+    let phase = std::time::Instant::now();
     let max_bytes = (settings.max_file_size_mb * 1024.0 * 1024.0) as i64;
 
     // Freshness: which in-scope files the index lacks or has out of date.
-    let known = engine.all_document_metadata().unwrap_or_default();
+    // Unreadable metadata fails the narrowing (the caller falls back to a
+    // full scan and reports it) instead of looking like an empty index.
+    let known = read_known(engine)?;
     let mut stale: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut scope_keys: std::collections::HashSet<String> = std::collections::HashSet::with_capacity(in_scope.len());
     for file in &in_scope {
         let full_name = file.path.to_string_lossy().into_owned();
-        scope_keys.insert(path_key(&full_name));
+        scope_keys.insert(path_key(&full_name).into_owned());
         let up_to_date = matches!(
-            known.get(&full_name),
-            Some(&(m, sz)) if m == file.modified.timestamp() && sz == file.length
+            known.get(path_key(&full_name).as_ref()),
+            Some(&(m, sz)) if m == ticks_from_modified(file.modified) && sz == file.length
         );
         if !up_to_date {
             out.stale_or_new += 1;
             if file.length <= max_bytes {
                 out.needs_update += 1;
             }
-            stale.insert(path_key(&full_name));
+            stale.insert(path_key(&full_name).into_owned());
         }
     }
     if let Ok(ids) = engine.all_document_ids() {
-        out.removed = ids.iter().filter(|id| !scope_keys.contains(&path_key(id)) && !Path::new(id.as_str()).exists()).count();
+        out.removed = ids.iter().filter(|id| !scope_keys.contains(path_key(id).as_ref()) && !Path::new(id.as_str()).exists()).count();
     }
 
+    out.freshness_ms = phase.elapsed().as_millis() as u64;
+    let phase = std::time::Instant::now();
     let indexed_paths = if settings.use_regex {
         let mut chunk_sets = Vec::with_capacity(settings.filters.len());
         for f in &settings.filters {
@@ -722,16 +824,17 @@ pub async fn narrow_candidates(
     let Some(indexed_paths) = indexed_paths else {
         return Ok(out);
     };
-    let from_index: std::collections::HashSet<String> = indexed_paths.iter().map(|p| path_key(p)).collect();
+    out.query_ms = phase.elapsed().as_millis() as u64;
+    let from_index: std::collections::HashSet<String> = indexed_paths.iter().map(|p| path_key(p).into_owned()).collect();
 
     let mut chosen = Vec::new();
     for file in in_scope {
         let full_name = file.path.to_string_lossy().into_owned();
         let key = path_key(&full_name);
-        if from_index.contains(&key) {
+        if from_index.contains(key.as_ref()) {
             out.from_index += 1;
             chosen.push(full_name);
-        } else if stale.contains(&key) {
+        } else if stale.contains(key.as_ref()) {
             chosen.push(full_name);
         }
     }
@@ -784,6 +887,12 @@ pub fn remove_orphaned_documents(engine: &NativeSearchEngine) -> NsResult<usize>
 /// own doc comment - is the caller's signal to offer/perform a rebuild,
 /// not something this function does on its own.
 pub fn verify_index(index_directory: &Path) -> NsResult<u64> {
+    if !semantic_version_current(index_directory) {
+        return Err(NsError::new(
+            native_search::error::NsStatus::CorruptIndex,
+            "index was built by an older version of the app and must be rebuilt",
+        ));
+    }
     let engine = NativeSearchEngine::open_or_create(index_directory)?;
     Ok(engine.num_docs())
 }
@@ -1259,10 +1368,62 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         ensure_index_directory_exists(dir.path()).unwrap();
         {
-            let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
+            let engine = open_or_create_with_rebuild(dir.path()).unwrap();
             index_hits_for_fast_search(&engine, &[sample_hit("/x/a.txt", 1_700_000_000, 7, &["hi"])]).unwrap();
         }
         assert_eq!(verify_index(dir.path()).unwrap(), 1);
+    }
+
+    #[test]
+    fn index_without_the_current_semantic_version_is_rebuilt_on_open_and_rejected_by_verify() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_index_directory_exists(dir.path()).unwrap();
+        {
+            let engine = open_or_create_with_rebuild(dir.path()).unwrap();
+            index_hits_for_fast_search(&engine, &[sample_hit("/x/a.txt", 1_700_000_000, 7, &["hi"])]).unwrap();
+        }
+        assert!(semantic_version_current(dir.path()));
+
+        // An index from before versioning (no stamp) or from another version is outdated.
+        std::fs::remove_file(dir.path().join(SEMANTIC_VERSION_FILE)).unwrap();
+        assert!(!semantic_version_current(dir.path()));
+        assert_eq!(verify_index(dir.path()).unwrap_err().status, native_search::error::NsStatus::CorruptIndex);
+        std::fs::write(dir.path().join(SEMANTIC_VERSION_FILE), (INDEX_SEMANTIC_VERSION + 1).to_string()).unwrap();
+        assert!(!semantic_version_current(dir.path()));
+
+        let engine = open_or_create_with_rebuild(dir.path()).unwrap();
+        assert_eq!(engine.num_docs(), 0, "outdated index must be discarded, not reused");
+        assert!(semantic_version_current(dir.path()), "rebuilt index is stamped");
+        drop(engine);
+        assert!(semantic_version_current(dir.path()));
+        assert_eq!(open_or_create_with_rebuild(dir.path()).unwrap().num_docs(), 0, "a current index is kept on reopen");
+    }
+
+    #[test]
+    fn path_key_folds_case_and_separators_only_when_asked() {
+        assert_eq!(path_key_folded(r"C:\Folder\File.PDF", true), "c:/folder/file.pdf");
+        assert_eq!(path_key_folded(r"C:\Folder\File.PDF", false), r"C:\Folder\File.PDF");
+    }
+
+    #[test]
+    fn known_metadata_is_rekeyed_so_case_or_slash_differences_still_match() {
+        let mut known = HashMap::new();
+        known.insert(r"C:\Data\A.txt".to_string(), (5_i64, 9_i64));
+        let folded = known_by_key(known.clone(), true);
+        assert_eq!(folded.get(path_key_folded("c:/data/a.txt", true).as_ref()), Some(&(5, 9)));
+        assert_eq!(known_by_key(known.clone(), false), known, "no re-keying off Windows");
+    }
+
+    #[test]
+    fn failure_details_are_capped_but_counts_and_summary_are_complete() {
+        let mut o = CorpusIndexOutcome::default();
+        let total = MAX_FAILURE_DETAILS + 50;
+        for i in 0..total {
+            record_failure(&mut o, &format!("/x/f{i}.txt"), ".txt", "permission denied");
+        }
+        assert_eq!(o.failed_count as usize, total);
+        assert_eq!(o.failed_files.len(), MAX_FAILURE_DETAILS);
+        assert_eq!(o.failure_summary.values().sum::<u32>() as usize, total);
     }
 
     #[test]
@@ -1381,6 +1542,75 @@ mod tests {
         let cands = out.candidates.unwrap();
         assert_eq!(cands.len(), 1);
         assert!(cands[0].ends_with("a.txt"));
+    }
+
+    #[tokio::test]
+    async fn same_size_edit_within_the_same_second_is_detected_as_changed() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        let set_mtime = |t: std::time::SystemTime| std::fs::File::options().write(true).open(&path).unwrap().set_modified(t).unwrap();
+        let base = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        std::fs::write(&path, "alpha\n").unwrap();
+        set_mtime(base + Duration::from_millis(100));
+        let settings = narrow_settings(dir.path(), "bravo");
+        let engine = built_engine(dir.path(), &settings).await;
+        let token = CancellationToken::new();
+        assert!(!narrow_candidates(&settings, &engine, &token).await.unwrap().is_stale());
+
+        // Same length, mtime moved 500 ms - still inside the same whole second.
+        std::fs::write(&path, "bravo\n").unwrap();
+        set_mtime(base + Duration::from_millis(600));
+        let out = narrow_candidates(&settings, &engine, &token).await.unwrap();
+        assert!(out.is_stale(), "whole-second mtimes would call this file unchanged");
+        assert_eq!(out.candidates.unwrap().len(), 1, "the edited file must stay a candidate for its new text");
+    }
+
+    #[tokio::test]
+    async fn removed_counts_only_documents_whose_file_is_gone_not_ones_merely_out_of_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "needle\n").unwrap();
+        std::fs::write(dir.path().join("b.log"), "needle\n").unwrap();
+        let mut settings = narrow_settings(dir.path(), "needle");
+        settings.extensions = Some(vec![".txt".to_string(), ".log".to_string()]);
+        let engine = built_engine(dir.path(), &settings).await;
+        let token = CancellationToken::new();
+
+        // `.log` leaves the scan scope but the file still exists: not an orphan.
+        settings.extensions = Some(vec![".txt".to_string()]);
+        assert_eq!(narrow_candidates(&settings, &engine, &token).await.unwrap().removed, 0);
+
+        std::fs::remove_file(dir.path().join("b.log")).unwrap();
+        assert_eq!(narrow_candidates(&settings, &engine, &token).await.unwrap().removed, 1);
+    }
+
+    #[tokio::test]
+    async fn cancelling_mid_build_stops_early_and_keeps_what_was_committed() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..60 {
+            std::fs::write(dir.path().join(format!("f{i:02}.txt")), format!("content {i}\n")).unwrap();
+        }
+        let mut settings = narrow_settings(dir.path(), "content");
+        settings.parallel = true;
+        settings.throttle_limit = 4;
+        let index_dir = dir.path().join(".idx-test");
+        ensure_index_directory_exists(&index_dir).unwrap();
+        let engine = open_or_create_with_rebuild(&index_dir).unwrap();
+        let token = CancellationToken::new();
+        let cancel = token.clone();
+        let mut seen = 0;
+        let mut on_progress = move |p: CorpusIndexProgress| {
+            if p.stage == IndexStage::Indexing {
+                seen += 1;
+                if seen == 5 {
+                    cancel.cancel();
+                }
+            }
+        };
+        let out = build_or_update_corpus_index_send(&settings, &engine, &token, Some(&mut on_progress)).await.unwrap();
+        assert!(out.cancelled);
+        assert!(out.indexed_count > 0 && out.indexed_count < 60, "indexed {}", out.indexed_count);
+        assert_eq!(engine.num_docs(), out.indexed_count as u64, "everything counted as indexed was committed");
     }
 
     #[tokio::test]

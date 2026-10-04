@@ -196,7 +196,7 @@ fn leak_custom_material(name: String, e_ksi: f64, sy_ksi: f64, ftu_ksi: f64, nu:
     // fields `pressure-vessel-solver` never reads - zeroed rather than
     // guessed, since a wrong nonzero value here could look load-bearing
     // to a future reader when it structurally cannot be for this toolbox.
-    Box::leak(Box::new(Material { id, name, e_ksi, sy_ksi, fbru_ksi: 0.0, fsu_ksi: 0.0, ftu_ksi, nu, alpha_u_f }))
+    Box::leak(Box::new(Material { id, name, e_ksi, sy_ksi, fbru_ksi: 0.0, fbru_e15_ksi: 0.0, fsu_ksi: 0.0, ftu_ksi, nu, alpha_u_f, extra: None }))
 }
 
 /// The whole toolbox's engineering state, plus every derived result -
@@ -272,7 +272,7 @@ impl PressureVesselModel {
     /// they were added - `material_index` is an index into exactly this
     /// sequence.
     pub fn material_catalog(&self) -> Vec<&'static Material> {
-        MATERIALS.iter().chain(self.custom_materials.iter().copied()).collect()
+        mechanics_core::materials::builtin_catalog().chain(self.custom_materials.iter().copied()).collect()
     }
 
     pub fn material(&self) -> &'static Material {
@@ -521,7 +521,7 @@ mod tests {
     #[test]
     fn add_custom_material_appends_selects_and_is_used_by_recompute() {
         let mut model = PressureVesselModel::default();
-        let builtin_count = MATERIALS.len();
+        let builtin_count = mechanics_core::materials::builtin_len();
         model.add_custom_material("Unobtainium".to_string(), 99999.0, 5000.0, 6000.0, 0.25, 3.0);
         assert_eq!(model.material_catalog().len(), builtin_count + 1);
         assert_eq!(model.material_index, builtin_count);

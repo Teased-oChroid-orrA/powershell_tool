@@ -7,6 +7,7 @@
 //! abstraction is worth adding once a second real toolbox needs the same
 //! treatment, not before.
 
+pub mod diagnostics;
 pub mod extension_picker;
 pub mod index_view;
 pub mod indexing;

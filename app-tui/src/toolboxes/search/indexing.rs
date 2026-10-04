@@ -83,6 +83,9 @@ pub struct IndexRunState {
     /// Set by a search that found the index out of date: (new/changed files,
     /// removed files). Consumed when that search finishes to prompt an update.
     pub stale: Option<(usize, usize)>,
+    /// Files that failed in the most recent finished build (shown in the
+    /// post-search index health line).
+    pub last_build_failed: Option<i32>,
     pub(super) indexing_started: Option<Instant>,
 }
 
@@ -94,6 +97,7 @@ impl IndexRunState {
             docs: self.docs,
             last_narrow: self.last_narrow.take(),
             stale: None,
+            last_build_failed: self.last_build_failed,
             ..Default::default()
         };
     }
@@ -142,6 +146,7 @@ impl IndexRunState {
         self.percent = 100.0;
         self.current_file.clear();
         self.docs = Some(outcome.index_docs);
+        self.last_build_failed = Some(outcome.failed_count);
         let secs = outcome.elapsed_ms as f64 / 1000.0;
         let lead = if outcome.cancelled { "Index build cancelled" } else { "Index ready" };
         self.status_text = format!(
@@ -317,7 +322,7 @@ fn remove_index_dir_with_retry(index_dir: &Path) -> std::io::Result<()> {
 /// True when `index_dir` holds a finished Tantivy index (its `meta.json`
 /// exists). An empty or half-created folder is "not built".
 pub fn index_is_built(index_dir: &Path) -> bool {
-    index_dir.join("meta.json").is_file()
+    index_dir.join("meta.json").is_file() && search_core::native_index::semantic_version_current(index_dir)
 }
 
 /// Builds or updates the fast re-search index for one root: an existing

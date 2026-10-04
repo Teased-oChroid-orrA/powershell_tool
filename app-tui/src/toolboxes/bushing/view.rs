@@ -60,6 +60,48 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingState, 
     if state.advice.open {
         draw_advice_window(frame, area, theme, state, regions);
     }
+    draw_edge_tip(frame, area, theme, state);
+}
+
+/// Tooltip for a cross-check: shown while the mouse is over its name, or
+/// pinned by a click (Esc / another click closes it).
+fn draw_edge_tip(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingState) {
+    use ratatui::widgets::Clear;
+
+    if state.advice.open || area.width < 24 || area.height < 8 {
+        return;
+    }
+    let (topic, ax, ay) = match (state.edge_info_pinned, state.edge_hover) {
+        (Some(t), Some((_, x, y))) => (t, x, y),
+        (Some(t), None) => (t, area.x + area.width / 2, area.y + area.height / 3),
+        (None, Some((t, x, y))) => (t, x, y),
+        (None, None) => return,
+    };
+    let tip = super::edge_check::tip(topic);
+    let width = area.width.saturating_sub(2).min(72);
+    let mut lines: Vec<Line> = Vec::new();
+    // The numbers behind this table row first, then the static discussion.
+    lines.push(Line::from(Span::styled("This run", theme.title_style(true).add_modifier(Modifier::BOLD))));
+    for detail in super::edge_check::detail_lines(topic, state.edge_check.as_ref(), &state.model) {
+        lines.push(Line::from(detail));
+    }
+    for (heading, body) in tip.sections {
+        lines.push(Line::from(Span::styled(*heading, theme.title_style(true).add_modifier(Modifier::BOLD))));
+        lines.push(Line::from(*body));
+    }
+    let inner_w = width.saturating_sub(2).max(1);
+    let height = (crate::widgets::scroll_paragraph::wrapped_height(&lines, inner_w) + 2).min(area.height.saturating_sub(1)).max(3);
+    let x = ax.min(area.x + area.width - width).max(area.x);
+    // Prefer below the pointer; flip above when it would run off the pane.
+    let below = ay + 1;
+    let y = if below + height <= area.y + area.height { below } else { ay.saturating_sub(height).max(area.y) };
+    let rect = Rect { x, y, width, height };
+    frame.render_widget(Clear, rect);
+    let hint = if state.edge_info_pinned.is_some() { " (Esc/click closes) " } else { " (click to pin) " };
+    let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.border_style(true)).title(format!(" {} ", tip.title)).title_bottom(hint);
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 /// Label of a row; tolerance rows read "... Tol" or "... Limits" by entry mode.
@@ -114,7 +156,8 @@ fn fields_required_width(state: &BushingState) -> u16 {
             }
         })
         .max()
-        .unwrap_or(0) as u16;
+        .unwrap_or(0)
+        .min(crate::widgets::scroll_list::VALUE_CAP) as u16;
     2 + label_width + max_value_width + 2
 }
 
@@ -142,15 +185,17 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingStat
 
     let label_width = compute_label_width(state.model.tolerance_mode, &rows) as usize;
 
+    let mut heights: Vec<u16> = Vec::with_capacity(rows.len());
     let items: Vec<ListItem> = rows
         .iter()
         .enumerate()
         .map(|(i, row)| {
             if let FieldRow::Header(text) = row {
+                heights.push(1);
                 return ListItem::new(Line::from(Span::styled(format!("-- {text} --"), theme.title_style(false).add_modifier(Modifier::BOLD))));
             }
             let selected = focused && i == state.selected;
-            let value = if selected && state.editing { format!("{}_", state.edit_buffer) } else { display_value(&state.model, *row) };
+            let value = if selected && state.editing { state.edit_buffer.with_cursor() } else { display_value(&state.model, *row) };
             let marker = if selected { "> " } else { "  " };
             let label = row_text(state.model.tolerance_mode, *row);
             let failing = state.model.checks.iter().any(|c| {
@@ -171,12 +216,14 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingStat
             } else {
                 Style::default()
             };
-            ListItem::new(Line::from(Span::styled(format!("{marker}{label:<label_width$}{value}"), style)))
+            let (item, h) = crate::widgets::scroll_list::field_item(marker, label, label_width, &value, list_area.width, style, None);
+            heights.push(h);
+            item
         })
         .collect();
 
     let offset = crate::widgets::scroll_list::render(frame, list_area, items, focused.then_some(state.selected));
-    regions.bushing_rows.extend(crate::mouse::list_row_regions(list_area, offset, rows.len()));
+    regions.bushing_rows.extend(crate::mouse::list_row_regions_var(list_area, offset, &heights));
 
     if let Some(hint_area) = hint_area {
         frame.render_widget(Paragraph::new(Line::from(Span::styled(hint, theme.disabled_style()))).wrap(Wrap { trim: true }), hint_area);
@@ -233,7 +280,10 @@ fn draw_readout(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingSta
     if let Some(bar) = bar_area {
         draw_action_bar(frame, bar, theme, state, interactive.then_some(&mut *regions));
     }
-    let (lines, tags) = readout_lines(theme, &state.model, state.show_numbers, state.last_applied.as_deref(), state.input_error.as_deref());
+    let stale = state.edge_check.as_ref().is_some_and(|run| super::edge_check::build_input(&state.model).as_ref() != Ok(&run.input));
+    let edge_section = super::edge_check::section_lines(theme, state.edge_check.as_ref(), stale, &state.model);
+    let advisories = super::edge_check::advisories(state.edge_check.as_ref(), stale);
+    let (lines, tags) = readout_lines(theme, &state.model, state.show_numbers, state.last_applied.as_deref(), state.input_error.as_deref(), edge_section, advisories);
     let clicks = crate::widgets::scroll_paragraph::render_interactive(frame, body_area, theme, lines, state.results_scroll, &tags);
     if interactive {
         regions.bushing_actions.extend(clicks);
@@ -260,6 +310,8 @@ fn draw_action_bar(frame: &mut Frame, area: Rect, theme: &Theme, state: &Bushing
         buttons.push((label.to_string(), BushingAction::OpenExplain, active(StatusTone::Warning)));
     }
     buttons.push((format!(" Numbers: {} ", if state.show_numbers { "on" } else { "off" }), BushingAction::ToggleNumbers, Style::default().add_modifier(Modifier::REVERSED)));
+    buttons.push((" Edge check ".to_string(), BushingAction::EdgeCheck, Style::default().add_modifier(Modifier::REVERSED)));
+    buttons.push((" +Plastic ".to_string(), BushingAction::EdgeCheckDeep, Style::default().add_modifier(Modifier::REVERSED)));
     buttons.push((" Export ".to_string(), BushingAction::Export, Style::default().add_modifier(Modifier::REVERSED)));
 
     let mut spans = Vec::new();
@@ -451,7 +503,15 @@ fn push_check<'a>(theme: &Theme, lines: &mut Vec<Line<'a>>, tags: &mut Vec<(usiz
 }
 
 /// The scrollable readout plus, for each clickable line, `(line index, action)`.
-fn readout_lines<'a>(theme: &'a Theme, model: &'a BushingModel, show_numbers: bool, last_applied: Option<&str>, input_error: Option<&str>) -> (Vec<Line<'a>>, Vec<(usize, BushingAction)>) {
+fn readout_lines<'a>(
+    theme: &'a Theme,
+    model: &'a BushingModel,
+    show_numbers: bool,
+    last_applied: Option<&str>,
+    input_error: Option<&str>,
+    edge_section: (Vec<Line<'a>>, Vec<(usize, super::edge_check::EdgeTopic)>),
+    advisories: Vec<super::edge_check::Advisory>,
+) -> (Vec<Line<'a>>, Vec<(usize, BushingAction)>) {
     let out = &model.output;
     let mut lines = Vec::new();
     let mut tags: Vec<(usize, BushingAction)> = Vec::new();
@@ -470,6 +530,9 @@ fn readout_lines<'a>(theme: &'a Theme, model: &'a BushingModel, show_numbers: bo
     // The Tolerance check has its own (clickable) line further down.
     for check in model.checks.iter().filter(|c| c.severity != Severity::Pass && c.kind != CheckKind::Tolerance) {
         push_check(theme, &mut lines, &mut tags, check.severity, fixes_for(check.kind), format!("  {}: {}", check.kind.label(), check.detail));
+    }
+    for adv in &advisories {
+        push_check(theme, &mut lines, &mut tags, Severity::Warn, BushingAction::EdgeInfo(adv.topic), format!("  {}", adv.text));
     }
     if let Some(err) = input_error {
         lines.push(Line::from(Span::styled(format!("\u{2717} {err}"), theme.status_style(StatusTone::Danger))));
@@ -567,7 +630,8 @@ fn readout_lines<'a>(theme: &'a Theme, model: &'a BushingModel, show_numbers: bo
     lines.push(Line::from(format!("  Retained (in-service) force {:.1} lbf", out.retained_install_force)));
     lines.push(Line::from(""));
 
-    lines.push(Line::from(Span::styled("Edge Distance", theme.title_style(false))));
+    tags.push((lines.len(), BushingAction::EdgeInfo(super::edge_check::EdgeTopic::Legacy)));
+    lines.push(Line::from(Span::styled("Edge Distance (legacy check; hover for details)", theme.title_style(false))));
     lines.push(Line::from(format!("  Actual e/D          {:.3}", out.ed_actual)));
     for (kind, label, min, margin) in [
         (CheckKind::EdgeSequencing, "Sequencing margin ", out.ed_min_sequence, out.sequence_margin),
@@ -598,6 +662,12 @@ fn readout_lines<'a>(theme: &'a Theme, model: &'a BushingModel, show_numbers: bo
             ]));
         }
     }
+
+    lines.push(Line::from(""));
+    let (edge_lines, edge_tags) = edge_section;
+    let base = lines.len();
+    lines.extend(edge_lines);
+    tags.extend(edge_tags.into_iter().map(|(i, t)| (base + i, BushingAction::EdgeInfo(t))));
 
     if show_numbers {
         lines.push(Line::from(""));
@@ -723,6 +793,111 @@ mod tests {
     #[test]
     fn draw_does_not_panic_at_normal_width() {
         draw_at(160, 40, &BushingState::default());
+    }
+
+    #[test]
+    fn the_edge_check_section_renders_before_and_after_a_run_at_any_width() {
+        for width in [40u16, 60, 100, 160] {
+            let mut state = BushingState::default();
+            draw_at(width, 40, &state); // "not run" hint
+            state.run_edge_check(false);
+            assert!(state.edge_check.is_some());
+            draw_at(width, 40, &state);
+            state.model.commit_number(model::NumberTarget::EdgeDist, 1.0); // now stale
+            draw_at(width, 40, &state);
+        }
+    }
+
+    #[test]
+    fn the_results_text_shows_the_cross_check_and_flags_it_stale_after_an_edit() {
+        let theme = Theme::default_palette();
+        let flat = |lines: &[Line]| lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect::<Vec<_>>().join("\n");
+        let mut state = BushingState::default();
+        assert!(flat(&super::super::edge_check::section_lines(&theme, None, false, &state.model).0).contains("Not run"));
+        state.run_edge_check(false);
+        let fresh = flat(&super::super::edge_check::section_lines(&theme, state.edge_check.as_ref(), false, &state.model).0);
+        assert!(fresh.contains("Superposition") && fresh.contains("Elastic FE") && fresh.contains("Allowables") && fresh.contains("Legacy (solver)"), "{fresh}");
+        assert!(!fresh.contains("inputs changed"));
+        let stale = flat(&super::super::edge_check::section_lines(&theme, state.edge_check.as_ref(), true, &state.model).0);
+        assert!(stale.contains("inputs changed"));
+    }
+
+    #[test]
+    fn hovering_or_pinning_a_check_name_shows_its_strengths_weaknesses_and_restrictions() {
+        use super::super::edge_check::EdgeTopic;
+        let mut state = BushingState::default();
+        state.run_edge_check(true);
+        assert!(!rendered_text(&state, 160, 50).contains("Weaknesses"), "no tooltip until hovered");
+        state.edge_hover = Some((EdgeTopic::PlasticFe, 100, 20));
+        let text = rendered_text(&state, 160, 50);
+        for needle in ["Elastic-plastic FE limit load", "Strengths", "Weaknesses", "Restrictions", "plane strain"] {
+            assert!(text.contains(needle), "hover tooltip lacks {needle:?}");
+        }
+        state.edge_hover = None;
+        state.perform(BushingAction::EdgeInfo(EdgeTopic::Legacy));
+        assert!(rendered_text(&state, 160, 50).contains("Legacy edge-distance check"));
+        state.perform(BushingAction::EdgeInfo(EdgeTopic::Legacy));
+        assert!(state.edge_info_pinned.is_none(), "clicking again unpins");
+    }
+
+    #[test]
+    fn every_topic_tooltip_has_the_four_sections_and_fits_a_small_pane() {
+        use super::super::edge_check::{tip, EdgeTopic};
+        for t in [EdgeTopic::Legacy, EdgeTopic::StressSuperposition, EdgeTopic::ElasticFe, EdgeTopic::Allowables, EdgeTopic::PlasticFe] {
+            let headings: Vec<&str> = tip(t).sections.iter().map(|(h, _)| *h).collect();
+            assert_eq!(headings, ["What it does", "Strengths", "Weaknesses", "Restrictions"], "{t:?}");
+            let mut state = BushingState::default();
+            state.edge_info_pinned = Some(t);
+            for (w, h) in [(30u16, 12u16), (60, 20), (160, 50)] {
+                let _ = rendered_text(&state, w, h); // must not panic at any size
+            }
+        }
+    }
+
+    #[test]
+    fn a_long_material_name_wraps_instead_of_widening_the_inputs_pane() {
+        let base = BushingState::default();
+        let mut long = BushingState::default();
+        let idx = long.model.material_catalog().iter().position(|m| m.name.len() > 55).expect("handbook has long names");
+        long.model.housing_material_index = idx;
+        long.model.recompute();
+        assert_eq!(fields_required_width(&long), fields_required_width(&base), "pane width must not depend on the longest material name");
+        let text = rendered_text(&long, 150, 45);
+        let name = long.model.housing_material().name;
+        let first_word = name.split(' ').next().unwrap();
+        assert!(text.contains(first_word), "the name is shown (wrapped):\n{text}");
+        // The label sits on its own row with the value on the rows below it.
+        let rows: Vec<&str> = text.lines().collect();
+        let i = rows.iter().position(|r| r.contains("Housing Material")).expect("label row");
+        assert!(!rows[i].contains(first_word), "value moved off the label row");
+        assert!(rows[i + 1].contains(first_word), "value starts on the next row");
+    }
+
+    #[test]
+    fn clicking_the_wrapped_second_row_of_a_field_still_selects_that_field() {
+        let mut state = BushingState::default();
+        let idx = state.model.material_catalog().iter().position(|m| m.name.len() > 55).unwrap();
+        state.model.housing_material_index = idx;
+        state.model.recompute();
+        let backend = TestBackend::new(150, 45);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut regions = crate::mouse::MouseRegions::default();
+        terminal.draw(|f| draw(f, Rect::new(0, 0, 150, 45), &Theme::default_palette(), &state, true, &mut regions)).unwrap();
+        let rows = model::field_rows(&state.model);
+        let target = rows.iter().position(|r| *r == FieldRow::OpenHousingMaterialPicker).unwrap();
+        let (rect, _) = regions.bushing_rows.iter().find(|(_, i)| *i == target).unwrap();
+        assert!(rect.height >= 2, "the wrapped row owns every row it occupies: {rect:?}");
+        assert_eq!(crate::mouse::hit(&regions.bushing_rows, rect.x + 3, rect.y + rect.height - 1), Some(target));
+    }
+
+    #[test]
+    fn the_action_bar_offers_an_edge_check_button() {
+        let backend = TestBackend::new(160, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut regions = crate::mouse::MouseRegions::default();
+        let state = BushingState::default();
+        terminal.draw(|f| draw(f, Rect::new(0, 0, 160, 40), &Theme::default_palette(), &state, true, &mut regions)).unwrap();
+        assert!(regions.bushing_actions.iter().any(|(_, a)| *a == BushingAction::EdgeCheck));
     }
 
     /// Regression test for the hint-truncation bug: the bottom Hint panel

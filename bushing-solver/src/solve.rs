@@ -218,6 +218,11 @@ pub struct BushingOutput {
     pub retained_install_force: f64,
 
     pub ed_actual: f64,
+    /// Effective sequencing thickness used by the edge-distance strength
+    /// check (housing length for straight/flanged bushings, bearing-profile
+    /// weighted for countersinks) - the bearing length the cross-check
+    /// models in `edge-check` use as plate thickness.
+    pub t_eff_seq: f64,
     pub ed_min_sequence: f64,
     pub ed_min_strength: f64,
     pub sequence_margin: f64,
@@ -801,6 +806,7 @@ pub fn compute(input: &BushingInputs) -> BushingOutput {
         install_force,
         retained_install_force,
         ed_actual,
+        t_eff_seq,
         ed_min_sequence,
         ed_min_strength,
         sequence_margin,

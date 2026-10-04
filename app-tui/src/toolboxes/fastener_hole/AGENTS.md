@@ -48,6 +48,7 @@ Fields here are toleranced: `NumberPart` selects nominal/plus/minus. Only input 
 ### Always
 - Extend the matching `domain/` module's brute-force/round-trip tests with any formula change.
 - Render the readout through `widgets/scroll_paragraph.rs`.
+- Show every calculated toleranced value as `nominal -minus/+plus` via `model::format_{linear,angle,area}_band` (one line, no separate Min/Max/-Tol/+Tol lines).
 ### Never
 - Add `ratatui`/`crossterm` imports under `domain/`.
 - Put calculated values in `field_rows`.

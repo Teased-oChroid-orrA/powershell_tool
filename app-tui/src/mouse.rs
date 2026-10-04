@@ -119,9 +119,34 @@ pub fn list_row_regions(area: Rect, offset: usize, len: usize) -> Vec<(Rect, usi
         .collect()
 }
 
+/// Like [`list_row_regions`] for items of differing heights (`heights[i]`
+/// rows each) - a wrapped field row is two rows tall. `offset` is the index
+/// of the first visible item, as returned by `scroll_list::render`.
+pub fn list_row_regions_var(area: Rect, offset: usize, heights: &[u16]) -> Vec<(Rect, usize)> {
+    let mut out = Vec::new();
+    let mut y = area.y;
+    let bottom = area.y + area.height;
+    for (i, &h) in heights.iter().enumerate().skip(offset) {
+        if y >= bottom || area.width == 0 {
+            break;
+        }
+        let height = h.min(bottom - y);
+        out.push((Rect { x: area.x, y, width: area.width, height }, i));
+        y += h;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn variable_height_regions_stack_by_each_items_height_and_clip_at_the_bottom() {
+        let r = list_row_regions_var(Rect::new(0, 10, 20, 5), 1, &[1, 2, 1, 2, 1]);
+        assert_eq!(r.iter().map(|(rect, i)| (rect.y, rect.height, *i)).collect::<Vec<_>>(), vec![(10, 2, 1), (12, 1, 2), (13, 2, 3)]);
+        assert!(list_row_regions_var(Rect::new(0, 0, 0, 5), 0, &[1]).is_empty());
+    }
 
     #[test]
     fn hit_finds_the_containing_region() {

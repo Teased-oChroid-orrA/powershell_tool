@@ -89,7 +89,8 @@ fn fields_required_width(state: &PressureVesselState) -> u16 {
                 state.edit_buffer.chars().count() + 1
             } else {
                 display_value(&state.model, *row).chars().count()
-            };
+            }
+            .min(crate::widgets::scroll_list::VALUE_CAP);
             let hint_len = row_hint(&state.model, *row).map(|h| h.chars().count() + 4).unwrap_or(0); // "  ⚠ " + text
             value_len + hint_len
         })
@@ -133,32 +134,33 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, state: &PressureVes
 
     let label_width = compute_label_width(&rows) as usize;
 
+    let mut heights: Vec<u16> = Vec::with_capacity(rows.len());
     let items: Vec<ListItem> = rows
         .iter()
         .enumerate()
         .map(|(i, row)| {
             if let FieldRow::Header(text) = row {
+                heights.push(1);
                 return ListItem::new(Line::from(Span::styled(format!("-- {text} --"), theme.title_style(false).add_modifier(Modifier::BOLD))));
             }
             let selected = focused && i == state.selected;
             let value = if selected && state.editing {
-                format!("{}_", state.edit_buffer)
+                state.edit_buffer.with_cursor()
             } else {
                 display_value(&state.model, *row)
             };
             let marker = if selected { "> " } else { "  " };
             let label = model::row_label(*row);
             let style = if selected { theme.selected_row_style() } else { Style::default() };
-            let mut spans = vec![Span::styled(format!("{marker}{label:<label_width$}{value}"), style)];
-            if let Some(hint) = row_hint(&state.model, *row) {
-                spans.push(hint_span(&hint, theme));
-            }
-            ListItem::new(Line::from(spans))
+            let extra = row_hint(&state.model, *row).map(|hint| hint_span(&hint, theme));
+            let (item, h) = crate::widgets::scroll_list::field_item(marker, label, label_width, &value, list_area.width, style, extra);
+            heights.push(h);
+            item
         })
         .collect();
 
     let offset = crate::widgets::scroll_list::render(frame, list_area, items, focused.then_some(state.selected));
-    regions.pressure_vessel_rows.extend(crate::mouse::list_row_regions(list_area, offset, rows.len()));
+    regions.pressure_vessel_rows.extend(crate::mouse::list_row_regions_var(list_area, offset, &heights));
 
     if let Some(hint_area) = hint_area {
         frame.render_widget(Paragraph::new(Line::from(Span::styled(hint, theme.disabled_style()))).wrap(Wrap { trim: true }), hint_area);

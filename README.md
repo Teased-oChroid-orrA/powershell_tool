@@ -7,18 +7,16 @@ entries, including nested zips), `.rtf`, `.pdf`, and dozens of other
 code/config/data extensions - producing a live-updating HTML report plus
 optional CSV/JSON/JSONL export.
 
-The GUI (`app/`) is a multi-tool dashboard shell ("Toolbench") - a left
-rail switches between tools, and this search feature is the first,
-fully-functional one inside it. A few more tool slots exist in the rail
-today as "Coming soon" placeholders (Duplicate Finder, Batch Rename, Log
-Analyzer) with no logic behind them yet - see
-[`docs/toolbench-status.md`](docs/toolbench-status.md).
+The GUI (`app-tui/`, a ratatui/crossterm terminal UI) is a multi-tool
+"GS Engineering Toolbench": Search is the first tool, alongside Fastener
+Holes, Bushing Workbench, Pressure Vessel Analyzer and Preload Analysis.
+Placeholders remain for Dupes, Rename and Logs.
 
 ## Project status: mid-migration, Rust is the active implementation
 
-This project is being migrated from **C#/WinUI 3** to **Rust/Dioxus**.
-The Rust stack (`native-search/`, `search-core/`, `app/`, `cli/`) is
-where active development happens; the original C#/WinUI app (`src/`) and
+This project is being migrated from **C#/WinUI 3** to **Rust**.
+The Rust stack (`native-search/`, `search-core/`, `app-tui/`, `cli/` and
+the solver crates) is where active development happens; the original C#/WinUI app (`src/`) and
 the PowerShell tool it was itself migrated from (`powershell/`) are kept
 as working references only - not built on, not deleted. See
 [`docs/rust-rewrite-status.md`](docs/rust-rewrite-status.md) for exactly
@@ -26,6 +24,9 @@ why (short version: WinUI 3 cannot be built, run, or debugged on a
 non-Windows machine at all, turning every UI iteration into a
 tens-of-minutes-per-attempt Windows CI round-trip) and what's done vs.
 still open.
+
+The earlier Rust GUI heads (`app/` on dioxus-native and `app-egui/`) were
+deleted once `app-tui/` reached parity on what it implements.
 
 The Rust app is **functionally complete** - full parity with the C#
 app's settings/matching/export behavior, plus features the C# app never
@@ -38,21 +39,23 @@ export for large result sets, and more - see "Features" below).
 ```
 native-search/    Tantivy-backed indexing/search engine ("Fast re-search")
 search-core/      Plain Rust library - all business logic, zero GUI dependency
-app/              Dioxus desktop GUI (dioxus-native/Blitz - no WebView2 dependency)
+app-tui/          ratatui terminal GUI - the sole GUI head (Toolbench)
 cli/              Headless CLI entry point, same search-core engine
+bushing-solver/, fastened-joint-solver/, pressure-vessel-solver/,
+engineering-math/, mechanics-core/   Engineering solvers and shared math
 src/              C#/WinUI 3 app - reference only, not actively developed
 powershell/       The original PowerShell tool - reference only
 ```
 
 `search-core` is a plain Rust library with no GUI dependency at all - it
 builds and its full test suite runs on any platform's toolchain
-(including this repo's own CI, on Linux, for speed). `app` and `cli` are
-both thin heads built on top of it; all real logic lives in
+(including this repo's own CI, on Linux, for speed). `app-tui` and `cli`
+are both thin heads built on top of it; all real logic lives in
 `search-core`, not duplicated in either head. See
-[`CLAUDE.md`](CLAUDE.md) for the full per-file architecture map and the
-reasoning behind each major design decision (why `fancy-regex` not
+[`CLAUDE.md`](CLAUDE.md) for the project map and the `AGENTS.md` file in
+each crate for its contracts and pitfalls (why `fancy-regex` not
 `regex`, why hand-rolled OOXML/PDF extraction instead of a parser crate,
-why `dioxus-native` instead of `dioxus-desktop`, and more), and
+and more), and
 [`docs/architecture.md`](docs/architecture.md) for the original
 PowerShell → C# migration map.
 
@@ -78,9 +81,11 @@ PowerShell → C# migration map.
   extensions - the full default list plus a type-to-filter tick-list
   picker and custom-extension add path
 - **Fast re-search**: an optional persistent Tantivy index (per searched
-  folder, auto-excluded from future scans, skip-reindex-if-unchanged,
-  kept current by a filesystem watcher) that narrows full scans via a
-  trigram candidate filter - always a safe superset pre-filter, never a
+  folder, auto-excluded from future scans, skip-reindex-if-unchanged
+  by modified time + size, brought up to date by an explicit build/update
+  - there is no filesystem watcher; a search always re-checks the folder
+  and includes any file changed since the build) that narrows full scans
+  via a trigram candidate filter - always a safe superset pre-filter, never a
   replacement for the exact literal/regex line scanner, which stays the
   sole authority on what's actually a match
 - **Live progress**: per-file in-flight status (not just an aggregate
@@ -108,15 +113,13 @@ measured performance numbers - not fabricated ones.
 ## Building and running (Rust stack)
 
 Requires the Rust toolchain (`rustup`) - nothing else. Works on macOS,
-Linux, or Windows; the GUI (`dioxus-native`/Blitz) has no
-Windows-only rendering dependency, so the full app - not just
-`search-core` - is developable and runnable on any platform.
+Linux, or Windows; the GUI is a terminal UI with no windowing system, so
+the full app - not just `search-core` - is developable and runnable on
+any platform.
 
 ```sh
 # Run the GUI locally (any platform)
-cargo run -p app
-# or, for hot-reload during UI development, from app/:
-cd app && dx serve
+cargo run -p app-tui
 
 # Run the headless CLI
 cargo run -p search-cli -- --help
@@ -125,17 +128,18 @@ cargo run -p search-cli -- /path/to/folder --filter foo --filter bar
 cargo run -p search-cli
 
 # Build a release binary
-cargo build --release -p app          # target/release/app(.exe)
+cargo build --release -p app-tui      # target/release/app-tui(.exe)
 cargo build --release -p search-cli   # target/release/search-cli(.exe)
 ```
 
 Windows-specific release builds cross-compile the same way:
-`cargo build --release -p app --target x86_64-pc-windows-msvc` (this is
+`cargo build --release -p app-tui --target x86_64-pc-windows-msvc` (this is
 exactly what CI does - see "CI" below).
 
 ## Running the tests
 
 ```sh
+cargo test --workspace      # everything (what CI runs)
 cargo test -p search-core   # zero GUI dependency - runs anywhere
 cargo test -p search-cli    # also GUI-free
 ```
@@ -146,21 +150,19 @@ invalid-regex-filter error reporting, real DOCX/PPTX/XLSX/ZIP/PDF
 fixture parity tests, the incremental cache lifecycle, CSV
 formula-injection neutralization, the Windows-1252 encoding path, the
 fast-search index's auto-exclude/skip-if-unchanged policy, and full
-end-to-end orchestrator runs. The `app` crate (the actual rendered
-window) needs a real run to verify beyond type-checking - `cargo run -p
-app` locally is the fast feedback loop for that, on any platform.
+end-to-end orchestrator runs. The `app-tui` crate's rendering needs a
+real terminal run to verify beyond its `TestBackend` tests - `cargo run
+-p app-tui` locally (or in `tmux`) is the fast feedback loop for that.
 
 ## CI
 
-`.github/workflows/rust-build.yml` runs `search-core`'s and `search-cli`'s
-test suites (Linux, for speed), then builds `app` and `search-cli` for
-`x86_64-pc-windows-msvc` on a Windows runner and uploads both as
-artifacts - `app`'s published exe is also scanned to confirm it doesn't
-accidentally link `WebView2Loader.dll` (a real regression guard: this
-app deliberately avoids any WebView2 dependency, see `CLAUDE.md`).
-`.github/workflows/build.yml` is the separate CI gate for the C#/WinUI
-reference app, only relevant if that app is being deliberately touched
-during the migration.
+`.github/workflows/ci.yml` runs on every push to `main` and on pull
+requests: `cargo test --workspace` on Linux. `.github/workflows/app-tui-build.yml`
+(manual, or on a `v*` tag) builds `app-tui` for `x86_64-pc-windows-msvc`
+on a Windows runner and uploads the exe. `.github/workflows/rust-build.yml`
+(manual) does the same for `search-cli`. `.github/workflows/build.yml` is
+the separate manual CI gate for the C#/WinUI reference app, only
+relevant if that app is being deliberately touched during the migration.
 
 ## Target environment
 
@@ -177,9 +179,9 @@ above - `rust-rewrite-status.md` (migration status), `architecture.md`
 (the original PowerShell → C# map), `benchmarking.md` (real, measured
 performance numbers with caveats), `search-semantics.md` (the formal
 matching contract), `deployment-rust.md` (build/publish/clean-machine
-verification for `app`/`cli`), `deployment.md`/`offline-build.md`
-(the same for the C# reference app), `toolbench-status.md` (the
-multi-tool dashboard shell `app/` is becoming), and a series of
+verification for the Rust heads), `deployment.md`/`offline-build.md`
+(the same for the C# reference app), `toolbench-status.md` (history of
+the multi-tool dashboard shell - the old `app/` head's view; obsolete), and a series of
 `issue-*-status.md`/`issue-6-phase-*.md` docs recording the
 evidence-driven investigation and decisions behind specific features and
 rejected optimizations - read those before assuming something wasn't

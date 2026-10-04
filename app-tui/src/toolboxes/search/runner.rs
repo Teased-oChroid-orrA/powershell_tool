@@ -16,6 +16,7 @@ use search_core::orchestrator::OrchestratorError;
 use crate::app::AppEvent;
 use crate::debug_log::log;
 
+use super::diagnostics::{IndexHealth, SearchDiagnostics};
 use super::indexing::{self, IndexSettings};
 
 /// Runs a (possibly multi-root) search one root at a time, so a slow or
@@ -40,7 +41,9 @@ pub async fn run_search(
     index: IndexSettings,
 ) {
     log("SEARCH", format!("run start: roots={} filters={} regex={} use_index={}", roots.len(), base_settings.filters.len(), base_settings.use_regex, index.enabled));
+    let run_started = std::time::Instant::now();
     let mut accumulated = SearchRunResult::default();
+    let mut diagnostics = SearchDiagnostics { roots: roots.len(), ..Default::default() };
     let mut cancelled = false;
 
     for root in roots {
@@ -52,7 +55,8 @@ pub async fn run_search(
         let mut root_settings = base_settings.clone();
         root_settings.search_path = root.clone();
 
-        let candidates = narrow_via_index(&tx, index, &root, &root_settings, &cancellation).await;
+        let candidates = narrow_via_index(&tx, index, &root, &root_settings, &cancellation, &mut diagnostics).await;
+        let verify_started = std::time::Instant::now();
 
         let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
         let run_cancellation = cancellation.clone();
@@ -71,6 +75,7 @@ pub async fn run_search(
 
         match handle.await {
             Ok(Ok(run_result)) => {
+                diagnostics.verify_ms += verify_started.elapsed().as_millis() as u64;
                 super::model::merge_run_result(&mut accumulated, run_result);
             }
             Ok(Err(OrchestratorError::Cancelled)) => {
@@ -91,6 +96,15 @@ pub async fn run_search(
         }
     }
 
+    if !cancelled {
+        diagnostics.total_ms = run_started.elapsed().as_millis() as u64;
+        diagnostics.verified = accumulated.summary.files_searched;
+        diagnostics.cache_reused = accumulated.summary.cache_reused;
+        diagnostics.matched_files =
+            accumulated.file_results.iter().filter(|r| r.status == search_core::models::FileSearchStatus::Hit).count();
+        log("SEARCH", format!("diagnostics: {}", diagnostics.lines(None).join(" | ")));
+        let _ = tx.send(AppEvent::SearchDiagnostics(Box::new(diagnostics)));
+    }
     let outcome = if cancelled { Err(OrchestratorError::Cancelled) } else { Ok(accumulated) };
     let _ = tx.send(AppEvent::SearchFinished(outcome));
 }
@@ -108,7 +122,8 @@ pub async fn run_search(
 ///   `AppEvent::IndexStale` asks the UI to offer an update once the search
 ///   finishes - the search itself never waits for it and is still exact.
 ///
-/// Reports how the index was used via `AppEvent::IndexNarrowed`. Any failure
+/// Reports how the index was used via `AppEvent::IndexNarrowed`, and records
+/// the numbers (or the reason for a full scan) in `diagnostics`. Any failure
 /// degrades to a full scan, never to a wrong or empty result.
 async fn narrow_via_index(
     tx: &mpsc::UnboundedSender<AppEvent>,
@@ -116,8 +131,10 @@ async fn narrow_via_index(
     root: &str,
     settings: &SearchSettings,
     cancellation: &CancellationToken,
+    diagnostics: &mut SearchDiagnostics,
 ) -> Option<Vec<String>> {
     if !index.enabled {
+        diagnostics.full_scan_reason = Some("fast re-search index is off".to_string());
         return None;
     }
     let note = |text: String| {
@@ -136,6 +153,7 @@ async fn narrow_via_index(
             return None;
         }
         if !built {
+            diagnostics.full_scan_reason = Some("index could not be built".to_string());
             note(format!("Index could not be built - full scan (details in the debug log) [{}]", index_dir.display()));
             return None;
         }
@@ -143,6 +161,7 @@ async fn narrow_via_index(
         engine = open_engine(&index_dir).await.ok();
     }
     let Some(engine) = engine else {
+        diagnostics.full_scan_reason = Some("index unreadable".to_string());
         note(format!("Index unreadable - full scan; run Build / update from the command palette (Ctrl+P) [{}]", index_dir.display()));
         return None;
     };
@@ -153,24 +172,34 @@ async fn narrow_via_index(
                 let _ = tx.send(AppEvent::IndexStale { new_or_changed: out.needs_update, removed: out.removed });
             }
             match &out.candidates {
-                Some(c) => note(format!(
-                    "Index narrowed {} → {} file(s) ({} from index, {} new/changed since build, {} docs indexed)",
-                    out.scannable,
-                    c.len(),
-                    out.from_index,
-                    out.stale_or_new,
-                    out.index_docs
-                )),
-                None => note("Index cannot narrow this query (short/regex filter) - full scan".to_string()),
+                Some(c) => {
+                    diagnostics.record_narrowed(&out, c.len());
+                    let dir = index_dir.clone();
+                    let snapshot = out.clone();
+                    diagnostics.health = tokio::task::spawn_blocking(move || IndexHealth::read(&dir, &snapshot)).await.ok();
+                    note(narrowed_note(&out, c.len()));
+                }
+                None => {
+                    diagnostics.full_scan_reason = Some("index cannot narrow this query".to_string());
+                    note("Index cannot narrow this query (short/regex filter) - full scan".to_string());
+                }
             }
             out.candidates
         }
         Err(e) => {
             log("ERROR", format!("search: narrowing failed: {e:?}"));
+            diagnostics.full_scan_reason = Some("index query failed".to_string());
             note(format!("Index query failed - full scan ({e})"));
             None
         }
     }
+}
+
+/// Short status-row note for an index-narrowed search; the full numbers
+/// (corpus, timings, index health) are in the Search summary box.
+fn narrowed_note(out: &search_core::native_index::NarrowOutcome, candidates: usize) -> String {
+    let reduction = if out.scannable == 0 { 0.0 } else { 100.0 * (1.0 - candidates as f64 / out.scannable as f64) };
+    format!("Index narrowed {} → {candidates} ({reduction:.1}% fewer)", out.scannable)
 }
 
 async fn open_engine(index_dir: &Path) -> Result<native_search::engine::NativeSearchEngine, ()> {
@@ -234,6 +263,15 @@ mod tests {
     use super::*;
     use std::fs;
     use std::time::Duration;
+
+    #[test]
+    fn narrowed_note_reports_the_reduction_and_survives_an_empty_scope() {
+        let out = search_core::native_index::NarrowOutcome { scannable: 1000, ..Default::default() };
+        let note = narrowed_note(&out, 10);
+        assert_eq!(note, "Index narrowed 1000 → 10 (99.0% fewer)");
+        assert!(!note.contains(" ["), "the caller strips everything after ' [' before logging: {note}");
+        assert!(narrowed_note(&Default::default(), 0).contains("0.0% fewer"), "empty scope must not divide by zero");
+    }
 
     use crate::toolboxes::search::model::{build_settings, SearchToolConfig};
 
@@ -397,6 +435,69 @@ mod tests {
         assert!(events.iter().any(|e| matches!(e, AppEvent::IndexNarrowed(n) if n.contains("narrowed 2 → 1"))), "{:?}", events.iter().filter_map(|e| match e { AppEvent::IndexNarrowed(n) => Some(n.clone()), _ => None }).collect::<Vec<_>>());
         assert!(!events.iter().any(|e| matches!(e, AppEvent::IndexStale { .. })), "a just-built index is not stale");
         assert!(matches!(events.last(), Some(AppEvent::SearchFinished(Ok(_)))));
+    }
+
+    fn diagnostics_of(events: &[AppEvent]) -> super::super::diagnostics::SearchDiagnostics {
+        let found = events.iter().find_map(|e| match e {
+            AppEvent::SearchDiagnostics(d) => Some((**d).clone()),
+            _ => None,
+        });
+        found.expect("a successful run must report diagnostics")
+    }
+
+    #[tokio::test]
+    async fn an_indexed_search_reports_corpus_candidates_matches_and_index_health() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "needle here\n").unwrap();
+        fs::write(dir.path().join("b.txt"), "something else\n").unwrap();
+        fs::write(dir.path().join("c.txt"), "also unrelated\n").unwrap();
+        let mut config = SearchToolConfig { search_path: dir.path().to_string_lossy().into_owned(), ..Default::default() };
+        config.filters_text = "needle".to_string();
+        config.index.enabled = true;
+        let settings = build_settings(&config);
+        let index_dir = indexing::index_directory(config.index.location, &config.search_path, "");
+        let (itx, _irx) = mpsc::unbounded_channel();
+        assert!(indexing::build_or_rebuild_index(itx, settings.clone(), index_dir, CancellationToken::new()).await);
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        run_search(tx, CancellationToken::new(), vec![config.search_path.clone()], settings, config.index).await;
+        let events = drain_progress(&mut rx);
+        let d = diagnostics_of(&events);
+        assert_eq!((d.roots, d.roots_narrowed, d.corpus, d.candidates), (1, 1, 3, 1));
+        assert_eq!((d.verified, d.matched_files), (1, 1));
+        assert!(d.total_ms >= d.verify_ms);
+        let health = d.health.expect("an index was used, so its health is reported");
+        assert_eq!((health.docs, health.new_or_changed, health.removed), (3, 0, 0));
+        assert!(health.segments >= 1 && health.size_bytes > 0 && health.updated_ago.is_some());
+        let diag_pos = events.iter().position(|e| matches!(e, AppEvent::SearchDiagnostics(_))).unwrap();
+        let fin_pos = events.iter().position(|e| matches!(e, AppEvent::SearchFinished(_))).unwrap();
+        assert!(diag_pos < fin_pos, "diagnostics must arrive before the run is marked finished");
+    }
+
+    #[tokio::test]
+    async fn a_full_scan_reports_why_the_index_was_not_used() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "needle\n").unwrap();
+        let mut config = SearchToolConfig { search_path: dir.path().to_string_lossy().into_owned(), ..Default::default() };
+        config.filters_text = "needle".to_string();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        run_search(tx, CancellationToken::new(), vec![config.search_path.clone()], build_settings(&config), config.index).await;
+        let d = diagnostics_of(&drain_progress(&mut rx));
+        assert_eq!((d.roots_narrowed, d.verified, d.matched_files), (0, 1, 1));
+        assert_eq!(d.full_scan_reason.as_deref(), Some("fast re-search index is off"));
+        assert!(d.health.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_run_reports_no_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "needle\n").unwrap();
+        let config = SearchToolConfig { search_path: dir.path().to_string_lossy().into_owned(), filters_text: "needle".into(), ..Default::default() };
+        let token = CancellationToken::new();
+        token.cancel();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        run_search(tx, token, vec![config.search_path.clone()], build_settings(&config), config.index).await;
+        assert!(!drain_progress(&mut rx).iter().any(|e| matches!(e, AppEvent::SearchDiagnostics(_))));
     }
 
     #[tokio::test]

@@ -1,0 +1,20 @@
+[package]
+name = "edge-check"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Independent cross-checks of the bushing edge-distance requirement:
+# an elastic stress-superposition model, a plane-stress FE model and a
+# test-allowable (MMPDS-style) check, all behind one `EdgeModel` trait so a
+# model can be added or removed by touching only `models::default_models`.
+# Deliberately NOT a dependency of `bushing-solver`: `solve::compute` is
+# unchanged and this crate is a pure function of its inputs, so deleting
+# the crate (and the one UI hook that calls it) removes the feature.
+#
+# Zero external dependencies: the FE solver (banded Cholesky) and the
+# least-squares solver are small and local, and the RNG is a fixed-seed
+# xorshift so Monte-Carlo results are reproducible.
+[dependencies]
+mechanics-core = { path = "../mechanics-core" }

@@ -30,6 +30,13 @@ pub fn draw(
     tick: u64,
     regions: &mut MouseRegions,
 ) {
+    let summary = finished_summary(state);
+    // Room for the whole summary only when the terminal is tall enough to keep
+    // a usable results list; otherwise the box stays 2 lines and shows the first two.
+    let ticker_height = match &summary {
+        Some(lines) if area.height >= 26 => lines.len() as u16 + 2,
+        _ => 4,
+    };
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -38,7 +45,7 @@ pub fn draw(
             Constraint::Length(1), // run/cancel hint + status
             Constraint::Length(2), // progress bar + live stats
             Constraint::Length(2), // fast re-search index status (wraps; quiet when idle/disabled)
-            Constraint::Length(4), // in-flight ticker
+            Constraint::Length(ticker_height), // in-flight ticker, or the finished-run summary
             Constraint::Min(3),    // results + preview
         ])
         .split(area);
@@ -51,7 +58,10 @@ pub fn draw(
     draw_run_hint(frame, rows[2], theme, state, focused_pane == Some(PANE_FILTERS));
     draw_progress(frame, rows[3], theme, state, tick);
     index_view::render_status_line(frame, rows[4], theme, tick, &state.index_run);
-    draw_in_flight(frame, rows[5], theme, state);
+    match summary {
+        Some(lines) => draw_summary(frame, rows[5], theme, &lines),
+        None => draw_in_flight(frame, rows[5], theme, state),
+    }
     draw_results(frame, rows[6], theme, state, focused_pane == Some(PANE_RESULTS), regions);
 }
 
@@ -143,6 +153,30 @@ fn draw_progress(frame: &mut Frame, area: Rect, theme: &Theme, state: &SearchToo
         }
     };
     progress_bar::render(frame, area, theme, &view);
+}
+
+/// The post-search diagnostics, once a run has finished and nothing else (a
+/// running search, an index build) owns the ticker box.
+fn finished_summary(state: &SearchToolState) -> Option<Vec<String>> {
+    if state.run.is_running || state.index_run.is_building {
+        return None;
+    }
+    state.run.diagnostics.as_ref().map(|d| d.lines(state.index_run.last_build_failed))
+}
+
+fn draw_summary(frame: &mut Frame, area: Rect, theme: &Theme, lines: &[String]) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(theme.border_style(false))
+        .title(" Search summary ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height == 0 {
+        return;
+    }
+    let text: Vec<Line> = lines.iter().map(|l| Line::from(l.as_str())).collect();
+    frame.render_widget(Paragraph::new(text).wrap(ratatui::widgets::Wrap { trim: false }), inner);
 }
 
 fn draw_in_flight(frame: &mut Frame, area: Rect, theme: &Theme, state: &SearchToolState) {

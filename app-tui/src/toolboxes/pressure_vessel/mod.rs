@@ -41,7 +41,7 @@ pub struct PressureVesselState {
     pub model: PressureVesselModel,
     pub selected: usize,
     pub editing: bool,
-    pub edit_buffer: String,
+    pub edit_buffer: crate::widgets::number_edit::EditBuffer,
     pub material_picker: MaterialPickerState,
     /// `d` toggles a text-only panel (Lamé constants + per-surface stress
     /// breakdown) appended below the Results readout - see this module's
@@ -59,7 +59,7 @@ impl Default for PressureVesselState {
             model: PressureVesselModel::default(),
             selected: 0,
             editing: false,
-            edit_buffer: String::new(),
+            edit_buffer: Default::default(),
             material_picker: MaterialPickerState::default(),
             show_numbers: false,
             results_scroll: 0,
@@ -149,7 +149,7 @@ pub fn handle_key(state: &mut PressureVesselState, key: KeyEvent) -> (bool, Vec<
     if let Some(c) = crate::widgets::number_edit::number_char(&key) {
         if matches!(model::field_rows().get(state.selected).copied(), Some(FieldRow::Number(_))) {
             state.editing = true;
-            state.edit_buffer = c.to_string();
+            state.edit_buffer.set(c.to_string());
             return (true, Vec::new());
         }
     }
@@ -170,7 +170,7 @@ pub fn handle_key(state: &mut PressureVesselState, key: KeyEvent) -> (bool, Vec<
         KeyCode::Enter => match model::field_rows().get(state.selected).copied() {
             Some(FieldRow::Number(target)) => {
                 state.editing = true;
-                state.edit_buffer = model::format_for_edit(state.model.number_value(target));
+                state.edit_buffer.set(model::format_for_edit(state.model.number_value(target)));
                 (true, Vec::new())
             }
             Some(FieldRow::ToggleEndCondition) | Some(FieldRow::OpenMaterialPicker) => {
@@ -265,13 +265,25 @@ mod tests {
     }
 
     #[test]
-    fn delete_clears_the_edit_buffer_while_editing() {
+    fn arrow_keys_move_the_cursor_and_delete_removes_one_character_while_editing() {
         let mut state = PressureVesselState::default();
         state.selected = model::field_rows().iter().position(|r| *r == FieldRow::Number(model::NumberTarget::OuterDiameter)).unwrap();
         handle_key(&mut state, key(KeyCode::Enter));
-        assert!(!state.edit_buffer.is_empty());
+        handle_key(&mut state, key(KeyCode::Char('8')));
+        let before = state.edit_buffer.to_string();
+        assert!(before.chars().count() >= 2, "prefilled value needs two characters for this test: {before}");
+        // Home + Delete removes only the first character (not the whole buffer).
+        handle_key(&mut state, key(KeyCode::Home));
         handle_key(&mut state, key(KeyCode::Delete));
-        assert_eq!(state.edit_buffer, "");
+        assert_eq!(state.edit_buffer.to_string(), before.chars().skip(1).collect::<String>());
+        // Right then Backspace removes the new first character.
+        handle_key(&mut state, key(KeyCode::Right));
+        handle_key(&mut state, key(KeyCode::Backspace));
+        assert_eq!(state.edit_buffer.to_string(), before.chars().skip(2).collect::<String>());
+        // Left then typing inserts at the start, not the end.
+        handle_key(&mut state, key(KeyCode::Left));
+        handle_key(&mut state, key(KeyCode::Char('7')));
+        assert!(state.edit_buffer.starts_with('7'));
         assert!(state.editing);
     }
 

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["native-search", "search-core", "app-tui", "cli", "bushing-solver", "engineering-math", "mechanics-core", "pressure-vessel-solver", "fastened-joint-solver"]
+members = ["native-search", "search-core", "app-tui", "cli", "bushing-solver", "engineering-math", "mechanics-core", "pressure-vessel-solver", "fastened-joint-solver", "edge-check"]
 
 # Moved here from native-search/Cargo.toml: Cargo ignores [profile.*]
 # sections in non-root workspace members. panic="unwind" (not "abort") is
@@ -23,3 +23,9 @@ panic = "unwind"
 # separate crate rather than a `[[bin]]` in search-core itself so
 # search-core's own [dependencies] stay exactly what the library needs (no
 # clap/arg-parsing pulled into every consumer, including app-tui/).
+
+# The edge-distance cross-check is numerically heavy (complex-variable
+# least squares, an FE solve, Monte Carlo) and runs on a key press from the
+# TUI: keep it fast even in unoptimised dev builds.
+[profile.dev.package.edge-check]
+opt-level = 3

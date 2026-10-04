@@ -2,9 +2,10 @@ name: Build app-tui Windows executable
 
 on:
   workflow_dispatch: {}
+  # Release builds only; `ci.yml` is the per-push test gate.
   push:
-    branches:
-      - feature/pinn-numerics-tui-integration-20260923
+    tags:
+      - "v*"
 
 jobs:
   build-app-tui-windows:

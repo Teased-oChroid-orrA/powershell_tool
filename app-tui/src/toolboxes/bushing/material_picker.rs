@@ -42,6 +42,7 @@ pub enum AddMaterialField {
     E,
     Sy,
     Fbru,
+    FbruE15,
     Fsu,
     Ftu,
     Nu,
@@ -49,11 +50,12 @@ pub enum AddMaterialField {
     Save,
 }
 
-pub const ADD_MATERIAL_FIELDS: [AddMaterialField; 9] = [
+pub const ADD_MATERIAL_FIELDS: [AddMaterialField; 10] = [
     AddMaterialField::Name,
     AddMaterialField::E,
     AddMaterialField::Sy,
     AddMaterialField::Fbru,
+    AddMaterialField::FbruE15,
     AddMaterialField::Fsu,
     AddMaterialField::Ftu,
     AddMaterialField::Nu,
@@ -67,7 +69,8 @@ impl AddMaterialField {
             AddMaterialField::Name => "Name",
             AddMaterialField::E => "E (ksi)",
             AddMaterialField::Sy => "Yield Strength Sy (ksi)",
-            AddMaterialField::Fbru => "Bearing Ultimate Fbru (ksi)",
+            AddMaterialField::Fbru => "Bearing Ult. Fbru e/D=2.0 (ksi)",
+            AddMaterialField::FbruE15 => "Bearing Ult. Fbru e/D=1.5 (ksi)",
             AddMaterialField::Fsu => "Shear Ultimate Fsu (ksi)",
             AddMaterialField::Ftu => "Ultimate Strength Ftu (ksi)",
             AddMaterialField::Nu => "Poisson's Ratio",
@@ -81,11 +84,12 @@ impl AddMaterialField {
 pub struct AddMaterialForm {
     pub selected: usize,
     pub editing: bool,
-    pub edit_buffer: String,
+    pub edit_buffer: crate::widgets::number_edit::EditBuffer,
     pub name: String,
     pub e_ksi: String,
     pub sy_ksi: String,
     pub fbru_ksi: String,
+    pub fbru_e15_ksi: String,
     pub fsu_ksi: String,
     pub ftu_ksi: String,
     pub nu: String,
@@ -100,6 +104,7 @@ impl AddMaterialForm {
             AddMaterialField::E => &self.e_ksi,
             AddMaterialField::Sy => &self.sy_ksi,
             AddMaterialField::Fbru => &self.fbru_ksi,
+            AddMaterialField::FbruE15 => &self.fbru_e15_ksi,
             AddMaterialField::Fsu => &self.fsu_ksi,
             AddMaterialField::Ftu => &self.ftu_ksi,
             AddMaterialField::Nu => &self.nu,
@@ -114,6 +119,7 @@ impl AddMaterialForm {
             AddMaterialField::E => self.e_ksi = text,
             AddMaterialField::Sy => self.sy_ksi = text,
             AddMaterialField::Fbru => self.fbru_ksi = text,
+            AddMaterialField::FbruE15 => self.fbru_e15_ksi = text,
             AddMaterialField::Fsu => self.fsu_ksi = text,
             AddMaterialField::Ftu => self.ftu_ksi = text,
             AddMaterialField::Nu => self.nu = text,
@@ -138,6 +144,10 @@ impl AddMaterialForm {
         let e_ksi = parse_positive(&self.e_ksi, "E")?;
         let sy_ksi = parse_positive(&self.sy_ksi, "Yield strength")?;
         let fbru_ksi = parse_non_negative_or_blank(&self.fbru_ksi, "Bearing ultimate")?;
+        let fbru_e15_ksi = parse_non_negative_or_blank(&self.fbru_e15_ksi, "Bearing ultimate at e/D 1.5")?;
+        if fbru_e15_ksi > 0.0 && fbru_ksi > 0.0 && fbru_e15_ksi > fbru_ksi {
+            return Err("Fbru at e/D 1.5 cannot exceed Fbru at e/D 2.0".to_string());
+        }
         let fsu_ksi = parse_non_negative_or_blank(&self.fsu_ksi, "Shear ultimate")?;
         let ftu_ksi = parse_positive(&self.ftu_ksi, "Ultimate strength")?;
         let nu: f64 = self.nu.trim().parse().map_err(|_| "Poisson's ratio must be a number".to_string())?;
@@ -148,7 +158,7 @@ impl AddMaterialForm {
         if !alpha_u_f.is_finite() || alpha_u_f < 0.0 {
             return Err("Thermal expansion must be \u{2265} 0".to_string());
         }
-        Ok(PersistedMaterial { name: name.to_string(), e_ksi, sy_ksi, fbru_ksi, fsu_ksi, ftu_ksi, nu, alpha_u_f })
+        Ok(PersistedMaterial { name: name.to_string(), e_ksi, sy_ksi, fbru_ksi, fbru_e15_ksi, fsu_ksi, ftu_ksi, nu, alpha_u_f })
     }
 }
 
@@ -186,7 +196,6 @@ pub struct MaterialPickerState {
     pub target: Option<MaterialTarget>,
     pub cursor: usize,
     pub filter_text: String,
-    pub filtering: bool,
     pub add_form: Option<AddMaterialForm>,
     /// User-added/imported materials, merged into `BushingModel`'s own
     /// combined catalog once added via the form or an import - this
@@ -200,7 +209,7 @@ pub struct MaterialPickerState {
 
 impl Default for MaterialPickerState {
     fn default() -> Self {
-        Self { open: false, target: None, cursor: 0, filter_text: String::new(), filtering: false, add_form: None, library: Vec::new(), pending_conflicts: None, path_prompt: None }
+        Self { open: false, target: None, cursor: 0, filter_text: String::new(), add_form: None, library: Vec::new(), pending_conflicts: None, path_prompt: None }
     }
 }
 
@@ -215,8 +224,14 @@ impl MaterialPickerState {
         if needle.is_empty() {
             (0..catalog.len()).collect()
         } else {
-            catalog.iter().enumerate().filter(|(_, m)| m.name.to_lowercase().contains(&needle)).map(|(i, _)| i).collect()
+            catalog.iter().enumerate().filter(|(_, m)| crate::widgets::material_detail::matches(m, &needle)).map(|(i, _)| i).collect()
         }
+    }
+
+    /// Moves by `delta` rows, clamped (no wrap): paging a long list.
+    fn jump_cursor(&mut self, model: &BushingModel, delta: i32) {
+        let len = self.visible_indices(model).len() as i32;
+        self.cursor = if len == 0 { 0 } else { (self.cursor as i32 + delta).clamp(0, len - 1) as usize };
     }
 
     fn move_cursor(&mut self, model: &BushingModel, delta: i32) {
@@ -251,7 +266,7 @@ pub fn handle_key(picker: &mut MaterialPickerState, model: &mut BushingModel, ke
                 if kind_is_export {
                     let mut items: Vec<LibraryItem<PersistedMaterial>> = mechanics_core::materials::MATERIALS
                         .iter()
-                        .map(|m| LibraryItem::new(PersistedMaterial { name: m.name.to_string(), e_ksi: m.e_ksi, sy_ksi: m.sy_ksi, fbru_ksi: m.fbru_ksi, fsu_ksi: m.fsu_ksi, ftu_ksi: m.ftu_ksi, nu: m.nu, alpha_u_f: m.alpha_u_f }))
+                        .map(|m| LibraryItem::new(PersistedMaterial { name: m.name.to_string(), e_ksi: m.e_ksi, sy_ksi: m.sy_ksi, fbru_ksi: m.fbru_ksi, fbru_e15_ksi: m.fbru_e15_ksi, fsu_ksi: m.fsu_ksi, ftu_ksi: m.ftu_ksi, nu: m.nu, alpha_u_f: m.alpha_u_f }))
                         .collect();
                     items.extend(picker.library.iter().cloned());
                     let contents = crate::library::export_json(&items);
@@ -284,46 +299,19 @@ pub fn handle_key(picker: &mut MaterialPickerState, model: &mut BushingModel, ke
         return handle_add_form_key(picker, model, key);
     }
 
-    if picker.filtering {
-        return match key.code {
-            KeyCode::Enter | KeyCode::Esc => {
-                picker.filtering = false;
-                picker.cursor = 0;
-                (true, Vec::new())
-            }
-            KeyCode::Backspace => {
-                picker.filter_text.pop();
-                picker.cursor = 0;
-                (true, Vec::new())
-            }
-            KeyCode::Delete => {
-                picker.filter_text.clear();
-                picker.cursor = 0;
-                (true, Vec::new())
-            }
-            KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
-                picker.filter_text.push(c);
-                picker.cursor = 0;
-                (true, Vec::new())
-            }
-            _ => (false, Vec::new()),
-        };
-    }
-
+    // Always-on search: printable keys type into the search box (so the
+    // action keys are Ctrl chords); the list narrows as you type.
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
-        KeyCode::Char('/') => {
-            picker.filtering = true;
-            (true, Vec::new())
-        }
-        KeyCode::Char('n' | 'N') => {
+        KeyCode::Char('n') if ctrl => {
             picker.add_form = Some(AddMaterialForm::default());
             (true, Vec::new())
         }
-        KeyCode::Char('i' | 'I') => {
+        KeyCode::Char('l') if ctrl => {
             picker.path_prompt = Some(PathPrompt { kind: PathPromptKind::Import, buffer: default_material_library_path() });
             (true, Vec::new())
         }
-        KeyCode::Char('x' | 'X') => {
+        KeyCode::Char('e') if ctrl => {
             picker.path_prompt = Some(PathPrompt { kind: PathPromptKind::Export, buffer: default_material_library_path() });
             (true, Vec::new())
         }
@@ -333,6 +321,22 @@ pub fn handle_key(picker: &mut MaterialPickerState, model: &mut BushingModel, ke
         }
         KeyCode::Down => {
             picker.move_cursor(model, 1);
+            (true, Vec::new())
+        }
+        KeyCode::PageUp => {
+            picker.jump_cursor(model, -10);
+            (true, Vec::new())
+        }
+        KeyCode::PageDown => {
+            picker.jump_cursor(model, 10);
+            (true, Vec::new())
+        }
+        KeyCode::Home => {
+            picker.cursor = 0;
+            (true, Vec::new())
+        }
+        KeyCode::End => {
+            picker.cursor = picker.visible_indices(model).len().saturating_sub(1);
             (true, Vec::new())
         }
         KeyCode::Enter => {
@@ -355,7 +359,14 @@ pub fn handle_key(picker: &mut MaterialPickerState, model: &mut BushingModel, ke
             }
             (true, Vec::new())
         }
-        _ => (false, Vec::new()),
+        _ => {
+            if crate::widgets::material_detail::search_edit(&mut picker.filter_text, &key) {
+                picker.cursor = 0;
+                (true, Vec::new())
+            } else {
+                (false, Vec::new())
+            }
+        }
     }
 }
 
@@ -390,7 +401,7 @@ fn handle_add_form_key(picker: &mut MaterialPickerState, model: &mut BushingMode
         return match key.code {
             KeyCode::Enter => {
                 let field = ADD_MATERIAL_FIELDS[form.selected];
-                let text = std::mem::take(&mut form.edit_buffer);
+                let text = form.edit_buffer.take();
                 form.set_field_text(field, text);
                 form.editing = false;
                 (true, Vec::new())
@@ -400,18 +411,7 @@ fn handle_add_form_key(picker: &mut MaterialPickerState, model: &mut BushingMode
                 form.edit_buffer.clear();
                 (true, Vec::new())
             }
-            KeyCode::Delete => {
-                form.edit_buffer.clear();
-                (true, Vec::new())
-            }
-            KeyCode::Backspace => {
-                form.edit_buffer.pop();
-                (true, Vec::new())
-            }
-            KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
-                form.edit_buffer.push(c);
-                (true, Vec::new())
-            }
+            _ if form.edit_buffer.handle_key(&key, |_| true) => (true, Vec::new()),
             _ => (false, Vec::new()),
         };
     }
@@ -442,7 +442,7 @@ fn handle_add_form_key(picker: &mut MaterialPickerState, model: &mut BushingMode
                 match validation {
                     Ok(persisted) => {
                         let Some(target) = picker.target else { return (true, Vec::new()) };
-                        model.add_custom_material(target, persisted.name.clone(), persisted.e_ksi, persisted.sy_ksi, persisted.fbru_ksi, persisted.fsu_ksi, persisted.ftu_ksi, persisted.nu, persisted.alpha_u_f);
+                        model.add_custom_material(target, persisted.name.clone(), persisted.e_ksi, persisted.sy_ksi, persisted.fbru_ksi, persisted.fbru_e15_ksi, persisted.fsu_ksi, persisted.ftu_ksi, persisted.nu, persisted.alpha_u_f);
                         picker.library.push(LibraryItem::new(persisted));
                         picker.add_form = None;
                         (true, vec![Effect::PersistBushingMaterialLibrary])
@@ -457,7 +457,7 @@ fn handle_add_form_key(picker: &mut MaterialPickerState, model: &mut BushingMode
             } else {
                 if let Some(form) = picker.add_form.as_mut() {
                     form.editing = true;
-                    form.edit_buffer = form.field_text(field).to_string();
+                    form.edit_buffer.set(form.field_text(field).to_string());
                 }
                 (true, Vec::new())
             }
@@ -501,7 +501,7 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &MaterialPic
         Some(MaterialTarget::Bushing) => "Bushing",
         None => "",
     };
-    let title = format!(" {which} Material ({} of {}) - n: add \u{b7} i: import \u{b7} x: export ", visible.len(), catalog.len());
+    let title = format!(" {which} Material ({} of {}) \u{b7} Enter select \u{b7} PgUp/PgDn \u{b7} Esc clear/close ", visible.len(), catalog.len());
     let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.border_style(true)).title(title);
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
@@ -509,7 +509,10 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &MaterialPic
         return;
     }
 
-    let (list_area, bottom_area) = if inner.height > 1 { let rows = Layout::default().direction(Direction::Vertical).constraints([Constraint::Min(1), Constraint::Length(1)]).split(inner); (rows[0], Some(rows[1])) } else { (inner, None) };
+    let (list_area, bottom_area, detail_area) = detail_split(inner, visible.get(picker.cursor).map(|&i| catalog[i]));
+    if let (Some(area), Some(&i)) = (detail_area, visible.get(picker.cursor)) {
+        frame.render_widget(Paragraph::new(crate::widgets::material_detail::lines(theme, catalog[i])).wrap(Wrap { trim: true }), area);
+    }
 
     if visible.is_empty() {
         empty_state::render(frame, list_area, theme, "No materials match the filter", Some("Esc to clear the filter"));
@@ -519,7 +522,7 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &MaterialPic
             .enumerate()
             .map(|(display_i, &idx)| {
                 let material = catalog[idx];
-                let is_custom = idx >= mechanics_core::materials::MATERIALS.len();
+                let is_custom = idx >= mechanics_core::materials::builtin_len();
                 let labels = if is_custom { picker.library.iter().find(|li| li.item.name == material.name).map(|li| li.labels.clone()).unwrap_or_default() } else { Vec::new() };
                 let tag = if is_custom { " [custom]".to_string() } else { String::new() };
                 let labels_tag = if labels.is_empty() { String::new() } else { format!(" {{{}}}", labels.join(", ")) };
@@ -541,12 +544,29 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &MaterialPic
             };
             let line = crate::widgets::input_line::line(theme, label, prompt.buffer.as_str(), "_", area.width);
             frame.render_widget(Paragraph::new(line), area);
-        } else if picker.filtering || !picker.filter_text.is_empty() {
-            let label = if picker.filtering { "Filter (Enter/Esc to stop): " } else { "Filter: " };
-            let cursor_glyph = if picker.filtering { "_" } else { "" };
-            let line = crate::widgets::input_line::line(theme, label, picker.filter_text.as_str(), cursor_glyph, area.width);
-            frame.render_widget(Paragraph::new(line), area);
+        } else {
+            frame.render_widget(Paragraph::new(crate::widgets::material_detail::search_line(theme, &picker.filter_text, "Ctrl+N add \u{b7} Ctrl+L import \u{b7} Ctrl+E export", area.width)), area);
         }
+    }
+}
+
+/// Splits the popup into list / search row / property panel. The panel needs
+/// room, so it is dropped on short terminals.
+fn detail_split(inner: Rect, selected: Option<&mechanics_core::materials::Material>) -> (Rect, Option<Rect>, Option<Rect>) {
+    let panel = if selected.is_some() && inner.height >= 16 { if selected.is_some_and(|m| m.extra.is_some()) { 8 } else { 2 } } else { 0 };
+    let mut constraints = vec![Constraint::Min(1)];
+    if panel > 0 {
+        constraints.push(Constraint::Length(panel));
+    }
+    if inner.height > 1 {
+        constraints.push(Constraint::Length(1));
+    }
+    let rows = Layout::default().direction(Direction::Vertical).constraints(constraints).split(inner);
+    match (panel > 0, inner.height > 1) {
+        (true, true) => (rows[0], Some(rows[2]), Some(rows[1])),
+        (true, false) => (rows[0], None, Some(rows[1])),
+        (false, true) => (rows[0], Some(rows[1]), None),
+        (false, false) => (rows[0], None, None),
     }
 }
 
@@ -582,7 +602,7 @@ fn render_add_form(frame: &mut Frame, popup: Rect, theme: &Theme, form: &AddMate
         .enumerate()
         .map(|(i, &field)| {
             let selected = i == form.selected;
-            let value = if selected && form.editing { format!("{}_", form.edit_buffer) } else { form.field_text(field).to_string() };
+            let value = if selected && form.editing { form.edit_buffer.with_cursor() } else { form.field_text(field).to_string() };
             let marker = if selected { "> " } else { "  " };
             let style = if selected { theme.selected_row_style() } else { Style::default() };
             let label = field.label();
@@ -606,6 +626,10 @@ mod tests {
     use crossterm::event::{KeyEventKind, KeyEventState};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+
+    fn ctrl_key(c: char) -> KeyEvent {
+        KeyEvent { code: KeyCode::Char(c), modifiers: KeyModifiers::CONTROL, kind: KeyEventKind::Press, state: KeyEventState::NONE }
+    }
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent { code, modifiers: KeyModifiers::NONE, kind: KeyEventKind::Press, state: KeyEventState::NONE }
@@ -640,16 +664,17 @@ mod tests {
     }
 
     #[test]
-    fn slash_then_typing_narrows_the_visible_list() {
+    fn typing_narrows_the_visible_list_without_a_slash() {
         let mut picker = MaterialPickerState::open_for(MaterialTarget::Housing);
         let mut model = BushingModel::default();
-        handle_key(&mut picker, &mut model, key(KeyCode::Char('/')));
         for c in "steel".chars() {
             handle_key(&mut picker, &mut model, key(KeyCode::Char(c)));
         }
         let visible = picker.visible_indices(&model);
         assert!(!visible.is_empty());
-        assert!(visible.iter().all(|&i| model.material_catalog()[i].name.to_lowercase().contains("steel")));
+        // Matches the family too ("Low-Alloy Steels"), not just the name.
+        assert!(visible.iter().all(|&i| crate::widgets::material_detail::matches(model.material_catalog()[i], "steel")));
+        assert!(visible.len() > model.material_catalog().iter().filter(|m| m.name.to_lowercase().contains("steel")).count() / 2);
     }
 
     #[test]
@@ -661,10 +686,10 @@ mod tests {
     }
 
     #[test]
-    fn n_opens_the_add_material_form() {
+    fn ctrl_n_opens_the_add_material_form() {
         let mut picker = MaterialPickerState::open_for(MaterialTarget::Housing);
         let mut model = BushingModel::default();
-        handle_key(&mut picker, &mut model, key(KeyCode::Char('n')));
+        handle_key(&mut picker, &mut model, ctrl_key('n'));
         assert!(picker.add_form.is_some());
     }
 
@@ -694,6 +719,16 @@ mod tests {
         assert_eq!(model.housing_material().name, "Test Alloy");
         assert_eq!(model.housing_material().fbru_ksi, 120.0);
         assert_eq!(picker.library.len(), 1);
+    }
+
+    #[test]
+    fn add_form_stores_fbru_at_e_over_d_1p5_and_rejects_one_above_the_2p0_value() {
+        let mut form = AddMaterialForm { name: "M".into(), e_ksi: "10000".into(), sy_ksi: "50".into(), ftu_ksi: "60".into(), nu: "0.3".into(), alpha_u_f: "6".into(), fbru_ksi: "120".into(), fbru_e15_ksi: "98".into(), ..AddMaterialForm::default() };
+        assert_eq!(form.validate().unwrap().fbru_e15_ksi, 98.0);
+        form.fbru_e15_ksi = "130".into();
+        assert!(form.validate().unwrap_err().contains("cannot exceed"));
+        form.fbru_e15_ksi = String::new();
+        assert_eq!(form.validate().unwrap().fbru_e15_ksi, 0.0, "blank = not tabulated");
     }
 
     #[test]
@@ -729,17 +764,17 @@ mod tests {
     }
 
     #[test]
-    fn i_opens_an_import_prompt_prefilled_with_the_default_path() {
+    fn ctrl_l_opens_an_import_prompt_prefilled_with_the_default_path() {
         let mut picker = MaterialPickerState::open_for(MaterialTarget::Housing);
         let mut model = BushingModel::default();
-        handle_key(&mut picker, &mut model, key(KeyCode::Char('i')));
+        handle_key(&mut picker, &mut model, ctrl_key('l'));
         assert!(picker.path_prompt.is_some());
     }
 
     #[test]
     fn conflict_resolution_overwrites_on_o() {
         let mut picker = MaterialPickerState::open_for(MaterialTarget::Housing);
-        let existing = PersistedMaterial { name: "Custom X".to_string(), e_ksi: 10000.0, sy_ksi: 50.0, fbru_ksi: 0.0, fsu_ksi: 0.0, ftu_ksi: 60.0, nu: 0.3, alpha_u_f: 6.5 };
+        let existing = PersistedMaterial { name: "Custom X".to_string(), e_ksi: 10000.0, sy_ksi: 50.0, fbru_ksi: 0.0, fbru_e15_ksi: 0.0, fsu_ksi: 0.0, ftu_ksi: 60.0, nu: 0.3, alpha_u_f: 6.5 };
         picker.library.push(LibraryItem::new(existing.clone()));
         let incoming = PersistedMaterial { sy_ksi: 999.0, ..existing };
         let outcomes = crate::library::classify_import(&picker.library, vec![LibraryItem::new(incoming)], |m| m.name.clone());

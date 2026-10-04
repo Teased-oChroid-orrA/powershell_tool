@@ -41,7 +41,7 @@ pub struct PreloadAnalysisState {
     pub model: PreloadModel,
     pub selected: usize,
     pub editing: bool,
-    pub edit_buffer: String,
+    pub edit_buffer: crate::widgets::number_edit::EditBuffer,
     pub bolt_picker: BoltPickerState,
     pub template_picker: TemplatePickerState,
     /// What the last applied joint template was, shown atop Results.
@@ -59,7 +59,7 @@ pub struct PreloadAnalysisState {
 impl Default for PreloadAnalysisState {
     fn default() -> Self {
         let mut state =
-            Self { model: PreloadModel::default(), selected: 0, editing: false, edit_buffer: String::new(), bolt_picker: BoltPickerState::default(), template_picker: TemplatePickerState::default(), message: None, show_numbers: false, results_scroll: 0 };
+            Self { model: PreloadModel::default(), selected: 0, editing: false, edit_buffer: Default::default(), bolt_picker: BoltPickerState::default(), template_picker: TemplatePickerState::default(), message: None, show_numbers: false, results_scroll: 0 };
         // Row 0 is always a `Header` - land on the first real field instead
         // of an unselectable row.
         state.clamp_selection();
@@ -170,7 +170,7 @@ pub fn handle_key(state: &mut PreloadAnalysisState, key: KeyEvent) -> (bool, Vec
     if let Some(c) = crate::widgets::number_edit::number_char(&key) {
         if matches!(model::field_rows(&state.model).get(state.selected).copied(), Some(FieldRow::Number(_))) {
             state.editing = true;
-            state.edit_buffer = c.to_string();
+            state.edit_buffer.set(c.to_string());
             return (true, Vec::new());
         }
     }
@@ -193,7 +193,7 @@ pub fn handle_key(state: &mut PreloadAnalysisState, key: KeyEvent) -> (bool, Vec
             match rows.get(state.selected).copied() {
                 Some(FieldRow::Number(target)) => {
                     state.editing = true;
-                    state.edit_buffer = model::format_for_edit(state.model.number_value(target));
+                    state.edit_buffer.set(model::format_for_edit(state.model.number_value(target)));
                     (true, Vec::new())
                 }
                 Some(_) => {
@@ -278,13 +278,24 @@ mod tests {
     }
 
     #[test]
-    fn delete_clears_the_edit_buffer_while_editing() {
+    fn arrow_keys_move_the_cursor_and_delete_removes_one_character_while_editing() {
         let mut state = PreloadAnalysisState::default();
         state.selected = model::field_rows(&state.model).iter().position(|r| *r == FieldRow::Number(NumberTarget::AppliedTorque)).unwrap();
         handle_key(&mut state, key(KeyCode::Enter));
-        assert!(!state.edit_buffer.is_empty());
+        let before = state.edit_buffer.to_string();
+        assert!(before.chars().count() >= 2, "prefilled value needs two characters for this test: {before}");
+        // Home + Delete removes only the first character (not the whole buffer).
+        handle_key(&mut state, key(KeyCode::Home));
         handle_key(&mut state, key(KeyCode::Delete));
-        assert_eq!(state.edit_buffer, "");
+        assert_eq!(state.edit_buffer.to_string(), before.chars().skip(1).collect::<String>());
+        // Right then Backspace removes the new first character.
+        handle_key(&mut state, key(KeyCode::Right));
+        handle_key(&mut state, key(KeyCode::Backspace));
+        assert_eq!(state.edit_buffer.to_string(), before.chars().skip(2).collect::<String>());
+        // Left then typing inserts at the start, not the end.
+        handle_key(&mut state, key(KeyCode::Left));
+        handle_key(&mut state, key(KeyCode::Char('7')));
+        assert!(state.edit_buffer.starts_with('7'));
         assert!(state.editing);
     }
 

@@ -1,12 +1,7 @@
-name: Rust workspace build and verify (search-core, native-search, search-cli)
+name: Build search-cli Windows executable
 
-# Verifies the Rust rewrite (search-core + native-search - see
-# docs/rust-rewrite-status.md) and the `search-cli` headless entry point
-# (issue #6 §60). search-core is deliberately zero-GUI-dependency (same
-# invariant the old C#/WinUI split had for TextInFilesSearch.Core), so its
-# own test job runs on Linux for speed; `search-cli` is a real win-x64
-# build and is built on a Windows runner, same as the existing C#/WinUI
-# workflow.
+# Builds the `search-cli` headless entry point (issue #6 §60) for win-x64 on
+# a Windows runner. Tests run in `ci.yml` (Linux, whole workspace), not here.
 #
 # `app` (dioxus-native) and `app-egui` (egui/eframe, its own standalone
 # Cargo workspace) have been removed from this repository - `app-tui` (see
@@ -15,55 +10,14 @@ name: Rust workspace build and verify (search-core, native-search, search-cli)
 
 on:
   workflow_dispatch: {}
-  # workflow_dispatch alone isn't reachable via the API/UI until this file
-  # exists on the default branch (GitHub only registers manually-triggered
-  # workflows from main) - this repo's convention is not to merge feature
-  # branches to main without explicit approval, so a scoped push trigger
-  # is how this workflow actually runs pre-merge. Narrow to this branch
-  # rather than a blanket `push: {}` to avoid firing on every push once
-  # merged (see build.yml's own history of being made manual-only for the
-  # same "don't burn CI minutes on every push" reasoning).
+  # Release builds only; `ci.yml` is the per-push test gate.
   push:
-    branches:
-      - feature/issue-2-native-search-eval
+    tags:
+      - "v*"
 
 jobs:
-  search-core-test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Rust toolchain (stable)
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo registry/target
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            target
-          key: cargo-search-core-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-
-      - name: cargo test -p search-core
-        # search-core has zero GUI dependency by design (same invariant
-        # TextInFilesSearch.Core enforced) - this is the same guarantee
-        # that lets it be developed and verified without a Windows
-        # machine, run here on the fastest/cheapest runner rather than
-        # trusted from a developer's machine. Includes the real
-        # DOCX/PPTX/XLSX/ZIP/PDF fixture parity tests (tests/fixtures.rs).
-        run: cargo test -p search-core
-
-      - name: cargo test -p search-cli
-        # search-cli is equally GUI-free (that's the whole point of the
-        # headless entry point, issue #6 §60) - its own smoke test
-        # (cli/tests/cli_smoke.rs) runs here too, cheaply, before the
-        # Windows job spends time building the release exe.
-        run: cargo test -p search-cli
-
   search-cli-build-windows:
     runs-on: windows-latest
-    needs: search-core-test
     steps:
       - name: Checkout
         uses: actions/checkout@v4

@@ -356,6 +356,8 @@ pub struct SearchRunState {
     pub elapsed: Option<std::time::Duration>,
     pub files_completed: i32,
     pub total_files: i32,
+    /// Filled in when the run finishes; shown under the Run view.
+    pub diagnostics: Option<super::diagnostics::SearchDiagnostics>,
 }
 
 impl SearchRunState {

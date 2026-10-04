@@ -23,7 +23,7 @@ review (FAA/NAS/SAE/OEM SRM) - explicitly out of scope, never ported. Also does 
 | Tolerance-band resolution, bore-capability auto-adjust | `src/tolerance.rs` |
 | Countersink corner solve + worst-case tolerance search | `src/countersink.rs` |
 | Axial cross-section geometry / min wall-thickness scan | `src/geometry.rs` |
-| Edge-distance bearing-profile effective thickness | `src/bearing.rs` |
+| Edge-distance bearing-profile effective thickness (exposed as `BushingOutput::t_eff_seq`, also the plate thickness for the `edge-check` cross-checks) | `src/bearing.rs` |
 | Aircraft reamer catalog + nearest-size picker | `src/reamers.rs` + `data/aircraft_reamer_catalog.csv` |
 | Proof this matches the real production engine | `tests/differential.rs`, `tests/differential_countersink.rs` |
 

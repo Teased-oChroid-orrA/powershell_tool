@@ -134,7 +134,7 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, state: &FastenerHol
             }
             let selected = focused && i == state.selected;
             let value = if selected && state.editing {
-                format!("{}_", state.edit_buffer)
+                state.edit_buffer.with_cursor()
             } else {
                 display_value(&state.model, *row)
             };
@@ -234,18 +234,14 @@ pub fn build_report_text(model: &FastenerHoleModel) -> String {
             s.push_str("Secondary Companion Hole:\n");
             match &model.regular_secondary {
                 Ok((companion, check)) => {
-                    s.push_str(&format!("  Nominal  {} in\n", model::format_linear(companion.nominal)));
-                    s.push_str(&format!("  Min      {} in\n", model::format_linear(companion.min)));
-                    s.push_str(&format!("  Max      {} in\n", model::format_linear(companion.max)));
+                    s.push_str(&format!("  Diameter  {} in\n", model::format_linear_band(companion)));
                     s.push_str(&format!("  Envelope preservation: {}\n\n", if check.preserved { "preserved" } else { "NOT preserved" }));
                 }
                 Err(e) => s.push_str(&format!("  INVALID: {e}\n\n")),
             }
             s.push_str("Fit Analysis (Fit = Hole 2 - Hole 1):\n");
             let fit = &model.regular_fit;
-            s.push_str(&format!("  Min Fit      {} in\n", model::format_linear(fit.min)));
-            s.push_str(&format!("  Nominal Fit  {} in\n", model::format_linear(fit.nominal)));
-            s.push_str(&format!("  Max Fit      {} in\n", model::format_linear(fit.max)));
+            s.push_str(&format!("  Fit  {} in\n", model::format_band(fit.nominal, fit.min, fit.max, model::format_linear)));
             s.push_str(&format!(
                 "  Classification: {}\n",
                 match fit.classification {
@@ -266,24 +262,24 @@ pub fn build_report_text(model: &FastenerHoleModel) -> String {
                         CountersinkSolveFor::Depth => geometry.depth,
                         CountersinkSolveFor::Angle => geometry.angle_deg,
                     };
-                    let fmt = |v: f64| if matches!(geometry.solve_for, CountersinkSolveFor::Angle) { model::format_angle(v) } else { model::format_linear(v) };
-                    s.push_str(&format!("  {solved_label}: {} (range {} .. {})\n", fmt(solved_value.nominal), fmt(solved_value.min), fmt(solved_value.max)));
+                    let band = if matches!(geometry.solve_for, CountersinkSolveFor::Angle) { model::format_angle_band(&solved_value) } else { model::format_linear_band(&solved_value) };
+                    s.push_str(&format!("  {solved_label}: {band}\n"));
                 }
                 Err(e) => s.push_str(&format!("  INVALID: {e}\n")),
             }
             match &model.countersink_primary_area {
-                Ok(area) => s.push_str(&format!("  Lateral Surface Area: {} in^2\n\n", model::format_area(area.nominal))),
+                Ok(area) => s.push_str(&format!("  Lateral Surface Area: {} in^2\n\n", model::format_area_band(area))),
                 Err(_) => s.push_str("  Lateral Surface Area: INCOMPLETE\n\n"),
             }
 
             s.push_str(&format!("Secondary Countersink ({}):\n", model.countersink.secondary_method.label()));
             match &model.countersink_secondary {
                 Ok(geometry) => {
-                    s.push_str(&format!("  Outer Diameter  {} in\n", model::format_linear(geometry.outer_diameter.nominal)));
-                    s.push_str(&format!("  Depth           {} in\n", model::format_linear(geometry.depth.nominal)));
-                    s.push_str(&format!("  Angle           {} deg\n", model::format_angle(geometry.angle_deg.nominal)));
+                    s.push_str(&format!("  Outer Diameter  {} in\n", model::format_linear_band(&geometry.outer_diameter)));
+                    s.push_str(&format!("  Depth           {} in\n", model::format_linear_band(&geometry.depth)));
+                    s.push_str(&format!("  Angle           {} deg\n", model::format_angle_band(&geometry.angle_deg)));
                     if let Ok(area) = &model.countersink_secondary_area {
-                        s.push_str(&format!("  Lateral Area    {} in^2\n", model::format_area(area.nominal)));
+                        s.push_str(&format!("  Lateral Area    {} in^2\n", model::format_area_band(area)));
                     }
                 }
                 Err(e) => s.push_str(&format!("  INVALID: {e}\n")),
@@ -308,11 +304,7 @@ fn regular_readout_lines<'a>(theme: &'a Theme, model: &'a FastenerHoleModel) -> 
     lines.push(Line::from(Span::styled("Secondary Companion Hole", theme.title_style(false))));
     match &model.regular_secondary {
         Ok((companion, check)) => {
-            lines.push(value_line(theme, "  Nominal", model::format_linear(companion.nominal) + " in", "DERIVED", StatusTone::Info));
-            lines.push(value_line(theme, "  Min", model::format_linear(companion.min) + " in", "DERIVED", StatusTone::Info));
-            lines.push(value_line(theme, "  Max", model::format_linear(companion.max) + " in", "DERIVED", StatusTone::Info));
-            lines.push(value_line(theme, "  -Tol", model::format_linear(companion.tol_minus()), "DERIVED", StatusTone::Info));
-            lines.push(value_line(theme, "  +Tol", model::format_linear(companion.tol_plus()), "DERIVED", StatusTone::Info));
+            lines.push(value_line(theme, "  Diameter", model::format_linear_band(companion) + " in", "DERIVED", StatusTone::Info));
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled("Envelope Preservation", theme.title_style(false))));
             let (mark, tone) = if check.preserved { ("preserved", StatusTone::Success) } else { ("NOT preserved", StatusTone::Danger) };
@@ -324,9 +316,7 @@ fn regular_readout_lines<'a>(theme: &'a Theme, model: &'a FastenerHoleModel) -> 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled("Fit Analysis (Fit = Hole 2 - Hole 1)", theme.title_style(false))));
     let fit = &model.regular_fit;
-    lines.push(Line::from(format!("  Min Fit      {} in", model::format_linear(fit.min))));
-    lines.push(Line::from(format!("  Nominal Fit  {} in", model::format_linear(fit.nominal))));
-    lines.push(Line::from(format!("  Max Fit      {} in", model::format_linear(fit.max))));
+    lines.push(Line::from(format!("  Fit  {} in", model::format_band(fit.nominal, fit.min, fit.max, model::format_linear))));
     let (label, tone) = match fit.classification {
         FitClassification::Clearance => ("CLEARANCE", StatusTone::Success),
         FitClassification::Transition => ("TRANSITION", StatusTone::Warning),
@@ -359,12 +349,9 @@ fn countersink_readout_lines<'a>(theme: &'a Theme, model: &'a FastenerHoleModel)
                 CountersinkSolveFor::Depth => geometry.depth,
                 CountersinkSolveFor::Angle => geometry.angle_deg,
             };
-            let target = if geometry.solve_for == CountersinkSolveFor::Angle { NumberTarget::CsAngle } else { NumberTarget::CsDepth };
             let unit = if matches!(geometry.solve_for, CountersinkSolveFor::Angle) { " deg" } else { " in" };
-            let fmt = |v: f64| if matches!(geometry.solve_for, CountersinkSolveFor::Angle) { model::format_angle(v) } else { model::format_linear(v) };
-            let _ = target;
-            lines.push(value_line(theme, &format!("  {solved_label}"), format!("{}{unit}", fmt(solved_value.nominal)), "CALCULATED", StatusTone::Success));
-            lines.push(Line::from(format!("    range: {} .. {}{unit}", fmt(solved_value.min), fmt(solved_value.max))));
+            let band = if matches!(geometry.solve_for, CountersinkSolveFor::Angle) { model::format_angle_band(&solved_value) } else { model::format_linear_band(&solved_value) };
+            lines.push(value_line(theme, &format!("  {solved_label}"), format!("{band}{unit}"), "CALCULATED", StatusTone::Success));
         }
         Err(e) => lines.push(error_line(theme, "  Geometry", *e)),
     }
@@ -373,7 +360,7 @@ fn countersink_readout_lines<'a>(theme: &'a Theme, model: &'a FastenerHoleModel)
     lines.push(Line::from(Span::styled("Lateral Surface Area", theme.title_style(false))));
     match &model.countersink_primary_area {
         Ok(area) => {
-            lines.push(value_line(theme, "  Primary Area", format!("{} in^2", model::format_area(area.nominal)), "CALCULATED", StatusTone::Success));
+            lines.push(value_line(theme, "  Primary Area", format!("{} in^2", model::format_area_band(area)), "CALCULATED", StatusTone::Success));
         }
         Err(_) => lines.push(Line::from(vec![Span::raw("  Primary Area: -- "), origin_span(theme, "INCOMPLETE", StatusTone::Warning)])),
     }
@@ -387,16 +374,16 @@ fn countersink_readout_lines<'a>(theme: &'a Theme, model: &'a FastenerHoleModel)
                 SecondaryCountersinkMethod::PreserveLateralArea => ("CALCULATED", StatusTone::Success),
             };
             let (angle_tag, angle_tone) = ("TRANSFERRED", StatusTone::Warning);
-            lines.push(value_line(theme, "  Outer Diameter", format!("{} in", model::format_linear(geometry.outer_diameter.nominal)), "CALCULATED", StatusTone::Success));
-            lines.push(value_line(theme, "  Depth", format!("{} in", model::format_linear(geometry.depth.nominal)), depth_tag, depth_tone));
-            lines.push(value_line(theme, "  Angle", format!("{} deg", model::format_angle(geometry.angle_deg.nominal)), angle_tag, angle_tone));
+            lines.push(value_line(theme, "  Outer Diameter", format!("{} in", model::format_linear_band(&geometry.outer_diameter)), "CALCULATED", StatusTone::Success));
+            lines.push(value_line(theme, "  Depth", format!("{} in", model::format_linear_band(&geometry.depth)), depth_tag, depth_tone));
+            lines.push(value_line(theme, "  Angle", format!("{} deg", model::format_angle_band(&geometry.angle_deg)), angle_tag, angle_tone));
             match &model.countersink_secondary_area {
                 Ok(area) => {
                     let (area_tag, area_tone) = match model.countersink.secondary_method {
                         SecondaryCountersinkMethod::PreserveDepth => ("CALCULATED", StatusTone::Success),
                         SecondaryCountersinkMethod::PreserveLateralArea => ("PRESERVED", StatusTone::Info),
                     };
-                    lines.push(value_line(theme, "  Lateral Surface Area", format!("{} in^2", model::format_area(area.nominal)), area_tag, area_tone));
+                    lines.push(value_line(theme, "  Lateral Surface Area", format!("{} in^2", model::format_area_band(area)), area_tag, area_tone));
                 }
                 Err(_) => lines.push(Line::from(vec![Span::raw("  Lateral Surface Area: -- "), origin_span(theme, "INCOMPLETE", StatusTone::Warning)])),
             }
@@ -422,6 +409,25 @@ mod tests {
     use super::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+
+    #[test]
+    fn calculated_values_show_their_tolerance_next_to_the_nominal() {
+        for hole_type in [HoleType::Regular, HoleType::Countersunk] {
+            let mut state = FastenerHoleState::default();
+            state.model.hole_type = hole_type;
+            state.model.recompute();
+            let text = build_report_text(&state.model);
+            assert!(text.contains(" -0.") && text.contains("/+0."), "{hole_type:?} report lacks nominal -tol/+tol bands:\n{text}");
+            let theme = Theme::default_palette();
+            let lines = match hole_type {
+                HoleType::Regular => regular_readout_lines(&theme, &state.model),
+                HoleType::Countersunk => countersink_readout_lines(&theme, &state.model),
+            };
+            let flat: String = lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>() + "\n").collect();
+            assert!(flat.contains("/+0."), "{hole_type:?} readout lacks tolerance bands:\n{flat}");
+            assert!(!flat.contains("range:") && !flat.contains("-Tol"), "old multi-line min/max/tol layout must be gone:\n{flat}");
+        }
+    }
 
     #[test]
     fn draw_does_not_panic_at_normal_size_for_both_hole_types() {

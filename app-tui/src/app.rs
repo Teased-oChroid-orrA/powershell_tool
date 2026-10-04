@@ -93,6 +93,8 @@ pub enum AppEvent {
     Tick,
     SearchProgress(search_core::models::SearchProgressReport),
     SearchFinished(Result<SearchRunResult, OrchestratorError>),
+    /// Sent just before a successful `SearchFinished`: where the run's time went.
+    SearchDiagnostics(Box<search::diagnostics::SearchDiagnostics>),
     ReportWritten(Option<String>),
     IndexBuildProgress(search_core::native_index::CorpusIndexProgress),
     IndexBuildFinished(native_search::error::NsResult<search_core::native_index::CorpusIndexOutcome>),
@@ -202,6 +204,10 @@ pub fn handle_event(state: &mut AppState, event: AppEvent) -> Vec<Effect> {
             Vec::new()
         }
         AppEvent::SearchFinished(result) => handle_search_finished(state, result),
+        AppEvent::SearchDiagnostics(d) => {
+            state.search.run.diagnostics = Some(*d);
+            Vec::new()
+        }
         AppEvent::ReportWritten(path) => {
             state.search.run.last_report_path = path.clone();
             match path {
@@ -617,9 +623,19 @@ pub fn handle_mouse(state: &mut AppState, regions: &MouseRegions, event: MouseEv
             handle_scroll(state, regions, col, row, 1);
             Vec::new()
         }
-        // Right/middle click, drag, and plain movement have no bound
-        // action in this phase - explicitly ignored rather than falling
-        // through to an unrelated handler.
+        // Plain movement only drives the Bushing cross-check tooltips.
+        MouseEventKind::Moved => {
+            if state.nav.active_tool == ToolId::Bushing {
+                state.bushing.edge_hover = match mouse::hit(&regions.bushing_actions, col, row) {
+                    Some(bushing::BushingAction::EdgeInfo(topic)) => Some((topic, col, row)),
+                    _ => None,
+                };
+            }
+            Vec::new()
+        }
+        // Right/middle click and drag have no bound action in this phase -
+        // explicitly ignored rather than falling through to an unrelated
+        // handler.
         _ => Vec::new(),
     }
 }
@@ -1114,7 +1130,7 @@ fn execute_command(state: &mut AppState, cmd: Command) -> Vec<Effect> {
             Vec::new()
         }
         Command::ExportBushingReport => {
-            vec![Effect::ExportBushingReport(bushing::view::build_report_text(&state.bushing.model))]
+            vec![Effect::ExportBushingReport(state.bushing.report_text())]
         }
         Command::OpenReamerPicker => {
             state.bushing.reamer_picker = bushing::reamer_picker::ReamerPickerState::open_near(&state.bushing.model);

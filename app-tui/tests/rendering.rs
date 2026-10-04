@@ -585,3 +585,71 @@ fn the_t_key_opens_the_template_window_and_a_click_outside_it_is_swallowed() {
     }
     assert!(state.preload_analysis.template_picker.open && state.preload_analysis.selected == before);
 }
+
+// ---------------------------------------------------------------------
+// Post-search diagnostics summary
+// ---------------------------------------------------------------------
+
+fn finished_tool_with_diagnostics() -> SearchToolState {
+    use app_tui::toolboxes::search::diagnostics::{IndexHealth, SearchDiagnostics};
+    let mut diagnostics = SearchDiagnostics { roots: 1, verified: 1_397, matched_files: 17, verify_ms: 380, total_ms: 610, ..Default::default() };
+    diagnostics.record_narrowed(
+        &search_core::native_index::NarrowOutcome { scannable: 104_331, walk_ms: 100, freshness_ms: 60, query_ms: 42, ..Default::default() },
+        1_382,
+    );
+    diagnostics.health = Some(IndexHealth { docs: 104_331, segments: 4, size_bytes: 2048, semantic_version: 2, ..Default::default() });
+    let mut tool = SearchToolState::default();
+    tool.run = SearchRunState { started: Some(std::time::Instant::now()), diagnostics: Some(diagnostics), ..SearchRunState::default() };
+    tool
+}
+
+#[test]
+fn run_view_shows_the_search_summary_after_a_run_finishes() {
+    let text = buffer_text(&render_run_view(&finished_tool_with_diagnostics(), None, 140, 40));
+    assert!(text.contains("Search summary"), "{text}");
+    assert!(text.contains("Corpus 104,331 files") && text.contains("index candidates 1,382 (98.7% fewer)"), "{text}");
+    assert!(text.contains("exact verification 380 ms") && text.contains("total 610 ms"), "{text}");
+    assert!(text.contains("Index: 104,331 docs"), "health line missing:\n{text}");
+}
+
+#[test]
+fn run_view_keeps_the_in_flight_box_while_running_and_shrinks_the_summary_on_short_terminals() {
+    let mut tool = finished_tool_with_diagnostics();
+    tool.run.is_running = true;
+    let text = buffer_text(&render_run_view(&tool, None, 140, 40));
+    assert!(text.contains("In-flight") && !text.contains("Search summary"), "{text}");
+
+    let short = buffer_text(&render_run_view(&finished_tool_with_diagnostics(), None, 140, 20));
+    assert!(short.contains("Search summary") && short.contains("Corpus 104,331 files"), "short terminal still shows the first lines:\n{short}");
+}
+
+#[test]
+fn search_diagnostics_event_is_stored_on_the_run_state() {
+    let mut state = AppState::default();
+    let d = app_tui::toolboxes::search::diagnostics::SearchDiagnostics { matched_files: 5, ..Default::default() };
+    handle_event(&mut state, AppEvent::SearchDiagnostics(Box::new(d)));
+    assert_eq!(state.search.run.diagnostics.as_ref().map(|d| d.matched_files), Some(5));
+}
+
+#[test]
+fn hovering_a_cross_check_name_in_the_real_shell_shows_its_tooltip_and_leaving_hides_it() {
+    use app_tui::toolboxes::bushing::edge_check::EdgeTopic;
+    use app_tui::toolboxes::bushing::BushingAction;
+    let mut state = AppState::default();
+    state.nav.activate(app_tui::nav::ToolId::Bushing);
+    state.bushing.run_edge_check(true);
+    let mut regions = app_tui::mouse::MouseRegions::default();
+    let _ = render_shell_with_regions(&state, 170, 120, &mut regions);
+    // The pane scrolls: scroll until the plastic model's name is on screen.
+    let find = |regions: &app_tui::mouse::MouseRegions| regions.bushing_actions.iter().find(|(_, a)| *a == BushingAction::EdgeInfo(EdgeTopic::PlasticFe)).map(|(r, _)| *r);
+    let rect = find(&regions).expect("the plastic model name is a hover target");
+    let moved = |col, row| crossterm::event::MouseEvent { kind: crossterm::event::MouseEventKind::Moved, column: col, row, modifiers: crossterm::event::KeyModifiers::NONE };
+    app_tui::app::handle_mouse(&mut state, &regions, moved(rect.x + 1, rect.y));
+    assert_eq!(state.bushing.edge_hover.map(|h| h.0), Some(EdgeTopic::PlasticFe));
+    let text = buffer_text(&render_shell(&state, 170, 120));
+    assert!(text.contains("Elastic-plastic FE limit load") && text.contains("Weaknesses"), "tooltip missing:\n{text}");
+    // Moving off any hover target clears it.
+    app_tui::app::handle_mouse(&mut state, &regions, moved(0, 0));
+    assert!(state.bushing.edge_hover.is_none());
+    assert!(!buffer_text(&render_shell(&state, 170, 120)).contains("Weaknesses"));
+}

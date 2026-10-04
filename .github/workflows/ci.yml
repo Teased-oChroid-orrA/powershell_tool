@@ -1,0 +1,46 @@
+name: CI (workspace tests)
+
+# The gate that runs on `main` itself: every Rust crate's tests on Linux
+# (cheapest runner). Every crate here builds without a GUI toolchain -
+# `app-tui` is a terminal UI and its rendering tests use ratatui's
+# `TestBackend`. Windows-only behaviour (path-key folding, file locking, the
+# embedded exe icon) is NOT covered by this job; the Windows release builds
+# in `app-tui-build.yml` / `rust-build.yml` only prove the exes compile.
+#
+# Deliberately not gated yet: `cargo fmt --check` and `cargo clippy` - the
+# tree is not clean under either today (formatting drift, ~130 clippy
+# warnings), so a gate would fail on code unrelated to the change under test.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - main
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry/target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: cargo-ci-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-ci-${{ runner.os }}-
+
+      - name: cargo test --workspace
+        run: cargo test --workspace
