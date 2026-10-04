@@ -179,7 +179,7 @@ fn ultimate_margins_never_decrease_as_the_edge_moves_away() {
 #[test]
 fn monte_carlo_is_reproducible_and_consistent_with_the_deterministic_margin() {
     let models: Vec<Box<dyn EdgeModel>> = vec![Box::new(AnalyticModel)];
-    let cfg = EdgeConfig { mc_samples: 400, ..EdgeConfig::default() };
+    let cfg = EdgeConfig { mc_samples: 400, strength_cv: 0.0, model_error: false, ..EdgeConfig::default() };
     let seq = TARGETS.iter().position(|t| t.label.starts_with("Bearing")).unwrap();
 
     // Comfortably passing and comfortably failing cases.
@@ -210,7 +210,7 @@ fn monte_carlo_is_reproducible_and_consistent_with_the_deterministic_margin() {
         if margin_at(mid) > 0.0 { lo = mid } else { hi = mid }
     }
     let p_star = lo;
-    let rep = run(&models, &EdgeInput { geom: g, strengths: mat, applied_load: 1000.0, fit_pressure: 5000.0, fit_pressure_min: 0.0, fit_pressure_max: 40_000.0 }, &EdgeConfig { mc_samples: 4000, ..EdgeConfig::default() });
+    let rep = run(&models, &EdgeInput { geom: g, strengths: mat, applied_load: 1000.0, fit_pressure: 5000.0, fit_pressure_min: 0.0, fit_pressure_max: 40_000.0 }, &EdgeConfig { mc_samples: 4000, strength_cv: 0.0, model_error: false, ..EdgeConfig::default() });
     let got = rep.models[0].targets[seq].as_ref().unwrap().mc.as_ref().unwrap().p_fail;
     let expected = 1.0 - p_star / 40_000.0;
     assert!((got - expected).abs() < 0.01, "MC p_fail {got} vs analytic {expected}");
@@ -280,4 +280,39 @@ fn reported_capacity_is_the_load_where_the_margin_crosses_zero_and_the_fit_costs
     let expect = (shear - 8000.0 * 2.0 * A * T).min(bearing);
     assert!((a.capacity_lbf - expect).abs() < 1e-3 * expect, "{} vs {expect}", a.capacity_lbf);
     assert!((a.capacity_no_fit_lbf - shear.min(bearing)).abs() < 1e-3 * shear);
+}
+
+#[test]
+fn recommended_edge_distances_rise_with_the_survival_level_and_collapse_to_the_nominal_one_without_scatter() {
+    let models: Vec<Box<dyn EdgeModel>> = vec![Box::new(AnalyticModel)];
+    let bi = TARGETS.iter().position(|t| t.label.starts_with("Bearing")).unwrap();
+    let e_of = |m: EdgeMin| match m {
+        EdgeMin::Value(v) | EdgeMin::AtMost(v) | EdgeMin::Exceeds(v) => v,
+        EdgeMin::NotSearched => panic!("not searched"),
+    };
+
+    // No scatter at all (fit band collapsed, no strength or model error):
+    // every level is the deterministic minimum edge distance.
+    let mut point = input(2.0, 1000.0, 8000.0, 0.0);
+    point.fit_pressure_min = point.fit_pressure;
+    point.fit_pressure_max = point.fit_pressure;
+    let cfg0 = EdgeConfig { strength_cv: 0.0, model_error: false, ..EdgeConfig::default() };
+    let rep = run(&models, &point, &cfg0);
+    let t = rep.models[0].targets[bi].as_ref().unwrap();
+    let nominal = e_of(t.e_min);
+    for l in t.e_levels {
+        assert!((e_of(l) - nominal).abs() < 0.02 * rep.bore_diameter, "{l:?} vs nominal {nominal}");
+    }
+
+    // With the default scatter: P90 <= P95 <= P99, all above nominal, and the
+    // report's recommendation is the largest of them over targets.
+    let cfg = EdgeConfig::default();
+    let rep = run(&models, &input(2.0, 1000.0, 8000.0, 0.3), &cfg);
+    let t = rep.models[0].targets[bi].as_ref().unwrap();
+    let (p90, p95, p99) = (e_of(t.e_levels[0]), e_of(t.e_levels[1]), e_of(t.e_levels[2]));
+    let nominal = e_of(t.e_min);
+    assert!(nominal < p90 && p90 <= p95 && p95 <= p99, "nominal {nominal}, P90 {p90}, P95 {p95}, P99 {p99}");
+    let (rec, who) = rep.recommended(2).unwrap();
+    assert_eq!(who, "analytic");
+    assert!(e_of(rec) >= p99 - 1e-12);
 }

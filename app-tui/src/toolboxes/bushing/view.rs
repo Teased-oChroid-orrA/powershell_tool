@@ -931,7 +931,7 @@ mod tests {
     #[test]
     fn every_topic_tooltip_has_the_four_sections_and_fits_a_small_pane() {
         use super::super::edge_check::{tip, EdgeTopic};
-        for t in [EdgeTopic::Legacy, EdgeTopic::StressSuperposition, EdgeTopic::Allowables, EdgeTopic::PlasticFe, EdgeTopic::ContactFe] {
+        for t in [EdgeTopic::Legacy, EdgeTopic::StressSuperposition, EdgeTopic::Allowables, EdgeTopic::PlasticFe, EdgeTopic::ContactFe, EdgeTopic::Recommended] {
             let headings: Vec<&str> = tip(t).sections.iter().map(|(h, _)| *h).collect();
             assert_eq!(headings, ["What it does", "Strengths", "Weaknesses", "Restrictions"], "{t:?}");
             let mut state = BushingState::default();

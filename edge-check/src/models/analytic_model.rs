@@ -15,6 +15,11 @@ impl EdgeModel for AnalyticModel {
     fn label(&self) -> &'static str {
         "Stress superposition"
     }
+    /// Engineering judgement, not test-calibrated: the elastic mean-shear criterion
+    /// is unvalidated and its capacity differs from the contact FE's by ~15% on the default bushing.
+    fn model_cv(&self) -> f64 {
+        0.15
+    }
     fn respond(&self, geom: &Geometry, mat: &Strengths, _fit_pressure: f64) -> Result<Box<dyn Response>, String> {
         let field = AnalyticField::build(geom.bore_radius, geom.edge, geom.thickness, mat.nu)?;
         Ok(Box::new(FieldResponse::build(&field, geom, mat)?))

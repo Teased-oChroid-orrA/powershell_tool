@@ -48,6 +48,15 @@ pub trait EdgeModel {
         true
     }
 
+    /// Coefficient of variation of this model's own prediction error (its
+    /// capacity as a multiplicative random factor), from validation against
+    /// test data where there is some, else an engineering judgement stated
+    /// where it is set. `0` for a check that already is a statistical
+    /// allowable.
+    fn model_cv(&self) -> f64 {
+        0.0
+    }
+
     /// Whether the margin is a smooth monotone function of the edge
     /// distance, so the runner may search for the minimum edge distance.
     /// Models with a stepped allowable (the tabulated-`Fbru` check) say no.

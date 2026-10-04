@@ -56,10 +56,16 @@ both as a second table; "fit uses" = `1 - capacity/capacity_no_fit` for Strength
 is the Bearing target's. The report also
 shows each margin with the fit removed, to isolate what the interference does.
 
+## Recommended edge distance (P90 / P95 / P99)
+
+Because the nominal margin ignores variability, every run also finds, per model, the e/D at which the failure probability falls to 10 / 5 / 1 %, and recommends the largest of them over the models at P99 (`EdgeReport::recommended`, `TargetResult::e_levels`, `runner::search_levels`). Variability sampled (Latin hypercube, 800 samples, fixed seed): the fit pressure uniform over its tolerance band; the edge strength (`EdgeConfig::strength_cv`, **5 %, an assumption for typical handbook values, not user data**); the model's own error (`EdgeModel::model_cv`: contact FE 9 % = sd of its 12 NACA TN 1503 validation errors, superposition 15 % = engineering judgement since it is unvalidated, allowables 0 % since they are already statistical); and, for the bearing-limit load, the bearing strength as an independent factor (independent is the more conservative of independent and correlated). All normal, clipped at 3 sigma. The strength and bearing targets are searched (first yield is informational). With all scatter off the three levels collapse to the nominal minimum (tested).
+
+Default bushing (e/D 1.5): nominal minimum 1.37 / 1.74 / 1.58 (superposition / allowables / contact FE); P90 1.73 / 2.00 / 1.90, P95 1.84 / 2.00 / 1.99, P99 2.11 / 2.00 / 2.25; recommended e/D 2.25 (1.12 in) set by the contact FE. The P(fail) column now includes this scatter (superposition 27 %, allowables 100 %, contact FE 66 % at e/D 1.5).
+
 ## Monte Carlo
 
 Latin-hypercube samples (fixed seed, reproducible) of the fit pressure over its tolerance band
-(uniform) and, optionally, a strength coefficient of variation (`EdgeConfig::strength_cv`, default 0).
+(uniform), the strength (`EdgeConfig::strength_cv`, default 5 %) and each model's own error (`model_cv`, switch `EdgeConfig::model_error`).
 Reported: `P(margin < 0)` per target. Cheap because it only recombines stored unit fields.
 
 ## Validation (all in `edge-check/tests/verification.rs` and unit tests)

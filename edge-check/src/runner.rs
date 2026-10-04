@@ -27,8 +27,13 @@ pub struct EdgeConfig {
     /// Monte-Carlo samples (0 disables the pass).
     pub mc_samples: usize,
     pub seed: u64,
-    /// Coefficient of variation applied to every strength (0 = none).
+    /// Coefficient of variation of the material strengths in the Monte-Carlo
+    /// pass and the recommended-edge-distance search (0 = none). The default
+    /// 5 % is an assumption for typical (not A-basis) values, not user data.
     pub strength_cv: f64,
+    /// Include each model's own prediction error (`EdgeModel::model_cv`) in the
+    /// Monte-Carlo pass and the recommended edge distances.
+    pub model_error: bool,
     /// `Fbru` at `e/D = 1.5` (psi) for the tabulated-allowable check.
     pub fbru_e15: Option<f64>,
     /// Edge-distance search bracket, in multiples of the bore diameter.
@@ -44,7 +49,7 @@ pub struct EdgeConfig {
 
 impl Default for EdgeConfig {
     fn default() -> Self {
-        Self { mc_samples: 2000, seed: 0x5EED_ED6E, strength_cv: 0.0, fbru_e15: None, search_lo: 0.75, search_hi: 8.0, include_plastic: false, bushing: None }
+        Self { mc_samples: 2000, seed: 0x5EED_ED6E, strength_cv: 0.05, model_error: true, fbru_e15: None, search_lo: 0.75, search_hi: 8.0, include_plastic: false, bushing: None }
     }
 }
 
@@ -82,6 +87,28 @@ pub enum EdgeMin {
     NotSearched,
 }
 
+impl EdgeMin {
+    /// Ordering for "which requirement is stricter": exceeding the search
+    /// range > a found value > already satisfied at the lower end.
+    pub fn rank(self) -> (i8, f64) {
+        match self {
+            EdgeMin::Exceeds(v) => (2, v),
+            EdgeMin::Value(v) => (1, v),
+            EdgeMin::AtMost(v) => (0, v),
+            EdgeMin::NotSearched => (-1, 0.0),
+        }
+    }
+
+    /// The stricter of two requirements.
+    pub fn larger(self, other: EdgeMin) -> EdgeMin {
+        if other.rank() > self.rank() {
+            other
+        } else {
+            self
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TargetResult {
     pub target: Target,
@@ -100,7 +127,15 @@ pub struct TargetResult {
     pub capacity_no_fit_lbf: f64,
     pub e_min: EdgeMin,
     pub mc: Option<MarginStats>,
+    /// Smallest edge distance whose failure probability, over the fit-pressure
+    /// band, material scatter and the model's own error, is at most
+    /// 10 % / 5 % / 1 % (see [`CONFIDENCE`]). `NotSearched` for targets or
+    /// models that do not support it.
+    pub e_levels: [EdgeMin; 3],
 }
+
+/// Survival levels of the recommended edge distance (P90, P95, P99).
+pub const CONFIDENCE: [f64; 3] = [0.90, 0.95, 0.99]; 
 
 #[derive(Debug, Clone)]
 pub struct ModelReport {
@@ -113,6 +148,16 @@ pub struct ModelReport {
     pub targets: Vec<Option<TargetResult>>,
     pub notes: Vec<String>,
     pub elapsed: Duration,
+    /// The model's own prediction-error CV used in its Monte-Carlo pass (0 if switched off).
+    pub model_cv: f64,
+}
+
+impl ModelReport {
+    /// This model's edge distance at survival level `level`: the larger of
+    /// its strength and bearing targets. `None` if it has none.
+    pub fn level(&self, level: usize) -> Option<EdgeMin> {
+        self.targets.iter().flatten().filter(|t| recommends(&t.target)).map(|t| t.e_levels[level]).filter(|e| *e != EdgeMin::NotSearched).reduce(EdgeMin::larger)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -122,10 +167,28 @@ pub struct EdgeReport {
     pub applied_load: f64,
     pub bearing_limit_load: f64,
     pub fit_pressure: f64,
+    /// Material-strength CV assumed in the Monte-Carlo pass.
+    pub strength_cv: f64,
     pub models: Vec<ModelReport>,
 }
 
 impl EdgeReport {
+    /// The recommended (conservative) edge distance at survival level
+    /// `level` (index into [`CONFIDENCE`]): the largest over the models and
+    /// the strength / bearing targets, with the model that sets it. `None`
+    /// if no model produced one.
+    pub fn recommended(&self, level: usize) -> Option<(EdgeMin, &'static str)> {
+        let mut best: Option<(EdgeMin, &'static str)> = None;
+        for m in self.models.iter().filter(|m| m.error.is_none()) {
+            if let Some(e) = m.level(level) {
+                if best.is_none_or(|(b, _)| e.rank() > b.rank()) {
+                    best = Some((e, m.id));
+                }
+            }
+        }
+        best
+    }
+
     /// Whether the models that found a smallest edge distance for target
     /// `i` agree to within `rel` (fraction of the larger value) - `None`
     /// when fewer than two did.
@@ -204,32 +267,11 @@ fn target_margin(resp: &dyn Response, target: &Target, loads: &Loads, scale: f64
     resp.margins(loads, scale).into_iter().filter(|m| target.modes.contains(&m.mode)).map(|m| (m.margin, m.mode)).min_by(|a, b| a.0.total_cmp(&b.0))
 }
 
-/// Illinois-method root of the margin in the edge distance; every
-/// evaluation rebuilds the model's response at that edge distance.
-fn search_edge(
-    model: &dyn EdgeModel,
-    input: &EdgeInput,
-    target: &Target,
-    lo_in: f64,
-    hi_in: f64,
-    cache: &mut Vec<(f64, Vec<Option<f64>>)>,
-) -> EdgeMin {
-    let d = 2.0 * input.geom.bore_radius;
-    let tol = 0.004 * d;
-    let eval = |e: f64, cache: &mut Vec<(f64, Vec<Option<f64>>)>| -> Option<f64> {
-        let ti = TARGETS.iter().position(|t| t.label == target.label).unwrap();
-        if let Some((_, v)) = cache.iter().find(|(ce, _)| (*ce - e).abs() < 1e-12) {
-            return v[ti];
-        }
-        let mut geom = input.geom;
-        geom.edge = e;
-        let resp = model.respond_for_search(&geom, &input.strengths, input.fit_pressure).ok()?;
-        let vals: Vec<Option<f64>> = TARGETS.iter().map(|t| target_margin(&*resp, t, &loads_for(input, t.case, input.fit_pressure), 1.0).map(|x| x.0)).collect();
-        let out = vals[ti];
-        cache.push((e, vals));
-        out
-    };
-    let (Some(mut flo), Some(mut fhi)) = (eval(lo_in, cache), eval(hi_in, cache)) else {
+/// Illinois-method root of `eval` (a margin that grows with the edge
+/// distance) on `[lo_in, hi_in]`: the smallest edge distance with
+/// `eval >= 0`, or why there is none.
+fn root_search(lo_in: f64, hi_in: f64, tol: f64, eval: &mut dyn FnMut(f64) -> Option<f64>) -> EdgeMin {
+    let (Some(mut flo), Some(mut fhi)) = (eval(lo_in), eval(hi_in)) else {
         return EdgeMin::NotSearched;
     };
     if flo >= 0.0 {
@@ -251,7 +293,7 @@ fn search_edge(
         if !(e > lo && e < hi) {
             e = 0.5 * (lo + hi);
         }
-        let Some(fe) = eval(e, cache) else {
+        let Some(fe) = eval(e) else {
             return EdgeMin::NotSearched;
         };
         if fe >= 0.0 {
@@ -273,13 +315,101 @@ fn search_edge(
     EdgeMin::Value(hi)
 }
 
+/// Smallest edge distance for which `target`'s nominal margin is >= 0.
+fn search_edge(model: &dyn EdgeModel, input: &EdgeInput, target: &Target, lo_in: f64, hi_in: f64, cache: &mut Vec<(f64, Vec<Option<f64>>)>) -> EdgeMin {
+    let d = 2.0 * input.geom.bore_radius;
+    let ti = TARGETS.iter().position(|t| t.label == target.label).unwrap();
+    let mut eval = |e: f64| -> Option<f64> {
+        if let Some((_, v)) = cache.iter().find(|(ce, _)| (*ce - e).abs() < 1e-12) {
+            return v[ti];
+        }
+        let mut geom = input.geom;
+        geom.edge = e;
+        let resp = model.respond_for_search(&geom, &input.strengths, input.fit_pressure).ok()?;
+        let vals: Vec<Option<f64>> = TARGETS.iter().map(|t| target_margin(&*resp, t, &loads_for(input, t.case, input.fit_pressure), 1.0).map(|x| x.0)).collect();
+        let out = vals[ti];
+        cache.push((e, vals));
+        out
+    };
+    root_search(lo_in, hi_in, 0.004 * d, &mut eval)
+}
+
+/// Targets that get a recommended edge distance (everything but the
+/// informational first-yield one).
+fn recommends(target: &Target) -> bool {
+    !target.modes.contains(&Mode::FirstYield)
+}
+
+/// One Monte-Carlo draw of `target`'s margin: fit pressure uniform over its
+/// band; the edge strength and the model's own error as independent
+/// normal factors on the capacity; for the bearing-limit load, the bearing
+/// strength as a third independent factor on the load (independent, so the
+/// recommendation is the more conservative of correlated and uncorrelated).
+fn margin_sample(resp: &dyn Response, target: &Target, input: &EdgeInput, cfg: &EdgeConfig, model_cv: f64, u: &[f64]) -> f64 {
+    let z = |k: usize| inverse_normal_cdf(u[k]).clamp(-3.0, 3.0);
+    let fit = input.fit_pressure_min + (input.fit_pressure_max - input.fit_pressure_min) * u[0];
+    let cap_scale = ((1.0 + cfg.strength_cv * z(1)) * (1.0 + model_cv * z(2))).max(0.05);
+    let mut loads = loads_for(input, target.case, fit);
+    if target.case == Case::BearingLimit {
+        loads.pin_load *= (1.0 + cfg.strength_cv * z(3)).max(0.05);
+    }
+    target_margin(resp, target, &loads, cap_scale).map_or(f64::INFINITY, |x| x.0)
+}
+
+/// Samples used for the recommended-edge-distance search (fewer than the
+/// reported Monte-Carlo pass: it is evaluated at every edge distance tried).
+const LEVEL_SAMPLES: usize = 800;
+
+/// For each target that has one, the edge distances at which the failure
+/// probability under the full variability falls to 10 / 5 / 1 %: the
+/// `(1 - confidence)` quantile of the sampled margin crosses zero.
+fn search_levels(model: &dyn EdgeModel, input: &EdgeInput, cfg: &EdgeConfig, model_cv: f64, lo: f64, hi: f64) -> Vec<[EdgeMin; 3]> {
+    let samples = latin_hypercube(LEVEL_SAMPLES, 4, cfg.seed ^ 0xA5A5);
+    let d = 2.0 * input.geom.bore_radius;
+    // edge -> per target, the margin quantile at each level
+    let mut cache: Vec<(f64, Vec<[f64; 3]>)> = Vec::new();
+    let mut out = vec![[EdgeMin::NotSearched; 3]; TARGETS.len()];
+    for ti in (0..TARGETS.len()).filter(|&i| recommends(&TARGETS[i])) {
+        for (li, conf) in CONFIDENCE.iter().enumerate() {
+            let alpha = 1.0 - conf;
+            let mut eval = |e: f64| -> Option<f64> {
+                if let Some((_, v)) = cache.iter().find(|(ce, _)| (*ce - e).abs() < 1e-12) {
+                    return Some(v[ti][li]);
+                }
+                let mut geom = input.geom;
+                geom.edge = e;
+                let resp = model.respond_for_search(&geom, &input.strengths, input.fit_pressure).ok()?;
+                let per_target: Vec<[f64; 3]> = TARGETS
+                    .iter()
+                    .map(|t| {
+                        if !recommends(t) {
+                            return [f64::NAN; 3];
+                        }
+                        let mut ms: Vec<f64> = samples.iter().map(|u| margin_sample(&*resp, t, input, cfg, model_cv, u)).collect();
+                        ms.sort_by(|a, b| a.total_cmp(b));
+                        let q = |a: f64| ms[((a * ms.len() as f64) as usize).min(ms.len() - 1)];
+                        [q(1.0 - CONFIDENCE[0]), q(1.0 - CONFIDENCE[1]), q(1.0 - CONFIDENCE[2])]
+                    })
+                    .collect();
+                let v = per_target[ti][li];
+                cache.push((e, per_target));
+                Some(v)
+            };
+            let _ = alpha;
+            out[ti][li] = root_search(lo, hi, 0.004 * d, &mut eval);
+        }
+    }
+    out
+}
+
 pub fn run(models: &[Box<dyn EdgeModel>], input: &EdgeInput, cfg: &EdgeConfig) -> EdgeReport {
     let d = 2.0 * input.geom.bore_radius;
-    let samples = if cfg.mc_samples > 0 { latin_hypercube(cfg.mc_samples, 2, cfg.seed) } else { Vec::new() };
+    let samples = if cfg.mc_samples > 0 { latin_hypercube(cfg.mc_samples, 4, cfg.seed) } else { Vec::new() };
     let mut reports = Vec::with_capacity(models.len());
     for model in models {
         let t0 = Instant::now();
-        let mut rep = ModelReport { id: model.id(), label: model.label(), field_model: model.is_field_model(), error: None, targets: vec![None; TARGETS.len()], notes: Vec::new(), elapsed: Duration::ZERO };
+        let model_cv = if cfg.model_error { model.model_cv() } else { 0.0 };
+        let mut rep = ModelReport { id: model.id(), label: model.label(), field_model: model.is_field_model(), error: None, targets: vec![None; TARGETS.len()], notes: Vec::new(), elapsed: Duration::ZERO, model_cv };
         match model.respond(&input.geom, &input.strengths, input.fit_pressure) {
             Err(e) => rep.error = Some(e),
             Ok(resp) => {
@@ -296,20 +426,13 @@ pub fn run(models: &[Box<dyn EdgeModel>], input: &EdgeInput, cfg: &EdgeConfig) -
                     let Some((margin, governing)) = target_margin(&*resp, target, &loads, 1.0) else { continue };
                     let no_fit = target_margin(&*resp, target, &loads_for(input, target.case, 0.0), 1.0).map_or(f64::NAN, |x| x.0);
                     let mc = (!samples.is_empty()).then(|| {
-                        let ms: Vec<f64> = samples
-                            .iter()
-                            .map(|u| {
-                                let fit = input.fit_pressure_min + (input.fit_pressure_max - input.fit_pressure_min) * u[0];
-                                let scale = if cfg.strength_cv > 0.0 { (1.0 + cfg.strength_cv * inverse_normal_cdf(u[1]).clamp(-3.0, 3.0)).max(0.05) } else { 1.0 };
-                                target_margin(&*resp, target, &loads_for(input, target.case, fit), scale).map_or(f64::INFINITY, |x| x.0)
-                            })
-                            .collect();
+                        let ms: Vec<f64> = samples.iter().map(|u| margin_sample(&*resp, target, input, cfg, model_cv, u)).collect();
                         summarize(&ms)
                     });
                     let start = loads.pin_load;
                     let cap = capacity(&*resp, target, input.fit_pressure, 1.0, start);
                     let cap_no_fit = capacity(&*resp, target, 0.0, 1.0, start);
-                    rep.targets[i] = Some(TargetResult { target: *target, margin, governing, margin_no_fit: no_fit, capacity_lbf: cap, capacity_no_fit_lbf: cap_no_fit, e_min: EdgeMin::NotSearched, mc });
+                    rep.targets[i] = Some(TargetResult { target: *target, margin, governing, margin_no_fit: no_fit, capacity_lbf: cap, capacity_no_fit_lbf: cap_no_fit, e_min: EdgeMin::NotSearched, mc, e_levels: [EdgeMin::NotSearched; 3] });
                 }
                 if model.supports_edge_search() {
                     let mut cache = Vec::new();
@@ -318,11 +441,19 @@ pub fn run(models: &[Box<dyn EdgeModel>], input: &EdgeInput, cfg: &EdgeConfig) -
                             tr.e_min = search_edge(&**model, input, target, cfg.search_lo * d, cfg.search_hi * d, &mut cache);
                         }
                     }
+                    if cfg.mc_samples > 0 {
+                        let levels = search_levels(&**model, input, cfg, model_cv, cfg.search_lo * d, cfg.search_hi * d);
+                        for (i, l) in levels.into_iter().enumerate() {
+                            if let Some(tr) = rep.targets[i].as_mut() {
+                                tr.e_levels = l;
+                            }
+                        }
+                    }
                 }
             }
         }
         rep.elapsed = t0.elapsed();
         reports.push(rep);
     }
-    EdgeReport { bore_diameter: d, edge: input.geom.edge, applied_load: input.applied_load, bearing_limit_load: bearing_limit_load(input), fit_pressure: input.fit_pressure, models: reports }
+    EdgeReport { bore_diameter: d, edge: input.geom.edge, applied_load: input.applied_load, bearing_limit_load: bearing_limit_load(input), fit_pressure: input.fit_pressure, strength_cv: cfg.strength_cv, models: reports }
 }

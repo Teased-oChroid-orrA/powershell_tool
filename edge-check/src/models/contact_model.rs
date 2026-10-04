@@ -156,6 +156,12 @@ impl EdgeModel for ContactModel {
         false
     }
 
+    /// Standard deviation of the prediction error over the 12 NACA TN 1503
+    /// test points (-5.9 % mean, 8.5 % sd; `tests/validation_naca_tn1503.rs`).
+    fn model_cv(&self) -> f64 {
+        0.09
+    }
+
     fn respond(&self, geom: &Geometry, mat: &Strengths, fit_pressure: f64) -> Result<Box<dyn Response>, String> {
         let k = key(geom, mat, fit_pressure);
         if let Some((ck, profile)) = self.cache.lock().unwrap().as_ref() {
