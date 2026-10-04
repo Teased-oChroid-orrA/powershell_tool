@@ -61,6 +61,57 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingState, 
         draw_advice_window(frame, area, theme, state, regions);
     }
     draw_edge_tip(frame, area, theme, state);
+    draw_edge_status(frame, area, theme, state);
+}
+
+/// The persistent cross-check status tooltip, top right of the pane: while a
+/// run is in flight (spinner, elapsed time, what is being solved) and, after
+/// it, what it found - until Esc, a click or `EDGE_NOTICE_SECS`.
+fn draw_edge_status(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingState) {
+    use ratatui::widgets::Clear;
+
+    if area.width < 30 || area.height < 8 {
+        return;
+    }
+    let (title, tone, lines, hint): (String, StatusTone, Vec<String>, &str) = if let Some(job) = &state.edge_job {
+        let secs = job.started.elapsed().as_secs_f64();
+        let what = if job.deep {
+            "Solving the bushing + housing contact FE on parallel threads (typically 2-4 s), plus the quick set."
+        } else {
+            "Superposition and tabulated allowables (typically under half a second)."
+        };
+        (
+            format!("{} Edge check running - {secs:.1} s", super::edge_check::spinner_glyph(theme, secs)),
+            StatusTone::Warning,
+            vec![what.to_string(), "You can keep working: the app stays responsive. The Results table keeps the previous run until this one finishes, and flags a run as stale if the inputs changed meanwhile.".to_string()],
+            " Esc cancels ",
+        )
+    } else if let Some(n) = &state.edge_notice {
+        let tone = match n.kind {
+            super::EdgeNoticeKind::Done => StatusTone::Success,
+            super::EdgeNoticeKind::Short => StatusTone::Danger,
+            super::EdgeNoticeKind::Failed => StatusTone::Danger,
+            super::EdgeNoticeKind::Info => StatusTone::Info,
+        };
+        let mark = match n.kind {
+            super::EdgeNoticeKind::Done => "\u{2713} ",
+            super::EdgeNoticeKind::Short | super::EdgeNoticeKind::Failed => "\u{2717} ",
+            super::EdgeNoticeKind::Info => "",
+        };
+        (format!("{mark}{}", n.title), tone, n.lines.clone(), " Esc closes ")
+    } else {
+        return;
+    };
+    let width = area.width.saturating_sub(2).min(64);
+    let inner_w = width.saturating_sub(2).max(1);
+    let text: Vec<Line> = lines.into_iter().map(Line::from).collect();
+    let height = (crate::widgets::scroll_paragraph::wrapped_height(&text, inner_w) + 2).min(area.height.saturating_sub(1)).max(3);
+    let rect = Rect { x: area.x + area.width - width - 1, y: area.y + 1, width, height };
+    frame.render_widget(Clear, rect);
+    let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.status_style(tone)).title(format!(" {title} ")).title_bottom(hint);
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), inner);
 }
 
 /// Tooltip for a cross-check: shown while the mouse is over its name, or
@@ -281,7 +332,8 @@ fn draw_readout(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingSta
         draw_action_bar(frame, bar, theme, state, interactive.then_some(&mut *regions));
     }
     let stale = state.edge_check.as_ref().is_some_and(|run| super::edge_check::build_input(&state.model).as_ref() != Ok(&run.input));
-    let edge_section = super::edge_check::section_lines(theme, state.edge_check.as_ref(), stale, &state.model);
+    let running = state.edge_job.as_ref().map(|j| (j.started.elapsed().as_secs_f64(), j.deep));
+    let edge_section = super::edge_check::section_lines_with(theme, state.edge_check.as_ref(), stale, &state.model, running);
     let advisories = super::edge_check::advisories(state.edge_check.as_ref(), stale);
     let (lines, tags) = readout_lines(theme, &state.model, state.show_numbers, state.last_applied.as_deref(), state.input_error.as_deref(), edge_section, advisories);
     let clicks = crate::widgets::scroll_paragraph::render_interactive(frame, body_area, theme, lines, state.results_scroll, &tags);
@@ -310,8 +362,19 @@ fn draw_action_bar(frame: &mut Frame, area: Rect, theme: &Theme, state: &Bushing
         buttons.push((label.to_string(), BushingAction::OpenExplain, active(StatusTone::Warning)));
     }
     buttons.push((format!(" Numbers: {} ", if state.show_numbers { "on" } else { "off" }), BushingAction::ToggleNumbers, Style::default().add_modifier(Modifier::REVERSED)));
-    buttons.push((" Edge check ".to_string(), BushingAction::EdgeCheck, Style::default().add_modifier(Modifier::REVERSED)));
-    buttons.push((" +Contact FE ".to_string(), BushingAction::EdgeCheckDeep, Style::default().add_modifier(Modifier::REVERSED)));
+    let busy = |deep: bool, idle: &str| -> (String, Style) {
+        match state.edge_job.as_ref().filter(|j| j.deep == deep) {
+            Some(j) => {
+                let secs = j.started.elapsed().as_secs_f64();
+                (format!(" {} running {secs:.1} s ", super::edge_check::spinner_glyph(theme, secs)), active(StatusTone::Warning))
+            }
+            None => (idle.to_string(), Style::default().add_modifier(Modifier::REVERSED)),
+        }
+    };
+    let (quick_label, quick_style) = busy(false, " Edge check ");
+    let (deep_label, deep_style) = busy(true, " +Contact FE ");
+    buttons.push((quick_label, BushingAction::EdgeCheck, quick_style));
+    buttons.push((deep_label, BushingAction::EdgeCheckDeep, deep_style));
     buttons.push((" Export ".to_string(), BushingAction::Export, Style::default().add_modifier(Modifier::REVERSED)));
 
     let mut spans = Vec::new();
@@ -820,6 +883,31 @@ mod tests {
         assert!(!fresh.contains("inputs changed"));
         let stale = flat(&super::super::edge_check::section_lines(&theme, state.edge_check.as_ref(), true, &state.model).0);
         assert!(stale.contains("inputs changed"));
+    }
+
+    #[test]
+    fn a_running_check_shows_a_persistent_tooltip_and_a_finished_one_says_what_it_found() {
+        let mut state = BushingState::default();
+        assert!(!rendered_text(&state, 160, 50).contains("Edge check running"));
+        let effects = state.perform(BushingAction::EdgeCheckDeep);
+        let text = rendered_text(&state, 160, 50);
+        for needle in ["Edge check running", "contact FE", "Esc cancels", "running"] {
+            assert!(text.contains(needle), "running tooltip lacks {needle:?}:\n{text}");
+        }
+        // Still there on later frames, until the result arrives.
+        assert!(rendered_text(&state, 160, 50).contains("Edge check running"));
+        for e in effects {
+            if let crate::app::Effect::RunEdgeCheck { id, input, cfg, .. } = e {
+                state.finish_edge_check(id, super::super::edge_check::execute(input, &cfg));
+            }
+        }
+        let text = rendered_text(&state, 160, 50);
+        assert!(!text.contains("Edge check running"), "{text}");
+        for needle in ["Edge check finished in", "Superposition:", "Contact FE:", "Esc closes"] {
+            assert!(text.contains(needle), "completion tooltip lacks {needle:?}:\n{text}");
+        }
+        state.edge_notice = None;
+        assert!(!rendered_text(&state, 160, 50).contains("Edge check finished"));
     }
 
     #[test]

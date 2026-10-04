@@ -19,7 +19,7 @@ stress field instead, with two independent cross-checks, so the legacy numbers c
 | **Stress superposition** (primary) | Muskhelishvili complex potentials for the half plane `x > 0` minus the bore disc. Fundamental solutions (poles of every order at the bore centre and its mirror image, Kelvin logs tied by `psi ~ -kappa conj(alpha) ln`) fitted by least squares to "bore carries the contact tractions, edge `x = 0` traction free". Smooth closed-form field, no mesh. | 3-5 ms per geometry |
 | **Plane-stress FE** | Q9 elements, O-grid conforming to bore / free edge / far face / top face, half model about the load line, banded Cholesky, three unit load cases from one factorisation. | ~50 ms (fine mesh), ~15 ms (search mesh) |
 | **Elastic-plastic FE limit load** (fallback when no bushing is given; superseded by the contact FE) | Same Q9 mesh, J2 perfect plasticity, **plane strain**, flow stress `min(Ftu, sqrt(3) Fsu)`, fit pressure as a dead load, pin load on the loaded half-arc raised under *displacement control* (load control has no equilibrium past collapse, so "stopped converging" is ambiguous). Initial-stress iteration on the elastic factorisation with Anderson acceleration; closed-form return map; jump straight to 90 % of first yield. The collapse load is solved on an edge-distance grid in parallel threads (+ the actual edge, + the no-fit case) and every other edge distance is read off that profile. | 1-2 s (6-9 parallel solves of ~0.5 s) |
-| **Contact FE** (`C` only; `contact.rs`, `models/contact_model.rs`) | Bushing **and** housing meshed (Q9, plane strain, one lattice row per angular station so the interface stays inside the band). The interference is an initial overlap resolved by penalty contact (`kn = 100 E/a`) with Coulomb friction (C1-smoothed, slip limit `mu p` frozen within a solve and refreshed per load step). The fit is installed first (4 steps only if it yields), the rigid pin is conformed to the post-fit bore and pushed toward the edge under displacement control; the far-face reaction is a follower load of the computed pin load (Sherman-Morrison in the iteration matrix). Housing J2 perfect plasticity, bushing elastic. First-yield load extrapolated from one elastic pin step; collapse = load plateau (a further 1.6x of displacement adds < 2 %, twice). Modified Newton with a contact-set-aware refactorisation, damped steps while the set settles, Anderson acceleration for the plasticity. Solved on an edge-distance grid {1, 1.5, 2, 3, 4} D + the actual edge at {0, 1, 1.5}x the interference (at most 8 parallel solves); everything else is interpolated. | ~1.5 s per solve, ~3 s wall for `C` |
+| **Contact FE** (`C` only; `contact.rs`, `models/contact_model.rs`) | Bushing **and** housing meshed (Q9, plane strain, one lattice row per angular station so the interface stays inside the band). The interference is an initial overlap resolved by penalty contact (`kn = 100 E/a`) with Coulomb friction (C1-smoothed, slip limit `mu p` frozen within a solve and refreshed per load step). The fit is installed first (4 steps only if it yields), the rigid pin is conformed to the post-fit bore and pushed toward the edge under displacement control; the far-face reaction is a follower load of the computed pin load (Sherman-Morrison in the iteration matrix). Housing J2 perfect plasticity with flow stress `(Ftu + Fty)/2` (capped at `sqrt(3) Fsu`; see the test-data validation below), bushing elastic. First-yield load extrapolated from one elastic pin step; collapse = load plateau (a further 1.6x of displacement adds < 2 %, twice). Modified Newton with a contact-set-aware refactorisation, damped steps while the set settles, Anderson acceleration for the plasticity. Solved on an edge-distance grid {1, 1.5, 2, 3, 4} D + the actual edge at {0, 1, 1.5}x the interference (at most 8 parallel solves); everything else is interpolated. | ~1.5 s per solve, ~3 s wall for `C` |
 | **Tabulated allowables** | `P/(D t) <= Fbru(e/D)` (Fbru taken as the e/D = 2.0 value; interpolated to 1.5 only if a 1.5 value is supplied) and the classical 40-degree shear-out rule `P + p D t <= 2 Fsu t (e - (D/2) cos theta)` (the fit's `p D t` is charged at 100 %, same strip equilibrium as the stress models; bearing is not reduced by the fit). No stress field. | microseconds |
 
 ## Load model
@@ -138,12 +138,32 @@ Default bushing (7075 housing, e/D 1.5, p = 8.8 ksi):
 | Legacy (`Fbru + 0.8 p`) | 2.07 | |
 | Plastic FE, cosine half load, fit dead load (old) | 1.81 | 25,400 |
 | Stress superposition | 1.37 | 33,800 |
-| **Contact FE** | **1.49** | **30,400** (bearing limit 30,250) |
+| **Contact FE** (flow stress (Ftu+Fty)/2) | **1.58** | **29,000** (bearing limit 30,250: short by 4 %) |
 
 * **The fit barely changes the collapse load** (within the 1-2 % plateau scatter, either sign), as limit-load theory predicts for a residual stress installed before the load. The old dead-load treatment cost 8 %. The fit still matters for first yield and for retention.
 * **Back-side contact is retained to ~2.7x the load the cosine models predict**: they open it at `P = p pi a t` (3.9 kips here), the real bushing keeps it to ~10 kips (back pressure 9.7 ksi at 0.6 kips, 2.3 ksi at 9 kips, 0 at ~11 kips; the bushing wall carries the load into the front half). The superposition's `pin_case` switch is therefore conservative; `edge_check` does not use it for the contact FE.
 * Friction (mu 0.15) adds ~6 % collapse capacity vs frictionless; mu is a bushing input, not a model constant.
-* The plain Contact-FE result at the default e/D is a **marginal pass** (+0.4 %): treat e/D ~1.5 as the boundary, not a safe value.
+* With the validated flow stress the Contact FE says the default e/D 1.5 is **4 % short** of the bearing-limit load (needs e/D 1.58). The earlier +0.4 % pass used `Ftu` as flow stress, which the test data show to over-predict 7075 by 5-16 %. Allowables (1.74) and the legacy check (2.07) are stricter, superposition (1.37) looser.
+
+## Test-data validation (NACA TN 1503)
+
+Search result: no public source tabulates raw bushed-hole or interference-fit edge-distance tests. The Air Force lug method (Melcon & Hoblit, 1953) and MMPDS publish only curves and statistical allowables. The one openly available set of raw pin-bearing tests with edge distance is **NACA TN 1503** (R. L. Moore, Alcoa, 1948; NTRS 19930082186; page images, transcribed by hand and checked against its own Table III ratios): 0.500 in steel pin, t = 0.250 in (t/D 0.5), 2 in wide specimens, e/D 1.5 and 2.0, rolled bar of 75S-T (= 7075-T6), 24S-T (= 2024-T4) and 14S-T (= 2014-T6), two sizes each. TN 920/974/981 (sheet and plate) were not retrievable in readable form.
+
+`edge-check/tests/validation_naca_tn1503.rs` runs the contact FE on the actual specimens (width 2 in, steel pin as a thick steel cylinder with a rigid core, no interference) and compares the predicted ultimate bearing stress `P/(D t)` with the measured one:
+
+| Alloy (bar) | e/D | Test (psi) | Contact FE, flow stress (Ftu+Fty)/2 | with flow stress Ftu |
+|---|---|---|---|---|
+| 75S-T 1x2 | 1.5 / 2.0 | 115,500 / 151,900 | +6.9 % / +0.1 % | +12.1 % / +4.9 % |
+| 75S-T 2x2 | 1.5 / 2.0 | 109,500 / 140,400 | +4.4 % / +0.3 % | +16.1 % / +11.4 % |
+| 24S-T 1x2 | 1.5 / 2.0 | 98,500 / 123,000 | -13.1 % / -14.4 % | +1.4 % / -0.1 % |
+| 24S-T 2x2 | 1.5 / 2.0 | 98,400 / 123,400 | -16.3 % / -17.8 % | -2.1 % / -3.9 % |
+| 14S-T 1x2 | 1.5 / 2.0 | 102,800 / 129,500 | -5.1 % / -7.3 % | -0.7 % / -3.0 % |
+| 14S-T 2x2 | 1.5 / 2.0 | 99,400 / 124,200 | -3.8 % / -5.3 % | +1.8 % / +0.3 % |
+
+* The model's flow stress is the standard limit-analysis `(Ftu + Fty)/2` (not fitted): all 12 points within -18 % / +7 %, mean absolute error 8 %, and the quantity edge distance is about, `Fbru(2.0)/Fbru(1.5)`, within 10 % of the tests. Using `Ftu` fits the ductile alloys to 4 % but over-predicts 7075 by 5-16 %, which is the unsafe side for this tool's default material, hence the choice.
+* The plain-pin friction (0.2 vs 0) raises the prediction 5-8 %; the tests agree best with a frictionless pin. The bushing/housing friction of the real model is a separate input.
+* The plastic ductile alloy 24S-T is under-predicted (conservative) because perfect plasticity ignores its hardening.
+* **Not validated**: the interference fit and the bushing (no public data found; the fit is validated analytically against Lame only), `t/D` other than 0.5, and e/D outside 1.5-2.0 (the tests are all in that range).
 
 ## Known limits
 

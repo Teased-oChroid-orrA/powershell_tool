@@ -120,6 +120,40 @@ pub struct BushingState {
     pub edge_hover: Option<(edge_check::EdgeTopic, u16, u16)>,
     /// Tooltip pinned by a click (for terminals without mouse motion); Esc closes.
     pub edge_info_pinned: Option<edge_check::EdgeTopic>,
+    /// The cross-check running on a worker thread, if any.
+    pub edge_job: Option<EdgeJob>,
+    /// The persistent tooltip about the last run (finished, failed or
+    /// cancelled); closed by Esc, a click, or after [`EDGE_NOTICE_SECS`].
+    pub edge_notice: Option<EdgeNotice>,
+    next_edge_job: u64,
+}
+
+/// How long the completion tooltip stays up unless dismissed.
+pub const EDGE_NOTICE_SECS: u64 = 20;
+
+/// A cross-check running off the UI thread (see [`BushingState::start_edge_check`]).
+#[derive(Debug, Clone)]
+pub struct EdgeJob {
+    pub id: u64,
+    pub deep: bool,
+    pub started: std::time::Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeNoticeKind {
+    Done,
+    Short,
+    Failed,
+    Info,
+}
+
+/// Content of the completion tooltip.
+#[derive(Debug, Clone)]
+pub struct EdgeNotice {
+    pub kind: EdgeNoticeKind,
+    pub title: String,
+    pub lines: Vec<String>,
+    pub at: std::time::Instant,
 }
 
 impl Default for BushingState {
@@ -142,6 +176,9 @@ impl Default for BushingState {
             edge_check: None,
             edge_hover: None,
             edge_info_pinned: None,
+            edge_job: None,
+            edge_notice: None,
+            next_edge_job: 1,
         };
         // Row 0 is always a `Header` (the first section divider) - land on
         // the first real field instead of an unselectable row.
@@ -212,8 +249,8 @@ impl BushingState {
                 }
             }
             BushingAction::ToggleNumbers => self.show_numbers = !self.show_numbers,
-            BushingAction::EdgeCheck => self.run_edge_check(false),
-            BushingAction::EdgeCheckDeep => self.run_edge_check(true),
+            BushingAction::EdgeCheck => return self.start_edge_check(false),
+            BushingAction::EdgeCheckDeep => return self.start_edge_check(true),
             BushingAction::EdgeInfo(topic) => self.edge_info_pinned = if self.edge_info_pinned == Some(topic) { None } else { Some(topic) },
             BushingAction::Export => return vec![Effect::ExportBushingReport(self.report_text())],
             BushingAction::AdviceTab(tab) => {
@@ -232,9 +269,70 @@ impl BushingState {
         Vec::new()
     }
 
-    /// Runs the edge-distance cross-check for the current inputs (a few
-    /// hundred ms, ~1-3 s with the contact model when `deep`; `edge-check` is
-    /// compiled optimised even in dev builds).
+    /// Starts the edge-distance cross-check for the current inputs on a
+    /// worker thread (the `RunEdgeCheck` effect); the UI stays responsive and
+    /// shows a persistent "running" tooltip until
+    /// [`finish_edge_check`](Self::finish_edge_check). A second request while
+    /// one runs is refused with a note rather than queued.
+    pub fn start_edge_check(&mut self, deep: bool) -> Vec<Effect> {
+        if let Some(job) = &self.edge_job {
+            self.set_notice(EdgeNoticeKind::Info, "Edge check already running", vec![format!("The {} run started {:.1} s ago is still going; wait for it or press Esc to cancel it.", if job.deep { "contact FE" } else { "quick" }, job.started.elapsed().as_secs_f64())]);
+            return Vec::new();
+        }
+        match edge_check::prepare(&self.model, deep) {
+            Ok((input, cfg)) => {
+                let id = self.next_edge_job;
+                self.next_edge_job += 1;
+                self.edge_job = Some(EdgeJob { id, deep, started: std::time::Instant::now() });
+                self.edge_notice = None;
+                self.last_applied = None;
+                self.input_error = None;
+                vec![Effect::RunEdgeCheck { id, input, cfg, deep }]
+            }
+            Err(why) => {
+                self.input_error = Some(format!("edge-distance check not run: {why}"));
+                Vec::new()
+            }
+        }
+    }
+
+    /// A worker finished job `id`. Results of a cancelled or superseded job
+    /// are dropped.
+    pub fn finish_edge_check(&mut self, id: u64, run: edge_check::EdgeCheckRun) {
+        let Some(job) = self.edge_job.take_if(|j| j.id == id) else { return };
+        let secs = job.started.elapsed().as_secs_f64();
+        let lines = edge_check::completion_lines(&run);
+        let short = lines.iter().any(|l| l.contains("SHORT"));
+        let title = format!("Edge check finished in {secs:.1} s ({})", if job.deep { "quick set + contact FE" } else { "quick set" });
+        self.edge_check = Some(run);
+        self.set_notice(if short { EdgeNoticeKind::Short } else { EdgeNoticeKind::Done }, &title, lines);
+    }
+
+    /// Esc while a run is going: forget it (the worker finishes on its own;
+    /// its result is dropped).
+    pub fn cancel_edge_check(&mut self) -> bool {
+        match self.edge_job.take() {
+            Some(job) => {
+                self.set_notice(EdgeNoticeKind::Info, "Edge check cancelled", vec![format!("The {} run was discarded after {:.1} s; the Results table is unchanged.", if job.deep { "contact FE" } else { "quick" }, job.started.elapsed().as_secs_f64())]);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn set_notice(&mut self, kind: EdgeNoticeKind, title: &str, lines: Vec<String>) {
+        self.edge_notice = Some(EdgeNotice { kind, title: title.to_string(), lines, at: std::time::Instant::now() });
+    }
+
+    /// Called once per `Tick`: drops an expired completion tooltip.
+    pub fn expire_edge_notice(&mut self) {
+        if self.edge_notice.as_ref().is_some_and(|n| n.at.elapsed().as_secs() >= EDGE_NOTICE_SECS) {
+            self.edge_notice = None;
+        }
+    }
+
+    /// Runs the cross-check synchronously for the current inputs (tests and
+    /// scripted use; the UI uses [`start_edge_check`](Self::start_edge_check)).
     pub fn run_edge_check(&mut self, deep: bool) {
         match edge_check::run_check(&self.model, deep) {
             Ok(run) => {
@@ -351,9 +449,17 @@ impl BushingState {
 /// this toolbox's workspace pane has focus - same `(consumed, effects)`
 /// contract as every other toolbox in this crate.
 pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>) {
-    if state.edge_info_pinned.is_some() && key.code == KeyCode::Esc {
-        state.edge_info_pinned = None;
-        return (true, Vec::new());
+    if key.code == KeyCode::Esc {
+        if state.edge_info_pinned.is_some() {
+            state.edge_info_pinned = None;
+            return (true, Vec::new());
+        }
+        if state.cancel_edge_check() {
+            return (true, Vec::new());
+        }
+        if state.edge_notice.take().is_some() {
+            return (true, Vec::new());
+        }
     }
     if state.advice.open {
         return state.handle_advice_key(key);
@@ -516,14 +622,8 @@ pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>
         }
         KeyCode::Char('f' | 'F' | 'a' | 'A') => (true, state.perform(BushingAction::OpenFixes)),
         KeyCode::Char('w' | 'W') => (true, state.perform(BushingAction::OpenExplain)),
-        KeyCode::Char('c') => {
-            state.run_edge_check(false);
-            (true, Vec::new())
-        }
-        KeyCode::Char('C') => {
-            state.run_edge_check(true);
-            (true, Vec::new())
-        }
+        KeyCode::Char('c') => (true, state.start_edge_check(false)),
+        KeyCode::Char('C') => (true, state.start_edge_check(true)),
         KeyCode::Char('e' | 'E') => (true, vec![Effect::ExportBushingReport(state.report_text())]),
         KeyCode::PageUp => {
             state.results_scroll = state.results_scroll.saturating_sub(crate::widgets::scroll_paragraph::SCROLL_STEP);
@@ -874,27 +974,91 @@ mod tests {
         assert!(state.last_applied.as_deref().unwrap().contains("nothing to fix"));
     }
 
+    /// Plays the part of `main.rs`: runs the worker's job and delivers its result.
+    fn run_effects(state: &mut BushingState, effects: Vec<Effect>) {
+        for e in effects {
+            if let Effect::RunEdgeCheck { id, input, cfg, .. } = e {
+                let run = edge_check::execute(input, &cfg);
+                state.finish_edge_check(id, run);
+            }
+        }
+    }
+
+    fn press(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent { code, modifiers, kind: KeyEventKind::Press, state: KeyEventState::NONE }
+    }
+
     #[test]
-    fn c_runs_the_edge_check_and_the_export_includes_it() {
+    fn c_starts_the_edge_check_off_the_ui_thread_and_the_result_arrives_with_a_notice() {
         let mut state = BushingState::default();
         assert!(!state.report_text().contains("Edge-Distance Cross-Check"), "no cross-check before it is run");
         let (consumed, effects) = handle_key(&mut state, key(KeyCode::Char('c')));
-        assert!(consumed && effects.is_empty());
-        let run = state.edge_check.as_ref().expect("c runs the check");
+        assert!(consumed);
+        assert!(matches!(effects.as_slice(), [Effect::RunEdgeCheck { deep: false, .. }]), "{effects:?}");
+        assert!(state.edge_job.is_some() && state.edge_check.is_none(), "running, nothing stored yet");
+        run_effects(&mut state, effects);
+        assert!(state.edge_job.is_none());
+        let run = state.edge_check.as_ref().expect("the finished run is stored");
         assert_eq!(run.input, edge_check::build_input(&state.model).unwrap(), "the run records the input it was for");
+        let notice = state.edge_notice.as_ref().expect("completion tooltip");
+        assert!(notice.title.contains("finished") && notice.lines.iter().any(|l| l.starts_with("Superposition")), "{notice:?}");
         assert!(state.report_text().contains("Edge-Distance Cross-Check"));
         let effects = state.perform(BushingAction::Export);
         assert!(matches!(effects.as_slice(), [Effect::ExportBushingReport(t)] if t.contains("Stress superposition")));
     }
 
     #[test]
-    fn capital_c_runs_the_deep_check_including_the_plastic_model() {
+    fn capital_c_runs_the_deep_check_including_the_contact_model() {
         let mut state = BushingState::default();
-        handle_key(&mut state, KeyEvent { code: KeyCode::Char('C'), modifiers: KeyModifiers::SHIFT, kind: KeyEventKind::Press, state: KeyEventState::NONE });
-        let run = state.edge_check.as_ref().expect("C runs the check");
-        assert!(run.report.models.iter().any(|m| m.id == "contact"));
-        handle_key(&mut state, key(KeyCode::Char('c')));
+        let (_, effects) = handle_key(&mut state, press(KeyCode::Char('C'), KeyModifiers::SHIFT));
+        assert!(matches!(effects.as_slice(), [Effect::RunEdgeCheck { deep: true, .. }]));
+        run_effects(&mut state, effects);
+        assert!(state.edge_check.as_ref().unwrap().report.models.iter().any(|m| m.id == "contact"));
+        let (_, effects) = handle_key(&mut state, key(KeyCode::Char('c')));
+        run_effects(&mut state, effects);
         assert!(!state.edge_check.as_ref().unwrap().report.models.iter().any(|m| m.id == "contact"), "c re-runs the quick set");
+    }
+
+    #[test]
+    fn a_second_request_while_running_is_refused_and_esc_cancels_the_run_and_drops_its_result() {
+        let mut state = BushingState::default();
+        let (_, first) = handle_key(&mut state, press(KeyCode::Char('C'), KeyModifiers::SHIFT));
+        let (_, second) = handle_key(&mut state, key(KeyCode::Char('c')));
+        assert!(second.is_empty(), "one run at a time");
+        assert!(state.edge_notice.as_ref().unwrap().title.contains("already running"));
+        let (consumed, _) = handle_key(&mut state, key(KeyCode::Esc));
+        assert!(consumed && state.edge_job.is_none());
+        assert!(state.edge_notice.as_ref().unwrap().title.contains("cancelled"));
+        run_effects(&mut state, first); // the worker still finishes; its result must be dropped
+        assert!(state.edge_check.is_none(), "a cancelled run's result is discarded");
+        assert!(state.edge_notice.as_ref().unwrap().title.contains("cancelled"), "and it must not replace the notice");
+        // Esc once more closes the notice itself.
+        handle_key(&mut state, key(KeyCode::Esc));
+        assert!(state.edge_notice.is_none());
+    }
+
+    #[test]
+    fn a_result_for_an_older_job_is_ignored() {
+        let mut state = BushingState::default();
+        let (_, first) = handle_key(&mut state, key(KeyCode::Char('c')));
+        state.cancel_edge_check();
+        let (_, second) = handle_key(&mut state, key(KeyCode::Char('c')));
+        run_effects(&mut state, first);
+        assert!(state.edge_job.is_some() && state.edge_check.is_none(), "the stale job must not finish the new one");
+        run_effects(&mut state, second);
+        assert!(state.edge_job.is_none() && state.edge_check.is_some());
+    }
+
+    #[test]
+    fn the_completion_notice_expires() {
+        let mut state = BushingState::default();
+        let (_, effects) = handle_key(&mut state, key(KeyCode::Char('c')));
+        run_effects(&mut state, effects);
+        state.expire_edge_notice();
+        assert!(state.edge_notice.is_some(), "fresh notice stays");
+        state.edge_notice.as_mut().unwrap().at -= std::time::Duration::from_secs(EDGE_NOTICE_SECS + 1);
+        state.expire_edge_notice();
+        assert!(state.edge_notice.is_none());
     }
 
     #[test]

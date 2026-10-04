@@ -75,10 +75,10 @@ pub fn tip(topic: EdgeTopic) -> Tip {
         EdgeTopic::ContactFe => Tip {
             title: "Contact FE (bushing + housing, elastic-plastic)",
             sections: &[
-                ("What it does", "Meshes bushing and housing, installs the interference by contact (with friction), then pushes a rigid pin toward the edge to collapse (housing J2 plane strain, flow stress min(Ftu, sqrt(3) Fsu)). Gives the collapse and first-yield loads; solved on an edge-distance grid and interpolated."),
-                ("Strengths", "Fewest assumptions: no imposed pin-pressure shape, no rigid bushing, back-side contact loss is a result, the fit is installed first (residual stress, not a dead load). Replaces the shear-out/splitting rules. Its fit pressure matches Lame to 0.2%."),
+                ("What it does", "Meshes bushing and housing, installs the interference by contact (with friction), then pushes a rigid pin toward the edge to collapse (housing J2 plane strain, flow stress (Ftu+Fty)/2). Gives the collapse and first-yield loads; solved on an edge-distance grid and interpolated."),
+                ("Strengths", "Fewest assumptions: no imposed pin-pressure shape, no rigid bushing, back-side contact loss is a result, the fit is installed first (residual stress, not a dead load). Replaces the shear-out/splitting rules. Fit pressure matches Lame to 0.2%; collapse validated on NACA TN 1503 pin tests (-18/+7%)."),
                 ("Weaknesses", "2D plane strain for a triaxial bore; elastic bushing; no hardening, fracture or 3D effects; friction limit lags one load step. Collapse = load plateau (1-2% scatter, ~1% mesh). 1-3 s, so only on C."),
-                ("Restrictions", "Load toward the edge; straight bore and bushing; one nearest edge. Not validated against edge-distance tests."),
+                ("Restrictions", "Load toward the edge; straight bore and bushing; one nearest edge. No test data for the interference fit itself."),
             ],
         },
         EdgeTopic::PlasticFe => Tip {
@@ -142,6 +142,7 @@ fn short_name(id: &str) -> &'static str {
 
 /// The last run and the exact input it was run for - the Results pane marks
 /// it stale as soon as the live input differs.
+#[derive(Debug, Clone)]
 pub struct EdgeCheckRun {
     pub input: EdgeInput,
     pub report: EdgeReport,
@@ -186,12 +187,62 @@ fn bushing_spec(model: &BushingModel) -> Option<BushingSpec> {
     (ri > 0.0 && ri < a && delta.is_finite() && m.e_ksi > 0.0).then_some(BushingSpec { inner_radius: ri, interference: delta, e: m.e_ksi * 1000.0, nu: m.nu, friction: model.friction.max(0.0) })
 }
 
-/// `deep` also runs the elastic-plastic contact FE (~1-3 s).
-pub fn run_check(model: &BushingModel, deep: bool) -> Result<EdgeCheckRun, String> {
+/// The input and configuration of a run, or why the live inputs cannot be
+/// checked. Cheap: the heavy part is [`execute`], which the TUI runs off the
+/// UI thread.
+pub fn prepare(model: &BushingModel, deep: bool) -> Result<(EdgeInput, EdgeConfig), String> {
     let input = build_input(model)?;
     let cfg = EdgeConfig { include_plastic: deep, bushing: bushing_spec(model), ..EdgeConfig::default() };
-    let report = run(&default_models(&cfg), &input, &cfg);
-    Ok(EdgeCheckRun { input, report })
+    Ok((input, cfg))
+}
+
+/// Runs the models: ~0.3 s quick, ~3 s with the contact FE (`edge-check` is
+/// compiled optimised even in dev builds). Blocking; call from a worker.
+pub fn execute(input: EdgeInput, cfg: &EdgeConfig) -> EdgeCheckRun {
+    let report = run(&default_models(cfg), &input, cfg);
+    EdgeCheckRun { input, report }
+}
+
+/// `deep` also runs the elastic-plastic contact FE. Blocking (tests, scripts);
+/// the UI goes through [`prepare`] + [`execute`] on a worker thread.
+pub fn run_check(model: &BushingModel, deep: bool) -> Result<EdgeCheckRun, String> {
+    let (input, cfg) = prepare(model, deep)?;
+    Ok(execute(input, &cfg))
+}
+
+/// What a finished run says, one line per model, for the completion tooltip:
+/// does the actual edge distance carry the bearing-limit load (so the edge
+/// outlasts the bearing) and the applied load, and what e/D that needs.
+pub fn completion_lines(run: &EdgeCheckRun) -> Vec<String> {
+    let r = &run.report;
+    let (si, qi) = (target_index("Strength"), target_index("Bearing"));
+    let mut out = vec![format!("Actual e/D {:.2}; applied load {:.0} lbf; bearing limit {:.0} lbf.", r.edge / r.bore_diameter, r.applied_load, r.bearing_limit_load)];
+    for m in &r.models {
+        if EdgeTopic::for_model(m.id).is_none() {
+            continue;
+        }
+        if let Some(e) = &m.error {
+            out.push(format!("{}: not evaluated ({e}).", short_name(m.id)));
+            continue;
+        }
+        let at = |i: usize| m.targets.get(i).and_then(|t| t.as_ref());
+        let verdict = match (at(si), at(qi)) {
+            (Some(s), Some(q)) => {
+                let ok = s.margin >= 0.0 && q.margin >= 0.0;
+                let need = match q.e_min {
+                    EdgeMin::Value(v) => format!(", needs e/D {:.2}", v / r.bore_diameter),
+                    EdgeMin::AtMost(v) => format!(", needs e/D under {:.2}", v / r.bore_diameter),
+                    EdgeMin::Exceeds(v) => format!(", needs e/D over {:.1}", v / r.bore_diameter),
+                    EdgeMin::NotSearched => String::new(),
+                };
+                format!("{} (bearing margin {:+.3}{need})", if ok { "OK" } else { "SHORT" }, q.margin)
+            }
+            _ => "no result".to_string(),
+        };
+        out.push(format!("{}: {verdict}.", short_name(m.id)));
+    }
+    out.push("Hover a row in Results for the numbers behind it.".to_string());
+    out
 }
 
 fn fmt_margin(m: f64) -> String {
@@ -220,6 +271,16 @@ fn fmt_cell(report: &EdgeReport, m: Option<EdgeMin>) -> (String, bool) {
         Some(EdgeMin::AtMost(v)) => (format!("<{:.2}", v / d), false),
         Some(EdgeMin::Exceeds(v)) => (format!(">{:.1}", v / d), true),
         _ => ("-".to_string(), false),
+    }
+}
+
+/// One frame of the busy glyph for a run that has been going `secs` seconds.
+pub fn spinner_glyph(theme: &Theme, secs: f64) -> char {
+    let tick = (secs * 10.0) as u64;
+    if theme.reduced_color {
+        crate::widgets::spinner::ascii_frame(tick)
+    } else {
+        crate::widgets::spinner::frame(tick)
     }
 }
 
@@ -265,11 +326,21 @@ fn table_row<'a>(theme: &Theme, name: &str, cells: [(String, bool); 3], tail: &s
 /// and limits) is in the row's tooltip (hover, or click to pin). `stale` =
 /// the live input no longer matches the run.
 pub fn section_lines<'a>(theme: &Theme, run: Option<&EdgeCheckRun>, stale: bool, model: &BushingModel) -> (Vec<Line<'a>>, Vec<(usize, EdgeTopic)>) {
+    section_lines_with(theme, run, stale, model, None)
+}
+
+/// [`section_lines`] plus, while a run is in flight, a status line under the
+/// title (`running` = seconds since it started and whether it is the deep run).
+pub fn section_lines_with<'a>(theme: &Theme, run: Option<&EdgeCheckRun>, stale: bool, model: &BushingModel, running: Option<(f64, bool)>) -> (Vec<Line<'a>>, Vec<(usize, EdgeTopic)>) {
     let mut tags: Vec<(usize, EdgeTopic)> = Vec::new();
     let mut lines = vec![Line::from(vec![
         Span::styled("Edge-Distance Cross-Check", theme.title_style(false)),
         Span::styled("   c quick \u{b7} C +contact FE \u{b7} hover a row", theme.disabled_style()),
     ])];
+    if let Some((secs, deep)) = running {
+        let what = if deep { "contact FE (about 3 s)" } else { "quick set" };
+        lines.push(Line::from(Span::styled(format!("  {} running: {what}, {secs:.1} s - {}", spinner_glyph(theme, secs), if run.is_some() { "the table below is the previous run" } else { "results appear here" }), theme.status_style(StatusTone::Warning))));
+    }
     let Some(run) = run else {
         lines.push(Line::from(Span::styled("  Not run. c compares stress analysis, FE and tabulated allowables; C adds the bushing + housing contact FE (1-3 s).", theme.disabled_style())));
         return (lines, tags);
@@ -445,8 +516,8 @@ mod tests {
         let run = run_check(&model, true).unwrap();
         let adv = advisories(Some(&run), false);
         assert_eq!(adv.len(), 1, "one line however many checks are short: {:?}", adv.iter().map(|a| &a.text).collect::<Vec<_>>());
-        assert!(adv[0].text.starts_with("Edge advisory") && adv[0].text.contains("Allowables") && adv[0].text.contains("need more edge distance"), "{}", adv[0].text);
-        assert_eq!(adv[0].topic, EdgeTopic::Allowables, "hover shows the most demanding model first");
+        assert!(adv[0].text.starts_with("Edge advisory") && adv[0].text.contains("Allowables") && adv[0].text.contains("Contact FE") && adv[0].text.contains("need more edge distance"), "{}", adv[0].text);
+        assert_eq!(adv[0].topic, EdgeTopic::ContactFe, "hover shows the most demanding model first");
         assert!(advisories(Some(&run), true).is_empty(), "a stale run must not warn");
         assert!(advisories(None, false).is_empty());
         // Plenty of edge: no advisories.

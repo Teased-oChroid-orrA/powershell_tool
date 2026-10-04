@@ -200,6 +200,13 @@ fn execute_effect(tx: &mpsc::UnboundedSender<AppEvent>, state: &mut AppState, ef
                 let _ = tx.send(AppEvent::ExtensionsScanned(Ok(found)));
             });
         }
+        Effect::RunEdgeCheck { id, input, cfg, deep: _ } => {
+            let tx = tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let run = app_tui::toolboxes::bushing::edge_check::execute(input, &cfg);
+                let _ = tx.send(AppEvent::EdgeCheckFinished { id, run: Box::new(run) });
+            });
+        }
         Effect::ExportPressureVesselReport(contents) => {
             tokio::task::spawn_blocking(move || {
                 let Some(path) = pv_persistence::report_path() else { return };

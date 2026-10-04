@@ -116,6 +116,9 @@ pub enum AppEvent {
     /// Same round trip, for the Bushing ID library
     /// (`toolboxes/bushing/bushing_id_picker.rs`).
     BushingIdLibraryFileRead(Result<String, String>),
+    /// A worker finished the Bushing edge-distance cross-check `id`
+    /// (`Effect::RunEdgeCheck`); a cancelled or superseded id is ignored.
+    EdgeCheckFinished { id: u64, run: Box<crate::toolboxes::bushing::edge_check::EdgeCheckRun> },
     Quit,
 }
 
@@ -155,6 +158,11 @@ pub enum Effect {
     /// (`bushing::view::build_report_text`) to its fixed report path and
     /// opens it - same pattern as `ExportPressureVesselReport`.
     ExportBushingReport(String),
+    /// Runs the Bushing edge-distance cross-check (~0.3 s quick, ~3 s with
+    /// the contact FE) on a blocking worker and reports back with
+    /// `AppEvent::EdgeCheckFinished`; the input was already validated by
+    /// `edge_check::prepare`.
+    RunEdgeCheck { id: u64, input: ::edge_check::runner::EdgeInput, cfg: ::edge_check::runner::EdgeConfig, deep: bool },
     /// Writes the Preload Analysis toolbox's plain-text report to its
     /// fixed report path and opens it - same pattern as
     /// `ExportPressureVesselReport`/`ExportBushingReport`.
@@ -197,6 +205,7 @@ pub fn handle_event(state: &mut AppState, event: AppEvent) -> Vec<Effect> {
         AppEvent::Terminal(_) => Vec::new(),
         AppEvent::Tick => {
             state.notifications.expire();
+            state.bushing.expire_edge_notice();
             Vec::new()
         }
         AppEvent::SearchProgress(report) => {
@@ -285,6 +294,14 @@ pub fn handle_event(state: &mut AppState, event: AppEvent) -> Vec<Effect> {
         AppEvent::ReamerLibraryFileRead(result) => handle_reamer_library_file_read(state, result),
         AppEvent::BushingMaterialLibraryFileRead(result) => handle_bushing_material_library_file_read(state, result),
         AppEvent::BushingIdLibraryFileRead(result) => handle_bushing_id_library_file_read(state, result),
+        AppEvent::EdgeCheckFinished { id, run } => {
+            let was_running = state.bushing.edge_job.as_ref().is_some_and(|j| j.id == id);
+            state.bushing.finish_edge_check(id, *run);
+            if was_running {
+                state.notifications.push("Edge check finished - see the Edge-Distance Cross-Check in Bushing Results", StatusTone::Success);
+            }
+            Vec::new()
+        }
         AppEvent::Quit => {
             request_quit(state);
             Vec::new()
@@ -614,7 +631,11 @@ fn is_double_click(last_click: &mut Option<(Instant, ClickTarget)>, target: Clic
 pub fn handle_mouse(state: &mut AppState, regions: &MouseRegions, event: MouseEvent) -> Vec<Effect> {
     let (col, row) = (event.column, event.row);
     match event.kind {
-        MouseEventKind::Down(MouseButton::Left) => handle_click(state, regions, col, row),
+        MouseEventKind::Down(MouseButton::Left) => {
+            // A click closes the finished-run tooltip (a running one stays).
+            state.bushing.edge_notice = None;
+            handle_click(state, regions, col, row)
+        }
         MouseEventKind::ScrollUp => {
             handle_scroll(state, regions, col, row, -1);
             Vec::new()
@@ -1806,4 +1827,21 @@ mod tests {
         handle_mouse(&mut state, &regions, scroll(MouseEventKind::ScrollDown, 5, 0));
         assert_eq!(state.search.selected_result, 0);
     }
-}
+}    #[test]
+    fn the_edge_check_round_trip_runs_through_an_effect_and_an_event() {
+        let mut state = AppState::default();
+        state.nav.activate(crate::nav::ToolId::Bushing);
+        let effects = state.bushing.perform(bushing::BushingAction::EdgeCheck);
+        let [Effect::RunEdgeCheck { id, input, cfg, deep: false }] = effects.as_slice() else { panic!("{effects:?}") };
+        assert!(state.bushing.edge_job.is_some());
+        let run = bushing::edge_check::execute(input.clone(), cfg);
+        handle_event(&mut state, AppEvent::EdgeCheckFinished { id: *id, run: Box::new(run.clone()) });
+        assert!(state.bushing.edge_job.is_none() && state.bushing.edge_check.is_some());
+        assert!(state.notifications.visible().iter().any(|t| t.message.contains("Edge check finished")));
+        // A late result for a job that is no longer current changes nothing and adds no toast.
+        let toasts = state.notifications.visible().len();
+        handle_event(&mut state, AppEvent::EdgeCheckFinished { id: *id + 7, run: Box::new(run) });
+        assert_eq!(state.notifications.visible().len(), toasts);
+    }
+
+
