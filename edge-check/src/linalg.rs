@@ -5,6 +5,7 @@
 /// Symmetric positive-definite banded matrix, lower triangle stored by
 /// rows: entry `(i, j)` with `i - bw <= j <= i` lives at
 /// `data[i * (bw + 1) + (j + bw - i)]`.
+#[derive(Clone)]
 pub struct BandedSpd {
     pub n: usize,
     pub bw: usize,
@@ -35,28 +36,60 @@ impl BandedSpd {
         self.data[self.idx(i, i)]
     }
 
+    /// `A x` for the (unfactored) symmetric matrix.
+    pub fn mul(&self, x: &[f64]) -> Vec<f64> {
+        let (n, bw) = (self.n, self.bw);
+        let stride = bw + 1;
+        let mut y = vec![0.0; n];
+        for i in 0..n {
+            let j0 = i.saturating_sub(bw);
+            let row = &self.data[i * stride + (bw + j0 - i)..i * stride + bw];
+            // Strictly-lower part: y_i += sum L_ij x_j; y_j += L_ij x_i.
+            let mut acc = 0.0;
+            let xi = x[i];
+            for ((a, xj), yj) in row.iter().zip(&x[j0..i]).zip(y[j0..i].iter_mut()) {
+                acc += a * xj;
+                *yj += a * xi;
+            }
+            y[i] += acc + self.data[i * stride + bw] * xi;
+        }
+        y
+    }
+
     /// In-place banded Cholesky `A = L Lᵀ`. Returns `false` if the matrix
     /// is not positive definite (a non-positive pivot).
+    ///
+    /// Rows are stored contiguously, so the inner product of two rows of
+    /// `L` over their common band is a pair of slices (vectorisable).
     pub fn factor(&mut self) -> bool {
         let (n, bw) = (self.n, self.bw);
+        let stride = bw + 1;
         for i in 0..n {
             let j0 = i.saturating_sub(bw);
             for j in j0..=i {
-                let k0 = i.saturating_sub(bw).max(j.saturating_sub(bw));
-                let mut s = self.data[self.idx(i, j)];
-                for k in k0..j {
-                    s -= self.data[self.idx(i, k)] * self.data[self.idx(j, k)];
+                let k0 = j0.max(j.saturating_sub(bw));
+                // Row i holds column k at `i*stride + (k + bw - i)`.
+                let (ri, rj) = (i * stride + (bw + k0 - i), j * stride + (bw + k0 - j));
+                let len = j - k0;
+                let mut s = self.data[i * stride + (j + bw - i)];
+                if len > 0 {
+                    // rows i and j are distinct slices of `data` (j < i) or the
+                    // same row (j == i); split to satisfy the borrow checker.
+                    let dot = if j == i {
+                        self.data[ri..ri + len].iter().map(|v| v * v).sum::<f64>()
+                    } else {
+                        self.data[ri..ri + len].iter().zip(&self.data[rj..rj + len]).map(|(a, b)| a * b).sum::<f64>()
+                    };
+                    s -= dot;
                 }
                 if i == j {
                     if s <= 0.0 || !s.is_finite() {
                         return false;
                     }
-                    let k = self.idx(i, i);
-                    self.data[k] = s.sqrt();
+                    self.data[i * stride + bw] = s.sqrt();
                 } else {
-                    let d = self.data[self.idx(j, j)];
-                    let k = self.idx(i, j);
-                    self.data[k] = s / d;
+                    let d = self.data[j * stride + bw];
+                    self.data[i * stride + (j + bw - i)] = s / d;
                 }
             }
         }
@@ -66,21 +99,23 @@ impl BandedSpd {
     /// Solves `L Lᵀ x = b` in place (call after [`factor`](Self::factor)).
     pub fn solve_in_place(&self, b: &mut [f64]) {
         let (n, bw) = (self.n, self.bw);
+        let stride = bw + 1;
+        // Forward: L y = b, row by row (row i is contiguous).
         for i in 0..n {
             let j0 = i.saturating_sub(bw);
-            let mut s = b[i];
-            for (j, bj) in b.iter().enumerate().take(i).skip(j0) {
-                s -= self.data[self.idx(i, j)] * bj;
-            }
-            b[i] = s / self.data[self.idx(i, i)];
+            let row = i * stride + (bw + j0 - i);
+            let dot: f64 = self.data[row..row + (i - j0)].iter().zip(&b[j0..i]).map(|(a, x)| a * x).sum();
+            b[i] = (b[i] - dot) / self.data[i * stride + bw];
         }
+        // Backward: Lᵀ x = y, column-oriented so row i of L is read contiguously.
         for i in (0..n).rev() {
-            let mut s = b[i];
-            let jmax = (i + bw).min(n - 1);
-            for (j, bj) in b.iter().enumerate().take(jmax + 1).skip(i + 1) {
-                s -= self.data[self.idx(j, i)] * bj;
+            let j0 = i.saturating_sub(bw);
+            b[i] /= self.data[i * stride + bw];
+            let xi = b[i];
+            let row = i * stride + (bw + j0 - i);
+            for (lij, bj) in self.data[row..row + (i - j0)].iter().zip(b[j0..i].iter_mut()) {
+                *bj -= lij * xi;
             }
-            b[i] = s / self.data[self.idx(i, i)];
         }
     }
 }

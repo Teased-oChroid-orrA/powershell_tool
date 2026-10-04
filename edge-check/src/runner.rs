@@ -34,13 +34,17 @@ pub struct EdgeConfig {
     /// Edge-distance search bracket, in multiples of the bore diameter.
     pub search_lo: f64,
     pub search_hi: f64,
-    /// Also run the elastic-plastic FE limit-load model (~1-2 s).
+    /// Also run the elastic-plastic FE limit-load model (~1-3 s): the
+    /// bushing-and-housing contact model when `bushing` is known, else the
+    /// dead-load plate model.
     pub include_plastic: bool,
+    /// The bushing pressed into the bore (needed by the contact model).
+    pub bushing: Option<crate::types::BushingSpec>,
 }
 
 impl Default for EdgeConfig {
     fn default() -> Self {
-        Self { mc_samples: 2000, seed: 0x5EED_ED6E, strength_cv: 0.0, fbru_e15: None, search_lo: 0.75, search_hi: 8.0, include_plastic: false }
+        Self { mc_samples: 2000, seed: 0x5EED_ED6E, strength_cv: 0.0, fbru_e15: None, search_lo: 0.75, search_hi: 8.0, include_plastic: false, bushing: None }
     }
 }
 

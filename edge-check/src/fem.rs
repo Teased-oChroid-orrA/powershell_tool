@@ -67,7 +67,7 @@ pub struct FemSolution {
 }
 
 #[inline]
-fn shape1(xi: f64) -> ([f64; 3], [f64; 3]) {
+pub(crate) fn shape1(xi: f64) -> ([f64; 3], [f64; 3]) {
     (
         [0.5 * xi * (xi - 1.0), 1.0 - xi * xi, 0.5 * xi * (xi + 1.0)],
         [xi - 0.5, -2.0 * xi, xi + 0.5],
@@ -98,7 +98,7 @@ pub(crate) const GAUSS3: [(f64, f64); 3] = [(-0.774_596_669_241_483_4, 5.0 / 9.0
 
 /// Distance from `(e, 0)` along direction `phi` to the plate boundary
 /// (free edge `x = 0`, far face `x = e + far`, top face `y = h`).
-fn ray_to_boundary(e: f64, far: f64, h: f64, phi: f64) -> f64 {
+pub(crate) fn ray_to_boundary(e: f64, far: f64, h: f64, phi: f64) -> f64 {
     let (c, s) = (phi.cos(), phi.sin());
     let mut t = f64::INFINITY;
     if c > 1e-12 {
@@ -116,7 +116,7 @@ fn ray_to_boundary(e: f64, far: f64, h: f64, phi: f64) -> f64 {
 /// Angular lattice (2 lattice points per element) over `[0, pi]`, split at
 /// the plate's corner rays so element edges coincide with the far / top /
 /// free-edge faces.
-fn angular_lattice(e: f64, far: f64, h: f64, n_arc: [usize; 3]) -> Vec<f64> {
+pub(crate) fn angular_lattice(e: f64, far: f64, h: f64, n_arc: [usize; 3]) -> Vec<f64> {
     let phi_far = h.atan2(far);
     let phi_top = h.atan2(-e);
     let arcs = [(0.0, phi_far, n_arc[0]), (phi_far, phi_top, n_arc[1]), (phi_top, PI, n_arc[2])];
@@ -129,6 +129,55 @@ fn angular_lattice(e: f64, far: f64, h: f64, n_arc: [usize; 3]) -> Vec<f64> {
     }
     *phis.last_mut().unwrap() = PI;
     phis
+}
+
+/// 18x18 stiffness (per unit thickness) of one Q9 element with nodes `xy`
+/// (local order `3*b + a`) and constitutive matrix `d_mat`.
+pub(crate) fn element_stiffness(xy: &[[f64; 2]], d_mat: &[[f64; 3]; 3]) -> Result<[[f64; 18]; 18], String> {
+    let mut ke = [[0.0f64; 18]; 18];
+    for &(gx, wx) in &GAUSS3 {
+        for &(gy, wy) in &GAUSS3 {
+            let (_, dxi, deta) = shape_q9(gx, gy);
+            let (mut j11, mut j12, mut j21, mut j22) = (0.0, 0.0, 0.0, 0.0);
+            for n in 0..9 {
+                j11 += dxi[n] * xy[n][0];
+                j12 += dxi[n] * xy[n][1];
+                j21 += deta[n] * xy[n][0];
+                j22 += deta[n] * xy[n][1];
+            }
+            let det = j11 * j22 - j12 * j21;
+            if det <= 0.0 {
+                return Err("inverted element".to_string());
+            }
+            let inv = [[j22 / det, -j12 / det], [-j21 / det, j11 / det]];
+            let mut bm = [[0.0f64; 18]; 3];
+            for n in 0..9 {
+                let dnx = inv[0][0] * dxi[n] + inv[0][1] * deta[n];
+                let dny = inv[1][0] * dxi[n] + inv[1][1] * deta[n];
+                bm[0][2 * n] = dnx;
+                bm[1][2 * n + 1] = dny;
+                bm[2][2 * n] = dny;
+                bm[2][2 * n + 1] = dnx;
+            }
+            let wgt = det * wx * wy;
+            for r in 0..3 {
+                let mut db = [0.0; 18];
+                for c in 0..18 {
+                    db[c] = d_mat[r][0] * bm[0][c] + d_mat[r][1] * bm[1][c] + d_mat[r][2] * bm[2][c];
+                }
+                for i in 0..18 {
+                    let bi = bm[r][i] * wgt;
+                    if bi == 0.0 {
+                        continue;
+                    }
+                    for jj in 0..18 {
+                        ke[i][jj] += bi * db[jj];
+                    }
+                }
+            }
+        }
+    }
+    Ok(ke)
 }
 
 impl FemSolution {
@@ -199,49 +248,7 @@ impl FemSolution {
 
         for conn in &elems {
             let xy: Vec<[f64; 2]> = conn.iter().map(|&n| nodes[n]).collect();
-            let mut ke = [[0.0f64; 18]; 18];
-            for &(gx, wx) in &GAUSS3 {
-                for &(gy, wy) in &GAUSS3 {
-                    let (_, dxi, deta) = shape_q9(gx, gy);
-                    let (mut j11, mut j12, mut j21, mut j22) = (0.0, 0.0, 0.0, 0.0);
-                    for n in 0..9 {
-                        j11 += dxi[n] * xy[n][0];
-                        j12 += dxi[n] * xy[n][1];
-                        j21 += deta[n] * xy[n][0];
-                        j22 += deta[n] * xy[n][1];
-                    }
-                    let det = j11 * j22 - j12 * j21;
-                    if det <= 0.0 {
-                        return Err("inverted element".to_string());
-                    }
-                    let inv = [[j22 / det, -j12 / det], [-j21 / det, j11 / det]];
-                    let mut bm = [[0.0f64; 18]; 3];
-                    for n in 0..9 {
-                        let dnx = inv[0][0] * dxi[n] + inv[0][1] * deta[n];
-                        let dny = inv[1][0] * dxi[n] + inv[1][1] * deta[n];
-                        bm[0][2 * n] = dnx;
-                        bm[1][2 * n + 1] = dny;
-                        bm[2][2 * n] = dny;
-                        bm[2][2 * n + 1] = dnx;
-                    }
-                    let wgt = det * wx * wy;
-                    for r in 0..3 {
-                        let mut db = [0.0; 18];
-                        for c in 0..18 {
-                            db[c] = d_mat[r][0] * bm[0][c] + d_mat[r][1] * bm[1][c] + d_mat[r][2] * bm[2][c];
-                        }
-                        for i in 0..18 {
-                            let bi = bm[r][i] * wgt;
-                            if bi == 0.0 {
-                                continue;
-                            }
-                            for jj in 0..18 {
-                                ke[i][jj] += bi * db[jj];
-                            }
-                        }
-                    }
-                }
-            }
+            let ke = element_stiffness(&xy, &d_mat)?;
             for i in 0..18 {
                 let gi = 2 * conn[i / 2] + i % 2;
                 for jj in 0..=i {

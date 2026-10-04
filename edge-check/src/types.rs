@@ -138,3 +138,18 @@ pub fn margin_of(allowable: f64, applied: f64) -> f64 {
         f64::INFINITY
     }
 }
+
+/// The bushing pressed into the bore, for the contact FE model: it is the
+/// only model that represents the bushing itself (the others take the fit
+/// as a given pressure and the pin load as a given distribution).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BushingSpec {
+    /// Bushing bore radius, in (the pin's radius).
+    pub inner_radius: f64,
+    /// Radial interference (bushing OD radius minus housing bore radius), in.
+    pub interference: f64,
+    pub e: f64,
+    pub nu: f64,
+    /// Coulomb friction coefficient on the bushing/housing interface.
+    pub friction: f64,
+}

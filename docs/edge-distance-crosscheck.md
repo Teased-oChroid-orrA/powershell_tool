@@ -1,6 +1,6 @@
-# Edge-distance cross-check (branch `edge-distance-stress-check`)
+# Edge-distance cross-check
 
-Status: implemented on the branch, **not merged**. `bushing_solver::solve::compute` and its
+Status: on `main` (the contact FE below is on branch `fea-contact-model`). `bushing_solver::solve::compute` and its
 differential tests are unchanged (one additive output field, `t_eff_seq`). The feature is the
 `edge-check/` crate plus one Results-pane hook in `app-tui/src/toolboxes/bushing/` (key `c`).
 
@@ -18,7 +18,8 @@ stress field instead, with two independent cross-checks, so the legacy numbers c
 |---|---|---|
 | **Stress superposition** (primary) | Muskhelishvili complex potentials for the half plane `x > 0` minus the bore disc. Fundamental solutions (poles of every order at the bore centre and its mirror image, Kelvin logs tied by `psi ~ -kappa conj(alpha) ln`) fitted by least squares to "bore carries the contact tractions, edge `x = 0` traction free". Smooth closed-form field, no mesh. | 3-5 ms per geometry |
 | **Plane-stress FE** | Q9 elements, O-grid conforming to bore / free edge / far face / top face, half model about the load line, banded Cholesky, three unit load cases from one factorisation. | ~50 ms (fine mesh), ~15 ms (search mesh) |
-| **Elastic-plastic FE limit load** (`C` only) | Same Q9 mesh, J2 perfect plasticity, **plane strain**, flow stress `min(Ftu, sqrt(3) Fsu)`, fit pressure as a dead load, pin load on the loaded half-arc raised under *displacement control* (load control has no equilibrium past collapse, so "stopped converging" is ambiguous). Initial-stress iteration on the elastic factorisation with Anderson acceleration; closed-form return map; jump straight to 90 % of first yield. The collapse load is solved on an edge-distance grid in parallel threads (+ the actual edge, + the no-fit case) and every other edge distance is read off that profile. | 1-2 s (6-9 parallel solves of ~0.5 s) |
+| **Elastic-plastic FE limit load** (fallback when no bushing is given; superseded by the contact FE) | Same Q9 mesh, J2 perfect plasticity, **plane strain**, flow stress `min(Ftu, sqrt(3) Fsu)`, fit pressure as a dead load, pin load on the loaded half-arc raised under *displacement control* (load control has no equilibrium past collapse, so "stopped converging" is ambiguous). Initial-stress iteration on the elastic factorisation with Anderson acceleration; closed-form return map; jump straight to 90 % of first yield. The collapse load is solved on an edge-distance grid in parallel threads (+ the actual edge, + the no-fit case) and every other edge distance is read off that profile. | 1-2 s (6-9 parallel solves of ~0.5 s) |
+| **Contact FE** (`C` only; `contact.rs`, `models/contact_model.rs`) | Bushing **and** housing meshed (Q9, plane strain, one lattice row per angular station so the interface stays inside the band). The interference is an initial overlap resolved by penalty contact (`kn = 100 E/a`) with Coulomb friction (C1-smoothed, slip limit `mu p` frozen within a solve and refreshed per load step). The fit is installed first (4 steps only if it yields), the rigid pin is conformed to the post-fit bore and pushed toward the edge under displacement control; the far-face reaction is a follower load of the computed pin load (Sherman-Morrison in the iteration matrix). Housing J2 perfect plasticity, bushing elastic. First-yield load extrapolated from one elastic pin step; collapse = load plateau (a further 1.6x of displacement adds < 2 %, twice). Modified Newton with a contact-set-aware refactorisation, damped steps while the set settles, Anderson acceleration for the plasticity. Solved on an edge-distance grid {1, 1.5, 2, 3, 4} D + the actual edge at {0, 1, 1.5}x the interference (at most 8 parallel solves); everything else is interpolated. | ~1.5 s per solve, ~3 s wall for `C` |
 | **Tabulated allowables** | `P/(D t) <= Fbru(e/D)` (Fbru taken as the e/D = 2.0 value; interpolated to 1.5 only if a 1.5 value is supplied) and the classical 40-degree shear-out rule `P + p D t <= 2 Fsu t (e - (D/2) cos theta)` (the fit's `p D t` is charged at 100 %, same strip equilibrium as the stress models; bearing is not reduced by the fit). No stress field. | microseconds |
 
 ## Load model
@@ -126,11 +127,29 @@ differentially tested.
   built-in `Fbru` values are the TS engine's "typical" figures, not MMPDS A-basis (e.g. 7075-T6 sheet
   Fbru(e/D 2.0) is 146 ksi A-basis in MMPDS-05+ vs 121 here).
 
+## Contact FE: validation and findings (2026-10)
+
+Validation (`edge-check/src/contact.rs` tests): interference pressure vs plane-strain Lame 0.2 % (10.31 vs 10.33 ksi); iteration matrix = finite-difference derivative of the residual (1e-3); frictionless bore resultant = pin load (2 %); mesh convergence of the collapse load (production vs 1.4x finer mesh < 3 %, measured ~1 %); an 81-case sweep over e/D, interference, friction and bushing wall converges (`--ignored`).
+
+Default bushing (7075 housing, e/D 1.5, p = 8.8 ksi):
+
+| Check | e/D needed (bearing-limit load) | Capacity (lbf) |
+|---|---|---|
+| Legacy (`Fbru + 0.8 p`) | 2.07 | |
+| Plastic FE, cosine half load, fit dead load (old) | 1.81 | 25,400 |
+| Stress superposition | 1.37 | 33,800 |
+| **Contact FE** | **1.49** | **30,400** (bearing limit 30,250) |
+
+* **The fit barely changes the collapse load** (within the 1-2 % plateau scatter, either sign), as limit-load theory predicts for a residual stress installed before the load. The old dead-load treatment cost 8 %. The fit still matters for first yield and for retention.
+* **Back-side contact is retained to ~2.7x the load the cosine models predict**: they open it at `P = p pi a t` (3.9 kips here), the real bushing keeps it to ~10 kips (back pressure 9.7 ksi at 0.6 kips, 2.3 ksi at 9 kips, 0 at ~11 kips; the bushing wall carries the load into the front half). The superposition's `pin_case` switch is therefore conservative; `edge_check` does not use it for the contact FE.
+* Friction (mu 0.15) adds ~6 % collapse capacity vs frictionless; mu is a bushing input, not a model constant.
+* The plain Contact-FE result at the default e/D is a **marginal pass** (+0.4 %): treat e/D ~1.5 as the boundary, not a safe value.
+
 ## Known limits
 
 * Half plane: only the nearest free edge is modelled (the back edge of a narrow housing is ignored).
   The FE plate is 3 e / 10 a, so it includes some finite-plate effect the analytic model cannot.
-* The elastic models assume full shear redistribution; the plastic model computes it but is 2D
+* The elastic models assume full shear redistribution; the plastic and contact models compute it but are 2D
   (plane strain), perfectly plastic (no hardening, no fracture), small strain, and its collapse load
   carries ~1-2 % solver tolerance and ~4 % mesh error (coarse mesh; the profile is read off a 7-point
   grid by linear interpolation). Fit pressure dependence is linear between the no-fit and nominal-fit solves.
@@ -140,7 +159,7 @@ differentially tested.
 
 ## Removing it
 
-Delete `edge-check/` (the plastic model is `plastic.rs` + `models/plastic_model.rs`), `app-tui/src/toolboxes/bushing/edge_check.rs`, the `edge_check` field /
+Delete `edge-check/` (the plastic models are `plastic.rs` + `models/plastic_model.rs`; the contact model `contact.rs` + `models/contact_model.rs`), `app-tui/src/toolboxes/bushing/edge_check.rs`, the `edge_check` field /
 `EdgeCheck` action / `c` key in `bushing/mod.rs`, the `edge_section` hook in `bushing/view.rs`, the
 workspace member and `[profile.dev.package.edge-check]` in the root `Cargo.toml`, and the dependency
 in `app-tui/Cargo.toml`. To drop one model, delete its line in `models::default_models`.

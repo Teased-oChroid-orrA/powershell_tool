@@ -81,7 +81,7 @@ nodes.
 | ratatui GUI head | `app-tui/` | `app-tui/AGENTS.md` + per-toolbox `app-tui/src/toolboxes/{search,fastener_hole,bushing,pressure_vessel,preload_analysis}/AGENTS.md` | Active. Sole GUI head. |
 | Bushing press-fit solver | `bushing-solver/` | `bushing-solver/AGENTS.md` | Active. Consumed by `app-tui`. |
 | Fastened joint preload solver | `fastened-joint-solver/` | `fastened-joint-solver/AGENTS.md` | Active. Consumed by `app-tui` Preload Analysis. |
-| Edge-distance cross-checks (stress superposition / FE / allowables) | `edge-check/` | `edge-check/AGENTS.md` | Active on branch `edge-distance-stress-check` (not merged). Consumed by `app-tui` Bushing `c`. |
+| Edge-distance cross-checks (stress superposition / FE / allowables) | `edge-check/` | `edge-check/AGENTS.md` | Active on `main` (contact-FE work on branch `fea-contact-model`). Consumed by `app-tui` Bushing `c`/`C`. |
 | Pressure vessel solver | `pressure-vessel-solver/` | *(no node)* | Sibling pattern to `bushing-solver`. |
 | Shared math (Lamé, materials) | `engineering-math/`, `mechanics-core/` | *(no node)* | No re-export shim; import directly. |
 | CLI | `cli/` | *(no node)* | Second `search-core` consumer. |

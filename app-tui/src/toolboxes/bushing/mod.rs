@@ -60,7 +60,7 @@ pub enum BushingAction {
     ToggleNumbers,
     /// Run the independent edge-distance cross-check (`c`).
     EdgeCheck,
-    /// Same, plus the elastic-plastic FE limit load (`C`, ~1-2 s).
+    /// Same, plus the bushing + housing contact FE (`C`, ~1-3 s).
     EdgeCheckDeep,
     /// Pin/unpin the tooltip for one cross-check (also shown on hover).
     EdgeInfo(edge_check::EdgeTopic),
@@ -233,7 +233,7 @@ impl BushingState {
     }
 
     /// Runs the edge-distance cross-check for the current inputs (a few
-    /// hundred ms, ~1-2 s with the plastic model when `deep`; `edge-check` is
+    /// hundred ms, ~1-3 s with the contact model when `deep`; `edge-check` is
     /// compiled optimised even in dev builds).
     pub fn run_edge_check(&mut self, deep: bool) {
         match edge_check::run_check(&self.model, deep) {
@@ -892,9 +892,9 @@ mod tests {
         let mut state = BushingState::default();
         handle_key(&mut state, KeyEvent { code: KeyCode::Char('C'), modifiers: KeyModifiers::SHIFT, kind: KeyEventKind::Press, state: KeyEventState::NONE });
         let run = state.edge_check.as_ref().expect("C runs the check");
-        assert!(run.report.models.iter().any(|m| m.id == "plastic"));
+        assert!(run.report.models.iter().any(|m| m.id == "contact"));
         handle_key(&mut state, key(KeyCode::Char('c')));
-        assert!(!state.edge_check.as_ref().unwrap().report.models.iter().any(|m| m.id == "plastic"), "c re-runs the quick set");
+        assert!(!state.edge_check.as_ref().unwrap().report.models.iter().any(|m| m.id == "contact"), "c re-runs the quick set");
     }
 
     #[test]

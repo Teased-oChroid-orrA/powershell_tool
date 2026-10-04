@@ -640,14 +640,14 @@ fn hovering_a_cross_check_name_in_the_real_shell_shows_its_tooltip_and_leaving_h
     state.bushing.run_edge_check(true);
     let mut regions = app_tui::mouse::MouseRegions::default();
     let _ = render_shell_with_regions(&state, 170, 120, &mut regions);
-    // The pane scrolls: scroll until the plastic model's name is on screen.
-    let find = |regions: &app_tui::mouse::MouseRegions| regions.bushing_actions.iter().find(|(_, a)| *a == BushingAction::EdgeInfo(EdgeTopic::PlasticFe)).map(|(r, _)| *r);
-    let rect = find(&regions).expect("the plastic model name is a hover target");
+    // The pane scrolls: scroll until the contact model's name is on screen.
+    let find = |regions: &app_tui::mouse::MouseRegions| regions.bushing_actions.iter().find(|(_, a)| *a == BushingAction::EdgeInfo(EdgeTopic::ContactFe)).map(|(r, _)| *r);
+    let rect = find(&regions).expect("the contact model name is a hover target");
     let moved = |col, row| crossterm::event::MouseEvent { kind: crossterm::event::MouseEventKind::Moved, column: col, row, modifiers: crossterm::event::KeyModifiers::NONE };
     app_tui::app::handle_mouse(&mut state, &regions, moved(rect.x + 1, rect.y));
-    assert_eq!(state.bushing.edge_hover.map(|h| h.0), Some(EdgeTopic::PlasticFe));
+    assert_eq!(state.bushing.edge_hover.map(|h| h.0), Some(EdgeTopic::ContactFe));
     let text = buffer_text(&render_shell(&state, 170, 120));
-    assert!(text.contains("Elastic-plastic FE limit load") && text.contains("Weaknesses"), "tooltip missing:\n{text}");
+    assert!(text.contains("Contact FE (bushing + housing, elastic-plastic)") && text.contains("Weaknesses"), "tooltip missing:\n{text}");
     // Moving off any hover target clears it.
     app_tui::app::handle_mouse(&mut state, &regions, moved(0, 0));
     assert!(state.bushing.edge_hover.is_none());

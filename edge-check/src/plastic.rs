@@ -30,28 +30,61 @@ pub enum Collapse {
     FitOnlyFails,
 }
 
-struct Gp {
-    dnx: [f64; 9],
-    dny: [f64; 9],
-    w: f64,
+/// One Gauss point: shape-function gradients and the integration weight.
+pub(crate) struct Gp {
+    pub(crate) dnx: [f64; 9],
+    pub(crate) dny: [f64; 9],
+    pub(crate) w: f64,
+}
+
+/// Gauss points of every element, 9 per element in element order.
+pub(crate) fn gauss_points(nodes: &[[f64; 2]], elems: &[[usize; 9]]) -> Vec<Gp> {
+    elems
+        .iter()
+        .flat_map(|conn| {
+            let xy: Vec<[f64; 2]> = conn.iter().map(|&n| nodes[n]).collect();
+            let mut out = Vec::with_capacity(9);
+            for &(gx, wx) in &GAUSS3 {
+                for &(gy, wy) in &GAUSS3 {
+                    let (_, dxi, deta) = shape_q9(gx, gy);
+                    let (mut j11, mut j12, mut j21, mut j22) = (0.0, 0.0, 0.0, 0.0);
+                    for n in 0..9 {
+                        j11 += dxi[n] * xy[n][0];
+                        j12 += dxi[n] * xy[n][1];
+                        j21 += deta[n] * xy[n][0];
+                        j22 += deta[n] * xy[n][1];
+                    }
+                    let det = j11 * j22 - j12 * j21;
+                    let inv = [[j22 / det, -j12 / det], [-j21 / det, j11 / det]];
+                    let (mut dnx, mut dny) = ([0.0; 9], [0.0; 9]);
+                    for n in 0..9 {
+                        dnx[n] = inv[0][0] * dxi[n] + inv[0][1] * deta[n];
+                        dny[n] = inv[1][0] * dxi[n] + inv[1][1] * deta[n];
+                    }
+                    out.push(Gp { dnx, dny, w: det * wx * wy });
+                }
+            }
+            out
+        })
+        .collect()
 }
 
 /// Plastic strain state `(exx, eyy, ezz, gxy)`; `ezz` is only used under
 /// plane strain.
-type Ep = [f64; 4];
+pub(crate) type Ep = [f64; 4];
 
 #[derive(Clone, Copy)]
-struct Elastic {
-    e: f64,
-    nu: f64,
-    plane_strain: bool,
+pub(crate) struct Elastic {
+    pub(crate) e: f64,
+    pub(crate) nu: f64,
+    pub(crate) plane_strain: bool,
 }
 
 /// J2 return map. `eps` is the total in-plane strain `(exx, eyy, gxy)`
 /// (`ezz` is zero under plane strain and free under plane stress);
 /// returns the in-plane stress `(sxx, syy, txy)` and the new plastic strain.
 #[inline]
-fn return_map(eps: [f64; 3], ep: Ep, c: Elastic, sigma0: f64) -> ([f64; 3], Ep) {
+pub(crate) fn return_map(eps: [f64; 3], ep: Ep, c: Elastic, sigma0: f64) -> ([f64; 3], Ep) {
     if c.plane_strain {
         return return_map_plane_strain(eps, ep, c, sigma0);
     }
@@ -121,35 +154,7 @@ impl FemSolution {
     #[allow(clippy::needless_range_loop)] // dof-indexed vector updates read clearer than zips
     pub fn collapse_load(&self, p_fit: f64, sigma0: f64) -> Collapse {
         let ndof = 2 * self.nodes.len();
-        let gps: Vec<Gp> = self
-            .elems
-            .iter()
-            .flat_map(|conn| {
-                let xy: Vec<[f64; 2]> = conn.iter().map(|&n| self.nodes[n]).collect();
-                let mut out = Vec::with_capacity(9);
-                for &(gx, wx) in &GAUSS3 {
-                    for &(gy, wy) in &GAUSS3 {
-                        let (_, dxi, deta) = shape_q9(gx, gy);
-                        let (mut j11, mut j12, mut j21, mut j22) = (0.0, 0.0, 0.0, 0.0);
-                        for n in 0..9 {
-                            j11 += dxi[n] * xy[n][0];
-                            j12 += dxi[n] * xy[n][1];
-                            j21 += deta[n] * xy[n][0];
-                            j22 += deta[n] * xy[n][1];
-                        }
-                        let det = j11 * j22 - j12 * j21;
-                        let inv = [[j22 / det, -j12 / det], [-j21 / det, j11 / det]];
-                        let (mut dnx, mut dny) = ([0.0; 9], [0.0; 9]);
-                        for n in 0..9 {
-                            dnx[n] = inv[0][0] * dxi[n] + inv[0][1] * deta[n];
-                            dny[n] = inv[1][0] * dxi[n] + inv[1][1] * deta[n];
-                        }
-                        out.push(Gp { dnx, dny, w: det * wx * wy });
-                    }
-                }
-                out
-            })
-            .collect();
+        let gps = gauss_points(&self.nodes, &self.elems);
 
         let (e, nu) = (self.e_psi, self.nu);
         let elastic = Elastic { e, nu, plane_strain: self.plane_strain };

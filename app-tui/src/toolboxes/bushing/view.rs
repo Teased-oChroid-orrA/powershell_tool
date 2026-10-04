@@ -311,7 +311,7 @@ fn draw_action_bar(frame: &mut Frame, area: Rect, theme: &Theme, state: &Bushing
     }
     buttons.push((format!(" Numbers: {} ", if state.show_numbers { "on" } else { "off" }), BushingAction::ToggleNumbers, Style::default().add_modifier(Modifier::REVERSED)));
     buttons.push((" Edge check ".to_string(), BushingAction::EdgeCheck, Style::default().add_modifier(Modifier::REVERSED)));
-    buttons.push((" +Plastic ".to_string(), BushingAction::EdgeCheckDeep, Style::default().add_modifier(Modifier::REVERSED)));
+    buttons.push((" +Contact FE ".to_string(), BushingAction::EdgeCheckDeep, Style::default().add_modifier(Modifier::REVERSED)));
     buttons.push((" Export ".to_string(), BushingAction::Export, Style::default().add_modifier(Modifier::REVERSED)));
 
     let mut spans = Vec::new();
@@ -816,7 +816,7 @@ mod tests {
         assert!(flat(&super::super::edge_check::section_lines(&theme, None, false, &state.model).0).contains("Not run"));
         state.run_edge_check(false);
         let fresh = flat(&super::super::edge_check::section_lines(&theme, state.edge_check.as_ref(), false, &state.model).0);
-        assert!(fresh.contains("Superposition") && fresh.contains("Elastic FE") && fresh.contains("Allowables") && fresh.contains("Legacy (solver)"), "{fresh}");
+        assert!(fresh.contains("Superposition") && fresh.contains("Allowables") && fresh.contains("Legacy (solver)"), "{fresh}");
         assert!(!fresh.contains("inputs changed"));
         let stale = flat(&super::super::edge_check::section_lines(&theme, state.edge_check.as_ref(), true, &state.model).0);
         assert!(stale.contains("inputs changed"));
@@ -828,9 +828,9 @@ mod tests {
         let mut state = BushingState::default();
         state.run_edge_check(true);
         assert!(!rendered_text(&state, 160, 50).contains("Weaknesses"), "no tooltip until hovered");
-        state.edge_hover = Some((EdgeTopic::PlasticFe, 100, 20));
+        state.edge_hover = Some((EdgeTopic::ContactFe, 100, 20));
         let text = rendered_text(&state, 160, 50);
-        for needle in ["Elastic-plastic FE limit load", "Strengths", "Weaknesses", "Restrictions", "plane strain"] {
+        for needle in ["Contact FE", "Strengths", "Weaknesses", "Restrictions", "plane strain"] {
             assert!(text.contains(needle), "hover tooltip lacks {needle:?}");
         }
         state.edge_hover = None;
@@ -843,7 +843,7 @@ mod tests {
     #[test]
     fn every_topic_tooltip_has_the_four_sections_and_fits_a_small_pane() {
         use super::super::edge_check::{tip, EdgeTopic};
-        for t in [EdgeTopic::Legacy, EdgeTopic::StressSuperposition, EdgeTopic::ElasticFe, EdgeTopic::Allowables, EdgeTopic::PlasticFe] {
+        for t in [EdgeTopic::Legacy, EdgeTopic::StressSuperposition, EdgeTopic::Allowables, EdgeTopic::PlasticFe, EdgeTopic::ContactFe] {
             let headings: Vec<&str> = tip(t).sections.iter().map(|(h, _)| *h).collect();
             assert_eq!(headings, ["What it does", "Strengths", "Weaknesses", "Restrictions"], "{t:?}");
             let mut state = BushingState::default();

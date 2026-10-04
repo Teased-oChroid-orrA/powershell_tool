@@ -11,7 +11,7 @@ use super::model::BushingModel;
 use crate::theme::{StatusTone, Theme};
 use edge_check::models::default_models;
 use edge_check::runner::{run, Case, EdgeConfig, EdgeInput, EdgeMin, EdgeReport, TargetResult, TARGETS};
-use edge_check::types::{Geometry, Strengths};
+use edge_check::types::{BushingSpec, Geometry, Strengths};
 use ratatui::text::{Line, Span};
 
 /// What a hover/click tooltip is about: one per check the Results pane shows.
@@ -19,18 +19,19 @@ use ratatui::text::{Line, Span};
 pub enum EdgeTopic {
     Legacy,
     StressSuperposition,
-    ElasticFe,
     Allowables,
+    /// Dead-load plate model: only shown if the bushing is not known.
     PlasticFe,
+    ContactFe,
 }
 
 impl EdgeTopic {
     pub fn for_model(id: &str) -> Option<EdgeTopic> {
         Some(match id {
             "analytic" => EdgeTopic::StressSuperposition,
-            "fem" => EdgeTopic::ElasticFe,
             "allowable" => EdgeTopic::Allowables,
             "plastic" => EdgeTopic::PlasticFe,
+            "contact" => EdgeTopic::ContactFe,
             _ => return None,
         })
     }
@@ -62,22 +63,22 @@ pub fn tip(topic: EdgeTopic) -> Tip {
                 ("Restrictions", "Half plane: only the nearest edge, a narrow housing's back edge is ignored. Load acts toward the edge. The half-cosine load kink costs about 0.5% of peak stress."),
             ],
         },
-        EdgeTopic::ElasticFe => Tip {
-            title: "Plane-stress FE (elastic)",
-            sections: &[
-                ("What it does", "Q9 finite-element solution of the same elastic problem and the same failure criteria, on a finite plate (3 e or 10 bore radii)."),
-                ("Strengths", "An independent numerical method: agreement with the stress superposition validates the math, and it includes the finite plate. Mesh error under 0.4%."),
-                ("Weaknesses", "Same physics and the same optimistic full-redistribution criterion as the stress superposition, so agreement proves the numerics, not the failure assumption. Slower (about 50 ms)."),
-                ("Restrictions", "Plane stress; load toward the edge; straight bore; one free edge near the bore."),
-            ],
-        },
         EdgeTopic::Allowables => Tip {
             title: "Tabulated allowables (test-based)",
             sections: &[
-                ("What it does", "Bearing: P/(D t) <= Fbru(e/D), linear between e/D 1.5 and 2.0, Fbru(2.0) above 2.0 (MMPDS rules). Shear-out: P <= 2 Fsu t (e - D/2 cos 40 deg) (classical inclined-plane rule)."),
+                ("What it does", "Bearing: P/(D t) <= Fbru(e/D), linear between e/D 1.5 and 2.0, Fbru(2.0) above 2.0 (MMPDS rules). Shear-out: P + p D t <= 2 Fsu t (e - D/2 cos 40 deg) (classical inclined-plane rule; the fit pressure p is charged in full against the shear-out)."),
                 ("Strengths", "Rooted in test data and the usual certification basis, so no model risk. Conservative against the elastic models."),
-                ("Weaknesses", "Needs Fbru at e/D 1.5 per material (enter it in the material library from your MMPDS; blank means bearing needs e/D >= 2). The library's Fbru is a 'typical' value, not an A-basis one. Ignores the fit pressure, load angle and geometry detail."),
+                ("Weaknesses", "Needs Fbru at e/D 1.5 per material (enter it in the material library from your MMPDS; blank means bearing needs e/D >= 2). The library's Fbru is a 'typical' value, not an A-basis one. The fit is charged only in shear-out (it confines the bore, so bearing is not reduced); load angle and geometry detail are ignored."),
                 ("Restrictions", "Valid for 0.25 <= t/D <= 0.50 and e/D >= 1.5 (below that needs tests). Dry-pin values; the 40 deg rule is a rule of thumb."),
+            ],
+        },
+        EdgeTopic::ContactFe => Tip {
+            title: "Contact FE (bushing + housing, elastic-plastic)",
+            sections: &[
+                ("What it does", "Meshes bushing and housing, installs the interference by contact (with friction), then pushes a rigid pin toward the edge to collapse (housing J2 plane strain, flow stress min(Ftu, sqrt(3) Fsu)). Gives the collapse and first-yield loads; solved on an edge-distance grid and interpolated."),
+                ("Strengths", "Fewest assumptions: no imposed pin-pressure shape, no rigid bushing, back-side contact loss is a result, the fit is installed first (residual stress, not a dead load). Replaces the shear-out/splitting rules. Its fit pressure matches Lame to 0.2%."),
+                ("Weaknesses", "2D plane strain for a triaxial bore; elastic bushing; no hardening, fracture or 3D effects; friction limit lags one load step. Collapse = load plateau (1-2% scatter, ~1% mesh). 1-3 s, so only on C."),
+                ("Restrictions", "Load toward the edge; straight bore and bushing; one nearest edge. Not validated against edge-distance tests."),
             ],
         },
         EdgeTopic::PlasticFe => Tip {
@@ -132,9 +133,9 @@ pub fn advisories(run: Option<&EdgeCheckRun>, stale: bool) -> Vec<Advisory> {
 fn short_name(id: &str) -> &'static str {
     match id {
         "analytic" => "Superposition",
-        "fem" => "Elastic FE",
         "allowable" => "Allowables",
         "plastic" => "Plastic FE",
+        "contact" => "Contact FE",
         _ => "",
     }
 }
@@ -176,10 +177,19 @@ pub fn build_input(model: &BushingModel) -> Result<EdgeInput, String> {
     })
 }
 
-/// `deep` also runs the elastic-plastic FE limit-load model (~1-2 s).
+/// The bushing as the contact model needs it, or `None` if the inputs do not
+/// describe a bushing pressed into the bore (the plate model runs instead).
+fn bushing_spec(model: &BushingModel) -> Option<BushingSpec> {
+    let m = model.bushing_material();
+    let (ri, a) = (model.id_bushing / 2.0, model.output.bore_tol.nominal / 2.0);
+    let delta = model.output.delta_total.max(0.0) / 2.0;
+    (ri > 0.0 && ri < a && delta.is_finite() && m.e_ksi > 0.0).then_some(BushingSpec { inner_radius: ri, interference: delta, e: m.e_ksi * 1000.0, nu: m.nu, friction: model.friction.max(0.0) })
+}
+
+/// `deep` also runs the elastic-plastic contact FE (~1-3 s).
 pub fn run_check(model: &BushingModel, deep: bool) -> Result<EdgeCheckRun, String> {
     let input = build_input(model)?;
-    let cfg = EdgeConfig { include_plastic: deep, ..EdgeConfig::default() };
+    let cfg = EdgeConfig { include_plastic: deep, bushing: bushing_spec(model), ..EdgeConfig::default() };
     let report = run(&default_models(&cfg), &input, &cfg);
     Ok(EdgeCheckRun { input, report })
 }
@@ -223,10 +233,14 @@ fn fmt_lbf(v: f64) -> String {
     }
 }
 
-/// Share of the no-fit capacity the interference consumes, when it matters.
+/// Share of the no-fit capacity the interference consumes, when it matters
+/// (below 2 % either way is "no measurable effect": solver scatter).
 fn fmt_fit_share(t: &TargetResult) -> Option<String> {
-    (t.capacity_no_fit_lbf.is_finite() && t.capacity_no_fit_lbf > 0.0 && (t.capacity_no_fit_lbf - t.capacity_lbf).abs() > 1e-9 * t.capacity_no_fit_lbf)
-        .then(|| format!("{:.0}%", 100.0 * (1.0 - t.capacity_lbf / t.capacity_no_fit_lbf)))
+    if !(t.capacity_no_fit_lbf.is_finite() && t.capacity_no_fit_lbf > 0.0) {
+        return None;
+    }
+    let share = 1.0 - t.capacity_lbf / t.capacity_no_fit_lbf;
+    Some(if share.abs() < 0.02 { "~0%".to_string() } else { format!("{:.0}%", 100.0 * share) })
 }
 
 fn target_index(prefix: &str) -> usize {
@@ -254,10 +268,10 @@ pub fn section_lines<'a>(theme: &Theme, run: Option<&EdgeCheckRun>, stale: bool,
     let mut tags: Vec<(usize, EdgeTopic)> = Vec::new();
     let mut lines = vec![Line::from(vec![
         Span::styled("Edge-Distance Cross-Check", theme.title_style(false)),
-        Span::styled("   c quick \u{b7} C +plastic \u{b7} hover a row", theme.disabled_style()),
+        Span::styled("   c quick \u{b7} C +contact FE \u{b7} hover a row", theme.disabled_style()),
     ])];
     let Some(run) = run else {
-        lines.push(Line::from(Span::styled("  Not run. c compares stress analysis, FE and tabulated allowables; C adds an elastic-plastic limit load (1-2 s).", theme.disabled_style())));
+        lines.push(Line::from(Span::styled("  Not run. c compares stress analysis, FE and tabulated allowables; C adds the bushing + housing contact FE (1-3 s).", theme.disabled_style())));
         return (lines, tags);
     };
     let r = &run.report;
@@ -338,7 +352,11 @@ pub fn detail_lines(topic: EdgeTopic, run: Option<&EdgeCheckRun>, model: &Bushin
         };
         out.push(format!("{}: can carry {} lbf vs {} lbf needed, margin {} ({}), min e/D {e}.", t.target.label, fmt_lbf(t.capacity_lbf), fmt_lbf(load), fmt_margin(t.margin), t.governing.label()));
         if let Some(share) = fmt_fit_share(t) {
-            out.push(format!("  The fit uses {share} of that capacity ({} lbf without interference).", fmt_lbf(t.capacity_no_fit_lbf)));
+            out.push(if share == "~0%" {
+                format!("  The fit changes that capacity by under 2% ({} lbf without interference).", fmt_lbf(t.capacity_no_fit_lbf))
+            } else {
+                format!("  The fit uses {share} of that capacity ({} lbf without interference).", fmt_lbf(t.capacity_no_fit_lbf))
+            });
         }
         if let Some(mc) = t.mc.as_ref().filter(|mc| mc.mean.is_finite()) {
             out.push(format!("  Over the fit-pressure band: mean capacity/load {:.2}, 5th percentile {:.2}, worst {:.2}; P(fail) {:.1}%.", 1.0 + mc.mean, 1.0 + mc.p05, 1.0 + mc.min, mc.p_fail * 100.0));
@@ -390,7 +408,7 @@ mod tests {
     fn default_model_runs_and_every_model_reports_something() {
         let model = BushingModel::default();
         let run = run_check(&model, false).expect("default bushing is checkable");
-        assert!(run.report.models.len() >= 3);
+        assert!(run.report.models.len() >= 2, "superposition and the allowables");
         for m in &run.report.models {
             assert!(m.error.is_none(), "{}: {:?}", m.label, m.error);
             assert!(m.targets.iter().any(|t| t.is_some()), "{} produced no target", m.label);
@@ -414,8 +432,8 @@ mod tests {
         let model = BushingModel::default();
         let quick = run_check(&model, false).unwrap();
         let deep = run_check(&model, true).unwrap();
-        assert!(!quick.report.models.iter().any(|m| m.id == "plastic"));
-        let plastic = deep.report.models.iter().find(|m| m.id == "plastic").expect("deep run includes the plastic model");
+        assert!(!quick.report.models.iter().any(|m| m.id == "contact"));
+        let plastic = deep.report.models.iter().find(|m| m.id == "contact").expect("deep run includes the contact model");
         assert!(plastic.error.is_none(), "{:?}", plastic.error);
         assert!(plastic.targets.iter().flatten().any(|t| t.governing == edge_check::types::Mode::Collapse));
     }
@@ -427,8 +445,8 @@ mod tests {
         let run = run_check(&model, true).unwrap();
         let adv = advisories(Some(&run), false);
         assert_eq!(adv.len(), 1, "one line however many checks are short: {:?}", adv.iter().map(|a| &a.text).collect::<Vec<_>>());
-        assert!(adv[0].text.starts_with("Edge advisory") && adv[0].text.contains("Allowables") && adv[0].text.contains("Plastic FE") && adv[0].text.contains("need more edge distance"), "{}", adv[0].text);
-        assert_eq!(adv[0].topic, EdgeTopic::PlasticFe, "hover shows the most demanding model first");
+        assert!(adv[0].text.starts_with("Edge advisory") && adv[0].text.contains("Allowables") && adv[0].text.contains("need more edge distance"), "{}", adv[0].text);
+        assert_eq!(adv[0].topic, EdgeTopic::Allowables, "hover shows the most demanding model first");
         assert!(advisories(Some(&run), true).is_empty(), "a stale run must not warn");
         assert!(advisories(None, false).is_empty());
         // Plenty of edge: no advisories.
