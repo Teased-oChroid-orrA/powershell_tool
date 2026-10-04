@@ -82,8 +82,8 @@ fn predictions(mu: f64, sigma0: impl Fn(&Case) -> f64 + Sync) -> Vec<(usize, f64
 }
 
 /// The contact model, with its own flow-stress rule and a frictionless pin,
-/// against all twelve test points: no over-prediction beyond 8 %, no
-/// under-prediction beyond 20 %, mean absolute error under 10 %, and the
+/// against all twelve test points: no over-prediction, no under-prediction
+/// beyond 22 %, mean absolute error under 12 %, and the
 /// e/D 1.5 -> 2.0 strengthening (the quantity edge distance is about) within
 /// 10 % of the tests.
 #[test]
@@ -92,10 +92,10 @@ fn the_contact_fe_reproduces_the_pin_bearing_tests() {
     let mut sum_abs = 0.0;
     for &(i, ed, test, pred) in &p {
         let err = pred / test - 1.0;
-        assert!((-0.20..=0.08).contains(&err), "{} e/D {ed}: test {test:.0}, predicted {pred:.0} ({:+.1} %)", CASES[i].alloy, 100.0 * err);
+        assert!((-0.22..=0.0).contains(&err), "{} e/D {ed}: test {test:.0}, predicted {pred:.0} ({:+.1} %)", CASES[i].alloy, 100.0 * err);
         sum_abs += err.abs();
     }
-    assert!(sum_abs / p.len() as f64 > 0.0 && sum_abs / (p.len() as f64) < 0.10, "mean |error| {:.1} %", 100.0 * sum_abs / p.len() as f64);
+    assert!(sum_abs / p.len() as f64 > 0.0 && sum_abs / (p.len() as f64) < 0.12, "mean |error| {:.1} %", 100.0 * sum_abs / p.len() as f64);
     for i in 0..CASES.len() {
         let at = |ed: f64| p.iter().find(|r| r.0 == i && r.1 == ed).unwrap();
         let (test_ratio, pred_ratio) = (at(2.0).2 / at(1.5).2, at(2.0).3 / at(1.5).3);

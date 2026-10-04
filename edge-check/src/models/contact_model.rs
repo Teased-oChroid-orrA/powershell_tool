@@ -19,7 +19,12 @@ use crate::types::{BushingSpec, Geometry, Loads, Mode, ModeMargin, Strengths, ma
 use std::sync::{Arc, Mutex};
 
 /// Edge distances (in bore diameters) at which the loads are solved.
-const GRID_E_OVER_D: [f64; 5] = [1.0, 1.5, 2.0, 3.0, 4.0];
+const GRID_E_OVER_D: [f64; 6] = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0];
+/// Edge distance (in bore diameters) at which the interference levels are
+/// solved. Fixed, so the table (and therefore every recommendation read from
+/// it) does not depend on the edge distance being checked: applying a
+/// recommended edge distance must not move that recommendation.
+const FIT_REF_E_OVER_D: f64 = 2.0;
 /// Interference multiples (of the nominal) at the actual edge distance.
 const FIT_LEVELS: [f64; 3] = [0.0, 1.0, 1.5];
 
@@ -44,7 +49,7 @@ impl ContactModel {
 struct Profile {
     /// `(edge in, collapse lbf, first yield lbf)` at the nominal interference.
     points: Vec<(f64, f64, f64)>,
-    /// `(collapse, first yield)` at the actual edge for each of `FIT_LEVELS`.
+    /// `(collapse, first yield)` at the reference edge for each of `FIT_LEVELS`.
     at_edge: [(f64, f64); 3],
     /// Mean contact pressure the FE computed for the nominal interference.
     fit_pressure: f64,
@@ -55,20 +60,18 @@ struct Profile {
 }
 
 impl Profile {
+    /// Collapse and first-yield loads at edge distance `e`: a monotone cubic
+    /// (Fritsch-Carlson) through the solved points and the origin (nothing
+    /// can be carried at zero edge distance), held flat beyond the last
+    /// point (conservative). A linear interpolation of this concave curve
+    /// was low by up to 4.5 % between grid points, and by a different
+    /// amount depending on where the edge fell, which made the recommended
+    /// edge distance wander when it was applied.
     fn interp(&self, e: f64) -> (f64, f64) {
-        let p = &self.points;
-        if e <= p[0].0 {
-            let k = e / p[0].0; // edge-limited: loads ~ e
-            return (p[0].1 * k, p[0].2 * k);
-        }
-        for w in p.windows(2) {
-            if e <= w[1].0 {
-                let t = (e - w[0].0) / (w[1].0 - w[0].0);
-                return (w[0].1 + t * (w[1].1 - w[0].1), w[0].2 + t * (w[1].2 - w[0].2));
-            }
-        }
-        let last = p[p.len() - 1];
-        (last.1, last.2) // beyond the grid: hold (conservative)
+        let xs: Vec<f64> = std::iter::once(0.0).chain(self.points.iter().map(|p| p.0)).collect();
+        let c: Vec<f64> = std::iter::once(0.0).chain(self.points.iter().map(|p| p.1)).collect();
+        let y: Vec<f64> = std::iter::once(0.0).chain(self.points.iter().map(|p| p.2)).collect();
+        (pchip(&xs, &c, e), pchip(&xs, &y, e))
     }
 
     /// Multiplier on the nominal-interference loads at interference factor
@@ -89,6 +92,43 @@ impl Profile {
         };
         (at(r), at(ry))
     }
+}
+
+/// Monotone piecewise-cubic Hermite interpolation (Fritsch-Carlson) of
+/// `(xs, ys)` at `x`; flat beyond the ends.
+fn pchip(xs: &[f64], ys: &[f64], x: f64) -> f64 {
+    let n = xs.len();
+    if x <= xs[0] {
+        return ys[0];
+    }
+    if x >= xs[n - 1] {
+        return ys[n - 1];
+    }
+    let h: Vec<f64> = xs.windows(2).map(|w| w[1] - w[0]).collect();
+    let delta: Vec<f64> = (0..n - 1).map(|i| (ys[i + 1] - ys[i]) / h[i]).collect();
+    let mut d = vec![0.0; n];
+    for i in 1..n - 1 {
+        if delta[i - 1] * delta[i] > 0.0 {
+            let (w1, w2) = (2.0 * h[i] + h[i - 1], h[i] + 2.0 * h[i - 1]);
+            d[i] = (w1 + w2) / (w1 / delta[i - 1] + w2 / delta[i]);
+        }
+    }
+    let end = |h0: f64, h1: f64, d0: f64, d1: f64| {
+        let v = ((2.0 * h0 + h1) * d0 - h0 * d1) / (h0 + h1);
+        if v * d0 <= 0.0 {
+            0.0
+        } else if d0 * d1 <= 0.0 && v.abs() > 3.0 * d0.abs() {
+            3.0 * d0
+        } else {
+            v
+        }
+    };
+    d[0] = if n > 2 { end(h[0], h[1], delta[0], delta[1]) } else { delta[0] };
+    d[n - 1] = if n > 2 { end(h[n - 2], h[n - 3], delta[n - 2], delta[n - 3]) } else { delta[n - 2] };
+    let i = xs.partition_point(|v| *v <= x) - 1;
+    let t = (x - xs[i]) / h[i];
+    let (t2, t3) = (t * t, t * t * t);
+    (2.0 * t3 - 3.0 * t2 + 1.0) * ys[i] + (t3 - 2.0 * t2 + t) * h[i] * d[i] + (-2.0 * t3 + 3.0 * t2) * ys[i + 1] + (t3 - t2) * h[i] * d[i + 1]
 }
 
 struct ContactResponse {
@@ -135,8 +175,8 @@ impl Response for ContactResponse {
 /// ultimate (the standard limit-analysis flow stress for a hardening
 /// material), capped by `sqrt(3) Fsu` and never below yield. Validated
 /// against NACA TN 1503 pin-bearing tests (`tests/validation_naca_tn1503.rs`):
-/// with this rule all 12 test points are predicted within -18 % / +7 %; with
-/// `Ftu` instead, 7075 is over-predicted by up to 16 %.
+/// with this rule all 12 test points are predicted 0.6-20 % low (none high);
+/// with `Ftu` instead, 7075 is over-predicted by up to 8 %.
 pub fn flow_stress(mat: &Strengths) -> f64 {
     (0.5 * (mat.ftu + mat.sy)).min(3f64.sqrt() * mat.fsu).max(mat.sy)
 }
@@ -157,9 +197,10 @@ impl EdgeModel for ContactModel {
     }
 
     /// Standard deviation of the prediction error over the 12 NACA TN 1503
-    /// test points (-5.9 % mean, 8.5 % sd; `tests/validation_naca_tn1503.rs`).
+    /// test points (-9.9 % mean, i.e. conservative, 6.9 % sd;
+    /// `tests/validation_naca_tn1503.rs`); the bias is not corrected.
     fn model_cv(&self) -> f64 {
-        0.09
+        0.07
     }
 
     fn respond(&self, geom: &Geometry, mat: &Strengths, fit_pressure: f64) -> Result<Box<dyn Response>, String> {
@@ -181,14 +222,13 @@ impl ContactModel {
         let d = 2.0 * a;
         let sigma0 = flow_stress(mat);
         let spec = self.spec;
-        // Jobs `(edge, interference multiple)`: the grid at nominal, the
-        // actual edge at nominal, and the actual edge at the other levels.
+        // Jobs `(edge, interference multiple)`: the grid at nominal and the
+        // reference edge at the other interference levels. None depends on
+        // the edge distance being checked.
+        let ref_edge = FIT_REF_E_OVER_D * d;
         let mut jobs: Vec<(f64, f64)> = GRID_E_OVER_D.iter().map(|f| (f * d, 1.0)).collect();
-        if !jobs.iter().any(|(e, _)| (e - geom.edge).abs() < 1e-9 * geom.edge) {
-            jobs.push((geom.edge, 1.0));
-        }
-        jobs.push((geom.edge, FIT_LEVELS[0]));
-        jobs.push((geom.edge, FIT_LEVELS[2]));
+        jobs.push((ref_edge, FIT_LEVELS[0]));
+        jobs.push((ref_edge, FIT_LEVELS[2]));
         let (mesh, template, e_h, nu_h, t) = (self.mesh, *geom, mat.e, mat.nu, geom.thickness);
         let results: Vec<Result<(f64, f64, f64, bool), String>> = std::thread::scope(|scope| {
             let handles: Vec<_> = jobs
@@ -204,9 +244,9 @@ impl ContactModel {
                 .collect();
             handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Err("contact solver panicked".to_string()))).collect()
         });
-        let near = |e: f64| (e - geom.edge).abs() < 1e-9 * geom.edge;
-        // The solves at the actual edge distance are essential; a failed
-        // grid point elsewhere only coarsens the table (and is reported).
+        let near = |e: f64| (e - ref_edge).abs() < 1e-9 * ref_edge;
+        // The solves at the reference edge are essential; a failed grid
+        // point elsewhere only coarsens the table (and is reported).
         let mut kept: Vec<((f64, f64), (f64, f64, f64, bool))> = Vec::new();
         let mut skipped = Vec::new();
         for (job, r) in jobs.iter().zip(results) {

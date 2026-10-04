@@ -78,8 +78,8 @@ pub fn tip(topic: EdgeTopic) -> Tip {
             title: "Contact FE (bushing + housing, elastic-plastic)",
             sections: &[
                 ("What it does", "Meshes bushing and housing, installs the interference by contact (with friction), then pushes a rigid pin toward the edge to collapse (housing J2 plane strain, flow stress (Ftu+Fty)/2). Gives the collapse and first-yield loads; solved on an edge-distance grid and interpolated."),
-                ("Strengths", "Fewest assumptions: no imposed pin-pressure shape, no rigid bushing, back-side contact loss is a result, the fit is installed first (residual stress, not a dead load). Replaces the shear-out/splitting rules. Fit pressure matches Lame to 0.2%; collapse validated on NACA TN 1503 pin tests (-18/+7%)."),
-                ("Weaknesses", "2D plane strain for a triaxial bore; elastic bushing; no hardening, fracture or 3D effects; friction limit lags one load step. Collapse = load plateau (1-2% scatter, ~1% mesh). 1-3 s, so only on C."),
+                ("Strengths", "Fewest assumptions: no imposed pin-pressure shape, no rigid bushing, back-side contact loss is a result, the fit is installed first (residual stress, not a dead load). Replaces the shear-out/splitting rules. Fit pressure matches Lame to 0.2%; collapse validated on NACA TN 1503 pin tests (0.6-20% low, none high)."),
+                ("Weaknesses", "2D plane strain for a triaxial bore; elastic bushing; no hardening, fracture or 3D effects; friction limit lags one load step. Collapse = load at a pin displacement of 10% of D (deterministic, 0.6-20% below the NACA tests), ~1% mesh. About 3 s, so only on C."),
                 ("Restrictions", "Load toward the edge; straight bore and bushing; one nearest edge. No test data for the interference fit itself."),
             ],
         },
@@ -87,7 +87,7 @@ pub fn tip(topic: EdgeTopic) -> Tip {
             title: "Recommended edge distance (P90 / P95 / P99)",
             sections: &[
                 ("What it does", "Re-runs every check over the variability the nominal margin ignores (fit pressure over its tolerance band, material strength scatter, each model's own error, bearing strength) and finds the e/D where the chance of failing is 10 % / 5 % / 1 %, once for the applied load (falls as the housing gets longer) and once for the bearing-limit load (the edge must outlast the bearing; a ratio, independent of length). The recommendation is the larger of the two over the models, at P99."),
-                ("Strengths", "Covers all the scatters at once, so a pass here means failure is unlikely even at the worst of them. Assumed: strength CV 5 % (typical handbook values, not your data); model error contact FE 9 % (spread of its 12 NACA test points), superposition 15 % (judgement, unvalidated), allowables 0 % (already statistical); fit pressure uniform over the band; normal independent factors clipped at 3 sigma."),
+                ("Strengths", "Covers all the scatters at once, so a pass here means failure is unlikely even at the worst of them. Assumed: strength CV 5 % (typical handbook values, not your data); model error contact FE 7 % (spread of its 12 NACA test points), superposition 15 % (judgement, unvalidated), allowables 0 % (already statistical); fit pressure uniform over the band; normal independent factors clipped at 3 sigma."),
                 ("Weaknesses", "The scatter inputs are assumptions, not measurements: other CVs move the numbers. No applied-load variability. 800 Monte-Carlo samples (about 1 % of an e/D unit of noise at P99)."),
                 ("Restrictions", "A design guide, not a certification value. The legacy solver check has no variability and is shown for comparison only."),
             ],
@@ -798,6 +798,32 @@ mod tests {
         assert!(is_stale(&model, &run), "the contact model's bushing/friction input must count");
     }
 
+    /// Applying the recommended edge distance must not move the recommendation
+    /// (it used to wander by 3 % because the table was rebuilt around the
+    /// edge distance being checked and its collapse loads scattered).
+    #[test]
+    fn the_recommended_edge_distance_is_a_fixed_point_of_applying_it() {
+        let mut model = BushingModel::default();
+        let rec = |m: &BushingModel| {
+            let run = run_check(m, true).unwrap();
+            let (e, _, _) = run.report.recommended_governing(2).unwrap();
+            let EdgeMin::Value(v) = e else { panic!("{e:?}") };
+            let all_pass = run.report.models.iter().filter(|x| x.error.is_none()).all(|x| x.targets.iter().flatten().all(|t| t.margin >= 0.0));
+            (v, all_pass)
+        };
+        let (first, _) = rec(&model);
+        model.edge_dist = first;
+        model.recompute();
+        let (second, pass) = rec(&model);
+        assert!((second - first).abs() < 0.01 * first, "recommended {first:.4} in, after applying it {second:.4} in");
+        // At the recommendation the nominal margins pass, and applying the new value again is stable too.
+        assert!(pass, "every nominal margin must be positive at the recommended edge distance");
+        model.edge_dist = second;
+        model.recompute();
+        let (third, _) = rec(&model);
+        assert!((third - second).abs() < 0.01 * second, "{second:.4} -> {third:.4}");
+    }
+
     #[test]
     fn an_impossible_edge_distance_is_reported_not_run() {
         let mut model = BushingModel::default();
@@ -806,3 +832,4 @@ mod tests {
         assert!(run_check(&model, false).is_err());
     }
 }
+

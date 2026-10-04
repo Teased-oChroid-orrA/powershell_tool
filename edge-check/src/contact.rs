@@ -27,6 +27,14 @@ use crate::types::{BushingSpec, Geometry};
 
 const BIG: f64 = 1e30;
 
+/// The collapse load is the load at a pin displacement of this fraction of
+/// the bore diameter. In a perfectly plastic pin-in-hole model the load never
+/// quite plateaus (the contact arc keeps growing), so a plateau rule scattered
+/// the result by +-3 % from one edge distance to the next; a fixed
+/// displacement is deterministic. With it the model reads 1-20 % below the
+/// NACA TN 1503 bearing tests (see `tests/validation_naca_tn1503.rs`).
+pub const COLLAPSE_D_OVER_D: f64 = 0.10;
+
 /// A factorisation is reused while at most this many contact points have
 /// changed state since it was built (the iteration still converges, a
 /// little slower, and a factorisation costs as much as ~40 iterations).
@@ -138,8 +146,8 @@ pub struct ContactResult {
     pub first_yield: f64,
     /// Mean bushing/housing contact pressure after the fit step, psi.
     pub fit_pressure: f64,
-    /// The load plateaued. If not (the plastic ramp stopped converging
-    /// first), `collapse` is the highest converged load: a lower bound.
+    /// The ramp reached the displacement limit. If not (it stopped
+    /// converging first), `collapse` is the highest converged load: a lower bound.
     pub plateau: bool,
 }
 
@@ -795,12 +803,15 @@ impl ContactMesh {
         let first_yield = if fit_yields { 0.0 } else { lambda_y * f_a };
 
         // Plastic ramp: geometric growth of the pin displacement from just
-        // past first yield until the load plateaus.
+        // past first yield up to the displacement limit `COLLAPSE_D_OVER_D * D`,
+        // where the collapse load is read (the last step lands on it exactly).
+        let d_limit = COLLAPSE_D_OVER_D * 2.0 * self.bore_radius;
         let d_y = if lambda_y.is_finite() { lambda_y * d_a } else { 10.0 * d_a };
         let mut st = st_a;
-        let mut d = d_y.max(d_a) * 1.1;
+        let mut d = (d_y.max(d_a) * 1.1).min(d_limit);
         let mut ratio = 1.6f64;
-        let (mut f_prev, mut hits, mut f_best, mut steps_ok) = (f_a, 0, f_a, 0);
+        let (mut f_best, mut steps_ok) = (f_a, 0);
+        let mut f_at_limit: Option<f64> = None;
         let mut last_err = String::new();
         for _ in 0..40 {
             let saved = st.clone();
@@ -809,12 +820,11 @@ impl ContactMesh {
                     let f = ev.p_pt * thickness;
                     steps_ok += 1;
                     f_best = f_best.max(f);
-                    hits = if f - f_prev < 0.02 * f { hits + 1 } else { 0 };
-                    if hits >= 2 {
+                    if d >= d_limit * (1.0 - 1e-9) {
+                        f_at_limit = Some(f);
                         break;
                     }
-                    f_prev = f;
-                    d *= ratio;
+                    d = (d * ratio).min(d_limit);
                 }
                 Err(err) => {
                     last_err = err;
@@ -824,14 +834,16 @@ impl ContactMesh {
                     if ratio < 1.05 {
                         break;
                     }
-                    d *= ratio;
+                    d = (d * ratio).min(d_limit);
                 }
             }
         }
         if steps_ok == 0 {
             return Err(format!("the plastic ramp did not converge ({last_err})"));
         }
-        Ok(ContactResult { collapse: f_best, first_yield: first_yield.min(f_best), fit_pressure, plateau: hits >= 2 })
+        // Not reaching the limit leaves the highest converged load: a lower bound.
+        let collapse = f_at_limit.unwrap_or(f_best);
+        Ok(ContactResult { collapse, first_yield: first_yield.min(collapse), fit_pressure, plateau: f_at_limit.is_some() })
     }
 
     /// Conform the rigid pin to the bushing bore the fit left (zero initial
