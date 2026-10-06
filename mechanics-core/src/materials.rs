@@ -105,6 +105,34 @@ pub fn builtin_len() -> usize {
     MATERIALS.len() + crate::handbook::HANDBOOK.len()
 }
 
+/// Tabulated bearing-ultimate allowable `Fbru` at edge-distance ratio `e_over_d`.
+///
+/// The handbook table gives one `Fbru` (the e/D = 2.0 value, `fbru_e20`) and
+/// sometimes an e/D = 1.5 value (`fbru_e15`, `0` = not tabulated). At or above
+/// 2.0 the e/D = 2.0 value applies; between 1.5 and 2.0 the two are linearly
+/// interpolated; below 1.5, or between 1.5 and 2.0 without an e/D = 1.5 value,
+/// there is no allowable (`None`) - nothing is extrapolated or guessed. Any
+/// consistent unit works; the result is in the unit of the inputs.
+pub fn fbru_at_edge_ratio(fbru_e20: f64, fbru_e15: f64, e_over_d: f64) -> Option<f64> {
+    if fbru_e20.is_nan() || fbru_e20 <= 0.0 || !e_over_d.is_finite() {
+        return None;
+    }
+    if e_over_d >= 2.0 {
+        return Some(fbru_e20);
+    }
+    if fbru_e15 > 0.0 && e_over_d >= 1.5 {
+        return Some(fbru_e15 + (fbru_e20 - fbru_e15) * (e_over_d - 1.5) / 0.5);
+    }
+    None
+}
+
+impl Material {
+    /// [`fbru_at_edge_ratio`] for this material's own table values.
+    pub fn fbru_at(&self, e_over_d: f64) -> Option<f64> {
+        fbru_at_edge_ratio(self.fbru_ksi, self.fbru_e15_ksi, e_over_d)
+    }
+}
+
 /// Falls back to the first entry (`al7075`) on an unknown id, matching
 /// the TS original's `getMaterial`'s own fallback behavior exactly -
 /// never a hard error for a bad/missing material selection.
@@ -119,6 +147,19 @@ mod tests {
     #[test]
     fn seventeen_materials_present_matching_the_ts_source() {
         assert_eq!(MATERIALS.len(), 17);
+    }
+
+    #[test]
+    fn fbru_follows_the_tabulated_edge_ratio_rule() {
+        // e/D >= 2: the table value; 1.5..2 interpolates only with an e/D 1.5 value; below 1.5 nothing.
+        assert_eq!(fbru_at_edge_ratio(100.0, 80.0, 2.5), Some(100.0));
+        assert_eq!(fbru_at_edge_ratio(100.0, 80.0, 2.0), Some(100.0));
+        assert!((fbru_at_edge_ratio(100.0, 80.0, 1.75).unwrap() - 90.0).abs() < 1e-12);
+        assert_eq!(fbru_at_edge_ratio(100.0, 80.0, 1.5), Some(80.0));
+        assert_eq!(fbru_at_edge_ratio(100.0, 80.0, 1.49), None);
+        assert_eq!(fbru_at_edge_ratio(100.0, 0.0, 1.75), None, "no e/D 1.5 value: needs e/D >= 2");
+        assert_eq!(fbru_at_edge_ratio(0.0, 0.0, 3.0), None);
+        assert_eq!(fbru_at_edge_ratio(100.0, 80.0, f64::NAN), None);
     }
 
     #[test]

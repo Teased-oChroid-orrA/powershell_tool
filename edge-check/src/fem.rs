@@ -67,7 +67,7 @@ pub struct FemSolution {
 }
 
 #[inline]
-pub(crate) fn shape1(xi: f64) -> ([f64; 3], [f64; 3]) {
+pub fn shape1(xi: f64) -> ([f64; 3], [f64; 3]) {
     (
         [0.5 * xi * (xi - 1.0), 1.0 - xi * xi, 0.5 * xi * (xi + 1.0)],
         [xi - 0.5, -2.0 * xi, xi + 0.5],
@@ -77,7 +77,7 @@ pub(crate) fn shape1(xi: f64) -> ([f64; 3], [f64; 3]) {
 /// Q9 shape functions and derivatives at `(xi, eta)`; local node index is
 /// `3*b + a` with `a` along xi (radial) and `b` along eta (angular).
 #[inline]
-pub(crate) fn shape_q9(xi: f64, eta: f64) -> ([f64; 9], [f64; 9], [f64; 9]) {
+pub fn shape_q9(xi: f64, eta: f64) -> ([f64; 9], [f64; 9], [f64; 9]) {
     let (nx, dx) = shape1(xi);
     let (ny, dy) = shape1(eta);
     let mut n = [0.0; 9];
@@ -94,7 +94,7 @@ pub(crate) fn shape_q9(xi: f64, eta: f64) -> ([f64; 9], [f64; 9], [f64; 9]) {
     (n, dn_dxi, dn_deta)
 }
 
-pub(crate) const GAUSS3: [(f64, f64); 3] = [(-0.774_596_669_241_483_4, 5.0 / 9.0), (0.0, 8.0 / 9.0), (0.774_596_669_241_483_4, 5.0 / 9.0)];
+pub const GAUSS3: [(f64, f64); 3] = [(-0.774_596_669_241_483_4, 5.0 / 9.0), (0.0, 8.0 / 9.0), (0.774_596_669_241_483_4, 5.0 / 9.0)];
 
 /// Distance from `(e, 0)` along direction `phi` to the plate boundary
 /// (free edge `x = 0`, far face `x = e + far`, top face `y = h`).
@@ -133,7 +133,7 @@ pub(crate) fn angular_lattice(e: f64, far: f64, h: f64, n_arc: [usize; 3]) -> Ve
 
 /// 18x18 stiffness (per unit thickness) of one Q9 element with nodes `xy`
 /// (local order `3*b + a`) and constitutive matrix `d_mat`.
-pub(crate) fn element_stiffness(xy: &[[f64; 2]], d_mat: &[[f64; 3]; 3]) -> Result<[[f64; 18]; 18], String> {
+pub fn element_stiffness(xy: &[[f64; 2]], d_mat: &[[f64; 3]; 3]) -> Result<[[f64; 18]; 18], String> {
     let mut ke = [[0.0f64; 18]; 18];
     for &(gx, wx) in &GAUSS3 {
         for &(gy, wy) in &GAUSS3 {

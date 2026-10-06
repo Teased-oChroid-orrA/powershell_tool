@@ -1,0 +1,19 @@
+[package]
+name = "lug-solver"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Pin-loaded lug finite-element analysis: a rigid analytic pin (never meshed,
+# one reference point) pressed into the bore of a plane-stress Q9 lug mesh
+# with Gauss-point penalty contact and Coulomb friction. The elastic lug is
+# condensed onto its bore degrees of freedom once per mesh, so every pin
+# load / fit / friction case is a small dense Newton solve.
+#
+# Reuses the element kernels and banded Cholesky from `edge-check`; no
+# external crates, no GUI dependency.
+[dependencies]
+edge-check = { path = "../edge-check" }
+mechanics-core = { path = "../mechanics-core" }
+fea-core = { path = "../fea-core" }

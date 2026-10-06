@@ -1,12 +1,12 @@
 # app-tui/ — ratatui Terminal GUI ("Toolbench")
 
-> TL;DR: The sole active GUI head — ratatui/crossterm terminal UI (the earlier `app/` dioxus-native and `app-egui/` egui heads are deleted; no cross-section sketches, derivation view, or PINN Stress Solver exist anywhere in this repo anymore - see root `CLAUDE.md`). Five real toolboxes: Search Files (business logic in `search-core`/`native-search`), Fastener Holes (original `domain/`, unique to this crate), Bushing Workbench (`bushing-solver`/`mechanics-core`), Pressure Vessel Analyzer (`pressure-vessel-solver`/`mechanics-core`, plus thermal stress), and Preload Analysis (`fastened-joint-solver`, unique to this crate). Dupes/Rename/Logs rail slots are placeholders. Bushing/Pressure Vessel/Preload `model.rs` only bridge solver crates into UI state - the toolbox computes nothing itself. Shared UI pattern: field lists grouped under `Header` rows plus a bottom Hint panel (`widgets/hint_panel.rs`, `model.rs::field_hint`); Results panes use `widgets/scroll_paragraph.rs`. Per-toolbox detail is in Code Map and Pitfalls below.
+> TL;DR: The sole active GUI head — ratatui/crossterm terminal UI (the earlier `app/` dioxus-native and `app-egui/` egui heads are deleted; no cross-section sketches, derivation view, or PINN Stress Solver exist anywhere in this repo anymore - see root `CLAUDE.md`). Seven real toolboxes: Search Files (business logic in `search-core`/`native-search`), Fastener Holes (original `domain/`, unique to this crate), Bushing Workbench (`bushing-solver`/`mechanics-core`), Pressure Vessel Analyzer (`pressure-vessel-solver`/`mechanics-core`, plus thermal stress), Preload Analysis (`fastened-joint-solver`, unique to this crate), Lug Analysis (`lug-solver`, rigid-pin contact FE run on a worker with an auto re-run), and Material Lookup (browser/compare over `mechanics-core`'s MIL-HDBK-5J handbook, also the lug's material picker). Dupes/Rename/Logs rail slots are placeholders. Bushing/Pressure Vessel/Preload `model.rs` only bridge solver crates into UI state - the toolbox computes nothing itself. Shared UI pattern: field lists grouped under `Header` rows plus a bottom Hint panel (`widgets/hint_panel.rs`, `model.rs::field_hint`); Results panes use `widgets/scroll_paragraph.rs`. Per-toolbox detail is in Code Map and Pitfalls below.
 
 ## Purpose
-Owns: terminal lifecycle (`main.rs`), the shell chrome (topbar/rail/status bar/command palette/help overlay/toasts, `widgets/`), the app-wide reducer (`app.rs`), shared `library.rs`, and five toolbox modules under `src/toolboxes/` (each has its own `AGENTS.md`, see Downlinks).
+Owns: terminal lifecycle (`main.rs`), the shell chrome (topbar/rail/status bar/command palette/help overlay/toasts, `widgets/`), the app-wide reducer (`app.rs`), shared `library.rs`, and seven toolbox modules under `src/toolboxes/` (each has its own `AGENTS.md`, see Downlinks).
 Does not own: search/matching/extraction (`search-core`), the index engine (`native-search`), or any solver math (`bushing-solver`, `pressure-vessel-solver`, `fastened-joint-solver`, `mechanics-core`). Toolbox `model.rs` files only bridge those crates into UI state; Fastener Holes is the exception (own `domain/`).
 
-**Status**: Search Files, Fastener Holes, Bushing Workbench, Pressure Vessel Analyzer, Preload Analysis are real; Dupes/Rename/Logs are placeholders. Pure terminal I/O, no windowing/GPU dependency.
+**Status**: Search Files, Fastener Holes, Bushing Workbench, Pressure Vessel Analyzer, Preload Analysis, Lug Analysis, Material Lookup are real; Dupes/Rename/Logs are placeholders. Pure terminal I/O, no windowing/GPU dependency.
 
 ## Code Map
 
@@ -21,7 +21,7 @@ Does not own: search/matching/extraction (`search-core`), the index engine (`nat
 | Modal overlay state (palette/help/confirm) | `src/modal.rs` |
 | Toast queue | `src/notifications.rs` |
 | `Command` enum + fuzzy-filter palette state/render (toolbox-scoped - see `Command::scope`) | `src/command_palette.rs` |
-| Global, toolbox-agnostic chrome widgets (topbar/rail/status-bar composition, help overlay, spinner, empty-state, gauge) | `src/widgets/` |
+| Global, toolbox-agnostic chrome widgets (topbar/rail/status-bar composition, help overlay, spinner, empty-state, gauge); centred-overlay geometry for every popup is `widgets/popup.rs::centered_rect` (do not add a local copy) | `src/widgets/` |
 | Byte-size/elapsed-time formatting, extension-breakdown aggregation | `src/format.rs` |
 
 ## Key Relationships
@@ -110,5 +110,7 @@ Per-toolbox nodes (read the one for the toolbox you are changing):
 | Bushing Workbench | `src/toolboxes/bushing/AGENTS.md` |
 | Pressure Vessel Analyzer | `src/toolboxes/pressure_vessel/AGENTS.md` |
 | Preload Analysis | `src/toolboxes/preload_analysis/AGENTS.md` |
+| Lug Analysis | `src/toolboxes/lug_analysis/AGENTS.md` |
+| Material Lookup | `src/toolboxes/material_lookup/AGENTS.md` |
 
-Sibling nodes: `search-core/AGENTS.md`, `native-search/AGENTS.md`, `bushing-solver/AGENTS.md`, `fastened-joint-solver/AGENTS.md`. `pressure-vessel-solver` has no node.
+Sibling nodes: `search-core/AGENTS.md`, `native-search/AGENTS.md`, `bushing-solver/AGENTS.md`, `fastened-joint-solver/AGENTS.md`, `lug-solver/AGENTS.md`. `pressure-vessel-solver` has no node.

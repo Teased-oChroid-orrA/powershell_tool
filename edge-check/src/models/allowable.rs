@@ -32,18 +32,11 @@ struct AllowableResponse {
 }
 
 impl AllowableResponse {
-    /// Tabulated bearing allowable at this `e/D`, or `None` if none applies.
+    /// Tabulated bearing allowable at this `e/D`, or `None` if none applies
+    /// (the rule lives in `mechanics_core::materials::fbru_at_edge_ratio`).
     fn fbru_at(&self) -> Option<f64> {
         let ed = self.geom.edge / (2.0 * self.geom.bore_radius);
-        if ed >= 2.0 {
-            return Some(self.mat.fbru);
-        }
-        let f15 = self.fbru_e15?;
-        if ed >= 1.5 {
-            Some(f15 + (self.mat.fbru - f15) * (ed - 1.5) / 0.5)
-        } else {
-            None
-        }
+        mechanics_core::materials::fbru_at_edge_ratio(self.mat.fbru, self.fbru_e15.unwrap_or(0.0), ed)
     }
 }
 

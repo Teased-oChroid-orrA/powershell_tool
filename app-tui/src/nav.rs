@@ -9,8 +9,10 @@ pub enum ToolId {
     Search,
     FastenerHole,
     Bushing,
+    LugAnalysis,
     PressureVessel,
     PreloadAnalysis,
+    MaterialLookup,
     Dupes,
     Rename,
     Logs,
@@ -24,16 +26,28 @@ impl ToolId {
     /// `FastenerHole`/`PreloadAnalysis` have no equivalent in either
     /// existing GUI head - both are toolboxes unique to this crate, not
     /// ported placeholders.
-    pub const ALL: [ToolId; 8] =
-        [ToolId::Search, ToolId::FastenerHole, ToolId::Bushing, ToolId::PressureVessel, ToolId::PreloadAnalysis, ToolId::Dupes, ToolId::Rename, ToolId::Logs];
+    pub const ALL: [ToolId; 10] = [
+        ToolId::Search,
+        ToolId::FastenerHole,
+        ToolId::Bushing,
+        ToolId::LugAnalysis,
+        ToolId::PressureVessel,
+        ToolId::PreloadAnalysis,
+        ToolId::MaterialLookup,
+        ToolId::Dupes,
+        ToolId::Rename,
+        ToolId::Logs,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
             ToolId::Search => "Search Files",
             ToolId::FastenerHole => "Fastener Holes",
             ToolId::Bushing => "Bushing Workbench",
+            ToolId::LugAnalysis => "Lug Analysis",
             ToolId::PressureVessel => "Pressure Vessel Analyzer",
             ToolId::PreloadAnalysis => "Preload Analysis",
+            ToolId::MaterialLookup => "Material Lookup",
             ToolId::Dupes => "Duplicate Finder",
             ToolId::Rename => "Batch Rename",
             ToolId::Logs => "Log Analyzer",
@@ -46,7 +60,7 @@ impl ToolId {
     /// heads' own inert-placeholder convention for their own not-yet-built
     /// tools.
     pub fn enabled(self) -> bool {
-        matches!(self, ToolId::Search | ToolId::FastenerHole | ToolId::Bushing | ToolId::PressureVessel | ToolId::PreloadAnalysis)
+        !matches!(self, ToolId::Dupes | ToolId::Rename | ToolId::Logs)
     }
 }
 
@@ -144,14 +158,14 @@ mod tests {
         // entries (`Dupes`/`Rename`/`Logs`) that both `app/` and
         // `app-egui/` show as inert placeholders - `ALL` must list every
         // variant, `enabled()` must gate them correctly.
-        assert_eq!(ToolId::ALL.len(), 8);
+        assert_eq!(ToolId::ALL.len(), 10);
         let titles: Vec<&str> = ToolId::ALL.iter().map(|t| t.title()).collect();
         let mut distinct = titles.clone();
         distinct.sort_unstable();
         distinct.dedup();
         assert_eq!(distinct.len(), titles.len(), "every ToolId must have a distinct title: {titles:?}");
         for tool in ToolId::ALL {
-            let expected = matches!(tool, ToolId::Search | ToolId::FastenerHole | ToolId::Bushing | ToolId::PressureVessel | ToolId::PreloadAnalysis);
+            let expected = !matches!(tool, ToolId::Dupes | ToolId::Rename | ToolId::Logs);
             assert_eq!(tool.enabled(), expected, "{tool:?} enabled state");
         }
     }

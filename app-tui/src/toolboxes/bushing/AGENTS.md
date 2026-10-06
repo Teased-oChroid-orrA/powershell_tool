@@ -49,7 +49,12 @@ Does not own: any Lamé/press-fit/tolerance math (`bushing-solver/AGENTS.md`).
 
 ## Pitfalls
 - Reamer catalog, material library, and Bushing ID library are `src/library.rs` consumers; conflict/duplicate handling lives there, not here.
+- The import-conflict prompt (`k`/`o`/`z`/`a` keys and its dialog) is shared in `conflict_prompt.rs`; a picker supplies only its title and two description lines. Popup geometry is `widgets/popup.rs::centered_rect`, shared app-wide - do not re-add a local copy.
 - `m` inside the reamer picker reaches manual numeric entry; Bore Diameter's `Enter` opens the catalog (a real bore is reamed to a real size).
+
+## Known gaps (deliberately not done)
+- **Edge-check strength CV (5%) and model-error CVs are fixed assumptions**, shown in the tooltips/report but not editable. They are not solver inputs, so they must NOT become a `NumberTarget` (that enum is 1:1 with `BushingInputs`, and `advice.rs` trials rely on it); expose them as edge-check state with their own control in the Results pane.
+- **`FitType` presets are generic ratios of bore diameter, not ISO/ANSI fit classes** (H7/p6, FN, ...). Mapping to a standard needs a product decision on which standard.
 
 ## Public API
 Crate-internal. `mod.rs`: `BushingState`, `handle_key(&mut BushingState, KeyEvent) -> (bool, Vec<Effect>)`, `PANE_MAIN`/`PANE_COUNT`. `model.rs`: `FieldRow`, `NumberTarget`, `field_rows`, `row_label`, `field_hint`, and `cycle_*`/`label_*` pairs for each enum row (bushing type, ID type, end constraint, countersink mode, `FitType`). Pickers: `material_picker`, `reamer_picker`, `friction_picker`, `bushing_id_picker`, each with a `*_persistence` module.

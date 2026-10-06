@@ -15,6 +15,7 @@
 //! no public "just enumerate, don't extract" API shaped for this), not a
 //! call into search-core itself.
 
+use crate::widgets::popup::centered_rect;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -317,25 +318,6 @@ pub fn handle_key(picker: &mut ExtensionPicker, key: KeyEvent) -> bool {
         }
         _ => false,
     }
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(vertical[1])[1]
 }
 
 pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &ExtensionPicker, regions: &mut crate::mouse::MouseRegions) {

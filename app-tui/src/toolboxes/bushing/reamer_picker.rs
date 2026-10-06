@@ -20,6 +20,7 @@
 //! `Effect::ExportReamerLibraryFile` (never a direct `std::fs` call from
 //! this reducer-adjacent code - see `app-tui/AGENTS.md`'s Contracts).
 
+use crate::widgets::popup::centered_rect;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
@@ -29,7 +30,7 @@ use ratatui::Frame;
 
 use bushing_solver::reamers::{self, AvailabilityTier, ReamerEntry};
 
-use crate::library::{ConflictQueue, ConflictResolution, LibraryItem};
+use crate::library::{ConflictQueue, LibraryItem};
 use crate::theme::Theme;
 use crate::widgets::empty_state;
 
@@ -140,7 +141,7 @@ impl ReamerPickerState {
 
 pub fn handle_key(picker: &mut ReamerPickerState, model: &mut BushingModel, key: KeyEvent) -> (bool, Vec<Effect>) {
     if let Some(queue) = &mut picker.pending_conflicts {
-        return handle_conflict_key(queue, &mut picker.library, key);
+        return super::conflict_prompt::handle_key(queue, &mut picker.library, key);
     }
 
     if let Some(prompt) = &mut picker.path_prompt {
@@ -279,36 +280,6 @@ pub fn handle_key(picker: &mut ReamerPickerState, model: &mut BushingModel, key:
     }
 }
 
-fn handle_conflict_key(queue: &mut ConflictQueue<PersistedReamer>, library: &mut Vec<LibraryItem<PersistedReamer>>, key: KeyEvent) -> (bool, Vec<Effect>) {
-    // Same-action-either-case on every letter here (Windows Caps-Lock can
-    // report an uppercase letter with no Shift held - see
-    // `app-tui/AGENTS.md`'s Pitfalls) - each pair means one action, never
-    // two different ones gated by case.
-    let resolved = match key.code {
-        KeyCode::Char('k' | 'K') => Some((ConflictResolution::KeepExisting, false)),
-        KeyCode::Char('o' | 'O') => Some((ConflictResolution::Overwrite, false)),
-        KeyCode::Char('z' | 'Z') => Some((ConflictResolution::KeepExisting, true)),
-        KeyCode::Char('a' | 'A') => Some((ConflictResolution::Overwrite, true)),
-        _ => None,
-    };
-    let Some((resolution, apply_all)) = resolved else {
-        return (false, Vec::new());
-    };
-    queue.resolve(library, resolution, apply_all);
-    (true, Vec::new())
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage((100 - percent_y) / 2), Constraint::Percentage(percent_y), Constraint::Percentage((100 - percent_y) / 2)])
-        .split(area);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage((100 - percent_x) / 2), Constraint::Percentage(percent_x), Constraint::Percentage((100 - percent_x) / 2)])
-        .split(vertical[1])[1]
-}
-
 fn tier_tag(tier: AvailabilityTier) -> &'static str {
     match tier {
         AvailabilityTier::Preferred => " [preferred]",
@@ -329,7 +300,7 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &ReamerPicke
     frame.render_widget(Clear, popup);
 
     if let Some(queue) = &picker.pending_conflicts {
-        render_conflict_prompt(frame, popup, theme, queue);
+        super::conflict_prompt::render(frame, popup, theme, "Reamer import conflict", queue, |i| (format!("Size {} already exists with different data.", i.size_label), format!("Imported: {:.4} in  +{:.4}/-{:.4}", i.nominal_in, i.tool_tolerance_plus_in, i.tool_tolerance_minus_in)));
         return;
     }
 
@@ -394,24 +365,6 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &ReamerPicke
             frame.render_widget(Paragraph::new(line), area);
         }
     }
-}
-
-fn render_conflict_prompt(frame: &mut Frame, area: Rect, theme: &Theme, queue: &ConflictQueue<PersistedReamer>) {
-    let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.border_style(true)).title(" Reamer import conflict ");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    if inner.width == 0 || inner.height == 0 {
-        return;
-    }
-    let Some((_, incoming)) = queue.current() else { return };
-    let lines = vec![
-        Line::from(format!("Size {} already exists with different data.", incoming.item.size_label)),
-        Line::from(""),
-        Line::from(format!("Imported: {:.4} in  +{:.4}/-{:.4}", incoming.item.nominal_in, incoming.item.tool_tolerance_plus_in, incoming.item.tool_tolerance_minus_in)),
-        Line::from(""),
-        Line::from(Span::styled("k: keep existing    o: overwrite    z: keep all remaining    a: overwrite all remaining", theme.disabled_style())),
-    ];
-    frame.render_widget(Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: true }), inner);
 }
 
 #[cfg(test)]

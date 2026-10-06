@@ -48,8 +48,8 @@ filters across text, Office (`.docx`/`.pptx`/`.xlsx`), `.zip` (including
 nested), `.rtf`, `.pdf`, and dozens of code/config/data formats, producing an
 HTML report plus optional CSV/JSON export. It has grown into a multi-tool
 "Toolbench" for GS Engineering: Search, Fastener Holes, Bushing Workbench,
-Pressure Vessel Analyzer, and Preload Analysis (placeholders remain for
-Dupes/Rename/Logs).
+Pressure Vessel Analyzer, Preload Analysis, Lug Analysis and Material Lookup
+(placeholders remain for Dupes/Rename/Logs).
 
 **Mid-migration, three tiers deep: PowerShell -> C#/WinUI -> Rust.** Older
 tiers are kept as byte-for-byte-tested references, never deleted, never
@@ -81,7 +81,9 @@ nodes.
 | ratatui GUI head | `app-tui/` | `app-tui/AGENTS.md` + per-toolbox `app-tui/src/toolboxes/{search,fastener_hole,bushing,pressure_vessel,preload_analysis}/AGENTS.md` | Active. Sole GUI head. |
 | Bushing press-fit solver | `bushing-solver/` | `bushing-solver/AGENTS.md` | Active. Consumed by `app-tui`. |
 | Fastened joint preload solver | `fastened-joint-solver/` | `fastened-joint-solver/AGENTS.md` | Active. Consumed by `app-tui` Preload Analysis. |
-| Edge-distance cross-checks (stress superposition / FE / allowables) | `edge-check/` | `edge-check/AGENTS.md` | Active on `main` (contact-FE work on branch `fea-contact-model`). Consumed by `app-tui` Bushing `c`/`C`. |
+| Edge-distance cross-checks (stress superposition / FE / allowables) | `edge-check/` | `edge-check/AGENTS.md` | Active on `main` (the contact FE is merged). Consumed by `app-tui` Bushing `c`/`C`. |
+| Pin-loaded lug contact FE | `lug-solver/` | `lug-solver/AGENTS.md` | Active. Consumed by `app-tui` Lug Analysis, which runs it on the general kernel (`FeaLug`) by default; the condensed solvers are the legacy comparison. Design/validation in `docs/lug-analysis.md`, `docs/fea-core.md` Phase 7. |
+| General FEA kernel (2D/3D elements, sparse solve, loads, contact, plasticity) | `fea-core/` | `fea-core/AGENTS.md` | Active; phases 0-7 done (`docs/fea-core.md`). `lug-solver` runs the lug on it (`lug-solver/src/fea*.rs`) and `app-tui` Lug Analysis uses that as its main solver. |
 | Pressure vessel solver | `pressure-vessel-solver/` | *(no node)* | Sibling pattern to `bushing-solver`. |
 | Shared math (Lamé, materials) | `engineering-math/`, `mechanics-core/` | *(no node)* | No re-export shim; import directly. |
 | CLI | `cli/` | *(no node)* | Second `search-core` consumer. |
@@ -229,6 +231,7 @@ full index mapping decision topics to ADR numbers.
 | Change the terminal (app-tui) GUI | `app-tui/AGENTS.md` |
 | Change bushing/pressure-vessel solvers | `bushing-solver/AGENTS.md` |
 | Change the edge-distance cross-checks | `edge-check/AGENTS.md` |
+| Change the lug FE (mesh, contact, solve) | `lug-solver/AGENTS.md` |
 | Understand why an architecture decision was made | `docs/AGENTS.md` -> `docs/adr/` |
 | Understand a past epic's implementation history | `docs/AGENTS.md` -> `docs/issue-N-*.md` |
 | Run the C#/WinUI reference app's own tests | `src/AGENTS.md` |

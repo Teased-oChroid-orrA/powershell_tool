@@ -9,7 +9,8 @@ optional CSV/JSON/JSONL export.
 
 The GUI (`app-tui/`, a ratatui/crossterm terminal UI) is a multi-tool
 "GS Engineering Toolbench": Search is the first tool, alongside Fastener
-Holes, Bushing Workbench, Pressure Vessel Analyzer and Preload Analysis.
+Holes, Bushing Workbench, Lug Analysis, Pressure Vessel Analyzer, Preload
+Analysis and Material Lookup.
 Placeholders remain for Dupes, Rename and Logs.
 
 ## Project status: mid-migration, Rust is the active implementation

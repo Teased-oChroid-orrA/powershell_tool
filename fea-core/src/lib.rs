@@ -1,0 +1,34 @@
+//! General finite-element kernel. See `Cargo.toml`.
+pub mod adapt;
+pub mod amg;
+pub mod analysis;
+pub mod assembly;
+pub mod contact;
+pub mod delaunay;
+pub mod element;
+pub mod generate;
+pub mod geometry;
+pub mod import;
+pub mod kernel;
+pub mod linear;
+pub mod material;
+pub mod loads;
+pub mod mesh;
+pub mod mesh2d;
+pub mod mpc;
+pub mod nonlinear;
+pub mod ordering;
+pub mod recover;
+pub mod sparse;
+pub mod sweep;
+pub mod topology;
+pub mod vtu;
+
+pub use analysis::{Model, Solution, SolveMethod};
+pub use element::ElementKind;
+pub use linear::Dirichlet;
+pub use loads::{FaceField, Loads, SurfaceLoad};
+pub use mesh::{Elastic, Mesh, Physics};
+pub use material::J2;
+pub use nonlinear::{Control, NlOptions, NlSolution, NlState, Start};
+pub use mpc::{Constraints, RefPoint};

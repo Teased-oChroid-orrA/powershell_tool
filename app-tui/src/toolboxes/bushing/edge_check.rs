@@ -331,9 +331,11 @@ fn fmt_lbf(v: f64) -> String {
 }
 
 /// Share of the no-fit capacity the interference consumes, when it matters
-/// (below 2 % either way is "no measurable effect": solver scatter).
+/// (below 2 % either way is "no measurable effect": the contact FE's mesh
+/// sensitivity is ~1-2 %, see `docs/edge-distance-crosscheck.md`; the
+/// capacity bisection itself is deterministic to 1e-9).
 fn fmt_fit_share(t: &TargetResult) -> Option<String> {
-    if !(t.capacity_no_fit_lbf.is_finite() && t.capacity_no_fit_lbf > 0.0) {
+    if !(t.capacity_no_fit_lbf.is_finite() && t.capacity_no_fit_lbf > 0.0 && t.capacity_lbf.is_finite()) {
         return None;
     }
     let share = 1.0 - t.capacity_lbf / t.capacity_no_fit_lbf;
@@ -632,6 +634,43 @@ mod tests {
     use crate::app::Effect;
     use crate::toolboxes::bushing::BushingState;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn target_with_capacity(capacity_lbf: f64, capacity_no_fit_lbf: f64) -> TargetResult {
+        TargetResult {
+            target: TARGETS[TARGET_APPLIED],
+            margin: 0.0,
+            governing: TARGETS[TARGET_APPLIED].modes[0],
+            margin_no_fit: 0.0,
+            capacity_lbf,
+            capacity_no_fit_lbf,
+            e_min: EdgeMin::NotSearched,
+            mc: None,
+            e_levels: [EdgeMin::NotSearched; 3],
+        }
+    }
+
+    #[test]
+    fn fit_share_is_the_fraction_of_no_fit_capacity_the_fit_consumes() {
+        assert_eq!(fmt_fit_share(&target_with_capacity(700.0, 1000.0)).as_deref(), Some("30%"));
+        assert_eq!(fmt_fit_share(&target_with_capacity(0.0, 1000.0)).as_deref(), Some("100%"));
+        // The fit helping shows as a negative share.
+        assert_eq!(fmt_fit_share(&target_with_capacity(1100.0, 1000.0)).as_deref(), Some("-10%"));
+    }
+
+    #[test]
+    fn fit_share_under_two_percent_either_way_is_not_measurable() {
+        assert_eq!(fmt_fit_share(&target_with_capacity(985.0, 1000.0)).as_deref(), Some("~0%"));
+        assert_eq!(fmt_fit_share(&target_with_capacity(1015.0, 1000.0)).as_deref(), Some("~0%"));
+        assert_eq!(fmt_fit_share(&target_with_capacity(950.0, 1000.0)).as_deref(), Some("5%"));
+    }
+
+    #[test]
+    fn fit_share_is_absent_without_a_finite_baseline_and_never_nan() {
+        assert_eq!(fmt_fit_share(&target_with_capacity(500.0, 0.0)), None);
+        assert_eq!(fmt_fit_share(&target_with_capacity(500.0, f64::INFINITY)), None);
+        assert_eq!(fmt_fit_share(&target_with_capacity(f64::INFINITY, 1000.0)), None);
+        assert_eq!(fmt_fit_share(&target_with_capacity(f64::INFINITY, f64::INFINITY)), None);
+    }
 
     #[test]
     fn default_model_runs_and_every_model_reports_something() {

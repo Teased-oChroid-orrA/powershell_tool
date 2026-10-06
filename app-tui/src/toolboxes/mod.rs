@@ -5,6 +5,8 @@
 
 pub mod bushing;
 pub mod fastener_hole;
+pub mod lug_analysis;
+pub mod material_lookup;
 pub mod preload_analysis;
 pub mod pressure_vessel;
 pub mod search;

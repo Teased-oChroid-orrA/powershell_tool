@@ -8,6 +8,7 @@
 //! drops straight to plain numeric entry when none of the typical values
 //! apply.
 
+use crate::widgets::popup::centered_rect;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
@@ -63,17 +64,6 @@ pub fn handle_key(picker: &mut FrictionPickerState, model: &mut BushingModel, ke
         }
         _ => (false, Vec::new()),
     }
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage((100 - percent_y) / 2), Constraint::Percentage(percent_y), Constraint::Percentage((100 - percent_y) / 2)])
-        .split(area);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage((100 - percent_x) / 2), Constraint::Percentage(percent_x), Constraint::Percentage((100 - percent_x) / 2)])
-        .split(vertical[1])[1]
 }
 
 pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &FrictionPickerState, regions: &mut crate::mouse::MouseRegions) {

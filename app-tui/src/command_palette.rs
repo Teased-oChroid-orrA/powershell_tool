@@ -6,6 +6,7 @@
 //! BrowseOutputFolder-equivalent, ClearRecentSearches); this palette
 //! starts with the fuller set from day one.
 
+use crate::widgets::popup::centered_rect;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -20,8 +21,10 @@ pub enum Command {
     SwitchToSearch,
     SwitchToFastenerHole,
     SwitchToBushing,
+    SwitchToLugAnalysis,
     SwitchToPressureVessel,
     SwitchToPreloadAnalysis,
+    SwitchToMaterialLookup,
     SwitchToDupes,
     SwitchToRename,
     SwitchToLogs,
@@ -53,6 +56,11 @@ pub enum Command {
     TogglePreloadAnalysisNumbersPanel,
     ExportPreloadAnalysisReport,
     OpenBoltPicker,
+    ToggleLugAnalysisProfile,
+    ExportLugAnalysisReport,
+    OpenLugMaterialBrowser,
+    ToggleMaterialLookupCompare,
+    ExportMaterialLookupReport,
     Quit,
 }
 
@@ -61,8 +69,10 @@ impl Command {
         Command::SwitchToSearch,
         Command::SwitchToFastenerHole,
         Command::SwitchToBushing,
+        Command::SwitchToLugAnalysis,
         Command::SwitchToPressureVessel,
         Command::SwitchToPreloadAnalysis,
+        Command::SwitchToMaterialLookup,
         Command::SwitchToDupes,
         Command::SwitchToRename,
         Command::SwitchToLogs,
@@ -88,6 +98,11 @@ impl Command {
         Command::TogglePreloadAnalysisNumbersPanel,
         Command::ExportPreloadAnalysisReport,
         Command::OpenBoltPicker,
+        Command::ToggleLugAnalysisProfile,
+        Command::ExportLugAnalysisReport,
+        Command::OpenLugMaterialBrowser,
+        Command::ToggleMaterialLookupCompare,
+        Command::ExportMaterialLookupReport,
         Command::Quit,
     ];
 
@@ -96,8 +111,10 @@ impl Command {
             Command::SwitchToSearch => "Switch to: Search Files",
             Command::SwitchToFastenerHole => "Switch to: Fastener Holes",
             Command::SwitchToBushing => "Switch to: Bushing Workbench",
+            Command::SwitchToLugAnalysis => "Switch to: Lug Analysis",
             Command::SwitchToPressureVessel => "Switch to: Pressure Vessel Analyzer",
             Command::SwitchToPreloadAnalysis => "Switch to: Preload Analysis",
+            Command::SwitchToMaterialLookup => "Switch to: Material Lookup",
             Command::SwitchToDupes => "Switch to: Duplicate Finder (soon)",
             Command::SwitchToRename => "Switch to: Batch Rename (soon)",
             Command::SwitchToLogs => "Switch to: Log Analyzer (soon)",
@@ -123,6 +140,11 @@ impl Command {
             Command::TogglePreloadAnalysisNumbersPanel => "Toggle Numbers panel",
             Command::ExportPreloadAnalysisReport => "Export report",
             Command::OpenBoltPicker => "Open Bolt (AN Standard) catalog",
+            Command::ToggleLugAnalysisProfile => "Toggle bore profile",
+            Command::ExportLugAnalysisReport => "Export report",
+            Command::OpenLugMaterialBrowser => "Open Lug Material browser",
+            Command::ToggleMaterialLookupCompare => "Toggle comparison view",
+            Command::ExportMaterialLookupReport => "Export list and comparison",
             Command::Quit => "Quit",
         }
     }
@@ -136,8 +158,10 @@ impl Command {
             Command::SwitchToSearch
             | Command::SwitchToFastenerHole
             | Command::SwitchToBushing
+            | Command::SwitchToLugAnalysis
             | Command::SwitchToPressureVessel
             | Command::SwitchToPreloadAnalysis
+            | Command::SwitchToMaterialLookup
             | Command::SwitchToDupes
             | Command::SwitchToRename
             | Command::SwitchToLogs
@@ -158,6 +182,8 @@ impl Command {
             }
             Command::TogglePressureVesselNumbersPanel | Command::ExportPressureVesselReport | Command::OpenPressureVesselMaterialPicker => Some(ToolId::PressureVessel),
             Command::TogglePreloadAnalysisNumbersPanel | Command::ExportPreloadAnalysisReport | Command::OpenBoltPicker => Some(ToolId::PreloadAnalysis),
+            Command::ToggleLugAnalysisProfile | Command::ExportLugAnalysisReport | Command::OpenLugMaterialBrowser => Some(ToolId::LugAnalysis),
+            Command::ToggleMaterialLookupCompare | Command::ExportMaterialLookupReport => Some(ToolId::MaterialLookup),
         }
     }
 }
@@ -208,28 +234,6 @@ impl CommandPalette {
     pub fn picked(&self, active_tool: ToolId) -> Option<Command> {
         self.matches(active_tool).get(self.selected).copied()
     }
-}
-
-/// A centered `percent_x` x `percent_y` sub-rect of `area` - the standard
-/// ratatui pattern for a floating overlay (no built-in helper for this in
-/// ratatui itself).
-pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(vertical[1])[1]
 }
 
 pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, palette: &CommandPalette, active_tool: ToolId, regions: &mut crate::mouse::MouseRegions) {
@@ -372,7 +376,7 @@ mod tests {
         let mut palette = CommandPalette::default();
         "switch to".chars().for_each(|c| palette.push_char(c));
         let match_count = palette.matches(ToolId::Search).len();
-        assert_eq!(match_count, 8, "one \"Switch to: ...\" entry per ToolId variant");
+        assert_eq!(match_count, ToolId::ALL.len(), "one \"Switch to: ...\" entry per ToolId variant");
         palette.move_selection(ToolId::Search, -1);
         assert_eq!(palette.selected, match_count - 1);
         palette.move_selection(ToolId::Search, 1);

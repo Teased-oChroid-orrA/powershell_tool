@@ -27,6 +27,8 @@ Does not own: the legacy `Fbru + 0.8 p` check (stays in `bushing-solver/src/solv
 - Shear-out is the mean tangent-plane shear (a limit load assuming full redistribution), not an elastic peak. Do not add an elastic-peak bound at the bearing-limit load: it is dominated by the bearing stress and fails at every edge distance (tried).
 - A model that cannot evaluate a case returns `Err`; the runner reports it and the rest still run. Never silently drop a model.
 
+- `fem::{shape1, shape_q9, GAUSS3, element_stiffness}` and `linalg::BandedSpd` are `pub` because **`lug-solver` builds on them**: changing their conventions (local node order `3*b + a`, per-unit-thickness stiffness, lower-triangle band storage) breaks that crate. The bearing-allowable rule `Fbru(e/D)` lives in `mechanics_core::materials::fbru_at_edge_ratio` (shared with Lug Analysis).
+
 ## Pitfalls
 - Recommended edge distances (`runner::search_levels`) share `margin_sample` with the Monte-Carlo pass: any new random factor goes there once. Tests that need a deterministic result must set `strength_cv: 0.0, model_error: false` (and a collapsed fit band). `EdgeModel::model_cv` must come from validation or be flagged as judgement where it is set.
 - The contact FE is validated against NACA TN 1503 pin-bearing tests (`tests/validation_naca_tn1503.rs`, runs in the default suite, ~10 s): keep `contact_model::flow_stress` and the solver changes inside its -20 % / +8 % / 10 % bands; the transcribed test values are the report's, not ours to adjust. `cargo test -p edge-check --test validation_naca_tn1503 -- --ignored --nocapture` prints the comparison table.

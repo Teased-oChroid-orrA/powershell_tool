@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["native-search", "search-core", "app-tui", "cli", "bushing-solver", "engineering-math", "mechanics-core", "pressure-vessel-solver", "fastened-joint-solver", "edge-check"]
+members = ["native-search", "search-core", "app-tui", "cli", "bushing-solver", "engineering-math", "mechanics-core", "pressure-vessel-solver", "fastened-joint-solver", "edge-check", "lug-solver", "fea-core"]
 
 # Moved here from native-search/Cargo.toml: Cargo ignores [profile.*]
 # sections in non-root workspace members. panic="unwind" (not "abort") is
@@ -27,5 +27,16 @@ panic = "unwind"
 # The edge-distance cross-check is numerically heavy (complex-variable
 # least squares, an FE solve, Monte Carlo) and runs on a key press from the
 # TUI: keep it fast even in unoptimised dev builds.
+[profile.dev.package.lug-solver]
+opt-level = 3
+
 [profile.dev.package.edge-check]
+opt-level = 3
+
+[profile.dev.package.fea-core]
+opt-level = 3
+
+# The sparse factorisations of the lug / FE kernel run in faer (and rayon, gemm, pulp ...): dependencies are
+# optimised even in dev builds, or a lug analysis takes minutes under `cargo run` / `cargo test`.
+[profile.dev.package."*"]
 opt-level = 3

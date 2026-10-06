@@ -1,6 +1,6 @@
 # Edge-distance cross-check
 
-Status: on `main` (the contact FE below is on branch `fea-contact-model`). `bushing_solver::solve::compute` and its
+Status: on `main` (the contact FE below is merged). `bushing_solver::solve::compute` and its
 differential tests are unchanged (one additive output field, `t_eff_seq`). The feature is the
 `edge-check/` crate plus one Results-pane hook in `app-tui/src/toolboxes/bushing/` (key `c`).
 

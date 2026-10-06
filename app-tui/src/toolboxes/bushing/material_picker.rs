@@ -15,6 +15,7 @@
 //! (`fbru_ksi`/`fsu_ksi`, bearing/shear ultimate) - this toolbox's
 //! `compute()` does read both.
 
+use crate::widgets::popup::centered_rect;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
@@ -22,7 +23,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::library::{ConflictQueue, ConflictResolution, LibraryItem};
+use crate::library::{ConflictQueue, LibraryItem};
 use crate::theme::{StatusTone, Theme};
 use crate::widgets::empty_state;
 
@@ -246,7 +247,7 @@ impl MaterialPickerState {
 
 pub fn handle_key(picker: &mut MaterialPickerState, model: &mut BushingModel, key: KeyEvent) -> (bool, Vec<Effect>) {
     if let Some(queue) = &mut picker.pending_conflicts {
-        let (consumed, _) = handle_conflict_key(queue, &mut picker.library, key);
+        let (consumed, _) = super::conflict_prompt::handle_key(queue, &mut picker.library, key);
         if !consumed {
             return (false, Vec::new());
         }
@@ -374,21 +375,6 @@ fn default_material_library_path() -> String {
     crate::paths::app_data_dir().unwrap_or_default().join("bushing-material-library.json").to_string_lossy().into_owned()
 }
 
-fn handle_conflict_key(queue: &mut ConflictQueue<PersistedMaterial>, library: &mut Vec<LibraryItem<PersistedMaterial>>, key: KeyEvent) -> (bool, Vec<Effect>) {
-    let resolved = match key.code {
-        KeyCode::Char('k' | 'K') => Some((ConflictResolution::KeepExisting, false)),
-        KeyCode::Char('o' | 'O') => Some((ConflictResolution::Overwrite, false)),
-        KeyCode::Char('z' | 'Z') => Some((ConflictResolution::KeepExisting, true)),
-        KeyCode::Char('a' | 'A') => Some((ConflictResolution::Overwrite, true)),
-        _ => None,
-    };
-    let Some((resolution, apply_all)) = resolved else {
-        return (false, Vec::new());
-    };
-    queue.resolve(library, resolution, apply_all);
-    (true, Vec::new())
-}
-
 fn move_add_form_selection(form: &mut AddMaterialForm, delta: i32) {
     let len = ADD_MATERIAL_FIELDS.len() as i32;
     form.selected = ((form.selected as i32 + delta).rem_euclid(len)) as usize;
@@ -442,7 +428,7 @@ fn handle_add_form_key(picker: &mut MaterialPickerState, model: &mut BushingMode
                 match validation {
                     Ok(persisted) => {
                         let Some(target) = picker.target else { return (true, Vec::new()) };
-                        model.add_custom_material(target, persisted.name.clone(), persisted.e_ksi, persisted.sy_ksi, persisted.fbru_ksi, persisted.fbru_e15_ksi, persisted.fsu_ksi, persisted.ftu_ksi, persisted.nu, persisted.alpha_u_f);
+                        model.add_custom_material(target, persisted.clone());
                         picker.library.push(LibraryItem::new(persisted));
                         picker.add_form = None;
                         (true, vec![Effect::PersistBushingMaterialLibrary])
@@ -466,17 +452,6 @@ fn handle_add_form_key(picker: &mut MaterialPickerState, model: &mut BushingMode
     }
 }
 
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage((100 - percent_y) / 2), Constraint::Percentage(percent_y), Constraint::Percentage((100 - percent_y) / 2)])
-        .split(area);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage((100 - percent_x) / 2), Constraint::Percentage(percent_x), Constraint::Percentage((100 - percent_x) / 2)])
-        .split(vertical[1])[1]
-}
-
 pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &MaterialPickerState, model: &BushingModel, regions: &mut crate::mouse::MouseRegions) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -485,7 +460,7 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &MaterialPic
     frame.render_widget(Clear, popup);
 
     if let Some(queue) = &picker.pending_conflicts {
-        render_conflict_prompt(frame, popup, theme, queue);
+        super::conflict_prompt::render(frame, popup, theme, "Material import conflict", queue, |i| (format!("Material \"{}\" already exists with different data.", i.name), format!("Imported: E={:.0} ksi  Sy={:.0} ksi  Ftu={:.0} ksi", i.e_ksi, i.sy_ksi, i.ftu_ksi)));
         return;
     }
 
@@ -568,24 +543,6 @@ fn detail_split(inner: Rect, selected: Option<&mechanics_core::materials::Materi
         (false, true) => (rows[0], Some(rows[1]), None),
         (false, false) => (rows[0], None, None),
     }
-}
-
-fn render_conflict_prompt(frame: &mut Frame, area: Rect, theme: &Theme, queue: &ConflictQueue<PersistedMaterial>) {
-    let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.border_style(true)).title(" Material import conflict ");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    if inner.width == 0 || inner.height == 0 {
-        return;
-    }
-    let Some((_, incoming)) = queue.current() else { return };
-    let lines = vec![
-        Line::from(format!("Material \"{}\" already exists with different data.", incoming.item.name)),
-        Line::from(""),
-        Line::from(format!("Imported: E={:.0} ksi  Sy={:.0} ksi  Ftu={:.0} ksi", incoming.item.e_ksi, incoming.item.sy_ksi, incoming.item.ftu_ksi)),
-        Line::from(""),
-        Line::from(Span::styled("k: keep existing    o: overwrite    z: keep all remaining    a: overwrite all remaining", theme.disabled_style())),
-    ];
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 fn render_add_form(frame: &mut Frame, popup: Rect, theme: &Theme, form: &AddMaterialForm) {

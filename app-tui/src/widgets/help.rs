@@ -5,8 +5,9 @@
 //! command list), this is the three-layer discoverability the migration
 //! plan calls for.
 
+use crate::widgets::popup::centered_rect;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
@@ -16,30 +17,6 @@ use crate::theme::Theme;
 pub struct KeyHint {
     pub key: &'static str,
     pub label: &'static str,
-}
-
-/// A centered `percent_x` x `percent_y` sub-rect of `area` - a local copy
-/// of the standard ratatui floating-overlay pattern (not ratatui's own -
-/// it has no such helper), kept local rather than imported from
-/// `command_palette` since that module is owned separately and may not be
-/// finished yet.
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(vertical[1])[1]
 }
 
 /// Full keybinding reference, grouped into `(section_title, hints)` pairs.

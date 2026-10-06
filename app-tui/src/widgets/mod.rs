@@ -9,6 +9,7 @@ pub mod hint_panel;
 pub mod input_line;
 pub mod material_detail;
 pub mod number_edit;
+pub mod popup;
 pub mod scroll_list;
 pub mod scroll_paragraph;
 pub mod shell;

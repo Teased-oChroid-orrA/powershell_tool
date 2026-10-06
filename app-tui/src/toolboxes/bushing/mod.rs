@@ -23,6 +23,7 @@
 pub mod advice;
 pub mod bushing_id_persistence;
 pub mod bushing_id_picker;
+pub mod conflict_prompt;
 pub mod edge_check;
 pub mod friction_picker;
 pub mod material_persistence;

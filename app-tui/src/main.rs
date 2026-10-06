@@ -207,6 +207,20 @@ fn execute_effect(tx: &mpsc::UnboundedSender<AppEvent>, state: &mut AppState, ef
                 let _ = tx.send(AppEvent::EdgeCheckFinished { id, run: Box::new(run) });
             });
         }
+        Effect::RunLugAnalysis { id, input, cache } => {
+            let tx = tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let (result, cache) = app_tui::toolboxes::lug_analysis::model::run(&input, cache);
+                let _ = tx.send(AppEvent::LugAnalysisFinished { id, result: Box::new(result), cache });
+            });
+        }
+        Effect::RunLugMeshTest { id, input } => {
+            let tx = tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let result = app_tui::toolboxes::lug_analysis::mesh_test::run(&input);
+                let _ = tx.send(AppEvent::LugMeshTestFinished { id, result: Box::new(result) });
+            });
+        }
         Effect::ExportPressureVesselReport(contents) => {
             tokio::task::spawn_blocking(move || {
                 let Some(path) = pv_persistence::report_path() else { return };

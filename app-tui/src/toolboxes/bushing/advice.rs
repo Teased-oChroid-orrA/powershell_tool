@@ -652,6 +652,49 @@ mod tests {
         assert!(applied.checks.iter().all(|c| c.severity != Severity::Fail), "{:?}", applied.checks);
     }
 
+    fn fit_type_check(m: &BushingModel) -> Option<&Check> {
+        m.checks.iter().find(|c| c.kind == CheckKind::FitType)
+    }
+
+    #[test]
+    fn matching_fit_type_and_interference_sign_raises_no_fit_check() {
+        let mut m = model();
+        for _ in 0..4 {
+            assert!(fit_type_check(&m).is_none(), "{:?} {:?}", m.fit_type, m.checks);
+            m.toggle_fit_type();
+        }
+    }
+
+    #[test]
+    fn fit_type_check_flags_a_sign_mismatch_in_both_directions() {
+        // Clearance/Slip with positive interference.
+        let mut m = model();
+        m.fit_type = FitType::Slip;
+        m.recompute();
+        assert_eq!(fit_type_check(&m).map(|c| c.severity), Some(Severity::Warn));
+        // Press/Shrink with zero or negative interference.
+        for fit in [FitType::Press, FitType::Shrink] {
+            let mut m = model();
+            m.fit_type = fit;
+            m.commit_number(NumberTarget::Interference, 0.0);
+            assert_eq!(fit_type_check(&m).map(|c| c.severity), Some(Severity::Warn), "{fit:?}");
+        }
+    }
+
+    #[test]
+    fn fit_type_fix_loads_the_presets_and_clears_the_check() {
+        let mut m = model();
+        m.fit_type = FitType::Clearance;
+        m.recompute();
+        let rec = m.recommendations.iter().position(|r| r.fixes == CheckKind::FitType).expect("preset fix offered");
+        let (interference, plus, minus) = m.fit_type_preset();
+        m.apply_recommendation(rec).expect("applicable");
+        assert_eq!(m.interference, interference);
+        assert_eq!((m.interference_tol_plus, m.interference_tol_minus), (plus, minus));
+        assert!(m.interference < 0.0);
+        assert!(fit_type_check(&m).is_none(), "{:?}", m.checks);
+    }
+
     #[test]
     fn thin_straight_wall_is_flagged_and_the_fix_clears_it() {
         let mut m = model();

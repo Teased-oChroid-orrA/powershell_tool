@@ -24,6 +24,8 @@ use crate::notifications::NotificationQueue;
 use crate::theme::{StatusTone, Theme};
 use crate::toolboxes::bushing::{self, BushingState};
 use crate::toolboxes::fastener_hole::{self, FastenerHoleState};
+use crate::toolboxes::lug_analysis::{self, LugAnalysisState};
+use crate::toolboxes::material_lookup::{self, MaterialLookupState};
 use crate::toolboxes::preload_analysis::{self, PreloadAnalysisState};
 use crate::toolboxes::pressure_vessel::{self, PressureVesselState};
 use crate::toolboxes::search::{self, SearchToolState};
@@ -40,6 +42,8 @@ pub struct AppState {
     pub pressure_vessel: PressureVesselState,
     pub bushing: BushingState,
     pub preload_analysis: PreloadAnalysisState,
+    pub lug_analysis: LugAnalysisState,
+    pub material_lookup: MaterialLookupState,
     /// What the last left-click landed on and when - compared against the
     /// next click to detect a double-click (see `mouse` module doc and
     /// `handle_mouse` below). Not persisted, not meaningful outside the
@@ -61,6 +65,8 @@ impl Default for AppState {
             pressure_vessel: PressureVesselState::default(),
             bushing: BushingState::default(),
             preload_analysis: PreloadAnalysisState::default(),
+            lug_analysis: LugAnalysisState::default(),
+            material_lookup: MaterialLookupState::default(),
             last_click: None,
         }
     }
@@ -76,6 +82,8 @@ impl AppState {
             ToolId::PressureVessel => pressure_vessel::PANE_COUNT,
             ToolId::Bushing => bushing::PANE_COUNT,
             ToolId::PreloadAnalysis => preload_analysis::PANE_COUNT,
+            ToolId::LugAnalysis => lug_analysis::PANE_COUNT,
+            ToolId::MaterialLookup => material_lookup::PANE_COUNT,
             _ => 0,
         }
     }
@@ -119,6 +127,12 @@ pub enum AppEvent {
     /// A worker finished the Bushing edge-distance cross-check `id`
     /// (`Effect::RunEdgeCheck`); a cancelled or superseded id is ignored.
     EdgeCheckFinished { id: u64, run: Box<crate::toolboxes::bushing::edge_check::EdgeCheckRun> },
+    /// A worker finished Lug Analysis job `id` (`Effect::RunLugAnalysis`); the
+    /// condensed model it built (or reused) comes back for the cache, and a
+    /// stale id is ignored.
+    LugAnalysisFinished { id: u64, result: Box<Result<lug_analysis::model::LugRun, String>>, cache: Option<lug_analysis::model::CachedModel> },
+    /// A worker finished Lug Analysis mesh-size test `id` (`Effect::RunLugMeshTest`).
+    LugMeshTestFinished { id: u64, result: Box<Result<lug_analysis::mesh_test::MeshAdvice, String>> },
     Quit,
 }
 
@@ -163,6 +177,12 @@ pub enum Effect {
     /// `AppEvent::EdgeCheckFinished`; the input was already validated by
     /// `edge_check::prepare`.
     RunEdgeCheck { id: u64, input: ::edge_check::runner::EdgeInput, cfg: ::edge_check::runner::EdgeConfig, deep: bool },
+    /// Runs one Lug Analysis (contact FE, 0.03-1 s) on a blocking worker and
+    /// reports back with `AppEvent::LugAnalysisFinished`; `cache` is the
+    /// condensed model from the last run, reused when the geometry is unchanged.
+    RunLugAnalysis { id: u64, input: Box<lug_analysis::model::LugInput>, cache: Option<lug_analysis::model::CachedModel> },
+    /// Run the brief mesh-size test for these inputs on a worker; reports back with `AppEvent::LugMeshTestFinished`.
+    RunLugMeshTest { id: u64, input: Box<lug_analysis::model::LugInput> },
     /// Writes the Preload Analysis toolbox's plain-text report to its
     /// fixed report path and opens it - same pattern as
     /// `ExportPressureVesselReport`/`ExportBushingReport`.
@@ -206,10 +226,10 @@ pub fn handle_event(state: &mut AppState, event: AppEvent) -> Vec<Effect> {
         AppEvent::Tick => {
             state.notifications.expire();
             state.bushing.expire_edge_notice();
-            if state.nav.active_tool == crate::nav::ToolId::Bushing {
-                state.bushing.auto_edge_check()
-            } else {
-                Vec::new()
+            match state.nav.active_tool {
+                crate::nav::ToolId::Bushing => state.bushing.auto_edge_check(),
+                crate::nav::ToolId::LugAnalysis => state.lug_analysis.tick(),
+                _ => Vec::new(),
             }
         }
         AppEvent::SearchProgress(report) => {
@@ -305,6 +325,14 @@ pub fn handle_event(state: &mut AppState, event: AppEvent) -> Vec<Effect> {
             if was_running {
                 state.notifications.push("Edge check finished - see the Edge-Distance Cross-Check in Bushing Results", StatusTone::Success);
             }
+            Vec::new()
+        }
+        AppEvent::LugAnalysisFinished { id, result, cache } => {
+            state.lug_analysis.finish(id, *result, cache);
+            Vec::new()
+        }
+        AppEvent::LugMeshTestFinished { id, result } => {
+            state.lug_analysis.finish_mesh_test(id, *result);
             Vec::new()
         }
         AppEvent::Quit => {
@@ -504,6 +532,18 @@ fn handle_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             }
             ToolId::PreloadAnalysis => {
                 let (consumed, effects) = preload_analysis::handle_key(&mut state.preload_analysis, key);
+                if consumed {
+                    return effects;
+                }
+            }
+            ToolId::LugAnalysis => {
+                let (consumed, effects) = lug_analysis::handle_key(&mut state.lug_analysis, key);
+                if consumed {
+                    return effects;
+                }
+            }
+            ToolId::MaterialLookup => {
+                let (consumed, effects) = material_lookup::handle_key(&mut state.material_lookup, key);
                 if consumed {
                     return effects;
                 }
@@ -714,6 +754,19 @@ fn handle_click(state: &mut AppState, regions: &MouseRegions, col: u16, row: u16
         return Vec::new();
     }
 
+    // The Lug Analysis material browser is modal for the mouse.
+    if state.nav.active_tool == ToolId::LugAnalysis {
+        if let Some(browser) = state.lug_analysis.material_browser.as_mut() {
+            if let Some(i) = mouse::hit(&regions.material_lookup_rows, col, row) {
+                browser.cursor = i;
+                if is_double_click(&mut state.last_click, ClickTarget::MaterialLookupRow(i)) {
+                    return lug_analysis::handle_key(&mut state.lug_analysis, synthetic_key(KeyCode::Enter)).1;
+                }
+            }
+            return Vec::new();
+        }
+    }
+
     if state.pressure_vessel.material_picker.open {
         if let Some(i) = mouse::hit(&regions.material_rows, col, row) {
             state.pressure_vessel.material_picker.cursor = i;
@@ -759,6 +812,8 @@ fn handle_click(state: &mut AppState, regions: &MouseRegions, col: u16, row: u16
         ToolId::PressureVessel => handle_pressure_vessel_click(state, regions, col, row),
         ToolId::Bushing => handle_bushing_click(state, regions, col, row),
         ToolId::PreloadAnalysis => handle_preload_analysis_click(state, regions, col, row),
+        ToolId::LugAnalysis => handle_lug_analysis_click(state, regions, col, row),
+        ToolId::MaterialLookup => handle_material_lookup_click(state, regions, col, row),
         _ => Vec::new(),
     }
 }
@@ -951,6 +1006,41 @@ fn handle_preload_analysis_click(state: &mut AppState, regions: &MouseRegions, c
     Vec::new()
 }
 
+fn handle_lug_analysis_click(state: &mut AppState, regions: &MouseRegions, col: u16, row: u16) -> Vec<Effect> {
+    if let Some(i) = mouse::hit(&regions.lug_analysis_rows, col, row) {
+        state.focus.area = FocusArea::Workspace(lug_analysis::PANE_MAIN);
+        state.lug_analysis.selected = i;
+        state.lug_analysis.clamp_selection();
+        // A section header opens and closes on a single click.
+        if matches!(state.lug_analysis.selected_row_for_click(), Some(lug_analysis::model::FieldRow::MeshSection)) {
+            return lug_analysis::handle_key(&mut state.lug_analysis, synthetic_key(KeyCode::Enter)).1;
+        }
+        if is_double_click(&mut state.last_click, ClickTarget::LugAnalysisRow(i)) {
+            return lug_analysis::handle_key(&mut state.lug_analysis, synthetic_key(KeyCode::Enter)).1;
+        }
+        return Vec::new();
+    }
+    if let Some(pane) = mouse::hit(&regions.workspace_panes, col, row) {
+        state.focus.area = FocusArea::Workspace(pane);
+    }
+    Vec::new()
+}
+
+fn handle_material_lookup_click(state: &mut AppState, regions: &MouseRegions, col: u16, row: u16) -> Vec<Effect> {
+    if let Some(i) = mouse::hit(&regions.material_lookup_rows, col, row) {
+        state.focus.area = FocusArea::Workspace(material_lookup::PANE_MAIN);
+        state.material_lookup.cursor = i.min(state.material_lookup.hits.len().saturating_sub(1));
+        if is_double_click(&mut state.last_click, ClickTarget::MaterialLookupRow(i)) {
+            state.material_lookup.toggle_mark();
+        }
+        return Vec::new();
+    }
+    if let Some(pane) = mouse::hit(&regions.workspace_panes, col, row) {
+        state.focus.area = FocusArea::Workspace(pane);
+    }
+    Vec::new()
+}
+
 /// Scroll wheel routing: moves whatever list the cursor is currently over
 /// by one row, reusing each toolbox's existing Up/Down keyboard handling
 /// verbatim (via a synthetic key) rather than re-deriving the same
@@ -988,6 +1078,15 @@ fn handle_scroll(state: &mut AppState, regions: &MouseRegions, col: u16, row: u1
             bushing::handle_key(&mut state.bushing, key);
         }
         return;
+    }
+
+    if state.nav.active_tool == ToolId::LugAnalysis {
+        if let Some(browser) = state.lug_analysis.material_browser.as_mut() {
+            if mouse::hit(&regions.material_lookup_rows, col, row).is_some() {
+                material_lookup::handle_key(browser, key);
+            }
+            return;
+        }
     }
 
     if state.pressure_vessel.material_picker.open {
@@ -1052,6 +1151,16 @@ fn handle_scroll(state: &mut AppState, regions: &MouseRegions, col: u16, row: u1
                 preload_analysis::handle_key(&mut state.preload_analysis, key);
             }
         }
+        ToolId::LugAnalysis => {
+            if mouse::hit(&regions.lug_analysis_rows, col, row).is_some() {
+                lug_analysis::handle_key(&mut state.lug_analysis, key);
+            }
+        }
+        ToolId::MaterialLookup => {
+            if mouse::hit(&regions.material_lookup_rows, col, row).is_some() {
+                material_lookup::handle_key(&mut state.material_lookup, key);
+            }
+        }
         _ => {}
     }
 }
@@ -1076,6 +1185,14 @@ fn execute_command(state: &mut AppState, cmd: Command) -> Vec<Effect> {
         }
         Command::SwitchToPreloadAnalysis => {
             state.nav.activate(ToolId::PreloadAnalysis);
+            Vec::new()
+        }
+        Command::SwitchToLugAnalysis => {
+            state.nav.activate(ToolId::LugAnalysis);
+            Vec::new()
+        }
+        Command::SwitchToMaterialLookup => {
+            state.nav.activate(ToolId::MaterialLookup);
             Vec::new()
         }
         Command::SwitchToDupes => {
@@ -1181,6 +1298,25 @@ fn execute_command(state: &mut AppState, cmd: Command) -> Vec<Effect> {
             state.pressure_vessel.material_picker = pressure_vessel::material_picker::MaterialPickerState::open_now();
             Vec::new()
         }
+        Command::ToggleLugAnalysisProfile => {
+            state.lug_analysis.show_numbers = !state.lug_analysis.show_numbers;
+            Vec::new()
+        }
+        Command::ExportLugAnalysisReport => lug_analysis::handle_key(&mut state.lug_analysis, synthetic_key(KeyCode::Char('e'))).1,
+        Command::OpenLugMaterialBrowser => {
+            let mut browser = MaterialLookupState { picking: true, ..MaterialLookupState::default() };
+            if let Some(p) = browser.hits.iter().position(|&i| i == state.lug_analysis.model.material_index) {
+                browser.cursor = p;
+            }
+            state.lug_analysis.browser_target = lug_analysis::PickTarget::Lug;
+            state.lug_analysis.material_browser = Some(browser);
+            Vec::new()
+        }
+        Command::ToggleMaterialLookupCompare => {
+            state.material_lookup.compare = !state.material_lookup.compare;
+            Vec::new()
+        }
+        Command::ExportMaterialLookupReport => material_lookup::handle_key(&mut state.material_lookup, synthetic_key(KeyCode::F(3))).1,
         Command::TogglePreloadAnalysisNumbersPanel => {
             state.preload_analysis.show_numbers = !state.preload_analysis.show_numbers;
             Vec::new()
@@ -1279,25 +1415,24 @@ mod tests {
 
     #[test]
     fn rail_right_skips_past_disabled_tools_to_reach_the_next_enabled_one() {
-        // Regression test: `ToolId::ALL` is Search, FastenerHole, Bushing,
-        // PressureVessel, PreloadAnalysis (all enabled), then Dupes/Rename/
-        // Logs (disabled), then wraps back to Search. Pressing Right from
-        // PreloadAnalysis must land on Search, skipping the three disabled
+        // Regression test: `ToolId::ALL` ends with the enabled MaterialLookup
+        // followed by Dupes/Rename/Logs (disabled), then wraps back to Search.
+        // Pressing Right from MaterialLookup must land on Search, skipping the three disabled
         // entries between them - not get permanently stuck re-selecting one
         // of them on every subsequent Right press (the bug this test
         // guards against: `activate` is a no-op on a disabled target, and
         // `idx` is recomputed from `active_tool` each keypress, so a naive
         // next-neighbor-only step can never progress past a disabled run).
         let mut state = AppState::default();
-        state.nav.activate(ToolId::PreloadAnalysis);
+        state.nav.activate(ToolId::MaterialLookup);
         state.focus.area = FocusArea::Rail;
         handle_event(&mut state, press(KeyCode::Right));
         assert_eq!(state.nav.active_tool, ToolId::Search);
         // Left from Search must walk backward through the same disabled
-        // run and land on PreloadAnalysis, proving the skip works in both
+        // run and land on MaterialLookup, proving the skip works in both
         // directions, not just forward.
         handle_event(&mut state, press(KeyCode::Left));
-        assert_eq!(state.nav.active_tool, ToolId::PreloadAnalysis);
+        assert_eq!(state.nav.active_tool, ToolId::MaterialLookup);
     }
 
     #[test]
@@ -1305,7 +1440,7 @@ mod tests {
         let mut state = AppState::default();
         state.focus.area = FocusArea::Rail;
         handle_event(&mut state, press(KeyCode::Left));
-        assert_eq!(state.nav.active_tool, ToolId::PreloadAnalysis, "Dupes/Rename/Logs are disabled, so wrapping left from Search lands on the last enabled tool");
+        assert_eq!(state.nav.active_tool, ToolId::MaterialLookup, "Dupes/Rename/Logs are disabled, so wrapping left from Search lands on the last enabled tool");
     }
 
     #[test]

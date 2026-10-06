@@ -1,0 +1,20 @@
+[package]
+name = "fea-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# General finite-element kernel: 2D (plane stress / plane strain / axisymmetric) and 3D solid
+# elements, symmetric sparse assembly, direct and iterative linear solvers, boundary conditions,
+# nonlinear material and contact (later phases). Pure function of its inputs: no file I/O, no UI.
+# `lug-solver` and `edge-check` keep their own validated kernels until this crate matches them
+# (docs/fea-core.md). Pure-Rust dependencies only: the built app must run offline on win-x64 with
+# no runtime installed.
+[dependencies]
+mechanics-core = { path = "../mechanics-core" }
+faer = { version = "0.24", default-features = false, features = ["std", "rayon", "sparse-linalg"] }
+rayon = "1"
+dyn-stack = "0.13"
+# Exact adaptive orient2d / incircle (Shewchuk) for the 2D Delaunay mesher; pure Rust, no dependencies.
+robust = "1"

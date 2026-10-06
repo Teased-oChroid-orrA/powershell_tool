@@ -33,7 +33,10 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 |---|---|
 | #2 — Native Offline Search Engine (Tantivy) foundation | `docs/native-search-assessment.md` (Phase 1 recon) → `docs/adr/*` → `docs/issue-2-status.md` (DoD checklist; **closed**) |
 | #6 — index-first/incremental search engine (80-section epic) | `docs/issue-6-status.md` (gap analysis) → `docs/issue-6-phase-1.md` .. `phase-16.md` → `docs/issue-6-validation-report.md` (**closed**, all 16 phases + final validation) |
-| Edge-distance cross-check (stress superposition / FE / allowables vs the legacy `Fbru + 0.8 p` check; merged to main; contact FE on branch `fea-contact-model`) | `docs/edge-distance-crosscheck.md` |
+| Edge-distance cross-check (stress superposition / FE / allowables vs the legacy `Fbru + 0.8 p` check; merged to main, including the contact FE) | `docs/edge-distance-crosscheck.md` |
+| Lug Analysis: rigid-pin contact FE (options considered, method, validation numbers, performance, what is not done) | `docs/lug-analysis.md` |
+| Lug solver upgrade pass (15 accuracy/robustness items, status and measured outcome of each) | `docs/lug-solver-upgrade-plan.md` |
+| General FEA kernel `fea-core` (2D/3D elements, assembly, faer solver, validation, measured speed, phase plan) | `docs/fea-core.md`; decision `docs/adr/ADR-012-general-fea-kernel.md` |
 | MIL-HDBK-5J material library (1,375 conditions in the Bushing / Pressure Vessel pickers; provenance, conversion rules, what is estimated) | `docs/material-handbook.md` |
 | Index audit 2026-10 — freshness precision, scheduling, version stamp, measured rejections | `docs/index-audit-2026-10.md` |
 | #8 — perf/indexing/scalability evidence report | `docs/issue-8-status.md` (single-file report against #6's shipped state) |

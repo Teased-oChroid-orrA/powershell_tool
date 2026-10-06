@@ -10,16 +10,17 @@
 //! labeling all reuse `crate::library`'s generic machinery - see that
 //! module's own doc comment for the JSON schema.
 
+use crate::widgets::popup::centered_rect;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, ListItem, Paragraph};
 use ratatui::Frame;
 
 use bushing_solver::drills::{self, DrillEntry};
 
-use crate::library::{ConflictQueue, ConflictResolution, LibraryItem};
+use crate::library::{ConflictQueue, LibraryItem};
 use crate::theme::Theme;
 use crate::widgets::empty_state;
 
@@ -129,7 +130,7 @@ impl BushingIdPickerState {
 
 pub fn handle_key(picker: &mut BushingIdPickerState, model: &mut BushingModel, key: KeyEvent) -> (bool, Vec<Effect>) {
     if let Some(queue) = &mut picker.pending_conflicts {
-        return handle_conflict_key(queue, &mut picker.library, key);
+        return super::conflict_prompt::handle_key(queue, &mut picker.library, key);
     }
 
     if let Some(prompt) = &mut picker.path_prompt {
@@ -264,32 +265,6 @@ fn default_path_string() -> String {
     crate::paths::app_data_dir().unwrap_or_default().join("bushing-id-library.json").to_string_lossy().into_owned()
 }
 
-fn handle_conflict_key(queue: &mut ConflictQueue<PersistedBushingId>, library: &mut Vec<LibraryItem<PersistedBushingId>>, key: KeyEvent) -> (bool, Vec<Effect>) {
-    let resolved = match key.code {
-        KeyCode::Char('k' | 'K') => Some((ConflictResolution::KeepExisting, false)),
-        KeyCode::Char('o' | 'O') => Some((ConflictResolution::Overwrite, false)),
-        KeyCode::Char('z' | 'Z') => Some((ConflictResolution::KeepExisting, true)),
-        KeyCode::Char('a' | 'A') => Some((ConflictResolution::Overwrite, true)),
-        _ => None,
-    };
-    let Some((resolution, apply_all)) = resolved else {
-        return (false, Vec::new());
-    };
-    queue.resolve(library, resolution, apply_all);
-    (true, vec![Effect::PersistBushingIdLibrary])
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage((100 - percent_y) / 2), Constraint::Percentage(percent_y), Constraint::Percentage((100 - percent_y) / 2)])
-        .split(area);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage((100 - percent_x) / 2), Constraint::Percentage(percent_x), Constraint::Percentage((100 - percent_x) / 2)])
-        .split(vertical[1])[1]
-}
-
 pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &BushingIdPickerState, model: &BushingModel, regions: &mut crate::mouse::MouseRegions) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -298,7 +273,7 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &BushingIdPi
     frame.render_widget(Clear, popup);
 
     if let Some(queue) = &picker.pending_conflicts {
-        render_conflict_prompt(frame, popup, theme, queue);
+        super::conflict_prompt::render(frame, popup, theme, "Bushing ID import conflict", queue, |i| (format!("\"{}\" already exists with a different value.", i.label), format!("Imported: {:.4} in", i.id_in)));
         return;
     }
 
@@ -360,24 +335,6 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &BushingIdPi
             frame.render_widget(Paragraph::new(line), area);
         }
     }
-}
-
-fn render_conflict_prompt(frame: &mut Frame, area: Rect, theme: &Theme, queue: &ConflictQueue<PersistedBushingId>) {
-    let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.border_style(true)).title(" Bushing ID import conflict ");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    if inner.width == 0 || inner.height == 0 {
-        return;
-    }
-    let Some((_, incoming)) = queue.current() else { return };
-    let lines = vec![
-        Line::from(format!("\"{}\" already exists with a different value.", incoming.item.label)),
-        Line::from(""),
-        Line::from(format!("Imported: {:.4} in", incoming.item.id_in)),
-        Line::from(""),
-        Line::from(Span::styled("k: keep existing    o: overwrite    z: keep all remaining    a: overwrite all remaining", theme.disabled_style())),
-    ];
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 #[cfg(test)]
