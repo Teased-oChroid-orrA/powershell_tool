@@ -58,6 +58,10 @@ pub struct Loads {
     /// body that is otherwise free to move or rotate rigidly (a pin or bushing held only by contact) and leak
     /// `k u` of force to ground, so keep them tiny. Ignored by the linear solvers.
     pub ground: Vec<(usize, f64)>,
+    /// Follower pressures `(face nodes, p)`: a pressure that stays normal to the *deformed* surface (positive pushes
+    /// into the body). The nonlinear driver applies them with their load stiffness; every linear analysis treats them as
+    /// the dead `SurfaceLoad::Pressure` they equal for small displacements.
+    pub followers: Vec<(Vec<usize>, f64)>,
 }
 
 /// 1D rule (3-point Gauss) for edges.
@@ -104,6 +108,9 @@ pub fn assemble(mesh: &Mesh, loads: &Loads) -> Result<Vec<f64>, String> {
     }
     for (nodes, field) in &loads.field_faces {
         add_face(mesh, nodes, &*field.0, &mut f)?;
+    }
+    for (nodes, p) in &loads.followers {
+        add_face(mesh, nodes, &|_: &[f64; 3], n: &[f64; 3]| [-p * n[0], -p * n[1], -p * n[2]], &mut f)?;
     }
     let mut work = Work::new();
     let mut fe = vec![0.0; crate::element::MAX_NODES * 3];
@@ -211,4 +218,78 @@ fn add_face<F: Fn(&[f64; 3], &[f64; 3]) -> [f64; 3] + ?Sized>(mesh: &Mesh, nodes
         }
     }
     Ok(())
+}
+
+/// The force of a follower pressure `p` on a face at displacements `u` and its derivative: `g(x) = -p int N_a (x_xi x x_eta)`
+/// (3D; in 2D `-p t N_a (y_xi, -x_xi)` with the thickness `t`), so the load follows the deformed surface. Returns `(g, J)`
+/// over the face's `nn * d` dofs (node-major) with `J = dg/du` row-major. Axisymmetric faces are not supported.
+pub fn follower_face(mesh: &Mesh, nodes: &[usize], p: f64, u: &[f64]) -> Result<(Vec<f64>, Vec<f64>), String> {
+    if let Some(&bad) = nodes.iter().find(|&&n| n >= mesh.nodes.len()) {
+        return Err(format!("face refers to missing node {bad}"));
+    }
+    let d = mesh.dim();
+    let nn = nodes.len();
+    let nd = nn * d;
+    let scale = match mesh.physics {
+        Physics::PlaneStress { thickness } | Physics::PlaneStrain { thickness } => thickness,
+        Physics::Axisymmetric => return Err("follower pressure is not supported for axisymmetric analyses".into()),
+        _ => 1.0,
+    };
+    let x: Vec<[f64; 3]> = nodes.iter().map(|&n| std::array::from_fn(|i| mesh.nodes[n][i] + if i < d { u[n * d + i] } else { 0.0 })).collect();
+    let (mut g, mut j) = (vec![0.0; nd], vec![0.0; nd * nd]);
+    if d == 2 {
+        if nn != 2 && nn != 3 {
+            return Err(format!("an edge with {nn} nodes is not supported in 2D"));
+        }
+        for &(xi, w) in &GL3 {
+            let (n, dn) = line_shape(nn, xi);
+            let (mut tx, mut ty) = (0.0, 0.0);
+            for a in 0..nn {
+                tx += dn[a] * x[a][0];
+                ty += dn[a] * x[a][1];
+            }
+            let c = -p * w * scale;
+            for a in 0..nn {
+                // n da = (t_y, -t_x) dxi: g_a = c N_a (t_y, -t_x).
+                g[a * 2] += c * n[a] * ty;
+                g[a * 2 + 1] -= c * n[a] * tx;
+                for b in 0..nn {
+                    j[(a * 2) * nd + b * 2 + 1] += c * n[a] * dn[b]; // d g_x / d y_b
+                    j[(a * 2 + 1) * nd + b * 2] -= c * n[a] * dn[b]; // d g_y / d x_b
+                }
+            }
+        }
+    } else {
+        let kind = face_kind(nn)?;
+        let t = kind.table();
+        let skew = |v: [f64; 3]| [[0.0, -v[2], v[1]], [v[2], 0.0, -v[0]], [-v[1], v[0], 0.0]];
+        for gp in 0..t.ngp {
+            let n = t.n_at(gp);
+            let dn = t.dn_at(gp);
+            let (mut a1, mut a2) = ([0.0f64; 3], [0.0f64; 3]);
+            for a in 0..nn {
+                for i in 0..3 {
+                    a1[i] += dn[a * 2] * x[a][i];
+                    a2[i] += dn[a * 2 + 1] * x[a][i];
+                }
+            }
+            let cr = [a1[1] * a2[2] - a1[2] * a2[1], a1[2] * a2[0] - a1[0] * a2[2], a1[0] * a2[1] - a1[1] * a2[0]];
+            let c = -p * t.w[gp];
+            let (s1, s2) = (skew(a1), skew(a2));
+            for a in 0..nn {
+                for i in 0..3 {
+                    g[a * 3 + i] += c * n[a] * cr[i];
+                }
+                for b in 0..nn {
+                    // d(x_xi x x_eta)/d x_b = -dNxi_b [x_eta]x + dNeta_b [x_xi]x   (d(a x b)/da = -[b]x, d/db = [a]x)
+                    for i in 0..3 {
+                        for k in 0..3 {
+                            j[(a * 3 + i) * nd + b * 3 + k] += c * n[a] * (dn[b * 2 + 1] * s1[i][k] - dn[b * 2] * s2[i][k]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok((g, j))
 }

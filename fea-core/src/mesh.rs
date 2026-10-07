@@ -39,6 +39,9 @@ impl Physics {
 pub struct Aniso {
     pub d: [[f64; 6]; 6],
     pub c: [[f64; 6]; 6],
+    /// Thermal expansion tensor of the anisotropic material, per degree, as the strain vector `(a_xx, a_yy, a_zz, 2 a_xy,
+    /// 2 a_yz, 2 a_zx)` (engineering shear). `None`: the isotropic `Elastic::alpha` on the three normal components.
+    pub alpha: Option<[f64; 6]>,
 }
 
 /// Linear elastic material (psi, inch units by convention; the kernel is unit-free). Isotropic
@@ -113,7 +116,7 @@ impl Elastic {
         let k = ((d[0][0] + d[1][1] + d[2][2]) + 2.0 * (d[0][1] + d[1][2] + d[2][0])) / 9.0;
         let g = ((d[0][0] + d[1][1] + d[2][2]) - (d[0][1] + d[1][2] + d[2][0]) + 3.0 * (d[3][3] + d[4][4] + d[5][5])) / 15.0;
         let (e, nu) = (9.0 * k * g / (3.0 * k + g), (3.0 * k - 2.0 * g) / (2.0 * (3.0 * k + g)));
-        Ok(Self { e, nu, alpha: 0.0, aniso: Some(Aniso { d, c }) })
+        Ok(Self { e, nu, alpha: 0.0, aniso: Some(Aniso { d, c, alpha: None }) })
     }
 
     /// Orthotropic material with principal axes along `x, y, z` from engineering constants
@@ -166,7 +169,37 @@ impl Elastic {
                 d[j][i] = m;
             }
         }
-        Ok(Self { alpha: self.alpha, ..Self::anisotropic(d)? })
+        let mut out = Self { alpha: self.alpha, ..Self::anisotropic(d)? };
+        if let Some(a) = an.alpha {
+            // alpha_g = Q alpha_l Q^T with the same Q as the stiffness (local axes at `phi` to the global ones).
+            let (a11, a22, a12) = (a[0], a[1], 0.5 * a[3]);
+            let g11 = c * c * a11 + s * s * a22 - 2.0 * c * s * a12;
+            let g22 = s * s * a11 + c * c * a22 + 2.0 * c * s * a12;
+            let g12 = c * s * (a11 - a22) + (c * c - s * s) * a12;
+            // (a_zx, a_zy) rotates as a vector.
+            let (zx, zy) = (0.5 * a[5], 0.5 * a[4]);
+            let (gzx, gzy) = (c * zx - s * zy, s * zx + c * zy);
+            if let Some(o) = out.aniso.as_mut() {
+                o.alpha = Some([g11, g22, a[2], 2.0 * g12, 2.0 * gzy, 2.0 * gzx]);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Anisotropic thermal expansion: the tensor components `(a_xx, a_yy, a_zz, a_xy, a_yz, a_zx)` per degree (tensor
+    /// shear components, in the material axes). Only an anisotropic material has one.
+    pub fn with_alpha_tensor(self, a: [f64; 6]) -> Result<Self, String> {
+        let mut an = self.aniso.ok_or("a thermal expansion tensor needs an anisotropic material")?;
+        an.alpha = Some([a[0], a[1], a[2], 2.0 * a[3], 2.0 * a[4], 2.0 * a[5]]);
+        Ok(Self { aniso: Some(an), ..self })
+    }
+
+    /// The thermal strain of a uniform temperature change `d_t` as `(xx, yy, zz, 2 xy, 2 yz, 2 zx)`.
+    pub fn thermal_strain(&self, d_t: f64) -> [f64; 6] {
+        match self.aniso.and_then(|a| a.alpha) {
+            Some(a) => a.map(|v| v * d_t),
+            None => [self.alpha * d_t, self.alpha * d_t, self.alpha * d_t, 0.0, 0.0, 0.0],
+        }
     }
 
     pub fn with_alpha(self, alpha: f64) -> Self {
@@ -280,11 +313,11 @@ impl Mesh {
         Ok(())
     }
 
-    /// Attach J2 plasticity to block `block` (isotropic elastic constants only).
+    /// Attach J2 plasticity to block `block`. An anisotropic elastic law is supported with small-strain plasticity only.
     pub fn set_plasticity(&mut self, block: usize, j2: J2) -> Result<(), String> {
         let b = self.blocks.get_mut(block).ok_or_else(|| format!("no block {block}"))?;
-        if b.material.aniso.is_some() {
-            return Err("plasticity needs an isotropic elastic law".into());
+        if b.material.aniso.is_some() && j2.large_strain {
+            return Err("finite-strain plasticity needs an isotropic elastic law (anisotropic elasticity is small-strain only)".into());
         }
         b.plasticity = Some(j2);
         Ok(())

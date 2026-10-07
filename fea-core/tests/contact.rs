@@ -551,3 +551,205 @@ fn a_lightly_loaded_stiff_penalty_contact_converges_in_few_factorisations() {
     assert!((f / 5.0 - 1.0).abs() < 1e-3, "equilibrium: contact force {f} vs 5");
     assert!(sol.factorisations <= 30, "Newton needed {} factorisations", sol.factorisations);
 }
+
+/// A free deformable block held off a fixed one by a gap and loaded by its own body force: under load control it
+/// has nothing to push against while it crosses the gap (the weak grounding is its only stiffness), under arc-length
+/// control the displacement step carries it across and the load rises once it lands. The final state must be the
+/// one a block placed in touching contact reaches: pressure `W / width` everywhere, transmitted force `W`.
+#[test]
+fn arc_length_control_carries_a_free_body_across_a_gap_into_contact() {
+    let (gap, b_force) = (0.02, 1.0e4);
+    let mat = Elastic::new(E, NU);
+    let physics = Physics::PlaneStrain { thickness: 1.0 };
+    let run = |gap: f64, control: Control| {
+        let bottom = grid(physics, ElementKind::Quad9, mat, [6, 3, 1], &|p| [2.0 * p[0], p[1], 0.0]).unwrap();
+        let top = grid(physics, ElementKind::Quad9, mat, [4, 3, 1], &move |p| [2.0 * p[0], 1.0 + gap + p[1], 0.0]).unwrap();
+        let mut mesh = bottom;
+        let first_top = mesh.nodes.len();
+        mesh.append(&top, "top_").unwrap();
+        let top_block = mesh.blocks.len() - 1;
+        let model = Model::new(mesh).unwrap();
+        let mut bc = model.dirichlet();
+        for &n in model.mesh.node_set("v0").unwrap() {
+            bc.fix(n, 1, 0.0);
+        }
+        bc.fix(model.mesh.node_set("v0").unwrap()[0], 0, 0.0);
+        // The top block is held only by contact and weak springs.
+        let k = 1e-9 * E;
+        let ground: Vec<(usize, f64)> = (first_top..model.mesh.nodes.len()).flat_map(|n| [(2 * n, k), (2 * n + 1, k)]).collect();
+        let loads = Loads { block_body: vec![(top_block, [0.0, -b_force, 0.0])], ground, ..Loads::default() };
+        let (b_top, t_bot) = (model.mesh.surfaces["v1"].clone(), model.mesh.surfaces["top_v0"].clone());
+        let spec = ContactSpec::deformable("interface", b_top, t_bot, 1.0e9).with_margin(0.5);
+        model.solve_nonlinear_contact(&loads, &bc, vec![spec], &NlOptions { control, steps: 2, ..NlOptions::default() }).unwrap()
+    };
+    let weight = b_force * 2.0; // body force x area (2 x 1) x thickness 1
+    let touching = run(0.0, Control::Load);
+    assert!(touching.complete(), "{:?}", touching.stop);
+    let arc = run(gap, Control::Arc { ds: 0.01, lambda_max: 1.0, max_steps: 80 });
+    assert!(arc.complete(), "arc-length did not reach the load: {:?} at lambda {}", arc.stop, arc.lambda);
+    assert!((arc.lambda - 1.0).abs() < 1e-9, "lands exactly on the load: {}", arc.lambda);
+    // The weak springs that held the free block across the gap leak a negligible share of the weight.
+    assert!(arc.ground_leak < 1e-4 * weight, "ground leak {} of {weight}", arc.ground_leak);
+    for (name, sol) in [("touching, load control", &touching), ("gap, arc-length", &arc)] {
+        let cs = sol.contact.as_ref().unwrap();
+        assert!((cs.master_force[0][1].abs() / weight - 1.0).abs() < 2e-3, "{name}: transmitted force {} vs {weight}", cs.master_force[0][1]);
+        let ps: Vec<f64> = sol.state.contact[0].iter().map(|s| s.p).collect();
+        let mean = ps.iter().sum::<f64>() / ps.len() as f64;
+        assert!((mean / (weight / 2.0) - 1.0).abs() < 3e-2, "{name}: mean pressure {mean}");
+    }
+}
+
+/// A body that nothing holds is refused, not solved with an arbitrary rigid motion.
+#[test]
+fn a_floating_body_is_refused_unless_a_spring_or_a_contact_holds_it() {
+    let mat = Elastic::new(E, NU);
+    let physics = Physics::PlaneStrain { thickness: 1.0 };
+    let build = |with_ground: bool| {
+        let bottom = grid(physics, ElementKind::Quad9, mat, [4, 2, 1], &|p| [2.0 * p[0], p[1], 0.0]).unwrap();
+        let top = grid(physics, ElementKind::Quad9, mat, [4, 2, 1], &|p| [2.0 * p[0], 5.0 + p[1], 0.0]).unwrap(); // far from the bottom body
+        let mut mesh = bottom;
+        let first = mesh.nodes.len();
+        mesh.append(&top, "top_").unwrap();
+        let model = Model::new(mesh).unwrap();
+        let mut bc = model.dirichlet();
+        for &n in model.mesh.node_set("v0").unwrap() {
+            bc.fix_node(n);
+        }
+        let ground = if with_ground { vec![(2 * first, 1.0), (2 * first + 1, 1.0), (2 * first + 2, 1.0)] } else { Vec::new() };
+        (model, bc, Loads { ground, ..Loads::default() })
+    };
+    let (model, bc, loads) = build(false);
+    let err = model.solve_nonlinear(&loads, &bc, &NlOptions::default()).err().expect("a floating body must be refused");
+    assert!(err.contains("float"), "{err}");
+    let (model, bc, loads) = build(true);
+    assert!(model.solve_nonlinear(&loads, &bc, &NlOptions::default()).is_ok(), "a grounding spring holds the body");
+}
+
+/// The traction output integrates to the transmitted force: `sum p w` is the force and `sum p w n` its vector, with the
+/// normal pointing from the master to the slave.
+#[test]
+fn the_contact_tractions_integrate_to_the_transmitted_force() {
+    let q = 1.0e4;
+    let (model, bc, loads, specs) = stacked_blocks(6, 4, true, q);
+    let _ = &model;
+    let sol = model.solve_nonlinear_contact(&loads, &bc, specs, &NlOptions { steps: 2, ..NlOptions::default() }).unwrap();
+    let tr = sol.contact_tractions(0, 0.0);
+    assert!(!tr.is_empty());
+    let normal_force: f64 = tr.iter().map(|t| t.pressure * t.weight).sum();
+    assert!((normal_force / (2.0 * q) - 1.0).abs() < 1e-3, "sum p w = {normal_force}, expected {}", 2.0 * q);
+    let vector: [f64; 2] = tr.iter().fold([0.0, 0.0], |a, t| [a[0] + t.pressure * t.weight * t.normal[0], a[1] + t.pressure * t.weight * t.normal[1]]);
+    assert!(vector[0].abs() < 1e-3 * normal_force && (vector[1].abs() / normal_force - 1.0).abs() < 1e-3, "sum p w n = {vector:?}");
+    assert!(tr.iter().all(|t| t.active && !t.slipping));
+}
+
+/// An elastic ring pressed into a rigid bore (interference `delta`, plane-stress Lame pressure) and a moment applied to
+/// the bore, which is free to rotate; the ring's torque is reacted by a uniform tangential traction on its inner
+/// surface (a smooth, axisymmetric reaction: point supports would make the rim shear uneven). Below the friction
+/// capacity `mu p 2 pi R^2 t` the ring sticks and the friction moment on it equals the applied one (the bore turns a
+/// little, the ring shears) up to 60 % of it (near the limit a moment-controlled run slows: the Schur complement over the rotation assumes a symmetric coupling, which sliding friction breaks).
+#[test]
+fn a_rigid_bore_turned_by_a_moment_transmits_it_by_friction_up_to_mu_p_2_pi_r_squared() {
+    use fea_core::geometry::{Loop, Region};
+    use fea_core::loads::FaceField;
+    let (r, ri, delta, mu, t) = (1.0f64, 0.4f64, 0.002f64, 0.2f64, 1.0f64);
+    let ring = Region::new(Loop::circle([0.0, 0.0], r, "rim").unwrap(), vec![Loop::circle([0.0, 0.0], ri, "inner").unwrap()], Elastic::new(E, NU)).unwrap();
+    let mesh = mesh_region(&ring, Physics::PlaneStress { thickness: t }, ElementKind::Quad9, &|_| 0.12, MeshOptions::default()).unwrap();
+    let model = Model::new(mesh).unwrap();
+    // Lame pressure of a ring (inner radius ri, free inside) squeezed by the interference at its outer surface.
+    let nodes = &model.mesh.nodes;
+    let (nu, e) = (NU, E);
+    let p = {
+        // plane stress ring: u_r(R) = -p R/E ((R^2 + ri^2)/(R^2 - ri^2) - nu)  for an external pressure p
+        let compliance = r / e * ((r * r + ri * ri) / (r * r - ri * ri) - nu);
+        delta / compliance
+    };
+    let capacity = mu * p * 2.0 * PI * r * r * t;
+    // Three tangential constraints on the inner surface remove the rigid motion and carry no reaction: the axisymmetric
+    // state moves those nodes radially and the torque balance is exact.
+    let at = |x: f64, y: f64| (0..nodes.len()).find(|&n| (nodes[n][0] - x).abs() < 1e-9 && (nodes[n][1] - y).abs() < 1e-9).expect("inner-surface node");
+    let mut bc = model.dirichlet();
+    bc.fix(at(ri, 0.0), 1, 0.0);
+    bc.fix(at(-ri, 0.0), 1, 0.0);
+    bc.fix(at(0.0, ri), 0, 0.0);
+    let slave = model.mesh.surfaces["rim"].clone();
+    let inner = model.mesh.surfaces["inner"].clone();
+    let run = |moment: f64, max_cuts: usize| {
+        // Reaction: torque -moment on the inner surface, tau = -M / (2 pi ri^2 t) along theta-hat, per unit load factor.
+        let tau = -moment / (2.0 * PI * ri * ri * t);
+        let field = FaceField::new(move |x: &[f64; 3], _n: &[f64; 3]| {
+            let rho = x[0].hypot(x[1]);
+            [-tau * x[1] / rho, tau * x[0] / rho, 0.0]
+        });
+        let loads = Loads { field_faces: inner.iter().map(|f| (f.clone(), field.clone())).collect(), ..Loads::default() };
+        let bore = RigidMaster { inside: true, ..RigidMaster::new(RigidShape::Circle { c: [0.0, 0.0], r: r - delta }) }.with_free_rotation(moment);
+        let spec = ContactSpec::rigid("bore", slave.clone(), bore, 3.0e9).with_rule(ContactRule::Reduced).with_friction(mu, 2.0e8);
+        model.solve_nonlinear_contact(&loads, &bc, vec![spec], &NlOptions { steps: 4, outer_tol: 1e-3, max_outer: 12, max_cuts, ..NlOptions::default() })
+    };
+    // Sticking at half the capacity.
+    let t0 = std::time::Instant::now();
+    let half = run(0.5 * capacity, 12).unwrap();
+    eprintln!("half capacity: {:.1} s, stop {:?}", t0.elapsed().as_secs_f64(), half.stop);
+    assert!(half.complete(), "{:?}", half.stop);
+    let tr = half.contact_tractions(0, mu);
+    let normal: f64 = tr.iter().map(|x| x.pressure * x.weight).sum();
+    assert!((normal / (2.0 * PI * r * t * p) - 1.0).abs() < 0.03, "interface force {normal} vs Lame {}", 2.0 * PI * r * t * p);
+    let torque_on_ring: f64 = tr.iter().map(|x| (x.x[0] * x.friction[1] - x.x[1] * x.friction[0]) * x.weight).sum();
+    assert!((torque_on_ring.abs() / (0.5 * capacity) - 1.0).abs() < 0.03, "friction moment {torque_on_ring} vs applied {}", 0.5 * capacity);
+    assert!(tr.iter().all(|x| !x.slipping), "no point slips at half the capacity");
+    assert!(half.rigid_translation[0][2].abs() > 0.0, "the bore turns");
+    // Still sticking at 60 % of the capacity: the transmitted moment is the applied one and no point is at its limit.
+    let high = run(0.6 * capacity, 12).unwrap();
+    assert!(high.complete(), "{:?}", high.stop);
+    let tr = high.contact_tractions(0, mu);
+    let torque: f64 = tr.iter().map(|x| (x.x[0] * x.friction[1] - x.x[1] * x.friction[0]) * x.weight).sum();
+    assert!((torque.abs() / (0.6 * capacity) - 1.0).abs() < 0.03, "friction moment {torque} vs applied {}", 0.6 * capacity);
+    assert!(tr.iter().all(|x| !x.slipping), "no point slips at 60 % of the capacity");
+    // (Beyond the capacity the bore turns without limit and a moment-controlled run has no equilibrium to find.)
+}
+
+/// The closest-point projection onto a master face must not depend on where the model sits: it used to stop on an
+/// absolute `1e-14` in the parametric step, which round-off of order `eps |x| / |tangent|` exceeds as soon as the
+/// coordinates are of order one (a 2D hole at (1, 1) lost contact points; the same model at the origin solved).
+#[test]
+fn a_contact_solution_does_not_depend_on_where_the_model_sits() {
+    use fea_core::geometry::{Curve, Segment};
+    let (a, b, delta) = (0.5f64, 1.0f64, 0.001f64);
+    // Plane-strain Lame pressure of the shrink fit (same material both sides).
+    let p_lame = delta * E / ((1.0 + NU) * a * (((1.0 - 2.0 * NU) * a * a + b * b) / (b * b - a * a) + (1.0 - 2.0 * NU)));
+    let mean_pressure = |o: [f64; 2]| -> f64 {
+        let seg = |curve, name: &str| Segment { curve, name: name.to_string() };
+        let p = |x: f64, y: f64| [o[0] + x, o[1] + y];
+        let rs = a + delta;
+        let half = std::f64::consts::FRAC_PI_2;
+        let shaft = Loop::new(vec![seg(Curve::line(p(0.0, 0.0), p(rs, 0.0)), "xaxis"), seg(Curve::arc(p(0.0, 0.0), rs, 0.0, half), "iface"), seg(Curve::line(p(0.0, rs), p(0.0, 0.0)), "yaxis")]).unwrap();
+        let hub = Loop::new(vec![seg(Curve::line(p(a, 0.0), p(b, 0.0)), "xaxis"), seg(Curve::arc(p(0.0, 0.0), b, 0.0, half), "outer"), seg(Curve::line(p(0.0, b), p(0.0, a)), "yaxis"), seg(Curve::arc(p(0.0, 0.0), a, half, 0.0), "iface")]).unwrap();
+        let mat = Elastic::new(E, NU);
+        let physics = Physics::PlaneStrain { thickness: 1.0 };
+        let m_shaft = mesh_region(&Region::new(shaft, vec![], mat).unwrap(), physics, ElementKind::Quad9, &|_| 0.05, MeshOptions::default()).unwrap();
+        let m_hub = mesh_region(&Region::new(hub, vec![], mat).unwrap(), physics, ElementKind::Quad9, &|_| 0.07, MeshOptions::default()).unwrap();
+        let mut mesh = m_shaft;
+        mesh.append(&m_hub, "hub_").unwrap();
+        let model = Model::new(mesh).unwrap();
+        let mut bc = model.dirichlet();
+        for prefix in ["", "hub_"] {
+            for &n in model.mesh.node_set(&format!("{prefix}xaxis")).unwrap() {
+                bc.fix(n, 1, 0.0);
+            }
+            for &n in model.mesh.node_set(&format!("{prefix}yaxis")).unwrap() {
+                bc.fix(n, 0, 0.0);
+            }
+        }
+        let (slave, master) = (model.mesh.surfaces["iface"].clone(), model.mesh.surfaces["hub_iface"].clone());
+        let specs: Vec<ContactSpec> = ContactSpec::two_pass("fit", slave, master, 1.0e9).into_iter().map(|s| s.with_margin(0.1)).collect();
+        let sol = model.solve_nonlinear_contact(&Loads::default(), &bc, specs, &NlOptions { steps: 1, ..NlOptions::default() }).unwrap();
+        assert!(sol.complete(), "offset {o:?}: {:?}", sol.stop);
+        (0..2).map(|k| { let ps: Vec<f64> = sol.state.contact[k].iter().filter(|s| s.active).map(|s| s.p).collect(); ps.iter().sum::<f64>() / ps.len() as f64 }).sum()
+    };
+    let at_origin = mean_pressure([0.0, 0.0]);
+    eprintln!("Lame {p_lame:.1}, origin {at_origin:.1}");
+    for o in [[1.0, 1.0], [6.0, 6.0], [-40.0, 25.0]] {
+        let moved = mean_pressure(o);
+        eprintln!("offset {o:?}: {moved:.1} (origin {at_origin:.1})");
+        assert!((moved / at_origin - 1.0).abs() < 1.5e-2, "offset {o:?}: mean pressure {moved} vs {at_origin} at the origin");
+    }
+}

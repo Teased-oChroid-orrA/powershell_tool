@@ -270,6 +270,209 @@ pub fn small_strain_update(mo: Moduli, law: &Hardening, eps: &M3, old: &GpState)
     Update { stress, tangent: t, state }
 }
 
+// ------------------------------------------------------------------ small strain, anisotropic elasticity
+
+/// Tensor index pair of every entry of the library's stress / strain order `(xx, yy, zz, xy, yz, zx)`.
+const PAIRS: [(usize, usize); 6] = [(0, 0), (1, 1), (2, 2), (0, 1), (1, 2), (2, 0)];
+
+/// Solve `A X = B` (`N x N`, `N x M`) by Gaussian elimination with partial pivoting; `None` if singular.
+fn lu_solve<const N: usize, const M: usize>(mut a: [[f64; N]; N], mut b: [[f64; M]; N]) -> Option<[[f64; M]; N]> {
+    let scale = a.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs())).max(1e-300);
+    for c in 0..N {
+        let p = (c..N).max_by(|&i, &j| a[i][c].abs().total_cmp(&a[j][c].abs()))?;
+        if a[p][c].abs() < 1e-14 * scale {
+            return None;
+        }
+        a.swap(c, p);
+        b.swap(c, p);
+        for i in c + 1..N {
+            let f = a[i][c] / a[c][c];
+            for k in c..N {
+                a[i][k] -= f * a[c][k];
+            }
+            for k in 0..M {
+                b[i][k] -= f * b[c][k];
+            }
+        }
+    }
+    let mut x = [[0.0; M]; N];
+    for i in (0..N).rev() {
+        for k in 0..M {
+            x[i][k] = (b[i][k] - (i + 1..N).map(|j| a[i][j] * x[j][k]).sum::<f64>()) / a[i][i];
+        }
+    }
+    Some(x)
+}
+
+/// Von Mises stress, the flow direction `n_v = d sigma_vm / d sigma` as a strain-like vector (engineering shear: the
+/// plastic strain increment is `dgamma n_v`) and `M = d n_v / d sigma_v` (6 x 6) of a stress in Voigt order.
+fn flow_direction(sig: &[f64; 6]) -> (f64, [f64; 6], [[f64; 6]; 6]) {
+    let tr = (sig[0] + sig[1] + sig[2]) / 3.0;
+    let s = [sig[0] - tr, sig[1] - tr, sig[2] - tr, sig[3], sig[4], sig[5]]; // tensor components s_ij (shear once)
+    let ss = s[0] * s[0] + s[1] * s[1] + s[2] * s[2] + 2.0 * (s[3] * s[3] + s[4] * s[4] + s[5] * s[5]);
+    let vm = (1.5 * ss).sqrt().max(1e-300);
+    let n: [f64; 6] = std::array::from_fn(|a| 1.5 * s[a] / vm); // tensor components n_ij
+    let g: [f64; 6] = std::array::from_fn(|a| if a < 3 { n[a] } else { 2.0 * n[a] }); // d vm / d sigma_v
+    let mut m = [[0.0; 6]; 6];
+    for a in 0..6 {
+        let (i, j) = PAIRS[a];
+        let ca = if a < 3 { 1.0 } else { 2.0 };
+        for b in 0..6 {
+            let (k, l) = PAIRS[b];
+            let ds = if b < 3 { f64::from(u8::from(i == k && j == k)) - if i == j { 1.0 / 3.0 } else { 0.0 } } else { f64::from(u8::from(i == k && j == l)) + f64::from(u8::from(i == l && j == k)) };
+            m[a][b] = ca * (1.5 / vm * ds - n[a] * g[b] / vm);
+        }
+    }
+    (vm, g, m)
+}
+
+/// Small-strain J2 update with a general anisotropic elastic stiffness `d` (`6 x 6`, library order, engineering shear):
+/// the associative von Mises flow `d eps_p = dgamma n(sigma)` with `n = d sigma_vm / d sigma` and the stress `sigma =
+/// D (eps - eps_p)`. Unlike the isotropic law the flow direction changes during the return (`D n` is not parallel to
+/// `n`), so the return solves `sigma + dgamma D n(sigma) = sigma_trial`, `sigma_vm(sigma) = sigma_y(p + dgamma)` for the
+/// stress and the multiplier together by Newton's method; the tangent is the consistent one of that linearisation.
+pub fn small_strain_update_aniso(d: &[[f64; 6]; 6], law: &Hardening, eps: &M3, old: &GpState) -> Update {
+    let ep_v = [old[0], old[1], old[2], 2.0 * old[3], 2.0 * old[4], 2.0 * old[5]];
+    let e_v = [eps[0][0], eps[1][1], eps[2][2], 2.0 * eps[0][1], 2.0 * eps[1][2], 2.0 * eps[2][0]];
+    let ee: [f64; 6] = std::array::from_fn(|i| e_v[i] - ep_v[i]);
+    let tr: [f64; 6] = std::array::from_fn(|i| (0..6).map(|j| d[i][j] * ee[j]).sum());
+    let p0 = old[6];
+    let (vm_tr, _, _) = flow_direction(&tr);
+    let sy0 = law.stress(p0);
+    let to_t4 = |tv: &[[f64; 6]; 6]| -> T4 {
+        // d sigma_ij / d H_kl = sum_b T[a(ij)][b] d eps_v[b] / d H_kl.
+        let mut t = [[0.0; 9]; 9];
+        for i in 0..3 {
+            for j in 0..3 {
+                let a = PAIRS.iter().position(|&(p, q)| (p == i && q == j) || (p == j && q == i)).expect("pair");
+                for k in 0..3 {
+                    for l in 0..3 {
+                        let mut v = 0.0;
+                        for b in 0..6 {
+                            let (p, q) = PAIRS[b];
+                            let de = if b < 3 { f64::from(u8::from(k == p && l == p)) } else { f64::from(u8::from(k == p && l == q)) + f64::from(u8::from(k == q && l == p)) };
+                            v += tv[a][b] * de;
+                        }
+                        t[3 * i + j][3 * k + l] = v;
+                    }
+                }
+            }
+        }
+        t
+    };
+    let tensor = |s: &[f64; 6]| -> M3 { [[s[0], s[3], s[5]], [s[3], s[1], s[4]], [s[5], s[4], s[2]]] };
+    if vm_tr <= sy0 {
+        return Update { stress: tensor(&tr), tangent: to_t4(d), state: *old };
+    }
+    // Plastic: Newton on (sigma, dgamma).
+    let gbar = (d[3][3] + d[4][4] + d[5][5]) / 3.0;
+    let mut dg = ((vm_tr - sy0) / (3.0 * gbar + law.slope(p0).max(0.0))).max(0.0);
+    let mut sig: [f64; 6] = std::array::from_fn(|i| tr[i]);
+    let resid = |sig: &[f64; 6], dg: f64| -> ([f64; 6], f64) {
+        let (vm, _, _) = flow_direction(sig);
+        let (_, g, _) = flow_direction(sig);
+        let dn: [f64; 6] = std::array::from_fn(|i| (0..6).map(|j| d[i][j] * g[j]).sum());
+        (std::array::from_fn(|i| sig[i] - tr[i] + dg * dn[i]), vm - law.stress(p0 + dg))
+    };
+    let norm = |r: &[f64; 6], f: f64| (r.iter().map(|v| v * v).sum::<f64>() + f * f).sqrt();
+    let (mut r, mut f) = resid(&sig, dg);
+    let mut rn = norm(&r, f);
+    for _ in 0..60 {
+        if rn <= 1e-12 * sy0.max(1e-300) {
+            break;
+        }
+        let (_, g, m) = flow_direction(&sig);
+        let hp = law.slope(p0 + dg);
+        // J = [I + dg D M, D g; g^T, -H] over (sigma, dgamma).
+        let mut jac = [[0.0; 7]; 7];
+        for i in 0..6 {
+            for j in 0..6 {
+                jac[i][j] = f64::from(u8::from(i == j)) + dg * (0..6).map(|k| d[i][k] * m[k][j]).sum::<f64>();
+            }
+            jac[i][6] = (0..6).map(|k| d[i][k] * g[k]).sum();
+            jac[6][i] = g[i];
+        }
+        jac[6][6] = -hp;
+        let mut rhs = [[0.0; 1]; 7];
+        for i in 0..6 {
+            rhs[i][0] = -r[i];
+        }
+        rhs[6][0] = -f;
+        let Some(dx) = lu_solve(jac, rhs) else { break };
+        // Backtrack if the step does not reduce the residual (the multiplier stays non-negative).
+        let mut alpha = 1.0;
+        let mut accepted = false;
+        for _ in 0..12 {
+            let st: [f64; 6] = std::array::from_fn(|i| sig[i] + alpha * dx[i][0]);
+            let dgt = (dg + alpha * dx[6][0]).max(0.0);
+            let (rt, ft) = resid(&st, dgt);
+            let n = norm(&rt, ft);
+            if n < rn || n <= 1e-12 * sy0 {
+                (sig, dg, r, f, rn) = (st, dgt, rt, ft, n);
+                accepted = true;
+                break;
+            }
+            alpha *= 0.5;
+        }
+        if !accepted {
+            break;
+        }
+    }
+    let (_, g, m) = flow_direction(&sig);
+    let hp = law.slope(p0 + dg);
+    // Tangent: A = I + dg D M; T = A^-1 D - (A^-1 D g)(g^T A^-1 D) / (g^T A^-1 D g + H).
+    let mut a = [[0.0; 6]; 6];
+    for i in 0..6 {
+        for j in 0..6 {
+            a[i][j] = f64::from(u8::from(i == j)) + dg * (0..6).map(|k| d[i][k] * m[k][j]).sum::<f64>();
+        }
+    }
+    let mut rhs = [[0.0; 7]; 6];
+    for i in 0..6 {
+        rhs[i][..6].copy_from_slice(&d[i]);
+        rhs[i][6] = (0..6).map(|k| d[i][k] * g[k]).sum();
+    }
+    let x = lu_solve(a, rhs).expect("the return-mapping linearisation is regular");
+    // x[.][0..6] = A^-1 D, x[.][6] = A^-1 D g.
+    let adg: [f64; 6] = std::array::from_fn(|i| x[i][6]);
+    let gad: [f64; 6] = std::array::from_fn(|j| (0..6).map(|i| g[i] * x[i][j]).sum());
+    let denom = (0..6).map(|i| g[i] * adg[i]).sum::<f64>() + hp;
+    let mut tv = [[0.0; 6]; 6];
+    for i in 0..6 {
+        for j in 0..6 {
+            tv[i][j] = x[i][j] - adg[i] * gad[j] / denom;
+        }
+    }
+    let mut state = *old;
+    for k in 0..3 {
+        state[k] += dg * g[k];
+    }
+    for k in 3..6 {
+        state[k] += dg * 0.5 * g[k]; // tensor shear = engineering / 2; g[k] holds the engineering component
+    }
+    state[6] += dg;
+    Update { stress: tensor(&sig), tangent: to_t4(&tv), state }
+}
+
+/// Plane-stress version of [`small_strain_update_aniso`]: `eps_zz` is solved so that `sigma_zz = 0`.
+pub fn small_strain_plane_stress_aniso(d: &[[f64; 6]; 6], law: &Hardening, eps: &M3, old: &GpState) -> (Update, f64) {
+    let mut e = *eps;
+    let mut ezz = -0.3 * (e[0][0] + e[1][1]);
+    let mut up = small_strain_update_aniso(d, law, &e, old);
+    for _ in 0..40 {
+        e[2][2] = ezz;
+        up = small_strain_update_aniso(d, law, &e, old);
+        let szz = up.stress[2][2];
+        let scale = d[2][2].abs().max(1e-300) * (e[0][0].abs() + e[1][1].abs() + e[0][1].abs() + ezz.abs());
+        if szz.abs() <= 1e-13 * scale {
+            break;
+        }
+        ezz -= szz / up.tangent[8][8];
+    }
+    up.tangent = condense_zz(&up.tangent);
+    (up, ezz)
+}
+
 // ------------------------------------------------------------------ finite strain
 
 /// Finite-strain Hencky J2 update for the deformation gradient `f` (3 x 3, `det f > 0`).

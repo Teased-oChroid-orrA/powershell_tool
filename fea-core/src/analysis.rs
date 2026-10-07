@@ -85,6 +85,132 @@ impl Model {
         Dirichlet::new(self.mesh.nodes.len(), self.mesh.dim())
     }
 
+    /// Reject a support set that leaves a rigid-body motion of some connected piece free. A singular
+    /// system does not always fail in the factorisation (rounding can leave tiny positive pivots), so
+    /// the answer would silently carry an arbitrary rigid motion: check the rigid modes against the
+    /// constrained dofs instead. Called by [`Model::solve_static_with`].
+    pub fn check_constrained(&self, bc: &Dirichlet) -> Result<(), String> {
+        let mesh = &self.mesh;
+        let d = mesh.dim();
+        // Connected pieces of the element graph.
+        let n = mesh.nodes.len();
+        let mut parent: Vec<usize> = (0..n).collect();
+        fn find(p: &mut [usize], mut a: usize) -> usize {
+            while p[a] != a {
+                p[a] = p[p[a]];
+                a = p[a];
+            }
+            a
+        }
+        let mut used = vec![false; n];
+        for blk in &mesh.blocks {
+            for c in blk.conn.chunks_exact(blk.kind.n_nodes()) {
+                for &a in c {
+                    used[a] = true;
+                    let (ra, rb) = (find(&mut parent, a), find(&mut parent, c[0]));
+                    parent[ra] = rb;
+                }
+            }
+        }
+        let mut groups: std::collections::BTreeMap<usize, Vec<usize>> = std::collections::BTreeMap::new();
+        for i in (0..n).filter(|&i| used[i]) {
+            let r = find(&mut parent, i);
+            groups.entry(r).or_default().push(i);
+        }
+        for (gi, nodes) in groups.values().enumerate() {
+            let axisym = matches!(mesh.physics, Physics::Axisymmetric);
+            let nm = match (axisym, d) {
+                (true, _) => 1,
+                (_, 2) => 3,
+                _ => 6,
+            };
+            let mut c = [0.0f64; 3];
+            for &i in nodes {
+                for k in 0..3 {
+                    c[k] += mesh.nodes[i][k] / nodes.len() as f64;
+                }
+            }
+            let span = nodes.iter().flat_map(|&i| (0..d).map(move |k| (i, k))).map(|(i, k)| (mesh.nodes[i][k] - c[k]).abs()).fold(0.0f64, f64::max).max(1e-300);
+            // Rigid mode values (per unit) at a node, one entry per mode, for component `comp`.
+            let mode = |i: usize, comp: usize| -> [f64; 6] {
+                let r: [f64; 3] = std::array::from_fn(|k| (mesh.nodes[i][k] - c[k]) / span);
+                let mut m = [0.0f64; 6];
+                if axisym {
+                    m[0] = if comp == 1 { 1.0 } else { 0.0 };
+                } else if d == 2 {
+                    m[comp] = 1.0;
+                    m[2] = if comp == 0 { -r[1] } else { r[0] };
+                } else {
+                    m[comp] = 1.0;
+                    let rot = [[0.0, -r[2], r[1]], [r[2], 0.0, -r[0]], [-r[1], r[0], 0.0]];
+                    for q in 0..3 {
+                        m[3 + q] = rot[q][comp];
+                    }
+                }
+                m
+            };
+            // Gram matrix of the constraint rows.
+            let mut g = vec![vec![0.0f64; nm]; nm];
+            for &i in nodes {
+                for comp in 0..d {
+                    if bc.fixed[i * d + comp] {
+                        let m = mode(i, comp);
+                        for a in 0..nm {
+                            for b in 0..nm {
+                                g[a][b] += m[a] * m[b];
+                            }
+                        }
+                    }
+                }
+            }
+            // A mode no constrained dof touches has a zero diagonal. The rest are scaled to unit diagonal (correlation
+            // matrix) so a legitimately tiny lever arm (a micro hole in a big body holds the rotation only through
+            // `r / span`) is not mistaken for a free mode; then the numerical rank is read off by elimination.
+            let diag: Vec<f64> = (0..nm).map(|a| g[a][a]).collect();
+            let dmax = diag.iter().fold(0.0f64, |m, v| m.max(*v));
+            for a in 0..nm {
+                for b in 0..nm {
+                    let (da, db) = (diag[a], diag[b]);
+                    g[a][b] = if da > 1e-24 * dmax && db > 1e-24 * dmax { g[a][b] / (da * db).sqrt() } else { 0.0 };
+                }
+            }
+            let mut rank = 0;
+            let mut rows: Vec<usize> = (0..nm).collect();
+            let mut cols: Vec<usize> = (0..nm).collect();
+            for k in 0..nm {
+                // Full pivoting.
+                let (mut best, mut bi, mut bj) = (0.0f64, k, k);
+                for &i in &rows[k..] {
+                    for &j in &cols[k..] {
+                        if g[i][j].abs() > best {
+                            best = g[i][j].abs();
+                            (bi, bj) = (i, j);
+                        }
+                    }
+                }
+                if best <= 1e-9 {
+                    break;
+                }
+                let (pi, pj) = (rows.iter().position(|&r| r == bi).unwrap(), cols.iter().position(|&c| c == bj).unwrap());
+                rows.swap(k, pi);
+                cols.swap(k, pj);
+                let (pr, pc) = (rows[k], cols[k]);
+                for &i in &rows[k + 1..] {
+                    let f = g[i][pc] / g[pr][pc];
+                    for j in 0..nm {
+                        g[i][j] -= f * g[pr][j];
+                    }
+                }
+                rank += 1;
+            }
+            if rank < nm {
+                let which = if groups.len() > 1 { format!(" in piece {} of the mesh", gi + 1) } else { String::new() };
+                return Err(format!("the model is not fully constrained{which} ({} of {nm} rigid-body motions are held): add supports", rank));
+            }
+        }
+        Ok(())
+    }
+
     /// Linear static solve (method chosen by size: see [`SolveMethod::Auto`]).
     pub fn solve_static(&self, loads: &Loads, bc: &Dirichlet) -> Result<Solution, String> {
         self.solve_static_with(loads, bc, SolveMethod::Auto)
@@ -92,6 +218,7 @@ impl Model {
 
     /// Linear static solve with an explicit method.
     pub fn solve_static_with(&self, loads: &Loads, bc: &Dirichlet, method: SolveMethod) -> Result<Solution, String> {
+        self.check_constrained(bc)?;
         match method.resolve(self.mesh.dim(), self.mesh.n_dofs() - bc.n_fixed()) {
             SolveMethod::Iterative { tol, max_iter } => self.solve_iterative(loads, bc, tol, max_iter),
             _ => self.solve_direct(loads, bc),
@@ -181,27 +308,45 @@ impl Model {
     }
 
     fn solve_direct(&self, loads: &Loads, bc: &Dirichlet) -> Result<Solution, String> {
-        let mut t = Timings::default();
+        let mut v = self.solve_direct_many(std::slice::from_ref(loads), bc)?;
+        Ok(v.remove(0))
+    }
+
+    /// Several load cases on one factorisation (direct solver): the stiffness is assembled and
+    /// factored once and every case is a back-substitution. `Solution::timings` of the first case
+    /// carries the shared assembly / factorisation time (the others only their own solve time).
+    pub fn solve_static_many(&self, cases: &[Loads], bc: &Dirichlet) -> Result<Vec<Solution>, String> {
+        self.check_constrained(bc)?;
+        self.solve_direct_many(cases, bc)
+    }
+
+    fn solve_direct_many(&self, cases: &[Loads], bc: &Dirichlet) -> Result<Vec<Solution>, String> {
+        let mut shared = Timings::default();
         let clock = Instant::now();
         let k = self.assemble()?;
-        t.assemble_ms = clock.elapsed().as_secs_f64() * 1e3;
+        shared.assemble_ms = clock.elapsed().as_secs_f64() * 1e3;
         let clock = Instant::now();
         let red = Reduced::with_ordering(&self.pattern, bc, Some(&self.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?;
-        t.symbolic_ms = clock.elapsed().as_secs_f64() * 1e3;
+        shared.symbolic_ms = clock.elapsed().as_secs_f64() * 1e3;
         let clock = Instant::now();
         let fac = red.factor(&k).map_err(|e| e.to_string())?;
-        t.factor_ms = clock.elapsed().as_secs_f64() * 1e3;
-        let clock = Instant::now();
-        let f = loads::assemble(&self.mesh, loads)?;
-        let u = fac.solve(&k, &f, bc);
-        t.solve_ms = clock.elapsed().as_secs_f64() * 1e3;
-        let mut reactions = residual(&k, &self.pattern, &u, &f);
-        for (r, fx) in reactions.iter_mut().zip(&bc.fixed) {
-            if !fx {
-                *r = 0.0;
+        shared.factor_ms = clock.elapsed().as_secs_f64() * 1e3;
+        let mut out = Vec::with_capacity(cases.len());
+        for (i, loads) in cases.iter().enumerate() {
+            let mut t = if i == 0 { shared } else { Timings::default() };
+            let clock = Instant::now();
+            let f = loads::assemble(&self.mesh, loads)?;
+            let u = fac.solve(&k, &f, bc);
+            t.solve_ms = clock.elapsed().as_secs_f64() * 1e3;
+            let mut reactions = residual(&k, &self.pattern, &u, &f);
+            for (r, fx) in reactions.iter_mut().zip(&bc.fixed) {
+                if !fx {
+                    *r = 0.0;
+                }
             }
+            out.push(Solution { u, reactions, n_free: red.n_free(), timings: t, iterations: None });
         }
-        Ok(Solution { u, reactions, n_free: red.n_free(), timings: t, iterations: None })
+        Ok(out)
     }
 
     /// Strain energy `1/2 u^T K u`.
@@ -292,9 +437,13 @@ impl Model {
 
 /// Stress at node `a` of one element (strain from the shape-function derivatives there).
 fn node_stress(kind: crate::element::ElementKind, physics: crate::mesh::Physics, mat: &crate::mesh::Elastic, xyz: &[[f64; 3]], ue: &[f64], a: usize, delta_t: f64) -> Result<[f64; 6], String> {
+    stress_at_xi(kind, physics, mat, xyz, ue, kind.node_coords()[a], delta_t)
+}
+
+/// Stress of one element at natural coordinates `xi` (strain from the shape-function derivatives there).
+pub(crate) fn stress_at_xi(kind: crate::element::ElementKind, physics: crate::mesh::Physics, mat: &crate::mesh::Elastic, xyz: &[[f64; 3]], ue: &[f64], xi: [f64; 3], delta_t: f64) -> Result<[f64; 6], String> {
     let d = kind.dim();
     let nn = kind.n_nodes();
-    let xi = kind.node_coords()[a];
     let (n, dn) = kind.shape(xi);
     let mut jac = [[0.0f64; 3]; 3];
     for b in 0..nn {

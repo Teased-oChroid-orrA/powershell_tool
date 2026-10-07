@@ -373,3 +373,82 @@ fn a_block_body_force_loads_only_its_own_block() {
     assert!(on_block0.abs() < 1e-14, "block 0 got {on_block0}");
     assert!((on_block1 + 3.0 * 1.0 * 2.0).abs() < 1e-12, "block 1 got {on_block1}");
 }
+
+/// A support set that leaves a rigid-body motion free used to factorise anyway (rounding leaves
+/// tiny positive pivots) and return the true answer plus an arbitrary rigid motion.
+#[test]
+fn unconstrained_rigid_body_motion_is_an_error() {
+    let id = |p: [f64; 3]| p;
+    for (kind, name) in [(ElementKind::Quad8, "2D"), (ElementKind::Hex8, "3D")] {
+        let d = kind.dim();
+        let div = if d == 2 { [3, 2, 1] } else { [2, 2, 2] };
+        let mesh = grid(physics_for(kind), kind, mat(), div, &id).unwrap();
+        let model = Model::new(mesh).unwrap();
+        let n = model.mesh.nodes.len();
+        let loads = Loads { nodal: vec![(n - 1, [1.0, 0.0, 0.0])], ..Loads::default() };
+        let corner = (0..n).min_by(|&a, &b| model.mesh.nodes[a].iter().sum::<f64>().total_cmp(&model.mesh.nodes[b].iter().sum::<f64>())).unwrap();
+        // Nothing fixed, one node fixed (rotations free), one 2D roller line (translation + rotation free).
+        let mut one = model.dirichlet();
+        one.fix_node(corner);
+        for bc in [model.dirichlet(), one] {
+            let e = model.solve_static(&loads, &bc).err().unwrap_or_else(|| panic!("{name}: a free rigid motion went unnoticed"));
+            assert!(e.contains("not fully constrained"), "{name}: {e}");
+        }
+    }
+    // Fully constrained (two nodes in 2D fix all three motions) is accepted.
+    let mesh = grid(Physics::PlaneStress { thickness: 1.0 }, ElementKind::Quad8, mat(), [3, 2, 1], &id).unwrap();
+    let model = Model::new(mesh).unwrap();
+    let n = model.mesh.nodes.len();
+    let mut bc = model.dirichlet();
+    bc.fix_node(0);
+    bc.fix(n - 1, 1, 0.0);
+    let loads = Loads { nodal: vec![(n / 2, [1.0, 0.0, 0.0])], ..Loads::default() };
+    model.solve_static(&loads, &bc).expect("pinned at one node and rolled at another is statically determinate");
+}
+
+#[test]
+fn several_load_cases_on_one_factorisation_match_separate_solves() {
+    let mesh = grid(Physics::PlaneStress { thickness: 0.5 }, ElementKind::Quad8, mat(), [4, 3, 1], &|p| [3.0 * p[0], 2.0 * p[1], p[2]]).unwrap();
+    let model = Model::new(mesh).unwrap();
+    let mut bc = model.dirichlet();
+    for &n in model.mesh.node_set("u0").unwrap() {
+        bc.fix_node(n);
+    }
+    let n = model.mesh.nodes.len();
+    let cases: Vec<Loads> = vec![
+        Loads { nodal: vec![(n - 1, [100.0, 0.0, 0.0])], ..Loads::default() },
+        Loads { nodal: vec![(n - 1, [0.0, -50.0, 0.0])], ..Loads::default() },
+        Loads { body: Some([0.0, -1.0, 0.0]), ..Loads::default() },
+    ];
+    let many = model.solve_static_many(&cases, &bc).unwrap();
+    assert_eq!(many.len(), 3);
+    for (loads, m) in cases.iter().zip(&many) {
+        let one = model.solve_static_with(loads, &bc, SolveMethod::Direct).unwrap();
+        let scale = one.u.iter().fold(0.0f64, |a, v| a.max(v.abs()));
+        for (a, b) in one.u.iter().zip(&m.u) {
+            assert!((a - b).abs() < 1e-12 * scale, "{a} vs {b}");
+        }
+    }
+    assert!(model.solve_static_many(&cases, &model.dirichlet()).is_err(), "an unsupported model is refused here too");
+}
+
+/// A tiny lever arm is still a constraint: a micro hole fixed in a large body holds the rotation only
+/// through `r / span`, which the check must not mistake for a free mode (found while normalising it).
+#[test]
+fn a_small_fixed_hole_in_a_large_body_is_accepted_but_one_pinned_node_is_not() {
+    use fea_core::delaunay::MeshOptions;
+    use fea_core::geometry::{Loop, Region};
+    use fea_core::mesh2d::mesh_region;
+    let region = Region::new(Loop::rectangle(0.0, 0.0, 1000.0, 1000.0).unwrap(), vec![Loop::circle([500.0, 500.0], 0.01, "hole").unwrap()], mat()).unwrap();
+    let size = |x: [f64; 2]| (0.003 + 0.4 * ((x[0] - 500.0).hypot(x[1] - 500.0) - 0.01).max(0.0)).min(250.0);
+    let mesh = mesh_region(&region, Physics::PlaneStress { thickness: 1.0 }, ElementKind::Quad8, &size, MeshOptions::default()).unwrap();
+    let model = Model::new(mesh).unwrap();
+    let mut bc = model.dirichlet();
+    for &n in model.mesh.node_set("hole").unwrap() {
+        bc.fix_node(n);
+    }
+    model.check_constrained(&bc).expect("a fixed micro hole holds all three rigid motions");
+    let mut pinned = model.dirichlet();
+    pinned.fix_node(model.mesh.node_set("hole").unwrap()[0]);
+    assert!(model.check_constrained(&pinned).unwrap_err().contains("2 of 3"), "one node leaves the rotation free");
+}

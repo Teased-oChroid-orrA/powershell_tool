@@ -193,10 +193,11 @@ fn plastic_element(blk: &Block, physics: Physics, xyz: &[[f64; 3]], ue: &[f64], 
             .ok_or_else(|| "material state failed (inverted element or non-positive stretch)".to_string())?
         } else {
             let eps: M3 = std::array::from_fn(|i| std::array::from_fn(|j| 0.5 * (h[i][j] + h[j][i])));
-            if plane_stress {
-                small_strain_plane_stress(mo, &j2.law, &eps, &old[g]).0
-            } else {
-                small_strain_update(mo, &j2.law, &eps, &old[g])
+            match (&blk.material.aniso, plane_stress) {
+                (Some(an), true) => small_strain_plane_stress_aniso(&an.d, &j2.law, &eps, &old[g]).0,
+                (Some(an), false) => small_strain_update_aniso(&an.d, &j2.law, &eps, &old[g]),
+                (None, true) => small_strain_plane_stress(mo, &j2.law, &eps, &old[g]).0,
+                (None, false) => small_strain_update(mo, &j2.law, &eps, &old[g]),
             }
         };
         new[g] = up.state;
@@ -313,6 +314,12 @@ pub fn assemble_nl_public(mesh: &Mesh, pat: &Pattern, u: &[f64], old: &NlState, 
 
 // ------------------------------------------------------------------ driver
 
+/// How many times a contact solve is repeated with doubled margins after a node pair fell outside the matrix pattern.
+const MARGIN_RETRIES: usize = 4;
+
+/// Cycles of defect-correction refinement of a frictional Newton step.
+const REFINE_ITERS: usize = 6;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Control {
     /// Load factor (and prescribed displacements) from 0 to 1 in automatically cut steps.
@@ -352,6 +359,9 @@ pub struct NlOptions {
     /// Displacement-driven contact: stop once the first master's force has fallen this fraction below its
     /// peak (`0` = off); how a hardening law's limit is read, since its curve never flattens.
     pub stop_on_fall: f64,
+    /// Contact analyses: stop once the first master carries at least this force (norm), whatever the load factor.
+    /// The stage that presses a body in by prescribed displacement until it carries a target load (`0` = off).
+    pub stop_at_force: f64,
     /// Accept an iteration that used up `max_iter` with a residual below this fraction of the force scale
     /// (`0` = never): frictional contact can chatter between stick and slip without reaching the tight
     /// tolerance, and a load-travel curve does not need it.
@@ -378,7 +388,7 @@ impl NlOptions {
 
 impl Default for NlOptions {
     fn default() -> Self {
-        Self { control: Control::Load, steps: 10, max_iter: 25, tol: 1e-9, line_search: true, max_cuts: 12, failure_ep: None, chord_iters: 0, max_outer: 12, outer_tol: 1e-4, stop_on_plateau: false, stop_on_fall: 0.0, stall_tol: 0.0, first_step: 1.0 }
+        Self { control: Control::Load, steps: 10, max_iter: 25, tol: 1e-9, line_search: true, max_cuts: 12, failure_ep: None, chord_iters: 0, max_outer: 12, outer_tol: 1e-4, stop_on_plateau: false, stop_on_fall: 0.0, stop_at_force: 0.0, stall_tol: 0.0, first_step: 1.0 }
     }
 }
 
@@ -413,6 +423,8 @@ pub enum Stop {
     NoConvergence(String),
     /// The pin load flattened or fell (`NlOptions::stop_on_plateau` / `stop_on_fall`): the limit is on the curve.
     Plateau,
+    /// The first master reached `NlOptions::stop_at_force`.
+    ForceReached,
 }
 
 pub struct NlSolution {
@@ -433,11 +445,33 @@ pub struct NlSolution {
     pub contact_weights: Vec<Vec<f64>>,
     /// Final translation of every rigid master (`shift + lambda travel + free part`), per interface.
     pub rigid_translation: Vec<[f64; 3]>,
+    /// Net force the weak grounding springs (`Loads::ground`) carry at the end: the leak of the way a body held only by
+    /// contact is kept from floating (compare it with the applied load). `0` without springs.
+    pub ground_leak: f64,
 }
 
 impl NlSolution {
+    /// The tractions of contact interface `spec` (in the order the interfaces were given): per slave point the
+    /// position, normal, pressure, friction traction and weight, a first-class result instead of reading raw point
+    /// states. `mu` is the interface's friction coefficient (it only decides which points are `slipping`). Integrals of
+    /// these (the transmitted force `sum p w n`, a torque `sum x cross t w`) are the reliable outputs: pointwise values
+    /// scatter on non-matching deformable meshes.
+    pub fn contact_tractions(&self, spec: usize, mu: f64) -> Vec<crate::contact::ContactTraction> {
+        let (Some(states), Some(points), Some(weights)) = (self.state.contact.get(spec), self.contact_points.get(spec), self.contact_weights.get(spec)) else { return Vec::new() };
+        states
+            .iter()
+            .zip(points)
+            .zip(weights)
+            .map(|((s, x), w)| {
+                let friction = if s.active { s.fric } else { [0.0; 3] };
+                let fmag = norm(&friction);
+                crate::contact::ContactTraction { x: *x, normal: s.n, pressure: if s.active { s.p } else { 0.0 }, friction, weight: *w, active: s.active, slipping: s.active && mu > 0.0 && fmag >= mu * s.p * (1.0 - 1e-3) }
+            })
+            .collect()
+    }
+
     pub fn complete(&self) -> bool {
-        matches!(self.stop, Stop::Completed | Stop::FailureStrain | Stop::StepLimit | Stop::Plateau)
+        matches!(self.stop, Stop::Completed | Stop::FailureStrain | Stop::StepLimit | Stop::Plateau | Stop::ForceReached)
     }
 
     /// Peak load factor over the converged steps.
@@ -492,8 +526,10 @@ struct Ctx<'a> {
     factorisations: Cell<usize>,
     start: Option<&'a Start>,
     ground: Vec<(usize, f64)>,
+    /// Follower pressures (face nodes, p): see `Loads::followers`.
+    followers: Vec<(Vec<usize>, f64)>,
     /// Seconds spent (evaluation, factorisation, solves), reported under `NL_PROFILE`.
-    timers: [Cell<f64>; 3],
+    timers: [Cell<f64>; 5],
 }
 
 /// A converged state to continue from (load control with contact): the displacements and the
@@ -505,6 +541,9 @@ pub struct Start {
     pub contact: Vec<Option<Vec<CpState>>>,
     /// Material state of the plastic blocks (per block, empty for elastic ones).
     pub gp: Option<Vec<Vec<GpState>>>,
+    /// The load factor the state is in equilibrium at (`0` for a state that carries none of this run's load): the
+    /// run goes from here to `1`, so a stage that already applied part of the load is continued, not restarted.
+    pub lambda: f64,
 }
 
 struct Eval {
@@ -513,6 +552,12 @@ struct Eval {
     state: NlState,
     stats: Option<ContactStats>,
     ex: Option<ExtraOut>,
+    /// Norm of the element (elastic / plastic) internal force alone: it does not cancel against the contact forces
+    /// at equilibrium, so it is the force level a relative tolerance must be measured against.
+    f_elem: f64,
+    /// Unsymmetric remainder of the follower-load stiffness as `(dofs, row-major matrix)` per face (the symmetric part is
+    /// in `k`): the exact tangent is `K + sum E^T D E`, applied by the same refinement as the frictional defect.
+    load_defect: Vec<(Vec<usize>, Vec<f64>)>,
 }
 
 impl Ctx<'_> {
@@ -522,6 +567,9 @@ impl Ctx<'_> {
         let (mut f, mut k) = assemble_nl(&self.model.mesh, &self.pat, u, old, &mut state, want_k)?;
         let mut stats = None;
         let mut ex = None;
+        let f_elem = norm(&f);
+        self.timers[3].set(self.timers[3].get() + t_eval.elapsed().as_secs_f64());
+        let t_contact = Instant::now();
         if let Some(cs) = &self.contacts {
             let m = cs.n_extra();
             let mut out = (m > 0).then(|| ExtraOut::new(self.model.mesh.n_dofs(), m));
@@ -531,6 +579,43 @@ impl Ctx<'_> {
             }
             stats = Some(st);
             ex = out;
+        }
+        self.timers[4].set(self.timers[4].get() + t_contact.elapsed().as_secs_f64());
+        // Follower pressures: the force follows the deformed surface and so does the load stiffness. Its symmetric part joins
+        // the tangent, the unsymmetric remainder is kept as a defect (see `refine_consistent`).
+        let mut load_defect = Vec::new();
+        let d = self.model.mesh.dim();
+        for (nodes, p) in &self.followers {
+            let (g, jac) = loads::follower_face(&self.model.mesh, nodes, *p, u)?;
+            let nd = nodes.len() * d;
+            for a in 0..nodes.len() {
+                for i in 0..d {
+                    f[nodes[a] * d + i] -= lambda * g[a * d + i];
+                }
+            }
+            if let Some(k) = k.as_mut() {
+                // r = f_int - lambda (f_ext + g(u)): d r / d u gets -lambda J.
+                let mut defect = vec![0.0; nd * nd];
+                let mut any = false;
+                for ra in 0..nd {
+                    for cb in 0..nd {
+                        let m = -lambda * jac[ra * nd + cb];
+                        let sym = 0.5 * (m - lambda * jac[cb * nd + ra]);
+                        defect[ra * nd + cb] = m - sym;
+                        any |= (m - sym).abs() > 1e-14 * m.abs().max(1.0);
+                        let (a, i, b, j) = (ra / d, ra % d, cb / d, cb % d);
+                        if nodes[a] >= nodes[b] {
+                            if let Some(pos) = self.pat.find(nodes[a], nodes[b]) {
+                                k.vals[pos * d * d + i * d + j] += sym;
+                            }
+                        }
+                    }
+                }
+                if any {
+                    let dofs: Vec<usize> = nodes.iter().flat_map(|&n| (0..d).map(move |c| n * d + c)).collect();
+                    load_defect.push((dofs, defect));
+                }
+            }
         }
         // Weak grounding springs.
         for &(dof, kk) in &self.ground {
@@ -547,7 +632,7 @@ impl Ctx<'_> {
             return Err("non-finite internal force".into());
         }
         self.timers[0].set(self.timers[0].get() + t_eval.elapsed().as_secs_f64());
-        Ok(Eval { f, k, state, stats, ex })
+        Ok(Eval { f, k, state, stats, ex, f_elem, load_defect })
     }
 
     /// Residual over the free dofs followed by the residuals of the extra (rigid-body) unknowns at
@@ -568,8 +653,10 @@ impl Ctx<'_> {
         let nf = self.free.len();
         let m = r.len() - nf;
         let mut a: Vec<f64> = r[..nf].iter().map(|v| -v).collect();
+        let b0 = a.clone();
         fac.solve_reduced(&mut a);
         if m == 0 {
+            self.refine_consistent(fac, ev, &b0, &mut a);
             return Ok(a);
         }
         let ex = ev.ex.as_ref().expect("extra unknowns");
@@ -598,18 +685,93 @@ impl Ctx<'_> {
         Ok(dx)
     }
 
+    /// A residual this small against the full applied load is converged whatever the current force level (a body in
+    /// free flight has nothing but round-off to measure a relative tolerance against).
+    fn abs_tol(&self) -> f64 {
+        1e-10 * norm(&self.f_ext)
+    }
+
+    /// Make the Newton step the one the exact frictional tangent gives: the factorised matrix `K` is symmetric and
+    /// freezes sliding friction; the exact tangent is `K + D` with `D` the (unsymmetric) defect of the frictional
+    /// points (`ContactStats::defect`). Iterative refinement `x += K^-1 (b - (K + D) x)` solves `(K + D) x = b` over the
+    /// existing factorisation, a few cheap back-substitutions that restore fast convergence where friction slides.
+    /// Stops when the defect is resolved to 1 %, or if it stops improving (then the best iterate is kept).
+    fn refine_consistent(&self, fac: &crate::linear::AnyFactor<'_>, ev: &Eval, b: &[f64], x: &mut Vec<f64>) {
+        let contact_defect: &[(Vec<usize>, Vec<f64>)] = ev.stats.as_ref().map_or(&[], |s| &s.defect);
+        if contact_defect.is_empty() && ev.load_defect.is_empty() {
+            return;
+        }
+        let (k, nf, n) = (ev.k.as_ref().expect("tangent"), self.free.len(), self.model.mesh.n_dofs());
+        let bn = norm(b).max(1e-300);
+        let apply = |x: &[f64]| -> Vec<f64> {
+            let mut xf = vec![0.0; n];
+            for (j, &i) in self.free.iter().enumerate() {
+                xf[i] = x[j];
+            }
+            let mut y = vec![0.0; n];
+            k.matvec_add(&self.pat, &xf, &mut y);
+            for (dofs, mat) in contact_defect.iter().chain(ev.load_defect.iter()) {
+                let nt = dofs.len();
+                for i in 0..nt {
+                    let mut s = 0.0;
+                    for j in 0..nt {
+                        s += mat[i * nt + j] * xf[dofs[j]];
+                    }
+                    y[dofs[i]] += s;
+                }
+            }
+            (0..nf).map(|j| y[self.free[j]]).collect()
+        };
+        let mut best: Option<(f64, Vec<f64>)> = None;
+        for _ in 0..REFINE_ITERS {
+            let ax = apply(x);
+            let res: Vec<f64> = b.iter().zip(&ax).map(|(bb, aa)| bb - aa).collect();
+            let rn = norm(&res);
+            if best.as_ref().is_none_or(|(bn_, _)| rn < *bn_) {
+                best = Some((rn, x.clone()));
+            } else {
+                break;
+            }
+            if rn <= 1e-2 * bn {
+                break;
+            }
+            let mut dx = res;
+            fac.solve_reduced(&mut dx);
+            for (xi, di) in x.iter_mut().zip(&dx) {
+                *xi += di;
+            }
+        }
+        if let Some((_, xb)) = best {
+            *x = xb;
+        }
+    }
+
     fn scale(&self, ev: &Eval, lambda: f64) -> f64 {
-        norm(&ev.f).max(lambda * norm(&self.f_ext)).max(1e-300)
+        norm(&ev.f).max(ev.f_elem).max(lambda * norm(&self.f_ext)).max(1e-300)
     }
 
     /// Solve `K_ff x = a` and `K_ff y = b` with one factorization of the tangent of `ev` (LDL^T when the
     /// tangent is indefinite, as it is past a limit point); returns whether it was indefinite.
     fn solve2(&self, ev: &Eval, a: &mut [f64], b: &mut [f64]) -> Result<bool, String> {
         let fac = self.red.factor_any(ev.k.as_ref().expect("tangent")).map_err(|e| e.to_string())?;
+        let (a0, b0) = (a.to_vec(), b.to_vec());
         fac.solve_reduced(a);
         fac.solve_reduced(b);
+        for (rhs, orig) in [(&mut *a, &a0), (&mut *b, &b0)] {
+            let mut x = rhs.to_vec();
+            self.refine_consistent(&fac, ev, orig, &mut x);
+            rhs.copy_from_slice(&x);
+        }
         self.factorisations.set(self.factorisations.get() + 1);
         Ok(fac.is_indefinite())
+    }
+
+    /// As [`solve`](Self::solve) with LDL^T where the tangent is indefinite (contact with friction).
+    fn solve_any(&self, ev: &Eval, rhs: &mut [f64]) -> Result<(), String> {
+        let fac = self.red.factor_any(ev.k.as_ref().expect("tangent")).map_err(|e| e.to_string())?;
+        fac.solve_reduced(rhs);
+        self.factorisations.set(self.factorisations.get() + 1);
+        Ok(())
     }
 
     /// Solve `K_ff x = rhs` with the tangent of `ev`.
@@ -622,6 +784,67 @@ impl Ctx<'_> {
 }
 
 impl Model {
+    /// Reject a body that nothing holds: no prescribed displacement, no grounding spring and no contact touching any of
+    /// its nodes. It would float (a singular system can still factorise and return an arbitrary rigid motion).
+    fn check_not_floating(&self, bc: &Dirichlet, ground: &[(usize, f64)], contacts: &[ContactSpec]) -> Result<(), String> {
+        let (n, d) = (self.mesh.nodes.len(), self.mesh.dim());
+        let mut parent: Vec<usize> = (0..n).collect();
+        fn find(p: &mut [usize], mut a: usize) -> usize {
+            while p[a] != a {
+                p[a] = p[p[a]];
+                a = p[a];
+            }
+            a
+        }
+        let mut used = vec![false; n];
+        let mut block_of = vec![0usize; n];
+        for (bi, blk) in self.mesh.blocks.iter().enumerate() {
+            for c in blk.conn.chunks_exact(blk.kind.n_nodes()) {
+                for &a in c {
+                    used[a] = true;
+                    block_of[a] = bi;
+                    let (ra, rb) = (find(&mut parent, a), find(&mut parent, c[0]));
+                    parent[ra] = rb;
+                }
+            }
+        }
+        let mut anchored = vec![false; n];
+        let hold = |node: usize, anchored: &mut Vec<bool>, parent: &mut Vec<usize>| {
+            let r = find(parent, node);
+            anchored[r] = true;
+        };
+        for node in (0..n).filter(|&i| used[i]) {
+            if (0..d).any(|c| bc.fixed[node * d + c]) {
+                hold(node, &mut anchored, &mut parent);
+            }
+        }
+        for &(dof, k) in ground {
+            if k > 0.0 && dof / d < n {
+                hold(dof / d, &mut anchored, &mut parent);
+            }
+        }
+        for spec in contacts {
+            for face in spec.slave.iter().chain(match &spec.master {
+                crate::contact::Master::Faces(f) => f.iter(),
+                crate::contact::Master::Rigid(_) => [].iter(),
+            }) {
+                for &node in face {
+                    if node < n {
+                        hold(node, &mut anchored, &mut parent);
+                    }
+                }
+            }
+        }
+        for node in (0..n).filter(|&i| used[i]) {
+            let r = find(&mut parent, node);
+            if !anchored[r] {
+                let name = &self.mesh.blocks[block_of[node]].name;
+                return Err(format!("the body containing block '{name}' has no supports, grounding springs or contacts: it would float"));
+            }
+        }
+        Ok(())
+    }
+
     /// Nonlinear static solution. Blocks with `plasticity` use J2 plasticity (small or finite strain);
     /// other blocks are linear elastic. See the module documentation for the conventions.
     pub fn solve_nonlinear(&self, loads: &Loads, bc: &Dirichlet, opt: &NlOptions) -> Result<NlSolution, String> {
@@ -636,16 +859,33 @@ impl Model {
     /// As [`solve_nonlinear_contact`](Self::solve_nonlinear_contact), continuing from a converged `start`
     /// (load control only): the load factor runs `0 -> 1` on top of it.
     pub fn solve_nonlinear_contact_from(&self, loads: &Loads, bc: &Dirichlet, contacts: Vec<ContactSpec>, opt: &NlOptions, start: Option<&Start>) -> Result<NlSolution, String> {
+        // The matrix pattern is built once from the initial proximity (`margin`); a contact that slides to a node pair
+        // outside it fails the step. Rather than make the caller guess a margin, widen every margin and rerun.
+        let mut specs = contacts;
+        for attempt in 0..=MARGIN_RETRIES {
+            match self.solve_nonlinear_contact_once(loads, bc, specs.clone(), opt, start) {
+                Err(e) if attempt < MARGIN_RETRIES && e.contains("outside the matrix pattern") => {
+                    specs.iter_mut().for_each(|s| s.margin = Some(2.0 * s.effective_margin(&self.mesh)));
+                }
+                other => return other,
+            }
+        }
+        unreachable!("the last attempt returns")
+    }
+
+    fn solve_nonlinear_contact_once(&self, loads: &Loads, bc: &Dirichlet, contacts: Vec<ContactSpec>, opt: &NlOptions, start: Option<&Start>) -> Result<NlSolution, String> {
         let clock = Instant::now();
         let any_plastic = self.mesh.blocks.iter().any(|b| b.plasticity.is_some());
         if any_plastic && loads.delta_t != 0.0 {
             return Err("a temperature change cannot be combined with plasticity yet".into());
         }
         let n = self.mesh.n_dofs();
-        let f_ext = loads::assemble(&self.mesh, loads)?;
+        self.check_not_floating(bc, &loads.ground, &contacts)?;
+        // Follower pressures are applied by the driver at the deformed configuration, not as dead loads.
+        let f_ext = if loads.followers.is_empty() { loads::assemble(&self.mesh, loads)? } else { loads::assemble(&self.mesh, &Loads { followers: Vec::new(), ..loads.clone() })? };
         let contact_set = if contacts.is_empty() { None } else { Some(ContactSet::new(&self.mesh, contacts)?) };
-        if contact_set.is_some() && !matches!(opt.control, Control::Load) {
-            return Err("contact analyses use load control".into());
+        if contact_set.as_ref().is_some_and(|cs| cs.n_extra() > 0) && !matches!(opt.control, Control::Load) {
+            return Err("a rigid master with free translations needs load control (arc-length handles deformable contact only)".into());
         }
         let _ = Master::Faces(Vec::new());
         let pat = match &contact_set {
@@ -667,7 +907,7 @@ impl Model {
                 return Err("arc-length control needs zero prescribed displacements".into());
             }
         }
-        let mut ctx = Ctx { model: self, pat, contacts: contact_set, red, free, fixed, f_ext, bc, opt: *opt, factorisations: Cell::new(0), start, ground: loads.ground.clone(), timers: Default::default() };
+        let mut ctx = Ctx { model: self, pat, contacts: contact_set, red, free, fixed, f_ext, bc, opt: *opt, factorisations: Cell::new(0), start, ground: loads.ground.clone(), followers: loads.followers.clone(), timers: Default::default() };
         let mut sol = match opt.control {
             Control::Load => ctx.run_load_control()?,
             Control::Arc { ds, lambda_max, max_steps } => ctx.run_arc_length(ds, lambda_max, max_steps)?,
@@ -675,7 +915,7 @@ impl Model {
         sol.factorisations = ctx.factorisations.get();
         sol.elapsed_ms = clock.elapsed().as_secs_f64() * 1e3;
         if std::env::var("NL_PROFILE").is_ok() {
-            eprintln!("nl profile: {:.0} ms total, evaluation {:.0} ms, factorisation {:.0} ms ({} of them), solves {:.0} ms", sol.elapsed_ms, 1e3 * ctx.timers[0].get(), 1e3 * ctx.timers[1].get(), sol.factorisations, 1e3 * ctx.timers[2].get());
+            eprintln!("nl profile: {:.0} ms total, evaluation {:.0} ms (element assembly {:.0}, contact {:.0}), factorisation {:.0} ms ({} of them), solves {:.0} ms", sol.elapsed_ms, 1e3 * ctx.timers[0].get(), 1e3 * ctx.timers[3].get(), 1e3 * ctx.timers[4].get(), 1e3 * ctx.timers[1].get(), sol.factorisations, 1e3 * ctx.timers[2].get());
         }
         Ok(sol)
     }
@@ -715,7 +955,15 @@ impl Ctx<'_> {
         let contact_points = self.contacts.as_ref().map_or(Vec::new(), |cs| (0..cs.specs.len()).map(|i| cs.slave_positions(i)).collect());
         let rigid_translation = self.contacts.as_ref().map_or(Vec::new(), |cs| cs.rigid_translations(lambda, &state.rigid_q));
         let contact_weights = self.contacts.as_ref().map_or(Vec::new(), |cs| (0..cs.specs.len()).map(|i| cs.slave_weights(i)).collect());
-        NlSolution { u, state, lambda, steps, reactions, stop, factorisations: 0, elapsed_ms: 0.0, contact, contact_points, contact_weights, rigid_translation }
+        let ground_leak = {
+            let d = self.model.mesh.dim();
+            let mut net = [0.0f64; 3];
+            for &(dof, k) in &self.ground {
+                net[dof % d] += k * u[dof];
+            }
+            norm(&net)
+        };
+        NlSolution { u, state, lambda, steps, reactions, stop, factorisations: 0, elapsed_ms: 0.0, contact, contact_points, contact_weights, rigid_translation, ground_leak }
     }
 
     /// Newton iterations at load factor `lambda` from the converged `(u, state)`.
@@ -732,7 +980,15 @@ impl Ctx<'_> {
         // to the prescribed increment (K_ff du = -K_fp dup). Without it the first residual sees one
         // badly distorted layer of elements next to the moved boundary and the step often fails.
         if jump.iter().any(|v| *v != 0.0) {
-            let ev0 = self.eval(u0, &q, state0, lambda_prev, true)?;
+            // (Without the near-point stabiliser: it would couple a body that is only approaching to the one being moved.)
+            if let Some(cs) = &self.contacts {
+                cs.set_stabilise(false);
+            }
+            let ev0 = self.eval(u0, &q, state0, lambda_prev, true);
+            if let Some(cs) = &self.contacts {
+                cs.set_stabilise(true);
+            }
+            let ev0 = ev0?;
             let mut kd = vec![0.0; u.len()];
             ev0.k.as_ref().expect("tangent").matvec_add(&self.pat, &jump, &mut kd);
             let mut dx: Vec<f64> = self.free.iter().map(|&i| -kd[i]).collect();
@@ -746,6 +1002,13 @@ impl Ctx<'_> {
         let mut r = self.residual(&ev, lambda);
         let mut rn = norm(&r);
         residuals.push(rn);
+        if std::env::var("NL_TOPRES").is_ok() {
+            let mut idx: Vec<usize> = (0..self.free.len()).collect();
+            idx.sort_by(|&a, &b| r[b].abs().total_cmp(&r[a].abs()));
+            let d = self.model.mesh.dim();
+            let top: Vec<String> = idx.iter().take(4).map(|&j| { let dof = self.free[j]; let nd = dof / d; format!("node {nd} comp {} r {:.2e} at {:?} u {:.2e}", dof % d, r[j], &self.model.mesh.nodes[nd][..2], u[dof]) }).collect();
+            eprintln!("  lambda {lambda:.4e} initial residual {rn:.3e}: {}", top.join(" | "));
+        }
         // (u, q before the step, the step, residual norm before it)
         type Prev = (Vec<f64>, Vec<f64>, Vec<f64>, f64);
         let mut prev: Option<Prev> = None;
@@ -753,7 +1016,7 @@ impl Ctx<'_> {
         let mut chord: Option<(crate::linear::AnyFactor<'_>, usize)> = None;
         let mut last_rn = f64::INFINITY;
         for _ in 0..=self.opt.max_iter {
-            if rn <= self.opt.tol * self.scale(&ev, lambda) || rn < 1e-14 * self.scale(&ev, lambda).max(1.0) {
+            if rn <= self.opt.tol * self.scale(&ev, lambda) || rn < 1e-14 * self.scale(&ev, lambda).max(1.0) || rn <= self.abs_tol() {
                 let mut st = ev.state;
                 st.rigid_q = q;
                 return Ok((u, st, residuals));
@@ -800,7 +1063,8 @@ impl Ctx<'_> {
                 // Cholesky; with contact the (symmetrised) frictional tangent can be indefinite, so LDL^T is the fallback there.
                 let k = ev.k.as_ref().expect("tangent");
                 let t_fac = Instant::now();
-                let fac = if self.contacts.is_some() { self.red.factor_any(k) } else { self.red.factor(k).map(crate::linear::AnyFactor::Llt) }.map_err(|e| e.to_string())?;
+                // (Follower loads too: the symmetric part of their load stiffness is indefinite well before the body is.)
+                let fac = if self.contacts.is_some() || !self.followers.is_empty() { self.red.factor_any(k) } else { self.red.factor(k).map(crate::linear::AnyFactor::Llt) }.map_err(|e| e.to_string())?;
                 self.timers[1].set(self.timers[1].get() + t_fac.elapsed().as_secs_f64());
                 self.factorisations.set(self.factorisations.get() + 1);
                 chord = Some((fac, 0));
@@ -837,7 +1101,7 @@ impl Ctx<'_> {
             return Ok((u, st, residuals));
         }
         if std::env::var("NL_DEBUG").is_ok() {
-            eprintln!("newton lambda {lambda:.3e} failed: residuals {:?}", residuals.iter().map(|r| format!("{r:.2e}")).collect::<Vec<_>>());
+            eprintln!("newton lambda {lambda:.3e} failed (force scale {:.3e}, elastic {:.3e}): residuals {:?}", self.scale(&ev, lambda), ev.f_elem, residuals.iter().map(|r| format!("{r:.2e}")).collect::<Vec<_>>());
         }
         Err(format!("no convergence in {} iterations (residual {rn:.3e})", self.opt.max_iter))
     }
@@ -907,11 +1171,12 @@ impl Ctx<'_> {
         s
     }
 
-    fn run_load_control(&mut self) -> Result<NlSolution, String> {
+    /// The state a run starts from: rest, or the converged `start` (the displacements and contact states of
+    /// interfaces that existed before; bodies appended later start at rest).
+    fn initial_with_start(&self) -> Result<(Vec<f64>, NlState, f64), String> {
         let n = self.model.mesh.n_dofs();
         let (mut u, mut state) = (vec![0.0; n], self.initial_state());
         if let Some(st) = self.start {
-            // The start may cover only the first nodes (bodies appended later start at rest).
             if st.u.len() > n {
                 return Err("the start state does not belong to this model".into());
             }
@@ -930,37 +1195,48 @@ impl Ctx<'_> {
                 }
             }
         }
-        let (mut lambda, dl_max) = (0.0f64, 1.0 / self.opt.steps.max(1) as f64);
+        Ok((u, state, self.start.map_or(0.0, |s| s.lambda)))
+    }
+
+    /// Augmented-Lagrangian passes at a converged load factor: update the multipliers from the converged pressures
+    /// and re-solve until they stop changing, then commit the slip history. `residuals` collects the Newton work.
+    fn refine_contact(&self, lambda_prev: f64, target: f64, mut un: Vec<f64>, mut sn: NlState, residuals: &mut Vec<f64>) -> (Vec<f64>, NlState) {
+        let Some(cs) = &self.contacts else { return (un, sn) };
+        for _ in 0..self.opt.max_outer {
+            let chg = cs.update_multipliers(&mut sn.contact);
+            if chg < self.opt.outer_tol {
+                break;
+            }
+            match self.newton(lambda_prev, target, &un, &sn) {
+                Ok((u2, s2, r2)) => {
+                    if std::env::var("NL_DEBUG").is_ok() {
+                        eprintln!("  AL pass at lambda {target:.4}: multiplier change {chg:.2e}, {} residual evaluations", r2.len());
+                    }
+                    un = u2;
+                    sn = s2;
+                    residuals.extend(r2);
+                }
+                Err(_) => break,
+            }
+        }
+        cs.commit_history(&mut sn.contact);
+        (un, sn)
+    }
+
+    fn run_load_control(&mut self) -> Result<NlSolution, String> {
+        let (mut u, mut state, lambda0) = self.initial_with_start()?;
+        let (mut lambda, dl_max) = (lambda0, 1.0 / self.opt.steps.max(1) as f64);
         let mut dl = self.opt.first_step * dl_max;
         let (mut steps, mut cuts_total) = (Vec::new(), 0usize);
         while lambda < 1.0 - 1e-12 {
             let target = (lambda + dl).min(1.0);
+            let lambda_before = lambda;
             match self.newton(lambda, target, &u, &state) {
-                Ok((mut un, mut sn, mut residuals)) => {
+                Ok((un, sn, mut residuals)) => {
+                    let (mut un, mut sn) = (un, sn);
                     // Step growth follows the Newton effort of the step itself, not of its AL passes.
                     let newton_effort = residuals.len();
-                    if let Some(cs) = &self.contacts {
-                        // Augmented-Lagrangian passes: update the multipliers from the converged
-                        // pressures and re-solve until they stop changing, then commit the slip history.
-                        for _ in 0..self.opt.max_outer {
-                            let chg = cs.update_multipliers(&mut sn.contact);
-                            if chg < self.opt.outer_tol {
-                                break;
-                            }
-                            match self.newton(lambda, target, &un, &sn) {
-                                Ok((u2, s2, r2)) => {
-                                    if std::env::var("NL_DEBUG").is_ok() {
-                                        eprintln!("  AL pass at lambda {target:.4}: multiplier change {chg:.2e}, {} residual evaluations", r2.len());
-                                    }
-                                    un = u2;
-                                    sn = s2;
-                                    residuals.extend(r2);
-                                }
-                                Err(_) => break,
-                            }
-                        }
-                        cs.commit_history(&mut sn.contact);
-                    }
+                    (un, sn) = self.refine_contact(lambda, target, un, sn, &mut residuals);
                     lambda = target;
                     if std::env::var("NL_DEBUG").is_ok() {
                         eprintln!("step ok lambda {target:.4} effort {newton_effort} total {}", residuals.len());
@@ -968,6 +1244,13 @@ impl Ctx<'_> {
                     let iterations = residuals.len();
                     let max_ep = sn.max_ep();
                     let master_force = if self.contacts.is_some() { self.eval(&un, &sn.rigid_q, &sn, lambda, false).ok().and_then(|e| e.stats).map_or(Vec::new(), |st| st.master_force) } else { Vec::new() };
+                    // A step that carries the first master well past the target force is taken again with half the step
+                    // (the force rises steeply once a body is in contact, so a uniform step can jump far over the target).
+                    if self.opt.stop_at_force > 0.0 && master_force.first().is_some_and(|f| norm(f) > 1.25 * self.opt.stop_at_force) && dl > 1e-9 {
+                        lambda = lambda_before;
+                        dl *= 0.5;
+                        continue;
+                    }
                     steps.push(StepInfo { lambda, iterations, residuals, max_ep, plastic_fraction: sn.plastic_fraction(), cuts: cuts_total, indefinite: false, master_force });
                     u = un;
                     state = sn;
@@ -979,6 +1262,9 @@ impl Ctx<'_> {
                     }
                     if self.opt.failure_ep.is_some_and(|lim| max_ep >= lim) {
                         return Ok(self.finish(u, state, lambda, steps, Stop::FailureStrain));
+                    }
+                    if self.opt.stop_at_force > 0.0 && steps.last().and_then(|s| s.master_force.first()).is_some_and(|f| norm(f) >= self.opt.stop_at_force) {
+                        return Ok(self.finish(u, state, lambda, steps, Stop::ForceReached));
                     }
                     if (self.opt.stop_on_plateau && load_flat(&steps, 0.012)) || (self.opt.stop_on_fall > 0.0 && load_fell(&steps, self.opt.stop_on_fall)) {
                         return Ok(self.finish(u, state, lambda, steps, Stop::Plateau));
@@ -1005,9 +1291,8 @@ impl Ctx<'_> {
     }
 
     fn run_arc_length(&mut self, ds0: f64, lambda_max: f64, max_steps: usize) -> Result<NlSolution, String> {
-        let n = self.model.mesh.n_dofs();
-        let (mut u, mut state) = (vec![0.0; n], NlState::new(&self.model.mesh));
-        let (mut lambda, mut ds) = (0.0f64, ds0);
+        let (mut u, mut state, lambda0) = self.initial_with_start()?;
+        let (mut lambda, mut ds) = (lambda0, ds0);
         let mut steps: Vec<StepInfo> = Vec::new();
         let mut dir: Option<(Vec<f64>, f64)> = None; // previous converged increment (free dofs, load factor)
         let mut cuts = 0usize;
@@ -1015,6 +1300,15 @@ impl Ctx<'_> {
         while steps.len() < max_steps {
             if lambda >= lambda_max {
                 return Ok(self.finish(u, state, lambda, steps, Stop::Completed));
+            }
+            // Start every step from an equilibrated state: a contact (or friction) state accepted a hair above the
+            // tolerance leaves a residual the arc-length constraint cannot remove once the arc gets short. One
+            // load-controlled Newton at the current load (the arc-length path itself passes through such states).
+            if self.contacts.is_some() && !steps.is_empty() {
+                if let Ok((up, sp, _)) = self.newton(lambda, lambda, &u, &state) {
+                    u = up;
+                    state = sp;
+                }
             }
             // Predictor: the first step follows the tangent response to the load; every later step
             // extrapolates the previous converged increment (a secant predictor), which stays on the
@@ -1031,7 +1325,7 @@ impl Ctx<'_> {
                         Err(e) => return Ok(self.finish(u, state, lambda, steps, Stop::NoConvergence(e))),
                     };
                     let mut duf = fext_free.clone();
-                    if let Err(e) = self.solve(&ev0, &mut duf) {
+                    if let Err(e) = self.solve_any(&ev0, &mut duf) {
                         return Ok(self.finish(u, state, lambda, steps, Stop::NoConvergence(e)));
                     }
                     let k = ds / norm(&duf).max(1e-300);
@@ -1060,7 +1354,7 @@ impl Ctx<'_> {
                 let r = self.residual(&ev, lam);
                 let rn = norm(&r);
                 residuals.push(rn);
-                if rn <= self.opt.tol * self.scale(&ev, lam) {
+                if rn <= self.opt.tol * self.scale(&ev, lam) || rn <= self.abs_tol() {
                     converged = Some((ut, ev.state, lam));
                     break;
                 }
@@ -1101,8 +1395,38 @@ impl Ctx<'_> {
             }
             match (converged, failed) {
                 (Some((un, sn, lam)), false) => {
+                    // The step overshot the target load: land on it exactly with a load-controlled step from the last
+                    // converged state (the arc-length path has found the contact; load control finishes it).
+                    if lam > lambda_max {
+                        return match self.newton(lambda, lambda_max, &u, &state) {
+                            Ok((ul, sl, mut res)) => {
+                                let (ul, sl) = self.refine_contact(lambda, lambda_max, ul, sl, &mut res);
+                                let (max_ep, iterations) = (sl.max_ep(), res.len());
+                                steps.push(StepInfo { lambda: lambda_max, iterations, residuals: res, max_ep, plastic_fraction: sl.plastic_fraction(), cuts, indefinite, master_force: Vec::new() });
+                                Ok(self.finish(ul, sl, lambda_max, steps, Stop::Completed))
+                            }
+                            Err(_) => {
+                                // Not landing is not fatal: shorten the arc and try again from here.
+                                cuts += 1;
+                                ds *= 0.5;
+                                if cuts > self.opt.max_cuts {
+                                    return Ok(self.finish(u, state, lambda, steps, Stop::NoConvergence(format!("could not land on lambda {lambda_max}"))));
+                                }
+                                continue;
+                            }
+                        };
+                    }
+                    let (un, sn) = if self.contacts.is_some() {
+                        let mut extra = Vec::new();
+                        self.refine_contact(lam, lam, un, sn, &mut extra)
+                    } else {
+                        (un, sn)
+                    };
                     let max_ep = sn.max_ep();
                     let iterations = residuals.len();
+                    if std::env::var("NL_DEBUG").is_ok() {
+                        eprintln!("arc step ok: lambda {lam:.5e} ds {ds:.2e} iterations {iterations}");
+                    }
                     steps.push(StepInfo { lambda: lam, iterations, residuals, max_ep, plastic_fraction: sn.plastic_fraction(), cuts, indefinite, master_force: Vec::new() });
                     dir = Some((du, dlam));
                     u = un;
@@ -1119,6 +1443,9 @@ impl Ctx<'_> {
                     }
                 }
                 _ => {
+                    if std::env::var("NL_DEBUG").is_ok() {
+                        eprintln!("arc step from lambda {lambda:.5e} failed at ds {ds:.2e}: {reason} (residuals {:?})", residuals.iter().map(|r| format!("{r:.1e}")).collect::<Vec<_>>());
+                    }
                     cuts += 1;
                     ds *= 0.5;
                     if reason.is_empty() {

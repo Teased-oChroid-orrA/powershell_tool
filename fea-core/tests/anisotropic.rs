@@ -295,3 +295,164 @@ fn rotating_mesh_and_material_together_leaves_energy_and_displacements_invariant
         }
     }
 }
+
+// ------------------------------------------------------------------ anisotropic elasticity with J2 plasticity
+
+mod plastic {
+    use super::*;
+    use fea_core::material::{small_strain_plane_stress_aniso, small_strain_update, small_strain_update_aniso, GpState, Moduli, M3};
+    use mechanics_core::hardening::Hardening;
+
+    fn law() -> Hardening {
+        Hardening::linear(40_000.0, 2.0e5, 5.0).unwrap()
+    }
+
+    fn strain(v: [f64; 6]) -> M3 {
+        [[v[0], v[3], v[5]], [v[3], v[1], v[4]], [v[5], v[4], v[2]]]
+    }
+
+    fn ortho() -> [[f64; 6]; 6] {
+        Elastic::orthotropic(18.0e6, 9.0e6, 7.0e6, 0.28, 0.25, 0.33, 3.1e6, 2.6e6, 3.4e6).unwrap().aniso.unwrap().d
+    }
+
+    const STRAINS: [[f64; 6]; 4] = [[0.0030, -0.0009, -0.0008, 0.0, 0.0, 0.0], [0.0042, 0.0011, -0.0020, 0.0016, 0.0, 0.0], [-0.0030, 0.0035, 0.0012, 0.0013, -0.0011, 0.0009], [0.0005, 0.0004, -0.0003, 0.0002, 0.0001, 0.0]];
+
+    /// With an isotropic stiffness the anisotropic return mapping is the isotropic one: stress, plastic state and tangent.
+    #[test]
+    fn an_isotropic_stiffness_through_the_anisotropic_return_mapping_equals_the_isotropic_law() {
+        let d = iso_d(E, NU);
+        for e in STRAINS {
+            let old: GpState = [0.0; 7];
+            let iso = small_strain_update(Moduli::new(E, NU), &law(), &strain(e), &old);
+            let an = small_strain_update_aniso(&d, &law(), &strain(e), &old);
+            let scale = iso.stress.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs())).max(1.0);
+            for i in 0..3 {
+                for j in 0..3 {
+                    assert!((iso.stress[i][j] - an.stress[i][j]).abs() < 1e-7 * scale, "stress[{i}][{j}] {} vs {}", iso.stress[i][j], an.stress[i][j]);
+                }
+            }
+            for k in 0..7 {
+                assert!((iso.state[k] - an.state[k]).abs() < 1e-9, "state[{k}] {} vs {}", iso.state[k], an.state[k]);
+            }
+            let ts = iso.tangent.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs()));
+            for a in 0..9 {
+                for b in 0..9 {
+                    assert!((iso.tangent[a][b] - an.tangent[a][b]).abs() < 1e-6 * ts, "tangent[{a}][{b}] {} vs {}", iso.tangent[a][b], an.tangent[a][b]);
+                }
+            }
+        }
+    }
+
+    /// An orthotropic elastic law with von Mises yielding: the stress lies on the (hardened) yield surface, and the
+    /// consistent tangent is the derivative of the stress with respect to the strain.
+    #[test]
+    fn the_orthotropic_return_lands_on_the_yield_surface_and_its_tangent_is_consistent() {
+        let d = ortho();
+        for e in STRAINS {
+            let old: GpState = [0.0; 7];
+            let up = small_strain_update_aniso(&d, &law(), &strain(e), &old);
+            let s = up.stress;
+            let tr = (s[0][0] + s[1][1] + s[2][2]) / 3.0;
+            let mut dev = s;
+            for i in 0..3 {
+                dev[i][i] -= tr;
+            }
+            let vm = (1.5 * dev.iter().flatten().map(|v| v * v).sum::<f64>()).sqrt();
+            let p = up.state[6];
+            if p > 0.0 {
+                assert!((vm - law().stress(p)).abs() < 1e-6 * law().stress(p), "vm {vm} vs yield {}", law().stress(p));
+            }
+            // Tangent against central differences of the stress in every strain component.
+            for (comp, (i, j)) in [(0usize, (0, 0)), (1, (1, 1)), (2, (2, 2)), (3, (0, 1)), (4, (1, 2)), (5, (2, 0))] {
+                let h = 1e-8;
+                let (mut ep, mut em) = (strain(e), strain(e));
+                let bump = if comp < 3 { h } else { 0.5 * h };
+                ep[i][j] += bump;
+                em[i][j] -= bump;
+                if comp >= 3 {
+                    ep[j][i] += bump;
+                    em[j][i] -= bump;
+                }
+                let (sp, sm) = (small_strain_update_aniso(&d, &law(), &ep, &old).stress, small_strain_update_aniso(&d, &law(), &em, &old).stress);
+                for a in 0..3 {
+                    for b in 0..3 {
+                        let fd = (sp[a][b] - sm[a][b]) / (2.0 * bump);
+                        let analytic = up.tangent[3 * a + b][3 * i + j] + if comp >= 3 { up.tangent[3 * a + b][3 * j + i] } else { 0.0 };
+                        let scale = up.tangent.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs()));
+                        assert!((fd - analytic).abs() < 2e-5 * scale, "strain {e:?} comp {comp}: d sigma[{a}][{b}] = {analytic} vs FD {fd}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Plane stress: `sigma_zz = 0` and the yield surface holds.
+    #[test]
+    fn the_anisotropic_plane_stress_update_has_no_out_of_plane_stress() {
+        let d = ortho();
+        let e = strain([0.0042, 0.0011, 0.0, 0.0016, 0.0, 0.0]);
+        let (up, ezz) = small_strain_plane_stress_aniso(&d, &law(), &e, &[0.0; 7]);
+        assert!(up.stress[2][2].abs() < 1e-6 * up.stress[0][0].abs().max(1.0), "sigma_zz {}", up.stress[2][2]);
+        assert!(ezz.abs() > 0.0 && up.state[6] > 0.0);
+    }
+
+    /// An orthotropic bar in uniaxial tension: it follows `E1` while elastic and yields when the axial stress reaches the
+    /// yield stress (the von Mises stress of a uniaxial state), whatever the elastic anisotropy. Perfectly plastic.
+    #[test]
+    fn an_orthotropic_bar_yields_at_the_uniaxial_yield_stress_and_carries_it() {
+        let (e1, sy) = (18.0e6, 40_000.0);
+        let mat = Elastic::orthotropic(e1, 9.0e6, 7.0e6, 0.28, 0.25, 0.33, 3.1e6, 2.6e6, 3.4e6).unwrap();
+        let law = Hardening::linear(sy, 0.0, 5.0).unwrap();
+        let (lx, ly, lz) = (2.0, 1.0, 0.5);
+        for delta in [0.5 * sy / e1 * lx, 4.0 * sy / e1 * lx] {
+            let mut mesh = grid(Physics::Solid, ElementKind::Hex20, mat, [2, 2, 2], &move |p| [lx * p[0], ly * p[1], lz * p[2]]).unwrap();
+            mesh.set_plasticity(0, material::J2::small(law.clone())).unwrap();
+            let model = Model::new(mesh).unwrap();
+            let mut bc = model.dirichlet();
+            for n in 0..model.mesh.nodes.len() {
+                let x = model.mesh.nodes[n];
+                for c in 0..3 {
+                    if x[c] < 1e-12 {
+                        bc.fix(n, c, 0.0);
+                    }
+                }
+                if (x[0] - lx).abs() < 1e-12 {
+                    bc.fix(n, 0, delta);
+                }
+            }
+            let sol = model.solve_nonlinear(&Loads::default(), &bc, &NlOptions { steps: 8, tol: 1e-10, ..NlOptions::default() }).unwrap();
+            assert!(sol.complete(), "{:?}", sol.stop);
+            let force: f64 = (0..model.mesh.nodes.len()).filter(|&n| model.mesh.nodes[n][0] < 1e-12).map(|n| -sol.reactions[3 * n]).sum();
+            let stress = force / (ly * lz);
+            let expect = if delta < sy / e1 * lx { e1 * delta / lx } else { sy };
+            assert!((stress / expect - 1.0).abs() < 1e-6, "delta {delta}: axial stress {stress} vs {expect}");
+        }
+    }
+
+    /// Heating an orthotropic block with an anisotropic expansion tensor strains it by exactly `alpha_i dT` per axis
+    /// (stress free), and the rotated material expands along the rotated axes.
+    #[test]
+    fn an_anisotropic_expansion_tensor_strains_each_axis_by_its_own_coefficient() {
+        let base = Elastic::orthotropic(18.0e6, 9.0e6, 7.0e6, 0.28, 0.25, 0.33, 3.1e6, 2.6e6, 3.4e6).unwrap();
+        let alpha = [1.0e-5, 2.5e-5, 4.0e-5, 0.0, 0.0, 0.0];
+        let dt = 80.0;
+        for (phi, expect) in [(0.0, [alpha[0], alpha[1], alpha[2]]), (std::f64::consts::FRAC_PI_2, [alpha[1], alpha[0], alpha[2]])] {
+            let mat = base.with_alpha_tensor(alpha).unwrap().rotated_z(phi).unwrap();
+            let mesh = grid(Physics::Solid, ElementKind::Hex20, mat, [2, 2, 2], &|p| [p[0], p[1], p[2]]).unwrap();
+            let model = Model::new(mesh).unwrap();
+            let mut bc = model.dirichlet();
+            for n in 0..model.mesh.nodes.len() {
+                for c in 0..3 {
+                    if model.mesh.nodes[n][c] < 1e-12 {
+                        bc.fix(n, c, 0.0);
+                    }
+                }
+            }
+            let sol = model.solve_static(&Loads { delta_t: dt, ..Loads::default() }, &bc).unwrap();
+            let far = (0..model.mesh.nodes.len()).find(|&n| model.mesh.nodes[n].iter().all(|&x| (x - 1.0).abs() < 1e-12)).unwrap();
+            for c in 0..3 {
+                assert!((sol.u[3 * far + c] - expect[c] * dt).abs() < 1e-9, "phi {phi} axis {c}: {} vs {}", sol.u[3 * far + c], expect[c] * dt);
+            }
+        }
+    }
+}

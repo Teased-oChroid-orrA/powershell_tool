@@ -93,6 +93,15 @@ impl RigidMaster {
         self
     }
 
+    /// Let a 2D circular master rotate about its own centre under the applied `moment` (per unit load factor): the third
+    /// extra-unknown slot of a 2D master is its rotation (radians). The shape does not change under the rotation, so it
+    /// only acts through friction (the slip of the slave over the turning surface and the torque it transmits).
+    pub fn with_free_rotation(mut self, moment: f64) -> Self {
+        self.free[2] = true;
+        self.load[2] = moment;
+        self
+    }
+
     pub fn with_travel(mut self, travel: V3) -> Self {
         self.travel = travel;
         self
@@ -109,7 +118,19 @@ impl RigidMaster {
 
     /// As [`gap`](Self::gap) with the free translation `q` added to the prescribed one.
     pub fn gap_q(&self, y: &V3, lambda: f64, q: &V3, dim: usize) -> (f64, V3, V3) {
-        let q = sub(y, &add(&self.translation(lambda), q));
+        // In 2D the third free component is the rotation about the circle's centre (see `with_free_rotation`): the
+        // slave point is brought into the body's frame, and the contact point comes back in it (the slip history lives
+        // there); the normal is returned in the world frame.
+        let theta = if dim == 2 { q[2] } else { 0.0 };
+        let q = if dim == 2 { [q[0], q[1], 0.0] } else { *q };
+        let mut q = sub(y, &add(&self.translation(lambda), &q));
+        if theta != 0.0 {
+            if let RigidShape::Circle { c, .. } = self.shape {
+                let (s, co) = (-theta).sin_cos();
+                let d = [q[0] - c[0], q[1] - c[1]];
+                q = [c[0] + co * d[0] - s * d[1], c[1] + s * d[0] + co * d[1], 0.0];
+            }
+        }
         let (g, n) = match self.shape {
             RigidShape::Circle { c, r } => {
                 let d = [q[0] - c[0], q[1] - c[1], 0.0];
@@ -135,7 +156,10 @@ impl RigidMaster {
             _ => (g, n),
         };
         let _ = dim;
-        (g, n, sub(&q, &scale(&n, g)))
+        let xc = sub(&q, &scale(&n, g));
+        // The normal in the world frame (the frame of the body rotated by `theta`).
+        let n = if theta != 0.0 { let (s, co) = theta.sin_cos(); [co * n[0] - s * n[1], s * n[0] + co * n[1], n[2]] } else { n };
+        (g, n, xc)
     }
 }
 
@@ -203,8 +227,17 @@ impl FaceGeom {
 
     /// Second derivatives `d2[a][i][j]` by central differences of the (exact) first derivatives.
     pub fn second(&self, xi: [f64; 2]) -> [[[f64; 2]; 2]; 9] {
-        let h = 1e-5;
         let mut out = [[[0.0; 2]; 2]; 9];
+        // An edge: the second derivatives of the (linear / quadratic) shape functions are constants.
+        if self.kind.is_none() {
+            if self.nn == 3 {
+                out[0][0][0] = 1.0;
+                out[1][0][0] = 1.0;
+                out[2][0][0] = -2.0;
+            }
+            return out;
+        }
+        let h = 1e-5;
         for j in 0..self.p {
             let (mut xp, mut xm) = (xi, xi);
             xp[j] += h;
@@ -312,7 +345,13 @@ pub fn project(geom: &FaceGeom, x: &[V3], y: &V3, xi0: [f64; 2]) -> Option<Proje
         let s = if m > 0.5 { 0.5 / m } else { 1.0 };
         xi[0] += s * dxi[0];
         xi[1] += s * dxi[1];
-        if m * s < 1e-14 {
+        // Converged when the step is below the round-off of the geometry: `r = y - x_c` carries an absolute error of order
+        // `eps |x|`, which the tangent turns into `eps |x| / |tau|` in the parameter. A fixed 1e-14 is below that as soon as
+        // the coordinates are of order one (the projection then never converged and the point silently left contact).
+        let reach = (0..3).map(|i| y[i].abs().max(xc[i].abs())).fold(0.0f64, f64::max);
+        let tau_len = (0..p).map(|a| norm(&tau[a])).fold(0.0f64, f64::max).max(1e-300);
+        let tol = (1e-14f64).max(64.0 * f64::EPSILON * reach / tau_len);
+        if m * s < tol {
             let (xc, tau, _) = face_point(geom, x, xi);
             let n = face_normal(p, &tau);
             return Some(Projection { xi, xc, n, g: dot(&sub(y, &xc), &n) });
@@ -377,6 +416,26 @@ pub struct ContactSpec {
 }
 
 impl ContactSpec {
+    /// The margin in force: the given one, else the largest slave-face extent.
+    pub fn effective_margin(&self, mesh: &Mesh) -> f64 {
+        self.margin.unwrap_or_else(|| {
+            let diam = self
+                .slave
+                .iter()
+                .map(|f| {
+                    let mut m = 0.0f64;
+                    for a in f {
+                        for b in f {
+                            m = m.max(norm(&sub(&mesh.nodes[*a], &mesh.nodes[*b])));
+                        }
+                    }
+                    m
+                })
+                .fold(0.0f64, f64::max);
+            diam.max(1e-12)
+        })
+    }
+
     pub fn rigid(name: &str, slave: Vec<Vec<usize>>, master: RigidMaster, eps_n: f64) -> Self {
         Self { name: name.to_string(), slave, master: Master::Rigid(master), eps_n, eps_t: eps_n, mu: 0.0, margin: None, rule: ContactRule::default(), activation_gap: None, overlap: 0.0 }
     }
@@ -415,6 +474,24 @@ impl ContactSpec {
     }
 }
 
+/// The traction of one slave collocation point of a contact interface, as read from a converged solution.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContactTraction {
+    /// Reference position of the point.
+    pub x: V3,
+    /// Unit contact normal (from the master towards the slave).
+    pub normal: V3,
+    /// Normal pressure (0 when not in contact).
+    pub pressure: f64,
+    /// Friction traction on the slave surface, in the tangent plane.
+    pub friction: V3,
+    /// Integration weight: pressure times weight is the normal force the point carries (thickness included).
+    pub weight: f64,
+    pub active: bool,
+    /// The point is at its Coulomb limit (`|friction| >= mu p`).
+    pub slipping: bool,
+}
+
 /// State of one slave Gauss point.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CpState {
@@ -434,6 +511,8 @@ pub struct CpState {
     pub active: bool,
     pub cur: V3,
     pub cur_face: u32,
+    /// Unit contact normal of the latest evaluation (pointing from the master towards the slave).
+    pub n: V3,
 }
 
 struct SlavePoint {
@@ -454,6 +533,9 @@ pub struct ContactStats {
     pub master_force: Vec<V3>,
     /// Slave / master node couplings found missing from the matrix pattern.
     pub missing_pairs: Vec<(usize, usize)>,
+    /// The unsymmetric remainder of the frictional tangent as `(dofs, row-major matrix)` per point: the exact tangent is
+    /// `K + sum E^T D E` (see `Ctx::newton_step`). Empty without friction (or with free rigid translations).
+    pub defect: Vec<(Vec<usize>, Vec<f64>)>,
 }
 
 /// Outputs for the free rigid-body translations: the residual of each extra unknown, its coupling
@@ -481,6 +563,9 @@ pub struct ContactSet {
     pts: Vec<Vec<SlavePoint>>,
     faces: Vec<Vec<(FaceGeom, Vec<usize>)>>,
     margins: Vec<f64>,
+    /// Add the stabilising stiffness of merely-near points (see `eval`); off for the tangent predictor of prescribed
+    /// displacements, which would drag a body that is only approaching along with the one it moves.
+    stabilise: std::sync::atomic::AtomicBool,
 }
 
 /// Collocation points `(xi, weight)` on a slave face of `nn` nodes in `dim` dimensions.
@@ -561,6 +646,11 @@ fn slave_points(mesh: &Mesh, faces: &[Vec<usize>], rule: ContactRule) -> Result<
 }
 
 impl ContactSet {
+    /// Switch the stabilising stiffness of near points on or off for the following evaluations.
+    pub fn set_stabilise(&self, on: bool) {
+        self.stabilise.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
     pub fn new(mesh: &Mesh, specs: Vec<ContactSpec>) -> Result<Self, String> {
         let dim = mesh.dim();
         let mut pts = Vec::new();
@@ -589,21 +679,7 @@ impl ContactSet {
                 }
             }
             faces.push(mf);
-            // Default margin: the largest slave-face extent.
-            let diam = s
-                .slave
-                .iter()
-                .map(|f| {
-                    let mut m = 0.0f64;
-                    for a in f {
-                        for b in f {
-                            m = m.max(norm(&sub(&mesh.nodes[*a], &mesh.nodes[*b])));
-                        }
-                    }
-                    m
-                })
-                .fold(0.0f64, f64::max);
-            margins.push(s.margin.unwrap_or(diam.max(1e-12)));
+            margins.push(s.effective_margin(mesh));
         }
         let mut extra = Vec::new();
         let mut extra_load = Vec::new();
@@ -617,12 +693,17 @@ impl ContactSet {
                     }
                 }
                 if r.free[2] && dim == 2 {
-                    return Err(format!("contact '{}': a 2D rigid master has no z translation", s.name));
+                    // The rotation of a circle about its centre (see `RigidMaster::with_free_rotation`).
+                    if !matches!(r.shape, RigidShape::Circle { .. }) {
+                        return Err(format!("contact '{}': only a circular 2D master can rotate", s.name));
+                    }
+                    e.push((2, extra_load.len()));
+                    extra_load.push(r.load[2]);
                 }
             }
             extra.push(e);
         }
-        Ok(Self { specs, dim, extra, extra_load, pts, faces, margins })
+        Ok(Self { specs, dim, extra, extra_load, pts, faces, margins, stabilise: std::sync::atomic::AtomicBool::new(true) })
     }
 
     /// Gap below which a point counts as touching for the slip history and the stabilising stiffness.
@@ -938,7 +1019,12 @@ impl PointCtx<'_> {
             } else {
                 None
             };
-            let s = prev.map_or([0.0; 3], |pv| sub(&xc, &pv));
+            let mut s = prev.map_or([0.0; 3], |pv| sub(&xc, &pv));
+            // The slip was measured in the body's frame: bring it to the world frame when the body turns.
+            if d == 2 && self.rigid.is_some() && qv[2] != 0.0 {
+                let (sn, cs) = qv[2].sin_cos();
+                s = [cs * s[0] - sn * s[1], sn * s[0] + cs * s[1], 0.0];
+            }
             let st = sub(&s, &scale(&n, dot(&s, &n)));
             let lt = sub(&self.os.lam_t, &scale(&n, dot(&self.os.lam_t, &n)));
             let trial = add(&lt, &scale(&st, self.eps_t));
@@ -964,7 +1050,18 @@ impl PointCtx<'_> {
         }
         // The rigid body feels the opposite of the slave-point force: its residual is minus the y residual.
         for j in 0..self.n_free {
-            r[qoff + j] = -r[self.free_comps[j]];
+            let comp = self.free_comps[j];
+            if d == 2 && comp == 2 {
+                // The master's rotation: minus the moment of the slave-point force about the circle's centre.
+                let (c, shift) = match self.rigid.map(|rm| rm.shape) {
+                    Some(RigidShape::Circle { c, .. }) => (c, self.rigid.map_or([0.0; 3], |rm| rm.translation(self.lambda))),
+                    _ => ([0.0; 2], [0.0; 3]),
+                };
+                let cw = [c[0] + shift[0] + qv[0], c[1] + shift[1] + qv[1]];
+                r[qoff + j] = -((y[0] - cw[0]) * r[1] - (y[1] - cw[1]) * r[0]);
+            } else {
+                r[qoff + j] = -r[comp];
+            }
         }
         LocalOut { p, g, fric, cur, active: true, slip, n, m: mshape }
     }
@@ -980,6 +1077,8 @@ struct PointOut {
     dofs: Vec<usize>,
     r: Vec<f64>,
     k: Vec<f64>,
+    /// Exact minus factorised tangent of a frictional point (see the tangent comment), over the same dofs.
+    kdef: Vec<f64>,
     st: CpState,
     master_force: V3,
     missing: Vec<(usize, usize)>,
@@ -1018,6 +1117,7 @@ impl ContactSet {
                 .collect();
             let bvh = Bvh::build(&boxes);
             let want_k = k.is_some();
+            let stabilise = self.stabilise.load(std::sync::atomic::Ordering::Relaxed);
             let act_gap = self.activation_gap(si);
             let fc: &[(usize, usize)] = &self.extra[si];
             let n_free = fc.len();
@@ -1061,7 +1161,7 @@ impl ContactSet {
                             st.p = 0.0;
                             st.g = f64::INFINITY;
                             st.fric = [0.0; 3];
-                            return PointOut { near_only: false, dofs: Vec::new(), r: Vec::new(), k: Vec::new(), st, master_force: [0.0; 3], missing: Vec::new() };
+                            return PointOut { near_only: false, dofs: Vec::new(), r: Vec::new(), k: Vec::new(), kdef: Vec::new(), st, master_force: [0.0; 3], missing: Vec::new() };
                         }
                     }
                     let (mgeom, mnodes): (Option<FaceGeom>, &[usize]) = match chosen {
@@ -1096,13 +1196,15 @@ impl ContactSet {
                     st.active = out.active;
                     st.cur = out.cur;
                     st.cur_face = chosen.map_or(0, |c| c.0 as u32);
-                    let near = !out.active && out.g.is_finite() && out.g < act_gap;
+                    st.n = out.n;
+                    let near = !out.active && out.g.is_finite() && out.g < act_gap && stabilise;
                     if !(out.active || near && want_k) {
-                        return PointOut { near_only: false, dofs: Vec::new(), r: Vec::new(), k: Vec::new(), st, master_force: [0.0; 3], missing: Vec::new() };
+                        return PointOut { near_only: false, dofs: Vec::new(), r: Vec::new(), k: Vec::new(), kdef: Vec::new(), st, master_force: [0.0; 3], missing: Vec::new() };
                     }
                     // Tangent: central differences of the local residual (or, for a point that is only
                     // close, the penalty stiffness along the normal).
                     let mut kv = Vec::new();
+                    let mut kdef_loc: Vec<f64> = Vec::new();
                     if near {
                         kv = vec![0.0; nv * nv];
                         let mut grad = vec![0.0; nv];
@@ -1138,12 +1240,37 @@ impl ContactSet {
                                 kv[i * nv + j] = (rp[i] - rm[i]) / (2.0 * h);
                             }
                         }
+                        // The tangent the solver factorises is symmetric (and freezes sliding friction); the exact
+                        // one differs by the sliding points' `mu dp` coupling and the unsymmetric part. That difference
+                        // is kept as a defect operator and applied by iterative refinement over the factorisation
+                        // (`nonlinear.rs`), which makes the Newton step consistent without an unsymmetric factorisation.
+                        let mut kfull = vec![0.0; nv * nv];
+                        // (Every frictional point: the sticking ones are unsymmetric too through the projection and the
+                        // normal; restricting the defect to sliding points was tried and Newton stalls again.)
+                        let want_defect = spec.mu > 0.0 && n_free == 0;
+                        if want_defect {
+                            let fctx = PointCtx { frozen: None, smooth: true, ..ctx_copy(&ctx) };
+                            for j in 0..nv {
+                                let h = 1e-6 * (1.0 + v[j].abs());
+                                let (mut vp, mut vm) = (v.clone(), v.clone());
+                                vp[j] += h;
+                                vm[j] -= h;
+                                fctx.residual(&vp, &mut rp);
+                                fctx.residual(&vm, &mut rm);
+                                for i in 0..nv {
+                                    kfull[i * nv + j] = (rp[i] - rm[i]) / (2.0 * h);
+                                }
+                            }
+                        }
                         for i in 0..nv {
                             for j in 0..i {
                                 let m = 0.5 * (kv[i * nv + j] + kv[j * nv + i]);
                                 kv[i * nv + j] = m;
                                 kv[j * nv + i] = m;
                             }
+                        }
+                        if want_defect {
+                            kdef_loc = (0..nv * nv).map(|ix| kfull[ix] - kv[ix]).collect();
                         }
                     }
                     // Expand the local variables to the nodal dofs: slave nodes (shape-weighted), then master nodes.
@@ -1179,13 +1306,13 @@ impl ContactSet {
                             rd[c] += e[var * nd_tot + c] * r[var];
                         }
                     }
-                    let mut kd = Vec::new();
-                    if want_k {
-                        kd = vec![0.0; nd_tot * nd_tot];
+                    // `E^T K E`: local variables to the nodal dofs.
+                    let expand = |kloc: &[f64]| -> Vec<f64> {
+                        let mut kd = vec![0.0; nd_tot * nd_tot];
                         let mut tmp = vec![0.0; nv * nd_tot]; // K_v E
                         for i in 0..nv {
                             for j in 0..nv {
-                                let kij = kv[i * nv + j];
+                                let kij = kloc[i * nv + j];
                                 if kij != 0.0 {
                                     for c in 0..nd_tot {
                                         tmp[i * nd_tot + c] += kij * e[j * nd_tot + c];
@@ -1203,7 +1330,10 @@ impl ContactSet {
                                 }
                             }
                         }
-                    }
+                        kd
+                    };
+                    let kd = if want_k { expand(&kv) } else { Vec::new() };
+                    let kdef = if kdef_loc.is_empty() { Vec::new() } else { expand(&kdef_loc) };
                     let mut missing = Vec::new();
                     if want_k {
                         // Matrix couplings must exist in the pattern (checked at scatter time).
@@ -1216,7 +1346,7 @@ impl ContactSet {
                         }
                     }
                     let mf: V3 = std::array::from_fn(|i| if i < d { r[i] } else { 0.0 });
-                    PointOut { near_only: near, dofs, r: rd, k: kd, st, master_force: mf, missing }
+                    PointOut { near_only: near, dofs, r: rd, k: kd, kdef, st, master_force: mf, missing }
                 })
                 .collect();
             // Stabilising stiffness of merely-near points only when nothing at all is in contact yet.
@@ -1234,6 +1364,9 @@ impl ContactSet {
                     }
                 }
                 stats.missing_pairs.extend(o.missing);
+                if !o.kdef.is_empty() && o.st.active {
+                    stats.defect.push((o.dofs.clone(), o.kdef));
+                }
                 for (c, &dof) in o.dofs.iter().enumerate() {
                     if dof < ndm {
                         f[dof] += o.r[c];

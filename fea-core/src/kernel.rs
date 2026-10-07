@@ -431,7 +431,7 @@ pub fn thermal_load(kind: ElementKind, physics: Physics, mat: &Elastic, d_t: f64
     f[..nn * d].fill(0.0);
     if let Some(an) = &mat.aniso {
         // f_a = -int B_a^T sigma_th with sigma_th = -D alpha dT, i.e. the stress of zero strain.
-        let s0 = stress_aniso(an, physics, [0.0; 6], mat.alpha * d_t);
+        let s0 = stress_aniso(an, physics, [0.0; 6], mat.thermal_strain(d_t));
         for g in 0..t.ngp {
             let w = work.wdet[g];
             let gr = &work.grad[g * nn * d..(g + 1) * nn * d];
@@ -523,10 +523,10 @@ pub fn strain_at(kind: ElementKind, physics: Physics, work: &Work, g: usize, u: 
 /// Cauchy stress from a strain (same component order as [`strain_at`]); thermal strain
 /// `alpha d_t` removed. Plane stress returns `zz = 0`; plane strain computes `zz`.
 pub fn stress_from_strain(physics: Physics, mat: &Elastic, strain: [f64; 6], d_t: f64) -> [f64; 6] {
-    let th = mat.alpha * d_t;
     if let Some(an) = &mat.aniso {
-        return stress_aniso(an, physics, strain, th);
+        return stress_aniso(an, physics, strain, mat.thermal_strain(d_t));
     }
+    let th = mat.alpha * d_t;
     let (lam, mu) = (mat.lambda(physics), mat.mu());
     match physics {
         Physics::PlaneStress { .. } => {
@@ -555,19 +555,19 @@ pub fn stress_from_strain(physics: Physics, mat: &Elastic, strain: [f64; 6], d_t
     }
 }
 
-/// `sigma = D (strain - thermal)` for an anisotropic material (`th` = isotropic thermal strain).
-fn stress_aniso(an: &crate::mesh::Aniso, physics: Physics, strain: [f64; 6], th: f64) -> [f64; 6] {
+/// `sigma = D (strain - thermal)` for an anisotropic material (`th` = thermal strain vector, engineering shear).
+fn stress_aniso(an: &crate::mesh::Aniso, physics: Physics, strain: [f64; 6], th: [f64; 6]) -> [f64; 6] {
     let mut out = [0.0f64; 6];
     match physics {
         Physics::Solid => {
-            let e: [f64; 6] = std::array::from_fn(|i| strain[i] - if i < 3 { th } else { 0.0 });
+            let e: [f64; 6] = std::array::from_fn(|i| strain[i] - th[i]);
             for i in 0..6 {
                 out[i] = (0..6).map(|j| an.d[i][j] * e[j]).sum();
             }
         }
         Physics::PlaneStress { .. } => {
             let (dm, _) = reduced_d(an, physics);
-            let e = [strain[0] - th, strain[1] - th, strain[3]];
+            let e = [strain[0] - th[0], strain[1] - th[1], strain[3] - th[3]];
             let s: [f64; 3] = std::array::from_fn(|i| (0..3).map(|j| dm[i][j] * e[j]).sum());
             out[0] = s[0];
             out[1] = s[1];
@@ -576,7 +576,7 @@ fn stress_aniso(an: &crate::mesh::Aniso, physics: Physics, strain: [f64; 6], th:
         Physics::PlaneStrain { .. } | Physics::Axisymmetric => {
             // Strain over (xx, yy, zz, xy): zz is zero in plane strain, the hoop strain in axisymmetry.
             let ezz = if matches!(physics, Physics::PlaneStrain { .. }) { 0.0 } else { strain[2] };
-            let e = [strain[0] - th, strain[1] - th, ezz - th, strain[3]];
+            let e = [strain[0] - th[0], strain[1] - th[1], ezz - th[2], strain[3] - th[3]];
             for i in 0..4 {
                 out[i] = (0..4).map(|j| an.d[i][j] * e[j]).sum();
             }
