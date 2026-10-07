@@ -1,6 +1,6 @@
 # edge-check
 
-> TL;DR: Independent cross-checks of the bushing edge-distance requirement (stress superposition / tabulated allowables / bushing-and-housing contact FE; the plane-stress FE is kept for validation tests) behind one `EdgeModel` trait. Pure function of an `EdgeInput`; zero dependency on `bushing-solver`; zero external crates. Full write-up: `docs/edge-distance-crosscheck.md`.
+> TL;DR: Independent cross-checks of the bushing edge-distance requirement (stress superposition / tabulated allowables / bushing-and-housing contact FE; the plane-stress FE is kept for validation tests) behind one `EdgeModel` trait. Pure function of an `EdgeInput`; zero dependency on `bushing-solver`; zero external crates (the plane-stress FE check depends on the workspace's `fea-core`). Full write-up: `docs/edge-distance-crosscheck.md`.
 
 ## Purpose
 Owns: the edge-distance models, the runner (margins, minimum edge distance, Monte Carlo, report), the small FE and least-squares solvers they need.
@@ -12,7 +12,8 @@ Does not own: the legacy `Fbru + 0.8 p` check (stays in `bushing-solver/src/solv
 | The trait every model implements (`EdgeModel` -> `Response`) | `src/model.rs` |
 | Registry (add/remove a model here) | `src/models/mod.rs::default_models` |
 | Elastic analytic field (complex potentials + collocation) | `src/analytic.rs` |
-| FE solver (Q9, banded Cholesky, point stress recovery) | `src/fem.rs`, `src/linalg.rs` |
+| Plane-stress FE check on the general kernel (`fea-core`): same O-grid and unit load cases, point stress by the kernel locator | `src/kfem.rs` (model: `src/models/fem_model.rs`) |
+| FE solver (Q9, banded Cholesky, point stress recovery): kept for the contact and plastic collapse solvers, which reuse its factorisation, and as the differential reference of `kfem.rs` | `src/fem.rs`, `src/linalg.rs` |
 | Failure modes from any stress field (shear-out / splitting / first yield) | `src/field.rs` |
 | Tabulated allowables | `src/models/allowable.rs` |
 | Bushing + housing contact FE (penalty contact, friction, fit-then-pin, J2 housing) and its edge-distance/fit table | `src/contact.rs`, `src/models/contact_model.rs` |

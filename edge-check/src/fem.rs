@@ -180,6 +180,62 @@ pub fn element_stiffness(xy: &[[f64; 2]], d_mat: &[[f64; 3]; 3]) -> Result<[[f64
     Ok(ke)
 }
 
+/// The structured O-grid of the half plate: lattice nodes (`na` radial x angular rows, two lattice
+/// points per element), and the Q9 elements in local order `3 * b + a` (`b` angular, `a` radial).
+pub(crate) struct PlateMesh {
+    pub nodes: Vec<[f64; 2]>,
+    pub elems: Vec<[usize; 9]>,
+    /// Radial lattice columns (`2 n_radial + 1`).
+    pub na: usize,
+    pub n_theta_el: usize,
+}
+
+pub(crate) fn plate_mesh(geom: &Geometry, spec: MeshSpec) -> PlateMesh {
+    let a = geom.bore_radius;
+    let e = geom.edge;
+    let (far, h) = (geom.plate_far, geom.plate_half_height);
+    let phis = angular_lattice(e, far, h, spec.n_arc);
+    let nb = phis.len(); // lattice rows in the angular direction
+    let na = 2 * spec.n_radial + 1; // lattice columns in the radial direction
+    let n_theta_el = (nb - 1) / 2;
+    let n_node = na * nb;
+
+    let mut nodes = vec![[0.0; 2]; n_node];
+    for (ib, &phi) in phis.iter().enumerate() {
+        let t_out = ray_to_boundary(e, far, h, phi);
+        // Element boundaries graded by a power law; midside nodes sit at
+        // the element midpoint (a quarter-point or off-centre midside
+        // node makes the Jacobian vanish or go negative at the bore).
+        let grade_at = |i: usize| (i as f64 / spec.n_radial as f64).powf(spec.grade);
+        for ia in 0..na {
+            let s = if ia % 2 == 0 { grade_at(ia / 2) } else { 0.5 * (grade_at(ia / 2) + grade_at(ia / 2 + 1)) };
+            let r = a + (t_out - a) * s;
+            nodes[ib * na + ia] = [e + r * phi.cos(), r * phi.sin()];
+        }
+    }
+    // The load line is a symmetry axis: exact zeros on y = 0.
+    for node in nodes.iter_mut() {
+        if node[1].abs() < 1e-12 * e {
+            node[1] = 0.0;
+        }
+    }
+
+    let mut elems = Vec::with_capacity(spec.n_radial * n_theta_el);
+    for j in 0..n_theta_el {
+        for i in 0..spec.n_radial {
+            let mut conn = [0usize; 9];
+            for b in 0..3 {
+                for aa in 0..3 {
+                    conn[3 * b + aa] = (2 * j + b) * na + (2 * i + aa);
+                }
+            }
+            elems.push(conn);
+        }
+    }
+
+    PlateMesh { nodes, elems, na, n_theta_el }
+}
+
 impl FemSolution {
     pub fn solve(geom: &Geometry, e_psi: f64, nu: f64, spec: MeshSpec) -> Result<Self, String> {
         Self::solve_with(geom, e_psi, nu, spec, false)
@@ -195,46 +251,9 @@ impl FemSolution {
         if !(a > 0.0 && e > a && geom.thickness > 0.0 && geom.plate_far > a && geom.plate_half_height > a) {
             return Err("degenerate plate geometry".to_string());
         }
+        let PlateMesh { nodes, elems, na, n_theta_el } = plate_mesh(geom, spec);
         let (far, h) = (geom.plate_far, geom.plate_half_height);
-        let phis = angular_lattice(e, far, h, spec.n_arc);
-        let nb = phis.len(); // lattice rows in the angular direction
-        let na = 2 * spec.n_radial + 1; // lattice columns in the radial direction
-        let n_theta_el = (nb - 1) / 2;
-        let n_node = na * nb;
-
-        let mut nodes = vec![[0.0; 2]; n_node];
-        for (ib, &phi) in phis.iter().enumerate() {
-            let t_out = ray_to_boundary(e, far, h, phi);
-            // Element boundaries graded by a power law; midside nodes sit at
-            // the element midpoint (a quarter-point or off-centre midside
-            // node makes the Jacobian vanish or go negative at the bore).
-            let grade_at = |i: usize| (i as f64 / spec.n_radial as f64).powf(spec.grade);
-            for ia in 0..na {
-                let s = if ia % 2 == 0 { grade_at(ia / 2) } else { 0.5 * (grade_at(ia / 2) + grade_at(ia / 2 + 1)) };
-                let r = a + (t_out - a) * s;
-                nodes[ib * na + ia] = [e + r * phi.cos(), r * phi.sin()];
-            }
-        }
-        // The load line is a symmetry axis: exact zeros on y = 0.
-        for node in nodes.iter_mut() {
-            if node[1].abs() < 1e-12 * e {
-                node[1] = 0.0;
-            }
-        }
-
-        let mut elems = Vec::with_capacity(spec.n_radial * n_theta_el);
-        for j in 0..n_theta_el {
-            for i in 0..spec.n_radial {
-                let mut conn = [0usize; 9];
-                for b in 0..3 {
-                    for aa in 0..3 {
-                        conn[3 * b + aa] = (2 * j + b) * na + (2 * i + aa);
-                    }
-                }
-                elems.push(conn);
-            }
-        }
-
+        let n_node = nodes.len();
         let d_mat = {
             let f = e_psi / (1.0 - nu * nu);
             [[f, f * nu, 0.0], [f * nu, f, 0.0], [0.0, 0.0, f * (1.0 - nu) / 2.0]]

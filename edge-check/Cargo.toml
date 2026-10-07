@@ -13,8 +13,10 @@ publish = false
 # unchanged and this crate is a pure function of its inputs, so deleting
 # the crate (and the one UI hook that calls it) removes the feature.
 #
-# Zero external dependencies: the FE solver (banded Cholesky) and the
-# least-squares solver are small and local, and the RNG is a fixed-seed
-# xorshift so Monte-Carlo results are reproducible.
+# No external crates beyond the workspace's own: the plane-stress FE check runs on the general
+# kernel (`fea-core`, see `kfem.rs`); the contact / plastic collapse solvers keep their small local
+# banded Cholesky (validated against NACA TN 1503, see AGENTS.md), the least-squares solver is
+# local, and the RNG is a fixed-seed xorshift so Monte-Carlo results are reproducible.
 [dependencies]
 mechanics-core = { path = "../mechanics-core" }
+fea-core = { path = "../fea-core" }

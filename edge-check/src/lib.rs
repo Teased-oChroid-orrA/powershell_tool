@@ -3,6 +3,7 @@ pub mod analytic;
 pub mod contact;
 pub mod fem;
 pub mod field;
+pub mod kfem;
 pub mod linalg;
 pub mod mc;
 pub mod model;

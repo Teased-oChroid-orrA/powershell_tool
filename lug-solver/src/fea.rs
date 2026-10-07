@@ -4,6 +4,7 @@
 //! route the condensed solver is cross-checked against (`tests/fea_bridge.rs`); the condensed model
 //! stays the interactive default because it is much faster (`docs/fea-core.md`).
 
+use fea_core::kernel::von_mises;
 use crate::fe::Material;
 use crate::geometry::LugGeometry;
 use crate::mesh::{Mesh, MeshSpec};
@@ -37,62 +38,7 @@ pub struct FeaLug {
     pub(crate) finite_elastic: bool,
 }
 
-/// Augmented-Lagrangian / Newton controls of the kernel runs: the speed-versus-tightness knobs. The
-/// multiplier passes remove the penalty error, so a soft penalty only speeds Newton up (measured on
-/// the lug: 10 E/a is 5-13x faster than 100 E/a for the same answer, `docs/fea-core.md`).
-#[derive(Debug, Clone, Copy)]
-pub struct Tuning {
-    /// Normal penalty in units of `E / bore radius`.
-    pub penalty_factor: f64,
-    /// Multiplier passes per load step.
-    pub max_outer: usize,
-    /// Stop the passes when the multipliers change by less than this (relative to the peak pressure).
-    pub outer_tol: f64,
-    /// Chord-Newton reuse of one factorisation (0 = full Newton).
-    pub chord_iters: usize,
-    /// Newton residual tolerance (relative).
-    pub newton_tol: f64,
-    /// Displacement-driven runs: the pin travel of one load step as a fraction of the bore radius.
-    pub step_fraction: f64,
-    /// Accept a Newton iteration that stalls (chattering friction) below this fraction of the force scale.
-    pub stall_tol: f64,
-    /// The first load step as a fraction of the regular one (a displacement-driven pin meets its stiffest transition at the first touch).
-    pub first_step: f64,
-}
-
-impl Tuning {
-    /// Frictionless elastic contact (one load step is enough: the response is smooth).
-    pub fn frictionless() -> Self {
-        Self { penalty_factor: 10.0, max_outer: 8, outer_tol: 5e-3, chord_iters: 0, newton_tol: 1e-4, step_fraction: 0.015, stall_tol: 0.0, first_step: 1.0 }
-    }
-
-    /// Coulomb friction: a stiffer penalty and tighter passes (sticking multipliers converge slowly, and a
-    /// soft penalty leaves the peak pressure ~10 % low).
-    pub fn friction() -> Self {
-        Self { penalty_factor: 30.0, max_outer: 12, outer_tol: 2e-3, chord_iters: 0, newton_tol: 1e-4, step_fraction: 0.015, stall_tol: 0.0, first_step: 1.0 }
-    }
-
-    /// Displacement-driven plastic collapse: one multiplier pass per step and a 1e-4 Newton tolerance (the
-    /// load-travel curve is read at every step; the collapse load of an oblique case with friction moved
-    /// 0.01 % against two passes at 1e-6, in 60 % of the time). Steps larger than 0.015 of the bore radius
-    /// shifted the plateau by 2 %.
-    pub fn collapse() -> Self {
-        Self { penalty_factor: 10.0, max_outer: 1, outer_tol: 1e-2, chord_iters: 0, newton_tol: 1e-4, step_fraction: 0.015, stall_tol: 1e-3, first_step: 0.25 }
-    }
-
-    /// The tight reference setting (deformable contact, the 3D models).
-    pub fn reference() -> Self {
-        Self { penalty_factor: 100.0, max_outer: 12, outer_tol: 2e-3, chord_iters: 0, newton_tol: 1e-9, step_fraction: 0.015, stall_tol: 0.0, first_step: 1.0 }
-    }
-
-    pub(crate) fn options(&self, steps: usize) -> NlOptions {
-        NlOptions { steps, outer_tol: self.outer_tol, max_outer: self.max_outer, chord_iters: self.chord_iters, tol: self.newton_tol, stall_tol: self.stall_tol, first_step: self.first_step, ..NlOptions::default() }
-    }
-
-    pub(crate) fn eps_n(&self, e_psi: f64, bore_radius: f64) -> f64 {
-        self.penalty_factor * e_psi / bore_radius
-    }
-}
+pub use fea_core::fit::Tuning;
 
 /// What moves the rigid pin.
 #[derive(Debug, Clone, Copy)]
@@ -271,8 +217,8 @@ impl FeaLug {
             // The interface may slide several elements under a collapse load: the matrix pattern is built from the
             // initial proximity, so give it a generous margin (a few face lengths).
             let face = lug.iter().map(|f| { let (p, q) = (self.mesh.nodes[f[0]], self.mesh.nodes[f[1]]); (p[0] - q[0]).hypot(p[1] - q[1]) }).fold(0.0f64, f64::max);
-            for spec in ContactSpec::two_pass("fit", lug, bush, eps_n) {
-                specs.push(spec.with_rule(fea_core::contact::ContactRule::Reduced).with_friction(b.friction, 0.03 * eps_n).with_overlap(overlap).with_margin(6.0 * face));
+            for spec in fea_core::fit::interference_contacts("fit", lug, bush, eps_n, b.friction, overlap, 6.0 * face) {
+                specs.push(spec);
             }
         }
         specs
@@ -387,9 +333,7 @@ impl FeaLug {
     /// The interference-fit state as the start of a run that adds the pin: displacements and the interface
     /// contacts (the pin's contact is new).
     pub(crate) fn fit_start(fit: &NlSolution) -> Start {
-        let mut contact = vec![None];
-        contact.extend(fit.state.contact.iter().cloned().map(Some));
-        Start { u: fit.u.clone(), contact, gp: Some(fit.state.gp.clone()) }
+        fea_core::fit::start_after_fit(fit, 1)
     }
 
     /// Solve the rigid pin loaded by `case` (force on the pin, applied as its free translation).
@@ -650,11 +594,6 @@ fn wrap_towards(from: f64, to: f64) -> f64 {
         d += std::f64::consts::TAU;
     }
     from + d
-}
-
-fn von_mises(s: &[f64; 6]) -> f64 {
-    let (a, b, c) = (s[0], s[1], s[2]);
-    (0.5 * ((a - b).powi(2) + (b - c).powi(2) + (c - a).powi(2)) + 3.0 * (s[3] * s[3] + s[4] * s[4] + s[5] * s[5])).sqrt()
 }
 
 /// Angular extent (degrees) of `angles` (radians) about the load direction `dir`; a half model's

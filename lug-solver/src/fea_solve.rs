@@ -2,6 +2,7 @@
 //! [`LugModel::solve`](crate::LugModel::solve) (contact points, bore stresses, peaks, bushing fit,
 //! verification), so the toolbox can run either solver.
 
+use fea_core::kernel::von_mises;
 use crate::contact::{IfacePoint, PointResult};
 use crate::fea::{Drive, FeaLug, RunSpec, Tuning};
 use crate::fe::Material;
@@ -14,11 +15,6 @@ use std::time::Instant;
 /// Components of a kernel stress `[xx, yy, zz, xy, yz, zx]` in the plane.
 fn plane(s: &[f64; 6]) -> Stress {
     Stress { sx: s[0], sy: s[1], txy: s[3] }
-}
-
-fn von_mises(s: &[f64; 6]) -> f64 {
-    let (a, b, c) = (s[0], s[1], s[2]);
-    (0.5 * ((a - b).powi(2) + (b - c).powi(2) + (c - a).powi(2)) + 3.0 * (s[3] * s[3] + s[4] * s[4] + s[5] * s[5])).sqrt()
 }
 
 fn angle_deg(p: &[f64; 3]) -> f64 {

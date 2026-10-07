@@ -1,6 +1,7 @@
-//! Item 2: plane-stress FE check.
+//! Item 2: plane-stress FE check, run on the general FE kernel (`fea-core`, see `kfem.rs`).
 
-use crate::fem::{FemSolution, MeshSpec, UnitCase};
+use crate::fem::{MeshSpec, UnitCase};
+use crate::kfem::KernelFem;
 use crate::field::{FieldResponse, UnitFieldSource};
 use crate::model::{EdgeModel, Response};
 use crate::types::{Geometry, Strengths, Stress};
@@ -18,7 +19,7 @@ impl Default for FemModel {
     }
 }
 
-impl UnitFieldSource for FemSolution {
+impl UnitFieldSource for KernelFem {
     fn stress(&self, case: UnitCase, x: f64, y: f64) -> Option<Stress> {
         self.stress_at(case, x, y)
     }
@@ -32,11 +33,11 @@ impl EdgeModel for FemModel {
         "Plane-stress FE"
     }
     fn respond(&self, geom: &Geometry, mat: &Strengths, _fit_pressure: f64) -> Result<Box<dyn Response>, String> {
-        let sol = FemSolution::solve(geom, mat.e, mat.nu, self.mesh)?;
+        let sol = KernelFem::solve(geom, mat.e, mat.nu, self.mesh)?;
         Ok(Box::new(FieldResponse::build(&sol, geom, mat)?))
     }
     fn respond_for_search(&self, geom: &Geometry, mat: &Strengths, _fit_pressure: f64) -> Result<Box<dyn Response>, String> {
-        let sol = FemSolution::solve(geom, mat.e, mat.nu, self.search_mesh)?;
+        let sol = KernelFem::solve(geom, mat.e, mat.nu, self.search_mesh)?;
         Ok(Box::new(FieldResponse::build(&sol, geom, mat)?))
     }
 }
