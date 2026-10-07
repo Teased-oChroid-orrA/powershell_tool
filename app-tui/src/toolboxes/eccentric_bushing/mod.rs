@@ -62,11 +62,11 @@ impl Default for EccentricState {
 
 impl EccentricState {
     pub fn selected_row(&self) -> Option<FieldRow> {
-        model::field_rows().get(self.selected).copied()
+        model::field_rows(self.ui.advanced_open).get(self.selected).copied()
     }
 
     pub fn clamp_selection(&mut self) {
-        let rows = model::field_rows();
+        let rows = model::field_rows(self.ui.advanced_open);
         self.selected = self.selected.min(rows.len() - 1);
         if matches!(rows[self.selected], FieldRow::Header(_)) {
             self.move_selection(1);
@@ -74,7 +74,7 @@ impl EccentricState {
     }
 
     fn move_selection(&mut self, delta: i32) {
-        let rows = model::field_rows();
+        let rows = model::field_rows(self.ui.advanced_open);
         let len = rows.len() as i32;
         let mut next = self.selected as i32;
         for _ in 0..rows.len() {
@@ -147,6 +147,10 @@ impl EccentricState {
             }
             Some(FieldRow::TogglePinCredit) => {
                 self.ui.credit_pin_load = !self.ui.credit_pin_load;
+                Vec::new()
+            }
+            Some(FieldRow::AdvancedSection) => {
+                self.ui.advanced_open = !self.ui.advanced_open;
                 Vec::new()
             }
             Some(FieldRow::Run(task)) => self.start(bushing, task),

@@ -11,7 +11,9 @@ fn bushing() -> BushingModel {
 }
 
 fn select(state: &mut EccentricState, row: FieldRow) {
-    state.selected = model::field_rows().iter().position(|r| *r == row).unwrap();
+    // Rows of the Advanced section exist only while it is open.
+    state.ui.advanced_open = !model::field_rows(false).contains(&row);
+    state.selected = model::field_rows(state.ui.advanced_open).iter().position(|r| *r == row).unwrap();
 }
 
 #[test]
@@ -72,9 +74,9 @@ fn typing_a_number_edits_the_selected_row_and_the_value_is_clamped() {
 fn up_down_skip_headers_and_wrap() {
     let mut s = EccentricState::default();
     let first = s.selected;
-    assert!(!matches!(model::field_rows()[first], FieldRow::Header(_)));
+    assert!(!matches!(model::field_rows(false)[first], FieldRow::Header(_)));
     handle_key(&mut s, &bushing(), key(KeyCode::Up));
-    assert_eq!(s.selected, model::field_rows().len() - 1);
+    assert_eq!(s.selected, model::field_rows(false).len() - 1);
     handle_key(&mut s, &bushing(), key(KeyCode::Down));
     assert_eq!(s.selected, first);
 }
@@ -103,4 +105,16 @@ fn a_stale_job_result_is_dropped() {
     s.start(&bushing(), Task::Analyze);
     s.finish(999, Err("x".into()));
     assert!(s.job.is_some() && s.error.is_none());
+}
+
+#[test]
+fn the_advanced_section_is_collapsed_by_default_and_toggles_with_space_or_enter() {
+    let mut s = EccentricState::default();
+    assert!(!model::field_rows(s.ui.advanced_open).contains(&FieldRow::ToggleDirectOnset), "collapsed: no advanced rows");
+    select(&mut s, FieldRow::AdvancedSection);
+    assert!(!s.ui.advanced_open);
+    handle_key(&mut s, &bushing(), key(KeyCode::Char(' ')));
+    assert!(s.ui.advanced_open && model::field_rows(true).contains(&FieldRow::ToggleDirectOnset));
+    handle_key(&mut s, &bushing(), key(KeyCode::Enter));
+    assert!(!s.ui.advanced_open, "Enter closes it again");
 }

@@ -133,6 +133,7 @@ impl PreloadAnalysisState {
     /// Called every `Tick` while this toolbox is on screen: starts the FE member-compliance
     /// cross-check once the joint has stopped changing (the very first run starts at once).
     pub fn tick(&mut self) -> Vec<Effect> {
+        self.sync_fe_angle();
         let Some(input) = self.model.fe_input() else {
             self.fe.seen = None;
             return Vec::new();
@@ -151,10 +152,22 @@ impl PreloadAnalysisState {
         vec![Effect::RunMemberFe { id, input: Box::new(input) }]
     }
 
+    /// Keeps `model.fe_angle_deg` equal to the FE-equivalent cone angle of exactly the current joint
+    /// (cleared while the FE result is pending, failed, or for other inputs). Called from `tick`, the
+    /// stiffness toggle and `finish_fe`; `FeInput` excludes the solver angle, so there is no feedback.
+    pub fn sync_fe_angle(&mut self) {
+        let angle = self
+            .model
+            .fe_input()
+            .and_then(|i| self.fe.current(&i).and_then(|r| r.as_ref().ok().and_then(|r| r.equivalent_angle_deg)));
+        self.model.set_fe_angle(angle);
+    }
+
     /// A worker finished job `id`; a result for older inputs is kept only as "stale" (it never matches `current`).
     pub fn finish_fe(&mut self, id: u64, result: Result<fe_check::FeResult, String>) {
         let Some((_, input, _)) = self.fe.job.take_if(|(j, _, _)| *j == id) else { return };
         self.fe.result = Some((input, result));
+        self.sync_fe_angle();
     }
 
     pub fn after_template(&mut self, applied: Option<String>) {
@@ -171,7 +184,12 @@ impl PreloadAnalysisState {
             Some(FieldRow::OpenBoltPicker) => self.bolt_picker = BoltPickerState::open_for(&self.model),
             Some(FieldRow::OpenTemplatePicker) => self.template_picker = TemplatePickerState::open(),
             Some(FieldRow::ToggleTighteningFrom) => self.model.toggle_tightening_from(),
+            Some(FieldRow::AdvancedSection) => self.model.advanced_open = !self.model.advanced_open,
             Some(FieldRow::ToggleBearingModel) => self.model.toggle_bearing_model(),
+            Some(FieldRow::ToggleMemberStiffness) => {
+                self.model.toggle_member_stiffness();
+                self.sync_fe_angle();
+            }
             Some(FieldRow::ToggleExternalLoadEnabled) => self.model.toggle_external_load_enabled(),
             Some(FieldRow::ToggleSlipEnabled) => self.model.toggle_slip_enabled(),
             Some(FieldRow::ToggleStrengthLimitsEnabled) => self.model.toggle_strength_limits_enabled(),
@@ -480,5 +498,33 @@ mod tests {
         s.model.recompute();
         s.finish_fe(*id, fe_check::run(input));
         assert!(s.fe.current(&s.model.fe_input().unwrap()).is_none());
+    }
+
+    #[test]
+    fn finite_element_stiffness_makes_the_solver_use_the_fe_compliance() {
+        let mut s = PreloadAnalysisState::default();
+        let cone_c_m = s.model.output.as_ref().unwrap().compliance.c_m;
+        let e = s.tick();
+        let [Effect::RunMemberFe { id, input }] = e.as_slice() else { panic!("{e:?}") };
+        // Cone mode: the FE result is only a cross-check, the solution does not move.
+        s.finish_fe(*id, fe_check::run(input));
+        assert_eq!(s.model.output.as_ref().unwrap().compliance.c_m, cone_c_m);
+        assert!(!s.model.uses_fe_stiffness());
+        // Finite Element mode: C_m is the FE compliance (to the angle bisection tolerance).
+        assert!(!model::field_rows(&s.model).contains(&FieldRow::ToggleMemberStiffness), "advanced: hidden until the section opens");
+        s.model.advanced_open = true;
+        s.selected = model::field_rows(&s.model).iter().position(|r| *r == FieldRow::ToggleMemberStiffness).unwrap();
+        handle_key(&mut s, key(KeyCode::Char(' ')));
+        assert!(s.model.uses_fe_stiffness());
+        let fe_c = s.fe.current(&s.model.fe_input().unwrap()).unwrap().as_ref().unwrap().fe.compliance;
+        let c_m = s.model.output.as_ref().unwrap().compliance.c_m;
+        assert!((c_m / fe_c - 1.0).abs() < 1e-6, "{c_m:e} vs FE {fe_c:e}");
+        assert_ne!(c_m, cone_c_m);
+        // Editing the joint drops the (now stale) FE angle at once: no FE value is applied to other inputs.
+        s.model.members[0].thickness *= 1.5;
+        s.model.recompute();
+        s.tick();
+        assert!(!s.model.uses_fe_stiffness());
+        assert_eq!(s.model.solver_cone_angle_deg(), s.model.cone_half_angle_deg);
     }
 }

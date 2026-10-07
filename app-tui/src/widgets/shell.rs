@@ -197,13 +197,20 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, state: &AppState, tick: u64) {
         help::KeyHint { key: "Ctrl+P", label: "Commands" },
         help::KeyHint { key: "Tab", label: "Focus" },
     ];
-    hints.extend(contextual_hint(state));
-    hints.push(help::KeyHint { key: "?", label: "Help" });
-    hints.push(help::KeyHint { key: "q", label: "Quit" });
     let layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(1), Constraint::Length(10)])
         .split(area);
+    let mut contextual = contextual_hint(state);
+    // Narrow terminals drop the toolbox's own hints from the end (whole hints, never half a label);
+    // the global ones, including Help and Quit, stay.
+    let tail = [help::KeyHint { key: "?", label: "Help" }, help::KeyHint { key: "q", label: "Quit" }];
+    let width = |hs: &[&help::KeyHint]| hs.iter().map(|h| h.key.chars().count() + 1 + h.label.chars().count()).sum::<usize>() + 2 * hs.len().saturating_sub(1);
+    while !contextual.is_empty() && width(&hints.iter().chain(contextual.iter()).chain(tail.iter()).collect::<Vec<_>>()) > layout[0].width as usize {
+        contextual.pop();
+    }
+    hints.extend(contextual);
+    hints.extend(tail);
     help::render_status_hints(frame, layout[0], &state.theme, &hints);
 
     let status = if state.is_busy() {

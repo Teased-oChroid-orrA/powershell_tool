@@ -24,7 +24,7 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &PreloadAnalysi
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(theme.border_style(focused))
-        .title(" Preload Analysis - Space/Enter: toggle/edit \u{b7} t: joint templates \u{b7} d: details \u{b7} e: export ");
+        .title(crate::widgets::title::toolbox_title("Preload Analysis", &["Enter Edit", "t Templates", "e Export", "d Details"], area.width));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -71,7 +71,13 @@ fn display_value(model: &PreloadModel, row: model::FieldRow) -> String {
         model::FieldRow::OpenBoltPicker => model.matching_bolt().map(|b| b.designation.to_string()).unwrap_or_else(|| "Custom".to_string()),
         model::FieldRow::OpenTemplatePicker => format!("{} member(s) - Enter to choose", model.members.len()),
         model::FieldRow::ToggleTighteningFrom => model::label_tightening_from(model.tightening_from).to_string(),
+        model::FieldRow::AdvancedSection => String::new(),
         model::FieldRow::ToggleBearingModel => model::label_bearing_model(model.bearing_model).to_string(),
+        model::FieldRow::ToggleMemberStiffness => match (model.member_stiffness_fe, model.fe_angle_deg) {
+            (false, _) => "Pressure Cone".to_string(),
+            (true, Some(a)) => format!("Finite Element (cone {a:.1} deg)"),
+            (true, None) => "Finite Element (pending, using cone)".to_string(),
+        },
         model::FieldRow::ToggleExternalLoadEnabled => bool_label(model.external_load_enabled),
         model::FieldRow::ToggleSlipEnabled => bool_label(model.slip_enabled),
         model::FieldRow::ToggleStrengthLimitsEnabled => bool_label(model.strength_limits_enabled),
@@ -135,6 +141,12 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, state: &PreloadAnal
         .map(|(i, row)| {
             if let model::FieldRow::Header(text) = row {
                 return ListItem::new(Line::from(Span::styled(format!("-- {text} --"), theme.title_style(false).add_modifier(Modifier::BOLD))));
+            }
+            if *row == model::FieldRow::AdvancedSection {
+                let selected = focused && i == state.selected;
+                let (chevron, summary) = if state.model.advanced_open { ("\u{25be}", "") } else { ("\u{25b8}", "  (thread detail, uncertainty)") };
+                let style = if selected { theme.selected_row_style() } else { theme.title_style(false).add_modifier(Modifier::BOLD) };
+                return ListItem::new(Line::from(Span::styled(format!("{}-- {chevron} Advanced{summary} --", if selected { "> " } else { "" }), style)));
             }
             let selected = focused && i == state.selected;
             let value = if selected && state.editing { state.edit_buffer.with_cursor() } else { display_value(&state.model, *row) };
@@ -225,32 +237,36 @@ fn readout_lines<'a>(theme: &'a Theme, model: &'a PreloadModel, fe: &super::FeCh
         SolverStatus::NotBracketed => ("NOT BRACKETED", StatusTone::Danger),
         SolverStatus::MaxIterationsExceeded => ("MAX ITERATIONS EXCEEDED", StatusTone::Danger),
     };
-    lines.push(Line::from(vec![
-        Span::styled("Solver: ", Style::default()),
-        Span::styled(status_text, theme.status_style(status_tone).add_modifier(Modifier::BOLD)),
-        Span::raw(format!("   Residual: {:.4}", solution.torque.residual)),
-    ]));
+    let mut headline = vec![Span::styled(format!("Preload {:.0} lbf  from {:.1} in-lbf   ", solution.preload, solution.torque.applied), theme.title_style(false).add_modifier(Modifier::BOLD)), Span::styled(status_text, theme.status_style(status_tone).add_modifier(Modifier::BOLD))];
+    if solution.status != SolverStatus::Converged {
+        headline.push(Span::raw(format!("   residual {:.4}", solution.torque.residual)));
+    }
+    lines.push(Line::from(headline));
+    if model.member_stiffness_fe {
+        let note = if model.uses_fe_stiffness() { format!("Member stiffness from the finite-element model (equivalent cone {:.1} deg).", model.solver_cone_angle_deg()) } else { "Member stiffness: finite-element result pending, using the cone model.".to_string() };
+        lines.push(Line::from(Span::styled(note, theme.disabled_style())));
+    }
     lines.push(Line::from(""));
     lines.extend(stack_lines(theme, model));
 
     lines.push(Line::from(Span::styled("Preload / Torque Breakdown", theme.title_style(false))));
-    lines.push(Line::from(format!("  Applied torque       {:.4}", solution.torque.applied)));
+    lines.push(Line::from(format!("  Applied torque       {:.2}", solution.torque.applied)));
     lines.push(Line::from(format!(
-        "  Thread torque        {:.4}  ({:.1}%)",
+        "  Thread torque        {:.2}  ({:.1}%)",
         solution.torque.thread,
         solution.torque.thread_fraction() * 100.0
     )));
     lines.push(Line::from(format!(
-        "  Bearing torque       {:.4}  ({:.1}%)",
+        "  Bearing torque       {:.2}  ({:.1}%)",
         solution.torque.bearing,
         solution.torque.bearing_fraction() * 100.0
     )));
     lines.push(Line::from(format!(
-        "  Prevailing torque    {:.4}  ({:.1}%)",
+        "  Prevailing torque    {:.2}  ({:.1}%)",
         solution.torque.prevailing,
         solution.torque.prevailing_fraction() * 100.0
     )));
-    lines.push(Line::from(Span::styled(format!("  Solved preload       {:.4}", solution.preload), theme.title_style(false))));
+    lines.push(Line::from(Span::styled(format!("  Solved preload       {:.1}", solution.preload), theme.title_style(false))));
     lines.push(Line::from(""));
 
     lines.push(Line::from(Span::styled("Deformation", theme.title_style(false))));
@@ -514,6 +530,7 @@ mod tests {
     #[test]
     fn the_longest_hint_is_never_truncated_across_a_range_of_widths() {
         let mut everything_on = PreloadModel::default();
+        everything_on.advanced_open = true;
         everything_on.uncertainty_enabled = true;
         everything_on.monte_carlo_enabled = true;
         everything_on.external_load_enabled = true;
@@ -532,6 +549,7 @@ mod tests {
 
         for width in [40u16, 50, 60, 84, 98, 140] {
             let mut state = PreloadAnalysisState::default();
+            state.model.advanced_open = true;
             state.model.uncertainty_enabled = true;
             state.model.monte_carlo_enabled = true;
             state.model.external_load_enabled = true;

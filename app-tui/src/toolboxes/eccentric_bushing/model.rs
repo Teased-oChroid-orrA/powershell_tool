@@ -80,29 +80,37 @@ pub enum FieldRow {
     TogglePinCredit,
     ToggleDirectOnset,
     Run(Task),
+    /// Opens and closes the Advanced section (rows after it in `field_rows`).
+    AdvancedSection,
 }
 
-pub fn field_rows() -> Vec<FieldRow> {
-    vec![
+/// Basic inputs and the three actions first; the modelling switches sit in the Advanced section.
+pub fn field_rows(advanced: bool) -> Vec<FieldRow> {
+    let mut rows = vec![
         FieldRow::Header("Eccentricity"),
         FieldRow::Number(NumberTarget::Offset),
         FieldRow::Number(NumberTarget::LoadAngle),
-        FieldRow::Header("Housing"),
+        FieldRow::Header("Housing & Pin"),
         FieldRow::Number(NumberTarget::BossFactor),
-        FieldRow::TogglePlane,
-        FieldRow::ToggleHousing,
-        FieldRow::Header("Pin"),
         FieldRow::Number(NumberTarget::PinClearance),
         FieldRow::Number(NumberTarget::PinFriction),
-        FieldRow::Number(NumberTarget::PinModulus),
-        FieldRow::Number(NumberTarget::PinNu),
-        FieldRow::TogglePinCredit,
-        FieldRow::ToggleDirectOnset,
         FieldRow::Header("Run"),
         FieldRow::Run(Task::Analyze),
         FieldRow::Run(Task::MaxOffset),
         FieldRow::Run(Task::MaxLoad),
-    ]
+        FieldRow::AdvancedSection,
+    ];
+    if advanced {
+        rows.extend([
+            FieldRow::TogglePlane,
+            FieldRow::ToggleHousing,
+            FieldRow::Number(NumberTarget::PinModulus),
+            FieldRow::Number(NumberTarget::PinNu),
+            FieldRow::TogglePinCredit,
+            FieldRow::ToggleDirectOnset,
+        ]);
+    }
+    rows
 }
 
 pub fn row_label(row: FieldRow) -> &'static str {
@@ -116,12 +124,14 @@ pub fn row_label(row: FieldRow) -> &'static str {
         FieldRow::Run(Task::Analyze) => "Analyse this offset",
         FieldRow::Run(Task::MaxOffset) => "Find maximum offset",
         FieldRow::Run(Task::MaxLoad) => "Find maximum load",
+        FieldRow::AdvancedSection => "Advanced settings",
     }
 }
 
 pub fn field_hint(row: FieldRow) -> &'static str {
     match row {
         FieldRow::Header(_) => "",
+        FieldRow::AdvancedSection => "Axial condition, housing type, pin modulus and Poisson ratio, capacity basis and the direct spin check. The analysis uses these values whether the section is open or not. Enter, Space or a click opens and closes it.",
         FieldRow::Number(NumberTarget::Offset) => "Distance between the bushing's bore centre and its outer-diameter centre. The wall on the thin side is (bore - ID)/2 minus this. The model needs it above 3 % of the bore; the Bushing Workbench's minimum wall is reported against it separately.",
         FieldRow::Number(NumberTarget::LoadAngle) => "Pin load direction from the offset line (the line from the bushing's OD centre through its bore centre). 90 is transverse: the worst case for spin; 0 or 180 push along the offset line and cause no spin torque.",
         FieldRow::Number(NumberTarget::BossFactor) => "Outer diameter of the round boss around the bore, as a multiple of the bore diameter (at least 1.5). The boss surface is free; only two supports prevent rigid motion.",
@@ -142,6 +152,8 @@ pub fn field_hint(row: FieldRow) -> &'static str {
 /// The toolbox's own inputs (everything else is read from the Bushing Workbench).
 #[derive(Debug, Clone, PartialEq)]
 pub struct EccentricUi {
+    /// The Advanced section of the field list is open.
+    pub advanced_open: bool,
     pub offset: f64,
     pub load_angle: f64,
     pub boss_factor: f64,
@@ -159,7 +171,7 @@ pub struct EccentricUi {
 
 impl Default for EccentricUi {
     fn default() -> Self {
-        Self { offset: 0.02, load_angle: 90.0, boss_factor: 2.5, plane_strain: false, pin_clearance: 0.001, pin_friction: 0.1, pin_modulus: 29.0, pin_nu: 0.30, credit_pin_load: true, direct_onset: false, edge_limited: false }
+        Self { advanced_open: false, offset: 0.02, load_angle: 90.0, boss_factor: 2.5, plane_strain: false, pin_clearance: 0.001, pin_friction: 0.1, pin_modulus: 29.0, pin_nu: 0.30, credit_pin_load: true, direct_onset: false, edge_limited: false }
     }
 }
 

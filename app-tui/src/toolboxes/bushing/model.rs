@@ -341,6 +341,8 @@ pub enum FieldRow {
     /// out on a paper bushing-fit worksheet, so the list reads as a form
     /// with sections rather than one long undifferentiated column.
     Header(&'static str),
+    /// Opens and closes the Advanced section (rows after it in `field_rows`).
+    AdvancedSection,
     ToggleFitType,
     ToggleToleranceMode,
     /// One compact row for a dimension's whole tolerance band.
@@ -363,6 +365,7 @@ pub enum FieldRow {
 pub fn row_label(row: FieldRow) -> &'static str {
     match row {
         FieldRow::Header(text) => text,
+        FieldRow::AdvancedSection => "Advanced settings",
         FieldRow::ToggleFitType => "Fit Type",
         FieldRow::ToggleToleranceMode => "Tolerance Entry",
         FieldRow::Tol(_) => "Tolerance",
@@ -391,6 +394,7 @@ pub fn row_label(row: FieldRow) -> &'static str {
 pub fn field_hint(row: FieldRow) -> &'static str {
     match row {
         FieldRow::Header(_) => "",
+        FieldRow::AdvancedSection => "Tolerance bands, installation limits, flange / countersink geometry, tolerance enforcement and install thermal assist. Enter, Space or a click opens and closes the section; the checks use these values whether it is open or not.",
         FieldRow::ToggleToleranceMode => "How every tolerance row is entered and shown: nominal with +tol / -tol, or absolute min / max limits. Switching only changes the view - the same band is kept.",
         FieldRow::Tol(_) => "Tolerance band of the dimension above. Enter or just type: '+0.0005 -0.0003' (plus then minus; one value = symmetric), or in Min / Max mode '0.4995 0.5005'. The nominal stays put when it is inside the limits. A bore band wider than the interference band makes the fit Infeasible.",
         FieldRow::ToggleFitType => "Selecting a fit type loads its typical Target Interference and tolerance band for the current bore (Press ~0.003 x D, Shrink ~0.005 x D plus Install Thermal Assist, Clearance/Slip negative). Everything stays editable afterward; a mismatch between fit type and interference sign is flagged in Results.",
@@ -451,15 +455,14 @@ pub fn field_hint(row: FieldRow) -> &'static str {
 /// Tolerance Enforcement / Install Thermal Assist) rather than one long
 /// undifferentiated list.
 pub fn field_rows(model: &BushingModel) -> Vec<FieldRow> {
+    // Basic: what a first fit check needs. Everything else (tolerance bands, installation limits,
+    // countersinks, enforcement, thermal assist) sits behind the collapsed Advanced section.
     let mut rows = vec![
         FieldRow::Header("Bore & Fit"),
         FieldRow::ToggleFitType,
-        FieldRow::ToggleToleranceMode,
         FieldRow::Number(NumberTarget::BoreDia),
-        FieldRow::Tol(TolGroup::Bore),
         FieldRow::Number(NumberTarget::IdBushing),
         FieldRow::Number(NumberTarget::Interference),
-        FieldRow::Tol(TolGroup::Interference),
         FieldRow::Header("Housing Geometry"),
         FieldRow::Number(NumberTarget::HousingLen),
         FieldRow::Number(NumberTarget::HousingWidth),
@@ -469,14 +472,25 @@ pub fn field_rows(model: &BushingModel) -> Vec<FieldRow> {
         FieldRow::OpenBushingMaterialPicker,
         FieldRow::Number(NumberTarget::Friction),
         FieldRow::Number(NumberTarget::DeltaT),
+        FieldRow::Header("Load"),
+        FieldRow::Number(NumberTarget::Load),
+        FieldRow::AdvancedSection,
+    ];
+    if !model.advanced_open {
+        return rows;
+    }
+    rows.extend([
+        FieldRow::Header("Tolerances"),
+        FieldRow::ToggleToleranceMode,
+        FieldRow::Tol(TolGroup::Bore),
+        FieldRow::Tol(TolGroup::Interference),
         FieldRow::Header("Installation"),
         FieldRow::ToggleEndConstraint,
         FieldRow::Number(NumberTarget::MinWallStraight),
         FieldRow::Number(NumberTarget::EdgeLoadAngleDeg),
-        FieldRow::Number(NumberTarget::Load),
         FieldRow::Header("OD Geometry"),
         FieldRow::ToggleBushingType,
-    ];
+    ]);
     if model.bushing_type == BushingType::Flanged {
         rows.push(FieldRow::Number(NumberTarget::FlangeOd));
         rows.push(FieldRow::Number(NumberTarget::FlangeThk));
@@ -555,6 +569,8 @@ pub struct CatalogSize {
 
 #[derive(Clone)]
 pub struct BushingModel {
+    /// The Advanced section of the field list is open.
+    pub advanced_open: bool,
     pub fit_type: FitType,
     pub tolerance_mode: ToleranceMode,
     pub bore_dia: f64,
@@ -639,6 +655,7 @@ pub struct BushingModel {
 impl Default for BushingModel {
     fn default() -> Self {
         let mut model = Self {
+            advanced_open: false,
             fit_type: FitType::default(),
             tolerance_mode: ToleranceMode::default(),
             bore_dia: 0.5,
@@ -1342,6 +1359,7 @@ mod tests {
     #[test]
     fn field_rows_shows_flange_fields_only_when_flanged() {
         let mut model = BushingModel::default();
+        model.advanced_open = true;
         assert!(!field_rows(&model).contains(&FieldRow::Number(NumberTarget::FlangeOd)));
         model.bushing_type = BushingType::Flanged;
         assert!(field_rows(&model).contains(&FieldRow::Number(NumberTarget::FlangeOd)));
@@ -1350,6 +1368,7 @@ mod tests {
     #[test]
     fn field_rows_hides_the_derived_countersink_dimension() {
         let mut model = BushingModel::default();
+        model.advanced_open = true;
         model.id_type = IdType::Countersink;
         model.cs_mode = CsMode::DepthAngle;
         let rows = field_rows(&model);
@@ -1361,6 +1380,7 @@ mod tests {
     #[test]
     fn field_rows_hides_enforcement_sub_fields_until_enabled() {
         let mut model = BushingModel::default();
+        model.advanced_open = true;
         assert!(!field_rows(&model).contains(&FieldRow::ToggleLockBore));
         model.enforcement_enabled = true;
         assert!(field_rows(&model).contains(&FieldRow::ToggleLockBore));
@@ -1369,6 +1389,7 @@ mod tests {
     #[test]
     fn field_rows_hides_assembly_thermal_fields_until_enabled() {
         let mut model = BushingModel::default();
+        model.advanced_open = true;
         assert!(!field_rows(&model).contains(&FieldRow::Number(NumberTarget::AssemblyHousingTemp)));
         model.assembly_thermal_enabled = true;
         assert!(field_rows(&model).contains(&FieldRow::Number(NumberTarget::AssemblyHousingTemp)));

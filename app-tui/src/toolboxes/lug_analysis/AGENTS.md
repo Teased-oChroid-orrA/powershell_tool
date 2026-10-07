@@ -24,6 +24,7 @@ Does not own: any mechanics (`lug-solver`), material data (`mechanics-core`), th
 - Every single-letter binding is `'x' | 'X'` (Windows Caps Lock). Readout paragraphs are trimmed per line: start table rows with text, not padding.
 
 ## Pitfalls
+- The `Advanced` section (`FieldRow::MeshSection`, `mesh_open`) holds mesh, solver, plasticity, nonlinearity and pin-bending rows; collapsed by default. Results start with a `PASS/REVIEW/FAIL` verdict line, then Checks, then the contact/ultimate details.
 - `Head Shape = Round` derives edge and corner radius from the width; the Edge/Corner rows only exist in Custom mode. Toggling Custom copies the round values so nothing jumps.
 - Oblique/transverse loads use the full lug and a clamped far end: the response depends on `Model Length` (a note says so).
 - Do not present the elastic peak hoop as a failure load: the ultimate margin comes from the plastic collapse (Plastic Limit Load).

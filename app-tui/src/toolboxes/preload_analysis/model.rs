@@ -247,7 +247,10 @@ pub enum FieldRow {
     OpenBoltPicker,
     OpenTemplatePicker,
     ToggleTighteningFrom,
+    /// Opens and closes the Advanced section (rows after it in `field_rows`).
+    AdvancedSection,
     ToggleBearingModel,
+    ToggleMemberStiffness,
     ToggleExternalLoadEnabled,
     ToggleSlipEnabled,
     ToggleStrengthLimitsEnabled,
@@ -266,7 +269,9 @@ pub fn row_label(row: FieldRow) -> &'static str {
         FieldRow::OpenBoltPicker => "Bolt (AN Standard)",
         FieldRow::OpenTemplatePicker => "Joint Template",
         FieldRow::ToggleTighteningFrom => "Tightening From",
+        FieldRow::AdvancedSection => "Advanced settings",
         FieldRow::ToggleBearingModel => "Bearing Pressure Model",
+        FieldRow::ToggleMemberStiffness => "Member Stiffness",
         FieldRow::ToggleExternalLoadEnabled => "External Service Load",
         FieldRow::ToggleSlipEnabled => "Transverse Load / Slip Check",
         FieldRow::ToggleStrengthLimitsEnabled => "Material Strength Limits",
@@ -295,6 +300,8 @@ pub fn field_hint(row: FieldRow) -> &'static str {
         FieldRow::Number(NumberTarget::MuThread) => "Thread-thread friction coefficient - the dominant term in the full V-thread torque equation.",
         FieldRow::Number(NumberTarget::MuBearing) => "Friction coefficient at the rotating bearing face (under the head, nut, or washer).",
         FieldRow::ToggleBearingModel => "Contact-pressure assumption under the bearing face - Uniform Pressure (new/rigid parts) or Uniform Wear (broken-in/softer parts) - changes the effective friction radius, not the friction coefficient itself.",
+        FieldRow::AdvancedSection => "Friction model, member stiffness model, thread detail (filled in by the Bolt picker), member outer geometry, uncertainty and thread load distribution. Enter, Space or a click opens and closes the section; the solve uses these values whether it is open or not.",
+        FieldRow::ToggleMemberStiffness => "How the clamped members' compliance is found. Pressure Cone uses the half-angle below. Finite Element meshes the stack on the general FE kernel (fea-core) and uses the cone half-angle that reproduces its compliance, so the whole solve (preload, load fraction, separation, slip) follows the FE value. Falls back to the cone angle while the FE result is pending or unavailable.",
         FieldRow::Number(NumberTarget::PrevailingTorque) => "Constant torque from a self-locking nut/insert, independent of preload - kept separate from the preload-producing friction torque.",
         FieldRow::Number(NumberTarget::BearingInnerRadius) => "Inner radius of the nut-side annular bearing contact (the clearance hole radius). Always used for clamped-member contact pressure, and for the torque solve when Tightening From is Nut.",
         FieldRow::Number(NumberTarget::BearingOuterRadius) => "Outer radius of the nut-side annular bearing contact (nut/washer bearing face radius).",
@@ -367,6 +374,12 @@ pub struct PreloadModel {
     pub head_bearing_inner_radius: f64,
     pub head_bearing_outer_radius: f64,
     pub cone_half_angle_deg: f64,
+    /// Member compliance from the finite-element model (`fe_check`) instead of the pressure cone.
+    pub member_stiffness_fe: bool,
+    /// The Advanced section of the field list is open.
+    pub advanced_open: bool,
+    /// Cone half angle matching the FE compliance of exactly the current joint; set by `PreloadAnalysisState::sync_fe_angle`.
+    pub fe_angle_deg: Option<f64>,
 
     pub thread_major_dia: f64,
     pub thread_pitch_dia: f64,
@@ -455,6 +468,9 @@ impl Default for PreloadModel {
             head_bearing_inner_radius: 0.0,
             head_bearing_outer_radius: 0.0,
             cone_half_angle_deg: 30.0,
+            member_stiffness_fe: false,
+            advanced_open: false,
+            fe_angle_deg: None,
             thread_major_dia: g.d,
             thread_pitch_dia: g.d2,
             thread_root_dia: g.d3,
@@ -530,24 +546,14 @@ pub fn field_rows(model: &PreloadModel) -> Vec<FieldRow> {
     rows.push(FieldRow::Header("Friction"));
     rows.push(FieldRow::Number(NumberTarget::MuThread));
     rows.push(FieldRow::Number(NumberTarget::MuBearing));
-    rows.push(FieldRow::ToggleBearingModel);
-    rows.push(FieldRow::Number(NumberTarget::PrevailingTorque));
 
     rows.push(FieldRow::Header("Bearing Geometry"));
     rows.push(FieldRow::Number(NumberTarget::BearingInnerRadius));
     rows.push(FieldRow::Number(NumberTarget::BearingOuterRadius));
-    rows.push(FieldRow::Number(NumberTarget::ConeHalfAngleDeg));
 
     rows.push(FieldRow::Header("Fastener"));
     rows.push(FieldRow::OpenBoltPicker);
     rows.push(FieldRow::Number(NumberTarget::ThreadMajorDia));
-    rows.push(FieldRow::Number(NumberTarget::ThreadPitchDia));
-    rows.push(FieldRow::Number(NumberTarget::ThreadRootDia));
-    rows.push(FieldRow::Number(NumberTarget::ThreadPitch));
-    rows.push(FieldRow::Number(NumberTarget::ThreadStarts));
-    rows.push(FieldRow::Number(NumberTarget::ThreadAngleDeg));
-    rows.push(FieldRow::Number(NumberTarget::FastenerE));
-    rows.push(FieldRow::Number(NumberTarget::FastenerNu));
     rows.push(FieldRow::Number(NumberTarget::ShankLength));
     rows.push(FieldRow::Number(NumberTarget::ShankDiameter));
 
@@ -557,7 +563,6 @@ pub fn field_rows(model: &PreloadModel) -> Vec<FieldRow> {
         rows.push(FieldRow::Number(NumberTarget::MemberThickness(i)));
         rows.push(FieldRow::Number(NumberTarget::MemberModulus(i)));
         rows.push(FieldRow::Number(NumberTarget::MemberHoleDiameter(i)));
-        rows.push(FieldRow::Number(NumberTarget::MemberOuterDiameter(i)));
     }
     if model.members.len() < MAX_MEMBERS {
         rows.push(FieldRow::ToggleAddMember);
@@ -585,6 +590,31 @@ pub fn field_rows(model: &PreloadModel) -> Vec<FieldRow> {
         rows.push(FieldRow::Number(NumberTarget::UltimateStrength));
         rows.push(FieldRow::Number(NumberTarget::ThreadEngagementLength));
         rows.push(FieldRow::Number(NumberTarget::ThreadShearStrength));
+    }
+
+
+    // Advanced: friction model detail, member stiffness model, catalog-filled thread data, member
+    // outer geometry and the optional analyses. Collapsed by default; the solve uses them regardless.
+    rows.push(FieldRow::AdvancedSection);
+    if !model.advanced_open {
+        return rows;
+    }
+    rows.push(FieldRow::Header("Friction & Stiffness"));
+    rows.push(FieldRow::ToggleBearingModel);
+    rows.push(FieldRow::Number(NumberTarget::PrevailingTorque));
+    rows.push(FieldRow::ToggleMemberStiffness);
+    rows.push(FieldRow::Number(NumberTarget::ConeHalfAngleDeg));
+    rows.push(FieldRow::Header("Thread & Fastener Detail"));
+    rows.push(FieldRow::Number(NumberTarget::ThreadPitchDia));
+    rows.push(FieldRow::Number(NumberTarget::ThreadRootDia));
+    rows.push(FieldRow::Number(NumberTarget::ThreadPitch));
+    rows.push(FieldRow::Number(NumberTarget::ThreadStarts));
+    rows.push(FieldRow::Number(NumberTarget::ThreadAngleDeg));
+    rows.push(FieldRow::Number(NumberTarget::FastenerE));
+    rows.push(FieldRow::Number(NumberTarget::FastenerNu));
+    rows.push(FieldRow::Header("Member Outer Geometry"));
+    for i in 0..model.members.len() {
+        rows.push(FieldRow::Number(NumberTarget::MemberOuterDiameter(i)));
     }
 
     rows.push(FieldRow::Header("Uncertainty Analysis"));
@@ -647,6 +677,37 @@ impl PreloadModel {
         })
     }
 
+    /// The half angle the solver integrates with: the FE-equivalent one in Finite Element mode once
+    /// available for this joint, otherwise the user's.
+    pub fn solver_cone_angle_deg(&self) -> f64 {
+        match (self.member_stiffness_fe, self.fe_angle_deg) {
+            (true, Some(a)) => a,
+            _ => self.cone_half_angle_deg,
+        }
+    }
+
+    /// Whether the displayed solution really uses the FE compliance.
+    pub fn uses_fe_stiffness(&self) -> bool {
+        self.member_stiffness_fe && self.fe_angle_deg.is_some()
+    }
+
+    pub fn toggle_member_stiffness(&mut self) {
+        self.member_stiffness_fe = !self.member_stiffness_fe;
+        self.recompute();
+    }
+
+    /// Sets the FE-equivalent angle; returns whether the solve changed.
+    pub fn set_fe_angle(&mut self, angle: Option<f64>) -> bool {
+        if self.fe_angle_deg == angle {
+            return false;
+        }
+        self.fe_angle_deg = angle;
+        if self.member_stiffness_fe {
+            self.recompute();
+        }
+        true
+    }
+
     fn build_inputs(&self) -> JointInputs {
         let mode = match self.mode {
             Mode::TorqueControlled => AnalysisMode::TorqueControlled { applied_torque: self.applied_torque },
@@ -667,7 +728,7 @@ impl PreloadModel {
             fastener_e: self.fastener_e,
             fastener_nu: self.fastener_nu,
             member_stack: self.member_stack(),
-            cone_half_angle_deg: self.cone_half_angle_deg,
+            cone_half_angle_deg: self.solver_cone_angle_deg(),
             mode,
             external_axial_load: self.external_load_enabled.then_some(self.external_axial_load),
             friction_interfaces: if self.slip_enabled { vec![self.friction_interface_mu] } else { Vec::new() },

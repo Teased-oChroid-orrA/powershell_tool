@@ -26,7 +26,7 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &FastenerHoleSt
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(theme.border_style(focused))
-        .title(" Fastener Holes - Space/Enter: toggle or edit ");
+        .title(crate::widgets::title::toolbox_title("Fastener Holes", &["Enter Edit"], area.width));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {

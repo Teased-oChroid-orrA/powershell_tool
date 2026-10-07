@@ -20,7 +20,7 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &LugAnalysisSta
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(theme.border_style(focused))
-        .title(" Lug Analysis - Space/Enter: toggle/pick/edit \u{b7} d: bore profile \u{b7} e: export ");
+        .title(crate::widgets::title::toolbox_title("Lug Analysis", &["Enter Edit", "e Export", "d Bore profile"], area.width));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -135,9 +135,9 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, state: &LugAnalysis
                 heights.push(1);
                 let selected = focused && i == state.selected;
                 let chevron = if state.model.mesh_open { "\u{25be}" } else { "\u{25b8}" };
-                let summary = if state.model.mesh_open { String::new() } else { format!("  ({} around the bore)", state.model.effective_elements_around()) };
+                let summary = if state.model.mesh_open { String::new() } else { format!("  (mesh {})", state.model.effective_elements_around()) };
                 let style = if selected { theme.selected_row_style() } else { theme.title_style(false).add_modifier(Modifier::BOLD) };
-                return ListItem::new(Line::from(Span::styled(format!("{}-- {chevron} Mesh{summary} --", if selected { "> " } else { "" }), style)));
+                return ListItem::new(Line::from(Span::styled(format!("{}-- {chevron} Advanced{summary} --", if selected { "> " } else { "" }), style)));
             }
             let selected = focused && i == state.selected;
             let value = if selected && state.editing { state.edit_buffer.with_cursor() } else { display_value(state, *row) };
@@ -191,6 +191,22 @@ fn check_line<'a>(theme: &Theme, c: &Check) -> Line<'a> {
     ])
 }
 
+/// One-line answer above the details: every check passes, some need a look, or one fails.
+fn verdict_line<'a>(theme: &Theme, checks: &[Check]) -> Line<'a> {
+    let failing: Vec<&Check> = checks.iter().filter(|c| c.status == Status::Fail).collect();
+    let warning = checks.iter().filter(|c| c.status == Status::Warn).count();
+    let lowest = checks.iter().filter_map(|c| c.margin.map(|m| (m, c.name))).min_by(|a, b| a.0.total_cmp(&b.0));
+    let (tone, text) = if let Some(first) = failing.first() {
+        (StatusTone::Danger, format!("FAIL: {} check(s) not met, first {}", failing.len(), first.name))
+    } else if warning > 0 {
+        (StatusTone::Warning, format!("REVIEW: {warning} check(s) with a warning"))
+    } else {
+        (StatusTone::Success, "PASS: every check is met".to_string())
+    };
+    let margin = lowest.map_or(String::new(), |(m, name)| format!("   lowest margin MS {m:+.2} ({name})"));
+    Line::from(Span::styled(format!("{text}{margin}"), theme.status_style(tone).add_modifier(Modifier::BOLD)))
+}
+
 pub fn readout_lines<'a>(theme: &Theme, state: &LugAnalysisState) -> Vec<Line<'a>> {
     let mut lines: Vec<Line<'a>> = Vec::new();
 
@@ -209,11 +225,12 @@ pub fn readout_lines<'a>(theme: &Theme, state: &LugAnalysisState) -> Vec<Line<'a
     if state.error.is_some() || state.job.is_some() || state.model.input().ok().as_ref() != Some(&run.input) {
         lines.push(Line::from(Span::styled("Showing the last completed analysis; the inputs have changed.", theme.disabled_style())));
     }
-    lines.push(Line::from(""));
-    lines.extend(summary_lines(theme, run));
+    lines.push(verdict_line(theme, &run.checks));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled("Checks", theme.title_style(false).add_modifier(Modifier::BOLD))));
     lines.extend(run.checks.iter().map(|c| check_line(theme, c)));
+    lines.push(Line::from(""));
+    lines.extend(summary_lines(theme, run));
     if !run.notes.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled("Notes", theme.title_style(false).add_modifier(Modifier::BOLD))));
@@ -447,11 +464,11 @@ mod tests {
     fn the_mesh_header_shows_its_state_and_summary_and_is_a_clickable_row() {
         let mut s = LugAnalysisState::default();
         let (text, regions) = rendered(&s, 150, 50);
-        assert!(text.contains("\u{25b8} Mesh") && text.contains("72 around the bore"), "collapsed header with its summary:\n{text}");
+        assert!(text.contains("\u{25b8} Advanced") && text.contains("(mesh 72)"), "collapsed header with its summary:\n{text}");
         assert!(!text.contains("Max Growth Ratio"));
         s.model.mesh_open = true;
         let (text, _) = rendered(&s, 150, 60);
-        assert!(text.contains("\u{25be} Mesh") && text.contains("Elements Around Bore") && text.contains("Max Growth Ratio") && text.contains("First Layer Aspect") && text.contains("Mesh Size Test") && text.contains("not run"), "{text}");
+        assert!(text.contains("\u{25be} Advanced") && text.contains("Elements Around Bore") && text.contains("Max Growth Ratio") && text.contains("First Layer Aspect") && text.contains("Mesh Size Test") && text.contains("not run"), "{text}");
         assert!(!regions.lug_analysis_rows.is_empty());
     }
 

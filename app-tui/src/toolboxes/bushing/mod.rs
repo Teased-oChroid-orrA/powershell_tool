@@ -494,6 +494,7 @@ impl BushingState {
             Some(FieldRow::ToggleAssemblyThermalEnabled) => self.model.toggle_assembly_thermal_enabled(),
             Some(FieldRow::OpenHousingMaterialPicker) => self.material_picker = MaterialPickerState::open_for(MaterialTarget::Housing),
             Some(FieldRow::OpenBushingMaterialPicker) => self.material_picker = MaterialPickerState::open_for(MaterialTarget::Bushing),
+            Some(FieldRow::AdvancedSection) => self.model.advanced_open = !self.model.advanced_open,
             Some(FieldRow::Header(_)) | Some(FieldRow::Number(_)) | Some(FieldRow::Tol(_)) | None => return,
         }
         self.clamp_selection();
@@ -758,6 +759,7 @@ mod tests {
     #[test]
     fn space_on_bushing_type_toggle_cycles_it_without_entering_edit_mode() {
         let mut state = BushingState::default();
+        state.model.advanced_open = true;
         state.selected = model::field_rows(&state.model).iter().position(|r| *r == FieldRow::ToggleBushingType).unwrap();
         handle_key(&mut state, key(KeyCode::Char(' ')));
         assert_eq!(state.model.bushing_type, bushing_solver::geometry::BushingType::Flanged);
@@ -1176,6 +1178,7 @@ mod tests {
     #[test]
     fn typing_on_a_tolerance_row_edits_plus_and_minus_in_one_row() {
         let mut state = BushingState::default();
+        state.model.advanced_open = true;
         select(&mut state, FieldRow::Tol(model::TolGroup::Bore));
         type_text(&mut state, "+0.0005 -0.0003");
         assert!(state.editing);
@@ -1188,6 +1191,7 @@ mod tests {
     #[test]
     fn min_max_mode_reads_two_limits_and_keeps_the_nominal_when_inside() {
         let mut state = BushingState::default();
+        state.model.advanced_open = true;
         state.model.toggle_tolerance_mode();
         select(&mut state, FieldRow::Tol(model::TolGroup::Bore));
         handle_key(&mut state, key(KeyCode::Enter));
@@ -1201,6 +1205,7 @@ mod tests {
     #[test]
     fn an_unreadable_tolerance_is_rejected_with_a_reason_and_changes_nothing() {
         let mut state = BushingState::default();
+        state.model.advanced_open = true;
         select(&mut state, FieldRow::Tol(model::TolGroup::Interference));
         handle_key(&mut state, key(KeyCode::Enter));
         state.edit_buffer.set("abc".to_string());
@@ -1212,6 +1217,7 @@ mod tests {
     #[test]
     fn tolerance_entry_row_toggles_mode_without_changing_the_band() {
         let mut state = BushingState::default();
+        state.model.advanced_open = true;
         state.model.commit_tolerance_text(model::TolGroup::Bore, "+0.001 -0.0005").unwrap();
         select(&mut state, FieldRow::ToggleToleranceMode);
         handle_key(&mut state, key(KeyCode::Char(' ')));
@@ -1223,7 +1229,10 @@ mod tests {
 
     #[test]
     fn tolerance_rows_replace_the_separate_plus_and_minus_rows() {
-        let rows = model::field_rows(&BushingState::default().model);
+        let mut state = BushingState::default();
+        assert!(!model::field_rows(&state.model).contains(&FieldRow::Tol(model::TolGroup::Bore)), "tolerances are advanced: hidden by default");
+        state.model.advanced_open = true;
+        let rows = model::field_rows(&state.model);
         assert!(rows.contains(&FieldRow::Tol(model::TolGroup::Bore)) && rows.contains(&FieldRow::Tol(model::TolGroup::Interference)));
         assert!(!rows.iter().any(|r| matches!(r, FieldRow::Number(NumberTarget::BoreTolPlus | NumberTarget::BoreTolMinus | NumberTarget::InterferenceTolPlus | NumberTarget::InterferenceTolMinus))));
         assert!(!rows.contains(&FieldRow::Tol(model::TolGroup::CsDia)), "countersink tolerance rows only exist for countersunk geometry");

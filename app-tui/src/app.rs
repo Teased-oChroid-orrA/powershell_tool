@@ -1068,6 +1068,10 @@ fn handle_bushing_click(state: &mut AppState, regions: &MouseRegions, col: u16, 
         state.focus.area = FocusArea::Workspace(bushing::PANE_MAIN);
         state.bushing.selected = i;
         state.bushing.clamp_selection();
+        // A section header opens and closes on a single click.
+        if bushing::model::field_rows(&state.bushing.model).get(state.bushing.selected) == Some(&bushing::model::FieldRow::AdvancedSection) {
+            return bushing::handle_key(&mut state.bushing, synthetic_key(KeyCode::Enter)).1;
+        }
         if is_double_click(&mut state.last_click, ClickTarget::BushingRow(i)) {
             let (_, effects) = bushing::handle_key(&mut state.bushing, synthetic_key(KeyCode::Enter));
             return effects;
@@ -1085,6 +1089,10 @@ fn handle_preload_analysis_click(state: &mut AppState, regions: &MouseRegions, c
         state.focus.area = FocusArea::Workspace(preload_analysis::PANE_MAIN);
         state.preload_analysis.selected = i;
         state.preload_analysis.clamp_selection();
+        // A section header opens and closes on a single click.
+        if preload_analysis::model::field_rows(&state.preload_analysis.model).get(state.preload_analysis.selected) == Some(&preload_analysis::model::FieldRow::AdvancedSection) {
+            return preload_analysis::handle_key(&mut state.preload_analysis, synthetic_key(KeyCode::Enter)).1;
+        }
         if is_double_click(&mut state.last_click, ClickTarget::PreloadAnalysisRow(i)) {
             let (_, effects) = preload_analysis::handle_key(&mut state.preload_analysis, synthetic_key(KeyCode::Enter));
             return effects;
@@ -1102,6 +1110,10 @@ fn handle_eccentric_click(state: &mut AppState, regions: &MouseRegions, col: u16
         state.focus.area = FocusArea::Workspace(eccentric_bushing::PANE_MAIN);
         state.eccentric.selected = i;
         state.eccentric.clamp_selection();
+        // A section header opens and closes on a single click.
+        if state.eccentric.selected_row() == Some(eccentric_bushing::model::FieldRow::AdvancedSection) {
+            return eccentric_bushing::handle_key(&mut state.eccentric, &state.bushing.model, synthetic_key(KeyCode::Enter)).1;
+        }
         if is_double_click(&mut state.last_click, ClickTarget::EccentricRow(i)) {
             return eccentric_bushing::handle_key(&mut state.eccentric, &state.bushing.model, synthetic_key(KeyCode::Enter)).1;
         }

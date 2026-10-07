@@ -22,5 +22,6 @@ Owns: UI state, key routing, rendering, report text. Does not own: any mechanics
 Offset, load angle; housing (`Boss OD / Bore`, round boss or edge-limited plate), axial condition (plane stress / strain); pin (clearance, friction, E, nu), capacity basis (with the pin load / fit alone), direct spin check (on: also simulate the spin, 15-30 s more); the run actions. Inputs from the Bushing Workbench: bore, ID, interference, friction, length, load, materials, edge distance, minimum wall.
 
 ## Pitfalls
+- `model::field_rows(advanced)`: basic inputs and the three Run rows first; axial condition, housing, pin modulus/nu, capacity basis and direct spin check sit behind `FieldRow::AdvancedSection` (`EccentricUi::advanced_open`). The Results headline folds the thin-wall check into the spin verdict, so `HOLDS` never hides a failing wall.
 - The Bushing Workbench's `output.delta_total` is the diametral interference (the solver takes diametral); its `bore_tol.nominal` is the bore diameter.
 - Material elasticity is converted from `mechanics_core::materials::Material` (`e_ksi * 1000`), never re-derived.

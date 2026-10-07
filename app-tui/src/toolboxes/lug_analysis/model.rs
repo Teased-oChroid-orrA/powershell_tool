@@ -500,7 +500,7 @@ pub fn row_label(row: FieldRow) -> &'static str {
         FieldRow::ToggleSecondOrder => "Geometric Nonlinearity",
         FieldRow::TogglePinBending => "Pin Bending",
         FieldRow::ToggleFlowRule => "Flow Stress Rule",
-        FieldRow::MeshSection => "Mesh",
+        FieldRow::MeshSection => "Advanced settings",
         FieldRow::ToggleAutoRefine => "Contact Refinement",
         FieldRow::MeshAdvice => "Mesh Size Test",
         FieldRow::ToggleSolver => "Solver",
@@ -514,7 +514,7 @@ pub fn field_hint(row: FieldRow) -> &'static str {
         FieldRow::ToggleHeadShape => "Round: the head is a half circle concentric with the hole (e = W/2). Custom: set the edge distance and corner radius yourself.",
         FieldRow::OpenMaterialPicker => "Enter opens the material browser (MIL-HDBK-5J conditions and typical values). E, Fty, Ftu and the bearing allowables come from it.",
         FieldRow::ToggleMeshDensity => "Preset for the elements around the bore at the far spacing (typing a number below overrides it). The loaded sector of a loose pin is refined on top of this.",
-        FieldRow::MeshSection => "Mesh settings. Enter, Space or a click opens and closes the section.",
+        FieldRow::MeshSection => "Solver, plasticity, nonlinearity, pin bending and mesh settings; the defaults suit most lugs. Enter, Space or a click opens and closes the section.",
         FieldRow::ToggleAutoRefine => "On: finer angular spacing around the loaded sector when a loose pin makes a narrow contact patch (Hertz width). Off: the uniform spacing only.",
         FieldRow::MeshAdvice => "Enter runs a brief test: the elastic case at several mesh sizes (frictionless, in parallel), timed and compared, and recommends the coarsest size whose hoop stress, pressure and pin travel have converged. Enter again applies the recommendation.",
         FieldRow::ToggleSolver => "Kernel: the general finite-element kernel (fea-core) runs every analysis. Legacy: the older condensed / finite-strain solvers of lug-solver. Compare: both, the legacy result shown beside the kernel's. A case the kernel cannot run falls back to the legacy solver with a note.",
@@ -679,25 +679,26 @@ pub fn field_rows(model: &LugUiModel) -> Vec<FieldRow> {
             FieldRow::ToggleAutoRefine,
             FieldRow::MeshAdvice,
         ]);
-    }
-    rows.extend([FieldRow::Header("Analysis"), FieldRow::ToggleSolver, FieldRow::TogglePlastic]);
-    if model.plastic {
-        if !model.finite_strain {
-            rows.push(FieldRow::ToggleFlowRule);
-            if model.flow_rule == FlowRule::TrueUltimate {
+
+        rows.extend([FieldRow::Header("Analysis"), FieldRow::ToggleSolver, FieldRow::TogglePlastic]);
+        if model.plastic {
+            if !model.finite_strain {
+                rows.push(FieldRow::ToggleFlowRule);
+                if model.flow_rule == FlowRule::TrueUltimate {
+                    rows.push(FieldRow::Number(NumberTarget::Elongation));
+                }
+            }
+            rows.push(FieldRow::ToggleFiniteStrain);
+            if model.finite_strain {
+                rows.push(FieldRow::Number(NumberTarget::Ductility));
                 rows.push(FieldRow::Number(NumberTarget::Elongation));
             }
         }
-        rows.push(FieldRow::ToggleFiniteStrain);
-        if model.finite_strain {
-            rows.push(FieldRow::Number(NumberTarget::Ductility));
-            rows.push(FieldRow::Number(NumberTarget::Elongation));
+        rows.push(FieldRow::ToggleSecondOrder);
+        rows.push(FieldRow::TogglePinBending);
+        if model.pin_bending {
+            rows.push(FieldRow::Number(NumberTarget::ClevisOffset));
         }
-    }
-    rows.push(FieldRow::ToggleSecondOrder);
-    rows.push(FieldRow::TogglePinBending);
-    if model.pin_bending {
-        rows.push(FieldRow::Number(NumberTarget::ClevisOffset));
     }
     rows
 }
@@ -1545,6 +1546,7 @@ mod tests {
     #[test]
     fn the_new_rows_follow_their_switches() {
         let mut m = LugUiModel::default();
+        m.mesh_open = true; // the analysis switches sit in the Advanced section
         let has = |m: &LugUiModel, r: FieldRow| field_rows(m).contains(&r);
         assert!(has(&m, FieldRow::TogglePinBody) && has(&m, FieldRow::ToggleSecondOrder) && has(&m, FieldRow::TogglePinBending));
         assert!(has(&m, FieldRow::Number(NumberTarget::TemperatureChange)));
@@ -1654,6 +1656,7 @@ mod tests {
         assert_eq!(m.flow_for(FlowRule::Ultimate, 0.1), 77_000.0);
         assert!((m.flow_for(FlowRule::TrueUltimate, 0.10) - 84_700.0).abs() < 1e-6);
         let mut ui = LugUiModel::default();
+        ui.mesh_open = true; // the analysis switches sit in the Advanced section
         assert_eq!(ui.flow_rule, FlowRule::Ultimate, "the validated, never-high rule is the default");
         let has = |m: &LugUiModel, r: FieldRow| field_rows(m).contains(&r);
         assert!(has(&ui, FieldRow::ToggleFlowRule) && !has(&ui, FieldRow::Number(NumberTarget::Elongation)));

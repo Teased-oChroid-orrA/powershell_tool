@@ -732,6 +732,7 @@ mod tests {
     #[test]
     fn the_solver_row_cycles_kernel_legacy_compare() {
         let mut s = LugAnalysisState::default();
+        s.model.mesh_open = true; // the solver row sits in the Advanced section
         assert_eq!(s.model.solver, model::SolverChoice::Kernel);
         select(&mut s, FieldRow::ToggleSolver);
         handle_key(&mut s, key(KeyCode::Char(' ')));

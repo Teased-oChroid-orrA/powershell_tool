@@ -25,7 +25,7 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingState, 
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(theme.border_style(focused))
-        .title(" Bushing Workbench - Space/Enter: toggle/pick/edit \u{b7} d: details \u{b7} e: export ");
+        .title(crate::widgets::title::toolbox_title("Bushing Workbench", &["Enter Edit", "e Export", "d Details"], area.width));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -169,7 +169,7 @@ fn compute_label_width(mode: model::ToleranceMode, rows: &[FieldRow]) -> u16 {
 
 fn display_value(model: &BushingModel, row: FieldRow) -> String {
     match row {
-        FieldRow::Header(_) => String::new(),
+        FieldRow::Header(_) | FieldRow::AdvancedSection => String::new(),
         FieldRow::ToggleFitType => model::label_fit_type(model.fit_type).to_string(),
         FieldRow::ToggleToleranceMode => model.tolerance_mode.label().to_string(),
         FieldRow::Tol(group) => model.tolerance_display(group),
@@ -244,6 +244,13 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingStat
             if let FieldRow::Header(text) = row {
                 heights.push(1);
                 return ListItem::new(Line::from(Span::styled(format!("-- {text} --"), theme.title_style(false).add_modifier(Modifier::BOLD))));
+            }
+            if *row == FieldRow::AdvancedSection {
+                heights.push(1);
+                let selected = focused && i == state.selected;
+                let (chevron, summary) = if state.model.advanced_open { ("\u{25be}", "") } else { ("\u{25b8}", "  (tolerances, geometry)") };
+                let style = if selected { theme.selected_row_style() } else { theme.title_style(false).add_modifier(Modifier::BOLD) };
+                return ListItem::new(Line::from(Span::styled(format!("{}-- {chevron} Advanced{summary} --", if selected { "> " } else { "" }), style)));
             }
             let selected = focused && i == state.selected;
             let value = if selected && state.editing { state.edit_buffer.with_cursor() } else { display_value(&state.model, *row) };

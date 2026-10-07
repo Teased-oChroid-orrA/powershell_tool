@@ -19,7 +19,7 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &EccentricState
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(theme.border_style(focused))
-        .title(" Eccentric Bushing - r: analyse \u{b7} m: max offset \u{b7} l: max load \u{b7} d: profile \u{b7} e: export ");
+        .title(crate::widgets::title::toolbox_title("Eccentric Bushing", &["r Analyse", "m Max offset", "l Max load", "e Export", "d Profile"], area.width));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -29,7 +29,7 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &EccentricState
         let cols = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Length(FIELDS_WIDTH), Constraint::Min(MIN_READOUT_WIDTH)]).split(inner);
         (cols[0], cols[1])
     } else {
-        let rows = Layout::default().direction(Direction::Vertical).constraints([Constraint::Percentage(45), Constraint::Percentage(55)]).split(inner);
+        let rows = Layout::default().direction(Direction::Vertical).constraints([Constraint::Percentage(60), Constraint::Percentage(40)]).split(inner);
         (rows[0], rows[1])
     };
     regions.workspace_panes.push((area, super::PANE_MAIN));
@@ -39,7 +39,7 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &EccentricState
 
 fn display_value(state: &EccentricState, row: FieldRow) -> String {
     match row {
-        FieldRow::Header(_) => String::new(),
+        FieldRow::Header(_) | FieldRow::AdvancedSection => String::new(),
         FieldRow::Number(t) => model::format_value(t, state.ui.number_value(t)),
         FieldRow::TogglePlane => if state.ui.plane_strain { "Constrained (plane strain)" } else { "Free ends (plane stress)" }.to_string(),
         FieldRow::ToggleHousing => if state.ui.edge_limited { "Edge-limited plate" } else { "Round boss" }.to_string(),
@@ -59,7 +59,7 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, state: &EccentricSt
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    let rows = model::field_rows();
+    let rows = model::field_rows(state.ui.advanced_open);
     let hint = rows.get(state.selected).map(|r| model::field_hint(*r)).unwrap_or("");
     let hint_height = crate::widgets::hint_panel::hint_panel_height(hint, inner.width, inner.height.saturating_sub(4).max(1));
     let (list_area, hint_area) = if inner.height > hint_height + 1 {
@@ -77,6 +77,13 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, state: &EccentricSt
             if let FieldRow::Header(text) = row {
                 heights.push(1);
                 return ListItem::new(Line::from(Span::styled(format!("-- {text} --"), theme.title_style(false).add_modifier(Modifier::BOLD))));
+            }
+            if *row == FieldRow::AdvancedSection {
+                heights.push(1);
+                let selected = focused && i == state.selected;
+                let (chevron, summary) = if state.ui.advanced_open { ("\u{25be}", "") } else { ("\u{25b8}", "  (axial, housing, pin)") };
+                let style = if selected { theme.selected_row_style() } else { theme.title_style(false).add_modifier(Modifier::BOLD) };
+                return ListItem::new(Line::from(Span::styled(format!("{}-- {chevron} Advanced{summary} --", if selected { "> " } else { "" }), style)));
             }
             let selected = focused && i == state.selected;
             let value = if selected && state.editing { state.edit_buffer.with_cursor() } else { display_value(state, *row) };
@@ -121,31 +128,25 @@ pub fn readout_lines<'a>(theme: &Theme, state: &EccentricState, bushing: &Bushin
         lines.push(Line::from(Span::styled(format!("\u{2717} {err}"), theme.status_style(StatusTone::Danger))));
     }
     let input = model::build_input(bushing, &state.ui);
-    lines.push(bold(theme, "From the Bushing Workbench"));
-    match &input {
-        Ok(i) => {
-            lines.push(Line::from(format!("  Bore {:.4} in  ID {:.4} in  interference {:.4} in (dia)  length {:.3} in", i.bore_dia, i.bushing_id, i.interference_dia, i.thickness)));
-            lines.push(Line::from(format!("  Friction {:.2}  pin load {:.0} lbf  {}  thin wall {:.4} in", i.friction, i.load_lbf, i.edge_distance.map_or(format!("boss OD {:.3} in", i.housing_od), |e| format!("plate, edge {e:.3} in")), i.walls().0)));
-        }
-        Err(why) => lines.push(Line::from(Span::styled(format!("  \u{26a0} {why}"), theme.status_style(StatusTone::Warning)))),
-    }
     let fresh = |sig: &eccentric_bushing::Inputs| input.as_ref().is_ok_and(|i| i == sig);
 
     if let Some((sig, a)) = &state.analysis {
+        // The spin margin alone is not the answer when the thin wall already breaks the Bushing Workbench's minimum.
+        let (glyph, tone) = if !a.wall_ok || (a.margin.is_finite() && a.margin < 0.0) {
+            ("\u{2717}", StatusTone::Danger)
+        } else if !a.margin.is_finite() {
+            ("\u{b7}", StatusTone::Neutral)
+        } else {
+            ("\u{2713}", StatusTone::Success)
+        };
+        let spin = if a.margin.is_finite() { format!("{} at e = {:.4} in   margin {:+.1} %", if a.margin >= 0.0 { "HOLDS" } else { "SPINS" }, a.offset, a.margin * 100.0) } else { format!("No spin torque at this load angle (e = {:.4} in)", a.offset) };
+        let verdict = if a.wall_ok { spin } else { format!("THIN WALL below the minimum; spin {spin}") };
+        lines.push(Line::from(Span::styled(format!("{glyph} {verdict}"), theme.status_style(tone).add_modifier(Modifier::BOLD))));
         lines.push(Line::from(""));
-        lines.push(bold(theme, &format!("Spin check at e = {:.4} in", a.offset)));
+        lines.push(bold(theme, "Spin check details"));
         if !fresh(sig) {
             lines.push(Line::from(Span::styled("  (inputs changed since this run: r runs it again)", theme.disabled_style())));
         }
-        let (glyph, tone) = if !a.margin.is_finite() {
-            ("\u{b7}", StatusTone::Neutral)
-        } else if a.margin >= 0.0 {
-            ("\u{2713}", StatusTone::Success)
-        } else {
-            ("\u{2717}", StatusTone::Danger)
-        };
-        let verdict = if a.margin.is_finite() { format!("margin {:+.1} %  {}", a.margin * 100.0, if a.margin >= 0.0 { "HOLDS" } else { "SPINS" }) } else { "no spin torque at this load angle".to_string() };
-        lines.push(Line::from(Span::styled(format!("  {glyph} {verdict}"), theme.status_style(tone))));
         lines.push(Line::from(format!("  Torque required F e sin(a)  {:>9.2} lbf in", a.torque_required)));
         lines.push(Line::from(format!("  Capacity, fit alone         {:>9.2} lbf in", a.torque_capacity_fit)));
         lines.push(Line::from(format!("  Capacity, with pin load     {:>9.2} lbf in", a.torque_capacity)));
@@ -197,6 +198,16 @@ pub fn readout_lines<'a>(theme: &Theme, state: &EccentricState, bushing: &Bushin
     if state.analysis.is_none() && state.max_offset.is_none() && state.max_load.is_none() && state.job.is_none() && state.error.is_none() {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled("Press r to analyse this offset, m for the maximum offset, l for the maximum load.", theme.disabled_style())));
+    }
+    lines.push(Line::from(""));
+    let input = model::build_input(bushing, &state.ui);
+    lines.push(bold(theme, "From the Bushing Workbench"));
+    match &input {
+        Ok(i) => {
+            lines.push(Line::from(format!("  Bore {:.4} in  ID {:.4} in  interference {:.4} in (dia)  length {:.3} in", i.bore_dia, i.bushing_id, i.interference_dia, i.thickness)));
+            lines.push(Line::from(format!("  Friction {:.2}  pin load {:.0} lbf  {}  thin wall {:.4} in", i.friction, i.load_lbf, i.edge_distance.map_or(format!("boss OD {:.3} in", i.housing_od), |e| format!("plate, edge {e:.3} in")), i.walls().0)));
+        }
+        Err(why) => lines.push(Line::from(Span::styled(format!("  \u{26a0} {why}"), theme.status_style(StatusTone::Warning)))),
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(

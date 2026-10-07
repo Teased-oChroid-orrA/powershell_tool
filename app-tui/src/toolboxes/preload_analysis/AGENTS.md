@@ -23,7 +23,7 @@ Does not own: any preload mechanics (`fastened-joint-solver/AGENTS.md`).
 | Add/change a Preload Analysis editable field | `src/toolboxes/preload_analysis/model.rs` (`NumberTarget`/`field_rows`) - member-stack fields are indexed (`NumberTarget::MemberThickness(usize)` etc.), added/removed via `ToggleAddMember`/`ToggleRemoveMember` up to `MAX_MEMBERS` |
 
 ## Contracts
-- The FE member-compliance cross-check is read-only: it never feeds the solver. `tick` (every `Tick` while the toolbox is active) starts `Effect::RunMemberFe` 400 ms after the joint stops changing (the first at once); `current(&input)` returns a result only for exactly the inputs shown, so a stale result is never displayed as current. Members are assumed Poisson's ratio 0.3 (`fe_check::MEMBER_NU`); the report export includes the cross-check when it is current.
+- The FE member-compliance cross-check is a read-only second opinion in `Member Stiffness: Pressure Cone` mode (default). In `Finite Element` mode (Advanced section) the solver is fed the cone half angle whose compliance equals the FE one (`FeResult::equivalent_angle_deg`, bisected to 1e-6 and tested to reproduce the FE `C_m`): one solver path, no second solve, no solver change. `PreloadModel::fe_angle_deg` is set only by `PreloadAnalysisState::sync_fe_angle` for exactly the current joint (cleared while pending/failed/stale, falling back to the user's cone angle, labelled in Inputs and Results). `FeInput` deliberately excludes the solver angle, so applying it never re-triggers the FE job. `tick` (every `Tick` while the toolbox is active) starts `Effect::RunMemberFe` 400 ms after the joint stops changing (the first at once); `current(&input)` returns a result only for exactly the inputs shown, so a stale result is never displayed as current. Members are assumed Poisson's ratio 0.3 (`fe_check::MEMBER_NU`); the report export includes the cross-check when it is current.
 - `model.rs` only bridges `solve::compute`; member-stack fields are indexed (`NumberTarget::MemberThickness(usize)` etc.), added/removed up to `MAX_MEMBERS`.
 - `Tightening From` (Nut/Bolt Head) must reach `JointInputs.tightening_from`; it was once a dead toggle.
 
@@ -33,6 +33,7 @@ Does not own: any preload mechanics (`fastened-joint-solver/AGENTS.md`).
 - Results show the head-to-nut stack picture (`stack_diagram`) for any stack, template or hand-built.
 
 ## Pitfalls
+- `field_rows` hides the expert rows behind `FieldRow::AdvancedSection` (`PreloadModel::advanced_open`, collapsed by default): friction model, member stiffness model, thread detail, member outer diameters, Uncertainty, Thread Load Distribution. Hidden values still feed the solve. Tests that look for those rows must set `advanced_open = true`.
 - Before assuming a feature is missing, read `fastened-joint-solver/src/lib.rs`: scope cuts and catalog sourcing exclusions are deliberate.
 
 ## Public API

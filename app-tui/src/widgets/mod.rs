@@ -14,3 +14,4 @@ pub mod scroll_list;
 pub mod scroll_paragraph;
 pub mod shell;
 pub mod spinner;
+pub mod title;

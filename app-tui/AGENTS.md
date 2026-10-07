@@ -81,6 +81,8 @@ Does not own: search/matching/extraction (`search-core`), the index engine (`nat
 - **The Windows exe icon comes from `build.rs` (`winresource`), host-Windows only.** Verified compile of the non-Windows path only; the embed itself must be checked on a CI-built `app-tui.exe`. See `docs/deployment-rust.md` "Windows .exe icon".
 
 ## Patterns
+### Basic / Advanced form sections
+Bushing Workbench, Lug Analysis, Preload Analysis and Eccentric Bushing show the rows a first run needs and put the expert rows behind a collapsed `FieldRow::AdvancedSection` (Lug: `MeshSection` / `mesh_open`; others: `advanced_open` on the model/UI state), rendered as `-- ▸ Advanced --`, toggled by Enter / Space / click like any row. The section row sits at the end of the basic rows and the advanced rows follow it in `field_rows`, so the mouse row mapping (`list_row_regions*`, built from `field_rows`) stays in sync with no extra code. Hidden rows still feed the solve; tests that look for an advanced row must open the section first. Toolbox block titles use `widgets::title::toolbox_title` (drops trailing key hints to fit the width) and the status bar drops the toolbox's own hints whole before `? Help` / `q Quit`. Results lead with a one-line verdict (Lug `PASS/REVIEW/FAIL`, Eccentric `HOLDS/SPINS/THIN WALL`, Preload preload + solver status, Bushing `REVIEW`/`OK`).
 
 ### Adding a real tool behind a placeholder rail slot (`Bushing`/`PressureVessel`)
 1. Add a `src/toolboxes/<tool>/` module mirroring `toolboxes/search/`'s split: a pure `model.rs` (zero ratatui/crossterm imports), a `mod.rs` owning the tool's own state struct + toolbox-local key routing (returning `(bool, Vec<Effect>)` the same way `search::handle_key` does), and a `*_view.rs` for rendering.
