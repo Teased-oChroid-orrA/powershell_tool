@@ -309,7 +309,7 @@ pub fn build_loads(mesh: &mut Mesh, p: &Problem) -> Result<Loads, String> {
             Load::Force { edge, fx, fy, fz } => {
                 let faces = named_faces(mesh, edge)?;
                 let total: f64 = faces.iter().map(|f| face_measure(mesh, f)).sum();
-                if !(total > 0.0) {
+                if total.is_nan() || total <= 0.0 {
                     return Err(format!("edge '{edge}' has no extent to spread a force over"));
                 }
                 let t = [fx / total, fy / total, fz / total];
@@ -324,7 +324,7 @@ pub fn build_loads(mesh: &mut Mesh, p: &Problem) -> Result<Loads, String> {
                 let Geometry::Sketch { holes, .. } = &p.geometry else { return Err("a bearing load needs a sketch hole".into()) };
                 let shape = holes.get(hole.wrapping_sub(1)).ok_or_else(|| format!("bearing load: there is no hole {hole}"))?;
                 let mag = fx.hypot(*fy);
-                if !(mag > 0.0) {
+                if mag.is_nan() || mag <= 0.0 {
                     continue;
                 }
                 // The pin bears on the bore: with a bushing that is the bushing's (possibly offset) bore centre.
@@ -342,7 +342,7 @@ pub fn build_loads(mesh: &mut Mesh, p: &Problem) -> Result<Loads, String> {
                 let probe = Loads { field_faces: faces.iter().map(|f| (f.clone(), unit.clone())).collect(), ..Loads::default() };
                 let fv = loads::assemble(mesh, &probe)?;
                 let r: f64 = (0..fv.len() / d).map(|n| fv[n * d] * dir[0] + fv[n * d + 1] * dir[1]).sum();
-                if !(r > 0.0) {
+                if r.is_nan() || r <= 0.0 {
                     return Err(format!("hole {hole}: the bearing load has nothing to bear on"));
                 }
                 let s = mag / r;
@@ -441,9 +441,12 @@ fn solve_mesh(p: &Problem, mut mesh: Mesh) -> Result<Pass, String> {
 
 /// A plane problem with interference-fit bushings: the fit is installed first (frictional contact between each bushing
 /// and its hole, the bushings held only by contact and weak springs), then the loads are applied on top of it.
+/// A bushing's hole index with its bore and outer faces (node lists per face).
+type HoleFaces = (usize, Vec<Vec<usize>>, Vec<Vec<usize>>);
+
 fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> Result<Pass, String> {
     let d = mesh.dim();
-    let hole_faces: Vec<(usize, Vec<Vec<usize>>, Vec<Vec<usize>>)> = p
+    let hole_faces: Vec<HoleFaces> = p
         .bushings
         .iter()
         .enumerate()

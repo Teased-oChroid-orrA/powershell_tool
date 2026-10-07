@@ -51,7 +51,7 @@ fn the_fe_compliance_has_converged_with_the_default_mesh() {
     let stack = [layer(0.4, 10.0e6, 0.25, None), layer(0.3, 29.0e6, 0.27, Some(2.0))];
     let coarse = member_compliance(&stack, 0.9, 0.9).unwrap();
     let fine = member_compliance_sized(&stack, 0.9, 0.9, 0.06).unwrap();
-    assert!(fine.elements > 2 * coarse.elements / 1, "the refined mesh is larger");
+    assert!(fine.elements > 2 * coarse.elements, "the refined mesh is larger");
     assert!((coarse.compliance / fine.compliance - 1.0).abs() < 0.01, "{:e} vs {:e}", coarse.compliance, fine.compliance);
 }
 

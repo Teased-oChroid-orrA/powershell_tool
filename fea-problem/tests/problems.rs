@@ -31,6 +31,8 @@ fn plate_with_hole_matches_the_net_section_stress_concentration() {
     let s = solve(&p, None).unwrap();
     let (w, d, sigma) = (4.0, 1.0, 10_000.0);
     let x = d / w;
+    // 3.14 is Howland's polynomial coefficient for the stress-concentration fit, not pi.
+    #[allow(clippy::approx_constant)]
     let expect = (3.0 - 3.14 * x + 3.667 * x * x - 1.527 * x * x * x) * sigma * w / (w - d);
     let got = s.summary.max_principal.value;
     eprintln!("peak {got:.0} expect {expect:.0}");
