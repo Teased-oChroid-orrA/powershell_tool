@@ -172,9 +172,17 @@ fn draw_workspace(frame: &mut Frame, area: Rect, state: &AppState, tick: u64, re
             let focused = matches!(state.focus.area, FocusArea::Workspace(_));
             crate::toolboxes::preload_analysis::view::draw(frame, area, &state.theme, &state.preload_analysis, focused, regions);
         }
+        ToolId::EccentricBushing => {
+            let focused = matches!(state.focus.area, FocusArea::Workspace(_));
+            crate::toolboxes::eccentric_bushing::view::draw(frame, area, &state.theme, &state.eccentric, &state.bushing.model, focused, regions);
+        }
         ToolId::LugAnalysis => {
             let focused = matches!(state.focus.area, FocusArea::Workspace(_));
             crate::toolboxes::lug_analysis::view::draw(frame, area, &state.theme, &state.lug_analysis, focused, regions);
+        }
+        ToolId::FeaWorkbench => {
+            let focused = matches!(state.focus.area, FocusArea::Workspace(_));
+            crate::toolboxes::fea_workbench::view::draw(frame, area, &state.theme, &state.fea_workbench, focused, regions);
         }
         ToolId::MaterialLookup => {
             let focused = matches!(state.focus.area, FocusArea::Workspace(_));
@@ -252,8 +260,14 @@ fn contextual_hint(state: &AppState) -> Vec<help::KeyHint> {
         ToolId::PreloadAnalysis if matches!(state.focus.area, FocusArea::Workspace(_)) => {
             vec![help::KeyHint { key: "d", label: "Numbers" }, help::KeyHint { key: "e", label: "Export" }]
         }
+        ToolId::EccentricBushing if matches!(state.focus.area, FocusArea::Workspace(_)) => {
+            vec![help::KeyHint { key: "r", label: "Analyse" }, help::KeyHint { key: "m", label: "Max offset" }, help::KeyHint { key: "l", label: "Max load" }, help::KeyHint { key: "e", label: "Export" }]
+        }
         ToolId::LugAnalysis if state.lug_analysis.material_browser.is_none() && matches!(state.focus.area, FocusArea::Workspace(_)) => {
             vec![help::KeyHint { key: "d", label: "Bore profile" }, help::KeyHint { key: "e", label: "Export" }]
+        }
+        ToolId::FeaWorkbench if state.fea_workbench.material_browser.is_none() && matches!(state.focus.area, FocusArea::Workspace(_)) => {
+            vec![help::KeyHint { key: "r", label: "Solve" }, help::KeyHint { key: "v", label: "Field" }, help::KeyHint { key: "j", label: "Save" }]
         }
         ToolId::MaterialLookup if matches!(state.focus.area, FocusArea::Workspace(_)) => {
             vec![help::KeyHint { key: "Enter", label: "Mark" }, help::KeyHint { key: "F2", label: "Compare" }, help::KeyHint { key: "F3", label: "Export" }]
@@ -331,6 +345,14 @@ fn draw_help(frame: &mut Frame, area: Rect, state: &AppState, regions: &mut Mous
         help::KeyHint { key: "Bolt (AN Standard)", label: "Enter opens the AN/NAS/MS/Hi-Lok catalog and auto-fills thread geometry" },
         help::KeyHint { key: "Uncertainty Analysis", label: "Worst-case corner search and/or a seeded Monte Carlo sampler, toggled together" },
     ];
+    let eccentric: &[help::KeyHint] = &[
+        help::KeyHint { key: "Up/Down", label: "Move field selection" },
+        help::KeyHint { key: "Enter/Space", label: "Edit a value, toggle the axial condition, or run the selected action" },
+        help::KeyHint { key: "r", label: "Analyse the entered offset: pressure map, friction torque capacity against F e sin(angle), margin" },
+        help::KeyHint { key: "m / l", label: "Find the largest offset that still holds / the largest pin load that is held" },
+        help::KeyHint { key: "d / e", label: "Toggle the interface pressure profile / export a text report" },
+        help::KeyHint { key: "Inputs", label: "Bore, ID, interference, friction, length, load and materials come from the Bushing Workbench" },
+    ];
     let lug_analysis: &[help::KeyHint] = &[
         help::KeyHint { key: "Up/Down", label: "Move field selection" },
         help::KeyHint { key: "Space/Enter", label: "Toggle Head Shape / Mesh Density, open the material browser, or edit a value" },
@@ -340,6 +362,18 @@ fn draw_help(frame: &mut Frame, area: Rect, state: &AppState, regions: &mut Mous
         help::KeyHint { key: "Re-analysis", label: "Automatic a moment after any input stops changing; the FE runs on a worker thread" },
         help::KeyHint { key: "Elastic FE", label: "Peak stresses are elastic indicators; local yielding at the hole edge is expected in a ductile lug" },
         help::KeyHint { key: "Load Angle", label: "0 is axial tension, 90 transverse, 180 compression; oblique loads use the full lug and a clamped far end" },
+    ];
+    let fea_workbench: &[help::KeyHint] = &[
+        help::KeyHint { key: "Up/Down", label: "Move field selection" },
+        help::KeyHint { key: "Space/Enter", label: "Cycle a choice, open the material browser, add or remove a hole / support / load, or edit a value" },
+        help::KeyHint { key: "Left/Right", label: "Previous / next template, analysis, element type or edge name" },
+        help::KeyHint { key: "r / a", label: "Solve now / toggle the automatic solve of a small model" },
+        help::KeyHint { key: "v / m / x", label: "Cycle the contour field / toggle mesh lines / toggle the deformed shape" },
+        help::KeyHint { key: "d", label: "Toggle the full report in the Results pane" },
+        help::KeyHint { key: "j / o", label: "Save the problem as JSON / open a problem file" },
+        help::KeyHint { key: "e / p", label: "Export the text report / the result as .vtu (ParaView)" },
+        help::KeyHint { key: "Geometry From", label: "Imported: read a Gmsh .msh or Abaqus .inp mesh; its set and surface names become the edges" },
+        help::KeyHint { key: "Support / Load edges", label: "Rectangle: bottom right top left; polygon: edge1..; holes: hole1..; 3D ends: start, end" },
     ];
     let material_lookup: &[help::KeyHint] = &[
         help::KeyHint { key: "Type", label: "Search by name, alloy, temper, spec or table; every word must match" },
@@ -351,14 +385,16 @@ fn draw_help(frame: &mut Frame, area: Rect, state: &AppState, regions: &mut Mous
         help::KeyHint { key: "F3 / Ctrl+E", label: "Export the list and the comparison as a text report" },
         help::KeyHint { key: "Ctrl+PgUp/PgDn", label: "Scroll the property panel" },
     ];
-    let sections: [(&str, &[help::KeyHint]); 8] = [
+    let sections: [(&str, &[help::KeyHint]); 10] = [
         ("Global", global),
         ("Search Files", search),
         ("Fastener Holes", fastener_hole),
         ("Bushing Workbench", bushing),
         ("Pressure Vessel Analyzer", pressure_vessel),
         ("Preload Analysis", preload_analysis),
+        ("Eccentric Bushing", eccentric),
         ("Lug Analysis", lug_analysis),
+        ("FEA Workbench", fea_workbench),
         ("Material Lookup", material_lookup),
     ];
     help::render_overlay(frame, area, &state.theme, &sections);

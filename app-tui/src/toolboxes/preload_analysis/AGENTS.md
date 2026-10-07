@@ -14,6 +14,7 @@ Does not own: any preload mechanics (`fastened-joint-solver/AGENTS.md`).
 | `PreloadAnalysisState`, toolbox-local key routing including member add/remove (`d` numbers panel, `e` export) | `src/toolboxes/preload_analysis/mod.rs` |
 | rendering (field list + torque/deformation/rotation/stress/service-load/slip/uncertainty readout, wide/narrow layout, plain-text report builder) | `src/toolboxes/preload_analysis/view.rs` |
 | sectioned AN/NAS/MS/Hi-Lok fastener catalog picker (auto-fills thread geometry + shank diameter) | `src/toolboxes/preload_analysis/bolt_picker.rs` |
+| finite-element member-compliance cross-check (cone `C_m` vs an axisymmetric FE on `fea-core`, load fractions, equivalent cone half angle): input / result types, `run`, state in `PreloadAnalysisState::fe`, `tick` / `finish_fe` | `src/toolboxes/preload_analysis/fe_check.rs`, `mod.rs`; FE model in `fea-problem/src/joint.rs` |
 
 ## Entry Points
 | Task | Start Here |
@@ -22,6 +23,7 @@ Does not own: any preload mechanics (`fastened-joint-solver/AGENTS.md`).
 | Add/change a Preload Analysis editable field | `src/toolboxes/preload_analysis/model.rs` (`NumberTarget`/`field_rows`) - member-stack fields are indexed (`NumberTarget::MemberThickness(usize)` etc.), added/removed via `ToggleAddMember`/`ToggleRemoveMember` up to `MAX_MEMBERS` |
 
 ## Contracts
+- The FE member-compliance cross-check is read-only: it never feeds the solver. `tick` (every `Tick` while the toolbox is active) starts `Effect::RunMemberFe` 400 ms after the joint stops changing (the first at once); `current(&input)` returns a result only for exactly the inputs shown, so a stale result is never displayed as current. Members are assumed Poisson's ratio 0.3 (`fe_check::MEMBER_NU`); the report export includes the cross-check when it is current.
 - `model.rs` only bridges `solve::compute`; member-stack fields are indexed (`NumberTarget::MemberThickness(usize)` etc.), added/removed up to `MAX_MEMBERS`.
 - `Tightening From` (Nut/Bolt Head) must reach `JointInputs.tightening_from`; it was once a dead toggle.
 

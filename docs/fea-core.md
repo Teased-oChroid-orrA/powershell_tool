@@ -13,8 +13,9 @@ Plan origin: turn the special-purpose lug solver into a general 2D/3D FEA with a
 | 3 | Material nonlinearity (small- and finite-strain J2, analytic consistent tangent, Newton driver) | **Done**. The `Hardening` law moved to `mechanics-core` (single copy, `lug-solver` re-exports it); GEMM/SIMD kernel measured and rejected (see Phase 3) |
 | 4 | General contact (Gauss-point-to-surface, AL + Coulomb friction, BVH search) | **Done** (rigid analytic and deformable masters, 2D and 3D, normal + friction; see limits) |
 | 5 | `lug-solver` bridge on `fea-core` (`lug-solver/src/fea.rs`), force-controlled pin, plastic / finite-strain collapse, meshed elastic pin, 3D double-shear lug, retire duplicated solvers | **Done**: the kernel reproduces the condensed solver (see Phase 5). Retiring `lug-solver`'s own sparse/finite solvers is **declined by the speed gate** (kernel 40-300x slower on the lug); single shear is out of scope |
-| 6 | Docs/ADR upkeep, `app-tui` FEA toolbox (separate decision) | Docs done; the `app-tui` toolbox is deliberately **not** built (library first, user decision pending) |
+| 6 | Docs/ADR upkeep, `app-tui` FEA toolbox (separate decision) | Docs done; the toolbox was built in Phase 8 |
 | 7 | The kernel becomes the main lug solver: bushing, thermal fit, second order, oblique / hardening / finite-strain collapse, sweeps, elastic pin on the full model, speed, mesh settings and mesh-size test in the toolbox | **Done** (see Phase 7) |
+| 8 | The FEA Workbench (`fea-problem` + `app-tui`), toolboxes moved onto the kernel (Bushing's plane-stress edge FE, Preload's member compliance), kernel additions (point location, multi-case solve, rigid-body check) | **Done** (see Phase 8) |
 
 ## Phase 0 baseline (existing lug solver, release build, Apple M1, 8 threads)
 
@@ -293,3 +294,42 @@ oblique 45 deg 30 s (legacy 3.3 s; elastic and collapse run side by side). Where
 
 Limits: elastic pin with friction on the full model falls back to the legacy solver; the kernel is 3-10x slower than the condensed solver
 for the elastic case and ~10x for the collapse (a collapse at 72 elements around is 4-10 s), which the toolbox hides behind its worker thread.
+
+## Phase 8: a workbench, and the toolboxes that can use the kernel use it
+
+**Decision.** Which toolboxes can use a finite-element kernel? Lug Analysis already does (Phase 7). Pressure Vessel (exact Lame, thermal gradient the kernel cannot load: it has uniform `delta_t` only), Fastener Holes (tolerances) and Search have nothing for it to add; an FE re-derivation of a closed form is a test, not a feature. That leaves three real uses, and a place to author problems:
+
+1. **FEA Workbench** (`app-tui` toolbox over the new `fea-problem` crate): a sketched outline with holes (rectangle / circle / slot / polygon), plane stress / plane strain / axisymmetric / 3D extrusion, or an imported Gmsh / Abaqus mesh; material from the handbook browser; edge and point supports with prescribed components; pressure, traction, edge force, bearing (pin) load, point force, body force, temperature change; mesh size, element type, hole refinement, adaptive passes on the ZZ error estimate; mesh preview then colour contour of von Mises, principals, components and displacements, with the deformed shape; JSON problems, text report, `.vtu`. Validated in `fea-problem/tests/problems.rs` against Heywood's Kt (4 %), Timoshenko's cantilever (2 %), Lame in axisymmetry (0.2 % displacements), an exact 3D bar, bearing-load resultants, equilibrium of every template.
+2. **Bushing Workbench edge-distance check**: the plane-stress FE model (`edge-check/src/kfem.rs`) now runs on the kernel with the *same* O-grid, loads and constraints as the banded solver it replaces for this model: displacements agree to 1e-12 (pin cases) and 3e-6 -> 0 (the fit case, once its load is the radial field on the true circle instead of the element edge's own normal), stress at probes to 1e-6. `edge-check`'s contact and plastic-collapse solvers keep their own banded factorisation: they reuse it as an iteration matrix and are validated against NACA TN 1503 with a fixed-point invariant on recommended edge distances; porting them means re-validating those bands and is not done (the lug's own contact collapse already runs on the kernel in Lug Analysis).
+3. **Preload Analysis**: an FE cross-check of the clamped-member compliance (`fea-problem::joint`, axisymmetric rings sharing nodes, equal and opposite bearing pressures, `C = 2U/F^2`) beside the pressure-cone `C_m`, with the joint load fraction each gives and the cone half angle that reproduces the FE compliance. A typical two-plate aluminium joint under a 0.75 in head gives an FE compliance 17 % above the 30 degree cone's, an equivalent half angle near 22 degrees. Read-only: the solver's numbers are unchanged. Members are assumed Poisson's ratio 0.3.
+
+**Kernel additions** (each with tests in `fea-core/tests`): `Model::locator` / `Locator::stress_at` (stress at any physical point by Newton inverse of the isoparametric map, averaged over the elements containing it, nearest element within 2 % of its natural extent for a point a hair off a curved edge), `Model::solve_static_many` (several load cases on one factorisation), and `Model::check_constrained` (called by `solve_static_with`).
+
+**Bug found and fixed.** An under-supported model (a roller on one edge with nothing holding the other direction, or one pinned node) used to factorise anyway - rounding leaves tiny positive pivots - and return the true answer plus an arbitrary rigid motion, silently. `check_constrained` tests the rigid-body modes of every connected piece against the constrained dofs and refuses with "not fully constrained"; regression test `unconstrained_rigid_body_motion_is_an_error`.
+
+Limits: the workbench is linear static (no plasticity or contact authoring yet; the kernel has both), one material per problem, supports and loads reference edge names (no picking in the terminal), the polygon editor lists outer points only, the contour of a 3D model is its front face (`z` maximum), the axisymmetric extrusion / revolution is not offered, and an imported mesh needs its names in the file.
+
+## Phase 9: shared bushing contact set-up and the eccentric-bushing upgrades (`fea-core/src/fit.rs` and the kernel)
+
+`Tuning`, `interference_contacts` and `start_after_fit` / `start_from` moved here from `lug-solver/src/fea.rs` so that the new `eccentric-bushing` crate, the FEA Workbench's bushings and `FeaLug` share one validated path (`lug_solver::fea::Tuning` is a re-export). Guard: `lug-solver/tests/kernel_analysis.rs` (press fit vs Lame to 0.00 %) and `kernel_features.rs`; the whole `lug-solver` suite is green after every change below.
+
+Kernel limits this effort removed (each with its test; the evidence and the measurements are in `docs/eccentric-bushing.md` section 9):
+
+| Limit listed in "Not done / limits" | Now |
+|---|---|
+| Dead (conservative) loads only | `Loads::followers`: follower pressure with its load stiffness; exact Hencky hydrostatic compression to 1e-9 (2D plane strain Quad9, 3D Hex20), load stiffness = finite differences to 1e-6; a dead pressure demonstrably gives a different state (`tests/follower.rs`) |
+| Contact needs load control (no arc-length) | Arc-length with deformable contact (free rigid masters still need load control), last step lands exactly on `lambda_max`, `Start::lambda`, `NlOptions::stop_at_force` (`tests/contact.rs`: a free block crosses a gap into contact) |
+| Anisotropy elastic only | Anisotropic elasticity with small-strain J2 plasticity (iso-equivalence 1e-9, yield surface, consistent tangent, plane stress, an orthotropic bar yields at exactly the uniaxial yield stress) and an anisotropic thermal expansion tensor that rotates with the material (`tests/anisotropic.rs`) |
+| Rigid masters translate only | A 2D circular master can rotate under a moment (`RigidMaster::with_free_rotation`); torque equilibrium of a friction-transmitted moment to 3 % (`tests/contact.rs`); moment-controlled runs slow near the friction limit (symmetric Schur complement) |
+| Static contact pattern | A node pair outside it retries with doubled margins |
+| Friction tangent frozen when sliding (Newton stalls on stick/slip chatter) | Defect-correction refinement makes the step consistent; the failure that motivated it (pin loaded on an eccentric bushing) converges |
+| (not a listed limit) a body held by nothing | `Model::solve_nonlinear*` refuses it; `NlSolution::ground_leak` reports the springs' share |
+| (not a listed limit) Tri3 / Tet4 | The Workbench's results carry the documented caution |
+
+Bugs found and fixed on the way (all would have bitten other models): the closest-point projection's absolute `1e-14` tolerance (contact away from the origin), the relative convergence tolerance that cancelled at equilibrium (starting a run from a converged fit), the tangent predictor dragging approaching bodies, and a silent wrong answer (a converged run that carried none of the pin load; now an equilibrium guard in the consumer).
+
+Measured and declined: element-stiffness caching / SIMD assembly (assembly is 9 % of a contact solve, contact evaluation 35 %, factorisation 33 % of 80-160 factorisations); reusing a factorisation across AL passes or chord Newton in the arc corrector (153 vs 145 factorisations: no gain); looser AL tolerances or stiffer penalties (they fail, or converge to a wrong state); topology-reusing sweeps (mesh and model set-up are ~3 % of a solve: the offset search is parallel instead); the contact collocation rule (`Reduced` 0.02 % pointwise scatter on a concentric fit, full Gauss 0.03 %, nodal does not solve).
+
+Not done (too large for the session, no product decision needed): an unstructured 3D mesher, a prism element, shells and beams, dynamics.
+
+Answer to "can the kernel solve any problem type?": no. Statics of 2D / 3D solids (isotropic and anisotropic elastic, J2 plasticity small / finite strain, anisotropic small-strain plasticity), contact with friction, follower pressure, thermal loads and point-in-mesh stress queries yes; shells, beams, dynamics / modal / buckling, rate-dependent or kinematic-hardening plasticity, plasticity with a temperature change and an unstructured 3D mesher are not there.

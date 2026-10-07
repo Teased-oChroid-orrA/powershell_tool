@@ -30,6 +30,8 @@ pub enum ClickTarget {
     MaterialRow(usize),
     MaterialLookupRow(usize),
     LugAnalysisRow(usize),
+    EccentricRow(usize),
+    FeaWorkbenchRow(usize),
     PaletteRow(usize),
     ExtensionRow(usize),
     ConfirmYes,
@@ -73,6 +75,8 @@ pub struct MouseRegions {
     pub material_rows: Vec<(Rect, usize)>,
     pub material_lookup_rows: Vec<(Rect, usize)>,
     pub lug_analysis_rows: Vec<(Rect, usize)>,
+    pub eccentric_rows: Vec<(Rect, usize)>,
+    pub fea_workbench_rows: Vec<(Rect, usize)>,
     /// Row regions for the Bushing friction-coefficient picker - navigable
     /// by keyboard (Up/Down/Enter) only for now, tracked here purely so
     /// `friction_picker::render` can call `list_row_regions` the same way

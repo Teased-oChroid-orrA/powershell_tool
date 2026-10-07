@@ -1,12 +1,12 @@
 # app-tui/ — ratatui Terminal GUI ("Toolbench")
 
-> TL;DR: The sole active GUI head — ratatui/crossterm terminal UI (the earlier `app/` dioxus-native and `app-egui/` egui heads are deleted; no cross-section sketches, derivation view, or PINN Stress Solver exist anywhere in this repo anymore - see root `CLAUDE.md`). Seven real toolboxes: Search Files (business logic in `search-core`/`native-search`), Fastener Holes (original `domain/`, unique to this crate), Bushing Workbench (`bushing-solver`/`mechanics-core`), Pressure Vessel Analyzer (`pressure-vessel-solver`/`mechanics-core`, plus thermal stress), Preload Analysis (`fastened-joint-solver`, unique to this crate), Lug Analysis (`lug-solver`, rigid-pin contact FE run on a worker with an auto re-run), and Material Lookup (browser/compare over `mechanics-core`'s MIL-HDBK-5J handbook, also the lug's material picker). Dupes/Rename/Logs rail slots are placeholders. Bushing/Pressure Vessel/Preload `model.rs` only bridge solver crates into UI state - the toolbox computes nothing itself. Shared UI pattern: field lists grouped under `Header` rows plus a bottom Hint panel (`widgets/hint_panel.rs`, `model.rs::field_hint`); Results panes use `widgets/scroll_paragraph.rs`. Per-toolbox detail is in Code Map and Pitfalls below.
+> TL;DR: The sole active GUI head — ratatui/crossterm terminal UI (the earlier `app/` dioxus-native and `app-egui/` egui heads are deleted; no cross-section sketches, derivation view, or PINN Stress Solver exist anywhere in this repo anymore - see root `CLAUDE.md`). Nine real toolboxes: Eccentric Bushing (spin capacity of an offset-bore bushing, `eccentric-bushing`; inputs shared with the Bushing Workbench), Search Files (business logic in `search-core`/`native-search`), Fastener Holes (original `domain/`, unique to this crate), Bushing Workbench (`bushing-solver`/`mechanics-core`), Pressure Vessel Analyzer (`pressure-vessel-solver`/`mechanics-core`, plus thermal stress), Preload Analysis (`fastened-joint-solver`, unique to this crate), Lug Analysis (`lug-solver`, rigid-pin contact FE run on a worker with an auto re-run), an FEA Workbench (define a sketch / extrusion / imported-mesh problem, solve it on `fea-core` through `fea-problem`, colour contour; mesh preview and small solves re-run on a worker), and Material Lookup (browser/compare over `mechanics-core`'s MIL-HDBK-5J handbook, also the lug's and the workbench's material picker). Dupes/Rename/Logs rail slots are placeholders. Bushing/Pressure Vessel/Preload `model.rs` only bridge solver crates into UI state - the toolbox computes nothing itself. Shared UI pattern: field lists grouped under `Header` rows plus a bottom Hint panel (`widgets/hint_panel.rs`, `model.rs::field_hint`); Results panes use `widgets/scroll_paragraph.rs`. Per-toolbox detail is in Code Map and Pitfalls below.
 
 ## Purpose
-Owns: terminal lifecycle (`main.rs`), the shell chrome (topbar/rail/status bar/command palette/help overlay/toasts, `widgets/`), the app-wide reducer (`app.rs`), shared `library.rs`, and seven toolbox modules under `src/toolboxes/` (each has its own `AGENTS.md`, see Downlinks).
+Owns: terminal lifecycle (`main.rs`), the shell chrome (topbar/rail/status bar/command palette/help overlay/toasts, `widgets/`), the app-wide reducer (`app.rs`), shared `library.rs`, and eight toolbox modules under `src/toolboxes/` (each has its own `AGENTS.md`, see Downlinks).
 Does not own: search/matching/extraction (`search-core`), the index engine (`native-search`), or any solver math (`bushing-solver`, `pressure-vessel-solver`, `fastened-joint-solver`, `mechanics-core`). Toolbox `model.rs` files only bridge those crates into UI state; Fastener Holes is the exception (own `domain/`).
 
-**Status**: Search Files, Fastener Holes, Bushing Workbench, Pressure Vessel Analyzer, Preload Analysis, Lug Analysis, Material Lookup are real; Dupes/Rename/Logs are placeholders. Pure terminal I/O, no windowing/GPU dependency.
+**Status**: Search Files, Fastener Holes, Bushing Workbench, Eccentric Bushing, Pressure Vessel Analyzer, Preload Analysis, Lug Analysis, FEA Workbench, Material Lookup are real; Dupes/Rename/Logs are placeholders. Pure terminal I/O, no windowing/GPU dependency.
 
 ## Code Map
 
@@ -110,7 +110,9 @@ Per-toolbox nodes (read the one for the toolbox you are changing):
 | Bushing Workbench | `src/toolboxes/bushing/AGENTS.md` |
 | Pressure Vessel Analyzer | `src/toolboxes/pressure_vessel/AGENTS.md` |
 | Preload Analysis | `src/toolboxes/preload_analysis/AGENTS.md` |
+| Eccentric Bushing | `src/toolboxes/eccentric_bushing/AGENTS.md` |
 | Lug Analysis | `src/toolboxes/lug_analysis/AGENTS.md` |
+| FEA Workbench | `src/toolboxes/fea_workbench/AGENTS.md` |
 | Material Lookup | `src/toolboxes/material_lookup/AGENTS.md` |
 
 Sibling nodes: `search-core/AGENTS.md`, `native-search/AGENTS.md`, `bushing-solver/AGENTS.md`, `fastened-joint-solver/AGENTS.md`, `lug-solver/AGENTS.md`. `pressure-vessel-solver` has no node.

@@ -207,6 +207,13 @@ fn execute_effect(tx: &mpsc::UnboundedSender<AppEvent>, state: &mut AppState, ef
                 let _ = tx.send(AppEvent::EdgeCheckFinished { id, run: Box::new(run) });
             });
         }
+        Effect::RunEccentric { id, task, input } => {
+            let tx = tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let result = app_tui::toolboxes::eccentric_bushing::model::run(task, &input);
+                let _ = tx.send(AppEvent::EccentricFinished { id, result: Box::new(result) });
+            });
+        }
         Effect::RunLugAnalysis { id, input, cache } => {
             let tx = tx.clone();
             tokio::task::spawn_blocking(move || {
@@ -219,6 +226,45 @@ fn execute_effect(tx: &mpsc::UnboundedSender<AppEvent>, state: &mut AppState, ef
             tokio::task::spawn_blocking(move || {
                 let result = app_tui::toolboxes::lug_analysis::mesh_test::run(&input);
                 let _ = tx.send(AppEvent::LugMeshTestFinished { id, result: Box::new(result) });
+            });
+        }
+        Effect::RunMemberFe { id, input } => {
+            let tx = tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app_tui::toolboxes::preload_analysis::fe_check::run(&input))).unwrap_or_else(|_| Err("the FE check stopped unexpectedly".to_string()));
+                let _ = tx.send(AppEvent::MemberFeFinished { id, result: Box::new(result) });
+            });
+        }
+        Effect::RunFeaPreview { id, problem, import_text } => {
+            let tx = tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let result = fea_problem::solve::preview(&problem, import_text.as_deref());
+                let _ = tx.send(AppEvent::FeaPreviewFinished { id, result: Box::new(result) });
+            });
+        }
+        Effect::RunFeaSolve { id, problem, import_text } => {
+            let tx = tx.clone();
+            tokio::task::spawn_blocking(move || {
+                // A panic in a worker must come back as an error, never as a silently dead job.
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fea_problem::solve(&problem, import_text.as_deref()))).unwrap_or_else(|_| Err("the solver stopped unexpectedly".to_string()));
+                let _ = tx.send(AppEvent::FeaSolveFinished { id, result: Box::new(result) });
+            });
+        }
+        Effect::WriteTextFile { path, contents } => {
+            let tx = tx.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Some(parent) = std::path::Path::new(&path).parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let result = std::fs::write(&path, contents).map_err(|e| e.to_string());
+                let _ = tx.send(AppEvent::TextFileWritten { path, result });
+            });
+        }
+        Effect::ReadTextFile { purpose, path } => {
+            let tx = tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let result = std::fs::read_to_string(&path).map_err(|e| e.to_string());
+                let _ = tx.send(AppEvent::TextFileRead { purpose, path, result });
             });
         }
         Effect::ExportPressureVesselReport(contents) => {

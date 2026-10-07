@@ -21,6 +21,7 @@
 //! presentation to compare against or deliberately omit.
 
 pub mod bolt_picker;
+pub mod fe_check;
 pub mod joint_templates;
 pub mod template_picker;
 pub mod model;
@@ -54,12 +55,37 @@ pub struct PreloadAnalysisState {
     /// PageUp/PageDown-adjusted scroll offset into the Results pane -
     /// clamped on every render by `widgets::scroll_paragraph::render`.
     pub results_scroll: u16,
+    /// The finite-element member-compliance cross-check (`fe_check.rs`).
+    pub fe: FeCheckState,
 }
+
+/// State of the member-compliance cross-check: its last result, the job running, and the debounce.
+#[derive(Default)]
+pub struct FeCheckState {
+    pub result: Option<(fe_check::FeInput, Result<fe_check::FeResult, String>)>,
+    job: Option<(u64, fe_check::FeInput, std::time::Instant)>,
+    seen: Option<(fe_check::FeInput, std::time::Instant)>,
+    next_job: u64,
+}
+
+impl FeCheckState {
+    /// The result for exactly these inputs.
+    pub fn current(&self, input: &fe_check::FeInput) -> Option<&Result<fe_check::FeResult, String>> {
+        self.result.as_ref().filter(|(i, _)| i == input).map(|(_, r)| r)
+    }
+
+    pub fn running(&self) -> bool {
+        self.job.is_some()
+    }
+}
+
+/// Inputs must sit unchanged this long before the cross-check starts.
+const FE_DEBOUNCE_MS: u128 = 400;
 
 impl Default for PreloadAnalysisState {
     fn default() -> Self {
         let mut state =
-            Self { model: PreloadModel::default(), selected: 0, editing: false, edit_buffer: Default::default(), bolt_picker: BoltPickerState::default(), template_picker: TemplatePickerState::default(), message: None, show_numbers: false, results_scroll: 0 };
+            Self { model: PreloadModel::default(), selected: 0, editing: false, edit_buffer: Default::default(), bolt_picker: BoltPickerState::default(), template_picker: TemplatePickerState::default(), message: None, show_numbers: false, results_scroll: 0, fe: FeCheckState::default() };
         // Row 0 is always a `Header` - land on the first real field instead
         // of an unselectable row.
         state.clamp_selection();
@@ -104,6 +130,33 @@ impl PreloadAnalysisState {
     }
 
     /// Bookkeeping after the template window applied something (or not).
+    /// Called every `Tick` while this toolbox is on screen: starts the FE member-compliance
+    /// cross-check once the joint has stopped changing (the very first run starts at once).
+    pub fn tick(&mut self) -> Vec<Effect> {
+        let Some(input) = self.model.fe_input() else {
+            self.fe.seen = None;
+            return Vec::new();
+        };
+        if self.fe.seen.as_ref().is_none_or(|(s, _)| *s != input) {
+            self.fe.seen = Some((input.clone(), std::time::Instant::now()));
+        }
+        let settled = self.fe.seen.as_ref().is_some_and(|(_, at)| at.elapsed().as_millis() >= FE_DEBOUNCE_MS);
+        let first = self.fe.result.is_none();
+        if self.fe.job.is_some() || self.fe.current(&input).is_some() || !(settled || first) {
+            return Vec::new();
+        }
+        self.fe.next_job += 1;
+        let id = self.fe.next_job;
+        self.fe.job = Some((id, input.clone(), std::time::Instant::now()));
+        vec![Effect::RunMemberFe { id, input: Box::new(input) }]
+    }
+
+    /// A worker finished job `id`; a result for older inputs is kept only as "stale" (it never matches `current`).
+    pub fn finish_fe(&mut self, id: u64, result: Result<fe_check::FeResult, String>) {
+        let Some((_, input, _)) = self.fe.job.take_if(|(j, _, _)| *j == id) else { return };
+        self.fe.result = Some((input, result));
+    }
+
     pub fn after_template(&mut self, applied: Option<String>) {
         if let Some(name) = applied {
             self.message = Some(format!("Joint template applied: {name}"));
@@ -211,7 +264,7 @@ pub fn handle_key(state: &mut PreloadAnalysisState, key: KeyEvent) -> (bool, Vec
             state.template_picker = TemplatePickerState::open();
             (true, Vec::new())
         }
-        KeyCode::Char('e' | 'E') => (true, vec![Effect::ExportPreloadAnalysisReport(view::build_report_text(&state.model))]),
+        KeyCode::Char('e' | 'E') => (true, vec![Effect::ExportPreloadAnalysisReport(view::build_report_text(&state.model, &state.fe))]),
         KeyCode::PageUp => {
             state.results_scroll = state.results_scroll.saturating_sub(crate::widgets::scroll_paragraph::SCROLL_STEP);
             (true, Vec::new())
@@ -395,5 +448,37 @@ mod tests {
             [Effect::ExportPreloadAnalysisReport(text)] => assert!(!text.is_empty()),
             other => panic!("expected exactly one ExportPreloadAnalysisReport effect, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_fe_member_check_runs_once_per_joint_and_again_after_an_edit() {
+        let mut s = PreloadAnalysisState::default();
+        let e = s.tick();
+        let [Effect::RunMemberFe { id, input }] = e.as_slice() else { panic!("{e:?}") };
+        assert!(s.tick().is_empty(), "one job at a time");
+        s.finish_fe(*id, fe_check::run(input));
+        let current = s.model.fe_input().unwrap();
+        let r = s.fe.current(&current).expect("result for these inputs").as_ref().expect("a default joint solves");
+        assert!(r.fe.compliance > 0.0 && r.cone > 0.0);
+        assert!(s.tick().is_empty(), "nothing to do for an unchanged joint");
+        // Edit a member thickness: the result no longer matches, and the check re-runs after the debounce.
+        s.model.members[0].thickness *= 1.5;
+        s.model.recompute();
+        assert!(s.fe.current(&s.model.fe_input().unwrap()).is_none());
+        assert!(s.tick().is_empty(), "debounce");
+        s.fe.seen = s.fe.seen.take().map(|(i, _)| (i, std::time::Instant::now() - std::time::Duration::from_secs(5)));
+        let e = s.tick();
+        assert!(matches!(e.as_slice(), [Effect::RunMemberFe { .. }]), "{e:?}");
+    }
+
+    #[test]
+    fn a_result_for_older_inputs_is_never_shown_as_current() {
+        let mut s = PreloadAnalysisState::default();
+        let e = s.tick();
+        let [Effect::RunMemberFe { id, input }] = e.as_slice() else { panic!() };
+        s.model.members[0].hole_diameter *= 1.1;
+        s.model.recompute();
+        s.finish_fe(*id, fe_check::run(input));
+        assert!(s.fe.current(&s.model.fe_input().unwrap()).is_none());
     }
 }

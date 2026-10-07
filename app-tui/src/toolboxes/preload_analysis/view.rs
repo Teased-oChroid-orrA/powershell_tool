@@ -42,7 +42,7 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &PreloadAnalysi
 
     regions.workspace_panes.push((area, super::PANE_MAIN));
     draw_fields(frame, fields_area, theme, state, focused, regions);
-    draw_readout(frame, readout_area, theme, &state.model, state.show_numbers, state.results_scroll, state.message.as_deref());
+    draw_readout(frame, readout_area, theme, &state.model, &state.fe, state.show_numbers, state.results_scroll, state.message.as_deref());
 
     if state.bolt_picker.open {
         super::bolt_picker::render(frame, area, theme, &state.bolt_picker, regions);
@@ -183,14 +183,14 @@ fn tone_color(tone: StatusTone) -> ratatui::style::Color {
     }
 }
 
-fn draw_readout(frame: &mut Frame, area: Rect, theme: &Theme, model: &PreloadModel, show_numbers: bool, scroll: u16, message: Option<&str>) {
+fn draw_readout(frame: &mut Frame, area: Rect, theme: &Theme, model: &PreloadModel, fe: &super::FeCheckState, show_numbers: bool, scroll: u16, message: Option<&str>) {
     let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.border_style(false)).title(" Results ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    let lines = readout_lines(theme, model, show_numbers, message);
+    let lines = readout_lines(theme, model, fe, show_numbers, message);
     crate::widgets::scroll_paragraph::render(frame, inner, theme, lines, scroll);
 }
 
@@ -206,7 +206,7 @@ fn stack_lines<'a>(theme: &Theme, model: &PreloadModel) -> Vec<Line<'a>> {
     lines
 }
 
-fn readout_lines<'a>(theme: &'a Theme, model: &'a PreloadModel, show_numbers: bool, message: Option<&str>) -> Vec<Line<'a>> {
+fn readout_lines<'a>(theme: &'a Theme, model: &'a PreloadModel, fe: &super::FeCheckState, show_numbers: bool, message: Option<&str>) -> Vec<Line<'a>> {
     let mut lines = Vec::new();
     if let Some(m) = message {
         lines.push(Line::from(Span::styled(format!("\u{2713} {m}"), theme.status_style(StatusTone::Success))));
@@ -258,6 +258,8 @@ fn readout_lines<'a>(theme: &'a Theme, model: &'a PreloadModel, show_numbers: bo
     lines.push(Line::from(format!("  Member compression   {:.6}", solution.deformation.member_compression)));
     lines.push(Line::from(format!("  Total closure        {:.6}", solution.deformation.total_closure)));
     lines.push(Line::from(""));
+
+    lines.extend(fe_lines(theme, model, fe));
 
     lines.push(Line::from(Span::styled("Nut Rotation", theme.title_style(false))));
     lines.push(Line::from(format!("  Relative rotation    {:.4} rev  ({:.2} deg)", solution.rotation.revolutions, solution.rotation.degrees)));
@@ -367,7 +369,7 @@ fn numbers_panel_lines(theme: &Theme, solution: &JointSolution) -> Vec<Line<'sta
 
 /// Plain-text export - mirrors `pressure_vessel/view.rs::build_report_text`'s
 /// pattern: pure and synchronous, no filesystem access.
-pub fn build_report_text(model: &PreloadModel) -> String {
+pub fn build_report_text(model: &PreloadModel, fe: &super::FeCheckState) -> String {
     let mut s = String::new();
     s.push_str("Preload Analysis Report\n");
     s.push_str("========================\n\n");
@@ -441,7 +443,49 @@ pub fn build_report_text(model: &PreloadModel) -> String {
             s.push_str(&format!("  - {w}\n"));
         }
     }
+    if let Some(Ok(r)) = model.fe_input().and_then(|i| fe.current(&i)) {
+        s.push_str(&format!(
+            "\nMember compliance cross-check (FE, axisymmetric): cone C_m {:.4e}, FE C_m {:.4e} ({:+.1}%); joint load fraction cone {:.3}, FE {:.3}{}\n",
+            r.cone,
+            r.fe.compliance,
+            r.difference() * 100.0,
+            r.fraction_cone,
+            r.fraction_fe,
+            r.equivalent_angle_deg.map(|a| format!("; equivalent cone half angle {a:.1} deg")).unwrap_or_default()
+        ));
+    }
     s
+}
+
+/// The finite-element member-compliance cross-check (`fe_check.rs`): the solver's cone estimate
+/// beside the axisymmetric FE value, the joint load fraction each gives, and the cone half angle that
+/// would reproduce the FE compliance.
+fn fe_lines<'a>(theme: &Theme, model: &PreloadModel, fe: &super::FeCheckState) -> Vec<Line<'a>> {
+    let mut lines = vec![Line::from(Span::styled("Member Compliance Cross-Check (FE, axisymmetric)", theme.title_style(false)))];
+    let current = model.fe_input().and_then(|i| fe.current(&i));
+    match current {
+        Some(Ok(r)) => {
+            let diff = r.difference();
+            lines.push(Line::from(format!("  Pressure-cone C_m  {:.4e}   FE C_m  {:.4e}   FE vs cone {:+.1}%", r.cone, r.fe.compliance, diff * 100.0)));
+            lines.push(Line::from(format!("  Joint load fraction  cone {:.3}   FE {:.3}   ({} elements, {:.0} ms)", r.fraction_cone, r.fraction_fe, r.fe.elements, r.fe.ms)));
+            if let Some(a) = r.equivalent_angle_deg {
+                if diff.abs() > 0.10 {
+                    let tone = if diff.abs() > 0.25 { StatusTone::Warning } else { StatusTone::Info };
+                    lines.push(Line::from(Span::styled(
+                        format!("  The FE compliance corresponds to a cone half angle of {a:.1} deg (the joint uses {:.1} deg); members taken with Poisson's ratio {}.", model.cone_half_angle_deg, super::fe_check::MEMBER_NU),
+                        theme.status_style(tone),
+                    )));
+                } else {
+                    lines.push(Line::from(Span::styled(format!("  Agrees with the cone model (equivalent half angle {a:.1} deg).") , theme.disabled_style())));
+                }
+            }
+        }
+        Some(Err(e)) => lines.push(Line::from(Span::styled(format!("  FE cross-check unavailable: {e}"), theme.disabled_style()))),
+        None if fe.running() => lines.push(Line::from(Span::styled("  \u{2026} running the finite-element model", theme.status_style(StatusTone::Info)))),
+        None => lines.push(Line::from(Span::styled("  (starts a moment after the joint stops changing)", theme.disabled_style()))),
+    }
+    lines.push(Line::from(""));
+    lines
 }
 
 #[cfg(test)]
@@ -552,7 +596,7 @@ mod tests {
     #[test]
     fn build_report_text_mentions_the_solver_status_and_preload() {
         let model = PreloadModel::default();
-        let text = build_report_text(&model);
+        let text = build_report_text(&model, &super::super::FeCheckState::default());
         assert!(text.contains("Solver status:"));
         assert!(text.contains("Solved preload:"));
     }

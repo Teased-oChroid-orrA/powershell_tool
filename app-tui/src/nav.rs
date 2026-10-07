@@ -10,6 +10,8 @@ pub enum ToolId {
     FastenerHole,
     Bushing,
     LugAnalysis,
+    EccentricBushing,
+    FeaWorkbench,
     PressureVessel,
     PreloadAnalysis,
     MaterialLookup,
@@ -26,11 +28,13 @@ impl ToolId {
     /// `FastenerHole`/`PreloadAnalysis` have no equivalent in either
     /// existing GUI head - both are toolboxes unique to this crate, not
     /// ported placeholders.
-    pub const ALL: [ToolId; 10] = [
+    pub const ALL: [ToolId; 12] = [
         ToolId::Search,
         ToolId::FastenerHole,
         ToolId::Bushing,
+        ToolId::EccentricBushing,
         ToolId::LugAnalysis,
+        ToolId::FeaWorkbench,
         ToolId::PressureVessel,
         ToolId::PreloadAnalysis,
         ToolId::MaterialLookup,
@@ -44,7 +48,9 @@ impl ToolId {
             ToolId::Search => "Search Files",
             ToolId::FastenerHole => "Fastener Holes",
             ToolId::Bushing => "Bushing Workbench",
+            ToolId::EccentricBushing => "Eccentric Bushing",
             ToolId::LugAnalysis => "Lug Analysis",
+            ToolId::FeaWorkbench => "FEA Workbench",
             ToolId::PressureVessel => "Pressure Vessel Analyzer",
             ToolId::PreloadAnalysis => "Preload Analysis",
             ToolId::MaterialLookup => "Material Lookup",
@@ -158,7 +164,7 @@ mod tests {
         // entries (`Dupes`/`Rename`/`Logs`) that both `app/` and
         // `app-egui/` show as inert placeholders - `ALL` must list every
         // variant, `enabled()` must gate them correctly.
-        assert_eq!(ToolId::ALL.len(), 10);
+        assert_eq!(ToolId::ALL.len(), 12);
         let titles: Vec<&str> = ToolId::ALL.iter().map(|t| t.title()).collect();
         let mut distinct = titles.clone();
         distinct.sort_unstable();

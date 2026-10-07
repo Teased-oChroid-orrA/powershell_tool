@@ -4,7 +4,9 @@
 //! in a future phase.
 
 pub mod bushing;
+pub mod fea_workbench;
 pub mod fastener_hole;
+pub mod eccentric_bushing;
 pub mod lug_analysis;
 pub mod material_lookup;
 pub mod preload_analysis;

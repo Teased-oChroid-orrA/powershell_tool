@@ -48,7 +48,9 @@ filters across text, Office (`.docx`/`.pptx`/`.xlsx`), `.zip` (including
 nested), `.rtf`, `.pdf`, and dozens of code/config/data formats, producing an
 HTML report plus optional CSV/JSON export. It has grown into a multi-tool
 "Toolbench" for GS Engineering: Search, Fastener Holes, Bushing Workbench,
-Pressure Vessel Analyzer, Preload Analysis, Lug Analysis and Material Lookup
+Pressure Vessel Analyzer, Preload Analysis, Lug Analysis, an FEA Workbench
+(define a 2D / extruded / imported-mesh problem, solve it on `fea-core`, contour
+the result) and Material Lookup
 (placeholders remain for Dupes/Rename/Logs).
 
 **Mid-migration, three tiers deep: PowerShell -> C#/WinUI -> Rust.** Older
@@ -78,12 +80,14 @@ nodes.
 |------|----------|------|--------|
 | Search/matching/extraction core | `search-core/` | `search-core/AGENTS.md` | Active. Zero GUI deps. |
 | Fast re-search index engine | `native-search/` | `native-search/AGENTS.md` | Active. Tantivy-backed. |
-| ratatui GUI head | `app-tui/` | `app-tui/AGENTS.md` + per-toolbox `app-tui/src/toolboxes/{search,fastener_hole,bushing,pressure_vessel,preload_analysis}/AGENTS.md` | Active. Sole GUI head. |
+| ratatui GUI head | `app-tui/` | `app-tui/AGENTS.md` + per-toolbox `app-tui/src/toolboxes/{search,fastener_hole,bushing,pressure_vessel,preload_analysis,lug_analysis,fea_workbench}/AGENTS.md` | Active. Sole GUI head. |
 | Bushing press-fit solver | `bushing-solver/` | `bushing-solver/AGENTS.md` | Active. Consumed by `app-tui`. |
 | Fastened joint preload solver | `fastened-joint-solver/` | `fastened-joint-solver/AGENTS.md` | Active. Consumed by `app-tui` Preload Analysis. |
 | Edge-distance cross-checks (stress superposition / FE / allowables) | `edge-check/` | `edge-check/AGENTS.md` | Active on `main` (the contact FE is merged). Consumed by `app-tui` Bushing `c`/`C`. |
 | Pin-loaded lug contact FE | `lug-solver/` | `lug-solver/AGENTS.md` | Active. Consumed by `app-tui` Lug Analysis, which runs it on the general kernel (`FeaLug`) by default; the condensed solvers are the legacy comparison. Design/validation in `docs/lug-analysis.md`, `docs/fea-core.md` Phase 7. |
-| General FEA kernel (2D/3D elements, sparse solve, loads, contact, plasticity) | `fea-core/` | `fea-core/AGENTS.md` | Active; phases 0-7 done (`docs/fea-core.md`). `lug-solver` runs the lug on it (`lug-solver/src/fea*.rs`) and `app-tui` Lug Analysis uses that as its main solver. |
+| General FEA kernel (2D/3D elements, sparse solve, loads, contact, plasticity) | `fea-core/` | `fea-core/AGENTS.md` | Active; phases 0-8 done (`docs/fea-core.md`). `lug-solver` runs the lug on it (`lug-solver/src/fea*.rs`) and `app-tui` Lug Analysis uses that as its main solver; `fea-problem` / the FEA Workbench define and solve general problems on it (including interference-fit bushings with contact); `edge-check`'s plane-stress FE and Preload's member-compliance check run on it. |
+| Problem definition over the kernel (sketch / extrusion / imported mesh, supports, loads, solve, results, raster; bolt-joint member compliance) | `fea-problem/` | `fea-problem/AGENTS.md` | Active. Consumed by the `app-tui` FEA Workbench and Preload Analysis. |
+| Eccentric bushing spin capacity (offset bore: friction torque of the fit vs F e sin(angle); maximum offset / load; meshed elastic pin, direct spin simulation, round boss or edge-limited plate) | `eccentric-bushing/` | `eccentric-bushing/AGENTS.md` + `app-tui/src/toolboxes/eccentric_bushing/AGENTS.md` | Active. Plane contact FE on `fea-core`; consumed by the `app-tui` Eccentric Bushing toolbox (inputs come from the Bushing Workbench). Plan/evidence: `docs/eccentric-bushing.md`. |
 | Pressure vessel solver | `pressure-vessel-solver/` | *(no node)* | Sibling pattern to `bushing-solver`. |
 | Shared math (Lamé, materials) | `engineering-math/`, `mechanics-core/` | *(no node)* | No re-export shim; import directly. |
 | CLI | `cli/` | *(no node)* | Second `search-core` consumer. |
@@ -232,6 +236,8 @@ full index mapping decision topics to ADR numbers.
 | Change bushing/pressure-vessel solvers | `bushing-solver/AGENTS.md` |
 | Change the edge-distance cross-checks | `edge-check/AGENTS.md` |
 | Change the lug FE (mesh, contact, solve) | `lug-solver/AGENTS.md` |
+| Change the eccentric bushing spin check / maximum offset | `eccentric-bushing/AGENTS.md`, `app-tui/src/toolboxes/eccentric_bushing/AGENTS.md` |
+| Change the FEA Workbench or the problem schema | `app-tui/src/toolboxes/fea_workbench/AGENTS.md`, `fea-problem/AGENTS.md` |
 | Understand why an architecture decision was made | `docs/AGENTS.md` -> `docs/adr/` |
 | Understand a past epic's implementation history | `docs/AGENTS.md` -> `docs/issue-N-*.md` |
 | Run the C#/WinUI reference app's own tests | `src/AGENTS.md` |

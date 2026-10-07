@@ -635,6 +635,18 @@ impl PreloadModel {
         }
     }
 
+    /// What the finite-element member-compliance cross-check needs, once the joint solves.
+    pub fn fe_input(&self) -> Option<super::fe_check::FeInput> {
+        let solution = self.output.as_ref().ok()?;
+        let inputs = self.build_inputs();
+        Some(super::fe_check::FeInput {
+            members: self.member_stack().members,
+            contact_diameter: 2.0 * inputs.geometry.bearing_outer_radius,
+            cone_half_angle_deg: self.cone_half_angle_deg,
+            fastener_compliance: solution.compliance.c_b,
+        })
+    }
+
     fn build_inputs(&self) -> JointInputs {
         let mode = match self.mode {
             Mode::TorqueControlled => AnalysisMode::TorqueControlled { applied_torque: self.applied_torque },

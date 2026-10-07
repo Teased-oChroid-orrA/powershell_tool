@@ -653,3 +653,60 @@ fn hovering_a_cross_check_name_in_the_real_shell_shows_its_tooltip_and_leaving_h
     assert!(state.bushing.edge_hover.is_none());
     assert!(!buffer_text(&render_shell(&state, 170, 120)).contains("Weaknesses"));
 }
+
+// ---------------------------------------------------------------------
+// FEA Workbench: the canvas paints a coloured contour, never panics
+// ---------------------------------------------------------------------
+
+fn fea_state_with_result() -> AppState {
+    let mut state = AppState::default();
+    state.nav.activate(app_tui::nav::ToolId::FeaWorkbench);
+    let w = &mut state.fea_workbench;
+    let problem = w.problem.clone();
+    let mesh = fea_problem::solve::preview(&problem, None).unwrap();
+    let solved = fea_problem::solve(&problem, None).unwrap();
+    let _ = mesh;
+    // Drive the same path the app does: tick -> preview job -> solve job.
+    for e in w.tick() {
+        if let app_tui::app::Effect::RunFeaPreview { id, problem, import_text } = e {
+            w.finish_preview(id, fea_problem::solve::preview(&problem, import_text.as_deref()));
+        }
+    }
+    w.finish_solve_for_test(solved);
+    state
+}
+
+#[test]
+fn fea_workbench_renders_the_field_list_and_a_colour_contour() {
+    let state = fea_state_with_result();
+    let buf = render_shell(&state, 160, 48);
+    let text = buffer_text(&buf);
+    assert!(text.contains("FEA Workbench"), "{text}");
+    assert!(text.contains("von Mises stress"), "contour title");
+    assert!(text.contains("Peak von Mises"), "results readout");
+    assert!(text.contains("Plate with a hole"), "template row");
+    // The canvas paints true-colour half blocks: both reds and blues from the ramp occur.
+    let area = buf.area;
+    let mut colours = std::collections::HashSet::new();
+    for y in 0..area.height {
+        for x in 0..area.width {
+            let c = &buf[(x, y)];
+            if c.symbol() == "\u{2580}" || c.symbol() == "\u{2584}" {
+                colours.insert(format!("{:?}", c.fg));
+            }
+        }
+    }
+    assert!(colours.len() > 8, "a contour uses many colours, found {}", colours.len());
+}
+
+#[test]
+fn fea_workbench_does_not_panic_at_any_size_with_and_without_a_result() {
+    let with = fea_state_with_result();
+    let mut without = AppState::default();
+    without.nav.activate(app_tui::nav::ToolId::FeaWorkbench);
+    for state in [&with, &without] {
+        for (w, h) in [(0, 0), (1, 1), (20, 6), (69, 10), (100, 24), (160, 48), (240, 70)] {
+            let _ = render_shell(state, w, h);
+        }
+    }
+}

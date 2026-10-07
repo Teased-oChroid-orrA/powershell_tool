@@ -21,7 +21,9 @@ pub enum Command {
     SwitchToSearch,
     SwitchToFastenerHole,
     SwitchToBushing,
+    SwitchToEccentricBushing,
     SwitchToLugAnalysis,
+    SwitchToFeaWorkbench,
     SwitchToPressureVessel,
     SwitchToPreloadAnalysis,
     SwitchToMaterialLookup,
@@ -59,6 +61,10 @@ pub enum Command {
     ToggleLugAnalysisProfile,
     ExportLugAnalysisReport,
     OpenLugMaterialBrowser,
+    SolveFeaWorkbench,
+    SaveFeaWorkbenchProblem,
+    ExportFeaWorkbenchReport,
+    ExportFeaWorkbenchVtu,
     ToggleMaterialLookupCompare,
     ExportMaterialLookupReport,
     Quit,
@@ -69,7 +75,9 @@ impl Command {
         Command::SwitchToSearch,
         Command::SwitchToFastenerHole,
         Command::SwitchToBushing,
+        Command::SwitchToEccentricBushing,
         Command::SwitchToLugAnalysis,
+        Command::SwitchToFeaWorkbench,
         Command::SwitchToPressureVessel,
         Command::SwitchToPreloadAnalysis,
         Command::SwitchToMaterialLookup,
@@ -101,6 +109,10 @@ impl Command {
         Command::ToggleLugAnalysisProfile,
         Command::ExportLugAnalysisReport,
         Command::OpenLugMaterialBrowser,
+        Command::SolveFeaWorkbench,
+        Command::SaveFeaWorkbenchProblem,
+        Command::ExportFeaWorkbenchReport,
+        Command::ExportFeaWorkbenchVtu,
         Command::ToggleMaterialLookupCompare,
         Command::ExportMaterialLookupReport,
         Command::Quit,
@@ -111,7 +123,9 @@ impl Command {
             Command::SwitchToSearch => "Switch to: Search Files",
             Command::SwitchToFastenerHole => "Switch to: Fastener Holes",
             Command::SwitchToBushing => "Switch to: Bushing Workbench",
+            Command::SwitchToEccentricBushing => "Switch to: Eccentric Bushing",
             Command::SwitchToLugAnalysis => "Switch to: Lug Analysis",
+            Command::SwitchToFeaWorkbench => "Switch to: FEA Workbench",
             Command::SwitchToPressureVessel => "Switch to: Pressure Vessel Analyzer",
             Command::SwitchToPreloadAnalysis => "Switch to: Preload Analysis",
             Command::SwitchToMaterialLookup => "Switch to: Material Lookup",
@@ -143,6 +157,10 @@ impl Command {
             Command::ToggleLugAnalysisProfile => "Toggle bore profile",
             Command::ExportLugAnalysisReport => "Export report",
             Command::OpenLugMaterialBrowser => "Open Lug Material browser",
+            Command::SolveFeaWorkbench => "Solve the problem",
+            Command::SaveFeaWorkbenchProblem => "Save problem (JSON)",
+            Command::ExportFeaWorkbenchReport => "Export report",
+            Command::ExportFeaWorkbenchVtu => "Export result (.vtu for ParaView)",
             Command::ToggleMaterialLookupCompare => "Toggle comparison view",
             Command::ExportMaterialLookupReport => "Export list and comparison",
             Command::Quit => "Quit",
@@ -158,7 +176,9 @@ impl Command {
             Command::SwitchToSearch
             | Command::SwitchToFastenerHole
             | Command::SwitchToBushing
+            | Command::SwitchToEccentricBushing
             | Command::SwitchToLugAnalysis
+            | Command::SwitchToFeaWorkbench
             | Command::SwitchToPressureVessel
             | Command::SwitchToPreloadAnalysis
             | Command::SwitchToMaterialLookup
@@ -183,6 +203,7 @@ impl Command {
             Command::TogglePressureVesselNumbersPanel | Command::ExportPressureVesselReport | Command::OpenPressureVesselMaterialPicker => Some(ToolId::PressureVessel),
             Command::TogglePreloadAnalysisNumbersPanel | Command::ExportPreloadAnalysisReport | Command::OpenBoltPicker => Some(ToolId::PreloadAnalysis),
             Command::ToggleLugAnalysisProfile | Command::ExportLugAnalysisReport | Command::OpenLugMaterialBrowser => Some(ToolId::LugAnalysis),
+            Command::SolveFeaWorkbench | Command::SaveFeaWorkbenchProblem | Command::ExportFeaWorkbenchReport | Command::ExportFeaWorkbenchVtu => Some(ToolId::FeaWorkbench),
             Command::ToggleMaterialLookupCompare | Command::ExportMaterialLookupReport => Some(ToolId::MaterialLookup),
         }
     }
