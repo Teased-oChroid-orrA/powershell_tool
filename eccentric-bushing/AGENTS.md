@@ -1,0 +1,37 @@
+# eccentric-bushing
+
+> TL;DR: Spin capacity of a bushing whose bore is offset from its outer diameter, pressed into a round boss or an edge-limited plate, and the largest offset (or pin load) the interference fit still holds. Plane contact FE on `fea-core`: interference fit with Coulomb friction, then a meshed elastic pin in frictional contact loaded through its length. Pure function of `Inputs`; no UI, no file I/O. Plan, derivation, evidence: `docs/eccentric-bushing.md`.
+
+## Purpose
+Owns: the offset-bushing model (meshing, fit, pin, read-out of the interface), the friction torque capacity, the direct spin simulation, the `e_max` / `F_max` searches.
+Does not own: the concentric Lame fit, tolerance bands, materials (`bushing-solver`, `mechanics-core`; this crate takes resolved `Elasticity` values), or any UI (`app-tui/src/toolboxes/eccentric_bushing/`).
+
+## Code Map
+| Looking for... | Go to |
+|---|---|
+| `Inputs`, `Analysis`, mesh + supports, stage 1 (fit), stage 2 (pin: pressed in, then released and loaded), `analyze`, `fit_capacity`, `spin_onset_torque` | `src/model.rs` |
+| `max_offset`, `max_load` (8-section parallel search; fit-alone first, loaded when the pin load is credited) | `src/offset.rs` |
+| Shared contact set-up, `Tuning`, `start_after_fit`, `start_from` | `fea-core/src/fit.rs` |
+| Proof (Lame, equilibrium, mesh independence, pin realism, direct spin onset, edge-limited housing, orthotropy, cross-check against `edge-check`) | `tests/verification.rs`, `tests/cross_check.rs` |
+
+## Contracts
+- Geometry: the housing bore is centred on the origin `O`; the bushing's bore centre is `(offset, 0)` (thin wall at theta = 0, thick at 180 deg, fit pressure highest on the thick side). The housing is a round boss (`housing_od`) or, with `edge_distance`, a plate whose free edge is that far from the bore on the `-x` side. The pin load acts at `load_angle_deg` from `+x`; `90` is transverse (worst case for spin).
+- The pin is a meshed elastic disc (`pin`, `pin_friction`, `pin_clearance_dia` to the bore *as fitted*), loaded by a body force through its length (the lug's elastic-pin model) and free to rotate. The torque the interface must return is `F e |sin(angle)|` exactly (a free pin adds no net torque); capacity is `sum mu p |x| w` over both contact passes. The tractions come from `NlSolution::contact_tractions` (their integrals are reliable, pointwise values scatter).
+- **Capacity basis** (`credit_pin_load`): with the pin loaded the margin uses the interface pressure the loaded pin produces (its one-sided pressure has a non-zero mean that squeezes the bushing: +2 % to +55 %, real physics); the fit-alone basis is the conservative one. Both are always reported. `direct_onset` adds the direct torque simulation and caps the capacity at its knee.
+- The all-slip integral overstates the true slip onset by 3-4 % when the wall varies 3:1 (`spin_onset_torque`: a pure torque on the bore raised under arc-length control; the onset is the knee of the load factor, the creep after it is re-seating). It is exact (0.5 %) concentric.
+- Plane stress is the default so the FE fit pressure equals the Bushing Workbench's Lame (open ends); `plane_strain` is an explicit input. `Elasticity::ortho` gives a body in-plane orthotropy (axes at `angle_deg`).
+- Thin wall: the model needs at least `MIN_WALL_FRACTION` (3 %) of the bore; the Bushing Workbench's `min_wall_straight` is carried as `min_wall` and reported against separately (`wall_ok`, `OffsetLimit::wall_limit`). Friction must be in `0.01..=2`.
+- A converged loaded run whose interface force does not return the pin load is an `Err` (a silent wrong answer was seen: the pin carried nothing yet reached full load).
+
+## Pitfalls
+- **The pin cannot be a free body loaded by force from the start**: it has nothing to push against while it crosses its clearance (load control: enormous Newton steps; arc-length steps can leap the bore; a rigid pin touching at zero gap is a degenerate contact; a pin of the nominal ID starts with interference). The two-stage scheme in `solve_loaded` is what works: stage A presses the pin in as a rigid body by prescribed displacement until it carries a quarter of the load (`NlOptions::stop_at_force`, which also halves a step that overshoots), stage B releases it and ramps the body force from that level (`Start::lambda`). Springs on two pin rim nodes (not all nodes: the leak) remove its rigid modes: `3e-5 E t`, which leaks ~0.1 % of the load (`ground_leak`); with `1e-6` the friction contact stagnated on the Bushing Workbench's default case (the pin's soft rotation/translation modes make the sliding friction indeterminate), at `1e-4` it leaks 0.35 %. Stage A (a seating stage) uses loose tolerances (`tol 1e-3`, two multiplier passes): 24 s -> 3 s.
+- **The fitted bore must be a least-squares circle** (`fitted_bore`): the mean of the displaced bore nodes is biased by the non-uniform node spacing (it put the pin 1.5 mm off its centre and every eccentric loaded run failed).
+- The convergence tolerance is measured against the elastic internal force (`Eval::f_elem`), not `|f|` (which cancels at equilibrium); the fit stage converges to `1e-6` so the loaded stage's small first steps can resolve its leftover residual.
+- Pointwise Gauss pressures scatter ~+-2 % on non-matching meshes: use integrals. The default mesh is uniform, about 1.2 x the thin wall clamped to `r/8 .. r/4`, the pin a sixth of its radius or the bushing's size if coarser (a graded mesh, fine on the thin side, was tried: the same model took 3x longer, the contact converging worse across mismatched sizes; the capacity is converged to 0.01-0.08 % against a 56k-dof mesh).
+- A solve is 5-15 s, a direct spin check 15-30 s more, `max_offset` with the pin credited tens of seconds to minutes: callers run it on a worker. One fit solve is 80 factorisations (~60 %), contact evaluation ~25 %, element assembly ~9 %: the search is parallel instead of the solver faster.
+- Build the crate optimised even in dev (`[profile.dev.package.eccentric-bushing]`).
+
+## Boundaries
+### Never
+- Add a second Lame path here; the concentric limit is checked against `mechanics_core::lame` and `edge-check`'s contact FE in the tests only.
+- Weaken a verification tolerance to make a case pass; find the cause.

@@ -119,8 +119,11 @@ dependencies = [
  "bushing-solver",
  "chrono",
  "crossterm",
+ "eccentric-bushing",
  "edge-check",
  "fastened-joint-solver",
+ "fea-core",
+ "fea-problem",
  "futures-util",
  "lug-solver",
  "mechanics-core",
@@ -875,9 +878,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1d926b4d407d372f141f93bb444696142c29d32962ccbd3531117cf3aa0bfa9"
 
 [[package]]
+name = "eccentric-bushing"
+version = "0.1.0"
+dependencies = [
+ "edge-check",
+ "fea-core",
+ "mechanics-core",
+]
+
+[[package]]
 name = "edge-check"
 version = "0.1.0"
 dependencies = [
+ "fea-core",
  "mechanics-core",
 ]
 
@@ -1129,6 +1142,15 @@ dependencies = [
  "mechanics-core",
  "rayon",
  "robust",
+]
+
+[[package]]
+name = "fea-problem"
+version = "0.1.0"
+dependencies = [
+ "fea-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,0 +1,18 @@
+[package]
+name = "fea-problem"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Problem definition layer over `fea-core`: a serialisable description of a 2D / extruded / imported
+# finite-element problem (geometry, material, mesh settings, supports, loads), the mesh generation
+# and solve that turn it into results, and a raster of any result field for a terminal view.
+# Pure functions of their inputs: no file I/O (callers read / write the JSON, mesh and `.vtu` text),
+# no UI. Consumed by the `app-tui` FEA Workbench.
+[dependencies]
+fea-core = { path = "../fea-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]

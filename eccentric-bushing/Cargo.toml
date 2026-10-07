@@ -1,0 +1,17 @@
+[package]
+name = "eccentric-bushing"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Spin capacity of an eccentric bushing pressed into a round housing boss, and the largest bore offset that
+# still holds. Plane-strain contact FE on `fea-core` (interference fit, Coulomb friction, force-controlled
+# rigid pin); the concentric Lame fit from `mechanics-core` is the reference limit. No GUI, no file I/O.
+[dependencies]
+fea-core = { path = "../fea-core" }
+mechanics-core = { path = "../mechanics-core" }
+
+[dev-dependencies]
+# The independent banded-solver contact FE of the edge-distance cross-check, for the differential test.
+edge-check = { path = "../edge-check" }
