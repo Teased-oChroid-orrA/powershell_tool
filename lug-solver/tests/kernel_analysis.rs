@@ -166,7 +166,7 @@ fn elastic_pin_friction_probe() {
     let pin = PinSpec { body: PinBody::Elastic(STEEL), ..PinSpec::new(0.4995, 0.15) };
     let spec = MeshSpec { elements_around: 32, ..Default::default() };
     let mut fe = FeaLug::build(&lug(), AL, spec, true, PlaneMode::Stress).unwrap();
-    for (name, t) in [("reference", Tuning::reference()), ("friction", Tuning::friction()), ("pf30 outer12", Tuning { penalty_factor: 30.0, ..Tuning::reference() }), ("pf10", Tuning { penalty_factor: 10.0, max_outer: 12, outer_tol: 2e-3, chord_iters: 0, newton_tol: 1e-6, step_fraction: 0.015, stall_tol: 0.0, first_step: 1.0 })] {
+    for (name, t) in [("reference", Tuning::reference()), ("friction", Tuning::friction()), ("pf30 outer12", Tuning { penalty_factor: 30.0, ..Tuning::reference() }), ("pf10", Tuning { penalty_factor: 10.0, max_outer: 12, outer_tol: 2e-3, chord_iters: 0, newton_tol: 1e-6, step_fraction: 0.015, stall_tol: 0.0, first_step: 1.0, stick_slip_guard: false })] {
         fe.tuning = Some(t);
         let t0 = std::time::Instant::now();
         match fe.analyze(pin, LoadCase { load_lbf: 1500.0, angle_deg: 0.0 }) {

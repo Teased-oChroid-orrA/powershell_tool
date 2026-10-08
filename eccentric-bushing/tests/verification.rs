@@ -375,12 +375,13 @@ fn a_small_bushing_whose_friction_contact_chatters_still_converges() {
     assert!(a.loaded_failure.is_none() && (a.margin / 51.36 - 1.0).abs() < 0.005, "margin {} {:?}", a.margin, a.loaded_failure);
 }
 
-/// Slow (about 60 s): a concentric, thick-walled, stiff bushing with the load along x. The default mesh fails every
-/// attempt of the loaded stage (the friction contact cycles between stick and slip); a mesh 1.4 x coarser solves it, and
-/// the margin (no spin torque here) is unaffected: the mesh route, not the fit-alone fallback, answers.
+/// A concentric, thick-walled, stiff bushing with the load along x. The loaded stage used to cycle between stick and slip
+/// on every attempt on the default mesh (and again on a second one after another route): points at the edge of the pin's
+/// contact patch, at ~zero pressure, entered and left the contact from one Newton iteration to the next. Holding the active
+/// set once the iteration stagnates (`fea-core`'s `stick_slip_guard`) solves it on the first attempt, on the default mesh.
 #[test]
-#[ignore = "slow: run with --ignored"]
-fn a_pin_load_the_default_mesh_cannot_solve_is_solved_on_another_mesh() {
+#[ignore = "slow (12 s): run with --ignored"]
+fn a_thick_walled_concentric_bushing_converges_on_the_default_mesh() {
     let i = Inputs {
         bore_dia: 0.7170741524845823,
         housing_od: 2.010949715936335,
@@ -404,7 +405,38 @@ fn a_pin_load_the_default_mesh_cannot_solve_is_solved_on_another_mesh() {
         mesh_size: Some(0.08963426906057279),
     };
     let a = analyze(&i).unwrap();
-    assert!(a.loaded_failure.is_none() && a.mesh_scale != 1.0 && a.pin_peak_pressure > 0.0, "{:?} scale {}", a.loaded_failure, a.mesh_scale);
+    assert!(a.loaded_failure.is_none() && a.mesh_scale == 1.0 && a.pin_peak_pressure > 0.0, "{:?} scale {}", a.loaded_failure, a.mesh_scale);
+}
+
+/// A very soft set (housing 0.4 Msi, bushing and pin 0.8 Msi) at 1000 lbf: failed every attempt on the default mesh before
+/// the active set was held. The margin agrees with the one the 1.6 x coarser mesh gave (0.606).
+#[test]
+#[ignore = "slow (30 s): run with --ignored"]
+fn soft_parts_converge_on_the_default_mesh() {
+    let i = Inputs {
+        bore_dia: 0.5,
+        housing_od: 1.25,
+        edge_distance: None,
+        bushing_id: 0.38,
+        offset: 0.03,
+        interference_dia: 0.002,
+        thickness: 0.5,
+        housing: Elasticity::iso(0.4e6, 0.35),
+        bushing: Elasticity::iso(0.8e6, 0.35),
+        friction: 0.15,
+        pin: Elasticity::iso(0.8e6, 0.35),
+        pin_friction: 0.1,
+        pin_clearance_dia: 0.001,
+        credit_pin_load: true,
+        load_lbf: 1000.0,
+        load_angle_deg: 90.0,
+        direct_onset: false,
+        min_wall: 0.0,
+        plane_strain: false,
+        mesh_size: Some(0.05),
+    };
+    let a = analyze(&i).unwrap();
+    assert!(a.loaded_failure.is_none() && (a.margin - 0.606).abs() < 0.01, "margin {} {:?}", a.margin, a.loaded_failure);
 }
 
 /// Dimensional similarity: a bushing twice as large in every length (and the load 4 x, force goes as E l^2) is the same

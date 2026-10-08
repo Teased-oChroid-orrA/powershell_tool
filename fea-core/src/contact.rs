@@ -566,6 +566,10 @@ pub struct ContactSet {
     /// Add the stabilising stiffness of merely-near points (see `eval`); off for the tangent predictor of prescribed
     /// displacements, which would drag a body that is only approaching along with the one it moves.
     stabilise: std::sync::atomic::AtomicBool,
+    /// A held active set (`hold_active_set`): per spec, per slave point, whether the point counts as in contact. Set by a
+    /// Newton solve whose iteration chatters at the edge of a contact patch (points of ~zero pressure entering and leaving),
+    /// released when that solve ends.
+    hold: std::sync::RwLock<Option<Vec<Vec<bool>>>>,
 }
 
 /// Collocation points `(xi, weight)` on a slave face of `nn` nodes in `dim` dimensions.
@@ -703,7 +707,7 @@ impl ContactSet {
             }
             extra.push(e);
         }
-        Ok(Self { specs, dim, extra, extra_load, pts, faces, margins, stabilise: std::sync::atomic::AtomicBool::new(true) })
+        Ok(Self { specs, dim, extra, extra_load, pts, faces, margins, stabilise: std::sync::atomic::AtomicBool::new(true), hold: std::sync::RwLock::new(None) })
     }
 
     /// Gap below which a point counts as touching for the slip history and the stabilising stiffness.
@@ -1085,6 +1089,24 @@ struct PointOut {
 }
 
 impl ContactSet {
+    /// Hold the active set of `state`: until [`Self::release_active_set`] a point is in contact exactly when it is in
+    /// `state` (its pressure then follows the smooth branch, a tiny negative value included, instead of toggling at zero).
+    pub fn hold_active_set(&self, state: &[Vec<CpState>]) {
+        if let Ok(mut h) = self.hold.write() {
+            *h = Some(state.iter().map(|v| v.iter().map(|c| c.active).collect()).collect());
+        }
+    }
+
+    pub fn release_active_set(&self) {
+        if let Ok(mut h) = self.hold.write() {
+            *h = None;
+        }
+    }
+
+    pub fn active_set_held(&self) -> bool {
+        self.hold.read().is_ok_and(|h| h.is_some())
+    }
+
     /// Add the contact forces (and tangent) at displacements `u` and load factor `lambda`. `old` is the
     /// committed state; the trial results go to `new`.
     #[allow(clippy::too_many_arguments)] // one evaluation needs all of mesh, pattern, state, outputs
@@ -1125,10 +1147,13 @@ impl ContactSet {
             for (j, (c, _)) in fc.iter().enumerate() {
                 free_comps[j] = *c;
             }
+            let hold_guard = self.hold.read().map_err(|_| "contact hold lock poisoned".to_string())?;
+            let held_flags: Option<&Vec<bool>> = hold_guard.as_ref().map(|h| &h[si]);
             let outs: Vec<PointOut> = self.pts[si]
                 .par_iter()
                 .zip(old[si].par_iter())
-                .map(|(sp, os)| {
+                .enumerate()
+                .map(|(pi, (sp, os))| {
                     let ns = sp.nodes.len();
                     // Slave point and, for a deformable master, the face it projects onto.
                     let mut y = [0.0; 3];
@@ -1186,7 +1211,16 @@ impl ContactSet {
                     }
                     let same_face = chosen.is_some_and(|(fi, _)| os.has_hist && os.face as usize == fi);
                     let xi0 = chosen.map_or([0.0; 2], |c| c.1);
-                    let ctx = PointCtx { d, w: sp.w, eps_n: spec.eps_n, eps_t: spec.eps_t, mu: spec.mu, os, rigid, lambda, geom: mgeom, xi0, same_face, frozen: None, overlap: spec.overlap, free_comps, n_free, smooth: false };
+                    // A held active set: in contact means the smooth pressure branch (no clamp at zero), out of contact means none.
+                    let held = held_flags.and_then(|h| h.get(pi).copied());
+                    if held == Some(false) {
+                        let mut st = *os;
+                        st.active = false;
+                        st.p = 0.0;
+                        st.fric = [0.0; 3];
+                        return PointOut { near_only: false, dofs: Vec::new(), r: Vec::new(), k: Vec::new(), kdef: Vec::new(), st, master_force: [0.0; 3], missing: Vec::new() };
+                    }
+                    let ctx = PointCtx { d, w: sp.w, eps_n: spec.eps_n, eps_t: spec.eps_t, mu: spec.mu, os, rigid, lambda, geom: mgeom, xi0, same_face, frozen: None, overlap: spec.overlap, free_comps, n_free, smooth: held == Some(true) };
                     let mut r = vec![0.0; nv];
                     let out = ctx.residual(&v, &mut r);
                     let mut st = *os;

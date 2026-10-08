@@ -96,12 +96,12 @@ fn sweep(seed: u64, n: usize, coarse: bool, tolerated_degraded: usize) {
 
 #[test]
 fn random_valid_inputs_are_always_analysable_on_a_coarse_mesh() {
-    // Seed 2024: one case (concentric, load along the offset line, a thin stiff bushing) is the known hard one.
-    sweep(2024, 12, true, 2);
+    // Seed 2024 holds the cases that used to fail the loaded stage (concentric, load along the offset line, stiff walls).
+    sweep(2024, 12, true, 0);
 }
 
 #[test]
 #[ignore = "slow soak: default meshes, run with --ignored"]
 fn random_valid_inputs_are_always_analysable_on_the_default_mesh() {
-    sweep(77, 24, false, 4);
+    sweep(77, 24, false, 0);
 }

@@ -26,18 +26,20 @@ pub struct Tuning {
     pub stall_tol: f64,
     /// The first load step as a fraction of the regular one (a displacement-driven pin meets its stiffest transition at the first touch).
     pub first_step: f64,
+    /// `NlOptions::stick_slip_guard`: hold the contact active set when a frictional solve cycles at a patch edge.
+    pub stick_slip_guard: bool,
 }
 
 impl Tuning {
     /// Frictionless elastic contact (one load step is enough: the response is smooth).
     pub fn frictionless() -> Self {
-        Self { penalty_factor: 10.0, max_outer: 8, outer_tol: 5e-3, chord_iters: 0, newton_tol: 1e-4, step_fraction: 0.015, stall_tol: 0.0, first_step: 1.0 }
+        Self { penalty_factor: 10.0, max_outer: 8, outer_tol: 5e-3, chord_iters: 0, newton_tol: 1e-4, step_fraction: 0.015, stall_tol: 0.0, first_step: 1.0, stick_slip_guard: false }
     }
 
     /// Coulomb friction: a stiffer penalty and tighter passes (sticking multipliers converge slowly, and a
     /// soft penalty leaves the peak pressure ~10 % low).
     pub fn friction() -> Self {
-        Self { penalty_factor: 30.0, max_outer: 12, outer_tol: 2e-3, chord_iters: 0, newton_tol: 1e-4, step_fraction: 0.015, stall_tol: 0.0, first_step: 1.0 }
+        Self { penalty_factor: 30.0, max_outer: 12, outer_tol: 2e-3, chord_iters: 0, newton_tol: 1e-4, step_fraction: 0.015, stall_tol: 0.0, first_step: 1.0, stick_slip_guard: true }
     }
 
     /// Displacement-driven plastic collapse: one multiplier pass per step and a 1e-4 Newton tolerance (the
@@ -45,16 +47,16 @@ impl Tuning {
     /// 0.01 % against two passes at 1e-6, in 60 % of the time). Steps larger than 0.015 of the bore radius
     /// shifted the plateau by 2 %.
     pub fn collapse() -> Self {
-        Self { penalty_factor: 10.0, max_outer: 1, outer_tol: 1e-2, chord_iters: 0, newton_tol: 1e-4, step_fraction: 0.015, stall_tol: 1e-3, first_step: 0.25 }
+        Self { penalty_factor: 10.0, max_outer: 1, outer_tol: 1e-2, chord_iters: 0, newton_tol: 1e-4, step_fraction: 0.015, stall_tol: 1e-3, first_step: 0.25, stick_slip_guard: false }
     }
 
     /// The tight reference setting (deformable contact, the 3D models).
     pub fn reference() -> Self {
-        Self { penalty_factor: 100.0, max_outer: 12, outer_tol: 2e-3, chord_iters: 0, newton_tol: 1e-9, step_fraction: 0.015, stall_tol: 0.0, first_step: 1.0 }
+        Self { penalty_factor: 100.0, max_outer: 12, outer_tol: 2e-3, chord_iters: 0, newton_tol: 1e-9, step_fraction: 0.015, stall_tol: 0.0, first_step: 1.0, stick_slip_guard: false }
     }
 
     pub fn options(&self, steps: usize) -> NlOptions {
-        NlOptions { steps, outer_tol: self.outer_tol, max_outer: self.max_outer, chord_iters: self.chord_iters, tol: self.newton_tol, stall_tol: self.stall_tol, first_step: self.first_step, ..NlOptions::default() }
+        NlOptions { steps, outer_tol: self.outer_tol, max_outer: self.max_outer, chord_iters: self.chord_iters, tol: self.newton_tol, stall_tol: self.stall_tol, first_step: self.first_step, stick_slip_guard: self.stick_slip_guard, ..NlOptions::default() }
     }
 
     pub fn eps_n(&self, e_psi: f64, bore_radius: f64) -> f64 {

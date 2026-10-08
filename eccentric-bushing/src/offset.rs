@@ -310,7 +310,6 @@ mod tests {
 
     #[test]
     fn a_known_start_margin_saves_a_round_and_a_step_margin_still_converges() {
-        let k = section_count();
         let smooth = |x: f64| -> Result<f64, String> { Ok(0.6 / x.max(1e-9) - 1.0) };
         let f = search_up(0.2, 1.0, 0.02, &none(), Some(2.0), smooth);
         assert!(f.lo <= 0.6 * 1.003 && 0.6 <= f.hi.unwrap() && f.hi.unwrap() - f.lo <= 0.02 * 0.8 + 1e-12, "{:?}", (f.lo, f.hi));

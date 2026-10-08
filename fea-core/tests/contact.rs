@@ -753,3 +753,19 @@ fn a_contact_solution_does_not_depend_on_where_the_model_sits() {
         assert!((moved / at_origin - 1.0).abs() < 1.5e-2, "offset {o:?}: mean pressure {moved} vs {at_origin} at the origin");
     }
 }
+
+/// `stick_slip_guard` only acts on a solve that stagnates: a well-behaved frictional contact (sliding and sticking blocks)
+/// takes the identical path with and without it.
+#[test]
+fn the_stick_slip_guard_does_not_change_a_solve_that_converges() {
+    for shift in [0.05, 2.0e-5] {
+        let run = |guard: bool| {
+            let (model, bc, loads, specs) = block_on_plane(0.3, 1.0e4, shift);
+            let sol = model.solve_nonlinear_contact(&loads, &bc, specs, &NlOptions { steps: 5, outer_tol: 1e-6, max_outer: 40, stick_slip_guard: guard, step_memory: guard, stall_tol: if guard { 3e-3 } else { 0.0 }, ..NlOptions::default() }).unwrap();
+            assert!(sol.complete() && sol.stalled_solves == 0, "{:?} {}", sol.stop, sol.stalled_solves);
+            sol.contact.unwrap().master_force[0]
+        };
+        let (a, b) = (run(false), run(true));
+        assert!((a[0] - b[0]).abs() <= 1e-9 * a[0].abs().max(1.0) && (a[1] - b[1]).abs() <= 1e-9 * a[1].abs(), "shift {shift}: {a:?} vs {b:?}");
+    }
+}

@@ -358,6 +358,8 @@ const STAGNATION_ITERATIONS: usize = 8;
 /// Step cuts a stagnating load step gets under `stick_slip_guard`: halving the step released none of the stick-slip cycles
 /// seen (a failing first attempt cost 59 s with all 12 cuts, 13 s with 3), and the caller has other attempts to try.
 const STAGNATION_CUTS: usize = 3;
+/// Iterations a solve gets on top of `max_iter` once its active set is held.
+const HOLD_EXTRA_ITERATIONS: usize = 15;
 /// Prefix of the Newton error of a stagnated solve (`Stop::NoConvergence` carries it).
 pub const STAGNATED: &str = "stagnated";
 #[derive(Debug, Clone, Default)]
@@ -1045,6 +1047,15 @@ impl Ctx<'_> {
 
     /// Newton iterations at load factor `lambda` from the converged `(u, state)`.
     fn newton(&self, lambda_prev: f64, lambda: f64, u0: &[f64], state0: &NlState) -> Result<(Vec<f64>, NlState, Vec<f64>), String> {
+        let result = self.newton_iterations(lambda_prev, lambda, u0, state0);
+        // A held active set belongs to the one solve that asked for it.
+        if let Some(cs) = &self.contacts {
+            cs.release_active_set();
+        }
+        result
+    }
+
+    fn newton_iterations(&self, lambda_prev: f64, lambda: f64, u0: &[f64], state0: &NlState) -> Result<(Vec<f64>, NlState, Vec<f64>), String> {
         let nf = self.free.len();
         let mut u = u0.to_vec();
         let mut q = state0.rigid_q.clone();
@@ -1104,7 +1115,9 @@ impl Ctx<'_> {
         // Only a frictional contact cycles between stick and slip: `NlOptions::stick_slip_guard` is for it.
         let frictional = self.opt.stick_slip_guard && self.contacts.as_ref().is_some_and(|cs| cs.specs.iter().any(|s| s.mu > 0.0));
         let damped = frictional && self.opt.step_memory;
-        for _ in 0..=self.opt.max_iter {
+        let (mut iteration, mut budget) = (0usize, self.opt.max_iter);
+        while iteration <= budget {
+            iteration += 1;
             if self.opt.interrupt.triggered() {
                 return Err("interrupted".into());
             }
@@ -1123,6 +1136,23 @@ impl Ctx<'_> {
                 (best_rn, since_best) = (rn, 0);
             } else {
                 since_best += 1;
+            }
+            // First remedy for a chattering patch edge: hold the active set (points of ~zero pressure entering and leaving
+            // the contact were what the residual alternated on) and iterate on with the smooth branch.
+            if frictional && since_best >= STAGNATION_ITERATIONS {
+                if let Some(cs) = self.contacts.as_ref().filter(|cs| !cs.active_set_held()) {
+                    cs.hold_active_set(&ev.state.contact);
+                    budget += HOLD_EXTRA_ITERATIONS;
+                    ev = self.eval(&u, &q, state0, lambda, true)?;
+                    r = self.residual(&ev, lambda);
+                    rn = norm(&r);
+                    residuals.push(rn);
+                    (best_rn, since_best) = (rn, 0);
+                    lowest = None;
+                    prev = None;
+                    chord = None;
+                    continue;
+                }
             }
             if frictional && since_best >= STAGNATION_ITERATIONS && self.opt.stall_tol > 0.0 {
                 if let Some((_, lu, lq, mut lst)) = lowest.take().filter(|l| l.0 <= self.opt.stall_tol * self.scale(&ev, lambda)) {
