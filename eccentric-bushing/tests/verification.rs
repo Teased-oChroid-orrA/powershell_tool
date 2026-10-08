@@ -274,3 +274,136 @@ fn default_mesh_convergence() {
         }
     }
 }
+
+#[test]
+fn a_search_that_is_interrupted_returns_what_it_verified_instead_of_failing() {
+    use eccentric_bushing::{max_load_with, max_offset_with, Control, Interrupt};
+    use std::sync::{atomic::AtomicBool, Arc};
+    let i = fit_basis(Inputs { interference_dia: 0.0006, load_lbf: 3000.0, ..base() });
+    // A cancel raised before the search starts: no candidate completes, the whole range is still open.
+    let cancelled: Control = Interrupt { deadline: None, cancel: Some(Arc::new(AtomicBool::new(true))) }.into();
+    let started = std::time::Instant::now();
+    let lim = max_offset_with(&i, 0.02, &cancelled).unwrap();
+    assert!(started.elapsed().as_secs_f64() < 5.0, "an interrupted search must return at once");
+    assert_eq!(lim.halted.as_deref(), Some("cancelled"));
+    assert_eq!(lim.value, 0.0);
+    assert!(lim.upper.is_some_and(|u| u > 0.0), "the unresolved bracket is reported: {lim:?}");
+    // The same through a deadline that has already passed.
+    let late: Control = Interrupt { deadline: Some(std::time::Instant::now()), cancel: None }.into();
+    assert_eq!(max_offset_with(&i, 0.02, &late).unwrap().halted.as_deref(), Some("time budget used up"));
+    // max_load has nothing to report before its first (closed-form) solve finishes: a clear error, not a hang.
+    let e = max_load_with(&Inputs { offset: 0.04, ..i }, 0.02, &cancelled).unwrap_err();
+    assert!(e.contains("cancelled"), "{e}");
+}
+
+/// Slow (about 70 s): the Bushing Workbench defaults at 0.04 in offset and 1500 lbf on the earlier default mesh (0.031 in
+/// elements). The first attempt of the loaded stage falls into a stick-slip limit cycle and fails; the second (with step
+/// memory) converges, to the margin every other mesh and attempt gives (5.92).
+#[test]
+#[ignore = "slow: run with --ignored"]
+fn the_fine_mesh_default_case_at_1500_lbf_converges_through_the_second_attempt() {
+    let a = analyze(&Inputs { offset: 0.04, load_lbf: 1500.0, mesh_size: Some(0.031), ..base() }).unwrap_or_else(|e| panic!("{e}"));
+    assert!(a.loaded_failure.is_none() && (a.margin - 5.921).abs() < 0.03, "margin {} {:?}", a.margin, a.loaded_failure);
+}
+
+/// The bushing the user reported (bore 0.5, ID 0.1875, length 0.125 in, interference 0.0025, friction 0.15, 1000 lbf,
+/// boss 1.25): `max_load` probes 8856 lbf, where the rigid pressing-in stage used up its prescribed travel before the pin
+/// carried a quarter of the load ("the pin could not be pressed in to 2214 lbf (Completed)"). The travel is extended.
+fn reported_bushing() -> Inputs {
+    Inputs {
+        bore_dia: 0.5,
+        housing_od: 1.25,
+        edge_distance: None,
+        bushing_id: 0.1875,
+        offset: 0.02,
+        interference_dia: 0.0025,
+        thickness: 0.125,
+        housing: Elasticity::iso(10.4e6, 0.33),
+        bushing: Elasticity::iso(10.8e6, 0.30),
+        friction: 0.15,
+        pin: Elasticity::iso(29.0e6, 0.30),
+        pin_friction: 0.1,
+        pin_clearance_dia: 0.001,
+        credit_pin_load: true,
+        load_lbf: 1000.0,
+        load_angle_deg: 90.0,
+        direct_onset: false,
+        min_wall: 0.0,
+        plane_strain: false,
+        mesh_size: None,
+    }
+}
+
+#[test]
+fn the_reported_8856_lbf_case_presses_the_pin_in_and_converges() {
+    let a = analyze(&Inputs { load_lbf: 8856.0, ..reported_bushing() }).unwrap_or_else(|e| panic!("{e}"));
+    assert!(a.loaded_failure.is_none(), "{:?}", a.loaded_failure);
+    assert!((a.margin - 1.442).abs() < 0.01, "margin {}", a.margin);
+    assert!((a.net_force[1].abs() - 8856.0).abs() < 0.03 * 8856.0, "net force {:?}", a.net_force);
+    // The margin must fall with the load (the squeeze grows slower than the demand).
+    let light = analyze(&reported_bushing()).unwrap();
+    assert!(light.margin > a.margin, "{} vs {}", light.margin, a.margin);
+}
+
+#[test]
+fn a_small_bushing_whose_friction_contact_chatters_still_converges() {
+    // Bore 0.25 in, 113 lbf: with the strict tolerance the loaded stage crawled through 24 steps and 657 factorisations
+    // (100 s) to margin 51.361; accepting the stalled residual (below 0.3 % of the force scale) takes seconds.
+    let i = Inputs {
+        bore_dia: 0.253539395644151,
+        housing_od: 0.6394422267443205,
+        edge_distance: None,
+        bushing_id: 0.17230006325942043,
+        offset: 0.01143373248833315,
+        interference_dia: 0.001887110271978934,
+        thickness: 0.16344989404120458,
+        housing: Elasticity::iso(16.5e6, 0.3376056751374146),
+        bushing: Elasticity::iso(15.0e6, 0.28855486018848214),
+        friction: 0.14385111882242554,
+        pin: Elasticity::iso(16.5e6, 0.30),
+        pin_friction: 0.18818329575543752,
+        pin_clearance_dia: 0.0015056058644689848,
+        credit_pin_load: true,
+        load_lbf: 113.23032109379717,
+        load_angle_deg: 90.0,
+        direct_onset: false,
+        min_wall: 0.0,
+        plane_strain: false,
+        mesh_size: Some(0.031692424455518876),
+    };
+    let a = analyze(&i).unwrap();
+    assert!(a.loaded_failure.is_none() && (a.margin / 51.36 - 1.0).abs() < 0.005, "margin {} {:?}", a.margin, a.loaded_failure);
+}
+
+/// Slow (about 80 s): a concentric bushing, thin and stiff, with the load along x. The loaded stage fails on every attempt
+/// (a kernel limitation, see AGENTS.md); the analysis is still returned, on the fit alone, with the failure stated.
+#[test]
+#[ignore = "slow: run with --ignored"]
+fn an_unsolvable_pin_load_falls_back_to_the_fit_alone_and_says_so() {
+    let i = Inputs {
+        bore_dia: 0.7170741524845823,
+        housing_od: 2.010949715936335,
+        edge_distance: None,
+        bushing_id: 0.6279361151428063,
+        offset: 0.0,
+        interference_dia: 0.005020770756775639,
+        thickness: 0.739000798272336,
+        housing: Elasticity::iso(15.0e6, 0.2895727566169047),
+        bushing: Elasticity::iso(15.0e6, 0.2918196667044108),
+        friction: 0.2255222816316399,
+        pin: Elasticity::iso(16.5e6, 0.30),
+        pin_friction: 0.07911088556462952,
+        pin_clearance_dia: 0.0015331617664861002,
+        credit_pin_load: true,
+        load_lbf: 2720.1117949243553,
+        load_angle_deg: 0.0,
+        direct_onset: false,
+        min_wall: 0.0,
+        plane_strain: false,
+        mesh_size: Some(0.08963426906057279),
+    };
+    let a = analyze(&i).unwrap();
+    let why = a.loaded_failure.as_deref().expect("the pin load is expected to fail here");
+    assert!(why.contains("attempts"), "{why}");
+    assert!(a.pin_peak_pressure == 0.0 && (a.torque_capacity - a.torque_capacity_fit).abs() < 1e-9);
+}

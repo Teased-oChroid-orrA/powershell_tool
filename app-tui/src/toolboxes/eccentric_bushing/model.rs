@@ -2,7 +2,9 @@
 //! live model to `eccentric_bushing::Inputs`, and the report text. It computes nothing itself.
 
 pub use eccentric_bushing::Inputs;
-use eccentric_bushing::{Analysis, Elasticity, OffsetLimit};
+use eccentric_bushing::{Analysis, Control, Elasticity, Interrupt, OffsetLimit, Progress, SweepPoint};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use crate::toolboxes::bushing::model::BushingModel;
 
@@ -15,6 +17,10 @@ pub enum Task {
     MaxOffset,
     /// The largest load that is held, at the entered offset.
     MaxLoad,
+    /// The margin at a range of offsets (the curve behind the maximum offset).
+    Sweep,
+    /// The analysis again, with the finite-element fields written as a `.vtu` file.
+    Fields,
 }
 
 /// A finished worker run.
@@ -23,14 +29,66 @@ pub enum Output {
     Analysis(Box<Analysis>),
     MaxOffset(OffsetLimit),
     MaxLoad(OffsetLimit),
+    Sweep(Vec<SweepPoint>),
+    /// The analysis and the `.vtu` text of its fields.
+    Fields(Box<Analysis>, String),
 }
 
-/// Run one task (blocking: seconds to about a minute).
+pub fn task_name(t: Task) -> &'static str {
+    match t {
+        Task::Analyze => "analysis",
+        Task::MaxOffset => "maximum offset",
+        Task::MaxLoad => "maximum load",
+        Task::Sweep => "sweep",
+        Task::Fields => "field export",
+    }
+}
+
+/// The wall-clock a search may use before it stops with the bracket it has (a single analysis is bounded by its solver).
+pub const SEARCH_BUDGET: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Offsets of a [`Task::Sweep`].
+pub const SWEEP_POINTS: usize = 9;
+
+/// The stop and progress record of a new run: a flag `c` raises, a deadline for the searches and sweeps, a progress
+/// record the view reads.
+pub fn new_control(task: Task) -> Control {
+    let deadline = (task != Task::Analyze && task != Task::Fields).then(|| std::time::Instant::now() + SEARCH_BUDGET);
+    Control { interrupt: Interrupt { deadline, cancel: Some(Arc::new(AtomicBool::new(false))) }, progress: Some(Progress::new()) }
+}
+
+/// Run one task (blocking: seconds to about a minute) with no cancel flag.
 pub fn run(task: Task, input: &Inputs) -> Result<Output, String> {
+    run_controlled(task, input, &new_control(task))
+}
+
+/// Run one task under `control`: a search or sweep stops at the deadline or when the flag is raised and reports what it
+/// has (`OffsetLimit::halted`, a point's error); an analysis returns the error "cancelled".
+pub fn run_controlled(task: Task, input: &Inputs, control: &Control) -> Result<Output, String> {
+    let cancelled = |e: String| if e == "interrupted" { "cancelled".to_string() } else { e };
     Ok(match task {
-        Task::Analyze => Output::Analysis(Box::new(eccentric_bushing::analyze(input)?)),
-        Task::MaxOffset => Output::MaxOffset(eccentric_bushing::max_offset(input, 0.02)?),
-        Task::MaxLoad => Output::MaxLoad(eccentric_bushing::max_load(input, 0.02)?),
+        Task::Analyze => Output::Analysis(Box::new(eccentric_bushing::analyze_with(input, control).map_err(cancelled)?)),
+        Task::MaxOffset => Output::MaxOffset(eccentric_bushing::max_offset_with(input, 0.02, control)?),
+        Task::MaxLoad => Output::MaxLoad(eccentric_bushing::max_load_with(input, 0.02, control)?),
+        Task::Sweep => Output::Sweep(eccentric_bushing::sweep_offset(input, SWEEP_POINTS, control)?),
+        Task::Fields => {
+            let (a, vtu) = eccentric_bushing::analyze_fields(input, control).map_err(cancelled)?;
+            Output::Fields(Box::new(a), vtu)
+        }
+    })
+}
+
+/// One line when a candidate that could not be solved bounds the answer (the value is conservative).
+pub fn caveat_note(l: &OffsetLimit) -> Option<String> {
+    l.caveat.as_ref().map(|c| format!("caution: {c}"))
+}
+
+/// One line saying what a stopped search still knows (empty for a finished one).
+pub fn halted_note(l: &OffsetLimit, unit: &str, decimals: usize) -> Option<String> {
+    let why = l.halted.as_ref()?;
+    Some(match l.upper {
+        Some(u) => format!("stopped early ({why}): the limit lies between {:.decimals$} and {u:.decimals$} {unit}; the lower value is verified to hold", l.value),
+        None => format!("stopped early ({why}): {:.decimals$} {unit} is verified to hold, the limit was not resolved further", l.value),
     })
 }
 
@@ -98,6 +156,8 @@ pub fn field_rows(advanced: bool) -> Vec<FieldRow> {
         FieldRow::Run(Task::Analyze),
         FieldRow::Run(Task::MaxOffset),
         FieldRow::Run(Task::MaxLoad),
+        FieldRow::Run(Task::Sweep),
+        FieldRow::Run(Task::Fields),
         FieldRow::AdvancedSection,
     ];
     if advanced {
@@ -124,6 +184,8 @@ pub fn row_label(row: FieldRow) -> &'static str {
         FieldRow::Run(Task::Analyze) => "Analyse this offset",
         FieldRow::Run(Task::MaxOffset) => "Find maximum offset",
         FieldRow::Run(Task::MaxLoad) => "Find maximum load",
+        FieldRow::Run(Task::Sweep) => "Sweep margin vs offset",
+        FieldRow::Run(Task::Fields) => "Export FE fields (.vtu)",
         FieldRow::AdvancedSection => "Advanced settings",
     }
 }
@@ -146,6 +208,8 @@ pub fn field_hint(row: FieldRow) -> &'static str {
         FieldRow::Run(Task::Analyze) => "Enter or r: solve the fit and the pin load on the entered offset (a few seconds).",
         FieldRow::Run(Task::MaxOffset) => "Enter or m: the largest offset whose friction torque still carries load x offset x sin(angle). Bisection on the fit alone, confirmed with the loaded run (tens of seconds).",
         FieldRow::Run(Task::MaxLoad) => "Enter or l: the largest pin load held at the entered offset and angle.",
+        FieldRow::Run(Task::Sweep) => "Enter or s: the margin at nine offsets from zero to the thinnest wall the model allows, solved in parallel, drawn as a bar chart. x exports it as CSV.",
+        FieldRow::Run(Task::Fields) => "Enter or v: solve the entered offset again and write the displacement and stress fields of the housing, bushing and pin as a .vtu file for ParaView.",
     }
 }
 
@@ -272,13 +336,42 @@ pub fn report_text(input: &Inputs, analysis: Option<&Analysis>, max_offset: Opti
             if a.margin.is_finite() { format!("{:+.1} %  ({})", a.margin * 100.0, if a.margin >= 0.0 { "holds" } else { "SPINS" }) } else { "no spin torque at this angle".into() },
             a.fit_pressure_min, a.fit_pressure_max, a.contact_lost_deg, a.pin_arc_deg, a.pin_peak_pressure, a.slip_share * 100.0
         ));
+        if let Some(why) = &a.loaded_failure {
+            s.push_str(&format!("WARNING: the pin load could not be solved ({why}); capacity and margin are the fit alone (conservative), the pin results are blank.\n\n"));
+        } else if a.stalled_solves > 0 {
+            s.push_str(&format!("Note: the pin load converged to 0.3 % of the force scale on {} solve(s) (friction stick-slip), not to the tight tolerance.\n\n", a.stalled_solves));
+        }
     }
     if let Some(l) = max_offset {
         s.push_str(&format!("Offset the spin check allows: up to {:.4} in{}\n", l.value, if l.bounded_by_wall { " (spin never limits it: the numerical wall floor does)" } else { "" }));
         s.push_str(&format!("Offset the minimum wall allows: up to {:.4} in{}\n", l.wall_limit, if l.wall_limit < l.value { " (the wall governs, not spin)" } else { "" }));
+        if let Some(note) = halted_note(l, "in", 4).or_else(|| caveat_note(l)) {
+            s.push_str(&format!("{note}\n"));
+        }
     }
     if let Some(l) = max_load {
         s.push_str(&if l.value.is_finite() { format!("Maximum pin load that is held: {:.0} lbf\n", l.value) } else { "No spin torque at this angle: any load is held.\n".to_string() });
+        if let Some(note) = halted_note(l, "lbf", 0).or_else(|| caveat_note(l)) {
+            s.push_str(&format!("{note}\n"));
+        }
+    }
+    s
+}
+
+/// CSV of the interface pressure profile (and the margin sweep, when it ran for these inputs).
+pub fn csv_text(input: &Inputs, analysis: Option<&Analysis>, sweep: Option<&[SweepPoint]>) -> String {
+    let mut s = format!("# eccentric bushing: bore {:.4} in, bushing ID {:.4} in, offset {:.4} in, load {:.0} lbf at {:.1} deg, friction {:.2}\n", input.bore_dia, input.bushing_id, input.offset, input.load_lbf, input.load_angle_deg, input.friction);
+    if let Some(a) = analysis {
+        s.push_str("angle_deg,fit_pressure_psi,loaded_pressure_psi\n");
+        for b in &a.profile {
+            s.push_str(&format!("{:.1},{:.1},{:.1}\n", b.angle_deg, b.fit, b.loaded));
+        }
+    }
+    if let Some(points) = sweep {
+        s.push_str("offset_in,margin,design_capacity_lbf_in,required_torque_lbf_in,note\n");
+        for p in points {
+            s.push_str(&format!("{:.5},{},{:.3},{:.3},{}\n", p.offset, p.margin.map_or(String::new(), |m| if m.is_finite() { format!("{m:.5}") } else { "inf".into() }), p.capacity, p.required, p.error.as_deref().unwrap_or("")));
+        }
     }
     s
 }

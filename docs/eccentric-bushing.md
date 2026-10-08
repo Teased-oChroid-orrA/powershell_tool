@@ -236,3 +236,26 @@ incl. the Lame press fit are unchanged), crate `eccentric-bushing/` (9 verificat
 **Measured speed** (8 cores, default mesh, 0.5 in bore): one fit solve 2-4 s; `analyze` with the pin 8-20 s; `max_offset` with the pin credited is two rounds of eight parallel analyses (~1-2 minutes, on a worker); on the fit-alone basis ~20 s; the direct spin check adds 15-30 s.
 
 **Not done, why**: an unstructured 3D mesher, a prism element, shells / beams / dynamics (each is a project of its own, no product decision missing); moment-controlled friction runs near the slip limit with a free rotating master (the Schur complement assumes symmetry).
+
+## 10. Third session (2026-10-07): slow and failing searches, the reported case
+
+Reported: `m` sometimes ran over 600 s; `l` failed with "the pin could not be pressed in to 2214 lbf (Completed)" (bore 0.5, ID 0.1875, length 0.125 in, interference 0.0025, friction 0.15, 1000 lbf, boss 1.25, offset 0.02; materials not given, aluminium housing / bushing of E 10.8 Msi reproduce its fit capacity 141.8 vs 141.7 lbf in).
+
+**Evidence (all measured on the development Mac, release build, `ECCENTRIC_TRACE=1`):**
+
+| Finding | Measurement |
+|---|---|
+| The reported error is stage A running out of prescribed travel | `max_load` probes 1.25 x the fit-alone limit = 8856 lbf; press-in `Completed` at travel 0.0099 in, `ForceReached` after extending to 0.0296 in |
+| Stage A steps were wasteful | 200 steps: 107 s; 100: 26 s; 50: 19 s; 25: 19 s; margin 1.443 / 1.442 / 1.443 / 1.441 |
+| Default solves were 10-30 x slower than the 5-15 s in section 9 | the old default mesh (0.031 in) plus the loaded stage's stick-slip failures: 150 s fail + 70-90 s retry on the Workbench defaults at 1500 lbf |
+| The capacity does not need that mesh | margin 5.921 / 5.920 / 5.921 at 0.1 / 0.07 / 0.05 in elements, 5.921-5.924 at 0.031; thin wall (0.016 in) fit capacity 209.237 / 209.2185 / 209.2214 at 0.1 / 0.05 / 0.03 in. The displayed pressure range does need r/5 (bin scatter 10 % at r/4, <0.5 % at r/5) |
+| Loaded stage stalls on friction stick-slip, path dependent | fails at release share 0.25 / 0.4 and anchor stiffness 1e-5 / 1e-4, converges at 0.12 and 3e-4 (all to margin 5.924); stalled residual 1e-3..1e-2 of the force scale |
+| A random sweep finds more | 5 of 12 coarse-mesh cases failed before the changes; one case crawled 657 factorisations (103 s) with the strict tolerance and takes 7 s accepting a stall below 0.3 % of the force scale (margin 51.361 vs 51.358) |
+| Step memory (damped Newton after a backtrack) is not a general cure | the reported case converges in 4 s without it and fails with it; the fine-mesh default case the reverse. It is now a second attempt |
+| Stall acceptance needs a physical check | the soak sweep accepted a stalled residual that carried 84 of 207 lbf (the force scale is dominated by the fit): `transmitted` is checked before accepting |
+| More parallel candidates do not help `max_load` much | reported case, 14-18 solves: k = 2 242 s, 4 363 s, 8 282 s: per-probe cost (failed attempts) varies far more than the thread count matters; kept k = cores clamped 2..8 |
+| Two margins near the limit differ ~1 % between runs of different k | 12341 / 12407 / 12620 lbf (tolerance 2 % of the range): the loaded margin is slightly path dependent near the limit |
+
+**Done:** see the crate AGENTS.md (`Control`, `halted` / `caveat`, `loaded_failure`, attempts, mesh, stage A extension), `fea-core/AGENTS.md` (`Interrupt`, `StepObserver`, `stick_slip_guard`, `step_memory`), the toolbox (progress, queue, cancel, sweep, history, `.vtu`, CSV), the Workbench (`.csv`, template benchmarks).
+
+**Declined / not done, why:** (1) a kernel friction update that does not depend on the path (the real fix; the soft-parts and the thick concentric case still fail every attempt and now fall back to the fit alone, stated); (5) Brent / secant search: with 8 cores the 2-round parallel section search has the shorter wall time, so it was improved (interpolated second round, k + 3 solves) rather than replaced; (4) warm start across offsets: a different offset is a different mesh, nothing to map; the load-independent fit is cached across probes instead (`max_load`); (8) units selection: the whole toolbench is inch / lbf / psi, a unit system is a project-wide change, not a toolbox feature.

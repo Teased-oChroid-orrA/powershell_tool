@@ -32,5 +32,5 @@ pub use linear::Dirichlet;
 pub use loads::{FaceField, Loads, SurfaceLoad};
 pub use mesh::{Elastic, Mesh, Physics};
 pub use material::J2;
-pub use nonlinear::{Control, NlOptions, NlSolution, NlState, Start};
+pub use nonlinear::{Control, Interrupt, NlOptions, StepEvent, StepObserver, NlSolution, NlState, Start};
 pub use mpc::{Constraints, RefPoint};

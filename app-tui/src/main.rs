@@ -207,10 +207,10 @@ fn execute_effect(tx: &mpsc::UnboundedSender<AppEvent>, state: &mut AppState, ef
                 let _ = tx.send(AppEvent::EdgeCheckFinished { id, run: Box::new(run) });
             });
         }
-        Effect::RunEccentric { id, task, input } => {
+        Effect::RunEccentric { id, task, input, control } => {
             let tx = tx.clone();
             tokio::task::spawn_blocking(move || {
-                let result = app_tui::toolboxes::eccentric_bushing::model::run(task, &input);
+                let result = app_tui::toolboxes::eccentric_bushing::model::run_controlled(task, &input, &control);
                 let _ = tx.send(AppEvent::EccentricFinished { id, result: Box::new(result) });
             });
         }

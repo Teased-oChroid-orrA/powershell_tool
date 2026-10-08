@@ -202,7 +202,7 @@ pub enum Effect {
     /// condensed model from the last run, reused when the geometry is unchanged.
     /// Runs one Eccentric Bushing task (contact FE, seconds to tens of seconds) on a blocking worker and reports back
     /// with `AppEvent::EccentricFinished`.
-    RunEccentric { id: u64, task: eccentric_bushing::model::Task, input: Box<eccentric_bushing::model::Inputs> },
+    RunEccentric { id: u64, task: eccentric_bushing::model::Task, input: Box<eccentric_bushing::model::Inputs>, control: ::eccentric_bushing::Control },
     RunLugAnalysis { id: u64, input: Box<lug_analysis::model::LugInput>, cache: Option<lug_analysis::model::CachedModel> },
     /// Run the brief mesh-size test for these inputs on a worker; reports back with `AppEvent::LugMeshTestFinished`.
     RunLugMeshTest { id: u64, input: Box<lug_analysis::model::LugInput> },
@@ -363,8 +363,7 @@ pub fn handle_event(state: &mut AppState, event: AppEvent) -> Vec<Effect> {
             Vec::new()
         }
         AppEvent::EccentricFinished { id, result } => {
-            state.eccentric.finish(id, *result);
-            Vec::new()
+            state.eccentric.finish(id, *result, &state.bushing.model)
         }
         AppEvent::LugAnalysisFinished { id, result, cache } => {
             state.lug_analysis.finish(id, *result, cache);

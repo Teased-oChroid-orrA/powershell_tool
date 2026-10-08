@@ -8,7 +8,8 @@ pub mod model;
 pub mod view;
 
 use crossterm::event::{KeyCode, KeyEvent};
-use eccentric_bushing::{Analysis, Inputs, OffsetLimit};
+use eccentric_bushing::{Analysis, Control, Inputs, OffsetLimit, SweepPoint};
+use std::collections::VecDeque;
 
 use crate::app::Effect;
 use crate::toolboxes::bushing::model::BushingModel;
@@ -23,7 +24,27 @@ pub struct Job {
     pub task: Task,
     pub sig: Inputs,
     pub started: std::time::Instant,
+    /// Stop flag (`c`), deadline and progress record shared with the worker: a stopped search reports the bracket it had,
+    /// the view reads the progress.
+    pub control: Control,
 }
+
+/// One finished analysis kept for comparison with the next ones.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HistoryEntry {
+    pub offset: f64,
+    pub load_lbf: f64,
+    pub load_angle_deg: f64,
+    pub interference_dia: f64,
+    pub margin: f64,
+    pub design_capacity: f64,
+    pub pin_peak_pressure: f64,
+}
+
+const HISTORY_LIMIT: usize = 6;
+
+/// Runs asked for while one is going wait here (the same task is not queued twice).
+const QUEUE_LIMIT: usize = 4;
 
 pub struct EccentricState {
     pub ui: EccentricUi,
@@ -36,7 +57,11 @@ pub struct EccentricState {
     pub analysis: Option<(Inputs, Analysis)>,
     pub max_offset: Option<(Inputs, OffsetLimit)>,
     pub max_load: Option<(Inputs, OffsetLimit)>,
+    pub sweep: Option<(Inputs, Vec<SweepPoint>)>,
+    /// The last analyses, newest last (re-running identical inputs replaces the newest).
+    pub history: Vec<HistoryEntry>,
     pub job: Option<Job>,
+    pub queue: VecDeque<Task>,
     next_job: u64,
     pub error: Option<String>,
 }
@@ -53,7 +78,10 @@ impl Default for EccentricState {
             analysis: None,
             max_offset: None,
             max_load: None,
+            sweep: None,
+            history: Vec::new(),
             job: None,
+            queue: VecDeque::new(),
             next_job: 1,
             error: None,
         }
@@ -86,9 +114,12 @@ impl EccentricState {
         self.selected = next as usize;
     }
 
-    /// Start `task` for the live Bushing Workbench model (nothing while another run is going).
+    /// Start `task` for the live Bushing Workbench model; while another run is going it waits in the queue.
     pub fn start(&mut self, bushing: &BushingModel, task: Task) -> Vec<Effect> {
         if self.job.is_some() {
+            if !self.queue.contains(&task) && self.queue.len() < QUEUE_LIMIT {
+                self.queue.push_back(task);
+            }
             return Vec::new();
         }
         match model::build_input(bushing, &self.ui) {
@@ -100,24 +131,60 @@ impl EccentricState {
                 self.error = None;
                 let id = self.next_job;
                 self.next_job += 1;
-                self.job = Some(Job { id, task, sig: input, started: std::time::Instant::now() });
-                vec![Effect::RunEccentric { id, task, input: Box::new(input) }]
+                let control = model::new_control(task);
+                self.job = Some(Job { id, task, sig: input, started: std::time::Instant::now(), control: control.clone() });
+                vec![Effect::RunEccentric { id, task, input: Box::new(input), control }]
             }
         }
     }
 
-    /// A worker finished job `id`.
-    pub fn finish(&mut self, id: u64, result: Result<Output, String>) {
-        let Some(job) = self.job.take_if(|j| j.id == id) else { return };
+    fn remember(&mut self, inp: &Inputs, a: &Analysis) {
+        let entry = HistoryEntry { offset: inp.offset, load_lbf: inp.load_lbf, load_angle_deg: inp.load_angle_deg, interference_dia: inp.interference_dia, margin: a.margin, design_capacity: a.design_capacity, pin_peak_pressure: a.pin_peak_pressure };
+        if self.history.last().is_some_and(|h| (h.offset, h.load_lbf, h.load_angle_deg, h.interference_dia) == (entry.offset, entry.load_lbf, entry.load_angle_deg, entry.interference_dia)) {
+            self.history.pop();
+        }
+        self.history.push(entry);
+        if self.history.len() > HISTORY_LIMIT {
+            self.history.remove(0);
+        }
+    }
+
+    /// `c`: stop the running job (it still reports what it has) and drop the queued ones.
+    pub fn cancel(&mut self) {
+        if let Some(job) = &self.job {
+            if let Some(flag) = &job.control.interrupt.cancel {
+                flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        self.queue.clear();
+    }
+
+    /// A worker finished job `id`; returns the file to write for a field export and the next queued run.
+    pub fn finish(&mut self, id: u64, result: Result<Output, String>, bushing: &BushingModel) -> Vec<Effect> {
+        let Some(job) = self.job.take_if(|j| j.id == id) else { return Vec::new() };
+        let mut effects = Vec::new();
         match result {
-            Ok(Output::Analysis(a)) => self.analysis = Some((job.sig, *a)),
+            Ok(Output::Analysis(a)) => {
+                self.remember(&job.sig, &a);
+                self.analysis = Some((job.sig, *a));
+            }
             Ok(Output::MaxOffset(l)) => self.max_offset = Some((job.sig, l)),
             Ok(Output::MaxLoad(l)) => self.max_load = Some((job.sig, l)),
+            Ok(Output::Sweep(points)) => self.sweep = Some((job.sig, points)),
+            Ok(Output::Fields(a, vtu)) => {
+                self.remember(&job.sig, &a);
+                self.analysis = Some((job.sig, *a));
+                effects.extend(crate::paths::app_data_dir().map(|dir| Effect::WriteTextFile { path: dir.join("reports").join("eccentric-bushing-fields.vtu").to_string_lossy().into_owned(), contents: vtu }));
+            }
             Err(why) => self.error = Some(format!("{:?} failed: {why}", job.task)),
         }
         if self.error.as_deref().is_some_and(|e| !e.contains("failed")) {
             self.error = None;
         }
+        if let Some(next) = self.queue.pop_front() {
+            effects.extend(self.start(bushing, next));
+        }
+        effects
     }
 
     pub fn tick(&mut self) {}
@@ -157,6 +224,16 @@ impl EccentricState {
             _ => Vec::new(),
         }
     }
+}
+
+fn csv_effect(state: &EccentricState, bushing: &BushingModel) -> Vec<Effect> {
+    let (Ok(input), Some(dir)) = (model::build_input(bushing, &state.ui), crate::paths::app_data_dir()) else { return Vec::new() };
+    let a = state.analysis.as_ref().filter(|(s, _)| *s == input).map(|(_, a)| a);
+    let sweep = state.sweep.as_ref().filter(|(s, _)| *s == input).map(|(_, p)| p.as_slice());
+    if a.is_none() && sweep.is_none() {
+        return Vec::new();
+    }
+    vec![Effect::WriteTextFile { path: dir.join("reports").join("eccentric-bushing.csv").to_string_lossy().into_owned(), contents: model::csv_text(&input, a, sweep) }]
 }
 
 fn export_effect(state: &EccentricState, bushing: &BushingModel) -> Vec<Effect> {
@@ -210,6 +287,13 @@ pub fn handle_key(state: &mut EccentricState, bushing: &BushingModel, key: KeyEv
         KeyCode::Char('r' | 'R') => (true, state.start(bushing, Task::Analyze)),
         KeyCode::Char('m' | 'M') => (true, state.start(bushing, Task::MaxOffset)),
         KeyCode::Char('l' | 'L') => (true, state.start(bushing, Task::MaxLoad)),
+        KeyCode::Char('c' | 'C') => {
+            state.cancel();
+            (true, Vec::new())
+        }
+        KeyCode::Char('s' | 'S') => (true, state.start(bushing, Task::Sweep)),
+        KeyCode::Char('v' | 'V') => (true, state.start(bushing, Task::Fields)),
+        KeyCode::Char('x' | 'X') => (true, csv_effect(state, bushing)),
         KeyCode::Char('d' | 'D') => {
             state.show_profile = !state.show_profile;
             (true, Vec::new())

@@ -705,6 +705,10 @@ pub fn handle_key(state: &mut FeaWorkbenchState, key: KeyEvent) -> (bool, Vec<Ef
                 Some(Ok(text)) => (true, state.write_effect("vtu", text, false)),
                 _ => (true, Vec::new()),
             },
+            'c' => match state.solved.as_ref().map(|s| s.csv()) {
+                Some(text) => (true, state.write_effect("csv", text, false)),
+                None => (true, Vec::new()),
+            },
             'j' => match state.problem.to_json() {
                 Ok(text) => (true, state.write_effect("json", text, false)),
                 Err(_) => (true, Vec::new()),

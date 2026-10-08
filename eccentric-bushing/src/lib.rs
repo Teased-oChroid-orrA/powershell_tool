@@ -7,8 +7,11 @@
 //! gives after the fit **and** the pin load; the concentric Lame pressure is only the `e = 0` limit.
 //! `docs/eccentric-bushing.md` has the derivation and the verification plan.
 
+mod control;
 mod model;
 mod offset;
 
-pub use model::{analyze, fit_capacity, spin_onset_torque, Analysis, Elasticity, Inputs, Orthotropy, ProfileBin};
-pub use offset::{max_load, max_offset, OffsetLimit};
+pub use control::{Control, Progress, ProgressState};
+pub use fea_core::Interrupt;
+pub use model::{analyze, analyze_fields, analyze_with, fit_capacity, fit_capacity_with, spin_onset_torque, Analysis, Elasticity, Inputs, Orthotropy, ProfileBin};
+pub use offset::{max_load, max_load_with, max_offset, max_offset_with, sweep_offset, OffsetLimit, SweepPoint};

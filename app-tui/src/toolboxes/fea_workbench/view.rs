@@ -20,7 +20,7 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &FeaWorkbenchSt
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(theme.border_style(focused))
-        .title(" FEA Workbench - r: solve \u{b7} v: field \u{b7} m: mesh \u{b7} x: deform \u{b7} d: details \u{b7} j: save \u{b7} o: open \u{b7} e: report \u{b7} p: .vtu ");
+        .title(" FEA Workbench - r: solve \u{b7} v: field \u{b7} m: mesh \u{b7} x: deform \u{b7} d: details \u{b7} j: save \u{b7} o: open \u{b7} e: report \u{b7} p: .vtu \u{b7} c: .csv ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -236,6 +236,13 @@ pub fn readout_lines<'a>(theme: &Theme, state: &FeaWorkbenchState) -> Vec<Line<'
         }
         lines.push(Line::from(format!("Reactions        ({:.2}, {:.2}, {:.2})", sm.reaction[0], sm.reaction[1], sm.reaction[2])));
         lines.push(Line::from(Span::styled(format!("{} nodes, {} elements, {} dofs, solved in {:.0} ms ({} pass{})", sm.nodes, sm.elements, sm.dofs, sm.solve_ms, s.history.len(), if s.history.len() == 1 { "" } else { "es" }), theme.disabled_style())));
+    }
+    if let Some(b) = fea_problem::benchmark::check(s).filter(|_| !state.details) {
+        let lead = b.lines().into_iter().next().unwrap_or_default();
+        lines.push(tone(if b.passed() { StatusTone::Success } else { StatusTone::Warning }, format!("{} {lead}", if b.passed() { "\u{2713}" } else { "\u{26a0}" })));
+        for c in &b.checks {
+            lines.push(Line::from(format!("  {}: FE {:.5e} vs {:.5e} ({:+.2} %)", c.quantity, c.fe, c.reference, 100.0 * c.error())));
+        }
     }
     for f in &sm.interfaces {
         lines.push(Line::from(format!("Bushing in hole {}: fit pressure {:.0} mean / {:.0} peak, friction torque capacity {:.2}{}", f.hole, f.mean_pressure, f.peak_pressure, f.torque_capacity, if f.open_arc_deg > 0.0 { format!(", open over {:.0} deg", f.open_arc_deg) } else { String::new() })));

@@ -330,7 +330,60 @@ pub enum Control {
     Arc { ds: f64, lambda_max: f64, max_steps: usize },
 }
 
+/// A cooperative stop for a long solve: a wall-clock deadline and/or a flag another thread raises. The solver checks it
+/// at every Newton iteration and load step and returns the state it reached with `Stop::Interrupted`.
+/// What a converged load step reports to a [`StepObserver`].
 #[derive(Debug, Clone, Copy)]
+pub struct StepEvent {
+    /// Converged steps of this run so far (including this one).
+    pub step: usize,
+    pub lambda: f64,
+    /// Norm of the force on the first contact master (the pin's pressing force), when there is contact.
+    pub master_force: Option<f64>,
+    pub factorisations: usize,
+}
+
+/// A callback invoked after every converged load step, on the solving thread (live progress for a long solve).
+#[derive(Clone)]
+pub struct StepObserver(pub std::sync::Arc<dyn Fn(&StepEvent) + Send + Sync>);
+
+impl std::fmt::Debug for StepObserver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StepObserver")
+    }
+}
+
+/// Newton iterations without a 3 % gain of the best residual after which a contact solve is called stagnated.
+const STAGNATION_ITERATIONS: usize = 8;
+/// Step cuts a stagnating load step gets under `stick_slip_guard`: halving the step released none of the stick-slip cycles
+/// seen (a failing first attempt cost 59 s with all 12 cuts, 13 s with 3), and the caller has other attempts to try.
+const STAGNATION_CUTS: usize = 3;
+/// Prefix of the Newton error of a stagnated solve (`Stop::NoConvergence` carries it).
+pub const STAGNATED: &str = "stagnated";
+#[derive(Debug, Clone, Default)]
+pub struct Interrupt {
+    pub deadline: Option<Instant>,
+    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+}
+
+impl Interrupt {
+    /// Why it fired, if it has: a cancel request or the deadline.
+    pub fn reason(&self) -> Option<&'static str> {
+        if self.cancel.as_ref().is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
+            Some("cancelled")
+        } else if self.deadline.is_some_and(|d| Instant::now() >= d) {
+            Some("time budget used up")
+        } else {
+            None
+        }
+    }
+
+    pub fn triggered(&self) -> bool {
+        self.reason().is_some()
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct NlOptions {
     pub control: Control,
     /// Initial number of load steps to `lambda = 1` (load control).
@@ -370,6 +423,22 @@ pub struct NlOptions {
     /// meets its stiffest transition at the first touch, and a step that fails there costs a full set of iterations
     /// before it is halved.
     pub first_step: f64,
+    /// Give up early on a deadline or a cancel request (`Stop::Interrupted`).
+    pub interrupt: Interrupt,
+    /// Frictional contact that cycles between stick and slip (the residual alternates or plateaus far above `tol`):
+    /// (1) a Newton step that had to be backtracked sets the fraction of the next ones, which recovers by doubling;
+    /// (2) 8 iterations without a 3 % gain of the best residual end the solve as stagnated: the lowest iterate is
+    /// accepted when `stall_tol` allows it (counted in `NlSolution::stalled_solves`), else the solve fails at once
+    /// (`STAGNATED`; the load step gets 3 cuts, not `max_cuts`). Off by default: callers that converge slowly
+    /// but surely (the lug solver's elastic pin) must not be cut short.
+    pub stick_slip_guard: bool,
+    /// With `stick_slip_guard`: a Newton step that had to be backtracked sets the fraction of the next ones (which
+    /// recovers by doubling) instead of every iteration trying the full step first. It rescues some stick-slip cycles
+    /// and ruins other solves that converge without it (the same model converged in 4 s without and failed with it, and
+    /// the reverse on a finer mesh), so it is a second attempt's strategy, not a default.
+    pub step_memory: bool,
+    /// Called after every converged load step.
+    pub observer: Option<StepObserver>,
 }
 
 impl NlOptions {
@@ -388,7 +457,7 @@ impl NlOptions {
 
 impl Default for NlOptions {
     fn default() -> Self {
-        Self { control: Control::Load, steps: 10, max_iter: 25, tol: 1e-9, line_search: true, max_cuts: 12, failure_ep: None, chord_iters: 0, max_outer: 12, outer_tol: 1e-4, stop_on_plateau: false, stop_on_fall: 0.0, stop_at_force: 0.0, stall_tol: 0.0, first_step: 1.0 }
+        Self { control: Control::Load, steps: 10, max_iter: 25, tol: 1e-9, line_search: true, max_cuts: 12, failure_ep: None, chord_iters: 0, max_outer: 12, outer_tol: 1e-4, stop_on_plateau: false, stop_on_fall: 0.0, stop_at_force: 0.0, stall_tol: 0.0, first_step: 1.0, interrupt: Interrupt::default(), stick_slip_guard: false, step_memory: false, observer: None }
     }
 }
 
@@ -425,6 +494,8 @@ pub enum Stop {
     Plateau,
     /// The first master reached `NlOptions::stop_at_force`.
     ForceReached,
+    /// `NlOptions::interrupt` fired (deadline or cancel request): the solution is the last converged step, not a result.
+    Interrupted,
 }
 
 pub struct NlSolution {
@@ -436,6 +507,9 @@ pub struct NlSolution {
     pub reactions: Vec<f64>,
     pub stop: Stop,
     pub factorisations: usize,
+    /// Newton solves accepted because the residual stalled below `NlOptions::stall_tol` (frictional stick-slip chatter
+    /// that does not reach the tolerance), not because it met it. `0` when every solve converged.
+    pub stalled_solves: usize,
     pub elapsed_ms: f64,
     /// Contact summary of the final state (`None` without contact).
     pub contact: Option<ContactStats>,
@@ -524,6 +598,8 @@ struct Ctx<'a> {
     bc: &'a Dirichlet,
     opt: NlOptions,
     factorisations: Cell<usize>,
+    /// Newton solves accepted on a stalled residual (`NlOptions::stall_tol`) rather than the tolerance.
+    stalled: Cell<usize>,
     start: Option<&'a Start>,
     ground: Vec<(usize, f64)>,
     /// Follower pressures (face nodes, p): see `Loads::followers`.
@@ -907,12 +983,13 @@ impl Model {
                 return Err("arc-length control needs zero prescribed displacements".into());
             }
         }
-        let mut ctx = Ctx { model: self, pat, contacts: contact_set, red, free, fixed, f_ext, bc, opt: *opt, factorisations: Cell::new(0), start, ground: loads.ground.clone(), followers: loads.followers.clone(), timers: Default::default() };
+        let mut ctx = Ctx { model: self, pat, contacts: contact_set, red, free, fixed, f_ext, bc, opt: opt.clone(), factorisations: Cell::new(0), stalled: Cell::new(0), start, ground: loads.ground.clone(), followers: loads.followers.clone(), timers: Default::default() };
         let mut sol = match opt.control {
             Control::Load => ctx.run_load_control()?,
             Control::Arc { ds, lambda_max, max_steps } => ctx.run_arc_length(ds, lambda_max, max_steps)?,
         };
         sol.factorisations = ctx.factorisations.get();
+        sol.stalled_solves = ctx.stalled.get();
         sol.elapsed_ms = clock.elapsed().as_secs_f64() * 1e3;
         if std::env::var("NL_PROFILE").is_ok() {
             eprintln!("nl profile: {:.0} ms total, evaluation {:.0} ms (element assembly {:.0}, contact {:.0}), factorisation {:.0} ms ({} of them), solves {:.0} ms", sol.elapsed_ms, 1e3 * ctx.timers[0].get(), 1e3 * ctx.timers[3].get(), 1e3 * ctx.timers[4].get(), 1e3 * ctx.timers[1].get(), sol.factorisations, 1e3 * ctx.timers[2].get());
@@ -963,7 +1040,7 @@ impl Ctx<'_> {
             }
             norm(&net)
         };
-        NlSolution { u, state, lambda, steps, reactions, stop, factorisations: 0, elapsed_ms: 0.0, contact, contact_points, contact_weights, rigid_translation, ground_leak }
+        NlSolution { u, state, lambda, steps, reactions, stop, factorisations: 0, stalled_solves: 0, elapsed_ms: 0.0, contact, contact_points, contact_weights, rigid_translation, ground_leak }
     }
 
     /// Newton iterations at load factor `lambda` from the converged `(u, state)`.
@@ -1015,7 +1092,22 @@ impl Ctx<'_> {
         // The factorization of a past tangent (chord Newton) and how many iterations it has served.
         let mut chord: Option<(crate::linear::AnyFactor<'_>, usize)> = None;
         let mut last_rn = f64::INFINITY;
+        // `NlOptions::step_memory`: the fraction of the Newton step taken. A step that had to be backtracked says the
+        // tangent overshoots here (a friction contact flipping between stick and slip), so the next one starts from the
+        // accepted fraction and doubles back towards 1 while the residual keeps falling.
+        let mut trust = 1.0f64;
+        // Stagnation: the best residual so far and the iterations since it last improved by 3 %. Frictional contact can
+        // cycle between stick and slip at a residual far above the tolerance; 8 iterations without progress is that.
+        let (mut best_rn, mut since_best) = (f64::INFINITY, 0usize);
+        // With `stall_tol` the iterate of the lowest residual is kept, to be accepted when the iteration stalls.
+        let mut lowest: Option<(f64, Vec<f64>, Vec<f64>, NlState)> = None;
+        // Only a frictional contact cycles between stick and slip: `NlOptions::stick_slip_guard` is for it.
+        let frictional = self.opt.stick_slip_guard && self.contacts.as_ref().is_some_and(|cs| cs.specs.iter().any(|s| s.mu > 0.0));
+        let damped = frictional && self.opt.step_memory;
         for _ in 0..=self.opt.max_iter {
+            if self.opt.interrupt.triggered() {
+                return Err("interrupted".into());
+            }
             if rn <= self.opt.tol * self.scale(&ev, lambda) || rn < 1e-14 * self.scale(&ev, lambda).max(1.0) || rn <= self.abs_tol() {
                 let mut st = ev.state;
                 st.rigid_q = q;
@@ -1023,6 +1115,24 @@ impl Ctx<'_> {
             }
             if !rn.is_finite() || rn > 1e12 * (1.0 + self.scale(&ev, lambda)) {
                 return Err("residual diverged".into());
+            }
+            if self.opt.stall_tol > 0.0 && lowest.as_ref().is_none_or(|l| rn < l.0) {
+                lowest = Some((rn, u.clone(), q.clone(), ev.state.clone()));
+            }
+            if rn < 0.97 * best_rn {
+                (best_rn, since_best) = (rn, 0);
+            } else {
+                since_best += 1;
+            }
+            if frictional && since_best >= STAGNATION_ITERATIONS && self.opt.stall_tol > 0.0 {
+                if let Some((_, lu, lq, mut lst)) = lowest.take().filter(|l| l.0 <= self.opt.stall_tol * self.scale(&ev, lambda)) {
+                    lst.rigid_q = lq;
+                    self.stalled.set(self.stalled.get() + 1);
+                    return Ok((lu, lst, residuals));
+                }
+            }
+            if frictional && since_best >= STAGNATION_ITERATIONS {
+                return Err(format!("{STAGNATED} (residual {rn:.3e}, best {best_rn:.3e})"));
             }
             // Backtrack when the last full step increased the residual.
             if self.opt.line_search {
@@ -1043,6 +1153,7 @@ impl Ctx<'_> {
                                 let r2 = self.residual(&e2, lambda);
                                 let n2 = norm(&r2);
                                 if n2 <= rp || (alpha < 0.05 && self.contacts.is_none()) {
+                                    trust = (trust * alpha).max(1.0 / 64.0);
                                     u = ut;
                                     q = qt;
                                     ev = e2;
@@ -1054,6 +1165,8 @@ impl Ctx<'_> {
                             alpha *= 0.5;
                         }
                         residuals.push(rn);
+                    } else {
+                        trust = (trust * 2.0).min(1.0);
                     }
                 }
             }
@@ -1078,6 +1191,8 @@ impl Ctx<'_> {
             self.timers[2].set(self.timers[2].get() + t_sol.elapsed().as_secs_f64());
             *age += 1;
             last_rn = rn;
+            let step = if damped && trust < 1.0 { trust } else { 1.0 };
+            let dx: Vec<f64> = if step < 1.0 { dx.iter().map(|v| v * step).collect() } else { dx };
             let before = (u.clone(), q.clone(), dx.clone(), rn);
             for (j, &i) in self.free.iter().enumerate() {
                 u[i] += dx[j];
@@ -1095,10 +1210,12 @@ impl Ctx<'_> {
             residuals.push(rn);
             prev = Some(before);
         }
-        if self.opt.stall_tol > 0.0 && rn.is_finite() && rn <= self.opt.stall_tol * self.scale(&ev, lambda) {
-            let mut st = ev.state;
-            st.rigid_q = q;
-            return Ok((u, st, residuals));
+        if self.opt.stall_tol > 0.0 && rn.is_finite() {
+            if let Some((_, lu, lq, mut lst)) = lowest.take().filter(|l| l.0 <= self.opt.stall_tol * self.scale(&ev, lambda)) {
+                lst.rigid_q = lq;
+                self.stalled.set(self.stalled.get() + 1);
+                return Ok((lu, lst, residuals));
+            }
         }
         if std::env::var("NL_DEBUG").is_ok() {
             eprintln!("newton lambda {lambda:.3e} failed (force scale {:.3e}, elastic {:.3e}): residuals {:?}", self.scale(&ev, lambda), ev.f_elem, residuals.iter().map(|r| format!("{r:.2e}")).collect::<Vec<_>>());
@@ -1227,8 +1344,11 @@ impl Ctx<'_> {
         let (mut u, mut state, lambda0) = self.initial_with_start()?;
         let (mut lambda, dl_max) = (lambda0, 1.0 / self.opt.steps.max(1) as f64);
         let mut dl = self.opt.first_step * dl_max;
-        let (mut steps, mut cuts_total) = (Vec::new(), 0usize);
+        let (mut steps, mut cuts_total, mut stagnated_cuts) = (Vec::new(), 0usize, 0usize);
         while lambda < 1.0 - 1e-12 {
+            if self.opt.interrupt.triggered() {
+                return Ok(self.finish(u, state, lambda, steps, Stop::Interrupted));
+            }
             let target = (lambda + dl).min(1.0);
             let lambda_before = lambda;
             match self.newton(lambda, target, &u, &state) {
@@ -1251,6 +1371,9 @@ impl Ctx<'_> {
                         dl *= 0.5;
                         continue;
                     }
+                    if let Some(obs) = &self.opt.observer {
+                        (obs.0)(&StepEvent { step: steps.len() + 1, lambda, master_force: master_force.first().map(|f| norm(f)), factorisations: self.factorisations.get() });
+                    }
                     steps.push(StepInfo { lambda, iterations, residuals, max_ep, plastic_fraction: sn.plastic_fraction(), cuts: cuts_total, indefinite: false, master_force });
                     u = un;
                     state = sn;
@@ -1271,10 +1394,19 @@ impl Ctx<'_> {
                     }
                 }
                 Err(e) => {
+                    if self.opt.interrupt.triggered() {
+                        return Ok(self.finish(u, state, lambda, steps, Stop::Interrupted));
+                    }
                     if std::env::var("NL_DEBUG").is_ok() {
                         eprintln!("step to lambda {target:.4} cut: {e}");
                     }
                     cuts_total += 1;
+                    if self.opt.stick_slip_guard && e.starts_with(STAGNATED) {
+                        stagnated_cuts += 1;
+                        if stagnated_cuts > STAGNATION_CUTS {
+                            return Ok(self.finish(u, state, lambda, steps, Stop::NoConvergence(e)));
+                        }
+                    }
                     dl *= 0.5;
                     // A displacement-driven pin that cannot be pushed further once its load has all but flattened has
                     // reached its limit state (Newton fails on the singular plateau): not a failure.
@@ -1298,6 +1430,9 @@ impl Ctx<'_> {
         let mut cuts = 0usize;
         let fext_free: Vec<f64> = self.free.iter().map(|&i| self.f_ext[i]).collect();
         while steps.len() < max_steps {
+            if self.opt.interrupt.triggered() {
+                return Ok(self.finish(u, state, lambda, steps, Stop::Interrupted));
+            }
             if lambda >= lambda_max {
                 return Ok(self.finish(u, state, lambda, steps, Stop::Completed));
             }

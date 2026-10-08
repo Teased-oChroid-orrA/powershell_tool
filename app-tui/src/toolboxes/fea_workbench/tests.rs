@@ -278,9 +278,16 @@ fn exports_need_a_result_and_name_their_files_after_the_problem() {
     let e = s.tick();
     run_effects(&mut s, e);
     let (_, e) = handle_key(&mut s, key(KeyCode::Char('e')));
-    assert!(matches!(e.as_slice(), [Effect::WriteTextFileAndOpen { path, contents }] if path.ends_with("plate-with-a-hole.txt") && contents.contains("Equilibrium error")), "{e:?}");
+    assert!(matches!(e.as_slice(), [Effect::WriteTextFileAndOpen { path, contents }] if path.ends_with("plate-with-a-hole.txt") && contents.contains("Equilibrium error") && contents.contains("Benchmark (Heywood")), "{e:?}");
     let (_, e) = handle_key(&mut s, key(KeyCode::Char('p')));
     assert!(matches!(e.as_slice(), [Effect::WriteTextFile { path, contents }] if path.ends_with("plate-with-a-hole.vtu") && contents.contains("von_mises")), "{e:?}");
+    let (_, e) = handle_key(&mut s, key(KeyCode::Char('C')));
+    let [Effect::WriteTextFile { path, contents }] = e.as_slice() else { panic!("{e:?}") };
+    let mut lines = contents.lines();
+    assert!(path.ends_with("plate-with-a-hole.csv") && lines.next().unwrap().starts_with("node,x,y,ux,uy,sxx,syy,szz,sxy,syz,szx,von_mises"), "{path}");
+    // One row per node, every value finite, 14 columns (index, x, y, ux, uy, six stresses, three derived).
+    let rows: Vec<&str> = lines.collect();
+    assert!(rows.len() > 50 && rows.iter().all(|r| r.split(',').count() == 14 && r.split(',').all(|v| v.parse::<f64>().is_ok_and(f64::is_finite))));
 }
 
 #[test]

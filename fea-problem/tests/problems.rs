@@ -290,3 +290,20 @@ fn a_bushing_must_sit_in_a_circular_hole_with_a_wall_and_an_interference() {
     p.analysis = Analysis::Solid;
     assert!(p.validate().is_err());
 }
+
+#[test]
+fn unmodified_templates_with_a_closed_form_agree_with_it_and_edited_ones_are_not_checked() {
+    use fea_problem::benchmark::check;
+    for name in ["Cantilever beam", "Thick cylinder (axisymmetric)", "Plate with a hole"] {
+        let p = template(name);
+        let solved = solve(&p, None).unwrap();
+        let b = check(&solved).unwrap_or_else(|| panic!("{name} has a benchmark"));
+        eprintln!("{}", b.lines().join("\n"));
+        assert!(b.passed(), "{name}: {:?}", b.checks);
+        // Any edit takes the problem off its benchmark.
+        let mut edited = p.clone();
+        edited.material.e *= 1.1;
+        assert!(check(&solve(&edited, None).unwrap()).is_none(), "{name}");
+    }
+    assert!(check(&solve(&template("Pin-loaded lug"), None).unwrap()).is_none(), "no closed form for the lug template");
+}

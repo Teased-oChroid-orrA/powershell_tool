@@ -19,7 +19,7 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &EccentricState
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(theme.border_style(focused))
-        .title(crate::widgets::title::toolbox_title("Eccentric Bushing", &["r Analyse", "m Max offset", "l Max load", "e Export", "d Profile"], area.width));
+        .title(crate::widgets::title::toolbox_title("Eccentric Bushing", &["r Analyse", "m Max offset", "l Max load", "s Sweep", "c Cancel", "e Export", "d Profile"], area.width));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -121,8 +121,25 @@ pub fn readout_lines<'a>(theme: &Theme, state: &EccentricState, bushing: &Bushin
             Task::Analyze => "analysing",
             Task::MaxOffset => "searching the maximum offset",
             Task::MaxLoad => "searching the maximum load",
+            Task::Sweep => "sweeping the offset",
+            Task::Fields => "analysing for the field export",
         };
-        lines.push(Line::from(Span::styled(format!("\u{2026} {what} ({:.0} s)", job.started.elapsed().as_secs_f64()), theme.status_style(StatusTone::Info))));
+        let info = theme.status_style(StatusTone::Info);
+        lines.push(Line::from(Span::styled(format!("\u{2026} {what} ({:.0} s; c cancels)", job.started.elapsed().as_secs_f64()), info)));
+        if let Some(p) = job.control.progress.as_ref().map(|p| p.snapshot()) {
+            if !p.detail.is_empty() {
+                lines.push(Line::from(Span::styled(format!("  {}", p.detail), theme.disabled_style())));
+            }
+            let mut sofar = format!("  {} solve{} done", p.solves_done, if p.solves_done == 1 { "" } else { "s" });
+            if let Some((lo, hi)) = p.bracket {
+                sofar.push_str(&format!(", the answer lies in {lo:.4} to {hi:.4}"));
+            }
+            lines.push(Line::from(Span::styled(sofar, theme.disabled_style())));
+        }
+        if !state.queue.is_empty() {
+            let names: Vec<&str> = state.queue.iter().map(|t| model::task_name(*t)).collect();
+            lines.push(Line::from(Span::styled(format!("  queued next: {}", names.join(", ")), theme.disabled_style())));
+        }
     }
     if let Some(err) = &state.error {
         lines.push(Line::from(Span::styled(format!("\u{2717} {err}"), theme.status_style(StatusTone::Danger))));
@@ -172,6 +189,11 @@ pub fn readout_lines<'a>(theme: &Theme, state: &EccentricState, bushing: &Bushin
             format!("  FE check: interface force ({:.0}, {:.0}) lbf, friction moment {:.2} lbf in", a.net_force[0], a.net_force[1], a.friction_torque),
             theme.disabled_style(),
         )));
+        if let Some(why) = &a.loaded_failure {
+            lines.push(Line::from(Span::styled(format!("  \u{26a0} the pin load could not be solved ({why}): capacity and margin are the fit alone (conservative), the pin results are blank"), theme.status_style(StatusTone::Warning))));
+        } else if a.stalled_solves > 0 {
+            lines.push(Line::from(Span::styled(format!("  \u{b7} the pin load converged to 0.3 % of the force scale on {} solve(s) (friction stick-slip), not to the tight tolerance", a.stalled_solves), theme.disabled_style())));
+        }
         if state.show_profile {
             lines.push(Line::from(""));
             lines.extend(profile_lines(theme, a));
@@ -188,16 +210,40 @@ pub fn readout_lines<'a>(theme: &Theme, state: &EccentricState, bushing: &Bushin
             format!("  {glyph} the minimum wall allows e up to {:.4} in{}", l.wall_limit, if l.wall_limit < l.value { " - the wall governs, not spin" } else { "" }),
             theme.status_style(tone),
         )));
+        if let Some(note) = model::halted_note(l, "in", 4).or_else(|| model::caveat_note(l)) {
+            lines.push(Line::from(Span::styled(format!("  \u{26a0} {note}"), theme.status_style(StatusTone::Warning))));
+        }
     }
     if let Some((sig, l)) = &state.max_load {
         lines.push(Line::from(""));
         lines.push(bold(theme, "Maximum pin load that is held"));
         let stale = if fresh(sig) { "" } else { "  (inputs changed: l runs it again)" };
         lines.push(Line::from(if l.value.is_finite() { format!("  F max = {:.0} lbf{stale}", l.value) } else { format!("  no spin torque at this angle: any load is held{stale}") }));
+        if let Some(note) = model::halted_note(l, "lbf", 0).or_else(|| model::caveat_note(l)) {
+            lines.push(Line::from(Span::styled(format!("  \u{26a0} {note}"), theme.status_style(StatusTone::Warning))));
+        }
+    }
+    if state.history.len() > 1 {
+        lines.push(Line::from(""));
+        lines.push(bold(theme, "Earlier analyses (against the latest)"));
+        let latest = state.history.last().cloned();
+        for h in state.history.iter().rev().skip(1) {
+            let delta = latest.as_ref().map_or(String::new(), |l| if h.margin.is_finite() && l.margin.is_finite() { format!("  latest {:+.0} points", (l.margin - h.margin) * 100.0) } else { String::new() });
+            let margin = if h.margin.is_finite() { format!("{:+.0} %", h.margin * 100.0) } else { "no spin torque".into() };
+            lines.push(Line::from(Span::styled(format!("  e {:.4} in, {:.0} lbf at {:.0} deg, interference {:.4}: margin {margin}, capacity {:.1}{delta}", h.offset, h.load_lbf, h.load_angle_deg, h.interference_dia, h.design_capacity), theme.disabled_style())));
+        }
+    }
+    if let Some((sig, points)) = &state.sweep {
+        lines.push(Line::from(""));
+        lines.push(bold(theme, "Margin versus offset"));
+        if !fresh(sig) {
+            lines.push(Line::from(Span::styled("  (inputs changed: s runs it again)", theme.disabled_style())));
+        }
+        lines.extend(sweep_lines(theme, points));
     }
     if state.analysis.is_none() && state.max_offset.is_none() && state.max_load.is_none() && state.job.is_none() && state.error.is_none() {
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("Press r to analyse this offset, m for the maximum offset, l for the maximum load.", theme.disabled_style())));
+        lines.push(Line::from(Span::styled("Press r to analyse this offset, m for the maximum offset, l for the maximum load, s for the margin versus offset.", theme.disabled_style())));
     }
     lines.push(Line::from(""));
     let input = model::build_input(bushing, &state.ui);
@@ -230,4 +276,22 @@ fn profile_lines<'a>(theme: &Theme, a: &eccentric_bushing::Analysis) -> Vec<Line
         out.push(Line::from(format!("  {:>3}\u{b0} {:>7.0} | {:>7.0}  {bar}", k * 15, fit, loaded)));
     }
     out
+}
+
+/// Bar chart of the margin per offset: the bar is the margin from 0 to 1000 % (a spin, margin below zero, is a bar of
+/// crosses), the figure after it the margin itself.
+fn sweep_lines<'a>(theme: &Theme, points: &[eccentric_bushing::SweepPoint]) -> Vec<Line<'a>> {
+    const WIDTH: f64 = 24.0;
+    points
+        .iter()
+        .map(|p| {
+            let (bar, text, tone) = match (p.margin, &p.error) {
+                (Some(m), _) if !m.is_finite() => ("\u{2588}".repeat(WIDTH as usize), "no spin torque".to_string(), StatusTone::Neutral),
+                (Some(m), _) if m < 0.0 => ("x".repeat(((-m).min(1.0) * WIDTH).ceil().max(1.0) as usize), format!("{:+.0} %  SPINS", m * 100.0), StatusTone::Danger),
+                (Some(m), _) => ("\u{2588}".repeat((m.min(10.0) / 10.0 * WIDTH).ceil().max(1.0) as usize), format!("{:+.0} %", m * 100.0), if m < 0.25 { StatusTone::Warning } else { StatusTone::Success }),
+                (None, why) => (String::new(), why.clone().unwrap_or_else(|| "no result".into()), StatusTone::Warning),
+            };
+            Line::from(vec![Span::raw(format!("  e {:.4} in  ", p.offset)), Span::styled(format!("{bar:<24}"), theme.status_style(tone)), Span::raw(format!(" {text}"))])
+        })
+        .collect()
 }

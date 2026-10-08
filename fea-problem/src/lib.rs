@@ -1,4 +1,5 @@
 //! Problem definition layer over `fea-core`. See `Cargo.toml`.
+pub mod benchmark;
 pub mod build;
 pub mod joint;
 pub mod problem;

@@ -81,6 +81,12 @@ pub fn report(s: &Solved) -> String {
             let _ = writeln!(o, "  hole {}: mean pressure {:.0}, peak {:.0}, open over {:.0} deg, friction torque capacity {:.2}, {:.0} % of the force at its friction limit", f.hole, f.mean_pressure, f.peak_pressure, f.open_arc_deg, f.torque_capacity, 100.0 * f.slip_share);
         }
     }
+    if let Some(b) = crate::benchmark::check(s) {
+        let _ = writeln!(o);
+        for line in b.lines() {
+            let _ = writeln!(o, "{line}");
+        }
+    }
     if !sm.notes.is_empty() {
         let _ = writeln!(o, "\nNotes");
         for n in &sm.notes {

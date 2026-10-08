@@ -146,6 +146,37 @@ impl Solved {
         field_values(self.model.mesh.dim(), &self.u, &self.nodal, field)
     }
 
+    /// CSV of the nodal results, one row per node: position, displacement, the six stress components, von Mises and the
+    /// principal stresses (a spreadsheet or plotting script reads it where ParaView is not at hand).
+    pub fn csv(&self) -> String {
+        use std::fmt::Write;
+        let d = self.model.mesh.dim();
+        let axes = ["x", "y", "z"];
+        let mut o = String::from("node");
+        for a in &axes[..d] {
+            let _ = write!(o, ",{a}");
+        }
+        for a in &axes[..d] {
+            let _ = write!(o, ",u{a}");
+        }
+        o.push_str(",sxx,syy,szz,sxy,syz,szx,von_mises,max_principal,min_principal\n");
+        let (vm, p1, p3) = (self.node_values(Field::VonMises), self.node_values(Field::MaxPrincipal), self.node_values(Field::MinPrincipal));
+        for (i, x) in self.model.mesh.nodes.iter().enumerate() {
+            let _ = write!(o, "{i}");
+            for c in &x[..d] {
+                let _ = write!(o, ",{c:.6e}");
+            }
+            for c in &self.u[i * d..(i + 1) * d] {
+                let _ = write!(o, ",{c:.6e}");
+            }
+            for c in &self.nodal[i] {
+                let _ = write!(o, ",{c:.6e}");
+            }
+            let _ = writeln!(o, ",{:.6e},{:.6e},{:.6e}", vm[i], p1[i], p3[i]);
+        }
+        o
+    }
+
     /// `.vtu` text with the displacement vector and every stress field.
     pub fn vtu(&self) -> Result<String, String> {
         use fea_core::vtu::{pad3, write, Field as VtkField};

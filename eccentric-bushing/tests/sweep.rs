@@ -1,0 +1,107 @@
+//! Random sweep over valid inputs: every one must analyse without a solver failure, the interface must return the pin load,
+//! and the margin must be finite. The case that fails is printed with its inputs (the reproduction).
+
+use eccentric_bushing::{analyze, Elasticity, Inputs};
+
+/// A small deterministic generator (SplitMix64): no dependency, the same cases on every platform.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> f64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    fn range(&mut self, lo: f64, hi: f64) -> f64 {
+        lo + (hi - lo) * self.next()
+    }
+
+    fn pick<T: Copy>(&mut self, v: &[T]) -> T {
+        v[(self.next() * v.len() as f64) as usize % v.len()]
+    }
+}
+
+/// Elastic moduli (psi) of the materials these parts are made of: magnesium, aluminium, bronze, titanium, steel.
+const MODULI: [f64; 5] = [6.5e6, 10.4e6, 15.0e6, 16.5e6, 29.0e6];
+
+fn random_case(rng: &mut Rng, coarse: bool) -> Inputs {
+    let bore_dia = rng.range(0.25, 1.0);
+    let wall = rng.range(0.1, 0.35) * bore_dia / 2.0 * 2.0 / 2.0;
+    let bushing_id = bore_dia - 2.0 * wall;
+    let min_thin = 0.03 * bore_dia;
+    let offset = rng.range(0.0, (wall - min_thin - 1e-4).max(0.0)) * rng.pick(&[0.0, 0.5, 1.0, 1.0]);
+    let thickness = rng.range(0.1, 0.6) * bore_dia * 2.0;
+    let housing = Elasticity::iso(rng.pick(&MODULI), rng.range(0.28, 0.35));
+    let bushing = Elasticity::iso(rng.pick(&MODULI), rng.range(0.28, 0.35));
+    let pin = Elasticity::iso(rng.pick(&[10.4e6, 16.5e6, 29.0e6]), 0.30);
+    let bearing = rng.range(0.03, 0.6) * 20_000.0; // psi on the pin's projected area
+    Inputs {
+        bore_dia,
+        housing_od: bore_dia * rng.range(1.8, 3.0),
+        edge_distance: None,
+        bushing_id,
+        offset,
+        interference_dia: rng.range(0.0008, 0.004) * bore_dia / 0.5,
+        thickness,
+        housing,
+        bushing,
+        friction: rng.range(0.08, 0.3),
+        pin,
+        pin_friction: rng.range(0.05, 0.25),
+        pin_clearance_dia: rng.range(0.0005, 0.002),
+        credit_pin_load: true,
+        load_lbf: bearing * bushing_id * thickness,
+        load_angle_deg: rng.pick(&[90.0, 90.0, 45.0, 135.0, 0.0]),
+        direct_onset: false,
+        min_wall: 0.0,
+        plane_strain: false,
+        mesh_size: coarse.then_some(bore_dia / 2.0 / 4.0),
+    }
+}
+
+/// The cases whose pin load could not be solved are returned as fit-alone analyses (`Analysis::loaded_failure`): they are
+/// listed, and only a few are tolerated, so a regression of the loaded stage cannot hide behind the fallback.
+fn sweep(seed: u64, n: usize, coarse: bool, tolerated_degraded: usize) {
+    let mut rng = Rng(seed);
+    let cases: Vec<Inputs> = (0..n).map(|_| random_case(&mut rng, coarse)).collect();
+    let results: Vec<(String, bool)> = std::thread::scope(|s| {
+        let handles: Vec<_> = cases
+            .chunks(n.div_ceil(4))
+            .map(|chunk| {
+                s.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|c| {
+                            let no_torque = c.offset == 0.0 || c.load_angle_deg == 0.0;
+                            match c.validate().and_then(|()| analyze(c)) {
+                                Ok(a) if a.margin.is_finite() == !no_torque && a.margin > -1.0 => (format!("ok margin {:.3}", a.margin), a.loaded_failure.is_some()),
+                                Ok(a) => (format!("FAIL margin {} (no spin torque: {no_torque}) for {c:?}", a.margin), true),
+                                Err(e) => (format!("FAIL {e} for {c:?}"), true),
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+    });
+    let failed: Vec<&String> = results.iter().filter(|(m, _)| m.starts_with("FAIL")).map(|(m, _)| m).collect();
+    assert!(failed.is_empty(), "{} of {n} random cases failed:\n{}", failed.len(), failed.iter().map(|m| m.as_str()).collect::<Vec<_>>().join("\n"));
+    let degraded = results.iter().filter(|(_, d)| *d).count();
+    assert!(degraded <= tolerated_degraded, "{degraded} of {n} cases could not solve the pin load (at most {tolerated_degraded} tolerated)");
+}
+
+#[test]
+fn random_valid_inputs_are_always_analysable_on_a_coarse_mesh() {
+    // Seed 2024: one case (concentric, load along the offset line, a thin stiff bushing) is the known hard one.
+    sweep(2024, 12, true, 2);
+}
+
+#[test]
+#[ignore = "slow soak: default meshes, run with --ignored"]
+fn random_valid_inputs_are_always_analysable_on_the_default_mesh() {
+    sweep(77, 24, false, 4);
+}

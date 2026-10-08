@@ -46,3 +46,6 @@ Does not own: any element, solver or mesher (`fea-core`), any UI or file access 
 
 ## Navigation
 Parent concepts: `fea-core/AGENTS.md`. Consumer: `app-tui/src/toolboxes/fea_workbench/AGENTS.md`, `app-tui/src/toolboxes/preload_analysis/AGENTS.md`.
+
+## Benchmarks
+`benchmark::check(&Solved)` compares an *unmodified* starting template with its closed form (cantilever tip deflection by Timoshenko theory +0.09 %, Lame thick-cylinder bore hoop stress +0.04 %, Heywood net-section Kt of a hole in a finite-width plate +0.6 %); any edit to the problem returns `None`. Shown in the workbench readout and appended to the report. Tolerances (2 / 1 / 3 %) are the closed forms' own accuracy plus the mesh; do not loosen them to pass.
