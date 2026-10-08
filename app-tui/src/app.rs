@@ -1905,6 +1905,33 @@ mod tests {
     }
 
     #[test]
+    fn clicking_eccentric_rows_selects_toggles_the_advanced_section_and_double_click_runs() {
+        use crate::toolboxes::eccentric_bushing::model::{field_rows, FieldRow, Task};
+        let mut state = AppState::default();
+        state.nav.active_tool = ToolId::EccentricBushing;
+        let rows = field_rows(false);
+        let mut regions = MouseRegions::default();
+        regions.eccentric_rows = (0..rows.len()).map(|i| (Rect::new(30, 5 + i as u16, 40, 1), i)).collect();
+        let at = |i: usize| (31, 5 + i as u16);
+        let index = |r: FieldRow| rows.iter().position(|x| *x == r).unwrap();
+
+        // One click on the Advanced header opens the section; another closes it.
+        let (c, r) = at(index(FieldRow::AdvancedSection));
+        assert!(!state.eccentric.ui.advanced_open);
+        handle_mouse(&mut state, &regions, click(c, r));
+        assert!(state.eccentric.ui.advanced_open);
+        handle_mouse(&mut state, &regions, click(c, r));
+        assert!(!state.eccentric.ui.advanced_open);
+
+        // One click on a Run row only selects it, the second within the window runs it.
+        let (c, r) = at(index(FieldRow::Run(Task::Sweep)));
+        let fx = handle_mouse(&mut state, &regions, click(c, r));
+        assert!(fx.is_empty() && state.eccentric.selected_row() == Some(FieldRow::Run(Task::Sweep)) && state.eccentric.job.is_none());
+        let fx = handle_mouse(&mut state, &regions, click(c, r));
+        assert!(matches!(fx.as_slice(), [Effect::RunEccentric { task: Task::Sweep, .. }]), "{fx:?}");
+    }
+
+    #[test]
     fn clicking_a_result_row_selects_it_without_opening() {
         let mut state = AppState::default();
         state.search.run.results = vec![

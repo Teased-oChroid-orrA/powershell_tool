@@ -1639,7 +1639,7 @@ mod plateau_tests {
         assert!(load_flat(&flat, 0.012), "flat over the last 9 % of the travel");
         // After a convergence trouble the steps shrink: three equal loads over a sliver of travel say nothing.
         let mut tiny = rising.clone();
-        tiny.extend([step(0.3005, 10_000.0), step(0.3010, 10_000.0), step(0.3015, 10_000.0)]);
+        tiny.extend([step(0.3005, 10_000.0), step(0.3011, 10_000.0), step(0.3015, 10_000.0)]);
         assert!(!load_flat(&tiny, 0.012), "tiny steps must not read as a plateau");
         // A falling load is flat (the collapse is behind it).
         let mut falling = rising;
