@@ -189,6 +189,14 @@ pub fn readout_lines<'a>(theme: &Theme, state: &EccentricState, bushing: &Bushin
             format!("  FE check: interface force ({:.0}, {:.0}) lbf, friction moment {:.2} lbf in", a.net_force[0], a.net_force[1], a.friction_torque),
             theme.disabled_style(),
         )));
+        if a.mesh_scale != 1.0 {
+            lines.push(Line::from(Span::styled(format!("  \u{b7} solved on elements {:.1} x the default size: the default mesh did not converge the pin load (the capacity does not depend on the mesh)", a.mesh_scale), theme.disabled_style())));
+        }
+        if a.mesh_error.is_finite() {
+            let (glyph, tone) = if a.mesh_error > 0.10 { ("\u{26a0}", StatusTone::Warning) } else { ("\u{b7}", StatusTone::Neutral) };
+            let hint = if a.mesh_error > 0.10 { ": local pressures (pin peak) are uncertain, the capacity integral is not" } else { "" };
+            lines.push(Line::from(Span::styled(format!("  {glyph} estimated mesh error {:.1} % of the energy norm{hint}", 100.0 * a.mesh_error), theme.status_style(tone))));
+        }
         if let Some(why) = &a.loaded_failure {
             lines.push(Line::from(Span::styled(format!("  \u{26a0} the pin load could not be solved ({why}): capacity and margin are the fit alone (conservative), the pin results are blank"), theme.status_style(StatusTone::Warning))));
         } else if a.stalled_solves > 0 {

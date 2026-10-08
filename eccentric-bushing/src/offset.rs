@@ -5,8 +5,9 @@
 //! usually higher (the pin's pressure squeezes the bushing): the answer is then looked for above the fit-only one, with
 //! full analyses, and below it when contact is lost under the load.
 
-use crate::model::{analyze_from_fit, analyze_with, fit_capacity_with, solve_fit, Inputs, INTERRUPTED, MIN_WALL_FRACTION};
+use crate::model::{analyze_from_fit, analyze_strict, fit_capacity_with, solve_fit, Inputs, INTERRUPTED, MIN_WALL_FRACTION};
 use crate::control::Control;
+use crate::scaling::Scale;
 
 /// Result of [`max_offset`] / [`max_load`].
 #[derive(Debug, Clone)]
@@ -156,6 +157,12 @@ pub fn max_offset(inp: &Inputs, tol: f64) -> Result<OffsetLimit, String> {
 /// [`max_offset`] that stops when `ctl`'s interrupt fires (a deadline or a cancel request), returning the bracket it had.
 pub fn max_offset_with(inp: &Inputs, tol: f64, ctl: &Control) -> Result<OffsetLimit, String> {
     inp.validate()?;
+    let sc = Scale::of(inp);
+    max_offset_scaled(&sc.inputs(inp), tol, ctl).map(|l| sc.limit(l, true))
+}
+
+/// [`max_offset_with`] on inputs in units of the bore radius and the housing modulus (see `scaling`).
+fn max_offset_scaled(inp: &Inputs, tol: f64, ctl: &Control) -> Result<OffsetLimit, String> {
     let wall = inp.bore_radius() - inp.bushing_id / 2.0;
     let bound = wall - MIN_WALL_FRACTION * inp.bore_dia;
     let wall_limit = (wall - inp.min_wall).max(0.0);
@@ -164,7 +171,7 @@ pub fn max_offset_with(inp: &Inputs, tol: f64, ctl: &Control) -> Result<OffsetLi
         let req = inp.load_lbf * torque_per_load(inp, e);
         Ok(if req > 0.0 { cap / req - 1.0 } else { f64::INFINITY })
     };
-    let loaded_margin = |e: f64| analyze_with(&Inputs { offset: e, ..*inp }, ctl).map(|a| a.margin);
+    let loaded_margin = |e: f64| analyze_strict(&Inputs { offset: e, ..*inp }, ctl).map(|a| a.margin);
     // The fit-alone limit first: it is the answer on the conservative basis and the starting point on the other.
     let fit = search_up(0.0, bound, tol, ctl, None, fit_margin);
     let mut evaluations = fit.evals;
@@ -199,6 +206,12 @@ pub fn max_load(inp: &Inputs, tol: f64) -> Result<OffsetLimit, String> {
 /// [`max_load`] that stops when `ctl`'s interrupt fires (a deadline or a cancel request), returning the bracket it had.
 pub fn max_load_with(inp: &Inputs, tol: f64, ctl: &Control) -> Result<OffsetLimit, String> {
     inp.validate()?;
+    let sc = Scale::of(inp);
+    max_load_scaled(&sc.inputs(inp), tol, ctl).map(|l| sc.limit(l, false))
+}
+
+/// [`max_load_with`] on scaled inputs.
+fn max_load_scaled(inp: &Inputs, tol: f64, ctl: &Control) -> Result<OffsetLimit, String> {
     let arm = torque_per_load(inp, inp.offset);
     if arm <= 0.0 {
         return Ok(OffsetLimit { value: f64::INFINITY, upper: None, halted: None, caveat: None, wall_limit: 0.0, bounded_by_wall: false, set_by_loaded_run: false, evaluations: 0 });
@@ -254,7 +267,7 @@ pub fn sweep_offset(inp: &Inputs, points: usize, ctl: &Control) -> Result<Vec<Sw
     }
     let offsets: Vec<f64> = (0..points).map(|i| bound * i as f64 / (points - 1) as f64).collect();
     Ok(parallel_map(&offsets, |e| {
-        let r = analyze_with(&Inputs { offset: e, ..*inp }, ctl);
+        let r = analyze_strict(&Inputs { offset: e, ..*inp }, ctl);
         ctl.solve_done();
         match r {
             Ok(a) => SweepPoint { offset: e, margin: Some(a.margin), capacity: a.design_capacity, required: a.torque_required, error: None },

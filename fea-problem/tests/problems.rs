@@ -307,3 +307,60 @@ fn unmodified_templates_with_a_closed_form_agree_with_it_and_edited_ones_are_not
     }
     assert!(check(&solve(&template("Pin-loaded lug"), None).unwrap()).is_none(), "no closed form for the lug template");
 }
+
+/// The same problem in other units: lengths x `a`, stresses and moduli x `b` (forces x `b a^2`, thickness is a length).
+fn rescaled(p: &Problem, a: f64, b: f64) -> Problem {
+    let shape = |s: &Shape| match s {
+        Shape::Rect { x0, y0, x1, y1 } => Shape::Rect { x0: x0 * a, y0: y0 * a, x1: x1 * a, y1: y1 * a },
+        Shape::Circle { cx, cy, r } => Shape::Circle { cx: cx * a, cy: cy * a, r: r * a },
+        Shape::Slot { cx, cy, length, width, angle } => Shape::Slot { cx: cx * a, cy: cy * a, length: length * a, width: width * a, angle: *angle },
+        Shape::Polygon { pts } => Shape::Polygon { pts: pts.iter().map(|q| [q[0] * a, q[1] * a]).collect() },
+    };
+    let mut q = p.clone();
+    q.thickness *= a;
+    q.material.e *= b;
+    q.material.yield_stress = q.material.yield_stress.map(|y| y * b);
+    q.mesh.size *= a;
+    if let Geometry::Sketch { outer, holes, depth, .. } = &mut q.geometry {
+        *outer = shape(outer);
+        *holes = holes.iter().map(shape).collect();
+        *depth *= a;
+    }
+    q.loads = p
+        .loads
+        .iter()
+        .map(|l| match l {
+            Load::Pressure { edge, p } => Load::Pressure { edge: edge.clone(), p: p * b },
+            Load::Traction { edge, tx, ty, tz } => Load::Traction { edge: edge.clone(), tx: tx * b, ty: ty * b, tz: tz * b },
+            Load::Force { edge, fx, fy, fz } => Load::Force { edge: edge.clone(), fx: fx * b * a * a, fy: fy * b * a * a, fz: fz * b * a * a },
+            Load::Bearing { hole, fx, fy } => Load::Bearing { hole: *hole, fx: fx * b * a * a, fy: fy * b * a * a },
+            other => other.clone(),
+        })
+        .collect();
+    for bu in &mut q.bushings {
+        bu.inner_diameter *= a;
+        bu.offset = [bu.offset[0] * a, bu.offset[1] * a];
+        bu.interference *= a;
+        bu.material.e *= b;
+        bu.material.yield_stress = bu.material.yield_stress.map(|y| y * b);
+    }
+    q
+}
+
+#[test]
+fn the_solution_does_not_depend_on_the_units() {
+    // inch / psi -> mm / MPa, and a deliberately awkward pair (metres-ish lengths, kPa-ish stresses).
+    for (a, b) in [(25.4, 1.0 / 145.037_7), (1.0e-3, 1.0e6)] {
+        for name in ["Plate with a hole", "Thick cylinder (axisymmetric)", "Lug with an eccentric bushing"] {
+            let p = template(name);
+            let (s0, s1) = (solve(&p, None).unwrap(), solve(&rescaled(&p, a, b), None).unwrap_or_else(|e| panic!("{name} at ({a}, {b}): {e}")));
+            let vm = s1.summary.max_von_mises.value / b / s0.summary.max_von_mises.value - 1.0;
+            let u = s1.summary.max_displacement.value / a / s0.summary.max_displacement.value - 1.0;
+            eprintln!("{name} at ({a}, {b}): von Mises {vm:+.2e}, displacement {u:+.2e}, equilibrium {:.1e}, mesh {}x{} nodes/elements vs {}x{}", s1.summary.equilibrium_error, s1.summary.nodes, s1.summary.elements, s0.summary.nodes, s0.summary.elements);
+            // The Delaunay refinement is invariant in exact arithmetic; its float round-off breaks ties differently in other units
+            // (9992 against 10171 nodes), so the answers agree to the discretisation error, not to round-off.
+            let tol = if p.bushings.is_empty() { 1e-2 } else { 2e-2 };
+            assert!(vm.abs() < tol && u.abs() < tol, "{name} at ({a}, {b}): von Mises {vm:e}, displacement {u:e}");
+        }
+    }
+}

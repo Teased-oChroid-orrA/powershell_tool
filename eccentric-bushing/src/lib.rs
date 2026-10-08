@@ -9,6 +9,7 @@
 
 mod control;
 mod model;
+mod scaling;
 mod offset;
 
 pub use control::{Control, Progress, ProgressState};

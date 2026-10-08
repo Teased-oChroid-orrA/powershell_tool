@@ -375,11 +375,12 @@ fn a_small_bushing_whose_friction_contact_chatters_still_converges() {
     assert!(a.loaded_failure.is_none() && (a.margin / 51.36 - 1.0).abs() < 0.005, "margin {} {:?}", a.margin, a.loaded_failure);
 }
 
-/// Slow (about 80 s): a concentric bushing, thin and stiff, with the load along x. The loaded stage fails on every attempt
-/// (a kernel limitation, see AGENTS.md); the analysis is still returned, on the fit alone, with the failure stated.
+/// Slow (about 60 s): a concentric, thick-walled, stiff bushing with the load along x. The default mesh fails every
+/// attempt of the loaded stage (the friction contact cycles between stick and slip); a mesh 1.4 x coarser solves it, and
+/// the margin (no spin torque here) is unaffected: the mesh route, not the fit-alone fallback, answers.
 #[test]
 #[ignore = "slow: run with --ignored"]
-fn an_unsolvable_pin_load_falls_back_to_the_fit_alone_and_says_so() {
+fn a_pin_load_the_default_mesh_cannot_solve_is_solved_on_another_mesh() {
     let i = Inputs {
         bore_dia: 0.7170741524845823,
         housing_od: 2.010949715936335,
@@ -403,7 +404,39 @@ fn an_unsolvable_pin_load_falls_back_to_the_fit_alone_and_says_so() {
         mesh_size: Some(0.08963426906057279),
     };
     let a = analyze(&i).unwrap();
-    let why = a.loaded_failure.as_deref().expect("the pin load is expected to fail here");
-    assert!(why.contains("attempts"), "{why}");
-    assert!(a.pin_peak_pressure == 0.0 && (a.torque_capacity - a.torque_capacity_fit).abs() < 1e-9);
+    assert!(a.loaded_failure.is_none() && a.mesh_scale != 1.0 && a.pin_peak_pressure > 0.0, "{:?} scale {}", a.loaded_failure, a.mesh_scale);
+}
+
+/// Dimensional similarity: a bushing twice as large in every length (and the load 4 x, force goes as E l^2) is the same
+/// problem, so the margin and the pressures must agree. The solve runs in units of the bore radius, so they do to
+/// round-off, not merely to a tolerance.
+#[test]
+fn a_geometrically_similar_bushing_has_the_same_margin_and_pressures() {
+    let a = Inputs { mesh_size: Some(0.07), offset: 0.03, load_lbf: 1500.0, ..base() };
+    let k = 2.0;
+    let b = Inputs {
+        bore_dia: a.bore_dia * k,
+        housing_od: a.housing_od * k,
+        bushing_id: a.bushing_id * k,
+        offset: a.offset * k,
+        interference_dia: a.interference_dia * k,
+        thickness: a.thickness * k,
+        pin_clearance_dia: a.pin_clearance_dia * k,
+        load_lbf: a.load_lbf * k * k,
+        mesh_size: a.mesh_size.map(|m| m * k),
+        ..a
+    };
+    let (ra, rb) = (analyze(&a).unwrap(), analyze(&b).unwrap());
+    assert!((ra.margin / rb.margin - 1.0).abs() < 1e-9, "margins {} vs {}", ra.margin, rb.margin);
+    assert!((ra.fit_pressure_max / rb.fit_pressure_max - 1.0).abs() < 1e-9 && (ra.pin_peak_pressure / rb.pin_peak_pressure - 1.0).abs() < 1e-9);
+    // Torque goes as E l^3 (load x length): capacity 8 x.
+    assert!((rb.torque_capacity / ra.torque_capacity / 8.0 - 1.0).abs() < 1e-9, "{} vs {}", rb.torque_capacity, ra.torque_capacity);
+    assert!((rb.wall_thin / ra.wall_thin - k).abs() < 1e-9);
+}
+
+/// The mesh error estimate is reported and small on the default mesh of the Bushing Workbench defaults.
+#[test]
+fn the_default_mesh_reports_a_small_error_estimate() {
+    let a = analyze(&Inputs { offset: 0.03, load_lbf: 1000.0, ..base() }).unwrap();
+    assert!(a.mesh_error.is_finite() && a.mesh_error < 0.10 && a.mesh_scale == 1.0, "mesh error {} scale {}", a.mesh_error, a.mesh_scale);
 }
