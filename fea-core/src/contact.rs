@@ -515,6 +515,12 @@ pub struct CpState {
     pub n: V3,
 }
 
+/// Per spec, per slave point: whether it is held in contact and the master face it is held on (`ContactSet::hold_active_set`).
+type HeldPoints = Vec<Vec<(bool, u32)>>;
+
+/// Parametric tolerance within which a slave point still counts as lying over its committed master face.
+const STICKY_TOL: f64 = 1e-6;
+
 struct SlavePoint {
     nodes: Vec<usize>,
     n: [f64; 9],
@@ -569,7 +575,7 @@ pub struct ContactSet {
     /// A held active set (`hold_active_set`): per spec, per slave point, whether the point counts as in contact. Set by a
     /// Newton solve whose iteration chatters at the edge of a contact patch (points of ~zero pressure entering and leaving),
     /// released when that solve ends.
-    hold: std::sync::RwLock<Option<Vec<Vec<bool>>>>,
+    hold: std::sync::RwLock<Option<HeldPoints>>,
 }
 
 /// Collocation points `(xi, weight)` on a slave face of `nn` nodes in `dim` dimensions.
@@ -1089,11 +1095,13 @@ struct PointOut {
 }
 
 impl ContactSet {
-    /// Hold the active set of `state`: until [`Self::release_active_set`] a point is in contact exactly when it is in
-    /// `state` (its pressure then follows the smooth branch, a tiny negative value included, instead of toggling at zero).
+    /// Hold the discrete state of `state`: until [`Self::release_active_set`] a point is in contact exactly when it is in
+    /// `state` (its pressure then follows the smooth branch, a tiny negative value included, instead of toggling at zero),
+    /// and a point in contact stays on the master face it is on (a point at an element edge of the master surface would
+    /// otherwise flip between two faces whose normals differ).
     pub fn hold_active_set(&self, state: &[Vec<CpState>]) {
         if let Ok(mut h) = self.hold.write() {
-            *h = Some(state.iter().map(|v| v.iter().map(|c| c.active).collect()).collect());
+            *h = Some(state.iter().map(|v| v.iter().map(|c| (c.active, c.cur_face)).collect()).collect());
         }
     }
 
@@ -1148,7 +1156,7 @@ impl ContactSet {
                 free_comps[j] = *c;
             }
             let hold_guard = self.hold.read().map_err(|_| "contact hold lock poisoned".to_string())?;
-            let held_flags: Option<&Vec<bool>> = hold_guard.as_ref().map(|h| &h[si]);
+            let held_flags: Option<&Vec<(bool, u32)>> = hold_guard.as_ref().map(|h| &h[si]);
             let outs: Vec<PointOut> = self.pts[si]
                 .par_iter()
                 .zip(old[si].par_iter())
@@ -1167,18 +1175,43 @@ impl ContactSet {
                     if rigid.is_none() {
                         let mut best = f64::INFINITY;
                         let mut cand = Vec::new();
-                        bvh.query(&y, &mut cand);
+                        // A held point stays on its face while the projection still lands on it.
+                        let held_face = held_flags.and_then(|h| h.get(pi)).filter(|h| h.0).map(|h| h.1 as usize).filter(|&fi| fi < faces.len());
+                        // The face of the committed state when the point still lies over it.
+                        let mut sticky: Option<(usize, [f64; 2])> = None;
+                        if let Some(fi) = held_face {
+                            let (geom, _) = &faces[fi];
+                            let xi0 = if os.has_hist && os.face as usize == fi { [os.hist[0], os.hist[1]] } else { geom.centre() };
+                            if let Some(pr) = project(geom, &face_x[fi], &y, xi0) {
+                                if geom.contains(pr.xi, 0.1) && pr.g.abs() < margin {
+                                    chosen = Some((fi, pr.xi));
+                                }
+                            }
+                        }
+                        if chosen.is_none() {
+                            bvh.query(&y, &mut cand);
+                        }
                         for &fi in &cand {
                             let fi = fi as usize;
                             let (geom, _) = &faces[fi];
                             let x = &face_x[fi];
-                            let xi0 = if os.has_hist && os.face as usize == fi { [os.hist[0], os.hist[1]] } else { geom.centre() };
+                            let committed = os.has_hist && os.face as usize == fi;
+                            let xi0 = if committed { [os.hist[0], os.hist[1]] } else { geom.centre() };
                             if let Some(pr) = project(geom, x, &y, xi0) {
                                 if geom.contains(pr.xi, 0.1) && pr.g.abs() < margin && pr.g.abs() < best {
                                     best = pr.g.abs();
                                     chosen = Some((fi, pr.xi));
                                 }
+                                if committed && geom.contains(pr.xi, STICKY_TOL) && pr.g.abs() < margin {
+                                    sticky = Some((fi, pr.xi));
+                                }
                             }
+                        }
+                        // A slave point on (or within round-off of) an element edge of the master surface is on two faces at once,
+                        // whose normals differ (C0 surface): which one the minimum-gap rule picks then depends on round-off and
+                        // flips between Newton iterations, jumping the residual. Stay on the committed face while the point is over it.
+                        if sticky.is_some() && held_face.is_none() {
+                            chosen = sticky;
                         }
                         if chosen.is_none() {
                             let mut st = *os;
@@ -1212,7 +1245,7 @@ impl ContactSet {
                     let same_face = chosen.is_some_and(|(fi, _)| os.has_hist && os.face as usize == fi);
                     let xi0 = chosen.map_or([0.0; 2], |c| c.1);
                     // A held active set: in contact means the smooth pressure branch (no clamp at zero), out of contact means none.
-                    let held = held_flags.and_then(|h| h.get(pi).copied());
+                    let held = held_flags.and_then(|h| h.get(pi).map(|h| h.0));
                     if held == Some(false) {
                         let mut st = *os;
                         st.active = false;
@@ -1464,6 +1497,22 @@ impl ContactSet {
             sp.lam_t = ft;
         }
         change
+    }
+
+    /// One line for `NL_TRACE`: per spec the points in contact, those at their friction limit, and those whose master
+    /// face differs from the committed one.
+    pub fn describe(&self, state: &[Vec<CpState>]) -> String {
+        state
+            .iter()
+            .zip(&self.specs)
+            .map(|(pts, spec)| {
+                let active = pts.iter().filter(|c| c.active).count();
+                let slip = pts.iter().filter(|c| c.active && spec.mu > 0.0 && norm(&c.fric) >= spec.mu * c.p * (1.0 - 1e-6)).count();
+                let moved = pts.iter().filter(|c| c.active && c.has_hist && c.face != c.cur_face).count();
+                format!("[{}: {active} in contact, {slip} slipping, {moved} off their face]", spec.name)
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// Commit the slip history (the contact point of the converged state) for every point that is

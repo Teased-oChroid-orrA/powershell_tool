@@ -761,7 +761,7 @@ fn the_stick_slip_guard_does_not_change_a_solve_that_converges() {
     for shift in [0.05, 2.0e-5] {
         let run = |guard: bool| {
             let (model, bc, loads, specs) = block_on_plane(0.3, 1.0e4, shift);
-            let sol = model.solve_nonlinear_contact(&loads, &bc, specs, &NlOptions { steps: 5, outer_tol: 1e-6, max_outer: 40, stick_slip_guard: guard, step_memory: guard, stall_tol: if guard { 3e-3 } else { 0.0 }, ..NlOptions::default() }).unwrap();
+            let sol = model.solve_nonlinear_contact(&loads, &bc, specs, &NlOptions { steps: 5, outer_tol: 1e-6, max_outer: 40, stick_slip_guard: guard, stall_tol: if guard { 3e-3 } else { 0.0 }, ..NlOptions::default() }).unwrap();
             assert!(sol.complete() && sol.stalled_solves == 0, "{:?} {}", sol.stop, sol.stalled_solves);
             sol.contact.unwrap().master_force[0]
         };

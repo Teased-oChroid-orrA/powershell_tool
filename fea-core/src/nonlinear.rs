@@ -434,11 +434,6 @@ pub struct NlOptions {
     /// (`STAGNATED`; the load step gets 3 cuts, not `max_cuts`). Off by default: callers that converge slowly
     /// but surely (the lug solver's elastic pin) must not be cut short.
     pub stick_slip_guard: bool,
-    /// With `stick_slip_guard`: a Newton step that had to be backtracked sets the fraction of the next ones (which
-    /// recovers by doubling) instead of every iteration trying the full step first. It rescues some stick-slip cycles
-    /// and ruins other solves that converge without it (the same model converged in 4 s without and failed with it, and
-    /// the reverse on a finer mesh), so it is a second attempt's strategy, not a default.
-    pub step_memory: bool,
     /// Called after every converged load step.
     pub observer: Option<StepObserver>,
 }
@@ -459,7 +454,7 @@ impl NlOptions {
 
 impl Default for NlOptions {
     fn default() -> Self {
-        Self { control: Control::Load, steps: 10, max_iter: 25, tol: 1e-9, line_search: true, max_cuts: 12, failure_ep: None, chord_iters: 0, max_outer: 12, outer_tol: 1e-4, stop_on_plateau: false, stop_on_fall: 0.0, stop_at_force: 0.0, stall_tol: 0.0, first_step: 1.0, interrupt: Interrupt::default(), stick_slip_guard: false, step_memory: false, observer: None }
+        Self { control: Control::Load, steps: 10, max_iter: 25, tol: 1e-9, line_search: true, max_cuts: 12, failure_ep: None, chord_iters: 0, max_outer: 12, outer_tol: 1e-4, stop_on_plateau: false, stop_on_fall: 0.0, stop_at_force: 0.0, stall_tol: 0.0, first_step: 1.0, interrupt: Interrupt::default(), stick_slip_guard: false, observer: None }
     }
 }
 
@@ -512,6 +507,8 @@ pub struct NlSolution {
     /// Newton solves accepted because the residual stalled below `NlOptions::stall_tol` (frictional stick-slip chatter
     /// that does not reach the tolerance), not because it met it. `0` when every solve converged.
     pub stalled_solves: usize,
+    /// Newton solves that stagnated and were finished with a held active set (`ContactSet::hold_active_set`).
+    pub held_solves: usize,
     pub elapsed_ms: f64,
     /// Contact summary of the final state (`None` without contact).
     pub contact: Option<ContactStats>,
@@ -602,6 +599,8 @@ struct Ctx<'a> {
     factorisations: Cell<usize>,
     /// Newton solves accepted on a stalled residual (`NlOptions::stall_tol`) rather than the tolerance.
     stalled: Cell<usize>,
+    /// Newton solves that stagnated and went on with a held active set.
+    held: Cell<usize>,
     start: Option<&'a Start>,
     ground: Vec<(usize, f64)>,
     /// Follower pressures (face nodes, p): see `Loads::followers`.
@@ -985,13 +984,14 @@ impl Model {
                 return Err("arc-length control needs zero prescribed displacements".into());
             }
         }
-        let mut ctx = Ctx { model: self, pat, contacts: contact_set, red, free, fixed, f_ext, bc, opt: opt.clone(), factorisations: Cell::new(0), stalled: Cell::new(0), start, ground: loads.ground.clone(), followers: loads.followers.clone(), timers: Default::default() };
+        let mut ctx = Ctx { model: self, pat, contacts: contact_set, red, free, fixed, f_ext, bc, opt: opt.clone(), factorisations: Cell::new(0), stalled: Cell::new(0), held: Cell::new(0), start, ground: loads.ground.clone(), followers: loads.followers.clone(), timers: Default::default() };
         let mut sol = match opt.control {
             Control::Load => ctx.run_load_control()?,
             Control::Arc { ds, lambda_max, max_steps } => ctx.run_arc_length(ds, lambda_max, max_steps)?,
         };
         sol.factorisations = ctx.factorisations.get();
         sol.stalled_solves = ctx.stalled.get();
+        sol.held_solves = ctx.held.get();
         sol.elapsed_ms = clock.elapsed().as_secs_f64() * 1e3;
         if std::env::var("NL_PROFILE").is_ok() {
             eprintln!("nl profile: {:.0} ms total, evaluation {:.0} ms (element assembly {:.0}, contact {:.0}), factorisation {:.0} ms ({} of them), solves {:.0} ms", sol.elapsed_ms, 1e3 * ctx.timers[0].get(), 1e3 * ctx.timers[3].get(), 1e3 * ctx.timers[4].get(), 1e3 * ctx.timers[1].get(), sol.factorisations, 1e3 * ctx.timers[2].get());
@@ -1042,7 +1042,7 @@ impl Ctx<'_> {
             }
             norm(&net)
         };
-        NlSolution { u, state, lambda, steps, reactions, stop, factorisations: 0, stalled_solves: 0, elapsed_ms: 0.0, contact, contact_points, contact_weights, rigid_translation, ground_leak }
+        NlSolution { u, state, lambda, steps, reactions, stop, factorisations: 0, stalled_solves: 0, held_solves: 0, elapsed_ms: 0.0, contact, contact_points, contact_weights, rigid_translation, ground_leak }
     }
 
     /// Newton iterations at load factor `lambda` from the converged `(u, state)`.
@@ -1103,10 +1103,6 @@ impl Ctx<'_> {
         // The factorization of a past tangent (chord Newton) and how many iterations it has served.
         let mut chord: Option<(crate::linear::AnyFactor<'_>, usize)> = None;
         let mut last_rn = f64::INFINITY;
-        // `NlOptions::step_memory`: the fraction of the Newton step taken. A step that had to be backtracked says the
-        // tangent overshoots here (a friction contact flipping between stick and slip), so the next one starts from the
-        // accepted fraction and doubles back towards 1 while the residual keeps falling.
-        let mut trust = 1.0f64;
         // Stagnation: the best residual so far and the iterations since it last improved by 3 %. Frictional contact can
         // cycle between stick and slip at a residual far above the tolerance; 8 iterations without progress is that.
         let (mut best_rn, mut since_best) = (f64::INFINITY, 0usize);
@@ -1114,7 +1110,6 @@ impl Ctx<'_> {
         let mut lowest: Option<(f64, Vec<f64>, Vec<f64>, NlState)> = None;
         // Only a frictional contact cycles between stick and slip: `NlOptions::stick_slip_guard` is for it.
         let frictional = self.opt.stick_slip_guard && self.contacts.as_ref().is_some_and(|cs| cs.specs.iter().any(|s| s.mu > 0.0));
-        let damped = frictional && self.opt.step_memory;
         let (mut iteration, mut budget) = (0usize, self.opt.max_iter);
         while iteration <= budget {
             iteration += 1;
@@ -1139,9 +1134,16 @@ impl Ctx<'_> {
             }
             // First remedy for a chattering patch edge: hold the active set (points of ~zero pressure entering and leaving
             // the contact were what the residual alternated on) and iterate on with the smooth branch.
+            // (Frictional contact only: holding every stagnating contact solve was tried and broke
+            // `a_lightly_loaded_stiff_penalty_contact_converges_in_few_factorisations`: a free pin that has not touched yet
+            // was held out of contact, and its rigid-body dofs went singular.)
             if frictional && since_best >= STAGNATION_ITERATIONS {
                 if let Some(cs) = self.contacts.as_ref().filter(|cs| !cs.active_set_held()) {
                     cs.hold_active_set(&ev.state.contact);
+                    self.held.set(self.held.get() + 1);
+                    if std::env::var("NL_DEBUG").is_ok() {
+                        eprintln!("HELD stagnated at lambda {lambda:.4} (residual {rn:.3e}, best {best_rn:.3e}): holding the active set");
+                    }
                     budget += HOLD_EXTRA_ITERATIONS;
                     ev = self.eval(&u, &q, state0, lambda, true)?;
                     r = self.residual(&ev, lambda);
@@ -1183,7 +1185,6 @@ impl Ctx<'_> {
                                 let r2 = self.residual(&e2, lambda);
                                 let n2 = norm(&r2);
                                 if n2 <= rp || (alpha < 0.05 && self.contacts.is_none()) {
-                                    trust = (trust * alpha).max(1.0 / 64.0);
                                     u = ut;
                                     q = qt;
                                     ev = e2;
@@ -1195,8 +1196,6 @@ impl Ctx<'_> {
                             alpha *= 0.5;
                         }
                         residuals.push(rn);
-                    } else {
-                        trust = (trust * 2.0).min(1.0);
                     }
                 }
             }
@@ -1221,8 +1220,6 @@ impl Ctx<'_> {
             self.timers[2].set(self.timers[2].get() + t_sol.elapsed().as_secs_f64());
             *age += 1;
             last_rn = rn;
-            let step = if damped && trust < 1.0 { trust } else { 1.0 };
-            let dx: Vec<f64> = if step < 1.0 { dx.iter().map(|v| v * step).collect() } else { dx };
             let before = (u.clone(), q.clone(), dx.clone(), rn);
             for (j, &i) in self.free.iter().enumerate() {
                 u[i] += dx[j];
@@ -1233,9 +1230,23 @@ impl Ctx<'_> {
             ev = self.eval(&u, &q, state0, lambda, true)?;
             r = self.residual(&ev, lambda);
             rn = norm(&r);
-            if std::env::var("NL_TRACE").is_ok() {
-                let act: Vec<String> = ev.state.contact.first().map_or(vec![], |v| v.iter().enumerate().filter(|(_, c)| c.active).map(|(i, c)| format!("{i}:{:.1e}", c.p)).collect());
-                eprintln!("  it rn {rn:.3e} q {q:?} active {}", act.join(" "));
+            if let Ok(mode) = std::env::var("NL_TRACE") {
+                let dxn = dx.iter().map(|v| v * v).sum::<f64>().sqrt();
+                let summary = self.contacts.as_ref().map_or(String::new(), |cs| cs.describe(&ev.state.contact));
+                // The two largest residual dofs: a residual that stays put while `dx` shrinks is a discontinuity at them.
+                let mut idx: Vec<usize> = (0..self.free.len()).collect();
+                idx.sort_by(|&a, &b| r[b].abs().total_cmp(&r[a].abs()));
+                let d = self.model.mesh.dim();
+                let top: Vec<String> = idx.iter().take(2).map(|&j| {
+                    let (dof, node) = (self.free[j], self.free[j] / d);
+                    format!("node {node} comp {} r {:.1e} at ({:.3}, {:.3})", dof % d, r[j], self.model.mesh.nodes[node][0], self.model.mesh.nodes[node][1])
+                }).collect();
+                let gap = ev.stats.as_ref().map_or(0.0, |s| s.min_gap);
+                eprintln!("  it rn {rn:.6e} |dx| {dxn:.1e} min gap {gap:.2e} q {q:?} {summary} | {}", top.join(" | "));
+                if mode == "full" {
+                    let act: Vec<String> = ev.state.contact.first().map_or(vec![], |v| v.iter().enumerate().filter(|(_, c)| c.active).map(|(i, c)| format!("{i}:{:.1e}", c.p)).collect());
+                    eprintln!("    active {}", act.join(" "));
+                }
             }
             residuals.push(rn);
             prev = Some(before);
@@ -1349,9 +1360,16 @@ impl Ctx<'_> {
     /// and re-solve until they stop changing, then commit the slip history. `residuals` collects the Newton work.
     fn refine_contact(&self, lambda_prev: f64, target: f64, mut un: Vec<f64>, mut sn: NlState, residuals: &mut Vec<f64>) -> (Vec<f64>, NlState) {
         let Some(cs) = &self.contacts else { return (un, sn) };
+        // The multipliers `un` was solved for. The update that ends the passes is not re-solved, and a state that pairs
+        // `un` with the updated multipliers is off by that update: reactions and master forces read off it miss the
+        // equilibrium by `outer_tol x` the fit pressure, which is large next to a small applied load.
+        let mut solved = sn.contact.clone();
+        let mut ended = false;
         for _ in 0..self.opt.max_outer {
+            solved = sn.contact.clone();
             let chg = cs.update_multipliers(&mut sn.contact);
             if chg < self.opt.outer_tol {
+                ended = true;
                 break;
             }
             match self.newton(lambda_prev, target, &un, &sn) {
@@ -1363,7 +1381,20 @@ impl Ctx<'_> {
                     sn = s2;
                     residuals.extend(r2);
                 }
-                Err(_) => break,
+                Err(_) => {
+                    ended = true;
+                    break;
+                }
+            }
+        }
+        for (pts, old) in sn.contact.iter_mut().zip(&solved) {
+            for (p, o) in pts.iter_mut().zip(old) {
+                if ended {
+                    p.lam_n = o.lam_n;
+                }
+                // The friction multiplier is the friction of the iterate: committing the slip history zeroes the slip, so
+                // the friction a re-evaluation reproduces is exactly the multiplier.
+                p.lam_t = if p.active { p.fric } else { [0.0; 3] };
             }
         }
         cs.commit_history(&mut sn.contact);

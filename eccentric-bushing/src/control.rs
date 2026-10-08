@@ -46,28 +46,17 @@ impl Progress {
 pub struct Control {
     pub interrupt: Interrupt,
     pub progress: Option<Arc<Progress>>,
-    /// The mesh route (index into the analysis's mesh scales) that last solved a pin load the default mesh could not: the
-    /// next solve of the same run tries it first.
-    learned: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl From<Interrupt> for Control {
     fn from(interrupt: Interrupt) -> Self {
-        Self { interrupt, progress: None, ..Self::default() }
+        Self { interrupt, progress: None }
     }
 }
 
 impl Control {
     pub fn new(interrupt: Interrupt, progress: Option<Arc<Progress>>) -> Self {
-        Self { interrupt, progress, ..Self::default() }
-    }
-
-    pub(crate) fn learned_route(&self) -> usize {
-        self.learned.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    pub(crate) fn learn_route(&self, route: usize) {
-        self.learned.store(route, std::sync::atomic::Ordering::Relaxed);
+        Self { interrupt, progress }
     }
 
     pub(crate) fn stage(&self, name: &str) {

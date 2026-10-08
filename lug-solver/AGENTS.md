@@ -22,6 +22,7 @@ Does not own: any UI (`app-tui/src/toolboxes/lug_analysis/`), material data (`me
 | Patch recovery (SPR), ZZ error estimate, strain / geometric energy | `src/stress.rs` |
 | Upgrade pass: self-checks, SPR/ZZ, elastic pin, hardening, thermal, thickness, P-delta | `tests/verification.rs`, `tests/elastic_pin.rs`, `tests/thermal.rs`, `tests/thickness.rs`, `tests/second_order.rs`, `tests/angle_sweep.rs` |
 | Exact-solution and consistency tests | `tests/lug_fem.rs`, unit tests per module |
+| Random valid lugs on the kernel (`FeaLug`: bushed / plain, clearance / interference, friction, axial / oblique) must solve and pass `Verification::ok`; `SWEEP_SEED` / `SWEEP_N` / `SWEEP_ONLY`; it found the multiplier-pairing bug (`fea-core/AGENTS.md`, contact robustness 2) | `tests/kernel_sweep.rs` (`--ignored`) |
 | Plasticity: exact rings, NACA TN 1503 (12 published points) | `tests/plastic_validation.rs`, `tests/validation_naca_tn1503.rs` |
 | Bushing: exact two-cylinder Lame press fit, fit/separation, half-vs-full | `tests/bushing_validation.rs` |
 | Against the `edge-check` bushing contact FE (ignored, slow) | `tests/compare_edge_check.rs` |

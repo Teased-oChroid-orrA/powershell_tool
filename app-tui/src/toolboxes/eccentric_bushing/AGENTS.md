@@ -19,7 +19,7 @@ Owns: UI state, key routing, rendering, report text. Does not own: any mechanics
 - Keys (both cases): `r` analyse, `m` max offset, `l` max load, `s` margin-versus-offset sweep (9 offsets in parallel, bar chart), `v` solve and write the FE fields as `.vtu` (`<app data>/reports/eccentric-bushing-fields.vtu`), `x` CSV of the pressure profile and the sweep (`eccentric-bushing.csv`), `e` text report, `d` profile, `c` cancel.
 - Each run has a `Control` (`model::new_control`): a cancel flag, a 10 min deadline for searches and sweeps (`SEARCH_BUDGET`) and a `Progress` record the view reads live (stage, last step with the force the pin carries, solves done, the bracket a search has so far). A stopped search is a normal result with `OffsetLimit::halted`: the view and report show the verified bracket (`model::halted_note`). A cancelled analysis is the error "cancelled"; `c` also clears the queue.
 - A run asked for while one is going is queued (same task once, at most 4) and starts when the job finishes (`finish` returns the effects). The last 6 analyses are kept (`history`, an identical rerun replaces the newest) and listed against the latest.
-- `Analysis::loaded_failure` / `stalled_solves` show as a warning / note under the results.
+- `Analysis::loaded_failure` shows as a warning under the results.
 - Runs are manual, never automatic (seconds to tens of seconds); a second start while a job runs is ignored; a result for an older job id is dropped.
 
 ## Rows

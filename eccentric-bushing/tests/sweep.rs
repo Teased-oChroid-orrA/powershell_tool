@@ -105,3 +105,40 @@ fn random_valid_inputs_are_always_analysable_on_a_coarse_mesh() {
 fn random_valid_inputs_are_always_analysable_on_the_default_mesh() {
     sweep(77, 24, false, 0);
 }
+
+/// Measurement, not a gate: how often the random cases need the kernel's active-set hold, and whether any falls back to the fit alone
+/// (the nets that once sat in between, other loaded attempts, mesh routes and stalled-residual acceptance, were reached 0, 0 and 3 times in 192 cases and were deleted). `SWEEP_SEED`, `SWEEP_N`,
+/// `SWEEP_COARSE=1`. A net that nothing reaches over a large corpus is dead weight.
+#[test]
+#[ignore = "measurement: run with --ignored --nocapture"]
+fn safety_net_usage_measurement() {
+    let env = |k: &str, d: u64| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    let (seed, n, coarse) = (env("SWEEP_SEED", 31), env("SWEEP_N", 48) as usize, env("SWEEP_COARSE", 0) == 1);
+    let mut rng = Rng(seed);
+    let cases: Vec<Inputs> = (0..n).map(|_| random_case(&mut rng, coarse)).collect();
+    let rows: Vec<String> = std::thread::scope(|s| {
+        let hs: Vec<_> = cases
+            .chunks(n.div_ceil(4))
+            .map(|chunk| {
+                s.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|c| match c.validate().and_then(|()| analyze(c)) {
+                            Ok(a) => format!("held={} fitonly={}", a.held_solves > 0, a.loaded_failure.is_some()),
+                            Err(e) => format!("ERROR {e}"),
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+    });
+    let mut tally = std::collections::BTreeMap::new();
+    for r in &rows {
+        *tally.entry(r.clone()).or_insert(0usize) += 1;
+    }
+    for (k, v) in &tally {
+        eprintln!("{v:4} x {k}");
+    }
+    eprintln!("net usage over {n} random cases (seed {seed}, coarse {coarse}): {tally:?}");
+}

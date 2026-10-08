@@ -333,3 +333,23 @@ Measured and declined: element-stiffness caching / SIMD assembly (assembly is 9 
 Not done (too large for the session, no product decision needed): an unstructured 3D mesher, a prism element, shells and beams, dynamics.
 
 Answer to "can the kernel solve any problem type?": no. Statics of 2D / 3D solids (isotropic and anisotropic elastic, J2 plasticity small / finite strain, anisotropic small-strain plasticity), contact with friction, follower pressure, thermal loads and point-in-mesh stress queries yes; shells, beams, dynamics / modal / buckling, rate-dependent or kinematic-hardening plasticity, plasticity with a temperature change and an unstructured 3D mesher are not there.
+
+## Phase 10: random corpora, a shared adaptive loop, and what they found (2026-10-08)
+
+Method: instead of waiting for a user to report a failing input, seeded random valid inputs for every consumer of the contact kernel, each failure traced before it was fixed and each fix tried on the other corpora. Corpora: `fea-problem/tests/sweep.rs` (bushed plates, linear templates, bolted-joint stacks, `tests/data` regression problems), `lug-solver/tests/kernel_sweep.rs` (random lugs on `FeaLug`), `fea-core/tests/contact_sweep.rs` (stacked blocks, 2D and 3D, matching and non-matching meshes, friction below the limit), `eccentric-bushing/tests/sweep.rs` (existing, plus the safety-net usage measurement).
+
+| Finding | Evidence | Fix |
+|---|---|---|
+| A slave point on a master element edge picks either face on round-off; the faces' normals differ (C0 surface) | bushed plate seed 11: Newton stagnated at every step size; residual ±5.5 lbf at 5 points, indifferent to `dx` | committed face kept while the point is over it; the active-set hold also freezes faces (`contact.rs`) |
+| The state returned by a load step paired the displacements with multipliers updated after the last solve | 8 of 24 random lugs failed `Verification::force_balance` (up to 4.5 % of a small pin load) | `refine_contact` returns an equilibrated pair (`nonlinear.rs`) |
+| Hand-written tangential penalty ratios | 3D stacked blocks stagnate at 0.1, converge at 0.03 | `fit::EPS_T_RATIO`, `Tuning::eps_t` |
+| Holding the active set for every contact solve, a stricter free-body force tolerance, friction history across master faces | each broke an existing test or a corpus case | tried and rejected (see `fea-core/AGENTS.md`) |
+| 3D partial slip (shear above ~0.4 of the friction limit) | 8 of 24 random cases do not converge | **not fixed**, documented limit |
+| Linear templates, bolted-joint compliance | 14 random templates and 12 stacks: no failure | none needed |
+| Lug on the kernel | 24 random lugs: all pass after the pairing fix | none |
+
+Adaptive meshing is now a kernel service: `adapt::refine` (+ the `Pass` trait) is the loop (refine above the target, coarsen below it, keep a pass only if it lowers the error or meets the target with < 90 % of the unknowns); `fea-problem` calls it for sketches **including bushed plates** (the fit and the pin load are re-solved on every new mesh; the bushing is sized from the same field as the plate so both sides of the interface ask for the same element size). Measured on the bushed template: 10281 -> 4769 nodes at zz 0.011, torque capacity identical, von Mises -0.2 %, peak pressure +4 %. The eccentric-bushing and lug toolboxes keep their own parametric meshes (their sizing follows the wall and the bore, and their mesh studies show the capacity is mesh independent from r/6; an error-driven loop would only add cost there).
+
+Safety nets of the eccentric-bushing analysis, measured over 192 random cases (default and coarse meshes, three seeds) after the active-set hold: the second and third loaded attempt, the mesh routes and the fit-alone fallback were reached 0 times; stalled-residual acceptance 3 times; the hold itself 65 % of the time. The attempts, the mesh routes (and `Control`'s route memory, `Analysis::mesh_scale`) and `NlOptions::step_memory` were deleted; the verification suite and the soaks pass without them.
+
+Debug aids added: `NL_TRACE` now prints the residual, `|dx|`, the minimum gap, per contact the points in contact / slipping / off their committed face, and the two largest residual dofs; `NL_TRACE=full` also lists the first contact's pressures. `NlSolution::held_solves` counts the solves finished with a held active set.

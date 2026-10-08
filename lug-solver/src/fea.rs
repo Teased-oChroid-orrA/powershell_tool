@@ -207,7 +207,7 @@ impl FeaLug {
             if pin.friction > 0.0 {
                 // The multiplier passes make the answer independent of this penalty (checked 0.01 - 0.1); a soft one keeps
                 // Newton well conditioned and the passes few.
-                pin_spec = pin_spec.with_friction(pin.friction, 0.03 * eps_n);
+                pin_spec = pin_spec.with_friction(pin.friction, fea_core::fit::EPS_T_RATIO * eps_n);
             }
             specs.push(pin_spec);
         }

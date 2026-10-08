@@ -76,7 +76,7 @@ impl FeaLug {
         let eps_n = tune.eps_n(self.material.e_psi, self.bore_radius);
         let mut pin_spec = ContactSpec::deformable("pin", self.bore_faces.clone(), rim_faces, eps_n);
         if pin.friction > 0.0 {
-            pin_spec = pin_spec.with_friction(pin.friction, 0.03 * eps_n);
+            pin_spec = pin_spec.with_friction(pin.friction, fea_core::fit::EPS_T_RATIO * eps_n);
         }
         let mut specs = vec![pin_spec];
         specs.extend(self.contacts(pin, None, overlap, tune));

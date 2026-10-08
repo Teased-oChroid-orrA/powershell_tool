@@ -202,14 +202,12 @@ pub struct Analysis {
     pub profile: Vec<ProfileBin>,
     pub factorisations: usize,
     pub dofs: usize,
-    /// Newton solves of the loaded stage accepted on a stalled residual (below 0.3 % of the force scale) instead of the
-    /// tolerance; `0` when every one converged.
-    pub stalled_solves: usize,
+    /// Newton solves that stagnated and were finished with a held active set (fit and loaded stage): the kernel's own remedy for
+    /// a chattering contact patch edge, reported so that it can be seen how often it is needed.
+    pub held_solves: usize,
     /// Why the pin load could not be solved, when it could not: the pin fields are zero and the capacity, margin and
     /// profile are those of the fit alone (the conservative basis).
     pub loaded_failure: Option<String>,
-    /// Element size of the solution as a multiple of the default (1 unless the default mesh did not solve the pin load).
-    pub mesh_scale: f64,
     /// Relative energy-norm discretisation error estimate (ZZ) of the solved model; `NaN` when it could not be formed.
     pub mesh_error: f64,
 }
@@ -219,11 +217,6 @@ const BINS: usize = 72;
 /// The share of the pin load the rigid pressing-in stage reaches before the pin is released.
 const PIN_PRESS_SHARE: f64 = 0.25;
 
-/// The share tried when the loaded stage does not converge from the first one. The friction contact can fall into a
-/// stick-slip limit cycle that depends on where the pin is released: the default Bushing Workbench case at 1500 lbf and
-/// 0.04 in offset does at 0.25 and 0.4, converges at 0.12.
-const PIN_PRESS_RETRY_SHARE: f64 = 0.12;
-
 /// Default element size of the housing and bushing: about 1.2 x the thin wall, between `r / MESH_COARSE` and `r / MESH_FINE`
 /// of the bore radius `r` (the pin is a sixth of its own radius, or the bushing's size if coarser: a pin finer than the bushing mesh made the contact converge worse). The capacity integrals are
 /// mesh independent far beyond this (the displayed pressure range is not: its bin-to-bin scatter is under 0.5 % at `r / 5` and 10 % at `r / 4`, so the element stays at or below `r / 5`): the margin of the Bushing Workbench defaults at 1500 lbf is 5.921 / 5.920 / 5.921 at
@@ -231,12 +224,6 @@ const PIN_PRESS_RETRY_SHARE: f64 = 0.12;
 /// 209.237 / 209.2185 / 209.2214 at 0.1 / 0.05 / 0.03 in (0.01 %), while the solve gets 5-20 times cheaper.
 const MESH_FINE: f64 = 6.0;
 const MESH_COARSE: f64 = 5.0;
-
-/// The loaded stage accepts a Newton solve whose residual has stalled (no 3 % gain in 8 iterations: a friction contact
-/// chattering between stick and slip) below this fraction of the force scale. Case 1 of the random sweep (bore 0.25 in,
-/// 113 lbf) crawled through 24 steps and 657 factorisations (103 s) with the strict tolerance and gave a margin of
-/// 51.361; accepting the stall it takes 4 steps (7 s) and gives 51.358 (0.006 %). `Analysis::stalled_solves` reports it.
-const LOADED_STALL_TOL: f64 = 3e-3;
 
 /// Load steps of the pressing-in stage over its whole travel (a seating stage: the loaded stage reconverges everything,
 /// and the force target halves a step that overshoots). 200 -> 50 cut the user's 8856 lbf case from 107 s to 19 s at the
@@ -332,7 +319,7 @@ fn interface_force(pts: &[Pt]) -> [f64; 2] {
     })
 }
 
-/// A converged run that does not transmit the pin load (the pin was never caught by the bore, or a stalled residual
+/// A converged run that does not transmit the pin load (the pin was never caught by the bore, or a residual
 /// measured against the large fit forces hid a pin carrying a fraction of it) is a failure, not a result: the interface
 /// force must return the load. The force is a sum over the whole fit pressure, so its integration noise (about 0.03 % of
 /// the fit force) bounds how small a load can be checked this way.
@@ -494,56 +481,8 @@ fn fitted_bore(b: &Built, fit: &NlSolution) -> (Vec<[f64; 2]>, [f64; 2], f64) {
 /// pressed in by a prescribed rigid translation along the load until it carries a quarter of `F` (displacement control
 /// is robust at first touch), then it is released and the body force is ramped from that level to `F` (the contact patch
 /// already exists, and the stage continues from it: `Start::lambda`). Returns the solution and the model it ran on.
-fn solve_loaded(inp: &Inputs, fit: &Fit, ctl: &Control, attempts: usize) -> Result<(NlSolution, Model), String> {
-    // The attempts, in order: a friction contact that cycles between stick and slip is cured by a different route, not
-    // a stronger version of the same (see `LoadAttempt`).
-    let mut last = String::new();
-    let tried = &LOAD_ATTEMPTS[..attempts.clamp(1, LOAD_ATTEMPTS.len())];
-    for (i, attempt) in tried.iter().enumerate() {
-        match solve_loaded_from(inp, fit, ctl, attempt) {
-            Ok(r) => return Ok(r),
-            Err(LoadFailure::NoConvergence(m)) if !ctl.interrupt.triggered() => {
-                trace(|| format!("attempt {} ({}) failed: {m}", i + 1, attempt.name));
-                last = m;
-            }
-            Err(LoadFailure::NoConvergence(m) | LoadFailure::Other(m)) => return Err(m),
-        }
-    }
-    Err(format!("{last} (after {} attempts: {})", tried.len(), tried.iter().map(|a| a.name).collect::<Vec<_>>().join(", ")))
-}
-
-/// One way of running the loaded stage.
-struct LoadAttempt {
-    name: &'static str,
-    /// The share of the load the rigid pressing-in stage reaches before the pin is released.
-    share: f64,
-    /// `NlOptions::step_memory`.
-    step_memory: bool,
-}
-
-/// The default case at 0.031 in elements and 1500 lbf cycles at share 0.25 and 0.4 (and with anchor stiffness 1e-5 / 1e-4)
-/// and converges at share 0.12 and with step memory; the reported case (8856 lbf, 0.1875 in bushing) converges only
-/// without step memory (4 s, against failing with it). Hence the order: the plain run first.
-const LOAD_ATTEMPTS: [LoadAttempt; 3] = [
-    LoadAttempt { name: "release at 25 %", share: PIN_PRESS_SHARE, step_memory: false },
-    LoadAttempt { name: "release at 25 %, step memory", share: PIN_PRESS_SHARE, step_memory: true },
-    LoadAttempt { name: "release at 12 %", share: PIN_PRESS_RETRY_SHARE, step_memory: false },
-];
-
-/// Why a loaded run failed: `NoConvergence` is the one a different release point can cure.
-enum LoadFailure {
-    NoConvergence(String),
-    Other(String),
-}
-
-impl From<String> for LoadFailure {
-    fn from(m: String) -> Self {
-        LoadFailure::Other(m)
-    }
-}
-
-fn solve_loaded_from(inp: &Inputs, fit: &Fit, ctl: &Control, attempt: &LoadAttempt) -> Result<(NlSolution, Model), LoadFailure> {
-    let share = attempt.share;
+fn solve_loaded(inp: &Inputs, fit: &Fit, ctl: &Control) -> Result<(NlSolution, Model), String> {
+    let share = PIN_PRESS_SHARE;
     let (bore_pts, centre, _bore) = fitted_bore(&fit.b, &fit.sol);
     let phi = inp.load_angle_deg.to_radians();
     let dir = [phi.cos(), phi.sin()];
@@ -616,7 +555,7 @@ fn solve_loaded_from(inp: &Inputs, fit: &Fit, ctl: &Control, attempt: &LoadAttem
         trace_stage(&format!("press-in (share {share}, travel {travel:.4})"), inp, &sol);
         match sol.stop {
             Stop::ForceReached => break sol,
-            Stop::Interrupted => return Err(LoadFailure::Other(INTERRUPTED.into())),
+            Stop::Interrupted => return Err(INTERRUPTED.into()),
             // The travel was used up before the pin carried its share: press further from where it stands (the travel so
             // far is the fraction `1 / PRESS_EXTENSION` of the longer one).
             Stop::Completed if extensions < MAX_PRESS_EXTENSIONS => {
@@ -624,7 +563,7 @@ fn solve_loaded_from(inp: &Inputs, fit: &Fit, ctl: &Control, attempt: &LoadAttem
                 start_a = start_from(&sol, 1.0 / PRESS_EXTENSION);
                 travel *= PRESS_EXTENSION;
             }
-            ref stop => return Err(LoadFailure::Other(format!("the pin could not be pressed in to {target:.0} lbf ({stop:?}, travel {travel:.4} in)"))),
+            ref stop => return Err(format!("the pin could not be pressed in to {target:.0} lbf ({stop:?}, travel {travel:.4} in)")),
         }
     };
     let carried = sol_a.steps.last().and_then(|s| s.master_force.first()).map_or(0.0, |f| f[0] * dir[0] + f[1] * dir[1]).abs();
@@ -638,21 +577,14 @@ fn solve_loaded_from(inp: &Inputs, fit: &Fit, ctl: &Control, attempt: &LoadAttem
     opts_b.interrupt = ctl.interrupt.clone();
     ctl.stage("pin load");
     opts_b.observer = ctl.observer(format!("e {:.4} in, {:.0} lbf, pin load", inp.offset, inp.load_lbf));
-    opts_b.stall_tol = LOADED_STALL_TOL;
     opts_b.stick_slip_guard = true;
-    opts_b.step_memory = attempt.step_memory;
     let nl = model.solve_nonlinear_contact_from(&loads_b, &bc_b, specs, &opts_b, Some(&start_from(&sol_a, lambda0)))?;
     trace_stage(&format!("pin load (from {lambda0:.3})"), inp, &nl);
     if nl.stop == Stop::Interrupted {
-        return Err(LoadFailure::Other(INTERRUPTED.into()));
+        return Err(INTERRUPTED.into());
     }
     if !nl.complete() {
-        return Err(LoadFailure::NoConvergence(format!("the pin load could not be solved: {:?}", nl.stop)));
-    }
-    // A stalled residual is measured against the whole force scale (the fit forces dwarf a light pin load): accept it only
-    // when the interface really returns the pin load, else the next attempt runs.
-    if nl.stalled_solves > 0 {
-        transmitted(inp, &interface_points(&nl, 2, inp.friction)).map_err(|e| LoadFailure::NoConvergence(format!("a stalled residual was accepted but {e}")))?;
+        return Err(format!("the pin load could not be solved: {:?}", nl.stop));
     }
     Ok((nl, model))
 }
@@ -735,98 +667,37 @@ pub fn analyze(inp: &Inputs) -> Result<Analysis, String> {
 /// [`analyze`] that gives up with `Err(INTERRUPTED)` when `ctl`'s interrupt fires.
 pub fn analyze_with(inp: &Inputs, ctl: &Control) -> Result<Analysis, String> {
     let sc = Scale::of(inp);
-    analyze_routed(&sc.inputs(inp), None, ctl, true).map(|r| sc.analysis(r.0))
+    analyze_core(&sc.inputs(inp), None, ctl, true).map(|r| sc.analysis(r.0))
 }
 
 /// [`analyze_with`] that fails when the pin load cannot be solved instead of returning the fit alone (the probes of a
 /// search or a sweep must all be on the same capacity basis).
 pub(crate) fn analyze_strict(inp: &Inputs, ctl: &Control) -> Result<Analysis, String> {
     let sc = Scale::of(inp);
-    analyze_routed(&sc.inputs(inp), None, ctl, false).map(|r| sc.analysis(r.0))
+    analyze_core(&sc.inputs(inp), None, ctl, false).map(|r| sc.analysis(r.0))
 }
 
 /// How the pin load is handled by [`analyze_inner`].
 #[derive(Clone)]
 enum LoadMode {
-    /// Solve it with this many of the `LOAD_ATTEMPTS`; a failure is an error.
-    Solve(usize),
+    /// Solve it; a failure is an error.
+    Solve,
     /// It could not be solved (the reason): the analysis is the fit alone, with the failure stated.
     FitOnly(String),
 }
 
 /// The analysis on an already solved fit (stage 1 does not depend on the pin load: a search over the load solves it
-/// once), on the default mesh route, a failed pin load being an error (a search must not mix the two capacity bases).
+/// once), a failed pin load being an error (a search must not mix the two capacity bases).
 pub(crate) fn analyze_from_fit(inp: &Inputs, fit: &Fit, ctl: &Control) -> Result<Analysis, String> {
-    analyze_routed(inp, Some(fit), ctl, false).map(|r| r.0)
-}
-
-/// Mesh sizes tried, as multiples of the default (or the entered) element size: the loaded stage's friction convergence
-/// depends on the mesh as it does on the release point, and the capacity does not (case of a concentric thick-walled bushing:
-/// fails at 1x, solves at 0.6x and 1.6x; a soft-parts case solves at 1.6x in 7.6 s and not at 0.6x). The scale that worked is
-/// remembered by the `Control` and tried first by the next solve of the same search.
-const MESH_ROUTES: [f64; 3] = [1.0, 1.4, 0.7];
-
-/// Element size the default rule gives.
-fn default_mesh_size(inp: &Inputs) -> f64 {
-    let r = inp.bore_radius();
-    (1.2 * inp.walls().0).clamp(r / MESH_FINE, r / MESH_COARSE)
-}
-
-fn with_mesh_scale(inp: &Inputs, scale: f64) -> Inputs {
-    if scale == 1.0 {
-        *inp
-    } else {
-        Inputs { mesh_size: Some(inp.mesh_size.unwrap_or_else(|| default_mesh_size(inp)) * scale), ..*inp }
-    }
+    analyze_core(inp, Some(fit), ctl, false).map(|r| r.0)
 }
 
 type Solved = (Analysis, Option<(NlSolution, Model)>);
 
-/// The analysis over the mesh routes: the route the control has learned first, then the others (a different mesh gets a
-/// fit of its own, and two of the loaded attempts). With `fall_back`, when nothing solves the pin load, the fit alone is
-/// returned with the failure stated.
-fn analyze_routed(inp: &Inputs, shared: Option<&Fit>, ctl: &Control, fall_back: bool) -> Result<Solved, String> {
-    let first = ctl.learned_route().min(MESH_ROUTES.len() - 1);
-    let order: Vec<usize> = std::iter::once(first).chain((0..MESH_ROUTES.len()).filter(|&i| i != first)).collect();
-    let mut failures: Vec<String> = Vec::new();
-    for &i in &order {
-        let m = with_mesh_scale(inp, MESH_ROUTES[i]);
-        let own;
-        let fit = match shared {
-            Some(f) if i == 0 => f,
-            _ => {
-                own = match solve_fit(&m, ctl) {
-                    Ok(f) => f,
-                    Err(e) if e == INTERRUPTED => return Err(e),
-                    Err(e) => {
-                        failures.push(format!("mesh x{}: {e}", MESH_ROUTES[i]));
-                        continue;
-                    }
-                };
-                &own
-            }
-        };
-        match analyze_inner(&m, fit, ctl, LoadMode::Solve(if i == 0 { LOAD_ATTEMPTS.len() } else { 2 })) {
-            Ok(mut r) => {
-                r.0.mesh_scale = MESH_ROUTES[i];
-                if i != first {
-                    ctl.learn_route(i);
-                }
-                return Ok(r);
-            }
-            Err(e) if e == INTERRUPTED => return Err(e),
-            Err(e) => {
-                trace(|| format!("mesh route x{} failed: {e}", MESH_ROUTES[i]));
-                failures.push(format!("mesh x{}: {e}", MESH_ROUTES[i]));
-            }
-        }
-    }
-    let why = failures.first().cloned().unwrap_or_default();
-    let summary = format!("{why}{}", if failures.len() > 1 { format!(" (and on {} other mesh size(s))", failures.len() - 1) } else { String::new() });
-    if !fall_back {
-        return Err(summary);
-    }
-    // Nothing solves the pin load: the fit alone, on the default mesh, with the failure stated.
+/// The analysis on `shared` (an already solved fit) or a fit of its own. With `fall_back`, when the pin load cannot be
+/// solved, the fit alone is returned with the failure stated; a search or a sweep (`fall_back` off) must not mix the two
+/// capacity bases, so there it is an error.
+fn analyze_core(inp: &Inputs, shared: Option<&Fit>, ctl: &Control, fall_back: bool) -> Result<Solved, String> {
     let own;
     let fit = match shared {
         Some(f) => f,
@@ -835,7 +706,10 @@ fn analyze_routed(inp: &Inputs, shared: Option<&Fit>, ctl: &Control, fall_back: 
             &own
         }
     };
-    analyze_inner(inp, fit, ctl, LoadMode::FitOnly(summary))
+    match analyze_inner(inp, fit, ctl, LoadMode::Solve) {
+        Err(e) if fall_back && e != INTERRUPTED => analyze_inner(inp, fit, ctl, LoadMode::FitOnly(e)),
+        other => other,
+    }
 }
 
 /// The analysis and, with a pin load, the loaded solution and its model (the fields of `analyze_fields`).
@@ -843,7 +717,7 @@ fn analyze_inner(inp: &Inputs, fit: &Fit, ctl: &Control, mode: LoadMode) -> Resu
     let mut loaded_failure = None;
     let loaded = if inp.load_lbf > 0.0 {
         match mode {
-            LoadMode::Solve(attempts) => Some(solve_loaded(inp, fit, ctl, attempts)?),
+            LoadMode::Solve => Some(solve_loaded(inp, fit, ctl)?),
             LoadMode::FitOnly(why) => {
                 loaded_failure = Some(why);
                 None
@@ -909,9 +783,8 @@ fn analyze_inner(inp: &Inputs, fit: &Fit, ctl: &Control, mode: LoadMode) -> Resu
         profile: (0..BINS).map(|i| ProfileBin { angle_deg: (i as f64 + 0.5) * 360.0 / BINS as f64, fit: fit_bins[i], loaded: bins[i] }).collect(),
         factorisations,
         dofs: fit.b.model.mesh.n_dofs(),
-        stalled_solves: loaded.as_ref().map_or(0, |(nl, _)| nl.stalled_solves),
+        held_solves: loaded.as_ref().map_or(0, |(nl, _)| nl.held_solves) + fit.sol.held_solves,
         loaded_failure,
-        mesh_scale: 1.0,
         mesh_error,
     };
     Ok((analysis, loaded))
@@ -924,14 +797,14 @@ pub fn analyze_fields(inp: &Inputs, ctl: &Control) -> Result<(Analysis, String),
     use fea_core::vtu::{pad3, write, Field};
     let sc = Scale::of(inp);
     let inp = &sc.inputs(inp);
-    let (analysis, loaded) = analyze_routed(inp, None, ctl, true)?;
+    let (analysis, loaded) = analyze_core(inp, None, ctl, true)?;
     let analysis = sc.analysis(analysis);
     // Without a solved pin load the fields are those of the fit.
     let fit_only;
     let (u, model) = match &loaded {
         Some((nl, model)) => (&nl.u, model),
         None => {
-            fit_only = solve_fit(&with_mesh_scale(inp, 1.0), ctl)?;
+            fit_only = solve_fit(inp, ctl)?;
             (&fit_only.sol.u, &fit_only.b.model)
         }
     };

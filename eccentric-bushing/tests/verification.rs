@@ -297,11 +297,11 @@ fn a_search_that_is_interrupted_returns_what_it_verified_instead_of_failing() {
 }
 
 /// Slow (about 70 s): the Bushing Workbench defaults at 0.04 in offset and 1500 lbf on the earlier default mesh (0.031 in
-/// elements). The first attempt of the loaded stage falls into a stick-slip limit cycle and fails; the second (with step
-/// memory) converges, to the margin every other mesh and attempt gives (5.92).
+/// elements). It used to fall into a stick-slip limit cycle (contact-patch-edge active-set chatter) and needed a second
+/// attempt with step memory; the kernel's active-set hold converges it at once, to the margin every other mesh gives (5.92).
 #[test]
 #[ignore = "slow: run with --ignored"]
-fn the_fine_mesh_default_case_at_1500_lbf_converges_through_the_second_attempt() {
+fn the_fine_mesh_default_case_at_1500_lbf_converges_on_the_first_attempt() {
     let a = analyze(&Inputs { offset: 0.04, load_lbf: 1500.0, mesh_size: Some(0.031), ..base() }).unwrap_or_else(|e| panic!("{e}"));
     assert!(a.loaded_failure.is_none() && (a.margin - 5.921).abs() < 0.03, "margin {} {:?}", a.margin, a.loaded_failure);
 }
@@ -348,7 +348,7 @@ fn the_reported_8856_lbf_case_presses_the_pin_in_and_converges() {
 #[test]
 fn a_small_bushing_whose_friction_contact_chatters_still_converges() {
     // Bore 0.25 in, 113 lbf: with the strict tolerance the loaded stage crawled through 24 steps and 657 factorisations
-    // (100 s) to margin 51.361; accepting the stalled residual (below 0.3 % of the force scale) takes seconds.
+    // (100 s) to margin 51.361; the kernel's active-set hold converges it strictly in seconds.
     let i = Inputs {
         bore_dia: 0.253539395644151,
         housing_od: 0.6394422267443205,
@@ -405,7 +405,7 @@ fn a_thick_walled_concentric_bushing_converges_on_the_default_mesh() {
         mesh_size: Some(0.08963426906057279),
     };
     let a = analyze(&i).unwrap();
-    assert!(a.loaded_failure.is_none() && a.mesh_scale == 1.0 && a.pin_peak_pressure > 0.0, "{:?} scale {}", a.loaded_failure, a.mesh_scale);
+    assert!(a.loaded_failure.is_none() && a.pin_peak_pressure > 0.0, "{:?}", a.loaded_failure);
 }
 
 /// A very soft set (housing 0.4 Msi, bushing and pin 0.8 Msi) at 1000 lbf: failed every attempt on the default mesh before
@@ -470,5 +470,5 @@ fn a_geometrically_similar_bushing_has_the_same_margin_and_pressures() {
 #[test]
 fn the_default_mesh_reports_a_small_error_estimate() {
     let a = analyze(&Inputs { offset: 0.03, load_lbf: 1000.0, ..base() }).unwrap();
-    assert!(a.mesh_error.is_finite() && a.mesh_error < 0.10 && a.mesh_scale == 1.0, "mesh error {} scale {}", a.mesh_error, a.mesh_scale);
+    assert!(a.mesh_error.is_finite() && a.mesh_error < 0.10, "mesh error {}", a.mesh_error);
 }

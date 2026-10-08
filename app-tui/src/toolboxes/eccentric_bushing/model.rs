@@ -336,16 +336,11 @@ pub fn report_text(input: &Inputs, analysis: Option<&Analysis>, max_offset: Opti
             if a.margin.is_finite() { format!("{:+.1} %  ({})", a.margin * 100.0, if a.margin >= 0.0 { "holds" } else { "SPINS" }) } else { "no spin torque at this angle".into() },
             a.fit_pressure_min, a.fit_pressure_max, a.contact_lost_deg, a.pin_arc_deg, a.pin_peak_pressure, a.slip_share * 100.0
         ));
-        if a.mesh_scale != 1.0 {
-            s.push_str(&format!("Note: solved on elements {:.1} x the default size (the default mesh did not converge the pin load).\n", a.mesh_scale));
-        }
         if a.mesh_error.is_finite() {
             s.push_str(&format!("Estimated mesh error {:.1} % of the energy norm.\n", 100.0 * a.mesh_error));
         }
         if let Some(why) = &a.loaded_failure {
             s.push_str(&format!("WARNING: the pin load could not be solved ({why}); capacity and margin are the fit alone (conservative), the pin results are blank.\n\n"));
-        } else if a.stalled_solves > 0 {
-            s.push_str(&format!("Note: the pin load converged to 0.3 % of the force scale on {} solve(s) (friction stick-slip), not to the tight tolerance.\n\n", a.stalled_solves));
         }
     }
     if let Some(l) = max_offset {

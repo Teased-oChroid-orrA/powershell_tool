@@ -30,6 +30,9 @@ pub struct Tuning {
     pub stick_slip_guard: bool,
 }
 
+/// Tangential penalty over normal penalty of every frictional contact in the workspace (see [`Tuning::eps_t`]).
+pub const EPS_T_RATIO: f64 = 0.03;
+
 impl Tuning {
     /// Frictionless elastic contact (one load step is enough: the response is smooth).
     pub fn frictionless() -> Self {
@@ -62,6 +65,13 @@ impl Tuning {
     pub fn eps_n(&self, e_psi: f64, bore_radius: f64) -> f64 {
         self.penalty_factor * e_psi / bore_radius
     }
+
+    /// The tangential (friction) penalty that goes with a normal penalty `eps_n`: a soft one, `EPS_T_RATIO x eps_n`. The
+    /// multiplier passes make the answer independent of it, and a stiffer one makes partial slip hard for Newton: stacked
+    /// 3D blocks of different moduli sheared near the friction limit converged at 0.03 and 0.01 and stagnated at 0.1.
+    pub fn eps_t(&self, eps_n: f64) -> f64 {
+        EPS_T_RATIO * eps_n
+    }
 }
 
 /// The interference-fit interface of a bushing pressed into a housing bore: two deformable passes (each body the
@@ -70,7 +80,7 @@ impl Tuning {
 /// order `[corner, corner, midside]`; `margin` bounds how far the interface may slide (the matrix pattern is
 /// built once from the initial proximity).
 pub fn interference_contacts(name: &str, housing: Vec<Vec<usize>>, bushing: Vec<Vec<usize>>, eps_n: f64, mu: f64, overlap: f64, margin: f64) -> [ContactSpec; 2] {
-    ContactSpec::two_pass(name, housing, bushing, eps_n).map(|spec| spec.with_rule(ContactRule::Reduced).with_friction(mu, 0.03 * eps_n).with_overlap(overlap).with_margin(margin))
+    ContactSpec::two_pass(name, housing, bushing, eps_n).map(|spec| spec.with_rule(ContactRule::Reduced).with_friction(mu, EPS_T_RATIO * eps_n).with_overlap(overlap).with_margin(margin))
 }
 
 /// The converged interference-fit state (interface contacts only) as the start of a run that continues from it:
