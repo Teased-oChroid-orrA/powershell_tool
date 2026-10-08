@@ -79,7 +79,10 @@ struct Found {
 /// holding (the answer is then conservative) and reported as a `caveat` when it is what bounds the answer from above. When
 /// `ctl`'s interrupt fires (every solve in flight stops with it) the search stops and reports the bracket it had (`halted`).
 fn search_up(lo: f64, hi: f64, tol: f64, ctl: &Control, margin_lo: Option<f64>, margin: impl Fn(f64) -> Result<f64, String> + Sync) -> Found {
-    let k = section_count();
+    search_up_k(section_count(), lo, hi, tol, ctl, margin_lo, margin)
+}
+
+fn search_up_k(k: usize, lo: f64, hi: f64, tol: f64, ctl: &Control, margin_lo: Option<f64>, margin: impl Fn(f64) -> Result<f64, String> + Sync) -> Found {
     let (mut lo_now, mut hi_now, mut evals) = (lo, hi, 0);
     let (mut m_lo, mut m_hi) = (margin_lo.filter(|m| m.is_finite()), None::<f64>);
     let range = hi - lo;
@@ -286,20 +289,23 @@ mod tests {
 
     #[test]
     fn interpolation_finds_a_smooth_root_in_about_k_plus_three_solves() {
-        let k = section_count();
+        for k in [2, 3, 4, 8] {
         for root in [0.0123, 0.37, 0.83, 0.95] {
             // A smooth falling margin (hyperbolic, like capacity / demand - 1).
             let m = move |x: f64| -> Result<f64, String> { Ok(root / x.max(1e-9) - 1.0) };
-            let f = search_up(0.0, 1.0, 0.02, &none(), None, m);
+            let f = search_up_k(k, 0.0, 1.0, 0.02, &none(), None, m);
             // The search accepts a margin down to -MARGIN_TOL, so its edge is root / (1 - MARGIN_TOL).
             let edge = root / (1.0 - MARGIN_TOL);
             assert!(f.halted.is_none() && f.lo <= edge + 1e-9 && edge < f.hi.unwrap_or(1.0) + 1e-9, "{root}: {:?}", (f.lo, f.hi));
             assert!(f.hi.unwrap_or(1.0) - f.lo <= 0.02 + 1e-12, "{root}: bracket {:?}", (f.lo, f.hi));
-            assert!(f.evals <= 2 * k + 3, "{root}: {} solves for k = {k}", f.evals);
+            // Never worse than plain k-section (k per round, log_k(50) rounds) plus a margin of 3.
+            let plain = k * (50f64.ln() / (k as f64).ln()).ceil() as usize;
+            assert!(f.evals <= plain + 3, "{root}: {} solves for k = {k} (plain k-section {plain})", f.evals);
         }
         // A margin that never fails reaches the top of the range in one round.
-        let f = search_up(0.0, 1.0, 0.02, &none(), None, |_| Ok(5.0));
+        let f = search_up_k(k, 0.0, 1.0, 0.02, &none(), None, |_| Ok(5.0));
         assert!(f.reached_top && f.lo == 1.0 && f.evals == k);
+        }
     }
 
     #[test]
@@ -308,7 +314,7 @@ mod tests {
         let smooth = |x: f64| -> Result<f64, String> { Ok(0.6 / x.max(1e-9) - 1.0) };
         let f = search_up(0.2, 1.0, 0.02, &none(), Some(2.0), smooth);
         assert!(f.lo <= 0.6 * 1.003 && 0.6 <= f.hi.unwrap() && f.hi.unwrap() - f.lo <= 0.02 * 0.8 + 1e-12, "{:?}", (f.lo, f.hi));
-        assert!(f.evals <= 2 * k + 3);
+        assert!(f.evals <= 3 * section_count() + 3);
         // A discontinuous (stepped) margin: the interpolation is wrong, the search still brackets the step.
         let step = |x: f64| -> Result<f64, String> { Ok(if x <= 0.4 { 3.0 } else { -0.5 }) };
         let f = search_up(0.0, 1.0, 0.02, &none(), None, step);
