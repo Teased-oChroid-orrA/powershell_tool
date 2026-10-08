@@ -826,7 +826,14 @@ mod tests {
         let byte_count = write_html_report(path.to_str().unwrap(), &settings, &run).unwrap();
 
         let written = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(written, expected, "streamed file content must match the in-memory build exactly");
+        // Both builds stamp the run time to the second; they can straddle a second boundary, so compare without it.
+        let without_run_time = |html: &str| -> String {
+            let marker = "<strong>Run time:</strong> ";
+            let start = html.find(marker).expect("the report states its run time") + marker.len();
+            let end = start + html[start..].find("</div>").expect("the run time line ends");
+            format!("{}{}", &html[..start], &html[end..])
+        };
+        assert_eq!(without_run_time(&written), without_run_time(&expected), "streamed file content must match the in-memory build exactly");
         assert_eq!(byte_count, written.len() as u64, "returned byte count must match the real file size");
     }
 
