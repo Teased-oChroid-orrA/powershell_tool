@@ -3,7 +3,7 @@
 
 use crate::build::{imported_mesh, sketch_mesh};
 use crate::problem::{Analysis, Geometry, Load, Problem, Support};
-use fea_core::adapt::{adapted_size_field, AdaptOptions};
+use fea_core::adapt::{refine, AdaptOptions};
 use fea_core::kernel::von_mises;
 use fea_core::loads::{self, FaceField, Loads, SurfaceLoad};
 use fea_core::fit::{interference_contacts, start_from, Tuning};
@@ -435,6 +435,16 @@ pub struct InterfaceResult {
     pub normal_force: f64,
 }
 
+impl fea_core::adapt::Pass for Pass {
+    fn mesh(&self) -> &Mesh {
+        &self.model.mesh
+    }
+
+    fn zz(&self) -> &fea_core::recover::ZzEstimate {
+        &self.zz
+    }
+}
+
 fn solve_mesh(p: &Problem, mut mesh: Mesh) -> Result<Pass, String> {
     let bc = apply_supports(&mesh, &p.supports)?;
     let loads = build_loads(&mut mesh, p)?;
@@ -641,38 +651,24 @@ fn notes(_p: &Problem, mesh: &Mesh) -> Vec<String> {
 }
 
 /// Build, solve and (for 2D sketches with `adapt_passes > 0`) refine until the passes run out or the
-/// ZZ estimate reaches `target_error`. `import_text` is the file content for an imported mesh.
+/// ZZ estimate meets `target_error` with the fewest unknowns the passes find. `import_text` is the file content for an imported mesh.
 pub fn solve(p: &Problem, import_text: Option<&str>) -> Result<Solved, String> {
     p.validate()?;
     let first = match &p.geometry {
         Geometry::Sketch { .. } => sketch_mesh(p, None)?,
         Geometry::Imported { .. } => imported_mesh(p, import_text.ok_or("the mesh file has not been read")?)?,
     };
-    let adaptive = matches!(p.geometry, Geometry::Sketch { .. }) && p.analysis != Analysis::Solid && p.mesh.adapt_passes > 0 && p.bushings.is_empty();
+    let adaptive = matches!(p.geometry, Geometry::Sketch { .. }) && p.analysis != Analysis::Solid && p.mesh.adapt_passes > 0;
     let mut history = Vec::new();
-    let mut pass = solve_mesh(p, first)?;
-    history.push(info(&pass));
-    if adaptive {
-        for _ in 0..p.mesh.adapt_passes {
-            if pass.zz.relative() <= p.mesh.target_error {
-                break;
-            }
-            let order = if p.mesh.element.is_quadratic() { 2.0 } else { 1.0 };
-            let opt = AdaptOptions { target_rel_error: p.mesh.target_error, order, h_min: p.mesh.size / 16.0, h_max: p.mesh.size * 2.0, ..AdaptOptions::default() };
-            let field = adapted_size_field(&pass.model.mesh, &pass.zz, p.mesh.element.is_quad(), &opt)?;
-            let mesh = sketch_mesh(p, Some(&field))?;
-            let next = solve_mesh(p, mesh)?;
-            // A pass that did not lower the error estimate is dropped (the estimate is unreliable
-            // near a singularity, and a finer mesh must never make the answer worse).
-            let better = next.zz.relative() < pass.zz.relative();
-            history.push(info(&next));
-            if better {
-                pass = next;
-            } else {
-                break;
-            }
-        }
-    }
+    let first = solve_mesh(p, first)?;
+    let pass = if adaptive {
+        let order = if p.mesh.element.is_quadratic() { 2.0 } else { 1.0 };
+        let opt = AdaptOptions { target_rel_error: p.mesh.target_error, order, h_min: p.mesh.size / 16.0, h_max: p.mesh.size * 2.0, ..AdaptOptions::default() };
+        refine(first, p.mesh.adapt_passes as usize, p.mesh.element.is_quad(), &opt, |field| solve_mesh(p, sketch_mesh(p, Some(field))?), |pass| history.push(info(pass)))?
+    } else {
+        history.push(info(&first));
+        first
+    };
     let summary = summarize(p, &pass);
     Ok(Solved { problem: p.clone(), model: pass.model, u: pass.u, nodal: pass.nodal, summary, history })
 }

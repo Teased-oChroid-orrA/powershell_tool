@@ -364,3 +364,30 @@ fn the_solution_does_not_depend_on_the_units() {
         }
     }
 }
+
+#[test]
+fn adaptive_passes_also_refine_and_coarsen_a_bushed_plate() {
+    // A coarse start: the error estimate is above the target, so the passes refine; the fit and the pin load are re-solved on every new mesh.
+    let mut p = template("Lug with an eccentric bushing");
+    p.mesh = MeshSpec { size: 0.6, hole_factor: 0.5, ..MeshSpec::default() };
+    let plain = solve(&p, None).unwrap();
+    p.mesh.adapt_passes = 2;
+    p.mesh.target_error = 0.01;
+    let a = solve(&p, None).unwrap();
+    assert!(a.history.len() >= 2, "{:?}", a.history);
+    assert!(a.summary.zz_error < plain.summary.zz_error, "{} vs {}", a.summary.zz_error, plain.summary.zz_error);
+    assert!(a.summary.equilibrium_error < 1e-3, "equilibrium {:e}", a.summary.equilibrium_error);
+    let (pa, pp) = (&a.summary.interfaces[0], &plain.summary.interfaces[0]);
+    assert!((pa.mean_pressure / pp.mean_pressure - 1.0).abs() < 0.03, "{} vs {}", pa.mean_pressure, pp.mean_pressure);
+    // A mesh already below the target is coarsened where the error is low, without losing the integral results.
+    let mut fine = template("Lug with an eccentric bushing");
+    fine.mesh.adapt_passes = 2;
+    fine.mesh.target_error = 0.02;
+    let c = solve(&fine, None).unwrap();
+    fine.mesh.adapt_passes = 0;
+    let f = solve(&fine, None).unwrap();
+    assert!(c.summary.nodes < f.summary.nodes, "{} vs {}", c.summary.nodes, f.summary.nodes);
+    assert!(c.summary.zz_error <= 0.02);
+    assert!((c.summary.interfaces[0].torque_capacity / f.summary.interfaces[0].torque_capacity - 1.0).abs() < 0.02);
+    assert!((c.summary.max_von_mises.value / f.summary.max_von_mises.value - 1.0).abs() < 0.02);
+}

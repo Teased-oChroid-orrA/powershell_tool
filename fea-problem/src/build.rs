@@ -84,7 +84,7 @@ fn size_function(p: &Problem) -> Box<dyn Fn([f64; 2]) -> f64> {
 /// possibly offset) meshed with the plate's element type and registered as surfaces `bN/od` (outer) and `bN/id` (bore).
 /// The plate's own hole surface is kept as `plate_holeH`, and the name `holeH` is re-pointed at the bore so that a load or
 /// support on the hole acts on the bushing.
-pub fn add_bushings(p: &Problem, mesh: &mut Mesh) -> Result<(), String> {
+pub fn add_bushings(p: &Problem, mesh: &mut Mesh, field: Option<&SizeField>) -> Result<(), String> {
     let Geometry::Sketch { holes, .. } = &p.geometry else { return Ok(()) };
     for (i, b) in p.bushings.iter().enumerate() {
         let n = i + 1;
@@ -92,9 +92,13 @@ pub fn add_bushings(p: &Problem, mesh: &mut Mesh) -> Result<(), String> {
         let ri = 0.5 * b.inner_diameter;
         let wall = r - ri - b.offset[0].hypot(b.offset[1]);
         let region = Region::new(Loop::circle([*cx, *cy], *r, "od")?, vec![Loop::circle([cx + b.offset[0], cy + b.offset[1]], ri, "id")?], b.material.elastic())?;
-        // Fine enough for the thin side of the wall, never coarser than the plate's own hole refinement.
-        let h = (p.mesh.size * p.mesh.hole_factor).min(wall.max(r / 25.0));
-        let bm = mesh_region(&region, physics_of(p), p.mesh.element.kind(), &move |_| h, MeshOptions::default())?;
+        // Fine enough for the thin side of the wall, never coarser than the plate's own hole refinement. An adaptive pass
+        // sizes the bushing from the same field as the plate, so the two sides of the fit ask for the same element size
+        // along the interface (a mesh much finer on one side converges worse than a matched pair).
+        let cap = wall.max(r / 25.0);
+        let h = (p.mesh.size * p.mesh.hole_factor).min(cap);
+        let size = |x: [f64; 2]| field.map_or(h, |sf| sf.at(x).min(cap));
+        let bm = mesh_region(&region, physics_of(p), p.mesh.element.kind(), &size, MeshOptions::default())?;
         let plate = mesh.surfaces.get(&format!("hole{}", b.hole)).cloned().ok_or_else(|| format!("bushing {n}: the plate has no surface hole{}", b.hole))?;
         mesh.surfaces.insert(format!("plate_hole{}", b.hole), plate);
         mesh.append(&bm, &format!("b{n}/"))?;
@@ -120,7 +124,7 @@ pub fn sketch_mesh(p: &Problem, field: Option<&SizeField>) -> Result<Mesh, Strin
         None => base(x),
     };
     let mut mesh = mesh_region(&region, physics_2d, p.mesh.element.kind(), &size, MeshOptions::default())?;
-    add_bushings(p, &mut mesh)?;
+    add_bushings(p, &mut mesh, field)?;
     if p.analysis == Analysis::Solid {
         let levels: Vec<f64> = (0..=*layers).map(|i| depth * i as f64 / *layers as f64).collect();
         return extrude(&mesh, &levels);

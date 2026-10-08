@@ -181,3 +181,50 @@ fn an_l_shaped_plate_refines_toward_the_reentrant_corner() {
     assert!(far / near > 2.5, "the singular corner must be finer than the far field: {sizes:?}");
     assert!(sizes[0].0 / near > 5.0, "the corner size must drop strongly over the passes: {sizes:?}");
 }
+
+struct LPass {
+    model: Model,
+    zz: fea_core::recover::ZzEstimate,
+}
+
+impl fea_core::adapt::Pass for LPass {
+    fn mesh(&self) -> &Mesh {
+        &self.model.mesh
+    }
+    fn zz(&self) -> &fea_core::recover::ZzEstimate {
+        &self.zz
+    }
+}
+
+fn solve_l(mesh: Mesh) -> Result<LPass, String> {
+    let model = Model::new(mesh)?;
+    let mut bc = model.dirichlet();
+    for &n in model.mesh.node_set("left").unwrap() {
+        bc.fix_node(n);
+    }
+    let loads = Loads { faces: model.mesh.surfaces["right"].iter().map(|f| (f.clone(), SurfaceLoad::Traction([0.0, 500.0, 0.0]))).collect(), ..Loads::default() };
+    let sol = model.solve_static(&loads, &bc)?;
+    let zz = model.zz_error(&sol.u, 0.0)?;
+    Ok(LPass { model, zz })
+}
+
+#[test]
+fn the_shared_refine_loop_refines_above_the_target_and_coarsens_below_it() {
+    let l = Loop::polygon_named(&[[0.0, 0.0], [3.0, 0.0], [3.0, 1.0], [1.0, 1.0], [1.0, 3.0], [0.0, 3.0]], &["bottom", "right", "inner_h", "inner_v", "top", "left"]).unwrap();
+    let region = Region::new(l, vec![], Elastic::new(E, NU)).unwrap();
+    let mesh_at = |h: &dyn Fn([f64; 2]) -> f64| mesh_region(&region, Physics::PlaneStress { thickness: 1.0 }, ElementKind::Tri6, h, MeshOptions::default()).unwrap();
+    let opt = |target: f64| AdaptOptions { target_rel_error: target, h_min: 0.02, h_max: 1.0, ..AdaptOptions::default() };
+    // Above the target: refined, every kept pass lowers the estimate, every pass is reported.
+    let first = solve_l(mesh_at(&|_| 0.5)).unwrap();
+    let e0 = first.zz.relative();
+    let mut seen = Vec::new();
+    let best = fea_core::adapt::refine(first, 4, false, &opt(0.005), |sf| solve_l(mesh_at(&|x| sf.at(x))), |p| seen.push((p.model.mesh.n_dofs(), p.zz.relative()))).unwrap();
+    assert!(seen.len() >= 2 && best.zz.relative() < e0, "{seen:?}");
+    assert!(seen.iter().any(|s| s.1 == best.zz.relative()), "the returned pass is one of the reported ones: {seen:?}");
+    // Already finer than a loose target: the field coarsens and a kept pass has clearly fewer unknowns and still meets it.
+    let fine = solve_l(mesh_at(&|_| 0.1)).unwrap();
+    let (n0, e0) = (fine.model.mesh.n_dofs(), fine.zz.relative());
+    let target = (3.0 * e0).max(0.02);
+    let best = fea_core::adapt::refine(fine, 3, false, &opt(target), |sf| solve_l(mesh_at(&|x| sf.at(x))), |_| {}).unwrap();
+    assert!(best.model.mesh.n_dofs() < n0 && best.zz.relative() <= target, "{} vs {n0}, {} vs {target}", best.model.mesh.n_dofs(), best.zz.relative());
+}

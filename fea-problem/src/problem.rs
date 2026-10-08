@@ -169,7 +169,8 @@ pub struct MeshSpec {
     /// Size multiplier at holes (1 = uniform, 0.25 = four times finer at the hole edge, blending
     /// back to `size` about two hole radii away).
     pub hole_factor: f64,
-    /// Remeshing passes driven by the ZZ error estimate (0 = none); 2D parametric problems only.
+    /// Remeshing passes driven by the ZZ error estimate (0 = none): refine where the error is above `target_error`, coarsen
+    /// where it is below; 2D parametric problems only (bushed plates included: the fit is re-solved on every mesh).
     pub adapt_passes: u8,
     /// Target relative energy-norm error of an adaptive pass.
     pub target_error: f64,

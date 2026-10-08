@@ -211,3 +211,33 @@ pub fn adapted_size_field(mesh: &Mesh, zz: &ZzEstimate, quad_split: bool, opt: &
     // background triangles only reference corner nodes (they are the only vertices of `tris`).
     Ok(SizeField::new(pts, tris, h.into_iter().map(|v| if v.is_finite() { v } else { opt.h_max.min(1e30) }).collect()))
 }
+
+/// One meshed and solved pass of an adaptive run: what the driver needs to judge it and to size the next mesh.
+pub trait Pass {
+    fn mesh(&self) -> &Mesh;
+    fn zz(&self) -> &ZzEstimate;
+}
+
+/// Adaptive remeshing loop shared by every consumer (the caller owns meshing and solving). From the `first` pass it asks
+/// `next` for a pass on the size field of the best pass so far, up to `passes` times, and keeps the best:
+/// - above `opt.target_rel_error` a pass is kept only if its ZZ estimate is lower (near a singularity the estimate is
+///   unreliable, and a finer mesh must never make the answer worse);
+/// - at or below it the field coarsens where the error is low, and a pass is kept when it still meets the target with
+///   fewer than 90 % of the unknowns.
+/// The run stops at the first pass that is not kept. `seen` is called with every pass computed, kept or not (history).
+pub fn refine<T: Pass>(first: T, passes: usize, quad_split: bool, opt: &AdaptOptions, mut next: impl FnMut(&SizeField) -> Result<T, String>, mut seen: impl FnMut(&T)) -> Result<T, String> {
+    seen(&first);
+    let mut best = first;
+    for _ in 0..passes {
+        let field = adapted_size_field(best.mesh(), best.zz(), quad_split, opt)?;
+        let cand = next(&field)?;
+        seen(&cand);
+        let (now, then) = (best.zz().relative(), cand.zz().relative());
+        let better = if now > opt.target_rel_error { then < now } else { then <= opt.target_rel_error && (cand.mesh().n_dofs() as f64) < 0.9 * best.mesh().n_dofs() as f64 };
+        if !better {
+            break;
+        }
+        best = cand;
+    }
+    Ok(best)
+}
