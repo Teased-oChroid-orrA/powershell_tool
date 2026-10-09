@@ -77,7 +77,8 @@ pub struct HeatLoads {
 #[derive(Debug, Clone)]
 pub struct HeatSolution {
     pub temperature: Vec<f64>,
-    /// `|K T - f| / |f|` over the free nodes, evaluated with the conductivity of the final temperature.
+    /// Normwise backward error `||K T - f|| / || |K| |T| + |f| ||` over the free nodes,
+    /// evaluated with the conductivity of the final temperature. An accepted steady solve has a finite value <= `tol`.
     pub rel_residual: f64,
     /// Picard iterations (`1` for a constant conductivity).
     pub iterations: usize,
@@ -218,6 +219,9 @@ impl Model {
     /// field changes by less than `tol` (relative to its range) AND the residual with the conductivity of the answer is
     /// below `tol`.
     pub fn solve_heat_steady(&self, loads: &HeatLoads, bc: &Dirichlet, tol: f64) -> Result<HeatSolution, String> {
+        if !tol.is_finite() || tol <= 0.0 {
+            return Err("steady heat: tolerance must be positive and finite".into());
+        }
         let spat = std::sync::Arc::new(self.pattern.scalar());
         let props = self.thermal_props()?;
         for p in &props {
@@ -248,6 +252,9 @@ impl Model {
             let (f, _) = self.heat_system(&spat, loads, &mut k)?;
             let fac = red.factor(&k).map_err(|e| e.to_string())?;
             let tn = fac.solve(&k, &f, bc);
+            if tn.iter().any(|v| !v.is_finite()) {
+                return Err("steady heat: the temperature field is not finite".into());
+            }
             let range = tn.iter().cloned().fold(f64::NEG_INFINITY, f64::max) - tn.iter().cloned().fold(f64::INFINITY, f64::min);
             let change = tn.iter().zip(&t).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max) / range.max(1e-300);
             t = tn;
@@ -255,7 +262,7 @@ impl Model {
                 break change;
             }
         };
-        if nonlinear && last_change > tol {
+        if nonlinear && (!last_change.is_finite() || last_change > tol) {
             return Err(format!("the temperature-dependent conduction iteration did not converge in {iterations} iterations (last change {last_change:.2e} of the range)"));
         }
         // Verification with the conductivity of the answer.
@@ -263,20 +270,30 @@ impl Model {
         let (f, heat_in) = self.heat_system(&spat, loads, &mut k)?;
         let mut kt = vec![0.0; n];
         k.matvec_add(&spat, &t, &mut kt);
-        let (mut rn, mut fnorm, mut reaction, mut rfixed) = (0.0f64, 0.0f64, 0.0, 0.0f64);
+        // A load/reaction-only scale degenerates for a non-zero uniform temperature with no heat flow.
+        // Use the magnitudes before cancellation in K T, the standard backward-error scale.
+        let abs_k = BlockMatrix { d: k.d, vals: k.vals.iter().map(|v| v.abs()).collect() };
+        let abs_t: Vec<f64> = t.iter().map(|v| v.abs()).collect();
+        let mut scale = vec![0.0; n];
+        abs_k.matvec_add(&spat, &abs_t, &mut scale);
+        let (mut rn, mut denominator, mut reaction) = (0.0f64, 0.0f64, 0.0);
         for i in 0..n {
             let r = kt[i] - f[i];
             if bc.fixed[i] {
                 reaction += r;
-                rfixed += r * r;
             } else {
-                rn += r * r;
-                fnorm += f[i] * f[i];
+                rn = rn.hypot(r);
+                denominator = denominator.hypot(scale[i] + f[i].abs());
             }
         }
-        // (scaled by the loads and by the heat the supports carry: a problem driven by temperatures alone has no load)
-        let rel_residual = rn.sqrt() / (fnorm.sqrt() + rfixed.sqrt()).max(1e-300);
+        let rel_residual = rn / denominator.max(1e-300);
         let heat_out_convection = self.convection_out(loads, &t)?;
+        if !denominator.is_finite() || !rel_residual.is_finite() || !heat_in.is_finite() || !reaction.is_finite() || !heat_out_convection.is_finite() {
+            return Err("steady heat: the final residual or heat flow is not finite".into());
+        }
+        if rel_residual > tol {
+            return Err(format!("steady heat: the final residual {rel_residual:.2e} exceeds the allowed tolerance {tol:.2e}"));
+        }
         Ok(HeatSolution { temperature: t, rel_residual, iterations, heat_in, heat_out_fixed: -reaction, heat_out_convection })
     }
 

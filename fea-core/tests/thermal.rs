@@ -36,7 +36,80 @@ fn a_bar_between_two_temperatures_has_a_linear_profile_and_conserves_heat() {
         assert!((s.temperature[i] - 25.0 * x[0]).abs() < 1e-9, "node {i}: {} vs {}", s.temperature[i], 25.0 * x[0]);
     }
     // Heat through a unit-area bar: k dT/dx = 2 * 25 = 50, out of the hot end, into the cold one (reactions of opposite sign).
-    assert!(s.rel_residual < 1e-10 || s.rel_residual.is_nan() || s.heat_in == 0.0);
+    assert!(s.rel_residual.is_finite() && s.rel_residual <= 1e-10, "{s:?}");
+}
+
+#[test]
+fn a_uniform_steady_temperature_is_accepted_without_heat_flow() {
+    // An insulated bar fixed at one end has T = constant and zero heat flow.
+    // A load/reaction-only residual scale degenerates to round-off / round-off here.
+    let model = bar(ElementKind::Quad9, 4, 3.0, plane());
+    let mut bc = model.thermal_dirichlet();
+    fix_set(&model, &mut bc, "u0", 100.0);
+    let s = model.solve_heat_steady(&HeatLoads::default(), &bc, 1e-10).unwrap();
+    assert!(s.temperature.iter().all(|t| (t - 100.0).abs() < 1e-10));
+    assert!(s.rel_residual.is_finite() && s.rel_residual <= 1e-10, "{s:?}");
+    assert!(s.heat_in == 0.0 && s.heat_out_fixed.abs() < 1e-10 && s.heat_out_convection == 0.0, "{s:?}");
+}
+
+#[test]
+fn steady_heat_refuses_invalid_acceptance_tolerances() {
+    let model = bar(ElementKind::Quad4, 3, 2.0, plane());
+    let mut bc = model.thermal_dirichlet();
+    fix_set(&model, &mut bc, "u0", 0.0);
+    fix_set(&model, &mut bc, "u1", 100.0);
+    for tol in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -1.0] {
+        let err = model.solve_heat_steady(&HeatLoads::default(), &bc, tol).unwrap_err();
+        assert!(err.contains("tolerance"), "tol {tol}: {err}");
+    }
+}
+
+#[test]
+fn steady_heat_refuses_a_result_above_the_requested_residual() {
+    let model = bar(ElementKind::Quad9, 4, 3.0, plane());
+    let mut bc = model.thermal_dirichlet();
+    fix_set(&model, &mut bc, "u0", 0.0);
+    fix_set(&model, &mut bc, "u1", 0.0);
+    let loads = HeatLoads { source: 8.0, ..HeatLoads::default() };
+    let reference = model.solve_heat_steady(&loads, &bc, 1e-10).unwrap();
+    assert!(reference.rel_residual > 0.0 && reference.rel_residual < 1e-10);
+    // The same deterministic factorisation cannot meet half its measured residual.
+    let tol = reference.rel_residual * 0.5;
+    let err = model.solve_heat_steady(&loads, &bc, tol).unwrap_err();
+    assert!(err.contains("residual") && err.contains("allowed"), "{err}");
+}
+
+#[test]
+fn steady_heat_refuses_non_finite_results() {
+    let model = bar(ElementKind::Quad4, 3, 2.0, plane());
+    let mut bc = model.thermal_dirichlet();
+    fix_set(&model, &mut bc, "u0", 0.0);
+    for q in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let loads = HeatLoads { nodal: vec![(model.mesh.node_set("u1").unwrap()[0], q)], ..HeatLoads::default() };
+        assert!(model.solve_heat_steady(&loads, &bc, 1e-10).is_err(), "heat input {q} must not return a successful solution");
+    }
+}
+
+#[test]
+fn generation_with_convection_matches_the_independent_closed_form() {
+    // -k T'' = q, T(0) = T0, -k T'(L) = h (T(L) - Ta).
+    // T(x) = T0 + c x - q x^2 / (2 k); the Robin condition determines c.
+    let (l, q, h, t0, ta) = (3.0, 8.0, 5.0, 20.0, 10.0);
+    let c = (q * l + h * q * l * l / (2.0 * K) - h * (t0 - ta)) / (K + h * l);
+    let model = bar(ElementKind::Quad9, 4, l, plane());
+    let mut bc = model.thermal_dirichlet();
+    fix_set(&model, &mut bc, "u0", t0);
+    let loads = HeatLoads { source: q, convection: model.mesh.surfaces["u1"].iter().map(|f| (f.clone(), h, ta)).collect(), ..HeatLoads::default() };
+    let s = model.solve_heat_steady(&loads, &bc, 1e-10).unwrap();
+    for (i, x) in model.mesh.nodes.iter().enumerate() {
+        let exact = t0 + c * x[0] - q * x[0] * x[0] / (2.0 * K);
+        assert!((s.temperature[i] - exact).abs() < 1e-10, "node {i}: {} vs {exact}", s.temperature[i]);
+    }
+    let end = t0 + c * l - q * l * l / (2.0 * K);
+    assert!((s.heat_in - q * l).abs() < 1e-10);
+    assert!((s.heat_out_fixed - K * c).abs() < 1e-10);
+    assert!((s.heat_out_convection - h * (end - ta)).abs() < 1e-10);
+    assert!(s.rel_residual.is_finite() && s.rel_residual <= 1e-10 && s.balance_error() < 1e-10, "{s:?}");
 }
 
 #[test]
