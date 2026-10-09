@@ -44,6 +44,7 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 | #9 — general-purpose indexed query engine (regex-aware exec) | `docs/issue-9-status.md` (single-file; initial investigation/first pass, no phase docs follow) |
 | #10 — 14-toolbox "Engineering Toolbox Platform" | `docs/issue-10-status.md` (explicitly scoped to Phase 1 only) → `docs/issue-10-phase-1.md`. **Remaining 13 toolboxes are on hold, not started** — don't assume this epic is done because a `-status.md` exists |
 | #11 — Pressure Vessel Stress/Failure-Mode/Min-Thickness Analyzer | `docs/issue-11-status.md` → `docs/issue-11-phase-1.md` .. `phase-15.md` (no phase-8; folded elsewhere) (**closed**, 15 phases shipped). Also summarized in root `CLAUDE.md` — that summary is being trimmed to point here instead of duplicating it |
+| #12 — FEA Audit 2.0 and core roadmap | `docs/issue-12-phase-12.md` (source audit, baseline, first acceptance increment and Claude Code handoff; **in progress**) |
 
 ### Find It Fast — by current/live status
 | Looking for current status of... | Go to |
