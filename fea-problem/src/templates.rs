@@ -3,7 +3,7 @@
 use crate::problem::*;
 
 fn steel() -> MaterialSpec {
-    MaterialSpec { name: "Steel (generic)".into(), e: 29.0e6, nu: 0.3, alpha: 6.5e-6, yield_stress: Some(50_000.0) }
+    MaterialSpec { name: "Steel (generic)".into(), e: 29.0e6, nu: 0.3, alpha: 6.5e-6, yield_stress: Some(50_000.0), density: 0.283 / 386.089 }
 }
 
 fn sketch(outer: Shape, holes: Vec<Shape>) -> Geometry {
@@ -49,7 +49,7 @@ pub fn templates() -> Vec<(&'static str, Problem)> {
 
     // A lug with an eccentric steel bushing pressed into its hole (interference fit, then the pin load on its bore).
     let mut bushed = base("Lug with an eccentric bushing", Analysis::PlaneStress, sketch(Shape::Rect { x0: 0.0, y0: 0.0, x1: 4.0, y1: 2.0 }, vec![Shape::Circle { cx: 1.0, cy: 1.0, r: 0.5 }]));
-    bushed.material = MaterialSpec { name: "Aluminium 7075 (generic)".into(), e: 10.3e6, nu: 0.33, alpha: 12.9e-6, yield_stress: Some(60_000.0) };
+    bushed.material = MaterialSpec { name: "Aluminium 7075 (generic)".into(), e: 10.3e6, nu: 0.33, alpha: 12.9e-6, yield_stress: Some(60_000.0), density: 0.101 / 386.089 };
     bushed.mesh = MeshSpec { size: 0.3, hole_factor: 0.2, ..MeshSpec::default() };
     bushed.supports = vec![Support::fixed("right")];
     bushed.loads = vec![Load::Bearing { hole: 1, fx: -1500.0, fy: 0.0 }];

@@ -16,6 +16,8 @@ Plan origin: turn the special-purpose lug solver into a general 2D/3D FEA with a
 | 6 | Docs/ADR upkeep, `app-tui` FEA toolbox (separate decision) | Docs done; the toolbox was built in Phase 8 |
 | 7 | The kernel becomes the main lug solver: bushing, thermal fit, second order, oblique / hardening / finite-strain collapse, sweeps, elastic pin on the full model, speed, mesh settings and mesh-size test in the toolbox | **Done** (see Phase 7) |
 | 8 | The FEA Workbench (`fea-problem` + `app-tui`), toolboxes moved onto the kernel (Bushing's plane-stress edge FE, Preload's member compliance), kernel additions (point location, multi-case solve, rigid-body check) | **Done** (see Phase 8) |
+| 9, 10 | Eccentric-bushing upgrades; random corpora, shared adaptive loop | **Done** (see Phase 9, 10) |
+| 11 | Adaptive solver programme: baseline, capability matrix, diagnostics, validation, verified strategy selection, modal / buckling / transient, 3D partial slip, parallel factorisation | **Done** (see Phase 11; each increment below with its proof) |
 
 ## Phase 0 baseline (existing lug solver, release build, Apple M1, 8 threads)
 
@@ -344,7 +346,7 @@ Method: instead of waiting for a user to report a failing input, seeded random v
 | The state returned by a load step paired the displacements with multipliers updated after the last solve | 8 of 24 random lugs failed `Verification::force_balance` (up to 4.5 % of a small pin load) | `refine_contact` returns an equilibrated pair (`nonlinear.rs`) |
 | Hand-written tangential penalty ratios | 3D stacked blocks stagnate at 0.1, converge at 0.03 | `fit::EPS_T_RATIO`, `Tuning::eps_t` |
 | Holding the active set for every contact solve, a stricter free-body force tolerance, friction history across master faces | each broke an existing test or a corpus case | tried and rejected (see `fea-core/AGENTS.md`) |
-| 3D partial slip (shear above ~0.4 of the friction limit) | 8 of 24 random cases do not converge | **not fixed**, documented limit |
+| 3D partial slip (shear above ~0.4 of the friction limit) | 8 of 24 random cases do not converge | **fixed in Phase 11**: the consistent frictional step is solved by preconditioned GMRES instead of plain refinement |
 | Linear templates, bolted-joint compliance | 14 random templates and 12 stacks: no failure | none needed |
 | Lug on the kernel | 24 random lugs: all pass after the pairing fix | none |
 
@@ -353,3 +355,90 @@ Adaptive meshing is now a kernel service: `adapt::refine` (+ the `Pass` trait) i
 Safety nets of the eccentric-bushing analysis, measured over 192 random cases (default and coarse meshes, three seeds) after the active-set hold: the second and third loaded attempt, the mesh routes and the fit-alone fallback were reached 0 times; stalled-residual acceptance 3 times; the hold itself 65 % of the time. The attempts, the mesh routes (and `Control`'s route memory, `Analysis::mesh_scale`) and `NlOptions::step_memory` were deleted; the verification suite and the soaks pass without them.
 
 Debug aids added: `NL_TRACE` now prints the residual, `|dx|`, the minimum gap, per contact the points in contact / slipping / off their committed face, and the two largest residual dofs; `NL_TRACE=full` also lists the first contact's pressures. `NlSolution::held_solves` counts the solves finished with a held active set.
+
+## Phase 11: the adaptive solver programme (started 2026-10-08)
+
+**Governing principle** (user brief): start from the most complete applicable reference formulation; adapt the strategy toward the lowest cost that demonstrably meets the required accuracy; escalate or revert when evidence requires it. Accuracy is never traded for speed. Every automatic simplification is recorded, verified and reversible; an unsupported method is reported, never silently substituted. Order of operations: define, validate the model, establish the reference formulation, choose the initial strategy, baseline, solve and monitor, adapt, verify every reduction, escalate/revert, accept and report.
+
+**Machine learning**: only if it costs no speed and never overrides a verification. Position: (1) first build the decision log (below); (2) learned or tabulated predictors may only choose *starting values* (step size, tuning, solver path) that the verifier then checks, so a wrong prediction costs one retry, never a wrong answer; (3) prediction must be cheaper than the saving (a lookup or a small regression on logged features, not a network inference per iteration). Nothing is built before the log exists to train and measure it on.
+
+### Increments
+
+| # | Increment | Proof |
+|---|---|---|
+| 1 | Baseline timings (below) and this matrix | measurements recorded here |
+| 2 | Structured solve report: per-step/iteration convergence history, strategy decisions (solver path, ordering, tuning, step cuts, active-set holds), tolerances, conditioning estimate, verification outcome; machine readable, no `NL_*` env var needed | reproduces `NL_TRACE` data; deterministic |
+| 3 | ADR-013: eigen / time integration / sensitivity (build vs crate) and the strategy-selection architecture (reference run, reduction, verify, revert) | decision record |
+| 4 | Modal analysis (validated on cantilever / plate closed forms), then linear buckling (Euler column), then Newmark / HHT transient | closed forms, convergence rates |
+| 5 | 3D frictional partial slip (root cause: the defect-correction refinement diverged; solved by GMRES, no semismooth rewrite needed) | `contact_sweep` shear to 0.8 + all four corpora |
+| 6 | Strategy selector with verified reductions (e.g. element order / integration / tolerance / solver path), error estimate against the reference | reduced result within the required bound of the reference on a corpus |
+| 7 | Heat conduction field, sensitivity / optimisation, UI | later |
+
+### Baseline (release, Apple M1, 8 threads, 2026-10-08; `cargo test -p fea-core --release --test bench -- --ignored --nocapture`)
+
+Linear static (ms; setup / assemble / symbolic / factor / solve): Quad9 100x100 (80.8k dofs) 13.4 / 6.6 / 59.4 / 140 / 8.5; Quad4 100x100 (20.4k) 3.5 / 2.4 / 10.3 / 22.7 / 1.7; Hex8 10^3 (27.8k) 7.5 / 8.1 / 74 / **1466** / 16; Hex20 10^3 (14.9k) 5.3 / 10 / 52 / 639 / 8.2; Hex27 10^3 (27.8k) 9.8 / 17.6 / 113 / 1480 / 16; Hex8 14^3 (73.2k) 20 / 19 / 301 / **7974** / 69; Hex20 14^3 (38.5k) 16 / 33 / 187 / 5048 / 38; Tet10 10^3 (27.8k) 11 / 8 / 82 / 1621 / 17. In 3D the numeric factorisation is 90-95 % of the cost and grows steeply (Hex8 6^3 -> 10^3: 4.2x the dofs, 20x the factor time); 2D is cheap. The PCG + AMG path (`iterative_against_direct_on_large_hex_models`) is the existing alternative above 150k free dofs: the threshold is a candidate for the strategy selector to revisit with these numbers.
+
+Nonlinear plastic (one tangent: assembly / factor / solve ms): Hex8 16^3 (14.7k dofs) 19 / 225 / 5; Hex20 8^3 (8.0k) 36 / 145 / 3; Hex27 7^3 (10.1k) 43 / 194 / 4; Quad9 120^2 (116k) 23 / 238 / 13. Factorisation dominates every nonlinear iteration.
+
+Contact (`contact_sweep.rs::contact_speed_baseline`, stacked blocks, friction, best of 3): 2D 260 dofs 36 factorisations 27.6 ms; 2D 240 dofs 23 / 16.8 ms; 3D Hex27 1050 dofs 55 factorisations **511 ms** (9 ms per factorisation); 3D 900 dofs 33 / 279 ms. 3D contact is the expensive case at small size.
+
+### Capability matrix (state of the code, verified 2026-10-08, updated at the end of the session)
+
+| Capability | State | Proof |
+|---|---|---|
+| 2D plane stress/strain/axisymmetric, 3D solids, 10 element types | implemented | `tests/linear_static.rs`, `tests/classic.rs` |
+| Direct sparse solve (faer, AMD / nested dissection, parallel from 1M / 8M factor entries), PCG + AMG (`Auto` from 60M entries) | implemented | `tests/iterative.rs`, `tests/bench.rs`, `tests/strategy.rs` |
+| MPC, rigid coupling, Dirichlet by elimination | implemented | `tests/mpc.rs` |
+| Isotropic / anisotropic elasticity, thermal load (uniform dT **and a nodal temperature field**) | implemented | `tests/linear_static.rs`, `tests/anisotropic.rs`, `tests/thermal.rs` |
+| J2 plasticity small / finite strain (isotropic hardening), anisotropic small strain | implemented | `tests/nonlinear.rs`, `tests/anisotropic.rs` |
+| Hyperelasticity: Hencky (finite-strain elastic) and **compressible neo-Hookean** (solid, plane strain, axisymmetric) | implemented; Mooney-Rivlin / Ogden missing | `tests/hyperelastic.rs` (tangent vs finite differences, uniaxial closed form to 1e-6, small-strain limit, quadratic Newton) |
+| Follower pressure, arc-length, Newton + line search + step cutting | implemented | `tests/follower.rs`, `tests/nonlinear.rs` |
+| Contact: normal AL + Coulomb friction, deformable / rigid masters, 2D and 3D (shear to 0.8 of the limit) | implemented | `tests/contact.rs`, `tests/contact_sweep.rs` |
+| Error estimate (SPR, ZZ), adaptive remeshing | implemented | `tests/recovery.rs`, `tests/adapt.rs` |
+| Meshing: 2D unstructured, structured, sweep, Gmsh/Abaqus import | implemented; no 3D unstructured, no prisms | `tests/mesh2d.rs`, `tests/sweep.rs`, `tests/import.rs` |
+| Convergence history / decision log as data, JSON report | implemented | `tests/report.rs` |
+| Conditioning estimate | implemented | `tests/report.rs` (dense eigen oracle) |
+| Model validation before a solve | implemented | `tests/strategy.rs` |
+| Modal analysis (consistent / lumped mass), buckling (both-sign stress states), linear transient (Newmark / HHT) | implemented | `tests/dynamics.rs`, `fea-problem/tests/dynamics.rs` |
+| Heat conduction: steady and transient, flux / convection / source, temperature-dependent conductivity | implemented | `tests/thermal.rs` |
+| Sensitivities (adjoint: displacement, compliance, frequency; modulus, density, thickness, node position) and a block-sizing optimiser | implemented | `tests/sensitivity.rs` (vs global finite differences), `tests/optimize.rs` (closed form) |
+| Automatic strategy selection with verified reductions | implemented for linear statics (`solve_adaptive`), the nonlinear / contact ladder (`solve_nonlinear_ladder`, caller supplies the check) and the eigen method (Lanczos, then subspace iteration if rejected) | `tests/strategy.rs`, `tests/dynamics.rs` |
+| Kinematic / rate-dependent plasticity, plasticity with dT | missing | |
+| Temperature-dependent elastic properties, thermal-structural coupling beyond one way | missing | |
+| Shells, beams, prisms, 3D unstructured meshing | missing | |
+| Machine-learned strategy prior | **evaluated, not built**: nothing to predict (see below) | `contact_sweep.rs::tuning_preset_measurement` |
+
+### Done in Phase 11 (2026-10-08, evidence in the tests named)
+
+| Increment | What | Proof |
+|---|---|---|
+| Solve report | `NlSolution::{events, profile, report_json}`: step cuts, held active sets, accepted stalls, indefinite tangents, widened margins, augmented-Lagrangian passes that ended without meeting `outer_tol`, strategy changes and warnings, plus per-step residual histories and the time split; `NL_EVENTS=1` echoes them. `Solution::{method, rel_residual, factor_nnz, fallback}` for linear solves. `Model::condition_estimate` | `tests/report.rs` (events = cuts, deterministic JSON, estimate vs dense eigen oracle, cond ~ h^-2) |
+| Model validation | `Model::validate`: empty mesh, bad constraints, non-finite data, invalid material, inverted elements, aspect ratio, orphan nodes, rigid body, load assembly, low-order elements, axisymmetric radius | `tests/strategy.rs` |
+| Verified adaptive solve | `Model::solve_adaptive(loads, bc, Requirements)`: validate, reference direct solve or the iterative path where the factor size says it pays, independent verification (a-posteriori residual, global force balance, optional ZZ requirement), reversion to direct on a failed check, JSON report; `Model::solve_nonlinear_ladder`: rungs cheapest to most robust, each verified, escalation recorded | `tests/strategy.rs` |
+| Modal analysis | `Model::modal`: consistent or HRZ-lumped mass, shift-and-invert Lanczos (default) or subspace iteration, residual-verified, effective modal masses | `tests/dynamics.rs`: axial bar (closed form), Euler-Bernoulli cantilever 2D / 3D, free-free beam with rigid modes, mass = rho V, lumped below / consistent above, Lanczos vs subspace incl. multiple eigenvalues |
+| Buckling | `Model::buckling`: geometric stiffness from the linear stress state, `K phi = lambda (-K_G) phi` | Euler cantilever column 2D (1.5 %) and 3D (2 %), tension has no positive factor |
+| Transient | `Model::transient`: Newmark / HHT-alpha, Rayleigh damping | second order against exact modal superposition (error ratios 3.5-4.5), energy conserved to 1e-10, HHT / damping never gain energy |
+| 3D partial slip (root cause found and fixed) | the frictional Newton step is now solved by GMRES preconditioned with the factorisation (`refine_consistent`); plain defect refinement diverged where most points are at their friction limit | `contact_sweep` shear to 0.8: 0 of 24 random 3D cases fail (8 of 24 before); the whole sweep takes 10 s instead of 58 s |
+| Latent wrong answer found by that fix | holding the active set of a stagnating iterate that had lost the pin's contact froze a state carrying none of the pin load; a hold now needs at least half of the start's contact per interface | `eccentric-bushing` `a_stagnating_step_that_lost_the_pin_is_not_frozen_into_a_wrong_answer`; all corpora re-run clean |
+| Parallel factorisation | the numeric factorisation runs on all threads when the factor is large enough for the dimension (3D: 1M entries, 2D: 8M) instead of only above 40k unknowns | 3D blocks below 40k dofs 1.8-2.1x faster (Hex8 10^3 1501 -> 787 ms, Hex20 14^3 5145 -> 2578 ms), 2D unchanged; bit-for-bit reproducible (`tests/strategy.rs`) |
+| `Auto` solver choice | in 3D from 20k free dofs `Auto` looks at the exact factor size and takes PCG + AMG from 60M entries (was: from 150k dofs), verified, with the direct solve as the recorded fallback | `iterative_against_direct_on_large_hex_models`: equal at 12M (Hex8) / 49M (Hex20), 1.6x faster at 39M, 3.6x at 125M, 6x at 310M |
+
+Method note: the verification is never the iteration's own convergence flag. The eigensolver returns a residual per mode and refuses a pair above the tolerance; the adaptive solve recomputes `|K u - f|` and the global force balance from the result; the ladder takes a caller-supplied physical check.
+
+Eigensolver cost (`modal_analysis_cost`, release, 6 / 20 modes, 3k-11k dofs): Lanczos with the completeness check 100-1300 ms against 160-3400 ms for subspace iteration (1.2-2.6x).
+| Heat conduction | `Model::solve_heat_steady` (Picard for a conductivity table, residual and energy balance reported), `solve_heat_transient` (theta method), `Loads::temperature` drives the structure (loads and stresses at the Gauss points) | `tests/thermal.rs`: linear and parabolic profiles exact, flux / convection, Kirchhoff transform, cooling slab at second order, hollow cylinder, 3D energy balance, a linear field expands a free body stress-free (exact quadratic displacement), a clamped bar carries -E alpha mean(T) |
+| Sensitivities and sizing | `Model::{sensitivities, compliance_sensitivities, eigenvalue_sensitivities}`, `optimize_compliance` (optimality criteria at a material budget) | adjoint = global central finite difference for displacements, compliance (incl. a loaded node's pressure load vector) and frequencies; series bars reach the closed form `s ~ 1/sqrt(E)`, with a binding bound |
+| Neo-Hookean | `J2::neo_hookean()` through the finite-strain path | `tests/hyperelastic.rs`; written in the displacement gradient so a tiny strain keeps its digits (the form in `F` stalled Newton at `G eps` absolute error) |
+| Buckling with tension and compression | a Cholesky-proven shift below the smallest positive factor (`K - sigma B` SPD) puts the wanted factors nearest the shift; both signs are found and the positive ones kept | `fea-problem/tests/dynamics.rs::a_mixed_sign_stress_state_still_gives_buckling_factors`; the unshifted pencil did not converge (residual 1e-5) |
+| Workbench | keys `n` (6 natural frequencies) and `b` (3 buckling factors), mode picker `[` `]`, deformed mode shape; `Mass Density` row | `app-tui` unit and render tests; checked in a real terminal (tmux): cantilever 319 Hz vs Euler-Bernoulli 321 Hz, axial mode 4978 Hz vs 4972 Hz |
+| Bug fixed on the way | `stagnated_cuts` was cumulative over the whole analysis, not per load step as documented, so a long run exhausted the budget on early trouble: a random 2D friction case failed with the standard preset | `contact_sweep.rs::tuning_preset_measurement` 60 of 60 |
+
+### Machine learning: evaluated before it was built
+
+The brief: use ML if it costs no speed. Procedure: find a decision whose outcome varies and costs time, log it, see whether a cheap predictor could save that time. Decisions in the kernel: (1) direct vs iterative solve, (2) the contact `Tuning` preset, (3) eigensolver method, (4) factorisation parallelism.
+
+* (1) and (4) are functions of the exact symbolic factor size, measured above: a threshold read off a table, no model needed and nothing a learner could add.
+* (2) `tuning_preset_measurement` (60 random stacked-block cases, 2D and 3D, friction, shear to 0.8): the soft preset passed 60 of 60 in 3.6 s, the standard frictional preset passed 60 of 60 in 9.6 s once the per-step budget bug was fixed (59 of 60 before). A predictor would save the failing attempts, and there are none to save: the cheaper rung is accurate on the verified quantities. The consumers' accuracy needs (peak pressure, not only force balance) are physical requirements, not predictions.
+* (3) Lanczos is rejected by its own residual check in a small class of problems (mixed-sign buckling, now handled by the shift); the fallback costs one extra attempt.
+
+Conclusion: no learned component is justified, and none is shipped. The decision log is in place (`NlSolution::report_json`, `Adaptive::report_json`) so the question can be reopened on real usage data; a model would still only choose a starting rung behind the verifier.

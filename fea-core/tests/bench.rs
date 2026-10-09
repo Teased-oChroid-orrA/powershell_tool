@@ -97,9 +97,10 @@ fn pipeline(label: &str, kind: ElementKind, physics: Physics, div: [usize; 3]) -
     let f = fea_core::loads::assemble(&model.mesh, &loads).unwrap();
     let (t_sol, _) = best(3, || fac.solve(&k, &f, &bc));
     eprintln!(
-        "BENCH {label:<22} nodes {:>7} dofs {:>7} colors {:>3} | setup {setup:>8.1} assemble {:>8.2} symbolic {:>8.2} factor {:>8.2} solve {:>7.2} ms",
+        "BENCH {label:<22} nodes {:>7} dofs {:>7} nnzL {:>9} colors {:>3} | setup {setup:>8.1} assemble {:>8.2} symbolic {:>8.2} factor {:>8.2} solve {:>7.2} ms",
         model.mesh.nodes.len(),
         model.mesh.n_dofs(),
+        red.factor_nnz(),
         model.pattern.n_colors(),
         ms(t_asm),
         ms(t_sym),
@@ -169,8 +170,8 @@ fn ordering_comparison() {
 #[test]
 #[ignore]
 fn iterative_against_direct_on_large_hex_models() {
-    for n in [24usize, 32, 40] {
-        let mut mesh = fea_core::generate::grid(Physics::Solid, ElementKind::Hex8, Elastic::new(10.0e6, 0.3), [n, n, n], &|p| [p[0], 0.8 * p[1], 0.6 * p[2]]).unwrap();
+    for (kind, n) in [(ElementKind::Hex8, 10usize), (ElementKind::Hex8, 14), (ElementKind::Hex8, 18), (ElementKind::Hex8, 24), (ElementKind::Hex8, 32), (ElementKind::Hex8, 40), (ElementKind::Hex20, 6), (ElementKind::Hex20, 10), (ElementKind::Hex20, 14), (ElementKind::Hex20, 20), (ElementKind::Tet10, 8), (ElementKind::Tet10, 14)] {
+        let mut mesh = fea_core::generate::grid(Physics::Solid, kind, Elastic::new(10.0e6, 0.3), [n, n, n], &|p| [p[0], 0.8 * p[1], 0.6 * p[2]]).unwrap();
         mesh.select_nodes("base", |x| x[2] < 1e-9);
         let top: Vec<Vec<usize>> = mesh.select_faces("top", |c| c[2] > 0.6 - 1e-9).to_vec();
         let model = Model::new(mesh).unwrap();
@@ -187,7 +188,7 @@ fn iterative_against_direct_on_large_hex_models() {
         let t_d = t.elapsed().as_secs_f64() * 1e3;
         let scale = direct.u.iter().fold(0.0f64, |m, v| m.max(v.abs()));
         let diff = it.u.iter().zip(&direct.u).fold(0.0f64, |m, (a, b)| m.max((a - b).abs())) / scale;
-        eprintln!("Hex8 {n}^3 ({} dofs): PCG+AMG {t_it:.0} ms ({} its, setup {:.0} + solve {:.0}); direct {t_d:.0} ms (symbolic {:.0} + factor {:.0}); max rel diff {diff:.1e}", it.n_free, it.iterations.unwrap(), it.timings.symbolic_ms, it.timings.solve_ms, direct.timings.symbolic_ms, direct.timings.factor_ms);
+        eprintln!("BENCH iter-vs-direct {kind:?} {n}^3 ({} dofs, factor nnz {}): PCG+AMG {t_it:.0} ms ({} its, setup {:.0} + solve {:.0}); direct {t_d:.0} ms (symbolic {:.0} + factor {:.0}); max rel diff {diff:.1e}", it.n_free, direct.factor_nnz, it.iterations.unwrap(), it.timings.symbolic_ms, it.timings.solve_ms, direct.timings.symbolic_ms, direct.timings.factor_ms);
         assert!(diff < 1e-8);
     }
 }
@@ -300,6 +301,31 @@ fn chord_newton_on_a_3d_plastic_block() {
             let sol = model.solve_nonlinear(&Loads::default(), &bc, &NlOptions { steps: 5, chord_iters: chord, control: Control::Load, ..NlOptions::default() }).unwrap();
             let iters: usize = sol.steps.iter().map(|s| s.iterations).sum();
             eprintln!("{kind:?} {n}^3 ({} dofs), chord_iters {chord}: {:?}, {iters} iterations, {} factorisations, {:.0} ms, ep max {:.3}", model.mesh.n_dofs(), sol.stop, sol.factorisations, sol.elapsed_ms, sol.state.max_ep());
+        }
+    }
+}
+
+/// Modal analysis cost: shift-and-invert subspace iteration on cantilever bars (the factorisation, the iterations and the
+/// time; `docs/adr/ADR-013-eigen-and-transient-methods.md`).
+#[test]
+#[ignore]
+fn modal_analysis_cost() {
+    use fea_core::{EigMethod, ModalOptions};
+    for (kind, div) in [(ElementKind::Quad9, [200usize, 4, 1]), (ElementKind::Hex20, [20, 3, 3]), (ElementKind::Hex20, [40, 4, 4]), (ElementKind::Hex8, [30, 6, 6])] {
+        let physics = if div[2] == 1 { Physics::PlaneStress { thickness: 1.0 } } else { Physics::Solid };
+        let mut mesh = grid(physics, kind, Elastic::new(1.0e7, 0.3), div, &|p| [10.0 * p[0], p[1], p[2]]).unwrap();
+        mesh.set_density_all(1.0).unwrap();
+        let model = Model::new(mesh).unwrap();
+        let mut bc = model.dirichlet();
+        for n in 0..model.mesh.nodes.len() {
+            if model.mesh.nodes[n][0] < 1e-12 {
+                bc.fix_node(n);
+            }
+        }
+        for (nev, method) in [6usize, 20].into_iter().flat_map(|n| [(n, EigMethod::Subspace), (n, EigMethod::Lanczos)]) {
+            let t = Instant::now();
+            let r = model.modal(&bc, &ModalOptions { n_modes: nev, method, ..ModalOptions::default() }).unwrap();
+            eprintln!("BENCH modal {method:?} {kind:?} {div:?} ({} dofs) nev {nev}: {} iterations, subspace {}, factor nnz {}, {:.0} ms, worst residual {:.1e}", model.mesh.n_dofs() - bc.n_fixed(), r.iterations, r.subspace, r.factor_nnz, ms(t.elapsed()), r.modes.iter().map(|m| m.residual).fold(0.0f64, f64::max));
         }
     }
 }

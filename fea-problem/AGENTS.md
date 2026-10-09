@@ -15,6 +15,7 @@ Does not own: any element, solver or mesher (`fea-core`), any UI or file access 
 | Field to pixel grid (triangle fill, edges, deformed shape, 3D front face) | `src/raster.rs` |
 | Plain-text report, one-line support / load descriptions | `src/report.rs` |
 | Interference-fit bushings (`Problem::bushings`): the annulus mesh (`build::add_bushings`), the contact solve (`solve::solve_mesh_contact`), `InterfaceResult` | `src/problem.rs`, `src/build.rs`, `src/solve.rs` |
+| Natural frequencies and buckling load factors (`modal`, `buckling`, `run`, `DynSolved`) on the problem's own mesh, supports and loads | `src/dynamics.rs`, `tests/dynamics.rs` |
 | Starting problems | `src/templates.rs` |
 | Member stack -> axisymmetric FE compliance (`C = 2U/F^2`) | `src/joint.rs` |
 | Closed-form validation | `tests/problems.rs`, `tests/joint.rs` |
@@ -32,6 +33,7 @@ Does not own: any element, solver or mesher (`fea-core`), any UI or file access 
 - `Summary::notes` carries the caution the kernel documents for the elements in use (Tri3 / Tet4: constant strain, poor on pressure and bending problems).
 
 ## Pitfalls
+- `MaterialSpec::density` (serde default 0) feeds only `dynamics::modal` (consistent units: inch / psi -> lbf s^2/in^4 = weight density / 386.09); a zero density is an explained error there, never a silent massless structure. Modal and buckling refuse bushed problems (a contact problem) and axisymmetric buckling.
 - Random corpora live in `tests/sweep.rs`: linear templates and bolted-joint stacks (fast, in the default run), random bushed plates (`--ignored`, `SWEEP_SEED` / `SWEEP_N`, ~4 min for 24), `every_corpus_case_solves` over `tests/data/*.json` (each file is a problem that once failed the kernel), and `replay_one_case` (`SWEEP_CASE=path`, with `NL_TRACE` / `NL_DEBUG`). Add a failing case to `tests/data` when you fix it.
 - `Problem` derives `PartialEq` and the workbench uses it for staleness / debounce: do not add a field that changes on its own (a timestamp, a counter). `Problem::name` is part of it; `app-tui` strips it, the supports and the loads (`preview_key`) when deciding whether the mesh is still valid.
 - A node set and a surface can share a name; `named_nodes` prefers the node set, `named_faces` the surface.

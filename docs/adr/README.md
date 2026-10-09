@@ -20,3 +20,4 @@ for Sections 13 and 15.
 | [010](ADR-010-multi-index-vs-tantivy-only-architecture.md) | Multi-Index vs. Tantivy-Only Architecture | Accepted (Tantivy-only) |
 | [011](ADR-011-in-folder-index-location.md) | In-Folder Index Location | Accepted (`<SearchPath>\.native-search-index\`, by direct user direction) |
 | [012](ADR-012-general-fea-kernel.md) | General FEA kernel (`fea-core`) alongside the special-purpose solvers | Accepted (direct user direction; not part of issue #2) |
+| [013](ADR-013-eigen-and-transient-methods.md) | Eigenvalue (modal / buckling), transient and adaptive-strategy methods of `fea-core` | Accepted (direct user direction) |

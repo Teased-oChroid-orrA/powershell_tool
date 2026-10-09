@@ -20,7 +20,7 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &FeaWorkbenchSt
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(theme.border_style(focused))
-        .title(" FEA Workbench - r: solve \u{b7} v: field \u{b7} m: mesh \u{b7} x: deform \u{b7} d: details \u{b7} j: save \u{b7} o: open \u{b7} e: report \u{b7} p: .vtu \u{b7} c: .csv ");
+        .title(" FEA Workbench - r: solve \u{b7} n: frequencies \u{b7} b: buckling \u{b7} v: field \u{b7} m: mesh \u{b7} x: deform \u{b7} d: details \u{b7} j: save \u{b7} o: open \u{b7} e: report \u{b7} p: .vtu \u{b7} c: .csv ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -130,8 +130,13 @@ fn showing_result(state: &FeaWorkbenchState) -> bool {
 }
 
 fn draw_canvas(frame: &mut Frame, area: Rect, theme: &Theme, state: &FeaWorkbenchState) {
-    let result = showing_result(state);
-    let title = if result { format!(" {} ", state.field.label()) } else { " Mesh preview ".to_string() };
+    let dynamic = state.dynamic_shown();
+    let result = dynamic.is_some() || showing_result(state);
+    let title = match dynamic {
+        Some(d) => format!(" {} ", d.title(state.mode.min(d.n_modes().saturating_sub(1)))),
+        None if result => format!(" {} ", state.field.label()),
+        None => " Mesh preview ".to_string(),
+    };
     let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.border_style(false)).title(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -139,6 +144,7 @@ fn draw_canvas(frame: &mut Frame, area: Rect, theme: &Theme, state: &FeaWorkbenc
         return;
     }
     let mesh = match (result, &state.solved, &state.preview) {
+        _ if dynamic.is_some() => dynamic.map(|d| &d.model().mesh),
         (true, Some(s), _) => Some(&s.model.mesh),
         (_, _, Some(p)) => Some(&p.mesh),
         _ => None,
@@ -152,10 +158,24 @@ fn draw_canvas(frame: &mut Frame, area: Rect, theme: &Theme, state: &FeaWorkbenc
     let canvas_area = Rect { height: inner.height - 1, ..inner };
     let legend_area = Rect { y: inner.y + inner.height - 1, height: 1, ..inner };
     let (w, h) = canvas::pixel_size(canvas_area);
-    let key = RasterKey { w, h, field: result.then_some(state.field), deform: state.deform && result, source: state.source };
+    let mode = dynamic.map(|d| state.mode.min(d.n_modes().saturating_sub(1)));
+    let key = RasterKey { w, h, field: (result && dynamic.is_none()).then_some(state.field), deform: state.deform && result, mode, source: state.source };
     let mut cache = state.raster.borrow_mut();
     if cache.as_ref().is_none_or(|(k, _)| *k != key) {
         let raster = match (result, &state.solved) {
+            _ if dynamic.is_some() => {
+                let d = dynamic.expect("checked");
+                let i = mode.unwrap_or(0);
+                let values = d.magnitude(i);
+                let shape = d.shape(i);
+                let deform = key.deform.then(|| {
+                    let (lo, hi) = mesh.nodes.iter().fold(([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]), |(lo, hi), x| (std::array::from_fn(|i| lo[i].min(x[i])), std::array::from_fn(|i| hi[i].max(x[i]))));
+                    let extent = (0..mesh.dim()).map(|i| hi[i] - lo[i]).fold(0.0f64, f64::max);
+                    let umax = values.iter().cloned().fold(0.0f64, f64::max);
+                    (shape, if umax > 0.0 { 0.1 * extent / umax } else { 0.0 })
+                });
+                rasterize(mesh, Some(&values), deform, w, h)
+            }
             (true, Some(s)) => {
                 let values = s.node_values(state.field);
                 let deform = key.deform.then(|| {
@@ -206,6 +226,22 @@ pub fn readout_lines<'a>(theme: &Theme, state: &FeaWorkbenchState) -> Vec<Line<'
     }
     if let Some(secs) = state.solving() {
         lines.push(tone(StatusTone::Info, format!("\u{2026} solving ({secs:.1} s)")));
+    }
+    if let Some(secs) = state.analysing() {
+        lines.push(tone(StatusTone::Info, format!("\u{2026} computing modes ({secs:.1} s)")));
+    }
+    if let Some(e) = &state.dyn_error {
+        lines.push(tone(StatusTone::Danger, format!("\u{2717} {e}")));
+    }
+    if let Some(d) = state.dynamic.as_deref() {
+        if d.problem() != &state.problem {
+            lines.push(tone(StatusTone::Warning, "The inputs changed since the modes were computed (n / b computes again).".to_string()));
+        } else {
+            for (i, l) in d.lines().into_iter().enumerate() {
+                lines.push(if i == 0 { Line::from(Span::styled(l, theme.title_style(false))) } else { Line::from(l) });
+            }
+            lines.push(Line::from(Span::styled(format!("[ ] pick the mode drawn (now {}); x deforms the shape; r returns to the static result", state.mode + 1), theme.disabled_style())));
+        }
     }
     if let Some(e) = &state.preview_error {
         lines.push(tone(StatusTone::Danger, format!("\u{2717} {e}")));

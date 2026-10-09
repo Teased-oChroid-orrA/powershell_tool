@@ -149,6 +149,8 @@ pub enum AppEvent {
     FeaPreviewFinished { id: u64, result: Box<Result<fea_core::Mesh, String>> },
     /// A worker finished FEA Workbench solve `id` (`Effect::RunFeaSolve`).
     FeaSolveFinished { id: u64, result: Box<Result<fea_problem::Solved, String>> },
+    /// A worker finished FEA Workbench natural-frequency / buckling run `id` (`Effect::RunFeaDynamic`).
+    FeaDynamicFinished { id: u64, result: Box<Result<fea_problem::dynamics::DynSolved, String>> },
     /// A file read requested by `Effect::ReadTextFile` finished.
     TextFileRead { purpose: fea_workbench::FilePurpose, path: String, result: Result<String, String> },
     /// A write requested by `Effect::WriteTextFile` finished.
@@ -212,6 +214,8 @@ pub enum Effect {
     RunFeaPreview { id: u64, problem: Box<fea_problem::Problem>, import_text: Option<String> },
     /// Solve a FEA Workbench problem on a worker; reports back with `AppEvent::FeaSolveFinished`.
     RunFeaSolve { id: u64, problem: Box<fea_problem::Problem>, import_text: Option<String> },
+    /// Natural frequencies or buckling load factors of a FEA Workbench problem on a worker; reports back with `AppEvent::FeaDynamicFinished`.
+    RunFeaDynamic { id: u64, problem: Box<fea_problem::Problem>, import_text: Option<String>, kind: fea_problem::dynamics::DynKind, n_modes: usize },
     /// Writes `contents` to `path` (creating the folder) without opening it; reports back with `AppEvent::TextFileWritten`.
     WriteTextFile { path: String, contents: String },
     /// Reads the text file at `path` for `purpose`; reports back with `AppEvent::TextFileRead`.
@@ -383,6 +387,10 @@ pub fn handle_event(state: &mut AppState, event: AppEvent) -> Vec<Effect> {
         }
         AppEvent::FeaSolveFinished { id, result } => {
             state.fea_workbench.finish_solve(id, *result);
+            Vec::new()
+        }
+        AppEvent::FeaDynamicFinished { id, result } => {
+            state.fea_workbench.finish_dynamic(id, *result);
             Vec::new()
         }
         AppEvent::TextFileRead { purpose, path, result } => {

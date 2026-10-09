@@ -16,6 +16,7 @@ use std::time::Instant;
 pub type GaussStress = ([f64; 3], [f64; 6]);
 
 /// A mesh with its (reusable) sparsity pattern.
+#[derive(Clone)]
 pub struct Model {
     pub mesh: Mesh,
     pub pattern: Arc<Pattern>,
@@ -36,13 +37,24 @@ pub enum SolveMethod {
     Direct,
     /// Conjugate gradients preconditioned by smoothed-aggregation multigrid with rigid-body modes.
     Iterative { tol: f64, max_iter: usize },
-    /// Direct, except for 3D systems above [`AUTO_ITERATIVE_DOFS`] free dofs.
+    /// Direct, except where the iterative solver is predicted to be faster: a 3D system whose Cholesky factor would hold
+    /// [`AUTO_ITERATIVE_FACTOR_NNZ`] entries or more (the symbolic analysis is exact and cheap next to the factorisation), or
+    /// above [`AUTO_ITERATIVE_DOFS`] free dofs whatever the factor. An iterative solve that fails is repeated directly
+    /// (`Solution::fallback` says so).
     Auto,
 }
 
 /// Free dofs above which a 3D model is solved iteratively under [`SolveMethod::Auto`] (the
 /// factorization of a 3D system grows like `n^2` in flops and `n^{4/3}` in memory).
 pub const AUTO_ITERATIVE_DOFS: usize = 150_000;
+
+/// Factor size from which `Auto` prefers PCG + AMG in 3D. Measured (`tests/bench.rs::iterative_against_direct_on_large_hex_models`,
+/// Apple M1, 8 threads, parallel factorisation): equal at ~12M entries (Hex8 18^3), AMG 1.6x faster at 39M (Hex8 24^3), 3.6x
+/// at 125M, 6x at 310M; for quadratic elements (more AMG iterations) equal at 49M (Hex20 14^3), 2x at 205M.
+pub const AUTO_ITERATIVE_FACTOR_NNZ: usize = 60_000_000;
+
+/// Free dofs below which `Auto` does not analyse the factor at all (a 3D system this small factors in well under a second).
+pub const AUTO_ANALYSE_DOFS: usize = 20_000;
 
 impl SolveMethod {
     /// The default iterative settings: relative residual `1e-10`.
@@ -60,6 +72,7 @@ impl SolveMethod {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Solution {
     /// Displacements `node * d + comp`.
     pub u: Vec<f64>,
@@ -69,6 +82,28 @@ pub struct Solution {
     pub timings: Timings,
     /// Conjugate-gradient iterations (iterative solves only).
     pub iterations: Option<usize>,
+    /// The method that actually ran (`Auto` resolved).
+    pub method: SolveMethod,
+    /// A-posteriori check of the solve: `|K_ff u_f - f_f| / |f_f|` over the free dofs (with the prescribed values
+    /// moved to the right-hand side). Round-off level (1e-12 or so) for a sound direct solve; a larger value
+    /// exposes an ill-conditioned or inconsistent system whatever the solver reported.
+    pub rel_residual: f64,
+    /// Entries of the Cholesky factor (`0` for the iterative path): the memory / flop proxy of the strategy.
+    pub factor_nnz: usize,
+    /// Why the iterative solve `Auto` chose was replaced by the direct one (`None`: nothing was replaced).
+    pub fallback: Option<String>,
+}
+
+/// `|r_free| / |f_free|` of the residual `r = K u - f`.
+fn free_relative_residual(r: &[f64], f: &[f64], fixed: &[bool]) -> f64 {
+    let (mut rn, mut fnorm) = (0.0f64, 0.0f64);
+    for i in 0..r.len() {
+        if !fixed[i] {
+            rn += r[i] * r[i];
+            fnorm += f[i] * f[i];
+        }
+    }
+    rn.sqrt() / fnorm.sqrt().max(1e-300)
 }
 
 impl Model {
@@ -219,8 +254,35 @@ impl Model {
     /// Linear static solve with an explicit method.
     pub fn solve_static_with(&self, loads: &Loads, bc: &Dirichlet, method: SolveMethod) -> Result<Solution, String> {
         self.check_constrained(bc)?;
-        match method.resolve(self.mesh.dim(), self.mesh.n_dofs() - bc.n_fixed()) {
-            SolveMethod::Iterative { tol, max_iter } => self.solve_iterative(loads, bc, tol, max_iter),
+        let (dim, n_free) = (self.mesh.dim(), self.mesh.n_dofs() - bc.n_fixed());
+        let auto = method == SolveMethod::Auto;
+        // Iterative, but with the direct solve as the reference to fall back on when `Auto` chose it.
+        let iterative = |tol: f64, max_iter: usize| -> Result<Solution, String> {
+            let attempt = self.solve_iterative(loads, bc, tol, max_iter);
+            match attempt {
+                Ok(s) if !auto || s.rel_residual <= 1e-8 => Ok(s),
+                Ok(s) => self.solve_direct_many(std::slice::from_ref(loads), bc, None).map(|mut v| {
+                    v[0].fallback = Some(format!("the iterative solve left a residual of {:.1e}", s.rel_residual));
+                    v.remove(0)
+                }),
+                Err(e) if auto => self.solve_direct_many(std::slice::from_ref(loads), bc, None).map(|mut v| {
+                    v[0].fallback = Some(format!("the iterative solve failed: {e}"));
+                    v.remove(0)
+                }),
+                Err(e) => Err(e),
+            }
+        };
+        match method.resolve(dim, n_free) {
+            SolveMethod::Iterative { tol, max_iter } => iterative(tol, max_iter),
+            _ if auto && dim == 3 && n_free >= AUTO_ANALYSE_DOFS => {
+                let red = Reduced::with_ordering(&self.pattern, bc, Some(&self.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?;
+                if red.factor_nnz() >= AUTO_ITERATIVE_FACTOR_NNZ {
+                    let SolveMethod::Iterative { tol, max_iter } = SolveMethod::iterative() else { unreachable!() };
+                    iterative(tol, max_iter)
+                } else {
+                    self.solve_direct_many(std::slice::from_ref(loads), bc, Some(red)).map(|mut v| v.remove(0))
+                }
+            }
             _ => self.solve_direct(loads, bc),
         }
     }
@@ -248,12 +310,13 @@ impl Model {
         red.scatter(&x, &mut u);
         t.solve_ms = clock.elapsed().as_secs_f64() * 1e3;
         let mut reactions = residual(&k, &self.pattern, &u, &f);
+        let rel_residual = free_relative_residual(&reactions, &f, &bc.fixed);
         for (r, fx) in reactions.iter_mut().zip(&bc.fixed) {
             if !fx {
                 *r = 0.0;
             }
         }
-        Ok(Solution { u, reactions, n_free: red.n_free(), timings: t, iterations: Some(rep.iterations) })
+        Ok(Solution { u, reactions, n_free: red.n_free(), timings: t, iterations: Some(rep.iterations), method: SolveMethod::Iterative { tol, max_iter }, rel_residual, factor_nnz: 0, fallback: None })
     }
 
     /// Node grouping of the reduced dofs and the rigid-body near-null space (row major, `nb`
@@ -308,7 +371,7 @@ impl Model {
     }
 
     fn solve_direct(&self, loads: &Loads, bc: &Dirichlet) -> Result<Solution, String> {
-        let mut v = self.solve_direct_many(std::slice::from_ref(loads), bc)?;
+        let mut v = self.solve_direct_many(std::slice::from_ref(loads), bc, None)?;
         Ok(v.remove(0))
     }
 
@@ -317,16 +380,20 @@ impl Model {
     /// carries the shared assembly / factorisation time (the others only their own solve time).
     pub fn solve_static_many(&self, cases: &[Loads], bc: &Dirichlet) -> Result<Vec<Solution>, String> {
         self.check_constrained(bc)?;
-        self.solve_direct_many(cases, bc)
+        self.solve_direct_many(cases, bc, None)
     }
 
-    fn solve_direct_many(&self, cases: &[Loads], bc: &Dirichlet) -> Result<Vec<Solution>, String> {
+    /// `red`: the symbolic analysis when the caller already made it (its time is then not counted in `symbolic_ms`).
+    fn solve_direct_many(&self, cases: &[Loads], bc: &Dirichlet, red: Option<Reduced>) -> Result<Vec<Solution>, String> {
         let mut shared = Timings::default();
         let clock = Instant::now();
         let k = self.assemble()?;
         shared.assemble_ms = clock.elapsed().as_secs_f64() * 1e3;
         let clock = Instant::now();
-        let red = Reduced::with_ordering(&self.pattern, bc, Some(&self.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?;
+        let red = match red {
+            Some(r) => r,
+            None => Reduced::with_ordering(&self.pattern, bc, Some(&self.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?,
+        };
         shared.symbolic_ms = clock.elapsed().as_secs_f64() * 1e3;
         let clock = Instant::now();
         let fac = red.factor(&k).map_err(|e| e.to_string())?;
@@ -339,12 +406,13 @@ impl Model {
             let u = fac.solve(&k, &f, bc);
             t.solve_ms = clock.elapsed().as_secs_f64() * 1e3;
             let mut reactions = residual(&k, &self.pattern, &u, &f);
+            let rel_residual = free_relative_residual(&reactions, &f, &bc.fixed);
             for (r, fx) in reactions.iter_mut().zip(&bc.fixed) {
                 if !fx {
                     *r = 0.0;
                 }
             }
-            out.push(Solution { u, reactions, n_free: red.n_free(), timings: t, iterations: None });
+            out.push(Solution { u, reactions, n_free: red.n_free(), timings: t, iterations: None, method: SolveMethod::Direct, rel_residual, factor_nnz: red.factor_nnz(), fallback: None });
         }
         Ok(out)
     }
@@ -361,6 +429,12 @@ impl Model {
     /// `[block][element * ngp + g] -> (physical position, stress)`; stress components in the order
     /// of [`kernel::strain_at`].
     pub fn gauss_stresses(&self, u: &[f64], delta_t: f64) -> Result<Vec<Vec<GaussStress>>, String> {
+        self.gauss_stresses_field(u, delta_t, None)
+    }
+
+    /// As [`gauss_stresses`](Self::gauss_stresses) with a nodal temperature field (`Loads::temperature`) on top of the
+    /// uniform `delta_t`: the thermal strain is that of the temperature interpolated to each Gauss point.
+    pub fn gauss_stresses_field(&self, u: &[f64], delta_t: f64, field: Option<&[f64]>) -> Result<Vec<Vec<GaussStress>>, String> {
         let d = self.mesh.dim();
         let mut work = Work::new();
         let mut out = Vec::new();
@@ -378,6 +452,10 @@ impl Model {
                     }
                 }
                 kernel::geometry(blk.kind, self.mesh.physics, &xyz, &mut work).map_err(|e| e.to_string())?;
+                let gauss_t: Vec<f64> = match field {
+                    Some(tf) => kernel::gauss_temperatures(blk.kind, &conn.iter().map(|&n| tf[n]).collect::<Vec<_>>()),
+                    None => vec![0.0; t.ngp],
+                };
                 for g in 0..t.ngp {
                     let n = t.n_at(g);
                     let mut pos = [0.0; 3];
@@ -387,7 +465,7 @@ impl Model {
                         }
                     }
                     let strain = kernel::strain_at(blk.kind, self.mesh.physics, &work, g, &ue);
-                    v.push((pos, kernel::stress_from_strain(self.mesh.physics, &blk.material, strain, delta_t)));
+                    v.push((pos, kernel::stress_from_strain(self.mesh.physics, &blk.material, strain, delta_t + gauss_t[g])));
                 }
             }
             out.push(v);
@@ -398,6 +476,11 @@ impl Model {
     /// Nodal stress: the stress of each element evaluated at its nodes, averaged over the
     /// elements that share the node.
     pub fn nodal_stresses(&self, u: &[f64], delta_t: f64) -> Result<Vec<[f64; 6]>, String> {
+        self.nodal_stresses_field(u, delta_t, None)
+    }
+
+    /// As [`nodal_stresses`](Self::nodal_stresses) with a nodal temperature field.
+    pub fn nodal_stresses_field(&self, u: &[f64], delta_t: f64, field: Option<&[f64]>) -> Result<Vec<[f64; 6]>, String> {
         let d = self.mesh.dim();
         let n = self.mesh.nodes.len();
         let mut sum = vec![[0.0f64; 6]; n];
@@ -416,7 +499,7 @@ impl Model {
                 }
                 for (a, &nd) in conn.iter().enumerate() {
                     // Gradients at node `a` itself: build a one-point table on the fly.
-                    let s = node_stress(kind, self.mesh.physics, &blk.material, &xyz, &ue, a, delta_t)?;
+                    let s = node_stress(kind, self.mesh.physics, &blk.material, &xyz, &ue, a, delta_t + field.map_or(0.0, |tf| tf[nd]))?;
                     for c in 0..6 {
                         sum[nd][c] += s[c];
                     }
@@ -510,7 +593,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn auto_goes_iterative_only_for_large_3d_systems() {
+    fn auto_goes_iterative_without_looking_only_for_huge_3d_systems() {
         assert_eq!(SolveMethod::Auto.resolve(3, AUTO_ITERATIVE_DOFS), SolveMethod::Direct);
         assert_eq!(SolveMethod::Auto.resolve(3, AUTO_ITERATIVE_DOFS + 1), SolveMethod::iterative());
         assert_eq!(SolveMethod::Auto.resolve(2, 10 * AUTO_ITERATIVE_DOFS), SolveMethod::Direct, "2D factorizations stay cheap");

@@ -37,7 +37,19 @@ struct Case {
     nu: f64,
 }
 
-fn run(c: &Case) -> Result<(), String> {
+/// Cost of one converged case: dofs, factorisations, wall time.
+#[derive(Debug, Clone, Copy)]
+struct Cost {
+    dofs: usize,
+    factorisations: usize,
+    ms: f64,
+}
+
+fn run(c: &Case) -> Result<Cost, String> {
+    run_with(c, Tuning::friction())
+}
+
+fn run_with(c: &Case, tune: Tuning) -> Result<Cost, String> {
     let side = 1.5;
     let (kind, physics, e3) = if c.dim == 2 { (ElementKind::Quad9, Physics::PlaneStrain { thickness: 1.0 }, 1usize) } else { (ElementKind::Hex27, Physics::Solid, 2usize) };
     let block = |n: usize, z0: f64, e: f64| grid(physics, kind, Elastic::new(e, c.nu), [n, if c.dim == 2 { 2 } else { n.min(2) }, e3], &move |p| if c.dim == 2 { [side * p[0], z0 + p[1], 0.0] } else { [side * p[0], side * p[1], z0 + 0.6 * p[2]] });
@@ -75,7 +87,6 @@ fn run(c: &Case) -> Result<(), String> {
     let ground: Vec<(usize, f64)> = (n_bottom..model.mesh.nodes.len()).flat_map(|n| (0..c.dim - 1).map(move |i| (n * c.dim + i, k))).collect();
     let loads = Loads { ground, ..loads };
     let (lo, hi) = (model.mesh.surfaces[face_lo].clone(), model.mesh.surfaces[face_hi].clone());
-    let tune = Tuning::friction();
     let eps_n = tune.eps_n(c.e[0].min(c.e[1]), 0.5);
     let spec = if c.slave_is_bottom { ContactSpec::deformable("interface", lo, hi, eps_n) } else { ContactSpec::deformable("interface", hi, lo, eps_n) };
     // Start engaged, as an interference fit does (a zero-gap start leaves the shear direction held by weak springs alone).
@@ -93,12 +104,12 @@ fn run(c: &Case) -> Result<(), String> {
     if (tang - want_t).abs() > 2e-2 * want_n * c.mu {
         return Err(format!("shear carried {tang} vs {want_t}"));
     }
-    Ok(())
+    Ok(Cost { dofs: model.mesh.n_dofs(), factorisations: sol.factorisations, ms: sol.elapsed_ms })
 }
 
-/// `max_shear` bounds the share of the friction limit the applied shear takes in 3D (2D takes up to 0.8 everywhere): above
-/// ~0.4 the 3D interface is mostly at its friction limit, which Newton does not converge in ~8 % of random cases (see
-/// `partial_slip_3d_measurement`, `fea-core/AGENTS.md`).
+/// `max_shear_3d` bounds the share of the friction limit the applied shear takes in 3D (2D takes up to 0.8 everywhere). Above
+/// ~0.4 the 3D interface is mostly at its friction limit; plain defect refinement of the frictional Newton step diverged there
+/// (8 of 24 random cases failed), the GMRES solve of `Ctx::refine_consistent` converges them all (`partial_slip_3d_measurement`).
 fn sweep(seed: u64, n: usize, max_shear_3d: f64) {
     let mut rng = Rng(seed);
     let mut failures = Vec::new();
@@ -119,22 +130,23 @@ fn sweep(seed: u64, n: usize, max_shear_3d: f64) {
 
 #[test]
 fn random_stacked_blocks_stick_under_shear() {
-    sweep(3, 14, 0.4);
+    sweep(3, 14, 0.8);
 }
 
 #[test]
 #[ignore = "slow soak: run with --ignored"]
 fn random_stacked_blocks_stick_under_shear_soak() {
-    sweep(99, 60, 0.4);
+    sweep(99, 60, 0.8);
 }
 
 
 
 
 
-/// Measurement, not a gate: the share of random 3D cases sheared to 0.4-0.8 of the friction limit that fail to converge.
+/// The 3D partial-slip regression: random cases sheared to 0.4-0.8 of the friction limit must all converge (8 of 24 failed
+/// before the preconditioned-GMRES step; `--ignored` because of its 1 minute cost).
 #[test]
-#[ignore = "measurement: run with --ignored --nocapture"]
+#[ignore = "slow (about a minute): run with --ignored"]
 fn partial_slip_3d_measurement() {
     let mut rng = Rng(7);
     let (mut failed, mut total) = (0, 0);
@@ -147,4 +159,62 @@ fn partial_slip_3d_measurement() {
         }
     }
     eprintln!("3D partial slip: {failed} of {total} failed");
+    assert_eq!(failed, 0, "3D partial slip regressed");
+}
+
+/// Speed baseline of the contact solve (timings, not assertions): fixed stacked-block cases, 2D and 3D, matching and
+/// non-matching meshes. `cargo test -p fea-core --release --test contact_sweep contact_speed_baseline -- --ignored --nocapture`
+/// (add `NL_PROFILE=1` for the evaluation / factorisation / solve split). Recorded in `docs/fea-core.md` Phase 11.
+#[test]
+#[ignore = "measurement: run with --ignored --nocapture"]
+fn contact_speed_baseline() {
+    let cases = [
+        Case { dim: 2, div: [6, 6], slave_is_bottom: true, mu: 0.3, q: 2e4, shear: 0.5, e: [1e7, 2e7], nu: 0.3 },
+        Case { dim: 2, div: [6, 5], slave_is_bottom: false, mu: 0.3, q: 2e4, shear: 0.5, e: [1e7, 2e7], nu: 0.3 },
+        Case { dim: 3, div: [3, 3], slave_is_bottom: true, mu: 0.3, q: 2e4, shear: 0.3, e: [1e7, 2e7], nu: 0.3 },
+        Case { dim: 3, div: [3, 2], slave_is_bottom: false, mu: 0.3, q: 2e4, shear: 0.3, e: [1e7, 2e7], nu: 0.3 },
+    ];
+    for c in &cases {
+        let best = (0..3).map(|_| run(c).unwrap()).min_by(|a, b| a.ms.total_cmp(&b.ms)).unwrap();
+        eprintln!("BENCH contact {}D div {:?} {:>6} dofs {:>3} factorisations {:>8.1} ms", c.dim, c.div, best.dofs, best.factorisations, best.ms);
+    }
+}
+
+/// Which `Tuning` preset a frictional stacked-block problem needs, measured over random cases (the experiment behind the
+/// decision about a learned strategy prior, `docs/fea-core.md` Phase 11): pass count and total time per preset.
+#[test]
+#[ignore = "measurement: run with --ignored --nocapture"]
+fn tuning_preset_measurement() {
+    let mut rng = Rng(2026);
+    let cases: Vec<Case> = (0..60)
+        .map(|_| {
+            let dim = if rng.next() < 0.5 { 2 } else { 3 };
+            let m = if dim == 2 { 6 } else { 3 };
+            Case { dim, div: [rng.int(1, m), rng.int(1, m)], slave_is_bottom: rng.next() < 0.5, mu: rng.range(0.1, 0.5), q: rng.range(1e3, 5e4), shear: rng.range(0.0, 0.8), e: [rng.range(5e6, 3e7), rng.range(5e6, 3e7)], nu: rng.range(0.2, 0.4) }
+        })
+        .collect();
+    let presets = [("frictionless", Tuning::frictionless()), ("friction", Tuning::friction())]; // (`reference` tightens the Newton tolerance to 1e-9, which frictional chatter cannot reach: it burns every step cut)
+    for (name, t) in presets {
+        let (mut ok, mut ms, mut fac) = (0, 0.0, 0);
+        for c in &cases {
+            match run_with(c, t) {
+                Ok(cost) => {
+                    ok += 1;
+                    ms += cost.ms;
+                    fac += cost.factorisations;
+                }
+                Err(e) => eprintln!("  {name} fails on {c:?}: {e}"),
+            }
+        }
+        eprintln!("PRESET {name:<13} {ok:>2} of {} pass, {ms:>8.0} ms, {fac:>5} factorisations", cases.len());
+    }
+}
+
+/// Found by `tuning_preset_measurement`: the standard frictional preset stagnates on this 2D case (shear 0.61 of the
+/// friction limit, the stiffer body on top) where the soft preset converges.
+#[test]
+#[ignore = "manual replay: run with --ignored --nocapture and NL_TRACE / NL_DEBUG"]
+fn replay_stagnating_friction_case() {
+    let c = Case { dim: 2, div: [3, 3], slave_is_bottom: false, mu: 0.3757327117221081, q: 7146.738229386764, shear: 0.6124697478944268, e: [18553878.881065063, 27766769.826461133], nu: 0.3658527796499168 };
+    run(&c).unwrap();
 }

@@ -329,7 +329,7 @@ fn transmitted(inp: &Inputs, pts: &[Pt]) -> Result<(), String> {
     let normal: f64 = pts.iter().map(|q| q.p * q.w).sum();
     let carried = net[0] * phi.cos() + net[1] * phi.sin();
     if (carried - inp.load_lbf).abs() > 0.05 * inp.load_lbf + 4e-3 * normal {
-        return Err(format!("the pin load was not transmitted to the bushing ({carried:.1} of {:.1} lbf): the solution is not an equilibrium of the loaded pin", inp.load_lbf));
+        return Err(format!("the pin load was not transmitted to the bushing ({carried:.3} of {:.3} lbf, fit force {normal:.3}): the solution is not an equilibrium of the loaded pin", inp.load_lbf));
     }
     Ok(())
 }

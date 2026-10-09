@@ -250,6 +250,13 @@ fn execute_effect(tx: &mpsc::UnboundedSender<AppEvent>, state: &mut AppState, ef
                 let _ = tx.send(AppEvent::FeaSolveFinished { id, result: Box::new(result) });
             });
         }
+        Effect::RunFeaDynamic { id, problem, import_text, kind, n_modes } => {
+            let tx = tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fea_problem::dynamics::run(kind, &problem, import_text.as_deref(), n_modes))).unwrap_or_else(|_| Err("the solver stopped unexpectedly".to_string()));
+                let _ = tx.send(AppEvent::FeaDynamicFinished { id, result: Box::new(result) });
+            });
+        }
         Effect::WriteTextFile { path, contents } => {
             let tx = tx.clone();
             tokio::task::spawn_blocking(move || {

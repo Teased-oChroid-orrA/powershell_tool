@@ -23,6 +23,7 @@ fn run_effects(s: &mut FeaWorkbenchState, effects: Vec<Effect>) {
         match e {
             Effect::RunFeaPreview { id, problem, import_text } => s.finish_preview(id, fea_problem::solve::preview(&problem, import_text.as_deref())),
             Effect::RunFeaSolve { id, problem, import_text } => s.finish_solve(id, fea_problem::solve(&problem, import_text.as_deref())),
+            Effect::RunFeaDynamic { id, problem, import_text, kind, n_modes } => s.finish_dynamic(id, fea_problem::dynamics::run(kind, &problem, import_text.as_deref(), n_modes)),
             other => panic!("unexpected effect {other:?}"),
         }
     }
@@ -340,4 +341,49 @@ fn a_bushing_is_added_edited_and_dropped_with_its_hole_and_a_bushed_problem_is_n
     select(&mut s, FieldRow::HoleRemove(0));
     handle_key(&mut s, key(KeyCode::Char(' ')));
     assert!(s.problem.bushings.is_empty());
+}
+
+#[test]
+fn natural_frequencies_run_on_a_worker_and_a_mode_is_drawn() {
+    let mut s = FeaWorkbenchState::default();
+    let e = s.tick();
+    run_effects(&mut s, e);
+    // The default template is a plate with a hole; its steel material carries a density.
+    let (consumed, effects) = handle_key(&mut s, key(KeyCode::Char('n')));
+    assert!(consumed && matches!(effects.as_slice(), [Effect::RunFeaDynamic { .. }]), "{effects:?}");
+    // A second request while one runs does nothing.
+    assert!(handle_key(&mut s, key(KeyCode::Char('n'))).1.is_empty());
+    assert!(s.analysing().is_some());
+    run_effects(&mut s, effects);
+    assert!(s.analysing().is_none());
+    // Plate with a hole has a roller + point support: a mechanism-free plane model, so modes exist or an explained error does.
+    match (s.dynamic.as_ref().map(|d| d.n_modes()), s.dyn_error.clone()) {
+        (Some(n_modes), None) => {
+            assert!(n_modes > 0 && s.dynamic_shown().is_some());
+            let first = s.mode;
+            handle_key(&mut s, key(KeyCode::Char(']')));
+            assert_eq!(s.mode, (first + 1) % n_modes);
+            handle_key(&mut s, key(KeyCode::Char('[')));
+            assert_eq!(s.mode, first);
+            // Editing an input makes the result stale (no longer shown) without discarding it.
+            s.problem.material.e *= 1.1;
+            assert!(s.dynamic_shown().is_none());
+            // r returns to the static result display.
+            s.show_dynamic = true;
+            handle_key(&mut s, key(KeyCode::Char('r')));
+            assert!(!s.show_dynamic);
+        }
+        (_, Some(e)) => assert!(!e.is_empty()),
+        _ => panic!("neither a result nor an error"),
+    }
+}
+
+#[test]
+fn buckling_without_a_density_still_runs_and_frequencies_explain_the_missing_density() {
+    let mut s = FeaWorkbenchState::default();
+    s.problem.material.density = 0.0;
+    let e = handle_key(&mut s, key(KeyCode::Char('n'))).1;
+    run_effects(&mut s, e);
+    assert!(s.dyn_error.as_deref().is_some_and(|m| m.contains("density")), "{:?}", s.dyn_error);
+    assert!(s.dynamic.is_none());
 }

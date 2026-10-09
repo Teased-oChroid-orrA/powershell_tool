@@ -86,6 +86,10 @@ pub struct MaterialSpec {
     pub alpha: f64,
     #[serde(default)]
     pub yield_stress: Option<f64>,
+    /// Mass density (mass per volume, in the problem's consistent units: with inch / psi, lbf s^2 / in^4 = weight density / 386.09).
+    /// Only the natural-frequency analysis uses it; `0` = not given.
+    #[serde(default)]
+    pub density: f64,
 }
 
 impl MaterialSpec {

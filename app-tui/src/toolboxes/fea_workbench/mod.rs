@@ -17,6 +17,7 @@ use std::cell::RefCell;
 use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use fea_problem::dynamics::{DynKind, DynSolved};
 use fea_problem::raster::Raster;
 use fea_problem::templates::templates;
 use fea_problem::{Field, Geometry, Problem, Solved, Support};
@@ -67,6 +68,8 @@ pub(crate) struct RasterKey {
     pub h: usize,
     pub field: Option<Field>,
     pub deform: bool,
+    /// Mode drawn (natural-frequency / buckling run) instead of a result field.
+    pub mode: Option<usize>,
     pub source: u64,
 }
 
@@ -92,6 +95,14 @@ pub struct FeaWorkbenchState {
     solve_job: Option<Job>,
     /// Inputs the last failed solve was for: not retried until an edit.
     failed_sig: Option<Problem>,
+    /// Natural frequencies / buckling load factors of the inputs they were computed for (keys `n`, `b`).
+    pub dynamic: Option<Box<DynSolved>>,
+    pub dyn_error: Option<String>,
+    dyn_job: Option<Job>,
+    /// Whether the canvas and readout show the dynamic result (while it still belongs to the inputs).
+    pub show_dynamic: bool,
+    /// Mode drawn on the canvas.
+    pub mode: usize,
     pub auto_solve: bool,
     pub field: Field,
     pub show_mesh: bool,
@@ -131,6 +142,11 @@ impl FeaWorkbenchState {
             solve_error: None,
             solve_job: None,
             failed_sig: None,
+            dynamic: None,
+            dyn_error: None,
+            dyn_job: None,
+            show_dynamic: false,
+            mode: 0,
             auto_solve: true,
             field: Field::VonMises,
             show_mesh: true,
@@ -473,6 +489,61 @@ impl FeaWorkbenchState {
         vec![Effect::RunFeaSolve { id, problem: Box::new(sig), import_text }]
     }
 
+    /// Start natural frequencies (`Modal`) or buckling load factors (`Buckling`) of the current inputs (keys `n`, `b`).
+    pub fn start_dynamic(&mut self, kind: DynKind) -> Vec<Effect> {
+        if self.dyn_job.is_some() {
+            return Vec::new();
+        }
+        let sig = self.problem.clone();
+        if let Err(e) = sig.validate() {
+            self.dyn_error = Some(e);
+            return Vec::new();
+        }
+        let import_text = self.import_text();
+        if matches!(sig.geometry, Geometry::Imported { .. }) && import_text.is_none() {
+            self.dyn_error = Some("read a mesh file first".into());
+            return Vec::new();
+        }
+        let id = self.take_job_id();
+        self.dyn_job = Some(Job { id, sig: sig.clone(), started: Instant::now() });
+        self.dyn_error = None;
+        vec![Effect::RunFeaDynamic { id, problem: Box::new(sig), import_text, kind, n_modes: if kind == DynKind::Modal { 6 } else { 3 } }]
+    }
+
+    pub fn finish_dynamic(&mut self, id: u64, result: Result<DynSolved, String>) {
+        if self.dyn_job.take_if(|j| j.id == id).is_none() {
+            return;
+        }
+        match result {
+            Ok(d) => {
+                self.dynamic = Some(Box::new(d));
+                self.dyn_error = None;
+                self.show_dynamic = true;
+                self.mode = 0;
+                self.source += 1;
+            }
+            Err(e) => self.dyn_error = Some(e),
+        }
+    }
+
+    /// Installs a dynamic result as if a worker had returned it (render tests).
+    #[doc(hidden)]
+    pub fn finish_dynamic_for_test(&mut self, d: DynSolved) {
+        self.dynamic = Some(Box::new(d));
+        self.show_dynamic = true;
+        self.mode = 0;
+        self.source += 1;
+    }
+
+    pub fn analysing(&self) -> Option<f64> {
+        self.dyn_job.as_ref().map(|j| j.started.elapsed().as_secs_f64())
+    }
+
+    /// The dynamic result, when it belongs to the current inputs and is the one on display.
+    pub fn dynamic_shown(&self) -> Option<&DynSolved> {
+        self.dynamic.as_deref().filter(|d| self.show_dynamic && d.problem() == &self.problem)
+    }
+
     pub fn finish_preview(&mut self, id: u64, result: Result<fea_core::Mesh, String>) {
         let Some(job) = self.preview_job.take_if(|j| j.id == id) else { return };
         match result {
@@ -674,7 +745,13 @@ pub fn handle_key(state: &mut FeaWorkbenchState, key: KeyEvent) -> (bool, Vec<Ef
             (true, Vec::new())
         }
         KeyCode::Char(c) if !ctrl => match c.to_ascii_lowercase() {
-            'r' => (true, state.start_solve()),
+            'r' => {
+                state.show_dynamic = false;
+                state.source += 1;
+                (true, state.start_solve())
+            }
+            'n' => (true, state.start_dynamic(DynKind::Modal)),
+            'b' => (true, state.start_dynamic(DynKind::Buckling)),
             'a' => {
                 state.auto_solve = !state.auto_solve;
                 (true, Vec::new())
@@ -687,6 +764,14 @@ pub fn handle_key(state: &mut FeaWorkbenchState, key: KeyEvent) -> (bool, Vec<Ef
             }
             'm' => {
                 state.show_mesh = !state.show_mesh;
+                (true, Vec::new())
+            }
+            '[' | ']' => {
+                if let Some(n) = state.dynamic.as_ref().map(|d| d.n_modes()).filter(|n| *n > 0) {
+                    state.mode = if c == ']' { (state.mode + 1) % n } else { (state.mode + n - 1) % n };
+                    state.show_dynamic = true;
+                    state.source += 1;
+                }
                 (true, Vec::new())
             }
             'x' => {

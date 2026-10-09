@@ -87,6 +87,27 @@ fn parallelism_for(n: usize) -> Par {
     }
 }
 
+/// Entries of the Cholesky factor below which the numeric factorisation runs sequentially. The work of a factorisation is
+/// a function of the factor and of the dimension, not of the number of unknowns: the elimination tree of a 2D mesh is
+/// thin (little to run in parallel: a 20k-dof grid with a 1.6M-entry factor is 11 % slower on eight threads, a 80k-dof one
+/// equal), that of a 3D mesh is wide (a 3.7k-dof Hex20 block with a 1.4M-entry factor is 24 % faster, 15k dofs twice as
+/// fast, 73k dofs twice; measured, `docs/fea-core.md` Phase 11). The old rule (parallel from 40k unknowns) left every 3D
+/// model below 40k dofs on one core.
+fn parallel_factor_threshold(dim: usize) -> usize {
+    std::env::var("FEA_PAR_NNZ").ok().and_then(|v| v.parse().ok()).unwrap_or(if dim == 3 { PARALLEL_FACTOR_NNZ_3D } else { PARALLEL_FACTOR_NNZ_2D })
+}
+
+const PARALLEL_FACTOR_NNZ_2D: usize = 8_000_000;
+const PARALLEL_FACTOR_NNZ_3D: usize = 1_000_000;
+
+fn factor_parallelism(dim: usize, nnz: usize) -> Par {
+    if nnz < parallel_factor_threshold(dim) {
+        Par::Seq
+    } else {
+        get_global_parallelism()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SolveError {
     /// Every dof constrained, or no dof at all.
@@ -227,7 +248,7 @@ impl Reduced {
         let m = self.n_free();
         let sym = SymbolicSparseColMatRef::new_checked(m, m, &self.col_ptr, None, &self.row_idx);
         let mat = SparseColMatRef::new(sym, &vals);
-        let par = parallelism_for(m);
+        let par = factor_parallelism(self.pat.d, symbolic.len_val());
         let mut numeric = vec![0.0f64; symbolic.len_val()];
         let mut buf = MemBuffer::new(symbolic.factorize_numeric_llt_scratch::<f64>(par, Default::default()));
         symbolic.factorize_numeric_llt::<f64>(&mut numeric, mat, Side::Lower, Default::default(), par, MemStack::new(&mut buf), Default::default()).map_err(|_| SolveError::NotPositiveDefinite)?;
@@ -306,7 +327,7 @@ impl Reduced {
         let mut vals: Vec<f64> = self.src.iter().map(|&s| k.vals[s as usize]).collect();
         let m = self.n_free();
         let sym = SymbolicSparseColMatRef::new_checked(m, m, &self.col_ptr, None, &self.row_idx);
-        let par = parallelism_for(m);
+        let par = factor_parallelism(self.pat.d, symbolic.len_val());
         let mut numeric = vec![0.0f64; symbolic.len_val()];
         let mut buf = MemBuffer::new(symbolic.factorize_numeric_ldlt_scratch::<f64>(par, Default::default()));
         // Positions of the diagonal entries (the lower triangle stores each column's diagonal).

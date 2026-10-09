@@ -106,6 +106,17 @@ fn random_valid_inputs_are_always_analysable_on_the_default_mesh() {
     sweep(77, 24, false, 0);
 }
 
+/// Regression: at a stagnating step of this case the Newton iterate had lost the pin's contact altogether, and holding that active
+/// set "converged" to a pin carrying none of its load (silently, until the consumer's equilibrium guard fell back to the fit alone).
+/// A hold is only taken when the iterate still has at least half the contact the step started with (`nonlinear.rs`).
+#[test]
+fn a_stagnating_step_that_lost_the_pin_is_not_frozen_into_a_wrong_answer() {
+    let mut rng = Rng(77);
+    let case = (0..24).map(|_| random_case(&mut rng, false)).find(|c| (c.bore_dia - 0.4766061927066888).abs() < 1e-12).expect("the case of seed 77");
+    let a = analyze(&case).unwrap();
+    assert!(a.loaded_failure.is_none(), "{:?}", a.loaded_failure);
+}
+
 /// Measurement, not a gate: how often the random cases need the kernel's active-set hold, and whether any falls back to the fit alone
 /// (the nets that once sat in between, other loaded attempts, mesh routes and stalled-residual acceptance, were reached 0, 0 and 3 times in 192 cases and were deleted). `SWEEP_SEED`, `SWEEP_N`,
 /// `SWEEP_COARSE=1`. A net that nothing reaches over a large corpus is dead weight.
@@ -115,7 +126,9 @@ fn safety_net_usage_measurement() {
     let env = |k: &str, d: u64| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let (seed, n, coarse) = (env("SWEEP_SEED", 31), env("SWEEP_N", 48) as usize, env("SWEEP_COARSE", 0) == 1);
     let mut rng = Rng(seed);
-    let cases: Vec<Inputs> = (0..n).map(|_| random_case(&mut rng, coarse)).collect();
+    let only = std::env::var("SWEEP_MATCH").ok(); // replay the cases whose `{:?}` contains this text (a failure printed above)
+    let cases: Vec<Inputs> = (0..n).map(|_| random_case(&mut rng, coarse)).filter(|c| only.as_ref().is_none_or(|m| format!("{c:?}").contains(m.as_str()))).collect();
+    let n = cases.len().max(1);
     let rows: Vec<String> = std::thread::scope(|s| {
         let hs: Vec<_> = cases
             .chunks(n.div_ceil(4))
@@ -124,7 +137,12 @@ fn safety_net_usage_measurement() {
                     chunk
                         .iter()
                         .map(|c| match c.validate().and_then(|()| analyze(c)) {
-                            Ok(a) => format!("held={} fitonly={}", a.held_solves > 0, a.loaded_failure.is_some()),
+                            Ok(a) => {
+                                if let Some(why) = &a.loaded_failure {
+                                    eprintln!("FIT ONLY ({why}): {c:?}");
+                                }
+                                format!("held={} fitonly={}", a.held_solves > 0, a.loaded_failure.is_some())
+                            }
                             Err(e) => format!("ERROR {e}"),
                         })
                         .collect::<Vec<_>>()

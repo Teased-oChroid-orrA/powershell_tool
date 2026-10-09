@@ -1,6 +1,7 @@
 //! Problem definition layer over `fea-core`. See `Cargo.toml`.
 pub mod benchmark;
 pub mod build;
+pub mod dynamics;
 pub mod joint;
 pub mod problem;
 pub mod raster;

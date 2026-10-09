@@ -238,3 +238,58 @@ pub fn assemble_stiffness(mesh: &Mesh, pat: &Pattern) -> Result<BlockMatrix, Str
     }
     Ok(mat)
 }
+
+/// Assemble a matrix whose node-pair blocks are a scalar times the identity (consistent mass, geometric stiffness):
+/// `element(block, element, xyz, work, out)` fills the element's `nn x nn` scalars. Same colouring and scatter as the
+/// stiffness.
+pub fn assemble_scalar_identity<F>(mesh: &Mesh, pat: &Pattern, element: F) -> Result<BlockMatrix, String>
+where
+    F: Fn(usize, usize, &[[f64; 3]], &mut Work, &mut [f64]) -> Result<(), ElementError> + Sync,
+{
+    let mut mat = BlockMatrix::zeros(pat);
+    let d = pat.d;
+    let dd = d * d;
+    let shared = Shared(mat.vals.as_mut_ptr());
+    let shared = &shared;
+    for class in &pat.colors {
+        class
+            .par_iter()
+            .try_for_each_init(
+                || (Work::new(), vec![0.0f64; MAX_NODES * MAX_NODES], vec![[0.0f64; 3]; MAX_NODES]),
+                |(work, me, xyz), &(bi, e)| -> Result<(), ElementError> {
+                    let blk = &mesh.blocks[bi as usize];
+                    let nn = blk.kind.n_nodes();
+                    for (a, &nd) in blk.elem(e as usize).iter().enumerate() {
+                        xyz[a] = mesh.nodes[nd];
+                    }
+                    element(bi as usize, e as usize, &xyz[..nn], work, me)?;
+                    let map = &pat.scatter[bi as usize][e as usize * nn * nn..(e as usize + 1) * nn * nn];
+                    for a in 0..nn {
+                        for b in 0..nn {
+                            let pos = map[a * nn + b];
+                            if pos == NO_BLOCK {
+                                continue;
+                            }
+                            // SAFETY: as in `assemble_stiffness`: one colour's elements share no node.
+                            unsafe {
+                                let dst = shared.0.add(pos as usize * dd);
+                                for i in 0..d {
+                                    *dst.add(i * d + i) += me[a * nn + b];
+                                }
+                            }
+                        }
+                    }
+                    Ok(())
+                },
+            )
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(mat)
+}
+
+impl BlockMatrix {
+    /// `self + alpha * other` (same pattern).
+    pub fn axpy(&self, alpha: f64, other: &BlockMatrix) -> BlockMatrix {
+        BlockMatrix { d: self.d, vals: self.vals.iter().zip(&other.vals).map(|(a, b)| a + alpha * b).collect() }
+    }
+}

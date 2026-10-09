@@ -54,6 +54,9 @@ pub struct Loads {
     pub block_body: Vec<(usize, [f64; 3])>,
     /// Uniform temperature change from the stress-free state.
     pub delta_t: f64,
+    /// Temperature change from the stress-free state at every node (a field, e.g. from `Model::solve_heat_steady`); added
+    /// to the uniform `delta_t`. Linear analyses only: the nonlinear driver refuses it.
+    pub temperature: Option<Vec<f64>>,
     /// Weak grounding springs `(dof, stiffness)` of the nonlinear solver (`dof = node * d + component`): they hold a
     /// body that is otherwise free to move or rotate rigidly (a pin or bushing held only by contact) and leak
     /// `k u` of force to ground, so keep them tiny. Ignored by the linear solvers.
@@ -115,7 +118,12 @@ pub fn assemble(mesh: &Mesh, loads: &Loads) -> Result<Vec<f64>, String> {
     let mut work = Work::new();
     let mut fe = vec![0.0; crate::element::MAX_NODES * 3];
     let mut xyz = [[0.0f64; 3]; crate::element::MAX_NODES];
-    if loads.body.is_some() || loads.delta_t != 0.0 || !loads.block_body.is_empty() {
+    if let Some(t) = &loads.temperature {
+        if t.len() != mesh.nodes.len() {
+            return Err(format!("the temperature field has {} values for {} nodes", t.len(), mesh.nodes.len()));
+        }
+    }
+    if loads.body.is_some() || loads.delta_t != 0.0 || loads.temperature.is_some() || !loads.block_body.is_empty() {
         for (bi, blk) in mesh.blocks.iter().enumerate() {
             let block_body = loads.block_body.iter().filter(|(b, _)| *b == bi).fold(None, |acc: Option<[f64; 3]>, (_, v)| Some(acc.map_or(*v, |a| [a[0] + v[0], a[1] + v[1], a[2] + v[2]])));
             let nn = blk.kind.n_nodes();
@@ -131,8 +139,12 @@ pub fn assemble(mesh: &Mesh, loads: &Loads) -> Result<Vec<f64>, String> {
                     kernel::body_load(blk.kind, mesh.physics, b, &xyz[..nn], &mut work, &mut fe).map_err(|e| e.to_string())?;
                     scatter(&mut f, conn, &fe, d);
                 }
-                if loads.delta_t != 0.0 {
-                    kernel::thermal_load(blk.kind, mesh.physics, &blk.material, loads.delta_t, &xyz[..nn], &mut work, &mut fe).map_err(|e| e.to_string())?;
+                if loads.delta_t != 0.0 || loads.temperature.is_some() {
+                    let gauss: Vec<f64> = match &loads.temperature {
+                        Some(t) => kernel::gauss_temperatures(blk.kind, &conn.iter().map(|&n| t[n]).collect::<Vec<_>>()),
+                        None => vec![0.0; blk.kind.table().ngp],
+                    };
+                    kernel::thermal_load_with(blk.kind, mesh.physics, &blk.material, &|g| loads.delta_t + gauss[g], &xyz[..nn], &mut work, &mut fe).map_err(|e| e.to_string())?;
                     scatter(&mut f, conn, &fe, d);
                 }
             }
@@ -149,7 +161,10 @@ fn scatter(f: &mut [f64], conn: &[usize], fe: &[f64], d: usize) {
     }
 }
 
-fn add_face<F: Fn(&[f64; 3], &[f64; 3]) -> [f64; 3] + ?Sized>(mesh: &Mesh, nodes: &[usize], force_at: &F, f: &mut [f64]) -> Result<(), String> {
+/// Visit the quadrature points of a boundary face (an edge in 2D): `visit(N, position, outward normal, weight)` with the
+/// shape values `N` of the face's nodes (in the order given) and a weight that includes the plane thickness or the
+/// axisymmetric `2 pi r`.
+pub(crate) fn face_points(mesh: &Mesh, nodes: &[usize], mut visit: impl FnMut(&[f64], [f64; 3], [f64; 3], f64)) -> Result<(), String> {
     if let Some(&bad) = nodes.iter().find(|&&n| n >= mesh.nodes.len()) {
         return Err(format!("face refers to missing node {bad}"));
     }
@@ -160,24 +175,19 @@ fn add_face<F: Fn(&[f64; 3], &[f64; 3]) -> [f64; 3] + ?Sized>(mesh: &Mesh, nodes
         _ => 1.0,
     };
     let axisym = matches!(mesh.physics, Physics::Axisymmetric);
-    let add = |n: &[f64], normal: [f64; 3], w: f64, f: &mut [f64]| {
+    let mut at = |n: &[f64], normal: [f64; 3], w: f64| {
         let mut pos = [0.0; 3];
         for a in 0..nn {
             for i in 0..3 {
                 pos[i] += n[a] * mesh.nodes[nodes[a]][i];
             }
         }
-        let force = force_at(&pos, &normal);
         let mut wt = w * scale;
         if axisym {
             let r: f64 = (0..nn).map(|a| n[a] * mesh.nodes[nodes[a]][0]).sum();
             wt *= 2.0 * std::f64::consts::PI * r;
         }
-        for a in 0..nn {
-            for i in 0..d {
-                f[nodes[a] * d + i] += wt * n[a] * force[i];
-            }
-        }
+        visit(n, pos, normal, wt);
     };
     if d == 2 {
         if nn != 2 && nn != 3 {
@@ -194,7 +204,7 @@ fn add_face<F: Fn(&[f64; 3], &[f64; 3]) -> [f64; 3] + ?Sized>(mesh: &Mesh, nodes
             if len <= 0.0 {
                 return Err("zero-length boundary edge".into());
             }
-            add(&n[..nn], [ty / len, -tx / len, 0.0], w * len, f);
+            at(&n[..nn], [ty / len, -tx / len, 0.0], w * len);
         }
     } else {
         let kind = face_kind(nn)?;
@@ -214,10 +224,22 @@ fn add_face<F: Fn(&[f64; 3], &[f64; 3]) -> [f64; 3] + ?Sized>(mesh: &Mesh, nodes
             if area <= 0.0 {
                 return Err("degenerate boundary face".into());
             }
-            add(n, [cr[0] / area, cr[1] / area, cr[2] / area], t.w[g] * area, f);
+            at(n, [cr[0] / area, cr[1] / area, cr[2] / area], t.w[g] * area);
         }
     }
     Ok(())
+}
+
+fn add_face<F: Fn(&[f64; 3], &[f64; 3]) -> [f64; 3] + ?Sized>(mesh: &Mesh, nodes: &[usize], force_at: &F, f: &mut [f64]) -> Result<(), String> {
+    let d = mesh.dim();
+    face_points(mesh, nodes, |n, pos, normal, wt| {
+        let force = force_at(&pos, &normal);
+        for a in 0..nodes.len() {
+            for i in 0..d {
+                f[nodes[a] * d + i] += wt * n[a] * force[i];
+            }
+        }
+    })
 }
 
 /// The force of a follower pressure `p` on a face at displacements `u` and its derivative: `g(x) = -p int N_a (x_xi x x_eta)`

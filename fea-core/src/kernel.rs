@@ -425,14 +425,25 @@ fn stiffness_axisym(ngp: usize, nn: usize, work: &Work, kind: ElementKind, lam: 
 /// Equivalent nodal force of a uniform temperature change `d_t` of a fully free element
 /// (`f[a * d + i]`); the stress it would cause when constrained is `-c d_t I`.
 pub fn thermal_load(kind: ElementKind, physics: Physics, mat: &Elastic, d_t: f64, xyz: &[[f64; 3]], work: &mut Work, f: &mut [f64]) -> Result<(), ElementError> {
+    thermal_load_with(kind, physics, mat, &|_| d_t, xyz, work, f)
+}
+
+/// Temperature change at the Gauss points from the element's nodal values `t_nodes` (the interpolated field).
+pub fn gauss_temperatures(kind: ElementKind, t_nodes: &[f64]) -> Vec<f64> {
+    let t = kind.table();
+    (0..t.ngp).map(|g| (0..t.nn).map(|a| t.n_at(g)[a] * t_nodes[a]).sum()).collect()
+}
+
+/// As [`thermal_load`] with the temperature change given per Gauss point (`dt_at(g)`): a temperature field.
+pub fn thermal_load_with(kind: ElementKind, physics: Physics, mat: &Elastic, dt_at: &dyn Fn(usize) -> f64, xyz: &[[f64; 3]], work: &mut Work, f: &mut [f64]) -> Result<(), ElementError> {
     geometry(kind, physics, xyz, work)?;
     let t = kind.table();
     let (nn, d) = (t.nn, t.dim);
     f[..nn * d].fill(0.0);
     if let Some(an) = &mat.aniso {
-        // f_a = -int B_a^T sigma_th with sigma_th = -D alpha dT, i.e. the stress of zero strain.
-        let s0 = stress_aniso(an, physics, [0.0; 6], mat.thermal_strain(d_t));
         for g in 0..t.ngp {
+            // f_a = -int B_a^T sigma_th with sigma_th = -D alpha dT, i.e. the stress of zero strain.
+            let s0 = stress_aniso(an, physics, [0.0; 6], mat.thermal_strain(dt_at(g)));
             let w = work.wdet[g];
             let gr = &work.grad[g * nn * d..(g + 1) * nn * d];
             let n = t.n_at(g);
@@ -458,9 +469,9 @@ pub fn thermal_load(kind: ElementKind, physics: Physics, mat: &Elastic, d_t: f64
         }
         return Ok(());
     }
-    let c = mat.thermal_modulus(physics) * d_t;
+    let c0 = mat.thermal_modulus(physics);
     for g in 0..t.ngp {
-        let w = work.wdet[g] * c;
+        let w = work.wdet[g] * c0 * dt_at(g);
         let gr = &work.grad[g * nn * d..(g + 1) * nn * d];
         let n = t.n_at(g);
         for a in 0..nn {
@@ -488,6 +499,89 @@ pub fn body_load(kind: ElementKind, physics: Physics, body: [f64; 3], xyz: &[[f6
         for a in 0..nn {
             for i in 0..d {
                 f[a * d + i] += w * n[a] * body[i];
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Consistent mass of one element as `nn x nn` scalars (`me[a * nn + b] = rho * integral N_a N_b`): the mass matrix of a
+/// continuum element is this times the identity on the displacement components.
+pub fn mass(kind: ElementKind, physics: Physics, rho: f64, xyz: &[[f64; 3]], work: &mut Work, me: &mut [f64]) -> Result<(), ElementError> {
+    geometry(kind, physics, xyz, work)?;
+    let t = kind.table();
+    let nn = t.nn;
+    me[..nn * nn].fill(0.0);
+    for g in 0..t.ngp {
+        let w = rho * work.wdet[g];
+        let n = t.n_at(g);
+        for a in 0..nn {
+            for b in 0..=a {
+                me[a * nn + b] += w * n[a] * n[b];
+            }
+        }
+    }
+    for a in 0..nn {
+        for b in a + 1..nn {
+            me[a * nn + b] = me[b * nn + a];
+        }
+    }
+    Ok(())
+}
+
+/// Conduction matrix of one element as `nn x nn` scalars (`ke[a * nn + b] = integral k grad N_a . grad N_b`); the
+/// conductivity `k` is evaluated at the temperature of each Gauss point (`t_nodes` are the element's nodal temperatures).
+pub fn conduction(kind: ElementKind, physics: Physics, k_of_t: &dyn Fn(f64) -> f64, t_nodes: &[f64], xyz: &[[f64; 3]], work: &mut Work, ke: &mut [f64]) -> Result<(), ElementError> {
+    geometry(kind, physics, xyz, work)?;
+    let t = kind.table();
+    let (nn, d) = (t.nn, t.dim);
+    ke[..nn * nn].fill(0.0);
+    for g in 0..t.ngp {
+        let n = t.n_at(g);
+        let tg: f64 = (0..nn).map(|a| n[a] * t_nodes[a]).sum();
+        let w = work.wdet[g] * k_of_t(tg);
+        let gr = &work.grad[g * nn * d..(g + 1) * nn * d];
+        for a in 0..nn {
+            for b in 0..=a {
+                let mut v = 0.0;
+                for i in 0..d {
+                    v += gr[a * d + i] * gr[b * d + i];
+                }
+                ke[a * nn + b] += w * v;
+            }
+        }
+    }
+    for a in 0..nn {
+        for b in a + 1..nn {
+            ke[a * nn + b] = ke[b * nn + a];
+        }
+    }
+    Ok(())
+}
+
+/// Geometric (initial-stress) stiffness of one element as `nn x nn` scalars
+/// (`kg[a * nn + b] = integral grad N_a . sigma . grad N_b`), times the identity on the displacement components.
+/// `stress[g]` is the stress at Gauss point `g` in the component order of [`strain_at`]. Plane and 3D solids only.
+pub fn geometric_stiffness(kind: ElementKind, physics: Physics, stress: &[[f64; 6]], xyz: &[[f64; 3]], work: &mut Work, kg: &mut [f64]) -> Result<(), ElementError> {
+    geometry(kind, physics, xyz, work)?;
+    let t = kind.table();
+    let (nn, d) = (t.nn, t.dim);
+    kg[..nn * nn].fill(0.0);
+    for g in 0..t.ngp {
+        let s = &stress[g];
+        // The symmetric d x d stress matrix from the engineering ordering: (xx, yy, zz, xy, yz, zx); plane problems use (xx, yy, ., xy).
+        let m = if d == 2 { [[s[0], s[3], 0.0], [s[3], s[1], 0.0], [0.0; 3]] } else { [[s[0], s[3], s[5]], [s[3], s[1], s[4]], [s[5], s[4], s[2]]] };
+        let w = work.wdet[g];
+        let gr = &work.grad[g * nn * d..(g + 1) * nn * d];
+        for a in 0..nn {
+            for b in 0..nn {
+                let mut v = 0.0;
+                for i in 0..d {
+                    for j in 0..d {
+                        v += gr[a * d + i] * m[i][j] * gr[b * d + j];
+                    }
+                }
+                kg[a * nn + b] += w * v;
             }
         }
     }

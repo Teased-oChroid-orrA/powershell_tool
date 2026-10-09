@@ -251,6 +251,11 @@ pub struct Block {
     /// J2 plasticity (small or finite strain) for the nonlinear solver; `None` is linear elastic.
     /// The linear solver treats every block as elastic.
     pub plasticity: Option<J2>,
+    /// Mass density (mass per volume; plane problems: per area, the thickness is applied by the kernel). `0` = massless:
+    /// dynamic analyses (`dynamics.rs`) refuse a mesh without mass.
+    pub density: f64,
+    /// Conductivity and heat capacity for the heat-conduction analyses (`thermal.rs`).
+    pub thermal: Option<crate::thermal::ThermalProps>,
 }
 
 impl Block {
@@ -309,7 +314,34 @@ impl Mesh {
             return Err(format!("element refers to node {bad} but the mesh has {}", self.nodes.len()));
         }
         material.validate()?;
-        self.blocks.push(Block { kind, conn, material, name: name.to_string(), plasticity: None });
+        self.blocks.push(Block { kind, conn, material, name: name.to_string(), plasticity: None, density: 0.0, thermal: None });
+        Ok(())
+    }
+
+    /// Mass density of block `block` (consistent units: with inch / psi use lbf s^2 / in^4, i.e. weight density / 386.09).
+    pub fn set_density(&mut self, block: usize, density: f64) -> Result<(), String> {
+        if !(density.is_finite() && density > 0.0) {
+            return Err(format!("density must be positive and finite, got {density}"));
+        }
+        self.blocks.get_mut(block).ok_or_else(|| format!("no block {block}"))?.density = density;
+        Ok(())
+    }
+
+    /// Thermal properties of block `block`.
+    pub fn set_thermal(&mut self, block: usize, conductivity: crate::thermal::Conductivity, capacity: f64) -> Result<(), String> {
+        conductivity.validate()?;
+        if !(capacity.is_finite() && capacity >= 0.0) {
+            return Err(format!("heat capacity must be non-negative and finite, got {capacity}"));
+        }
+        self.blocks.get_mut(block).ok_or_else(|| format!("no block {block}"))?.thermal = Some(crate::thermal::ThermalProps { conductivity, capacity });
+        Ok(())
+    }
+
+    /// Set the density of every block.
+    pub fn set_density_all(&mut self, density: f64) -> Result<(), String> {
+        for b in 0..self.blocks.len() {
+            self.set_density(b, density)?;
+        }
         Ok(())
     }
 
@@ -318,6 +350,9 @@ impl Mesh {
         let b = self.blocks.get_mut(block).ok_or_else(|| format!("no block {block}"))?;
         if b.material.aniso.is_some() && j2.large_strain {
             return Err("finite-strain plasticity needs an isotropic elastic law (anisotropic elasticity is small-strain only)".into());
+        }
+        if j2.neo_hookean && matches!(self.physics, Physics::PlaneStress { .. }) {
+            return Err("neo-Hookean hyperelasticity is not available for plane stress (the out-of-plane stretch would have to be solved for): use plane strain, axisymmetric or solid elements".into());
         }
         b.plasticity = Some(j2);
         Ok(())

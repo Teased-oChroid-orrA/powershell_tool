@@ -36,21 +36,30 @@ pub struct J2 {
     pub law: Hardening,
     /// Finite-strain (total-Lagrangian Hencky) formulation instead of small strain.
     pub large_strain: bool,
+    /// Compressible neo-Hookean hyperelasticity instead of J2 plasticity (`law` is unused; finite strain, no plane stress).
+    pub neo_hookean: bool,
 }
 
 impl J2 {
     pub fn small(law: Hardening) -> Self {
-        Self { law, large_strain: false }
+        Self { law, large_strain: false, neo_hookean: false }
     }
 
     pub fn finite(law: Hardening) -> Self {
-        Self { law, large_strain: true }
+        Self { law, large_strain: true, neo_hookean: false }
     }
 
     /// Hyperelastic Hencky material with no yielding (a large-strain elastic body in a finite-strain
     /// model).
     pub fn elastic_finite() -> Self {
-        Self { law: Hardening::linear(1.0e30, 0.0, 1.0).expect("valid table"), large_strain: true }
+        Self { law: Hardening::linear(1.0e30, 0.0, 1.0).expect("valid table"), large_strain: true, neo_hookean: false }
+    }
+
+    /// Compressible neo-Hookean hyperelastic material, `W = G/2 (I1 - 3) - G ln J + lambda/2 (ln J)^2` with the shear modulus
+    /// `G` and `lambda = K - 2G/3` of the block's elastic constants (no yielding, finite strain; solid, plane-strain and
+    /// axisymmetric analyses).
+    pub fn neo_hookean() -> Self {
+        Self { law: Hardening::linear(1.0e30, 0.0, 1.0).expect("valid table"), large_strain: true, neo_hookean: true }
     }
 
     pub fn initial_state(&self) -> GpState {
@@ -474,6 +483,49 @@ pub fn small_strain_plane_stress_aniso(d: &[[f64; 6]; 6], law: &Hardening, eps: 
 }
 
 // ------------------------------------------------------------------ finite strain
+
+/// Compressible neo-Hookean update for the displacement gradient `h` (`F = I + H`): `P = G (F - F^-T) + lambda ln J F^-T` and
+/// `A_iJkL = G d_ik d_JL + (G - lambda ln J) F^-1_Jk F^-1_Li + lambda F^-1_Ji F^-1_Lk`. Written in `H` so that a small
+/// strain does not lose its digits: `F - F^-T = H + (H F^-1)^T` and `J - 1` from the invariants of `H`, never as differences
+/// of O(1) numbers (the form in `F` has an absolute error of `G eps` in the stress, which no Newton tolerance below
+/// `G eps / force` can reach in a nearly unstrained body). `None` for a non-positive determinant.
+pub fn neo_hookean_update(mo: Moduli, h: &M3, old: &GpState) -> Option<Update> {
+    let mut f = *h;
+    for i in 0..3 {
+        f[i][i] += 1.0;
+    }
+    let finv = inverse(&f)?;
+    let tr = h[0][0] + h[1][1] + h[2][2];
+    let tr2: f64 = (0..3).flat_map(|i| (0..3).map(move |j| (i, j))).map(|(i, j)| h[i][j] * h[j][i]).sum();
+    let jm1 = tr + 0.5 * (tr * tr - tr2) + det(h);
+    if jm1.is_nan() || jm1 <= -1.0 || !jm1.is_finite() {
+        return None;
+    }
+    let lnj = jm1.ln_1p();
+    let (g, lam) = (mo.g, mo.k - 2.0 * mo.g / 3.0);
+    let hfinv = mul(h, &finv);
+    let mut stress = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for jj in 0..3 {
+            stress[i][jj] = g * (h[i][jj] + hfinv[jj][i]) + lam * lnj * finv[jj][i];
+        }
+    }
+    let mut tangent = [[0.0; 9]; 9];
+    for i in 0..3 {
+        for jj in 0..3 {
+            for k in 0..3 {
+                for l in 0..3 {
+                    let mut a = (g - lam * lnj) * finv[jj][k] * finv[l][i] + lam * finv[jj][i] * finv[l][k];
+                    if i == k && jj == l {
+                        a += g;
+                    }
+                    tangent[3 * i + jj][3 * k + l] = a;
+                }
+            }
+        }
+    }
+    Some(Update { stress, tangent, state: *old })
+}
 
 /// Finite-strain Hencky J2 update for the deformation gradient `f` (3 x 3, `det f > 0`).
 /// Returns `None` for a non-positive determinant.

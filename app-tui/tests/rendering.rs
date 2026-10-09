@@ -700,6 +700,33 @@ fn fea_workbench_renders_the_field_list_and_a_colour_contour() {
 }
 
 #[test]
+fn fea_workbench_draws_a_mode_shape_and_lists_the_frequencies() {
+    let mut state = fea_state_with_result();
+    let w = &mut state.fea_workbench;
+    // The cantilever template has a clean first bending mode.
+    let (_, beam) = fea_problem::templates::templates().into_iter().find(|(t, _)| *t == "Cantilever beam").unwrap();
+    w.set_problem(beam.clone());
+    let d = fea_problem::dynamics::run(fea_problem::dynamics::DynKind::Modal, &beam, None, 3).unwrap();
+    w.finish_dynamic_for_test(d);
+    let buf = render_shell(&state, 170, 50);
+    let text = buffer_text(&buf);
+    assert!(text.contains("Mode 1 - "), "contour title: {text}");
+    assert!(text.contains("Natural frequencies"), "readout");
+    assert!(text.contains(" Hz"), "frequencies listed");
+    let area = buf.area;
+    let mut colours = std::collections::HashSet::new();
+    for y in 0..area.height {
+        for x in 0..area.width {
+            let c = &buf[(x, y)];
+            if c.symbol() == "\u{2580}" || c.symbol() == "\u{2584}" {
+                colours.insert(format!("{:?}", c.fg));
+            }
+        }
+    }
+    assert!(colours.len() > 8, "a mode contour uses many colours, found {}", colours.len());
+}
+
+#[test]
 fn fea_workbench_does_not_panic_at_any_size_with_and_without_a_result() {
     let with = fea_state_with_result();
     let mut without = AppState::default();

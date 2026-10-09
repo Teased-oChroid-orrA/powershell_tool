@@ -13,6 +13,7 @@ pub enum FieldRow {
     Young,
     Poisson,
     Alpha,
+    Density,
     Yield,
     DeltaT,
     Source,
@@ -65,7 +66,7 @@ pub enum EditKind {
 pub fn edit_kind(row: FieldRow) -> EditKind {
     use FieldRow::*;
     match row {
-        Thickness | Young | Poisson | Alpha | Yield | DeltaT | Outer(..) | PolyPoint(..) | Hole(..) | Depth | Layers | MeshSize | HoleFactor | AdaptPasses | TargetError | SupportCoord(..) | LoadParam(..) | BushingParam(..) => EditKind::Number,
+        Thickness | Young | Poisson | Alpha | Density | Yield | DeltaT | Outer(..) | PolyPoint(..) | Hole(..) | Depth | Layers | MeshSize | HoleFactor | AdaptPasses | TargetError | SupportCoord(..) | LoadParam(..) | BushingParam(..) => EditKind::Number,
         SupportComp(..) => EditKind::Component,
         ImportPath => EditKind::Text,
         _ => EditKind::Action,
@@ -91,7 +92,7 @@ pub fn field_rows(p: &Problem) -> Vec<FieldRow> {
     if matches!(p.analysis, fea_problem::Analysis::PlaneStress | fea_problem::Analysis::PlaneStrain) {
         r.push(Thickness);
     }
-    r.extend([Header("Material"), Material, Young, Poisson, Alpha, Yield, DeltaT, Header("Geometry"), Source]);
+    r.extend([Header("Material"), Material, Young, Poisson, Alpha, Density, Yield, DeltaT, Header("Geometry"), Source]);
     match &p.geometry {
         Geometry::Sketch { outer, holes, .. } => {
             r.push(OuterKind);
@@ -184,6 +185,7 @@ pub fn row_label(p: &Problem, row: FieldRow) -> String {
         Young => "Young's Modulus E".into(),
         Poisson => "Poisson's Ratio".into(),
         Alpha => "Thermal Expansion".into(),
+        Density => "Mass Density".into(),
         Yield => "Yield Stress".into(),
         DeltaT => "Temperature Change".into(),
         Source => "Geometry From".into(),
@@ -248,6 +250,7 @@ pub fn number_value(p: &Problem, row: FieldRow) -> Option<f64> {
         Young => p.material.e,
         Poisson => p.material.nu,
         Alpha => p.material.alpha,
+        Density => p.material.density,
         Yield => p.material.yield_stress.unwrap_or(0.0),
         DeltaT => p.delta_t,
         Outer(i) => match &p.geometry {
@@ -295,6 +298,7 @@ pub fn set_number(p: &mut Problem, row: FieldRow, v: f64) {
         Young if v > 0.0 => p.material.e = v,
         Poisson if v > -1.0 && v < 0.5 => p.material.nu = v,
         Alpha => p.material.alpha = v,
+        Density if v >= 0.0 => p.material.density = v,
         Yield => p.material.yield_stress = (v > 0.0).then_some(v),
         DeltaT => p.delta_t = v,
         Outer(i) => {
@@ -406,7 +410,7 @@ pub fn row_value(p: &Problem, names: &[String], import_len: Option<usize>, row: 
             None => "Free".to_string(),
         },
         Layers | AdaptPasses => format!("{}", number_value(p, row).unwrap_or(0.0).round()),
-        Thickness | Young | Poisson | Alpha | DeltaT | Outer(..) | PolyPoint(..) | Hole(..) | Depth | MeshSize | HoleFactor | TargetError | SupportCoord(..) | LoadParam(..) | BushingParam(..) => {
+        Thickness | Young | Poisson | Alpha | Density | DeltaT | Outer(..) | PolyPoint(..) | Hole(..) | Depth | MeshSize | HoleFactor | TargetError | SupportCoord(..) | LoadParam(..) | BushingParam(..) => {
             let _ = d;
             number_value(p, row).map_or(String::new(), format_number)
         }
@@ -429,6 +433,7 @@ pub fn field_hint(row: FieldRow) -> &'static str {
         Analysis => "Plane stress (thin plate), plane strain (long prismatic body), axisymmetric (x = radius, y = axis; loads are totals over 360 degrees) or a 3D solid (an extruded sketch or an imported volume mesh).",
         Thickness => "Out-of-plane thickness; edge forces and tractions act over this thickness.",
         Material => "Enter opens the material browser: E, Poisson's ratio, thermal expansion and yield come from it.",
+        Density => "Mass per volume in consistent units (inch / psi: lbf s^2/in^4 = weight density / 386.09). Only the natural-frequency analysis (n) uses it.",
         Young | Poisson | Alpha | Yield => "Linear isotropic material. Units are yours (inch / psi by convention); the solver is unit-free. Yield only feeds the margin readout (0 = none).",
         DeltaT => "Uniform temperature change from the stress-free state (needs a thermal expansion coefficient).",
         Source => "Sketch: a parametric outline with holes meshed here. Imported: a Gmsh .msh or Abaqus .inp mesh from a file.",
@@ -522,7 +527,7 @@ pub fn new_bushing(p: &Problem) -> Option<fea_problem::Bushing> {
         Shape::Circle { r, .. } if !p.bushings.iter().any(|b| b.hole == i + 1) => Some((i, *r)),
         _ => None,
     })?;
-    Some(fea_problem::Bushing { hole: i + 1, inner_diameter: 1.5 * r, offset: [0.0, 0.0], interference: 0.008 * r, friction: 0.15, material: fea_problem::MaterialSpec { name: "Steel (bushing)".into(), e: 29.0e6, nu: 0.3, alpha: 6.5e-6, yield_stress: None } })
+    Some(fea_problem::Bushing { hole: i + 1, inner_diameter: 1.5 * r, offset: [0.0, 0.0], interference: 0.008 * r, friction: 0.15, material: fea_problem::MaterialSpec { name: "Steel (bushing)".into(), e: 29.0e6, nu: 0.3, alpha: 6.5e-6, yield_stress: None, density: 0.283 / 386.089 } })
 }
 
 /// Drop the bushings of a removed hole and renumber the later ones.

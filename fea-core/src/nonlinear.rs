@@ -25,7 +25,8 @@ use crate::loads::{self, Loads};
 use crate::material::*;
 use crate::mesh::{Block, Mesh, Physics};
 use rayon::prelude::*;
-use std::cell::Cell;
+use crate::report::{EventKind, Profile, SolveEvent};
+use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -185,7 +186,9 @@ fn plastic_element(blk: &Block, physics: Physics, xyz: &[[f64; 3]], ue: &[f64], 
             for i in 0..3 {
                 f[i][i] += 1.0;
             }
-            if plane_stress {
+            if j2.neo_hookean {
+                neo_hookean_update(mo, &h, &old[g])
+            } else if plane_stress {
                 finite_strain_plane_stress(mo, &j2.law, &f, &old[g], 1.0 - blk.material.nu / (1.0 - blk.material.nu) * (h[0][0] + h[1][1])).map(|r| r.0)
             } else {
                 finite_strain_update(mo, &j2.law, &f, &old[g])
@@ -317,8 +320,8 @@ pub fn assemble_nl_public(mesh: &Mesh, pat: &Pattern, u: &[f64], old: &NlState, 
 /// How many times a contact solve is repeated with doubled margins after a node pair fell outside the matrix pattern.
 const MARGIN_RETRIES: usize = 4;
 
-/// Cycles of defect-correction refinement of a frictional Newton step.
-const REFINE_ITERS: usize = 6;
+/// Krylov dimension of the GMRES solve that makes a frictional Newton step consistent (`refine_consistent`).
+const REFINE_ITERS: usize = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Control {
@@ -521,6 +524,10 @@ pub struct NlSolution {
     /// Net force the weak grounding springs (`Loads::ground`) carry at the end: the leak of the way a body held only by
     /// contact is kept from floating (compare it with the applied load). `0` without springs.
     pub ground_leak: f64,
+    /// Decisions the driver took, in order (`report::SolveEvent`); empty for a plain converging run.
+    pub events: Vec<SolveEvent>,
+    /// Where the time went.
+    pub profile: Profile,
 }
 
 impl NlSolution {
@@ -601,6 +608,8 @@ struct Ctx<'a> {
     stalled: Cell<usize>,
     /// Newton solves that stagnated and went on with a held active set.
     held: Cell<usize>,
+    /// Decision log (`NlSolution::events`).
+    events: RefCell<Vec<SolveEvent>>,
     start: Option<&'a Start>,
     ground: Vec<(usize, f64)>,
     /// Follower pressures (face nodes, p): see `Loads::followers`.
@@ -770,9 +779,11 @@ impl Ctx<'_> {
 
     /// Make the Newton step the one the exact frictional tangent gives: the factorised matrix `K` is symmetric and
     /// freezes sliding friction; the exact tangent is `K + D` with `D` the (unsymmetric) defect of the frictional
-    /// points (`ContactStats::defect`). Iterative refinement `x += K^-1 (b - (K + D) x)` solves `(K + D) x = b` over the
+    /// points (`ContactStats::defect`). Solving `(K + D) x = b` over the
     /// existing factorisation, a few cheap back-substitutions that restore fast convergence where friction slides.
-    /// Stops when the defect is resolved to 1 %, or if it stops improving (then the best iterate is kept).
+    /// Solved by GMRES preconditioned with the factorisation (plain refinement diverged where most points are at their
+    /// friction limit: the 3D partial-slip failures); stops when the residual is down to 1 % of the right-hand side, and
+    /// keeps the result only if the true residual fell.
     fn refine_consistent(&self, fac: &crate::linear::AnyFactor<'_>, ev: &Eval, b: &[f64], x: &mut Vec<f64>) {
         let contact_defect: &[(Vec<usize>, Vec<f64>)] = ev.stats.as_ref().map_or(&[], |s| &s.defect);
         if contact_defect.is_empty() && ev.load_defect.is_empty() {
@@ -799,27 +810,76 @@ impl Ctx<'_> {
             }
             (0..nf).map(|j| y[self.free[j]]).collect()
         };
-        let mut best: Option<(f64, Vec<f64>)> = None;
-        for _ in 0..REFINE_ITERS {
-            let ax = apply(x);
-            let res: Vec<f64> = b.iter().zip(&ax).map(|(bb, aa)| bb - aa).collect();
-            let rn = norm(&res);
-            if best.as_ref().is_none_or(|(bn_, _)| rn < *bn_) {
-                best = Some((rn, x.clone()));
-            } else {
+        // Right-preconditioned GMRES on `(K + D) x = b`, preconditioner = the factorisation of `K` (the defect is small
+        // when friction sticks, not when most points are at their friction limit: there plain refinement
+        // `x += K^-1 (b - (K + D) x)` diverges and the Newton step fell back to the inconsistent symmetric one).
+        let r0: Vec<f64> = b.iter().zip(&apply(x)).map(|(bb, aa)| bb - aa).collect();
+        let rn0 = norm(&r0);
+        if rn0 <= 1e-2 * bn {
+            return;
+        }
+        let m = REFINE_ITERS;
+        let mut v: Vec<Vec<f64>> = vec![r0.iter().map(|t| t / rn0).collect()];
+        let mut z: Vec<Vec<f64>> = Vec::new();
+        let mut h = vec![vec![0.0f64; m]; m + 1];
+        let (mut cs, mut sn) = (vec![0.0f64; m], vec![0.0f64; m]);
+        let mut g = vec![0.0f64; m + 1];
+        g[0] = rn0;
+        let mut used = 0;
+        for jx in 0..m {
+            let mut zj = v[jx].clone();
+            fac.solve_reduced(&mut zj);
+            let mut w = apply(&zj);
+            z.push(zj);
+            for i in 0..=jx {
+                h[i][jx] = w.iter().zip(&v[i]).map(|(a, c)| a * c).sum();
+                for (wv, vv) in w.iter_mut().zip(&v[i]) {
+                    *wv -= h[i][jx] * vv;
+                }
+            }
+            h[jx + 1][jx] = norm(&w);
+            for i in 0..jx {
+                let t = cs[i] * h[i][jx] + sn[i] * h[i + 1][jx];
+                h[i + 1][jx] = -sn[i] * h[i][jx] + cs[i] * h[i + 1][jx];
+                h[i][jx] = t;
+            }
+            let denom = (h[jx][jx] * h[jx][jx] + h[jx + 1][jx] * h[jx + 1][jx]).sqrt();
+            if denom == 0.0 || !denom.is_finite() {
                 break;
             }
-            if rn <= 1e-2 * bn {
+            cs[jx] = h[jx][jx] / denom;
+            sn[jx] = h[jx + 1][jx] / denom;
+            h[jx][jx] = denom;
+            g[jx + 1] = -sn[jx] * g[jx];
+            g[jx] *= cs[jx];
+            used = jx + 1;
+            let breakdown = h[jx + 1][jx] < 1e-14 * rn0;
+            if g[jx + 1].abs() <= 1e-3 * bn || breakdown {
                 break;
             }
-            let mut dx = res;
-            fac.solve_reduced(&mut dx);
-            for (xi, di) in x.iter_mut().zip(&dx) {
-                *xi += di;
+            let hn = h[jx + 1][jx];
+            v.push(w.iter().map(|t| t / hn).collect());
+        }
+        // Back-substitute the small triangular system and update x.
+        let mut y = vec![0.0f64; used];
+        for i in (0..used).rev() {
+            let mut sum = g[i];
+            for k2 in i + 1..used {
+                sum -= h[i][k2] * y[k2];
+            }
+            y[i] = sum / h[i][i];
+        }
+        let mut xn = x.clone();
+        for (yi, zi) in y.iter().zip(&z) {
+            for (xv, zv) in xn.iter_mut().zip(zi) {
+                *xv += yi * zv;
             }
         }
-        if let Some((_, xb)) = best {
-            *x = xb;
+        // Keep it only if it really lowered the true residual (a GMRES step cannot raise the preconditioned one, but the
+        // defect operator is only as accurate as its finite differences).
+        let after = norm(&b.iter().zip(&apply(&xn)).map(|(bb, aa)| bb - aa).collect::<Vec<_>>());
+        if after < rn0 {
+            *x = xn;
         }
     }
 
@@ -939,10 +999,17 @@ impl Model {
         // The matrix pattern is built once from the initial proximity (`margin`); a contact that slides to a node pair
         // outside it fails the step. Rather than make the caller guess a margin, widen every margin and rerun.
         let mut specs = contacts;
+        let mut widened = Vec::new();
         for attempt in 0..=MARGIN_RETRIES {
             match self.solve_nonlinear_contact_once(loads, bc, specs.clone(), opt, start) {
                 Err(e) if attempt < MARGIN_RETRIES && e.contains("outside the matrix pattern") => {
+                    widened.push(SolveEvent { kind: EventKind::MarginWidened, lambda: 0.0, residual: f64::NAN, detail: format!("attempt {} left the matrix pattern; margins doubled", attempt + 1) });
                     specs.iter_mut().for_each(|s| s.margin = Some(2.0 * s.effective_margin(&self.mesh)));
+                }
+                Ok(mut sol) => {
+                    widened.append(&mut sol.events);
+                    sol.events = widened;
+                    return Ok(sol);
                 }
                 other => return other,
             }
@@ -953,7 +1020,7 @@ impl Model {
     fn solve_nonlinear_contact_once(&self, loads: &Loads, bc: &Dirichlet, contacts: Vec<ContactSpec>, opt: &NlOptions, start: Option<&Start>) -> Result<NlSolution, String> {
         let clock = Instant::now();
         let any_plastic = self.mesh.blocks.iter().any(|b| b.plasticity.is_some());
-        if any_plastic && loads.delta_t != 0.0 {
+        if any_plastic && (loads.delta_t != 0.0 || loads.temperature.is_some()) {
             return Err("a temperature change cannot be combined with plasticity yet".into());
         }
         let n = self.mesh.n_dofs();
@@ -984,7 +1051,7 @@ impl Model {
                 return Err("arc-length control needs zero prescribed displacements".into());
             }
         }
-        let mut ctx = Ctx { model: self, pat, contacts: contact_set, red, free, fixed, f_ext, bc, opt: opt.clone(), factorisations: Cell::new(0), stalled: Cell::new(0), held: Cell::new(0), start, ground: loads.ground.clone(), followers: loads.followers.clone(), timers: Default::default() };
+        let mut ctx = Ctx { model: self, pat, contacts: contact_set, red, free, fixed, f_ext, bc, opt: opt.clone(), factorisations: Cell::new(0), stalled: Cell::new(0), held: Cell::new(0), events: RefCell::new(Vec::new()), start, ground: loads.ground.clone(), followers: loads.followers.clone(), timers: Default::default() };
         let mut sol = match opt.control {
             Control::Load => ctx.run_load_control()?,
             Control::Arc { ds, lambda_max, max_steps } => ctx.run_arc_length(ds, lambda_max, max_steps)?,
@@ -993,6 +1060,7 @@ impl Model {
         sol.stalled_solves = ctx.stalled.get();
         sol.held_solves = ctx.held.get();
         sol.elapsed_ms = clock.elapsed().as_secs_f64() * 1e3;
+        sol.profile = Profile { evaluation_ms: 1e3 * ctx.timers[0].get(), assembly_ms: 1e3 * ctx.timers[3].get(), contact_ms: 1e3 * ctx.timers[4].get(), factorisation_ms: 1e3 * ctx.timers[1].get(), solve_ms: 1e3 * ctx.timers[2].get() };
         if std::env::var("NL_PROFILE").is_ok() {
             eprintln!("nl profile: {:.0} ms total, evaluation {:.0} ms (element assembly {:.0}, contact {:.0}), factorisation {:.0} ms ({} of them), solves {:.0} ms", sol.elapsed_ms, 1e3 * ctx.timers[0].get(), 1e3 * ctx.timers[3].get(), 1e3 * ctx.timers[4].get(), 1e3 * ctx.timers[1].get(), sol.factorisations, 1e3 * ctx.timers[2].get());
         }
@@ -1022,6 +1090,14 @@ fn load_fell(steps: &[StepInfo], frac: f64) -> bool {
 }
 
 impl Ctx<'_> {
+    fn note(&self, kind: EventKind, lambda: f64, residual: f64, detail: impl Into<String>) {
+        let detail = detail.into();
+        if std::env::var("NL_EVENTS").is_ok() {
+            eprintln!("EVENT {} at lambda {lambda:.4}: {detail}", kind.name());
+        }
+        self.events.borrow_mut().push(SolveEvent { kind, lambda, residual, detail });
+    }
+
     fn finish(&self, u: Vec<f64>, state: NlState, lambda: f64, steps: Vec<StepInfo>, stop: Stop) -> NlSolution {
         let mut reactions = vec![0.0; u.len()];
         let mut contact = None;
@@ -1042,7 +1118,7 @@ impl Ctx<'_> {
             }
             norm(&net)
         };
-        NlSolution { u, state, lambda, steps, reactions, stop, factorisations: 0, stalled_solves: 0, held_solves: 0, elapsed_ms: 0.0, contact, contact_points, contact_weights, rigid_translation, ground_leak }
+        NlSolution { u, state, lambda, steps, reactions, stop, factorisations: 0, stalled_solves: 0, held_solves: 0, elapsed_ms: 0.0, contact, contact_points, contact_weights, rigid_translation, ground_leak, events: self.events.borrow().clone(), profile: Profile::default() }
     }
 
     /// Newton iterations at load factor `lambda` from the converged `(u, state)`.
@@ -1137,10 +1213,16 @@ impl Ctx<'_> {
             // (Frictional contact only: holding every stagnating contact solve was tried and broke
             // `a_lightly_loaded_stiff_penalty_contact_converges_in_few_factorisations`: a free pin that has not touched yet
             // was held out of contact, and its rigid-body dofs went singular.)
-            if frictional && since_best >= STAGNATION_ITERATIONS {
+            // A hold freezes the chatter of a patch edge: a few points of ~zero pressure entering and leaving. An iterate that
+            // lost half the contact (or all of it) of the step's start is not chattering, it has left the solution: freezing
+            // that active set "converged" to a pin carrying none of its load (3D partial-slip GMRES steps exposed it:
+            // `eccentric-bushing` seed 77), so the stagnation stands and the step is cut.
+            let hold_plausible = state0.contact.iter().zip(&ev.state.contact).all(|(start, now)| 2 * now.iter().filter(|c| c.active).count() >= start.iter().filter(|c| c.active).count());
+            if frictional && since_best >= STAGNATION_ITERATIONS && hold_plausible {
                 if let Some(cs) = self.contacts.as_ref().filter(|cs| !cs.active_set_held()) {
                     cs.hold_active_set(&ev.state.contact);
                     self.held.set(self.held.get() + 1);
+                    self.note(EventKind::ActiveSetHeld, lambda, rn, format!("no 3 % gain of the best residual {best_rn:.3e} in {STAGNATION_ITERATIONS} iterations"));
                     if std::env::var("NL_DEBUG").is_ok() {
                         eprintln!("HELD stagnated at lambda {lambda:.4} (residual {rn:.3e}, best {best_rn:.3e}): holding the active set");
                     }
@@ -1160,6 +1242,7 @@ impl Ctx<'_> {
                 if let Some((_, lu, lq, mut lst)) = lowest.take().filter(|l| l.0 <= self.opt.stall_tol * self.scale(&ev, lambda)) {
                     lst.rigid_q = lq;
                     self.stalled.set(self.stalled.get() + 1);
+                    self.note(EventKind::StallAccepted, lambda, residuals.last().copied().unwrap_or(f64::NAN), "stagnated; lowest iterate accepted under stall_tol");
                     return Ok((lu, lst, residuals));
                 }
             }
@@ -1208,6 +1291,9 @@ impl Ctx<'_> {
                 // (Follower loads too: the symmetric part of their load stiffness is indefinite well before the body is.)
                 let fac = if self.contacts.is_some() || !self.followers.is_empty() { self.red.factor_any(k) } else { self.red.factor(k).map(crate::linear::AnyFactor::Llt) }.map_err(|e| e.to_string())?;
                 self.timers[1].set(self.timers[1].get() + t_fac.elapsed().as_secs_f64());
+                if fac.is_indefinite() && !self.events.borrow().iter().any(|e| e.kind == EventKind::IndefiniteTangent) {
+                    self.note(EventKind::IndefiniteTangent, lambda, rn, "tangent not positive definite: LDL^T factorisation (first occurrence)");
+                }
                 self.factorisations.set(self.factorisations.get() + 1);
                 chord = Some((fac, 0));
             }
@@ -1255,6 +1341,7 @@ impl Ctx<'_> {
             if let Some((_, lu, lq, mut lst)) = lowest.take().filter(|l| l.0 <= self.opt.stall_tol * self.scale(&ev, lambda)) {
                 lst.rigid_q = lq;
                 self.stalled.set(self.stalled.get() + 1);
+                self.note(EventKind::StallAccepted, lambda, residuals.last().copied().unwrap_or(f64::NAN), "iteration limit; lowest iterate accepted under stall_tol");
                 return Ok((lu, lst, residuals));
             }
         }
@@ -1365,7 +1452,7 @@ impl Ctx<'_> {
         // equilibrium by `outer_tol x` the fit pressure, which is large next to a small applied load.
         let mut solved = sn.contact.clone();
         let mut ended = false;
-        for _ in 0..self.opt.max_outer {
+        for pass in 0..self.opt.max_outer {
             solved = sn.contact.clone();
             let chg = cs.update_multipliers(&mut sn.contact);
             if chg < self.opt.outer_tol {
@@ -1381,10 +1468,14 @@ impl Ctx<'_> {
                     sn = s2;
                     residuals.extend(r2);
                 }
-                Err(_) => {
+                Err(e) => {
+                    self.note(EventKind::OuterNotConverged, target, f64::NAN, format!("an augmented-Lagrangian pass failed (multiplier change {chg:.2e}): {e}"));
                     ended = true;
                     break;
                 }
+            }
+            if pass + 1 == self.opt.max_outer {
+                self.note(EventKind::OuterNotConverged, target, f64::NAN, format!("{} passes left the multiplier change at {chg:.2e} (outer_tol {:.1e})", self.opt.max_outer, self.opt.outer_tol));
             }
         }
         for (pts, old) in sn.contact.iter_mut().zip(&solved) {
@@ -1419,12 +1510,12 @@ impl Ctx<'_> {
                     let newton_effort = residuals.len();
                     (un, sn) = self.refine_contact(lambda, target, un, sn, &mut residuals);
                     lambda = target;
-                    if std::env::var("NL_DEBUG").is_ok() {
-                        eprintln!("step ok lambda {target:.4} effort {newton_effort} total {}", residuals.len());
-                    }
                     let iterations = residuals.len();
                     let max_ep = sn.max_ep();
                     let master_force = if self.contacts.is_some() { self.eval(&un, &sn.rigid_q, &sn, lambda, false).ok().and_then(|e| e.stats).map_or(Vec::new(), |st| st.master_force) } else { Vec::new() };
+                    if std::env::var("NL_DEBUG").is_ok() {
+                        eprintln!("step ok lambda {target:.4} effort {newton_effort} total {} master force {:?}", residuals.len(), master_force.first());
+                    }
                     // A step that carries the first master well past the target force is taken again with half the step
                     // (the force rises steeply once a body is in contact, so a uniform step can jump far over the target).
                     if self.opt.stop_at_force > 0.0 && master_force.first().is_some_and(|f| norm(f) > 1.25 * self.opt.stop_at_force) && dl > 1e-9 {
@@ -1439,6 +1530,7 @@ impl Ctx<'_> {
                     u = un;
                     state = sn;
                     cuts_total = 0;
+                    stagnated_cuts = 0; // (per load step, as documented: the budget was cumulative over the whole analysis)
                     // Frictional contact converges linearly (the sliding traction is frozen in the tangent), so
                     // its first pass legitimately takes 10-15 iterations.
                     if newton_effort <= if self.contacts.is_some() { 16 } else { 5 } {
@@ -1462,6 +1554,7 @@ impl Ctx<'_> {
                         eprintln!("step to lambda {target:.4} cut: {e}");
                     }
                     cuts_total += 1;
+                    self.note(EventKind::StepCut, target, f64::NAN, e.clone());
                     if self.opt.stick_slip_guard && e.starts_with(STAGNATED) {
                         stagnated_cuts += 1;
                         if stagnated_cuts > STAGNATION_CUTS {
@@ -1647,6 +1740,7 @@ impl Ctx<'_> {
                     if reason.is_empty() {
                         reason = format!("no convergence in {} iterations (residuals {:?})", self.opt.max_iter, residuals.iter().rev().take(4).rev().map(|r| format!("{r:.2e}")).collect::<Vec<_>>());
                     }
+                    self.note(EventKind::StepCut, lambda, residuals.last().copied().unwrap_or(f64::NAN), reason.clone());
                     if cuts > self.opt.max_cuts {
                         return Ok(self.finish(u, state, lambda, steps, Stop::NoConvergence(format!("arc-length step could not converge at lambda {lambda:.5} (ds {ds:.2e}): {reason}"))));
                     }
