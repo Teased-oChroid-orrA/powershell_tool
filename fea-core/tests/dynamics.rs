@@ -363,3 +363,26 @@ fn fixed_fixed_axial_modes_match_the_independent_spectrum_and_mass_orthogonality
         }
     }
 }
+
+#[test]
+fn streamed_transient_states_match_recorded_history_and_preserve_diagnostics() {
+    let (model, bc, _, loads) = bar_for_transient();
+    let opt = TransientOptions { dt: 0.002, steps: 20, record: (0..model.mesh.n_dofs()).collect(), ..Default::default() };
+    let recorded = model.transient(&loads, &|_| 1.0, &bc, None, &opt).unwrap();
+    let mut seen = Vec::new();
+    let streamed = model.transient_observed(&loads, &|_| 1.0, &bc, None,
+        &TransientOptions { record: Vec::new(), ..opt.clone() },
+        &mut |step, time, u| { seen.push((step, time, u.to_vec())); Ok(()) }).unwrap();
+    assert_eq!(seen.len(), 21);
+    assert!(streamed.history.is_empty());
+    assert_eq!(streamed.times, recorded.times);
+    assert_eq!(streamed.residuals, recorded.residuals);
+    assert_eq!(streamed.energy, recorded.energy);
+    for (step, time, u) in seen {
+        assert_eq!(time, recorded.times[step]);
+        for (dof, value) in u.iter().enumerate() { assert_eq!(*value, recorded.history[dof][step]); }
+    }
+    let error = model.transient_observed(&loads, &|_| 1.0, &bc, None, &opt,
+        &mut |step, _, _| if step == 3 { Err("observer cancelled".into()) } else { Ok(()) }).unwrap_err();
+    assert_eq!(error, "observer cancelled");
+}

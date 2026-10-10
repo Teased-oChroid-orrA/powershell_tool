@@ -1,7 +1,7 @@
 use fea_core::Mesh;
 use serde::{Deserialize, Serialize};
 
-const SAMPLE_BUDGET: usize = 4_000_000;
+pub(super) const SAMPLE_BUDGET: usize = 4_000_000;
 
 /// Normalized coordinates; displacement/scalar samples are frame-major and uploaded once.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -13,8 +13,55 @@ pub struct Scene {
     pub times: Vec<f32>,
     pub range: [f32; 2],
     pub gain: f32,
+    /// A compact, mass-normalized modal shape. The shader gain follows sin(2πt/period).
+    #[serde(default)]
+    pub harmonic_period: Option<f32>,
 }
 impl Scene {
+    pub fn duration(&self) -> f32 {
+        self.harmonic_period
+            .unwrap_or_else(|| *self.times.last().unwrap_or(&0.0))
+    }
+    /// Append a sampled state directly in GPU precision; never retain a second full f64 history.
+    pub(super) fn append_displacements(
+        &mut self,
+        u: &[f64],
+        dim: usize,
+        span: f64,
+        time: f32,
+    ) -> Result<(), String> {
+        let n = self.positions.len();
+        if !(2..=3).contains(&dim)
+            || u.len() != n * dim
+            || !span.is_finite()
+            || span <= 0.0
+            || !time.is_finite()
+            || time <= *self.times.last().ok_or("missing initial frame")?
+            || self
+                .samples
+                .len()
+                .checked_add(n)
+                .is_none_or(|count| count > SAMPLE_BUDGET)
+        {
+            return Err("invalid streamed frame or GPU sample budget exceeded".into());
+        }
+        let samples: Vec<[f32; 4]> = (0..n)
+            .map(|i| {
+                let mut sample = [0.0; 4];
+                for axis in 0..dim {
+                    sample[axis] = (u[i * dim + axis] / span) as f32;
+                }
+                sample[3] = self.samples[i][3];
+                sample
+            })
+            .collect();
+        if samples.iter().flatten().any(|x| !x.is_finite()) {
+            return Err("nonfinite streamed displacement".into());
+        }
+        self.samples.extend(samples);
+        self.times.push(time);
+        Ok(())
+    }
     pub fn validate(&self) -> Result<(), String> {
         let n = self.positions.len();
         if n == 0
@@ -42,6 +89,9 @@ impl Scene {
             || self.range[1] < self.range[0]
             || !(self.range[1] - self.range[0]).is_finite()
             || self.label.len() > 1024
+            || self
+                .harmonic_period
+                .is_some_and(|p| !p.is_finite() || p <= 0.0 || self.times.len() != 1)
         {
             return Err("invalid or oversized GPU scene".into());
         }
@@ -173,6 +223,7 @@ impl Scene {
             } else {
                 1.0
             },
+            harmonic_period: None,
         };
         scene.validate()?;
         Ok(scene)
@@ -204,6 +255,7 @@ mod tests {
             times: vec![0.0, 0.5, 1.0],
             range: [0.0, 1.0],
             gain: 1.0,
+            harmonic_period: None,
         }
     }
     #[test]
@@ -312,7 +364,7 @@ mod mesh_tests {
 /// Cheap result snapshot sent to a worker; tessellation/frame expansion stays outside the reducer.
 #[derive(Debug)]
 pub struct SceneSource {
-    pub mesh: Mesh,
+    pub mesh: std::sync::Arc<Mesh>,
     pub displacement: Vec<f64>,
     pub values: Vec<f64>,
     pub period: Option<f32>,
@@ -320,30 +372,152 @@ pub struct SceneSource {
 }
 impl SceneSource {
     pub fn build(self) -> Result<Scene, String> {
-        let count = if self.period.is_some() { 121 } else { 1 };
-        if self
-            .mesh
-            .n_dofs()
-            .checked_mul(count)
-            .is_none_or(|n| n > SAMPLE_BUDGET)
-        {
-            return Err("mode history exceeds the GPU memory budget".into());
-        }
-        let (frames, times) = if let Some(period) = self.period {
+        if let Some(period) = self.period {
             if !period.is_finite() || period <= 0.0 {
                 return Err("invalid modal period".into());
             }
-            let frames = (0..=120)
-                .map(|i| {
-                    let factor = (std::f64::consts::TAU * i as f64 / 120.0).sin();
-                    self.displacement.iter().map(|v| v * factor).collect()
-                })
-                .collect::<Vec<Vec<f64>>>();
-            let times = (0..=120).map(|i| i as f32 / 120.0 * period).collect();
-            (frames, times)
-        } else {
-            (vec![self.displacement], vec![0.0])
+        }
+        let mut scene = Scene::from_frames(
+            &self.mesh,
+            &[self.displacement],
+            vec![0.0],
+            &self.values,
+            self.label,
+        )?;
+        scene.harmonic_period = self.period;
+        scene.validate()?;
+        Ok(scene)
+    }
+}
+
+/// Versioned native result session; carries every already-computed mode for this problem.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ViewerProject {
+    pub version: u32,
+    pub scenes: Vec<Scene>,
+    pub selected: usize,
+    pub problem: Option<fea_problem::Problem>,
+}
+impl ViewerProject {
+    pub fn single(scene: Scene) -> Self {
+        Self {
+            version: 1,
+            scenes: vec![scene],
+            selected: 0,
+            problem: None,
+        }
+    }
+    pub fn validate(&self) -> Result<(), String> {
+        if self.version != 1
+            || self.scenes.is_empty()
+            || self.scenes.len() > 64
+            || self.selected >= self.scenes.len()
+            || self
+                .scenes
+                .iter()
+                .try_fold(0usize, |sum, s| sum.checked_add(s.samples.len()))
+                .is_none_or(|n| n > SAMPLE_BUDGET)
+        {
+            return Err("invalid or oversized native viewer session".into());
+        }
+        if self
+            .scenes
+            .iter()
+            .try_fold(0usize, |sum, s| sum.checked_add(s.triangles.len()))
+            .is_none_or(|n| n > 12_000_000)
+        {
+            return Err("native session geometry exceeds its aggregate index budget".into());
+        }
+        for scene in &self.scenes {
+            scene.validate()?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct ProjectSource {
+    pub sources: Vec<SceneSource>,
+    pub selected: usize,
+    pub problem: fea_problem::Problem,
+}
+impl ProjectSource {
+    pub fn build(self) -> Result<ViewerProject, String> {
+        if self
+            .sources
+            .iter()
+            .try_fold(0usize, |sum, s| sum.checked_add(s.mesh.nodes.len()))
+            .is_none_or(|n| n > SAMPLE_BUDGET)
+        {
+            return Err(
+                "computed modes exceed the native session budget; use a coarser mesh".into(),
+            );
+        }
+        let project = ViewerProject {
+            version: 1,
+            scenes: self
+                .sources
+                .into_iter()
+                .map(SceneSource::build)
+                .collect::<Result<_, _>>()?,
+            selected: self.selected,
+            problem: Some(self.problem),
         };
-        Scene::from_frames(&self.mesh, &frames, times, &self.values, self.label)
+        project.validate()?;
+        Ok(project)
+    }
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+    use fea_core::{generate::grid, Elastic, ElementKind, Physics};
+    fn source() -> SceneSource {
+        let mesh = grid(
+            Physics::PlaneStress { thickness: 1.0 },
+            ElementKind::Quad4,
+            Elastic::new(1.0, 0.3),
+            [1, 1, 1],
+            &|p| p,
+        )
+        .unwrap();
+        SceneSource {
+            mesh: std::sync::Arc::new(mesh),
+            displacement: vec![0.1; 8],
+            values: vec![1.0; 4],
+            period: Some(2.0),
+            label: "mode".into(),
+        }
+    }
+    #[test]
+    fn compact_modal_session_validates_version_selection_and_period() {
+        let scene = source().build().unwrap();
+        assert_eq!(scene.samples.len(), 4);
+        assert_eq!(scene.duration(), 2.0);
+        let mut project = ViewerProject::single(scene);
+        project.validate().unwrap();
+        project.selected = 1;
+        assert!(project.validate().is_err());
+        project.selected = 0;
+        project.version = 2;
+        assert!(project.validate().is_err());
+        project.version = 1;
+        project.scenes[0].harmonic_period = Some(f32::NAN);
+        assert!(project.validate().is_err());
+    }
+    #[test]
+    fn streamed_frame_preserves_scalars_and_rejects_invalid_updates_atomically() {
+        let mut s = source();
+        s.period = None;
+        let mut scene = s.build().unwrap();
+        scene.append_displacements(&[0.2; 8], 2, 1.0, 1.0).unwrap();
+        assert_eq!(scene.samples[4], [0.2, 0.2, 0.0, 1.0]);
+        let before = scene.samples.clone();
+        assert!(scene
+            .append_displacements(&[f64::INFINITY; 8], 2, 1.0, 2.0)
+            .is_err());
+        assert_eq!(before, scene.samples);
+        assert_eq!(scene.times, vec![0.0, 1.0]);
+        assert!(scene.append_displacements(&[0.0; 8], 2, 1.0, 0.5).is_err());
     }
 }

@@ -1,4 +1,4 @@
-use super::{render::Renderer, Scene};
+use super::{render::Renderer, scene::ViewerProject, Scene};
 use std::{sync::Arc, time::Instant};
 use winit::{
     application::ApplicationHandler,
@@ -8,7 +8,10 @@ use winit::{
     window::{Window, WindowId},
 };
 struct Viewer {
-    scene: Scene,
+    project: ViewerProject,
+    show_mesh: bool,
+    show_contour: bool,
+    deformed: bool,
     window: Option<Arc<Window>>,
     surface: Option<wgpu::Surface<'static>>,
     renderer: Option<Renderer>,
@@ -26,6 +29,32 @@ struct Viewer {
     error: Option<String>,
 }
 impl Viewer {
+    fn scene(&self) -> &Scene {
+        &self.project.scenes[self.project.selected]
+    }
+    fn switch_mode(&mut self, forward: bool) -> Result<(), String> {
+        let n = self.project.scenes.len();
+        let selected = if forward {
+            (self.project.selected + 1) % n
+        } else {
+            (self.project.selected + n - 1) % n
+        };
+        let scene = &self.project.scenes[selected];
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_scene(scene)?;
+        }
+        self.project.selected = selected;
+        self.gain = self.scene().gain;
+        self.time = 0.0;
+        self.speed = if self.scene().duration() > 0.0 {
+            self.scene().duration() / 4.0
+        } else {
+            1.0
+        };
+        self.error = None;
+        Ok(())
+    }
+
     fn init(&mut self, event_loop: &ActiveEventLoop) -> Result<(), String> {
         let window = Arc::new(
             event_loop
@@ -49,7 +78,7 @@ impl Viewer {
         let renderer = pollster::block_on(Renderer::new(
             &adapter,
             config.format,
-            &self.scene,
+            self.scene(),
             config.width,
             config.height,
         ))?;
@@ -59,6 +88,8 @@ impl Viewer {
         self.renderer = Some(renderer);
         self.config = Some(config);
         self.last = Instant::now();
+        // Companion-process readiness handshake: the controller keeps launch progress visible until here.
+        println!("FEA_GPU_READY");
         Ok(())
     }
 }
@@ -91,19 +122,52 @@ impl ApplicationHandler for Viewer {
                     Key::Named(NamedKey::Escape) => e.exit(),
                     Key::Named(NamedKey::Space) => self.paused = !self.paused,
                     Key::Named(NamedKey::Home) => self.time = 0.0,
+                    Key::Named(NamedKey::Tab) => {
+                        if let Err(err) = self.switch_mode(true) {
+                            self.error = Some(err);
+                        }
+                    }
+                    Key::Character(ref c) if c == "[" || c == "]" => {
+                        if let Err(err) = self.switch_mode(c == "]") {
+                            self.error = Some(err);
+                        }
+                    }
+                    Key::Character(ref c) if c.eq_ignore_ascii_case("m") => {
+                        self.show_mesh = !self.show_mesh
+                    }
+                    Key::Character(ref c) if c.eq_ignore_ascii_case("c") => {
+                        self.show_contour = !self.show_contour
+                    }
+                    Key::Character(ref c) if c.eq_ignore_ascii_case("d") => {
+                        self.deformed = !self.deformed
+                    }
+                    Key::Character(ref c) if c.eq_ignore_ascii_case("r") => {
+                        self.yaw = 0.0;
+                        self.pitch = 0.0;
+                        self.zoom = 1.6;
+                    }
                     Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::ArrowLeft) => {
                         self.paused = true;
+                        if let Some(period) = self.scene().harmonic_period {
+                            let delta = if event.logical_key == Key::Named(NamedKey::ArrowRight) {
+                                period / 120.0
+                            } else {
+                                -period / 120.0
+                            };
+                            self.time = (self.time + delta).rem_euclid(period);
+                            return;
+                        }
                         let i = self
-                            .scene
+                            .scene()
                             .times
                             .partition_point(|t| *t <= self.time)
                             .saturating_sub(1);
                         let j = if event.logical_key == Key::Named(NamedKey::ArrowRight) {
-                            (i + 1).min(self.scene.times.len() - 1)
+                            (i + 1).min(self.scene().times.len() - 1)
                         } else {
                             i.saturating_sub(1)
                         };
-                        self.time = self.scene.times[j];
+                        self.time = self.scene().times[j];
                     }
                     Key::Named(NamedKey::ArrowUp) => self.gain = (self.gain * 1.25).min(1e12),
                     Key::Named(NamedKey::ArrowDown) => self.gain /= 1.25,
@@ -141,24 +205,26 @@ impl ApplicationHandler for Viewer {
                 let now = Instant::now();
                 let dt = (now - self.last).as_secs_f32().min(0.1);
                 self.last = now;
-                let end = *self.scene.times.last().unwrap();
+                let end = self.scene().duration();
                 if !self.paused && end > 0.0 {
                     self.time = (self.time + dt * self.speed) % end;
                 }
                 if let (Some(s), Some(r), Some(c)) = (&self.surface, &self.renderer, &self.config) {
                     match s.get_current_texture() {
                         Ok(frame) => {
-                            r.draw(
+                            r.draw_display(
                                 &frame.texture.create_view(&Default::default()),
-                                &self.scene,
+                                self.scene(),
                                 self.time,
-                                self.gain,
+                                if self.deformed { self.gain } else { 0.0 },
                                 [
                                     self.yaw,
                                     self.pitch,
                                     self.zoom,
                                     c.width as f32 / c.height as f32,
                                 ],
+                                self.show_mesh,
+                                self.show_contour,
                             );
                             frame.present();
                         }
@@ -173,7 +239,7 @@ impl ApplicationHandler for Viewer {
                     }
                 }
                 if let Some(w) = &self.window {
-                    w.set_title(&format!("{} | t={:.4} | deformation ×{:.2} | speed ×{:.2} | Space play, ←→ frames, ↑↓ gain, +/- speed, drag orbit, wheel zoom",self.scene.label,self.time,self.gain,self.speed));
+                    w.set_title(&format!("{} | result {}/{} | t={:.4} | gain ×{:.2} | speed ×{:.2} | mesh {} / contour {} / deformed {} | Tab/[ ] modes, M mesh, C contour, D deform, Space play, arrows frame/gain, +/- speed, R camera{}",self.scene().label,self.project.selected+1,self.project.scenes.len(),self.time,self.gain,self.speed,self.show_mesh,self.show_contour,self.deformed,self.error.as_ref().map(|e|format!(" | {e}")).unwrap_or_default()));
                 }
             }
             _ => {}
@@ -185,12 +251,17 @@ impl ApplicationHandler for Viewer {
         }
     }
 }
-pub fn run(scene: Scene) -> Result<(), String> {
+pub fn run(project: ViewerProject) -> Result<(), String> {
+    project.validate()?;
+    let scene = &project.scenes[project.selected];
     let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
     let gain = scene.gain;
-    let end = *scene.times.last().unwrap();
+    let end = scene.duration();
     let mut app = Viewer {
-        scene,
+        project,
+        show_mesh: false,
+        show_contour: true,
+        deformed: true,
         window: None,
         surface: None,
         renderer: None,

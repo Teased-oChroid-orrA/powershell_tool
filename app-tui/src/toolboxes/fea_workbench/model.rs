@@ -433,7 +433,7 @@ pub fn field_hint(row: FieldRow) -> &'static str {
         Analysis => "Plane stress (thin plate), plane strain (long prismatic body), axisymmetric (x = radius, y = axis; loads are totals over 360 degrees) or a 3D solid (an extruded sketch or an imported volume mesh).",
         Thickness => "Out-of-plane thickness; edge forces and tractions act over this thickness.",
         Material => "Enter opens the material browser: E, Poisson's ratio, thermal expansion and yield come from it.",
-        Density => "Mass per volume in consistent units (inch / psi: lbf s^2/in^4 = weight density / 386.09). Only the natural-frequency analysis (n) uses it.",
+        Density => "Mass per volume in consistent units (inch / psi: lbf s^2/in^4 = weight density / 386.09). Natural frequencies (n) and load-release animation (t) require it.",
         Young | Poisson | Alpha | Yield => "Linear isotropic material. Units are yours (inch / psi by convention); the solver is unit-free. Yield only feeds the margin readout (0 = none).",
         DeltaT => "Uniform temperature change from the stress-free state (needs a thermal expansion coefficient).",
         Source => "Sketch: a parametric outline with holes meshed here. Imported: a Gmsh .msh or Abaqus .inp mesh from a file.",

@@ -17,6 +17,8 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) value: f32, };
     return o;
 }
 @fragment fn fs(o: Out) -> @location(0) vec4<f32> {
+    if (params.frames.w & 1u) != 0u { return vec4<f32>(0.6, 0.65, 0.72, 1.0); }
     let t = clamp(o.value,0.0,1.0);
     return vec4<f32>(t, 0.3+0.6*(1.0-abs(2.0*t-1.0)), 1.0-t, 1.0);
 }
+@fragment fn fs_mesh(o: Out) -> @location(0) vec4<f32> { return vec4<f32>(0.04, 0.05, 0.07, 1.0); }

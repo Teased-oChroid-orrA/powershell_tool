@@ -726,6 +726,14 @@ impl Model {
     /// Linear transient response of `K u + C v + M a = g(t) f` from the state `(u0, v0)` (zero when `None`), `f` the
     /// assembly of `loads`, homogeneous constraints. Constant step, one factorisation of the effective matrix.
     pub fn transient(&self, loads: &Loads, g: &dyn Fn(f64) -> f64, bc: &Dirichlet, init: Option<(&[f64], &[f64])>, opt: &TransientOptions) -> Result<Transient, String> {
+        self.transient_observed(loads, g, bc, init, opt, &mut |_, _, _| Ok(()))
+    }
+
+    /// Observe each finite integration state without retaining its complete displacement history.
+    /// Apply result acceptance before publishing snapshots.
+    /// Callback errors abort the solve; all residual/energy diagnostics remain recorded at every step.
+    #[allow(clippy::too_many_arguments)]
+    pub fn transient_observed(&self, loads: &Loads, g: &dyn Fn(f64) -> f64, bc: &Dirichlet, init: Option<(&[f64], &[f64])>, opt: &TransientOptions, observe: &mut dyn FnMut(usize, f64, &[f64]) -> Result<(), String>) -> Result<Transient, String> {
         if !opt.dt.is_finite() || opt.dt <= 0.0 || !(-1.0 / 3.0 - 1e-12..=1e-12).contains(&opt.alpha) {
             return Err("transient: dt must be positive and alpha within [-1/3, 0]".into());
         }
@@ -822,6 +830,7 @@ impl Model {
         if !out.energy[0].is_finite() || a.iter().any(|x| !x.is_finite()) {
             return Err("transient: nonfinite initial acceleration or energy".into());
         }
+        observe(0, 0.0, &u)?;
         for s in 1..=opt.steps {
             let t = s as f64 * dt;
             let f_new = load_at(t)?;
@@ -852,6 +861,7 @@ impl Model {
                 return Err(format!("transient: nonfinite state or energy at step {s}"));
             }
             out.energy.push(e);
+            observe(s, t, &u)?;
         }
         out.u = u;
         out.v = v;

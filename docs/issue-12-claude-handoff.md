@@ -212,3 +212,13 @@ between Lanczos and subspace iteration. Full workspace and subsequent hosted val
 in issue #12 / PR #13 against this follow-up's actual commit. The earlier full-suite counts remain
 historical evidence until that new run completes. Local evidence: `lanczos-warning-dynamics.log`
 and `.exit` under `/workspace/phase12-evidence/`.
+
+## Interactive GPU extension — 2026-10-10 UTC
+
+The user added new requirements after Phase 12–18 completion: visible generation progress, removal of ordinary full-history memory failures, in-window mode/display controls, and an interactive model/constraint editor with context-aware advisory ML. **Issue #12 is no longer implementation-complete for this expanded scope.** See [Phase 19–22 roadmap and current increment](issue-12-phase-19.md).
+
+The first increment implements streaming/visible generation and native keyboard result controls, preserving all 240 integration/acceptance steps. It also supplies packed companion transfer, launch readiness/error diagnostics, compact modal shapes, shared mesh snapshots and one reused graphics device. Tested core dynamics 19/19, app library 816/816 (3 ignored), explicit GPU checks 2/2, terminal-only compile, and actual tmux/xterm/native-window interaction. New workspace/hosted results belong to the published increment's SHA, tracked in issue #12 / draft PR #13; earlier passes are historical.
+
+The original large plate now animates. In the native modal window, Tab or [/] switches all already-computed modes; M toggles mesh, C contour, D deformation, R resets camera. Actual screenshot/pixel evidence is stored under `/workspace/phase12-evidence/phase19-*`. Cloud display setup uses signed/verified Debian packages extracted into `/workspace/ui-tools`; `/workspace/ui-tools/phase19-smoke.py` runs/cleans its own Xvfb (MIT-SHM disabled), xterm and tmux. Native macOS Metal and Windows hardware interaction remain unverified here.
+
+Next implementation: visible native panels/legend and a pure native editor controller; versioned model authoring (prioritize aircraft frame/truss members and valid translational/rotational constraints), stable picking/entity identities, undo/redo, save/load and verified analysis workers. Build exact formulation/operation capability filters before adding an optional measured ML ranker over allowed actions. No editor, trained contextual ML or new in-window solve command is claimed in this increment. Preserve deterministic numerical/physical acceptance and offline fallback. Continue exclusively on `codex/fea-core-roadmap`; keep PR #13 draft and main unchanged.

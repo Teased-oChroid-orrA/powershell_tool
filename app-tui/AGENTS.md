@@ -128,3 +128,11 @@ static/modal/buckling results; `t` computes a time history. Main executable disp
 builds use `--no-default-features`. Effects/process/window I/O stay in `main.rs`; reducers stay pure.
 See `docs/issue-12-phase-18.md` for controls, supported physics, limits and validation evidence.
 Earlier no-GPU descriptions above are historical.
+
+## Navigation addendum — native GPU workbench roadmap (2026-10-10)
+
+`src/gpu_viewer/progress.rs` and `transport.rs`: generation stages/step progress, ready handshake
+and packed companion streams. Versioned native sessions carry all computed modes; native Tab/[ ]
+selects results and M/C/D controls mesh/contour/deformation. Interactive authoring and contextual
+ML are newly planned, not shipped: `docs/issue-12-phase-19.md`; current status/handoff remains
+`docs/issue-12-claude-handoff.md`.

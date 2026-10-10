@@ -1,5 +1,7 @@
 use super::Scene;
 use wgpu::util::DeviceExt;
+#[cfg(test)]
+static HEADLESS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Params {
@@ -12,11 +14,15 @@ pub struct Renderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pipeline: wgpu::RenderPipeline,
+    mesh_pipeline: wgpu::RenderPipeline,
+    layout: wgpu::BindGroupLayout,
     bind: wgpu::BindGroup,
     uniform: wgpu::Buffer,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     count: u32,
+    edges: wgpu::Buffer,
+    edge_count: u32,
     depth: wgpu::TextureView,
 }
 impl Renderer {
@@ -70,7 +76,7 @@ impl Renderer {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -149,17 +155,133 @@ impl Renderer {
             usage: wgpu::BufferUsages::INDEX,
         });
         let depth = Self::depth(&device, width, height);
+        let mesh_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("FEA mesh overlay"),
+            layout: Some(&pl),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs",
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: 12,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0=>Float32x3],
+                }],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: "fs_mesh",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: Default::default(),
+                bias: wgpu::DepthBiasState {
+                    constant: -1,
+                    slope_scale: 0.0,
+                    clamp: 0.0,
+                },
+            }),
+            multisample: Default::default(),
+            multiview: None,
+        });
+        let edge_data = Self::edge_indices(scene);
+        let edges = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("mesh edges"),
+            contents: bytemuck::cast_slice(&edge_data),
+            usage: wgpu::BufferUsages::INDEX,
+        });
         Ok(Self {
             device,
             queue,
             pipeline,
+            mesh_pipeline,
+            layout,
             bind,
             uniform,
             vertices,
             indices,
             count: scene.triangles.len() as u32,
+            edges,
+            edge_count: edge_data.len() as u32,
             depth,
         })
+    }
+    fn edge_indices(scene: &Scene) -> Vec<u32> {
+        scene
+            .triangles
+            .chunks_exact(3)
+            .flat_map(|t| [t[0], t[1], t[1], t[2], t[2], t[0]])
+            .collect()
+    }
+    /// Change the active result on the same device and pipelines; upload immutable data once per selection.
+    pub fn set_scene(&mut self, scene: &Scene) -> Result<(), String> {
+        scene.validate()?;
+        let bytes = scene.samples.len() as u64 * 16;
+        let limits = self.device.limits();
+        if bytes > limits.max_storage_buffer_binding_size as u64 || bytes > limits.max_buffer_size {
+            return Err("mode exceeds this adapter's storage-buffer limit".into());
+        }
+        let samples = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("selected mode samples"),
+                contents: bytemuck::cast_slice(&scene.samples),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: samples.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.uniform.as_entire_binding(),
+                },
+            ],
+        });
+        let vertices = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: bytemuck::cast_slice(&scene.positions),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        let indices = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: bytemuck::cast_slice(&scene.triangles),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+        let data = Self::edge_indices(scene);
+        let edges = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: bytemuck::cast_slice(&data),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+        self.bind = bind;
+        self.vertices = vertices;
+        self.indices = indices;
+        self.edges = edges;
+        self.count = scene.triangles.len() as u32;
+        self.edge_count = data.len() as u32;
+        Ok(())
     }
     fn depth(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
         device
@@ -190,12 +312,33 @@ impl Renderer {
         gain: f32,
         camera: [f32; 4],
     ) {
+        self.draw_display(view, scene, time, gain, camera, false, true);
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_display(
+        &self,
+        view: &wgpu::TextureView,
+        scene: &Scene,
+        time: f32,
+        gain: f32,
+        camera: [f32; 4],
+        show_mesh: bool,
+        show_contour: bool,
+    ) {
         let (a, b, blend) = scene.frame_at(time);
+        let gain = scene.harmonic_period.map_or(gain, |period| {
+            gain * (std::f32::consts::TAU * time / period).sin()
+        });
         self.queue.write_buffer(
             &self.uniform,
             0,
             bytemuck::bytes_of(&Params {
-                frames: [a as u32, b as u32, scene.positions.len() as u32, 0],
+                frames: [
+                    a as u32,
+                    b as u32,
+                    scene.positions.len() as u32,
+                    u32::from(!show_contour),
+                ],
                 settings: [blend, gain, scene.range[0], scene.range[1]],
                 camera,
             }),
@@ -233,6 +376,11 @@ impl Renderer {
             pass.set_vertex_buffer(0, self.vertices.slice(..));
             pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.count, 0, 0..1);
+            if show_mesh {
+                pass.set_pipeline(&self.mesh_pipeline);
+                pass.set_index_buffer(self.edges.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..self.edge_count, 0, 0..1);
+            }
         }
         self.queue.submit(Some(encoder.finish()));
     }
@@ -244,6 +392,7 @@ mod tests {
     #[test]
     #[ignore = "requires a native graphics adapter; explicitly exercised during Phase 18 validation"]
     fn headless_deformation_changes_pixels() {
+        let _guard = HEADLESS_LOCK.lock().unwrap();
         pollster::block_on(async {
             let instance = wgpu::Instance::default();
             let adapter = instance
@@ -270,10 +419,12 @@ mod tests {
                 times: vec![0.0, 1.0],
                 range: [0.0, 1.0],
                 gain: 1.0,
+                harmonic_period: None,
             };
-            let renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, 64, 64)
-                .await
-                .unwrap();
+            let mut renderer =
+                Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, 64, 64)
+                    .await
+                    .unwrap();
             let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
                 label: None,
                 size: wgpu::Extent3d {
@@ -288,13 +439,15 @@ mod tests {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
                 view_formats: &[],
             });
-            let read = |time| {
-                renderer.draw(
+            let read = |renderer: &Renderer, scene: &Scene, time, mesh, contour| {
+                renderer.draw_display(
                     &texture.create_view(&Default::default()),
-                    &scene,
+                    scene,
                     time,
                     1.0,
                     [0.0, 0.0, 1.6, 1.0],
+                    mesh,
+                    contour,
                 );
                 let buffer = renderer.device.create_buffer(&wgpu::BufferDescriptor {
                     label: None,
@@ -335,9 +488,32 @@ mod tests {
                 buffer.unmap();
                 bytes
             };
-            let a = read(0.0);
-            let b = read(1.0);
-            let mid = read(0.5);
+            let a = read(&renderer, &scene, 0.0, false, true);
+            let b = read(&renderer, &scene, 1.0, false, true);
+            let mid = read(&renderer, &scene, 0.5, false, true);
+            assert_ne!(
+                a,
+                read(&renderer, &scene, 0.0, true, true),
+                "mesh toggle changes pixels"
+            );
+            assert_ne!(
+                a,
+                read(&renderer, &scene, 0.0, false, false),
+                "contour toggle changes pixels"
+            );
+            let mut mode = scene.clone();
+            mode.samples = vec![[0.3, 0.0, 0.0, 0.5]; 3];
+            mode.times = vec![0.0];
+            mode.harmonic_period = Some(1.0);
+            renderer.set_scene(&mode).unwrap();
+            assert_ne!(
+                read(&renderer, &mode, 0.25, false, true),
+                read(&renderer, &mode, 0.75, false, true),
+                "compact modal sine changes geometry"
+            );
+            let mut invalid = mode.clone();
+            invalid.triangles[0] = 100;
+            assert!(renderer.set_scene(&invalid).is_err());
             assert_ne!(a, b);
             assert_ne!(a, mid);
             assert_ne!(b, mid);
@@ -355,6 +531,7 @@ mod performance_tests {
     #[test]
     #[ignore = "native adapter playback measurement; run explicitly with --ignored --nocapture"]
     fn headless_playback_profile() {
+        let _guard = HEADLESS_LOCK.lock().unwrap();
         pollster::block_on(async {
             let mesh = fea_core::generate::grid(
                 fea_core::Physics::PlaneStress { thickness: 1.0 },
