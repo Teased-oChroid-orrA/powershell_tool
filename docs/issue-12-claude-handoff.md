@@ -200,3 +200,15 @@ Native Windows window/terminal interaction and physical GPU throughput remain ex
 limits, requiring a Windows machine and graphics hardware. They are not covered by the Linux
 software-rendering evidence. Claude Code should review the documented formulation limits, run the
 Windows/hardware checks before making platform claims, and await explicit merge authorization.
+
+## User-reported build warning follow-up — 2026-10-10 UTC
+
+Removed the unused private `LanczosCtx.kind` field and its initializer. The `lanczos` function
+still uses its `kind` argument to select the modal/buckling metric before constructing the context;
+no numerical operation, acceptance criterion, public API or test tolerance changes. The original
+build warning is resolved rather than suppressed. `cargo test -p fea-core --test dynamics --locked
+-j4` passed: **18 passed, 0 failed**, including independent modal/buckling references and agreement
+between Lanczos and subspace iteration. Full workspace and subsequent hosted validation are tracked
+in issue #12 / PR #13 against this follow-up's actual commit. The earlier full-suite counts remain
+historical evidence until that new run completes. Local evidence: `lanczos-warning-dynamics.log`
+and `.exit` under `/workspace/phase12-evidence/`.

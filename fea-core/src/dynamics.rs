@@ -536,7 +536,7 @@ fn lanczos(m: usize, nev: usize, tol: f64, max_iter: usize, kind: Kind, sigma: f
     let theta_of = |lam: f64| 1.0 / (lam - sigma);
     // `interest`: larger is more wanted (|theta| for both problems; buckling keeps the positive factors afterwards).
     let interest = |lam: f64| theta_of(lam).abs();
-    let ctx = LanczosCtx { m, tol, max_iter, kind, sigma, mul, g_mat, k, b, fac, pair_of };
+    let ctx = LanczosCtx { m, tol, max_iter, sigma, mul, g_mat, k, b, fac, pair_of };
     let mut dim_total = 0;
     let (mut found, d) = ctx.run(nev, &[])?;
     dim_total += d;
@@ -573,7 +573,6 @@ struct LanczosCtx<'a> {
     m: usize,
     tol: f64,
     max_iter: usize,
-    kind: Kind,
     sigma: f64,
     mul: &'a (dyn Fn(&BlockMatrix, &[f64]) -> Vec<f64> + Sync),
     g_mat: &'a BlockMatrix,
