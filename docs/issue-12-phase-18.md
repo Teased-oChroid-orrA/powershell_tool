@@ -78,3 +78,22 @@ with workspace-local XDG runtime/cache directories passed both; use `--test-thre
 adapter tests. Interactive viewer runs one GPU context per companion process.
 
 Final workspace/terminal-only/rendering results are recorded in the Claude Code handoff.
+
+The companion's transient workflow has a fixed step count chosen from the fundamental period.
+Residual/energy acceptance does **not** certify a temporal-error bound or adequate resolution of every
+high-frequency mode. The kernel has independent second-order time-convergence benchmarks; refine
+time steps separately before using a particular history for production dynamic decisions. Arbitrary
+excitation histories, damping controls and time-varying stress recovery are not this first viewport scope.
+
+### Final current-source results
+
+Source `b7d4f33`: complete workspace 1,811 passed / 0 failed / 60 ignored / 93 targets, exit 0;
+app-lib 809 passed / 0 failed / 3 ignored; scoped rendering 38/38; native bins/lib/tests check and
+terminal-only bins/lib/tests check passed. Both graphics tests were also executed from the **final
+workspace binary**: pixel comparison 1/1, isolated playback profile 1/1, both exit 0. Software driver
+remains Mesa llvmpipe/OpenGL. Isolated 512x256 batch: 2,145 vertices, 4,096 triangles, 241 frames,
+8,271,120 sample bytes; pipeline/upload 55.056 ms, submitted playback plus completion 150.187 ms;
+process wall 0.410 s, peak RSS 113,732 KiB (Linux wait4). Evidence:
+`gpu-pixels-final.log/.exit`, `gpu-profile-final.log/.json`. This is software batch throughput with a
+warm driver cache, not native-window/hardware/Windows performance verification. Full final tracking
+and remaining hosted-CI status are in the Claude Code handoff.

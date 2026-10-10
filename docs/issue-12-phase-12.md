@@ -188,3 +188,27 @@ The user additionally requested direct GPU visualization and time-frame deformat
 This is an authorized GUI scope extension after the new core interfaces; preserve pure solver APIs
 and isolate rendering/window/file effects in the application. GPU continuation will be recorded in
 `docs/issue-12-phase-18.md`, alongside a final Claude Code roadmap handoff.
+
+## Final roadmap source validation (2026-10-10 UTC)
+
+Tested source commit **`b7d4f33b342469c227a21ebad20f31066bceafa1`** (core through Phase 17 plus
+user-authorized direct-wgpu Phase 18). The complete current-source required Linux CI command
+`cargo test --workspace --locked -j4 --no-fail-fast` passed with exit 0:
+**1,811 passed, 0 failed, 60 ignored, 93 targets**. Wall time including combined-feature rebuild:
+816.405 s. Evidence: `roadmap-final-workspace.log/.exit/.summary.json` and
+`roadmap-final-commands.json` under `/workspace/phase12-evidence/`.
+
+App bins/lib/tests check and terminal-only bins/lib/tests check passed. Current app-lib target:
+809 passed, 0 failed, 3 ignored. Rendering target: 38 passed, 0 failed, then explicit scoped replay
+also passed 38/38. Independent 3D partial-slip replay: `0 of 24 failed`, harness 1 passed / 0 failed,
+exit 0. Default-ignored native shader/pixel and playback profile tests were separately invoked and
+passed on Mesa llvmpipe/OpenGL; no default ignored test is counted as a workspace pass.
+
+Phases 12–17 and the direct-wgpu extension are incorporated within their dated documented scopes.
+No numerical tolerance was weakened. Failures, corrective actions, platform/formulation limitations,
+commit/PR links and exact Claude Code next steps are consolidated in
+[issue-12-claude-handoff.md](issue-12-claude-handoff.md). The following commit is documentation/navigation
+only, so it does not change the tested production or test source. Draft PR #13 remains unmerged;
+main remains at the audited `d5748135188cd6f196a2f6310ea9934251260f93`.
+GitHub-hosted CI was still running at handoff publication; local CI-equivalent results above are
+complete, but do not infer a hosted CI pass from them. Check the latest PR gate before any future merge.

@@ -81,3 +81,17 @@ automatic element-order or time-step reduction shared across all analyses.
 Heat conduction is implemented separately in `thermal.rs`; a nodal temperature field can drive
 structural loads and stress recovery. This is **one-way** coupling, not a generalized coupled field/DOF
 system. Phase 12 audit, checks and follow-up are recorded in [issue-12-phase-12.md](../issue-12-phase-12.md).
+
+## Roadmap implementation addendum (2026-10-10, issue #12)
+
+On `codex/fea-core-roadmap`, `fields.rs` now supplies generalized translational/rotational/thermal
+mapping, constraints and sparse symmetric assembly; `coupling.rs` explicitly supplies one-way
+thermal-to-structural transfer. This does not claim monolithic/two-way multiphysics.
+`strategy.rs::solve_refined` orchestrates bounded verified linear solves with a caller-owned mesher;
+`solve_nonlinear_verified` adds strict completed/finite/residual/caller-physics acceptance to a
+bounded strategy ladder. `report.rs::AcceptanceReport` provides analysis adapters and machine-readable
+finite acceptance records. Effective residuals accompany structural transient histories; energy
+checks remain conditional on the load/damping regime. No universal time-step/order adaptation or
+learned production selector is claimed. Independent benchmarks and limitations are in
+[Phase 13](../issue-12-phase-13.md), [Phase 15](../issue-12-phase-15.md),
+[Phase 17](../issue-12-phase-17.md) and the final Claude Code handoff.
