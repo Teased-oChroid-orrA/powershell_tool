@@ -240,4 +240,5 @@ full index mapping decision topics to ADR numbers.
 | Change the FEA Workbench or the problem schema | `app-tui/src/toolboxes/fea_workbench/AGENTS.md`, `fea-problem/AGENTS.md` |
 | Understand why an architecture decision was made | `docs/AGENTS.md` -> `docs/adr/` |
 | Understand a past epic's implementation history | `docs/AGENTS.md` -> `docs/issue-N-*.md` |
+| Continue issue #12 FEA roadmap / direct-wgpu work | `docs/issue-12-claude-handoff.md` -> `docs/issue-12-phase-12.md` .. `phase-18.md`; draft PR #13 |
 | Run the C#/WinUI reference app's own tests | `src/AGENTS.md` |

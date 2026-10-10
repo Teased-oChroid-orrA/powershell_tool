@@ -205,3 +205,143 @@ fn the_iterative_path_is_chosen_from_the_factor_size_not_the_dof_count() {
     assert!(!iterative_pays_off(3, AUTO_ANALYSE_DOFS - 1, 10 * AUTO_ITERATIVE_FACTOR_NNZ), "small systems are not even analysed");
     assert!(!iterative_pays_off(2, 1_000_000, 10 * AUTO_ITERATIVE_FACTOR_NNZ), "2D factors stay cheap");
 }
+
+#[test]
+fn adaptive_requirements_and_malformed_constraints_are_rejected() {
+    let (model, bc) = plastic_bar();
+    for tolerance in [f64::NAN, f64::INFINITY, 0.0, -1.0] {
+        assert!(model
+            .solve_adaptive(
+                &Loads::default(),
+                &bc,
+                &Requirements {
+                    residual_tol: tolerance,
+                    ..Default::default()
+                }
+            )
+            .is_err());
+    }
+    let mut malformed = bc.clone();
+    malformed.value.pop();
+    assert!(model
+        .solve_adaptive(&Loads::default(), &malformed, &Default::default())
+        .is_err());
+    assert!(model
+        .solve_adaptive(
+            &Loads::default(),
+            &bc,
+            &Requirements {
+                max_zz_error: Some(f64::INFINITY),
+                ..Default::default()
+            }
+        )
+        .is_err());
+}
+
+#[test]
+fn strict_nonlinear_ladder_requires_numerical_and_independent_physical_acceptance() {
+    let (model, bc) = plastic_bar();
+    let rungs = [Rung {
+        name: "verified reference".into(),
+        options: Default::default(),
+    }];
+    let verify = |s: &NlSolution| {
+        let sum: f64 = s.reactions.iter().step_by(2).sum();
+        let scale: f64 = s.reactions.iter().map(|x| x.abs()).sum();
+        if sum.abs() < 1e-8 * scale {
+            Ok(())
+        } else {
+            Err("independent force balance".into())
+        }
+    };
+    let out = model
+        .solve_nonlinear_verified(&Loads::default(), &bc, &[], &rungs, 1e-8, &verify)
+        .unwrap();
+    assert_eq!(out.rung, 0);
+    assert!(model
+        .solve_nonlinear_verified(&Loads::default(), &bc, &[], &rungs, 1e-8, &|_| Err(
+            "physical benchmark failed".into()
+        ))
+        .err()
+        .unwrap()
+        .contains("physical benchmark failed"));
+    assert!(model
+        .solve_nonlinear_verified(&Loads::default(), &bc, &[], &rungs, 1e-30, &|_| Ok(()))
+        .is_err());
+}
+
+fn refinement_problem(div: usize) -> (Model, Loads, Dirichlet) {
+    let mesh = grid(
+        Physics::PlaneStress { thickness: 1.0 },
+        ElementKind::Quad4,
+        Elastic::new(1e7, 0.3),
+        [div * 4, div, 1],
+        &|p| [4.0 * p[0], p[1], 0.0],
+    )
+    .unwrap();
+    let model = Model::new(mesh).unwrap();
+    let mut bc = model.dirichlet();
+    for &n in model.mesh.node_set("u0").unwrap() {
+        bc.fix_node(n);
+    }
+    let loads = Loads {
+        faces: model.mesh.surfaces["u1"]
+            .iter()
+            .map(|f| (f.clone(), SurfaceLoad::Traction([0.0, 1.0, 0.0])))
+            .collect(),
+        ..Default::default()
+    };
+    (model, loads, bc)
+}
+#[test]
+fn integrated_refinement_enforces_the_budget_and_final_error_requirement() {
+    use fea_core::adapt::AdaptOptions;
+    use fea_core::strategy::solve_refined;
+    let (model, loads, bc) = refinement_problem(2);
+    let req = Requirements {
+        max_zz_error: Some(0.1),
+        ..Default::default()
+    };
+    let mut div = 2;
+    let out = solve_refined(
+        model,
+        loads,
+        bc,
+        &req,
+        &AdaptOptions {
+            target_rel_error: 0.1,
+            ..Default::default()
+        },
+        3,
+        true,
+        |field| {
+            assert!(field.at([2.0, 0.5]).is_finite());
+            div *= 2;
+            Ok(refinement_problem(div))
+        },
+    )
+    .unwrap();
+    assert!(out.report.passed());
+    assert!(out.attempts <= 4);
+    assert!(out.report.json().contains("ZZ discretization"));
+    let (model, loads, bc) = refinement_problem(2);
+    let error = solve_refined(
+        model,
+        loads,
+        bc,
+        &Requirements {
+            max_zz_error: Some(1e-12),
+            ..Default::default()
+        },
+        &Default::default(),
+        0,
+        true,
+        |_| panic!("zero budget must not call mesher"),
+    )
+    .err()
+    .unwrap();
+    assert!(
+        error.contains("budget 0") && error.contains("acceptance failed"),
+        "{error}"
+    );
+}

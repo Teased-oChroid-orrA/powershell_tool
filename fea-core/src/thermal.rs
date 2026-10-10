@@ -77,8 +77,12 @@ pub struct HeatLoads {
 #[derive(Debug, Clone)]
 pub struct HeatSolution {
     pub temperature: Vec<f64>,
-    /// `|K T - f| / |f|` over the free nodes, evaluated with the conductivity of the final temperature.
+    /// Normwise backward error `||K T - f|| / || |K| |T| + |f| ||` over the free nodes,
+    /// evaluated with the conductivity of the final temperature. An accepted steady solve has a finite value <= `tol`.
     pub rel_residual: f64,
+    /// Global heat-flow imbalance after an explicit matrix-scaled floating-point allowance.
+    /// Accepted steady solves require this finite value <= `tol`; `balance_error()` remains raw.
+    pub accepted_balance_error: f64,
     /// Picard iterations (`1` for a constant conductivity).
     pub iterations: usize,
     /// Heat entering through sources, fluxes and point inputs (independent of the solution).
@@ -181,7 +185,7 @@ impl Model {
         }
         let input: f64 = f.iter().sum();
         for (face, h, t_inf) in &loads.convection {
-            if h.is_nan() || *h < 0.0 {
+            if !h.is_finite() || *h < 0.0 || !t_inf.is_finite() {
                 return Err("a convection coefficient must be non-negative".into());
             }
             face_points(mesh, face, |nsh, _pos, _normal, w| {
@@ -218,12 +222,15 @@ impl Model {
     /// field changes by less than `tol` (relative to its range) AND the residual with the conductivity of the answer is
     /// below `tol`.
     pub fn solve_heat_steady(&self, loads: &HeatLoads, bc: &Dirichlet, tol: f64) -> Result<HeatSolution, String> {
+        if !tol.is_finite() || tol <= 0.0 {
+            return Err("steady heat: tolerance must be positive and finite".into());
+        }
         let spat = std::sync::Arc::new(self.pattern.scalar());
         let props = self.thermal_props()?;
         for p in &props {
             p.conductivity.validate()?;
         }
-        if bc.d != 1 || bc.fixed.len() != self.mesh.nodes.len() {
+        if bc.d != 1 || bc.fixed.len() != self.mesh.nodes.len() || bc.value.len() != bc.fixed.len() || bc.value.iter().any(|v| !v.is_finite()) {
             return Err("the temperature constraints must be a Dirichlet set with one component per node (Model::thermal_dirichlet)".into());
         }
         if bc.n_fixed() == 0 && loads.convection.is_empty() {
@@ -248,6 +255,9 @@ impl Model {
             let (f, _) = self.heat_system(&spat, loads, &mut k)?;
             let fac = red.factor(&k).map_err(|e| e.to_string())?;
             let tn = fac.solve(&k, &f, bc);
+            if tn.iter().any(|v| !v.is_finite()) {
+                return Err("steady heat: the temperature field is not finite".into());
+            }
             let range = tn.iter().cloned().fold(f64::NEG_INFINITY, f64::max) - tn.iter().cloned().fold(f64::INFINITY, f64::min);
             let change = tn.iter().zip(&t).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max) / range.max(1e-300);
             t = tn;
@@ -255,7 +265,7 @@ impl Model {
                 break change;
             }
         };
-        if nonlinear && last_change > tol {
+        if nonlinear && (!last_change.is_finite() || last_change > tol) {
             return Err(format!("the temperature-dependent conduction iteration did not converge in {iterations} iterations (last change {last_change:.2e} of the range)"));
         }
         // Verification with the conductivity of the answer.
@@ -263,21 +273,38 @@ impl Model {
         let (f, heat_in) = self.heat_system(&spat, loads, &mut k)?;
         let mut kt = vec![0.0; n];
         k.matvec_add(&spat, &t, &mut kt);
-        let (mut rn, mut fnorm, mut reaction, mut rfixed) = (0.0f64, 0.0f64, 0.0, 0.0f64);
+        // A load/reaction-only scale degenerates for a non-zero uniform temperature with no heat flow.
+        // Use the magnitudes before cancellation in K T, the standard backward-error scale.
+        let abs_k = BlockMatrix { d: k.d, vals: k.vals.iter().map(|v| v.abs()).collect() };
+        let abs_t: Vec<f64> = t.iter().map(|v| v.abs()).collect();
+        let mut scale = vec![0.0; n];
+        abs_k.matvec_add(&spat, &abs_t, &mut scale);
+        let (mut rn, mut denominator, mut reaction) = (0.0f64, 0.0f64, 0.0);
         for i in 0..n {
             let r = kt[i] - f[i];
             if bc.fixed[i] {
                 reaction += r;
-                rfixed += r * r;
             } else {
-                rn += r * r;
-                fnorm += f[i] * f[i];
+                rn = rn.hypot(r);
+                denominator = denominator.hypot(scale[i] + f[i].abs());
             }
         }
-        // (scaled by the loads and by the heat the supports carry: a problem driven by temperatures alone has no load)
-        let rel_residual = rn.sqrt() / (fnorm.sqrt() + rfixed.sqrt()).max(1e-300);
+        let rel_residual = rn / denominator.max(1e-300);
         let heat_out_convection = self.convection_out(loads, &t)?;
-        Ok(HeatSolution { temperature: t, rel_residual, iterations, heat_in, heat_out_fixed: -reaction, heat_out_convection })
+        if !denominator.is_finite() || !rel_residual.is_finite() || !heat_in.is_finite() || !reaction.is_finite() || !heat_out_convection.is_finite() {
+            return Err("steady heat: the final residual or heat flow is not finite".into());
+        }
+        if rel_residual > tol {
+            return Err(format!("steady heat: the final residual {rel_residual:.2e} exceeds the allowed tolerance {tol:.2e}"));
+        }
+        let flow_scale = heat_in.abs() + reaction.abs() + heat_out_convection.abs();
+        let roundoff = 100.0 * f64::EPSILON * scale.iter().zip(&f).map(|(s, f)| s + f.abs()).sum::<f64>();
+        let imbalance = (heat_in + reaction - heat_out_convection).abs();
+        let accepted_balance_error = (imbalance - roundoff).max(0.0) / flow_scale.max(1e-300);
+        if !roundoff.is_finite() || !flow_scale.is_finite() || !imbalance.is_finite() || !accepted_balance_error.is_finite() || accepted_balance_error > tol {
+            return Err(format!("steady heat: global heat balance {accepted_balance_error:e} exceeds {tol:e} or is nonfinite"));
+        }
+        Ok(HeatSolution { temperature: t, rel_residual, accepted_balance_error, iterations, heat_in, heat_out_fixed: -reaction, heat_out_convection })
     }
 
     /// Transient temperature field by the theta method (`theta = 1` backward Euler, `0.5` Crank-Nicolson), constant
@@ -290,16 +317,19 @@ impl Model {
         }
         for p in &props {
             p.conductivity.validate()?;
-            if p.capacity.is_nan() || p.capacity <= 0.0 {
+            if !p.capacity.is_finite() || p.capacity <= 0.0 {
                 return Err("a transient conduction problem needs a positive heat capacity in every block".into());
             }
         }
-        if dt.is_nan() || dt <= 0.0 || !(0.5..=1.0).contains(&theta) {
+        if !dt.is_finite() || dt <= 0.0 || !(0.5..=1.0).contains(&theta) {
             return Err("transient conduction: dt must be positive and theta within [0.5, 1]".into());
         }
         let n = self.mesh.nodes.len();
-        if t0.len() != n {
-            return Err("the initial temperature field has the wrong length".into());
+        if t0.len() != n || t0.iter().any(|v| !v.is_finite()) {
+            return Err("the initial temperature field must have the correct length and finite values".into());
+        }
+        if bc.d != 1 || bc.fixed.len() != n || bc.value.len() != n || bc.value.iter().any(|v| !v.is_finite()) {
+            return Err("transient conduction: invalid constraints".into());
         }
         let mut k = self.conduction_matrix(&spat, t0)?;
         let (f, _) = self.heat_system(&spat, loads, &mut k)?;
@@ -320,6 +350,9 @@ impl Model {
             k.matvec_add(&spat, &t, &mut kt);
             let rhs: Vec<f64> = (0..n).map(|i| ct[i] / dt - (1.0 - theta) * kt[i] + f[i]).collect();
             t = fac.solve(&lhs, &rhs, bc);
+            if t.iter().any(|v| !v.is_finite()) {
+                return Err("transient conduction: nonfinite temperature".into());
+            }
             out.push(t.clone());
         }
         Ok(out)

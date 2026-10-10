@@ -34,3 +34,19 @@ Does not own: the problem schema, meshing, solving, results, rasterising or the 
 
 ## Navigation
 Parent: `app-tui/AGENTS.md`. Library: `fea-problem/AGENTS.md`, kernel: `fea-core/AGENTS.md`.
+
+## Navigation addendum — GPU viewer (2026-10-10)
+
+`g`/`G`: current solved static contour or selected modal/buckling shape in direct wgpu viewport.
+`t`/`T`: verified unloaded free vibration worker; job id plus input signature drops stale results.
+`src/gpu_viewer/` implements scene conversion/rendering/transient preparation; `main.rs` executes
+`RunFeaAnimation` and `OpenGpuScene`. Controls and physics limits: `docs/issue-12-phase-18.md`.
+
+## Navigation addendum — streamed generation/native controls (2026-10-10)
+
+Generation stages and actual step progress: `gpu_viewer/progress.rs`, `FeaAnimationProgress` events
+and `view::readout_lines`. Launch stays visible until the matching native readiness event.
+`gpu_viewer/transport.rs` owns bounded packed companion streams with legacy JSON compatibility;
+`scene::ViewerProject` transfers all computed modes, and the native window switches them on one
+graphics device. `t` streams bounded display frames while retaining all 240 numerical steps.
+Implementation and remaining interactive editor/ML scope: `docs/issue-12-phase-19.md`.

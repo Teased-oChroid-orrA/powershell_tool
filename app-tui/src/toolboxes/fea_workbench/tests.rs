@@ -387,3 +387,94 @@ fn buckling_without_a_density_still_runs_and_frequencies_explain_the_missing_den
     assert!(s.dyn_error.as_deref().is_some_and(|m| m.contains("density")), "{:?}", s.dyn_error);
     assert!(s.dynamic.is_none());
 }
+
+#[test]
+fn gpu_animation_discards_stale_inputs_and_wrong_ids() {
+    let mut s=FeaWorkbenchState::default();
+    let effect=s.start_animation().pop().unwrap();
+    let Effect::RunFeaAnimation {id,..}=effect else {panic!("worker effect expected")};
+    assert!(s.finish_animation(id+1,Err("wrong job".into())).is_empty());
+    assert!(s.solve_error.is_none());
+    s.problem.name.push_str(" changed");
+    assert!(s.finish_animation(id,Err("stale failure".into())).is_empty());
+    assert!(s.solve_error.is_none());
+    assert_eq!(s.start_animation().len(),1);
+}
+
+#[test]
+fn gpu_bindings_accept_windows_caps_lock() {
+    for c in ['t','T'] {
+        let mut s=FeaWorkbenchState::default();
+        let (handled,effects)=handle_key(&mut s,key(KeyCode::Char(c)));
+        assert!(handled);assert!(matches!(effects.first(),Some(Effect::RunFeaAnimation {..})));
+    }
+    for c in ['g','G'] {
+        let mut s=FeaWorkbenchState::default();
+        let (handled,effects)=handle_key(&mut s,key(KeyCode::Char(c)));
+        assert!(handled);assert!(effects.is_empty());assert!(s.solve_error.as_ref().unwrap().contains("solve the current inputs"));
+    }
+}
+
+#[test]
+fn animation_progress_is_visible_and_rejects_stale_updates() {
+    use crate::gpu_viewer::progress::GenerationProgress;
+    let mut s = FeaWorkbenchState::default();
+    s.solve_error = Some("previous failure".into());
+    let Effect::RunFeaAnimation { id, .. } = s.start_animation().pop().unwrap() else { panic!() };
+    assert!(s.solve_error.is_none());
+    assert!(s.animation_status().unwrap().contains("Preparing animation"));
+    let progress = GenerationProgress { stage: "Integrating free vibration", completed: 120, total: 240 };
+    s.update_animation_progress(id + 1, progress.clone());
+    assert!(!s.animation_status().unwrap().contains("120/240"));
+    s.update_animation_progress(id, progress.clone());
+    assert!(s.animation_status().unwrap().contains("120/240 (50%)"));
+    let text = view::readout_lines(&crate::theme::Theme::default(), &s).iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("120/240 (50%)"));
+    s.problem.name.push_str(" changed");
+    s.update_animation_progress(id, GenerationProgress::stage("stale"));
+    let status = s.animation_status().unwrap();
+    assert!(status.contains("Inputs changed; previous animation finishing"));
+    assert!(!status.contains("120/240") && !status.contains("stale"));
+    assert!(s.start_animation().is_empty());
+    s.finish_animation(id, Err("stale failure".into()));
+    assert!(s.animation_status().is_none());
+    assert!(s.solve_error.is_none());
+}
+
+#[test]
+fn native_viewer_receives_every_computed_mode_and_current_selection() {
+    let mut s = FeaWorkbenchState::default();
+    s.problem = templates().into_iter().nth(1).unwrap().1;
+    s.problem.material.density = 1.0;
+    let effects = s.start_dynamic(DynKind::Modal);
+    run_effects(&mut s, effects);
+    assert!(s.dynamic.as_ref().unwrap().n_modes() > 2);
+    s.mode = 2;
+    let Effect::BuildFeaGpuScene { source, .. } = s.open_gpu().pop().unwrap() else { panic!() };
+    let project = source.build().unwrap();
+    assert_eq!(project.selected, 2);
+    assert_eq!(project.scenes.len(), s.dynamic.as_ref().unwrap().n_modes());
+    assert_eq!(project.problem, Some(s.problem.clone()));
+    for scene in &project.scenes {
+        assert!(scene.harmonic_period.unwrap() > 0.0);
+        assert_eq!(scene.samples.len(), scene.positions.len());
+    }
+    assert_ne!(project.scenes[0].samples, project.scenes[1].samples);
+}
+
+#[test]
+fn native_launch_progress_stays_until_matching_ready_event() {
+    let mut s = FeaWorkbenchState::default();
+    let Effect::RunFeaAnimation { id, .. } = s.start_animation().pop().unwrap() else { panic!() };
+    let mesh = fea_core::generate::grid(fea_core::Physics::PlaneStress { thickness: 1.0 }, fea_core::ElementKind::Quad4, fea_core::Elastic::new(1.0, 0.3), [1, 1, 1], &|p| p).unwrap();
+    let scene = crate::gpu_viewer::Scene::from_frames(&mesh, &[vec![0.0; 8]], vec![0.0], &[0.0; 4], "launch".into()).unwrap();
+    let effects = s.finish_animation(id, Ok(crate::gpu_viewer::scene::ViewerProject::single(scene)));
+    assert!(matches!(effects.first(), Some(Effect::OpenGpuScene { id: live, .. }) if *live == id));
+    assert!(s.animation_status().unwrap().contains("Opening native GPU viewport"));
+    assert!(s.start_animation().is_empty());
+    s.viewer_ready(id + 1);
+    assert!(s.animation_status().is_some());
+    s.viewer_ready(id);
+    assert!(s.animation_status().is_none());
+    assert_eq!(s.start_animation().len(), 1);
+}

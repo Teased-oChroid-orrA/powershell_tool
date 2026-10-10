@@ -108,3 +108,29 @@ fn plane_stress_is_refused() {
     let mut mesh = grid(Physics::PlaneStress { thickness: 1.0 }, ElementKind::Quad4, Elastic::new(E, NU), [1, 1, 1], &|p| p).unwrap();
     assert!(mesh.set_plasticity(0, J2::neo_hookean()).is_err());
 }
+
+#[test]
+fn rigid_rotation_is_stress_free_and_rotated_stretch_is_objective() {
+    // Independent constitutive reference: F=R U, P(R U)=R P(U), with proper R.
+    let mo = Moduli::new(E, NU);
+    let angle = 0.73_f64;
+    let (s, c) = angle.sin_cos();
+    let r = [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]];
+    let stretch = [1.2, 0.9, 1.05];
+    let mut hr = r;
+    let mut hu = [[0.0; 3]; 3];
+    let mut hru = [[0.0; 3]; 3];
+    for i in 0..3 {
+        hr[i][i] -= 1.0;
+        hu[i][i] = stretch[i] - 1.0;
+        for j in 0..3 { hru[i][j] = r[i][j] * stretch[j] - if i == j { 1.0 } else { 0.0 }; }
+    }
+    let rotation = neo_hookean_update(mo, &hr, &[0.0; 7]).unwrap();
+    assert!(rotation.stress.iter().flatten().all(|v| v.abs() < 1e-8));
+    let base = neo_hookean_update(mo, &hu, &[0.0; 7]).unwrap();
+    let rotated = neo_hookean_update(mo, &hru, &[0.0; 7]).unwrap();
+    for i in 0..3 { for j in 0..3 {
+        let expected: f64 = (0..3).map(|k| r[i][k] * base.stress[k][j]).sum();
+        assert!((rotated.stress[i][j] - expected).abs() < 1e-8 * E);
+    }}
+}

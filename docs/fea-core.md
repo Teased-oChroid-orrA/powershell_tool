@@ -442,3 +442,15 @@ The brief: use ML if it costs no speed. Procedure: find a decision whose outcome
 * (3) Lanczos is rejected by its own residual check in a small class of problems (mixed-sign buckling, now handled by the shift); the fallback costs one extra attempt.
 
 Conclusion: no learned component is justified, and none is shipped. The decision log is in place (`NlSolution::report_json`, `Adaptive::report_json`) so the question can be reopened on real usage data; a model would still only choose a starting rung behind the verifier.
+
+## Issue #12 roadmap continuation (2026-10-10)
+
+Dated implementation/verification records: [Phase 12](issue-12-phase-12.md),
+[generalized fields and one-way coupling](issue-12-phase-13.md),
+[spatial members and restricted flat plates/shells](issue-12-phase-14.md),
+[bounded orchestration and strict acceptance](issue-12-phase-15.md),
+[selected aircraft member scope](issue-12-phase-16.md),
+[performance and advisory ML evaluation](issue-12-phase-17.md), and
+[direct wgpu deformation viewport](issue-12-phase-18.md).
+These addenda preserve earlier phase history; supported scope and explicit formulation limits
+are documented per phase. Branch remains `codex/fea-core-roadmap`; draft PR #13 references issue #12.

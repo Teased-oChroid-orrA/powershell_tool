@@ -146,6 +146,10 @@ impl Reduced {
     fn gather(pat: &Arc<Pattern>, bc: &Dirichlet) -> Result<(Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>), SolveError> {
         let d = pat.d;
         let n = pat.n_nodes * d;
+        if bc.d != d || bc.fixed.len() != n || bc.value.len() != n
+            || bc.fixed.iter().zip(&bc.value).any(|(fixed, value)| *fixed && !value.is_finite()) {
+            return Err(SolveError::Other("invalid constraint dimensions or nonfinite prescribed value".into()));
+        }
         let mut free_of = vec![FIXED; n];
         let mut free_dofs = Vec::new();
         #[allow(clippy::needless_range_loop)] // dof indexes two arrays and is stored

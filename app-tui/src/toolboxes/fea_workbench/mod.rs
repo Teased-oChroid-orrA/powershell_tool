@@ -99,6 +99,9 @@ pub struct FeaWorkbenchState {
     pub dynamic: Option<Box<DynSolved>>,
     pub dyn_error: Option<String>,
     dyn_job: Option<Job>,
+    animation_job: Option<Job>,
+    animation_progress: Option<crate::gpu_viewer::progress::GenerationProgress>,
+    viewer_launch: Option<(u64, Instant)>,
     /// Whether the canvas and readout show the dynamic result (while it still belongs to the inputs).
     pub show_dynamic: bool,
     /// Mode drawn on the canvas.
@@ -145,6 +148,9 @@ impl FeaWorkbenchState {
             dynamic: None,
             dyn_error: None,
             dyn_job: None,
+            animation_job: None,
+            animation_progress: None,
+            viewer_launch: None,
             show_dynamic: false,
             mode: 0,
             auto_solve: true,
@@ -489,6 +495,114 @@ impl FeaWorkbenchState {
         vec![Effect::RunFeaSolve { id, problem: Box::new(sig), import_text }]
     }
 
+    pub fn start_animation(&mut self) -> Vec<Effect> {
+        if self.animation_job.is_some() || self.viewer_launch.is_some() {
+            return Vec::new();
+        }
+        let id = self.take_job_id();
+        self.solve_error = None;
+        self.animation_progress = Some(crate::gpu_viewer::progress::GenerationProgress::stage("Preparing animation"));
+        let sig = self.problem.clone();
+        self.animation_job = Some(Job {
+            id,
+            sig: sig.clone(),
+            started: Instant::now(),
+        });
+        vec![Effect::RunFeaAnimation {
+            id,
+            problem: Box::new(sig),
+            import_text: self.import_text(),
+        }]
+    }
+    pub fn finish_animation(
+        &mut self,
+        id: u64,
+        result: Result<crate::gpu_viewer::scene::ViewerProject, String>,
+    ) -> Vec<Effect> {
+        let Some(job) = self.animation_job.take_if(|j| j.id == id) else {
+            return Vec::new();
+        };
+        self.animation_progress = None;
+        if job.sig != self.problem {
+            return Vec::new();
+        }
+        match result {
+            Ok(scene) => { self.solve_error = None; self.viewer_launch = Some((id, Instant::now())); vec![Effect::OpenGpuScene {
+                id,
+                scene: Box::new(scene),
+            }] },
+            Err(e) => {
+                self.solve_error = Some(e);
+                Vec::new()
+            }
+        }
+    }
+    pub fn open_gpu(&mut self) -> Vec<Effect> {
+        if self.animation_job.is_some() || self.viewer_launch.is_some() {
+            return Vec::new();
+        }
+        let mut sources = Vec::new();
+        let selected;
+        if let Some(d) = self.dynamic_shown() {
+            selected = self.mode;
+            if d.model().mesh.nodes.len().checked_mul(d.n_modes()).is_none_or(|n| n > 4_000_000) {
+                self.solve_error = Some("computed modes exceed the native session budget; use a coarser mesh".into());
+                return Vec::new();
+            }
+            let mesh = std::sync::Arc::new(d.model().mesh.clone());
+            for mode in 0..d.n_modes() {
+                let period = match d {
+                    DynSolved::Modal(m) => Some(1.0 / m.modes[mode].frequency_hz as f32),
+                    _ => None,
+                };
+                sources.push(crate::gpu_viewer::scene::SceneSource {
+                    mesh: mesh.clone(), displacement: d.shape(mode).to_vec(),
+                    values: d.magnitude(mode), period,
+                    label: format!("{} | {}", d.title(mode), if period.is_some() { "harmonic mode; seconds; mass-normalized magnitude" } else { "static buckling shape" }),
+                });
+            }
+        } else if let Some(s) = self.solved.as_deref().filter(|s| s.problem == self.problem) {
+            selected = 0;
+            sources.push(crate::gpu_viewer::scene::SceneSource {
+                mesh: std::sync::Arc::new(s.model.mesh.clone()), displacement: s.u.clone(), values: s.node_values(self.field),
+                period: None, label: format!("{} | static {:?}", s.problem.name, self.field),
+            });
+        } else {
+            self.solve_error = Some("solve the current inputs before opening the GPU viewport".into());
+            return Vec::new();
+        }
+        let source = crate::gpu_viewer::scene::ProjectSource { sources, selected, problem: self.problem.clone() };
+        let id = self.take_job_id();
+        self.solve_error = None;
+        self.animation_progress = Some(crate::gpu_viewer::progress::GenerationProgress::stage("Preparing GPU scene"));
+        self.animation_job = Some(Job {
+            id,
+            sig: self.problem.clone(),
+            started: Instant::now(),
+        });
+        vec![Effect::BuildFeaGpuScene {
+            id,
+            source: Box::new(source),
+        }]
+    }
+
+    pub fn update_animation_progress(&mut self, id: u64, progress: crate::gpu_viewer::progress::GenerationProgress) {
+        if self.animation_job.as_ref().is_some_and(|j| j.id == id && j.sig == self.problem) {
+            self.animation_progress = Some(progress);
+        }
+    }
+    pub fn animation_status(&self) -> Option<String> {
+        if let Some((_, started)) = &self.viewer_launch { return Some(format!("Opening native GPU viewport ({:.1} s)", started.elapsed().as_secs_f64())); }
+        let job = self.animation_job.as_ref()?;
+        if job.sig != self.problem {
+            return Some(format!("Inputs changed; previous animation finishing ({:.1} s)", job.started.elapsed().as_secs_f64()));
+        }
+        Some(format!("{} ({:.1} s)", self.animation_progress.as_ref().map(|p| p.text()).unwrap_or_else(|| "Preparing animation".into()), job.started.elapsed().as_secs_f64()))
+    }
+    pub fn viewer_ready(&mut self, id: u64) {
+        if self.viewer_launch.is_some_and(|(live, _)| live == id) { self.viewer_launch = None; }
+    }
+
     /// Start natural frequencies (`Modal`) or buckling load factors (`Buckling`) of the current inputs (keys `n`, `b`).
     pub fn start_dynamic(&mut self, kind: DynKind) -> Vec<Effect> {
         if self.dyn_job.is_some() {
@@ -750,6 +864,8 @@ pub fn handle_key(state: &mut FeaWorkbenchState, key: KeyEvent) -> (bool, Vec<Ef
                 state.source += 1;
                 (true, state.start_solve())
             }
+            't' => (true,state.start_animation()),
+            'g' => (true, state.open_gpu()),
             'n' => (true, state.start_dynamic(DynKind::Modal)),
             'b' => (true, state.start_dynamic(DynKind::Buckling)),
             'a' => {

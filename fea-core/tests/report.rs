@@ -139,3 +139,35 @@ fn a_run_without_trouble_has_no_events_and_a_profile() {
     assert!(sol.events.is_empty(), "{:?}", sol.events);
     assert!(sol.profile.factorisation_ms > 0.0 && sol.profile.evaluation_ms > 0.0);
 }
+
+#[test]
+fn acceptance_reports_never_certify_nonfinite_or_empty_evidence() {
+    use fea_core::report::{AcceptanceCheck, AcceptanceReport};
+    assert!(!AcceptanceReport::default().passed());
+    for value in [f64::NAN, f64::INFINITY, -1.0, 2.0] {
+        let report = AcceptanceReport {
+            checks: vec![AcceptanceCheck {
+                name: "residual".into(),
+                value,
+                limit: 1.0,
+            }],
+            diagnostics: vec![],
+        };
+        assert!(report.require().is_err());
+        assert!(report.json().contains("\"passed\":false"));
+    }
+}
+
+#[test]
+fn incomplete_transient_history_fails_unified_acceptance() {
+    let result = fea_core::Transient {
+        times: vec![0.0, 1.0],
+        history: vec![vec![0.0]],
+        energy: vec![0.0, 0.0],
+        residuals: vec![0.0],
+        u: vec![0.0],
+        v: vec![0.0],
+    };
+    let report = fea_core::report::AcceptanceReport::transient(&result, 1e-8, None);
+    assert!(report.require().is_err());
+}

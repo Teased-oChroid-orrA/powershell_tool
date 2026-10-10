@@ -18,3 +18,5 @@ pub mod paths;
 pub mod theme;
 pub mod toolboxes;
 pub mod widgets;
+
+pub mod gpu_viewer;

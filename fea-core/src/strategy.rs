@@ -91,6 +91,12 @@ impl Model {
     /// Linear static solve under the adaptive protocol (see the module documentation).
     pub fn solve_adaptive(&self, loads: &Loads, bc: &Dirichlet, req: &Requirements) -> Result<Adaptive, String> {
         let clock = Instant::now();
+        if !req.residual_tol.is_finite() || req.residual_tol <= 0.0 || req.max_zz_error.is_some_and(|e| !e.is_finite() || e < 0.0) {
+            return Err("adaptive solve: finite positive residual tolerance and finite nonnegative ZZ limit required".into());
+        }
+        if req.max_zz_error.is_some() && loads.temperature.is_some() {
+            return Err("adaptive solve: ZZ verification of nodal temperature fields is not supported".into());
+        }
         let issues = self.validate(loads, bc);
         errors_of(&issues)?;
         let mut events = Vec::new();
@@ -117,7 +123,7 @@ impl Model {
                 Some(_) => Some(self.zz_estimate(&sol.u, loads.delta_t)?),
                 None => None,
             };
-            let passed = sol.rel_residual <= req.residual_tol && equilibrium <= req.residual_tol.max(1e-9) && zz_error.zip(req.max_zz_error).is_none_or(|(e, m)| e <= m);
+            let passed = sol.u.iter().chain(&sol.reactions).all(|v| v.is_finite()) && sol.rel_residual.is_finite() && equilibrium.is_finite() && zz_error.is_none_or(|e| e.is_finite()) && sol.rel_residual <= req.residual_tol && equilibrium <= req.residual_tol.max(1e-9) && zz_error.zip(req.max_zz_error).is_none_or(|(e, m)| e <= m);
             Ok(Verification { rel_residual: sol.rel_residual, equilibrium, zz_error, passed })
         };
         let mut attempt = self.solve_static_with(loads, bc, method);
@@ -220,5 +226,263 @@ impl Model {
             }
         }
         Err(format!("every rung of the ladder failed; the last: {last_err}"))
+    }
+}
+
+/// A verified mesh pass; the caller still owns geometry and boundary/load remapping.
+pub struct RefinedPass {
+    pub model: Model,
+    pub loads: Loads,
+    pub bc: Dirichlet,
+    pub solve: Adaptive,
+    pub estimate: crate::recover::ZzEstimate,
+}
+impl crate::adapt::Pass for RefinedPass {
+    fn mesh(&self) -> &crate::Mesh {
+        &self.model.mesh
+    }
+    fn zz(&self) -> &crate::recover::ZzEstimate {
+        &self.estimate
+    }
+}
+pub struct Refined {
+    pub best: RefinedPass,
+    pub attempts: usize,
+    pub report: crate::report::AcceptanceReport,
+    pub events: Vec<SolveEvent>,
+}
+fn verified_pass(
+    model: Model,
+    loads: Loads,
+    bc: Dirichlet,
+    req: &Requirements,
+) -> Result<RefinedPass, String> {
+    if loads.temperature.is_some() {
+        return Err("refinement: nodal-temperature ZZ recovery is unsupported".into());
+    }
+    let solve = model.solve_adaptive(
+        &loads,
+        &bc,
+        &Requirements {
+            max_zz_error: None,
+            ..req.clone()
+        },
+    )?;
+    let estimate = model.zz_error(&solve.solution.u, loads.delta_t)?;
+    if !estimate.relative().is_finite() {
+        return Err("refinement: nonfinite ZZ estimate".into());
+    }
+    Ok(RefinedPass {
+        model,
+        loads,
+        bc,
+        solve,
+        estimate,
+    })
+}
+/// Integrates validation, deterministic verified selection/fallback and bounded ZZ remeshing.
+/// Every mesher callback must rebuild supports and loads on its returned mesh. Exhausting the
+/// budget without meeting the final discretization requirement is an error, never success.
+pub fn solve_refined(
+    model: Model,
+    loads: Loads,
+    bc: Dirichlet,
+    req: &Requirements,
+    opt: &crate::adapt::AdaptOptions,
+    max_passes: usize,
+    quad_split: bool,
+    mut mesh_next: impl FnMut(&crate::adapt::SizeField) -> Result<(Model, Loads, Dirichlet), String>,
+) -> Result<Refined, String> {
+    if [
+        opt.target_rel_error,
+        opt.order,
+        opt.min_factor,
+        opt.max_factor,
+        opt.grading,
+        opt.h_min,
+    ]
+    .iter()
+    .any(|v| !v.is_finite())
+        || opt.target_rel_error <= 0.0
+        || opt.order <= 0.0
+        || opt.min_factor <= 0.0
+        || opt.min_factor > 1.0
+        || opt.max_factor < 1.0
+        || opt.grading < 0.0
+        || opt.h_min < 0.0
+        || opt.h_max.is_nan()
+        || opt.h_max <= opt.h_min
+    {
+        return Err("refinement: invalid size-field options".into());
+    }
+    let first = verified_pass(model, loads, bc, req)?;
+    let mut attempts = 0;
+    let mut events = Vec::new();
+    let best = crate::adapt::refine(
+        first,
+        max_passes,
+        quad_split,
+        opt,
+        |field| {
+            let (model, loads, bc) = mesh_next(field)?;
+            verified_pass(model, loads, bc, req)
+        },
+        |pass| {
+            attempts += 1;
+            events.extend(pass.solve.events.clone());
+            events.push(SolveEvent {
+                kind: EventKind::StrategyChange,
+                lambda: 0.0,
+                residual: pass.solve.verification.rel_residual,
+                detail: format!(
+                    "mesh attempt {attempts}: {} DOFs, ZZ {:.6e}, verified {:?}",
+                    pass.model.mesh.n_dofs(),
+                    pass.estimate.relative(),
+                    pass.solve.method
+                ),
+            });
+        },
+    )?;
+    let v = best.solve.verification;
+    let report = crate::report::AcceptanceReport {
+        checks: vec![
+            crate::report::AcceptanceCheck {
+                name: "residual".into(),
+                value: v.rel_residual,
+                limit: req.residual_tol,
+            },
+            crate::report::AcceptanceCheck {
+                name: "equilibrium".into(),
+                value: v.equilibrium,
+                limit: req.residual_tol.max(1e-9),
+            },
+            crate::report::AcceptanceCheck {
+                name: "ZZ discretization".into(),
+                value: best.estimate.relative(),
+                limit: req.max_zz_error.unwrap_or(opt.target_rel_error),
+            },
+        ],
+        diagnostics: events.iter().map(|e| e.detail.clone()).collect(),
+    };
+    report.require().map_err(|e| {
+        format!("refinement after {attempts} attempts (budget {max_passes} additional): {e}")
+    })?;
+    Ok(Refined {
+        best,
+        attempts,
+        report,
+        events,
+    })
+}
+
+/// Strict numerical acceptance in addition to the caller's independent physical benchmark.
+/// The legacy `complete()` includes engineering stop conditions; this API requires Completed.
+/// Stall/unfinished outer passes are rejected rather than certified by a permissive callback.
+impl Model {
+    pub fn solve_nonlinear_verified(
+        &self,
+        loads: &Loads,
+        bc: &Dirichlet,
+        contacts: &[ContactSpec],
+        rungs: &[Rung],
+        residual_tol: f64,
+        physical: &dyn Fn(&NlSolution) -> Result<(), String>,
+    ) -> Result<Ladder, String> {
+        if !residual_tol.is_finite() || residual_tol <= 0.0 {
+            return Err("nonlinear acceptance: finite positive tolerance required".into());
+        }
+        let mut issues = self.validate(loads, bc);
+        if !contacts.is_empty() || !loads.ground.is_empty() {
+            issues.retain(|i| i.code != "rigid_body");
+        }
+        errors_of(&issues)?;
+        if rungs.iter().any(|r| {
+            !r.options.tol.is_finite()
+                || r.options.tol <= 0.0
+                || r.options.steps == 0
+                || r.options.max_iter == 0
+                || !r.options.outer_tol.is_finite()
+                || r.options.outer_tol <= 0.0
+                || r.options.max_outer == 0
+        }) {
+            return Err("nonlinear acceptance: invalid rung convergence options".into());
+        }
+        let f = loads::assemble(&self.mesh, loads)?;
+        self.solve_nonlinear_ladder(loads, bc, contacts, rungs, &|sol| {
+            if sol.stop != crate::nonlinear::Stop::Completed
+                || sol.stalled_solves != 0
+                || sol
+                    .events
+                    .iter()
+                    .any(|e| e.kind == EventKind::OuterNotConverged)
+            {
+                return Err(format!(
+                    "nonlinear acceptance: termination {:?}, {} stalls or unfinished outer passes",
+                    sol.stop, sol.stalled_solves
+                ));
+            }
+            if sol.u.iter().chain(&sol.reactions).any(|v| !v.is_finite())
+                || !sol.lambda.is_finite()
+                || sol.steps.is_empty()
+            {
+                return Err("nonlinear acceptance: missing steps or nonfinite state".into());
+            }
+            let scale = f
+                .iter()
+                .map(|x| sol.lambda * x.abs())
+                .chain(sol.reactions.iter().map(|x| x.abs()))
+                .fold(0.0_f64, f64::max)
+                .max(1e-300);
+            if !scale.is_finite() {
+                return Err("nonlinear acceptance: nonfinite force scale".into());
+            }
+            let last = sol
+                .steps
+                .last()
+                .and_then(|s| s.residuals.last())
+                .copied()
+                .ok_or("nonlinear acceptance: missing final residual")?;
+            if !last.is_finite() || last / scale > residual_tol {
+                return Err(format!(
+                    "nonlinear acceptance: residual {:.3e} exceeds {residual_tol:e}",
+                    last / scale
+                ));
+            }
+            physical(sol)
+        })
+    }
+}
+
+impl Refined {
+    pub fn report_json(&self) -> String {
+        format!(
+            "{{\"mesh_attempts\":{},\"best_dofs\":{},\"acceptance\":{},\"solver\":{}}}",
+            self.attempts,
+            self.best.model.mesh.n_dofs(),
+            self.report.json(),
+            self.best.solve.report_json()
+        )
+    }
+}
+impl Ladder {
+    pub fn report_json(&self) -> String {
+        let events = self
+            .events
+            .iter()
+            .map(|e| {
+                format!(
+                    "{{\"kind\":{},\"detail\":{}}}",
+                    crate::report::json_str(e.kind.name()),
+                    crate::report::json_str(&e.detail)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "{{\"accepted_rung\":{},\"decisions\":[{}],\"solution\":{}}}",
+            self.rung,
+            events,
+            self.solution.report_json()
+        )
     }
 }

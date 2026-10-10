@@ -59,7 +59,7 @@ impl Model {
             out.push(issue(Severity::Error, "empty_mesh", "the mesh has no elements".into()));
             return out;
         }
-        if bc.fixed.len() != mesh.n_dofs() {
+        if bc.d != d || bc.fixed.len() != mesh.n_dofs() || bc.value.len() != mesh.n_dofs() {
             out.push(issue(Severity::Error, "bc_size", format!("the constraint set is for {} dofs, the mesh has {}", bc.fixed.len(), mesh.n_dofs())));
             return out;
         }
@@ -77,6 +77,10 @@ impl Model {
             if matches!(blk.kind, ElementKind::Tri3 | ElementKind::Tet4) {
                 out.push(issue(Severity::Warning, "low_order_element", format!("block {bi} ({}) uses {:?}: constant-strain elements are poor on pressure and bending problems (a library element for meshers, not for results)", blk.name, blk.kind)));
             }
+        }
+        if mesh.blocks.iter().any(|b| b.conn.len() % b.kind.n_nodes() != 0 || b.conn.iter().any(|&n| n >= mesh.nodes.len()) || b.kind.dim() != d) {
+            out.push(issue(Severity::Error, "connectivity", "element connectivity or dimension is invalid".into()));
+            return out;
         }
         // Element geometry.
         let mut work = Work::new();
@@ -144,4 +148,127 @@ pub fn errors_of(issues: &[Issue]) -> Result<(), String> {
     } else {
         Err(errs.join("; "))
     }
+}
+
+/// Reject visible rigid motions of every connected generalized structural component.
+/// Rotations of a collinear truss that move no DOF are excluded from the visible basis.
+pub fn check_field_supports(
+    nodes: &[[f64; 3]],
+    map: &crate::fields::DofMap,
+    connectivity: &[Vec<usize>],
+    bc: &crate::fields::FieldConstraints,
+) -> Result<(), String> {
+    use crate::fields::Field;
+    if map.n_nodes() != nodes.len() || !bc.matches(map) {
+        return Err("field supports: node/layout mismatch".into());
+    }
+    let mut parent: Vec<usize> = (0..nodes.len()).collect();
+    fn root(p: &mut [usize], mut i: usize) -> usize {
+        while p[i] != i {
+            p[i] = p[p[i]];
+            i = p[i];
+        }
+        i
+    }
+    let mut used = vec![false; nodes.len()];
+    for element in connectivity {
+        let &first = element.first().ok_or("field supports: empty element")?;
+        if element.iter().any(|&n| n >= nodes.len()) {
+            return Err("field supports: missing node".into());
+        }
+        for &n in element {
+            used[n] = true;
+            let a = root(&mut parent, first);
+            let b = root(&mut parent, n);
+            parent[b] = a;
+        }
+    }
+    let mut groups = std::collections::BTreeMap::<usize, Vec<usize>>::new();
+    for n in 0..nodes.len() {
+        if used[n] {
+            let r = root(&mut parent, n);
+            groups.entry(r).or_default().push(n);
+        } else {
+            for &field in map.fields(n).unwrap() {
+                if bc.prescribed(map.index(n, field)?)?.is_none() {
+                    return Err("field supports: unconstrained orphan node".into());
+                }
+            }
+        }
+    }
+    fn orthogonalize(mut v: Vec<f64>, basis: &[Vec<f64>]) -> Option<Vec<f64>> {
+        for _ in 0..2 {
+            for b in basis {
+                let dot: f64 = v.iter().zip(b).map(|(a, b)| a * b).sum();
+                for (a, b) in v.iter_mut().zip(b) {
+                    *a -= dot * b;
+                }
+            }
+        }
+        let norm = v.iter().fold(0.0_f64, |s, x| s.hypot(*x));
+        if norm <= 1e-10 || !norm.is_finite() {
+            None
+        } else {
+            Some(v.into_iter().map(|x| x / norm).collect())
+        }
+    }
+    for group in groups.values() {
+        let mut center = [0.0; 3];
+        for &n in group {
+            for a in 0..3 {
+                center[a] += nodes[n][a] / group.len() as f64;
+            }
+        }
+        let span = group
+            .iter()
+            .flat_map(|&n| (0..3).map(move |a| (nodes[n][a] - center[a]).abs()))
+            .fold(0.0_f64, f64::max)
+            .max(1e-300);
+        let mut dofs = Vec::new();
+        let mut rows = Vec::new();
+        for &n in group {
+            let r: [f64; 3] = std::array::from_fn(|a| (nodes[n][a] - center[a]) / span);
+            for &field in map.fields(n).unwrap() {
+                let mut row = [0.0; 6];
+                match field {
+                    Field::Translation(a) => {
+                        row[a] = 1.0;
+                        let rot = [[0.0, r[2], -r[1]], [-r[2], 0.0, r[0]], [r[1], -r[0], 0.0]];
+                        row[3..].copy_from_slice(&rot[a]);
+                    }
+                    Field::Rotation(a) => row[3 + a] = 1.0,
+                    Field::Temperature => continue,
+                }
+                dofs.push(map.index(n, field)?);
+                rows.push(row);
+            }
+        }
+        let mut basis = Vec::new();
+        for mode in 0..6 {
+            if let Some(v) = orthogonalize(rows.iter().map(|r| r[mode]).collect(), &basis) {
+                basis.push(v);
+            }
+        }
+        let held: Vec<usize> = dofs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &d)| bc.prescribed(d).ok().flatten().map(|_| i))
+            .collect();
+        let mut constrained_basis = Vec::new();
+        for mode in &basis {
+            if let Some(v) =
+                orthogonalize(held.iter().map(|&i| mode[i]).collect(), &constrained_basis)
+            {
+                constrained_basis.push(v);
+            }
+        }
+        if constrained_basis.len() != basis.len() {
+            return Err(format!(
+                "field supports: {} of {} visible rigid motions held",
+                constrained_basis.len(),
+                basis.len()
+            ));
+        }
+    }
+    Ok(())
 }

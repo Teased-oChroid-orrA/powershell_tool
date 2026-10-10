@@ -218,3 +218,12 @@ fn replay_stagnating_friction_case() {
     let c = Case { dim: 2, div: [3, 3], slave_is_bottom: false, mu: 0.3757327117221081, q: 7146.738229386764, shear: 0.6124697478944268, e: [18553878.881065063, 27766769.826461133], nu: 0.3658527796499168 };
     run(&c).unwrap();
 }
+
+#[test]
+fn nonmatching_3d_partial_slip_carries_the_prescribed_resultants() {
+    // Fixed nonmatching, dissimilar-material case at 75% of Coulomb capacity.
+    // run() independently integrates applied area loads and checks normal/shear resultants.
+    let c = Case { dim: 3, div: [2, 3], slave_is_bottom: false, mu: 0.3, q: 2e4,
+        shear: 0.75, e: [1e7, 2e7], nu: 0.3 };
+    run(&c).unwrap();
+}

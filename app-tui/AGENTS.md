@@ -118,3 +118,21 @@ Per-toolbox nodes (read the one for the toolbox you are changing):
 | Material Lookup | `src/toolboxes/material_lookup/AGENTS.md` |
 
 Sibling nodes: `search-core/AGENTS.md`, `native-search/AGENTS.md`, `bushing-solver/AGENTS.md`, `fastened-joint-solver/AGENTS.md`, `lug-solver/AGENTS.md`. `pressure-vessel-solver` has no node.
+
+## Navigation addendum — issue #12 GPU extension (2026-10-10)
+
+User-authorized direct `wgpu` companion viewport: `src/gpu_viewer/` owns bounded scene conversion,
+WGSL/deformation buffers, `winit` native window and verified free-vibration worker. `g` opens current
+static/modal/buckling results; `t` computes a time history. Main executable dispatches
+`--gpu-viewer <scene.json>` before ratatui initialization. `gpu-viewer` defaults on; terminal-only
+builds use `--no-default-features`. Effects/process/window I/O stay in `main.rs`; reducers stay pure.
+See `docs/issue-12-phase-18.md` for controls, supported physics, limits and validation evidence.
+Earlier no-GPU descriptions above are historical.
+
+## Navigation addendum — native GPU workbench roadmap (2026-10-10)
+
+`src/gpu_viewer/progress.rs` and `transport.rs`: generation stages/step progress, ready handshake
+and packed companion streams. Versioned native sessions carry all computed modes; native Tab/[ ]
+selects results and M/C/D controls mesh/contour/deformation. Interactive authoring and contextual
+ML are newly planned, not shipped: `docs/issue-12-phase-19.md`; current status/handoff remains
+`docs/issue-12-claude-handoff.md`.

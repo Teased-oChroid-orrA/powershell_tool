@@ -221,6 +221,9 @@ fn draw_readout(frame: &mut Frame, area: Rect, theme: &Theme, state: &FeaWorkben
 pub fn readout_lines<'a>(theme: &Theme, state: &FeaWorkbenchState) -> Vec<Line<'a>> {
     let mut lines: Vec<Line<'a>> = Vec::new();
     let tone = |t: StatusTone, s: String| Line::from(Span::styled(s, theme.status_style(t)));
+    if let Some(progress) = state.animation_status() {
+        lines.push(tone(StatusTone::Info, format!("\u{2026} {progress}")));
+    }
     if state.meshing() {
         lines.push(tone(StatusTone::Info, "\u{2026} meshing".to_string()));
     }

@@ -258,3 +258,20 @@ fn zz_effectivity_is_near_one_and_spr_is_superconvergent_on_the_smooth_sphere() 
         assert!((0.9..1.1).contains(&last.2), "{kind:?}: effectivity {} at the finest mesh", last.2);
     }
 }
+
+#[test]
+fn zero_and_large_finite_error_norms_have_a_defined_relative_estimate() {
+    use fea_core::recover::ZzEstimate;
+    let zero = ZzEstimate {
+        eta: vec![],
+        total: 0.0,
+        norm: 0.0,
+    };
+    assert_eq!(zero.relative(), 0.0);
+    let large = ZzEstimate {
+        eta: vec![],
+        total: 1e200,
+        norm: 1e200,
+    };
+    assert!((large.relative() - 1.0 / 2.0_f64.sqrt()).abs() < 1e-15);
+}

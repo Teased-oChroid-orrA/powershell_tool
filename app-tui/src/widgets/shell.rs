@@ -274,7 +274,7 @@ fn contextual_hint(state: &AppState) -> Vec<help::KeyHint> {
             vec![help::KeyHint { key: "d", label: "Bore profile" }, help::KeyHint { key: "e", label: "Export" }]
         }
         ToolId::FeaWorkbench if state.fea_workbench.material_browser.is_none() && matches!(state.focus.area, FocusArea::Workspace(_)) => {
-            vec![help::KeyHint { key: "r", label: "Solve" }, help::KeyHint { key: "v", label: "Field" }, help::KeyHint { key: "j", label: "Save" }]
+            vec![help::KeyHint { key: "r", label: "Solve" }, help::KeyHint { key: "v", label: "Field" }, help::KeyHint { key: "g", label: "GPU view" }, help::KeyHint { key: "t", label: "Animate" }, help::KeyHint { key: "j", label: "Save" }]
         }
         ToolId::MaterialLookup if matches!(state.focus.area, FocusArea::Workspace(_)) => {
             vec![help::KeyHint { key: "Enter", label: "Mark" }, help::KeyHint { key: "F2", label: "Compare" }, help::KeyHint { key: "F3", label: "Export" }]

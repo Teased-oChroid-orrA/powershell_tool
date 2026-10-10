@@ -4,11 +4,8 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
-# Third GUI head (ratatui/crossterm terminal UI), alongside `app/`
-# (dioxus-native) and `app-egui/` (egui/eframe). Unlike `app-egui`, this
-# crate pulls in neither Blitz's font stack nor a wgpu-hal renderer, so it
-# has none of the `windows`/`windows-core` version conflict that forces
-# `app-egui` out of the root workspace - it's a normal member here.
+# Active ratatui Toolbench controller with a direct-wgpu native companion viewport.
+# Disable default features for a terminal-only build.
 [lib]
 name = "app_tui"
 path = "src/lib.rs"
@@ -17,7 +14,16 @@ path = "src/lib.rs"
 name = "app-tui"
 path = "src/main.rs"
 
+[features]
+default = ["gpu-viewer"]
+gpu-viewer = ["dep:wgpu", "dep:winit", "dep:bytemuck", "dep:pollster"]
+
 [dependencies]
+wgpu = { version = "0.19.4", optional = true }
+winit = { version = "0.30", default-features = false, features = ["x11", "rwh_06"], optional = true }
+bytemuck = { version = "1", features = ["derive"], optional = true }
+pollster = { version = "0.3", optional = true }
+tempfile = "3"
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
@@ -69,7 +75,6 @@ fastened-joint-solver = { path = "../fastened-joint-solver" }
 winresource = "0.1"
 
 [dev-dependencies]
-tempfile = "3"
 # Test-only: constructing a `search_core::models::FileSearchResult` fixture
 # needs a `chrono::DateTime<Local>` value for `created`/`modified`, and
 # Rust 2018+ requires the crate be a direct dependency to name it at all -

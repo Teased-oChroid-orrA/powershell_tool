@@ -61,3 +61,37 @@ without ever trading accuracy for speed. The build constraint stands: pure Rust,
 * Sensitivity analysis (adjoint for linear statics: `dJ/dp = -lambda^T (dK/dp u - df/dp)`, one extra solve per functional)
   is the chosen route when it is built; it needs element-matrix derivatives that are cheap by finite difference of the
   element kernel and exact for shape parameters only through the kernel Jacobians. Not built in this ADR's scope.
+
+## Source-status addendum (2026-10-09, issue #12)
+
+The original decision and consequences above are retained as history. At the audited commit
+`d5748135188cd6f196a2f6310ea9934251260f93`, sensitivities **are implemented** in `sensitivity.rs`
+(linear displacement/compliance and modal eigenvalues), and `optimize.rs` implements block-modulus
+sizing by optimality criteria. `tests/sensitivity.rs` checks against global finite differences;
+`tests/optimize.rs` checks the series-bar closed form. Coordinate derivatives currently use central
+differences of the element kernels, not an exact symbolic shape derivative.
+
+The strategy decision describes the intended programme, not a universal implemented reduction
+engine. `strategy.rs::solve_adaptive` selects direct/iterative linear statics and verifies residual,
+force balance and an optional ZZ requirement. `solve_nonlinear_ladder` requires a caller-provided
+acceptance check; it does not independently supply all physical checks. Eigen acceptance and fallback
+live in `dynamics.rs`. Mesh refinement remains the caller-owned `adapt::refine` loop. There is no
+automatic element-order or time-step reduction shared across all analyses.
+
+Heat conduction is implemented separately in `thermal.rs`; a nodal temperature field can drive
+structural loads and stress recovery. This is **one-way** coupling, not a generalized coupled field/DOF
+system. Phase 12 audit, checks and follow-up are recorded in [issue-12-phase-12.md](../issue-12-phase-12.md).
+
+## Roadmap implementation addendum (2026-10-10, issue #12)
+
+On `codex/fea-core-roadmap`, `fields.rs` now supplies generalized translational/rotational/thermal
+mapping, constraints and sparse symmetric assembly; `coupling.rs` explicitly supplies one-way
+thermal-to-structural transfer. This does not claim monolithic/two-way multiphysics.
+`strategy.rs::solve_refined` orchestrates bounded verified linear solves with a caller-owned mesher;
+`solve_nonlinear_verified` adds strict completed/finite/residual/caller-physics acceptance to a
+bounded strategy ladder. `report.rs::AcceptanceReport` provides analysis adapters and machine-readable
+finite acceptance records. Effective residuals accompany structural transient histories; energy
+checks remain conditional on the load/damping regime. No universal time-step/order adaptation or
+learned production selector is claimed. Independent benchmarks and limitations are in
+[Phase 13](../issue-12-phase-13.md), [Phase 15](../issue-12-phase-15.md),
+[Phase 17](../issue-12-phase-17.md) and the final Claude Code handoff.
