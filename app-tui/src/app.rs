@@ -155,6 +155,8 @@ pub enum AppEvent {
     TextFileRead { purpose: fea_workbench::FilePurpose, path: String, result: Result<String, String> },
     /// A write requested by `Effect::WriteTextFile` finished.
     TextFileWritten { path: String, result: Result<(), String> },
+    FeaAnimationFinished { id: u64, result: Box<Result<crate::gpu_viewer::Scene,String>> },
+    GpuViewerFinished(Result<(), String>),
     Quit,
 }
 
@@ -166,6 +168,9 @@ pub enum AppEvent {
 /// terminal, no tokio runtime, and no filesystem/OS access.
 #[derive(Debug)]
 pub enum Effect {
+    BuildFeaGpuScene { id:u64, source:Box<crate::gpu_viewer::scene::SceneSource> },
+    RunFeaAnimation { id:u64, problem:Box<fea_problem::Problem>, import_text:Option<String> },
+    OpenGpuScene { scene: Box<crate::gpu_viewer::Scene> },
     StartSearch { roots: Vec<String>, settings: SearchSettings, index: search::indexing::IndexSettings },
     /// `write_html` comes from `SearchToolConfig.export_html` - a TUI-only
     /// toggle, not a `SearchSettings` field (`SearchSettings` only carries
@@ -404,6 +409,11 @@ pub fn handle_event(state: &mut AppState, event: AppEvent) -> Vec<Effect> {
                 Ok(()) => state.notifications.push(format!("Saved {path}"), StatusTone::Success),
                 Err(e) => state.notifications.push(format!("Could not write {path}: {e}"), StatusTone::Danger),
             }
+            Vec::new()
+        }
+        AppEvent::FeaAnimationFinished {id,result} => state.fea_workbench.finish_animation(id,*result),
+        AppEvent::GpuViewerFinished(result) => {
+            if let Err(e) = result { state.notifications.push(e, StatusTone::Danger); }
             Vec::new()
         }
         AppEvent::Quit => {

@@ -34,3 +34,10 @@ Does not own: the problem schema, meshing, solving, results, rasterising or the 
 
 ## Navigation
 Parent: `app-tui/AGENTS.md`. Library: `fea-problem/AGENTS.md`, kernel: `fea-core/AGENTS.md`.
+
+## Navigation addendum — GPU viewer (2026-10-10)
+
+`g`/`G`: current solved static contour or selected modal/buckling shape in direct wgpu viewport.
+`t`/`T`: verified unloaded free vibration worker; job id plus input signature drops stale results.
+`src/gpu_viewer/` implements scene conversion/rendering/transient preparation; `main.rs` executes
+`RunFeaAnimation` and `OpenGpuScene`. Controls and physics limits: `docs/issue-12-phase-18.md`.

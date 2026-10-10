@@ -34,6 +34,10 @@ use app_tui::toolboxes::search::{extension_picker, indexing, persistence, runner
 use app_tui::widgets::shell;
 
 fn main() -> io::Result<()> {
+    if std::env::args().nth(1).as_deref() == Some("--gpu-viewer") {
+        let path = std::env::args_os().nth(2).ok_or_else(|| io::Error::other("missing GPU scene path"))?;
+        return app_tui::gpu_viewer::run(std::path::Path::new(&path)).map_err(io::Error::other);
+    }
     // Before anything else so a panic during startup is recorded too.
     app_tui::debug_log::init();
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -248,6 +252,34 @@ fn execute_effect(tx: &mpsc::UnboundedSender<AppEvent>, state: &mut AppState, ef
                 // A panic in a worker must come back as an error, never as a silently dead job.
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fea_problem::solve(&problem, import_text.as_deref()))).unwrap_or_else(|_| Err("the solver stopped unexpectedly".to_string()));
                 let _ = tx.send(AppEvent::FeaSolveFinished { id, result: Box::new(result) });
+            });
+        }
+        Effect::BuildFeaGpuScene {id,source} => {
+            let tx=tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| source.build())).unwrap_or_else(|_|Err("GPU scene preparation stopped unexpectedly".into()));
+                let _=tx.send(AppEvent::FeaAnimationFinished {id,result:Box::new(result)});
+            });
+        }
+        Effect::RunFeaAnimation { id, problem, import_text } => {
+            let tx=tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app_tui::gpu_viewer::transient::run(&problem,import_text.as_deref()))).unwrap_or_else(|_|Err("animation solver stopped unexpectedly".into()));
+                let _=tx.send(AppEvent::FeaAnimationFinished {id,result:Box::new(result)});
+            });
+        }
+        Effect::OpenGpuScene { scene } => {
+            let tx = tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let result = (|| -> Result<(), String> {
+                    let mut file = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
+                    serde_json::to_writer(file.as_file_mut(), &scene).map_err(|e| e.to_string())?;
+                    let status = std::process::Command::new(std::env::current_exe().map_err(|e| e.to_string())?)
+                        .arg("--gpu-viewer").arg(file.path()).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+                        .status().map_err(|e| e.to_string())?;
+                    if status.success() { Ok(()) } else { Err("GPU viewport failed; check desktop display and graphics driver availability".into()) }
+                })();
+                let _ = tx.send(AppEvent::GpuViewerFinished(result));
             });
         }
         Effect::RunFeaDynamic { id, problem, import_text, kind, n_modes } => {

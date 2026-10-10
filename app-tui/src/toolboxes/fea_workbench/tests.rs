@@ -387,3 +387,30 @@ fn buckling_without_a_density_still_runs_and_frequencies_explain_the_missing_den
     assert!(s.dyn_error.as_deref().is_some_and(|m| m.contains("density")), "{:?}", s.dyn_error);
     assert!(s.dynamic.is_none());
 }
+
+#[test]
+fn gpu_animation_discards_stale_inputs_and_wrong_ids() {
+    let mut s=FeaWorkbenchState::default();
+    let effect=s.start_animation().pop().unwrap();
+    let Effect::RunFeaAnimation {id,..}=effect else {panic!("worker effect expected")};
+    assert!(s.finish_animation(id+1,Err("wrong job".into())).is_empty());
+    assert!(s.solve_error.is_none());
+    s.problem.name.push_str(" changed");
+    assert!(s.finish_animation(id,Err("stale failure".into())).is_empty());
+    assert!(s.solve_error.is_none());
+    assert_eq!(s.start_animation().len(),1);
+}
+
+#[test]
+fn gpu_bindings_accept_windows_caps_lock() {
+    for c in ['t','T'] {
+        let mut s=FeaWorkbenchState::default();
+        let (handled,effects)=handle_key(&mut s,key(KeyCode::Char(c)));
+        assert!(handled);assert!(matches!(effects.first(),Some(Effect::RunFeaAnimation {..})));
+    }
+    for c in ['g','G'] {
+        let mut s=FeaWorkbenchState::default();
+        let (handled,effects)=handle_key(&mut s,key(KeyCode::Char(c)));
+        assert!(handled);assert!(effects.is_empty());assert!(s.solve_error.as_ref().unwrap().contains("solve the current inputs"));
+    }
+}

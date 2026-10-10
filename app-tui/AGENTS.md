@@ -118,3 +118,13 @@ Per-toolbox nodes (read the one for the toolbox you are changing):
 | Material Lookup | `src/toolboxes/material_lookup/AGENTS.md` |
 
 Sibling nodes: `search-core/AGENTS.md`, `native-search/AGENTS.md`, `bushing-solver/AGENTS.md`, `fastened-joint-solver/AGENTS.md`, `lug-solver/AGENTS.md`. `pressure-vessel-solver` has no node.
+
+## Navigation addendum — issue #12 GPU extension (2026-10-10)
+
+User-authorized direct `wgpu` companion viewport: `src/gpu_viewer/` owns bounded scene conversion,
+WGSL/deformation buffers, `winit` native window and verified free-vibration worker. `g` opens current
+static/modal/buckling results; `t` computes a time history. Main executable dispatches
+`--gpu-viewer <scene.json>` before ratatui initialization. `gpu-viewer` defaults on; terminal-only
+builds use `--no-default-features`. Effects/process/window I/O stay in `main.rs`; reducers stay pure.
+See `docs/issue-12-phase-18.md` for controls, supported physics, limits and validation evidence.
+Earlier no-GPU descriptions above are historical.
