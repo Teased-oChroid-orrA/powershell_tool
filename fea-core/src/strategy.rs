@@ -433,6 +433,9 @@ impl Model {
                 .chain(sol.reactions.iter().map(|x| x.abs()))
                 .fold(0.0_f64, f64::max)
                 .max(1e-300);
+            if !scale.is_finite() {
+                return Err("nonlinear acceptance: nonfinite force scale".into());
+            }
             let last = sol
                 .steps
                 .last()
@@ -447,5 +450,39 @@ impl Model {
             }
             physical(sol)
         })
+    }
+}
+
+impl Refined {
+    pub fn report_json(&self) -> String {
+        format!(
+            "{{\"mesh_attempts\":{},\"best_dofs\":{},\"acceptance\":{},\"solver\":{}}}",
+            self.attempts,
+            self.best.model.mesh.n_dofs(),
+            self.report.json(),
+            self.best.solve.report_json()
+        )
+    }
+}
+impl Ladder {
+    pub fn report_json(&self) -> String {
+        let events = self
+            .events
+            .iter()
+            .map(|e| {
+                format!(
+                    "{{\"kind\":{},\"detail\":{}}}",
+                    crate::report::json_str(e.kind.name()),
+                    crate::report::json_str(&e.detail)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "{{\"accepted_rung\":{},\"decisions\":[{}],\"solution\":{}}}",
+            self.rung,
+            events,
+            self.solution.report_json()
+        )
     }
 }

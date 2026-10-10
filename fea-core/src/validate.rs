@@ -159,7 +159,7 @@ pub fn check_field_supports(
     bc: &crate::fields::FieldConstraints,
 ) -> Result<(), String> {
     use crate::fields::Field;
-    if map.n_nodes() != nodes.len() {
+    if map.n_nodes() != nodes.len() || !bc.matches(map) {
         return Err("field supports: node/layout mismatch".into());
     }
     let mut parent: Vec<usize> = (0..nodes.len()).collect();

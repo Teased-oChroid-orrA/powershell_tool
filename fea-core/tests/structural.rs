@@ -128,7 +128,7 @@ fn rotated_frame_preserves_local_solution_and_rigid_body_patch() {
     );
     let mut rigid = model.fields().constraints();
     let omega = [0.03, -0.02, 0.01];
-    for (n, x) in model.nodes.iter().enumerate() {
+    for (n, x) in model.nodes().iter().enumerate() {
         let u = [
             0.2 + omega[1] * x[2] - omega[2] * x[1],
             -0.1 + omega[2] * x[0] - omega[0] * x[2],

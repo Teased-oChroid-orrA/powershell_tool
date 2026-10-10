@@ -71,6 +71,7 @@ impl DofMap {
     }
     pub fn constraints(&self) -> FieldConstraints {
         FieldConstraints {
+            map: self.clone(),
             values: vec![None; self.n_dofs()],
         }
     }
@@ -78,9 +79,13 @@ impl DofMap {
 
 #[derive(Debug, Clone)]
 pub struct FieldConstraints {
+    map: DofMap,
     values: Vec<Option<f64>>,
 }
 impl FieldConstraints {
+    pub fn matches(&self, map: &DofMap) -> bool {
+        self.map == *map
+    }
     pub fn prescribed(&self, dof: usize) -> Result<Option<f64>, String> {
         self.values
             .get(dof)
@@ -94,7 +99,7 @@ impl FieldConstraints {
         field: Field,
         value: f64,
     ) -> Result<(), String> {
-        if !value.is_finite() || self.values.len() != map.n_dofs() {
+        if !value.is_finite() || !self.matches(map) {
             return Err("field constraint: nonfinite value or layout mismatch".into());
         }
         let dof = map.index(node, field)?;
@@ -115,6 +120,7 @@ impl FieldConstraints {
             return Err("field constraint: invalid continuum layout".into());
         }
         Ok(Self {
+            map: model.displacement_fields(),
             values: bc
                 .fixed
                 .iter()
@@ -219,30 +225,40 @@ impl FieldAssembly {
 }
 
 pub struct FieldSystem {
-    pub map: DofMap,
-    pub pattern: Arc<Pattern>,
-    pub matrix: BlockMatrix,
-    pub load: Vec<f64>,
+    map: DofMap,
+    pattern: Arc<Pattern>,
+    matrix: BlockMatrix,
+    load: Vec<f64>,
 }
 #[derive(Debug, Clone)]
 pub struct FieldResult {
     pub map: DofMap,
     pub values: Vec<f64>,
     pub reactions: Vec<f64>,
+    /// Maximum component-wise backward error on free DOFs (each equation keeps its units).
     pub rel_residual: f64,
     pub quadratic_energy: f64,
 }
 impl FieldResult {
     pub fn value(&self, node: usize, field: Field) -> Result<f64, String> {
-        Ok(self.values[self.map.index(node, field)?])
+        self.values
+            .get(self.map.index(node, field)?)
+            .copied()
+            .ok_or_else(|| "field result: invalid value dimensions".into())
     }
 }
 impl FieldSystem {
+    pub fn fields(&self) -> &DofMap {
+        &self.map
+    }
+    pub fn nonzeros(&self) -> usize {
+        self.matrix.vals.len()
+    }
     pub fn solve(&self, constraints: &FieldConstraints, tol: f64) -> Result<FieldResult, String> {
         let n = self.map.n_dofs();
         if !tol.is_finite()
             || tol <= 0.0
-            || constraints.values.len() != n
+            || !constraints.matches(&self.map)
             || self.load.len() != n
             || self
                 .load
@@ -278,18 +294,21 @@ impl FieldSystem {
             &values.iter().map(|v| v.abs()).collect::<Vec<_>>(),
             &mut scale,
         );
-        let mut rn = 0.0_f64;
-        let mut sn = 0.0_f64;
+        // Row-wise scaling preserves acceptance across fields with different physical units.
+        // A large thermal equation must not hide a failed force/moment equation.
+        let mut rel_residual = 0.0_f64;
         for i in 0..n {
             if !bc.fixed[i] {
-                rn = rn.hypot(ku[i] - self.load[i]);
-                sn = sn.hypot(scale[i] + self.load[i].abs());
+                let denominator = scale[i] + self.load[i].abs();
+                let error = (ku[i] - self.load[i]).abs() / denominator.max(1e-300);
+                if !denominator.is_finite() || !error.is_finite() {
+                    return Err("field solve: nonfinite component backward error".into());
+                }
+                rel_residual = rel_residual.max(error);
             }
         }
-        let rel_residual = rn / sn.max(1e-300);
         let energy = 0.5 * values.iter().zip(&ku).map(|(u, f)| u * f).sum::<f64>();
         if values.iter().chain(&ku).any(|v| !v.is_finite())
-            || !sn.is_finite()
             || !rel_residual.is_finite()
             || rel_residual > tol
             || !energy.is_finite()

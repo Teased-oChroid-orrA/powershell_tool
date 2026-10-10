@@ -293,3 +293,187 @@ impl AcceptanceReport {
         )
     }
 }
+
+/// Only request mechanical-energy conservation for an undamped, unloaded average-acceleration
+/// run. HHT/damped unloaded runs may instead request an upper bound by the initial energy.
+#[derive(Debug, Clone, Copy)]
+pub enum TransientEnergy {
+    Conserved { tol: f64 },
+    BoundedByInitial { tol: f64 },
+}
+impl AcceptanceReport {
+    pub fn modal(result: &crate::Modal, tol: f64) -> Self {
+        let mut checks = Vec::new();
+        for (i, mode) in result.modes.iter().enumerate() {
+            checks.push(AcceptanceCheck {
+                name: format!("mode {i} residual"),
+                value: mode.residual,
+                limit: tol,
+            });
+            checks.push(AcceptanceCheck {
+                name: format!("mode {i} finite state"),
+                value: if !mode.shape.is_empty()
+                    && mode
+                        .shape
+                        .iter()
+                        .chain(&mode.effective_mass)
+                        .all(|v| v.is_finite())
+                    && mode.omega2.is_finite()
+                    && mode.frequency_hz.is_finite()
+                {
+                    0.0
+                } else {
+                    f64::INFINITY
+                },
+                limit: 0.0,
+            });
+        }
+        Self {
+            checks,
+            diagnostics: vec![format!(
+                "eigen iterations {}, subspace {}, fallback {:?}",
+                result.iterations, result.subspace, result.fallback
+            )],
+        }
+    }
+    pub fn heat(result: &crate::HeatSolution, tol: f64) -> Self {
+        Self {
+            checks: vec![
+                AcceptanceCheck {
+                    name: "thermal residual".into(),
+                    value: result.rel_residual,
+                    limit: tol,
+                },
+                AcceptanceCheck {
+                    name: "heat balance (roundoff allowance)".into(),
+                    value: result.accepted_balance_error,
+                    limit: tol,
+                },
+                AcceptanceCheck {
+                    name: "finite temperature".into(),
+                    value: if !result.temperature.is_empty()
+                        && result.temperature.iter().all(|v| v.is_finite())
+                        && [
+                            result.heat_in,
+                            result.heat_out_fixed,
+                            result.heat_out_convection,
+                        ]
+                        .iter()
+                        .all(|v| v.is_finite())
+                    {
+                        0.0
+                    } else {
+                        f64::INFINITY
+                    },
+                    limit: 0.0,
+                },
+            ],
+            diagnostics: vec![format!(
+                "raw heat balance {:.6e}, iterations {}",
+                result.balance_error(),
+                result.iterations
+            )],
+        }
+    }
+    pub fn transient(result: &crate::Transient, tol: f64, energy: Option<TransientEnergy>) -> Self {
+        let finite = result
+            .u
+            .iter()
+            .chain(&result.v)
+            .chain(&result.energy)
+            .chain(&result.times)
+            .chain(result.history.iter().flatten())
+            .all(|v| v.is_finite())
+            && result.energy.iter().all(|e| *e >= 0.0);
+        let mut checks = vec![AcceptanceCheck {
+            name: "finite transient state".into(),
+            value: if finite { 0.0 } else { f64::INFINITY },
+            limit: 0.0,
+        }];
+        for (step, &value) in result.residuals.iter().enumerate() {
+            checks.push(AcceptanceCheck {
+                name: format!("step {step} effective residual"),
+                value,
+                limit: tol,
+            });
+        }
+        let lengths = !result.times.is_empty()
+            && result.residuals.len() == result.times.len()
+            && result.energy.len() == result.times.len()
+            && result.history.iter().all(|h| h.len() == result.times.len());
+        checks.push(AcceptanceCheck {
+            name: "complete transient history".into(),
+            value: if lengths { 0.0 } else { f64::INFINITY },
+            limit: 0.0,
+        });
+        if let Some(requirement) = energy {
+            let initial = result.energy.first().copied().unwrap_or(f64::NAN);
+            let (name, limit) = match requirement {
+                TransientEnergy::Conserved { tol } => ("conserved mechanical energy", tol),
+                TransientEnergy::BoundedByInitial { tol } => {
+                    ("mechanical energy bounded by initial", tol)
+                }
+            };
+            let value = if !initial.is_finite() || initial < 0.0 || !finite {
+                f64::INFINITY
+            } else {
+                result
+                    .energy
+                    .iter()
+                    .map(|e| match requirement {
+                        TransientEnergy::Conserved { .. } => (e - initial).abs(),
+                        TransientEnergy::BoundedByInitial { .. } => (e - initial).max(0.0),
+                    })
+                    .fold(0.0_f64, f64::max)
+                    / initial.max(1e-300)
+            };
+            checks.push(AcceptanceCheck {
+                name: name.into(),
+                value,
+                limit,
+            });
+        }
+        Self {checks,diagnostics:vec!["Energy acceptance is conditional on the caller's declared loading/integration regime".into()]}
+    }
+}
+
+impl AcceptanceReport {
+    pub fn buckling(result: &crate::Buckling, tol: f64) -> Self {
+        let mut checks = Vec::new();
+        for (i, mode) in result.modes.iter().enumerate() {
+            checks.push(AcceptanceCheck {
+                name: format!("buckling mode {i} residual"),
+                value: mode.residual,
+                limit: tol,
+            });
+            let valid = mode.load_factor.is_finite()
+                && mode.load_factor > 0.0
+                && !mode.shape.is_empty()
+                && mode.shape.iter().all(|v| v.is_finite());
+            checks.push(AcceptanceCheck {
+                name: format!("buckling mode {i} positive finite state"),
+                value: if valid { 0.0 } else { f64::INFINITY },
+                limit: 0.0,
+            });
+        }
+        Self {
+            checks,
+            diagnostics: vec![format!(
+                "eigen iterations {}, fallback {:?}",
+                result.iterations, result.fallback
+            )],
+        }
+    }
+    pub fn fields(result: &crate::fields::FieldResult, tol: f64) -> Self {
+        let valid = result.values.len() == result.map.n_dofs()
+            && result.reactions.len() == result.map.n_dofs()
+            && result
+                .values
+                .iter()
+                .chain(&result.reactions)
+                .all(|v| v.is_finite())
+            && result.quadratic_energy.is_finite();
+        Self {checks:vec![AcceptanceCheck {name:"component-wise field residual".into(),value:result.rel_residual,limit:tol},
+            AcceptanceCheck {name:"finite field state/energy and metadata".into(),value:if valid {0.0}else{f64::INFINITY},limit:0.0}],diagnostics:vec!["Quadratic energy is a diagnostic; constitutive/physical benchmarks are independent acceptance evidence".into()]}
+    }
+}

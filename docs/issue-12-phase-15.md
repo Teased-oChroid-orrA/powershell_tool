@@ -27,3 +27,13 @@ Regression coverage includes insufficient refinement budget, achieved ZZ target 
 meshes, physical-verifier rejection, strict nonlinear residual rejection, malformed dimensions,
 nonfinite acceptance requirements/reports, zero/large ZZ norms, and existing fallback/ladder tests.
 Full milestone validation and evidence are in the final roadmap handoff.
+
+## Unified analysis acceptance addendum
+
+Common acceptance reports now cover modal, buckling, heat, generalized fields and transient outputs.
+Transient energy conservation/bounded-by-initial checks are explicit **conditional** caller requirements
+for the appropriate unloaded integration regime; driven/damped analyses must not be falsely certified
+as conservative. Incomplete histories fail. Steady heat enforces heat-flow balance after a documented
+`100 eps sum(|K| |T|+|f|)` floating-point allowance, alongside residual acceptance; raw balance remains
+available separately. The allowance handles uniform nonzero temperatures with zero physical heat flow.
+Refinement and ladder reports expose attempt/rung decisions and existing detailed solver reports.

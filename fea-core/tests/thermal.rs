@@ -32,6 +32,7 @@ fn a_bar_between_two_temperatures_has_a_linear_profile_and_conserves_heat() {
     fix_set(&model, &mut bc, "u0", 0.0);
     fix_set(&model, &mut bc, "u1", 100.0);
     let s = model.solve_heat_steady(&HeatLoads::default(), &bc, 1e-10).unwrap();
+    fea_core::report::AcceptanceReport::heat(&s, 1e-10).require().unwrap();
     for (i, x) in model.mesh.nodes.iter().enumerate() {
         assert!((s.temperature[i] - 25.0 * x[0]).abs() < 1e-9, "node {i}: {} vs {}", s.temperature[i], 25.0 * x[0]);
     }
@@ -47,6 +48,7 @@ fn a_uniform_steady_temperature_is_accepted_without_heat_flow() {
     let mut bc = model.thermal_dirichlet();
     fix_set(&model, &mut bc, "u0", 100.0);
     let s = model.solve_heat_steady(&HeatLoads::default(), &bc, 1e-10).unwrap();
+    fea_core::report::AcceptanceReport::heat(&s, 1e-10).require().unwrap();
     assert!(s.temperature.iter().all(|t| (t - 100.0).abs() < 1e-10));
     assert!(s.rel_residual.is_finite() && s.rel_residual <= 1e-10, "{s:?}");
     assert!(s.heat_in == 0.0 && s.heat_out_fixed.abs() < 1e-10 && s.heat_out_convection == 0.0, "{s:?}");
@@ -206,6 +208,7 @@ fn a_hollow_cylinder_has_the_logarithmic_profile() {
     fix_set(&model, &mut bc, "u0", 300.0);
     fix_set(&model, &mut bc, "u1", 100.0);
     let s = model.solve_heat_steady(&HeatLoads::default(), &bc, 1e-10).unwrap();
+    fea_core::report::AcceptanceReport::heat(&s, 1e-10).require().unwrap();
     for (i, x) in model.mesh.nodes.iter().enumerate() {
         let exact = 300.0 + (100.0 - 300.0) * (x[0] / ri).ln() / (ro / ri).ln();
         assert!((s.temperature[i] - exact).abs() < 2e-3, "r = {}: {} vs {exact}", x[0], s.temperature[i]);

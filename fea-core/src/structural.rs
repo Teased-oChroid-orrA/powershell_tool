@@ -75,8 +75,8 @@ impl Member {
 }
 #[derive(Debug, Clone)]
 pub struct MemberModel {
-    pub nodes: Vec<[f64; 3]>,
-    pub members: Vec<Member>,
+    nodes: Vec<[f64; 3]>,
+    members: Vec<Member>,
     map: DofMap,
 }
 #[derive(Debug, Clone)]
@@ -148,6 +148,12 @@ impl MemberModel {
             members,
             map,
         })
+    }
+    pub fn nodes(&self) -> &[[f64; 3]] {
+        &self.nodes
+    }
+    pub fn members(&self) -> &[Member] {
+        &self.members
     }
     pub fn fields(&self) -> &DofMap {
         &self.map
@@ -349,9 +355,13 @@ impl MemberModel {
             if actions.iter().any(|v| !v.is_finite()) {
                 return Err("member recovery: nonfinite actions".into());
             }
+            let axial_stress = actions[6] / elem.area;
+            if !axial_stress.is_finite() {
+                return Err("member recovery: nonfinite axial stress".into());
+            }
             members.push(MemberForce {
                 local_end_actions: actions,
-                axial_stress: actions[6] / elem.area,
+                axial_stress,
             });
         }
         Ok(MemberSolution { fields, members })

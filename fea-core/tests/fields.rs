@@ -36,8 +36,9 @@ fn generalized_sparse_assembly_solves_a_bar_with_nonzero_prescription() {
     }
     assembly.add_load(2, 2.0).unwrap();
     let system = assembly.finish();
-    assert_eq!(system.matrix.vals.len(), 5);
+    assert_eq!(system.nonzeros(), 5);
     let solution = system.solve(&bc, 1e-12).unwrap();
+    fea_core::report::AcceptanceReport::fields(&solution, 1e-12).require().unwrap();
     for (got, want) in solution.values.iter().zip([0.2, 0.7, 1.2]) {
         assert!((got - want).abs() < 1e-12);
     }
@@ -178,4 +179,20 @@ fn thermal_to_structural_coupling_uses_temperature_change_and_matches_the_bar_re
     assert!((reaction / (-e * alpha * 50.0) - 1.0).abs() < 1e-9);
     assert_eq!(out.thermal_fields.n_dofs(), model.mesh.nodes.len());
     assert_eq!(out.structural_fields.n_dofs(), model.mesh.n_dofs());
+}
+
+#[test]
+fn equal_sized_constraints_with_different_fields_cannot_be_reinterpreted() {
+    let thermal = DofMap::uniform(2, &[Field::Temperature]).unwrap();
+    let mechanical = DofMap::uniform(2, &[Field::Translation(0)]).unwrap();
+    let mut bc = thermal.constraints();
+    assert!(bc
+        .prescribe(&mechanical, 0, Field::Translation(0), 0.0)
+        .is_err());
+    bc.prescribe(&thermal, 0, Field::Temperature, 0.0).unwrap();
+    let mut assembly = FieldAssembly::new(mechanical);
+    assembly
+        .add_element(&[0, 1], &[1.0, -1.0, -1.0, 1.0])
+        .unwrap();
+    assert!(assembly.finish().solve(&bc, 1e-10).is_err());
 }

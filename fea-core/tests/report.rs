@@ -157,3 +157,17 @@ fn acceptance_reports_never_certify_nonfinite_or_empty_evidence() {
         assert!(report.json().contains("\"passed\":false"));
     }
 }
+
+#[test]
+fn incomplete_transient_history_fails_unified_acceptance() {
+    let result = fea_core::Transient {
+        times: vec![0.0, 1.0],
+        history: vec![vec![0.0]],
+        energy: vec![0.0, 0.0],
+        residuals: vec![0.0],
+        u: vec![0.0],
+        v: vec![0.0],
+    };
+    let report = fea_core::report::AcceptanceReport::transient(&result, 1e-8, None);
+    assert!(report.require().is_err());
+}

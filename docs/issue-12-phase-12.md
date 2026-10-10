@@ -175,3 +175,16 @@ only ThermalToStructural direction; no monolithic/two-way coupling is claimed.
 Remaining acceptance work includes unified orchestration/strict nonlinear acceptance in Phase 15,
 full milestone validation and continued roadmap documentation. Do not infer full roadmap completion
 from targeted checks or from a nonlinear driver's `complete()` termination classification.
+
+## Full hardening validation addendum
+
+`cargo test --workspace --locked -j 4 --no-fail-fast` of `31b76be` completed with exit 0:
+**1,776 passed, 0 failed, 57 ignored, 89 targets**. Logs/summary: `phase12-full.*` under
+`/workspace/phase12-evidence/`. Later generalized/structural/orchestration changes have targeted
+validation; final whole-workspace validation is pending before declaring those milestones complete.
+Continuation progress: https://github.com/Teased-oChroid-orrA/powershell_tool/issues/12#issuecomment-6091580436
+
+The user additionally requested direct GPU visualization and time-frame deformation animation.
+This is an authorized GUI scope extension after the new core interfaces; preserve pure solver APIs
+and isolate rendering/window/file effects in the application. GPU continuation will be recorded in
+`docs/issue-12-phase-18.md`, alongside a final Claude Code roadmap handoff.

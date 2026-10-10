@@ -80,6 +80,9 @@ pub struct HeatSolution {
     /// Normwise backward error `||K T - f|| / || |K| |T| + |f| ||` over the free nodes,
     /// evaluated with the conductivity of the final temperature. An accepted steady solve has a finite value <= `tol`.
     pub rel_residual: f64,
+    /// Global heat-flow imbalance after an explicit matrix-scaled floating-point allowance.
+    /// Accepted steady solves require this finite value <= `tol`; `balance_error()` remains raw.
+    pub accepted_balance_error: f64,
     /// Picard iterations (`1` for a constant conductivity).
     pub iterations: usize,
     /// Heat entering through sources, fluxes and point inputs (independent of the solution).
@@ -294,7 +297,14 @@ impl Model {
         if rel_residual > tol {
             return Err(format!("steady heat: the final residual {rel_residual:.2e} exceeds the allowed tolerance {tol:.2e}"));
         }
-        Ok(HeatSolution { temperature: t, rel_residual, iterations, heat_in, heat_out_fixed: -reaction, heat_out_convection })
+        let flow_scale = heat_in.abs() + reaction.abs() + heat_out_convection.abs();
+        let roundoff = 100.0 * f64::EPSILON * scale.iter().zip(&f).map(|(s, f)| s + f.abs()).sum::<f64>();
+        let imbalance = (heat_in + reaction - heat_out_convection).abs();
+        let accepted_balance_error = (imbalance - roundoff).max(0.0) / flow_scale.max(1e-300);
+        if !roundoff.is_finite() || !flow_scale.is_finite() || !imbalance.is_finite() || !accepted_balance_error.is_finite() || accepted_balance_error > tol {
+            return Err(format!("steady heat: global heat balance {accepted_balance_error:e} exceeds {tol:e} or is nonfinite"));
+        }
+        Ok(HeatSolution { temperature: t, rel_residual, accepted_balance_error, iterations, heat_in, heat_out_fixed: -reaction, heat_out_convection })
     }
 
     /// Transient temperature field by the theta method (`theta = 1` backward Euler, `0.5` Crank-Nicolson), constant

@@ -23,3 +23,10 @@ clamped-bar reaction `-E alpha mean(delta T)`. Evidence `fields.log`/`structural
 `/workspace/phase12-evidence`. Full current-source workspace validation remains required before
 marking the milestone complete. Claude: inspect these interfaces before structural consumer edits;
 retain existing continuum numbering and distinguish termination from verified acceptance.
+
+## Final interface review addendum
+
+Constraints now retain their full field layout: equal-sized thermal and mechanical layouts cannot
+be reinterpreted. Sparse system internals are encapsulated. Generalized residual acceptance is
+component-wise `max_i |(K u-f)_i|/(|K| |u|+|f|)_i`, so mixed equation units cannot mask one another.
+The earlier normwise description is historical. A regression verifies cross-layout rejection.

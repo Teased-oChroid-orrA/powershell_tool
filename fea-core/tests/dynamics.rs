@@ -146,6 +146,7 @@ fn euler_buckling_of_a_cantilever_column_2d() {
     fix_x0(&model, &mut bc);
     let loads = column_load(&model, 1.0, h);
     let b = model.buckling(&loads, &bc, &BucklingOptions { n_modes: 2, ..BucklingOptions::default() }).unwrap();
+    fea_core::report::AcceptanceReport::buckling(&b, 1e-9).require().unwrap();
     let pcr = PI * PI * (h * h * h / 12.0) / (4.0 * l * l);
     assert!((b.modes[0].load_factor / pcr - 1.0).abs() < 1.5e-2, "{} vs {pcr}", b.modes[0].load_factor);
     // The second cantilever mode: (3 pi / 2)^2 / (pi / 2)^2 = 9 times the first.
@@ -164,6 +165,7 @@ fn euler_buckling_of_a_cantilever_column_3d() {
     let faces = model.mesh.surfaces["u1"].clone();
     let loads = Loads { faces: faces.into_iter().map(|f| (f, SurfaceLoad::Traction([-1.0 / (w * w), 0.0, 0.0]))).collect(), ..Loads::default() };
     let b = model.buckling(&loads, &bc, &BucklingOptions { n_modes: 2, ..BucklingOptions::default() }).unwrap();
+    fea_core::report::AcceptanceReport::buckling(&b, 1e-9).require().unwrap();
     let pcr = PI * PI * (w.powi(4) / 12.0) / (4.0 * l * l);
     for m in &b.modes {
         assert!((m.load_factor / pcr - 1.0).abs() < 2e-2, "{} vs {pcr}", m.load_factor);
@@ -309,6 +311,8 @@ fn freely_vibrating_axial_mode_converges_to_the_harmonic_solution() {
         let out = model.transient(&loads, &|_| 0.0, &bc, Some((&mode.shape, &v0)), &TransientOptions { dt: end / steps as f64, steps, record: vec![tip * 2], ..Default::default() }).unwrap();
         let exact = mode.shape[tip * 2] * (omega * end).cos();
         errors.push((out.u[tip * 2] - exact).abs());
+        fea_core::report::AcceptanceReport::transient(&out, 1e-8,
+            Some(fea_core::report::TransientEnergy::Conserved { tol: 1e-10 })).require().unwrap();
         assert_eq!(out.residuals.len(), steps + 1);
         assert!(out.residuals.iter().all(|r| r.is_finite() && *r <= 1e-8));
         let e0 = out.energy[0];
@@ -346,6 +350,7 @@ fn fixed_fixed_axial_modes_match_the_independent_spectrum_and_mass_orthogonality
         if x[0] < 1e-12 || (x[0] - 2.0).abs() < 1e-12 { bc.fix(n, 0, 0.0); }
     }
     let result = model.modal(&bc, &ModalOptions { n_modes: 3, ..Default::default() }).unwrap();
+    fea_core::report::AcceptanceReport::modal(&result, 1e-9).require().unwrap();
     let mass = model.assemble_mass(MassKind::Consistent).unwrap();
     for (i, a) in result.modes.iter().enumerate() {
         let exact = (i + 1) as f64 * PI / (2.0 * 3.0_f64.sqrt());
