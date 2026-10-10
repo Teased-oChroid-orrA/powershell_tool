@@ -593,7 +593,10 @@ impl FeaWorkbenchState {
     }
     pub fn animation_status(&self) -> Option<String> {
         if let Some((_, started)) = &self.viewer_launch { return Some(format!("Opening native GPU viewport ({:.1} s)", started.elapsed().as_secs_f64())); }
-        let job = self.animation_job.as_ref().filter(|j| j.sig == self.problem)?;
+        let job = self.animation_job.as_ref()?;
+        if job.sig != self.problem {
+            return Some(format!("Inputs changed; previous animation finishing ({:.1} s)", job.started.elapsed().as_secs_f64()));
+        }
         Some(format!("{} ({:.1} s)", self.animation_progress.as_ref().map(|p| p.text()).unwrap_or_else(|| "Preparing animation".into()), job.started.elapsed().as_secs_f64()))
     }
     pub fn viewer_ready(&mut self, id: u64) {

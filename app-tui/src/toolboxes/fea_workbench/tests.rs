@@ -432,8 +432,12 @@ fn animation_progress_is_visible_and_rejects_stale_updates() {
     assert!(text.contains("120/240 (50%)"));
     s.problem.name.push_str(" changed");
     s.update_animation_progress(id, GenerationProgress::stage("stale"));
-    assert!(s.animation_status().is_none());
+    let status = s.animation_status().unwrap();
+    assert!(status.contains("Inputs changed; previous animation finishing"));
+    assert!(!status.contains("120/240") && !status.contains("stale"));
+    assert!(s.start_animation().is_empty());
     s.finish_animation(id, Err("stale failure".into()));
+    assert!(s.animation_status().is_none());
     assert!(s.solve_error.is_none());
 }
 

@@ -60,3 +60,11 @@ desktop setup and smoke command. The install script was exercised again; these s
 environment publication to become a new snapshot and do not claim a fresh-task validation.
 An offscreen run without the documented cache/runtime variables passed but emitted read-only
 home-cache/XDG warnings; the correctly configured replay passed without those setup warnings.
+
+## Superseded-generation follow-up — 2026-10-10 UTC
+
+Published increment `447f187d04474be7cccd19b6cf01f492f2ca76b4` passed the complete local workspace gate: **1,819 passed / 0 failed / 60 ignored / 93 targets**, exit 0. Hosted [run 38042753267](https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/38042753267) also succeeded at that SHA.
+
+A subsequent small correction keeps an explicit “Inputs changed; previous animation finishing” elapsed-time status visible when an edited analysis supersedes a running job. It suppresses stale numerical progress and still discards stale results; another generation remains blocked until the worker finishes. The extended regression passed (1/1). The actual terminal/native smoke replay exited 0 and verified the caption during an analysis edit, then verified no stale native window opened (`phase19-stale-smoke.log/.exit`, `phase19-tui-stale-progress.png/.txt`). An initial smoke attempt changed the template, which resets the job instead of exercising the retained-worker path; the corrected replay changes Analysis. Full workspace and hosted checks for this follow-up are recorded against its final SHA in issue #12 / draft PR #13.
+
+Remaining scope stays explicit: Phase 20 visible panels/legend/field selection, Phase 21 interactive authoring/constraints/analysis, and Phase 22 measured advisory ML. Continue on `codex/fea-core-roadmap`, preserving deterministic offline behavior; do not merge main or close the expanded issue as complete.
