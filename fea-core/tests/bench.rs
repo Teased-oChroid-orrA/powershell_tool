@@ -329,3 +329,184 @@ fn modal_analysis_cost() {
         }
     }
 }
+
+/// Roadmap performance evidence, not a speed assertion. Benchmark-only timing-trained decision
+/// stump; production selection remains deterministic. Includes held-out aspect/physics cases.
+#[test]
+#[ignore = "profile and advisory experiment: run explicitly with --ignored --nocapture"]
+fn roadmap_profiles_and_advisory_selection() {
+    use fea_core::fields::Field::{Rotation as R, Translation as U};
+    use fea_core::structural::{FrameSection, Member, MemberModel};
+    for div in [8, 32, 128] {
+        let l = 4.0;
+        let section = FrameSection {
+            e: 1e7,
+            g: 4e6,
+            area: 0.3,
+            iy: 0.02,
+            iz: 0.03,
+            torsion: 0.01,
+            shear_areas: None,
+        };
+        let model = MemberModel::new(
+            (0..=div)
+                .map(|n| [l * n as f64 / div as f64, 0.0, 0.0])
+                .collect(),
+            (0..div)
+                .map(|n| Member::Frame {
+                    nodes: [n, n + 1],
+                    section,
+                    reference: [0.0, 1.0, 0.0],
+                    uniform_load: [0.0; 3],
+                })
+                .collect(),
+        )
+        .unwrap();
+        let mut bc = model.fields().constraints();
+        for axis in 0..3 {
+            bc.prescribe(model.fields(), 0, U(axis), 0.0).unwrap();
+            bc.prescribe(model.fields(), 0, R(axis), 0.0).unwrap();
+        }
+        let exact = 100.0 * l.powi(3) / (3.0 * section.e * section.iz);
+        let (elapsed, out) = best(3, || model.solve(&bc, &[(div, U(1), 100.0)], 1e-8).unwrap());
+        let error = (out.fields.value(div, U(1)).unwrap() / exact - 1.0).abs();
+        assert!(error < 1e-6, "frame div={div}: error {error:e}");
+        let repeat = model.solve(&bc, &[(div, U(1), 100.0)], 1e-8).unwrap();
+        assert_eq!(
+            out.fields.values, repeat.fields.values,
+            "frame results must reproduce bit for bit"
+        );
+        eprintln!("ROADMAP frame div={div} dofs={} min_ms={:.3} relative_error={error:.3e} residual={:.3e}",model.fields().n_dofs(),ms(elapsed),out.fields.rel_residual);
+    }
+    fn problem(n: usize, aspect: f64, solid: bool) -> (Model, Loads, Dirichlet, f64) {
+        let physics = if solid {
+            Physics::Solid
+        } else {
+            Physics::PlaneStress { thickness: 1.0 }
+        };
+        let kind = if solid {
+            ElementKind::Hex8
+        } else {
+            ElementKind::Quad4
+        };
+        let mesh = grid(
+            physics,
+            kind,
+            Elastic::new(1e7, 0.0),
+            [n, n, if solid { n } else { 1 }],
+            &|p| [aspect * p[0], p[1], p[2]],
+        )
+        .unwrap();
+        let model = Model::new(mesh).unwrap();
+        let mut bc = model.dirichlet();
+        for &node in model.mesh.node_set("u0").unwrap() {
+            bc.fix_node(node);
+        }
+        let loads = Loads {
+            faces: model.mesh.surfaces["u1"]
+                .iter()
+                .map(|f| (f.clone(), SurfaceLoad::Traction([100.0, 0.0, 0.0])))
+                .collect(),
+            ..Default::default()
+        };
+        (model, loads, bc, 100.0 * aspect / 1e7)
+    }
+    fn timed(
+        model: &Model,
+        loads: &Loads,
+        bc: &Dirichlet,
+        choose: &dyn Fn() -> bool,
+        exact: f64,
+    ) -> (f64, Adaptive) {
+        let (elapsed, out) = best(3, || {
+            let method = if choose() {
+                SolveMethod::Iterative {
+                    tol: 1e-10,
+                    max_iter: 400,
+                }
+            } else {
+                SolveMethod::Direct
+            };
+            model
+                .solve_adaptive(
+                    loads,
+                    bc,
+                    &Requirements {
+                        force_method: Some(method),
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+        });
+        let dim = model.mesh.dim();
+        let mut error = 0.0_f64;
+        for &node in model.mesh.node_set("u1").unwrap() {
+            error = error.max((out.solution.u[node * dim] / exact - 1.0).abs());
+        }
+        assert!(error < 1e-6, "independent axial response error {error:e}");
+        assert!(out.verification.passed);
+        (ms(elapsed), out)
+    }
+    let mut training = Vec::new();
+    for n in [4, 8, 12] {
+        let (model, loads, bc, exact) = problem(n, 1.0, true);
+        let (direct, d) = timed(&model, &loads, &bc, &|| false, exact);
+        let (iterative, i) = timed(&model, &loads, &bc, &|| true, exact);
+        let dofs = model.mesh.n_dofs() - bc.n_fixed();
+        eprintln!("ROADMAP train n={n} free={dofs} direct_ms={direct:.3} iterative_ms={iterative:.3} iterative_actual={:?} factor_nnz={} residual_direct={:.3e} residual_iterative={:.3e}",i.method,d.solution.factor_nnz,d.verification.rel_residual,i.verification.rel_residual);
+        training.push((dofs, direct, iterative));
+    }
+    // Cost-minimizing one-feature decision stump, fit only to training timings.
+    let thresholds = [0, training[0].0 + 1, training[1].0 + 1, usize::MAX];
+    let threshold = *thresholds
+        .iter()
+        .min_by(|&&a, &&b| {
+            let cost = |threshold| {
+                training
+                    .iter()
+                    .map(|&(d, direct, iterative)| if d >= threshold { iterative } else { direct })
+                    .sum::<f64>()
+            };
+            cost(a).total_cmp(&cost(b))
+        })
+        .unwrap();
+    eprintln!("ROADMAP advisory trained_threshold={threshold}; OOD reverts to deterministic direct; benchmark only");
+    for (n, aspect, solid) in [
+        (6, 1.0, true),
+        (10, 1.0, true),
+        (6, 25.0, true),
+        (6, 0.04, true),
+        (12, 3.0, false),
+    ] {
+        let (model, loads, bc, exact) = problem(n, aspect, solid);
+        let dofs = model.mesh.n_dofs() - bc.n_fixed();
+        let in_domain = solid && aspect == 1.0 && dofs >= training[0].0 && dofs <= training[2].0;
+        let choice = in_domain && dofs >= threshold;
+        let (direct, d) = timed(&model, &loads, &bc, &|| false, exact);
+        let (advised, a) = timed(
+            &model,
+            &loads,
+            &bc,
+            &|| {
+                let free = model.mesh.n_dofs() - bc.n_fixed();
+                std::hint::black_box(
+                    solid
+                        && aspect == 1.0
+                        && free >= training[0].0
+                        && free <= training[2].0
+                        && free >= threshold,
+                )
+            },
+            exact,
+        );
+        let error = d
+            .solution
+            .u
+            .iter()
+            .zip(&a.solution.u)
+            .map(|(d, a)| (d - a).abs() / exact.abs())
+            .fold(0.0_f64, f64::max);
+        assert!(error < 1e-6);
+        eprintln!("ROADMAP heldout n={n} aspect={aspect} solid={solid} free={dofs} in_domain={in_domain} advisory_iterative={choice} direct_ms={direct:.3} advised_ms={advised:.3} speed_ratio={:.3} displacement_difference={error:.3e} fallback_events={}",direct/advised,a.events.len());
+    }
+}
