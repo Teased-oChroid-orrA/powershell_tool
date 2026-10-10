@@ -30,6 +30,8 @@ pub mod report;
 pub mod sensitivity;
 pub mod sparse;
 pub mod strategy;
+pub mod structural;
+pub mod plate;
 pub mod sweep;
 pub mod thermal;
 pub mod topology;
