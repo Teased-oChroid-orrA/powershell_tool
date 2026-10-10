@@ -181,3 +181,22 @@ remain acceptance boundaries, not missing implementations silently claimed by th
 Issue progress: https://github.com/Teased-oChroid-orrA/powershell_tool/issues/12#issuecomment-6091769141
 Completion comment and final documentation commit follow this source-validation record. Resolve
 handoff commit with `git log -1 --format=%H -- docs/issue-12-claude-handoff.md` and inspect the draft PR.
+
+## Hosted CI completion — 2026-10-10 UTC
+
+The pending hosted gate above is now resolved: GitHub Actions run
+[38011445843](https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/38011445843)
+completed successfully for **fbc4938fc206a99745f7371857b8f0cfd0c6d67c**. The required `test`
+job passed in 17m30s. That commit contains the exact production/test source previously validated
+locally at `b7d4f33`. All Phase 12–18 implementation checklists are complete within the documented
+acceptance boundaries; no required Linux test failure remains. This addendum changes documentation
+only and does not require repeating the unchanged numerical baseline. Check any subsequent hosted
+run against its own head SHA rather than attributing this pass to a different commit.
+
+Issue #12 remains open for draft PR #13 review/integration. The user explicitly requires the PR
+to remain draft and prohibits merging into or modifying main; implementation completion does not
+authorize integration. Main remains `d5748135188cd6f196a2f6310ea9934251260f93`.
+Native Windows window/terminal interaction and physical GPU throughput remain external validation
+limits, requiring a Windows machine and graphics hardware. They are not covered by the Linux
+software-rendering evidence. Claude Code should review the documented formulation limits, run the
+Windows/hardware checks before making platform claims, and await explicit merge authorization.
