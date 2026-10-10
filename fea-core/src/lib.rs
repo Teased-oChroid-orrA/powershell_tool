@@ -9,6 +9,8 @@ pub mod dynamics;
 pub mod delaunay;
 pub mod element;
 pub mod fit;
+pub mod fields;
+pub mod coupling;
 pub mod generate;
 pub mod geometry;
 pub mod import;

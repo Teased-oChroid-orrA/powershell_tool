@@ -182,7 +182,7 @@ impl Model {
         }
         let input: f64 = f.iter().sum();
         for (face, h, t_inf) in &loads.convection {
-            if h.is_nan() || *h < 0.0 {
+            if !h.is_finite() || *h < 0.0 || !t_inf.is_finite() {
                 return Err("a convection coefficient must be non-negative".into());
             }
             face_points(mesh, face, |nsh, _pos, _normal, w| {
@@ -227,7 +227,7 @@ impl Model {
         for p in &props {
             p.conductivity.validate()?;
         }
-        if bc.d != 1 || bc.fixed.len() != self.mesh.nodes.len() {
+        if bc.d != 1 || bc.fixed.len() != self.mesh.nodes.len() || bc.value.len() != bc.fixed.len() || bc.value.iter().any(|v| !v.is_finite()) {
             return Err("the temperature constraints must be a Dirichlet set with one component per node (Model::thermal_dirichlet)".into());
         }
         if bc.n_fixed() == 0 && loads.convection.is_empty() {

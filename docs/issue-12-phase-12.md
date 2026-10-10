@@ -146,3 +146,32 @@ progress comment also records both commits. Keep the PR as a draft for review.
 An environment reconnection occurred after validation finished. The branch, uncommitted documentation,
 implementation commit and all evidence/exit files were checked afterward and preserved. This is not
 an independent fresh-task rerun or a claim of Windows/GUI validation.
+
+## Continuation addendum (2026-10-10 UTC)
+
+The user authorized continuing through the remaining issue #12 roadmap. Aircraft frame and
+truss members were selected explicitly as Phase 16's actual aerospace use case. The original
+first-increment scope above is historical; this continuation preserves the branch and draft PR.
+
+Commit `31b76be` hardens modal/buckling option and constraint validation, finite eigenpair
+acceptance, transient initial-state/history/damping/time/load validation, and finite transient
+state/energy acceptance. Structural transient results now expose effective-system backward
+errors (required <= 1e-8) at initialization and every step. Load callbacks run once per time.
+Thermal transient rejects nonfinite capacities/time/initial fields/constraints/output.
+Additional independent tests cover fixed-fixed axial frequencies and mass orthogonality,
+pinned Euler buckling and reference-force scaling, second-order free harmonic response with
+energy conservation, hyperelastic rigid-rotation/objectivity, and a default nonmatching 3D
+partial-slip resultant case. No tolerance was weakened.
+
+Targeted `cargo test -p fea-core --locked -j 4 --test dynamics --test thermal --test hyperelastic
+--test contact_sweep` passed: 44 passed, 0 failed, 5 ignored. Evidence:
+`/workspace/phase12-evidence/phase12-regressions.log`. A full workspace run of commit `31b76be`
+was started before generalized-field edits; its results will be recorded when complete.
+Generalized-field tests passed (5/5), including continuum displacement/reaction equivalence
+and independent clamped-bar one-way thermomechanical reaction. The coupling API explicitly
+converts absolute temperatures to changes from a finite reference temperature and identifies
+only ThermalToStructural direction; no monolithic/two-way coupling is claimed.
+
+Remaining acceptance work includes unified orchestration/strict nonlinear acceptance in Phase 15,
+full milestone validation and continued roadmap documentation. Do not infer full roadmap completion
+from targeted checks or from a nonlinear driver's `complete()` termination classification.
