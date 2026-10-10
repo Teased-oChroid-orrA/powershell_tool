@@ -224,3 +224,72 @@ impl crate::nonlinear::NlSolution {
         self.events.iter().filter(|e| e.kind == kind).count()
     }
 }
+
+/// An explicit acceptance check. Nonfinite measured values or limits always fail.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AcceptanceCheck {
+    pub name: String,
+    pub value: f64,
+    pub limit: f64,
+}
+impl AcceptanceCheck {
+    pub fn passed(&self) -> bool {
+        self.value.is_finite()
+            && self.value >= 0.0
+            && self.limit.is_finite()
+            && self.limit >= 0.0
+            && self.value <= self.limit
+    }
+}
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AcceptanceReport {
+    pub checks: Vec<AcceptanceCheck>,
+    pub diagnostics: Vec<String>,
+}
+impl AcceptanceReport {
+    pub fn passed(&self) -> bool {
+        !self.checks.is_empty() && self.checks.iter().all(AcceptanceCheck::passed)
+    }
+    pub fn require(&self) -> Result<(), String> {
+        if self.passed() {
+            Ok(())
+        } else {
+            Err(format!(
+                "acceptance failed: {:?}; {:?}",
+                self.checks
+                    .iter()
+                    .filter(|c| !c.passed())
+                    .collect::<Vec<_>>(),
+                self.diagnostics
+            ))
+        }
+    }
+    pub fn json(&self) -> String {
+        let checks = self
+            .checks
+            .iter()
+            .map(|c| {
+                format!(
+                    "{{\"name\":{},\"value\":{},\"limit\":{},\"passed\":{}}}",
+                    json_str(&c.name),
+                    num(c.value),
+                    num(c.limit),
+                    c.passed()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let diagnostics = self
+            .diagnostics
+            .iter()
+            .map(|s| json_str(s))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "{{\"passed\":{},\"checks\":[{}],\"diagnostics\":[{}]}}",
+            self.passed(),
+            checks,
+            diagnostics
+        )
+    }
+}

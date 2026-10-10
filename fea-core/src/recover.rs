@@ -169,7 +169,9 @@ pub struct ZzEstimate {
 impl ZzEstimate {
     /// Relative error `eta / sqrt(eta^2 + |sigma*|^2)`.
     pub fn relative(&self) -> f64 {
-        (self.total * self.total / (self.total * self.total + self.norm * self.norm)).sqrt()
+        if !self.total.is_finite() || !self.norm.is_finite() || self.total < 0.0 || self.norm < 0.0 { return f64::NAN; }
+        let denominator = self.total.hypot(self.norm);
+        if denominator == 0.0 { 0.0 } else { self.total / denominator }
     }
 }
 
