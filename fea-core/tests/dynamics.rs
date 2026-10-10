@@ -265,3 +265,96 @@ fn lanczos_and_subspace_iteration_agree_including_multiple_eigenvalues() {
     }
     assert!((b.modes[0].load_factor / b.modes[1].load_factor - 1.0).abs() < 1e-6, "buckling in both planes");
 }
+
+#[test]
+fn dynamic_inputs_fail_before_indexing_or_factorization() {
+    let (model, bc, _, loads) = bar_for_transient();
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -1.0] {
+        assert!(model.modal(&bc, &ModalOptions { tol: bad, ..Default::default() }).is_err());
+        assert!(model.buckling(&loads, &bc, &BucklingOptions { tol: bad, ..Default::default() }).is_err());
+        assert!(model.transient(&loads, &|_| 1.0, &bc, None, &TransientOptions { dt: bad, ..Default::default() }).is_err());
+    }
+    let opt = TransientOptions { steps: 2, ..Default::default() };
+    assert!(model.transient(&loads, &|_| 1.0, &bc, Some((&[], &[])), &opt).is_err());
+    let mut malformed = bc.clone();
+    malformed.fixed.pop();
+    assert!(model.transient(&loads, &|_| 1.0, &malformed, None, &opt).is_err());
+    assert!(model.modal(&malformed, &Default::default()).is_err());
+    assert!(model.transient(&loads, &|_| 1.0, &bc, None, &TransientOptions { record: vec![model.mesh.n_dofs()], ..opt.clone() }).is_err());
+    assert!(model.transient(&loads, &|_| 1.0, &bc, None, &TransientOptions { rayleigh: (-1.0, 0.0), ..opt.clone() }).is_err());
+    assert!(model.transient(&loads, &|t| if t == 0.0 { 0.0 } else { f64::NAN }, &bc, None, &opt).is_err());
+}
+
+#[test]
+fn transient_load_function_is_evaluated_once_per_time() {
+    use std::cell::Cell;
+    let (model, bc, _, loads) = bar_for_transient();
+    let calls = Cell::new(0);
+    let opt = TransientOptions { steps: 4, ..Default::default() };
+    model.transient(&loads, &|_| { calls.set(calls.get() + 1); 1.0 }, &bc, None, &opt).unwrap();
+    assert_eq!(calls.get(), opt.steps + 1);
+}
+
+#[test]
+fn freely_vibrating_axial_mode_converges_to_the_harmonic_solution() {
+    // Independent temporal reference: an undamped eigenmode obeys q'' + omega² q = 0.
+    // Average acceleration is second order; halving dt must reduce displacement error by ~4.
+    let (model, bc, tip, loads) = bar_for_transient();
+    let mode = model.modal(&bc, &ModalOptions { n_modes: 1, ..Default::default() }).unwrap().modes.remove(0);
+    let omega = mode.omega2.sqrt();
+    let v0 = vec![0.0; mode.shape.len()];
+    let end = 1.3 / omega;
+    let mut errors = Vec::new();
+    for steps in [20, 40, 80] {
+        let out = model.transient(&loads, &|_| 0.0, &bc, Some((&mode.shape, &v0)), &TransientOptions { dt: end / steps as f64, steps, record: vec![tip * 2], ..Default::default() }).unwrap();
+        let exact = mode.shape[tip * 2] * (omega * end).cos();
+        errors.push((out.u[tip * 2] - exact).abs());
+        assert_eq!(out.residuals.len(), steps + 1);
+        assert!(out.residuals.iter().all(|r| r.is_finite() && *r <= 1e-8));
+        let e0 = out.energy[0];
+        assert!(out.energy.iter().all(|e| (e / e0 - 1.0).abs() < 1e-10));
+    }
+    assert!(errors[0] / errors[1] > 3.9 && errors[1] / errors[2] > 3.9, "{errors:?}");
+}
+
+#[test]
+fn pinned_column_buckles_at_euler_load_and_scales_with_reference_force() {
+    let (l, h) = (2.0, 0.05);
+    let model = beam2d(ElementKind::Quad9, [32, 2], l, h, 1.0);
+    let mut bc = model.dirichlet();
+    for (n, x) in model.mesh.nodes.iter().enumerate() {
+        // Roller supports at both section centroids permit end rotation and right-end shortening.
+        if (x[1] - h / 2.0).abs() < 1e-12 && (x[0] < 1e-12 || (x[0] - l).abs() < 1e-12) {
+            bc.fix(n, 1, 0.0);
+            if x[0] < 1e-12 { bc.fix(n, 0, 0.0); }
+        }
+    }
+    let euler = PI * PI * h.powi(3) / (12.0 * l * l);
+    let opt = BucklingOptions { n_modes: 1, ..Default::default() };
+    let first = model.buckling(&column_load(&model, 1.0, h), &bc, &opt).unwrap().modes[0].load_factor;
+    let doubled = model.buckling(&column_load(&model, 2.0, h), &bc, &opt).unwrap().modes[0].load_factor;
+    assert!((first / euler - 1.0).abs() < 0.01, "{first} vs {euler}");
+    assert!((doubled * 2.0 / first - 1.0).abs() < 1e-8);
+}
+
+#[test]
+fn fixed_fixed_axial_modes_match_the_independent_spectrum_and_mass_orthogonality() {
+    let model = beam2d(ElementKind::Quad9, [16, 1], 2.0, 0.1, 3.0);
+    let mut bc = model.dirichlet();
+    for (n, x) in model.mesh.nodes.iter().enumerate() {
+        bc.fix(n, 1, 0.0);
+        if x[0] < 1e-12 || (x[0] - 2.0).abs() < 1e-12 { bc.fix(n, 0, 0.0); }
+    }
+    let result = model.modal(&bc, &ModalOptions { n_modes: 3, ..Default::default() }).unwrap();
+    let mass = model.assemble_mass(MassKind::Consistent).unwrap();
+    for (i, a) in result.modes.iter().enumerate() {
+        let exact = (i + 1) as f64 * PI / (2.0 * 3.0_f64.sqrt());
+        assert!((a.omega2.sqrt() / exact - 1.0).abs() < 1e-4);
+        let mut ma = vec![0.0; a.shape.len()];
+        mass.matvec_add(&model.pattern, &a.shape, &mut ma);
+        for (j, b) in result.modes.iter().enumerate() {
+            let product: f64 = b.shape.iter().zip(&ma).map(|(x, y)| x * y).sum();
+            assert!((product - if i == j { 1.0 } else { 0.0 }).abs() < 1e-8);
+        }
+    }
+}

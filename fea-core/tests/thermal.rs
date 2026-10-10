@@ -330,3 +330,20 @@ fn a_wrong_length_temperature_field_is_refused() {
     }
     assert!(model.solve_static(&Loads { temperature: Some(vec![0.0; 3]), ..Loads::default() }, &bc).is_err());
 }
+
+#[test]
+fn transient_heat_rejects_nonfinite_or_malformed_inputs() {
+    let model = bar(ElementKind::Quad4, 2, 1.0, plane());
+    let bc = model.thermal_dirichlet();
+    let n = model.mesh.nodes.len();
+    let initial = vec![0.0; n];
+    for dt in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -1.0] {
+        assert!(model.solve_heat_transient(&HeatLoads::default(), &bc, &initial, dt, 1, 1.0).is_err());
+    }
+    let mut bad = initial.clone();
+    bad[0] = f64::NAN;
+    assert!(model.solve_heat_transient(&HeatLoads::default(), &bc, &bad, 0.1, 1, 1.0).is_err());
+    let mut bad_bc = bc.clone();
+    bad_bc.value.pop();
+    assert!(model.solve_heat_transient(&HeatLoads::default(), &bad_bc, &initial, 0.1, 1, 1.0).is_err());
+}

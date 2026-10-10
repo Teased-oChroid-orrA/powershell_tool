@@ -307,16 +307,19 @@ impl Model {
         }
         for p in &props {
             p.conductivity.validate()?;
-            if p.capacity.is_nan() || p.capacity <= 0.0 {
+            if !p.capacity.is_finite() || p.capacity <= 0.0 {
                 return Err("a transient conduction problem needs a positive heat capacity in every block".into());
             }
         }
-        if dt.is_nan() || dt <= 0.0 || !(0.5..=1.0).contains(&theta) {
+        if !dt.is_finite() || dt <= 0.0 || !(0.5..=1.0).contains(&theta) {
             return Err("transient conduction: dt must be positive and theta within [0.5, 1]".into());
         }
         let n = self.mesh.nodes.len();
-        if t0.len() != n {
-            return Err("the initial temperature field has the wrong length".into());
+        if t0.len() != n || t0.iter().any(|v| !v.is_finite()) {
+            return Err("the initial temperature field must have the correct length and finite values".into());
+        }
+        if bc.d != 1 || bc.fixed.len() != n || bc.value.len() != n || bc.value.iter().any(|v| !v.is_finite()) {
+            return Err("transient conduction: invalid constraints".into());
         }
         let mut k = self.conduction_matrix(&spat, t0)?;
         let (f, _) = self.heat_system(&spat, loads, &mut k)?;
@@ -337,6 +340,9 @@ impl Model {
             k.matvec_add(&spat, &t, &mut kt);
             let rhs: Vec<f64> = (0..n).map(|i| ct[i] / dt - (1.0 - theta) * kt[i] + f[i]).collect();
             t = fac.solve(&lhs, &rhs, bc);
+            if t.iter().any(|v| !v.is_finite()) {
+                return Err("transient conduction: nonfinite temperature".into());
+            }
             out.push(t.clone());
         }
         Ok(out)

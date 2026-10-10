@@ -350,7 +350,7 @@ impl Model {
             if std::env::var("EIG_TRACE").is_ok() {
                 eprintln!("eig it {it}: lambda {:?} residual {:?}", best.iter().map(|q| q.lambda).collect::<Vec<_>>(), best.iter().map(|q| format!("{:.1e}", q.residual)).collect::<Vec<_>>());
             }
-            if best.len() == nev && best.iter().all(|q| q.residual <= tol) {
+            if best.len() == nev && best.iter().all(|q| q.lambda.is_finite() && q.residual.is_finite() && q.residual <= tol && q.x.iter().all(|x| x.is_finite())) {
                 converged = true;
                 break;
             }
@@ -372,8 +372,20 @@ impl Model {
         u
     }
 
+    fn validate_dynamic_constraints(&self, bc: &Dirichlet) -> Result<(), String> {
+        let n = self.mesh.n_dofs();
+        if bc.d != self.mesh.dim() || bc.fixed.len() != n || bc.value.len() != n || bc.value.iter().any(|v| !v.is_finite()) {
+            return Err("dynamics: invalid constraint dimensions or nonfinite values".into());
+        }
+        Ok(())
+    }
+
     /// Natural frequencies and mode shapes of the constrained structure (homogeneous Dirichlet conditions).
     pub fn modal(&self, bc: &Dirichlet, opt: &ModalOptions) -> Result<Modal, String> {
+        self.validate_dynamic_constraints(bc)?;
+        if !opt.tol.is_finite() || opt.tol <= 0.0 || !opt.shift.is_finite() || opt.max_iter == 0 || opt.n_modes == 0 {
+            return Err("modal: finite positive tolerance, finite shift, and nonzero modes/iterations are required".into());
+        }
         self.require_mass()?;
         if bc.fixed.iter().zip(&bc.value).any(|(f, v)| *f && *v != 0.0) {
             return Err("a modal analysis needs homogeneous constraints (prescribed displacements are not part of the free vibration)".into());
@@ -392,6 +404,9 @@ impl Model {
             let mut mphi = vec![0.0; shape.len()];
             mass.matvec_add(&self.pattern, &shape, &mut mphi);
             let norm = dot(&shape, &mphi).sqrt();
+            if !norm.is_finite() || norm <= 0.0 || !q.lambda.is_finite() || !q.residual.is_finite() || q.residual > opt.tol {
+                return Err("modal: eigenpair failed finite mass-norm/residual acceptance".into());
+            }
             shape.iter_mut().for_each(|v| *v /= norm);
             mphi.iter_mut().for_each(|v| *v /= norm);
             let mut eff = [0.0; 3];
@@ -409,6 +424,10 @@ impl Model {
     /// static solution of the reference load; supports are those of `bc`. The reference load must put the structure in
     /// compression somewhere or no positive factor exists.
     pub fn buckling(&self, loads: &Loads, bc: &Dirichlet, opt: &BucklingOptions) -> Result<Buckling, String> {
+        self.validate_dynamic_constraints(bc)?;
+        if !opt.tol.is_finite() || opt.tol <= 0.0 || opt.max_iter == 0 || opt.n_modes == 0 || opt.n_modes > self.mesh.n_dofs() {
+            return Err("buckling: finite positive tolerance and valid nonzero modes/iterations are required".into());
+        }
         self.check_constrained(bc)?;
         let sol = self.solve_static(loads, bc)?;
         let k = self.assemble()?;
@@ -541,7 +560,7 @@ fn lanczos(m: usize, nev: usize, tol: f64, max_iter: usize, kind: Kind, sigma: f
     found.sort_by(|a, b| interest(b.0).total_cmp(&interest(a.0)));
     let pairs: Vec<Pair> = found.iter().map(|(l, x)| pair_of(*l, x)).collect();
     let worst = pairs.iter().map(|p| p.residual).fold(0.0f64, f64::max);
-    if worst > tol {
+    if !worst.is_finite() || worst > tol || pairs.iter().any(|p| !p.lambda.is_finite() || !p.residual.is_finite() || p.x.iter().any(|x| !x.is_finite())) {
         return Err(format!("Lanczos did not reach residual {tol:e} (worst residual {worst:.2e}); try EigMethod::Subspace or a larger max_iter"));
     }
     Ok(Pairs { pairs, iterations: dim_total, subspace: dim_total, factor_nnz, fallback: None })
@@ -697,6 +716,9 @@ pub struct Transient {
     pub history: Vec<Vec<f64>>,
     /// Kinetic plus strain energy at each time (conserved by an undamped, unloaded Newmark average-acceleration run).
     pub energy: Vec<f64>,
+    /// Normwise backward error of each effective acceleration solve, including the initial mass solve.
+    /// Every value is finite and at most `1e-8`; physical energy remains a separate diagnostic.
+    pub residuals: Vec<f64>,
     pub u: Vec<f64>,
     pub v: Vec<f64>,
 }
@@ -705,8 +727,25 @@ impl Model {
     /// Linear transient response of `K u + C v + M a = g(t) f` from the state `(u0, v0)` (zero when `None`), `f` the
     /// assembly of `loads`, homogeneous constraints. Constant step, one factorisation of the effective matrix.
     pub fn transient(&self, loads: &Loads, g: &dyn Fn(f64) -> f64, bc: &Dirichlet, init: Option<(&[f64], &[f64])>, opt: &TransientOptions) -> Result<Transient, String> {
-        if opt.dt.is_nan() || opt.dt <= 0.0 || !(-1.0 / 3.0 - 1e-12..=1e-12).contains(&opt.alpha) {
+        if !opt.dt.is_finite() || opt.dt <= 0.0 || !(-1.0 / 3.0 - 1e-12..=1e-12).contains(&opt.alpha) {
             return Err("transient: dt must be positive and alpha within [-1/3, 0]".into());
+        }
+        let n = self.mesh.n_dofs();
+        if bc.d != self.mesh.physics.dim() || bc.fixed.len() != n || bc.value.len() != n
+            || bc.value.iter().any(|v| !v.is_finite()) {
+            return Err("transient: invalid constraint dimensions or nonfinite values".into());
+        }
+        if !opt.rayleigh.0.is_finite() || !opt.rayleigh.1.is_finite()
+            || opt.rayleigh.0 < 0.0 || opt.rayleigh.1 < 0.0 {
+            return Err("transient: Rayleigh coefficients must be finite and nonnegative".into());
+        }
+        if !(opt.steps as f64 * opt.dt).is_finite() || opt.record.iter().any(|&d| d >= n) {
+            return Err("transient: nonfinite final time or history DOF out of range".into());
+        }
+        if let Some((u, v)) = init {
+            if u.len() != n || v.len() != n || u.iter().chain(v).any(|x| !x.is_finite()) {
+                return Err("transient: initial state must have the correct length and finite values".into());
+            }
         }
         if bc.fixed.iter().zip(&bc.value).any(|(f, v)| *f && *v != 0.0) {
             return Err("transient: prescribed non-zero displacements are not supported (use an equivalent load)".into());
@@ -742,11 +781,36 @@ impl Model {
                 v[i] = 0.0;
             }
         }
-        let load_at = |t: f64| -> Vec<f64> { f_ref.iter().map(|x| x * g(t)).collect() };
+        let backward_error = |mat: &BlockMatrix, x: &[f64], rhs: &[f64]| -> Result<f64, String> {
+            let ax = mul(mat, x);
+            let abs_mat = BlockMatrix { d: mat.d, vals: mat.vals.iter().map(|v| v.abs()).collect() };
+            let scale = mul(&abs_mat, &x.iter().map(|v| v.abs()).collect::<Vec<_>>());
+            let mut rn = 0.0_f64;
+            let mut sn = 0.0_f64;
+            for &i in &free {
+                rn = rn.hypot(ax[i] - rhs[i]);
+                sn = sn.hypot(scale[i] + rhs[i].abs());
+            }
+            let r = rn / sn.max(1e-300);
+            if !rn.is_finite() || !sn.is_finite() || !r.is_finite() || r > 1e-8 {
+                return Err(format!("transient: effective-system residual {r:e} exceeds 1e-8 or is nonfinite"));
+            }
+            Ok(r)
+        };
+        let load_at = |t: f64| -> Result<Vec<f64>, String> {
+            let scale = g(t);
+            let f: Vec<f64> = f_ref.iter().map(|x| x * scale).collect();
+            if !scale.is_finite() || f.iter().any(|x| !x.is_finite()) {
+                return Err(format!("transient: nonfinite load at time {t}"));
+            }
+            Ok(f)
+        };
+        let mut f_prev = load_at(0.0)?;
         // a0 = M^-1 (f0 - C v0 - K u0)
+        let (cv0, ku0) = (mul(&c, &v), mul(&k, &u));
+        let initial_rhs: Vec<f64> = (0..n).map(|d| f_prev[d] - cv0[d] - ku0[d]).collect();
         let mut a = {
-            let (f0, cv, ku) = (load_at(0.0), mul(&c, &v), mul(&k, &u));
-            let mut r: Vec<f64> = free.iter().map(|&d| f0[d] - cv[d] - ku[d]).collect();
+            let mut r: Vec<f64> = free.iter().map(|&d| initial_rhs[d]).collect();
             fac_m.solve_reduced(&mut r);
             let mut a = vec![0.0; n];
             for (&d, x) in free.iter().zip(&r) {
@@ -755,20 +819,25 @@ impl Model {
             a
         };
         let energy = |u: &[f64], v: &[f64]| -> f64 { 0.5 * dot(v, &mul(&mass, v)) + 0.5 * dot(u, &mul(&k, u)) };
-        let mut out = Transient { times: vec![0.0], history: opt.record.iter().map(|&d| vec![u[d]]).collect(), energy: vec![energy(&u, &v)], u: Vec::new(), v: Vec::new() };
-        let mut f_prev = load_at(0.0);
+        let mut out = Transient { times: vec![0.0], history: opt.record.iter().map(|&d| vec![u[d]]).collect(), energy: vec![energy(&u, &v)], residuals: vec![backward_error(&mass, &a, &initial_rhs)?], u: Vec::new(), v: Vec::new() };
+        if !out.energy[0].is_finite() || a.iter().any(|x| !x.is_finite()) {
+            return Err("transient: nonfinite initial acceleration or energy".into());
+        }
         for s in 1..=opt.steps {
             let t = s as f64 * dt;
-            let f_new = load_at(t);
+            let f_new = load_at(t)?;
             let u_pred: Vec<f64> = (0..n).map(|i| u[i] + dt * v[i] + dt * dt * (0.5 - beta) * a[i]).collect();
             let v_pred: Vec<f64> = (0..n).map(|i| v[i] + dt * (1.0 - gamma) * a[i]).collect();
             let (c_vp, c_v, k_up, k_u) = (mul(&c, &v_pred), mul(&c, &v), mul(&k, &u_pred), mul(&k, &u));
             let mut rhs: Vec<f64> = free.iter().map(|&d| (1.0 + alpha) * f_new[d] - alpha * f_prev[d] - (1.0 + alpha) * c_vp[d] + alpha * c_v[d] - (1.0 + alpha) * k_up[d] + alpha * k_u[d]).collect();
+            let mut full_rhs = vec![0.0; n];
+            for (&d, &r) in free.iter().zip(&rhs) { full_rhs[d] = r; }
             fac_eff.solve_reduced(&mut rhs);
             let mut a_new = vec![0.0; n];
             for (&d, x) in free.iter().zip(&rhs) {
                 a_new[d] = *x;
             }
+            out.residuals.push(backward_error(&eff, &a_new, &full_rhs)?);
             for i in 0..n {
                 u[i] = u_pred[i] + beta * dt * dt * a_new[i];
                 v[i] = v_pred[i] + gamma * dt * a_new[i];
@@ -779,7 +848,11 @@ impl Model {
             for (h, &d) in out.history.iter_mut().zip(&opt.record) {
                 h.push(u[d]);
             }
-            out.energy.push(energy(&u, &v));
+            let e = energy(&u, &v);
+            if !e.is_finite() || u.iter().chain(&v).chain(&a).any(|x| !x.is_finite()) {
+                return Err(format!("transient: nonfinite state or energy at step {s}"));
+            }
+            out.energy.push(e);
         }
         out.u = u;
         out.v = v;
