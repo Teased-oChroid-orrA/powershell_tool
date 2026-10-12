@@ -202,3 +202,23 @@ reactions 12 % short of the loads) and passed on three later runs; it never fail
 against the total magnitude of the forces) and recomputes a failing one on a single-thread pool, refusing it when it still fails
 (`fea_problem::solve::solve_mesh`, `fea_core::sequentially`); a recomputation shows up in `Summary::notes`, so the next occurrence is
 visible instead of silent. Cause unknown.
+
+### Terminal Workbench is manual by default (2026-10-12)
+
+ADR-016 decision 1 (nothing meshes or solves on its own) now holds in the terminal Workbench too, which had its own
+auto-preview and `auto_solve` default on. `u` generates the mesh, `r` solves, an edit leaves both out of date; `a` is an opt-in
+automatic mode (the old behaviour). Test: `nothing_meshes_or_solves_by_itself_until_asked`; the tests of the automatic behaviour
+run in `auto_state()`.
+
+### Thermal studies (2026-10-12)
+
+`Problem::study` / `Problem::thermal`, ADR-021, `fea-problem/src/thermal.rs`; closed-form checks in `fea-problem/tests/thermal.rs`
+(linear bar, flux + convection, generation, constrained thermal stress), UI in both front ends (`FieldRow::StudyKind`,
+Thermal section, tree nodes, surface menu kinds), `diagnose` class `NoThermalAnchor`.
+
+### Windows findings from the hosted Windows run (2026-10-12)
+
+Running the whole workspace on a hosted Windows runner (`.github/workflows/windows-tests.yml`) found, besides the sweep flake
+above: the fast re-search walker entered `.native-search-index` (a leading dot hides a folder only on Unix), so the index
+build counted its own `meta.json` (fixed in `file_reader::enumerate_files_safely`, which now never enters that folder); two
+tests that assumed a `/` path separator and a Unicode ellipsis.

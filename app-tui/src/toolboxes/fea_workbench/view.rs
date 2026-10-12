@@ -20,7 +20,7 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &FeaWorkbenchSt
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(theme.border_style(focused))
-        .title(" FEA Workbench - r: solve \u{b7} n: frequencies \u{b7} b: buckling \u{b7} v: field \u{b7} m: mesh \u{b7} x: deform \u{b7} d: details \u{b7} j: save \u{b7} o: open \u{b7} e: report \u{b7} p: .vtu \u{b7} c: .csv ");
+        .title(" FEA Workbench - u: mesh \u{b7} r: solve \u{b7} a: auto \u{b7} n: frequencies \u{b7} b: buckling \u{b7} v: field \u{b7} m: mesh \u{b7} x: deform \u{b7} d: details \u{b7} j: save \u{b7} o: open \u{b7} e: report \u{b7} p: .vtu \u{b7} c: .csv ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -150,7 +150,7 @@ fn draw_canvas(frame: &mut Frame, area: Rect, theme: &Theme, state: &FeaWorkbenc
         _ => None,
     };
     let Some(mesh) = mesh else {
-        let msg = state.preview_error.clone().unwrap_or_else(|| "Building the mesh...".to_string());
+        let msg = state.preview_error.clone().unwrap_or_else(|| if state.meshing() { "Building the mesh...".to_string() } else { "Mesh not generated: press u (or a for automatic meshing and solving).".to_string() });
         let tone = if state.preview_error.is_some() { StatusTone::Danger } else { StatusTone::Info };
         frame.render_widget(Paragraph::new(Line::from(Span::styled(msg, theme.status_style(tone)))).wrap(Wrap { trim: true }), inner);
         return;
@@ -254,7 +254,7 @@ pub fn readout_lines<'a>(theme: &Theme, state: &FeaWorkbenchState) -> Vec<Line<'
     }
     let Some(s) = &state.solved else {
         if lines.is_empty() {
-            let hint = if state.auto_solve { "Solves automatically for a small model; r solves now." } else { "Press r to solve." };
+            let hint = if state.auto_solve { "Automatic: meshes and solves a small model by itself; r solves now." } else { "Nothing runs by itself: u generates the mesh, r solves (a turns automatic mode on)." };
             lines.push(Line::from(Span::styled(hint, theme.disabled_style())));
         }
         return lines;

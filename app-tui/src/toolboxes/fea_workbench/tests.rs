@@ -7,6 +7,11 @@ fn key(code: KeyCode) -> KeyEvent {
     KeyEvent { code, modifiers: KeyModifiers::NONE, kind: KeyEventKind::Press, state: KeyEventState::NONE }
 }
 
+/// The terminal Workbench is manual by default (ADR-016); these tests exercise its automatic mode.
+fn auto_state() -> FeaWorkbenchState {
+    FeaWorkbenchState { auto_solve: true, ..FeaWorkbenchState::default() }
+}
+
 fn select(s: &mut FeaWorkbenchState, row: FieldRow) {
     s.selected = s.rows().iter().position(|r| *r == row).unwrap_or_else(|| panic!("no row {row:?}"));
 }
@@ -36,7 +41,7 @@ fn settle(s: &mut FeaWorkbenchState) {
 
 #[test]
 fn the_first_tick_meshes_then_a_small_model_solves_by_itself() {
-    let mut s = FeaWorkbenchState::default();
+    let mut s = auto_state();
     let e = s.tick();
     assert!(matches!(e.as_slice(), [Effect::RunFeaPreview { .. }]), "{e:?}");
     run_effects(&mut s, e);
@@ -53,7 +58,7 @@ fn the_first_tick_meshes_then_a_small_model_solves_by_itself() {
 
 #[test]
 fn editing_a_load_resolves_without_remeshing() {
-    let mut s = FeaWorkbenchState::default();
+    let mut s = auto_state();
     let e = s.tick();
     run_effects(&mut s, e);
     settle(&mut s);
@@ -80,7 +85,7 @@ fn editing_a_load_resolves_without_remeshing() {
 
 #[test]
 fn a_stale_job_result_is_dropped() {
-    let mut s = FeaWorkbenchState::default();
+    let mut s = auto_state();
     let e = s.tick();
     let Some(Effect::RunFeaPreview { id, problem, import_text }) = e.into_iter().next() else { panic!() };
     // The inputs change while the worker runs: a different mesh is now wanted.
@@ -98,7 +103,7 @@ fn a_stale_job_result_is_dropped() {
 
 #[test]
 fn invalid_inputs_report_why_instead_of_running() {
-    let mut s = FeaWorkbenchState::default();
+    let mut s = auto_state();
     s.problem.mesh.size = 0.0;
     assert!(s.tick().is_empty());
     assert!(s.preview_error.as_deref().unwrap().contains("mesh size"));
@@ -217,7 +222,7 @@ fn holes_and_polygon_points_are_editable() {
 
 #[test]
 fn the_geometry_source_toggles_to_an_imported_file_and_back_keeping_the_sketch() {
-    let mut s = FeaWorkbenchState::default();
+    let mut s = auto_state();
     let sketch = s.problem.geometry.clone();
     select(&mut s, FieldRow::Source);
     handle_key(&mut s, key(KeyCode::Enter));
@@ -270,7 +275,7 @@ fn letter_keys_work_in_both_cases_for_windows_caps_lock() {
 
 #[test]
 fn exports_need_a_result_and_name_their_files_after_the_problem() {
-    let mut s = FeaWorkbenchState::default();
+    let mut s = auto_state();
     assert!(handle_key(&mut s, key(KeyCode::Char('e'))).1.is_empty());
     assert!(handle_key(&mut s, key(KeyCode::Char('p'))).1.is_empty());
     let e = s.tick();
@@ -560,7 +565,7 @@ fn solid_editor_key_hands_the_current_problem_to_the_native_editor_and_reads_it_
 
 #[test]
 fn a_thermal_only_study_shows_temperatures_not_stresses_and_cycles_only_its_field() {
-    let mut s = FeaWorkbenchState::default();
+    let mut s = auto_state();
     // The study row cycles Structural -> Thermal and swaps the supports / loads sections for the thermal ones.
     select(&mut s, FieldRow::StudyKind);
     handle_key(&mut s, key(KeyCode::Enter));
@@ -589,4 +594,40 @@ fn a_thermal_only_study_shows_temperatures_not_stresses_and_cycles_only_its_fiel
     let text = view::readout_lines(&crate::theme::Theme::default(), &s).iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
     assert!(text.contains("Temperature"), "{text}");
     assert!(!text.contains("Peak von Mises"), "{text}");
+}
+
+#[test]
+fn nothing_meshes_or_solves_by_itself_until_asked() {
+    let mut s = FeaWorkbenchState::default();
+    assert!(!s.auto_solve);
+    for _ in 0..3 {
+        assert!(s.tick().is_empty(), "no automatic mesh");
+        settle(&mut s);
+    }
+    assert!(s.preview.is_none() && s.solved.is_none());
+    let text = view::readout_lines(&crate::theme::Theme::default(), &s).iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("u generates the mesh"), "{text}");
+    // `u` builds the mesh once ...
+    handle_key(&mut s, key(KeyCode::Char('u')));
+    let e = s.tick();
+    assert!(matches!(e.as_slice(), [Effect::RunFeaPreview { .. }]), "{e:?}");
+    run_effects(&mut s, e);
+    assert!(s.preview.is_some() && s.solved.is_none());
+    // ... and a changed input leaves it out of date instead of rebuilding it.
+    select(&mut s, FieldRow::MeshSize);
+    handle_key(&mut s, key(KeyCode::Enter));
+    for _ in 0..8 {
+        handle_key(&mut s, key(KeyCode::Backspace));
+    }
+    type_text(&mut s, "0.7");
+    handle_key(&mut s, key(KeyCode::Enter));
+    settle(&mut s);
+    assert!(s.tick().is_empty(), "an edit does not remesh by itself");
+    // `r` still solves (it meshes inside the worker); `a` switches the automatic mode on.
+    let e = handle_key(&mut s, key(KeyCode::Char('r'))).1;
+    assert!(matches!(e.as_slice(), [Effect::RunFeaSolve { .. }]), "{e:?}");
+    run_effects(&mut s, e);
+    assert!(s.solved.is_some());
+    handle_key(&mut s, key(KeyCode::Char('a')));
+    assert!(s.auto_solve);
 }

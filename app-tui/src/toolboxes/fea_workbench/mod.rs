@@ -112,7 +112,11 @@ pub struct FeaWorkbenchState {
     pub show_dynamic: bool,
     /// Mode drawn on the canvas.
     pub mode: usize,
+    /// Automatic mode: mesh and solve by themselves as the inputs settle. Off by default (ADR-016: nothing meshes or
+    /// solves on its own); `u` generates the mesh, `r` solves, `a` turns this on.
     pub auto_solve: bool,
+    /// `u` was pressed: build the mesh preview now, once.
+    mesh_requested: bool,
     pub field: Field,
     pub show_mesh: bool,
     pub deform: bool,
@@ -160,7 +164,8 @@ impl FeaWorkbenchState {
             viewer_launch: None,
             show_dynamic: false,
             mode: 0,
-            auto_solve: true,
+            auto_solve: false,
+            mesh_requested: false,
             field: Field::VonMises,
             show_mesh: true,
             deform: false,
@@ -304,7 +309,8 @@ impl FeaWorkbenchState {
             }
         }
         let settled = self.seen.as_ref().is_some_and(|(_, at)| at.elapsed().as_millis() >= DEBOUNCE_MS);
-        let first = self.preview.is_none() && self.preview_error.is_none();
+        // Automatic mode previews as soon as it has nothing; manual mode only when asked (`u`).
+        let first = self.auto_solve && self.preview.is_none() && self.preview_error.is_none();
         let mut effects = Vec::new();
 
         if let Err(e) = sig.validate_geometry() {
@@ -321,7 +327,9 @@ impl FeaWorkbenchState {
         if preview_current {
             self.preview_error = None;
         }
-        if !preview_current && self.preview_job.is_none() && (settled || first) {
+        let wanted = self.mesh_requested || (self.auto_solve && (settled || first));
+        if !preview_current && self.preview_job.is_none() && wanted {
+            self.mesh_requested = false;
             let id = self.take_job_id();
             self.preview_job = Some(Job { id, sig: preview_key(&sig), started: Instant::now(), transient: false });
             effects.push(Effect::RunFeaPreview { id, problem: Box::new(preview_key(&sig)), import_text: import_text.clone() });
@@ -793,6 +801,10 @@ pub fn handle_key(state: &mut FeaWorkbenchState, key: KeyEvent) -> (bool, Vec<Ef
             'w' | 'g' | 't' => (true, state.open_solid_editor()),
             'n' => (true, state.start_dynamic(DynKind::Modal)),
             'b' => (true, state.start_dynamic(DynKind::Buckling)),
+            'u' => {
+                state.mesh_requested = true;
+                (true, Vec::new())
+            }
             'a' => {
                 state.auto_solve = !state.auto_solve;
                 (true, Vec::new())
