@@ -1,7 +1,8 @@
 name: Windows diagnostics
 
 # Temporary: isolates the Windows-only equilibrium failure of `random_linear_problems_solve_and_balance`
-# (docs/issue-12-phase-26.md). Delete once the cause is fixed.
+# (docs/issue-12-phase-26.md). Delete once the cause is fixed. Hypothesis: a runner CPU with AVX-512 takes a different
+# SIMD path in faer / gemm / pulp and that path is wrong for this case; the failing runs print identical wrong numbers.
 on:
   workflow_dispatch: {}
   pull_request:
@@ -22,23 +23,22 @@ jobs:
           key: cargo-windows-diag-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             cargo-windows-diag-
+      - name: cpu
+        shell: pwsh
+        run: |
+          (Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors | Format-List | Out-String)
+          "avx2=$([System.Runtime.Intrinsics.X86.Avx2]::IsSupported) avx512f=$([System.Runtime.Intrinsics.X86.Avx512F]::IsSupported) avx512bw=$([System.Runtime.Intrinsics.X86.Avx512BW]::IsSupported)"
       - name: build
         run: cargo test -p fea-problem --test sweep --no-run
-      - name: one rayon thread
+      - name: the whole sweep binary (tests run concurrently)
         if: always()
-        env:
-          RAYON_NUM_THREADS: "1"
-        run: cargo test -p fea-problem --test sweep random_linear -- --nocapture
-      - name: default threads
+        run: cargo test -p fea-problem --test sweep -- --nocapture
+      - name: the one test alone
         if: always()
         run: cargo test -p fea-problem --test sweep random_linear -- --nocapture
-      - name: two rayon threads
+      - name: the whole workspace's feature set, the one test
         if: always()
-        env:
-          RAYON_NUM_THREADS: "2"
-        run: cargo test -p fea-problem --test sweep random_linear -- --nocapture
-      - name: dynamic CRT
+        run: cargo test --workspace --no-run
+      - name: one test of the workspace build
         if: always()
-        env:
-          RUSTFLAGS: "-C target-feature=-crt-static"
         run: cargo test -p fea-problem --test sweep random_linear -- --nocapture
