@@ -11,7 +11,25 @@ fn sketch(outer: Shape, holes: Vec<Shape>) -> Geometry {
 }
 
 fn base(name: &str, analysis: Analysis, geometry: Geometry) -> Problem {
-    Problem { version: FORMAT_VERSION, name: name.into(), analysis, thickness: 0.25, material: steel(), geometry, mesh: MeshSpec::default(), supports: Vec::new(), loads: Vec::new(), delta_t: 0.0, bushings: Vec::new() }
+    Problem { version: FORMAT_VERSION, name: name.into(), analysis, thickness: 0.25, material: steel(), geometry, mesh: MeshSpec::default(), supports: Vec::new(), loads: Vec::new(), delta_t: 0.0, bushings: Vec::new(), history: None }
+}
+
+/// A new, empty part: Sketch1 (empty) on the Front plane and no body yet. It cannot be meshed or solved until the
+/// sketch has a closed profile.
+pub fn blank() -> Problem {
+    use crate::history::{FeatureKind, Plane};
+    let mut p = base("New part", Analysis::PlaneStress, sketch(Shape::Rect { x0: 0.0, y0: 0.0, x1: 1.0, y1: 1.0 }, Vec::new()));
+    p.clear_geometry();
+    if let Some(h) = p.history.as_mut() {
+        h.add("Sketch1", FeatureKind::Sketch { plane: Plane::Front { offset: 0.0 }, sketch: crate::sketch::Sketch::default() });
+    }
+    p
+}
+
+/// A problem whose geometry is the mesh file at `path` (read separately; no boundary conditions yet).
+pub fn imported(path: &str) -> Problem {
+    let name = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("Imported mesh");
+    base(name, Analysis::PlaneStress, Geometry::Imported { path: path.into() })
 }
 
 /// `(title, problem)` pairs; the first is the default.

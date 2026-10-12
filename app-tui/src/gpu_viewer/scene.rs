@@ -2,6 +2,7 @@ use fea_core::Mesh;
 use serde::{Deserialize, Serialize};
 
 pub(super) const SAMPLE_BUDGET: usize = 4_000_000;
+pub(super) const MAX_FIELDS: usize = 16;
 
 /// Normalized coordinates; displacement/scalar samples are frame-major and uploaded once.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,6 +17,34 @@ pub struct Scene {
     /// A compact, mass-normalized modal shape. The shader gain follows sin(2πt/period).
     #[serde(default)]
     pub harmonic_period: Option<f32>,
+    /// Name (and meaning) of the primary scalar stored in `samples[..].w`; empty when unknown.
+    #[serde(default)]
+    pub field_label: String,
+    /// Alternative nodal scalars for a static scene (one value per node each), selectable in the viewer.
+    #[serde(default)]
+    pub fields: Vec<ScalarField>,
+}
+/// A named nodal scalar with its own colour range; units are the model's consistent units.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScalarField {
+    pub label: String,
+    pub range: [f32; 2],
+    pub values: Vec<f32>,
+}
+impl ScalarField {
+    pub fn from_f64(label: &str, values: &[f64]) -> Result<Self, String> {
+        if values.iter().any(|v| !v.is_finite()) {
+            return Err("nonfinite scalar field".into());
+        }
+        let v: Vec<f32> = values.iter().map(|x| *x as f32).collect();
+        let lo = v.iter().copied().fold(f32::INFINITY, f32::min);
+        let hi = v.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        Ok(Self {
+            label: label.chars().take(200).collect(),
+            range: if v.is_empty() { [0.0, 0.0] } else { [lo, hi] },
+            values: v,
+        })
+    }
 }
 impl Scene {
     pub fn duration(&self) -> f32 {
@@ -72,7 +101,7 @@ impl Scene {
             || self.samples.len() > SAMPLE_BUDGET
             || self.triangles.is_empty()
             || self.triangles.len() > 3_000_000
-            || self.triangles.len() % 3 != 0
+            || !self.triangles.len().is_multiple_of(3)
             || self.triangles.iter().any(|&i| i as usize >= n)
             || self
                 .positions
@@ -89,6 +118,16 @@ impl Scene {
             || self.range[1] < self.range[0]
             || !(self.range[1] - self.range[0]).is_finite()
             || self.label.len() > 1024
+            || self.field_label.len() > 1024
+            || self.fields.len() > MAX_FIELDS
+            || n.checked_mul(self.fields.len()).is_none_or(|c| c > SAMPLE_BUDGET)
+            || self.fields.iter().any(|f| {
+                f.values.len() != n
+                    || f.label.len() > 1024
+                    || f.values.iter().chain(f.range.iter()).any(|x| !x.is_finite())
+                    || f.range[1] < f.range[0]
+                    || !(f.range[1] - f.range[0]).is_finite()
+            })
             || self
                 .harmonic_period
                 .is_some_and(|p| !p.is_finite() || p <= 0.0 || self.times.len() != 1)
@@ -224,6 +263,8 @@ impl Scene {
                 1.0
             },
             harmonic_period: None,
+            field_label: String::new(),
+            fields: Vec::new(),
         };
         scene.validate()?;
         Ok(scene)
@@ -256,6 +297,8 @@ mod tests {
             range: [0.0, 1.0],
             gain: 1.0,
             harmonic_period: None,
+            field_label: String::new(),
+            fields: Vec::new(),
         }
     }
     #[test]
@@ -369,8 +412,46 @@ pub struct SceneSource {
     pub values: Vec<f64>,
     pub period: Option<f32>,
     pub label: String,
+    /// Name of `values`, shown in the native legend.
+    pub field_label: String,
+    /// Further nodal scalars (static results) the native window can switch to.
+    pub fields: Vec<(String, Vec<f64>)>,
 }
 impl SceneSource {
+    /// Static result of a solved problem: `field` is the primary scalar, every other field is selectable in the window.
+    pub fn from_solved(s: &fea_problem::Solved, field: fea_problem::Field) -> Self {
+        Self {
+            mesh: std::sync::Arc::new(s.model.mesh.clone()),
+            displacement: s.u.clone(),
+            values: s.node_values(field),
+            period: None,
+            label: format!("{} | static {:?}", s.problem.name, field),
+            field_label: field.label().into(),
+            fields: fea_problem::Field::ALL.iter().filter(|f| **f != field).map(|f| (f.label().to_string(), s.node_values(*f))).collect(),
+        }
+    }
+    /// One source per computed mode shape (harmonic for natural frequencies, static for buckling).
+    pub fn from_dynamic(d: &fea_problem::dynamics::DynSolved) -> Vec<Self> {
+        use fea_problem::dynamics::DynSolved;
+        let mesh = std::sync::Arc::new(d.model().mesh.clone());
+        (0..d.n_modes())
+            .map(|mode| {
+                let period = match d {
+                    DynSolved::Modal(m) => Some(1.0 / m.modes[mode].frequency_hz as f32),
+                    _ => None,
+                };
+                Self {
+                    mesh: mesh.clone(),
+                    displacement: d.shape(mode).to_vec(),
+                    values: d.magnitude(mode),
+                    period,
+                    field_label: if period.is_some() { "mass-normalized displacement magnitude (arbitrary amplitude)" } else { "buckling displacement magnitude (arbitrary amplitude)" }.into(),
+                    fields: Vec::new(),
+                    label: format!("{} | {}", d.title(mode), if period.is_some() { "harmonic mode; seconds; mass-normalized magnitude" } else { "static buckling shape" }),
+                }
+            })
+            .collect()
+    }
     pub fn build(self) -> Result<Scene, String> {
         if let Some(period) = self.period {
             if !period.is_finite() || period <= 0.0 {
@@ -385,6 +466,12 @@ impl SceneSource {
             self.label,
         )?;
         scene.harmonic_period = self.period;
+        scene.field_label = self.field_label.chars().take(200).collect();
+        scene.fields = self
+            .fields
+            .iter()
+            .map(|(name, values)| ScalarField::from_f64(name, values))
+            .collect::<Result<_, _>>()?;
         scene.validate()?;
         Ok(scene)
     }
@@ -407,6 +494,17 @@ impl ViewerProject {
             problem: None,
         }
     }
+    /// Add another project's scenes after this one's (the one native window holds every result).
+    /// Fails, leaving `self` unchanged, when the combined sample budget would be exceeded.
+    pub fn append(&mut self, other: ViewerProject) -> Result<(), String> {
+        let kept = self.scenes.len();
+        self.scenes.extend(other.scenes);
+        if let Err(e) = self.validate() {
+            self.scenes.truncate(kept);
+            return Err(e);
+        }
+        Ok(())
+    }
     pub fn validate(&self) -> Result<(), String> {
         if self.version != 1
             || self.scenes.is_empty()
@@ -415,8 +513,11 @@ impl ViewerProject {
             || self
                 .scenes
                 .iter()
-                .try_fold(0usize, |sum, s| sum.checked_add(s.samples.len()))
-                .is_none_or(|n| n > SAMPLE_BUDGET)
+                .try_fold(0usize, |sum, s| {
+                sum.checked_add(s.samples.len())?
+                    .checked_add(s.positions.len().checked_mul(s.fields.len())?)
+            })
+            .is_none_or(|n| n > SAMPLE_BUDGET)
         {
             return Err("invalid or oversized native viewer session".into());
         }
@@ -487,7 +588,23 @@ mod session_tests {
             values: vec![1.0; 4],
             period: Some(2.0),
             label: "mode".into(),
+            field_label: "magnitude".into(),
+            fields: vec![("other".into(), vec![-2.0, 0.0, 1.0, 3.0])],
         }
+    }
+    #[test]
+    fn appending_projects_keeps_one_window_for_every_result_and_rolls_back_invalid_ones() {
+        let mut p = ViewerProject::single(source().build().unwrap());
+        let mut more = source().build().unwrap();
+        more.label = "second".into();
+        p.append(ViewerProject::single(more)).unwrap();
+        assert_eq!(p.scenes.len(), 2);
+        assert_eq!(p.scenes[1].label, "second");
+        let mut broken = source().build().unwrap();
+        broken.triangles = vec![0, 1, 99];
+        assert!(p.append(ViewerProject::single(broken)).is_err());
+        assert_eq!(p.scenes.len(), 2, "a rejected append leaves the project unchanged");
+        assert!(p.validate().is_ok());
     }
     #[test]
     fn compact_modal_session_validates_version_selection_and_period() {

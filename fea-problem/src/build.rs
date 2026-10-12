@@ -7,7 +7,8 @@ use fea_core::delaunay::MeshOptions;
 use fea_core::geometry::{Curve, Loop, Region, Segment};
 use fea_core::import::{read_abaqus, read_gmsh, ImportOptions};
 use fea_core::mesh2d::mesh_region;
-use fea_core::sweep::extrude;
+use crate::history::Body;
+use fea_core::sweep::{extrude, revolve};
 use fea_core::{Mesh, Physics};
 
 /// Most elements a sketch is allowed to produce (a guard against a size typo freezing the app).
@@ -61,14 +62,38 @@ pub fn region_of(p: &Problem) -> Result<Region, String> {
     Region::new(outer_loop, hole_loops, p.material.elastic())
 }
 
+/// Holes (1-based, as their `holeN` names) that do not fit the outline: outside it, crossing it, or overlapping another
+/// hole, each with the geometry kernel's reason. Empty for a sound sketch and for any other geometry.
+pub fn hole_problems(p: &Problem) -> Vec<(usize, String)> {
+    let Geometry::Sketch { outer, holes, .. } = &p.geometry else { return Vec::new() };
+    let Ok(outer_loop) = shape_loop(outer, true, true, "outer") else { return Vec::new() };
+    let loops: Vec<Option<Loop>> = holes.iter().enumerate().map(|(i, h)| shape_loop(h, false, false, &format!("hole{}", i + 1)).ok()).collect();
+    let mut out = Vec::new();
+    for (i, l) in loops.iter().enumerate() {
+        let Some(l) = l else { continue };
+        if let Err(e) = Region::new(outer_loop.clone(), vec![l.clone()], p.material.elastic()) {
+            out.push((i + 1, e.replace("hole 1", &format!("hole {}", i + 1))));
+            continue;
+        }
+        for (j, o) in loops.iter().enumerate().skip(i + 1) {
+            let Some(o) = o else { continue };
+            if Region::new(outer_loop.clone(), vec![l.clone(), o.clone()], p.material.elastic()).is_err() && !out.iter().any(|(k, _)| *k == j + 1) {
+                out.push((j + 1, format!("hole {} overlaps hole {}", j + 1, i + 1)));
+            }
+        }
+    }
+    out
+}
+
 /// Size function: `size` away from holes, `size * hole_factor` at a hole edge, blended over two hole
 /// reaches.
 fn size_function(p: &Problem) -> Box<dyn Fn([f64; 2]) -> f64> {
     let (h, f) = (p.mesh.size, p.mesh.hole_factor);
     let holes: Vec<([f64; 2], f64)> = match &p.geometry {
         Geometry::Sketch { holes, .. } => holes.iter().map(|s| (s.centre(), s.reach())).collect(),
-        Geometry::Imported { .. } => Vec::new(),
+        Geometry::Imported { .. } | Geometry::Solid { .. } => Vec::new(),
     };
+    let zones = p.mesh.refine.clone();
     Box::new(move |x| {
         let mut k = 1.0f64;
         for (c, r) in &holes {
@@ -76,8 +101,71 @@ fn size_function(p: &Problem) -> Box<dyn Fn([f64; 2]) -> f64> {
             let t = (d / (2.0 * r)).min(1.0);
             k = k.min(f + (1.0 - f) * t);
         }
-        h * k
+        h * k.min(zone_factor(&zones, x))
     })
+}
+
+/// Size multiplier of the refinement zones at `x` (1 outside them).
+fn zone_factor(zones: &[crate::problem::RefineRegion], x: [f64; 2]) -> f64 {
+    zones.iter().fold(1.0, |k, z| k.min(z.factor(x)))
+}
+
+/// Elements per unit area at element size 1, measured against the mesher (see `estimate_mesh`).
+pub fn elements_per_area(quad: bool) -> f64 {
+    if quad { 9.5 } else { 3.2 }
+}
+
+/// Element-count forecast of a sketch problem's base mesh (before any adaptive pass), from the size function sampled
+/// over the region: what the Mesh panel shows before Generate.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MeshEstimate {
+    pub elements: f64,
+    /// Elements attributed to each refinement zone (the zone with the smallest factor at each sample).
+    pub per_zone: Vec<f64>,
+    /// Share of the region where a zone is at its full level, and where any zone changes the size (blend included).
+    pub core_share: f64,
+    pub touched_share: f64,
+}
+
+/// See [`MeshEstimate`]. A 2D profile is counted once even when it is extruded (`layers` multiplies the 3D count).
+pub fn estimate_mesh(p: &Problem) -> Result<MeshEstimate, String> {
+    let region = region_of(p)?;
+    let (lo, hi) = region.bounds();
+    let n = 220usize;
+    let (dx, dy) = ((hi[0] - lo[0]) / n as f64, (hi[1] - lo[1]) / n as f64);
+    // Elements per unit area at size h, measured against the mesher over element types, sizes, hole factors and zones
+    // (real / estimate stayed within 10% of these): the quad mesh is a recombined triangle mesh, so it is far denser
+    // than a square tiling.
+    let per_area = elements_per_area(p.mesh.element.is_quad());
+    let base = size_function(p);
+    let zones = &p.mesh.refine;
+    let mut out = MeshEstimate { elements: 0.0, per_zone: vec![0.0; zones.len()], core_share: 0.0, touched_share: 0.0 };
+    let (mut cells, mut core, mut touched) = (0.0, 0.0, 0.0);
+    for i in 0..n {
+        for j in 0..n {
+            let x = [lo[0] + (i as f64 + 0.5) * dx, lo[1] + (j as f64 + 0.5) * dy];
+            if !region.contains(x) {
+                continue;
+            }
+            let h = base(x);
+            let e = per_area * dx * dy / (h * h);
+            out.elements += e;
+            cells += 1.0;
+            let best = zones.iter().enumerate().map(|(k, z)| (k, z.factor(x))).filter(|(_, f)| *f < 1.0 - 1e-9).min_by(|a, b| a.1.total_cmp(&b.1));
+            if let Some((k, _)) = best {
+                out.per_zone[k] += e;
+                touched += 1.0;
+                if zones.iter().any(|z| z.distance(x) <= z.radius) {
+                    core += 1.0;
+                }
+            }
+        }
+    }
+    if cells > 0.0 {
+        out.core_share = core / cells;
+        out.touched_share = touched / cells;
+    }
+    Ok(out)
 }
 
 /// Append the bushings of a plane problem to the plate mesh: each is an annulus (outer circle = its hole, bore
@@ -113,21 +201,38 @@ pub fn sketch_mesh(p: &Problem, field: Option<&SizeField>) -> Result<Mesh, Strin
     p.validate_geometry()?;
     let region = region_of(p)?;
     let Geometry::Sketch { depth, layers, .. } = &p.geometry else { return Err("not a sketch problem".into()) };
-    let est = region.area() / (p.mesh.size * p.mesh.size) * if p.mesh.element.is_quad() { 3.0 } else { 2.0 };
+    let est = estimate_mesh(p)?.elements;
     if est * if p.analysis == Analysis::Solid { *layers as f64 } else { 1.0 } > MAX_ELEMENTS {
         return Err(format!("about {:.0} elements: that is too fine (limit {MAX_ELEMENTS:.0}); increase the mesh size", est));
     }
     let physics_2d = if p.analysis == Analysis::Solid { Physics::PlaneStress { thickness: 1.0 } } else { physics_of(p) };
     let base = size_function(p);
+    // An adaptive pass sizes the mesh from the error field, but the user's refinement zones still apply.
     let size = |x: [f64; 2]| match field {
-        Some(sf) => sf.at(x),
+        Some(sf) => sf.at(x).min(p.mesh.size * zone_factor(&p.mesh.refine, x)),
         None => base(x),
     };
     let mut mesh = mesh_region(&region, physics_2d, p.mesh.element.kind(), &size, MeshOptions::default())?;
     add_bushings(p, &mut mesh, field)?;
     if p.analysis == Analysis::Solid {
-        let levels: Vec<f64> = (0..=*layers).map(|i| depth * i as f64 / *layers as f64).collect();
-        return extrude(&mesh, &levels);
+        let body = p.history.as_ref().map(|h| h.rebuild()).transpose()?;
+        let mut solid = match body.as_ref().map(|b| &b.body) {
+            Some(Body::Revolve { angle_deg, segments }) => {
+                let angles: Vec<f64> = (0..=*segments).map(|i| angle_deg.to_radians() * i as f64 / *segments as f64).collect();
+                revolve(&mesh, &angles)?
+            }
+            _ => {
+                let levels: Vec<f64> = (0..=*layers).map(|i| depth * i as f64 / *layers as f64).collect();
+                extrude(&mesh, &levels)?
+            }
+        };
+        // A sketch on another plane places the part there (names and node sets are unaffected).
+        if let Some(b) = body.filter(|b| !b.frame.is_identity()) {
+            for n in &mut solid.nodes {
+                *n = b.frame.apply(*n);
+            }
+        }
+        return Ok(solid);
     }
     Ok(mesh)
 }

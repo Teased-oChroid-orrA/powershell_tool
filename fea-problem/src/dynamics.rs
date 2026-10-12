@@ -51,6 +51,7 @@ fn prepare(p: &Problem, import_text: Option<&str>) -> Result<(Mesh, fea_core::Di
     let mut mesh = match &p.geometry {
         Geometry::Sketch { .. } => sketch_mesh(p, None)?,
         Geometry::Imported { .. } => imported_mesh(p, import_text.ok_or("the mesh file has not been read")?)?,
+        Geometry::Solid { .. } => crate::solid::solid_mesh(p)?.0,
     };
     let bc = apply_supports(&mesh, &p.supports)?;
     let loads = build_loads(&mut mesh, p)?;

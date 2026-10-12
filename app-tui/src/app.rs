@@ -159,6 +159,8 @@ pub enum AppEvent {
     FeaAnimationProgress { id: u64, progress: crate::gpu_viewer::progress::GenerationProgress },
     GpuViewerReady { id: u64 },
     GpuViewerFinished { id: u64, result: Result<(), String> },
+    /// The native editor window (members or solid) was closed.
+    NativeEditorFinished { kind: crate::gpu_viewer::EditorKind, path: String, result: Result<(), String> },
     Quit,
 }
 
@@ -173,6 +175,9 @@ pub enum Effect {
     BuildFeaGpuScene { id:u64, source:Box<crate::gpu_viewer::scene::ProjectSource> },
     RunFeaAnimation { id:u64, problem:Box<fea_problem::Problem>, import_text:Option<String> },
     OpenGpuScene { id: u64, scene: Box<crate::gpu_viewer::scene::ViewerProject> },
+    /// Open the native frame/truss member editor on this project file (created on first save).
+    /// Open the native editor window for the frame/truss members or the meshed solid model at `path`.
+    OpenNativeEditor { kind: crate::gpu_viewer::EditorKind, path: String },
     StartSearch { roots: Vec<String>, settings: SearchSettings, index: search::indexing::IndexSettings },
     /// `write_html` comes from `SearchToolConfig.export_html` - a TUI-only
     /// toggle, not a `SearchSettings` field (`SearchSettings` only carries
@@ -421,6 +426,15 @@ pub fn handle_event(state: &mut AppState, event: AppEvent) -> Vec<Effect> {
             if let Err(e) = result { state.notifications.push(e, StatusTone::Danger); }
             Vec::new()
         }
+        AppEvent::NativeEditorFinished { kind, path, result } => match result {
+            Err(e) => {
+                state.notifications.push(e, StatusTone::Danger);
+                Vec::new()
+            }
+            // The solid model is the Workbench's own problem file format: bring the edits back.
+            Ok(()) if kind == crate::gpu_viewer::EditorKind::Solid => vec![Effect::ReadTextFile { purpose: crate::toolboxes::fea_workbench::FilePurpose::Problem, path }],
+            Ok(()) => Vec::new(),
+        },
         AppEvent::Quit => {
             request_quit(state);
             Vec::new()

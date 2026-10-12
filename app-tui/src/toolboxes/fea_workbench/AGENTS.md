@@ -37,8 +37,11 @@ Parent: `app-tui/AGENTS.md`. Library: `fea-problem/AGENTS.md`, kernel: `fea-core
 
 ## Navigation addendum — GPU viewer (2026-10-10)
 
-`g`/`G`: current solved static contour or selected modal/buckling shape in direct wgpu viewport.
-`t`/`T`: verified unloaded free vibration worker; job id plus input signature drops stale results.
+`f`/`F`: native frame/truss member editor (`--gpu-editor`, file `member-model.json` in the workbench folder; see `app-tui/AGENTS.md`).
+`g`, `t` and `w` (any case) all open the native solid editor on the current problem (it runs static / modal / buckling /
+transient studies from its Simulation menu; `start_animation` / `open_gpu` remain only as unreachable-from-keys helpers kept
+by their tests, candidates for deletion with `Effect::OpenGpuScene`). `n`/`b` still compute modes for the text report (`native-solid.json`; closing reads the edits back). Shared editing core for both heads: `model.rs`
+(`apply_row_action`, `commit_edit`, `edit_start_text`, `toggle_source`, `apply_material`, `move_selection`).
 `src/gpu_viewer/` implements scene conversion/rendering/transient preparation; `main.rs` executes
 `RunFeaAnimation` and `OpenGpuScene`. Controls and physics limits: `docs/issue-12-phase-18.md`.
 

@@ -31,8 +31,9 @@ Does not own: any UI, material tables (`mechanics-core`), the lug physics (`lug-
 | 2D region geometry (lines + arcs, holes, named segments) | `src/geometry.rs` |
 | Delaunay + Ruppert triangulation with a size function | `src/delaunay.rs` |
 | Region -> Tri3/Tri6/Quad4/8/9 mesh with curved boundary nodes, named sets and surfaces | `src/mesh2d.rs` |
-| ZZ-error-driven size field for adaptive remeshing, and the shared refine/coarsen loop (`adapt::refine`, `Pass`) every consumer calls with its own mesher and solver | `src/adapt.rs` |
+| ZZ-error-driven size field for adaptive remeshing, and the shared refine/coarsen loop (`adapt::refine`, `Pass`; 3D: `SizeField3`, `adapted_size_field_3d`) every consumer calls with its own mesher and solver | `src/adapt.rs` |
 | Extrude / revolve quad meshes into hex meshes | `src/sweep.rs` |
+| Tetrahedral volume mesh of a solid from a signed distance + size field (Kuhn lattice, longest-edge bisection with Rivara propagation, feature-preserving snapping, Tet10 curved boundary edges, named outward faces); the 3D size-field remesher for adaptive refinement | `src/tetmesh.rs` (`mesh_solid`, `Solid`, `FaceHit`), `tests/tetmesh.rs` |
 | Gmsh MSH and Abaqus INP import | `src/import.rs` |
 | Structured grids of any element type through a coordinate map (curved boundaries, node sets, surfaces) | `src/generate.rs` |
 | Closed-form validation (patch tests, Lame plane strain/axisymmetric/3D, thermal, reactions) | `tests/linear_static.rs` |
@@ -52,6 +53,7 @@ Does not own: any UI, material tables (`mechanics-core`), the lug physics (`lug-
 | Validation, adaptive solve, nonlinear ladder | `src/validate.rs`, `src/strategy.rs`, `tests/strategy.rs` |
 | Modal / buckling / transient, mass and geometric stiffness | `src/dynamics.rs`, `src/dense.rs`, `tests/dynamics.rs` (decision: `docs/adr/ADR-013-eigen-and-transient-methods.md`) |
 | Heat conduction, temperature field as a structural load | `src/thermal.rs`, `tests/thermal.rs` |
+| Frame local axes (`structural::member_axes`, used by `fea-problem::members` for distributed-load balance) | `src/structural.rs` |
 | Adjoint sensitivities, block-sizing optimiser | `src/sensitivity.rs`, `src/optimize.rs`, `tests/sensitivity.rs`, `tests/optimize.rs` |
 | Neo-Hookean hyperelasticity | `src/material.rs::neo_hookean_update`, `tests/hyperelastic.rs` |
 | Speed baseline (ignored tests; the faer-vs-lug-solver gate lives in `lug-solver/tests/sparse_speed_gate.rs`) | `tests/bench.rs` |

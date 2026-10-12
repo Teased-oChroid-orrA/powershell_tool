@@ -92,8 +92,14 @@ pub fn field_rows(p: &Problem) -> Vec<FieldRow> {
     if matches!(p.analysis, fea_problem::Analysis::PlaneStress | fea_problem::Analysis::PlaneStrain) {
         r.push(Thickness);
     }
-    r.extend([Header("Material"), Material, Young, Poisson, Alpha, Density, Yield, DeltaT, Header("Geometry"), Source]);
+    r.extend([Header("Material"), Material, Young, Poisson, Alpha, Density, Yield, DeltaT, Header("Geometry")]);
+    // A model built from a feature history gets its geometry from the history: it is edited there (native CAD
+    // window), not row by row, or the next rebuild would silently undo the edit.
+    if p.history.is_none() {
+        r.push(Source);
+    }
     match &p.geometry {
+        _ if p.history.is_some() => {}
         Geometry::Sketch { outer, holes, .. } => {
             r.push(OuterKind);
             match outer {
@@ -119,6 +125,8 @@ pub fn field_rows(p: &Problem) -> Vec<FieldRow> {
             }
         }
         Geometry::Imported { .. } => r.push(ImportPath),
+        // A stored STEP solid is edited in the native window (needs the OpenCascade build), not row by row.
+        Geometry::Solid { .. } => {}
     }
     r.push(Header("Mesh"));
     if is_sketch(p) {
@@ -377,7 +385,12 @@ pub fn row_value(p: &Problem, names: &[String], import_len: Option<usize>, row: 
         Analysis => p.analysis.label().to_string(),
         Material => p.material.name.clone(),
         Yield => p.material.yield_stress.map_or("none".to_string(), format_number),
-        Source => if is_sketch(p) { "Sketch" } else { "Imported mesh file" }.to_string(),
+        Source => match &p.geometry {
+            Geometry::Sketch { .. } => "Sketch",
+            Geometry::Imported { .. } => "Imported mesh file",
+            Geometry::Solid { .. } => "STEP solid",
+        }
+        .to_string(),
         ImportPath => match (&p.geometry, import_len) {
             (Geometry::Imported { path }, Some(_)) if !path.is_empty() => path.clone(),
             (Geometry::Imported { path }, None) if !path.is_empty() => format!("{path}  (not read yet)"),
@@ -405,7 +418,7 @@ pub fn row_value(p: &Problem, names: &[String], import_len: Option<usize>, row: 
         LoadKind(l) => p.loads.get(l).map_or(String::new(), |x| x.label().to_string()),
         LoadEdge(l) => p.loads.get(l).and_then(|x| x.edge()).map(|e| edge_text(e, names)).unwrap_or_default(),
         SupportComp(s, c) => match p.supports.get(s).and_then(|x| x.comps()[c]) {
-            Some(v) if v == 0.0 => "Fixed (0)".to_string(),
+            Some(0.0) => "Fixed (0)".to_string(),
             Some(v) => format!("Prescribed {}", format_number(v)),
             None => "Free".to_string(),
         },
@@ -536,6 +549,200 @@ pub fn forget_hole(p: &mut Problem, removed: usize) {
     for b in &mut p.bushings {
         if b.hole > removed + 1 {
             b.hole -= 1;
+        }
+    }
+}
+
+/// The row activations that only change the `Problem` (cycling a kind, adding or removing an entry);
+/// shared by the terminal Workbench and the native window. Rows that need UI state (the template
+/// swap, the material browser, the geometry source toggle) are handled by the caller; returns false
+/// for those and for rows without an action.
+pub fn apply_row_action(p: &mut Problem, names: &[String], row: FieldRow, forward: bool) -> bool {
+    use FieldRow::*;
+    let first = names.first().cloned().unwrap_or_default();
+    match row {
+            Analysis => {
+                let all = fea_problem::Analysis::ALL;
+                let i = all.iter().position(|a| *a == p.analysis).unwrap_or(0);
+                p.analysis = all[if forward { (i + 1) % all.len() } else { (i + all.len() - 1) % all.len() }];
+                fix_element_for(p);
+            }
+            OuterKind => {
+                if let Geometry::Sketch { outer, .. } = &mut p.geometry {
+                    *outer = outer.next_kind(true);
+                }
+            }
+            PolyAdd => add_polygon_point(p),
+            PolyRemove => remove_polygon_point(p),
+            HoleKind(h) => {
+                if let Geometry::Sketch { holes, .. } = &mut p.geometry {
+                    if let Some(s) = holes.get_mut(h) {
+                        *s = s.next_kind(false);
+                    }
+                }
+            }
+            HoleRemove(h) => {
+                if let Geometry::Sketch { holes, .. } = &mut p.geometry {
+                    if h < holes.len() {
+                        holes.remove(h);
+                    }
+                }
+                forget_hole(p, h);
+            }
+            HoleAdd => {
+                let hole = new_hole(p);
+                if let Geometry::Sketch { holes, .. } = &mut p.geometry {
+                    holes.push(hole);
+                }
+            }
+            Element => {
+                let all: Vec<_> = fea_problem::ElementChoice::ALL.iter().copied().filter(|e| p.analysis != fea_problem::Analysis::Solid || e.is_quad()).collect();
+                let i = all.iter().position(|e| *e == p.mesh.element).unwrap_or(0);
+                p.mesh.element = all[if forward { (i + 1) % all.len() } else { (i + all.len() - 1) % all.len() }];
+            }
+            SupportKind(s) => {
+                if let Some(sup) = p.supports.get_mut(s) {
+                    *sup = sup.toggled(&first);
+                }
+            }
+            SupportEdge(s) => {
+                if let Some(sup) = p.supports.get_mut(s) {
+                    if let Some(next) = cycle_name(sup.edge().unwrap_or(""), names, forward) {
+                        sup.set_edge(&next);
+                    }
+                }
+            }
+            SupportComp(s, c) => {
+                if let Some(sup) = p.supports.get_mut(s) {
+                    let held = sup.comps()[c].is_some();
+                    sup.set_comp(c, if held { None } else { Some(0.0) });
+                }
+            }
+            SupportRemove(s) => {
+                if s < p.supports.len() {
+                    p.supports.remove(s);
+                }
+            }
+            SupportAdd => p.supports.push(Support::fixed(&first)),
+            LoadKind(l) => {
+                if let Some(load) = p.loads.get_mut(l) {
+                    *load = load.next_kind(&first);
+                }
+            }
+            LoadEdge(l) => {
+                if let Some(load) = p.loads.get_mut(l) {
+                    if let Some(next) = cycle_name(load.edge().unwrap_or(""), names, forward) {
+                        load.set_edge(&next);
+                    }
+                }
+            }
+            LoadRemove(l) => {
+                if l < p.loads.len() {
+                    p.loads.remove(l);
+                }
+            }
+            LoadAdd => p.loads.push(default_load(&first)),
+            BushingAdd => {
+                if let Some(b) = new_bushing(p) {
+                    p.bushings.push(b);
+                }
+            }
+            BushingRemove(b) => {
+                if b < p.bushings.len() {
+                    p.bushings.remove(b);
+                }
+            }
+            _ => return false,
+    }
+    true
+}
+
+/// Initial text of the edit buffer when a row starts being edited (`first` is a typed character
+/// that begins the entry instead of the current value).
+pub fn edit_start_text(p: &Problem, row: FieldRow, kind: EditKind, first: Option<char>) -> String {
+    match (kind, first) {
+        (_, Some(c)) => c.to_string(),
+        (EditKind::Text, None) => match &p.geometry {
+            Geometry::Imported { path } => path.clone(),
+            _ => String::new(),
+        },
+        (EditKind::Component, None) => number_value(p, row).map_or("free".to_string(), format_number),
+        (_, None) => number_value(p, row).map_or(String::new(), format_number),
+    }
+}
+
+/// What committing an edit asks the caller to do besides changing the problem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditCommit {
+    Done,
+    /// The geometry now points at this mesh file: read it.
+    ReadMesh(String),
+}
+
+/// Apply typed `text` to `row`. Unparsable numbers leave the problem unchanged; an unparsable
+/// component releases it (`free`).
+pub fn commit_edit(p: &mut Problem, row: FieldRow, kind: EditKind, text: &str) -> EditCommit {
+    match kind {
+        EditKind::Number => {
+            if let Ok(v) = text.trim().parse::<f64>() {
+                set_number(p, row, v);
+            }
+        }
+        EditKind::Component => match text.trim().parse::<f64>() {
+            Ok(v) => set_number(p, row, v),
+            Err(_) => release_component(p, row),
+        },
+        EditKind::Text => {
+            let path = text.trim().trim_matches('"').to_string();
+            if !path.is_empty() {
+                p.geometry = Geometry::Imported { path: path.clone() };
+                return EditCommit::ReadMesh(path);
+            }
+        }
+        EditKind::Action => {}
+    }
+    EditCommit::Done
+}
+
+/// Copy a catalog material's properties into the problem.
+pub fn apply_material(p: &mut Problem, m: &mechanics_core::materials::Material) {
+    let mat = &mut p.material;
+    mat.name = m.name.to_string();
+    mat.e = m.e_ksi * 1000.0;
+    mat.nu = m.nu;
+    mat.alpha = m.alpha_u_f * 1e-6;
+    mat.yield_stress = (m.sy_ksi > 0.0).then_some(m.sy_ksi * 1000.0);
+}
+
+/// Next selectable (non-header) row from `selected` in direction `delta`, wrapping.
+pub fn move_selection(rows: &[FieldRow], selected: usize, delta: i32) -> usize {
+    let len = rows.len() as i32;
+    if len == 0 {
+        return 0;
+    }
+    let mut next = selected as i32;
+    for _ in 0..rows.len() {
+        next = (next + delta).rem_euclid(len);
+        if !matches!(rows[next as usize], FieldRow::Header(_)) {
+            break;
+        }
+    }
+    next as usize
+}
+
+/// Switch the geometry between the sketch and an imported mesh, remembering the sketch in `saved`
+/// so toggling back restores it (a fresh template sketch when there is none).
+pub fn toggle_source(p: &mut Problem, saved: &mut Option<Geometry>, import_path: Option<String>) {
+    match (&p.geometry, saved.take()) {
+        (Geometry::Sketch { .. } | Geometry::Solid { .. }, _) => {
+            let sketch = std::mem::replace(&mut p.geometry, Geometry::Imported { path: import_path.unwrap_or_default() });
+            *saved = Some(sketch);
+        }
+        (Geometry::Imported { .. }, Some(sketch)) => p.geometry = sketch,
+        (Geometry::Imported { .. }, None) => {
+            if let Some((_, pr)) = fea_problem::templates::templates().into_iter().next() {
+                p.geometry = pr.geometry;
+            }
         }
     }
 }

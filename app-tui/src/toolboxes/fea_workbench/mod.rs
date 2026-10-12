@@ -20,7 +20,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use fea_problem::dynamics::{DynKind, DynSolved};
 use fea_problem::raster::Raster;
 use fea_problem::templates::templates;
-use fea_problem::{Field, Geometry, Problem, Solved, Support};
+use fea_problem::{Field, Geometry, Problem, Solved};
 
 use crate::app::Effect;
 use crate::toolboxes::material_lookup::{self, MaterialLookupState};
@@ -59,6 +59,9 @@ struct Job {
     id: u64,
     sig: Problem,
     started: Instant,
+    /// An animation job that generates the load-release transient (its result is cached for the
+    /// consolidated native window) rather than building scenes from existing results.
+    transient: bool,
 }
 
 /// What a cached raster was drawn from.
@@ -100,6 +103,9 @@ pub struct FeaWorkbenchState {
     pub dyn_error: Option<String>,
     dyn_job: Option<Job>,
     animation_job: Option<Job>,
+    /// The load-release transient generated for the inputs it was computed for: part of the one
+    /// consolidated native window (`g` and `t` both open it).
+    transient: Option<(Problem, crate::gpu_viewer::scene::ViewerProject)>,
     animation_progress: Option<crate::gpu_viewer::progress::GenerationProgress>,
     viewer_launch: Option<(u64, Instant)>,
     /// Whether the canvas and readout show the dynamic result (while it still belongs to the inputs).
@@ -149,6 +155,7 @@ impl FeaWorkbenchState {
             dyn_error: None,
             dyn_job: None,
             animation_job: None,
+            transient: None,
             animation_progress: None,
             viewer_launch: None,
             show_dynamic: false,
@@ -181,7 +188,7 @@ impl FeaWorkbenchState {
     /// Edge / set / surface names a support or load can use.
     pub fn names(&self) -> Vec<String> {
         match &self.problem.geometry {
-            Geometry::Sketch { .. } => self.problem.edge_names(),
+            Geometry::Sketch { .. } | Geometry::Solid { .. } => self.problem.edge_names(),
             Geometry::Imported { .. } => self.preview.as_ref().map(|p| p.names.clone()).unwrap_or_default(),
         }
     }
@@ -199,19 +206,7 @@ impl FeaWorkbenchState {
     }
 
     fn move_selection(&mut self, delta: i32) {
-        let rows = self.rows();
-        let len = rows.len() as i32;
-        if len == 0 {
-            return;
-        }
-        let mut next = self.selected as i32;
-        for _ in 0..rows.len() {
-            next = (next + delta).rem_euclid(len);
-            if !matches!(rows[next as usize], FieldRow::Header(_)) {
-                break;
-            }
-        }
-        self.selected = next as usize;
+        self.selected = model::move_selection(&self.rows(), self.selected, delta);
     }
 
     fn import_text(&self) -> Option<String> {
@@ -224,7 +219,6 @@ impl FeaWorkbenchState {
     fn activate(&mut self, row: FieldRow, forward: bool) -> Vec<Effect> {
         use FieldRow::*;
         let names = self.names();
-        let first = names.first().cloned().unwrap_or_default();
         let p = &mut self.problem;
         match row {
             Template => {
@@ -237,12 +231,6 @@ impl FeaWorkbenchState {
                 (self.auto_solve, self.field, self.show_mesh, self.deform) = (auto, field, mesh, deform);
                 return Vec::new();
             }
-            Analysis => {
-                let all = fea_problem::Analysis::ALL;
-                let i = all.iter().position(|a| *a == p.analysis).unwrap_or(0);
-                p.analysis = all[if forward { (i + 1) % all.len() } else { (i + all.len() - 1) % all.len() }];
-                model::fix_element_for(p);
-            }
             Material => {
                 let current = crate::toolboxes::material_lookup::model::catalog().iter().position(|m| m.name == p.material.name).unwrap_or(0);
                 let mut browser = MaterialLookupState { picking: true, ..MaterialLookupState::default() };
@@ -251,105 +239,10 @@ impl FeaWorkbenchState {
                 }
                 self.material_browser = Some(browser);
             }
-            Source => match (&p.geometry, self.saved_geometry.take()) {
-                (Geometry::Sketch { .. }, saved) => {
-                    let sketch = std::mem::replace(&mut p.geometry, Geometry::Imported { path: self.import.as_ref().map(|(p, _)| p.clone()).unwrap_or_default() });
-                    self.saved_geometry = Some(sketch);
-                    drop(saved);
-                }
-                (Geometry::Imported { .. }, Some(sketch)) => p.geometry = sketch,
-                (Geometry::Imported { .. }, None) => {
-                    if let Some((_, pr)) = templates().into_iter().next() {
-                        p.geometry = pr.geometry;
-                    }
-                }
-            },
-            OuterKind => {
-                if let Geometry::Sketch { outer, .. } = &mut p.geometry {
-                    *outer = outer.next_kind(true);
-                }
+            Source => model::toggle_source(p, &mut self.saved_geometry, self.import.as_ref().map(|(p, _)| p.clone())),
+            _ => {
+                model::apply_row_action(p, &names, row, forward);
             }
-            PolyAdd => model::add_polygon_point(p),
-            PolyRemove => model::remove_polygon_point(p),
-            HoleKind(h) => {
-                if let Geometry::Sketch { holes, .. } = &mut p.geometry {
-                    if let Some(s) = holes.get_mut(h) {
-                        *s = s.next_kind(false);
-                    }
-                }
-            }
-            HoleRemove(h) => {
-                if let Geometry::Sketch { holes, .. } = &mut p.geometry {
-                    if h < holes.len() {
-                        holes.remove(h);
-                    }
-                }
-                model::forget_hole(p, h);
-            }
-            HoleAdd => {
-                let hole = model::new_hole(p);
-                if let Geometry::Sketch { holes, .. } = &mut p.geometry {
-                    holes.push(hole);
-                }
-            }
-            Element => {
-                let all: Vec<_> = fea_problem::ElementChoice::ALL.iter().copied().filter(|e| p.analysis != fea_problem::Analysis::Solid || e.is_quad()).collect();
-                let i = all.iter().position(|e| *e == p.mesh.element).unwrap_or(0);
-                p.mesh.element = all[if forward { (i + 1) % all.len() } else { (i + all.len() - 1) % all.len() }];
-            }
-            SupportKind(s) => {
-                if let Some(sup) = p.supports.get_mut(s) {
-                    *sup = sup.toggled(&first);
-                }
-            }
-            SupportEdge(s) => {
-                if let Some(sup) = p.supports.get_mut(s) {
-                    if let Some(next) = model::cycle_name(sup.edge().unwrap_or(""), &names, forward) {
-                        sup.set_edge(&next);
-                    }
-                }
-            }
-            SupportComp(s, c) => {
-                if let Some(sup) = p.supports.get_mut(s) {
-                    let held = sup.comps()[c].is_some();
-                    sup.set_comp(c, if held { None } else { Some(0.0) });
-                }
-            }
-            SupportRemove(s) => {
-                if s < p.supports.len() {
-                    p.supports.remove(s);
-                }
-            }
-            SupportAdd => p.supports.push(Support::fixed(&first)),
-            LoadKind(l) => {
-                if let Some(load) = p.loads.get_mut(l) {
-                    *load = load.next_kind(&first);
-                }
-            }
-            LoadEdge(l) => {
-                if let Some(load) = p.loads.get_mut(l) {
-                    if let Some(next) = model::cycle_name(load.edge().unwrap_or(""), &names, forward) {
-                        load.set_edge(&next);
-                    }
-                }
-            }
-            LoadRemove(l) => {
-                if l < p.loads.len() {
-                    p.loads.remove(l);
-                }
-            }
-            LoadAdd => p.loads.push(model::default_load(&first)),
-            BushingAdd => {
-                if let Some(b) = model::new_bushing(p) {
-                    p.bushings.push(b);
-                }
-            }
-            BushingRemove(b) => {
-                if b < p.bushings.len() {
-                    p.bushings.remove(b);
-                }
-            }
-            _ => {}
         }
         self.clamp_selection();
         Vec::new()
@@ -357,15 +250,7 @@ impl FeaWorkbenchState {
 
     fn start_edit(&mut self, row: FieldRow, first: Option<char>) {
         let kind = model::edit_kind(row);
-        let text = match (kind, first) {
-            (_, Some(c)) => c.to_string(),
-            (EditKind::Text, None) => match &self.problem.geometry {
-                Geometry::Imported { path } => path.clone(),
-                _ => String::new(),
-            },
-            (EditKind::Component, None) => model::number_value(&self.problem, row).map_or("free".to_string(), model::format_number),
-            (_, None) => model::number_value(&self.problem, row).map_or(String::new(), model::format_number),
-        };
+        let text = model::edit_start_text(&self.problem, row, kind, first);
         self.edit = Some(kind);
         self.edit_buffer.set(text);
     }
@@ -374,26 +259,10 @@ impl FeaWorkbenchState {
         let Some(kind) = self.edit.take() else { return Vec::new() };
         let text = self.edit_buffer.take();
         let Some(row) = self.selected_row() else { return Vec::new() };
-        match kind {
-            EditKind::Number => {
-                if let Ok(v) = text.trim().parse::<f64>() {
-                    model::set_number(&mut self.problem, row, v);
-                }
-            }
-            EditKind::Component => match text.trim().parse::<f64>() {
-                Ok(v) => model::set_number(&mut self.problem, row, v),
-                Err(_) => model::release_component(&mut self.problem, row),
-            },
-            EditKind::Text => {
-                let path = text.trim().trim_matches('"').to_string();
-                if !path.is_empty() {
-                    self.problem.geometry = Geometry::Imported { path: path.clone() };
-                    return vec![Effect::ReadTextFile { purpose: FilePurpose::Mesh, path }];
-                }
-            }
-            EditKind::Action => {}
+        match model::commit_edit(&mut self.problem, row, kind, &text) {
+            model::EditCommit::ReadMesh(path) => vec![Effect::ReadTextFile { purpose: FilePurpose::Mesh, path }],
+            model::EditCommit::Done => Vec::new(),
         }
-        Vec::new()
     }
 
     /// A file read finished.
@@ -454,7 +323,7 @@ impl FeaWorkbenchState {
         }
         if !preview_current && self.preview_job.is_none() && (settled || first) {
             let id = self.take_job_id();
-            self.preview_job = Some(Job { id, sig: preview_key(&sig), started: Instant::now() });
+            self.preview_job = Some(Job { id, sig: preview_key(&sig), started: Instant::now(), transient: false });
             effects.push(Effect::RunFeaPreview { id, problem: Box::new(preview_key(&sig)), import_text: import_text.clone() });
         }
 
@@ -490,14 +359,24 @@ impl FeaWorkbenchState {
             return Vec::new();
         }
         let id = self.take_job_id();
-        self.solve_job = Some(Job { id, sig: sig.clone(), started: Instant::now() });
+        self.solve_job = Some(Job { id, sig: sig.clone(), started: Instant::now(), transient: false });
         self.solve_error = None;
         vec![Effect::RunFeaSolve { id, problem: Box::new(sig), import_text }]
     }
 
+    /// The cached load-release transient, when it was computed for the current inputs.
+    fn cached_transient(&self) -> Option<&crate::gpu_viewer::scene::ViewerProject> {
+        self.transient.as_ref().filter(|(sig, _)| *sig == self.problem).map(|(_, p)| p)
+    }
+
+    /// Key `t`: compute the load-release transient (once per set of inputs), then open the single
+    /// native window with it together with every other result computed for these inputs.
     pub fn start_animation(&mut self) -> Vec<Effect> {
         if self.animation_job.is_some() || self.viewer_launch.is_some() {
             return Vec::new();
+        }
+        if self.cached_transient().is_some() {
+            return self.open_gpu();
         }
         let id = self.take_job_id();
         self.solve_error = None;
@@ -507,6 +386,7 @@ impl FeaWorkbenchState {
             id,
             sig: sig.clone(),
             started: Instant::now(),
+            transient: true,
         });
         vec![Effect::RunFeaAnimation {
             id,
@@ -527,58 +407,108 @@ impl FeaWorkbenchState {
             return Vec::new();
         }
         match result {
-            Ok(scene) => { self.solve_error = None; self.viewer_launch = Some((id, Instant::now())); vec![Effect::OpenGpuScene {
-                id,
-                scene: Box::new(scene),
-            }] },
+            // A finished transient joins the cache; the one window then opens with everything.
+            Ok(project) if job.transient => {
+                self.solve_error = None;
+                self.transient = Some((job.sig, project));
+                self.open_gpu_as(Some(id))
+            }
+            Ok(mut project) => {
+                if let Some(t) = self.cached_transient() {
+                    if let Err(e) = project.append(t.clone()) {
+                        self.solve_error = Some(e);
+                        return Vec::new();
+                    }
+                }
+                self.solve_error = None;
+                self.viewer_launch = Some((id, Instant::now()));
+                vec![Effect::OpenGpuScene { id, scene: Box::new(project) }]
+            }
             Err(e) => {
                 self.solve_error = Some(e);
                 Vec::new()
             }
         }
     }
+    /// Key `f`: the native frame/truss editor, on `member-model.json` beside the workbench's other files.
+    pub fn open_member_editor(&mut self) -> Vec<Effect> {
+        let path = Self::file_dir().unwrap_or_default().join(crate::gpu_viewer::EditorKind::Members.default_file()).to_string_lossy().into_owned();
+        vec![Effect::OpenNativeEditor { kind: crate::gpu_viewer::EditorKind::Members, path }]
+    }
+    /// Key `w`: the native solid editor on the current inputs. They are written to
+    /// `native-solid.json` beside the workbench's other files first; closing the window reads the
+    /// edited problem back (see `AppEvent::NativeEditorFinished`).
+    pub fn open_solid_editor(&mut self) -> Vec<Effect> {
+        self.open_solid_editor_in(Self::file_dir())
+    }
+    fn open_solid_editor_in(&mut self, dir: Option<std::path::PathBuf>) -> Vec<Effect> {
+        let Some(dir) = dir else {
+            self.solve_error = Some("no app-data folder to hand the problem to the native editor".into());
+            return Vec::new();
+        };
+        let path = dir.join("native-solid.json");
+        let written = self.problem.to_json().and_then(|json| {
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            std::fs::write(&path, json).map_err(|e| e.to_string())
+        });
+        match written {
+            Ok(()) => vec![Effect::OpenNativeEditor { kind: crate::gpu_viewer::EditorKind::Solid, path: path.to_string_lossy().into_owned() }],
+            Err(e) => {
+                self.solve_error = Some(format!("could not write the problem for the native editor: {e}"));
+                Vec::new()
+            }
+        }
+    }
+    /// Keys `g` and `t`: the single native window. It holds every result computed for the current
+    /// inputs - the static solution, computed natural-frequency / buckling modes and the cached
+    /// load-release transient - so nothing needs its own window.
     pub fn open_gpu(&mut self) -> Vec<Effect> {
+        self.open_gpu_as(None)
+    }
+    /// `open_gpu`, optionally continuing the job id of a transient that just finished.
+    fn open_gpu_as(&mut self, job: Option<u64>) -> Vec<Effect> {
         if self.animation_job.is_some() || self.viewer_launch.is_some() {
             return Vec::new();
         }
         let mut sources = Vec::new();
-        let selected;
-        if let Some(d) = self.dynamic_shown() {
-            selected = self.mode;
+        let mut selected = 0;
+        if let Some(s) = self.solved.as_deref().filter(|s| s.problem == self.problem) {
+            sources.push(crate::gpu_viewer::scene::SceneSource::from_solved(s, self.field));
+        }
+        if let Some(d) = self.dynamic.as_deref().filter(|d| d.problem() == &self.problem) {
             if d.model().mesh.nodes.len().checked_mul(d.n_modes()).is_none_or(|n| n > 4_000_000) {
                 self.solve_error = Some("computed modes exceed the native session budget; use a coarser mesh".into());
                 return Vec::new();
             }
-            let mesh = std::sync::Arc::new(d.model().mesh.clone());
-            for mode in 0..d.n_modes() {
-                let period = match d {
-                    DynSolved::Modal(m) => Some(1.0 / m.modes[mode].frequency_hz as f32),
-                    _ => None,
-                };
-                sources.push(crate::gpu_viewer::scene::SceneSource {
-                    mesh: mesh.clone(), displacement: d.shape(mode).to_vec(),
-                    values: d.magnitude(mode), period,
-                    label: format!("{} | {}", d.title(mode), if period.is_some() { "harmonic mode; seconds; mass-normalized magnitude" } else { "static buckling shape" }),
-                });
+            if self.show_dynamic {
+                selected = sources.len() + self.mode.min(d.n_modes().saturating_sub(1));
             }
-        } else if let Some(s) = self.solved.as_deref().filter(|s| s.problem == self.problem) {
-            selected = 0;
-            sources.push(crate::gpu_viewer::scene::SceneSource {
-                mesh: std::sync::Arc::new(s.model.mesh.clone()), displacement: s.u.clone(), values: s.node_values(self.field),
-                period: None, label: format!("{} | static {:?}", s.problem.name, self.field),
-            });
-        } else {
-            self.solve_error = Some("solve the current inputs before opening the GPU viewport".into());
-            return Vec::new();
+            sources.extend(crate::gpu_viewer::scene::SceneSource::from_dynamic(d));
+        }
+        if sources.is_empty() {
+            // Only the transient exists: open it directly.
+            return match self.cached_transient().cloned() {
+                Some(project) => {
+                    let id = job.unwrap_or_else(|| self.take_job_id());
+                    self.solve_error = None;
+                    self.viewer_launch = Some((id, Instant::now()));
+                    vec![Effect::OpenGpuScene { id, scene: Box::new(project) }]
+                }
+                None => {
+                    self.solve_error = Some("solve the current inputs (r), compute modes (n / b) or the transient (t) before opening the native window".into());
+                    Vec::new()
+                }
+            };
         }
         let source = crate::gpu_viewer::scene::ProjectSource { sources, selected, problem: self.problem.clone() };
-        let id = self.take_job_id();
+        let id = job.unwrap_or_else(|| self.take_job_id());
         self.solve_error = None;
         self.animation_progress = Some(crate::gpu_viewer::progress::GenerationProgress::stage("Preparing GPU scene"));
         self.animation_job = Some(Job {
             id,
             sig: self.problem.clone(),
             started: Instant::now(),
+            transient: false,
         });
         vec![Effect::BuildFeaGpuScene {
             id,
@@ -619,7 +549,7 @@ impl FeaWorkbenchState {
             return Vec::new();
         }
         let id = self.take_job_id();
-        self.dyn_job = Some(Job { id, sig: sig.clone(), started: Instant::now() });
+        self.dyn_job = Some(Job { id, sig: sig.clone(), started: Instant::now(), transient: false });
         self.dyn_error = None;
         vec![Effect::RunFeaDynamic { id, problem: Box::new(sig), import_text, kind, n_modes: if kind == DynKind::Modal { 6 } else { 3 } }]
     }
@@ -744,13 +674,7 @@ pub fn handle_key(state: &mut FeaWorkbenchState, key: KeyEvent) -> (bool, Vec<Ef
         match key.code {
             KeyCode::Enter => {
                 if let Some(i) = browser.current() {
-                    let m = material_lookup::model::catalog()[i];
-                    let mat = &mut state.problem.material;
-                    mat.name = m.name.to_string();
-                    mat.e = m.e_ksi * 1000.0;
-                    mat.nu = m.nu;
-                    mat.alpha = m.alpha_u_f * 1e-6;
-                    mat.yield_stress = (m.sy_ksi > 0.0).then_some(m.sy_ksi * 1000.0);
+                    model::apply_material(&mut state.problem, material_lookup::model::catalog()[i]);
                 }
                 state.material_browser = None;
                 return (true, Vec::new());
@@ -864,8 +788,9 @@ pub fn handle_key(state: &mut FeaWorkbenchState, key: KeyEvent) -> (bool, Vec<Ef
                 state.source += 1;
                 (true, state.start_solve())
             }
-            't' => (true,state.start_animation()),
-            'g' => (true, state.open_gpu()),
+            'f' => (true, state.open_member_editor()),
+            // One native CAD window: its Simulation menu runs the static, modal, buckling and transient studies.
+            'w' | 'g' | 't' => (true, state.open_solid_editor()),
             'n' => (true, state.start_dynamic(DynKind::Modal)),
             'b' => (true, state.start_dynamic(DynKind::Buckling)),
             'a' => {

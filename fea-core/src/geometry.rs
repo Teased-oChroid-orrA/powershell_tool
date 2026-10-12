@@ -224,11 +224,11 @@ impl Region {
         let region = Self { outer: outer.oriented(true), holes: holes.iter().map(|h| h.oriented(false)).collect(), material };
         for (i, h) in region.holes.iter().enumerate() {
             if h.crosses(&region.outer) || !region.outer.contains(h.segments[0].curve.start()) {
-                return Err(format!("hole {i} is not inside the outer boundary"));
+                return Err(format!("hole {} is not inside the outer boundary", i + 1));
             }
             for (j, o) in region.holes.iter().enumerate().skip(i + 1) {
                 if h.crosses(o) || o.contains(h.segments[0].curve.start()) || h.contains(o.segments[0].curve.start()) {
-                    return Err(format!("holes {i} and {j} overlap"));
+                    return Err(format!("holes {} and {} overlap", i + 1, j + 1));
                 }
             }
         }

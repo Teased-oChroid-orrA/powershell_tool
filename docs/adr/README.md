@@ -21,3 +21,10 @@ for Sections 13 and 15.
 | [011](ADR-011-in-folder-index-location.md) | In-Folder Index Location | Accepted (`<SearchPath>\.native-search-index\`, by direct user direction) |
 | [012](ADR-012-general-fea-kernel.md) | General FEA kernel (`fea-core`) alongside the special-purpose solvers | Accepted (direct user direction; not part of issue #2) |
 | [013](ADR-013-eigen-and-transient-methods.md) | Eigenvalue (modal / buckling), transient and adaptive-strategy methods of `fea-core` | Accepted (direct user direction) |
+| [014](ADR-014-native-cad-process-model.md) | Native CAD window: process model and benches | Accepted (direct user direction) |
+| [015](ADR-015-parametric-sketch-history.md) | Parametric sketch + feature history model | Accepted (direct user direction) |
+| [016](ADR-016-manual-mesh-model-lifecycle-and-learning-prior.md) | Manual meshing, explicit model lifecycle, refinement zones, simulated prior for the rankers | Accepted (direct user direction) |
+| [017](ADR-017-egui-wgpu-front-end-and-real-3d-modelling.md) | egui on wgpu 30 for the native window, B-rep path for real 3D | Accepted in direction (kernel open) |
+| [018](ADR-018-contextual-inspector-and-adaptive-layout.md) | Contextual inspector cards instead of a permanent dock; tree-row menus; adaptive layout | Accepted (direct user direction) |
+| [019](ADR-019-solid-kernel-opencascade.md) | OpenCascade (via `opencascade`) is the B-rep kernel; tetrahedral volume mesher in `fea-core` | Accepted (spike evidence); binding changed to `cadrum` by addendum 2026-10-11 |
+| [020](ADR-020-failure-guidance-diagnosis-remedies-questions.md) | Failure guidance: state-based diagnosis, remedies and questions as data, ranking only behind the measured gate | Proposed (core built, UI awaits approval) |

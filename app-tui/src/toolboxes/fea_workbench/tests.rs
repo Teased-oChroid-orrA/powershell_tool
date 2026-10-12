@@ -402,16 +402,14 @@ fn gpu_animation_discards_stale_inputs_and_wrong_ids() {
 }
 
 #[test]
-fn gpu_bindings_accept_windows_caps_lock() {
-    for c in ['t','T'] {
-        let mut s=FeaWorkbenchState::default();
-        let (handled,effects)=handle_key(&mut s,key(KeyCode::Char(c)));
-        assert!(handled);assert!(matches!(effects.first(),Some(Effect::RunFeaAnimation {..})));
-    }
-    for c in ['g','G'] {
-        let mut s=FeaWorkbenchState::default();
-        let (handled,effects)=handle_key(&mut s,key(KeyCode::Char(c)));
-        assert!(handled);assert!(effects.is_empty());assert!(s.solve_error.as_ref().unwrap().contains("solve the current inputs"));
+fn member_editor_key_opens_the_native_editor_on_the_member_file() {
+    for c in ['f', 'F'] {
+        let mut s = FeaWorkbenchState::default();
+        let (handled, effects) = handle_key(&mut s, key(KeyCode::Char(c)));
+        assert!(handled);
+        let Some(Effect::OpenNativeEditor { kind, path }) = effects.first() else { panic!("{effects:?}") };
+        assert_eq!(*kind, crate::gpu_viewer::EditorKind::Members);
+        assert!(path.ends_with("member-model.json"), "{path}");
     }
 }
 
@@ -477,4 +475,85 @@ fn native_launch_progress_stays_until_matching_ready_event() {
     s.viewer_ready(id);
     assert!(s.animation_status().is_none());
     assert_eq!(s.start_animation().len(), 1);
+}
+
+/// A one-scene project standing in for a generated transient.
+fn fake_transient(problem: &Problem) -> crate::gpu_viewer::scene::ViewerProject {
+    let mesh = fea_core::generate::grid(fea_core::Physics::PlaneStress { thickness: 1.0 }, fea_core::ElementKind::Quad4, fea_core::Elastic::new(1.0, 0.3), [1, 1, 1], &|p| p).unwrap();
+    let scene = crate::gpu_viewer::Scene::from_frames(&mesh, &[vec![0.0; 8], vec![0.0; 8]], vec![0.0, 1.0], &[0.0; 4], "transient".into()).unwrap();
+    let mut project = crate::gpu_viewer::scene::ViewerProject::single(scene);
+    project.problem = Some(problem.clone());
+    project
+}
+
+#[test]
+fn g_and_t_open_one_window_with_static_modes_and_transient_together() {
+    let mut s = FeaWorkbenchState::default();
+    s.problem = templates().into_iter().nth(1).unwrap().1;
+    s.problem.material.density = 1.0;
+    let e = s.start_solve();
+    run_effects(&mut s, e);
+    let e = s.start_dynamic(DynKind::Modal);
+    run_effects(&mut s, e);
+    let modes = s.dynamic.as_ref().unwrap().n_modes();
+    assert!(s.solved.is_some() && modes > 2);
+    s.transient = Some((s.problem.clone(), fake_transient(&s.problem)));
+    s.mode = 1;
+    // `g`: the static result first, then every mode, selection on the mode being viewed.
+    let Effect::BuildFeaGpuScene { id, source } = s.open_gpu().pop().unwrap() else { panic!("build effect expected") };
+    assert_eq!(source.sources.len(), 1 + modes);
+    assert_eq!(source.selected, 1 + 1);
+    let project = source.build().unwrap();
+    // The cached transient joins when the scenes are built: one window, every result.
+    let effects = s.finish_animation(id, Ok(project));
+    let Some(Effect::OpenGpuScene { scene, .. }) = effects.first() else { panic!("{effects:?}") };
+    assert_eq!(scene.scenes.len(), 1 + modes + 1);
+    assert_eq!(scene.scenes.last().unwrap().label, "transient");
+    assert_eq!(scene.selected, 2);
+}
+
+#[test]
+fn t_reuses_the_cached_transient_and_a_stale_one_is_not_shown() {
+    let mut s = FeaWorkbenchState::default();
+    // Transient only: both keys open it directly, `t` without regenerating it.
+    s.transient = Some((s.problem.clone(), fake_transient(&s.problem)));
+    let effects = s.start_animation();
+    assert!(matches!(effects.first(), Some(Effect::OpenGpuScene { scene, .. }) if scene.scenes.len() == 1), "{effects:?}");
+    s.viewer_launch = None;
+    let effects = s.open_gpu();
+    assert!(matches!(effects.first(), Some(Effect::OpenGpuScene { .. })));
+    s.viewer_launch = None;
+    // After an edit the cached transient belongs to other inputs: it is neither opened nor reused.
+    s.problem.name.push_str(" edited");
+    assert!(s.open_gpu().is_empty() && s.solve_error.as_ref().is_some_and(|e| e.contains("before opening the native window")));
+    assert!(matches!(s.start_animation().first(), Some(Effect::RunFeaAnimation { .. })), "regenerated for the new inputs");
+}
+
+#[test]
+fn a_finished_transient_opens_with_the_existing_static_result() {
+    let mut s = FeaWorkbenchState::default();
+    s.problem = templates().into_iter().nth(1).unwrap().1;
+    let e = s.start_solve();
+    run_effects(&mut s, e);
+    let Effect::RunFeaAnimation { id, .. } = s.start_animation().pop().unwrap() else { panic!() };
+    let effects = s.finish_animation(id, Ok(fake_transient(&s.problem)));
+    let Some(Effect::BuildFeaGpuScene { id: build, source }) = effects.first() else { panic!("{effects:?}") };
+    assert_eq!(*build, id, "the same job continues");
+    assert_eq!(source.sources.len(), 1);
+    assert!(s.cached_transient().is_some());
+}
+
+#[test]
+fn solid_editor_key_hands_the_current_problem_to_the_native_editor_and_reads_it_back() {
+    let dir = std::env::temp_dir().join(format!("wb-solid-handoff-{}", std::process::id()));
+    let mut s = FeaWorkbenchState::default();
+    s.problem.name = "handed over".into();
+    let effects = s.open_solid_editor_in(Some(dir.clone()));
+    let Some(Effect::OpenNativeEditor { kind, path }) = effects.first() else { panic!("{effects:?}") };
+    assert_eq!(*kind, crate::gpu_viewer::EditorKind::Solid);
+    assert!(path.ends_with("native-solid.json"));
+    let written = Problem::from_json(&std::fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(written, s.problem, "the native editor starts from the Workbench's problem");
+    assert!(s.open_solid_editor_in(None).is_empty() && s.solve_error.as_ref().is_some_and(|e| e.contains("no app-data folder")));
+    let _ = std::fs::remove_dir_all(dir);
 }

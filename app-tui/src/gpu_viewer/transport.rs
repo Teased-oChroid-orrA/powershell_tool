@@ -1,6 +1,6 @@
 //! Versioned companion transport: small JSON metadata plus packed little-endian buffers.
 //! Generic streams keep filesystem/process effects in the executable runner.
-use super::scene::{Scene, ViewerProject, SAMPLE_BUDGET};
+use super::scene::{ScalarField, Scene, ViewerProject, MAX_FIELDS, SAMPLE_BUDGET};
 use serde::{Deserialize, Serialize};
 use std::io::{BufReader, BufWriter, Read, Write};
 const MAGIC: &[u8; 8] = b"FEAGPU01";
@@ -22,6 +22,16 @@ struct SceneHeader {
     range: [f32; 2],
     gain: f32,
     harmonic_period: Option<f32>,
+    #[serde(default)]
+    field_label: String,
+    /// Label and range of each extra scalar; its `positions` values follow the samples.
+    #[serde(default)]
+    fields: Vec<FieldHeader>,
+}
+#[derive(Serialize, Deserialize)]
+struct FieldHeader {
+    label: String,
+    range: [f32; 2],
 }
 pub fn write_project(output: impl Write, project: &ViewerProject) -> Result<(), String> {
     project.validate()?;
@@ -41,6 +51,15 @@ pub fn write_project(output: impl Write, project: &ViewerProject) -> Result<(), 
                 range: s.range,
                 gain: s.gain,
                 harmonic_period: s.harmonic_period,
+                field_label: s.field_label.clone(),
+                fields: s
+                    .fields
+                    .iter()
+                    .map(|f| FieldHeader {
+                        label: f.label.clone(),
+                        range: f.range,
+                    })
+                    .collect(),
             })
             .collect(),
     };
@@ -63,6 +82,9 @@ pub fn write_project(output: impl Write, project: &ViewerProject) -> Result<(), 
             for v in scene.samples.iter().flatten() {
                 output.write_all(&v.to_le_bytes())?;
             }
+            for v in scene.fields.iter().flat_map(|f| f.values.iter()) {
+                output.write_all(&v.to_le_bytes())?;
+            }
         }
         output.flush()
     })()
@@ -76,13 +98,13 @@ pub fn read_project(input: impl Read) -> Result<ViewerProject, String> {
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum Document {
-            Project(ViewerProject),
+            Project(Box<ViewerProject>),
             Legacy(Scene),
         }
         let project = match serde_json::from_reader(std::io::Cursor::new(magic).chain(input))
             .map_err(|e| e.to_string())?
         {
-            Document::Project(p) => p,
+            Document::Project(p) => *p,
             Document::Legacy(s) => ViewerProject::single(s),
         };
         project.validate()?;
@@ -126,6 +148,10 @@ pub fn read_project(input: impl Read) -> Result<ViewerProject, String> {
             || h.triangles > 3_000_000
             || h.triangles % 3 != 0
             || triangles > 12_000_000
+            || h.fields.len() > MAX_FIELDS
+            || h.positions
+                .checked_mul(h.fields.len())
+                .is_none_or(|c| c > SAMPLE_BUDGET)
         {
             return Err("oversized or inconsistent native session buffers".into());
         }
@@ -153,6 +179,18 @@ pub fn read_project(input: impl Read) -> Result<ViewerProject, String> {
                 f32::from_bits(read_u32(&mut input)?),
             ]);
         }
+        let mut fields = Vec::with_capacity(h.fields.len());
+        for f in h.fields {
+            let mut values = Vec::with_capacity(h.positions);
+            for _ in 0..h.positions {
+                values.push(f32::from_bits(read_u32(&mut input)?));
+            }
+            fields.push(ScalarField {
+                label: f.label,
+                range: f.range,
+                values,
+            });
+        }
         scenes.push(Scene {
             label: h.label,
             positions,
@@ -162,6 +200,8 @@ pub fn read_project(input: impl Read) -> Result<ViewerProject, String> {
             range: h.range,
             gain: h.gain,
             harmonic_period: h.harmonic_period,
+            field_label: h.field_label,
+            fields,
         });
     }
     let mut trailing = [0];
@@ -191,6 +231,12 @@ mod tests {
             range: [0.0, 1.0],
             gain: 1.0,
             harmonic_period: Some(2.0),
+            field_label: "magnitude".into(),
+            fields: vec![ScalarField {
+                label: "second".into(),
+                range: [-1.0, 2.0],
+                values: vec![-1.0, 0.5, 2.0],
+            }],
         })
     }
     #[test]
@@ -202,6 +248,8 @@ mod tests {
         let read = read_project(bytes.as_slice()).unwrap();
         assert_eq!(read.scenes[0].samples, p.scenes[0].samples);
         assert_eq!(read.scenes[0].harmonic_period, Some(2.0));
+        assert_eq!(read.scenes[0].fields, p.scenes[0].fields);
+        assert_eq!(read.scenes[0].field_label, "magnitude");
         assert_eq!(
             read_project(serde_json::to_vec(&p).unwrap().as_slice())
                 .unwrap()
@@ -235,6 +283,8 @@ mod tests {
                 range: [0.0, 1.0],
                 gain: 1.0,
                 harmonic_period: None,
+                field_label: String::new(),
+                fields: Vec::new(),
             }],
         };
         let h = serde_json::to_vec(&header).unwrap();
@@ -245,5 +295,19 @@ mod tests {
         let mut b = MAGIC.to_vec();
         b.extend(((HEADER_LIMIT + 1) as u32).to_le_bytes());
         assert!(read_project(b.as_slice()).unwrap_err().contains("metadata"));
+    }
+    #[test]
+    fn scenes_without_fields_still_decode() {
+        let mut value = serde_json::to_value(&project().scenes[0]).unwrap();
+        value.as_object_mut().unwrap().remove("fields");
+        value.as_object_mut().unwrap().remove("field_label");
+        let p = read_project(serde_json::to_vec(&value).unwrap().as_slice()).unwrap();
+        assert!(p.scenes[0].fields.is_empty() && p.scenes[0].field_label.is_empty());
+    }
+    #[test]
+    fn mismatched_field_length_is_refused() {
+        let mut p = project();
+        p.scenes[0].fields[0].values.pop();
+        assert!(write_project(Vec::new(), &p).is_err());
     }
 }

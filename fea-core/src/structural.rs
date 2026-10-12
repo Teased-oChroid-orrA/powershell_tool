@@ -17,6 +17,16 @@ fn unit(a: [f64; 3]) -> Result<[f64; 3], String> {
     }
     Ok(a.map(|x| x / n))
 }
+/// Right-handed local axes `[x, y, z]` (rows, in global components) and length of a frame member
+/// from `a` to `b` with the given reference direction (`z = x × reference`, normalised). Frame
+/// uniform loads are given in these axes.
+pub fn member_axes(
+    a: [f64; 3],
+    b: [f64; 3],
+    reference: [f64; 3],
+) -> Result<([[f64; 3]; 3], f64), String> {
+    frame(a, b, reference)
+}
 fn frame(a: [f64; 3], b: [f64; 3], reference: [f64; 3]) -> Result<([[f64; 3]; 3], f64), String> {
     let delta = std::array::from_fn(|i| b[i] - a[i]);
     let l = delta.iter().fold(0.0_f64, |n, v| n.hypot(*v));

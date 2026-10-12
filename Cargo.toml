@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["native-search", "search-core", "app-tui", "cli", "bushing-solver", "engineering-math", "mechanics-core", "pressure-vessel-solver", "fastened-joint-solver", "edge-check", "lug-solver", "fea-core", "fea-problem", "eccentric-bushing"]
+members = ["native-search", "search-core", "app-tui", "cli", "bushing-solver", "engineering-math", "mechanics-core", "pressure-vessel-solver", "fastened-joint-solver", "edge-check", "lug-solver", "fea-core", "fea-problem", "eccentric-bushing", "solid-kernel"]
 
 # Moved here from native-search/Cargo.toml: Cargo ignores [profile.*]
 # sections in non-root workspace members. panic="unwind" (not "abort") is
@@ -46,4 +46,8 @@ opt-level = 3
 
 # The eccentric-bushing solver meshes and solves contact FE models on a key press: keep it fast in dev builds.
 [profile.dev.package.eccentric-bushing]
+opt-level = 3
+
+# The surface-distance queries of the solid kernel run per lattice vertex while meshing: keep them fast in dev builds.
+[profile.dev.package.solid-kernel]
 opt-level = 3

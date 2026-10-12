@@ -1,8 +1,9 @@
 struct Params { frames: vec4<u32>, settings: vec4<f32>, camera: vec4<f32>, };
 @group(0) @binding(0) var<storage, read> samples: array<vec4<f32>>;
 @group(0) @binding(1) var<uniform> params: Params;
+@group(0) @binding(2) var<storage, read> fieldvals: array<f32>;
 struct Out { @builtin(position) position: vec4<f32>, @location(0) value: f32, };
-@vertex fn vs(@location(0) pos: vec3<f32>, @builtin(vertex_index) i: u32) -> Out {
+fn place(pos: vec3<f32>, i: u32) -> Out {
     let a = samples[params.frames.x * params.frames.z + i];
     let b = samples[params.frames.y * params.frames.z + i];
     let s = mix(a, b, params.settings.x);
@@ -13,7 +14,18 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) value: f32, };
     let r = vec3<f32>(q.x, cp*q.y-sp*q.z, sp*q.y+cp*q.z);
     var o: Out;
     o.position = vec4<f32>(r.x*params.camera.z/params.camera.w, r.y*params.camera.z, 0.5+r.z*0.25, 1.0);
-    o.value = (s.w-params.settings.z)/max(params.settings.w-params.settings.z,1e-20);
+    var v = s.w;
+    let field = params.frames.w >> 8u;
+    if field > 0u { v = fieldvals[(field - 1u) * params.frames.z + i]; }
+    o.value = (v-params.settings.z)/max(params.settings.w-params.settings.z,1e-20);
+    return o;
+}
+@vertex fn vs(@location(0) pos: vec3<f32>, @builtin(vertex_index) i: u32) -> Out { return place(pos, i); }
+// Mesh lines lie exactly on the surface; wgpu rejects a pipeline depth bias on line topology, so they are
+// pulled toward the camera here instead (clip depth is 0.5 + 0.25 z, so 1e-5 is far below one pixel of parallax).
+@vertex fn vs_mesh(@location(0) pos: vec3<f32>, @builtin(vertex_index) i: u32) -> Out {
+    var o = place(pos, i);
+    o.position.z = o.position.z - 1e-5;
     return o;
 }
 @fragment fn fs(o: Out) -> @location(0) vec4<f32> {

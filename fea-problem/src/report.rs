@@ -40,6 +40,9 @@ pub fn report(s: &Solved) -> String {
         Geometry::Imported { path } => {
             let _ = writeln!(o, "Geometry: imported mesh {path}");
         }
+        Geometry::Solid { cache, .. } => {
+            let _ = writeln!(o, "Geometry: B-rep solid (STEP){}", cache.as_ref().map(|c| format!(", {} faces, tessellated to {}", c.face_names().len(), c.deflection)).unwrap_or_default());
+        }
     }
     if p.delta_t != 0.0 {
         let _ = writeln!(o, "Temperature change: {}", p.delta_t);

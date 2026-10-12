@@ -95,6 +95,8 @@ pub struct Solved {
     pub nodal: Vec<[f64; 6]>,
     pub summary: Summary,
     pub history: Vec<PassInfo>,
+    /// ZZ error estimate of every element of the final mesh (block order); drives `advice::error_zones`.
+    pub zz_eta: Vec<f64>,
 }
 
 /// Sorted (descending) principal values of a symmetric stress in the library order.
@@ -414,6 +416,8 @@ struct Pass {
     solve_ms: f64,
     strain_energy: f64,
     interfaces: Vec<InterfaceResult>,
+    /// Model-check warnings (the solve ran, but the result needs a caveat), shown with the summary's notes.
+    warnings: Vec<String>,
 }
 
 /// What the interference fit of one bushing did, from the converged contact tractions (integrals, which are reliable:
@@ -452,6 +456,14 @@ fn solve_mesh(p: &Problem, mut mesh: Mesh) -> Result<Pass, String> {
         return solve_mesh_contact(p, mesh, loads, bc);
     }
     let model = Model::new(mesh)?;
+    // The kernel's model check (inverted elements, loose nodes, rigid-body motion, non-finite loads, nothing applied):
+    // an error stops the solve with its reason, a warning travels with the result.
+    let issues = model.validate(&loads, &bc);
+    if let Some(first) = issues.iter().find(|i| i.severity == fea_core::Severity::Error) {
+        let all: Vec<&str> = issues.iter().filter(|i| i.severity == fea_core::Severity::Error).map(|i| i.message.as_str()).collect();
+        return Err(if all.len() == 1 { first.message.clone() } else { all.join("; ") });
+    }
+    let warnings: Vec<String> = issues.iter().filter(|i| i.severity == fea_core::Severity::Warning && i.code != "low_order_element").map(|i| i.message.clone()).collect();
     let t0 = std::time::Instant::now();
     let sol = model.solve_static(&loads, &bc).map_err(|e| {
         if e.to_lowercase().contains("pivot") || e.to_lowercase().contains("positive") || e.to_lowercase().contains("singular") {
@@ -477,7 +489,7 @@ fn solve_mesh(p: &Problem, mut mesh: Mesh) -> Result<Pass, String> {
     };
     let zz = model.zz_error(&sol.u, p.delta_t)?;
     let strain_energy = model.strain_energy(&sol.u)?;
-    Ok(Pass { model, u: sol.u, nodal, zz, reaction, applied, solve_ms, strain_energy, interfaces: Vec::new() })
+    Ok(Pass { model, u: sol.u, nodal, zz, reaction, applied, solve_ms, strain_energy, interfaces: Vec::new(), warnings })
 }
 
 /// A plane problem with interference-fit bushings: the fit is installed first (frictional contact between each bushing
@@ -557,7 +569,7 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
     let zz = model.zz_error(&sol.u, p.delta_t)?;
     let strain_energy = model.strain_energy(&sol.u)?;
     let interfaces = p.bushings.iter().enumerate().map(|(i, b)| interface_result(&sol, 2 * i, b.hole, b.friction, match &p.geometry { Geometry::Sketch { holes, .. } => holes[b.hole - 1].centre(), _ => [0.0, 0.0] })).collect();
-    Ok(Pass { model, u: sol.u, nodal, zz, reaction, applied, solve_ms, strain_energy, interfaces })
+    Ok(Pass { model, u: sol.u, nodal, zz, reaction, applied, solve_ms, strain_energy, interfaces, warnings: Vec::new() })
 }
 
 /// The fit interface of one bushing (its two contact passes, indices `first` and `first + 1`) from the tractions.
@@ -636,7 +648,7 @@ fn summarize(p: &Problem, pass: &Pass) -> Summary {
         zz_error: pass.zz.relative(),
         margin: p.material.yield_stress.filter(|_| max_vm.value > 0.0).map(|y| y / max_vm.value - 1.0),
         solve_ms: pass.solve_ms,
-        notes: notes(p, mesh),
+        notes: notes(p, mesh).into_iter().chain(pass.warnings.iter().cloned()).collect(),
         interfaces: pass.interfaces.clone(),
     }
 }
@@ -657,6 +669,7 @@ pub fn solve(p: &Problem, import_text: Option<&str>) -> Result<Solved, String> {
     let first = match &p.geometry {
         Geometry::Sketch { .. } => sketch_mesh(p, None)?,
         Geometry::Imported { .. } => imported_mesh(p, import_text.ok_or("the mesh file has not been read")?)?,
+        Geometry::Solid { .. } => crate::solid::solid_mesh(p)?.0,
     };
     let adaptive = matches!(p.geometry, Geometry::Sketch { .. }) && p.analysis != Analysis::Solid && p.mesh.adapt_passes > 0;
     let mut history = Vec::new();
@@ -670,7 +683,8 @@ pub fn solve(p: &Problem, import_text: Option<&str>) -> Result<Solved, String> {
         first
     };
     let summary = summarize(p, &pass);
-    Ok(Solved { problem: p.clone(), model: pass.model, u: pass.u, nodal: pass.nodal, summary, history })
+    let zz_eta = pass.zz.eta.clone();
+    Ok(Solved { problem: p.clone(), model: pass.model, u: pass.u, nodal: pass.nodal, summary, history, zz_eta })
 }
 
 fn info(pass: &Pass) -> PassInfo {
@@ -692,6 +706,7 @@ pub fn preview(p: &Problem, import_text: Option<&str>) -> Result<Mesh, String> {
     match &p.geometry {
         Geometry::Sketch { .. } => sketch_mesh(p, None),
         Geometry::Imported { .. } => imported_mesh(p, import_text.ok_or("the mesh file has not been read")?),
+        Geometry::Solid { .. } => crate::solid::solid_mesh(p).map(|(m, _)| m),
     }
 }
 

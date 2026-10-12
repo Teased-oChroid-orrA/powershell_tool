@@ -230,3 +230,66 @@ Published increment `447f187d04474be7cccd19b6cf01f492f2ca76b4` passed the comple
 A subsequent small correction keeps an explicit “Inputs changed; previous animation finishing” elapsed-time status visible when an edited analysis supersedes a running job. It suppresses stale numerical progress and still discards stale results; another generation remains blocked until the worker finishes. The extended regression passed (1/1). The actual terminal/native smoke replay exited 0 and verified the caption during an analysis edit, then verified no stale native window opened (`phase19-stale-smoke.log/.exit`, `phase19-tui-stale-progress.png/.txt`). An initial smoke attempt changed the template, which resets the job instead of exercising the retained-worker path; the corrected replay changes Analysis. Full workspace and hosted checks for this follow-up are recorded against its final SHA in issue #12 / draft PR #13.
 
 Remaining scope stays explicit: Phase 20 visible panels/legend/field selection, Phase 21 interactive authoring/constraints/analysis, and Phase 22 measured advisory ML. Continue on `codex/fea-core-roadmap`, preserving deterministic offline behavior; do not merge main or close the expanded issue as complete.
+
+## Claude Code session — Phases 20-22 increment (2026-10-10, uncommitted)
+
+State: branch `codex/fea-core-roadmap` at `ae05501` plus a **working-tree increment that has not been committed or pushed** (the user commits). Details, evidence and limits: `docs/issue-12-phase-19.md` (last section) and `app-tui/AGENTS.md` ("Native viewer and member editor"). New/changed: `app-tui/src/gpu_viewer/{controller,overlay,render,window,scene,transport,transient}.rs`, `gpu_viewer/editor/*`, `gpu_viewer/overlay.wgsl`, `shader.wgsl`, `fea-problem/src/members.rs` + `tests/members.rs`, `fea-core/src/structural.rs` (`member_axes` made public), Workbench key `f`, `--gpu-editor`, `Cargo.toml`/`Cargo.lock` (`font8x8 0.3`, pure, embedded font).
+
+Exact next steps: (1) the user drives the editor by hand on macOS (`app-tui --gpu-editor demo.json`, or Workbench `f`): tools 1-6, click/drag, E to type values, Enter solve, Ctrl/Cmd+Z/S/O/N, panel clicks; report anything off. (2) Commit when asked, let hosted CI (including the Windows build) run. (3) Open: native authoring of solid `Problem`s (needs a product decision: duplicate or share the terminal Workbench editor), measured ML benefit (needs real recorded sessions; none exist), Windows hardware checks, `NlOptions::stall_tol` and the other items listed in the earlier handoff.
+
+
+## Claude Code session — menus, advisor loop, shared row actions (2026-10-10, uncommitted)
+
+Still uncommitted on `codex/fea-core-roadmap` (user commits). Added on top of the increment above: self-drawn menu bar / popup / right-click menus (`gpu_viewer/menu.rs`, `menus.rs`), advisor loop with opt-in recording, explicit training and a measured gate (`editor/learning.rs`, Advisor menu), `fea_workbench::model::apply_row_action` shared with the terminal Workbench. Details and evidence: `docs/issue-12-phase-19.md` (last section), `app-tui/AGENTS.md`.
+
+Exact next steps: (1) user hand-tests the native window: F10, menu navigation, right-click on nodes/members/empty space, View > panels, Advisor > Record / Train (training refuses with a stated reason until >= 20 sessions). (2) Solid authoring in the native window: introduce an `Authoring` trait implemented by the member `Session` and a new `SolidSession` (rows from `fea_workbench::model::field_rows` + `apply_row_action`/`set_number`, preview mesh via `fea_problem::solve::preview`, solve worker like `editor/job.rs`, scenes via `ProjectSource`); make `window.rs`/`menus.rs` depend on the trait (menus currently take `Option<&Session>`); add overlay geometry for edges/holes/supports/loads and picking by `bottom/right/top/left`, `edgeN`, `outer`, `holeN`. (3) Command palette, menu mnemonics, default panel visibility (product decision), input-injection test seam for CI. (4) Real advisor benefit stays unproven until real recordings exist.
+
+## Claude Code session — CAD chrome, solid authoring, single viewer (2026-10-10, uncommitted)
+
+Still uncommitted on `codex/fea-core-roadmap`. Details: `docs/issue-12-phase-19.md` (last section) and `app-tui/AGENTS.md` ("Native window: CAD chrome, viewer and editors"). New: `gpu_viewer/{layout,chrome,dock,ribbon,ui}.rs`, `editor/{authoring,solid,worker}.rs` + `editor/solid/`, `editor/session/ui.rs`, renderer viewport + 6 overlay slots, `EditorKind` + `--gpu-solid`, Workbench `w`, consolidated `g`/`t`.
+
+Exact next steps: (1) user hand-tests `app-tui --gpu-solid`, `--gpu-editor` and the consolidated viewer (menus, ribbon, tree, property manager, right-click, picking surfaces, solve). (2) Commit when asked and let hosted CI (Windows) run. (3) Open: command palette + menu mnemonics; face-level 3D picking and box-select; unit system; autosave/dirty-quit prompt; real text/glyph pipeline; per-element contours; advisor needs real recordings before any default-on.
+
+## Claude Code session — benches, palette, selection (Phase 23, 2026-10-10, uncommitted)
+
+Still uncommitted on `codex/fea-core-roadmap`. Read `docs/issue-12-phase-23.md` (status table, verification, known gaps) and
+`docs/adr/ADR-014-native-cad-process-model.md`, then `app-tui/AGENTS.md` last section.
+
+Exact next steps: (1) user hand-tests `cargo run -p app-tui --release`, Workbench `w`/`f`: Window > Bench, Ctrl+K, Alt+letter, Hole tool
+click, Support/Load tool click lists, Shift-click and Shift-drag, Simulation studies, close-with-unsaved warning; report anything off with
+`toolbench-debug.log`/stderr. (2) Commit when asked. (3) Next work: more benches (per-crate), advisor rules for solids, GUI polish list,
+delete the dead terminal animation path.
+
+## Claude Code session — parametric sketcher, feature history, recommendations (Phase 24, 2026-10-10, uncommitted)
+
+Still uncommitted on `codex/fea-core-roadmap` on top of `ae05501` (user commits; never merge to main). Read, in order:
+`docs/issue-12-phase-24.md` (what exists vs what was asked, verification, known limits, next steps),
+`docs/adr/ADR-015-parametric-sketch-history.md`, `fea-problem/AGENTS.md` (History / Sketch solver contracts),
+`app-tui/AGENTS.md` last section ("parametric sketch, feature history, recommendations").
+
+New: `fea-problem/src/{sketch/{mod,solve,profile,infer}.rs,history.rs,advice.rs}`, `Problem::history` + `apply_history`, plane-frame /
+revolve in `build::sketch_mesh`; `app-tui/src/gpu_viewer/editor/{sketcher/,rank.rs,solid/{sketching,advising}.rs}`; window seam
+`Authoring::{hover,grab,drag,release_grab,take_view}`; models with a history hide row-based geometry editing.
+
+Verified here: 1000+ app-tui lib tests, 38 rendering, fea-problem suites (`tests/sketch.rs`, `tests/advice.rs` new), clippy clean for
+`gpu_viewer` and `fea-problem`, `--no-default-features` warning-free, a rendered sketch snapshot, window opens with a history file and
+runs 8 s with empty stderr. NOT verified: real mouse / keyboard on the desktop, Windows, hosted CI. An independent review found no real
+defect (its two MAJOR claims were checked: the arc-endpoint claim was false - test `arcs::arc_end_points_are_polygon_vertices_in_both_directions`;
+the tolerance note led to `VIOLATION_TOL`). Self-found and fixed: replacing the model (template / Load) while sketching left a dangling
+sketch mode; solving while sketching used stale geometry; added `Cancel sketch`.
+
+Exact next steps: (1) user hand-tests Sketch mode: Insert > Sketch on Front plane (or the `Features` tab), L/R/C/A/P tools, click-click
+drawing, snapping, D then click an edge and type a value, drag a corner, Fix point, Finish sketch, Features > Extrude, tree click on
+Extrude/Sketch to edit parameters, Support on selection from the Sketch tab, Advisor menu; report with stderr / `toolbench-debug.log`.
+(2) Commit when asked. (3) Next work in `docs/issue-12-phase-24.md` "Next steps": per-entity DOF colour + in-viewport constraint glyphs, Sweep and
+datum/face planes, stable topology names + native arc `Shape`, thermal problem type before thermal advice; real recordings are needed
+before the learned ranker can ever pass its gate.
+
+## Phase 25 status (2026-10-11)
+
+Done and verified (1200 tests): sketch visible after Finish; New / Templates / Open / Clear and real delete; manual-only
+meshing with explicit states; AMR default 2 with a result report; refinement hints (rules, rings, panel, level ranker);
+simulated training corpus + weighted prior + continual refits with an honest evidence label. Records: `docs/issue-12-phase-25.md`,
+`docs/adr/ADR-016-manual-mesh-model-lifecycle-and-learning-prior.md`. NOT started: the item-4 feature list (table with
+proposed approaches and the product decisions needed is in the phase-25 doc). Still uncommitted on top of `ae05501`; commit/push only when asked.
+

@@ -212,6 +212,175 @@ pub fn adapted_size_field(mesh: &Mesh, zz: &ZzEstimate, quad_split: bool, opt: &
     Ok(SizeField::new(pts, tris, h.into_iter().map(|v| if v.is_finite() { v } else { opt.h_max.min(1e30) }).collect()))
 }
 
+/// A piecewise-linear size field on a background tetrahedral mesh with grid-accelerated lookup (the 3D analogue of
+/// [`SizeField`]). Hand `|x| field.at(x)` to `tetmesh::Solid::size`.
+pub struct SizeField3 {
+    pts: Vec<[f64; 3]>,
+    tets: Vec<[usize; 4]>,
+    h: Vec<f64>,
+    lo: [f64; 3],
+    cell: f64,
+    n: [usize; 3],
+    bins: Vec<Vec<u32>>,
+}
+
+impl SizeField3 {
+    pub fn new(pts: Vec<[f64; 3]>, tets: Vec<[usize; 4]>, h: Vec<f64>) -> Self {
+        let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+        for p in &pts {
+            for i in 0..3 {
+                lo[i] = lo[i].min(p[i]);
+                hi[i] = hi[i].max(p[i]);
+            }
+        }
+        let side = (tets.len() as f64).cbrt().ceil().max(1.0);
+        let cell = ((0..3).map(|i| hi[i] - lo[i]).fold(0.0, f64::max) / side).max(1e-300);
+        let n: [usize; 3] = std::array::from_fn(|i| ((hi[i] - lo[i]) / cell).floor() as usize + 1);
+        let mut bins = vec![Vec::new(); n[0] * n[1] * n[2]];
+        for (t, tr) in tets.iter().enumerate() {
+            let (mut tlo, mut thi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+            for &v in tr {
+                for i in 0..3 {
+                    tlo[i] = tlo[i].min(pts[v][i]);
+                    thi[i] = thi[i].max(pts[v][i]);
+                }
+            }
+            let r: [(usize, usize); 3] = std::array::from_fn(|i| (((tlo[i] - lo[i]) / cell).floor() as usize, (((thi[i] - lo[i]) / cell).floor() as usize).min(n[i] - 1)));
+            for k in r[2].0..=r[2].1 {
+                for j in r[1].0..=r[1].1 {
+                    for i in r[0].0..=r[0].1 {
+                        bins[(k * n[1] + j) * n[0] + i].push(t as u32);
+                    }
+                }
+            }
+        }
+        Self { pts, tets, h, lo, cell, n, bins }
+    }
+
+    /// Barycentric coordinates of `x` in tetrahedron `t` (`None` for a flat one).
+    fn bary(&self, t: usize, x: [f64; 3]) -> Option<[f64; 4]> {
+        let tr = self.tets[t];
+        let p = |i: usize| self.pts[tr[i]];
+        let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+        let det = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0]);
+        let (e1, e2, e3, r) = (sub(p(1), p(0)), sub(p(2), p(0)), sub(p(3), p(0)), sub(x, p(0)));
+        let d = det(e1, e2, e3);
+        if d.abs() < 1e-300 {
+            return None;
+        }
+        let (l1, l2, l3) = (det(r, e2, e3) / d, det(e1, r, e3) / d, det(e1, e2, r) / d);
+        Some([1.0 - l1 - l2 - l3, l1, l2, l3])
+    }
+
+    /// Size at `x`: linear interpolation in the containing tetrahedron. A point just outside the background (a vertex on
+    /// a curved boundary the straight-sided background cuts) uses the closest nearby tetrahedron with its weights
+    /// clamped; far outside, the nearest vertex.
+    pub fn at(&self, x: [f64; 3]) -> f64 {
+        let c: [i64; 3] = std::array::from_fn(|i| ((x[i] - self.lo[i]) / self.cell).floor() as i64);
+        let mut best: Option<(f64, [f64; 4], [usize; 4])> = None;
+        for dk in -1..=1i64 {
+            for dj in -1..=1i64 {
+                for di in -1..=1i64 {
+                    let (i, j, k) = (c[0] + di, c[1] + dj, c[2] + dk);
+                    if i < 0 || j < 0 || k < 0 || i as usize >= self.n[0] || j as usize >= self.n[1] || k as usize >= self.n[2] {
+                        continue;
+                    }
+                    for &t in &self.bins[(k as usize * self.n[1] + j as usize) * self.n[0] + i as usize] {
+                        let Some(l) = self.bary(t as usize, x) else { continue };
+                        let tr = self.tets[t as usize];
+                        let m = l.iter().cloned().fold(f64::INFINITY, f64::min);
+                        if m >= -1e-9 {
+                            return (0..4).map(|q| l[q] * self.h[tr[q]]).sum();
+                        }
+                        if best.as_ref().is_none_or(|b| m > b.0) {
+                            best = Some((m, l, tr));
+                        }
+                    }
+                }
+            }
+        }
+        if let Some((m, l, tr)) = best {
+            if m > -1.0 {
+                let w: [f64; 4] = std::array::from_fn(|i| l[i].max(0.0));
+                let sum: f64 = w.iter().sum();
+                return (0..4).map(|i| w[i] / sum * self.h[tr[i]]).sum();
+            }
+        }
+        let near = self.pts.iter().enumerate().map(|(k, p)| ((p[0] - x[0]).powi(2) + (p[1] - x[1]).powi(2) + (p[2] - x[2]).powi(2), k)).fold((f64::INFINITY, 0), |a, b| if b.0 < a.0 { b } else { a });
+        self.h[near.1]
+    }
+}
+
+/// Edge length of the regular tetrahedron of volume `v` (`V = h^3 / (6 sqrt 2)`).
+fn edge_of_volume(v: f64) -> f64 {
+    (6.0 * 2.0f64.sqrt() * v).cbrt()
+}
+
+/// Build the size field of the next tetrahedral mesh from the ZZ estimate of the current one (error equidistribution as
+/// in [`adapted_size_field`]; `quad_split` does not apply). Works on `Tet4` and `Tet10` meshes.
+pub fn adapted_size_field_3d(mesh: &Mesh, zz: &ZzEstimate, opt: &AdaptOptions) -> Result<SizeField3, String> {
+    if mesh.dim() != 3 || !mesh.blocks.iter().all(|b| matches!(b.kind, ElementKind::Tet4 | ElementKind::Tet10)) {
+        return Err("3D adaptive remeshing needs a tetrahedral mesh".into());
+    }
+    let n_elems = mesh.n_elems();
+    if zz.eta.len() != n_elems {
+        return Err(format!("{} error values for {} elements", zz.eta.len(), n_elems));
+    }
+    let target = opt.target_rel_error * (zz.norm * zz.norm + zz.total * zz.total).sqrt() / (n_elems as f64).sqrt();
+    let n_nodes = mesh.nodes.len();
+    let mut tets: Vec<[usize; 4]> = Vec::with_capacity(n_elems);
+    let mut h_elem: Vec<f64> = Vec::with_capacity(n_elems);
+    for blk in &mesh.blocks {
+        for conn in blk.conn.chunks_exact(blk.kind.n_nodes()) {
+            let t = [conn[0], conn[1], conn[2], conn[3]];
+            let p = |i: usize| mesh.nodes[t[i]];
+            let (a, b, c, d) = (p(0), p(1), p(2), p(3));
+            let (u, v, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]], [d[0] - a[0], d[1] - a[1], d[2] - a[2]]);
+            let vol = ((u[0] * (v[1] * w[2] - v[2] * w[1]) - u[1] * (v[0] * w[2] - v[2] * w[0]) + u[2] * (v[0] * w[1] - v[1] * w[0])) / 6.0).abs();
+            let e = tets.len();
+            let ratio = if zz.eta[e] > 0.0 { (target / zz.eta[e]).powf(1.0 / opt.order) } else { opt.max_factor };
+            h_elem.push((edge_of_volume(vol) * ratio.clamp(opt.min_factor, opt.max_factor)).clamp(opt.h_min, opt.h_max));
+            tets.push(t);
+        }
+    }
+    let (mut sum, mut cnt) = (vec![0.0f64; n_nodes], vec![0u32; n_nodes]);
+    for (e, t) in tets.iter().enumerate() {
+        for &v in t {
+            sum[v] += h_elem[e].ln();
+            cnt[v] += 1;
+        }
+    }
+    let mut h: Vec<f64> = (0..n_nodes).map(|i| if cnt[i] > 0 { (sum[i] / cnt[i] as f64).exp() } else { f64::INFINITY }).collect();
+    let dist = |i: usize, j: usize| {
+        let (a, b) = (mesh.nodes[i], mesh.nodes[j]);
+        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+    };
+    for _ in 0..(n_nodes.min(200)) {
+        let mut changed = false;
+        for t in &tets {
+            for i in 0..4 {
+                for j in (i + 1)..4 {
+                    let (a, b) = (t[i], t[j]);
+                    let d = dist(a, b);
+                    if h[a] > h[b] + opt.grading * d {
+                        h[a] = h[b] + opt.grading * d;
+                        changed = true;
+                    }
+                    if h[b] > h[a] + opt.grading * d {
+                        h[b] = h[a] + opt.grading * d;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let pts: Vec<[f64; 3]> = mesh.nodes.iter().map(|x| [x[0], x[1], x[2]]).collect();
+    Ok(SizeField3::new(pts, tets, h.into_iter().map(|v| if v.is_finite() { v } else { opt.h_max.min(1e30) }).collect()))
+}
+
 /// One meshed and solved pass of an adaptive run: what the driver needs to judge it and to size the next mesh.
 pub trait Pass {
     fn mesh(&self) -> &Mesh;
@@ -224,6 +393,7 @@ pub trait Pass {
 ///   unreliable, and a finer mesh must never make the answer worse);
 /// - at or below it the field coarsens where the error is low, and a pass is kept when it still meets the target with
 ///   fewer than 90 % of the unknowns.
+///
 /// The run stops at the first pass that is not kept. `seen` is called with every pass computed, kept or not (history).
 pub fn refine<T: Pass>(first: T, passes: usize, quad_split: bool, opt: &AdaptOptions, mut next: impl FnMut(&SizeField) -> Result<T, String>, mut seen: impl FnMut(&T)) -> Result<T, String> {
     seen(&first);

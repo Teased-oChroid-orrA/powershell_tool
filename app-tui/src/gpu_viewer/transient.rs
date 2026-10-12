@@ -75,9 +75,10 @@ pub fn run_with_progress(
         .map(|u| u.iter().fold(0.0_f64, |a, v| a.hypot(*v)))
         .collect();
     let mut scene = Scene::from_frames(
-        &model.mesh, &[initial.solution.u.clone()], vec![0.0], &values,
+        &model.mesh, std::slice::from_ref(&initial.solution.u), vec![0.0], &values,
         format!("{} | verified unloaded free vibration | seconds | initial displacement magnitude | display stride {} (240 solver steps)", p.name, stride),
     )?;
+    scene.field_label = "initial displacement magnitude".into();
     let result = model.transient_observed(
         &Loads::default(),
         &|_| 0.0,

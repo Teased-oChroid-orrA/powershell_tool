@@ -33,6 +33,7 @@ pub mod strategy;
 pub mod structural;
 pub mod plate;
 pub mod sweep;
+pub mod tetmesh;
 pub mod thermal;
 pub mod topology;
 pub mod validate;

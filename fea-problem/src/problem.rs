@@ -178,11 +178,63 @@ pub struct MeshSpec {
     pub adapt_passes: u8,
     /// Target relative energy-norm error of an adaptive pass.
     pub target_error: f64,
+    /// Extra refinement zones in the sketch plane (also kept through adaptive passes); 2D profile meshes only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refine: Vec<RefineRegion>,
 }
 
 impl Default for MeshSpec {
     fn default() -> Self {
-        Self { element: ElementChoice::Quad8, size: 0.25, hole_factor: 0.35, adapt_passes: 0, target_error: 0.02 }
+        Self { element: ElementChoice::Quad8, size: 0.25, hole_factor: 0.35, adapt_passes: 2, target_error: 0.02, refine: Vec::new() }
+    }
+}
+
+/// Most refinement zones a problem may carry.
+pub const MAX_REFINE: usize = 16;
+/// Finest allowed refinement level.
+pub const MAX_LEVEL: u8 = 3;
+
+/// Element size multiplier of refinement `level`: 1 halves the size, 2 quarters it, 3 divides it by eight.
+pub fn level_factor(level: u8) -> f64 {
+    0.5f64.powi(i32::from(level))
+}
+
+/// A zone where the element size is `size * level_factor(level)` within `radius` of `centre` (or of the segment
+/// `centre`-`to`, a band along an edge), blending back to `size` over `blend` more (default: one more `radius`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RefineRegion {
+    pub centre: [f64; 2],
+    pub radius: f64,
+    pub level: u8,
+    /// Other end of a band; absent for a round zone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<[f64; 2]>,
+    /// Width of the blend back to the base size; absent means `radius`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blend: Option<f64>,
+}
+
+impl RefineRegion {
+    pub fn circle(centre: [f64; 2], radius: f64, level: u8) -> Self {
+        Self { centre, radius, level, to: None, blend: None }
+    }
+    /// Distance from `x` to the zone's centre (a point, or the segment of a band).
+    pub fn distance(&self, x: [f64; 2]) -> f64 {
+        let Some(b) = self.to else { return (x[0] - self.centre[0]).hypot(x[1] - self.centre[1]) };
+        let a = self.centre;
+        let (ab, ax) = ([b[0] - a[0], b[1] - a[1]], [x[0] - a[0], x[1] - a[1]]);
+        let len2 = ab[0] * ab[0] + ab[1] * ab[1];
+        let t = if len2 > 0.0 { ((ax[0] * ab[0] + ax[1] * ab[1]) / len2).clamp(0.0, 1.0) } else { 0.0 };
+        (x[0] - a[0] - t * ab[0]).hypot(x[1] - a[1] - t * ab[1])
+    }
+    pub fn blend_width(&self) -> f64 {
+        self.blend.unwrap_or(self.radius)
+    }
+    /// Element size multiplier at `x`: the level's factor inside `radius`, rising to 1 over the blend.
+    pub fn factor(&self, x: [f64; 2]) -> f64 {
+        let f = level_factor(self.level);
+        let t = ((self.distance(x) - self.radius) / self.blend_width()).clamp(0.0, 1.0);
+        f + (1.0 - f) * t
     }
 }
 
@@ -194,6 +246,14 @@ pub enum Geometry {
     Sketch { outer: Shape, holes: Vec<Shape>, depth: f64, layers: usize },
     /// A mesh read from a Gmsh `.msh` or Abaqus `.inp` file (the app supplies its text).
     Imported { path: String },
+    /// A B-rep solid: its STEP text (the source of truth, edited with the OpenCascade kernel) and the cached face-tagged
+    /// surface mesh of it (all a solve needs, so a build without the kernel still solves). The cache is valid only while
+    /// its hash matches `step`; faces are named `face1`.. in the cache's face order, like sketch edges.
+    Solid {
+        step: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache: Option<crate::solid::SolidCache>,
+    },
 }
 
 /// One support: each component that is `Some(v)` is fixed to the displacement `v`.
@@ -292,6 +352,11 @@ pub struct Problem {
     /// Interference-fit bushings in circular holes (plane analyses only).
     #[serde(default)]
     pub bushings: Vec<Bushing>,
+    /// Parametric feature history the geometry was built from (sketch on a plane, extrude / revolve). Absent for
+    /// plain `Geometry` problems and for files written before the history existed; `apply_history` rewrites
+    /// `geometry` (and `analysis` for a solid) from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<crate::history::History>,
 }
 
 fn version() -> u32 {
@@ -299,6 +364,31 @@ fn version() -> u32 {
 }
 
 impl Problem {
+    /// Rebuild `geometry` (and `analysis`, for a solid feature) from the feature history. Supports and loads are
+    /// untouched: they refer to names (`edgeN`, `holeN`, `start`, `end`) that the rebuild reproduces.
+    pub fn apply_history(&mut self) -> Result<(), String> {
+        use crate::history::Body;
+        let Some(h) = &self.history else { return Ok(()) };
+        let b = h.rebuild()?;
+        let (depth, layers) = match b.body {
+            // A plain sketch keeps the extrusion settings the problem already had (they matter once it is extruded).
+            Body::Region => match &self.geometry {
+                Geometry::Sketch { depth, layers, .. } => (*depth, *layers),
+                Geometry::Imported { .. } | Geometry::Solid { .. } => (1.0, 1),
+            },
+            Body::Extrude { depth, layers } => (depth, layers),
+            Body::Revolve { segments, .. } => (1.0, segments),
+        };
+        if b.body != Body::Region {
+            self.analysis = Analysis::Solid;
+            if !self.mesh.element.is_quad() {
+                self.mesh.element = ElementChoice::Quad4;
+            }
+        }
+        self.geometry = Geometry::Sketch { outer: b.outer, holes: b.holes, depth, layers };
+        Ok(())
+    }
+
     pub fn to_json(&self) -> Result<String, String> {
         serde_json::to_string_pretty(self).map_err(|e| e.to_string())
     }
@@ -314,6 +404,9 @@ impl Problem {
     /// Names of the edges a support or load can refer to (sketch geometry only; an imported mesh's
     /// names are only known once its file is read).
     pub fn edge_names(&self) -> Vec<String> {
+        if let Geometry::Solid { cache: Some(c), .. } = &self.geometry {
+            return c.face_names();
+        }
         let Geometry::Sketch { outer, holes, depth, .. } = &self.geometry else { return Vec::new() };
         let mut names: Vec<String> = match outer {
             Shape::Rect { .. } => ["bottom", "right", "top", "left"].iter().map(|s| s.to_string()).collect(),
@@ -328,8 +421,24 @@ impl Problem {
         names
     }
 
+    /// Remove all geometry: an empty feature history, no boundary conditions (they named surfaces that are gone) and
+    /// a unit placeholder outline that is never meshed (`validate_geometry` refuses until a sketch has a profile).
+    pub fn clear_geometry(&mut self) {
+        self.geometry = Geometry::Sketch { outer: Shape::Rect { x0: 0.0, y0: 0.0, x1: 1.0, y1: 1.0 }, holes: Vec::new(), depth: 1.0, layers: 4 };
+        self.history = Some(crate::history::History::default());
+        self.supports.clear();
+        self.loads.clear();
+        self.bushings.clear();
+    }
+
     /// Everything needed to mesh the problem (no supports or loads yet).
     pub fn validate_geometry(&self) -> Result<(), String> {
+        if let Some(h) = &self.history {
+            if h.features.is_empty() {
+                return Err("the model has no geometry: add a sketch".into());
+            }
+            h.rebuild().map_err(|e| format!("the feature history has no valid body: {e}"))?;
+        }
         self.material.elastic().validate()?;
         if !(self.thickness.is_finite() && self.thickness > 0.0) && matches!(self.analysis, Analysis::PlaneStress | Analysis::PlaneStrain) {
             return Err("thickness must be positive".into());
@@ -339,6 +448,20 @@ impl Problem {
         }
         if !(self.mesh.hole_factor.is_finite() && self.mesh.hole_factor > 0.0 && self.mesh.hole_factor <= 1.0) {
             return Err("hole size factor must be in (0, 1]".into());
+        }
+        if self.mesh.refine.len() > MAX_REFINE {
+            return Err(format!("at most {MAX_REFINE} refinement zones"));
+        }
+        for r in &self.mesh.refine {
+            let ok = r.centre.iter().all(|c| c.is_finite())
+                && r.to.is_none_or(|t| t.iter().all(|c| c.is_finite()))
+                && r.radius.is_finite()
+                && r.radius > 0.0
+                && r.blend.is_none_or(|b| b.is_finite() && b > 0.0)
+                && (1..=MAX_LEVEL).contains(&r.level);
+            if !ok {
+                return Err(format!("a refinement zone needs a finite centre, a positive radius and blend, and a level 1 to {MAX_LEVEL}"));
+            }
         }
         match &self.geometry {
             Geometry::Sketch { outer, holes, depth, layers } => {
@@ -357,6 +480,19 @@ impl Problem {
             Geometry::Imported { path } => {
                 if path.trim().is_empty() {
                     return Err("no mesh file chosen".into());
+                }
+            }
+            Geometry::Solid { step, cache } => {
+                if self.analysis != Analysis::Solid {
+                    return Err("a B-rep solid is analysed as a 3D solid: set the analysis to 3D solid".into());
+                }
+                if step.trim().is_empty() {
+                    return Err("the solid has no STEP text".into());
+                }
+                match cache {
+                    None => return Err("the solid has not been tessellated yet: open it with the OpenCascade build to cache its surface mesh".into()),
+                    Some(c) if !c.is_current(step) => return Err("the solid's cached surface mesh is out of date (the STEP text changed): re-tessellate it with the OpenCascade build".into()),
+                    Some(_) => {}
                 }
             }
         }

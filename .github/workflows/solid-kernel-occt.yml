@@ -1,0 +1,44 @@
+name: Solid kernel (OpenCascade)
+
+# The `occt` feature of `solid-kernel` links a prebuilt OpenCASCADE through the `cadrum` crate (downloaded by its build
+# script), so it is its own job: run by hand or when the kernel or the volume mesher changes. Windows is the target. The default CI job covers everything that
+# does not need a C++ toolchain. See docs/adr/ADR-019-solid-kernel-opencascade.md.
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - "solid-kernel/**"
+      - "fea-core/src/tetmesh.rs"
+      - ".github/workflows/solid-kernel-occt.yml"
+
+concurrency:
+  group: occt-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  occt:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and the OpenCascade build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: cargo-occt-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-occt-${{ runner.os }}-
+
+      - name: cargo test -p solid-kernel --features occt
+        run: cargo test -p solid-kernel --features occt

@@ -38,6 +38,10 @@ fn main() -> io::Result<()> {
         let path = std::env::args_os().nth(2).ok_or_else(|| io::Error::other("missing GPU scene path"))?;
         return app_tui::gpu_viewer::run(std::path::Path::new(&path)).map_err(io::Error::other);
     }
+    if let Some(kind) = std::env::args().nth(1).as_deref().and_then(app_tui::gpu_viewer::EditorKind::from_flag) {
+        let path = std::env::args_os().nth(2).map_or_else(|| std::path::PathBuf::from(kind.default_file()), std::path::PathBuf::from);
+        return app_tui::gpu_viewer::run_native_editor(kind, &path).map_err(io::Error::other);
+    }
     // Before anything else so a panic during startup is recorded too.
     app_tui::debug_log::init();
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -293,6 +297,28 @@ fn execute_effect(tx: &mpsc::UnboundedSender<AppEvent>, state: &mut AppState, ef
                     }
                 })();
                 let _ = tx.send(AppEvent::GpuViewerFinished { id, result });
+            });
+        }
+        Effect::OpenNativeEditor { kind, path } => {
+            let tx = tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let result = (|| -> Result<(), String> {
+                    use std::io::Read;
+                    if let Some(parent) = std::path::Path::new(&path).parent().filter(|p| !p.as_os_str().is_empty()) {
+                        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                    }
+                    let errors = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
+                    let status = std::process::Command::new(std::env::current_exe().map_err(|e| e.to_string())?)
+                        .arg(kind.flag()).arg(&path).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::from(errors.as_file().try_clone().map_err(|e| e.to_string())?))
+                        .status().map_err(|e| e.to_string())?;
+                    if status.success() { return Ok(()); }
+                    let mut detail = Vec::new();
+                    errors.reopen().map_err(|e| e.to_string())?.take(4096).read_to_end(&mut detail).map_err(|e| e.to_string())?;
+                    let detail = String::from_utf8_lossy(&detail);
+                    Err(format!("{} failed: {}", kind.title(), if detail.trim().is_empty() { "check desktop display and graphics driver availability" } else { detail.trim() }))
+                })();
+                let _ = tx.send(AppEvent::NativeEditorFinished { kind, path, result });
             });
         }
         Effect::RunFeaDynamic { id, problem, import_text, kind, n_modes } => {

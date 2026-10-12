@@ -10,8 +10,13 @@ publish = false
 # and solve that turn it into results, and a raster of any result field for a terminal view.
 # Pure functions of their inputs: no file I/O (callers read / write the JSON, mesh and `.vtu` text),
 # no UI. Consumed by the `app-tui` FEA Workbench.
+[features]
+# Re-tessellating a STEP solid (and so editing one) needs the OpenCascade kernel; solving a stored solid does not.
+occt = ["solid-kernel/occt"]
+
 [dependencies]
 fea-core = { path = "../fea-core" }
+solid-kernel = { path = "../solid-kernel" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
