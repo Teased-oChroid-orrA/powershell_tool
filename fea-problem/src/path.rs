@@ -81,7 +81,7 @@ impl Path3 {
                 Seg::Line { a, b } => {
                     let d = dir3(a, b);
                     let len = norm(d);
-                    if !(len > 1e-12) {
+                    if len.is_nan() || len <= 1e-12 {
                         return Err(format!("path edge {} has no length", i + 1));
                     }
                     let t = scale(d, 1.0 / len);
@@ -89,7 +89,7 @@ impl Path3 {
                 }
                 Seg::Arc { c, r, a0, a1 } => {
                     let angle = a1 - a0;
-                    if !(r > 1e-12 && angle.abs() > 1e-12) {
+                    if r.is_nan() || r <= 1e-12 || angle.is_nan() || angle.abs() <= 1e-12 {
                         return Err(format!("path edge {} has no length", i + 1));
                     }
                     let centre = place(c);

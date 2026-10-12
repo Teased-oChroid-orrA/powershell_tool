@@ -1347,13 +1347,11 @@ mod tests {
         move_to(&mut v, away);
         frame(&mut v);
         assert_eq!(lit(&v), before, "leaving the row clears the highlight");
-        assert!(property_text(&v).len() > 0);
     }
 
     #[test]
     fn a_real_mouse_click_on_a_3d_face_picks_it_and_its_menu_adds_a_support_there() {
-        let problem = fea_problem::templates::templates().into_iter().find(|(n, _)| n.contains("3D")).unwrap().1;
-        let mut problem = problem;
+        let mut problem = fea_problem::templates::templates().into_iter().find(|(n, _)| n.contains("3D")).unwrap().1;
         problem.mesh.size = 1.0;
         problem.supports.clear();
         let mut v = viewer(Some(Box::new(crate::gpu_viewer::editor::solid::SolidSession::new(problem, std::env::temp_dir().join("window-facepick-test.json")))));

@@ -69,7 +69,19 @@ Does not own: search/matching/extraction (`search-core`), the index engine (`nat
   card / status-bar fix come from `fea_problem::diagnose` (ADR-020; ranker "Failure fixes" in `Advisors`, same measured gate);
   STEP open, hole / boss / fillet need `--features occt` (prebuilt OpenCASCADE via `cadrum`; set `OCCT_ROOT` to an extracted
   tarball if its download fails). Without the feature those entries are disabled with the reason. A kernel edit renumbers
-  `faceN`: never remap supports silently, let the diagnosis offer retarget / drop.
+  `faceN`; `Problem::apply_solid_op` carries supports and loads across it by geometry (`solid::remap_faces`) and renames a lost
+  one `removed:faceN`, which the diagnosis offers to retarget / drop. Findings that need a result (`diagnose_result`, e.g. an
+  absurd displacement) are added to the same card, cached per result. A remedy row previews itself: `DockItem::row_with_preview`
+  sends `(on, off)` actions on pointer enter / leave (`gui/mod.rs::run`), `SolidAction::PreviewFix` lights the surfaces
+  `Edit::surfaces` names, presentation only.
+- **Thermal studies** (ADR-021) ride the shared row model: `FieldRow::StudyKind`, the Thermal / Fixed temperatures / Heat loads
+  sections, `Feature::{Thermal, HeatSupport, HeatLoad}` tree nodes, `BcKind::{FixedTemperature, HeatFlux, Convection}` in the surface
+  menu. A result lists its fields with `Solved::fields()` / `default_field()`; never `Field::ALL`.
+- **The terminal Workbench is manual by default** (`u` mesh, `r` solve, `a` automatic mode). Tests of the automatic behaviour use
+  `auto_state()`.
+- **Window tests drive real input**: `gpu_viewer/window.rs` tests click the viewport (`click`, `move_to`, `Input::Key`), including the
+  STEP hole workflow under `--features occt`. Prefer them to calling session methods when the thing under test is a pointer or
+  key path; `type_text` feeds egui text fields only, an editor prompt takes `Input::Key(Key::Character(..))`.
 - **Linker error = check `df -h` first.** `target/debug/incremental` alone reached 14 GB and the build then failed with "No space
   left on device" behind a bare `clang: linker command failed`. Delete `target/debug/incremental` (a cache), use `CARGO_INCREMENTAL=0`
   for long test runs.

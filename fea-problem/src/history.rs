@@ -234,7 +234,7 @@ impl History {
         for (name, a, b) in sides {
             let d = [b[0] - a[0], b[1] - a[1]];
             let len = d[0].hypot(d[1]);
-            if !(len > 0.0) {
+            if len.is_nan() || len <= 0.0 {
                 continue;
             }
             let (d, n) = ([d[0] / len, d[1] / len], [side * d[1] / len, -side * d[0] / len]);
