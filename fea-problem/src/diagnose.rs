@@ -29,6 +29,11 @@ pub enum FailureClass {
     NonFiniteInput,
     /// Elements of an imported mesh with a non-positive Jacobian (inverted, folded or collapsed).
     InvertedElements,
+    /// A solved model whose displacements are a large share of the part's size: linear elasticity does not hold, and the usual
+    /// cause is a unit slip between the modulus and the loads or lengths.
+    ScaleSuspect,
+    /// A hole so thin that the mesher cannot resolve it within its budget.
+    ThinFeature,
     /// The contact solve of a bushed plate stalled instead of converging.
     ContactNotConverged,
     /// A steady thermal study with no fixed temperature and no convection: the temperature level is undetermined.
@@ -50,6 +55,8 @@ impl FailureClass {
             Self::NoThermalAnchor => "No fixed temperature",
             Self::InvertedElements => "Inverted elements",
             Self::ContactNotConverged => "Contact did not converge",
+            Self::ThinFeature => "Feature too thin to mesh",
+            Self::ScaleSuspect => "Implausibly large deformation",
             Self::Other => "Solve failed",
         }
     }
@@ -71,6 +78,8 @@ pub enum RemedyKind {
     ReorientMesh,
     /// Give a bushing the plate's modulus (a unit mix-up is the usual reason for a bushing orders of magnitude off).
     MatchBushingModulus,
+    /// Widen a hole that is thinner than the mesh can resolve.
+    WidenHole,
     /// Not a fix: answering the finding's question instead of taking a fix. It is offered to the guidance ranker next to the
     /// remedies so it can learn when asking is what users do, and the card then shows the question first.
     AnswerQuestion,
@@ -100,6 +109,10 @@ pub enum Edit {
     Reorient,
     /// Set the Young's modulus of bushing `bushing` (0-based).
     SetBushingModulus { bushing: usize, e: f64 },
+    /// Multiply the plate's Young's modulus by `factor`.
+    ScaleModulus { factor: f64 },
+    /// Make hole `n` (1-based) at least `to` thick: a circle's diameter, a slot's width, a rectangle's shorter side.
+    WidenHole { hole: usize, to: f64 },
 }
 
 /// `Advice` is not serialisable (it carries the reason text); the edit part is what a remedy stores.
@@ -128,6 +141,8 @@ impl Edit {
             Edit::Drop(target) => of_target(target).into_iter().collect(),
             Edit::RemoveHole(n) => vec![format!("hole{n}")],
             Edit::Reorient => Vec::new(),
+            Edit::WidenHole { hole, .. } => vec![format!("hole{hole}")],
+            Edit::ScaleModulus { .. } => Vec::new(),
             Edit::SetBushingModulus { bushing, .. } => p.bushings.get(*bushing).map(|b| format!("hole{}", b.hole)).into_iter().collect(),
         }
     }
@@ -170,6 +185,35 @@ impl Edit {
                 p.mesh.reorient = true;
                 Ok(())
             }
+            Edit::ScaleModulus { factor } => {
+                if !(factor.is_finite() && *factor > 0.0) {
+                    return Err("the factor must be positive".into());
+                }
+                p.material.e *= factor;
+                Ok(())
+            }
+            Edit::WidenHole { hole, to } => match &mut p.geometry {
+                Geometry::Sketch { holes, .. } if *hole >= 1 && *hole <= holes.len() => {
+                    match &mut holes[hole - 1] {
+                        crate::Shape::Circle { r, .. } => *r = 0.5 * to.max(2.0 * *r),
+                        crate::Shape::Slot { width, length, .. } => {
+                            *width = width.max(*to);
+                            *length = length.max(1.5 * *width);
+                        }
+                        crate::Shape::Rect { x0, y0, x1, y1 } => {
+                            if (*x1 - *x0) < *to {
+                                *x1 = *x0 + *to;
+                            }
+                            if (*y1 - *y0) < *to {
+                                *y1 = *y0 + *to;
+                            }
+                        }
+                        _ => return Err("that hole's shape cannot be widened automatically".into()),
+                    }
+                    Ok(())
+                }
+                _ => Err("there is no such hole: the model changed".into()),
+            },
             Edit::SetBushingModulus { bushing, e } => match p.bushings.get_mut(*bushing) {
                 Some(b) => {
                     b.material.e = *e;
@@ -251,6 +295,41 @@ pub struct Diagnosis {
     pub questions: Vec<Question>,
 }
 
+/// Findings that need a result. A displacement that is a large share of the part's size cannot come from a linear model of a
+/// sound design; the common cause is a modulus entered in a different unit from the loads and lengths. Nothing fails (the
+/// solve is exact for the numbers it was given), so this is the only place the slip can be seen. The question offers the two
+/// usual slips (a factor 1000 either way); a model that really deforms this much just ignores it.
+pub fn diagnose_result(s: &crate::Solved) -> Vec<Diagnosis> {
+    let p = &s.problem;
+    if !p.study.is_structural() {
+        return Vec::new();
+    }
+    let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    for n in &s.model.mesh.nodes {
+        for k in 0..3 {
+            lo[k] = lo[k].min(n[k]);
+            hi[k] = hi[k].max(n[k]);
+        }
+    }
+    let size = (0..3).map(|k| hi[k] - lo[k]).fold(0.0f64, f64::max);
+    let u = s.summary.max_displacement.value;
+    if !(size > 0.0 && u.is_finite() && u > 0.05 * size) {
+        return Vec::new();
+    }
+    let q = Question {
+        id: "modulus_units",
+        text: "Is Young's modulus in a different unit from the loads and lengths?".into(),
+        options: vec![("Yes: it is 1000 times too small".into(), Edit::ScaleModulus { factor: 1e3 }), ("Yes: it is 1000 times too large".into(), Edit::ScaleModulus { factor: 1e-3 })],
+    };
+    vec![Diagnosis {
+        class: FailureClass::ScaleSuspect,
+        summary: format!("The largest displacement is {:.0} % of the part's size: a linear model is not trustworthy this far from its undeformed shape.", 100.0 * u / size),
+        evidence: vec![format!("displacement {u:.4e}, part size {size:.4e}, modulus {:.3e}, peak von Mises {:.3e}", p.material.e, s.summary.max_von_mises.value)],
+        remedies: Vec::new(),
+        questions: vec![q],
+    }]
+}
+
 /// Findings for `p`. `error` is the solver's failure message when a solve failed (`None`: the prevention pass, which
 /// reports only what the model state already shows). Findings are ordered most blocking first.
 pub fn diagnose(p: &Problem, error: Option<&str>) -> Vec<Diagnosis> {
@@ -264,6 +343,7 @@ pub fn diagnose(p: &Problem, error: Option<&str>) -> Vec<Diagnosis> {
     out.extend(no_thermal_anchor(p));
     out.extend(error.and_then(|e| inverted_elements(p, e)));
     out.extend(error.and_then(|e| contact_not_converged(p, e)));
+    out.extend(error.and_then(|e| thin_feature(p, e)));
     if p.study.is_structural() && error.is_some_and(|e| e.contains("rigid-body") && e.contains("constrained")) && !p.supports.is_empty() {
         out.push(under_constrained(p));
     }
@@ -446,6 +526,41 @@ fn inverted_elements(p: &Problem, error: &str) -> Option<Diagnosis> {
         )
     };
     Some(Diagnosis { class: FailureClass::InvertedElements, summary, evidence: vec![error.to_string()], remedies, questions: Vec::new() })
+}
+
+/// Thickness of a hole: a circle's diameter, a slot's width, a rectangle's shorter side (`None`: not a simple shape).
+fn hole_thickness(h: &crate::Shape) -> Option<f64> {
+    match h {
+        crate::Shape::Circle { r, .. } => Some(2.0 * r),
+        crate::Shape::Slot { width, .. } => Some(*width),
+        crate::Shape::Rect { x0, y0, x1, y1 } => Some((x1 - x0).abs().min((y1 - y0).abs())),
+        _ => None,
+    }
+}
+
+/// The mesher stopped at its vertex budget. A hole much thinner than the element size is the cause the model can show: the
+/// refinement has to follow it down to its own width. Reproduced with a slot 1e-5 wide (minutes of refinement before this
+/// guard, an error in seconds after). The remedies are the two honest choices: widen it to what the mesh can resolve, or take it out.
+fn thin_feature(p: &Problem, error: &str) -> Option<Diagnosis> {
+    if !error.contains("mesh exceeds") {
+        return None;
+    }
+    let Geometry::Sketch { holes, .. } = &p.geometry else { return None };
+    let (hole, thick) = holes.iter().enumerate().filter_map(|(i, h)| hole_thickness(h).map(|t| (i + 1, t))).min_by(|a, b| a.1.total_cmp(&b.1))?;
+    if !(thick.is_finite() && thick < 0.2 * p.mesh.size) {
+        return None;
+    }
+    let to = advice::nice(0.5 * p.mesh.size);
+    Some(Diagnosis {
+        class: FailureClass::ThinFeature,
+        summary: format!("Hole {hole} is far thinner than the elements, so the mesher keeps refining until it runs out of budget."),
+        evidence: vec![format!("hole {hole} is {thick:.3e} thick, the element size is {}", p.mesh.size)],
+        remedies: vec![
+            Remedy { kind: RemedyKind::WidenHole, label: format!("Widen hole {hole} to {to}"), why: "a feature has to be at least a fraction of an element wide to be meshed; widen it to what the mesh can resolve, or decide it does not matter".into(), edit: Edit::WidenHole { hole, to } },
+            Remedy { kind: RemedyKind::RemoveHole, label: format!("Remove hole {hole}"), why: "a hair-thin feature carries no load of its own and costs the whole mesh".into(), edit: Edit::RemoveHole(hole) },
+        ],
+        questions: Vec::new(),
+    })
 }
 
 /// The contact solve of a bushed plate gave up. Reproduced: a bushing whose modulus is 1e-7 of the plate's (a units slip) makes

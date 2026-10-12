@@ -21,6 +21,8 @@ pub(super) struct Findings {
     problem: Problem,
     error: Option<String>,
     learned: bool,
+    /// Findings from a result are part of the list: a new result is a new state.
+    solved_id: Option<usize>,
     list: Vec<Diagnosis>,
 }
 
@@ -53,17 +55,22 @@ impl SolidSession {
             return Vec::new();
         }
         let learned = self.advisors.guidance.settings.use_learned && self.advisors.guidance.learned_available().is_ok();
+        let solved_id = self.current_solution().map(|s| std::sync::Arc::as_ptr(s) as usize);
         if let Some(c) = self.findings_cache.borrow().as_ref() {
-            if c.problem == self.problem && c.error == self.failure && c.learned == learned {
+            if c.problem == self.problem && c.error == self.failure && c.learned == learned && c.solved_id == solved_id {
                 return c.list.clone();
             }
         }
         let mut list = diagnose(&self.problem, self.failure.as_deref());
+        // What only a result can show (a displacement far too large for a linear model).
+        if let Some(sol) = self.current_solution() {
+            list.extend(fea_problem::diagnose::diagnose_result(sol));
+        }
         for d in &mut list {
             let (order, _) = self.advisors.guidance.order(&d.class, &offered_kinds(d));
             d.remedies.sort_by_key(|r| order.iter().position(|k| *k == r.kind).unwrap_or(usize::MAX));
         }
-        *self.findings_cache.borrow_mut() = Some(Findings { problem: self.problem.clone(), error: self.failure.clone(), learned, list: list.clone() });
+        *self.findings_cache.borrow_mut() = Some(Findings { problem: self.problem.clone(), error: self.failure.clone(), learned, solved_id, list: list.clone() });
         list
     }
 

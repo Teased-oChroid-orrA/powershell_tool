@@ -11,6 +11,14 @@ use crate::history::Body;
 use fea_core::sweep::{extrude, revolve, sweep_along};
 use fea_core::{Mesh, Physics};
 
+/// The mesher's own budget: vertices it may create before it gives up. The default (2 million) lets a sliver feature keep the
+/// refinement running for minutes before it says anything; this is about twice what `MAX_ELEMENTS` can use, reached in seconds.
+pub const MAX_VERTICES: usize = 250_000;
+
+fn mesh_options() -> MeshOptions {
+    MeshOptions { max_vertices: MAX_VERTICES, ..MeshOptions::default() }
+}
+
 /// Most elements a sketch is allowed to produce (a guard against a size typo freezing the app).
 pub const MAX_ELEMENTS: f64 = 120_000.0;
 
@@ -203,7 +211,7 @@ pub fn add_bushings(p: &Problem, mesh: &mut Mesh, field: Option<&SizeField>) -> 
         let cap = wall.max(r / 25.0);
         let h = (p.mesh.size * p.mesh.hole_factor).min(cap);
         let size = |x: [f64; 2]| field.map_or(h, |sf| sf.at(x).min(cap));
-        let bm = mesh_region(&region, physics_of(p), p.mesh.element.kind(), &size, MeshOptions::default())?;
+        let bm = mesh_region(&region, physics_of(p), p.mesh.element.kind(), &size, mesh_options())?;
         let plate = mesh.surfaces.get(&format!("hole{}", b.hole)).cloned().ok_or_else(|| format!("bushing {n}: the plate has no surface hole{}", b.hole))?;
         mesh.surfaces.insert(format!("plate_hole{}", b.hole), plate);
         mesh.append(&bm, &format!("b{n}/"))?;
@@ -229,10 +237,10 @@ pub fn sketch_mesh(p: &Problem, field: Option<&SizeField>) -> Result<Mesh, Strin
         Some(sf) => sf.at(x).min(p.mesh.size * zone_factor(&p.mesh.refine, x)),
         None => base(x),
     };
-    let mut mesh = mesh_region(&region, physics_2d, p.mesh.element.kind(), &size, MeshOptions::default())?;
+    let mut mesh = mesh_region(&region, physics_2d, p.mesh.element.kind(), &size, mesh_options())?;
     // The sketch's other regions are separate bodies: meshed alone and appended with their own surface names.
     for (k, reg) in extra_regions_of(p)?.iter().enumerate() {
-        let m = mesh_region(reg, physics_2d, p.mesh.element.kind(), &size, MeshOptions::default())?;
+        let m = mesh_region(reg, physics_2d, p.mesh.element.kind(), &size, mesh_options())?;
         mesh.append(&m, &format!("r{}/", k + 2))?;
     }
     add_bushings(p, &mut mesh, field)?;

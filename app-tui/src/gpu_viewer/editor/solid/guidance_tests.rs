@@ -189,3 +189,28 @@ fn pointing_at_a_fix_marks_the_surfaces_it_touches_without_applying_it() {
     s.do_action(SolidAction::Remedy(0, 0));
     assert!(s.fix_preview.is_none());
 }
+
+#[test]
+fn a_solved_model_that_deforms_absurdly_gets_the_units_question_in_the_check_card() {
+    let mut s = session("scale");
+    s.problem.supports = vec![Support::fixed("left")];
+    s.problem.material.e /= 1000.0;
+    s.problem.mesh.size = 1.0;
+    s.do_action(SolidAction::Solve);
+    let t = std::time::Instant::now();
+    while s.solve_worker.is_busy() || s.solved.is_none() {
+        s.poll();
+        assert!(t.elapsed().as_secs() < 120, "{}", s.status);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    s.poll();
+    let c = card(&s).expect("a finding from the result");
+    assert!(text(&c).contains("Implausibly large deformation") && text(&c).contains("different unit"), "{}", text(&c));
+    // Answering restores the modulus in one undoable edit, and the result is no longer current.
+    s.do_action(SolidAction::Answer(0, 0, 0));
+    assert!((s.problem.material.e / (plate_modulus()) - 1.0).abs() < 1e-12, "{}", s.problem.material.e);
+    assert!(card(&s).is_none() || !text(&card(&s).unwrap()).contains("Implausibly"));
+}
+fn plate_modulus() -> f64 {
+    fea_problem::templates::templates().remove(0).1.material.e
+}

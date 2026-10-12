@@ -617,6 +617,15 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
         }
     }
     let model = Model::new(mesh)?;
+    // The kernel's model check, minus what a bushed model fails on purpose: the bushing is held by contact alone (a rigid-body
+    // finding), and a fit with no applied load is a real case (no-load). Inverted elements, non-finite loads and values and
+    // bad materials stop here with their reason instead of minutes into the contact iteration.
+    let issues = model.validate(&loads, &bc);
+    let blocking: Vec<&str> = issues.iter().filter(|i| i.severity == fea_core::Severity::Error && i.code != "rigid_body").map(|i| i.message.as_str()).collect();
+    if !blocking.is_empty() {
+        return Err(blocking.join("; "));
+    }
+    let warnings: Vec<String> = issues.iter().filter(|i| i.severity == fea_core::Severity::Warning && !matches!(i.code, "low_order_element" | "no_load")).map(|i| i.message.clone()).collect();
     let r_hole: f64 = hole_faces.iter().map(|(h, ..)| match &p.geometry {
         Geometry::Sketch { holes, .. } => holes.get(h - 1).map_or(1.0, |s| s.reach()),
         _ => 1.0,
@@ -660,7 +669,7 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
     let strain_energy = model.strain_energy(&sol.u)?;
     let interfaces = p.bushings.iter().enumerate().map(|(i, b)| interface_result(&sol, 2 * i, b.hole, b.friction, match &p.geometry { Geometry::Sketch { holes, .. } => holes[b.hole - 1].centre(), _ => [0.0, 0.0] })).collect();
     let scale = force_scale(&f, &sol.reactions);
-    Ok(Pass { model, u: sol.u, nodal, zz, reaction, applied, force_scale: scale, solve_ms, strain_energy, interfaces, warnings: Vec::new(), heat: None })
+    Ok(Pass { model, u: sol.u, nodal, zz, reaction, applied, force_scale: scale, solve_ms, strain_energy, interfaces, warnings, heat: None })
 }
 
 /// The fit interface of one bushing (its two contact passes, indices `first` and `first + 1`) from the tractions.

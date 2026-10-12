@@ -311,3 +311,82 @@ fn a_real_stalled_contact_solve_is_diagnosed_and_applying_the_top_fix_makes_the_
     let s = fea_problem::solve(&p, None).unwrap();
     assert!(!s.summary.interfaces.is_empty() && s.summary.interfaces[0].mean_pressure > 0.0, "the fit is installed");
 }
+
+// ------------------------------------------------------------------------------------------ a feature too thin to mesh
+
+fn plate_with_a_hair_slot() -> fea_problem::Problem {
+    let mut p = fea_problem::templates::templates().remove(0).1;
+    if let Geometry::Sketch { holes, .. } = &mut p.geometry {
+        *holes = vec![Shape::Slot { cx: 6.0, cy: 2.0, length: 2.0, width: 1e-5, angle: 0.0 }];
+    }
+    // The adaptive passes (on by default) are what chase the sliver: without them the same mesh solves.
+    assert!(p.mesh.adapt_passes > 0);
+    p
+}
+
+#[test]
+fn a_hair_thin_slot_fails_fast_with_the_reason_and_each_fix_makes_the_model_solve() {
+    use fea_problem::diagnose::{diagnose, FailureClass, RemedyKind};
+    let p = plate_with_a_hair_slot();
+    let t = std::time::Instant::now();
+    let e = fea_problem::solve(&p, None).unwrap_err();
+    assert!(e.contains("mesh exceeds"), "{e}");
+    assert!(t.elapsed().as_secs() < 120, "the mesher's budget ends the refinement in seconds, not minutes: {:?}", t.elapsed());
+    let found = diagnose(&p, Some(&e));
+    let d = found.iter().find(|d| d.class == FailureClass::ThinFeature).expect("diagnosed");
+    assert!(d.evidence[0].contains("hole 1"), "{:?}", d.evidence);
+    assert_eq!(d.remedies.iter().map(|r| r.kind).collect::<Vec<_>>(), [RemedyKind::WidenHole, RemedyKind::RemoveHole]);
+    for r in &d.remedies {
+        let mut fixed = p.clone();
+        r.edit.apply(&mut fixed).unwrap();
+        assert!(fea_problem::solve(&fixed, None).is_ok(), "{}", r.label);
+    }
+    // A model whose mesh is merely big is not blamed on a feature.
+    let mut big = fea_problem::templates::templates().remove(0).1;
+    big.mesh.size = 0.001;
+    assert!(diagnose(&big, Some("mesh exceeds 250000 vertices (size function too small?)")).iter().all(|d| d.class != FailureClass::ThinFeature));
+}
+
+// ------------------------------------------------------------------------------------------ a modulus in the wrong unit
+
+#[test]
+fn a_modulus_a_thousand_times_too_small_solves_but_is_flagged_and_the_answer_restores_it() {
+    use fea_problem::diagnose::{diagnose_result, FailureClass};
+    let good = fea_problem::templates::templates().remove(0).1;
+    let solved_good = fea_problem::solve(&good, None).unwrap();
+    assert!(diagnose_result(&solved_good).is_empty(), "a sound design is not flagged");
+    // ksi typed where psi is meant: the plate is a thousand times too soft and stretches by far more than its own size.
+    let mut slip = good.clone();
+    slip.material.e /= 1000.0;
+    let solved = fea_problem::solve(&slip, None).unwrap();
+    let found = diagnose_result(&solved);
+    let d = found.iter().find(|d| d.class == FailureClass::ScaleSuspect).expect("flagged");
+    assert!(d.summary.contains("% of the part's size") && d.remedies.is_empty());
+    let (label, edit) = &d.questions[0].options[0];
+    assert!(label.contains("1000 times too small"), "{label}");
+    edit.apply(&mut slip).unwrap();
+    assert!((slip.material.e / good.material.e - 1.0).abs() < 1e-12);
+    let again = fea_problem::solve(&slip, None).unwrap();
+    assert!(diagnose_result(&again).is_empty() && (again.summary.max_displacement.value / solved_good.summary.max_displacement.value - 1.0).abs() < 1e-9);
+    // A thermal-only study has no displacements to judge.
+    let mut th = good.clone();
+    th.study = fea_problem::Study::Thermal;
+    th.thermal.supports = vec![fea_problem::HeatSupport::Temperature { edge: "left".into(), t: 0.0 }];
+    assert!(diagnose_result(&fea_problem::solve(&th, None).unwrap()).is_empty());
+}
+
+#[test]
+fn a_bushed_model_gets_the_kernels_model_check_before_the_contact_iteration() {
+    // A NaN load used to be discovered (or not) deep in the contact iteration; the check now refuses it at once, with its reason.
+    let mut p = bushed_lug();
+    p.loads = vec![fea_problem::Load::Traction { edge: "right".into(), tx: f64::NAN, ty: 0.0, tz: 0.0 }];
+    let t = std::time::Instant::now();
+    let e = fea_problem::solve(&p, None).unwrap_err();
+    assert!(e.contains("not finite"), "{e}");
+    assert!(t.elapsed().as_secs() < 30, "refused before any contact work: {:?}", t.elapsed());
+    // The held-by-contact bushing and a fit without a load are not findings.
+    let mut ok = bushed_lug();
+    ok.loads.clear();
+    ok.bushings[0].material.e = ok.material.e;
+    assert!(fea_problem::solve(&ok, None).is_ok());
+}

@@ -98,3 +98,18 @@ Two items listed above as not built are built:
   the card shows the question before the fixes; the rules show the fixes first. Nothing is ever hidden: asking and fixing stay
   offered whichever leads. No simulated prior exists for this choice (it would be my statement of what users do): until a user's
   own sessions pass the gate the order is the rules'.
+
+## Addendum 2026-10-12: the remaining failure classes
+
+Each class below was reproduced as a real failure first; its regression test applies the top remedy and checks the model then solves.
+
+| Class | Reproduced as | Remedy / question | Test (`fea-problem/tests/failures.rs`) |
+|---|---|---|---|
+| `InvertedElements` | one triangle of an imported Gmsh file written clockwise: `inverted or degenerate elements (block, element): [(0, 1)]` | `Edit::Reorient` (`MeshSpec::reorient`): `fea_core::import::reorient_inverted` turns mirrored elements right side out by the mirror node permutation, every element kind; collapsed or folded ones stay and the class then offers nothing | `a_reversed_triangle_in_an_imported_mesh_...` (the repaired model gives the good mesh's strain energy to 1e-12), `fea-core/tests/import.rs` for all ten kinds |
+| `ContactNotConverged` | a bushing modulus of 1 against the plate's 1e7: `the loaded bushing could not be solved: NoConvergence("stagnated ...")` | `MatchBushingModulus` only when the ratio is outside 1e-3..1e3 (a units slip); any other stall gets the evidence and **no** invented remedy | `a_bushing_with_a_units_slip_...` (fast), `a_real_stalled_contact_solve_...` (`--release --ignored`: minutes in a debug build) |
+| `ThinFeature` | a slot 1e-5 wide with the default adaptive passes: the refinement ran for minutes against the mesher's 2 million vertex cap | `MAX_VERTICES = 250_000` ends it in seconds with `mesh exceeds ...`; remedies widen the hole to half an element or remove it | `a_hair_thin_slot_fails_fast_...` (both fixes solve) |
+| `ScaleSuspect` | a modulus 1000 times too small: nothing fails, the plate stretches past its own size | `diagnose_result` (needs a solved result): displacement above 5 % of the part's size asks whether the modulus is in another unit; the two answers scale it by 1000 either way | `a_modulus_a_thousand_times_too_small_...`, `guidance_tests.rs` |
+
+Also: the contact (bushing) solve now runs the kernel's model check before the contact iteration, minus the findings a bushed model
+fails on purpose (`rigid_body`: the bushing is held by contact alone; `no_load`: a fit alone is a real case). A NaN load is refused
+at once with its reason.
