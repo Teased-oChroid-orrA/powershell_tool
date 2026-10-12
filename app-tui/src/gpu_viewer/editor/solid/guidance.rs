@@ -28,6 +28,23 @@ fn ui(a: SolidAction) -> UiAction {
     UiAction::Editor(EditorAction::Solid(a))
 }
 
+/// What the user is offered for a finding, as the guidance ranker sees it: the remedies' kinds, and a pseudo-kind for
+/// answering its question when it has one.
+fn offered_kinds(d: &Diagnosis) -> Vec<RemedyKind> {
+    let mut kinds: Vec<RemedyKind> = d.remedies.iter().map(|r| r.kind).collect();
+    if !d.questions.is_empty() {
+        kinds.push(RemedyKind::AnswerQuestion);
+    }
+    kinds
+}
+
+/// Does the order put answering the question ahead of the first fix? (No question, or no fix: nothing to compare.)
+pub(super) fn ask_first_in(order: &[RemedyKind]) -> bool {
+    let ask = order.iter().position(|k| *k == RemedyKind::AnswerQuestion);
+    let fix = order.iter().position(|k| *k != RemedyKind::AnswerQuestion);
+    matches!((ask, fix), (Some(a), Some(f)) if a < f)
+}
+
 impl SolidSession {
     /// Findings for the model now, remedies in the rules' (or the learned) order. Empty while a sketch is open or for an
     /// empty model: there is nothing to check yet.
@@ -43,8 +60,7 @@ impl SolidSession {
         }
         let mut list = diagnose(&self.problem, self.failure.as_deref());
         for d in &mut list {
-            let kinds: Vec<RemedyKind> = d.remedies.iter().map(|r| r.kind).collect();
-            let (order, _) = self.advisors.guidance.order(&d.class, &kinds);
+            let (order, _) = self.advisors.guidance.order(&d.class, &offered_kinds(d));
             d.remedies.sort_by_key(|r| order.iter().position(|k| *k == r.kind).unwrap_or(usize::MAX));
         }
         *self.findings_cache.borrow_mut() = Some(Findings { problem: self.problem.clone(), error: self.failure.clone(), learned, list: list.clone() });
@@ -82,19 +98,30 @@ impl SolidSession {
             for e in &d.evidence {
                 items.extend(wrap(e, 38).into_iter().map(|l| DockItem::text(format!("  {l}"), Tone::Dim)));
             }
+            // Which comes first, the fixes or the question, is the guidance ranker's call (rules: the fixes).
+            let ask_first = ask_first_in(&self.advisors.guidance.order(&d.class, &offered_kinds(d)).0);
+            let mut fixes = Vec::new();
             if !d.remedies.is_empty() {
-                items.push(DockItem::text(format!("Fixes (order: {})", self.ranking_label()), Tone::Dim));
+                fixes.push(DockItem::text(format!("Fixes (order: {})", self.ranking_label()), Tone::Dim));
                 for (ri, r) in d.remedies.iter().enumerate() {
-                    items.push(DockItem::row(format!("{}. {}", ri + 1, r.label), Tone::On, Some(ui(SolidAction::Remedy(fi, ri))), false));
-                    items.extend(wrap(&r.why, 36).into_iter().map(|l| DockItem::text(format!("     {l}"), Tone::Dim)));
+                    fixes.push(DockItem::row_with_preview(format!("{}. {}", ri + 1, r.label), Tone::On, ui(SolidAction::Remedy(fi, ri)), ui(SolidAction::PreviewFix(Some(FixRef::Remedy(fi, ri)))), ui(SolidAction::PreviewFix(None))));
+                    fixes.extend(wrap(&r.why, 36).into_iter().map(|l| DockItem::text(format!("     {l}"), Tone::Dim)));
                 }
-                items.push(DockItem::text("click to apply (Ctrl/Cmd+Z undoes)", Tone::Dim));
+                fixes.push(DockItem::text("click to apply (Ctrl/Cmd+Z undoes)", Tone::Dim));
             }
+            let mut asks = Vec::new();
             for (qi, q) in d.questions.iter().enumerate() {
-                items.extend(wrap(&q.text, 40).into_iter().map(|l| DockItem::text(l, Tone::Normal)));
+                asks.extend(wrap(&q.text, 40).into_iter().map(|l| DockItem::text(l, Tone::Normal)));
                 for (oi, (label, _)) in q.options.iter().enumerate() {
-                    items.push(DockItem::row(format!("  > {label}"), Tone::On, Some(ui(SolidAction::Answer(fi, qi, oi))), false));
+                    asks.push(DockItem::row_with_preview(format!("  > {label}"), Tone::On, ui(SolidAction::Answer(fi, qi, oi)), ui(SolidAction::PreviewFix(Some(FixRef::Answer(fi, qi, oi)))), ui(SolidAction::PreviewFix(None))));
                 }
+            }
+            if ask_first {
+                items.extend(asks);
+                items.extend(fixes);
+            } else {
+                items.extend(fixes);
+                items.extend(asks);
             }
         }
         Some(Card::new("guidance", if failed { "Solve failed" } else { "Check" }, if failed { Relevance::Primary } else { Relevance::Context }, items))
@@ -108,11 +135,23 @@ impl SolidSession {
         Some((r.label.clone(), ui(SolidAction::Remedy(0, 0))))
     }
 
+    /// Surfaces the fix under the pointer would touch (empty when none is previewed or it no longer exists).
+    pub(super) fn fix_preview_surfaces(&self) -> Vec<String> {
+        let Some(fix) = self.fix_preview else { return Vec::new() };
+        let findings = self.findings();
+        let edit = match fix {
+            FixRef::Remedy(f, r) => findings.get(f).and_then(|d| d.remedies.get(r)).map(|r| &r.edit),
+            FixRef::Answer(f, q, o) => findings.get(f).and_then(|d| d.questions.get(q)).and_then(|q| q.options.get(o)).map(|(_, e)| e),
+        };
+        edit.map(|e| e.surfaces(&self.problem)).unwrap_or_default()
+    }
+
     fn apply_edit(&mut self, edit: &Edit, label: &str) -> bool {
         let mut next = self.problem.clone();
         match edit.apply(&mut next) {
             Ok(()) => {
                 self.edit(|p| *p = next);
+                self.fix_preview = None;
                 self.status = format!("{label} (undoable). Solve again.");
                 true
             }
@@ -123,26 +162,32 @@ impl SolidSession {
         }
     }
 
+    /// Record which of the offered things (the fixes, answering the question) the user took, when recording is on.
+    fn record_guidance_choice(&mut self, d: &Diagnosis, taken: RemedyKind) {
+        if let Ok(Some(fit)) = self.advisors.guidance.record(d.class, offered_kinds(d), Some(taken)) {
+            self.advisors.last_fit = Some(fit);
+        }
+    }
+
     pub(super) fn do_remedy(&mut self, finding: usize, remedy: usize) {
         let findings = self.findings();
-        let Some((d, r)) = findings.get(finding).and_then(|d| d.remedies.get(remedy).map(|r| (d, r))) else {
+        let Some((d, r)) = findings.get(finding).and_then(|d| d.remedies.get(remedy).map(|r| (d.clone(), r.clone()))) else {
             self.status = "That fix no longer applies.".into();
             return;
         };
-        let (class, offered, taken, label, edit) = (d.class, d.remedies.iter().map(|r| r.kind).collect::<Vec<_>>(), r.kind, r.label.clone(), r.edit.clone());
-        if self.apply_edit(&edit, &label) {
-            if let Ok(Some(fit)) = self.advisors.guidance.record(class, offered, Some(taken)) {
-                self.advisors.last_fit = Some(fit);
-            }
+        if self.apply_edit(&r.edit, &r.label) {
+            self.record_guidance_choice(&d, r.kind);
         }
     }
 
     pub(super) fn do_answer(&mut self, finding: usize, question: usize, option: usize) {
         let findings = self.findings();
-        let Some((label, edit)) = findings.get(finding).and_then(|d| d.questions.get(question)).and_then(|q| q.options.get(option)).cloned() else {
+        let Some((d, label, edit)) = findings.get(finding).and_then(|d| d.questions.get(question).and_then(|q| q.options.get(option)).map(|(l, e)| (d.clone(), l.clone(), e.clone()))) else {
             self.status = "That question no longer applies.".into();
             return;
         };
-        self.apply_edit(&edit, &format!("Answered '{label}'"));
+        if self.apply_edit(&edit, &format!("Answered '{label}'")) {
+            self.record_guidance_choice(&d, RemedyKind::AnswerQuestion);
+        }
     }
 }

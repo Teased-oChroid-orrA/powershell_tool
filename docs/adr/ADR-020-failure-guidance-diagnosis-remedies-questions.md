@@ -82,3 +82,19 @@ Hover on [Apply] highlights the surface in the viewport (preview).
   only, no names or values).
 - Because evidence is recomputed from state, a diagnosis never disagrees with the model the user is looking at.
 - Risk: the one pinned substring for under-constraint; the test that pins the message is the guard.
+
+## Addendum 2026-10-12: hover preview and the usefulness of questions
+
+Two items listed above as not built are built:
+
+- **Hover preview.** `Edit::surfaces(&Problem)` names the surfaces an edit acts on (the added boundary's surface, the surface a
+  retarget leaves and reaches, the one a drop frees, `holeN` of a removed hole; none for a mesh size). A dock row can carry an
+  `(on, off)` pair of actions (`DockItem::row_with_preview`); the egui layer sends `on` when the pointer arrives and `off` when it
+  leaves, and `SolidAction::PreviewFix` lights those surfaces in the preview mesh exactly like a selection. Presentation only:
+  nothing is applied, a stale reference lights nothing, applying a fix clears it.
+- **Which questions are useful.** A finding that has a question offers the ranker a pseudo-kind `RemedyKind::AnswerQuestion`
+  next to its fixes. Taking a fix and answering the question are both recorded as the choice among the same offered set (only
+  when recording is on, content-free like every other ranker). The learned order, behind the same measured gate, decides whether
+  the card shows the question before the fixes; the rules show the fixes first. Nothing is ever hidden: asking and fixing stay
+  offered whichever leads. No simulated prior exists for this choice (it would be my statement of what users do): until a user's
+  own sessions pass the gate the order is the rules'.

@@ -59,6 +59,9 @@ pub struct Gui {
     viewport: Option<Rect>,
     /// Interactive controls of the last frame by label, in points (tests click them).
     targets: Vec<(String, Rect)>,
+    /// The row under the pointer that previews its effect this frame, and the one that did last frame.
+    hover_now: Option<(crate::gpu_viewer::controller::UiAction, crate::gpu_viewer::controller::UiAction)>,
+    hover_prev: Option<(crate::gpu_viewer::controller::UiAction, crate::gpu_viewer::controller::UiAction)>,
     /// What the layout has learned from use (ADR-018); decides orders, collapsed cards and the tree's default.
     adapt: Adapt,
     /// Cards the person opened or folded this session (overrides what was learned).
@@ -102,6 +105,8 @@ impl Gui {
             hint: None,
             viewport: None,
             targets: Vec::new(),
+            hover_now: None,
+            hover_prev: None,
             adapt: Adapt::in_memory(),
             card_open: HashMap::new(),
             inspector_dismissed: None,
@@ -247,9 +252,20 @@ impl Gui {
         let ctx = self.ctx.clone();
         let mut out = Vec::new();
         self.targets.clear();
+        self.hover_now = None;
         let mut hint = None;
         let full = ctx.run_ui(raw, |ui| self.build(ui, input, &mut out, &mut hint));
         self.hint = hint;
+        // A previewing row: `on` when the pointer arrives (or moves to another such row), `off` when it leaves them all.
+        let now = self.hover_now.take();
+        if now != self.hover_prev {
+            match (&now, &self.hover_prev) {
+                (Some((on, _)), _) => out.push(Outcome::Action(*on)),
+                (None, Some((_, off))) => out.push(Outcome::Action(*off)),
+                (None, None) => {}
+            }
+            self.hover_prev = now;
+        }
         (full, out)
     }
 

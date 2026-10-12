@@ -112,9 +112,18 @@ pub enum SolidAction {
     /// Add this kind of support / load on the selected surfaces.
     BoundaryKind(fea_problem::advice::BcKind),
     Advisor(AdvisorOp),
+    /// The pointer is on (`Some`) / left (`None`) a guidance fix: highlight the surfaces it would touch.
+    PreviewFix(Option<FixRef>),
     RunStudy(StudyKind),
     ShowStudy,
     StudyStep(bool),
+}
+
+/// A guidance fix by position: remedy `.1` of finding `.0`, or option `.2` of question `.1` of finding `.0`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FixRef {
+    Remedy(usize, usize),
+    Answer(usize, usize, usize),
 }
 
 /// A model feature as the tree lists it.
@@ -251,6 +260,8 @@ pub struct SolidSession {
     /// The solver's message of the last failed solve, until the model changes (failure guidance reads it).
     failure: Option<String>,
     findings_cache: std::cell::RefCell<Option<guidance::Findings>>,
+    /// The guidance fix the pointer is on: its surfaces are highlighted in the preview mesh (presentation only).
+    fix_preview: Option<FixRef>,
 }
 
 fn is_edit_char(c: char) -> bool {
@@ -303,6 +314,7 @@ impl SolidSession {
             advisors: advising::Advisors::new(),
             failure: None,
             findings_cache: std::cell::RefCell::new(None),
+            fix_preview: None,
         }
     }
 
@@ -890,7 +902,7 @@ impl SolidSession {
             Feature::Hole(h) => Some(format!("hole{}", h + 1)),
             _ => None,
         });
-        for name in focused.iter().chain(self.all_selected().iter()) {
+        for name in focused.iter().chain(self.all_selected().iter()).chain(self.fix_preview_surfaces().iter()) {
             mark(name, 3.0);
         }
         codes
@@ -1029,6 +1041,12 @@ impl SolidSession {
             SolidAction::Answer(f, q, o) => self.do_answer(f, q, o),
             SolidAction::BoundaryKind(k) => self.add_boundary_kind(k),
             SolidAction::Advisor(op) => self.do_advisor_op(op),
+            SolidAction::PreviewFix(f) => {
+                if self.fix_preview != f {
+                    self.fix_preview = f;
+                    self.touch();
+                }
+            }
             SolidAction::RunStudy(kind) => self.run_study(kind),
             SolidAction::ShowStudy => self.toggle_study(),
             SolidAction::StudyStep(forward) => self.study_step(forward),

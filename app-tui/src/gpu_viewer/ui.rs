@@ -84,7 +84,8 @@ impl RibbonTab {
 #[derive(Clone, Debug, PartialEq)]
 pub enum DockItem {
     Heading(String),
-    Line { text: String, tone: Tone, action: Option<UiAction>, focused: bool },
+    /// `hover`: `(on, off)` actions sent when the pointer enters / leaves the row (a preview of what a click would do).
+    Line { text: String, tone: Tone, action: Option<UiAction>, focused: bool, hover: Option<(UiAction, UiAction)> },
     /// A label with its value; a click (when `action` is set) edits it.
     Field { label: String, value: String, tone: Tone, action: Option<UiAction>, focused: bool },
     Gap,
@@ -93,10 +94,14 @@ pub enum DockItem {
 }
 impl DockItem {
     pub fn text(text: impl Into<String>, tone: Tone) -> Self {
-        DockItem::Line { text: text.into(), tone, action: None, focused: false }
+        DockItem::Line { text: text.into(), tone, action: None, focused: false, hover: None }
     }
     pub fn row(text: impl Into<String>, tone: Tone, action: Option<UiAction>, focused: bool) -> Self {
-        DockItem::Line { text: text.into(), tone, action, focused }
+        DockItem::Line { text: text.into(), tone, action, focused, hover: None }
+    }
+    /// A clickable row that also previews its effect while the pointer is on it (`on`), and stops when it leaves (`off`).
+    pub fn row_with_preview(text: impl Into<String>, tone: Tone, action: UiAction, on: UiAction, off: UiAction) -> Self {
+        DockItem::Line { text: text.into(), tone, action: Some(action), focused: false, hover: Some((on, off)) }
     }
     /// The row as plain text (labels and values joined), for tests and logs.
     pub fn plain_text(&self) -> Option<String> {

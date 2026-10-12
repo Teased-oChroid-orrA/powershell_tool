@@ -195,3 +195,23 @@ fn a_mesh_coarser_than_the_part_is_flagged_before_it_silently_gives_a_meaningles
     d[0].remedies[0].edit.apply(&mut q).unwrap();
     assert!(diagnose(&q, None).is_empty());
 }
+
+#[test]
+fn an_edit_names_the_surfaces_it_would_touch_for_the_viewer_to_highlight() {
+    use fea_problem::diagnose::{AdviceEdit, Edit, Target};
+    let mut p = fea_problem::templates::templates().remove(0).1;
+    p.supports = vec![fea_problem::Support::fixed("left")];
+    p.loads = vec![fea_problem::Load::Pressure { edge: "right".into(), p: 1.0 }];
+    let add = Edit::Advice(AdviceEdit::Boundary { surface: "top".into(), kind: fea_problem::advice::BcKind::Fixed });
+    assert_eq!(add.surfaces(&p), ["top"]);
+    assert_eq!(Edit::Drop(Target::Support(0)).surfaces(&p), ["left"]);
+    assert_eq!(Edit::Drop(Target::Load(0)).surfaces(&p), ["right"]);
+    assert_eq!(Edit::Retarget { target: Target::Load(0), to: "bottom".into() }.surfaces(&p), ["right", "bottom"], "from and to");
+    assert_eq!(Edit::RemoveHole(1).surfaces(&p), ["hole1"]);
+    assert!(Edit::Advice(AdviceEdit::MeshSize { size: 0.1 }).surfaces(&p).is_empty(), "the whole model, no surface");
+    assert!(Edit::Drop(Target::Support(9)).surfaces(&p).is_empty(), "a stale index names nothing");
+    // Previewing changes nothing.
+    let before = p.clone();
+    let _ = add.surfaces(&p);
+    assert_eq!(p, before);
+}

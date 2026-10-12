@@ -61,6 +61,9 @@ pub enum RemedyKind {
     RemoveHole,
     AddFixedTemperature,
     AddConvection,
+    /// Not a fix: answering the finding's question instead of taking a fix. It is offered to the guidance ranker next to the
+    /// remedies so it can learn when asking is what users do, and the card then shows the question first.
+    AnswerQuestion,
 }
 
 /// A support or load by position in `Problem::supports` / `Problem::loads`.
@@ -93,6 +96,26 @@ pub enum AdviceEdit {
 }
 
 impl Edit {
+    /// The surfaces of `p` this edit acts on, for a viewer to highlight while the user considers it (presentation only: the
+    /// edit is not applied). A mesh-size edit touches the whole model and names none.
+    pub fn surfaces(&self, p: &Problem) -> Vec<String> {
+        let of_target = |t: &Target| -> Option<String> {
+            match t {
+                Target::Support(i) => p.supports.get(*i).and_then(|s| s.edge()).map(str::to_string),
+                Target::Load(i) => p.loads.get(*i).and_then(advice::edge_of_load),
+                Target::HeatSupport(i) => p.thermal.supports.get(*i).and_then(|s| s.edge()).map(str::to_string),
+                Target::HeatLoad(i) => p.thermal.loads.get(*i).and_then(|l| l.edge()).map(str::to_string),
+            }
+        };
+        match self {
+            Edit::Advice(AdviceEdit::Boundary { surface, .. }) => vec![surface.clone()],
+            Edit::Advice(AdviceEdit::MeshSize { .. }) => Vec::new(),
+            Edit::Retarget { target, to } => of_target(target).into_iter().chain([to.clone()]).collect(),
+            Edit::Drop(target) => of_target(target).into_iter().collect(),
+            Edit::RemoveHole(n) => vec![format!("hole{n}")],
+        }
+    }
+
     pub fn apply(&self, p: &mut Problem) -> Result<(), String> {
         match self {
             Edit::Advice(AdviceEdit::Boundary { surface, kind }) => Advice::Boundary { surface: surface.clone(), kind: *kind, reason: String::new() }.apply(p),

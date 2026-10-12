@@ -143,3 +143,49 @@ fn a_step_solid_opens_gets_a_hole_and_a_dangling_support_is_diagnosed() {
         assert!(kinds.contains(&fea_problem::diagnose::FailureClass::UnknownSurface), "{kinds:?}");
     }
 }
+
+#[test]
+fn answering_a_question_is_recorded_as_a_choice_against_the_fixes_and_the_rules_put_the_fixes_first() {
+    use fea_problem::diagnose::{FailureClass, RemedyKind};
+    let mut s = session("ask");
+    // Rules: fixes first, then the question.
+    let t = text(&card(&s).unwrap());
+    assert!(t.find("Fixes").unwrap() < t.find("Which surface is held").unwrap(), "{t}");
+    s.advisors.guidance.set_record(true).unwrap();
+    s.do_action(SolidAction::Answer(0, 0, 1));
+    s.do_action(SolidAction::Undo);
+    s.do_action(SolidAction::Remedy(0, 0));
+    let rec = s.advisors.guidance.store.as_ref().unwrap().read::<FailureClass, RemedyKind>().unwrap();
+    assert_eq!(rec.len(), 2);
+    for r in &rec {
+        assert_eq!(r.situation, FailureClass::NoSupports);
+        assert!(r.offered.contains(&RemedyKind::AnswerQuestion) && r.offered.contains(&RemedyKind::AddFixedSupport), "{:?}", r.offered);
+    }
+    assert_eq!(rec[0].taken, Some(RemedyKind::AnswerQuestion), "the answer");
+    assert_eq!(rec[1].taken, Some(RemedyKind::AddFixedSupport), "the fix");
+    // The decision is a function of the order: asking leads only when it ranks above the first fix.
+    assert!(super::guidance::ask_first_in(&[RemedyKind::AnswerQuestion, RemedyKind::AddFixedSupport]));
+    assert!(!super::guidance::ask_first_in(&[RemedyKind::AddFixedSupport, RemedyKind::AnswerQuestion]));
+    assert!(!super::guidance::ask_first_in(&[RemedyKind::AnswerQuestion]), "nothing to compare with");
+    assert!(!super::guidance::ask_first_in(&[RemedyKind::AddFixedSupport]));
+}
+
+#[test]
+fn pointing_at_a_fix_marks_the_surfaces_it_touches_without_applying_it() {
+    let mut s = session("hover");
+    let before = s.problem.clone();
+    assert!(s.fix_preview_surfaces().is_empty());
+    s.do_action(SolidAction::PreviewFix(Some(FixRef::Remedy(0, 0))));
+    assert_eq!(s.fix_preview_surfaces(), ["left"]);
+    s.do_action(SolidAction::PreviewFix(Some(FixRef::Answer(0, 0, 1))));
+    assert_eq!(s.fix_preview_surfaces().len(), 1);
+    // A stale reference marks nothing; leaving clears; nothing was applied.
+    s.do_action(SolidAction::PreviewFix(Some(FixRef::Remedy(7, 7))));
+    assert!(s.fix_preview_surfaces().is_empty());
+    s.do_action(SolidAction::PreviewFix(None));
+    assert_eq!(s.problem, before);
+    // Applying a fix clears the preview.
+    s.do_action(SolidAction::PreviewFix(Some(FixRef::Remedy(0, 0))));
+    s.do_action(SolidAction::Remedy(0, 0));
+    assert!(s.fix_preview.is_none());
+}

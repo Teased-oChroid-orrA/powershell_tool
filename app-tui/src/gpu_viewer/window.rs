@@ -1314,6 +1314,43 @@ mod tests {
     }
 
     #[test]
+    fn pointing_at_a_fix_highlights_the_surface_it_touches_and_leaving_clears_it() {
+        let mut problem = fea_problem::templates::templates().remove(0).1;
+        problem.mesh.size = 1.0;
+        problem.supports.clear();
+        let mut v = viewer(Some(Box::new(crate::gpu_viewer::editor::solid::SolidSession::new(problem, std::env::temp_dir().join("window-fixhover-test.json")))));
+        // The mesh first: the preview scene is where surfaces are lit.
+        let tab = target(&v, "Mesh tab");
+        click(&mut v, tab);
+        let generate = target(&v, "Generate mesh");
+        click(&mut v, generate);
+        let t = Instant::now();
+        while !v.scene().label.contains("geometry") {
+            v.editor.as_mut().unwrap().poll();
+            frame(&mut v);
+            assert!(t.elapsed().as_secs() < 120, "timed out");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        frame(&mut v);
+        // Vertices carrying the "selected" state code (4 is the viewer's colour for it; the session marks highlights 3 -> selected).
+        let lit = |v: &Viewer| v.scene().samples.iter().filter(|s| s[3] >= 3.0 - 1e-6).count();
+        let before = lit(&v);
+        let labels = v.gui.target_labels();
+        let fix = labels.iter().find(|l| l.contains("Fix 'left'")).unwrap_or_else(|| panic!("no fix row among {labels:?}")).clone();
+        let at = target(&v, &fix);
+        move_to(&mut v, at);
+        frame(&mut v);
+        let on = lit(&v);
+        assert!(on > before, "pointing at 'Fix left' lights the left edge: {before} -> {on}");
+        // Away from every row the preview goes, and nothing was applied.
+        let away = viewport_centre(&v);
+        move_to(&mut v, away);
+        frame(&mut v);
+        assert_eq!(lit(&v), before, "leaving the row clears the highlight");
+        assert!(property_text(&v).len() > 0);
+    }
+
+    #[test]
     fn what_the_layout_learned_survives_a_restart() {
         let dir = std::env::temp_dir().join(format!("window-layout-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

@@ -417,12 +417,15 @@ impl Gui {
             DockItem::Gap => {
                 ui.add_space(4.0);
             }
-            DockItem::Line { text, tone, action, focused } => {
+            DockItem::Line { text, tone, action, focused, hover } => {
                 let color = tone_color(p, *tone);
                 match action {
                     Some(a) => {
                         let r = ui.add(egui::Button::selectable(*focused, RichText::new(text).color(color)).wrap().frame_when_inactive(false).min_size(Vec2::new(ui.available_width(), 0.0)));
                         self.targets.push((text.clone(), r.rect));
+                        if r.hovered() && hover.is_some() {
+                            self.hover_now = *hover;
+                        }
                         if r.clicked() {
                             out.push(Outcome::Action(*a));
                         }
