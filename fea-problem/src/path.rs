@@ -77,6 +77,7 @@ impl Path3 {
         };
         for (i, sg) in segs.iter().enumerate() {
             let (kind, len, t0) = match *sg {
+                Seg::Spline { .. } => return Err(format!("path edge {} is a spline; a swept path is lines and arcs", i + 1)),
                 Seg::Line { a, b } => {
                     let d = dir3(a, b);
                     let len = norm(d);

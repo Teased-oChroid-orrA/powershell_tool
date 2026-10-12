@@ -51,8 +51,8 @@ fn shape_loop(s: &Shape, rect_names: bool, polygon_names: bool, name: &str) -> R
             Loop::polygon_named(pts, &names.iter().map(String::as_str).collect::<Vec<_>>())
         }
         Shape::Polygon { pts } => Loop::polygon(pts, name),
-        Shape::Outline { segs } if polygon_names => Loop::new(segs.iter().enumerate().map(|(i, sg)| seg(sg.curve(), &format!("edge{}", i + 1))).collect()),
-        Shape::Outline { segs } => Loop::new(segs.iter().map(|sg| seg(sg.curve(), name)).collect()),
+        Shape::Outline { segs } if polygon_names => Loop::new(segs.iter().enumerate().flat_map(|(i, sg)| sg.curves().into_iter().map(move |c| seg(c, &format!("edge{}", i + 1)))).collect()),
+        Shape::Outline { segs } => Loop::new(segs.iter().flat_map(|sg| sg.curves().into_iter().map(|c| seg(c, name))).collect()),
     }
 }
 

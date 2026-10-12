@@ -228,8 +228,9 @@ impl Sketch {
         // Edges: (entity id, class of start, class of end).
         let mut edges: Vec<(Id, usize, usize)> = Vec::new();
         for e in self.entities.iter().filter(|e| !self.is_construction(e.id)) {
-            match e.v {
+            match &e.v {
                 Entity::Circle { c, r } => {
+                    let (c, r) = (*c, *r);
                     let c = snap2(self.point(c).ok_or("circle without centre")?);
                     let r = snap(r);
                     if !(r.is_finite() && r > 1e-9) {
@@ -241,8 +242,9 @@ impl Sketch {
                     });
                     out.push(Loop { key: e.id, shape: Shape::Circle { cx: c[0], cy: c[1], r }, pts: pts.collect(), circle: Some((c, r)), members: vec![(e.id, 0)] });
                 }
-                Entity::Line { a, b } => edges.push((e.id, cls(a), cls(b))),
-                Entity::Arc { s, e: en, .. } => edges.push((e.id, cls(s), cls(en))),
+                Entity::Line { a, b } => edges.push((e.id, cls(*a), cls(*b))),
+                Entity::Arc { s, e: en, .. } => edges.push((e.id, cls(*s), cls(*en))),
+                Entity::Spline { pts } => edges.push((e.id, cls(pts[0]), cls(pts[pts.len() - 1]))),
                 Entity::Point { .. } => {}
             }
         }
@@ -305,7 +307,14 @@ impl Sketch {
                 // Stored counter-clockwise from `s` to `e`; walked backwards it runs clockwise from `e`.
                 Ok(if fwd { Seg::Arc { c, r, a0, a1 } } else { Seg::Arc { c, r, a0: a1, a1: a0 } })
             }
-            _ => Err("a profile edge is not a line or arc".into()),
+            Some(Entity::Spline { pts }) => {
+                let mut v = pts.iter().map(|p| self.point(*p).map(snap2).ok_or("spline point")).collect::<Result<Vec<_>, _>>()?;
+                if !fwd {
+                    v.reverse();
+                }
+                Ok(Seg::Spline { pts: v })
+            }
+            _ => Err("a profile edge is not a line, arc or spline".into()),
         }
     }
 
@@ -316,9 +325,10 @@ impl Sketch {
         let cls = |id: Id| class.iter().find(|c| c.0 == id).map(|c| c.1).expect("point");
         let mut edges: Vec<(Id, usize, usize)> = Vec::new();
         for e in self.entities.iter().filter(|e| !self.is_construction(e.id)) {
-            match e.v {
-                Entity::Line { a, b } => edges.push((e.id, cls(a), cls(b))),
-                Entity::Arc { s, e: en, .. } => edges.push((e.id, cls(s), cls(en))),
+            match &e.v {
+                Entity::Line { a, b } => edges.push((e.id, cls(*a), cls(*b))),
+                Entity::Arc { s, e: en, .. } => edges.push((e.id, cls(*s), cls(*en))),
+                Entity::Spline { .. } => return Err("a spline cannot be part of a sweep path; a path is lines and arcs in one open chain".into()),
                 Entity::Circle { .. } => return Err("a circle cannot be part of a path; a path is lines and arcs in one open chain".into()),
                 Entity::Point { .. } => {}
             }
@@ -367,7 +377,7 @@ impl Sketch {
             segs.push(self.edge_seg(id, fwd)?);
             members.push((id, 1));
         }
-        let has_arc = segs.iter().any(|sg| matches!(sg, Seg::Arc { .. }));
+        let has_arc = segs.iter().any(|sg| matches!(sg, Seg::Arc { .. } | Seg::Spline { .. }));
         // The polygon the edges approximate: for orientation, nesting and the area check.
         let pts: Vec<[f64; 2]> = segs.iter().flat_map(|sg| sg.sample(ARC_SEGMENTS)).map(snap2).collect();
         if pts.len() < 3 || area(&pts).abs() < 1e-12 {

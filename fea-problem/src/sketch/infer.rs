@@ -76,13 +76,14 @@ impl Sketch {
         };
         let Some(ent) = self.entity(id) else { return out };
         // Points that take part (the entity's own end points, or the point itself).
-        let mut my_points: Vec<Id> = match *ent {
+        let mut my_points: Vec<Id> = match ent {
             Entity::Point { .. } => vec![id],
-            Entity::Line { a, b } => vec![a, b],
-            Entity::Arc { s, e, .. } => vec![s, e],
+            Entity::Line { a, b } => vec![*a, *b],
+            Entity::Arc { s, e, .. } => vec![*s, *e],
+            Entity::Spline { pts } => vec![pts[0], pts[pts.len() - 1]],
             Entity::Circle { .. } => Vec::new(),
         };
-        if let Entity::Circle { c, .. } | Entity::Arc { c, .. } = *ent {
+        if let Entity::Circle { c, .. } | Entity::Arc { c, .. } = ent.clone() {
             my_points.push(c);
         }
         let merged = |a: Id, b: Id| -> bool {
@@ -95,7 +96,7 @@ impl Sketch {
                 if other.id == id || my_points.contains(&other.id) && !matches!(ent, Entity::Point { .. }) && other.id == p {
                     continue;
                 }
-                match other.v {
+                match other.v.clone() {
                     Entity::Point { x, y } if other.id != p && !merged(p, other.id) => {
                         push(self, Constraint::Coincident { a: p, b: other.id }, Rule::Coincident, closeness(dist(pp, [x, y]), tol.dist));
                     }
@@ -129,7 +130,7 @@ impl Sketch {
             }
         }
         // Whole-entity relations.
-        match *ent {
+        match ent.clone() {
             Entity::Line { .. } => {
                 let (p0, p1) = self.line_pts(id).expect("line");
                 let d = [p1[0] - p0[0], p1[1] - p0[1]];
@@ -142,7 +143,7 @@ impl Sketch {
                         if other.id == id {
                             continue;
                         }
-                        match other.v {
+                        match other.v.clone() {
                             Entity::Line { .. } => {
                                 let (q0, q1) = self.line_pts(other.id).expect("line");
                                 let e = [q1[0] - q0[0], q1[1] - q0[1]];
@@ -161,7 +162,7 @@ impl Sketch {
                                     push(self, Constraint::Tangent { a: id, b: other.id }, Rule::Tangent, closeness((off - r).abs(), tol.dist));
                                 }
                             }
-                            Entity::Point { .. } => {}
+                            Entity::Point { .. } | Entity::Spline { .. } => {}
                         }
                     }
                 }
@@ -172,7 +173,7 @@ impl Sketch {
                     if other.id == id {
                         continue;
                     }
-                    match other.v {
+                    match other.v.clone() {
                         Entity::Circle { .. } | Entity::Arc { .. } => {
                             let (c1, r1) = self.round(other.id).expect("round");
                             push(self, Constraint::Equal { a: id, b: other.id }, Rule::Equal, closeness((r0 - r1).abs() / r0.max(r1).max(1e-300), tol.ratio));
@@ -189,11 +190,11 @@ impl Sketch {
                                 push(self, Constraint::Tangent { a: other.id, b: id }, Rule::Tangent, closeness((off - r0).abs(), tol.dist));
                             }
                         }
-                        Entity::Point { .. } => {}
+                        Entity::Point { .. } | Entity::Spline { .. } => {}
                     }
                 }
             }
-            Entity::Point { .. } => {}
+            Entity::Point { .. } | Entity::Spline { .. } => {}
         }
         out.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.rule.cmp(&b.rule)));
         out

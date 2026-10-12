@@ -177,3 +177,28 @@ Test-harness note: bind symmetry planes by surface name (`face3`..), not by coor
   windows against the prebuilt with `-crt-static` (not the shipping configuration) and (b) has a manual job building OCCT from
   source (`occt-source` feature) under `crt-static`, the configuration the shipped exe needs. Until (b) is green the Windows
   exe with `occt` is not shippable without bundling the VC++ runtime DLLs app-locally.
+
+### Sketch features closed this session (2026-10-12)
+
+The "Known limits" of `issue-12-phase-24.md` that were open are now built; each has tests (`fea-problem/tests/{sketch,swept}.rs`,
+`fea-core/tests/sweep.rs`, `app-tui` `sketching_tests.rs`).
+
+| Item | What it is now |
+|---|---|
+| Native arcs | `Shape::Outline { segs: Vec<Seg> }` (`Seg::{Line, Arc, Spline}`): exact arcs, one `edgeN` per edge (was 48 polygon edges per turn). The mesher places nodes on the arc (`fea-core` `Curve::Arc`). |
+| Construction geometry | `Sketch::construction`: solved, dimensionable, never part of the profile or its closure / branch checks. |
+| Islands and separate outlines | `Profile::regions` / `Geometry::Sketch { regions }`: a loop inside a hole is the outline of another region; each extra region is meshed alone and appended as a separate body, surfaces `r2/...`, `r3/...`. Crossing outlines are refused. A bushing needs a one-region sketch. |
+| Sweep | `FeatureKind::Sweep { profile, path, layers }`: profile carried along an open, tangent-continuous chain of lines and arcs on a rotation-minimizing frame (closed form, `fea-problem/src/path.rs`); `fea_core::sweep::sweep_along`. Volume = Pappus to 2e-3, straight path = extrusion. The path must leave the profile along its +normal. |
+| Datum / face planes | `History::planar_faces()`: caps and straight sides of the extruded body as outward datum planes; `Sketch on face '...'` in the Features ribbon and Insert menu. |
+| Splines | `Entity::Spline { pts }` (centripetal Catmull-Rom through points) and `Seg::Spline`; Spline tool (`B`; Enter or a second click on the last point finishes). Meshed as a fine chain of pieces of one surface; not allowed in sweep paths. |
+
+Fixed on the way: an extrusion of depth exactly 2 pi was treated as a closed revolution (nodes merged); JSON floats lost the last
+bit on a save / load (`float_roundtrip`); the C# reference workflow and csproj looked for `native_search.dll` in a directory
+the workspace migration emptied.
+
+**Windows-only flake.** `random_linear_problems_solve_and_balance` failed twice on a hosted Windows runner (45k-dof Hex27 case,
+reactions 12 % short of the loads) and passed on three later runs; it never failed on macOS or Linux and was not reproduced locally
+(40 geometry perturbations, 25 repeats under 2 and 4 rayon threads). The solve path now verifies every result (residual and force balance
+against the total magnitude of the forces) and recomputes a failing one on a single-thread pool, refusing it when it still fails
+(`fea_problem::solve::solve_mesh`, `fea_core::sequentially`); a recomputation shows up in `Summary::notes`, so the next occurrence is
+visible instead of silent. Cause unknown.

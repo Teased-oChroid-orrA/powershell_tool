@@ -112,22 +112,62 @@ pub enum Shape {
 }
 
 /// One edge of a [`Shape::Outline`]; each starts where the previous one ends.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Seg {
     Line { a: [f64; 2], b: [f64; 2] },
     /// Arc about `c` from angle `a0` to `a1` (radians); `a1 < a0` runs clockwise. At most one full turn.
     Arc { c: [f64; 2], r: f64, a0: f64, a1: f64 },
+    /// Smooth curve through `pts` (at least two): a centripetal Catmull-Rom spline, C1 through every point, with no cusp
+    /// or loop inside a span. It is meshed as a fine chain of straight pieces of one surface (the mesher has no spline).
+    Spline { pts: Vec<[f64; 2]> },
+}
+
+/// Straight pieces per spline span when a spline is meshed or sampled.
+const SPLINE_PIECES: usize = 16;
+
+/// Point of the centripetal Catmull-Rom spline through `pts` at `u` in `[0, 1]` of span `span` (between `pts[span]` and
+/// `pts[span + 1]`); the missing neighbours at the ends are reflections, which keeps the end tangents natural.
+fn spline_at(pts: &[[f64; 2]], span: usize, u: f64) -> [f64; 2] {
+    let n = pts.len();
+    let at = |i: isize| -> [f64; 2] {
+        if i < 0 {
+            [2.0 * pts[0][0] - pts[1][0], 2.0 * pts[0][1] - pts[1][1]]
+        } else if i as usize >= n {
+            [2.0 * pts[n - 1][0] - pts[n - 2][0], 2.0 * pts[n - 1][1] - pts[n - 2][1]]
+        } else {
+            pts[i as usize]
+        }
+    };
+    let (p0, p1, p2, p3) = (at(span as isize - 1), pts[span], pts[span + 1], at(span as isize + 2));
+    // Centripetal knots t_{i+1} = t_i + |P_{i+1} - P_i|^0.5.
+    let knot = |a: [f64; 2], b: [f64; 2]| ((b[0] - a[0]).hypot(b[1] - a[1])).sqrt().max(1e-12);
+    let (t0, t1) = (0.0, knot(p0, p1));
+    let (t2, t3) = (t1 + knot(p1, p2), t1 + knot(p1, p2) + knot(p2, p3));
+    let t = t1 + u * (t2 - t1);
+    let lerp = |a: [f64; 2], b: [f64; 2], ta: f64, tb: f64| -> [f64; 2] {
+        let w = (t - ta) / (tb - ta);
+        [(1.0 - w) * a[0] + w * b[0], (1.0 - w) * a[1] + w * b[1]]
+    };
+    let (a1, a2, a3) = (lerp(p0, p1, t0, t1), lerp(p1, p2, t1, t2), lerp(p2, p3, t2, t3));
+    let (b1, b2) = (lerp(a1, a2, t0, t2), lerp(a2, a3, t1, t3));
+    lerp(b1, b2, t1, t2)
 }
 
 impl Seg {
-    /// Point at parameter `t` in `[0, 1]` along the edge.
+    /// Point at parameter `t` in `[0, 1]` along the edge (a spline: equal parameter per span).
     pub fn point(&self, t: f64) -> [f64; 2] {
-        match *self {
+        match self {
             Seg::Line { a, b } => [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])],
             Seg::Arc { c, r, a0, a1 } => {
                 let th = a0 + t * (a1 - a0);
                 [c[0] + r * th.cos(), c[1] + r * th.sin()]
+            }
+            Seg::Spline { pts } => {
+                let spans = pts.len() - 1;
+                let x = t.clamp(0.0, 1.0) * spans as f64;
+                let span = (x.floor() as usize).min(spans - 1);
+                spline_at(pts, span, x - span as f64)
             }
         }
     }
@@ -139,25 +179,51 @@ impl Seg {
     }
     /// Points along the edge, `start` inclusive and `end` exclusive; an arc gets about `per_turn` per full turn.
     pub fn sample(&self, per_turn: f64) -> Vec<[f64; 2]> {
-        match *self {
-            Seg::Line { a, .. } => vec![a],
+        match self {
+            Seg::Line { a, .. } => vec![*a],
             Seg::Arc { a0, a1, .. } => {
                 let n = (((a1 - a0).abs() / std::f64::consts::TAU * per_turn).ceil() as usize).max(2);
                 (0..n).map(|i| self.point(i as f64 / n as f64)).collect()
             }
+            Seg::Spline { pts } => {
+                let n = (pts.len() - 1) * SPLINE_PIECES;
+                (0..n).map(|i| self.point(i as f64 / n as f64)).collect()
+            }
         }
     }
+    /// The curve of the spline through `pts` as a polyline of `per_span` pieces per span, both ends included.
+    pub fn spline_polyline(pts: &[[f64; 2]], per_span: usize) -> Vec<[f64; 2]> {
+        if pts.len() < 2 {
+            return pts.to_vec();
+        }
+        let per_span = per_span.max(1);
+        let mut v: Vec<[f64; 2]> = Vec::with_capacity((pts.len() - 1) * per_span + 1);
+        for span in 0..pts.len() - 1 {
+            v.extend((0..per_span).map(|i| spline_at(pts, span, i as f64 / per_span as f64)));
+        }
+        v.push(pts[pts.len() - 1]);
+        v
+    }
+
     /// The same edge walked the other way.
     pub fn reversed(&self) -> Seg {
-        match *self {
-            Seg::Line { a, b } => Seg::Line { a: b, b: a },
-            Seg::Arc { c, r, a0, a1 } => Seg::Arc { c, r, a0: a1, a1: a0 },
+        match self {
+            Seg::Line { a, b } => Seg::Line { a: *b, b: *a },
+            Seg::Arc { c, r, a0, a1 } => Seg::Arc { c: *c, r: *r, a0: *a1, a1: *a0 },
+            Seg::Spline { pts } => Seg::Spline { pts: pts.iter().rev().copied().collect() },
         }
     }
-    pub(crate) fn curve(&self) -> fea_core::geometry::Curve {
-        match *self {
-            Seg::Line { a, b } => fea_core::geometry::Curve::line(a, b),
-            Seg::Arc { c, r, a0, a1 } => fea_core::geometry::Curve::arc(c, r, a0, a1),
+    /// The mesher's curves for this edge: one for a line or an arc, a chain of short lines for a spline.
+    pub(crate) fn curves(&self) -> Vec<fea_core::geometry::Curve> {
+        use fea_core::geometry::Curve;
+        match self {
+            Seg::Line { a, b } => vec![Curve::line(*a, *b)],
+            Seg::Arc { c, r, a0, a1 } => vec![Curve::arc(*c, *r, *a0, *a1)],
+            Seg::Spline { .. } => {
+                let mut v = self.sample(0.0);
+                v.push(self.end());
+                v.windows(2).map(|w| Curve::line(w[0], w[1])).collect()
+            }
         }
     }
 }
@@ -205,6 +271,9 @@ impl Shape {
                 for sg in segs {
                     grow(sg.start());
                     grow(sg.end());
+                    if let Seg::Spline { .. } = sg {
+                        sg.sample(0.0).into_iter().for_each(&mut grow);
+                    }
                     if let Seg::Arc { c, r, a0, a1 } = *sg {
                         let (from, to) = (a0.min(a1), a0.max(a1));
                         for k in 0..4 {
@@ -672,9 +741,10 @@ fn check_shape(s: &Shape) -> Result<(), String> {
             }
         }
         Shape::Outline { segs } => {
-            let ok = |sg: &Seg| match *sg {
-                Seg::Line { a, b } => finite(&a) && finite(&b),
-                Seg::Arc { c, r, a0, a1 } => finite(&c) && finite(&[r, a0, a1]) && r > 0.0 && (a1 - a0).abs() <= std::f64::consts::TAU + 1e-12,
+            let ok = |sg: &Seg| match sg {
+                Seg::Line { a, b } => finite(a) && finite(b),
+                Seg::Arc { c, r, a0, a1 } => finite(c) && finite(&[*r, *a0, *a1]) && *r > 0.0 && (a1 - a0).abs() <= std::f64::consts::TAU + 1e-12,
+                Seg::Spline { pts } => pts.len() >= 2 && pts.iter().all(|p| finite(p)),
             };
             if segs.len() < 2 || !segs.iter().all(ok) {
                 return Err("an outline needs at least two finite edges and arcs with a positive radius and at most a full turn".into());

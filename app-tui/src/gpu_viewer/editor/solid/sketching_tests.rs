@@ -498,3 +498,41 @@ fn a_sweep_takes_the_selected_sketch_as_profile_and_the_last_as_path() {
     assert!(s.history_nodes().iter().any(|n| n.label.starts_with("Sweep1")));
     assert!(s.sweep_sketches().is_err());
 }
+
+#[test]
+fn a_spline_is_drawn_through_clicked_points_and_closes_a_profile() {
+    use fea_problem::sketch::Entity;
+    let mut s = session("spline");
+    new_sketch(&mut s, PlaneChoice::Front);
+    act(&mut s, SketchAction::Tool(Tool::Spline));
+    click(&mut s, [0.0, 0.0]);
+    click(&mut s, [2.0, 1.5]);
+    assert!(s.sketching.as_ref().unwrap().edit.busy());
+    click(&mut s, [5.0, 1.0]);
+    s.handle_key(Key::Enter, Mods::default());
+    let sk = sketch_of(&s);
+    let spline = sk.entities.iter().find_map(|e| if let Entity::Spline { pts } = &e.v { Some(pts.clone()) } else { None }).expect("a spline was made");
+    assert_eq!(spline.len(), 3, "{:?}", sk.entities);
+    assert!(!s.sketching.as_ref().unwrap().edit.busy(), "{}", s.status);
+    // Close it with a line between its ends: the profile is the area under the curve.
+    act(&mut s, SketchAction::Tool(Tool::Line));
+    click(&mut s, [5.0, 1.0]);
+    click(&mut s, [0.0, 0.0]);
+    act(&mut s, SketchAction::Tool(Tool::Select));
+    act(&mut s, SketchAction::Finish);
+    assert!(!s.sketch_mode(), "{}", s.status);
+    let Geometry::Sketch { outer, .. } = &s.problem.geometry else { panic!() };
+    assert!(matches!(outer, Shape::Outline { segs } if segs.len() == 2 && matches!(segs[0], fea_problem::Seg::Spline { .. } | fea_problem::Seg::Line { .. })), "{outer:?}");
+    // Clicking the last point again also ends a spline.
+    new_sketch(&mut s, PlaneChoice::Front);
+    act(&mut s, SketchAction::Tool(Tool::Spline));
+    click(&mut s, [1.0, 1.0]);
+    click(&mut s, [3.0, 2.0]);
+    click(&mut s, [3.0, 2.0]);
+    assert!(sketch_of(&s).entities.iter().any(|e| matches!(&e.v, Entity::Spline { pts } if pts.len() == 2)), "{}", s.status);
+    // One point is not a spline.
+    act(&mut s, SketchAction::Tool(Tool::Spline));
+    click(&mut s, [8.0, 8.0]);
+    s.handle_key(Key::Enter, Mods::default());
+    assert!(s.status.contains("at least two"), "{}", s.status);
+}

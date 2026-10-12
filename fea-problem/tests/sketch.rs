@@ -744,3 +744,97 @@ mod regions {
         assert!((ub - 300.0 * 4.0 / e).abs() < 0.03 * 300.0 * 4.0 / e, "{ub} vs {}", 300.0 * 4.0 / e);
     }
 }
+
+mod splines {
+    use fea_problem::history::{FeatureKind, History, Plane};
+    use fea_problem::sketch::{Entity, Sketch};
+    use fea_problem::{build, templates, Seg, Shape};
+
+    /// A hump over the x axis: a spline through (0,0), (1,1.2), (3,1.5), (4,0), closed by the straight base.
+    fn hump() -> (Sketch, u32, u32) {
+        let mut s = Sketch::default();
+        let p: Vec<u32> = [[0.0, 0.0], [1.0, 1.2], [3.0, 1.5], [4.0, 0.0]].iter().map(|q| s.add_point(q[0], q[1])).collect();
+        let spline = s.add_spline(p.clone()).unwrap();
+        let base = s.add_line(p[3], p[0]);
+        (s, spline, base)
+    }
+
+    #[test]
+    fn a_spline_interpolates_its_points_and_closes_a_profile_with_one_named_edge() {
+        let (s, spline, base) = hump();
+        let pr = s.profile().unwrap();
+        let Shape::Outline { segs } = &pr.outer else { panic!("{:?}", pr.outer) };
+        assert_eq!(segs.len(), 2);
+        let Seg::Spline { pts } = &segs[0] else { panic!("{:?}", segs[0]) };
+        // Through every given point, exactly, at the span ends.
+        for (k, want) in [[0.0, 0.0], [1.0, 1.2], [3.0, 1.5], [4.0, 0.0]].iter().enumerate() {
+            let got = segs[0].point(k as f64 / 3.0);
+            assert!((got[0] - want[0]).hypot(got[1] - want[1]) < 1e-12, "point {k}: {got:?} vs {want:?}");
+        }
+        assert_eq!(pts.len(), 4);
+        let names = s.surface_names().unwrap();
+        assert_eq!(names.iter().find(|(i, _)| *i == spline).unwrap().1, "edge1");
+        assert_eq!(names.iter().find(|(i, _)| *i == base).unwrap().1, "edge2");
+        // Smooth: no kink at an interior through point (the one-sided tangents agree).
+        let h = 1e-6;
+        let tangent = |t: f64, dt: f64| {
+            let (a, b) = (segs[0].point(t), segs[0].point(t + dt));
+            let l = (b[0] - a[0]).hypot(b[1] - a[1]);
+            [(b[0] - a[0]) / l, (b[1] - a[1]) / l]
+        };
+        for k in [1.0, 2.0] {
+            let (before, after) = (tangent(k / 3.0 - h, h), tangent(k / 3.0, h));
+            assert!((before[0] * after[0] + before[1] * after[1]) > 1.0 - 1e-9, "kink at point {k}");
+        }
+        // Its bounding box includes the overshoot between the points, not just the through points.
+        let (lo, hi) = pr.outer.bounds();
+        assert!(hi[1] >= 1.5 && lo[1] <= 0.0 && (hi[0] - 4.0).abs() < 1e-9, "{lo:?} {hi:?}");
+    }
+
+    #[test]
+    fn a_spline_edge_meshes_on_the_curve_and_has_the_curves_area() {
+        let (s, _, _) = hump();
+        let mut p = templates::blank();
+        let mut h = History::default();
+        h.add("S", FeatureKind::Sketch { plane: Plane::Front { offset: 0.0 }, sketch: s.clone() });
+        p.history = Some(h);
+        p.apply_history().unwrap();
+        p.mesh.size = 0.2;
+        p.analysis = fea_problem::Analysis::PlaneStress;
+        p.thickness = 1.0;
+        let mesh = build::sketch_mesh(&p, None).unwrap();
+        let on = &mesh.surfaces["edge1"];
+        assert!(on.len() > 20, "the curved edge carries many boundary elements");
+        // Area of the mesh against the area under the spline (sampled finely).
+        let Shape::Outline { segs } = s.profile().unwrap().outer else { panic!() };
+        let fine: Vec<[f64; 2]> = (0..=4000).map(|i| segs[0].point(i as f64 / 4000.0)).collect();
+        let area = 0.5 * (0..fine.len() - 1).map(|i| fine[i][0] * fine[i + 1][1] - fine[i + 1][0] * fine[i][1]).sum::<f64>().abs();
+        let loads = fea_core::Loads { body: Some([1.0, 0.0, 0.0]), ..Default::default() };
+        // Plane stress, thickness 1: the total of a unit body force is the area.
+        let total: f64 = fea_core::loads::assemble(&mesh, &loads).unwrap().chunks(2).map(|c| c[0]).sum();
+        assert!((total - area).abs() < 2e-3 * area, "mesh area {total} vs the area under the spline {area}");
+        // Every node of the spline edge lies on the curve to within the piece sag (nodes are on the chain's vertices or chord midpoints).
+        let curve: Vec<[f64; 2]> = (0..=2000).map(|i| segs[0].point(i as f64 / 2000.0)).collect();
+        let worst = on.iter().flatten().map(|&n| curve.iter().map(|c| (c[0] - mesh.nodes[n][0]).hypot(c[1] - mesh.nodes[n][1])).fold(f64::INFINITY, f64::min)).fold(0.0f64, f64::max);
+        assert!(worst < 2e-3, "{worst}");
+    }
+
+    #[test]
+    fn splines_follow_their_points_and_are_not_sweep_paths() {
+        let (mut s, spline, _) = hump();
+        // JSON round trip keeps the entity.
+        let back: Sketch = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
+        assert!(matches!(back.entity(spline), Some(Entity::Spline { pts }) if pts.len() == 4));
+        // A path with a spline is refused with the reason.
+        let mut path = Sketch::default();
+        let (a, b, c) = (path.add_point(0.0, 0.0), path.add_point(0.0, 1.0), path.add_point(0.5, 2.0));
+        path.add_spline(vec![a, b, c]);
+        assert!(path.open_path().unwrap_err().contains("spline"));
+        // Fewer than two points, or a non-point, make no spline.
+        assert!(s.add_spline(vec![0]).is_none() && s.add_spline(vec![0, spline]).is_none());
+        // Deleting a through point deletes the spline (and the profile it closed).
+        s.remove_entity(1);
+        assert!(s.entity(spline).is_none());
+    }
+}

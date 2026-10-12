@@ -20,6 +20,9 @@ pub enum Entity {
     Circle { c: Id, r: f64 },
     /// Counter-clockwise arc about centre `c` from `s` to `e` (both `Point`s; `|cs| = |ce|` is implicit).
     Arc { c: Id, s: Id, e: Id },
+    /// Smooth curve through the `Point`s `pts` in order (at least two; a centripetal Catmull-Rom spline). Its end points
+    /// join other edges like any line's; the points in between are free to move, dimension and constrain.
+    Spline { pts: Vec<Id> },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -166,6 +169,15 @@ impl Sketch {
         self.entities.push(Item { id, v: Entity::Circle { c, r } });
         id
     }
+    /// A spline through existing points; `None` for fewer than two or a point that is missing.
+    pub fn add_spline(&mut self, pts: Vec<Id>) -> Option<Id> {
+        if pts.len() < 2 || pts.iter().any(|p| self.kind(*p) != Some(0)) {
+            return None;
+        }
+        let id = self.take_id();
+        self.entities.push(Item { id, v: Entity::Spline { pts } });
+        Some(id)
+    }
     pub fn add_arc(&mut self, c: Id, s: Id, e: Id) -> Id {
         let id = self.take_id();
         self.entities.push(Item { id, v: Entity::Arc { c, s, e } });
@@ -196,6 +208,7 @@ impl Sketch {
                     Entity::Line { a, b } => dead.contains(&a) || dead.contains(&b),
                     Entity::Circle { c, .. } => dead.contains(&c),
                     Entity::Arc { c, s, e } => dead.contains(&c) || dead.contains(&s) || dead.contains(&e),
+                    Entity::Spline { ref pts } => pts.iter().any(|p| dead.contains(p)),
                     Entity::Point { .. } => false,
                 };
                 if uses && !dead.contains(&e.id) {
@@ -216,6 +229,7 @@ impl Sketch {
             Entity::Line { .. } => 1,
             Entity::Circle { .. } => 2,
             Entity::Arc { .. } => 3,
+            Entity::Spline { .. } => 4,
         })
     }
     /// Does `c` name existing entities of the kinds it needs?
@@ -254,6 +268,12 @@ impl Sketch {
             }
             _ => None,
         }
+    }
+    /// The curve of spline `id` as a polyline (`per_span` pieces per span), for drawing and picking.
+    pub fn spline_polyline(&self, id: Id, per_span: usize) -> Option<Vec<[f64; 2]>> {
+        let Entity::Spline { pts } = self.entity(id)? else { return None };
+        let pts: Vec<[f64; 2]> = pts.iter().map(|p| self.point(*p)).collect::<Option<_>>()?;
+        Some(crate::Seg::spline_polyline(&pts, per_span))
     }
     /// Foot of the perpendicular from `q` on the line `id`, if it lies on the segment (with a small margin).
     pub fn line_foot(&self, id: Id, q: [f64; 2]) -> Option<[f64; 2]> {
@@ -307,6 +327,7 @@ impl Sketch {
                 Entity::Line { a, b } => vec![a, b],
                 Entity::Circle { c, .. } => vec![c],
                 Entity::Arc { c, s, e } => vec![c, s, e],
+                Entity::Spline { ref pts } => pts.clone(),
                 Entity::Point { .. } => vec![],
             })
             .chain(self.constraints.iter().flat_map(|c| c.v.refs()))
@@ -347,14 +368,21 @@ impl Sketch {
                     let ids: Vec<Id> = segs.iter().map(|sg| s.add_point(sg.start()[0], sg.start()[1])).collect();
                     for (i, sg) in segs.iter().enumerate() {
                         let (from, to) = (ids[i], ids[(i + 1) % ids.len()]);
-                        match *sg {
+                        match sg {
                             crate::Seg::Line { .. } => {
                                 s.add_line(from, to);
                             }
                             crate::Seg::Arc { c, a0, a1, .. } => {
                                 let centre = s.add_point(c[0], c[1]);
                                 // Arcs are stored counter-clockwise from start to end.
-                                if a1 >= a0 { s.add_arc(centre, from, to) } else { s.add_arc(centre, to, from) };
+                                if *a1 >= *a0 { s.add_arc(centre, from, to) } else { s.add_arc(centre, to, from) };
+                            }
+                            crate::Seg::Spline { pts } => {
+                                // The through points between the ends are new; the ends are the shared edge points.
+                                let mut ids = vec![from];
+                                ids.extend(pts[1..pts.len() - 1].iter().map(|p| s.add_point(p[0], p[1])));
+                                ids.push(to);
+                                s.add_spline(ids);
                             }
                         }
                     }

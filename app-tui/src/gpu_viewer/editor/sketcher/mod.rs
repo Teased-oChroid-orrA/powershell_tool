@@ -20,11 +20,12 @@ pub enum Tool {
     Rectangle,
     Circle,
     Arc,
+    Spline,
     Dimension,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 7] = [Tool::Select, Tool::Line, Tool::Polyline, Tool::Rectangle, Tool::Circle, Tool::Arc, Tool::Dimension];
+    pub const ALL: [Tool; 8] = [Tool::Select, Tool::Line, Tool::Polyline, Tool::Rectangle, Tool::Circle, Tool::Arc, Tool::Spline, Tool::Dimension];
     pub fn label(self) -> &'static str {
         match self {
             Tool::Select => "Select",
@@ -33,6 +34,7 @@ impl Tool {
             Tool::Rectangle => "Rectangle",
             Tool::Circle => "Circle",
             Tool::Arc => "Arc",
+            Tool::Spline => "Spline",
             Tool::Dimension => "Dimension",
         }
     }
@@ -45,6 +47,7 @@ impl Tool {
             Tool::Rectangle => "Rectangle: click the first corner.",
             Tool::Circle => "Circle: click the centre.",
             Tool::Arc => "Arc: click the centre, then the start point, then the end point (counter-clockwise).",
+            Tool::Spline => "Spline: click the points it passes through; click the last point again, or press Enter, to finish.",
             Tool::Dimension => "Dimension: select a line, a circle / arc, two points or two lines.",
         }
     }
@@ -268,6 +271,14 @@ impl SketchEdit {
                 let (a0, a1) = (angle(c, s), angle(c, h.at));
                 arc_segments(c, r, a0, a1)
             }
+            Tool::Spline => {
+                let mut pts: Vec<[f64; 2]> = self.placed.iter().map(|p| p.at).collect();
+                if pts.last().is_none_or(|l| dist(*l, h.at) > 1e-9) {
+                    pts.push(h.at);
+                }
+                let line = fea_problem::Seg::spline_polyline(&pts, 12);
+                line.windows(2).map(|w| (w[0], w[1])).collect()
+            }
             Tool::Select | Tool::Dimension => Vec::new(),
         }
     }
@@ -286,6 +297,7 @@ impl SketchEdit {
             Tool::Rectangle => self.click_rectangle(sk, snap),
             Tool::Circle => self.click_circle(sk, snap),
             Tool::Arc => self.click_arc(sk, snap),
+            Tool::Spline => self.click_spline(sk, snap),
         }
     }
 
@@ -428,6 +440,36 @@ impl SketchEdit {
                 Ok(vec![arc])
             }
         }
+    }
+
+    fn click_spline(&mut self, sk: &mut Sketch, snap: Snap) -> Result<Vec<Id>, String> {
+        // Clicking the last point again ends the spline (a double click).
+        if self.placed.last().is_some_and(|l| dist(l.at, snap.at) <= 0.5 * self.pick.max(1e-9)) {
+            return self.finish_spline(sk);
+        }
+        self.placed.push(Self::placed_of(&snap));
+        self.status = format!("{} points; click the next, or the last again / press Enter to finish.", self.placed.len());
+        Ok(Vec::new())
+    }
+
+    /// Make the spline through the points clicked so far (Enter, or a second click on the last point).
+    pub fn finish_spline(&mut self, sk: &mut Sketch) -> Result<Vec<Id>, String> {
+        if self.placed.len() < 2 {
+            self.status = "A spline needs at least two points.".into();
+            return Err(self.status.clone());
+        }
+        let backup = sk.clone();
+        let placed = std::mem::take(&mut self.placed);
+        let ids: Vec<Id> = placed.iter().map(|p| Self::realize(sk, p, None)).collect();
+        let Some(spline) = sk.add_spline(ids) else {
+            *sk = backup;
+            self.status = "That is not a spline.".into();
+            return Err(self.status.clone());
+        };
+        self.settle(sk, backup, spline)?;
+        self.status = "Spline added.".into();
+        self.suggest_for(sk, spline);
+        Ok(vec![spline])
     }
 
     /// Re-solve after an edit; restore `backup` and explain when the result is conflicting or fails.
@@ -596,6 +638,7 @@ impl SketchEdit {
                     Entity::Line { .. } => sk.line_foot(e.id, at).map(|f| dist(f, at)),
                     Entity::Circle { .. } => sk.round(e.id).map(|(c, r)| (dist(c, at) - r).abs()),
                     Entity::Arc { .. } => sk.round(e.id).filter(|(c, _)| arc_contains(sk, e.id, angle(*c, at))).map(|(c, r)| (dist(c, at) - r).abs()),
+                    Entity::Spline { .. } => sk.spline_polyline(e.id, 12).map(|l| l.windows(2).map(|w| segment_distance(w[0], w[1], at)).fold(f64::INFINITY, f64::min)),
                     Entity::Point { .. } => None,
                 };
                 d.filter(|d| *d <= pick).map(|d| (e.id, d))
@@ -646,6 +689,7 @@ impl SketchEdit {
                 Entity::Line { .. } => sk.line_pts(e.id).is_some_and(|(p, q)| inside(p) && inside(q)),
                 Entity::Circle { .. } => sk.round(e.id).is_some_and(|(c, r)| inside([c[0] - r, c[1] - r]) && inside([c[0] + r, c[1] + r])),
                 Entity::Arc { c, s, e: en } => [c, s, en].iter().all(|p| sk.point(*p).is_some_and(inside)),
+                Entity::Spline { ref pts } => pts.iter().all(|p| sk.point(*p).is_some_and(inside)),
             };
             if hit {
                 self.selection.insert(e.id);
@@ -663,6 +707,7 @@ impl SketchEdit {
                     Some(Entity::Point { x, y }) => format!("Point ({x:.4}, {y:.4})"),
                     Some(Entity::Line { .. }) => format!("Line, length {:.4}", sk.measure_line(id).unwrap_or(0.0)),
                     Some(Entity::Circle { .. }) | Some(Entity::Arc { .. }) => format!("Radius {:.4}", sk.round(id).map_or(0.0, |r| r.1)),
+                    Some(Entity::Spline { pts }) => format!("Spline through {} points (dimension its points)", pts.len()),
                     None => String::new(),
                 }
             }
@@ -695,7 +740,7 @@ impl SketchEdit {
             [a] => match kind(*a)? {
                 Entity::Line { .. } => Some(DimKind::Length(*a)),
                 Entity::Circle { .. } | Entity::Arc { .. } => Some(DimKind::Radius(*a)),
-                Entity::Point { .. } => None,
+                Entity::Point { .. } | Entity::Spline { .. } => None,
             },
             [a, b] => match (kind(*a)?, kind(*b)?) {
                 (Entity::Point { .. }, Entity::Point { .. }) => Some(DimKind::Distance(*a, *b)),
@@ -827,10 +872,23 @@ pub fn sketch_segments(sk: &Sketch) -> Vec<(Id, [f64; 2], [f64; 2])> {
                     out.extend(arc_segments(c, dist(c, s), angle(c, s), angle(c, en)).into_iter().map(|(a, b)| (e.id, a, b)));
                 }
             }
+            Entity::Spline { .. } => {
+                if let Some(l) = sk.spline_polyline(e.id, 16) {
+                    out.extend(l.windows(2).map(|w| (e.id, w[0], w[1])));
+                }
+            }
             Entity::Point { .. } => {}
         }
     }
     out
+}
+
+/// Distance from `q` to the segment `a`-`b`.
+fn segment_distance(a: [f64; 2], b: [f64; 2], q: [f64; 2]) -> f64 {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let l2 = d[0] * d[0] + d[1] * d[1];
+    let t = if l2 > 0.0 { (((q[0] - a[0]) * d[0] + (q[1] - a[1]) * d[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
+    dist(q, [a[0] + t * d[0], a[1] + t * d[1]])
 }
 
 #[cfg(test)]

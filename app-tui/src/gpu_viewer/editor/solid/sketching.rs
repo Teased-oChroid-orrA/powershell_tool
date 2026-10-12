@@ -275,6 +275,7 @@ impl SolidSession {
                     Some([(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0])
                 }
                 Entity::Circle { c, .. } | Entity::Arc { c, .. } => sk.point(*c),
+                Entity::Spline { pts } => sk.point(pts[pts.len() / 2]),
             }
         };
         let mut out: Vec<Overlay> = Vec::new();
@@ -380,6 +381,15 @@ impl SolidSession {
 
     /// Leave a sketch that is an open chain of lines and arcs without rebuilding the model from it: it is no profile,
     /// but it is what a sweep follows. The sweep, once added, is what rebuilds the model.
+    /// Enter during the Spline tool: make the spline through the points clicked so far.
+    fn finish_spline_gesture(&mut self) {
+        let r = self.with_sketch(|sk, ed| ed.finish_spline(sk));
+        if let (Some(Err(e)), Some(_)) = (r, &self.sketching) {
+            self.status = e;
+        }
+        self.touch();
+    }
+
     fn finish_path(&mut self) {
         let Some((_, sk)) = self.active_sketch() else { return };
         match sk.open_path() {
@@ -809,6 +819,8 @@ impl SolidSession {
             Key::Enter => {
                 if tool == Tool::Dimension {
                     self.begin_dimension(None);
+                } else if tool == Tool::Spline && busy {
+                    self.finish_spline_gesture();
                 } else if busy {
                     self.view_sketch(|_, ed| ed.cancel());
                 } else {
@@ -836,6 +848,7 @@ impl SolidSession {
                     'r' => Some(Tool::Rectangle),
                     'c' => Some(Tool::Circle),
                     'a' => Some(Tool::Arc),
+                    'b' => Some(Tool::Spline),
                     'd' => Some(Tool::Dimension),
                     _ => None,
                 };
@@ -1217,6 +1230,7 @@ impl SolidSession {
             Tool::Rectangle => "R",
             Tool::Circle => "C",
             Tool::Arc => "A",
+            Tool::Spline => "B",
             Tool::Dimension => "D",
         };
         entry(t.label(), key, SketchAction::Tool(t)).checked(self.sketching.as_ref().is_some_and(|s| s.edit.tool == t))
@@ -1255,7 +1269,7 @@ impl SolidSession {
         let on_edges = if self.all_selected().is_empty() { Err("select an edge or a hole of the sketch first".to_string()) } else { Ok(()) };
         vec![RibbonTab::new("Sketch")
             .group("Sketch", vec![entry("Finish sketch", "Enter", SketchAction::Finish), entry("Finish as sweep path", "", SketchAction::FinishPath), entry("Cancel sketch", "", SketchAction::Cancel), entry("Grid snap", "G", SketchAction::ToggleGrid).checked(self.sketching.as_ref().is_some_and(|s| s.grid_on))])
-            .group("Draw", [Tool::Line, Tool::Polyline, Tool::Rectangle, Tool::Circle, Tool::Arc].into_iter().map(|t| self.tool_entry(t)).collect())
+            .group("Draw", [Tool::Line, Tool::Polyline, Tool::Rectangle, Tool::Circle, Tool::Arc, Tool::Spline].into_iter().map(|t| self.tool_entry(t)).collect())
             .group("Select", vec![self.tool_entry(Tool::Select)])
             .group("Constrain", self.constrain_entries())
             .group("Dimension", vec![self.tool_entry(Tool::Dimension), entry("Fix point", "F", SketchAction::Fix).when(self.fix_availability())])
@@ -1299,7 +1313,7 @@ impl SolidSession {
     /// The Insert menu: sketch tools while sketching, else the model inserts plus the history commands.
     pub(super) fn insert_items(&self, base: Vec<Item>) -> Vec<Item> {
         if self.sketching.is_some() {
-            let mut v: Vec<Item> = [Tool::Line, Tool::Polyline, Tool::Rectangle, Tool::Circle, Tool::Arc, Tool::Dimension, Tool::Select].into_iter().map(|t| Item::Entry(self.tool_entry(t))).collect();
+            let mut v: Vec<Item> = [Tool::Line, Tool::Polyline, Tool::Rectangle, Tool::Circle, Tool::Arc, Tool::Spline, Tool::Dimension, Tool::Select].into_iter().map(|t| Item::Entry(self.tool_entry(t))).collect();
             v.push(Item::Separator);
             v.extend(self.constrain_entries().into_iter().map(Item::Entry));
             v.push(Item::Separator);
