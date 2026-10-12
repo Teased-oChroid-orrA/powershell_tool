@@ -40,6 +40,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: runner CPU
+        if: runner.os == 'Windows' (see windows-tests.yml)
+        shell: pwsh
+        run: |
+          (Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors | Format-List | Out-String)
+          "avx2=$([System.Runtime.Intrinsics.X86.Avx2]::IsSupported) avx512f=$([System.Runtime.Intrinsics.X86.Avx512F]::IsSupported)"
+
       - name: Setup Rust toolchain (stable)
         uses: dtolnay/rust-toolchain@stable
 

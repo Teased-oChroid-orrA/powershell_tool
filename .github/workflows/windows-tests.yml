@@ -17,6 +17,11 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: runner CPU (a numerical failure that appears only on some runners is correlated with this)
+        shell: pwsh
+        run: |
+          (Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors | Format-List | Out-String)
+          "avx2=$([System.Runtime.Intrinsics.X86.Avx2]::IsSupported) avx512f=$([System.Runtime.Intrinsics.X86.Avx512F]::IsSupported)"
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/cache@v4
         with:
