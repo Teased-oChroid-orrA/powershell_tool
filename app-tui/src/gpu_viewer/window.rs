@@ -1351,6 +1351,124 @@ mod tests {
     }
 
     #[test]
+    fn a_real_mouse_click_on_a_3d_face_picks_it_and_its_menu_adds_a_support_there() {
+        let problem = fea_problem::templates::templates().into_iter().find(|(n, _)| n.contains("3D")).unwrap().1;
+        let mut problem = problem;
+        problem.mesh.size = 1.0;
+        problem.supports.clear();
+        let mut v = viewer(Some(Box::new(crate::gpu_viewer::editor::solid::SolidSession::new(problem, std::env::temp_dir().join("window-facepick-test.json")))));
+        let tab = target(&v, "Mesh tab");
+        click(&mut v, tab);
+        let generate = target(&v, "Generate mesh");
+        click(&mut v, generate);
+        let t = Instant::now();
+        while !v.scene().label.contains("geometry") {
+            v.editor.as_mut().unwrap().poll();
+            frame(&mut v);
+            assert!(t.elapsed().as_secs() < 120, "timed out");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        frame(&mut v);
+        let supports = |v: &Viewer| tree_labels(v).into_iter().find(|l| l.starts_with("Supports (")).unwrap();
+        assert_eq!(supports(&v), "Supports (0)");
+        // Sweep the viewport with real clicks until one lands on the part and opens the surface menu.
+        let r = v.viewport();
+        let mut picked = None;
+        'scan: for iy in 1..10 {
+            for ix in 1..16 {
+                let at = ((r.x + r.w * ix / 16) as f64, (r.y + r.h * iy / 10) as f64);
+                click(&mut v, at);
+                if let Some(item) = labels(&v).into_iter().find(|l| l.starts_with("Fixed support on '")) {
+                    picked = Some((at, item));
+                    break 'scan;
+                }
+            }
+        }
+        let (at, item) = picked.expect("some click in the viewport must land on the part and open the surface menu");
+        let face = item.trim_start_matches("Fixed support on '").trim_end_matches('\'').to_string();
+        assert!(["left", "right", "top", "bottom", "start", "end", "hole1"].contains(&face.as_str()), "a named face of the extruded plate: {face}");
+        // The tree shows the picked surface as selected, and choosing the menu entry adds the support on it.
+        let selected: Vec<String> = v.editor.as_ref().unwrap().tree().into_iter().filter(|n| n.selected && n.label == face).map(|n| n.label).collect();
+        assert_eq!(selected, [face.clone()], "pointer at {at:?}");
+        let entry = target(&v, &item);
+        click(&mut v, entry);
+        assert_eq!(supports(&v), "Supports (1)", "{}", v.editor.as_ref().unwrap().status());
+        assert!(v.editor.as_ref().unwrap().status().contains(&face), "{}", v.editor.as_ref().unwrap().status());
+    }
+
+    /// The whole STEP workflow with a real mouse: open a cube, mesh it, click a face, cut a hole in it from the Insert menu's
+    /// action, and see the support set on another face follow its face through the edit.
+    #[cfg(feature = "occt")]
+    #[test]
+    fn a_hole_is_cut_in_a_face_picked_with_the_mouse_and_a_support_on_another_face_survives_it() {
+        use crate::gpu_viewer::editor::solid::{stepops::PromptOp, SolidAction, SolidSession};
+        let dir = std::env::temp_dir().join(format!("window-step-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let step = solid_kernel::occt::Brep::box_from_corners([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]).to_step_text().unwrap();
+        let path = dir.join("cube.step");
+        std::fs::write(&path, step).unwrap();
+        let mut ed = SolidSession::new(fea_problem::templates::templates().remove(0).1, dir.join("model.json"));
+        ed.open_path(path.to_str().unwrap());
+        let mut v = viewer(Some(Box::new(ed)));
+        let tab = target(&v, "Mesh tab");
+        click(&mut v, tab);
+        let generate = target(&v, "Generate mesh");
+        click(&mut v, generate);
+        let t = Instant::now();
+        while !v.scene().label.contains("geometry") {
+            v.editor.as_mut().unwrap().poll();
+            frame(&mut v);
+            assert!(t.elapsed().as_secs() < 180, "timed out: {}", v.editor.as_ref().unwrap().status());
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        frame(&mut v);
+        // A real click on the part: the first one that opens the surface menu names a face; give that face a support.
+        let r = v.viewport();
+        let mut first = None;
+        'scan: for iy in 1..10 {
+            for ix in 1..16 {
+                let at = ((r.x + r.w * ix / 16) as f64, (r.y + r.h * iy / 10) as f64);
+                click(&mut v, at);
+                if let Some(item) = labels(&v).into_iter().find(|l| l.starts_with("Fixed support on '")) {
+                    first = Some(item);
+                    break 'scan;
+                }
+            }
+        }
+        let item = first.expect("a click lands on the cube");
+        let held = item.trim_start_matches("Fixed support on '").trim_end_matches('\'').to_string();
+        let entry = target(&v, &item);
+        click(&mut v, entry);
+        // Pick a different face with the mouse for the hole.
+        let mut hole_face = None;
+        'scan2: for iy in 1..10 {
+            for ix in 1..16 {
+                let at = ((r.x + r.w * ix / 16) as f64, (r.y + r.h * iy / 10) as f64);
+                click(&mut v, at);
+                if let Some(item) = labels(&v).into_iter().find(|l| l.starts_with("Fixed support on '")) {
+                    let name = item.trim_start_matches("Fixed support on '").trim_end_matches('\'').to_string();
+                    if name != held {
+                        hole_face = Some(name);
+                        break 'scan2;
+                    }
+                }
+            }
+        }
+        let hole_face = hole_face.expect("a second face is pickable");
+        // Close the surface menu (it stays selected), then run the hole action on the selection.
+        key(&mut v, NamedKey::Escape);
+        v.dispatch(UiAction::Editor(session::EditorAction::Solid(SolidAction::SolidOp(PromptOp::Hole))));
+        frame(&mut v);
+        v.input(Input::Key(Key::Character("2".into())));
+        key(&mut v, NamedKey::Enter);
+        let status = v.editor.as_ref().unwrap().status();
+        assert!(status.contains("Cut a hole") && status.contains("7 faces") && status.contains("follow their faces"), "{status} (held {held}, hole in {hole_face})");
+        // The support is still on a face of the part: nothing was lost.
+        assert!(!status.contains("lost their face"), "{status}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn what_the_layout_learned_survives_a_restart() {
         let dir = std::env::temp_dir().join(format!("window-layout-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

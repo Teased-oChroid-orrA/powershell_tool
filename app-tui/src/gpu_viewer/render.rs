@@ -1040,6 +1040,45 @@ mod snapshot_tests {
         });
     }
 
+    /// The viewport while the pointer is on a guidance fix: the surface it would touch is lit, nothing is applied.
+    #[test]
+    #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_EDITOR_OUT"]
+    fn fix_preview_snapshot() {
+        use crate::gpu_viewer::editor::solid::{FixRef, SolidAction, SolidSession};
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_EDITOR_OUT") else { return };
+        let _guard = headless_guard();
+        let mut problem = fea_problem::templates::templates().remove(0).1;
+        problem.mesh.size = 0.4;
+        problem.supports.clear();
+        let mut session = SolidSession::new(problem, "demo-fixpreview.json".into());
+        session.do_action(SolidAction::GenerateMesh);
+        let t = std::time::Instant::now();
+        while session.preview_summary().is_err() {
+            session.poll();
+            assert!(t.elapsed().as_secs() < 60, "mesh did not finish");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        pollster::block_on(async {
+            let adapter = test_adapter().await.expect("adapter required");
+            let (w, h) = (1600u32, 900u32);
+            let first = session.scene().unwrap();
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &first, w, h).await.unwrap();
+            let texture = target(&r, w, h);
+            let mut gui = Gui::new();
+            gui.ctx().set_theme(egui::Theme::Dark);
+            for (name, fix) in [("fix-preview-off", None), ("fix-preview-on", Some(FixRef::Remedy(0, 0)))] {
+                session.do_action(SolidAction::PreviewFix(fix));
+                let scene = session.scene().unwrap();
+                r.set_scene(&scene).unwrap();
+                let view = ViewState::new(&scene);
+                let scenes = [scene];
+                let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+                draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+                std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
+            }
+        });
+    }
+
     /// Sketch mode: a constrained plate outline with a hole, a half-drawn line and a selected edge.
     #[test]
     #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_EDITOR_OUT"]

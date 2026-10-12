@@ -83,9 +83,13 @@ impl SolidSession {
         match next.apply_solid_op(&solid_op) {
             Ok(()) => {
                 let faces = next.edge_names().len();
+                // Supports and loads follow their faces (`fea_problem::solid::remap_faces`); one whose face the edit removed is
+                // renamed `removed:faceN` and shows up as a finding.
+                let lost = next.supports.iter().filter_map(|s| s.edge()).map(str::to_string).chain(next.loads.iter().filter_map(|l| l.edge().map(str::to_string))).filter(|e| e.starts_with("removed:")).count();
                 self.edit(|p| *p = next);
                 self.clear_selection();
-                self.status = format!("{} (undoable). The solid now has {faces} faces: check supports and loads, they name faces by number.", match solid_op {
+                let kept = if lost == 0 { "supports and loads follow their faces".to_string() } else { format!("{lost} support(s) or load(s) lost their face: see the Check card") };
+                self.status = format!("{} (undoable). The solid now has {faces} faces; {kept}.", match solid_op {
                     SolidOp::Fillet { radius } => format!("Filleted every edge with radius {radius}"),
                     SolidOp::Hole { diameter, .. } => format!("Cut a hole of diameter {diameter}"),
                     SolidOp::Boss { diameter, height, .. } => format!("Added a boss of diameter {diameter}, height {height}"),

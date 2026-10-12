@@ -28,7 +28,7 @@ mod bench_support;
 mod sketch;
 mod advising;
 mod guidance;
-mod stepops;
+pub mod stepops;
 mod inspect;
 mod corpus;
 mod models;

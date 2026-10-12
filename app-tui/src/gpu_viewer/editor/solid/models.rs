@@ -94,7 +94,7 @@ impl SolidSession {
     }
 
     /// Open a saved problem (`.json`) or an imported mesh (anything else) at `path`.
-    pub(super) fn open_path(&mut self, path: &str) {
+    pub fn open_path(&mut self, path: &str) {
         let path = path.trim();
         if path.is_empty() {
             return;

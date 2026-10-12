@@ -86,3 +86,16 @@ Evidence and caveats (macOS arm64 only; Windows not run):
   need the history map (open item).
 - The wrapper's default features include a PNG renderer; it is turned off here.
 - The release-blocking licence check stays open: confirm the LGPL 2.1 + exception notice ships with the exe.
+
+## Addendum 2026-10-12: Windows linking and the license notice
+
+- **Linking.** The prebuilt MSVC OpenCASCADE that `cadrum` downloads is `/MD` (dynamic CRT); the workspace forces
+  `-C target-feature=+crt-static` so the shipped exe needs no Visual C++ runtime. On Windows the two cannot link
+  (`unresolved external symbol __imp_*`, hosted run 38236448142). Hosted CI therefore checks the code against the prebuilt with
+  `-crt-static` (`windows-prebuilt-dynamic-crt`, not a shipping configuration) and has a manual job that builds OCCT from source
+  under the static CRT (`occt-windows-static-crt`, cargo feature `occt-source`). An `occt` Windows exe is shippable only once
+  that job is green.
+- **License.** An `occt` build carries OCCT under LGPL 2.1 with the Open CASCADE exception. `THIRD-PARTY-NOTICES.md` and the two
+  license texts in `licenses/` ship with the executable (`app-tui-build.yml` stages `dist/` and refuses to publish without them;
+  its `occt` input builds with `occt-source`). The default release build has no OCCT in it. The legal sufficiency of static
+  linking for the way it is distributed is **not** decided here: it needs sign-off from the distributor.

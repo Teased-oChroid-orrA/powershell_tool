@@ -18,6 +18,9 @@ path = "src/main.rs"
 default = ["gpu-viewer"]
 # Open, edit (hole / boss / fillet) and re-tessellate STEP solids: links a prebuilt OpenCASCADE through `cadrum`.
 occt = ["fea-problem/occt", "dep:solid-kernel", "solid-kernel/occt"]
+# The same, building OpenCASCADE from source so it follows the workspace's static CRT (the prebuilt MSVC library is /MD and cannot link
+# under `crt-static`; ADR-019 addendum). About 30 minutes the first time; the Windows release workflow uses it.
+occt-source = ["occt", "solid-kernel/occt-source"]
 gpu-viewer = ["dep:wgpu", "dep:winit", "dep:bytemuck", "dep:pollster", "dep:egui", "dep:egui-wgpu", "dep:egui-winit"]
 
 [dependencies]

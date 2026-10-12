@@ -1,7 +1,12 @@
 name: Build app-tui Windows executable
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      occt:
+        description: "Build with STEP / OpenCASCADE support (LGPL: ships the notices; needs the static-CRT OCCT build to link, see ADR-019)"
+        type: boolean
+        default: false
   # Release builds only; `ci.yml` is the per-push test gate.
   push:
     tags:
@@ -31,7 +36,13 @@ jobs:
             cargo-app-tui-${{ runner.os }}-
 
       - name: Build app-tui (release, win-x64)
-        run: cargo build --release -p app-tui --target x86_64-pc-windows-msvc
+        shell: pwsh
+        run: |
+          if ("${{ inputs.occt }}" -eq "true") {
+            cargo build --release -p app-tui --features occt-source --target x86_64-pc-windows-msvc
+          } else {
+            cargo build --release -p app-tui --target x86_64-pc-windows-msvc
+          }
 
       - name: Verify and list app-tui.exe
         shell: pwsh
@@ -43,9 +54,22 @@ jobs:
           }
           Get-Item $exePath | Format-List Name, Length, LastWriteTime
 
-      - name: Upload app-tui.exe
+      - name: Stage the release folder (the executable and its notices)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/licenses | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/app-tui.exe dist/
+          Copy-Item THIRD-PARTY-NOTICES.md dist/
+          Copy-Item licenses/* dist/licenses/
+          # An OpenCASCADE build must not be published without the LGPL texts (THIRD-PARTY-NOTICES.md).
+          foreach ($f in "THIRD-PARTY-NOTICES.md", "licenses/OpenCASCADE-LICENSE_LGPL_21.txt", "licenses/OpenCASCADE-OCCT_LGPL_EXCEPTION.txt") {
+            if (-not (Test-Path "dist/$f")) { Write-Error "dist/$f is missing"; exit 1 }
+          }
+          Get-ChildItem -Recurse dist | Format-Table FullName, Length
+
+      - name: Upload app-tui release folder
         uses: actions/upload-artifact@v4
         with:
           name: app-tui-win-x64
-          path: target/x86_64-pc-windows-msvc/release/app-tui.exe
+          path: dist
           if-no-files-found: error
