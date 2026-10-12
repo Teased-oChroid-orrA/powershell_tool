@@ -267,13 +267,19 @@ pub fn readout_lines<'a>(theme: &Theme, state: &FeaWorkbenchState) -> Vec<Line<'
     if state.details {
         lines.extend(fea_problem::report::report(s).lines().map(|l| Line::from(l.to_string())));
     } else {
-        lines.push(Line::from(format!("Peak von Mises   {:.1} at {}", sm.max_von_mises.value, at(&sm.max_von_mises))));
-        lines.push(Line::from(format!("Max principal    {:.1}    min principal {:.1}", sm.max_principal.value, sm.min_principal.value)));
-        lines.push(Line::from(format!("Max displacement {:.5e} at {}", sm.max_displacement.value, at(&sm.max_displacement))));
-        if let Some(m) = sm.margin {
-            lines.push(tone(if m >= 0.0 { StatusTone::Success } else { StatusTone::Danger }, format!("Yield margin     {m:+.2} (yield / peak von Mises - 1)")));
+        if let Some(h) = &sm.heat {
+            lines.push(Line::from(format!("Temperature      {:.3} at {}  to  {:.3} at {}", h.t_min.value, at(&h.t_min), h.t_max.value, at(&h.t_max))));
+            lines.push(Line::from(Span::styled(format!("Heat in {:.4e}, out {:.4e} (net over fixed temperatures and convection), balance error {:.1e}", h.heat_in, h.heat_out, h.balance_error), theme.disabled_style())));
         }
-        lines.push(Line::from(format!("Reactions        ({:.2}, {:.2}, {:.2})", sm.reaction[0], sm.reaction[1], sm.reaction[2])));
+        if s.problem.study.is_structural() {
+            lines.push(Line::from(format!("Peak von Mises   {:.1} at {}", sm.max_von_mises.value, at(&sm.max_von_mises))));
+            lines.push(Line::from(format!("Max principal    {:.1}    min principal {:.1}", sm.max_principal.value, sm.min_principal.value)));
+            lines.push(Line::from(format!("Max displacement {:.5e} at {}", sm.max_displacement.value, at(&sm.max_displacement))));
+            if let Some(m) = sm.margin {
+                lines.push(tone(if m >= 0.0 { StatusTone::Success } else { StatusTone::Danger }, format!("Yield margin     {m:+.2} (yield / peak von Mises - 1)")));
+            }
+            lines.push(Line::from(format!("Reactions        ({:.2}, {:.2}, {:.2})", sm.reaction[0], sm.reaction[1], sm.reaction[2])));
+        }
         lines.push(Line::from(Span::styled(format!("{} nodes, {} elements, {} dofs, solved in {:.0} ms ({} pass{})", sm.nodes, sm.elements, sm.dofs, sm.solve_ms, s.history.len(), if s.history.len() == 1 { "" } else { "es" }), theme.disabled_style())));
     }
     if let Some(b) = fea_problem::benchmark::check(s).filter(|_| !state.details) {
@@ -290,10 +296,12 @@ pub fn readout_lines<'a>(theme: &Theme, state: &FeaWorkbenchState) -> Vec<Line<'
         lines.push(tone(StatusTone::Warning, format!("\u{26a0} {note}")));
     }
     // A contact solve balances to its Newton tolerance, a linear one to rounding.
-    if sm.equilibrium_error > if sm.interfaces.is_empty() { 1e-6 } else { 1e-3 } {
+    if s.problem.study.is_structural() && sm.equilibrium_error > if sm.interfaces.is_empty() { 1e-6 } else { 1e-3 } {
         lines.push(tone(StatusTone::Warning, format!("\u{26a0} reactions and loads differ by {:.1e} (relative): check the supports and loads", sm.equilibrium_error)));
     }
-    if sm.zz_error > 0.10 {
+    if !s.problem.study.is_structural() {
+        // A thermal-only result has no stress-based mesh error estimate.
+    } else if sm.zz_error > 0.10 {
         lines.push(tone(StatusTone::Warning, format!("\u{26a0} estimated mesh error {:.0} %: use a smaller element size, more adaptive passes or a quadratic element", 100.0 * sm.zz_error)));
     } else {
         lines.push(Line::from(Span::styled(format!("Estimated mesh error {:.2} % of the energy norm", 100.0 * sm.zz_error), theme.disabled_style())));

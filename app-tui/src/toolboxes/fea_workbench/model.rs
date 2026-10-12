@@ -8,6 +8,7 @@ pub enum FieldRow {
     Header(&'static str),
     Template,
     Analysis,
+    StudyKind,
     Thickness,
     Material,
     Young,
@@ -48,6 +49,20 @@ pub enum FieldRow {
     BushingParam(usize, usize),
     BushingRemove(usize),
     BushingAdd,
+    Conductivity,
+    HeatSource,
+    ReferenceTemp,
+    HeatSupportKind(usize),
+    HeatSupportEdge(usize),
+    HeatSupportCoord(usize, usize),
+    HeatSupportTemp(usize),
+    HeatSupportRemove(usize),
+    HeatSupportAdd,
+    HeatLoadKind(usize),
+    HeatLoadEdge(usize),
+    HeatLoadParam(usize, usize),
+    HeatLoadRemove(usize),
+    HeatLoadAdd,
 }
 
 /// How a row is edited.
@@ -66,7 +81,7 @@ pub enum EditKind {
 pub fn edit_kind(row: FieldRow) -> EditKind {
     use FieldRow::*;
     match row {
-        Thickness | Young | Poisson | Alpha | Density | Yield | DeltaT | Outer(..) | PolyPoint(..) | Hole(..) | Depth | Layers | MeshSize | HoleFactor | AdaptPasses | TargetError | SupportCoord(..) | LoadParam(..) | BushingParam(..) => EditKind::Number,
+        Thickness | Young | Poisson | Alpha | Density | Yield | DeltaT | Conductivity | HeatSource | ReferenceTemp | HeatSupportCoord(..) | HeatSupportTemp(..) | HeatLoadParam(..) | Outer(..) | PolyPoint(..) | Hole(..) | Depth | Layers | MeshSize | HoleFactor | AdaptPasses | TargetError | SupportCoord(..) | LoadParam(..) | BushingParam(..) => EditKind::Number,
         SupportComp(..) => EditKind::Component,
         ImportPath => EditKind::Text,
         _ => EditKind::Action,
@@ -88,7 +103,7 @@ pub fn is_sketch(p: &Problem) -> bool {
 pub fn field_rows(p: &Problem) -> Vec<FieldRow> {
     use FieldRow::*;
     let d = dim(p);
-    let mut r = vec![Header("Problem"), Template, Analysis];
+    let mut r = vec![Header("Problem"), Template, Analysis, StudyKind];
     if matches!(p.analysis, fea_problem::Analysis::PlaneStress | fea_problem::Analysis::PlaneStrain) {
         r.push(Thickness);
     }
@@ -144,27 +159,58 @@ pub fn field_rows(p: &Problem) -> Vec<FieldRow> {
             }
         }
     }
-    r.push(Header("Supports"));
-    for (s, sup) in p.supports.iter().enumerate() {
-        r.push(SupportKind(s));
-        match sup {
-            Support::Edge { .. } => r.push(SupportEdge(s)),
-            Support::Point { .. } => r.extend((0..d).map(|i| SupportCoord(s, i))),
+    if p.study.is_structural() {
+        r.push(Header("Supports"));
+        for (s, sup) in p.supports.iter().enumerate() {
+            r.push(SupportKind(s));
+            match sup {
+                Support::Edge { .. } => r.push(SupportEdge(s)),
+                Support::Point { .. } => r.extend((0..d).map(|i| SupportCoord(s, i))),
+            }
+            r.extend((0..d).map(|c| SupportComp(s, c)));
+            r.push(SupportRemove(s));
         }
-        r.extend((0..d).map(|c| SupportComp(s, c)));
-        r.push(SupportRemove(s));
-    }
-    r.push(SupportAdd);
-    r.push(Header("Loads"));
-    for (l, load) in p.loads.iter().enumerate() {
-        r.push(LoadKind(l));
-        if load.edge().is_some() {
-            r.push(LoadEdge(l));
+        r.push(SupportAdd);
+        r.push(Header("Loads"));
+        for (l, load) in p.loads.iter().enumerate() {
+            r.push(LoadKind(l));
+            if load.edge().is_some() {
+                r.push(LoadEdge(l));
+            }
+            r.extend((0..load.params(d).len()).map(|i| LoadParam(l, i)));
+            r.push(LoadRemove(l));
         }
-        r.extend((0..load.params(d).len()).map(|i| LoadParam(l, i)));
-        r.push(LoadRemove(l));
+        r.push(LoadAdd);
     }
-    r.push(LoadAdd);
+    if p.study.is_thermal() {
+        r.push(Header("Thermal"));
+        r.extend([Conductivity, HeatSource]);
+        if p.study == fea_problem::Study::ThermalStress {
+            r.push(ReferenceTemp);
+        }
+        r.push(Header("Fixed temperatures"));
+        for (s, sup) in p.thermal.supports.iter().enumerate() {
+            r.push(HeatSupportKind(s));
+            match sup {
+                fea_problem::HeatSupport::Temperature { .. } => r.push(HeatSupportEdge(s)),
+                fea_problem::HeatSupport::Point { .. } => r.extend((0..d).map(|i| HeatSupportCoord(s, i))),
+            }
+            r.extend([HeatSupportTemp(s), HeatSupportRemove(s)]);
+        }
+        r.push(HeatSupportAdd);
+        r.push(Header("Heat loads"));
+        for (l, load) in p.thermal.loads.iter().enumerate() {
+            r.push(HeatLoadKind(l));
+            if load.edge().is_some() {
+                r.push(HeatLoadEdge(l));
+            }
+            let n = load.params().len();
+            // A point input's coordinates beyond the plane are not offered in a 2D model.
+            r.extend((0..n).filter(|i| !matches!(load, fea_problem::HeatLoad::Point { .. }) || *i != 2 || d == 3).map(|i| HeatLoadParam(l, i)));
+            r.push(HeatLoadRemove(l));
+        }
+        r.push(HeatLoadAdd);
+    }
     // Interference-fit bushings (plane problems with a circular hole).
     let plane = matches!(p.analysis, fea_problem::Analysis::PlaneStress | fea_problem::Analysis::PlaneStrain);
     if plane && matches!(&p.geometry, Geometry::Sketch { holes, .. } if holes.iter().any(|h| matches!(h, Shape::Circle { .. }))) {
@@ -188,6 +234,7 @@ pub fn row_label(p: &Problem, row: FieldRow) -> String {
         Header(t) => t.to_string(),
         Template => "Template".into(),
         Analysis => "Analysis".into(),
+        StudyKind => "Study".into(),
         Thickness => "Thickness".into(),
         Material => "Material".into(),
         Young => "Young's Modulus E".into(),
@@ -234,6 +281,20 @@ pub fn row_label(p: &Problem, row: FieldRow) -> String {
         BushingParam(b, i) => format!("  Bushing {} {}", b + 1, p.bushings.get(b).and_then(|x| x.params().get(i).map(|(l, _)| *l)).unwrap_or("")),
         BushingRemove(b) => format!("  Remove Bushing {}", b + 1),
         BushingAdd => "Add Bushing".into(),
+        Conductivity => "Conductivity".into(),
+        HeatSource => "Heat Generation".into(),
+        ReferenceTemp => "Stress-Free Temperature".into(),
+        HeatSupportKind(s) => format!("Fixed Temperature {}", s + 1),
+        HeatSupportEdge(_) => "  Edge".into(),
+        HeatSupportCoord(_, i) => format!("  Point {}", AXIS[i]),
+        HeatSupportTemp(_) => "  Temperature".into(),
+        HeatSupportRemove(s) => format!("  Remove Fixed Temperature {}", s + 1),
+        HeatSupportAdd => "Add Fixed Temperature".into(),
+        HeatLoadKind(l) => format!("Heat Load {}", l + 1),
+        HeatLoadEdge(_) => "  Edge".into(),
+        HeatLoadParam(l, i) => format!("  {}", p.thermal.loads.get(l).and_then(|x| x.params().get(i).map(|(lab, _)| *lab)).unwrap_or("")),
+        HeatLoadRemove(l) => format!("  Remove Heat Load {}", l + 1),
+        HeatLoadAdd => "Add Heat Load".into(),
     }
 }
 
@@ -289,6 +350,12 @@ pub fn number_value(p: &Problem, row: FieldRow) -> Option<f64> {
         SupportComp(s, c) => p.supports.get(s)?.comps()[c]?,
         LoadParam(l, i) => p.loads.get(l)?.params(d).get(i)?.1,
         BushingParam(b, i) => p.bushings.get(b)?.params().get(i)?.1,
+        Conductivity => p.thermal.conductivity,
+        HeatSource => p.thermal.source,
+        ReferenceTemp => p.thermal.reference,
+        HeatSupportCoord(s, i) => p.thermal.supports.get(s)?.coords().get(i)?.1,
+        HeatSupportTemp(s) => p.thermal.supports.get(s)?.temperature(),
+        HeatLoadParam(l, i) => p.thermal.loads.get(l)?.params().get(i)?.1,
         _ => return None,
     })
 }
@@ -362,6 +429,24 @@ pub fn set_number(p: &mut Problem, row: FieldRow, v: f64) {
                 bu.set_param(i, v);
             }
         }
+        Conductivity if v > 0.0 => p.thermal.conductivity = v,
+        HeatSource => p.thermal.source = v,
+        ReferenceTemp => p.thermal.reference = v,
+        HeatSupportCoord(s, i) => {
+            if let Some(sup) = p.thermal.supports.get_mut(s) {
+                sup.set_coord(i, v);
+            }
+        }
+        HeatSupportTemp(s) => {
+            if let Some(sup) = p.thermal.supports.get_mut(s) {
+                sup.set_temperature(v);
+            }
+        }
+        HeatLoadParam(l, i) => {
+            if let Some(load) = p.thermal.loads.get_mut(l) {
+                load.set_param(i, v);
+            }
+        }
         _ => {}
     }
 }
@@ -383,6 +468,7 @@ pub fn row_value(p: &Problem, names: &[String], import_len: Option<usize>, row: 
         Header(_) => String::new(),
         Template => p.name.clone(),
         Analysis => p.analysis.label().to_string(),
+        StudyKind => p.study.label().to_string(),
         Material => p.material.name.clone(),
         Yield => p.material.yield_stress.map_or("none".to_string(), format_number),
         Source => match &p.geometry {
@@ -400,7 +486,15 @@ pub fn row_value(p: &Problem, names: &[String], import_len: Option<usize>, row: 
             Geometry::Sketch { outer, .. } => outer.label().to_string(),
             _ => String::new(),
         },
-        PolyAdd | PolyRemove | HoleAdd | HoleRemove(_) | SupportAdd | SupportRemove(_) | LoadAdd | LoadRemove(_) | BushingAdd | BushingRemove(_) => "Enter".to_string(),
+        PolyAdd | PolyRemove | HoleAdd | HoleRemove(_) | SupportAdd | SupportRemove(_) | LoadAdd | LoadRemove(_) | BushingAdd | BushingRemove(_) | HeatSupportAdd | HeatSupportRemove(_) | HeatLoadAdd | HeatLoadRemove(_) => "Enter".to_string(),
+        HeatSupportKind(s) => match p.thermal.supports.get(s) {
+            Some(fea_problem::HeatSupport::Temperature { .. }) => "Edge".to_string(),
+            Some(fea_problem::HeatSupport::Point { .. }) => "Point (nearest node)".to_string(),
+            None => String::new(),
+        },
+        HeatSupportEdge(s) => p.thermal.supports.get(s).and_then(|x| x.edge()).map(|e| edge_text(e, names)).unwrap_or_default(),
+        HeatLoadKind(l) => p.thermal.loads.get(l).map_or(String::new(), |x| x.label().to_string()),
+        HeatLoadEdge(l) => p.thermal.loads.get(l).and_then(|x| x.edge()).map(|e| edge_text(e, names)).unwrap_or_default(),
         HoleKind(h) => match &p.geometry {
             Geometry::Sketch { holes, .. } => match &holes[h] {
                 Shape::Polygon { pts } => format!("Polygon ({} points: edit in the problem file)", pts.len()),
@@ -423,7 +517,7 @@ pub fn row_value(p: &Problem, names: &[String], import_len: Option<usize>, row: 
             None => "Free".to_string(),
         },
         Layers | AdaptPasses => format!("{}", number_value(p, row).unwrap_or(0.0).round()),
-        Thickness | Young | Poisson | Alpha | Density | DeltaT | Outer(..) | PolyPoint(..) | Hole(..) | Depth | MeshSize | HoleFactor | TargetError | SupportCoord(..) | LoadParam(..) | BushingParam(..) => {
+        Thickness | Young | Poisson | Alpha | Density | DeltaT | Conductivity | HeatSource | ReferenceTemp | HeatSupportCoord(..) | HeatSupportTemp(..) | HeatLoadParam(..) | Outer(..) | PolyPoint(..) | Hole(..) | Depth | MeshSize | HoleFactor | TargetError | SupportCoord(..) | LoadParam(..) | BushingParam(..) => {
             let _ = d;
             number_value(p, row).map_or(String::new(), format_number)
         }
@@ -476,6 +570,19 @@ pub fn field_hint(row: FieldRow) -> &'static str {
         LoadAdd => "Adds a pressure on the first edge.",
         BushingParam(..) => "A bushing pressed into a circular hole of a plane problem: its outer diameter is the hole's plus the diametral interference, in frictional contact with the plate. The bore may be offset from the hole centre (an eccentric bushing). A load or support on holeN then acts on the bushing's bore. A bushed problem is solved with contact (seconds) on r, not automatically.",
         BushingRemove(_) => "Removes this bushing.",
+        StudyKind => "Structural (stresses from supports and loads), Thermal (steady temperature from fixed temperatures, heat fluxes and convection) or Thermal stress (the temperature field, then the stresses it causes).",
+        Conductivity => "Thermal conductivity in consistent units (energy per time, length and degree). The temperatures do not depend on it when only temperatures are fixed.",
+        HeatSource => "Heat generated per unit volume and time (0 = none).",
+        ReferenceTemp => "Temperature at which the structure is stress free; the thermal strain follows the change from it.",
+        HeatSupportKind(_) => "Surface: every node of a named edge is held at the temperature. Point: the node nearest the given coordinates.",
+        HeatSupportEdge(_) | HeatLoadEdge(_) => "Name of the edge (or imported surface / node set). Enter or Right: next; Left: previous.",
+        HeatSupportCoord(..) => "Coordinates of the node to hold.",
+        HeatSupportTemp(_) => "The fixed temperature.",
+        HeatSupportRemove(_) | HeatLoadRemove(_) => "Removes this item.",
+        HeatSupportAdd => "Holds the first edge at a temperature (a steady problem needs one, or a convection surface).",
+        HeatLoadKind(_) => "Enter cycles heat flux (into the body per area), convection to an ambient, and a point heat input.",
+        HeatLoadParam(..) => "Flux and point input are positive into the body; convection exchanges h (ambient - T) per area.",
+        HeatLoadAdd => "Adds a heat flux on the first edge.",
         BushingAdd => "Presses a steel bushing (bore 1.5 hole radii, diametral interference 0.8 % of the hole radius, friction 0.15) into the first circular hole that has none.",
     }
 }
@@ -567,6 +674,47 @@ pub fn apply_row_action(p: &mut Problem, names: &[String], row: FieldRow, forwar
                 p.analysis = all[if forward { (i + 1) % all.len() } else { (i + all.len() - 1) % all.len() }];
                 fix_element_for(p);
             }
+            StudyKind => {
+                let all = fea_problem::Study::ALL;
+                let i = all.iter().position(|a| *a == p.study).unwrap_or(0);
+                p.study = all[if forward { (i + 1) % all.len() } else { (i + all.len() - 1) % all.len() }];
+            }
+            HeatSupportKind(s) => {
+                if let Some(sup) = p.thermal.supports.get_mut(s) {
+                    *sup = sup.toggled(&first);
+                }
+            }
+            HeatSupportEdge(s) => {
+                if let Some(sup) = p.thermal.supports.get_mut(s) {
+                    if let Some(next) = cycle_name(sup.edge().unwrap_or(""), names, forward) {
+                        sup.set_edge(&next);
+                    }
+                }
+            }
+            HeatSupportRemove(s) => {
+                if s < p.thermal.supports.len() {
+                    p.thermal.supports.remove(s);
+                }
+            }
+            HeatSupportAdd => p.thermal.supports.push(fea_problem::HeatSupport::Temperature { edge: first.clone(), t: 0.0 }),
+            HeatLoadKind(l) => {
+                if let Some(load) = p.thermal.loads.get_mut(l) {
+                    *load = load.next_kind(&first);
+                }
+            }
+            HeatLoadEdge(l) => {
+                if let Some(load) = p.thermal.loads.get_mut(l) {
+                    if let Some(next) = cycle_name(load.edge().unwrap_or(""), names, forward) {
+                        load.set_edge(&next);
+                    }
+                }
+            }
+            HeatLoadRemove(l) => {
+                if l < p.thermal.loads.len() {
+                    p.thermal.loads.remove(l);
+                }
+            }
+            HeatLoadAdd => p.thermal.loads.push(fea_problem::HeatLoad::Flux { edge: first.clone(), q: 1.0 }),
             OuterKind => {
                 if let Geometry::Sketch { outer, .. } = &mut p.geometry {
                     *outer = outer.next_kind(true);

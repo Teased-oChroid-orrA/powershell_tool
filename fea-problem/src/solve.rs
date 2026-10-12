@@ -3,6 +3,7 @@
 
 use crate::build::{imported_mesh, sketch_mesh};
 use crate::problem::{Analysis, Geometry, Load, Problem, Support};
+use crate::thermal::Study;
 use fea_core::adapt::{refine, AdaptOptions};
 use fea_core::kernel::von_mises;
 use fea_core::loads::{self, FaceField, Loads, SurfaceLoad};
@@ -23,6 +24,8 @@ pub enum Field {
     Sxy,
     MaxPrincipal,
     MinPrincipal,
+    /// Steady temperature (thermal studies).
+    Temperature,
 }
 
 impl Field {
@@ -30,6 +33,7 @@ impl Field {
 
     pub fn label(self) -> &'static str {
         match self {
+            Field::Temperature => "Temperature",
             Field::VonMises => "von Mises stress",
             Field::Displacement => "Displacement magnitude",
             Field::Ux => "Displacement x",
@@ -74,7 +78,7 @@ pub struct Summary {
     pub reaction: [f64; 3],
     /// Sum of the applied loads (including thermal and body loads).
     pub applied: [f64; 3],
-    /// `|reaction + applied| / max(|applied|, |reaction|)` over the components that must balance.
+    /// `|reaction + applied|` over the total magnitude of the forces, for the components that must balance.
     pub equilibrium_error: f64,
     pub strain_energy: f64,
     pub zz_error: f64,
@@ -85,12 +89,17 @@ pub struct Summary {
     pub notes: Vec<String>,
     /// The interference fit of every bushing (empty without bushings).
     pub interfaces: Vec<InterfaceResult>,
+    /// What the heat solve found (thermal studies).
+    pub heat: Option<crate::thermal::HeatSummary>,
 }
 
 pub struct Solved {
     pub problem: Problem,
     pub model: Model,
+    /// Displacements (all zero in a thermal-only study).
     pub u: Vec<f64>,
+    /// Steady temperature at every node (thermal studies).
+    pub temperature: Option<Vec<f64>>,
     /// `[xx, yy, zz, xy, yz, zx]` per node (SPR-recovered, averaged where SPR does not apply).
     pub nodal: Vec<[f64; 6]>,
     pub summary: Summary,
@@ -137,6 +146,8 @@ fn field_values(d: usize, u: &[f64], nodal: &[[f64; 6]], field: Field) -> Vec<f6
                 Field::Sxy => s[3],
                 Field::MaxPrincipal => principal(s)[0],
                 Field::MinPrincipal => principal(s)[2],
+                // A temperature is not in these arrays: `Solved::node_values` answers it from the heat solution.
+                Field::Temperature => 0.0,
             }
         })
         .collect()
@@ -145,7 +156,28 @@ fn field_values(d: usize, u: &[f64], nodal: &[[f64; 6]], field: Field) -> Vec<f6
 impl Solved {
     /// Values of `field` at every node.
     pub fn node_values(&self, field: Field) -> Vec<f64> {
+        if field == Field::Temperature {
+            return self.temperature.clone().unwrap_or_else(|| vec![0.0; self.model.mesh.nodes.len()]);
+        }
         field_values(self.model.mesh.dim(), &self.u, &self.nodal, field)
+    }
+
+    /// The field a viewer opens on: the temperature of a thermal-only study, else the von Mises stress.
+    pub fn default_field(&self) -> Field {
+        if self.problem.study.is_structural() { Field::VonMises } else { Field::Temperature }
+    }
+
+    /// The fields this result has, the one to show first leading: the temperature of a thermal study, the stresses and
+    /// displacements of a structural one.
+    pub fn fields(&self) -> Vec<Field> {
+        let mut v = Vec::new();
+        if self.temperature.is_some() {
+            v.push(Field::Temperature);
+        }
+        if self.problem.study.is_structural() {
+            v.extend(Field::ALL);
+        }
+        v
     }
 
     /// CSV of the nodal results, one row per node: position, displacement, the six stress components, von Mises and the
@@ -161,7 +193,11 @@ impl Solved {
         for a in &axes[..d] {
             let _ = write!(o, ",u{a}");
         }
-        o.push_str(",sxx,syy,szz,sxy,syz,szx,von_mises,max_principal,min_principal\n");
+        o.push_str(",sxx,syy,szz,sxy,syz,szx,von_mises,max_principal,min_principal");
+        if self.temperature.is_some() {
+            o.push_str(",temperature");
+        }
+        o.push('\n');
         let (vm, p1, p3) = (self.node_values(Field::VonMises), self.node_values(Field::MaxPrincipal), self.node_values(Field::MinPrincipal));
         for (i, x) in self.model.mesh.nodes.iter().enumerate() {
             let _ = write!(o, "{i}");
@@ -174,7 +210,11 @@ impl Solved {
             for c in &self.nodal[i] {
                 let _ = write!(o, ",{c:.6e}");
             }
-            let _ = writeln!(o, ",{:.6e},{:.6e},{:.6e}", vm[i], p1[i], p3[i]);
+            let _ = write!(o, ",{:.6e},{:.6e},{:.6e}", vm[i], p1[i], p3[i]);
+            if let Some(t) = &self.temperature {
+                let _ = write!(o, ",{:.6e}", t[i]);
+            }
+            o.push('\n');
         }
         o
     }
@@ -188,17 +228,18 @@ impl Solved {
         let p1 = self.node_values(Field::MaxPrincipal);
         let p3 = self.node_values(Field::MinPrincipal);
         let stress: Vec<f64> = self.nodal.iter().flat_map(|s| s.iter().copied()).collect();
-        write(
-            &self.model.mesh,
-            &[
-                VtkField { name: "displacement", ncomp: 3, data: &disp },
-                VtkField { name: "von_mises", ncomp: 1, data: &vm },
-                VtkField { name: "max_principal", ncomp: 1, data: &p1 },
-                VtkField { name: "min_principal", ncomp: 1, data: &p3 },
-                VtkField { name: "stress_xx_yy_zz_xy_yz_zx", ncomp: 6, data: &stress },
-            ],
-            &[],
-        )
+        let temperature = self.temperature.clone().unwrap_or_default();
+        let mut fields = vec![
+            VtkField { name: "displacement", ncomp: 3, data: &disp },
+            VtkField { name: "von_mises", ncomp: 1, data: &vm },
+            VtkField { name: "max_principal", ncomp: 1, data: &p1 },
+            VtkField { name: "min_principal", ncomp: 1, data: &p3 },
+            VtkField { name: "stress_xx_yy_zz_xy_yz_zx", ncomp: 6, data: &stress },
+        ];
+        if self.temperature.is_some() {
+            fields.push(VtkField { name: "temperature", ncomp: 1, data: &temperature });
+        }
+        write(&self.model.mesh, &fields, &[])
     }
 }
 
@@ -214,7 +255,7 @@ fn available(mesh: &Mesh) -> String {
 }
 
 /// Nodes of a named node set, or of the faces of a named surface.
-fn named_nodes(mesh: &Mesh, name: &str) -> Result<Vec<usize>, String> {
+pub(crate) fn named_nodes(mesh: &Mesh, name: &str) -> Result<Vec<usize>, String> {
     if let Some(s) = mesh.node_sets.get(name) {
         return Ok(s.clone());
     }
@@ -229,7 +270,7 @@ fn named_nodes(mesh: &Mesh, name: &str) -> Result<Vec<usize>, String> {
 
 /// Boundary faces of a named surface; a node set without a surface gets the boundary faces whose
 /// corner nodes all belong to it.
-fn named_faces(mesh: &mut Mesh, name: &str) -> Result<Vec<Vec<usize>>, String> {
+pub(crate) fn named_faces(mesh: &mut Mesh, name: &str) -> Result<Vec<Vec<usize>>, String> {
     if let Some(f) = mesh.surfaces.get(name) {
         return Ok(f.clone());
     }
@@ -243,7 +284,7 @@ fn named_faces(mesh: &mut Mesh, name: &str) -> Result<Vec<Vec<usize>>, String> {
     Err(format!("no edge or surface named '{name}' ({})", available(mesh)))
 }
 
-fn nearest_node(mesh: &Mesh, x: [f64; 3]) -> usize {
+pub(crate) fn nearest_node(mesh: &Mesh, x: [f64; 3]) -> usize {
     let dim = mesh.dim();
     (0..mesh.nodes.len())
         .min_by(|&a, &b| {
@@ -413,11 +454,15 @@ struct Pass {
     zz: fea_core::recover::ZzEstimate,
     reaction: [f64; 3],
     applied: [f64; 3],
+    /// Total magnitude of the loads / reactions: the yardstick of the force balance.
+    force_scale: f64,
     solve_ms: f64,
     strain_energy: f64,
     interfaces: Vec<InterfaceResult>,
     /// Model-check warnings (the solve ran, but the result needs a caveat), shown with the summary's notes.
     warnings: Vec<String>,
+    /// Temperature at every node and the heat balance (thermal studies).
+    heat: Option<(Vec<f64>, crate::thermal::HeatSummary)>,
 }
 
 /// What the interference fit of one bushing did, from the converged contact tractions (integrals, which are reliable:
@@ -449,13 +494,41 @@ impl fea_core::adapt::Pass for Pass {
     }
 }
 
+/// A thermal-only study: the temperature field, with zero displacements and stresses so every consumer of a result keeps
+/// working.
+fn solve_thermal_only(mesh: Mesh, setup: &crate::thermal::Setup) -> Result<Pass, String> {
+    let t0 = std::time::Instant::now();
+    let model = Model::new(mesh)?;
+    let (heat, summary) = crate::thermal::solve_heat(&model, setup)?;
+    let (n, d) = (model.mesh.nodes.len(), model.mesh.dim());
+    let zz = fea_core::recover::ZzEstimate { eta: Vec::new(), total: 0.0, norm: 0.0 };
+    let solve_ms = t0.elapsed().as_secs_f64() * 1e3;
+    Ok(Pass { model, u: vec![0.0; n * d], nodal: vec![[0.0; 6]; n], zz, reaction: [0.0; 3], applied: [0.0; 3], force_scale: 0.0, solve_ms, strain_energy: 0.0, interfaces: Vec::new(), warnings: Vec::new(), heat: Some((heat.temperature, summary)) })
+}
+
 fn solve_mesh(p: &Problem, mut mesh: Mesh) -> Result<Pass, String> {
+    if p.study.is_thermal() && !p.bushings.is_empty() {
+        return Err("a thermal study does not support bushings".into());
+    }
+    let setup = if p.study.is_thermal() { Some(crate::thermal::prepare(p, &mut mesh)?) } else { None };
+    if p.study == Study::Thermal {
+        return solve_thermal_only(mesh, setup.as_ref().expect("a thermal study has its setup"));
+    }
     let bc = apply_supports(&mesh, &p.supports)?;
-    let loads = build_loads(&mut mesh, p)?;
+    let mut loads = build_loads(&mut mesh, p)?;
     if !p.bushings.is_empty() {
         return solve_mesh_contact(p, mesh, loads, bc);
     }
     let model = Model::new(mesh)?;
+    // Thermal stress: the steady temperature on this mesh, as a temperature change from the stress-free state.
+    let heat = match &setup {
+        Some(setup) => {
+            let (heat, summary) = crate::thermal::solve_heat(&model, setup)?;
+            loads.temperature = Some(heat.temperature.iter().map(|t| t - p.thermal.reference).collect());
+            Some((heat.temperature, summary))
+        }
+        None => None,
+    };
     // The kernel's model check (inverted elements, loose nodes, rigid-body motion, non-finite loads, nothing applied):
     // an error stops the solve with its reason, a warning travels with the result.
     let issues = model.validate(&loads, &bc);
@@ -483,18 +556,15 @@ fn solve_mesh(p: &Problem, mut mesh: Mesh) -> Result<Pass, String> {
     // a wrong displacement field must never be presented as a result.
     // The imbalance is judged against the total magnitude of the forces, not against the net force (a thermal load, or a
     // self-equilibrated one, has a net force of zero).
-    let force_scale = f.iter().map(|v| v.abs()).sum::<f64>().max(sol.reactions.iter().map(|v| v.abs()).sum::<f64>());
-    let imbalance = |reaction: &[f64; 3], applied: &[f64; 3]| {
-        let comps: &[usize] = if matches!(model.mesh.physics, Physics::Axisymmetric) { &[1] } else { &[0, 1, 2][..d] };
-        let diff: f64 = comps.iter().map(|&c| (reaction[c] + applied[c]).powi(2)).sum::<f64>().sqrt();
-        if force_scale > 0.0 { diff / force_scale } else { 0.0 }
-    };
+    let mut scale = force_scale(&f, &sol.reactions);
+    let imbalance = |reaction: &[f64; 3], applied: &[f64; 3], scale: f64| balance_error(&model.mesh.physics, reaction, applied, scale);
     let mut warnings = warnings;
-    if !(sol.rel_residual < 1e-6 && imbalance(&reaction, &applied) < 1e-6) {
-        let first = (sol.rel_residual, imbalance(&reaction, &applied));
+    if !(sol.rel_residual < 1e-6 && imbalance(&reaction, &applied, scale) < 1e-6) {
+        let first = (sol.rel_residual, imbalance(&reaction, &applied, scale));
         sol = fea_core::sequentially(|| solve(&model))?;
         (reaction, applied) = totals(d, &sol.reactions, &f);
-        let second = (sol.rel_residual, imbalance(&reaction, &applied));
+        scale = force_scale(&f, &sol.reactions);
+        let second = (sol.rel_residual, imbalance(&reaction, &applied, scale));
         if !(second.0 < 1e-6 && second.1 < 1e-6) {
             return Err(format!(
                 "the solve did not produce a consistent result (residual {:.1e}, force imbalance {:.1e}); the model may be badly conditioned: check units, supports and element shapes",
@@ -504,14 +574,15 @@ fn solve_mesh(p: &Problem, mut mesh: Mesh) -> Result<Pass, String> {
         warnings.push(format!("A solve failed its own checks (residual {:.1e}, force imbalance {:.1e}) and was recomputed on one thread; the result shown passed them.", first.0, first.1));
     }
     let solve_ms = t0.elapsed().as_secs_f64() * 1e3;
-    let gauss = model.gauss_stresses(&sol.u, p.delta_t)?;
+    let field = loads.temperature.as_deref();
+    let gauss = model.gauss_stresses_field(&sol.u, p.delta_t, field)?;
     let nodal = match model.recover_spr(&gauss) {
         Ok(v) => v,
-        Err(_) => model.nodal_stresses(&sol.u, p.delta_t)?,
+        Err(_) => model.nodal_stresses_field(&sol.u, p.delta_t, field)?,
     };
-    let zz = model.zz_error(&sol.u, p.delta_t)?;
+    let zz = model.zz_error_field(&sol.u, p.delta_t, field)?;
     let strain_energy = model.strain_energy(&sol.u)?;
-    Ok(Pass { model, u: sol.u, nodal, zz, reaction, applied, solve_ms, strain_energy, interfaces: Vec::new(), warnings })
+    Ok(Pass { model, u: sol.u, nodal, zz, reaction, applied, force_scale: scale, solve_ms, strain_energy, interfaces: Vec::new(), warnings, heat })
 }
 
 /// A plane problem with interference-fit bushings: the fit is installed first (frictional contact between each bushing
@@ -585,7 +656,8 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
     let zz = model.zz_error(&sol.u, p.delta_t)?;
     let strain_energy = model.strain_energy(&sol.u)?;
     let interfaces = p.bushings.iter().enumerate().map(|(i, b)| interface_result(&sol, 2 * i, b.hole, b.friction, match &p.geometry { Geometry::Sketch { holes, .. } => holes[b.hole - 1].centre(), _ => [0.0, 0.0] })).collect();
-    Ok(Pass { model, u: sol.u, nodal, zz, reaction, applied, solve_ms, strain_energy, interfaces, warnings: Vec::new() })
+    let scale = force_scale(&f, &sol.reactions);
+    Ok(Pass { model, u: sol.u, nodal, zz, reaction, applied, force_scale: scale, solve_ms, strain_energy, interfaces, warnings: Vec::new(), heat: None })
 }
 
 /// The fit interface of one bushing (its two contact passes, indices `first` and `first + 1`) from the tractions.
@@ -643,17 +715,21 @@ fn totals(d: usize, reactions: &[f64], loads: &[f64]) -> ([f64; 3], [f64; 3]) {
     (reaction, applied)
 }
 
-/// `|reaction + applied| / max(|applied|, |reaction|, fit_scale)` over the force components that must balance: the
-/// axial one only for an axisymmetric model (its radial reaction carries the hoop).
-fn balance_error(physics: &Physics, reaction: &[f64; 3], applied: &[f64; 3], fit_scale: f64) -> f64 {
+/// Total magnitude of the forces of a solve (loads and reactions over every dof, whichever is larger): the yardstick of
+/// the force balance. The net force cannot serve: a thermal or otherwise self-equilibrated load has a net force of zero.
+fn force_scale(loads: &[f64], reactions: &[f64]) -> f64 {
+    loads.iter().map(|v| v.abs()).sum::<f64>().max(reactions.iter().map(|v| v.abs()).sum::<f64>())
+}
+
+/// `|reaction + applied| / scale` over the force components that must balance: the axial one only for an axisymmetric
+/// model (its radial reaction carries the hoop).
+fn balance_error(physics: &Physics, reaction: &[f64; 3], applied: &[f64; 3], scale: f64) -> f64 {
     let comps: &[usize] = match physics {
         Physics::Axisymmetric => &[1],
         Physics::Solid => &[0, 1, 2],
         _ => &[0, 1],
     };
-    let dim = if matches!(physics, Physics::Solid) { 3 } else { 2 };
     let diff: f64 = comps.iter().map(|&c| (reaction[c] + applied[c]).powi(2)).sum();
-    let scale = (0..dim).map(|c| reaction[c].abs().max(applied[c].abs())).fold(fit_scale, f64::max);
     if scale > 0.0 { diff.sqrt() / scale } else { 0.0 }
 }
 
@@ -664,7 +740,7 @@ fn summarize(p: &Problem, pass: &Pass) -> Summary {
     let max_vm = extreme(&vm, &mesh.nodes, true);
     // A fit alone applies no load: the reactions are then judged against the force the interference fit transmits.
     let fit_scale = 1e-3 * pass.interfaces.iter().map(|f| f.normal_force).sum::<f64>();
-    let equilibrium_error = balance_error(&mesh.physics, &pass.reaction, &pass.applied, fit_scale);
+    let equilibrium_error = balance_error(&mesh.physics, &pass.reaction, &pass.applied, pass.force_scale.max(fit_scale));
     Summary {
         nodes: mesh.nodes.len(),
         elements: mesh.n_elems(),
@@ -682,6 +758,7 @@ fn summarize(p: &Problem, pass: &Pass) -> Summary {
         solve_ms: pass.solve_ms,
         notes: notes(p, mesh).into_iter().chain(pass.warnings.iter().cloned()).collect(),
         interfaces: pass.interfaces.clone(),
+        heat: pass.heat.as_ref().map(|h| h.1.clone()),
     }
 }
 
@@ -703,7 +780,7 @@ pub fn solve(p: &Problem, import_text: Option<&str>) -> Result<Solved, String> {
         Geometry::Imported { .. } => imported_mesh(p, import_text.ok_or("the mesh file has not been read")?)?,
         Geometry::Solid { .. } => crate::solid::solid_mesh(p)?.0,
     };
-    let adaptive = matches!(p.geometry, Geometry::Sketch { .. }) && p.analysis != Analysis::Solid && p.mesh.adapt_passes > 0;
+    let adaptive = matches!(p.geometry, Geometry::Sketch { .. }) && p.analysis != Analysis::Solid && p.mesh.adapt_passes > 0 && p.study.is_structural();
     let mut history = Vec::new();
     let first = solve_mesh(p, first)?;
     let pass = if adaptive {
@@ -716,7 +793,7 @@ pub fn solve(p: &Problem, import_text: Option<&str>) -> Result<Solved, String> {
     };
     let summary = summarize(p, &pass);
     let zz_eta = pass.zz.eta.clone();
-    Ok(Solved { problem: p.clone(), model: pass.model, u: pass.u, nodal: pass.nodal, summary, history, zz_eta })
+    Ok(Solved { problem: p.clone(), model: pass.model, u: pass.u, temperature: pass.heat.map(|h| h.0), nodal: pass.nodal, summary, history, zz_eta })
 }
 
 fn info(pass: &Pass) -> PassInfo {

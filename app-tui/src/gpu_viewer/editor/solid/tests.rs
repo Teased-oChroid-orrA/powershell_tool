@@ -613,3 +613,47 @@ fn a_solved_model_adds_a_result_card_for_the_simulation_step_only() {
     assert_eq!((result.relevance, result.steps.clone()), (Relevance::Info, vec!["Simulation"]));
     assert!(result.items.iter().any(|i| i.plain_text().is_some_and(|t| t.starts_with("max von Mises"))));
 }
+
+#[test]
+fn a_thermal_study_is_set_up_solved_and_shown_as_a_temperature_field() {
+    use fea_problem::{Field, Study};
+    let mut s = session("thermal");
+    // Switch the study: the supports / loads sections give way to the thermal ones.
+    s.do_action(SolidAction::Activate(FieldRow::StudyKind));
+    assert_eq!(s.problem.study, Study::Thermal, "Structural -> Thermal");
+    let rows = s.rows();
+    assert!(rows.contains(&FieldRow::Conductivity) && rows.contains(&FieldRow::HeatSupportAdd) && rows.contains(&FieldRow::HeatLoadAdd));
+    assert!(!rows.contains(&FieldRow::SupportAdd) && !rows.contains(&FieldRow::LoadAdd));
+    // Without a fixed temperature the solve is refused with the reason.
+    assert!(s.solve_availability().unwrap_err().contains("fixed temperature"), "{:?}", s.solve_availability());
+    // Quick commands on picked surfaces: Support -> fixed temperature, Load -> heat flux.
+    s.do_action(SolidAction::SelectSurface(s.names().iter().position(|n| n == "left").unwrap()));
+    s.do_action(SolidAction::SupportOnSelected);
+    s.do_action(SolidAction::SelectSurface(s.names().iter().position(|n| n == "right").unwrap()));
+    s.do_action(SolidAction::LoadOnSelected);
+    assert_eq!(s.problem.thermal.supports.len(), 1);
+    assert_eq!(s.problem.thermal.loads.len(), 1);
+    assert!(s.problem.supports.len() == plate().supports.len(), "no structural support was added");
+    // Edit the fixed temperature and the flux through their rows, then solve.
+    let t_row = row_index(&s, FieldRow::HeatSupportTemp(0));
+    s.do_action(SolidAction::Focus(t_row));
+    type_text(&mut s, "100");
+    s.handle_key(Key::Enter, Mods::default());
+    assert_eq!(s.problem.thermal.supports[0].temperature(), 100.0);
+    s.problem.thermal.loads.clear();
+    s.problem.thermal.loads.push(fea_problem::HeatLoad::Convection { edge: "right".into(), h: 5.0, ambient: 20.0 });
+    s.problem.thermal.conductivity = 2.0;
+    solved(&mut s);
+    let sol = s.current_solution().expect("solved").clone();
+    assert_eq!(sol.default_field(), Field::Temperature);
+    let h = sol.summary.heat.as_ref().unwrap();
+    assert!(h.t_max.value <= 100.0 + 1e-6 && h.t_min.value >= 20.0 - 1e-6 && h.t_max.value > h.t_min.value, "{h:?}");
+    // The scene the window draws is the temperature field, with no stress fields offered.
+    let scene = crate::gpu_viewer::scene::SceneSource::from_solved(&sol, Field::VonMises);
+    assert_eq!(scene.field_label, "Temperature");
+    assert!(scene.fields.is_empty(), "a thermal-only result offers just the temperature: {:?}", scene.fields.iter().map(|f| &f.0).collect::<Vec<_>>());
+    // Back to a structural study: the results no longer match.
+    s.do_action(SolidAction::Activate(FieldRow::StudyKind));
+    s.do_action(SolidAction::Activate(FieldRow::StudyKind));
+    assert_eq!(s.problem.study, Study::Structural);
+}

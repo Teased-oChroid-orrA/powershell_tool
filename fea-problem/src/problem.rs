@@ -518,6 +518,12 @@ pub struct Problem {
     /// Interference-fit bushings in circular holes (plane analyses only).
     #[serde(default)]
     pub bushings: Vec<Bushing>,
+    /// What a solve computes: stresses, a steady temperature field, or the thermal stress of that field.
+    #[serde(default)]
+    pub study: crate::thermal::Study,
+    /// Conductivity, source and thermal boundary conditions (used by the thermal studies).
+    #[serde(default, skip_serializing_if = "crate::thermal::ThermalSpec::is_default")]
+    pub thermal: crate::thermal::ThermalSpec,
     /// Parametric feature history the geometry was built from (sketch on a plane, extrude / revolve). Absent for
     /// plain `Geometry` problems and for files written before the history existed; `apply_history` rewrites
     /// `geometry` (and `analysis` for a solid) from it.
@@ -710,7 +716,13 @@ impl Problem {
     /// Everything needed to solve: a meshable geometry and at least one support.
     pub fn validate(&self) -> Result<(), String> {
         self.validate_geometry()?;
-        if self.supports.is_empty() {
+        if self.study.is_thermal() {
+            self.thermal.validate()?;
+            if self.thermal.supports.is_empty() && !self.thermal.loads.iter().any(|l| matches!(l, crate::thermal::HeatLoad::Convection { .. })) {
+                return Err("add a fixed temperature or a convection surface: without one the temperature level is undetermined".into());
+            }
+        }
+        if self.study.is_structural() && self.supports.is_empty() {
             return Err("add at least one support: the model is free to move".into());
         }
         Ok(())

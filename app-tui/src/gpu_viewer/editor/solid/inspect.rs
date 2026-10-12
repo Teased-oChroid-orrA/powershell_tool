@@ -24,7 +24,7 @@ fn ui(a: SolidAction) -> UiAction {
 
 /// The feature a feature-tree row stands for (`None` for result, surface and history rows).
 pub(super) fn node_feature(node: u32) -> Option<Feature> {
-    use super::ui::{T_BUSHINGS, T_FEATURE_BASE, T_GEOMETRY, T_LOADS, T_ROOT, T_SUPPORTS};
+    use super::ui::{T_BUSHINGS, T_FEATURE_BASE, T_GEOMETRY, T_HEAT_LOADS, T_HEAT_SUPPORTS, T_LOADS, T_ROOT, T_SUPPORTS};
     let rel = |base: u32| node.checked_sub(T_FEATURE_BASE + base).map(|n| n as usize);
     Some(match node {
         T_ROOT => Feature::Problem,
@@ -32,6 +32,9 @@ pub(super) fn node_feature(node: u32) -> Option<Feature> {
         T_SUPPORTS => Feature::Support(usize::MAX),
         T_LOADS => Feature::Load(usize::MAX),
         T_BUSHINGS => Feature::Bushing(usize::MAX),
+        T_HEAT_SUPPORTS => Feature::HeatSupport(usize::MAX),
+        T_HEAT_LOADS => Feature::HeatLoad(usize::MAX),
+        n if n == T_FEATURE_BASE + 4 => Feature::Thermal,
         n if n == T_FEATURE_BASE => Feature::Problem,
         n if n == T_FEATURE_BASE + 1 => Feature::Material,
         n if n == T_FEATURE_BASE + 2 => Feature::Geometry,
@@ -40,6 +43,8 @@ pub(super) fn node_feature(node: u32) -> Option<Feature> {
         n if (T_FEATURE_BASE + 1_000..T_FEATURE_BASE + 2_000).contains(&n) => Feature::Support(rel(1_000)?),
         n if (T_FEATURE_BASE + 2_000..T_FEATURE_BASE + 3_000).contains(&n) => Feature::Load(rel(2_000)?),
         n if (T_FEATURE_BASE + 3_000..T_FEATURE_BASE + 4_000).contains(&n) => Feature::Bushing(rel(3_000)?),
+        n if (T_FEATURE_BASE + 4_000..T_FEATURE_BASE + 5_000).contains(&n) => Feature::HeatSupport(rel(4_000)?),
+        n if (T_FEATURE_BASE + 5_000..T_FEATURE_BASE + 6_000).contains(&n) => Feature::HeatLoad(rel(5_000)?),
         _ => return None,
     })
 }
@@ -55,6 +60,11 @@ impl SolidSession {
             Feature::Support(s) if s != usize::MAX => format!("Support {}", s + 1),
             Feature::Load(l) if l != usize::MAX => format!("Load {}", l + 1),
             Feature::Bushing(b) if b != usize::MAX => format!("Bushing {}", b + 1),
+            Feature::Thermal => "Thermal".into(),
+            Feature::HeatSupport(s) if s != usize::MAX => format!("Fixed temperature {}", s + 1),
+            Feature::HeatLoad(l) if l != usize::MAX => format!("Heat load {}", l + 1),
+            Feature::HeatSupport(_) => "Fixed temperatures".into(),
+            Feature::HeatLoad(_) => "Heat loads".into(),
             Feature::Support(_) => "Supports".into(),
             Feature::Load(_) => "Loads".into(),
             Feature::Bushing(_) => "Bushings".into(),
@@ -127,12 +137,18 @@ impl SolidSession {
         if let Some(sol) = self.current_solution() {
             let s = &sol.summary;
             result.push(DockItem::text(format!("{} nodes, {} elements", s.nodes, s.elements), Tone::Dim));
-            result.push(DockItem::text(format!("max von Mises {:.4e}", s.max_von_mises.value), Tone::Normal));
-            result.push(DockItem::text(format!("max displacement {:.4e}", s.max_displacement.value), Tone::Normal));
-            if let Some(m) = s.margin {
-                result.push(DockItem::text(format!("yield margin {m:+.3}"), if m < 0.0 { Tone::Warn } else { Tone::On }));
+            if let Some(h) = &s.heat {
+                result.push(DockItem::text(format!("temperature {:.4} to {:.4}", h.t_min.value, h.t_max.value), Tone::Normal));
+                result.push(DockItem::text(format!("heat balance error {:.1e}", h.balance_error), Tone::Dim));
             }
-            result.push(DockItem::text(format!("equilibrium error {:.1e}", s.equilibrium_error), Tone::Dim));
+            if sol.problem.study.is_structural() {
+                result.push(DockItem::text(format!("max von Mises {:.4e}", s.max_von_mises.value), Tone::Normal));
+                result.push(DockItem::text(format!("max displacement {:.4e}", s.max_displacement.value), Tone::Normal));
+                if let Some(m) = s.margin {
+                    result.push(DockItem::text(format!("yield margin {m:+.3}"), if m < 0.0 { Tone::Warn } else { Tone::On }));
+                }
+                result.push(DockItem::text(format!("equilibrium error {:.1e}", s.equilibrium_error), Tone::Dim));
+            }
             result.extend(self.adaptive_lines(sol));
             for n in &s.notes {
                 for l in wrap(n, 44) {
@@ -183,7 +199,7 @@ impl SolidSession {
                 out.push(Item::Entry(Entry::new("Generate mesh", "", ui(SolidAction::GenerateMesh)).when(self.mesh_availability())));
                 out.push(Item::Entry(Entry::new("Refine where recommended", "", ui(SolidAction::RefineAll)).when(self.refine_availability())));
             }
-            Feature::Support(_) | Feature::Load(_) => {
+            Feature::Support(_) | Feature::Load(_) | Feature::HeatSupport(_) | Feature::HeatLoad(_) => {
                 out.push(Item::Separator);
                 out.push(Item::Entry(entry("Assign to the selected surface".into(), SolidAction::AssignSelection).when(self.assign_availability())));
             }

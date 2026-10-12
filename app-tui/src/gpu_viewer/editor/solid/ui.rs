@@ -33,6 +33,8 @@ pub(super) const T_SUPPORTS: u32 = 2;
 pub(super) const T_LOADS: u32 = 3;
 pub(super) const T_BUSHINGS: u32 = 4;
 pub(super) const T_SURFACES: u32 = 5;
+pub(super) const T_HEAT_SUPPORTS: u32 = 6;
+pub(super) const T_HEAT_LOADS: u32 = 7;
 pub(super) const T_FEATURE_BASE: u32 = 100;
 pub(super) const T_SURFACE_BASE: u32 = 10_000;
 
@@ -105,15 +107,30 @@ impl SolidSession {
             Err(m) => format!("Mesh: {}", clip(&m, 28)),
         };
         out.push(node(T_FEATURE_BASE + 3, 1, '#', mesh_label, Feature::Mesh));
-        out.push(TreeNode::new(T_SUPPORTS, 1, '+', format!("Supports ({})", p.supports.len())).folder());
-        for (s, sup) in p.supports.iter().enumerate() {
-            let target = sup.edge().map_or("point".to_string(), str::to_string);
-            out.push(node(T_FEATURE_BASE + 1_000 + s as u32, 2, '^', format!("{} on {target}", self.row_value(FieldRow::SupportKind(s))), Feature::Support(s)));
+        if p.study.is_structural() {
+            out.push(TreeNode::new(T_SUPPORTS, 1, '+', format!("Supports ({})", p.supports.len())).folder());
+            for (s, sup) in p.supports.iter().enumerate() {
+                let target = sup.edge().map_or("point".to_string(), str::to_string);
+                out.push(node(T_FEATURE_BASE + 1_000 + s as u32, 2, '^', format!("{} on {target}", self.row_value(FieldRow::SupportKind(s))), Feature::Support(s)));
+            }
+            out.push(TreeNode::new(T_LOADS, 1, '+', format!("Loads ({})", p.loads.len())).folder());
+            for (l, load) in p.loads.iter().enumerate() {
+                let target = load.edge().map_or("point".to_string(), str::to_string);
+                out.push(node(T_FEATURE_BASE + 2_000 + l as u32, 2, '>', format!("{} on {target}", self.row_value(FieldRow::LoadKind(l))), Feature::Load(l)));
+            }
         }
-        out.push(TreeNode::new(T_LOADS, 1, '+', format!("Loads ({})", p.loads.len())).folder());
-        for (l, load) in p.loads.iter().enumerate() {
-            let target = load.edge().map_or("point".to_string(), str::to_string);
-            out.push(node(T_FEATURE_BASE + 2_000 + l as u32, 2, '>', format!("{} on {target}", self.row_value(FieldRow::LoadKind(l))), Feature::Load(l)));
+        if p.study.is_thermal() {
+            out.push(node(T_FEATURE_BASE + 4, 1, 'T', format!("Thermal: k = {}", crate::toolboxes::fea_workbench::model::format_number(p.thermal.conductivity)), Feature::Thermal));
+            out.push(TreeNode::new(T_HEAT_SUPPORTS, 1, '+', format!("Fixed temperatures ({})", p.thermal.supports.len())).folder());
+            for (s, sup) in p.thermal.supports.iter().enumerate() {
+                let target = sup.edge().map_or("point".to_string(), str::to_string);
+                out.push(node(T_FEATURE_BASE + 4_000 + s as u32, 2, '^', format!("{} on {target}", crate::toolboxes::fea_workbench::model::format_number(sup.temperature())), Feature::HeatSupport(s)));
+            }
+            out.push(TreeNode::new(T_HEAT_LOADS, 1, '+', format!("Heat loads ({})", p.thermal.loads.len())).folder());
+            for (l, load) in p.thermal.loads.iter().enumerate() {
+                let target = load.edge().map_or("point".to_string(), str::to_string);
+                out.push(node(T_FEATURE_BASE + 5_000 + l as u32, 2, '>', format!("{} on {target}", load.label()), Feature::HeatLoad(l)));
+            }
         }
         if !p.bushings.is_empty() {
             out.push(TreeNode::new(T_BUSHINGS, 1, '+', format!("Bushings ({})", p.bushings.len())).folder());

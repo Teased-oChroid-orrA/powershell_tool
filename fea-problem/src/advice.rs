@@ -6,8 +6,8 @@
 //! Mesh density: `refinement_regions` proposes where a finer mesh is worth having (round holes, re-entrant corners, where
 //! loads and supports act) and at which level; `apply_region` turns one into a `MeshSpec::refine` zone.
 //!
-//! Scope: the `Problem` schema is structural (plane stress / strain, axisymmetric, solid) with a uniform temperature
-//! change; there is no thermal-conduction problem type here yet, so no thermal advice exists.
+//! Scope: structural advice (plane stress / strain, axisymmetric, solid) with a uniform temperature change. Thermal studies
+//! (ADR-021) get their boundary-condition kinds here (`BcKind::FixedTemperature` ...) but no thermal recommendations yet.
 use crate::problem::{Analysis, Geometry, Load, Problem, Seg, Shape, Support};
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +17,10 @@ pub enum BcKind {
     Roller,
     Pressure,
     Bearing,
+    /// A surface held at a temperature (thermal studies).
+    FixedTemperature,
+    HeatFlux,
+    Convection,
 }
 impl BcKind {
     pub fn label(self) -> &'static str {
@@ -25,6 +29,9 @@ impl BcKind {
             Self::Roller => "roller support",
             Self::Pressure => "pressure load",
             Self::Bearing => "pin (bearing) load",
+            Self::FixedTemperature => "fixed temperature",
+            Self::HeatFlux => "heat flux",
+            Self::Convection => "convection",
         }
     }
 }
@@ -118,6 +125,9 @@ pub fn add_boundary(p: &mut Problem, surface: &str, kind: BcKind) -> Result<(), 
             }
             p.loads.push(Load::Bearing { hole: n, fx: 1000.0, fy: 0.0 });
         }
+        BcKind::FixedTemperature => p.thermal.supports.push(crate::thermal::HeatSupport::Temperature { edge: surface.to_string(), t: 0.0 }),
+        BcKind::HeatFlux => p.thermal.loads.push(crate::thermal::HeatLoad::Flux { edge: surface.to_string(), q: 1.0 }),
+        BcKind::Convection => p.thermal.loads.push(crate::thermal::HeatLoad::Convection { edge: surface.to_string(), h: 10.0, ambient: 20.0 }),
     }
     Ok(())
 }
@@ -251,6 +261,19 @@ pub fn recommend(p: &Problem) -> Vec<Advice> {
 /// Support / load kinds that make sense on `surface` now, in the order the rules prefer (the intent: a first
 /// support, then a load, then refinements).
 pub fn boundary_options(p: &Problem, surface: &str) -> Vec<BcKind> {
+    let mut v = structural_options(p, surface);
+    if p.study == crate::Study::ThermalStress {
+        // The structure's boundary conditions first, then the thermal ones.
+        v.extend([BcKind::FixedTemperature, BcKind::HeatFlux, BcKind::Convection]);
+    }
+    v
+}
+
+fn structural_options(p: &Problem, surface: &str) -> Vec<BcKind> {
+    if p.study == crate::Study::Thermal {
+        // A first fixed temperature (or a convection surface) pins the level; then the heat enters.
+        return if p.thermal.supports.is_empty() { vec![BcKind::FixedTemperature, BcKind::Convection, BcKind::HeatFlux] } else { vec![BcKind::HeatFlux, BcKind::FixedTemperature, BcKind::Convection] };
+    }
     let plane = matches!(p.analysis, Analysis::PlaneStress | Analysis::PlaneStrain);
     match surface_kind(surface) {
         SurfaceKind::Hole => {

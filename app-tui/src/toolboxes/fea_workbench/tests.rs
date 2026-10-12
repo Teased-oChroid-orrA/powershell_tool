@@ -557,3 +557,36 @@ fn solid_editor_key_hands_the_current_problem_to_the_native_editor_and_reads_it_
     assert!(s.open_solid_editor_in(None).is_empty() && s.solve_error.as_ref().is_some_and(|e| e.contains("no app-data folder")));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_thermal_only_study_shows_temperatures_not_stresses_and_cycles_only_its_field() {
+    let mut s = FeaWorkbenchState::default();
+    // The study row cycles Structural -> Thermal and swaps the supports / loads sections for the thermal ones.
+    select(&mut s, FieldRow::StudyKind);
+    handle_key(&mut s, key(KeyCode::Enter));
+    assert_eq!(s.problem.study, fea_problem::Study::Thermal);
+    let rows = s.rows();
+    assert!(rows.contains(&FieldRow::Conductivity) && !rows.contains(&FieldRow::SupportAdd));
+    // A fixed temperature on the first edge and a flux on the last (the Add rows pick the first edge: edit the second).
+    select(&mut s, FieldRow::HeatSupportAdd);
+    handle_key(&mut s, key(KeyCode::Enter));
+    select(&mut s, FieldRow::HeatLoadAdd);
+    handle_key(&mut s, key(KeyCode::Enter));
+    assert_eq!((s.problem.thermal.supports.len(), s.problem.thermal.loads.len()), (1, 1));
+    s.problem.thermal.loads[0].set_edge("right");
+    let e = s.tick();
+    run_effects(&mut s, e);
+    settle(&mut s);
+    let e = s.tick();
+    run_effects(&mut s, e);
+    let sol = s.solved.as_ref().expect("solved");
+    assert!(sol.summary.heat.is_some() && sol.temperature.is_some());
+    // 'v' cycles the displayed field through the fields the result has: just the temperature.
+    s.field = fea_problem::Field::VonMises;
+    s.problem.study = fea_problem::Study::Thermal;
+    let all = s.solved.as_ref().unwrap().fields();
+    assert_eq!(all, vec![fea_problem::Field::Temperature]);
+    let text = view::readout_lines(&crate::theme::Theme::default(), &s).iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("Temperature"), "{text}");
+    assert!(!text.contains("Peak von Mises"), "{text}");
+}

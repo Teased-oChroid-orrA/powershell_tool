@@ -16,7 +16,7 @@ use crate::{
 };
 use crate::gpu_viewer::bench::Bench;
 use fea_core::Mesh;
-use fea_problem::{solve::Field, templates::templates, Geometry, Problem, Solved};
+use fea_problem::{templates::templates, Geometry, Problem, Solved};
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
@@ -128,13 +128,22 @@ pub enum Feature {
     Support(usize),
     Load(usize),
     Bushing(usize),
+    /// Conductivity, heat generation and the stress-free temperature.
+    Thermal,
+    HeatSupport(usize),
+    HeatLoad(usize),
 }
 
 /// The feature a property row belongs to.
 pub fn feature_of(row: FieldRow) -> Feature {
     use FieldRow::*;
     match row {
-        Header(_) | Template | Analysis | Thickness => Feature::Problem,
+        Header(_) | Template | Analysis | StudyKind | Thickness => Feature::Problem,
+        Conductivity | HeatSource | ReferenceTemp => Feature::Thermal,
+        HeatSupportKind(s) | HeatSupportEdge(s) | HeatSupportCoord(s, _) | HeatSupportTemp(s) | HeatSupportRemove(s) => Feature::HeatSupport(s),
+        HeatSupportAdd => Feature::HeatSupport(usize::MAX),
+        HeatLoadKind(l) | HeatLoadEdge(l) | HeatLoadParam(l, _) | HeatLoadRemove(l) => Feature::HeatLoad(l),
+        HeatLoadAdd => Feature::HeatLoad(usize::MAX),
         Material | Young | Poisson | Alpha | Density | Yield | DeltaT => Feature::Material,
         Source | ImportPath | OuterKind | Outer(_) | PolyPoint(..) | PolyAdd | PolyRemove | HoleAdd | Depth | Layers => Feature::Geometry,
         HoleKind(h) | Hole(h, _) | HoleRemove(h) => Feature::Hole(h),
@@ -155,13 +164,15 @@ pub fn removal_of(row: FieldRow) -> Option<FieldRow> {
         Feature::Support(s) if s != usize::MAX => Some(FieldRow::SupportRemove(s)),
         Feature::Load(l) if l != usize::MAX => Some(FieldRow::LoadRemove(l)),
         Feature::Bushing(b) if b != usize::MAX => Some(FieldRow::BushingRemove(b)),
+        Feature::HeatSupport(s) if s != usize::MAX => Some(FieldRow::HeatSupportRemove(s)),
+        Feature::HeatLoad(l) if l != usize::MAX => Some(FieldRow::HeatLoadRemove(l)),
         _ => None,
     }
 }
 
 /// The part of the inputs the mesh depends on (supports, loads and material values do not).
 fn preview_key(p: &Problem) -> Problem {
-    Problem { supports: Vec::new(), loads: Vec::new(), delta_t: 0.0, name: String::new(), ..p.clone() }
+    Problem { supports: Vec::new(), loads: Vec::new(), delta_t: 0.0, name: String::new(), study: fea_problem::Study::default(), thermal: fea_problem::ThermalSpec::default(), ..p.clone() }
 }
 
 struct Prompt {
@@ -383,6 +394,8 @@ impl SolidSession {
         match self.focused_row().map(feature_of) {
             Some(Feature::Support(s)) if s != usize::MAX && matches!(self.problem.supports.get(s), Some(fea_problem::Support::Edge { .. })) => Ok(()),
             Some(Feature::Load(l)) if l != usize::MAX && self.problem.loads.get(l).is_some_and(|l| l.edge().is_some()) => Ok(()),
+            Some(Feature::HeatSupport(s)) if s != usize::MAX && self.problem.thermal.supports.get(s).is_some_and(|x| x.edge().is_some()) => Ok(()),
+            Some(Feature::HeatLoad(l)) if l != usize::MAX && self.problem.thermal.loads.get(l).is_some_and(|x| x.edge().is_some()) => Ok(()),
             _ => Err(format!("focus a support or load that acts on an edge to assign '{name}' to it")),
         }
     }
@@ -590,8 +603,19 @@ impl SolidSession {
             self.status = "Pick a surface in the viewport or the tree first.".into();
             return;
         }
+        let thermal = self.problem.study == fea_problem::Study::Thermal;
+        if thermal && matches!(kind, Boundary::Roller(_)) {
+            self.status = "A thermal study has no rollers: choose a fixed temperature, a heat flux or convection from the surface menu.".into();
+            return;
+        }
         self.edit(|p| {
             for name in &names {
+                if thermal {
+                    // In a thermal-only study the two quick commands add the thermal counterparts.
+                    let bc = if kind == Boundary::Fixed { fea_problem::advice::BcKind::FixedTemperature } else { fea_problem::advice::BcKind::HeatFlux };
+                    let _ = fea_problem::advice::add_boundary(p, name, bc);
+                    continue;
+                }
                 match kind {
                     Boundary::Fixed => p.supports.push(fea_problem::Support::fixed(name)),
                     Boundary::Roller(c) => p.supports.push(fea_problem::Support::roller(name, c)),
@@ -629,6 +653,16 @@ impl SolidSession {
             }),
             Feature::Load(l) => self.edit(|p| {
                 if let Some(load) = p.loads.get_mut(l) {
+                    load.set_edge(&name);
+                }
+            }),
+            Feature::HeatSupport(s) => self.edit(|p| {
+                if let Some(sup) = p.thermal.supports.get_mut(s) {
+                    sup.set_edge(&name);
+                }
+            }),
+            Feature::HeatLoad(l) => self.edit(|p| {
+                if let Some(load) = p.thermal.loads.get_mut(l) {
                     load.set_edge(&name);
                 }
             }),
@@ -893,7 +927,7 @@ impl SolidSession {
             study_scene
         } else if let Some(solved) = showing {
             self.pick_positions.clear();
-            SceneSource::from_solved(&solved, Field::VonMises).build()?
+            SceneSource::from_solved(&solved, solved.default_field()).build()?
         } else if let Some(p) = self.preview.as_ref().filter(|p| p.key == preview_key(&self.problem)) {
             let mesh = p.mesh.clone();
             let codes = self.node_codes(&mesh);

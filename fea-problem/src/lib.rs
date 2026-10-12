@@ -15,6 +15,8 @@ pub mod sketch;
 pub mod solid;
 pub mod solve;
 pub mod templates;
+pub mod thermal;
 
 pub use problem::{Analysis, Bushing, ElementChoice, Geometry, Load, MaterialSpec, MeshSpec, Problem, RefineRegion, Seg, Shape, SketchRegion, Support};
 pub use solve::{solve, Field, Solved};
+pub use thermal::{HeatLoad, HeatSummary, HeatSupport, Study, ThermalSpec};

@@ -1,6 +1,7 @@
 //! Plain-text report of a solved problem.
 
 use crate::problem::{Geometry, Load, Support};
+use crate::thermal::{HeatLoad, HeatSupport};
 use crate::solve::Solved;
 use std::fmt::Write;
 
@@ -27,10 +28,26 @@ pub fn describe_load(l: &Load) -> String {
     }
 }
 
+pub fn describe_heat_support(s: &HeatSupport) -> String {
+    match s {
+        HeatSupport::Temperature { edge, t } => format!("{edge}: held at {t}"),
+        HeatSupport::Point { x, y, z, t } => format!("point ({x}, {y}, {z}): held at {t}"),
+    }
+}
+
+pub fn describe_heat_load(l: &HeatLoad) -> String {
+    match l {
+        HeatLoad::Flux { edge, q } => format!("{edge}: heat flux {q} (into the body)"),
+        HeatLoad::Convection { edge, h, ambient } => format!("{edge}: convection h = {h} to {ambient}"),
+        HeatLoad::Point { x, y, z, q } => format!("point ({x}, {y}, {z}): heat input {q}"),
+    }
+}
+
 pub fn report(s: &Solved) -> String {
     let (p, sm) = (&s.problem, &s.summary);
     let mut o = String::new();
     let _ = writeln!(o, "FEA Workbench: {}", p.name);
+    let _ = writeln!(o, "Study: {}", p.study.label());
     let _ = writeln!(o, "Analysis: {}{}", p.analysis.label(), if matches!(p.analysis, crate::Analysis::PlaneStress | crate::Analysis::PlaneStrain) { format!(", thickness {}", p.thickness) } else { String::new() });
     let _ = writeln!(o, "Material: {}  E = {}  nu = {}  alpha = {}{}", p.material.name, p.material.e, p.material.nu, p.material.alpha, p.material.yield_stress.map(|y| format!("  yield = {y}")).unwrap_or_default());
     match &p.geometry {
@@ -47,36 +64,70 @@ pub fn report(s: &Solved) -> String {
     if p.delta_t != 0.0 {
         let _ = writeln!(o, "Temperature change: {}", p.delta_t);
     }
-    let _ = writeln!(o, "\nSupports");
-    for s in &p.supports {
-        let _ = writeln!(o, "  {}", describe_support(s));
+    if p.study.is_thermal() {
+        let th = &p.thermal;
+        let _ = writeln!(o, "\nThermal: conductivity {}{}{}", th.conductivity, if th.source != 0.0 { format!(", heat generation {}", th.source) } else { String::new() }, if p.study == crate::Study::ThermalStress { format!(", stress free at {}", th.reference) } else { String::new() });
+        let _ = writeln!(o, "Fixed temperatures");
+        for t in &th.supports {
+            let _ = writeln!(o, "  {}", describe_heat_support(t));
+        }
+        let _ = writeln!(o, "Heat loads");
+        if th.loads.is_empty() && th.source == 0.0 {
+            let _ = writeln!(o, "  (none)");
+        }
+        for l in &th.loads {
+            let _ = writeln!(o, "  {}", describe_heat_load(l));
+        }
     }
-    let _ = writeln!(o, "Loads");
-    if p.loads.is_empty() && p.delta_t == 0.0 {
-        let _ = writeln!(o, "  (none)");
-    }
-    for l in &p.loads {
-        let _ = writeln!(o, "  {}", describe_load(l));
+    if p.study.is_structural() {
+        let _ = writeln!(o, "\nSupports");
+        for s in &p.supports {
+            let _ = writeln!(o, "  {}", describe_support(s));
+        }
+        let _ = writeln!(o, "Loads");
+        if p.loads.is_empty() && p.delta_t == 0.0 {
+            let _ = writeln!(o, "  (none)");
+        }
+        for l in &p.loads {
+            let _ = writeln!(o, "  {}", describe_load(l));
+        }
     }
     let _ = writeln!(o, "\nMesh: {:?}, {} nodes, {} elements, {} dofs", p.mesh.element, sm.nodes, sm.elements, sm.dofs);
     for (i, h) in s.history.iter().enumerate() {
-        let _ = writeln!(o, "  pass {}: {} nodes, {} elements, error estimate {:.2} %, peak von Mises {:.1}", i + 1, h.nodes, h.elements, 100.0 * h.zz_error, h.max_von_mises);
+        if p.study.is_structural() {
+            let _ = writeln!(o, "  pass {}: {} nodes, {} elements, error estimate {:.2} %, peak von Mises {:.1}", i + 1, h.nodes, h.elements, 100.0 * h.zz_error, h.max_von_mises);
+        } else {
+            let _ = writeln!(o, "  pass {}: {} nodes, {} elements", i + 1, h.nodes, h.elements);
+        }
     }
     let at = |e: &crate::solve::Extreme| if s.model.mesh.dim() == 3 { format!("({:.4}, {:.4}, {:.4})", e.at[0], e.at[1], e.at[2]) } else { format!("({:.4}, {:.4})", e.at[0], e.at[1]) };
     let _ = writeln!(o, "\nResults");
-    let _ = writeln!(o, "  Max displacement   {:.6e} at {}", sm.max_displacement.value, at(&sm.max_displacement));
-    let _ = writeln!(o, "  Max von Mises      {:.2} at {}", sm.max_von_mises.value, at(&sm.max_von_mises));
-    let _ = writeln!(o, "  Max principal      {:.2} at {}", sm.max_principal.value, at(&sm.max_principal));
-    let _ = writeln!(o, "  Min principal      {:.2} at {}", sm.min_principal.value, at(&sm.min_principal));
-    if let Some(m) = sm.margin {
-        let _ = writeln!(o, "  Yield margin       {m:+.3} (yield / peak von Mises - 1)");
+    if let Some(h) = &sm.heat {
+        let _ = writeln!(o, "  Min temperature    {:.4} at {}", h.t_min.value, at(&h.t_min));
+        let _ = writeln!(o, "  Max temperature    {:.4} at {}", h.t_max.value, at(&h.t_max));
     }
-    let _ = writeln!(o, "  Strain energy      {:.6e}", sm.strain_energy);
+    if p.study.is_structural() {
+        let _ = writeln!(o, "  Max displacement   {:.6e} at {}", sm.max_displacement.value, at(&sm.max_displacement));
+        let _ = writeln!(o, "  Max von Mises      {:.2} at {}", sm.max_von_mises.value, at(&sm.max_von_mises));
+        let _ = writeln!(o, "  Max principal      {:.2} at {}", sm.max_principal.value, at(&sm.max_principal));
+        let _ = writeln!(o, "  Min principal      {:.2} at {}", sm.min_principal.value, at(&sm.min_principal));
+        if let Some(m) = sm.margin {
+            let _ = writeln!(o, "  Yield margin       {m:+.3} (yield / peak von Mises - 1)");
+        }
+        let _ = writeln!(o, "  Strain energy      {:.6e}", sm.strain_energy);
+    }
     let _ = writeln!(o, "\nChecks");
-    let _ = writeln!(o, "  Reactions          ({:.4}, {:.4}, {:.4})", sm.reaction[0], sm.reaction[1], sm.reaction[2]);
-    let _ = writeln!(o, "  Applied loads      ({:.4}, {:.4}, {:.4})", sm.applied[0], sm.applied[1], sm.applied[2]);
-    let _ = writeln!(o, "  Equilibrium error  {:.2e}", sm.equilibrium_error);
-    let _ = writeln!(o, "  Mesh error (ZZ)    {:.2} % of the energy norm", 100.0 * sm.zz_error);
+    if let Some(h) = &sm.heat {
+        let _ = writeln!(o, "  Heat in            {:.6e}", h.heat_in);
+        let _ = writeln!(o, "  Heat out           {:.6e} (fixed temperatures and convection, net)", h.heat_out);
+        let _ = writeln!(o, "  Heat balance error {:.2e}", h.balance_error);
+    }
+    if p.study.is_structural() {
+        let _ = writeln!(o, "  Reactions          ({:.4}, {:.4}, {:.4})", sm.reaction[0], sm.reaction[1], sm.reaction[2]);
+        let _ = writeln!(o, "  Applied loads      ({:.4}, {:.4}, {:.4})", sm.applied[0], sm.applied[1], sm.applied[2]);
+        let _ = writeln!(o, "  Equilibrium error  {:.2e}", sm.equilibrium_error);
+        let _ = writeln!(o, "  Mesh error (ZZ)    {:.2} % of the energy norm", 100.0 * sm.zz_error);
+    }
     let _ = writeln!(o, "  Solve time         {:.0} ms", sm.solve_ms);
     if !sm.interfaces.is_empty() {
         let _ = writeln!(o, "\nInterference fits");

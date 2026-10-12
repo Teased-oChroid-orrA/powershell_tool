@@ -27,6 +27,8 @@ pub enum FailureClass {
     HoleOutsideOutline,
     /// A load or support value is NaN or infinite.
     NonFiniteInput,
+    /// A steady thermal study with no fixed temperature and no convection: the temperature level is undetermined.
+    NoThermalAnchor,
     /// A failure none of the rules recognise: the message is shown, with no remedy.
     Other,
 }
@@ -41,6 +43,7 @@ impl FailureClass {
             Self::MeshTooCoarse => "Mesh too coarse",
             Self::HoleOutsideOutline => "Hole does not fit",
             Self::NonFiniteInput => "Invalid value",
+            Self::NoThermalAnchor => "No fixed temperature",
             Self::Other => "Solve failed",
         }
     }
@@ -56,6 +59,8 @@ pub enum RemedyKind {
     CoarsenMesh,
     RefineMesh,
     RemoveHole,
+    AddFixedTemperature,
+    AddConvection,
 }
 
 /// A support or load by position in `Problem::supports` / `Problem::loads`.
@@ -63,6 +68,8 @@ pub enum RemedyKind {
 pub enum Target {
     Support(usize),
     Load(usize),
+    HeatSupport(usize),
+    HeatLoad(usize),
 }
 
 /// One edit of the problem.
@@ -105,6 +112,20 @@ impl Edit {
                     }
                     _ => Err("that load does not act on a surface".into()),
                 },
+                Target::HeatSupport(i) => match p.thermal.supports.get_mut(*i) {
+                    Some(t) if t.edge().is_some() => {
+                        t.set_edge(to);
+                        Ok(())
+                    }
+                    _ => Err("that fixed temperature does not act on a surface".into()),
+                },
+                Target::HeatLoad(i) => match p.thermal.loads.get_mut(*i) {
+                    Some(l) if l.edge().is_some() => {
+                        l.set_edge(to);
+                        Ok(())
+                    }
+                    _ => Err("that heat load does not act on a surface".into()),
+                },
             },
             Edit::RemoveHole(n) => match &mut p.geometry {
                 Geometry::Sketch { holes, .. } if *n >= 1 && *n <= holes.len() => {
@@ -135,6 +156,14 @@ impl Edit {
                 }
                 Target::Load(i) if *i < p.loads.len() => {
                     p.loads.remove(*i);
+                    Ok(())
+                }
+                Target::HeatSupport(i) if *i < p.thermal.supports.len() => {
+                    p.thermal.supports.remove(*i);
+                    Ok(())
+                }
+                Target::HeatLoad(i) if *i < p.thermal.loads.len() => {
+                    p.thermal.loads.remove(*i);
                     Ok(())
                 }
                 _ => Err("nothing to remove: the model changed".into()),
@@ -179,10 +208,11 @@ pub fn diagnose(p: &Problem, error: Option<&str>) -> Vec<Diagnosis> {
     out.extend(hole_misfits(p));
     out.extend(unknown_surfaces(p));
     out.extend(non_finite(p));
-    if p.supports.is_empty() {
+    if p.study.is_structural() && p.supports.is_empty() {
         out.push(no_supports(p));
     }
-    if error.is_some_and(|e| e.contains("rigid-body") && e.contains("constrained")) && !p.supports.is_empty() {
+    out.extend(no_thermal_anchor(p));
+    if p.study.is_structural() && error.is_some_and(|e| e.contains("rigid-body") && e.contains("constrained")) && !p.supports.is_empty() {
         out.push(under_constrained(p));
     }
     out.extend(mesh_too_fine(p));
@@ -252,6 +282,18 @@ fn unknown_surfaces(p: &Problem) -> Vec<Diagnosis> {
     for (i, l) in p.loads.iter().enumerate() {
         if let Load::Pressure { edge, .. } | Load::Traction { edge, .. } | Load::Force { edge, .. } = l {
             check(Target::Load(i), edge, "load");
+        }
+    }
+    if p.study.is_thermal() {
+        for (i, t) in p.thermal.supports.iter().enumerate() {
+            if let Some(n) = t.edge() {
+                check(Target::HeatSupport(i), n, "fixed temperature");
+            }
+        }
+        for (i, l) in p.thermal.loads.iter().enumerate() {
+            if let Some(n) = l.edge() {
+                check(Target::HeatLoad(i), n, "heat load");
+            }
         }
     }
     out
@@ -327,6 +369,29 @@ fn no_supports(p: &Problem) -> Diagnosis {
         remedies,
         questions,
     }
+}
+
+/// A steady thermal study needs something to pin the temperature level: a fixed temperature or a convection surface.
+fn no_thermal_anchor(p: &Problem) -> Option<Diagnosis> {
+    if !p.study.is_thermal() || !p.thermal.supports.is_empty() || p.thermal.loads.iter().any(|l| matches!(l, crate::thermal::HeatLoad::Convection { .. })) {
+        return None;
+    }
+    let names = p.edge_names();
+    let heated: Vec<String> = p.thermal.loads.iter().filter_map(|l| l.edge().map(str::to_string)).collect();
+    // The surface away from the heat input first; with none, the first.
+    let free: Vec<String> = names.iter().filter(|n| !heated.contains(n) && matches!(advice::surface_kind(n), SurfaceKind::OuterEdge | SurfaceKind::EndFace | SurfaceKind::Hole)).cloned().collect();
+    let mut remedies = Vec::new();
+    if let Some(first) = free.first().or(names.first()) {
+        remedies.push(Remedy { kind: RemedyKind::AddFixedTemperature, label: format!("Hold '{first}' at a fixed temperature"), why: "a heat sink at a known temperature fixes the level of the whole field".into(), edit: Edit::Advice(AdviceEdit::Boundary { surface: first.clone(), kind: BcKind::FixedTemperature }) });
+        remedies.push(Remedy { kind: RemedyKind::AddConvection, label: format!("Cool '{first}' by convection"), why: "heat lost to a surrounding fluid also fixes the level, with the ambient temperature as the reference".into(), edit: Edit::Advice(AdviceEdit::Boundary { surface: first.clone(), kind: BcKind::Convection }) });
+    }
+    Some(Diagnosis {
+        class: FailureClass::NoThermalAnchor,
+        summary: "Nothing fixes the temperature level: add a fixed temperature or a convection surface.".into(),
+        evidence: vec![format!("{} heat load(s), 0 fixed temperatures, no convection", p.thermal.loads.len())],
+        remedies,
+        questions: Vec::new(),
+    })
 }
 
 fn under_constrained(p: &Problem) -> Diagnosis {

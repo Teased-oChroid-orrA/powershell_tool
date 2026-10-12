@@ -325,7 +325,12 @@ impl Model {
     /// ZZ error estimate from the displacement field `u`: per-element energy norm of the difference
     /// between the SPR-recovered and the finite-element stress.
     pub fn zz_error(&self, u: &[f64], delta_t: f64) -> Result<ZzEstimate, String> {
-        let gauss = self.gauss_stresses(u, delta_t)?;
+        self.zz_error_field(u, delta_t, None)
+    }
+
+    /// As [`zz_error`](Self::zz_error) with a nodal temperature field (`Loads::temperature`) on top of `delta_t`.
+    pub fn zz_error_field(&self, u: &[f64], delta_t: f64, field: Option<&[f64]>) -> Result<ZzEstimate, String> {
+        let gauss = self.gauss_stresses_field(u, delta_t, field)?;
         let rec = self.recover_spr(&gauss)?;
         let mut work = Work::new();
         let (mut eta, mut norm2) = (Vec::with_capacity(self.mesh.n_elems()), 0.0f64);

@@ -1,6 +1,7 @@
 //! Starting points for the workbench: small, solvable problems of each kind.
 
 use crate::problem::*;
+use crate::thermal::{Study, ThermalSpec};
 
 fn steel() -> MaterialSpec {
     MaterialSpec { name: "Steel (generic)".into(), e: 29.0e6, nu: 0.3, alpha: 6.5e-6, yield_stress: Some(50_000.0), density: 0.283 / 386.089 }
@@ -11,7 +12,7 @@ fn sketch(outer: Shape, holes: Vec<Shape>) -> Geometry {
 }
 
 fn base(name: &str, analysis: Analysis, geometry: Geometry) -> Problem {
-    Problem { version: FORMAT_VERSION, name: name.into(), analysis, thickness: 0.25, material: steel(), geometry, mesh: MeshSpec::default(), supports: Vec::new(), loads: Vec::new(), delta_t: 0.0, bushings: Vec::new(), history: None }
+    Problem { version: FORMAT_VERSION, name: name.into(), analysis, thickness: 0.25, material: steel(), geometry, mesh: MeshSpec::default(), supports: Vec::new(), loads: Vec::new(), delta_t: 0.0, bushings: Vec::new(), study: Study::default(), thermal: ThermalSpec::default(), history: None }
 }
 
 /// A new, empty part: Sketch1 (empty) on the Front plane and no body yet. It cannot be meshed or solved until the

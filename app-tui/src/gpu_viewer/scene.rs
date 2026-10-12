@@ -420,6 +420,9 @@ pub struct SceneSource {
 impl SceneSource {
     /// Static result of a solved problem: `field` is the primary scalar, every other field is selectable in the window.
     pub fn from_solved(s: &fea_problem::Solved, field: fea_problem::Field) -> Self {
+        // A field the result does not have (von Mises of a thermal-only study) falls back to the one it opens on.
+        let available = s.fields();
+        let field = if available.contains(&field) { field } else { s.default_field() };
         Self {
             mesh: std::sync::Arc::new(s.model.mesh.clone()),
             displacement: s.u.clone(),
@@ -427,7 +430,7 @@ impl SceneSource {
             period: None,
             label: format!("{} | static {:?}", s.problem.name, field),
             field_label: field.label().into(),
-            fields: fea_problem::Field::ALL.iter().filter(|f| **f != field).map(|f| (f.label().to_string(), s.node_values(*f))).collect(),
+            fields: available.iter().filter(|f| **f != field).map(|f| (f.label().to_string(), s.node_values(*f))).collect(),
         }
     }
     /// One source per computed mode shape (harmonic for natural frequencies, static for buckling).

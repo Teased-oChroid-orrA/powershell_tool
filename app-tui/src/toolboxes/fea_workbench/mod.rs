@@ -661,7 +661,7 @@ impl FeaWorkbenchState {
 
 /// The part of the inputs the mesh depends on (supports, loads and material values do not).
 pub(crate) fn preview_key(p: &Problem) -> Problem {
-    Problem { supports: Vec::new(), loads: Vec::new(), delta_t: 0.0, name: String::new(), ..p.clone() }
+    Problem { supports: Vec::new(), loads: Vec::new(), delta_t: 0.0, name: String::new(), study: fea_problem::Study::default(), thermal: fea_problem::ThermalSpec::default(), ..p.clone() }
 }
 
 fn is_edit_char(c: char) -> bool {
@@ -798,7 +798,7 @@ pub fn handle_key(state: &mut FeaWorkbenchState, key: KeyEvent) -> (bool, Vec<Ef
                 (true, Vec::new())
             }
             'v' => {
-                let all = Field::ALL;
+                let all = state.solved.as_ref().map_or_else(|| Field::ALL.to_vec(), |s| s.fields());
                 let i = all.iter().position(|f| *f == state.field).unwrap_or(0);
                 state.field = all[(i + 1) % all.len()];
                 (true, Vec::new())
