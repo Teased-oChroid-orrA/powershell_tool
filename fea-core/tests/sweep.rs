@@ -155,3 +155,55 @@ fn a_closed_revolution_shares_the_seam_nodes() {
     eprintln!("ring volume error vs Pappus: 6 layers {e6:.2e}, 12 layers {e12:.2e}");
     assert!(e6 < 5e-3 && e12 < e6 / 10.0, "{e6:e} -> {e12:e}");
 }
+
+/// Volume of a 3D mesh: the total of a unit body force per unit volume.
+fn volume(mesh: &Mesh) -> f64 {
+    let loads = Loads { body: Some([0.0, 0.0, 1.0]), ..Loads::default() };
+    fea_core::loads::assemble(mesh, &loads).unwrap().chunks(3).map(|f| f[2]).sum()
+}
+
+fn unit_square(kind: ElementKind) -> Mesh {
+    grid(Physics::PlaneStress { thickness: 1.0 }, kind, Elastic::new(E, NU), [2, 2, 1], &|q| [q[0], q[1], 0.0]).unwrap()
+}
+
+/// An extrusion whose depth is exactly 2 pi is an open extrusion, not a closed revolution: the end layer must not be
+/// identified with the first (it used to be, collapsing the part onto a plane).
+#[test]
+fn an_extrusion_of_depth_two_pi_is_not_treated_as_a_full_turn() {
+    let m2 = unit_square(ElementKind::Quad9);
+    let tau = std::f64::consts::TAU;
+    let m3 = extrude(&m2, &[0.0, 0.5 * tau, tau]).unwrap();
+    assert_eq!(m3.nodes.len(), m2.nodes.len() * 5, "three layer boundaries and two mid-layers, none merged");
+    assert!((volume(&m3) - tau).abs() < 1e-12 * tau, "{}", volume(&m3));
+}
+
+/// Sweeping along a straight line is the extrusion; along a quarter circle it obeys Pappus: volume = area x distance
+/// travelled by the centroid. The nodes land exactly on the circle (also the mid-layer ones).
+#[test]
+fn a_swept_profile_matches_the_extrusion_and_pappus() {
+    use fea_core::sweep::sweep_along;
+    let m2 = grid(Physics::PlaneStress { thickness: 1.0 }, ElementKind::Quad9, Elastic::new(E, NU), [3, 2, 1], &|q| [q[0], q[1], 0.0]).unwrap();
+    // Straight path along +z.
+    let straight = sweep_along(&m2, &[0.0, 1.0, 2.5], &|x, s| [x[0], x[1], s]).unwrap();
+    let ext = extrude(&m2, &[0.0, 1.0, 2.5]).unwrap();
+    assert_eq!(straight.nodes, ext.nodes);
+    // A unit square profile (x, y in [0, 1]) bent a quarter turn: its x = 1 edge is the inner one (radius r0) and its
+    // x = 0 edge the outer (r0 + 1), about the axis parallel to y through x = r0 + 1.
+    let r0 = 2.0f64;
+    let quarter = std::f64::consts::FRAC_PI_2;
+    let levels: Vec<f64> = (0..=6).map(|i| quarter * i as f64 / 6.0).collect();
+    let cx = r0 + 1.0;
+    let bent = sweep_along(&m2, &levels, &|x, phi| {
+        let r = cx - x[0];
+        [cx - r * phi.cos(), x[1], r * phi.sin()]
+    })
+    .unwrap();
+    let v = volume(&bent);
+    // Centroid of the profile at x = 0.5 -> radius r0 + 0.5; distance = quarter * (r0 + 0.5); area 1.
+    let pappus = quarter * (r0 + 0.5);
+    assert!((v - pappus).abs() < 1e-5 * pappus, "{v} vs {pappus}");
+    for n in &bent.nodes {
+        let rr = (cx - n[0]).hypot(n[2]);
+        assert!((r0..=r0 + 1.0).contains(&(rr + 1e-12)) || (rr - r0 - 1.0).abs() < 1e-12, "node {n:?} at radius {rr} is outside the swept band");
+    }
+}

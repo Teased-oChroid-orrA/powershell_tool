@@ -147,6 +147,13 @@ impl Seg {
             }
         }
     }
+    /// The same edge walked the other way.
+    pub fn reversed(&self) -> Seg {
+        match *self {
+            Seg::Line { a, b } => Seg::Line { a: b, b: a },
+            Seg::Arc { c, r, a0, a1 } => Seg::Arc { c, r, a0: a1, a1: a0 },
+        }
+    }
     pub(crate) fn curve(&self) -> fea_core::geometry::Curve {
         match *self {
             Seg::Line { a, b } => fea_core::geometry::Curve::line(a, b),
@@ -311,12 +318,29 @@ impl RefineRegion {
     }
 }
 
+/// One more region of a sketch: an outline and its holes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SketchRegion {
+    pub outer: Shape,
+    #[serde(default)]
+    pub holes: Vec<Shape>,
+}
+
 /// Where the geometry comes from.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Geometry {
-    /// A 2D sketch (outer boundary minus holes); extruded when the analysis is [`Analysis::Solid`].
-    Sketch { outer: Shape, holes: Vec<Shape>, depth: f64, layers: usize },
+    /// A 2D sketch (outer boundary minus holes); extruded when the analysis is [`Analysis::Solid`]. `regions` are the
+    /// sketch's other disjoint regions (a separate outline, an island inside a hole): meshed on their own and appended as
+    /// separate bodies whose surfaces are named `r2/...`, `r3/...` (the first region has no prefix).
+    Sketch {
+        outer: Shape,
+        holes: Vec<Shape>,
+        depth: f64,
+        layers: usize,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        regions: Vec<SketchRegion>,
+    },
     /// A mesh read from a Gmsh `.msh` or Abaqus `.inp` file (the app supplies its text).
     Imported { path: String },
     /// A B-rep solid: its STEP text (the source of truth, edited with the OpenCascade kernel) and the cached face-tagged
@@ -451,6 +475,7 @@ impl Problem {
             },
             Body::Extrude { depth, layers } => (depth, layers),
             Body::Revolve { segments, .. } => (1.0, segments),
+            Body::Sweep { layers, .. } => (1.0, layers),
         };
         if b.body != Body::Region {
             self.analysis = Analysis::Solid;
@@ -458,7 +483,7 @@ impl Problem {
                 self.mesh.element = ElementChoice::Quad4;
             }
         }
-        self.geometry = Geometry::Sketch { outer: b.outer, holes: b.holes, depth, layers };
+        self.geometry = Geometry::Sketch { outer: b.outer, holes: b.holes, depth, layers, regions: b.regions };
         Ok(())
     }
 
@@ -480,14 +505,21 @@ impl Problem {
         if let Geometry::Solid { cache: Some(c), .. } = &self.geometry {
             return c.face_names();
         }
-        let Geometry::Sketch { outer, holes, depth, .. } = &self.geometry else { return Vec::new() };
-        let mut names: Vec<String> = match outer {
-            Shape::Rect { .. } => ["bottom", "right", "top", "left"].iter().map(|s| s.to_string()).collect(),
-            Shape::Polygon { pts } => (1..=pts.len()).map(|i| format!("edge{i}")).collect(),
-            Shape::Outline { segs } => (1..=segs.len()).map(|i| format!("edge{i}")).collect(),
-            Shape::Circle { .. } | Shape::Slot { .. } => vec!["outer".into()],
+        let Geometry::Sketch { outer, holes, depth, regions, .. } = &self.geometry else { return Vec::new() };
+        let region_names = |outer: &Shape, holes: &[Shape], prefix: &str| -> Vec<String> {
+            let mut names: Vec<String> = match outer {
+                Shape::Rect { .. } => ["bottom", "right", "top", "left"].iter().map(|s| s.to_string()).collect(),
+                Shape::Polygon { pts } => (1..=pts.len()).map(|i| format!("edge{i}")).collect(),
+                Shape::Outline { segs } => (1..=segs.len()).map(|i| format!("edge{i}")).collect(),
+                Shape::Circle { .. } | Shape::Slot { .. } => vec!["outer".into()],
+            };
+            names.extend((1..=holes.len()).map(|i| format!("hole{i}")));
+            names.into_iter().map(|n| format!("{prefix}{n}")).collect()
         };
-        names.extend((1..=holes.len()).map(|i| format!("hole{i}")));
+        let mut names = region_names(outer, holes, "");
+        for (k, r) in regions.iter().enumerate() {
+            names.extend(region_names(&r.outer, &r.holes, &format!("r{}/", k + 2)));
+        }
         if self.analysis == Analysis::Solid && *depth > 0.0 {
             names.push("start".into());
             names.push("end".into());
@@ -498,7 +530,7 @@ impl Problem {
     /// Remove all geometry: an empty feature history, no boundary conditions (they named surfaces that are gone) and
     /// a unit placeholder outline that is never meshed (`validate_geometry` refuses until a sketch has a profile).
     pub fn clear_geometry(&mut self) {
-        self.geometry = Geometry::Sketch { outer: Shape::Rect { x0: 0.0, y0: 0.0, x1: 1.0, y1: 1.0 }, holes: Vec::new(), depth: 1.0, layers: 4 };
+        self.geometry = Geometry::Sketch { outer: Shape::Rect { x0: 0.0, y0: 0.0, x1: 1.0, y1: 1.0 }, holes: Vec::new(), depth: 1.0, layers: 4, regions: Vec::new() };
         self.history = Some(crate::history::History::default());
         self.supports.clear();
         self.loads.clear();
@@ -538,7 +570,7 @@ impl Problem {
             }
         }
         match &self.geometry {
-            Geometry::Sketch { outer, holes, depth, layers } => {
+            Geometry::Sketch { outer, holes, depth, layers, regions } => {
                 if self.analysis == Analysis::Solid {
                     if !self.mesh.element.is_quad() {
                         return Err("a 3D extrusion needs quadrilateral elements (Quad4 / Quad8 / Quad9)".into());
@@ -547,8 +579,11 @@ impl Problem {
                         return Err("an extrusion needs a positive depth and at least one layer".into());
                     }
                 }
-                for s in std::iter::once(outer).chain(holes.iter()) {
+                for s in std::iter::once(outer).chain(holes.iter()).chain(regions.iter().flat_map(|r| std::iter::once(&r.outer).chain(r.holes.iter()))) {
                     check_shape(s)?;
+                }
+                if !regions.is_empty() && !self.bushings.is_empty() {
+                    return Err("a bushing is placed in a hole of the first region; a sketch with several regions cannot have bushings".into());
                 }
             }
             Geometry::Imported { path } => {

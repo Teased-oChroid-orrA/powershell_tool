@@ -31,7 +31,7 @@ fn random_case(rng: &mut Rng) -> Problem {
     let wall = rng.range(0.1, 0.35) * r;
     let width = r * rng.range(3.0, 6.0);
     let len = width * rng.range(1.5, 3.0);
-    p.geometry = Geometry::Sketch { outer: Shape::Rect { x0: 0.0, y0: 0.0, x1: len, y1: width }, holes: vec![Shape::Circle { cx: width / 2.0, cy: width / 2.0, r }], depth: 1.0, layers: 1 };
+    p.geometry = Geometry::Sketch { outer: Shape::Rect { x0: 0.0, y0: 0.0, x1: len, y1: width }, holes: vec![Shape::Circle { cx: width / 2.0, cy: width / 2.0, r }], depth: 1.0, layers: 1, regions: Vec::new() };
     p.thickness = rng.range(0.2, 1.0) * r * 2.0;
     p.material.e = rng.pick(&MODULI);
     p.material.nu = rng.range(0.28, 0.35);

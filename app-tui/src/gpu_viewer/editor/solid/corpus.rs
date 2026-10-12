@@ -354,7 +354,7 @@ fn scenario(rng: &mut Rng) -> Problem {
     } else {
         (0..rng.below(4)).map(|k| Shape::Circle { cx: w * (0.15 + 0.25 * k as f64), cy: h * 0.25, r: h * rng.range(0.04, 0.1) }).collect()
     };
-    p.geometry = Geometry::Sketch { outer, holes, depth: 1.0, layers: 4 };
+    p.geometry = Geometry::Sketch { outer, holes, depth: 1.0, layers: 4, regions: Vec::new() };
     p
 }
 

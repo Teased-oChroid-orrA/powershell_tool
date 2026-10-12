@@ -22,7 +22,7 @@ pub fn extrude(mesh: &Mesh, z_levels: &[f64]) -> Result<Mesh, String> {
     if matches!(mesh.physics, Physics::Axisymmetric) {
         return Err("an axisymmetric mesh is revolved, not extruded".into());
     }
-    sweep(mesh, z_levels, &|x, z| [x[0], x[1], z])
+    sweep(mesh, z_levels, false, &|x, z| [x[0], x[1], z])
 }
 
 /// Revolve about the `y` axis through the angle boundaries `angles` (radians, strictly
@@ -34,17 +34,29 @@ pub fn revolve(mesh: &Mesh, angles: &[f64]) -> Result<Mesh, String> {
     if angles.last().zip(angles.first()).is_some_and(|(b, a)| b - a > std::f64::consts::TAU + 1e-12) {
         return Err("a revolution cannot exceed 360 degrees".into());
     }
-    sweep(mesh, angles, &|x, phi| [x[0] * phi.cos(), x[1], x[0] * phi.sin()])
+    sweep(mesh, angles, closed_sweep(angles), &|x, phi| [x[0] * phi.cos(), x[1], x[0] * phi.sin()])
 }
 
-/// A sweep that returns to its start (360 degrees).
+/// Sweep along any mapping `pos(x2d, s)` of a 2D node and a level to its 3D position (a profile carried along a path),
+/// through the strictly increasing `levels`. The mapping must keep the orientation (a positive Jacobian: `dpos/dx x
+/// dpos/dy` along `dpos/ds`) or the elements come out inside out; `Model::validate` reports such elements. A mid-layer
+/// node is placed at the middle level, so a mapping that follows a circle puts it exactly on the circle.
+pub fn sweep_along(mesh: &Mesh, levels: &[f64], pos: &dyn Fn([f64; 3], f64) -> [f64; 3]) -> Result<Mesh, String> {
+    if matches!(mesh.physics, Physics::Axisymmetric) {
+        return Err("an axisymmetric mesh is revolved, not swept".into());
+    }
+    sweep(mesh, levels, false, pos)
+}
+
+/// A revolution that returns to its start (360 degrees). Only a revolution can: an extrusion or a path sweep whose levels
+/// happen to span 2 pi (a depth of 6.283...) is an open sweep.
 fn closed_sweep(levels: &[f64]) -> bool {
     (levels[levels.len() - 1] - levels[0] - std::f64::consts::TAU).abs() < 1e-9
 }
 
 type SweepMap<'a> = &'a dyn Fn([f64; 3], f64) -> [f64; 3];
 
-fn sweep(mesh: &Mesh, levels: &[f64], pos: SweepMap) -> Result<Mesh, String> {
+fn sweep(mesh: &Mesh, levels: &[f64], closed: bool, pos: SweepMap) -> Result<Mesh, String> {
     if mesh.dim() != 2 {
         return Err("only 2D meshes can be swept".into());
     }
@@ -56,7 +68,6 @@ fn sweep(mesh: &Mesh, levels: &[f64], pos: SweepMap) -> Result<Mesh, String> {
     // revolution (360 degrees) identifies the last layer boundary with the first.
     let mut ids: HashMap<(usize, usize), usize> = HashMap::new();
     let n_layers = levels.len() - 1;
-    let closed = closed_sweep(levels);
     let mut node = |out: &mut Mesh, n2: usize, half: usize| -> usize {
         let key = if closed && half == 2 * n_layers { 0 } else { half };
         *ids.entry((n2, key)).or_insert_with(|| {

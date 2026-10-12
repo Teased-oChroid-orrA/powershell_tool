@@ -8,7 +8,7 @@ use fea_core::geometry::{Curve, Loop, Region, Segment};
 use fea_core::import::{read_abaqus, read_gmsh, ImportOptions};
 use fea_core::mesh2d::mesh_region;
 use crate::history::Body;
-use fea_core::sweep::{extrude, revolve};
+use fea_core::sweep::{extrude, revolve, sweep_along};
 use fea_core::{Mesh, Physics};
 
 /// Most elements a sketch is allowed to produce (a guard against a size typo freezing the app).
@@ -62,6 +62,19 @@ pub fn region_of(p: &Problem) -> Result<Region, String> {
     let outer_loop = shape_loop(outer, true, true, "outer")?;
     let hole_loops = holes.iter().enumerate().map(|(i, h)| shape_loop(h, false, false, &format!("hole{}", i + 1))).collect::<Result<Vec<_>, _>>()?;
     Region::new(outer_loop, hole_loops, p.material.elastic())
+}
+
+/// The meshable regions of the sketch's other regions (islands, separate outlines), in the order of `r2/`, `r3/`, ...
+pub fn extra_regions_of(p: &Problem) -> Result<Vec<Region>, String> {
+    let Geometry::Sketch { regions, .. } = &p.geometry else { return Ok(Vec::new()) };
+    regions
+        .iter()
+        .map(|r| {
+            let outer = shape_loop(&r.outer, true, true, "outer")?;
+            let holes = r.holes.iter().enumerate().map(|(i, h)| shape_loop(h, false, false, &format!("hole{}", i + 1))).collect::<Result<Vec<_>, _>>()?;
+            Region::new(outer, holes, p.material.elastic())
+        })
+        .collect()
 }
 
 /// Holes (1-based, as their `holeN` names) that do not fit the outline: outside it, crossing it, or overlapping another
@@ -131,10 +144,8 @@ pub struct MeshEstimate {
 
 /// See [`MeshEstimate`]. A 2D profile is counted once even when it is extruded (`layers` multiplies the 3D count).
 pub fn estimate_mesh(p: &Problem) -> Result<MeshEstimate, String> {
-    let region = region_of(p)?;
-    let (lo, hi) = region.bounds();
+    let regions: Vec<Region> = std::iter::once(region_of(p)).chain(extra_regions_of(p)?.into_iter().map(Ok)).collect::<Result<_, _>>()?;
     let n = 220usize;
-    let (dx, dy) = ((hi[0] - lo[0]) / n as f64, (hi[1] - lo[1]) / n as f64);
     // Elements per unit area at size h, measured against the mesher over element types, sizes, hole factors and zones
     // (real / estimate stayed within 10% of these): the quad mesh is a recombined triangle mesh, so it is far denser
     // than a square tiling.
@@ -143,22 +154,26 @@ pub fn estimate_mesh(p: &Problem) -> Result<MeshEstimate, String> {
     let zones = &p.mesh.refine;
     let mut out = MeshEstimate { elements: 0.0, per_zone: vec![0.0; zones.len()], core_share: 0.0, touched_share: 0.0 };
     let (mut cells, mut core, mut touched) = (0.0, 0.0, 0.0);
-    for i in 0..n {
-        for j in 0..n {
-            let x = [lo[0] + (i as f64 + 0.5) * dx, lo[1] + (j as f64 + 0.5) * dy];
-            if !region.contains(x) {
-                continue;
-            }
-            let h = base(x);
-            let e = per_area * dx * dy / (h * h);
-            out.elements += e;
-            cells += 1.0;
-            let best = zones.iter().enumerate().map(|(k, z)| (k, z.factor(x))).filter(|(_, f)| *f < 1.0 - 1e-9).min_by(|a, b| a.1.total_cmp(&b.1));
-            if let Some((k, _)) = best {
-                out.per_zone[k] += e;
-                touched += 1.0;
-                if zones.iter().any(|z| z.distance(x) <= z.radius) {
-                    core += 1.0;
+    for region in &regions {
+        let (lo, hi) = region.bounds();
+        let (dx, dy) = ((hi[0] - lo[0]) / n as f64, (hi[1] - lo[1]) / n as f64);
+        for i in 0..n {
+            for j in 0..n {
+                let x = [lo[0] + (i as f64 + 0.5) * dx, lo[1] + (j as f64 + 0.5) * dy];
+                if !region.contains(x) {
+                    continue;
+                }
+                let h = base(x);
+                let e = per_area * dx * dy / (h * h);
+                out.elements += e;
+                cells += 1.0;
+                let best = zones.iter().enumerate().map(|(k, z)| (k, z.factor(x))).filter(|(_, f)| *f < 1.0 - 1e-9).min_by(|a, b| a.1.total_cmp(&b.1));
+                if let Some((k, _)) = best {
+                    out.per_zone[k] += e;
+                    touched += 1.0;
+                    if zones.iter().any(|z| z.distance(x) <= z.radius) {
+                        core += 1.0;
+                    }
                 }
             }
         }
@@ -215,9 +230,24 @@ pub fn sketch_mesh(p: &Problem, field: Option<&SizeField>) -> Result<Mesh, Strin
         None => base(x),
     };
     let mut mesh = mesh_region(&region, physics_2d, p.mesh.element.kind(), &size, MeshOptions::default())?;
+    // The sketch's other regions are separate bodies: meshed alone and appended with their own surface names.
+    for (k, reg) in extra_regions_of(p)?.iter().enumerate() {
+        let m = mesh_region(reg, physics_2d, p.mesh.element.kind(), &size, MeshOptions::default())?;
+        mesh.append(&m, &format!("r{}/", k + 2))?;
+    }
     add_bushings(p, &mut mesh, field)?;
     if p.analysis == Analysis::Solid {
         let body = p.history.as_ref().map(|h| h.rebuild()).transpose()?;
+        if let Some(Body::Sweep { path, layers, origin }) = body.as_ref().map(|b| &b.body) {
+            // The profile's own coordinates, measured from where the path starts, ride the path's moving frame.
+            let levels = path.levels(*layers);
+            let o = *origin;
+            return sweep_along(&mesh, &levels, &move |x, s| {
+                let f = path.at(s);
+                let (a, b) = (x[0] - o[0], x[1] - o[1]);
+                std::array::from_fn(|i| f.p[i] + a * f.u[i] + b * f.v[i])
+            });
+        }
         let mut solid = match body.as_ref().map(|b| &b.body) {
             Some(Body::Revolve { angle_deg, segments }) => {
                 let angles: Vec<f64> = (0..=*segments).map(|i| angle_deg.to_radians() * i as f64 / *segments as f64).collect();

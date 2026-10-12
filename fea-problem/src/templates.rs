@@ -7,7 +7,7 @@ fn steel() -> MaterialSpec {
 }
 
 fn sketch(outer: Shape, holes: Vec<Shape>) -> Geometry {
-    Geometry::Sketch { outer, holes, depth: 1.0, layers: 4 }
+    Geometry::Sketch { outer, holes, depth: 1.0, layers: 4, regions: Vec::new() }
 }
 
 fn base(name: &str, analysis: Analysis, geometry: Geometry) -> Problem {
@@ -55,7 +55,7 @@ pub fn templates() -> Vec<(&'static str, Problem)> {
     lug.supports = vec![Support::fixed("right")];
     lug.loads = vec![Load::Bearing { hole: 1, fx: -3000.0, fy: 0.0 }];
 
-    let mut block = base("Extruded plate with a hole (3D)", Analysis::Solid, Geometry::Sketch { outer: Shape::Rect { x0: 0.0, y0: 0.0, x1: 4.0, y1: 2.0 }, holes: vec![Shape::Circle { cx: 2.0, cy: 1.0, r: 0.5 }], depth: 0.5, layers: 3 });
+    let mut block = base("Extruded plate with a hole (3D)", Analysis::Solid, Geometry::Sketch { outer: Shape::Rect { x0: 0.0, y0: 0.0, x1: 4.0, y1: 2.0 }, holes: vec![Shape::Circle { cx: 2.0, cy: 1.0, r: 0.5 }], depth: 0.5, layers: 3, regions: Vec::new() });
     block.mesh = MeshSpec { size: 0.5, hole_factor: 0.4, ..MeshSpec::default() };
     block.supports = vec![Support::fixed("left")];
     block.loads = vec![Load::Traction { edge: "right".into(), tx: 5_000.0, ty: 0.0, tz: 0.0 }];

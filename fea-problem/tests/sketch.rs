@@ -126,7 +126,8 @@ fn profile_with_circle_hole_and_arc_slot_outline() {
     assert_eq!(pr.holes, vec![Shape::Circle { cx: 6.0, cy: 2.0, r: 0.5 }]);
     // A circle sticking out of the outline is a separate region -> error.
     s.add_circle(11.9, 2.0, 0.5);
-    assert!(s.profile().unwrap_err().contains("separate"));
+    let e = s.profile().unwrap_err();
+    assert!(e.contains("cross"), "{e}");
 }
 
 #[test]
@@ -388,7 +389,7 @@ mod convert {
     #[test]
     fn slot_converts_to_a_polygon_outline_of_the_same_area() {
         let mut p = templates::templates()[0].1.clone();
-        p.geometry = Geometry::Sketch { outer: Shape::Slot { cx: 3.0, cy: 1.0, length: 6.0, width: 2.0, angle: 20.0 }, holes: vec![], depth: 1.0, layers: 2 };
+        p.geometry = Geometry::Sketch { outer: Shape::Slot { cx: 3.0, cy: 1.0, length: 6.0, width: 2.0, angle: 20.0 }, holes: vec![], depth: 1.0, layers: 2, regions: Vec::new() };
         let area_before = build::region_of(&p).unwrap().area();
         p.history = Some(History::from_problem(&p).unwrap());
         p.apply_history().unwrap();
@@ -576,7 +577,7 @@ fn an_outline_with_arcs_round_trips_through_a_sketch_and_solves_on_its_arc_edge(
     // Mesh and solve: held on the straight edge, pulled along +x on the arc edge. Reaction balances the load.
     let mut p = templates::blank();
     p.history = None;
-    p.geometry = Geometry::Sketch { outer: outline, holes: vec![], depth: 1.0, layers: 1 };
+    p.geometry = Geometry::Sketch { outer: outline, holes: vec![], depth: 1.0, layers: 1, regions: Vec::new() };
     p.mesh.size = 0.25;
     p.thickness = 1.0;
     let names = p.edge_names();
@@ -654,5 +655,92 @@ mod faces {
         let sk = h.add("S", FeatureKind::Sketch { plane: Plane::Front { offset: 0.0 }, sketch: Sketch::from_shapes(&Shape::Rect { x0: 1.0, y0: 0.0, x1: 2.0, y1: 1.0 }, &[]) });
         h.add("R", FeatureKind::Revolve { profile: sk, angle_deg: 360.0, segments: 8 });
         assert!(h.planar_faces().unwrap().is_empty());
+    }
+}
+
+mod regions {
+    use fea_problem::history::{FeatureKind, History, Plane};
+    use fea_problem::sketch::{Constraint as C, Sketch};
+    use fea_problem::{build, solve, templates, Load, Shape, Support};
+
+    fn rect(s: &mut Sketch, x0: f64, y0: f64, x1: f64, y1: f64) -> [u32; 4] {
+        let p = [s.add_point(x0, y0), s.add_point(x1, y0), s.add_point(x1, y1), s.add_point(x0, y1)];
+        let l = [s.add_line(p[0], p[1]), s.add_line(p[1], p[2]), s.add_line(p[2], p[3]), s.add_line(p[3], p[0])];
+        for (i, id) in l.iter().enumerate() {
+            s.add_constraint(if i % 2 == 0 { C::Horizontal { line: *id } } else { C::Vertical { line: *id } }).unwrap();
+        }
+        l
+    }
+
+    fn problem_of(s: Sketch) -> fea_problem::Problem {
+        let mut p = templates::blank();
+        let mut h = History::default();
+        h.add("S", FeatureKind::Sketch { plane: Plane::Front { offset: 0.0 }, sketch: s });
+        p.history = Some(h);
+        p.apply_history().unwrap();
+        p.mesh.size = 0.4;
+        p
+    }
+
+    #[test]
+    fn an_island_in_a_hole_is_its_own_region_with_prefixed_names() {
+        let mut s = Sketch::default();
+        rect(&mut s, 0.0, 0.0, 10.0, 10.0);
+        let (hole, _) = s.add_circle(5.0, 5.0, 3.0);
+        let (island, _) = s.add_circle(5.0, 5.0, 1.0);
+        let pr = s.profile().unwrap();
+        assert_eq!(pr.outer, Shape::Rect { x0: 0.0, y0: 0.0, x1: 10.0, y1: 10.0 });
+        assert_eq!(pr.holes, vec![Shape::Circle { cx: 5.0, cy: 5.0, r: 3.0 }]);
+        assert_eq!(pr.regions.len(), 1);
+        assert_eq!(pr.regions[0].outer, Shape::Circle { cx: 5.0, cy: 5.0, r: 1.0 });
+        let names = s.surface_names().unwrap();
+        let name_of = |id| names.iter().find(|(i, _)| *i == id).map(|(_, n)| n.clone());
+        assert_eq!(name_of(hole).as_deref(), Some("hole1"));
+        assert_eq!(name_of(island).as_deref(), Some("r2/outer"));
+        let p = problem_of(s);
+        assert_eq!(p.edge_names(), ["bottom", "right", "top", "left", "hole1", "r2/outer"]);
+        // The mesh has the island as a separate body with its own surface.
+        let mesh = build::sketch_mesh(&p, None).unwrap();
+        assert!(mesh.surfaces.contains_key("r2/outer") && mesh.surfaces.contains_key("hole1"));
+        assert_eq!(mesh.blocks.len(), 2, "plate and island are separate blocks");
+        // Four concentric circles: a disc with a hole (first region) holding a disc with a hole (second region).
+        let mut t = Sketch::default();
+        t.add_circle(0.0, 0.0, 4.0);
+        t.add_circle(0.0, 0.0, 3.0);
+        t.add_circle(0.0, 0.0, 2.0);
+        t.add_circle(0.0, 0.0, 1.0);
+        let pr = t.profile().unwrap();
+        assert_eq!((pr.holes.len(), pr.regions.len(), pr.regions[0].holes.len()), (1, 1, 1));
+    }
+
+    #[test]
+    fn two_separate_outlines_are_solved_as_independent_bodies() {
+        let mut s = Sketch::default();
+        let a = rect(&mut s, 0.0, 0.0, 4.0, 2.0);
+        let b = rect(&mut s, 6.0, 0.0, 10.0, 2.0);
+        let pr = s.profile().unwrap();
+        assert_eq!(pr.regions.len(), 1, "{pr:?}");
+        let names = s.surface_names().unwrap();
+        let name_of = |id| names.iter().find(|(i, _)| *i == id).map(|(_, n)| n.clone()).unwrap();
+        assert_eq!(name_of(a[3]), "left");
+        assert_eq!(name_of(b[3]), "r2/left");
+        assert_eq!(name_of(b[1]), "r2/right");
+        let mut p = problem_of(s);
+        p.analysis = fea_problem::Analysis::PlaneStress;
+        p.thickness = 1.0;
+        p.supports = vec![Support::fixed("left"), Support::fixed("r2/left")];
+        // 100 on the first body's end, 300 on the second's (per unit area).
+        p.loads = vec![Load::Traction { edge: "right".into(), tx: 100.0, ty: 0.0, tz: 0.0 }, Load::Traction { edge: "r2/right".into(), tx: 300.0, ty: 0.0, tz: 0.0 }];
+        let sol = solve(&p, None).unwrap();
+        assert!(sol.summary.equilibrium_error < 1e-6, "{}", sol.summary.equilibrium_error);
+        // Total force = (100 + 300) x the 2-high end: reaction balances it.
+        assert!((sol.summary.reaction[0] + 800.0).abs() < 1e-6, "{:?}", sol.summary.reaction);
+        // Each body stretches by stress x length / E, independently (the free end of each, away from the Poisson-restrained root).
+        let mesh = &sol.model.mesh;
+        let tip = |x: f64| -> f64 { (0..mesh.nodes.len()).filter(|&n| (mesh.nodes[n][0] - x).abs() < 1e-9).map(|n| sol.u[n * 2]).sum::<f64>() / (0..mesh.nodes.len()).filter(|&n| (mesh.nodes[n][0] - x).abs() < 1e-9).count() as f64 };
+        let e = p.material.e;
+        let (ua, ub) = (tip(4.0), tip(10.0) - 0.0);
+        assert!((ua - 100.0 * 4.0 / e).abs() < 0.03 * 100.0 * 4.0 / e, "{ua} vs {}", 100.0 * 4.0 / e);
+        assert!((ub - 300.0 * 4.0 / e).abs() < 0.03 * 300.0 * 4.0 / e, "{ub} vs {}", 300.0 * 4.0 / e);
     }
 }

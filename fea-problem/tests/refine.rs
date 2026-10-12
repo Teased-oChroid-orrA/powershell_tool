@@ -11,7 +11,7 @@ fn plate() -> Problem {
 }
 fn l_bracket() -> Problem {
     let mut p = plate();
-    p.geometry = Geometry::Sketch { outer: Shape::Polygon { pts: vec![[0.0, 0.0], [6.0, 0.0], [6.0, 2.0], [2.0, 2.0], [2.0, 6.0], [0.0, 6.0]] }, holes: vec![], depth: 1.0, layers: 4 };
+    p.geometry = Geometry::Sketch { outer: Shape::Polygon { pts: vec![[0.0, 0.0], [6.0, 0.0], [6.0, 2.0], [2.0, 2.0], [2.0, 6.0], [0.0, 6.0]] }, holes: vec![], depth: 1.0, layers: 4, regions: Vec::new() };
     p
 }
 fn nodes_within(p: &Problem, c: [f64; 2], r: f64) -> usize {

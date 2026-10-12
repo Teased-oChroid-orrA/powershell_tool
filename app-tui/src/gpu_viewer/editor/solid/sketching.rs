@@ -69,6 +69,8 @@ pub enum SketchAction {
     /// Open the sketch feature for editing.
     Edit(Id),
     Finish,
+    /// Finish a sketch that is an open chain of lines and arcs, to use as a sweep path.
+    FinishPath,
     /// Leave the sketch and undo everything done since the command that opened it.
     Cancel,
     Tool(Tool),
@@ -84,6 +86,8 @@ pub enum SketchAction {
     Convert,
     AddExtrude,
     AddRevolve,
+    /// Sweep a profile sketch along a path sketch (the selected sketch is the profile, else the first).
+    AddSweep,
     SelectFeature(Id),
     Suppress(Id),
     /// Roll the model back to just after this feature, or forward to the end (`None`).
@@ -156,7 +160,7 @@ impl SolidSession {
         let is_sketch = |id: Id| matches!(h.feature(id).map(|f| &f.kind), Some(FeatureKind::Sketch { .. }));
         self.selected_feature.filter(|id| is_sketch(*id)).or_else(|| h.features[..h.active_len()].iter().rev().find(|f| matches!(f.kind, FeatureKind::Sketch { .. })).map(|f| f.id))
     }
-    fn body_feature(&self) -> Option<&HFeature> {
+    pub(super) fn body_feature(&self) -> Option<&HFeature> {
         self.history()?.features.iter().find(|f| !matches!(f.kind, FeatureKind::Sketch { .. }))
     }
     pub fn convert_availability(&self) -> Result<(), String> {
@@ -374,6 +378,21 @@ impl SolidSession {
         }
     }
 
+    /// Leave a sketch that is an open chain of lines and arcs without rebuilding the model from it: it is no profile,
+    /// but it is what a sweep follows. The sweep, once added, is what rebuilds the model.
+    fn finish_path(&mut self) {
+        let Some((_, sk)) = self.active_sketch() else { return };
+        match sk.open_path() {
+            Ok(_) => {
+                self.sketching = None;
+                self.typing = None;
+                self.status = "Path sketch finished. Select the profile sketch, then Sweep.".into();
+                self.touch();
+            }
+            Err(e) => self.status = format!("This sketch is not a sweep path: {e}."),
+        }
+    }
+
     fn cancel_sketch(&mut self) {
         let Some(st) = self.sketching.take() else { return };
         self.typing = None;
@@ -462,6 +481,43 @@ impl SolidSession {
         };
     }
 
+    /// Which sketches a sweep would use as `(profile, path)`: the selected sketch is the profile, else the first sketch;
+    /// the path is the last other sketch.
+    pub(super) fn sweep_sketches(&self) -> Result<(Id, Id), String> {
+        self.feature_availability(false)?;
+        let h = self.history().ok_or("the model has no feature history")?;
+        let sketches: Vec<Id> = h.features[..h.active_len()].iter().filter(|f| matches!(f.kind, FeatureKind::Sketch { .. })).map(|f| f.id).collect();
+        if sketches.len() < 2 {
+            return Err("a sweep needs two sketches: draw the profile and the path (on a plane the profile leaves along its normal)".into());
+        }
+        let profile = self.selected_feature.filter(|id| sketches.contains(id)).unwrap_or(sketches[0]);
+        let path = sketches.iter().rev().copied().find(|id| *id != profile).ok_or("a sweep needs two sketches")?;
+        Ok((profile, path))
+    }
+
+    fn add_sweep(&mut self) {
+        let (profile, path) = match self.sweep_sketches() {
+            Ok(v) => v,
+            Err(e) => {
+                self.status = e;
+                return;
+            }
+        };
+        let result = self.try_edit(|p| {
+            let h = p.history.as_mut().ok_or("no history")?;
+            h.add("Sweep1", FeatureKind::Sweep { profile, path, layers: 12 });
+            Ok(())
+        });
+        match result {
+            Ok(()) => {
+                self.selected_feature = self.body_feature().map(|f| f.id);
+                self.want_view = Some(StandardView::Isometric);
+                self.status = "Swept; the first sketch is the profile and the last the path. Edit the layers in the tree.".into();
+            }
+            Err(e) => self.status = format!("Cannot sweep: {e}"),
+        }
+    }
+
     fn add_body(&mut self, revolve: bool) {
         if let Err(e) = self.feature_availability(revolve) {
             self.status = e;
@@ -517,6 +573,7 @@ impl SolidSession {
                 }
             }
             SketchAction::Finish => self.finish_sketch(),
+            SketchAction::FinishPath => self.finish_path(),
             SketchAction::Cancel => self.cancel_sketch(),
             SketchAction::Tool(t) => {
                 if let Some(st) = &mut self.sketching {
@@ -567,6 +624,7 @@ impl SolidSession {
             }
             SketchAction::Convert => self.convert_to_history(),
             SketchAction::AddExtrude => self.add_body(false),
+            SketchAction::AddSweep => self.add_sweep(),
             SketchAction::AddRevolve => self.add_body(true),
             SketchAction::SelectFeature(id) => {
                 self.selected_feature = Some(id);
@@ -626,6 +684,7 @@ impl SolidSession {
             (FeatureKind::Extrude { layers, .. }, FeatureParam::Layers) => *layers as f64,
             (FeatureKind::Revolve { angle_deg, .. }, FeatureParam::Angle) => *angle_deg,
             (FeatureKind::Revolve { segments, .. }, FeatureParam::Segments) => *segments as f64,
+            (FeatureKind::Sweep { layers, .. }, FeatureParam::Layers) => *layers as f64,
             (FeatureKind::Sketch { plane, .. }, FeatureParam::PlaneOffset) => match plane {
                 Plane::Front { offset } | Plane::Top { offset } | Plane::Right { offset } => *offset,
                 Plane::Datum { .. } => return None,
@@ -681,6 +740,7 @@ impl SolidSession {
                         (FeatureKind::Extrude { layers, .. }, FeatureParam::Layers) if whole => *layers = v as usize,
                         (FeatureKind::Revolve { angle_deg, .. }, FeatureParam::Angle) => *angle_deg = v,
                         (FeatureKind::Revolve { segments, .. }, FeatureParam::Segments) if whole => *segments = v as usize,
+                        (FeatureKind::Sweep { layers, .. }, FeatureParam::Layers) if whole => *layers = v as usize,
                         (FeatureKind::Sketch { plane, .. }, FeatureParam::PlaneOffset) => match plane {
                             Plane::Front { offset } | Plane::Top { offset } | Plane::Right { offset } => *offset = v,
                             Plane::Datum { .. } => return Err("a datum plane has no offset".into()),
@@ -1112,6 +1172,11 @@ impl SolidSession {
                 out.push(row("Segments", FeatureParam::Segments));
                 out.push(DockItem::text("axis: the sketch's y axis; x is the radius", Tone::Dim));
             }
+            FeatureKind::Sweep { profile, path, .. } => {
+                let name = |id: Id| self.feature(id).map_or("?".to_string(), |f| f.name.clone());
+                out.push(DockItem::text(format!("profile {} along path {}", name(*profile), name(*path)), Tone::Dim));
+                out.push(row("Layers", FeatureParam::Layers));
+            }
         }
         if let Some(t) = &self.typing {
             if let TypeTarget::Param(_, p) = t.target {
@@ -1131,6 +1196,7 @@ impl SolidSession {
                 FeatureKind::Sketch { .. } => 'S',
                 FeatureKind::Extrude { .. } => 'E',
                 FeatureKind::Revolve { .. } => 'R',
+                FeatureKind::Sweep { .. } => 'W',
             };
             let mark = if i >= active { " (rolled back)" } else if f.suppressed { " (suppressed)" } else { "" };
             let editing = self.sketching.as_ref().is_some_and(|s| s.feature == f.id);
@@ -1188,7 +1254,7 @@ impl SolidSession {
     pub(super) fn sketch_ribbon(&self) -> Vec<RibbonTab> {
         let on_edges = if self.all_selected().is_empty() { Err("select an edge or a hole of the sketch first".to_string()) } else { Ok(()) };
         vec![RibbonTab::new("Sketch")
-            .group("Sketch", vec![entry("Finish sketch", "Enter", SketchAction::Finish), entry("Cancel sketch", "", SketchAction::Cancel), entry("Grid snap", "G", SketchAction::ToggleGrid).checked(self.sketching.as_ref().is_some_and(|s| s.grid_on))])
+            .group("Sketch", vec![entry("Finish sketch", "Enter", SketchAction::Finish), entry("Finish as sweep path", "", SketchAction::FinishPath), entry("Cancel sketch", "", SketchAction::Cancel), entry("Grid snap", "G", SketchAction::ToggleGrid).checked(self.sketching.as_ref().is_some_and(|s| s.grid_on))])
             .group("Draw", [Tool::Line, Tool::Polyline, Tool::Rectangle, Tool::Circle, Tool::Arc].into_iter().map(|t| self.tool_entry(t)).collect())
             .group("Select", vec![self.tool_entry(Tool::Select)])
             .group("Constrain", self.constrain_entries())
@@ -1211,6 +1277,7 @@ impl SolidSession {
             vec![
                 entry("Extrude", "", SketchAction::AddExtrude).when(self.feature_availability(false)),
                 entry("Revolve", "", SketchAction::AddRevolve).when(self.feature_availability(true)),
+                entry("Sweep", "", SketchAction::AddSweep).when(self.sweep_sketches().map(|_| ())),
                 entry("Convert to history", "", SketchAction::Convert).when(self.convert_availability()),
             ],
         )
@@ -1237,6 +1304,7 @@ impl SolidSession {
             v.extend(self.constrain_entries().into_iter().map(Item::Entry));
             v.push(Item::Separator);
             v.push(Item::Entry(entry("Finish sketch", "Enter", SketchAction::Finish)));
+            v.push(Item::Entry(entry("Finish as sweep path", "", SketchAction::FinishPath)));
             v.push(Item::Entry(entry("Cancel sketch", "", SketchAction::Cancel)));
             return v;
         }
@@ -1247,6 +1315,7 @@ impl SolidSession {
         v.push(Item::Entry(entry("Edit selected sketch", "", SketchAction::Edit(self.selected_feature.unwrap_or(0))).when(self.edit_availability())));
         v.push(Item::Entry(entry("Extrude", "", SketchAction::AddExtrude).when(self.feature_availability(false))));
         v.push(Item::Entry(entry("Revolve", "", SketchAction::AddRevolve).when(self.feature_availability(true))));
+        v.push(Item::Entry(entry("Sweep", "", SketchAction::AddSweep).when(self.sweep_sketches().map(|_| ()))));
         v.push(Item::Entry(entry("Convert to feature history", "", SketchAction::Convert).when(self.convert_availability())));
         v
     }

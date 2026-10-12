@@ -277,7 +277,7 @@ fn a_saved_history_reopens_and_regenerates_the_geometry() {
     let text = s.problem.to_json().unwrap();
     // Simulate a file whose stored geometry is stale: the history is authoritative.
     let mut stale = fea_problem::Problem::from_json(&text).unwrap();
-    stale.geometry = Geometry::Sketch { outer: Shape::Rect { x0: 0.0, y0: 0.0, x1: 1.0, y1: 1.0 }, holes: vec![], depth: 1.0, layers: 1 };
+    stale.geometry = Geometry::Sketch { outer: Shape::Rect { x0: 0.0, y0: 0.0, x1: 1.0, y1: 1.0 }, holes: vec![], depth: 1.0, layers: 1, regions: Vec::new() };
     let reopened = SolidSession::new(stale, temp("reopen2"));
     let Geometry::Sketch { outer, .. } = &reopened.problem.geometry else { panic!() };
     assert_eq!(*outer, Shape::Rect { x0: 0.0, y0: 0.0, x1: 10.0, y1: 4.0 });
@@ -465,4 +465,36 @@ fn a_sketch_can_be_placed_on_a_flat_face_of_the_extruded_body() {
     act(&mut s, SketchAction::Finish);
     act(&mut s, SketchAction::NewSketchOnFace(99));
     assert!(s.status.contains("no longer exists"), "{}", s.status);
+}
+
+#[test]
+fn a_sweep_takes_the_selected_sketch_as_profile_and_the_last_as_path() {
+    let mut s = drawn_rectangle("sweep");
+    let rect = s.sketching.as_ref().unwrap().feature;
+    act(&mut s, SketchAction::Finish);
+    // The converted template's own sketch comes first; only the drawn rectangle is the profile here.
+    // The path: a straight line leaving the rectangle's plane (the Right plane's sketch y is world z).
+    act(&mut s, SketchAction::NewSketch(PlaneChoice::Right));
+    act(&mut s, SketchAction::Tool(Tool::Line));
+    click(&mut s, [0.0, 0.0]);
+    click(&mut s, [0.0, 3.0]);
+    act(&mut s, SketchAction::Tool(Tool::Select));
+    act(&mut s, SketchAction::Finish);
+    assert!(s.sketch_mode(), "an open line is no profile: {}", s.status);
+    act(&mut s, SketchAction::FinishPath);
+    assert!(!s.sketch_mode(), "{}", s.status);
+    act(&mut s, SketchAction::SelectFeature(rect));
+    let (profile, path) = s.sweep_sketches().unwrap();
+    assert_eq!(profile, rect);
+    assert!(path > rect);
+    act(&mut s, SketchAction::AddSweep);
+    let body = s.body_feature().expect("the sweep exists").clone();
+    let FeatureKind::Sweep { profile: p, path: q, layers } = body.kind else { panic!("{:?} / {}", body.kind, s.status) };
+    assert_eq!((p, q), (profile, path));
+    assert!(layers > 0);
+    assert_eq!(s.problem.analysis, fea_problem::Analysis::Solid);
+    assert!(s.status.starts_with("Swept"), "{}", s.status);
+    // The tree lists it, and a second solid feature is refused.
+    assert!(s.history_nodes().iter().any(|n| n.label.starts_with("Sweep1")));
+    assert!(s.sweep_sketches().is_err());
 }

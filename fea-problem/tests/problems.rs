@@ -150,7 +150,7 @@ fn bad_problems_say_what_is_wrong() {
 #[test]
 fn slot_and_polygon_regions_have_the_right_area() {
     let mut p = template("Plate with a hole");
-    p.geometry = Geometry::Sketch { outer: Shape::Slot { cx: 0.0, cy: 0.0, length: 6.0, width: 2.0, angle: 30.0 }, holes: vec![], depth: 1.0, layers: 1 };
+    p.geometry = Geometry::Sketch { outer: Shape::Slot { cx: 0.0, cy: 0.0, length: 6.0, width: 2.0, angle: 30.0 }, holes: vec![], depth: 1.0, layers: 1, regions: Vec::new() };
     let r = fea_problem::build::region_of(&p).unwrap();
     let area = std::f64::consts::PI + 2.0 * 4.0;
     assert!((r.area() / area - 1.0).abs() < 1e-9, "{} vs {area}", r.area());
@@ -161,7 +161,7 @@ fn slot_and_polygon_regions_have_the_right_area() {
 
 fn solve_slot_plate() -> Solved {
     let mut p = template("Plate with a hole");
-    p.geometry = Geometry::Sketch { outer: Shape::Rect { x0: 0.0, y0: 0.0, x1: 8.0, y1: 3.0 }, holes: vec![Shape::Slot { cx: 4.0, cy: 1.5, length: 2.0, width: 0.8, angle: 0.0 }], depth: 1.0, layers: 1 };
+    p.geometry = Geometry::Sketch { outer: Shape::Rect { x0: 0.0, y0: 0.0, x1: 8.0, y1: 3.0 }, holes: vec![Shape::Slot { cx: 4.0, cy: 1.5, length: 2.0, width: 0.8, angle: 0.0 }], depth: 1.0, layers: 1, regions: Vec::new() };
     solve(&p, None).unwrap()
 }
 
@@ -246,7 +246,7 @@ fn lame_pressure_plane_stress(e_h: f64, nu_h: f64, e_b: f64, nu_b: f64, a: f64, 
 fn a_concentric_bushing_in_a_big_plate_gives_the_lame_fit_pressure_and_the_fit_balances() {
     let mut p = template("Lug with an eccentric bushing");
     // A large plate (the Lame housing is infinite), clamped on one side, no pin load: the fit alone.
-    p.geometry = Geometry::Sketch { outer: Shape::Rect { x0: 0.0, y0: 0.0, x1: 12.0, y1: 12.0 }, holes: vec![Shape::Circle { cx: 6.0, cy: 6.0, r: 0.5 }], depth: 1.0, layers: 1 };
+    p.geometry = Geometry::Sketch { outer: Shape::Rect { x0: 0.0, y0: 0.0, x1: 12.0, y1: 12.0 }, holes: vec![Shape::Circle { cx: 6.0, cy: 6.0, r: 0.5 }], depth: 1.0, layers: 1, regions: Vec::new() };
     p.loads.clear();
     p.supports = vec![Support::fixed("left")];
     p.bushings[0].offset = [0.0, 0.0];

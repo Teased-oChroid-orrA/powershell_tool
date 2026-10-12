@@ -465,23 +465,45 @@ fn solve_mesh(p: &Problem, mut mesh: Mesh) -> Result<Pass, String> {
     }
     let warnings: Vec<String> = issues.iter().filter(|i| i.severity == fea_core::Severity::Warning && i.code != "low_order_element").map(|i| i.message.clone()).collect();
     let t0 = std::time::Instant::now();
-    let sol = model.solve_static(&loads, &bc).map_err(|e| {
-        if e.to_lowercase().contains("pivot") || e.to_lowercase().contains("positive") || e.to_lowercase().contains("singular") {
-            format!("the model is not fully constrained (rigid-body motion remains): add supports. Solver said: {e}")
-        } else {
-            e
-        }
-    })?;
-    let solve_ms = t0.elapsed().as_secs_f64() * 1e3;
+    let solve = |model: &Model| {
+        model.solve_static(&loads, &bc).map_err(|e| {
+            if e.to_lowercase().contains("pivot") || e.to_lowercase().contains("positive") || e.to_lowercase().contains("singular") {
+                format!("the model is not fully constrained (rigid-body motion remains): add supports. Solver said: {e}")
+            } else {
+                e
+            }
+        })
+    };
+    let mut sol = solve(&model)?;
     let d = model.mesh.dim();
     let f = loads::assemble(&model.mesh, &loads)?;
-    let (mut reaction, mut applied) = ([0.0; 3], [0.0; 3]);
-    for n in 0..model.mesh.nodes.len() {
-        for c in 0..d {
-            reaction[c] += sol.reactions[n * d + c];
-            applied[c] += f[n * d + c];
+    let (mut reaction, mut applied) = totals(d, &sol.reactions, &f);
+    // The result must pass two checks that do not depend on how it was computed: the equations are satisfied and the
+    // reactions balance the loads. A result that fails them is recomputed on one thread, and refused if it still fails:
+    // a wrong displacement field must never be presented as a result.
+    // The imbalance is judged against the total magnitude of the forces, not against the net force (a thermal load, or a
+    // self-equilibrated one, has a net force of zero).
+    let force_scale = f.iter().map(|v| v.abs()).sum::<f64>().max(sol.reactions.iter().map(|v| v.abs()).sum::<f64>());
+    let imbalance = |reaction: &[f64; 3], applied: &[f64; 3]| {
+        let comps: &[usize] = if matches!(model.mesh.physics, Physics::Axisymmetric) { &[1] } else { &[0, 1, 2][..d] };
+        let diff: f64 = comps.iter().map(|&c| (reaction[c] + applied[c]).powi(2)).sum::<f64>().sqrt();
+        if force_scale > 0.0 { diff / force_scale } else { 0.0 }
+    };
+    let mut warnings = warnings;
+    if !(sol.rel_residual < 1e-6 && imbalance(&reaction, &applied) < 1e-6) {
+        let first = (sol.rel_residual, imbalance(&reaction, &applied));
+        sol = fea_core::sequentially(|| solve(&model))?;
+        (reaction, applied) = totals(d, &sol.reactions, &f);
+        let second = (sol.rel_residual, imbalance(&reaction, &applied));
+        if !(second.0 < 1e-6 && second.1 < 1e-6) {
+            return Err(format!(
+                "the solve did not produce a consistent result (residual {:.1e}, force imbalance {:.1e}); the model may be badly conditioned: check units, supports and element shapes",
+                second.0, second.1
+            ));
         }
+        warnings.push(format!("A solve failed its own checks (residual {:.1e}, force imbalance {:.1e}) and was recomputed on one thread; the result shown passed them.", first.0, first.1));
     }
+    let solve_ms = t0.elapsed().as_secs_f64() * 1e3;
     let gauss = model.gauss_stresses(&sol.u, p.delta_t)?;
     let nodal = match model.recover_spr(&gauss) {
         Ok(v) => v,
@@ -554,13 +576,7 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
     }
     let solve_ms = t0.elapsed().as_secs_f64() * 1e3;
     let f = loads::assemble(&model.mesh, &loads)?;
-    let (mut reaction, mut applied) = ([0.0; 3], [0.0; 3]);
-    for n in 0..model.mesh.nodes.len() {
-        for c in 0..d {
-            reaction[c] += sol.reactions[n * d + c];
-            applied[c] += f[n * d + c];
-        }
-    }
+    let (reaction, applied) = totals(d, &sol.reactions, &f);
     let gauss = model.gauss_stresses(&sol.u, p.delta_t)?;
     let nodal = match model.recover_spr(&gauss) {
         Ok(v) => v,
@@ -615,24 +631,40 @@ fn extreme(values: &[f64], nodes: &[[f64; 3]], pick_max: bool) -> Extreme {
     Extreme { value: if best.1.is_finite() { best.1 } else { 0.0 }, at: nodes.get(best.0).copied().unwrap_or([0.0; 3]) }
 }
 
+/// Sum of the reaction and of the load vector over the nodes, per component.
+fn totals(d: usize, reactions: &[f64], loads: &[f64]) -> ([f64; 3], [f64; 3]) {
+    let (mut reaction, mut applied) = ([0.0; 3], [0.0; 3]);
+    for n in 0..reactions.len() / d {
+        for c in 0..d {
+            reaction[c] += reactions[n * d + c];
+            applied[c] += loads[n * d + c];
+        }
+    }
+    (reaction, applied)
+}
+
+/// `|reaction + applied| / max(|applied|, |reaction|, fit_scale)` over the force components that must balance: the
+/// axial one only for an axisymmetric model (its radial reaction carries the hoop).
+fn balance_error(physics: &Physics, reaction: &[f64; 3], applied: &[f64; 3], fit_scale: f64) -> f64 {
+    let comps: &[usize] = match physics {
+        Physics::Axisymmetric => &[1],
+        Physics::Solid => &[0, 1, 2],
+        _ => &[0, 1],
+    };
+    let dim = if matches!(physics, Physics::Solid) { 3 } else { 2 };
+    let diff: f64 = comps.iter().map(|&c| (reaction[c] + applied[c]).powi(2)).sum();
+    let scale = (0..dim).map(|c| reaction[c].abs().max(applied[c].abs())).fold(fit_scale, f64::max);
+    if scale > 0.0 { diff.sqrt() / scale } else { 0.0 }
+}
+
 fn summarize(p: &Problem, pass: &Pass) -> Summary {
     let mesh = &pass.model.mesh;
     let val = |f| field_values(mesh.dim(), &pass.u, &pass.nodal, f);
     let (vm, disp, p1, p3) = (val(Field::VonMises), val(Field::Displacement), val(Field::MaxPrincipal), val(Field::MinPrincipal));
     let max_vm = extreme(&vm, &mesh.nodes, true);
-    // Components that must balance: axisymmetric radial reaction carries the hoop, so only the axis.
-    let comps: &[usize] = match mesh.physics {
-        Physics::Axisymmetric => &[1],
-        Physics::Solid => &[0, 1, 2],
-        _ => &[0, 1],
-    };
-    let mut diff = 0.0f64;
-    for &c in comps {
-        diff += (pass.reaction[c] + pass.applied[c]).powi(2);
-    }
     // A fit alone applies no load: the reactions are then judged against the force the interference fit transmits.
     let fit_scale = 1e-3 * pass.interfaces.iter().map(|f| f.normal_force).sum::<f64>();
-    let scale = (0..mesh.dim()).map(|c| pass.reaction[c].abs().max(pass.applied[c].abs())).fold(fit_scale, f64::max);
+    let equilibrium_error = balance_error(&mesh.physics, &pass.reaction, &pass.applied, fit_scale);
     Summary {
         nodes: mesh.nodes.len(),
         elements: mesh.n_elems(),
@@ -643,7 +675,7 @@ fn summarize(p: &Problem, pass: &Pass) -> Summary {
         min_principal: extreme(&p3, &mesh.nodes, false),
         reaction: pass.reaction,
         applied: pass.applied,
-        equilibrium_error: if scale > 0.0 { diff.sqrt() / scale } else { 0.0 },
+        equilibrium_error,
         strain_energy: pass.strain_energy,
         zz_error: pass.zz.relative(),
         margin: p.material.yield_stress.filter(|_| max_vm.value > 0.0).map(|y| y / max_vm.value - 1.0),

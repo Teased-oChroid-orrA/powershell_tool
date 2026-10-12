@@ -40,6 +40,16 @@ pub mod validate;
 pub mod vtu;
 
 pub use analysis::{Model, Solution, SolveMethod};
+
+/// Run `f` on a one-thread pool: every parallel loop inside it (the colour-parallel assembly, sparse products, the
+/// parallel factorisation) then runs in sequence. For recomputing a result whose verification failed, in case the failure
+/// came from the parallel schedule.
+pub fn sequentially<R: Send>(f: impl FnOnce() -> R + Send) -> R {
+    match rayon::ThreadPoolBuilder::new().num_threads(1).build() {
+        Ok(pool) => pool.install(f),
+        Err(_) => f(),
+    }
+}
 pub use element::ElementKind;
 pub use linear::Dirichlet;
 pub use loads::{FaceField, Loads, SurfaceLoad};

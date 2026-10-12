@@ -78,6 +78,9 @@ pub enum FeatureKind {
     Extrude { profile: Id, depth: f64, layers: usize },
     /// Revolve the profile about the sketch's y axis (x = radius, x >= 0) through `angle_deg`, in `segments` layers.
     Revolve { profile: Id, angle_deg: f64, segments: usize },
+    /// Sweep the profile of sketch feature `profile` along the open path of sketch feature `path` (tangent-continuous lines
+    /// and arcs that start on the profile's plane and leave it along its normal), in about `layers` element layers.
+    Sweep { profile: Id, path: Id, layers: usize },
 }
 
 impl FeatureKind {
@@ -86,6 +89,7 @@ impl FeatureKind {
             Self::Sketch { .. } => "Sketch",
             Self::Extrude { .. } => "Extrude",
             Self::Revolve { .. } => "Revolve",
+            Self::Sweep { .. } => "Sweep",
         }
     }
 }
@@ -116,12 +120,15 @@ pub enum Body {
     Region,
     Extrude { depth: f64, layers: usize },
     Revolve { angle_deg: f64, segments: usize },
+    /// The profile moved along `path`; `origin` is the path's start point in the profile sketch's coordinates.
+    Sweep { path: crate::path::Path3, layers: usize, origin: [f64; 2] },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Built {
     pub outer: crate::Shape,
     pub holes: Vec<crate::Shape>,
+    pub regions: Vec<crate::SketchRegion>,
     pub body: Body,
     pub frame: Frame,
 }
@@ -139,7 +146,7 @@ pub struct History {
 impl History {
     /// The history equivalent to a sketch problem's outline and holes (Front plane; an extrude when it is a solid).
     pub fn from_problem(p: &crate::Problem) -> Result<History, String> {
-        let crate::Geometry::Sketch { outer, holes, depth, layers } = &p.geometry else { return Err("an imported mesh has no sketch to turn into a history".into()) };
+        let crate::Geometry::Sketch { outer, holes, depth, layers, .. } = &p.geometry else { return Err("an imported mesh has no sketch to turn into a history".into()) };
         let mut h = History::default();
         let sk = h.add("Sketch1", FeatureKind::Sketch { plane: Plane::Front { offset: 0.0 }, sketch: Sketch::from_shapes(outer, holes) });
         if p.analysis == crate::Analysis::Solid {
@@ -177,7 +184,14 @@ impl History {
     }
     /// Delete a feature and the features that depend on it.
     pub fn remove(&mut self, id: Id) {
-        self.features.retain(|f| f.id != id && !matches!(f.kind, FeatureKind::Extrude { profile, .. } | FeatureKind::Revolve { profile, .. } if profile == id));
+        self.features.retain(|f| {
+            f.id != id
+                && match f.kind {
+                    FeatureKind::Extrude { profile, .. } | FeatureKind::Revolve { profile, .. } => profile != id,
+                    FeatureKind::Sweep { profile, path, .. } => profile != id && path != id,
+                    FeatureKind::Sketch { .. } => true,
+                }
+        });
         self.rollback = self.rollback.map(|n| n.min(self.features.len()));
     }
 
@@ -230,6 +244,50 @@ impl History {
         Ok(out)
     }
 
+    /// The sweep body: the path of sketch `path` placed in 3D and checked against the plane of sketch `profile`.
+    fn sweep_body(&self, active: &[&Feature], profile: Id, path: Id, layers: usize) -> Result<Body, String> {
+        if layers == 0 {
+            return Err("a sweep needs at least one layer".into());
+        }
+        let find = |id: Id, what: &str| -> Result<(&str, &Plane, &Sketch), String> {
+            let f = active.iter().find(|f| f.id == id).ok_or_else(|| format!("the sweep's {what} sketch is missing, suppressed or rolled back"))?;
+            match &f.kind {
+                FeatureKind::Sketch { plane, sketch } => Ok((f.name.as_str(), plane, sketch)),
+                _ => Err(format!("the sweep's {what} must be a sketch")),
+            }
+        };
+        let (pname, pplane, _) = find(profile, "profile")?;
+        let (qname, qplane, qsketch) = find(path, "path")?;
+        if profile == path {
+            return Err("a sweep needs two sketches: the profile and the path".into());
+        }
+        let pf = pplane.frame().map_err(|e| format!("sketch '{pname}': {e}"))?;
+        let qf = qplane.frame().map_err(|e| format!("sketch '{qname}': {e}"))?;
+        let mut qs = qsketch.clone();
+        if !qs.solve().violated.is_empty() {
+            return Err(format!("sketch '{qname}' has conflicting constraints"));
+        }
+        let segs = qs.open_path().map_err(|e| format!("path sketch '{qname}': {e}"))?;
+        // Walk the path from the end that lies on the profile plane; a path drawn from the other end is turned around.
+        let w = pf.w();
+        let on_plane = |p: [f64; 3]| (0..3).map(|i| (p[i] - pf.origin[i]) * w[i]).sum::<f64>().abs();
+        let place = |q: [f64; 2]| qf.apply([q[0], q[1], 0.0]);
+        let scale = segs.iter().map(|s| (s.end()[0] - s.start()[0]).hypot(s.end()[1] - s.start()[1])).fold(1e-9, f64::max);
+        let tol = 1e-7 * scale.max(1.0);
+        let segs = if on_plane(place(segs[0].start())) <= tol {
+            segs
+        } else if on_plane(place(segs.last().expect("non-empty").end())) <= tol {
+            segs.iter().rev().map(|s| s.reversed()).collect()
+        } else {
+            return Err(format!("the path of '{qname}' does not start on the plane of '{pname}'; a swept path begins on the profile's plane"));
+        };
+        let start = place(segs[0].start());
+        let path3 = crate::path::Path3::new(&segs, &place, qf.w(), pf.u, pf.v).map_err(|e| format!("path sketch '{qname}': {e}"))?;
+        let d = [start[0] - pf.origin[0], start[1] - pf.origin[1], start[2] - pf.origin[2]];
+        let origin = [(0..3).map(|i| d[i] * pf.u[i]).sum(), (0..3).map(|i| d[i] * pf.v[i]).sum()];
+        Ok(Body::Sweep { path: path3, layers, origin })
+    }
+
     /// Rebuild the profile and body from the active, unsuppressed features.
     pub fn rebuild(&self) -> Result<Built, String> {
         let active: Vec<&Feature> = self.features[..self.active_len()].iter().filter(|f| !f.suppressed).collect();
@@ -240,6 +298,7 @@ impl History {
         let (profile_id, body) = match bodies.first().map(|f| &f.kind) {
             Some(FeatureKind::Extrude { profile, depth, layers }) => (*profile, Body::Extrude { depth: *depth, layers: *layers }),
             Some(FeatureKind::Revolve { profile, angle_deg, segments }) => (*profile, Body::Revolve { angle_deg: *angle_deg, segments: *segments }),
+            Some(FeatureKind::Sweep { profile, path, layers }) => (*profile, self.sweep_body(&active, *profile, *path, *layers)?),
             Some(FeatureKind::Sketch { .. }) | None => {
                 let last = active.iter().rev().find(|f| matches!(f.kind, FeatureKind::Sketch { .. })).ok_or("the history has no sketch")?;
                 (last.id, Body::Region)
@@ -271,6 +330,6 @@ impl History {
             // A plane problem is solved in XY; a sketch elsewhere only becomes a part once it is extruded.
             return Err("a plane problem needs its sketch on the Front plane; extrude or revolve to place a part elsewhere".into());
         }
-        Ok(Built { outer: prof.outer, holes: prof.holes, body, frame })
+        Ok(Built { outer: prof.outer, holes: prof.holes, regions: prof.regions, body, frame })
     }
 }

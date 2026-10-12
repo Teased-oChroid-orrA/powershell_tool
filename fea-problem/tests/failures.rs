@@ -147,7 +147,7 @@ fn a_healthy_model_has_no_findings_and_an_unrecognised_failure_keeps_its_message
 #[test]
 fn a_hole_outside_the_outline_is_named_by_its_own_number_and_removing_it_fixes_the_solve() {
     let mut p = plate();
-    p.geometry = Geometry::Sketch { outer: Shape::Rect { x0: 0.0, y0: 0.0, x1: 12.0, y1: 4.0 }, holes: vec![Shape::Circle { cx: 6.0, cy: 2.0, r: 0.5 }, Shape::Circle { cx: 20.0, cy: 2.0, r: 0.5 }], depth: 1.0, layers: 1 };
+    p.geometry = Geometry::Sketch { outer: Shape::Rect { x0: 0.0, y0: 0.0, x1: 12.0, y1: 4.0 }, holes: vec![Shape::Circle { cx: 6.0, cy: 2.0, r: 0.5 }, Shape::Circle { cx: 20.0, cy: 2.0, r: 0.5 }], depth: 1.0, layers: 1, regions: Vec::new() };
     let e = err(&p);
     assert!(e.contains("hole 2 is not inside"), "numbered like the hole2 surface, not from zero: {e}");
     let d = diagnose(&p, Some(&e));
@@ -155,7 +155,7 @@ fn a_hole_outside_the_outline_is_named_by_its_own_number_and_removing_it_fixes_t
     assert!(d[0].summary.contains("Hole 2"));
     assert!(solves_after(&p, &d[0].remedies[0].edit));
     // Overlapping holes: the later one is named.
-    p.geometry = Geometry::Sketch { outer: Shape::Rect { x0: 0.0, y0: 0.0, x1: 12.0, y1: 4.0 }, holes: vec![Shape::Circle { cx: 6.0, cy: 2.0, r: 0.8 }, Shape::Circle { cx: 6.5, cy: 2.0, r: 0.8 }], depth: 1.0, layers: 1 };
+    p.geometry = Geometry::Sketch { outer: Shape::Rect { x0: 0.0, y0: 0.0, x1: 12.0, y1: 4.0 }, holes: vec![Shape::Circle { cx: 6.0, cy: 2.0, r: 0.8 }, Shape::Circle { cx: 6.5, cy: 2.0, r: 0.8 }], depth: 1.0, layers: 1, regions: Vec::new() };
     let d = diagnose(&p, None);
     assert_eq!(d[0].class, FailureClass::HoleOutsideOutline);
     assert!(d[0].summary.contains("Hole 2") && d[0].evidence[0].contains("overlaps hole 1"), "{:?}", d[0]);

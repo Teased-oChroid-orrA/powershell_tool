@@ -2,7 +2,7 @@
 //! in the `Shape` vocabulary the mesher already understands. Loop order and start are deterministic (lowest
 //! entity id first) so the names `edgeN` / `holeN` that supports and loads refer to survive a rebuild.
 use super::*;
-use crate::problem::{Seg, Shape};
+use crate::problem::{Seg, Shape, SketchRegion};
 
 /// Segments per full turn when an arc becomes polygon edges.
 const ARC_SEGMENTS: f64 = 48.0;
@@ -11,6 +11,8 @@ const ARC_SEGMENTS: f64 = 48.0;
 pub struct Profile {
     pub outer: Shape,
     pub holes: Vec<Shape>,
+    /// The other regions of the sketch (islands, separate outlines), in the order of their lowest entity id.
+    pub regions: Vec<SketchRegion>,
 }
 
 struct Loop {
@@ -70,68 +72,119 @@ impl Loop {
     }
 }
 
+/// One region of the nested loops: indices into the sorted loop list.
+struct Nest {
+    outer: usize,
+    holes: Vec<usize>,
+}
+
+fn segments_cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
+    let (d1, d2) = (cross([b[0] - a[0], b[1] - a[1]], [c[0] - a[0], c[1] - a[1]]), cross([b[0] - a[0], b[1] - a[1]], [d[0] - a[0], d[1] - a[1]]));
+    let (d3, d4) = (cross([d[0] - c[0], d[1] - c[1]], [a[0] - c[0], a[1] - c[1]]), cross([d[0] - c[0], d[1] - c[1]], [b[0] - c[0], b[1] - c[1]]));
+    // Proper crossings only: touching at an end point is left to the mesher's own checks.
+    let tol = 1e-12;
+    (d1 > tol && d2 < -tol || d1 < -tol && d2 > tol) && (d3 > tol && d4 < -tol || d3 < -tol && d4 > tol)
+}
+
 impl Sketch {
-    /// Mesh surface name of every profile edge, as `(entity id, name)`: what a support or load must name to act on
-    /// that sketch entity once the part is built (`bottom/right/top/left` of a rectangle outline, `edgeN` of a
-    /// polygon outline, `outer` of a circle, `holeN` of the N-th hole). An arc contributes several `edgeN`.
-    pub fn surface_names(&self) -> Result<Vec<(Id, String)>, String> {
-        let mut loops = self.loops()?;
-        loops.sort_by_key(|l| l.key);
-        let outer_i = (0..loops.len()).max_by(|&i, &j| area(&loops[i].pts).abs().total_cmp(&area(&loops[j].pts).abs())).ok_or("the sketch has no closed profile")?;
-        let outer = loops.remove(outer_i);
-        let mut out = Vec::new();
+    /// Group the loops (sorted by lowest entity id) into regions: a loop inside no other is an outline, a loop directly
+    /// inside an outline is its hole, a loop inside a hole is the outline of an island (a further region), and so on.
+    /// The first region is the one with the largest outline. Loops that cross are refused.
+    fn nest(loops: &[Loop]) -> Result<Vec<Nest>, String> {
+        let n = loops.len();
+        let areas: Vec<f64> = loops.iter().map(|l| area(&l.pts).abs()).collect();
+        for i in 0..n {
+            for j in 0..i {
+                let (a, b) = (&loops[i].pts, &loops[j].pts);
+                let crossing = (0..a.len()).any(|p| (0..b.len()).any(|q| segments_cross(a[p], a[(p + 1) % a.len()], b[q], b[(q + 1) % b.len()])));
+                if crossing {
+                    return Err("two outlines of the sketch cross each other; an outline may enclose another but not cut it".into());
+                }
+            }
+        }
+        // Parent: the smallest loop that contains it.
+        let parent: Vec<Option<usize>> = (0..n).map(|i| (0..n).filter(|&j| j != i && areas[j] > areas[i] && loops[i].within(&loops[j])).min_by(|&x, &y| areas[x].total_cmp(&areas[y]))).collect();
+        let depth = |mut i: usize| {
+            let mut d = 0;
+            while let Some(p) = parent[i] {
+                d += 1;
+                i = p;
+            }
+            d
+        };
+        let mut regions: Vec<Nest> = (0..n).filter(|&i| depth(i) % 2 == 0).map(|i| Nest { outer: i, holes: (0..n).filter(|&j| parent[j] == Some(i)).collect() }).collect();
+        // Largest outline first, the rest in the order of their lowest entity id.
+        // Equal outlines (to rounding) keep the one drawn first first, so the choice is the same on every platform.
+        let ax = |x: usize| areas[regions[x].outer];
+        if let Some(big) = (0..regions.len()).max_by(|&x, &y| if (ax(x) - ax(y)).abs() <= 1e-9 * ax(x).max(ax(y)) { y.cmp(&x) } else { ax(x).total_cmp(&ax(y)) }) {
+            let r = regions.remove(big);
+            regions.insert(0, r);
+        }
+        Ok(regions)
+    }
+
+    /// Append the surface names of one region: the outline's by shape, the holes' as `holeN`.
+    fn region_names(&self, outer: &Loop, holes: &[&Loop], prefix: &str, out: &mut Vec<(Id, String)>) {
         match &outer.shape {
             Shape::Rect { x0, y0, x1, y1 } => {
                 for (id, _) in &outer.members {
                     let Some((a, b)) = self.line_pts(*id) else { continue };
                     let eps = 1e-6 * (x1 - x0).max(y1 - y0);
                     let name = if (a[1] - b[1]).abs() < eps { if (a[1] - y0).abs() < eps { "bottom" } else { "top" } } else if (a[0] - x0).abs() < eps { "left" } else { "right" };
-                    out.push((*id, name.to_string()));
+                    out.push((*id, format!("{prefix}{name}")));
                 }
             }
             Shape::Polygon { .. } | Shape::Outline { .. } => {
                 let mut k = 1;
                 for (id, n) in &outer.members {
                     for _ in 0..*n {
-                        out.push((*id, format!("edge{k}")));
+                        out.push((*id, format!("{prefix}edge{k}")));
                         k += 1;
                     }
                 }
             }
             _ => {
                 for (id, _) in &outer.members {
-                    out.push((*id, "outer".to_string()));
+                    out.push((*id, format!("{prefix}outer")));
                 }
             }
         }
-        for (h, hole) in loops.iter().enumerate() {
+        for (h, hole) in holes.iter().enumerate() {
             for (id, _) in &hole.members {
-                out.push((*id, format!("hole{}", h + 1)));
+                out.push((*id, format!("{prefix}hole{}", h + 1)));
             }
+        }
+    }
+
+    /// Mesh surface name of every profile edge, as `(entity id, name)`: what a support or load must name to act on
+    /// that sketch entity once the part is built (`bottom/right/top/left` of a rectangle outline, `edgeN` of a
+    /// polygon or arc outline, `outer` of a circle, `holeN` of the N-th hole). The other regions of a sketch with several
+    /// (an island, a separate outline) carry the prefix `r2/`, `r3/`, ...
+    pub fn surface_names(&self) -> Result<Vec<(Id, String)>, String> {
+        let mut loops = self.loops()?;
+        if loops.is_empty() {
+            return Err("the sketch has no closed profile".into());
+        }
+        loops.sort_by_key(|l| l.key);
+        let mut out = Vec::new();
+        for (r, region) in Self::nest(&loops)?.iter().enumerate() {
+            let prefix = if r == 0 { String::new() } else { format!("r{}/", r + 1) };
+            let holes: Vec<&Loop> = region.holes.iter().map(|&h| &loops[h]).collect();
+            self.region_names(&loops[region.outer], &holes, &prefix, &mut out);
         }
         Ok(out)
     }
 
-    /// Loops the sketch forms. Errors name what is wrong (open profile, branch, crossing, nesting).
+    /// Loops the sketch forms. Errors name what is wrong (open profile, branch, crossing).
     pub fn profile(&self) -> Result<Profile, String> {
         let mut loops = self.loops()?;
         if loops.is_empty() {
             return Err("the sketch has no closed profile".into());
         }
         loops.sort_by_key(|l| l.key);
-        let outer_i = (0..loops.len()).max_by(|&i, &j| area(&loops[i].pts).abs().total_cmp(&area(&loops[j].pts).abs())).expect("non-empty");
-        let outer = loops.remove(outer_i);
-        for h in &loops {
-            if !h.within(&outer) {
-                return Err("the sketch has separate regions; a profile is one outline with holes inside it".into());
-            }
-        }
-        for (i, h) in loops.iter().enumerate() {
-            if loops.iter().enumerate().any(|(j, o)| j != i && h.within(o)) {
-                return Err("a profile inside a hole (an island) is not supported".into());
-            }
-        }
-        Ok(Profile { outer: outer.shape, holes: loops.into_iter().map(|l| l.shape).collect() })
+        let mut regions = Self::nest(&loops)?.into_iter().map(|n| SketchRegion { outer: loops[n.outer].shape.clone(), holes: n.holes.iter().map(|&h| loops[h].shape.clone()).collect() });
+        let first = regions.next().expect("at least one loop makes one region");
+        Ok(Profile { outer: first.outer, holes: first.holes, regions: regions.collect() })
     }
 
     /// Union-find class of each point id, merging `Coincident` constraints and points at the same place.
@@ -235,6 +288,74 @@ impl Sketch {
         Ok(out)
     }
 
+    /// The line or arc `id` as an outline edge, walked from its stored start (`fwd`) or from its stored end.
+    fn edge_seg(&self, id: Id, fwd: bool) -> Result<Seg, String> {
+        match self.entity(id) {
+            Some(Entity::Line { a, b }) => {
+                let (p, q) = (snap2(self.point(*a).ok_or("line end")?), snap2(self.point(*b).ok_or("line end")?));
+                Ok(if fwd { Seg::Line { a: p, b: q } } else { Seg::Line { a: q, b: p } })
+            }
+            Some(Entity::Arc { c, s, e }) => {
+                let (c, s, e) = (snap2(self.point(*c).ok_or("arc centre")?), snap2(self.point(*s).ok_or("arc start")?), snap2(self.point(*e).ok_or("arc end")?));
+                let r = (s[0] - c[0]).hypot(s[1] - c[1]);
+                let (a0, mut a1) = ((s[1] - c[1]).atan2(s[0] - c[0]), (e[1] - c[1]).atan2(e[0] - c[0]));
+                while a1 <= a0 {
+                    a1 += std::f64::consts::TAU;
+                }
+                // Stored counter-clockwise from `s` to `e`; walked backwards it runs clockwise from `e`.
+                Ok(if fwd { Seg::Arc { c, r, a0, a1 } } else { Seg::Arc { c, r, a0: a1, a1: a0 } })
+            }
+            _ => Err("a profile edge is not a line or arc".into()),
+        }
+    }
+
+    /// The lines and arcs of the sketch (construction geometry excluded) as one open chain of edges in walk order, for a
+    /// sweep path. It has two free ends and no branch; the walk starts at the end whose point has the lower id.
+    pub fn open_path(&self) -> Result<Vec<Seg>, String> {
+        let class = self.point_classes();
+        let cls = |id: Id| class.iter().find(|c| c.0 == id).map(|c| c.1).expect("point");
+        let mut edges: Vec<(Id, usize, usize)> = Vec::new();
+        for e in self.entities.iter().filter(|e| !self.is_construction(e.id)) {
+            match e.v {
+                Entity::Line { a, b } => edges.push((e.id, cls(a), cls(b))),
+                Entity::Arc { s, e: en, .. } => edges.push((e.id, cls(s), cls(en))),
+                Entity::Circle { .. } => return Err("a circle cannot be part of a path; a path is lines and arcs in one open chain".into()),
+                Entity::Point { .. } => {}
+            }
+        }
+        if edges.is_empty() {
+            return Err("the path sketch has no lines or arcs".into());
+        }
+        let mut deg: Vec<(usize, usize)> = Vec::new();
+        for &(_, a, b) in &edges {
+            for c in [a, b] {
+                match deg.iter_mut().find(|d| d.0 == c) {
+                    Some(d) => d.1 += 1,
+                    None => deg.push((c, 1)),
+                }
+            }
+        }
+        if deg.iter().any(|d| d.1 > 2) {
+            return Err("a path point joins more than two edges; a path is one chain without branches".into());
+        }
+        let ends: Vec<usize> = deg.iter().filter(|d| d.1 == 1).map(|d| d.0).collect();
+        if ends.len() != 2 {
+            return Err(if ends.is_empty() { "the path is closed; a path has two free ends".into() } else { "the path is in several pieces; a path is one chain".into() });
+        }
+        let mut at = ends[0].min(ends[1]);
+        let mut used = vec![false; edges.len()];
+        let mut out = Vec::new();
+        while let Some((k, fwd)) = (0..edges.len()).filter(|&k| !used[k]).find_map(|k| if edges[k].1 == at { Some((k, true)) } else if edges[k].2 == at { Some((k, false)) } else { None }) {
+            used[k] = true;
+            at = if fwd { edges[k].2 } else { edges[k].1 };
+            out.push(self.edge_seg(edges[k].0, fwd)?);
+        }
+        if out.len() != edges.len() {
+            return Err("the path is in several pieces; a path is one chain".into());
+        }
+        Ok(out)
+    }
+
     fn chain_loop(&self, edges: &[(Id, usize, usize)], chain: &[(usize, bool)], key: Id) -> Result<Loop, String> {
         // Rotate so the walk starts at the edge with the lowest id, in the direction it is stored.
         let k0 = chain.iter().position(|c| edges[c.0].0 == key).expect("key in chain");
@@ -243,25 +364,8 @@ impl Sketch {
         for n in 0..chain.len() {
             let (ei, fwd) = chain[(k0 + n) % chain.len()];
             let id = edges[ei].0;
-            match self.entity(id) {
-                Some(Entity::Line { a, b }) => {
-                    let (p, q) = (snap2(self.point(*a).ok_or("line end")?), snap2(self.point(*b).ok_or("line end")?));
-                    segs.push(if fwd { Seg::Line { a: p, b: q } } else { Seg::Line { a: q, b: p } });
-                    members.push((id, 1));
-                }
-                Some(Entity::Arc { c, s, e }) => {
-                    let (c, s, e) = (snap2(self.point(*c).ok_or("arc centre")?), snap2(self.point(*s).ok_or("arc start")?), snap2(self.point(*e).ok_or("arc end")?));
-                    let r = (s[0] - c[0]).hypot(s[1] - c[1]);
-                    let (a0, mut a1) = ((s[1] - c[1]).atan2(s[0] - c[0]), (e[1] - c[1]).atan2(e[0] - c[0]));
-                    while a1 <= a0 {
-                        a1 += std::f64::consts::TAU;
-                    }
-                    // Stored counter-clockwise from `s` to `e`; walked backwards it runs clockwise from `e`'s end.
-                    segs.push(if fwd { Seg::Arc { c, r, a0, a1 } } else { Seg::Arc { c, r, a0: a1, a1: a0 } });
-                    members.push((id, 1));
-                }
-                _ => return Err("a profile edge is not a line or arc".into()),
-            }
+            segs.push(self.edge_seg(id, fwd)?);
+            members.push((id, 1));
         }
         let has_arc = segs.iter().any(|sg| matches!(sg, Seg::Arc { .. }));
         // The polygon the edges approximate: for orientation, nesting and the area check.

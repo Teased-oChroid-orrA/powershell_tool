@@ -68,7 +68,7 @@ fn thin_extrusions_get_more_layers() {
     p.analysis = Analysis::Solid;
     p.supports.push(Support::fixed("left"));
     p.loads.push(Load::Pressure { edge: "right".into(), p: 1.0 });
-    p.geometry = Geometry::Sketch { outer: Shape::Rect { x0: 0.0, y0: 0.0, x1: 12.0, y1: 4.0 }, holes: vec![], depth: 0.25, layers: 1 };
+    p.geometry = Geometry::Sketch { outer: Shape::Rect { x0: 0.0, y0: 0.0, x1: 12.0, y1: 4.0 }, holes: vec![], depth: 0.25, layers: 1, regions: Vec::new() };
     let adv = recommend(&p);
     let a = adv.iter().find(|a| matches!(a, Advice::Layers { .. })).expect("layers");
     a.apply(&mut p).unwrap();
