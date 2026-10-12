@@ -315,6 +315,15 @@ fn rescaled(p: &Problem, a: f64, b: f64) -> Problem {
         Shape::Circle { cx, cy, r } => Shape::Circle { cx: cx * a, cy: cy * a, r: r * a },
         Shape::Slot { cx, cy, length, width, angle } => Shape::Slot { cx: cx * a, cy: cy * a, length: length * a, width: width * a, angle: *angle },
         Shape::Polygon { pts } => Shape::Polygon { pts: pts.iter().map(|q| [q[0] * a, q[1] * a]).collect() },
+        Shape::Outline { segs } => Shape::Outline {
+            segs: segs
+                .iter()
+                .map(|sg| match *sg {
+                    fea_problem::Seg::Line { a: p0, b: p1 } => fea_problem::Seg::Line { a: [p0[0] * a, p0[1] * a], b: [p1[0] * a, p1[1] * a] },
+                    fea_problem::Seg::Arc { c, r, a0, a1 } => fea_problem::Seg::Arc { c: [c[0] * a, c[1] * a], r: r * a, a0, a1 },
+                })
+                .collect(),
+        },
     };
     let mut q = p.clone();
     q.thickness *= a;

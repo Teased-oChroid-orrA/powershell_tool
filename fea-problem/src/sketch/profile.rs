@@ -2,7 +2,7 @@
 //! in the `Shape` vocabulary the mesher already understands. Loop order and start are deterministic (lowest
 //! entity id first) so the names `edgeN` / `holeN` that supports and loads refer to survive a rebuild.
 use super::*;
-use crate::problem::Shape;
+use crate::problem::{Seg, Shape};
 
 /// Segments per full turn when an arc becomes polygon edges.
 const ARC_SEGMENTS: f64 = 48.0;
@@ -89,7 +89,7 @@ impl Sketch {
                     out.push((*id, name.to_string()));
                 }
             }
-            Shape::Polygon { .. } => {
+            Shape::Polygon { .. } | Shape::Outline { .. } => {
                 let mut k = 1;
                 for (id, n) in &outer.members {
                     for _ in 0..*n {
@@ -174,7 +174,7 @@ impl Sketch {
         let mut out = Vec::new();
         // Edges: (entity id, class of start, class of end).
         let mut edges: Vec<(Id, usize, usize)> = Vec::new();
-        for e in &self.entities {
+        for e in self.entities.iter().filter(|e| !self.is_construction(e.id)) {
             match e.v {
                 Entity::Circle { c, r } => {
                     let c = snap2(self.point(c).ok_or("circle without centre")?);
@@ -238,51 +238,43 @@ impl Sketch {
     fn chain_loop(&self, edges: &[(Id, usize, usize)], chain: &[(usize, bool)], key: Id) -> Result<Loop, String> {
         // Rotate so the walk starts at the edge with the lowest id, in the direction it is stored.
         let k0 = chain.iter().position(|c| edges[c.0].0 == key).expect("key in chain");
-        let mut pts: Vec<[f64; 2]> = Vec::new();
-        let mut kinds = Vec::new();
+        let mut segs: Vec<Seg> = Vec::new();
         let mut members: Vec<(Id, usize)> = Vec::new();
         for n in 0..chain.len() {
             let (ei, fwd) = chain[(k0 + n) % chain.len()];
             let id = edges[ei].0;
             match self.entity(id) {
                 Some(Entity::Line { a, b }) => {
-                    let (p, q) = (self.point(*a).ok_or("line end")?, self.point(*b).ok_or("line end")?);
-                    pts.push(if fwd { p } else { q });
-                    kinds.push(true);
+                    let (p, q) = (snap2(self.point(*a).ok_or("line end")?), snap2(self.point(*b).ok_or("line end")?));
+                    segs.push(if fwd { Seg::Line { a: p, b: q } } else { Seg::Line { a: q, b: p } });
                     members.push((id, 1));
                 }
                 Some(Entity::Arc { c, s, e }) => {
-                    let (c, s, e) = (self.point(*c).ok_or("arc centre")?, self.point(*s).ok_or("arc start")?, self.point(*e).ok_or("arc end")?);
+                    let (c, s, e) = (snap2(self.point(*c).ok_or("arc centre")?), snap2(self.point(*s).ok_or("arc start")?), snap2(self.point(*e).ok_or("arc end")?));
                     let r = (s[0] - c[0]).hypot(s[1] - c[1]);
                     let (a0, mut a1) = ((s[1] - c[1]).atan2(s[0] - c[0]), (e[1] - c[1]).atan2(e[0] - c[0]));
                     while a1 <= a0 {
                         a1 += std::f64::consts::TAU;
                     }
-                    let steps = (((a1 - a0) / std::f64::consts::TAU * ARC_SEGMENTS).ceil() as usize).max(2);
-                    let mut arc: Vec<[f64; 2]> = (0..steps).map(|i| {
-                        let t = a0 + (a1 - a0) * i as f64 / steps as f64;
-                        [c[0] + r * t.cos(), c[1] + r * t.sin()]
-                    }).collect();
-                    if !fwd {
-                        arc.push(e);
-                        arc.reverse();
-                        arc.pop();
-                    }
-                    members.push((id, arc.len()));
-                    pts.extend(arc);
-                    kinds.push(false);
+                    // Stored counter-clockwise from `s` to `e`; walked backwards it runs clockwise from `e`'s end.
+                    segs.push(if fwd { Seg::Arc { c, r, a0, a1 } } else { Seg::Arc { c, r, a0: a1, a1: a0 } });
+                    members.push((id, 1));
                 }
                 _ => return Err("a profile edge is not a line or arc".into()),
             }
         }
-        let pts: Vec<[f64; 2]> = pts.into_iter().map(snap2).collect();
+        let has_arc = segs.iter().any(|sg| matches!(sg, Seg::Arc { .. }));
+        // The polygon the edges approximate: for orientation, nesting and the area check.
+        let pts: Vec<[f64; 2]> = segs.iter().flat_map(|sg| sg.sample(ARC_SEGMENTS)).map(snap2).collect();
         if pts.len() < 3 || area(&pts).abs() < 1e-12 {
             return Err("a profile loop has no area".into());
         }
         // Orientation is kept as drawn: `edgeN` is the N-th edge walked from the lowest-id edge, and the mesher
         // orients loops itself.
         let eps = 1e-9;
-        let shape = if kinds.len() == 4 && kinds.iter().all(|k| *k) && (0..4).all(|i| (pts[i][0] - pts[(i + 1) % 4][0]).abs() < eps || (pts[i][1] - pts[(i + 1) % 4][1]).abs() < eps) {
+        let shape = if has_arc {
+            Shape::Outline { segs }
+        } else if pts.len() == 4 && (0..4).all(|i| (pts[i][0] - pts[(i + 1) % 4][0]).abs() < eps || (pts[i][1] - pts[(i + 1) % 4][1]).abs() < eps) {
             let (xs, ys) = (pts.iter().map(|p| p[0]), pts.iter().map(|p| p[1]));
             Shape::Rect { x0: xs.clone().fold(f64::INFINITY, f64::min), y0: ys.clone().fold(f64::INFINITY, f64::min), x1: xs.fold(f64::NEG_INFINITY, f64::max), y1: ys.fold(f64::NEG_INFINITY, f64::max) }
         } else {

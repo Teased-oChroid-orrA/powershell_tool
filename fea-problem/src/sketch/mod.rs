@@ -102,6 +102,10 @@ pub struct Sketch {
     pub entities: Vec<Item<Entity>>,
     #[serde(default)]
     pub constraints: Vec<Item<Constraint>>,
+    /// Entities drawn only to hold dimensions and constraints (axes, centre lines, reference circles): they take part in
+    /// the solve but never in the profile (`profile`, `surface_names`) or its branch / closure checks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub construction: Vec<Id>,
 }
 
 impl Sketch {
@@ -109,6 +113,23 @@ impl Sketch {
         let id = self.next_id.max(self.entities.iter().map(|e| e.id + 1).chain(self.constraints.iter().map(|c| c.id + 1)).max().unwrap_or(0));
         self.next_id = id + 1;
         id
+    }
+    pub fn is_construction(&self, id: Id) -> bool {
+        self.construction.contains(&id)
+    }
+    /// Mark a line, circle or arc as construction geometry (or back to real geometry). A point has no profile role, so it
+    /// is refused, as is a missing entity.
+    pub fn set_construction(&mut self, id: Id, on: bool) -> Result<(), String> {
+        match self.entity(id) {
+            None => return Err(format!("no entity {id}")),
+            Some(Entity::Point { .. }) => return Err("a point is not part of a profile; only lines, circles and arcs can be construction geometry".into()),
+            Some(_) => {}
+        }
+        self.construction.retain(|c| *c != id);
+        if on {
+            self.construction.push(id);
+        }
+        Ok(())
     }
     pub fn entity(&self, id: Id) -> Option<&Entity> {
         self.entities.iter().find(|e| e.id == id).map(|e| &e.v)
@@ -187,6 +208,7 @@ impl Sketch {
         }
         self.entities.retain(|e| !dead.contains(&e.id));
         self.constraints.retain(|c| !c.v.refs().iter().any(|r| dead.contains(r)));
+        self.construction.retain(|c| !dead.contains(c));
     }
     fn kind(&self, id: Id) -> Option<u8> {
         Some(match self.entity(id)? {
@@ -318,6 +340,23 @@ impl Sketch {
                     let ids: Vec<Id> = pts.iter().map(|p| s.add_point(p[0], p[1])).collect();
                     for i in 0..ids.len() {
                         s.add_line(ids[i], ids[(i + 1) % ids.len()]);
+                    }
+                }
+                Shape::Outline { segs } => {
+                    // One point per edge start, shared with the previous edge's end; an arc also gets its centre.
+                    let ids: Vec<Id> = segs.iter().map(|sg| s.add_point(sg.start()[0], sg.start()[1])).collect();
+                    for (i, sg) in segs.iter().enumerate() {
+                        let (from, to) = (ids[i], ids[(i + 1) % ids.len()]);
+                        match *sg {
+                            crate::Seg::Line { .. } => {
+                                s.add_line(from, to);
+                            }
+                            crate::Seg::Arc { c, a0, a1, .. } => {
+                                let centre = s.add_point(c[0], c[1]);
+                                // Arcs are stored counter-clockwise from start to end.
+                                if a1 >= a0 { s.add_arc(centre, from, to) } else { s.add_arc(centre, to, from) };
+                            }
+                        }
                     }
                 }
                 Shape::Slot { cx, cy, length, width, angle } => {

@@ -106,6 +106,53 @@ pub enum Shape {
     /// Stadium: overall `length` x `width`, centred at `(cx, cy)`, long axis `angle` degrees from `x`.
     Slot { cx: f64, cy: f64, length: f64, width: f64, angle: f64 },
     Polygon { pts: Vec<[f64; 2]> },
+    /// Closed chain of straight and circular-arc edges (a sketch outline with arcs), each edge one named surface
+    /// (`edgeN` for an outer outline, the whole chain `holeN` for a hole). Arcs are exact: the mesher places nodes on them.
+    Outline { segs: Vec<Seg> },
+}
+
+/// One edge of a [`Shape::Outline`]; each starts where the previous one ends.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum Seg {
+    Line { a: [f64; 2], b: [f64; 2] },
+    /// Arc about `c` from angle `a0` to `a1` (radians); `a1 < a0` runs clockwise. At most one full turn.
+    Arc { c: [f64; 2], r: f64, a0: f64, a1: f64 },
+}
+
+impl Seg {
+    /// Point at parameter `t` in `[0, 1]` along the edge.
+    pub fn point(&self, t: f64) -> [f64; 2] {
+        match *self {
+            Seg::Line { a, b } => [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])],
+            Seg::Arc { c, r, a0, a1 } => {
+                let th = a0 + t * (a1 - a0);
+                [c[0] + r * th.cos(), c[1] + r * th.sin()]
+            }
+        }
+    }
+    pub fn start(&self) -> [f64; 2] {
+        self.point(0.0)
+    }
+    pub fn end(&self) -> [f64; 2] {
+        self.point(1.0)
+    }
+    /// Points along the edge, `start` inclusive and `end` exclusive; an arc gets about `per_turn` per full turn.
+    pub fn sample(&self, per_turn: f64) -> Vec<[f64; 2]> {
+        match *self {
+            Seg::Line { a, .. } => vec![a],
+            Seg::Arc { a0, a1, .. } => {
+                let n = (((a1 - a0).abs() / std::f64::consts::TAU * per_turn).ceil() as usize).max(2);
+                (0..n).map(|i| self.point(i as f64 / n as f64)).collect()
+            }
+        }
+    }
+    pub(crate) fn curve(&self) -> fea_core::geometry::Curve {
+        match *self {
+            Seg::Line { a, b } => fea_core::geometry::Curve::line(a, b),
+            Seg::Arc { c, r, a0, a1 } => fea_core::geometry::Curve::arc(c, r, a0, a1),
+        }
+    }
 }
 
 impl Shape {
@@ -115,6 +162,7 @@ impl Shape {
             Shape::Circle { .. } => "Circle",
             Shape::Slot { .. } => "Slot",
             Shape::Polygon { .. } => "Polygon",
+            Shape::Outline { .. } => "Outline",
         }
     }
 
@@ -134,6 +182,31 @@ impl Shape {
                     for i in 0..2 {
                         lo[i] = lo[i].min(p[i]);
                         hi[i] = hi[i].max(p[i]);
+                    }
+                }
+                (lo, hi)
+            }
+            Shape::Outline { segs } => {
+                // Corners plus the arc extremes that fall inside each arc's sweep.
+                let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+                let mut grow = |p: [f64; 2]| {
+                    for i in 0..2 {
+                        lo[i] = lo[i].min(p[i]);
+                        hi[i] = hi[i].max(p[i]);
+                    }
+                };
+                for sg in segs {
+                    grow(sg.start());
+                    grow(sg.end());
+                    if let Seg::Arc { c, r, a0, a1 } = *sg {
+                        let (from, to) = (a0.min(a1), a0.max(a1));
+                        for k in 0..4 {
+                            let q = k as f64 * std::f64::consts::FRAC_PI_2;
+                            let n0 = ((from - q) / std::f64::consts::TAU).ceil();
+                            if q + n0 * std::f64::consts::TAU <= to {
+                                grow([c[0] + r * q.cos(), c[1] + r * q.sin()]);
+                            }
+                        }
                     }
                 }
                 (lo, hi)
@@ -411,6 +484,7 @@ impl Problem {
         let mut names: Vec<String> = match outer {
             Shape::Rect { .. } => ["bottom", "right", "top", "left"].iter().map(|s| s.to_string()).collect(),
             Shape::Polygon { pts } => (1..=pts.len()).map(|i| format!("edge{i}")).collect(),
+            Shape::Outline { segs } => (1..=segs.len()).map(|i| format!("edge{i}")).collect(),
             Shape::Circle { .. } | Shape::Slot { .. } => vec!["outer".into()],
         };
         names.extend((1..=holes.len()).map(|i| format!("hole{i}")));
@@ -562,6 +636,15 @@ fn check_shape(s: &Shape) -> Result<(), String> {
                 return Err("a polygon needs at least three finite points".into());
             }
         }
+        Shape::Outline { segs } => {
+            let ok = |sg: &Seg| match *sg {
+                Seg::Line { a, b } => finite(&a) && finite(&b),
+                Seg::Arc { c, r, a0, a1 } => finite(&c) && finite(&[r, a0, a1]) && r > 0.0 && (a1 - a0).abs() <= std::f64::consts::TAU + 1e-12,
+            };
+            if segs.len() < 2 || !segs.iter().all(ok) {
+                return Err("an outline needs at least two finite edges and arcs with a positive radius and at most a full turn".into());
+            }
+        }
     }
     Ok(())
 }
@@ -577,7 +660,7 @@ impl Shape {
             Shape::Rect { x0, y0, x1, y1 } => vec![("X min", *x0), ("Y min", *y0), ("X max", *x1), ("Y max", *y1)],
             Shape::Circle { cx, cy, r } => vec![("Centre X", *cx), ("Centre Y", *cy), ("Radius", *r)],
             Shape::Slot { cx, cy, length, width, angle } => vec![("Centre X", *cx), ("Centre Y", *cy), ("Length", *length), ("Width", *width), ("Angle (deg)", *angle)],
-            Shape::Polygon { .. } => Vec::new(),
+            Shape::Polygon { .. } | Shape::Outline { .. } => Vec::new(),
         }
     }
 
@@ -614,10 +697,10 @@ impl Shape {
             (Shape::Rect { .. }, true) => circle,
             (Shape::Circle { .. }, true) => slot,
             (Shape::Slot { .. }, true) => poly,
-            (Shape::Polygon { .. }, true) => rect,
+            (Shape::Polygon { .. } | Shape::Outline { .. }, true) => rect,
             (Shape::Circle { .. }, false) => slot,
             (Shape::Slot { .. }, false) => rect,
-            (Shape::Rect { .. } | Shape::Polygon { .. }, false) => circle,
+            (Shape::Rect { .. } | Shape::Polygon { .. } | Shape::Outline { .. }, false) => circle,
         }
     }
 }

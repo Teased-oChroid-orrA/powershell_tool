@@ -139,7 +139,7 @@ fn open_profile_and_branch_are_reported() {
 }
 
 #[test]
-fn arc_in_outline_becomes_polygon_and_remove_entity_cascades() {
+fn arc_in_outline_stays_an_exact_arc_and_remove_entity_cascades() {
     // D-shape: line from (0,-1) to (0,1) closed by a half circle arc about the origin.
     let mut s = Sketch::default();
     let c = s.add_point(0.0, 0.0);
@@ -148,9 +148,10 @@ fn arc_in_outline_becomes_polygon_and_remove_entity_cascades() {
     let line = s.add_line(b, a);
     let arc = s.add_arc(c, a, b);
     let pr = s.profile().unwrap();
-    let Shape::Polygon { pts } = pr.outer else { panic!("expected polygon") };
-    let area = 0.5 * (0..pts.len()).map(|i| pts[i][0] * pts[(i + 1) % pts.len()][1] - pts[i][1] * pts[(i + 1) % pts.len()][0]).sum::<f64>();
-    assert!((area - std::f64::consts::FRAC_PI_2).abs() < 0.01, "area {area}");
+    let Shape::Outline { segs } = &pr.outer else { panic!("expected an outline, got {:?}", pr.outer) };
+    assert_eq!(segs.len(), 2, "one edge per entity, not 48 per turn");
+    let (lo, hi) = pr.outer.bounds();
+    assert!((lo[0]).abs() < 1e-12 && (hi[0] - 1.0).abs() < 1e-12 && (lo[1] + 1.0).abs() < 1e-12 && (hi[1] - 1.0).abs() < 1e-12, "{lo:?} {hi:?}: the arc's extreme x = 1 is not a vertex");
     s.add_constraint(C::Vertical { line }).unwrap();
     s.add_constraint(C::Radius { e: arc, d: 1.0 }).unwrap();
     s.remove_entity(a);
@@ -458,7 +459,7 @@ mod names {
     }
 
     #[test]
-    fn arc_contributes_several_polygon_edges() {
+    fn an_arc_is_one_named_edge_and_the_mesh_has_it_on_the_exact_circle() {
         let mut s = Sketch::default();
         let c = s.add_point(0.0, 0.0);
         let a = s.add_point(0.0, -1.0);
@@ -466,8 +467,23 @@ mod names {
         let line = s.add_line(b, a);
         let arc = s.add_arc(c, a, b);
         s.add_constraint(C::Vertical { line });
-        assert_eq!(names_of(&s, line).len(), 1);
-        assert!(names_of(&s, arc).len() > 10);
+        assert_eq!(names_of(&s, line), ["edge1"]);
+        assert_eq!(names_of(&s, arc), ["edge2"], "an arc is one surface");
+        let mut prob = fea_problem::templates::templates()[0].1.clone();
+        let mut h = History::default();
+        h.add("S", FeatureKind::Sketch { plane: Plane::Front { offset: 0.0 }, sketch: s.clone() });
+        prob.history = Some(h);
+        prob.apply_history().unwrap();
+        prob.mesh.size = 0.2;
+        assert_eq!(prob.edge_names()[..2], ["edge1", "edge2"]);
+        let mesh = build::sketch_mesh(&prob, None).unwrap();
+        let on_arc = &mesh.surfaces["edge2"];
+        assert!(!on_arc.is_empty());
+        let nodes: std::collections::BTreeSet<usize> = on_arc.iter().flat_map(|f| f.iter().copied()).collect();
+        for n in nodes {
+            let p = mesh.nodes[n];
+            assert!((p[0].hypot(p[1]) - 1.0).abs() < 1e-9, "node {n} at {p:?} is off the unit circle");
+        }
     }
 }
 
@@ -475,10 +491,9 @@ mod arcs {
     use fea_problem::sketch::Sketch;
     use fea_problem::Shape;
 
-    /// The polygon of a profile that contains an arc passes through BOTH arc end points (each edge contributes its start
-    /// point and the next edge starts where this one ends), in either walk direction.
+    /// The outline of a profile that contains an arc is continuous through BOTH arc end points in either walk direction.
     #[test]
-    fn arc_end_points_are_polygon_vertices_in_both_directions() {
+    fn arc_outline_is_continuous_in_both_directions() {
         for reversed in [false, true] {
             let mut s = Sketch::default();
             let c = s.add_point(0.0, 0.0);
@@ -496,13 +511,79 @@ mod arcs {
                 l2 = s.add_line(c, a);
             }
             let _ = (arc, l1, l2);
-            let Shape::Polygon { pts } = s.profile().unwrap().outer else { panic!("polygon") };
+            let Shape::Outline { segs } = s.profile().unwrap().outer else { panic!("outline") };
+            assert_eq!(segs.len(), 3);
+            // Walk-continuous in both directions: every edge ends where the next begins, whichever way it is stored.
+            for i in 0..3 {
+                let (e, n) = (segs[i].end(), segs[(i + 1) % 3].start());
+                assert!((e[0] - n[0]).hypot(e[1] - n[1]) < 1e-9, "reversed={reversed}: edge {i} ends at {e:?}, next starts at {n:?}");
+            }
+            let pts: Vec<[f64; 2]> = segs.iter().flat_map(|sg| sg.sample(480.0)).collect();
             let has = |p: [f64; 2]| pts.iter().any(|q| (q[0] - p[0]).hypot(q[1] - p[1]) < 1e-9);
-            assert!(has([1.0, 0.0]) && has([0.0, 1.0]) && has([0.0, 0.0]), "reversed={reversed}: {pts:?}");
+            assert!(has([1.0, 0.0]) && has([0.0, 1.0]) && has([0.0, 0.0]), "reversed={reversed}");
             let area = 0.5 * (0..pts.len()).map(|i| pts[i][0] * pts[(i + 1) % pts.len()][1] - pts[i][1] * pts[(i + 1) % pts.len()][0]).sum::<f64>().abs();
-            assert!((area - std::f64::consts::FRAC_PI_4).abs() < 5e-3, "area {area}");
-            // No duplicate consecutive vertices (a duplicate would make a zero-length mesh edge).
-            assert!(pts.windows(2).all(|w| (w[0][0] - w[1][0]).hypot(w[0][1] - w[1][1]) > 1e-9), "{pts:?}");
+            assert!((area - std::f64::consts::FRAC_PI_4).abs() < 1e-4, "area {area}");
         }
     }
+}
+
+#[test]
+fn construction_geometry_drives_the_solve_but_is_not_in_the_profile() {
+    let (mut s, p, l) = rough_rect();
+    for (i, id) in l.iter().enumerate() {
+        s.add_constraint(if i % 2 == 0 { C::Horizontal { line: *id } } else { C::Vertical { line: *id } }).unwrap();
+    }
+    s.add_constraint(C::Fixed { p: p[0], x: 0.0, y: 0.0 }).unwrap();
+    s.add_constraint(C::Length { line: l[0], d: 12.0 }).unwrap();
+    // A diagonal through two corners branches the outline until it is construction.
+    let diag = s.add_line(p[0], p[2]);
+    assert!(s.profile().unwrap_err().contains("more than two edges"));
+    s.set_construction(diag, true).unwrap();
+    s.add_constraint(C::Length { line: diag, d: 13.0 }).unwrap(); // 12 x 5 -> diagonal 13
+    s.solve();
+    let pr = s.profile().unwrap();
+    assert_eq!(pr.outer, Shape::Rect { x0: 0.0, y0: 0.0, x1: 12.0, y1: 5.0 }, "the diagonal dimension sized the rectangle");
+    // A reference circle is no hole; unmarking it makes it one.
+    let (c, _) = s.add_circle(6.0, 2.5, 1.0);
+    s.set_construction(c, true).unwrap();
+    assert!(s.profile().unwrap().holes.is_empty());
+    s.set_construction(c, false).unwrap();
+    assert_eq!(s.profile().unwrap().holes.len(), 1);
+    // Points cannot be construction; deleting the entity forgets the flag; the flag survives JSON.
+    assert!(s.set_construction(p[0], true).is_err() && s.set_construction(999, true).is_err());
+    let back: Sketch = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+    assert_eq!(back, s);
+    assert!(back.is_construction(diag));
+    let mut t = back;
+    t.remove_entity(diag);
+    assert!(t.construction.is_empty());
+}
+
+#[test]
+fn an_outline_with_arcs_round_trips_through_a_sketch_and_solves_on_its_arc_edge() {
+    use fea_problem::{solve, templates, Geometry, Load, Seg, Support};
+    use std::f64::consts::FRAC_PI_2;
+    // A D-shape: the straight edge x = 0 and a half circle of radius 2 bulging to +x (clockwise walk, then counter-clockwise).
+    let outline = Shape::Outline {
+        segs: vec![Seg::Line { a: [0.0, -2.0], b: [0.0, 2.0] }, Seg::Arc { c: [0.0, 0.0], r: 2.0, a0: FRAC_PI_2, a1: -FRAC_PI_2 }],
+    };
+    let sk = Sketch::from_shapes(&outline, &[]);
+    let back = sk.profile().unwrap().outer;
+    let Shape::Outline { segs } = &back else { panic!("{back:?}") };
+    assert_eq!(segs.len(), 2);
+    let (lo, hi) = back.bounds();
+    assert!((hi[0] - 2.0).abs() < 1e-12 && lo[0].abs() < 1e-12 && (hi[1] - 2.0).abs() < 1e-12, "{lo:?} {hi:?}");
+    // Mesh and solve: held on the straight edge, pulled along +x on the arc edge. Reaction balances the load.
+    let mut p = templates::blank();
+    p.history = None;
+    p.geometry = Geometry::Sketch { outer: outline, holes: vec![], depth: 1.0, layers: 1 };
+    p.mesh.size = 0.25;
+    p.thickness = 1.0;
+    let names = p.edge_names();
+    assert_eq!(names[..2], ["edge1", "edge2"]);
+    p.supports = vec![Support::fixed("edge1")];
+    p.loads = vec![Load::Force { edge: "edge2".into(), fx: 100.0, fy: 0.0, fz: 0.0 }];
+    let s = solve(&p, None).unwrap();
+    assert!((s.summary.reaction[0] + 100.0).abs() < 0.5, "{:?}", s.summary.reaction);
+    assert!(s.summary.equilibrium_error < 1e-6, "{}", s.summary.equilibrium_error);
 }

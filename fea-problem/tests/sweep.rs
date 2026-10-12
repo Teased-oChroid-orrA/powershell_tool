@@ -190,7 +190,10 @@ fn random_linear_problems_solve_and_balance() {
         }
         match p.validate().and_then(|()| solve(&p, None)) {
             Ok(s) if s.summary.equilibrium_error < 1e-6 && s.summary.zz_error.is_finite() && s.summary.max_von_mises.value > 0.0 => {}
-            Ok(s) => failures.push(format!("#{k} {name}: equilibrium {:e}, zz {}, vm {}", s.summary.equilibrium_error, s.summary.zz_error, s.summary.max_von_mises.value)),
+            Ok(s) => failures.push(format!(
+                "#{k} {name}: equilibrium {:e}, zz {}, vm {}; reaction {:?}, applied {:?}, {} dofs, element {:?}, size {}, notes {:?}",
+                s.summary.equilibrium_error, s.summary.zz_error, s.summary.max_von_mises.value, s.summary.reaction, s.summary.applied, s.summary.dofs, p.mesh.element, p.mesh.size, s.summary.notes
+            )),
             Err(e) => failures.push(format!("#{k} {name}: {e}")),
         }
     }

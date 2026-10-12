@@ -8,7 +8,7 @@
 //!
 //! Scope: the `Problem` schema is structural (plane stress / strain, axisymmetric, solid) with a uniform temperature
 //! change; there is no thermal-conduction problem type here yet, so no thermal advice exists.
-use crate::problem::{Analysis, Geometry, Load, Problem, Shape, Support};
+use crate::problem::{Analysis, Geometry, Load, Problem, Seg, Shape, Support};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -137,6 +137,7 @@ pub fn surface_centroids(p: &Problem) -> Vec<(String, [f64; 2])> {
                 out.push((format!("edge{}", i + 1), [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])]));
             }
         }
+        Shape::Outline { segs } => out.extend(segs.iter().enumerate().map(|(i, sg)| (format!("edge{}", i + 1), sg.point(0.5)))),
         Shape::Circle { .. } | Shape::Slot { .. } => out.push(("outer".into(), outer.centre())),
     }
     for (i, h) in holes.iter().enumerate() {
@@ -156,6 +157,7 @@ pub fn surface_edges(p: &Problem) -> Vec<(String, [[f64; 2]; 2])> {
             ("left".into(), [[*x0, *y1], [*x0, *y0]]),
         ],
         Shape::Polygon { pts } => (0..pts.len()).map(|i| (format!("edge{}", i + 1), [pts[i], pts[(i + 1) % pts.len()]])).collect(),
+        Shape::Outline { segs } => segs.iter().enumerate().filter_map(|(i, sg)| matches!(sg, Seg::Line { .. }).then(|| (format!("edge{}", i + 1), [sg.start(), sg.end()]))).collect(),
         Shape::Circle { .. } | Shape::Slot { .. } => Vec::new(),
     }
 }

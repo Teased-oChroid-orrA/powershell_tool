@@ -1,0 +1,30 @@
+name: Windows tests
+
+# The workspace tests on Windows, the platform the app ships on (`ci.yml` runs Linux only). Not a gate: it exists to
+# surface platform-specific numerical or filesystem differences. Linking `app-tui`'s GPU stack needs no GPU here: its GPU
+# tests are `#[ignore]`d.
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+
+concurrency:
+  group: windows-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: cargo-windows-tests-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-windows-tests-
+      - name: cargo test --workspace
+        run: cargo test --workspace --locked --no-fail-fast

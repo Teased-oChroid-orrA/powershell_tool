@@ -15,5 +15,5 @@ pub mod solid;
 pub mod solve;
 pub mod templates;
 
-pub use problem::{Analysis, Bushing, ElementChoice, Geometry, Load, MaterialSpec, MeshSpec, Problem, RefineRegion, Shape, Support};
+pub use problem::{Analysis, Bushing, ElementChoice, Geometry, Load, MaterialSpec, MeshSpec, Problem, RefineRegion, Seg, Shape, Support};
 pub use solve::{solve, Field, Solved};
