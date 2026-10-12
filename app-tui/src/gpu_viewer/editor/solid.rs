@@ -156,7 +156,7 @@ pub fn feature_of(row: FieldRow) -> Feature {
         Material | Young | Poisson | Alpha | Density | Yield | DeltaT => Feature::Material,
         Source | ImportPath | OuterKind | Outer(_) | PolyPoint(..) | PolyAdd | PolyRemove | HoleAdd | Depth | Layers => Feature::Geometry,
         HoleKind(h) | Hole(h, _) | HoleRemove(h) => Feature::Hole(h),
-        Element | MeshSize | HoleFactor | AdaptPasses | TargetError => Feature::Mesh,
+        Element | MeshSize | HoleFactor | AdaptPasses | TargetError | Reorient => Feature::Mesh,
         SupportKind(s) | SupportEdge(s) | SupportCoord(s, _) | SupportComp(s, _) | SupportRemove(s) => Feature::Support(s),
         SupportAdd => Feature::Support(usize::MAX),
         LoadKind(l) | LoadEdge(l) | LoadParam(l, _) | LoadRemove(l) => Feature::Load(l),

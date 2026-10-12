@@ -559,6 +559,9 @@ fn solve_mesh(p: &Problem, mut mesh: Mesh) -> Result<Pass, String> {
     let mut scale = force_scale(&f, &sol.reactions);
     let imbalance = |reaction: &[f64; 3], applied: &[f64; 3], scale: f64| balance_error(&model.mesh.physics, reaction, applied, scale);
     let mut warnings = warnings;
+    if let Some(why) = &sol.fallback {
+        warnings.push(format!("The linear solve was repeated: {why}."));
+    }
     if !(sol.rel_residual < 1e-6 && imbalance(&reaction, &applied, scale) < 1e-6) {
         let first = (sol.rel_residual, imbalance(&reaction, &applied, scale));
         sol = fea_core::sequentially(|| solve(&model))?;

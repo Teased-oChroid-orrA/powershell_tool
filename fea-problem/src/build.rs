@@ -281,6 +281,13 @@ pub fn imported_mesh(p: &Problem, text: &str) -> Result<Mesh, String> {
     } else {
         return Err("mesh files are Gmsh (.msh) or Abaqus (.inp)".into());
     };
+    let mut mesh = mesh;
+    if p.mesh.reorient {
+        let r = fea_core::import::reorient_inverted(&mut mesh);
+        if r.remaining > 0 {
+            return Err(format!("{} element(s) are collapsed or folded and cannot be turned right side out ({} were repaired): remesh them in the program that made the file", r.remaining, r.repaired));
+        }
+    }
     let solid = matches!(mesh.physics, Physics::Solid);
     if solid != (p.analysis == Analysis::Solid) {
         return Err(if solid { "the file holds a 3D mesh: set the analysis to 3D solid".into() } else { "the file holds a 2D mesh: choose plane stress, plane strain or axisymmetric".into() });

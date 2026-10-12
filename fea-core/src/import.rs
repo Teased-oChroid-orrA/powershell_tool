@@ -559,3 +559,61 @@ pub fn read_abaqus(text: &str, opt: &ImportOptions) -> Result<Mesh, String> {
     }
     Ok(mesh)
 }
+
+
+/// What [`reorient_inverted`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Reorientation {
+    /// Elements that had a non-positive Jacobian and were turned right side out.
+    pub repaired: usize,
+    /// Elements still unusable afterwards (collapsed or folded: a mirrored node order does not help).
+    pub remaining: usize,
+}
+
+/// Turn inverted elements right side out. A mesh exported with the opposite node orientation (a clockwise triangle, a
+/// left-handed hexahedron) has every element mirrored; the element is the same set of points, only its parametrisation is
+/// reversed. The fix is a node permutation: node `i` takes the old node at the mirror image of its reference position
+/// (`xi_x <-> xi_y` for simplices, `xi_x -> -xi_x` for quadrilaterals and hexahedra). An element that is still unusable
+/// afterwards is degenerate or folded and is left as it was.
+pub fn reorient_inverted(mesh: &mut Mesh) -> Reorientation {
+    use crate::element::ElementKind;
+    use crate::kernel::{self, Work};
+    let mut work = Work::new();
+    let physics = mesh.physics;
+    let nodes = mesh.nodes.clone();
+    let mut out = Reorientation::default();
+    for blk in &mut mesh.blocks {
+        let kind = blk.kind;
+        let nn = kind.n_nodes();
+        // The mirror permutation of this kind: `perm[i]` is the node at the mirrored reference position of node `i`.
+        let refs = kind.node_coords();
+        let mirror = |c: [f64; 3]| -> [f64; 3] {
+            match kind {
+                ElementKind::Tri3 | ElementKind::Tri6 | ElementKind::Tet4 | ElementKind::Tet10 => [c[1], c[0], c[2]],
+                _ => [-c[0], c[1], c[2]],
+            }
+        };
+        let perm: Option<Vec<usize>> = (0..nn).map(|i| (0..nn).find(|&j| (0..3).all(|k| (refs[j][k] - mirror(refs[i])[k]).abs() < 1e-12))).collect();
+        let usable = |conn: &[usize], work: &mut Work| -> bool {
+            let xyz: Vec<[f64; 3]> = conn.iter().map(|&n| nodes[n]).collect();
+            kernel::geometry(kind, physics, &xyz, work).is_ok()
+        };
+        for conn in blk.conn.chunks_exact_mut(nn) {
+            if usable(conn, &mut work) {
+                continue;
+            }
+            let Some(perm) = &perm else {
+                out.remaining += 1;
+                continue;
+            };
+            let flipped: Vec<usize> = perm.iter().map(|&j| conn[j]).collect();
+            if usable(&flipped, &mut work) {
+                conn.copy_from_slice(&flipped);
+                out.repaired += 1;
+            } else {
+                out.remaining += 1;
+            }
+        }
+    }
+    out
+}

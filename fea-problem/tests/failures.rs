@@ -215,3 +215,49 @@ fn an_edit_names_the_surfaces_it_would_touch_for_the_viewer_to_highlight() {
     let _ = add.surfaces(&p);
     assert_eq!(p, before);
 }
+
+// ------------------------------------------------------------------------------------------ inverted elements of an imported mesh
+
+const SQUARE_MSH: &str = "$MeshFormat\n2.2 0 8\n$EndMeshFormat\n$PhysicalNames\n2\n1 1 \"left\"\n1 2 \"right\"\n$EndPhysicalNames\n$Nodes\n4\n1 0 0 0\n2 1 0 0\n3 1 1 0\n4 0 1 0\n$EndNodes\n$Elements\n4\n1 1 2 1 1 4 1\n2 1 2 2 2 2 3\n3 2 2 0 1 1 2 3\n4 2 2 0 1 1 3 4\n$EndElements\n";
+/// The same square with the second triangle written clockwise.
+const SQUARE_BAD_MSH: &str = "$MeshFormat\n2.2 0 8\n$EndMeshFormat\n$PhysicalNames\n2\n1 1 \"left\"\n1 2 \"right\"\n$EndPhysicalNames\n$Nodes\n4\n1 0 0 0\n2 1 0 0\n3 1 1 0\n4 0 1 0\n$EndNodes\n$Elements\n4\n1 1 2 1 1 4 1\n2 1 2 2 2 2 3\n3 2 2 0 1 1 2 3\n4 2 2 0 1 1 4 3\n$EndElements\n";
+
+fn imported_square() -> fea_problem::Problem {
+    let mut p = fea_problem::templates::imported("square.msh");
+    p.analysis = fea_problem::Analysis::PlaneStress;
+    p.thickness = 1.0;
+    p.supports = vec![fea_problem::Support::fixed("left")];
+    p.loads = vec![fea_problem::Load::Traction { edge: "right".into(), tx: 10.0, ty: 0.0, tz: 0.0 }];
+    p
+}
+
+#[test]
+fn a_reversed_triangle_in_an_imported_mesh_is_diagnosed_and_the_fix_gives_the_answer_of_the_good_mesh() {
+    use fea_problem::diagnose::{diagnose, FailureClass, RemedyKind};
+    let mut p = imported_square();
+    let good = fea_problem::solve(&p, Some(SQUARE_MSH)).unwrap();
+    // The failure, as the user meets it.
+    let e = fea_problem::solve(&p, Some(SQUARE_BAD_MSH)).unwrap_err();
+    assert!(e.contains("inverted or degenerate"), "{e}");
+    let found = diagnose(&p, Some(&e));
+    let d = found.iter().find(|d| d.class == FailureClass::InvertedElements).expect("diagnosed");
+    assert_eq!(d.remedies[0].kind, RemedyKind::ReorientMesh);
+    assert!(d.evidence[0].contains("(0, 1)"), "the element is named: {:?}", d.evidence);
+    // The top remedy fixes it, and the result is the good mesh's, to rounding.
+    d.remedies[0].edit.apply(&mut p).unwrap();
+    assert!(p.mesh.reorient);
+    let fixed = fea_problem::solve(&p, Some(SQUARE_BAD_MSH)).unwrap();
+    let (a, b) = (good.summary.strain_energy, fixed.summary.strain_energy);
+    assert!((a - b).abs() < 1e-12 * a.abs(), "strain energy {a} vs {b}");
+    assert!((good.summary.max_displacement.value - fixed.summary.max_displacement.value).abs() < 1e-12);
+    // A good mesh is not touched by the option, and the option survives a save.
+    let again = fea_problem::solve(&p, Some(SQUARE_MSH)).unwrap();
+    assert!((again.summary.strain_energy - a).abs() < 1e-12 * a.abs());
+    assert!(Problem::from_json(&p.to_json().unwrap()).unwrap().mesh.reorient);
+    // A collapsed element is beyond the repair: the model says so, and offers no fix that cannot work.
+    let collapsed = SQUARE_BAD_MSH.replace("4 2 2 0 1 1 4 3", "4 2 2 0 1 1 3 3");
+    let e = fea_problem::solve(&p, Some(&collapsed)).unwrap_err();
+    assert!(e.contains("cannot be turned right side out"), "{e}");
+    let d = diagnose(&p, Some(&e)).into_iter().find(|d| d.class == FailureClass::InvertedElements).unwrap();
+    assert!(d.remedies.is_empty() && d.summary.contains("collapsed or folded"), "{d:?}");
+}

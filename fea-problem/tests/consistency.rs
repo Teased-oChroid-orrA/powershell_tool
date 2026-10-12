@@ -1,7 +1,9 @@
 //! The linear solve of a 45k-dof Hex27 model must be self-consistent however it is computed: the stiffness matrix must
 //! annihilate a rigid translation, every method must satisfy `K u = f`, and the methods must agree. This model once solved
 //! to a wrong answer (reactions 12 % short of the loads) on some hosted Windows runners and correctly everywhere else
-//! (docs/issue-12-phase-26.md); the test prints what it measured so a bad host shows where the numbers part.
+//! (docs/issue-12-phase-26.md); `Model::solve_static` now checks its own residual and repeats a bad direct solve on one
+//! thread, so this test passes there too and prints the NOTE the solve carries; it fails if a host ever returns a wrong answer
+//! the retry cannot repair.
 use fea_core::{Model, SolveMethod};
 use fea_problem::solve::{apply_supports, build_loads};
 use fea_problem::{build, templates, ElementChoice};
@@ -46,7 +48,7 @@ fn every_way_of_solving_the_large_hex27_model_agrees() {
             a[i % 3] += f[i];
         }
         let imbalance = ((0..3).map(|c| (r[c] + a[c]).powi(2)).sum::<f64>()).sqrt() / a[0].abs().max(1e-300);
-        eprintln!("{label}: residual {:.2e}, force imbalance {imbalance:.2e}, reaction {:?}", sol.rel_residual, r);
+        eprintln!("{label}: residual {:.2e}, force imbalance {imbalance:.2e}, reaction {:?}{}", sol.rel_residual, r, sol.fallback.as_ref().map(|f| format!("\n  NOTE: {f}")).unwrap_or_default());
         assert!(sol.rel_residual < 1e-6, "{label}: K u = f fails by {:e}", sol.rel_residual);
         assert!(imbalance < 1e-6, "{label}: the reactions miss the loads by {imbalance:e}");
     }

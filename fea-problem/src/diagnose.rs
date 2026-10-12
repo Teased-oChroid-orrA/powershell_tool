@@ -27,6 +27,8 @@ pub enum FailureClass {
     HoleOutsideOutline,
     /// A load or support value is NaN or infinite.
     NonFiniteInput,
+    /// Elements of an imported mesh with a non-positive Jacobian (inverted, folded or collapsed).
+    InvertedElements,
     /// A steady thermal study with no fixed temperature and no convection: the temperature level is undetermined.
     NoThermalAnchor,
     /// A failure none of the rules recognise: the message is shown, with no remedy.
@@ -44,6 +46,7 @@ impl FailureClass {
             Self::HoleOutsideOutline => "Hole does not fit",
             Self::NonFiniteInput => "Invalid value",
             Self::NoThermalAnchor => "No fixed temperature",
+            Self::InvertedElements => "Inverted elements",
             Self::Other => "Solve failed",
         }
     }
@@ -61,6 +64,8 @@ pub enum RemedyKind {
     RemoveHole,
     AddFixedTemperature,
     AddConvection,
+    /// Turn imported elements of the opposite node orientation right side out.
+    ReorientMesh,
     /// Not a fix: answering the finding's question instead of taking a fix. It is offered to the guidance ranker next to the
     /// remedies so it can learn when asking is what users do, and the card then shows the question first.
     AnswerQuestion,
@@ -86,6 +91,8 @@ pub enum Edit {
     Drop(Target),
     /// Remove hole `n` (1-based, as its `holeN` name) from a sketch.
     RemoveHole(usize),
+    /// Turn the elements of an imported mesh right side out when it is read (`MeshSpec::reorient`).
+    Reorient,
 }
 
 /// `Advice` is not serialisable (it carries the reason text); the edit part is what a remedy stores.
@@ -113,6 +120,7 @@ impl Edit {
             Edit::Retarget { target, to } => of_target(target).into_iter().chain([to.clone()]).collect(),
             Edit::Drop(target) => of_target(target).into_iter().collect(),
             Edit::RemoveHole(n) => vec![format!("hole{n}")],
+            Edit::Reorient => Vec::new(),
         }
     }
 
@@ -150,6 +158,10 @@ impl Edit {
                     _ => Err("that heat load does not act on a surface".into()),
                 },
             },
+            Edit::Reorient => {
+                p.mesh.reorient = true;
+                Ok(())
+            }
             Edit::RemoveHole(n) => match &mut p.geometry {
                 Geometry::Sketch { holes, .. } if *n >= 1 && *n <= holes.len() => {
                     holes.remove(n - 1);
@@ -235,6 +247,7 @@ pub fn diagnose(p: &Problem, error: Option<&str>) -> Vec<Diagnosis> {
         out.push(no_supports(p));
     }
     out.extend(no_thermal_anchor(p));
+    out.extend(error.and_then(|e| inverted_elements(p, e)));
     if p.study.is_structural() && error.is_some_and(|e| e.contains("rigid-body") && e.contains("constrained")) && !p.supports.is_empty() {
         out.push(under_constrained(p));
     }
@@ -392,6 +405,31 @@ fn no_supports(p: &Problem) -> Diagnosis {
         remedies,
         questions,
     }
+}
+
+/// The kernel refused an imported mesh because of elements with a non-positive Jacobian. A mesh exported with the opposite
+/// node orientation has them all mirrored, which turning them right side out repairs exactly; collapsed or folded elements
+/// (still refused after that) are the source program's to remesh.
+fn inverted_elements(p: &Problem, error: &str) -> Option<Diagnosis> {
+    let listed = error.contains("inverted or degenerate");
+    let unrepairable = error.contains("cannot be turned right side out");
+    if !(listed || unrepairable) || !matches!(p.geometry, Geometry::Imported { .. }) {
+        return None;
+    }
+    let (summary, remedies) = if p.mesh.reorient || unrepairable {
+        ("Some elements of the imported mesh are collapsed or folded; reversing their node order does not help.".to_string(), Vec::new())
+    } else {
+        (
+            "The imported mesh has elements with a reversed node order (negative volume or area), so the solver refuses it.".to_string(),
+            vec![Remedy {
+                kind: RemedyKind::ReorientMesh,
+                label: "Turn the reversed elements right side out when the mesh is read".into(),
+                why: "a file written with the opposite orientation has its elements mirrored, which a node permutation repairs exactly; the file itself is not changed".into(),
+                edit: Edit::Reorient,
+            }],
+        )
+    };
+    Some(Diagnosis { class: FailureClass::InvertedElements, summary, evidence: vec![error.to_string()], remedies, questions: Vec::new() })
 }
 
 /// A steady thermal study needs something to pin the temperature level: a fixed temperature or a convection surface.

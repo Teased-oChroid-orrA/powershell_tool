@@ -19,6 +19,8 @@ pub enum FieldRow {
     DeltaT,
     Source,
     ImportPath,
+    /// Imported meshes: turn reversed elements right side out when the file is read.
+    Reorient,
     OuterKind,
     Outer(usize),
     PolyPoint(usize, usize),
@@ -139,7 +141,7 @@ pub fn field_rows(p: &Problem) -> Vec<FieldRow> {
                 r.extend([Depth, Layers]);
             }
         }
-        Geometry::Imported { .. } => r.push(ImportPath),
+        Geometry::Imported { .. } => r.extend([ImportPath, Reorient]),
         // A stored STEP solid is edited in the native window (needs the OpenCascade build), not row by row.
         Geometry::Solid { .. } => {}
     }
@@ -245,6 +247,7 @@ pub fn row_label(p: &Problem, row: FieldRow) -> String {
         DeltaT => "Temperature Change".into(),
         Source => "Geometry From".into(),
         ImportPath => "Mesh File".into(),
+        Reorient => "Repair Orientation".into(),
         OuterKind => "Outer Shape".into(),
         Outer(i) => match &p.geometry {
             Geometry::Sketch { outer, .. } => format!("  {}", shape_param(outer, i)),
@@ -467,6 +470,7 @@ pub fn row_value(p: &Problem, names: &[String], import_len: Option<usize>, row: 
     match row {
         Header(_) => String::new(),
         Template => p.name.clone(),
+        Reorient => if p.mesh.reorient { "On" } else { "Off" }.to_string(),
         Analysis => p.analysis.label().to_string(),
         StudyKind => p.study.label().to_string(),
         Material => p.material.name.clone(),
@@ -545,6 +549,7 @@ pub fn field_hint(row: FieldRow) -> &'static str {
         DeltaT => "Uniform temperature change from the stress-free state (needs a thermal expansion coefficient).",
         Source => "Sketch: a parametric outline with holes meshed here. Imported: a Gmsh .msh or Abaqus .inp mesh from a file.",
         ImportPath => "Path of a Gmsh (.msh, ASCII 4.1 / 2.2) or Abaqus (.inp) mesh. Its node sets and surfaces become the edge names supports and loads refer to.",
+        Reorient => "On: elements written with the opposite node order (negative area or volume, which the solver refuses) are turned right side out when the mesh is read; the file is not changed. Collapsed or folded elements still need remeshing in the program that made the file.",
         OuterKind => "Enter changes the outline: rectangle (edges bottom / right / top / left), circle or slot (edge outer), polygon (edges edge1..edgeN).",
         Outer(_) | Hole(..) => "Dimension of the shape (slot angle in degrees from the x axis).",
         PolyPoint(..) => "Polygon vertex; edge i runs from point i to point i+1 and is named edge{i}.",
@@ -674,6 +679,7 @@ pub fn apply_row_action(p: &mut Problem, names: &[String], row: FieldRow, forwar
                 p.analysis = all[if forward { (i + 1) % all.len() } else { (i + all.len() - 1) % all.len() }];
                 fix_element_for(p);
             }
+            Reorient => p.mesh.reorient = !p.mesh.reorient,
             StudyKind => {
                 let all = fea_problem::Study::ALL;
                 let i = all.iter().position(|a| *a == p.study).unwrap_or(0);

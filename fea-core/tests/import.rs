@@ -295,3 +295,43 @@ fn faces_can_be_selected_from_an_imported_node_set() {
     let fz: f64 = (0..4).map(|n| f[n * 3 + 2]).sum();
     assert!((fz - 1.0).abs() < 1e-12, "pressure 2 on area 1/2 pushes with +1 in z: {fz}");
 }
+
+/// An element laid out as the mirror image of its reference element is inverted; turning it right side out makes every
+/// kind usable again and leaves the points where they were.
+#[test]
+fn inverted_elements_of_every_kind_are_turned_right_side_out() {
+    use fea_core::element::ALL_KINDS;
+    use fea_core::import::reorient_inverted;
+    use fea_core::kernel::{self, Work};
+    use fea_core::{Elastic, Mesh, Physics};
+    for kind in ALL_KINDS {
+        let physics = if kind.dim() == 2 { Physics::PlaneStress { thickness: 1.0 } } else { Physics::Solid };
+        let mut mesh = Mesh::new(physics);
+        // Nodes at the mirror image of the reference positions: the numbering is then left-handed.
+        let simplex = matches!(kind, fea_core::ElementKind::Tri3 | fea_core::ElementKind::Tri6 | fea_core::ElementKind::Tet4 | fea_core::ElementKind::Tet10);
+        let pos: Vec<[f64; 3]> = kind.node_coords().iter().map(|c| if simplex { [c[1], c[0], c[2]] } else { [-c[0], c[1], c[2]] }).collect();
+        for p in &pos {
+            mesh.add_node(*p);
+        }
+        mesh.add_block(kind, (0..pos.len()).collect(), Elastic::new(1.0, 0.3), "b").unwrap();
+        let mut work = Work::new();
+        assert!(kernel::geometry(kind, physics, &pos, &mut work).is_err(), "{kind:?} should start inverted");
+        let r = reorient_inverted(&mut mesh);
+        assert_eq!((r.repaired, r.remaining), (1, 0), "{kind:?}");
+        let conn = &mesh.blocks[0].conn;
+        let xyz: Vec<[f64; 3]> = conn.iter().map(|&n| mesh.nodes[n]).collect();
+        assert!(kernel::geometry(kind, physics, &xyz, &mut work).is_ok(), "{kind:?} usable after the repair");
+        // The same set of points: only the numbering changed.
+        let mut a: Vec<usize> = conn.clone();
+        a.sort_unstable();
+        assert_eq!(a, (0..pos.len()).collect::<Vec<_>>(), "{kind:?}");
+        // A good mesh is left alone, a collapsed element is counted and left.
+        assert_eq!(reorient_inverted(&mut mesh), fea_core::import::Reorientation::default(), "{kind:?}");
+    }
+    let mut flat = Mesh::new(Physics::PlaneStress { thickness: 1.0 });
+    for p in [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]] {
+        flat.add_node(p);
+    }
+    flat.add_block(fea_core::ElementKind::Tri3, vec![0, 1, 2], Elastic::new(1.0, 0.3), "flat").unwrap();
+    assert_eq!(reorient_inverted(&mut flat), fea_core::import::Reorientation { repaired: 0, remaining: 1 });
+}

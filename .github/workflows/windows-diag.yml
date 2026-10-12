@@ -1,7 +1,9 @@
 name: Windows diagnostics
 
 # Temporary: samples several hosted Windows runners (they are not all the same CPU) to find out where the numbers part on the
-# ones that solved a 45k-dof Hex27 model to a wrong answer (docs/issue-12-phase-26.md). Delete once the cause is fixed.
+# ones that solved a 45k-dof Hex27 model to a wrong answer (docs/issue-12-phase-26.md). Cause found: private-gemm-x86 0.1.20
+# returns wrong products on the AMD EPYC 7763 runners (fixed in 0.1.22, locked now). This run checks the fix on whichever
+# hosts it gets; delete the workflow when it has been green on a 7763.
 on:
   workflow_dispatch: {}
   pull_request:

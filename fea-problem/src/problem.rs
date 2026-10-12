@@ -330,11 +330,14 @@ pub struct MeshSpec {
     /// Extra refinement zones in the sketch plane (also kept through adaptive passes); 2D profile meshes only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refine: Vec<RefineRegion>,
+    /// Imported meshes: turn elements with the opposite node orientation right side out when the mesh is read.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reorient: bool,
 }
 
 impl Default for MeshSpec {
     fn default() -> Self {
-        Self { element: ElementChoice::Quad8, size: 0.25, hole_factor: 0.35, adapt_passes: 2, target_error: 0.02, refine: Vec::new() }
+        Self { element: ElementChoice::Quad8, size: 0.25, hole_factor: 0.35, adapt_passes: 2, target_error: 0.02, refine: Vec::new(), reorient: false }
     }
 }
 

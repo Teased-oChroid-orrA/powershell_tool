@@ -384,7 +384,30 @@ impl Model {
     }
 
     /// `red`: the symbolic analysis when the caller already made it (its time is then not counted in `symbolic_ms`).
+    /// Direct solves of several load cases, each checked against its own equations. A result whose relative residual is
+    /// not small is recomputed on one thread: the parallel factorisation of a large 3D system returned a wrong answer
+    /// (residual 0.3) on some hosted Windows runners while the same code on one thread, and everywhere else, was exact
+    /// (`fea-problem/tests/consistency.rs`, docs/issue-12-phase-26.md). The retry says so in `Solution::fallback`; when it is
+    /// no better the retry is returned as it is and the caller's own checks refuse it.
     fn solve_direct_many(&self, cases: &[Loads], bc: &Dirichlet, red: Option<Reduced>) -> Result<Vec<Solution>, String> {
+        const ACCEPT: f64 = 1e-6;
+        let out = self.solve_direct_many_once(cases, bc, red)?;
+        let worst = out.iter().map(|s| s.rel_residual).fold(0.0f64, |m, r| if r.is_nan() { f64::INFINITY } else { m.max(r) });
+        if worst < ACCEPT {
+            return Ok(out);
+        }
+        let mut retry = crate::sequentially(|| self.solve_direct_many_once(cases, bc, None))?;
+        let better = retry.iter().map(|s| s.rel_residual).fold(0.0f64, |m, r| if r.is_nan() { f64::INFINITY } else { m.max(r) });
+        if better < worst {
+            if let Some(first) = retry.first_mut() {
+                first.fallback = Some(format!("the factorisation on several threads returned a residual of {worst:.1e}; it was recomputed on one thread (residual {better:.1e})"));
+            }
+            return Ok(retry);
+        }
+        Ok(out)
+    }
+
+    fn solve_direct_many_once(&self, cases: &[Loads], bc: &Dirichlet, red: Option<Reduced>) -> Result<Vec<Solution>, String> {
         let mut shared = Timings::default();
         let clock = Instant::now();
         let k = self.assemble()?;
