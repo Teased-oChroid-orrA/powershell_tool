@@ -4,6 +4,9 @@ name: Windows diagnostics
 # (docs/issue-12-phase-26.md). Delete once the cause is fixed.
 on:
   workflow_dispatch: {}
+  pull_request:
+    paths:
+      - ".github/workflows/windows-diag.yml"
 
 jobs:
   diag:
