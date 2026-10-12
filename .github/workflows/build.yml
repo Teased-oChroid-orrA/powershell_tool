@@ -45,7 +45,7 @@ jobs:
         with:
           path: |
             ~/.cargo/registry
-            native-search/target
+            target
           key: cargo-${{ runner.os }}-${{ hashFiles('native-search/Cargo.lock') }}
 
       - name: Build and test native_search (Rust)
@@ -100,7 +100,7 @@ jobs:
         # side correctly, not just that it compiles.
         shell: pwsh
         run: |
-          Copy-Item native-search/target/x86_64-pc-windows-msvc/release/native_search.dll `
+          Copy-Item target/x86_64-pc-windows-msvc/release/native_search.dll `
             tests/TextInFilesSearch.Tests/bin/Debug/net8.0/native_search.dll
 
       - name: Run dependency-free verification suite

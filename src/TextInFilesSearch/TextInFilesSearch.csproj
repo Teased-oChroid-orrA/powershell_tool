@@ -126,8 +126,8 @@
     publish pipeline instead of a separate CI shell step now that the two
     would otherwise duplicate each other.
   -->
-  <ItemGroup Condition="Exists('..\..\native-search\target\x86_64-pc-windows-msvc\release\native_search.dll')">
-    <Content Include="..\..\native-search\target\x86_64-pc-windows-msvc\release\native_search.dll">
+  <ItemGroup Condition="Exists('..\..\target\x86_64-pc-windows-msvc\release\native_search.dll')">
+    <Content Include="..\..\target\x86_64-pc-windows-msvc\release\native_search.dll">
       <Link>native_search.dll</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
