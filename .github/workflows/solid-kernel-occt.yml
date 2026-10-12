@@ -40,8 +40,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: runner CPU
-        if: runner.os == 'Windows' (see windows-tests.yml)
+      - name: runner CPU (see windows-tests.yml)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           (Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors | Format-List | Out-String)
