@@ -151,6 +151,15 @@ test gate.
   matching. Use exact path exclusions, not bare substring wildcards, and
   diff the result.
 
+- **Hosted Windows CI is the only Windows evidence.** `windows-tests.yml` runs the whole workspace on a hosted Windows runner
+  (`ci.yml` is Linux only). Hosted runners are not one machine: a numerical failure that appears only on some runs is first a
+  hardware question (`Win32_Processor` name; `private-gemm-x86` 0.1.20 returned wrong products on AMD EPYC 7763 hosts, fixed by
+  the 0.1.22 pin in `Cargo.lock`). New workflow files cannot be dispatched until they are on the default branch: give them a
+  `pull_request` trigger. Every push cancels the in-flight run of the same workflow (batch pushes).
+- **OpenCASCADE (`occt` feature) is LGPL 2.1 + exception**: a release that includes it ships `THIRD-PARTY-NOTICES.md` and
+  `licenses/` (the release workflow stages and checks them); the default build has no OCCT. Static-CRT linking on Windows needs
+  `--features occt-source` (ADR-019 addendum).
+
 ## CodeGraph-First Engineering Workflow
 
 CodeGraph (`.codegraph/` at the repo root, machine-local) is the primary
