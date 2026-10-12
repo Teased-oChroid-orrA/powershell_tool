@@ -196,12 +196,19 @@ Fixed on the way: an extrusion of depth exactly 2 pi was treated as a closed rev
 bit on a save / load (`float_roundtrip`); the C# reference workflow and csproj looked for `native_search.dll` in a directory
 the workspace migration emptied.
 
-**Windows-only flake.** `random_linear_problems_solve_and_balance` failed twice on a hosted Windows runner (45k-dof Hex27 case,
-reactions 12 % short of the loads) and passed on three later runs; it never failed on macOS or Linux and was not reproduced locally
-(40 geometry perturbations, 25 repeats under 2 and 4 rayon threads). The solve path now verifies every result (residual and force balance
-against the total magnitude of the forces) and recomputes a failing one on a single-thread pool, refusing it when it still fails
-(`fea_problem::solve::solve_mesh`, `fea_core::sequentially`); a recomputation shows up in `Summary::notes`, so the next occurrence is
-visible instead of silent. Cause unknown.
+**Windows-only wrong 3D solves: found and fixed.** `random_linear_problems_solve_and_balance` (45k-dof Hex27 case, reactions 12 % short
+of the loads) and `solid-kernel`'s plate-with-a-hole test (peak stress 40 % low) failed on some hosted Windows runners and
+nowhere else, with identical wrong numbers each time. The sweep was not a race: `fea-problem/tests/consistency.rs` run on six
+sampled runners showed the stiffness matrix exact (`K * translation` 1e-16) and the *direct* solution wrong (`K u = f` off by
+0.31) on every `AMD EPYC 7763` host, right on `EPYC 9V74`, `9V45` and the Intel `8370C`. Cause (upstream, found by search, then
+confirmed here): `private-gemm-x86` 0.1.20, the matrix-product kernel under faer, returns wrong entries for its threaded product
+on that CPU; 0.1.22 fixes it ([report](https://github.com/tachsin/photonoxide/pull/192)). `Cargo.lock` now pins 0.1.22; the same
+test on 5 hosts including three 7763s then gave the correct, identical residual (3.6e-13) everywhere.
+
+Kept as guards, because the next defect of this kind will not announce itself: `Model::solve_direct_many` checks its own relative
+residual and repeats a bad solve on one thread (`Solution::fallback` says so), `fea_core::sequentially`, and `fea-problem`'s
+`solve_mesh` verifies residual and force balance (against the total force magnitude) before it returns a result, refusing one
+that still fails. A repeat shows up in `Summary::notes`.
 
 ### Terminal Workbench is manual by default (2026-10-12)
 

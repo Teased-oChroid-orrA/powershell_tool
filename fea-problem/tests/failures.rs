@@ -261,3 +261,53 @@ fn a_reversed_triangle_in_an_imported_mesh_is_diagnosed_and_the_fix_gives_the_an
     let d = diagnose(&p, Some(&e)).into_iter().find(|d| d.class == FailureClass::InvertedElements).unwrap();
     assert!(d.remedies.is_empty() && d.summary.contains("collapsed or folded"), "{d:?}");
 }
+
+// ------------------------------------------------------------------------------------------ contact that does not converge
+
+fn bushed_lug() -> fea_problem::Problem {
+    let mut p = fea_problem::templates::templates().into_iter().find(|(n, _)| n.contains("bushing")).unwrap().1;
+    p.mesh.size = 0.8;
+    p.mesh.hole_factor = 0.5;
+    p
+}
+
+/// The failure as the solver reports it (the exact text a real stalled solve gave, see the ignored test below), the diagnosis,
+/// and the remedy applied: fast enough for every run.
+#[test]
+fn a_bushing_with_a_units_slip_in_its_modulus_stalls_the_contact_and_is_diagnosed() {
+    use fea_problem::diagnose::{diagnose, FailureClass, RemedyKind};
+    let mut p = bushed_lug();
+    p.bushings[0].material.e = 1.0; // 1 where the plate is 1.03e7: a units slip
+    let e = "the loaded bushing could not be solved: NoConvergence(\"stagnated (residual 2.083e-5, best 2.098e-5)\")";
+    let found = diagnose(&p, Some(e));
+    let d = found.iter().find(|d| d.class == FailureClass::ContactNotConverged).expect("diagnosed");
+    assert!(d.evidence[0].contains("ratio 9.7e-8"), "{:?}", d.evidence);
+    assert_eq!(d.remedies[0].kind, RemedyKind::MatchBushingModulus);
+    assert_eq!(d.remedies[0].edit.surfaces(&p), ["hole1"]);
+    d.remedies[0].edit.apply(&mut p).unwrap();
+    assert_eq!(p.bushings[0].material.e, p.material.e);
+    // A stall with a sensible modulus gets the evidence and no invented remedy.
+    let normal = bushed_lug();
+    let d = diagnose(&normal, Some("the loaded bushing could not be solved: NoConvergence(\"stagnated\")")).into_iter().find(|d| d.class == FailureClass::ContactNotConverged).unwrap();
+    assert!(d.remedies.is_empty() && !d.evidence.is_empty());
+    // And a plate without a bushing is not a contact finding at all.
+    let mut plain = normal.clone();
+    plain.bushings.clear();
+    assert!(diagnose(&plain, Some("could not be solved")).iter().all(|d| d.class != FailureClass::ContactNotConverged));
+}
+
+/// The remedy fixes the failure: solving the repaired model installs the fit. A contact solve takes minutes in a debug
+/// build: `cargo test --release -p fea-problem --test failures -- --ignored`.
+#[test]
+#[ignore = "slow in a debug build: run with --release --ignored"]
+fn a_real_stalled_contact_solve_is_diagnosed_and_applying_the_top_fix_makes_the_model_solve() {
+    use fea_problem::diagnose::{diagnose, FailureClass};
+    let mut p = bushed_lug();
+    p.bushings[0].material.e = 1.0;
+    let e = fea_problem::solve(&p, None).unwrap_err();
+    assert!(e.contains("could not be solved"), "{e}");
+    let d = diagnose(&p, Some(&e)).into_iter().find(|d| d.class == FailureClass::ContactNotConverged).unwrap();
+    d.remedies[0].edit.apply(&mut p).unwrap();
+    let s = fea_problem::solve(&p, None).unwrap();
+    assert!(!s.summary.interfaces.is_empty() && s.summary.interfaces[0].mean_pressure > 0.0, "the fit is installed");
+}

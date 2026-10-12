@@ -29,6 +29,8 @@ pub enum FailureClass {
     NonFiniteInput,
     /// Elements of an imported mesh with a non-positive Jacobian (inverted, folded or collapsed).
     InvertedElements,
+    /// The contact solve of a bushed plate stalled instead of converging.
+    ContactNotConverged,
     /// A steady thermal study with no fixed temperature and no convection: the temperature level is undetermined.
     NoThermalAnchor,
     /// A failure none of the rules recognise: the message is shown, with no remedy.
@@ -47,6 +49,7 @@ impl FailureClass {
             Self::NonFiniteInput => "Invalid value",
             Self::NoThermalAnchor => "No fixed temperature",
             Self::InvertedElements => "Inverted elements",
+            Self::ContactNotConverged => "Contact did not converge",
             Self::Other => "Solve failed",
         }
     }
@@ -66,6 +69,8 @@ pub enum RemedyKind {
     AddConvection,
     /// Turn imported elements of the opposite node orientation right side out.
     ReorientMesh,
+    /// Give a bushing the plate's modulus (a unit mix-up is the usual reason for a bushing orders of magnitude off).
+    MatchBushingModulus,
     /// Not a fix: answering the finding's question instead of taking a fix. It is offered to the guidance ranker next to the
     /// remedies so it can learn when asking is what users do, and the card then shows the question first.
     AnswerQuestion,
@@ -93,6 +98,8 @@ pub enum Edit {
     RemoveHole(usize),
     /// Turn the elements of an imported mesh right side out when it is read (`MeshSpec::reorient`).
     Reorient,
+    /// Set the Young's modulus of bushing `bushing` (0-based).
+    SetBushingModulus { bushing: usize, e: f64 },
 }
 
 /// `Advice` is not serialisable (it carries the reason text); the edit part is what a remedy stores.
@@ -121,6 +128,7 @@ impl Edit {
             Edit::Drop(target) => of_target(target).into_iter().collect(),
             Edit::RemoveHole(n) => vec![format!("hole{n}")],
             Edit::Reorient => Vec::new(),
+            Edit::SetBushingModulus { bushing, .. } => p.bushings.get(*bushing).map(|b| format!("hole{}", b.hole)).into_iter().collect(),
         }
     }
 
@@ -162,6 +170,13 @@ impl Edit {
                 p.mesh.reorient = true;
                 Ok(())
             }
+            Edit::SetBushingModulus { bushing, e } => match p.bushings.get_mut(*bushing) {
+                Some(b) => {
+                    b.material.e = *e;
+                    Ok(())
+                }
+                None => Err("there is no such bushing: the model changed".into()),
+            },
             Edit::RemoveHole(n) => match &mut p.geometry {
                 Geometry::Sketch { holes, .. } if *n >= 1 && *n <= holes.len() => {
                     holes.remove(n - 1);
@@ -248,6 +263,7 @@ pub fn diagnose(p: &Problem, error: Option<&str>) -> Vec<Diagnosis> {
     }
     out.extend(no_thermal_anchor(p));
     out.extend(error.and_then(|e| inverted_elements(p, e)));
+    out.extend(error.and_then(|e| contact_not_converged(p, e)));
     if p.study.is_structural() && error.is_some_and(|e| e.contains("rigid-body") && e.contains("constrained")) && !p.supports.is_empty() {
         out.push(under_constrained(p));
     }
@@ -430,6 +446,32 @@ fn inverted_elements(p: &Problem, error: &str) -> Option<Diagnosis> {
         )
     };
     Some(Diagnosis { class: FailureClass::InvertedElements, summary, evidence: vec![error.to_string()], remedies, questions: Vec::new() })
+}
+
+/// The contact solve of a bushed plate gave up. Reproduced: a bushing whose modulus is 1e-7 of the plate's (a units slip) makes
+/// the loaded solve stagnate. The rules name what the model shows (the stiffness ratio, the interference, the friction) and
+/// offer a fix only for the cause they can see: a bushing orders of magnitude off the plate's modulus. Other stalls get the
+/// evidence and no invented remedy.
+fn contact_not_converged(p: &Problem, error: &str) -> Option<Diagnosis> {
+    let stalled = error.contains("could not be solved") || error.contains("did not converge") || error.contains("NoConvergence");
+    if !stalled || p.bushings.is_empty() {
+        return None;
+    }
+    let mut evidence = Vec::new();
+    let mut remedies = Vec::new();
+    for (i, b) in p.bushings.iter().enumerate() {
+        let ratio = b.material.e / p.material.e;
+        evidence.push(format!("bushing {}: modulus {:.3e} against the plate's {:.3e} (ratio {ratio:.1e}), diametral interference {}, friction {}", i + 1, b.material.e, p.material.e, b.interference, b.friction));
+        if ratio.is_finite() && !(1e-3..=1e3).contains(&ratio) && !remedies.iter().any(|r: &Remedy| matches!(r.edit, Edit::SetBushingModulus { bushing, .. } if bushing == i)) {
+            remedies.push(Remedy {
+                kind: RemedyKind::MatchBushingModulus,
+                label: format!("Give bushing {} the plate's modulus ({:.3e})", i + 1, p.material.e),
+                why: format!("its modulus is {:.0e} of the plate's: a units slip (psi against ksi, MPa against Pa) is the usual cause, and a fit between bodies that stiff-apart cannot be resolved; set the real value afterwards", ratio),
+                edit: Edit::SetBushingModulus { bushing: i, e: p.material.e },
+            });
+        }
+    }
+    Some(Diagnosis { class: FailureClass::ContactNotConverged, summary: "The contact solve of the bushed plate did not converge.".into(), evidence, remedies, questions: Vec::new() })
 }
 
 /// A steady thermal study needs something to pin the temperature level: a fixed temperature or a convection surface.
