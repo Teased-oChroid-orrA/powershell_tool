@@ -203,7 +203,9 @@ mod tests {
         let icon = if cfg!(windows) { "OK" } else { "✔" };
         assert!(out.contains(icon) && out.contains("100%") && out.contains("done"), "{out}");
         let out = draw(60, &view(None, BarState::Running, &["Scanning"]), false);
-        assert!(out.contains('…') && out.contains("Scanning"), "{out}");
+        // Windows terminals get the plain three dots (same switch as the icon above).
+        let dots = if cfg!(windows) { "..." } else { "…" };
+        assert!(out.contains(dots) && out.contains("Scanning"), "{out}");
     }
 
     #[test]

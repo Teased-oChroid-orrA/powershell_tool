@@ -287,6 +287,12 @@ pub fn enumerate_files_safely(
             if !exclude_folders.is_empty() && is_excluded_directory(&dir_name, &full_path, exclude_folders) {
                 continue;
             }
+            // The fast re-search index lives in a folder of the searched tree and must never be walked as if it held
+            // documents. "Hidden" does not cover it on Windows (the dot is no attribute there), and not every caller adds
+            // it to `exclude_folders`, so the walker owns this rule.
+            if dir_name.eq_ignore_ascii_case(crate::native_index::INDEX_FOLDER_NAME) {
+                continue;
+            }
             stack.push(d);
         }
     }
@@ -451,6 +457,20 @@ mod tests {
         assert!(names.contains(&"a.txt".to_string()));
         assert!(names.contains(&"c.txt".to_string()), "excluding 'bin' must not exclude 'robin'");
         assert!(!names.contains(&"b.txt".to_string()), "'bin' folder must be pruned");
+    }
+
+    #[test]
+    fn the_index_folder_is_never_walked_even_when_hidden_files_are_included_and_nothing_is_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
+        let index = dir.path().join(crate::native_index::INDEX_FOLDER_NAME);
+        std::fs::create_dir(&index).unwrap();
+        std::fs::write(index.join("meta.json"), b"{}").unwrap();
+        std::fs::create_dir(index.join("nested")).unwrap();
+        std::fs::write(index.join("nested").join("seg.txt"), b"x").unwrap();
+        let (files, _) = enumerate_files_safely(dir.path().to_str().unwrap(), true, &[], &CancellationToken::new(), None).unwrap();
+        let names: Vec<String> = files.iter().map(|f| f.path.file_name().unwrap().to_string_lossy().to_string()).collect();
+        assert_eq!(names, vec!["a.txt".to_string()], "the index folder is not a document source");
     }
 
     #[test]

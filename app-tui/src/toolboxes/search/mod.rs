@@ -509,7 +509,8 @@ mod tests {
         assert_eq!(effects.len(), 1);
         match &effects[0] {
             Effect::WriteTextFileAndOpen { path, contents } => {
-                assert_eq!(path, "/tmp/reports/notes_hits.txt");
+                // The folder and the file name are joined with the platform separator.
+                assert_eq!(std::path::Path::new(path), std::path::Path::new("/tmp/reports").join("notes_hits.txt"));
                 assert!(contents.starts_with("/tmp/project/notes.txt"));
             }
             other => panic!("expected WriteTextFileAndOpen, got {other:?}"),
