@@ -171,3 +171,116 @@ mod editing {
         assert!(cube().apply_solid_op(&SolidOp::Fillet { radius: -1.0 }).unwrap_err().contains("positive"));
     }
 }
+
+/// Faces are matched by what they are, not by their number: a permuted copy maps back through the permutation, a face the
+/// new solid lacks maps to nothing.
+#[test]
+fn remap_faces_follows_a_renumbering_and_reports_a_removed_face() {
+    use fea_problem::solid::remap_faces;
+    let old = SolidCache::new(STEP, box_mesh(1.0, 2.0, 3.0), 0.01);
+    let perm = [3usize, 0, 5, 1, 2, 4]; // new index of old face k
+    let mut m = box_mesh(1.0, 2.0, 3.0);
+    m.face.iter_mut().for_each(|f| *f = perm[*f]);
+    let renumbered = SolidCache::new(STEP, m, 0.01);
+    assert_eq!(remap_faces(&old, &renumbered), perm.iter().map(|p| Some(*p)).collect::<Vec<_>>());
+    // Drop face 2 (y-): its triangles vanish, and the survivors keep their identity.
+    let mut m = box_mesh(1.0, 2.0, 3.0);
+    let keep: Vec<usize> = (0..m.face.len()).filter(|t| m.face[*t] != 2).collect();
+    let (tri, face): (Vec<_>, Vec<_>) = keep.iter().map(|t| (m.triangles[*t], m.face[*t])).unzip();
+    m.triangles = tri;
+    m.face = face.iter().map(|f| if *f > 2 { f - 1 } else { *f }).collect();
+    let gone = remap_faces(&old, &SolidCache::new(STEP, m, 0.01));
+    assert_eq!(gone, vec![Some(0), Some(1), None, Some(2), Some(3), Some(4)]);
+    // A scaled box is the same faces moved too far to be the same surface.
+    let far = remap_faces(&old, &SolidCache::new(STEP, box_mesh(1.0, 2.0, 30.0), 0.01));
+    assert_eq!(far[4], Some(4), "z- stays put when only z+ moves");
+    assert_eq!(far[5], None, "z+ moved out of its plane");
+}
+
+/// A support and a load on untouched faces keep working through a boss and a hole; the one on the face a hole pierces
+/// follows that face; a name the edit cannot carry is renamed to something `diagnose` reports.
+#[cfg(feature = "occt")]
+mod naming {
+    use super::*;
+    use fea_problem::diagnose::{diagnose, FailureClass};
+    use fea_problem::solid::{flat_face, SolidOp};
+    use solid_kernel::occt::Brep;
+
+    fn cube() -> Problem {
+        let step = Brep::box_from_corners([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]).to_step_text().unwrap();
+        Problem::from_step("Cube", &step).unwrap()
+    }
+    fn cache(p: &Problem) -> &SolidCache {
+        match &p.geometry {
+            Geometry::Solid { cache: Some(c), .. } => c,
+            _ => panic!(),
+        }
+    }
+    fn name_of(p: &Problem, n: [f64; 3]) -> String {
+        let c = cache(p);
+        let f = (1..=c.face_names().len()).find(|f| flat_face(c, *f).map(|(_, m)| (0..3).all(|k| (m[k] - n[k]).abs() < 1e-6)).unwrap_or(false)).unwrap();
+        format!("face{f}")
+    }
+    fn centre(p: &Problem, name: &str) -> [f64; 3] {
+        flat_face(cache(p), name[4..].parse().unwrap()).unwrap().0
+    }
+    fn support_face(p: &Problem) -> &str {
+        match &p.supports[0] {
+            Support::Edge { edge, .. } => edge,
+            _ => panic!(),
+        }
+    }
+    fn load_face(p: &Problem) -> &str {
+        match &p.loads[0] {
+            Load::Traction { edge, .. } => edge,
+            _ => panic!(),
+        }
+    }
+
+    fn held_and_pulled() -> Problem {
+        let mut p = cube();
+        let (bottom, top) = (name_of(&p, [0.0, 0.0, -1.0]), name_of(&p, [0.0, 0.0, 1.0]));
+        p.supports = vec![Support::fixed(&bottom)];
+        p.loads = vec![Load::Traction { edge: top, tx: 0.0, ty: 0.0, tz: 5.0 }];
+        p
+    }
+
+    #[test]
+    fn boundary_conditions_follow_their_faces_through_a_hole_a_boss_and_fillets() {
+        for boss in [false, true] {
+            let mut p = held_and_pulled();
+            // The hole / boss goes in a side face, so both the held bottom and the loaded top are untouched by it.
+            let face: usize = name_of(&p, [1.0, 0.0, 0.0])[4..].parse().unwrap();
+            let op = if boss { SolidOp::Boss { face, diameter: 2.0, height: 2.0 } } else { SolidOp::Hole { face, diameter: 2.0 } };
+            p.apply_solid_op(&op).unwrap();
+            let (s, l) = (support_face(&p).to_string(), load_face(&p).to_string());
+            assert_eq!(s, name_of(&p, [0.0, 0.0, -1.0]), "{op:?}: the held face is still the bottom");
+            assert_eq!(l, name_of(&p, [0.0, 0.0, 1.0]), "{op:?}: the loaded face is still the top");
+            assert!(diagnose(&p, None).iter().all(|d| d.class != FailureClass::UnknownSurface));
+        }
+        // A hole through the loaded face itself: the load follows the pierced face (centre unchanged).
+        let mut p = held_and_pulled();
+        let top: usize = load_face(&p)[4..].parse().unwrap();
+        p.apply_solid_op(&SolidOp::Hole { face: top, diameter: 3.0 }).unwrap();
+        let l = load_face(&p).to_string();
+        assert_eq!(l, name_of(&p, [0.0, 0.0, 1.0]));
+        assert!((centre(&p, &l)[2] - 10.0).abs() < 1e-9);
+        assert_eq!(support_face(&p), name_of(&p, [0.0, 0.0, -1.0]), "a through hole also pierces the held face and it still matches");
+        // Fillets trim every flat face's rim but keep their planes.
+        let mut q = held_and_pulled();
+        q.apply_solid_op(&SolidOp::Fillet { radius: 0.5 }).unwrap();
+        assert_eq!(support_face(&q), name_of(&q, [0.0, 0.0, -1.0]));
+        assert_eq!(load_face(&q), name_of(&q, [0.0, 0.0, 1.0]));
+        assert!(solve(&q, None).is_ok(), "and the model still solves");
+    }
+
+    #[test]
+    fn a_boss_nearly_as_wide_as_the_loaded_face_leaves_the_load_on_the_remaining_ring() {
+        let mut p = held_and_pulled();
+        let top: usize = load_face(&p)[4..].parse().unwrap();
+        p.apply_solid_op(&SolidOp::Boss { face: top, diameter: 9.99, height: 2.0 }).unwrap();
+        let l = load_face(&p).to_string();
+        assert_eq!(l, name_of(&p, [0.0, 0.0, 1.0]), "the ring left of the face is still that face (flat, same plane, same centroid)");
+        assert!(diagnose(&p, None).iter().all(|d| d.class != FailureClass::UnknownSurface));
+    }
+}

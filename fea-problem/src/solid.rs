@@ -1,7 +1,7 @@
 //! `Geometry::Solid`: a B-rep solid stored as its STEP text plus the cached face-tagged surface mesh the solve needs.
 //! The solve path (`solid_mesh`) uses only `solid-kernel`'s surface mesh and volume mesher, so it works in a build without
 //! OpenCascade; reading or editing the STEP text (`tessellate_step`) needs the `occt` feature and says so when it is absent.
-use crate::problem::{Geometry, Problem};
+use crate::problem::{Geometry, Load, Problem, Support};
 use fea_core::tetmesh::MeshReport;
 use fea_core::Mesh;
 use serde::{Deserialize, Serialize};
@@ -108,6 +108,97 @@ impl Problem {
 }
 
 // ------------------------------------------------------------------------------------------ editing a stored solid
+
+/// Area, area-weighted centroid and net area vector of every face of a cache (one entry per `face` index).
+fn face_stats(c: &SolidCache) -> Vec<(f64, [f64; 3], [f64; 3])> {
+    let n = c.face.iter().copied().max().map_or(0, |m| m + 1);
+    let mut out = vec![(0.0, [0.0; 3], [0.0; 3]); n];
+    for (t, f) in c.triangles.iter().zip(&c.face) {
+        let [a, b, d] = t.map(|i| c.vertices[i]);
+        let (u, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [d[0] - a[0], d[1] - a[1], d[2] - a[2]]);
+        let nv = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+        let ar = 0.5 * (nv[0] * nv[0] + nv[1] * nv[1] + nv[2] * nv[2]).sqrt();
+        let e = &mut out[*f];
+        e.0 += ar;
+        for k in 0..3 {
+            e.1[k] += ar * (a[k] + b[k] + d[k]) / 3.0;
+            e.2[k] += 0.5 * nv[k];
+        }
+    }
+    for e in &mut out {
+        if e.0 > 0.0 {
+            e.1 = e.1.map(|v| v / e.0);
+        }
+    }
+    out
+}
+
+/// Which face of `new` each face of `old` became across a solid edit (`None`: the edit removed it). Face numbers are the
+/// kernel's order and change with every boolean or fillet, so the faces are matched by what they are: the same kind of
+/// surface (flat with the same normal and plane, or curved) whose centroid stays within a third of the face's size and whose
+/// area stays within a factor of 20, best match first, each new face used once. This holds for what these edits do to a
+/// surviving face: a hole or boss through it keeps its centroid and loses area, a fillet trims its rim. Done on the
+/// tessellations, so it needs no kernel and does not rely on the kernel's face ids (not unique, lost by STEP).
+pub fn remap_faces(old: &SolidCache, new: &SolidCache) -> Vec<Option<usize>> {
+    let (a, b) = (face_stats(old), face_stats(new));
+    let diag = {
+        let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+        for v in &old.vertices {
+            for k in 0..3 {
+                lo[k] = lo[k].min(v[k]);
+                hi[k] = hi[k].max(v[k]);
+            }
+        }
+        (0..3).map(|k| (hi[k] - lo[k]).powi(2)).sum::<f64>().sqrt()
+    };
+    let len = |v: [f64; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    let mut pairs: Vec<(f64, usize, usize)> = Vec::new();
+    for (i, (ai, ci, ni)) in a.iter().enumerate() {
+        if *ai <= 0.0 {
+            continue;
+        }
+        let flat_i = len(*ni) / ai;
+        for (j, (aj, cj, nj)) in b.iter().enumerate() {
+            if *aj <= 0.0 {
+                continue;
+            }
+            let flat_j = len(*nj) / aj;
+            let ratio = aj / ai;
+            if !(0.05..=20.0).contains(&ratio) || (flat_i - flat_j).abs() > 0.15 {
+                continue;
+            }
+            let delta = [cj[0] - ci[0], cj[1] - ci[1], cj[2] - ci[2]];
+            if flat_i > 0.99 && flat_j > 0.99 {
+                let u = ni.map(|v| v / len(*ni));
+                let dot = u[0] * nj[0] / len(*nj) + u[1] * nj[1] / len(*nj) + u[2] * nj[2] / len(*nj);
+                if dot < 0.999 || (delta[0] * u[0] + delta[1] * u[1] + delta[2] * u[2]).abs() > 1e-3 * diag {
+                    continue;
+                }
+            } else if flat_i > 0.5 && flat_j > 0.5 {
+                // Gently curved: the normals must still agree.
+                let dot = ni[0] * nj[0] + ni[1] * nj[1] + ni[2] * nj[2];
+                if dot < 0.9 * len(*ni) * len(*nj) {
+                    continue;
+                }
+            }
+            let d = len(delta) / ai.sqrt();
+            if d > 1.0 / 3.0 {
+                continue;
+            }
+            pairs.push((d + 0.1 * ratio.ln().abs(), i, j));
+        }
+    }
+    pairs.sort_by(|x, y| x.0.total_cmp(&y.0));
+    let mut out = vec![None; a.len()];
+    let mut used = vec![false; b.len()];
+    for (_, i, j) in pairs {
+        if out[i].is_none() && !used[j] {
+            out[i] = Some(j);
+            used[j] = true;
+        }
+    }
+    out
+}
 
 /// An edit of a stored solid. These need the OpenCascade kernel (feature `occt`); without it they say so.
 #[derive(Clone, Debug, PartialEq)]
@@ -239,13 +330,33 @@ impl Problem {
         Ok(p)
     }
 
-    /// Apply a solid edit to a solid problem (a new STEP text and cache); boundary conditions are kept as they are.
+    /// Apply a solid edit to a solid problem (a new STEP text and cache). Supports and loads that name faces follow the
+    /// faces across the edit (`remap_faces`); one whose face the edit removed is renamed `removed:faceN`, a name the
+    /// geometry does not have, so `diagnose` reports it instead of it silently landing on another face.
     pub fn apply_solid_op(&mut self, op: &SolidOp) -> Result<(), String> {
         let Geometry::Solid { step, cache: Some(cache) } = &self.geometry else { return Err("this model is not a STEP solid".into()) };
         if !cache.is_current(step) {
             return Err("the solid's cached surface mesh is out of date".into());
         }
         let (new_step, new_cache) = apply_op(step, cache, op)?;
+        let map = remap_faces(cache, &new_cache);
+        let rename = |name: &mut String| {
+            let Some(n) = name.strip_prefix("face").and_then(|d| d.parse::<usize>().ok()).filter(|n| *n >= 1) else { return };
+            *name = match map.get(n - 1) {
+                Some(Some(j)) => format!("face{}", j + 1),
+                _ => format!("removed:face{n}"),
+            };
+        };
+        for s in &mut self.supports {
+            if let Support::Edge { edge, .. } = s {
+                rename(edge);
+            }
+        }
+        for l in &mut self.loads {
+            if let Load::Pressure { edge, .. } | Load::Traction { edge, .. } | Load::Force { edge, .. } = l {
+                rename(edge);
+            }
+        }
         self.geometry = Geometry::Solid { step: new_step, cache: Some(new_cache) };
         Ok(())
     }

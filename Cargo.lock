@@ -520,6 +520,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f52f817c2f8ca69199ad0845b5be49b5d87ca94d23d0c3fcc839720d62e76723"
 dependencies = [
  "cc",
+ "cmake",
  "cxx",
  "cxx-build",
  "flate2",

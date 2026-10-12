@@ -160,3 +160,20 @@ Test-harness note: bind symmetry planes by surface name (`face3`..), not by coor
   face for the hole / boss by click on the real GPU window (the preview scene's picking is the existing surface picking and
   was not exercised with a real mouse), Windows and hosted CI (the `solid-kernel-occt` job has never run), the LGPL notice
   check before release.
+
+## Session 3 (2026-10-12): stable face naming, Windows CI finding
+
+- **Stable topological naming (done).** `fea_problem::solid::remap_faces(old, new)` matches faces across a solid edit by geometry
+  (same flatness, plane and normal for flat faces, centroid within a third of the face size, area within x20; best match first,
+  each new face once). `Problem::apply_solid_op` renames face supports/loads through it; a face the edit removed becomes
+  `removed:faceN`, which `diagnose` reports as an unknown surface (no retarget is offered: too far from any real name). Chosen
+  over `cadrum::Solid::iter_history` because kernel face ids are session-local, not unique for extrusion caps and lost by STEP;
+  geometry is stable across all of that and needs no kernel (the function is tested without `occt`). Tests:
+  `fea-problem/tests/solid.rs` (`remap_faces_*`, `naming::*`: hole/boss on a side face and through the loaded face, fillet, solve
+  after).
+- **Windows CI finding (hosted run 38236448142).** `solid-kernel` `--features occt` links on ubuntu but fails on windows with
+  `unresolved external symbol __imp_*`: cadrum's prebuilt MSVC OpenCascade is `/MD`, the workspace forces
+  `-C target-feature=+crt-static` (`.cargo/config.toml`, the self-contained-exe rule). The workflow now (a) checks the code on
+  windows against the prebuilt with `-crt-static` (not the shipping configuration) and (b) has a manual job building OCCT from
+  source (`occt-source` feature) under `crt-static`, the configuration the shipped exe needs. Until (b) is green the Windows
+  exe with `occt` is not shippable without bundling the VC++ runtime DLLs app-locally.

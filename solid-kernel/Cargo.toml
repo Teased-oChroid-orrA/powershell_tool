@@ -13,6 +13,9 @@ publish = false
 [features]
 default = []
 occt = ["dep:cadrum"]
+# Build OpenCascade from source instead of the prebuilt tarball (30+ minutes). The prebuilt MSVC library is /MD, which the
+# workspace's `crt-static` setting (.cargo/config.toml) cannot link; a source build follows the setting.
+occt-source = ["occt", "cadrum/source"]
 
 [dependencies]
 fea-core = { path = "../fea-core" }

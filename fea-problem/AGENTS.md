@@ -50,6 +50,7 @@ Does not own: any element, solver or mesher (`fea-core`), any UI or file access 
 - `Geometry::Solid` is solved from its cached surface mesh only; a missing or stale cache (hash of the STEP text) is refused,
   never re-tessellated silently (that needs the `occt` feature). Faces are `face1`.. in the kernel's order. Refinement zones
   and sketch history do not apply to it.
+- Face numbers of a stored solid change with every `apply_solid_op`; supports/loads are carried by `solid::remap_faces` (geometric match, not kernel ids) and a lost face becomes `removed:faceN` (reported by `diagnose`). Kernel ids do not survive a STEP round trip: never persist them.
 - `diagnose` recomputes its evidence from the problem; the only message text it relies on is the rigid-body wording, pinned by
   `tests/failures.rs`. Change that message and the test and the rule together.
 - `MaterialSpec::density` (serde default 0) feeds only `dynamics::modal` (consistent units: inch / psi -> lbf s^2/in^4 = weight density / 386.09); a zero density is an explained error there, never a silent massless structure. Modal and buckling refuse bushed problems (a contact problem) and axisymmetric buckling.

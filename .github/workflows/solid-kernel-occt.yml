@@ -18,11 +18,24 @@ concurrency:
 
 jobs:
   occt:
+    name: occt (${{ matrix.name }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - name: linux
+            os: ubuntu-latest
+            features: occt
+            rustflags: ""
+          # The prebuilt OpenCascade for MSVC uses the dynamic CRT; the workspace forces `crt-static`, which cannot link it.
+          # This job checks the code against the prebuilt with the dynamic CRT. It is not the shipping configuration.
+          - name: windows-prebuilt-dynamic-crt
+            os: windows-latest
+            features: occt
+            rustflags: "-C target-feature=-crt-static"
     runs-on: ${{ matrix.os }}
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,9 +49,28 @@ jobs:
           path: |
             ~/.cargo/registry
             target
-          key: cargo-occt-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-occt-${{ matrix.name }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            cargo-occt-${{ runner.os }}-
+            cargo-occt-${{ matrix.name }}-
 
-      - name: cargo test -p solid-kernel --features occt
-        run: cargo test -p solid-kernel --features occt
+      - name: cargo test -p solid-kernel -p fea-problem
+        run: cargo test -p solid-kernel -p fea-problem --features ${{ matrix.features }}
+
+  # OpenCascade built from source with the workspace's static CRT (the configuration the shipped exe needs). Slow, by hand.
+  occt-windows-static-crt:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: cargo-occt-static-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-occt-static-
+      - name: cargo test -p solid-kernel --features occt-source
+        run: cargo test -p solid-kernel --features occt-source
