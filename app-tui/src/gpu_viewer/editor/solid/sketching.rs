@@ -82,6 +82,8 @@ pub enum SketchAction {
     Dimension,
     /// Pin the selected points where they are.
     Fix,
+    /// Toggle the selected lines, circles, arcs and splines between construction and real geometry.
+    ToggleConstruction,
     ToggleGrid,
     Convert,
     AddExtrude,
@@ -626,6 +628,14 @@ impl SolidSession {
                     self.status = st.edit.status.clone();
                 }
             }
+            SketchAction::ToggleConstruction => {
+                let r = self.with_sketch(|sk, ed| ed.toggle_construction(sk));
+                if let Some(Err(e)) = r {
+                    self.status = e;
+                } else if let Some(st) = &self.sketching {
+                    self.status = st.edit.status.clone();
+                }
+            }
             SketchAction::ToggleGrid => {
                 if let Some(st) = &mut self.sketching {
                     st.grid_on = !st.grid_on;
@@ -869,6 +879,10 @@ impl SolidSession {
                         self.do_sketch_action(SketchAction::Fix);
                         true
                     }
+                    (None, 'x') => {
+                        self.do_sketch_action(SketchAction::ToggleConstruction);
+                        true
+                    }
                     (None, 'g') => {
                         self.do_sketch_action(SketchAction::ToggleGrid);
                         true
@@ -1000,7 +1014,9 @@ impl SolidSession {
         let base = if defined { CODE_SUPPORT } else { CODE_TRUSS };
         for (id, p, q) in sketcher::sketch_segments(sk) {
             let sel = st.edit.selection.contains(&id);
-            b.tube(to(p), to(q), if sel { 0.004 } else { 0.0028 }, [None, None], if sel { CODE_SELECTED } else { base });
+            // Construction geometry is thinner and in the frame colour: it holds dimensions, not material.
+            let (radius, code) = if sel { (0.004, CODE_SELECTED) } else if sk.is_construction(id) { (0.0016, CODE_FRAME) } else { (0.0028, base) };
+            b.tube(to(p), to(q), radius, [None, None], code);
         }
         for e in &sk.entities {
             if let Some(p) = sk.point(e.id) {
@@ -1248,6 +1264,12 @@ impl SolidSession {
         if st.edit.fixable(sk).is_empty() { Err("select a point that is not fixed yet".into()) } else { Ok(()) }
     }
 
+    fn construction_availability(&self) -> Result<(), String> {
+        let st = self.sketching.as_ref().ok_or("open a sketch first")?;
+        let (_, sk) = self.active_sketch().ok_or("open a sketch first")?;
+        if st.edit.constructible(sk).is_empty() { Err("select a line, circle, arc or spline".into()) } else { Ok(()) }
+    }
+
     fn constrain_entries(&self) -> Vec<Entry> {
         [
             (Rule::Horizontal, "Horizontal", "H"),
@@ -1272,7 +1294,7 @@ impl SolidSession {
             .group("Draw", [Tool::Line, Tool::Polyline, Tool::Rectangle, Tool::Circle, Tool::Arc, Tool::Spline].into_iter().map(|t| self.tool_entry(t)).collect())
             .group("Select", vec![self.tool_entry(Tool::Select)])
             .group("Constrain", self.constrain_entries())
-            .group("Dimension", vec![self.tool_entry(Tool::Dimension), entry("Fix point", "F", SketchAction::Fix).when(self.fix_availability())])
+            .group("Dimension", vec![self.tool_entry(Tool::Dimension), entry("Fix point", "F", SketchAction::Fix).when(self.fix_availability()), entry("Construction", "X", SketchAction::ToggleConstruction).when(self.construction_availability())])
             .group(
                 "Boundary",
                 vec![

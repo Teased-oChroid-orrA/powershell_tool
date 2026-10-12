@@ -617,6 +617,26 @@ impl SketchEdit {
         Ok(pts.len())
     }
 
+    /// Lines, circles, arcs and splines in the selection (what can be construction geometry).
+    pub fn constructible(&self, sk: &Sketch) -> Vec<Id> {
+        self.selection.iter().copied().filter(|id| sk.entity(*id).is_some_and(|e| !matches!(e, Entity::Point { .. }))).collect()
+    }
+
+    /// Toggle the selection between construction and real geometry: construction entities hold dimensions and constraints
+    /// but are not part of the profile. If any selected entity is real, all become construction; else all become real.
+    pub fn toggle_construction(&mut self, sk: &mut Sketch) -> Result<usize, String> {
+        let ids = self.constructible(sk);
+        if ids.is_empty() {
+            return Err("select a line, circle, arc or spline first".into());
+        }
+        let make = ids.iter().any(|id| !sk.is_construction(*id));
+        for id in &ids {
+            sk.set_construction(*id, make)?;
+        }
+        self.status = format!("{} {} as {}.", ids.len(), if ids.len() == 1 { "entity" } else { "entities" }, if make { "construction geometry (not part of the profile)" } else { "real geometry" });
+        Ok(ids.len())
+    }
+
     // ----------------------------------------------------------------------------- selection
 
     /// The entity nearest to `at` within the pick distance: points first, then lines, then circles / arcs.

@@ -536,3 +536,32 @@ fn a_spline_is_drawn_through_clicked_points_and_closes_a_profile() {
     s.handle_key(Key::Enter, Mods::default());
     assert!(s.status.contains("at least two"), "{}", s.status);
 }
+
+#[test]
+fn a_selected_line_becomes_construction_geometry_and_leaves_the_profile() {
+    let mut s = drawn_rectangle("construction");
+    // A diagonal through two corners: a branch in the outline until it is construction.
+    act(&mut s, SketchAction::Tool(Tool::Line));
+    click(&mut s, [0.0, 0.0]);
+    click(&mut s, [10.0, 4.0]);
+    act(&mut s, SketchAction::Tool(Tool::Select));
+    act(&mut s, SketchAction::Finish);
+    assert!(s.sketch_mode() && s.status.to_lowercase().contains("more than two"), "{}", s.status);
+    // Nothing selected: the command says what it needs. Then select the diagonal and press X.
+    act(&mut s, SketchAction::ToggleConstruction);
+    assert!(s.status.contains("select a line"), "{}", s.status);
+    click(&mut s, [5.0, 2.0]);
+    s.handle_key(Key::Char('x'), Mods::default());
+    assert!(s.status.contains("construction geometry"), "{}", s.status);
+    assert_eq!(sketch_of(&s).construction.len(), 1);
+    act(&mut s, SketchAction::Finish);
+    assert!(!s.sketch_mode(), "the profile is the rectangle again: {}", s.status);
+    // Back in the sketch the toggle undoes it, and the outline is refused again.
+    let feature = s.history().unwrap().features.iter().rev().find(|f| matches!(f.kind, FeatureKind::Sketch { .. })).unwrap().id;
+    act(&mut s, SketchAction::Edit(feature));
+    click(&mut s, [5.0, 2.0]);
+    act(&mut s, SketchAction::ToggleConstruction);
+    assert!(sketch_of(&s).construction.is_empty(), "{}", s.status);
+    act(&mut s, SketchAction::Finish);
+    assert!(s.sketch_mode(), "the diagonal is real geometry again");
+}
