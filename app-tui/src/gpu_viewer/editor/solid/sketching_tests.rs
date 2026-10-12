@@ -436,3 +436,33 @@ fn dimensions_and_constraint_glyphs_are_placed_on_the_geometry_in_the_viewport()
     let plain = session("overlay-none");
     assert!(Authoring::overlay(&plain, &cam(), SIZE).is_empty());
 }
+
+#[test]
+fn a_sketch_can_be_placed_on_a_flat_face_of_the_extruded_body() {
+    use fea_problem::history::Plane;
+    let mut s = drawn_rectangle("on-face");
+    act(&mut s, SketchAction::Finish);
+    act(&mut s, SketchAction::AddExtrude);
+    let faces = s.face_choices();
+    assert_eq!(faces.len(), 6, "start, end and the four sides of the rectangle");
+    let end = faces.iter().position(|f| f.name == "end").unwrap();
+    // The Insert menu and the Features ribbon list the faces.
+    let label = "Sketch on face 'end'";
+    assert!(s.features_ribbon().groups.iter().flat_map(|g| g.buttons.iter()).any(|e| e.label == label), "ribbon entry");
+    act(&mut s, SketchAction::NewSketchOnFace(end));
+    assert!(s.sketch_mode(), "{}", s.status);
+    let feature = s.sketching.as_ref().unwrap().feature;
+    let FeatureKind::Sketch { plane, .. } = &s.problem.history.as_ref().unwrap().feature(feature).unwrap().kind else { panic!() };
+    let Plane::Datum { origin, normal, .. } = plane else { panic!("{plane:?}") };
+    assert!(origin[2] > 0.0, "the end cap lies at the extrusion depth: {origin:?}");
+    assert_eq!(*normal, [0.0, 0.0, 1.0]);
+    // Drawing works in the face's own coordinates.
+    act(&mut s, SketchAction::Tool(Tool::Circle));
+    click(&mut s, [2.0, 2.0]);
+    click(&mut s, [3.0, 2.0]);
+    assert!(sketch_of(&s).entities.iter().any(|e| matches!(e.v, fea_problem::sketch::Entity::Circle { .. })));
+    // A stale index is refused with a message, never a panic.
+    act(&mut s, SketchAction::Finish);
+    act(&mut s, SketchAction::NewSketchOnFace(99));
+    assert!(s.status.contains("no longer exists"), "{}", s.status);
+}

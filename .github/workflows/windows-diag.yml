@@ -1,0 +1,41 @@
+name: Windows diagnostics
+
+# Temporary: isolates the Windows-only equilibrium failure of `random_linear_problems_solve_and_balance`
+# (docs/issue-12-phase-26.md). Delete once the cause is fixed.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  diag:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: cargo-windows-diag-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-windows-diag-
+      - name: build
+        run: cargo test -p fea-problem --test sweep --no-run
+      - name: one rayon thread
+        if: always()
+        env:
+          RAYON_NUM_THREADS: "1"
+        run: cargo test -p fea-problem --test sweep random_linear -- --nocapture
+      - name: default threads
+        if: always()
+        run: cargo test -p fea-problem --test sweep random_linear -- --nocapture
+      - name: two rayon threads
+        if: always()
+        env:
+          RAYON_NUM_THREADS: "2"
+        run: cargo test -p fea-problem --test sweep random_linear -- --nocapture
+      - name: dynamic CRT
+        if: always()
+        env:
+          RUSTFLAGS: "-C target-feature=-crt-static"
+        run: cargo test -p fea-problem --test sweep random_linear -- --nocapture

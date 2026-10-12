@@ -100,6 +100,15 @@ pub struct Feature {
     pub kind: FeatureKind,
 }
 
+/// A flat face of the body the active features build, as a plane a new sketch can be placed on (the datum-plane picker).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlanarFace {
+    /// The mesh surface name of the face (`start`, `end`, `bottom`, `edge3`, ...).
+    pub name: String,
+    /// Datum plane whose normal points out of the body, `x_dir` along the face's first direction.
+    pub plane: Plane,
+}
+
 /// What the active features produce.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Body {
@@ -170,6 +179,55 @@ impl History {
     pub fn remove(&mut self, id: Id) {
         self.features.retain(|f| f.id != id && !matches!(f.kind, FeatureKind::Extrude { profile, .. } | FeatureKind::Revolve { profile, .. } if profile == id));
         self.rollback = self.rollback.map(|n| n.min(self.features.len()));
+    }
+
+    /// The flat faces of the extruded body: the two caps and every straight side of the outline, each as an outward-facing
+    /// datum plane. A revolve and a plain sketch have none (their faces are curved or not a body yet).
+    pub fn planar_faces(&self) -> Result<Vec<PlanarFace>, String> {
+        use crate::problem::{Seg, Shape};
+        let built = self.rebuild()?;
+        let Body::Extrude { depth, .. } = built.body else { return Ok(Vec::new()) };
+        let (f, w) = (built.frame, built.frame.w());
+        let datum = |origin: [f64; 3], normal: [f64; 3], x_dir: [f64; 3]| Plane::Datum { origin, normal, x_dir };
+        let neg = |v: [f64; 3]| v.map(|c| -c);
+        let mut out = vec![
+            PlanarFace { name: "start".into(), plane: datum(f.origin, neg(w), f.u) },
+            PlanarFace { name: "end".into(), plane: datum(f.apply([0.0, 0.0, depth]), w, f.u) },
+        ];
+        // Straight sides: `(name, from, to)` in sketch coordinates, in the order the mesher names them.
+        let sides: Vec<(String, [f64; 2], [f64; 2])> = match &built.outer {
+            Shape::Rect { x0, y0, x1, y1 } => vec![
+                ("bottom".into(), [*x0, *y0], [*x1, *y0]),
+                ("right".into(), [*x1, *y0], [*x1, *y1]),
+                ("top".into(), [*x1, *y1], [*x0, *y1]),
+                ("left".into(), [*x0, *y1], [*x0, *y0]),
+            ],
+            Shape::Polygon { pts } => (0..pts.len()).map(|i| (format!("edge{}", i + 1), pts[i], pts[(i + 1) % pts.len()])).collect(),
+            Shape::Outline { segs } => segs.iter().enumerate().filter(|(_, sg)| matches!(sg, Seg::Line { .. })).map(|(i, sg)| (format!("edge{}", i + 1), sg.start(), sg.end())).collect(),
+            Shape::Circle { .. } | Shape::Slot { .. } => Vec::new(),
+        };
+        // Outward is to the right of a counter-clockwise walk and to the left of a clockwise one.
+        let pts: Vec<[f64; 2]> = match &built.outer {
+            Shape::Outline { segs } => segs.iter().flat_map(|sg| sg.sample(48.0)).collect(),
+            Shape::Polygon { pts } => pts.clone(),
+            other => {
+                let (lo, hi) = other.bounds();
+                vec![lo, [hi[0], lo[1]], hi, [lo[0], hi[1]]]
+            }
+        };
+        let area2: f64 = (0..pts.len()).map(|i| pts[i][0] * pts[(i + 1) % pts.len()][1] - pts[i][1] * pts[(i + 1) % pts.len()][0]).sum();
+        let side = if area2 >= 0.0 { 1.0 } else { -1.0 };
+        for (name, a, b) in sides {
+            let d = [b[0] - a[0], b[1] - a[1]];
+            let len = d[0].hypot(d[1]);
+            if !(len > 0.0) {
+                continue;
+            }
+            let (d, n) = ([d[0] / len, d[1] / len], [side * d[1] / len, -side * d[0] / len]);
+            let dir = |c: [f64; 2]| -> [f64; 3] { std::array::from_fn(|i| c[0] * f.u[i] + c[1] * f.v[i]) };
+            out.push(PlanarFace { name, plane: datum(f.apply([a[0], a[1], 0.0]), dir(n), dir(d)) });
+        }
+        Ok(out)
     }
 
     /// Rebuild the profile and body from the active, unsuppressed features.

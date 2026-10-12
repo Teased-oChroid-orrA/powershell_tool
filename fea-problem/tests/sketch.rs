@@ -587,3 +587,72 @@ fn an_outline_with_arcs_round_trips_through_a_sketch_and_solves_on_its_arc_edge(
     assert!((s.summary.reaction[0] + 100.0).abs() < 0.5, "{:?}", s.summary.reaction);
     assert!(s.summary.equilibrium_error < 1e-6, "{}", s.summary.equilibrium_error);
 }
+
+mod faces {
+    use fea_problem::history::{Body, FeatureKind, History, Plane};
+    use fea_problem::sketch::Sketch;
+    use fea_problem::{Shape, Seg};
+
+    fn history(outer: &Shape, depth: f64, plane: Plane) -> History {
+        let mut h = History::default();
+        let sk = h.add("S", FeatureKind::Sketch { plane, sketch: Sketch::from_shapes(outer, &[]) });
+        h.add("E", FeatureKind::Extrude { profile: sk, depth, layers: 2 });
+        h
+    }
+    fn normal(p: &Plane) -> [f64; 3] {
+        p.frame().unwrap().w()
+    }
+    fn close(a: [f64; 3], b: [f64; 3]) -> bool {
+        (0..3).all(|i| (a[i] - b[i]).abs() < 1e-9)
+    }
+
+    #[test]
+    fn a_box_has_six_outward_planes_through_its_faces() {
+        let h = history(&Shape::Rect { x0: 0.0, y0: 0.0, x1: 12.0, y1: 4.0 }, 3.0, Plane::Front { offset: 0.0 });
+        let faces = h.planar_faces().unwrap();
+        let by = |n: &str| faces.iter().find(|f| f.name == n).unwrap_or_else(|| panic!("{n}")).plane.clone();
+        assert_eq!(faces.len(), 6);
+        for (name, n, through) in [
+            ("start", [0.0, 0.0, -1.0], [6.0, 2.0, 0.0]),
+            ("end", [0.0, 0.0, 1.0], [6.0, 2.0, 3.0]),
+            ("bottom", [0.0, -1.0, 0.0], [6.0, 0.0, 1.5]),
+            ("top", [0.0, 1.0, 0.0], [6.0, 4.0, 1.5]),
+            ("left", [-1.0, 0.0, 0.0], [0.0, 2.0, 1.5]),
+            ("right", [1.0, 0.0, 0.0], [12.0, 2.0, 1.5]),
+        ] {
+            let pl = by(name);
+            assert!(close(normal(&pl), n), "{name}: normal {:?}", normal(&pl));
+            // The face centre lies in the plane: (centre - origin) . normal = 0.
+            let fr = pl.frame().unwrap();
+            let d: f64 = (0..3).map(|i| (through[i] - fr.origin[i]) * n[i]).sum();
+            assert!(d.abs() < 1e-9, "{name}: the face is {d} off its plane");
+        }
+    }
+
+    #[test]
+    fn a_clockwise_outline_and_a_plane_off_the_origin_still_face_outward() {
+        // The same outline drawn clockwise, on the Top plane offset 2: every side normal must still point away from the body.
+        let outline = Shape::Polygon { pts: vec![[0.0, 0.0], [0.0, 3.0], [5.0, 3.0], [5.0, 0.0]] };
+        let h = history(&outline, 1.0, Plane::Top { offset: 2.0 });
+        let built = h.rebuild().unwrap();
+        assert!(matches!(built.body, Body::Extrude { .. }));
+        let centre = built.frame.apply([2.5, 1.5, 0.5]);
+        for f in h.planar_faces().unwrap() {
+            let fr = f.plane.frame().unwrap();
+            let n = fr.w();
+            let out: f64 = (0..3).map(|i| (fr.origin[i] - centre[i]) * n[i]).sum();
+            assert!(out > 0.0, "{}: normal {n:?} points into the body", f.name);
+        }
+    }
+
+    #[test]
+    fn arcs_are_not_flat_and_a_revolve_has_no_planar_faces() {
+        let d = Shape::Outline { segs: vec![Seg::Line { a: [0.0, -2.0], b: [0.0, 2.0] }, Seg::Arc { c: [0.0, 0.0], r: 2.0, a0: std::f64::consts::FRAC_PI_2, a1: -std::f64::consts::FRAC_PI_2 }] };
+        let names: Vec<String> = history(&d, 1.0, Plane::Front { offset: 0.0 }).planar_faces().unwrap().into_iter().map(|f| f.name).collect();
+        assert_eq!(names, ["start", "end", "edge1"], "the arc edge2 is a curved face");
+        let mut h = History::default();
+        let sk = h.add("S", FeatureKind::Sketch { plane: Plane::Front { offset: 0.0 }, sketch: Sketch::from_shapes(&Shape::Rect { x0: 1.0, y0: 0.0, x1: 2.0, y1: 1.0 }, &[]) });
+        h.add("R", FeatureKind::Revolve { profile: sk, angle_deg: 360.0, segments: 8 });
+        assert!(h.planar_faces().unwrap().is_empty());
+    }
+}

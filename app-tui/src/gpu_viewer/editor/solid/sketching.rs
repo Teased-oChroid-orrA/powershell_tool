@@ -64,6 +64,8 @@ impl FeatureParam {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SketchAction {
     NewSketch(PlaneChoice),
+    /// A sketch on a flat face of the built body: the index into `History::planar_faces`.
+    NewSketchOnFace(usize),
     /// Open the sketch feature for editing.
     Edit(Id),
     Finish,
@@ -408,7 +410,12 @@ impl SolidSession {
         }
     }
 
-    fn new_sketch(&mut self, plane: PlaneChoice) {
+    /// The flat faces of the body the history builds, as planes to sketch on (none while it has no extruded body).
+    pub(super) fn face_choices(&self) -> Vec<fea_problem::history::PlanarFace> {
+        self.history().and_then(|h| h.planar_faces().ok()).unwrap_or_default()
+    }
+
+    fn new_sketch(&mut self, plane: Plane, label: String) {
         if self.sketching.is_some() {
             self.status = "Finish the current sketch first.".into();
             return;
@@ -423,11 +430,11 @@ impl SolidSession {
         let n = self.history().map_or(0, |h| h.features.iter().filter(|f| matches!(f.kind, FeatureKind::Sketch { .. })).count());
         self.edit(|p| {
             if let Some(h) = &mut p.history {
-                id = h.add(&format!("Sketch{}", n + 1), FeatureKind::Sketch { plane: plane.plane(), sketch: Sketch::default() });
+                id = h.add(&format!("Sketch{}", n + 1), FeatureKind::Sketch { plane, sketch: Sketch::default() });
             }
         });
         self.enter_sketch(id, entry);
-        self.status = format!("New sketch on the {}.", plane.label());
+        self.status = format!("New sketch on the {label}.");
     }
 
     /// Delete a feature and the ones that depend on it. Always allowed: when what is left has no valid body the model
@@ -496,7 +503,11 @@ impl SolidSession {
 
     pub(super) fn do_sketch_action(&mut self, a: SketchAction) {
         match a {
-            SketchAction::NewSketch(p) => self.new_sketch(p),
+            SketchAction::NewSketch(p) => self.new_sketch(p.plane(), p.label().to_string()),
+            SketchAction::NewSketchOnFace(i) => match self.face_choices().into_iter().nth(i) {
+                Some(f) => self.new_sketch(f.plane, format!("face '{}'", f.name)),
+                None => self.status = "That face no longer exists; the body changed.".into(),
+            },
             SketchAction::Edit(id) => {
                 if self.sketching.is_some() {
                     self.status = "Finish the current sketch first.".into();
@@ -1193,6 +1204,7 @@ impl SolidSession {
 
     pub(super) fn features_ribbon(&self) -> RibbonTab {
         let mut sketch: Vec<Entry> = PlaneChoice::ALL.iter().map(|p| entry(&format!("Sketch on {}", p.label()), "", SketchAction::NewSketch(*p))).collect();
+        sketch.extend(self.face_entries());
         sketch.push(entry("Edit selected sketch", "", SketchAction::Edit(self.selected_feature.unwrap_or(0))).when(self.edit_availability()));
         RibbonTab::new("Features").group("Sketch", sketch).group(
             "Solid",
@@ -1202,6 +1214,11 @@ impl SolidSession {
                 entry("Convert to history", "", SketchAction::Convert).when(self.convert_availability()),
             ],
         )
+    }
+
+    /// "Sketch on face ..." for each flat face of the built body.
+    fn face_entries(&self) -> Vec<Entry> {
+        self.face_choices().iter().enumerate().map(|(i, f)| entry(&format!("Sketch on face '{}'", f.name), "", SketchAction::NewSketchOnFace(i))).collect()
     }
 
     fn edit_availability(&self) -> Result<(), String> {
@@ -1226,6 +1243,7 @@ impl SolidSession {
         let mut v = base;
         v.push(Item::Separator);
         v.extend(PlaneChoice::ALL.iter().map(|p| Item::Entry(entry(&format!("Sketch on {}", p.label()), "", SketchAction::NewSketch(*p)))));
+        v.extend(self.face_entries().into_iter().map(Item::Entry));
         v.push(Item::Entry(entry("Edit selected sketch", "", SketchAction::Edit(self.selected_feature.unwrap_or(0))).when(self.edit_availability())));
         v.push(Item::Entry(entry("Extrude", "", SketchAction::AddExtrude).when(self.feature_availability(false))));
         v.push(Item::Entry(entry("Revolve", "", SketchAction::AddRevolve).when(self.feature_availability(true))));
