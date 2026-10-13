@@ -300,9 +300,9 @@ pub fn reconstruct(ctx: &EstimatorContext) -> Result<Reconstruction, MeshError> 
     let tests = monomials(k);
     let rule = tri_rule();
     let affine = tm.affine;
-    let mut stress_scale = 0.0f64;
-    let mut elems: Vec<ElemData> = Vec::with_capacity(tm.elems.len());
-    for te in &tm.elems {
+    // element data in parallel: collected in element order, and the scale is a max (order independent), so the result is deterministic
+    let build = |te: &super::trimesh::TriElem| -> Result<(ElemData, f64), MeshError> {
+        let mut stress_scale = 0.0f64;
         let blk = &mesh.blocks[te.block];
         let conn = blk.elem(te.local);
         let (p, c, s, area, grad) = (te.p, te.c, te.s, te.area, te.grad);
@@ -332,8 +332,11 @@ pub fn reconstruct(ctx: &EstimatorContext) -> Result<Reconstruction, MeshError> 
             q_sigma.push([st[0], st[1], st[3]]);
             q_lambda.push([1.0 - r[0] - r[1], r[0], r[1]]);
         }
-        elems.push(ElemData { block: te.block, corners: te.corners, p, c, s, grad, q_x, q_w, q_v, q_div, q_test, q_sigma, q_lambda, mass_chol: chol_factor(nb, &mass).ok_or_else(|| MeshError::Failed("the RT mass matrix of an element is not positive definite".into()))?, body: tm.body[te.block], edge_flux: [Vec::new(), Vec::new(), Vec::new()] });
-    }
+        Ok((ElemData { block: te.block, corners: te.corners, p, c, s, grad, q_x, q_w, q_v, q_div, q_test, q_sigma, q_lambda, mass_chol: chol_factor(nb, &mass).ok_or_else(|| MeshError::Failed("the RT mass matrix of an element is not positive definite".into()))?, body: tm.body[te.block], edge_flux: [Vec::new(), Vec::new(), Vec::new()] }, stress_scale))
+    };
+    let built: Vec<(ElemData, f64)> = tm.elems.par_iter().map(build).collect::<Result<_, _>>()?;
+    let mut stress_scale = built.iter().fold(0.0f64, |m, b| m.max(b.1));
+    let mut elems: Vec<ElemData> = built.into_iter().map(|b| b.0).collect();
     if stress_scale <= 0.0 {
         stress_scale = 1.0;
     }

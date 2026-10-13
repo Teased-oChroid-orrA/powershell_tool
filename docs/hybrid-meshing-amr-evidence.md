@@ -231,3 +231,14 @@ Multi-material (`meshing/multimaterial.rs`): two-material bar (E and 4E, nu = 0)
 equal to the series-spring value to 1e-9. Cells touching a shared boundary are forced unstructured so both sides place the same
 interface nodes; without that, the hybrid parts did not weld (7 and 15 hanging nodes) and the function fell back to unstructured
 for every part, with the reason reported.
+
+Phase 10 addenda (same run, 13354 dofs): the solve splits into assemble 3.5 ms + symbolic 11.7 + factor 14.5 + back-solve 1.0
+(32 ms). A controller cycle spends solve 30 ms, goals (enriched DWR) 318, physics (equilibrated) 387, fusion 0.5, marking+sizing
+1.0, meshing 203 (a complete remesh: adaptivity is remeshing-based, there is no local remeshing to profile), checks 7. The
+element-data loop of the equilibrated reconstruction now runs in parallel with an ordered collect and a max reduction (order
+independent, so results are identical): 299 -> 261 ms.
+
+Factorization reuse, evaluated and not done: the coarse dual solve (31 ms) refactors the stiffness the primal solve factored
+(32 ms in total). Reusing the factor would save about 30 ms of a cycle that costs about 1 s, and `Solution` does not keep the
+factor; the cost does not justify widening that type. The enriched dual solves on a different (refined) mesh and cannot reuse it.
+Allocation and cache behaviour were not studied beyond the equilibrated precomputation above.
