@@ -35,7 +35,12 @@ hybrid structured/unstructured mesher (System B) and a goal-oriented, multicrite
    C^-1 : (sigma*(z) - sigma_h(z))` from `a(e_u, e_z) = J(u) - J(u_h)` and Galerkin orthogonality, with the dual `z` from the
    primal factorisation (`K` symmetric). It needs no enriched space, works for every element family and inherits SPR
    improvements; effectivity is measured against closed-form quantities of interest.
-6. **Unsupported means explicit.** New code returns `MeshError` / reliability statuses, never a silent substitute. History
+6. **Equilibrated stress by vertex patches, row by row** (Phase 6): Raviart-Thomas of degree `p` on the triangles around a
+   vertex, one local KKT problem per stress row (rows are independent `H(div)` fields), a constraint row removed only when
+   linearly dependent (its leftover right-hand side is the reported compatibility defect), Neumann data from the applied
+   tractions, rows free where the displacement component of the vertex is constrained. Symmetry is not enforced: it is an
+   estimator, not a certified bound. Stress recovery never smooths across a material interface (SPR+ per material).
+7. **Unsupported means explicit.** New code returns `MeshError` / reliability statuses, never a silent substitute. History
    variables are not transferred between meshes (`Unsupported`) until an admissible transfer exists.
 
 ## Consequences

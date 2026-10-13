@@ -22,7 +22,7 @@ use crate::analysis::{GaussStress, Model};
 use crate::kernel::{self, Work};
 use crate::linear::{Ordering, Reduced};
 use crate::meshing::MeshError;
-use crate::recover::complementary_energy;
+use crate::recover::{complementary_energy, SprRecovery};
 use rayon::prelude::*;
 use std::time::Instant;
 
@@ -79,7 +79,7 @@ pub fn solve_duals(ctx: &EstimatorContext, goals: &[&LinearFunctional]) -> Resul
 }
 
 /// Per-element `int (sigma*(a) - sigma_h(a)) : C^-1 : (sigma*(b) - sigma_h(b))` in global element order.
-fn local_products(model: &Model, ga: &[Vec<GaussStress>], ra: &[[f64; 6]], gb: &[Vec<GaussStress>], rb: &[[f64; 6]]) -> Result<Vec<f64>, MeshError> {
+fn local_products(model: &Model, ga: &[Vec<GaussStress>], ra: &SprRecovery, gb: &[Vec<GaussStress>], rb: &SprRecovery) -> Result<Vec<f64>, MeshError> {
     let mut out = Vec::with_capacity(model.mesh.n_elems());
     for (bi, blk) in model.mesh.blocks.iter().enumerate() {
         let t = blk.kind.table();
@@ -95,9 +95,10 @@ fn local_products(model: &Model, ga: &[Vec<GaussStress>], ra: &[[f64; 6]], gb: &
                 let nsh = t.n_at(g);
                 let (mut sa, mut sb) = ([0.0; 6], [0.0; 6]);
                 for (a, &nd) in conn.iter().enumerate() {
+                    let (va, vb) = (ra.at(bi, nd), rb.at(bi, nd));
                     for c in 0..6 {
-                        sa[c] += nsh[a] * ra[nd][c];
-                        sb[c] += nsh[a] * rb[nd][c];
+                        sa[c] += nsh[a] * va[c];
+                        sb[c] += nsh[a] * vb[c];
                     }
                 }
                 let (ha, hb) = (ga[bi][e * t.ngp + g].1, gb[bi][e * t.ngp + g].1);
@@ -150,13 +151,11 @@ impl DwrEstimator {
         }
         let duals = solve_duals(ctx, goals)?;
         let gauss_u = model.gauss_stresses(ctx.u, ctx.loads.delta_t).map_err(MeshError::Failed)?;
-        let rec_u = model.recover_spr(&gauss_u).map_err(MeshError::Failed)?;
-        let topo = super::patch::PatchTopology::new(&model.mesh, ctx.adjacency);
-        let at_material_interface = topo.material_interface.iter().any(|&b| b);
+        let rec_u = model.recover_spr_by_material(&gauss_u).map_err(MeshError::Failed)?;
         let mut results = Vec::new();
         for (goal, dual) in goals.iter().zip(&duals) {
             let gauss_z = model.gauss_stresses(&dual.z, 0.0).map_err(MeshError::Failed)?;
-            let rec_z = model.recover_spr(&gauss_z).map_err(MeshError::Failed)?;
+            let rec_z = model.recover_spr_by_material(&gauss_z).map_err(MeshError::Failed)?;
             let eta = local_products(model, &gauss_u, &rec_u, &gauss_z, &rec_z)?;
             let estimated: f64 = eta.iter().sum();
             let value = goal.value(ctx.u);
@@ -166,9 +165,14 @@ impl DwrEstimator {
                 reliability = Reliability::Failed(format!("the dual solve left a relative residual of {:.2e}", dual.residual));
             } else if !goal.regularised {
                 reliability = Reliability::Degraded("point functional: its dual solution is singular at the point, the recovered estimate is unreliable".into());
-            } else if at_material_interface {
-                reliability = Reliability::Degraded("stress recovery smooths across a material interface".into());
+            } else if rec_u.diagnostics.averaged_fraction() > 0.05 || rec_z.diagnostics.averaged_fraction() > 0.05 {
+                reliability = Reliability::Degraded(format!(
+                    "{:.0} % (primal) / {:.0} % (dual) of the recovery patches are undetermined and use plain averages",
+                    100.0 * rec_u.diagnostics.averaged_fraction(),
+                    100.0 * rec_z.diagnostics.averaged_fraction()
+                ));
             }
+            notes.push(format!("recovery: {} corner nodes, {} own fits, {} borrowed, {} lower-degree, {} averaged; {} interface nodes", rec_u.diagnostics.corner_nodes, rec_u.diagnostics.fitted, rec_u.diagnostics.borrowed, rec_u.diagnostics.lower_degree, rec_u.diagnostics.averaged, rec_u.interface_nodes));
             let mut field = ErrorField::new(&name(goal), Indicator::Signed, eta, estimated, reliability, t0.elapsed().as_secs_f64());
             field.notes.append(&mut notes);
             results.push(DwrResult { goal: goal.name.clone(), value, estimated_error: estimated, corrected: value + estimated, field });

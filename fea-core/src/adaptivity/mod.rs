@@ -4,17 +4,21 @@
 //! rolls back the step. Estimator code never calls a mesher and a mesher never sees an estimator.
 
 pub mod dwr;
+pub mod equilibrated;
 pub mod estimator;
 pub mod goal;
 pub mod patch;
 pub mod snapshot;
 pub mod transaction;
 pub mod transfer;
+pub mod zones;
 
+pub use equilibrated::{reconstruct, EquilibratedEstimator, EquilibrationReport, Reconstruction};
 pub use estimator::{AdjacencyCache, ErrorEstimator, ErrorField, EstimatorContext, Indicator, Reliability, ZzEstimator};
 pub use dwr::{DwrEstimator, DwrGoalEstimator, DwrResult};
 pub use goal::LinearFunctional;
 pub use patch::PatchTopology;
 pub use snapshot::SolverSnapshot;
 pub use transaction::{attempt, Attempt};
+pub use zones::{DefaultZoneResolver, PhysicsEstimator, PhysicsZoneResolver, Zone, ZoneMap, ZoneSpec};
 pub use transfer::{NodalInterpolation, StateTransferOperator, Transferred};

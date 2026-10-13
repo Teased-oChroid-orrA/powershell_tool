@@ -189,9 +189,64 @@ impl ZzEstimate {
     }
 }
 
+/// How the corner nodes of a stress recovery were resolved (`recover_spr_diag`): a node whose patch is too small or degenerate
+/// borrows a neighbour's polynomial, and in the worst case gets the plain average of its Gauss-point stresses.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SprDiagnostics {
+    pub corner_nodes: usize,
+    /// Own over-determined polynomial.
+    pub fitted: usize,
+    /// Polynomial of an edge-adjacent well-posed node (boundary nodes and under-determined patches).
+    pub borrowed: usize,
+    /// Own patch fitted at a lower degree.
+    pub lower_degree: usize,
+    /// Plain average: no polynomial was determined at all.
+    pub averaged: usize,
+}
+
+impl SprDiagnostics {
+    /// Fraction of corner nodes that fell back to the plain average (an unreliable stress).
+    pub fn averaged_fraction(&self) -> f64 {
+        if self.corner_nodes == 0 { 0.0 } else { self.averaged as f64 / self.corner_nodes as f64 }
+    }
+
+    fn add(&mut self, o: &SprDiagnostics) {
+        self.corner_nodes += o.corner_nodes;
+        self.fitted += o.fitted;
+        self.borrowed += o.borrowed;
+        self.lower_degree += o.lower_degree;
+        self.averaged += o.averaged;
+    }
+}
+
+/// Recovered nodal stress with one patch family per material: the stress is discontinuous across a material interface, so a
+/// node shared by elements of different materials holds a different recovered value for each material. For a mesh of one
+/// material this is exactly [`Model::recover_spr`].
+#[derive(Debug, Clone)]
+pub struct SprRecovery {
+    group_of_block: Vec<usize>,
+    groups: Vec<Vec<[f64; 6]>>,
+    /// Nodes shared by blocks of different materials (where the recovery is one-sided).
+    pub interface_nodes: usize,
+    pub diagnostics: SprDiagnostics,
+}
+
+impl SprRecovery {
+    /// Recovered stress at `node` as seen from the elements of `block`.
+    pub fn at(&self, block: usize, node: usize) -> [f64; 6] {
+        self.groups[self.group_of_block[block]][node]
+    }
+}
+
 impl Model {
-    /// SPR nodal stresses from the Gauss-point stresses (`gauss_stresses` output).
+    /// SPR nodal stresses from the Gauss-point stresses (`gauss_stresses` output). Patches span every element around a node
+    /// whatever its material: use [`recover_spr_by_material`](Self::recover_spr_by_material) for a mesh with several materials.
     pub fn recover_spr(&self, gauss: &[Vec<GaussStress>]) -> Result<Vec<[f64; 6]>, String> {
+        self.recover_spr_diag(gauss).map(|r| r.0)
+    }
+
+    /// [`recover_spr`](Self::recover_spr) with a count of how each corner node was resolved.
+    pub fn recover_spr_diag(&self, gauss: &[Vec<GaussStress>]) -> Result<(Vec<[f64; 6]>, SprDiagnostics), String> {
         let d = self.mesh.dim();
         let n = self.mesh.nodes.len();
         // Elements around each node: (block, element).
@@ -266,23 +321,24 @@ impl Model {
             }
         }
         // Corner nodes: the node's own polynomial, a borrowed one, or a lower-degree fit.
-        let at_corner: Vec<Option<[f64; 6]>> = per_node(n, |nd| {
+        // Outcome tags: 0 own fit, 1 borrowed polynomial, 2 lower-degree fit, 3 plain average (no polynomial determined).
+        let at_corner: Vec<Option<([f64; 6], u8)>> = per_node(n, |nd| {
             if !corner[nd] {
                 return None;
             }
             let x = self.mesh.nodes[nd];
             Some(if let (true, Some(m)) = (on_boundary[nd], borrowed[nd]) {
-                fits[m].as_ref().unwrap().eval(d, x)
+                (fits[m].as_ref().unwrap().eval(d, x), 1)
             } else if let Some(f) = &fits[nd] {
-                f.eval(d, x)
+                (f.eval(d, x), 0)
             } else if let Some(m) = borrowed[nd] {
-                fits[m].as_ref().unwrap().eval(d, x)
+                (fits[m].as_ref().unwrap().eval(d, x), 1)
             } else {
                 // Lower-degree fit on the node's own patch; the plain average as the last resort.
                 let s = samples_of(nd);
                 let low = (0..degree[nd]).rev().find_map(|p| fit(d, p, x, &s));
                 match low {
-                    Some(f) => f.eval(d, x),
+                    Some(f) => (f.eval(d, x), 2),
                     None => {
                         let mut avg = [0.0; 6];
                         for g in &s {
@@ -290,11 +346,21 @@ impl Model {
                                 avg[c] += g.1[c] / s.len() as f64;
                             }
                         }
-                        avg
+                        (avg, 3)
                     }
                 }
             })
         });
+        let mut diag = SprDiagnostics::default();
+        for t in at_corner.iter().flatten() {
+            diag.corner_nodes += 1;
+            match t.1 {
+                0 => diag.fitted += 1,
+                1 => diag.borrowed += 1,
+                2 => diag.lower_degree += 1,
+                _ => diag.averaged += 1,
+            }
+        }
         // Midside / face / interior nodes: average of the owning elements' corner polynomials at the node.
         let corner_value = |cn: usize, x: [f64; 3]| -> Option<[f64; 6]> {
             match (on_boundary[cn], borrowed[cn], &fits[cn]) {
@@ -305,7 +371,7 @@ impl Model {
         };
         let out: Vec<[f64; 6]> = per_node(n, |nd| {
             if let Some(v) = at_corner[nd] {
-                return v;
+                return v.0;
             }
             let x = self.mesh.nodes[nd];
             let (mut sum, mut cnt) = ([0.0f64; 6], 0.0);
@@ -328,7 +394,52 @@ impl Model {
             }
             v
         });
-        Ok(out)
+        Ok((out, diag))
+    }
+
+    /// SPR+ recovery: patches never span two materials. The elements of each material (blocks of equal `Elastic`) are
+    /// recovered as a model of their own, so at an interface each side is a one-sided boundary patch (the boundary rule of
+    /// the original method) instead of an average over the jump.
+    pub fn recover_spr_by_material(&self, gauss: &[Vec<GaussStress>]) -> Result<SprRecovery, String> {
+        let nb = self.mesh.blocks.len();
+        let mut group_of_block = vec![0usize; nb];
+        let mut reps: Vec<usize> = Vec::new(); // first block of each material
+        for b in 0..nb {
+            match reps.iter().position(|&r| self.mesh.blocks[r].material == self.mesh.blocks[b].material) {
+                Some(g) => group_of_block[b] = g,
+                None => {
+                    group_of_block[b] = reps.len();
+                    reps.push(b);
+                }
+            }
+        }
+        if reps.len() <= 1 {
+            let (rec, diag) = self.recover_spr_diag(gauss)?;
+            return Ok(SprRecovery { group_of_block, groups: vec![rec], interface_nodes: 0, diagnostics: diag });
+        }
+        let mut groups = Vec::with_capacity(reps.len());
+        let mut diagnostics = SprDiagnostics::default();
+        for g in 0..reps.len() {
+            let mut mesh = self.mesh.clone();
+            mesh.blocks = (0..nb).filter(|&b| group_of_block[b] == g).map(|b| self.mesh.blocks[b].clone()).collect();
+            let sub_gauss: Vec<Vec<GaussStress>> = (0..nb).filter(|&b| group_of_block[b] == g).map(|b| gauss[b].clone()).collect();
+            let sub = Model { mesh, pattern: self.pattern.clone() };
+            let (rec, diag) = sub.recover_spr_diag(&sub_gauss)?;
+            diagnostics.add(&diag);
+            groups.push(rec);
+        }
+        let mut first_group = vec![usize::MAX; self.mesh.nodes.len()];
+        let mut interface = vec![false; self.mesh.nodes.len()];
+        for (b, blk) in self.mesh.blocks.iter().enumerate() {
+            for &nd in &blk.conn {
+                match first_group[nd] {
+                    usize::MAX => first_group[nd] = group_of_block[b],
+                    g if g != group_of_block[b] => interface[nd] = true,
+                    _ => {}
+                }
+            }
+        }
+        Ok(SprRecovery { group_of_block, groups, interface_nodes: interface.iter().filter(|&&i| i).count(), diagnostics })
     }
 
     /// ZZ error estimate from the displacement field `u`: per-element energy norm of the difference
@@ -340,7 +451,7 @@ impl Model {
     /// As [`zz_error`](Self::zz_error) with a nodal temperature field (`Loads::temperature`) on top of `delta_t`.
     pub fn zz_error_field(&self, u: &[f64], delta_t: f64, field: Option<&[f64]>) -> Result<ZzEstimate, String> {
         let gauss = self.gauss_stresses_field(u, delta_t, field)?;
-        let rec = self.recover_spr(&gauss)?;
+        let rec = self.recover_spr_by_material(&gauss)?;
         let (mut eta, mut norm2) = (Vec::with_capacity(self.mesh.n_elems()), 0.0f64);
         for (bi, blk) in self.mesh.blocks.iter().enumerate() {
             let t = blk.kind.table();
@@ -357,8 +468,9 @@ impl Model {
                     let nsh = t.n_at(g);
                     let mut star = [0.0; 6];
                     for (a, &nd) in conn.iter().enumerate() {
+                        let r = rec.at(bi, nd);
                         for c in 0..6 {
-                            star[c] += nsh[a] * rec[nd][c];
+                            star[c] += nsh[a] * r[c];
                         }
                     }
                     let h = gauss[bi][e * t.ngp + g].1;

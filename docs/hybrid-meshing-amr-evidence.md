@@ -55,3 +55,37 @@ the closed form is limited by the circle being approximated by quadratic edges, 
   field is bit-identical on one and many threads (60 x 60 Quad8).
 - A reaction sum fixed by equilibrium (true error 0) is estimated at 2e-4 .. 6e-5 of its value: small, not zero.
 - Point goals are reported `Degraded` (singular dual); plastic blocks and nodal temperature fields `Unsupported`.
+
+## Phase 6: SPR+ and the equilibrated stress reconstruction (2026-10-13)
+
+- **Defect fixed (Fix-Everything Policy)**: `recover_spr` built every patch from all elements around a node whatever their
+  material, so stress was blended across a material interface (`tests/spr_interface.rs`: the plain recovery misses the jump by
+  more than 20 % at interface nodes; kept as a test of the premise). `Model::recover_spr_by_material` recovers each material as
+  a model of its own (one-sided patches at the interface); `zz_error_field` and the dual-weighted estimator use it. A layered bar
+  whose finite-element solution is exact now has a ZZ estimate of 0 to 1e-6 (it was a visible nonzero), and a single-material
+  mesh gives the old result bit for bit. `SprDiagnostics` counts own fits / borrowed / lower-degree / plain-average nodes.
+- **Equilibrated reconstruction** (`adaptivity::equilibrated`, Tri3 / Tri6, plane stress and strain; `cargo test -p fea-core
+  --test equilibrated -- --nocapture`): vertex patches, Raviart-Thomas degree `p` per stress row, KKT local problems.
+  Verified on six cases (Tri3, Tri6 plane stress, Tri6 plane strain; clamped or symmetric supports; body force, traction,
+  pressure): `div sigma* + f` < 4e-15, normal-traction jump < 3e-14, boundary traction error < 5e-14, compatibility defect
+  < 4e-14 (all relative to the stress scale). Row-wise reconstruction is not symmetric: skew fraction 0.2 % (Tri6) to 4.5 %
+  (Tri3 clamped), so the result is an estimator, not a certified bound.
+- **Estimator quality**, L-shaped plate with a re-entrant corner against a fine Tri6 reference (h = 0.025):
+
+  | h | elements | true energy error | equilibrated (effectivity) | ZZ (effectivity) |
+  |---|---|---|---|---|
+  | 0.4 | 56 | 1.58e-2 | 2.17e-2 (1.37) | 2.91e-2 (1.84) |
+  | 0.2 | 220 | 1.27e-2 | 1.71e-2 (1.35) | 1.86e-2 (1.47) |
+
+  Both rank the worst element first or second. An exact multi-material solution gives an equilibrated estimate of 0 (< 1e-8 of
+  the stress scale) without any smoothing across the interface. Curved Tri6 edges are reconstructed on the straight triangle and
+  reported `Degraded`; quadrilaterals, nodal point loads, boundary force fields and temperature fields are `Unsupported`.
+  The reconstruction is bit-identical on one and many threads.
+- **Zones** (`adaptivity::zones`): re-entrant corners are `Singular`, sharp convex corners and hole boundaries
+  `GeometricDiscontinuity`, caller lists give contact / perimeter / bearing / buckling zones; the physics estimators a zone calls
+  for that do not exist (contact residual, eigenvalue, localised bearing) are listed by `ZoneMap::unmet`.
+- **Contact-specific reconstruction prerequisites** (not implemented): the contact traction must enter the patch problem as
+  Neumann data on each body, which needs (1) a converged active set and the tangent-transpose adjoint of the contact problem
+  (unsymmetric with friction), (2) a smoothed contact-pressure field, because pointwise Gauss-point pressures on non-matching
+  deformable meshes scatter (`fea-core/AGENTS.md`, contact pitfalls), (3) master/slave pair consistency in the patch topology.
+  They are Phase 9 work.
