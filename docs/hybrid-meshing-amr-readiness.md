@@ -45,7 +45,7 @@ Every failure path returns `MeshError` or a reliability status; there is no sile
 - General hex-against-tet transitions (declined, ADR-022 addendum).
 - Wedge import from Gmsh / Abaqus (node orderings not verified; none is imported today). Multi-material 3D (sweep keeps block materials but is not tested across an interface).
 - Size predictor takes loads, restraints and contacts as explicit points / lines from the caller; it does not read a `Model`.
-- Windows evidence only from hosted CI (PR #26).
+- Windows evidence only from hosted CI (PR #26): Windows and Linux workspace runs passed on the branch head before the last perf commit.
 
 ## Benchmark history
 

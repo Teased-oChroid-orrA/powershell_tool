@@ -154,7 +154,7 @@ fn chol_factor(n: usize, a: &[f64]) -> Option<Vec<f64>> {
                 s -= l[i * n + k] * l[j * n + k];
             }
             if i == j {
-                if !(s > 0.0) {
+                if s.is_nan() || s <= 0.0 {
                     return None;
                 }
                 l[i * n + i] = s.sqrt();
