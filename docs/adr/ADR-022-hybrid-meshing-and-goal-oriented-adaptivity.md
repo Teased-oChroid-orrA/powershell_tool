@@ -53,5 +53,19 @@ hybrid structured/unstructured mesher (System B) and a goal-oriented, multicrite
 
 - A hybrid mesh is a normal `Mesh` (blocks of Quad and Tri kinds); every solver, estimator and exporter keeps working.
 - Interface faces are interior faces, so boundary-based tools (surfaces, SPR boundary handling) see only the true boundary.
-- 3D hybrid (hexahedra against tetrahedra) needs a decision between pyramid elements, tie constraints and a vertex-matched
-  diagonal-split interface; it is tracked in issue #16 and not decided here.
+- 3D hybrid: see the addendum below.
+
+## Addendum: 3D hybrid is prismatic (decided with the Wedge6 / Wedge15 elements)
+
+A conforming interface between a hexahedron and a tetrahedron needs pyramid elements (a quadrilateral face has four corners,
+a tetrahedron face three), or tie constraints (non-conforming, mortar-style), or a diagonal-split quad that breaks the hex's
+face shape. All three add an element family or a constraint layer that every solver, estimator and exporter would have to
+honour, for a gain the 2D measurements do not support (isotropic blocks were not cheaper than graded Delaunay).
+
+Decision: **the 3D hybrid is the sweep of the 2D hybrid mesh.** `ElementKind::Wedge6` / `Wedge15` (VTK 13 / 26) are added,
+and `sweep::extrude` maps Quad4/8/9 to Hex8/20/27 and Tri3/6 to Wedge6/15, so structured (Hex) and unstructured (Wedge)
+regions meet on shared quadrilateral faces: the union is conforming by construction and the 2D interface machinery
+(pre-split interface edges, welding) carries over unchanged. General hex-against-tet transitions (pyramids, ties) are
+**declined**; a solid that is not a prism-like extrusion keeps the tetrahedral mesher (`tetmesh.rs`, `solid-kernel`).
+Evidence: `tests/wedge.rs` (Hex+Wedge conformity, 3D affine patch test to 1e-12 in displacement and 1e-9 in stress, extruded
+plane-strain solution equal to the 2D one to 1e-9, exact wedge-grid strain energy), element tests over `ALL_KINDS`.

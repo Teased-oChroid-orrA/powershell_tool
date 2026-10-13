@@ -104,12 +104,14 @@ const TRI_EDGES: [(usize, usize); 3] = [(0, 1), (1, 2), (2, 0)];
 const QUAD_EDGES: [(usize, usize); 4] = [(0, 1), (1, 2), (2, 3), (3, 0)];
 const TET_EDGES: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
 const HEX_EDGES: [(usize, usize); 12] = [(0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4), (0, 4), (1, 5), (2, 6), (3, 7)];
+const WEDGE_EDGES: [(usize, usize); 9] = [(0, 1), (1, 2), (2, 0), (3, 4), (4, 5), (5, 3), (0, 3), (1, 4), (2, 5)];
 
 fn edges(kind: ElementKind) -> &'static [(usize, usize)] {
     match kind {
         ElementKind::Tri3 | ElementKind::Tri6 => &TRI_EDGES,
         ElementKind::Quad4 | ElementKind::Quad8 | ElementKind::Quad9 => &QUAD_EDGES,
         ElementKind::Tet4 | ElementKind::Tet10 => &TET_EDGES,
+        ElementKind::Wedge6 | ElementKind::Wedge15 => &WEDGE_EDGES,
         _ => &HEX_EDGES,
     }
 }
@@ -199,7 +201,8 @@ pub fn element_quality(kind: ElementKind, xyz: &[V3]) -> ElementQuality {
             }
             worst = worst.min(unit_det(&cols[..dim], dim));
         }
-        worst
+        // a right prism on an equilateral triangle has the sine of the triangle's corner as its best value
+        if matches!(kind, ElementKind::Wedge6 | ElementKind::Wedge15) { worst / (3f64.sqrt() / 2.0) } else { worst }
     };
 
     let (mut min_angle, mut max_angle, mut skew) = (f64::NAN, f64::NAN, f64::NAN);
@@ -282,6 +285,8 @@ mod tests {
         let tet = element_quality(ElementKind::Tet4, &[[1.0, 1.0, 1.0], [1.0, -1.0, -1.0], [-1.0, 1.0, -1.0], [-1.0, -1.0, 1.0]]);
         assert!((tet.radius_ratio - 1.0).abs() < 1e-12, "{}", tet.radius_ratio);
         assert!((tet.scaled_jacobian.abs() - 1.0).abs() < 1e-12);
+        let prism = element_quality(ElementKind::Wedge6, &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 3f64.sqrt() / 2.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.5, 3f64.sqrt() / 2.0, 1.0]]);
+        assert!((prism.scaled_jacobian - 1.0).abs() < 1e-12 && (prism.edge_ratio - 1.0).abs() < 1e-12, "{prism:?}");
         let hex = grid(Physics::Solid, ElementKind::Hex8, Elastic::new(1.0, 0.3), [1, 1, 1], &|p| p).unwrap().quality();
         assert!((hex.min_scaled_jacobian - 1.0).abs() < 1e-12);
     }

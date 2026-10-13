@@ -308,7 +308,7 @@ fn inverted_elements_of_every_kind_are_turned_right_side_out() {
         let physics = if kind.dim() == 2 { Physics::PlaneStress { thickness: 1.0 } } else { Physics::Solid };
         let mut mesh = Mesh::new(physics);
         // Nodes at the mirror image of the reference positions: the numbering is then left-handed.
-        let simplex = matches!(kind, fea_core::ElementKind::Tri3 | fea_core::ElementKind::Tri6 | fea_core::ElementKind::Tet4 | fea_core::ElementKind::Tet10);
+        let simplex = matches!(kind, fea_core::ElementKind::Tri3 | fea_core::ElementKind::Tri6 | fea_core::ElementKind::Tet4 | fea_core::ElementKind::Tet10 | fea_core::ElementKind::Wedge6 | fea_core::ElementKind::Wedge15);
         let pos: Vec<[f64; 3]> = kind.node_coords().iter().map(|c| if simplex { [c[1], c[0], c[2]] } else { [-c[0], c[1], c[2]] }).collect();
         for p in &pos {
             mesh.add_node(*p);

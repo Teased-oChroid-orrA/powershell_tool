@@ -296,3 +296,68 @@ fn the_loop_runs_on_hybrid_and_unstructured_meshes_and_both_reach_the_tolerance(
     }
     eprintln!("final dofs: unstructured {} hybrid {}", dofs[0], dofs[1]);
 }
+
+/// A structural JSON check: braces and brackets balance outside strings, strings close, no `NaN`/`inf` tokens leaked.
+fn json_is_well_formed(s: &str) -> bool {
+    let (mut depth, mut in_str, mut esc) = (0i64, false, false);
+    for ch in s.chars() {
+        if in_str {
+            match (esc, ch) {
+                (true, _) => esc = false,
+                (false, '\\') => esc = true,
+                (false, '"') => in_str = false,
+                _ => {}
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_str = true,
+            '{' | '[' => depth += 1,
+            '}' | ']' => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    depth == 0 && !in_str && !s.contains("NaN") && !s.contains("inf")
+}
+
+#[test]
+fn the_element_wise_diagnostics_and_the_json_report_describe_every_cycle() {
+    use fea_core::adaptivity::{FieldRetention, Zone};
+    let mut results = Vec::new();
+    for keep in [FieldRetention::None, FieldRetention::Last, FieldRetention::All] {
+        let cfg = AmrConfig { max_cycles: 6, keep_fields: keep, ..AmrConfig::default() };
+        results.push(run(&goal_stress(Some(0.1)), &cfg));
+    }
+    assert!(results[0].fields.is_empty());
+    assert_eq!(results[1].fields.len(), 1);
+    let all = &results[2];
+    assert_eq!(all.fields.len(), all.history.len());
+    for (f, rec) in all.fields.iter().zip(&all.history) {
+        let n = rec.elements;
+        assert_eq!((f.cycle, f.physics_indicator.len(), f.score.len(), f.mandatory.len(), f.marked.len(), f.zones.len(), f.scaled_jacobian.len(), f.size.len()), (rec.cycle, n, n, n, n, n, n, n));
+        assert_eq!(f.goal_indicators.len(), 1);
+        assert_eq!(f.goal_indicators[0].1.len(), n);
+        assert_eq!(f.marked.iter().filter(|&&m| m).count(), rec.marked, "cycle {}", rec.cycle);
+        assert!(f.labels.is_none());
+        assert!(f.scaled_jacobian.iter().all(|&j| j > 0.0));
+        // the goal-oriented contributions sum to the estimate of the cycle
+        let s: f64 = f.goal_indicators[0].1.iter().sum();
+        assert!((s - rec.goals[0].estimated_error).abs() < 1e-9 * s.abs().max(1e-12));
+    }
+    // the last retained fields are those of the final mesh
+    assert_eq!(results[1].fields[0].cycle, results[1].history.last().unwrap().cycle);
+    assert!(all.fields.last().unwrap().marked.iter().all(|&m| !m), "the final cycle marks nothing");
+    assert!(all.fields.last().unwrap().zones.iter().any(|&z| z == Zone::Singular) || all.fields.last().unwrap().zones.iter().any(|&z| z != Zone::Smooth));
+    // the JSON report
+    let json = all.report_json();
+    assert!(json_is_well_formed(&json), "{json}");
+    for key in ["\"stop\"", "\"cycles\"", "\"dofs\"", "\"factor_bytes\"", "\"estimated_error\"", "\"seconds\"", "\"goal_estimator\":\"enriched-dwr\""] {
+        assert!(json.contains(key), "missing {key} in {json}");
+    }
+    assert_eq!(json.matches("\"cycle\":").count(), all.history.len());
+}

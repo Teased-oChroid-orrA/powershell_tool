@@ -573,7 +573,7 @@ pub struct Reorientation {
 /// Turn inverted elements right side out. A mesh exported with the opposite node orientation (a clockwise triangle, a
 /// left-handed hexahedron) has every element mirrored; the element is the same set of points, only its parametrisation is
 /// reversed. The fix is a node permutation: node `i` takes the old node at the mirror image of its reference position
-/// (`xi_x <-> xi_y` for simplices, `xi_x -> -xi_x` for quadrilaterals and hexahedra). An element that is still unusable
+/// (`xi_x <-> xi_y` for simplices and the triangle of a wedge, `xi_x -> -xi_x` for quadrilaterals and hexahedra). An element that is still unusable
 /// afterwards is degenerate or folded and is left as it was.
 pub fn reorient_inverted(mesh: &mut Mesh) -> Reorientation {
     use crate::element::ElementKind;
@@ -589,7 +589,7 @@ pub fn reorient_inverted(mesh: &mut Mesh) -> Reorientation {
         let refs = kind.node_coords();
         let mirror = |c: [f64; 3]| -> [f64; 3] {
             match kind {
-                ElementKind::Tri3 | ElementKind::Tri6 | ElementKind::Tet4 | ElementKind::Tet10 => [c[1], c[0], c[2]],
+                ElementKind::Tri3 | ElementKind::Tri6 | ElementKind::Tet4 | ElementKind::Tet10 | ElementKind::Wedge6 | ElementKind::Wedge15 => [c[1], c[0], c[2]],
                 _ => [-c[0], c[1], c[2]],
             }
         };

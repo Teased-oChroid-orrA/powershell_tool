@@ -273,6 +273,16 @@ fn error_rule(kind: ElementKind) -> Vec<([f64; 3], f64)> {
                 }
             }
         }
+        ElementKind::Wedge6 | ElementKind::Wedge15 => {
+            let axial = gauss_legendre_unit(n - 1);
+            for &(u, wu) in &gl {
+                for &(v, wv) in &gl {
+                    for &(c, wc) in &axial {
+                        out.push(([u * (1.0 - v), v, 2.0 * c - 1.0], 2.0 * wu * wv * (1.0 - v) * wc));
+                    }
+                }
+            }
+        }
         ElementKind::Tet4 | ElementKind::Tet10 => {
             let gl = gauss_legendre_unit(n - 1);
             for &(a, wa) in &gl {
@@ -632,18 +642,15 @@ mod rule_tests {
         for kind in ALL_KINDS {
             let rule = error_rule(kind);
             let measure: f64 = rule.iter().map(|r| r.1).sum();
-            let want = match (kind.is_simplex(), kind.dim()) {
-                (true, 2) => 0.5,
-                (true, _) => 1.0 / 6.0,
-                (false, 2) => 4.0,
-                (false, _) => 8.0,
-            };
+            let want = kind.reference_measure();
             assert!((measure - want).abs() < 1e-13, "{kind:?}: measure {measure} vs {want}");
             // the squared difference of two fields of the element's order: degree 2 (linear kinds) or 4 (quadratic kinds)
             let quadratic = kind.n_nodes() > kind.n_corners();
             let p = if quadratic { 2 } else { 1 };
             let got: f64 = rule.iter().map(|(x, w)| w * x[0].powi(p) * x[1].powi(p)).sum();
+            let wedge = matches!(kind, ElementKind::Wedge6 | ElementKind::Wedge15);
             let exact = match (kind.is_simplex(), kind.dim(), quadratic) {
+                _ if wedge => 2.0 * if quadratic { 4.0 / 720.0 } else { 1.0 / 24.0 }, // triangle integral times the axial length 2
                 (true, 2, false) => 1.0 / 24.0,           // int x y over the unit triangle = 1!1!/4!
                 (true, 2, true) => 4.0 / 720.0,           // 2!2!/6!
                 (true, _, false) => 1.0 / 120.0,          // 1!1!/5!

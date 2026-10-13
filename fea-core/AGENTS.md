@@ -32,7 +32,7 @@ Does not own: any UI, material tables (`mechanics-core`), the lug physics (`lug-
 | Delaunay + Ruppert triangulation with a size function | `src/delaunay.rs` |
 | Region -> Tri3/Tri6/Quad4/8/9 mesh with curved boundary nodes, named sets and surfaces | `src/mesh2d.rs` |
 | ZZ-error-driven size field for adaptive remeshing, and the shared refine/coarsen loop (`adapt::refine`, `Pass`; 3D: `SizeField3`, `adapted_size_field_3d`) every consumer calls with its own mesher and solver | `src/adapt.rs` |
-| Extrude / revolve quad meshes into hex meshes | `src/sweep.rs` |
+| Extrude / revolve quad meshes into hex and tri meshes into wedge (Wedge6/15) meshes; a hybrid 2D mesh sweeps into a conforming Hex+Wedge mesh (ADR-022 addendum) | `src/sweep.rs` |
 | Tetrahedral volume mesh of a solid from a signed distance + size field (Kuhn lattice, longest-edge bisection with Rivara propagation, feature-preserving snapping, Tet10 curved boundary edges, named outward faces); the 3D size-field remesher for adaptive refinement | `src/tetmesh.rs` (`mesh_solid`, `Solid`, `FaceHit`), `tests/tetmesh.rs` |
 | Gmsh MSH and Abaqus INP import | `src/import.rs` |
 | Structured grids of any element type through a coordinate map (curved boundaries, node sets, surfaces) | `src/generate.rs` |
@@ -48,6 +48,7 @@ Does not own: any UI, material tables (`mechanics-core`), the lug physics (`lug-
 | Unstructured meshes vs Lame / Kirsch, multi-hole regions | `tests/mesh2d.rs` |
 | Adaptive vs uniform refinement, size field, the shared loop | `tests/adapt.rs` |
 | Sweeps vs 2D / axisymmetric solutions | `tests/sweep.rs` |
+| Wedge elements, Hex+Wedge hybrid patch test and 2D equivalence | `tests/wedge.rs` |
 | Gmsh / Abaqus import and round trip | `tests/import.rs` |
 | Solve report, condition estimate | `src/report.rs`, `tests/report.rs` |
 | Validation, adaptive solve, nonlinear ladder | `src/validate.rs`, `src/strategy.rs`, `tests/strategy.rs` |

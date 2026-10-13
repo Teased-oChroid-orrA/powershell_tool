@@ -1,5 +1,5 @@
 //! Sweeping a 2D quadrilateral mesh into a 3D hexahedral mesh: [`extrude`] along `z` and
-//! [`revolve`] about the `y` axis. Quad4 -> Hex8, Quad8 -> Hex20, Quad9 -> Hex27, layer by layer
+//! [`revolve`] about the `y` axis. Quad4 -> Hex8, Quad8 -> Hex20, Quad9 -> Hex27, Tri3 -> Wedge6, Tri6 -> Wedge15, layer by layer
 //! (a layer's mid-plane nodes are placed halfway in the sweep parameter, exactly on the circle for
 //! a revolution).
 //!
@@ -81,18 +81,32 @@ fn sweep(mesh: &Mesh, levels: &[f64], closed: bool, pos: SweepMap) -> Result<Mes
             ElementKind::Quad4 => ElementKind::Hex8,
             ElementKind::Quad8 => ElementKind::Hex20,
             ElementKind::Quad9 => ElementKind::Hex27,
-            k => return Err(format!("{k:?} cannot be swept (no prism elements); mesh with quadrilaterals")),
+            ElementKind::Tri3 => ElementKind::Wedge6,
+            ElementKind::Tri6 => ElementKind::Wedge15,
+            k => return Err(format!("{k:?} cannot be swept (only triangles and quadrilaterals sweep)")),
         };
         let mut conn = Vec::with_capacity(blk.n_elems() * n_layers * kind3.n_nodes());
         for q in blk.conn.chunks_exact(blk.kind.n_nodes()) {
             for layer in 0..n_layers {
                 let (lo, mid, hi) = (2 * layer, 2 * layer + 1, 2 * layer + 2);
+                let nc = blk.kind.n_corners();
                 for half in [lo, hi] {
-                    for &c in &q[..4] {
+                    for &c in &q[..nc] {
                         conn.push(node(&mut out, c, half));
                     }
                 }
-                if kind3 == ElementKind::Hex8 {
+                if matches!(kind3, ElementKind::Hex8 | ElementKind::Wedge6) {
+                    continue;
+                }
+                if kind3 == ElementKind::Wedge15 {
+                    for half in [lo, hi] {
+                        for &c in &q[3..6] {
+                            conn.push(node(&mut out, c, half));
+                        }
+                    }
+                    for &c in &q[..3] {
+                        conn.push(node(&mut out, c, mid));
+                    }
                     continue;
                 }
                 for half in [lo, hi] {
@@ -241,7 +255,10 @@ mod tests {
         let m2 = plate(ElementKind::Quad9);
         assert!(extrude(&m2, &[0.0]).is_err() && extrude(&m2, &[0.0, 1.0, 1.0]).is_err());
         let tri = grid(Physics::PlaneStrain { thickness: 1.0 }, ElementKind::Tri6, Elastic::new(1.0, 0.3), [1, 1, 1], &|p| p).unwrap();
-        assert!(extrude(&tri, &[0.0, 1.0]).unwrap_err().contains("prism"));
+        let prism = extrude(&tri, &[0.0, 1.0]).unwrap();
+        assert_eq!(prism.blocks[0].kind, ElementKind::Wedge15);
+        // a unit square of two Tri6: 9 plane nodes on each of 2 levels, plus 4 corner nodes at the mid level
+        assert_eq!(prism.nodes.len(), 9 * 2 + 4);
         let ax = grid(Physics::Axisymmetric, ElementKind::Quad9, Elastic::new(1.0, 0.3), [1, 1, 1], &|p| [1.0 + p[0], p[1], 0.0]).unwrap();
         assert!(extrude(&ax, &[0.0, 1.0]).is_err());
         assert!(revolve(&ax, &[0.0, 7.0]).is_err());

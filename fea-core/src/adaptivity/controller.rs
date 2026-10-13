@@ -139,6 +139,38 @@ pub struct AmrConfig {
     pub quality: QualityThresholds,
     /// Relative change of the load resultant / area allowed between meshes (curved boundaries change them slightly).
     pub state_tolerance: f64,
+    /// Which cycles keep their element-wise fields (`AmrResult::fields`).
+    pub keep_fields: FieldRetention,
+}
+
+/// Which cycles of an adaptive run keep their element-wise diagnostic fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldRetention {
+    None,
+    /// The cycle the run ended on.
+    Last,
+    /// Every cycle (memory grows with the history).
+    All,
+}
+
+/// Element-wise diagnostics of one cycle (global element order of that cycle's mesh).
+#[derive(Debug, Clone)]
+pub struct CycleFields {
+    pub cycle: usize,
+    /// Signed goal-oriented contributions per goal.
+    pub goal_indicators: Vec<(String, Vec<f64>)>,
+    pub physics_indicator: Vec<f64>,
+    /// Combined refinement ranking score and the mandatory flags.
+    pub score: Vec<f64>,
+    pub mandatory: Vec<bool>,
+    /// Elements marked for refinement after this cycle (all false for the final cycle).
+    pub marked: Vec<bool>,
+    pub zones: Vec<Zone>,
+    /// Structured / unstructured / transition label, when the mesh came from the hybrid mesher.
+    pub labels: Option<Vec<RegionKind>>,
+    pub scaled_jacobian: Vec<f64>,
+    /// Size of each element in the size-function units of the mesher.
+    pub size: Vec<f64>,
 }
 
 impl Default for AmrConfig {
@@ -158,6 +190,7 @@ impl Default for AmrConfig {
             stagnation: StagnationRule { window: 2, gain: 0.9 },
             quality: QualityThresholds::default(),
             state_tolerance: 0.02,
+            keep_fields: FieldRetention::Last,
         }
     }
 }
@@ -231,10 +264,16 @@ pub struct AmrResult {
     pub u: Vec<f64>,
     pub stop: Stop,
     pub history: Vec<CycleRecord>,
+    /// Element-wise fields of the cycles `AmrConfig::keep_fields` selects, in cycle order.
+    pub fields: Vec<CycleFields>,
 }
 
 struct Evaluation {
     u: Vec<f64>,
+    /// Signed goal-oriented element fields and the physics indicator that ran (for the diagnostics).
+    goal_fields: Vec<(String, Vec<f64>)>,
+    physics_values: Vec<f64>,
+    zones: ZoneMap,
     goals: Vec<GoalOutcome>,
     physics_rel: f64,
     physics_name: String,
@@ -338,6 +377,8 @@ fn evaluate(problem: &MeshedProblem, goals: &[GoalSpec], cfg: &AmrConfig, adj: &
     let fused = fuse(&FusionInput { adjoint: &adjoint, physics: &physics, zones: Some(&zones), capped: Some(&capped), protected: None }, &fcfg)?;
     seconds.fusion = t.elapsed().as_secs_f64();
 
+    let goal_fields: Vec<(String, Vec<f64>)> = dwr.iter().map(|r| (r.goal.clone(), r.field.values.clone())).collect();
+    let physics_values: Vec<f64> = if eq_field.reliability.usable() { eq_field.values.clone() } else { zz_field.values.clone() };
     let outcomes: Vec<GoalOutcome> = goals
         .iter()
         .zip(&dwr)
@@ -345,7 +386,7 @@ fn evaluate(problem: &MeshedProblem, goals: &[GoalSpec], cfg: &AmrConfig, adj: &
         .collect();
     let physics_rel = if physics_total.is_finite() { physics_total / zz_norm.hypot(physics_total).max(1e-300) } else { f64::NAN };
     let cost = MeshCost::of(&model.mesh)?;
-    Ok(Evaluation { u: sol.u, goals: outcomes, physics_rel, physics_name: physics_name.to_string(), fused, capped, cost, goal_estimator, seconds, h_elem })
+    Ok(Evaluation { u: sol.u, goal_fields, physics_values, zones, goals: outcomes, physics_rel, physics_name: physics_name.to_string(), fused, capped, cost, goal_estimator, seconds, h_elem })
 }
 
 fn converged(goals: &[GoalOutcome], physics_rel: f64, cfg: &AmrConfig) -> (bool, bool, bool) {
@@ -475,6 +516,22 @@ fn record(cycle: usize, p: &MeshedProblem, ev: &Evaluation, cfg: &AmrConfig, mar
     }
 }
 
+fn cycle_fields(cycle: usize, p: &MeshedProblem, ev: &Evaluation, marked: &[bool]) -> CycleFields {
+    let q = p.model.mesh.quality();
+    CycleFields {
+        cycle,
+        goal_indicators: ev.goal_fields.clone(),
+        physics_indicator: ev.physics_values.clone(),
+        score: ev.fused.score.clone(),
+        mandatory: ev.fused.mandatory.clone(),
+        marked: marked.to_vec(),
+        zones: ev.zones.zones.clone(),
+        labels: p.labels.as_ref().map(|l| l.0.clone()),
+        scaled_jacobian: q.elements.iter().map(|e| e.scaled_jacobian).collect(),
+        size: ev.h_elem.clone(),
+    }
+}
+
 /// Run the adaptive loop from `initial`. `mesher` turns a size field into the next meshed problem.
 pub fn run_amr(initial: MeshedProblem, goals: &[GoalSpec], mesher: &mut dyn FnMut(&AdaptSize) -> Result<MeshedProblem, String>, cfg: &AmrConfig) -> Result<AmrResult, MeshError> {
     if goals.is_empty() {
@@ -486,6 +543,7 @@ pub fn run_amr(initial: MeshedProblem, goals: &[GoalSpec], mesher: &mut dyn FnMu
     let dim = initial.model.mesh.dim();
     let children = (1.0 / cfg.refine_ratio).powi(dim as i32);
     let mut history: Vec<CycleRecord> = Vec::new();
+    let mut fields_acc: Vec<CycleFields> = Vec::new();
     let mut metrics: Vec<f64> = Vec::new();
     let mut current = initial;
     let adj = current.model.mesh.adjacency();
@@ -496,21 +554,28 @@ pub fn run_amr(initial: MeshedProblem, goals: &[GoalSpec], mesher: &mut dyn FnMu
         let (_, _, done) = converged(&ev.goals, ev.physics_rel, cfg);
         metrics.push(progress(&ev.goals, ev.physics_rel, cfg));
         let mut rec = record(cycle, &current, &ev, cfg, 0, change, q_min);
-        let finish = |history: &mut Vec<CycleRecord>, rec: CycleRecord, stop: Stop, current: MeshedProblem, ev: Evaluation| -> Result<AmrResult, MeshError> {
+        let mut marked_flags = vec![false; current.model.mesh.n_elems()];
+        let finish = |history: &mut Vec<CycleRecord>, acc: &mut Vec<CycleFields>, marked: &[bool], rec: CycleRecord, stop: Stop, current: MeshedProblem, ev: Evaluation| -> Result<AmrResult, MeshError> {
+            if cfg.keep_fields != FieldRetention::None {
+                if cfg.keep_fields == FieldRetention::Last {
+                    acc.clear();
+                }
+                acc.push(cycle_fields(rec.cycle, &current, &ev, marked));
+            }
             history.push(rec);
-            Ok(AmrResult { problem: current, u: ev.u, stop, history: std::mem::take(history) })
+            Ok(AmrResult { problem: current, u: ev.u, stop, history: std::mem::take(history), fields: std::mem::take(acc) })
         };
         if done {
-            return finish(&mut history, rec, Stop::Converged, current, ev);
+            return finish(&mut history, &mut fields_acc, &marked_flags, rec, Stop::Converged, current, ev);
         }
         if cycle == cfg.max_cycles {
-            return finish(&mut history, rec, Stop::MaxCycles, current, ev);
+            return finish(&mut history, &mut fields_acc, &marked_flags, rec, Stop::MaxCycles, current, ev);
         }
         // stagnation: the progress metric has not fallen enough over the window
         let w = cfg.stagnation.window;
         if metrics.len() > w && metrics[metrics.len() - 1] > cfg.stagnation.gain * metrics[metrics.len() - 1 - w] {
             let why = format!("the progress metric went {:.3e} -> {:.3e} over {w} cycles (qoi converged: {}, physics converged: {})", metrics[metrics.len() - 1 - w], metrics[metrics.len() - 1], rec.qoi_converged, rec.physics_converged);
-            return finish(&mut history, rec, Stop::Stagnated(why), current, ev);
+            return finish(&mut history, &mut fields_acc, &marked_flags, rec, Stop::Stagnated(why), current, ev);
         }
 
         // ---- mark, within the budget
@@ -518,19 +583,20 @@ pub fn run_amr(initial: MeshedProblem, goals: &[GoalSpec], mesher: &mut dyn FnMu
         let n = current.model.mesh.n_elems();
         let mut marked = match dorfler(&ev.fused.score, cfg.theta, &ev.fused.mandatory, cfg.squared) {
             Ok(m) => m,
-            Err(e) => return finish(&mut history, rec, Stop::EstimatorUnavailable(e.to_string()), current, ev),
+            Err(e) => return finish(&mut history, &mut fields_acc, &marked_flags, rec, Stop::EstimatorUnavailable(e.to_string()), current, ev),
         };
         let cap = cfg.budget.element_cap(ev.cost.dofs, n);
         if !trim_to_budget(&mut marked.marked, &ev.fused.score, &ev.fused.mandatory, n, cap, children) {
-            return finish(&mut history, rec, Stop::BudgetExhausted, current, ev);
+            return finish(&mut history, &mut fields_acc, &marked_flags, rec, Stop::BudgetExhausted, current, ev);
         }
         // growth per cycle: even mandatory elements are limited, the highest ranked first
         let growth_cap = (cfg.max_growth.max(1.0) * n as f64).floor() as usize;
         trim_to_budget(&mut marked.marked, &ev.fused.score, &vec![false; n], n, growth_cap, children);
         marked.n_marked = marked.marked.iter().filter(|&&m| m).count();
+        marked_flags = marked.marked.clone();
         rec.marked = marked.n_marked;
         if marked.n_marked == 0 {
-            return finish(&mut history, rec, Stop::NothingToRefine, current, ev);
+            return finish(&mut history, &mut fields_acc, &marked_flags, rec, Stop::NothingToRefine, current, ev);
         }
         let h_new: Vec<f64> = (0..n)
             .map(|e| {
@@ -545,7 +611,7 @@ pub fn run_amr(initial: MeshedProblem, goals: &[GoalSpec], mesher: &mut dyn FnMu
         };
         let size = match size {
             Ok(s) => s,
-            Err(e) => return finish(&mut history, rec, Stop::RolledBack(format!("size field: {e}")), current, ev),
+            Err(e) => return finish(&mut history, &mut fields_acc, &marked_flags, rec, Stop::RolledBack(format!("size field: {e}")), current, ev),
         };
         rec.seconds.marking_and_sizing = t.elapsed().as_secs_f64();
 
@@ -557,7 +623,7 @@ pub fn run_amr(initial: MeshedProblem, goals: &[GoalSpec], mesher: &mut dyn FnMu
             Ok(p) => p,
             Err(e) => {
                 rec.seconds.meshing = meshing;
-                return finish(&mut history, rec, Stop::RolledBack(format!("the mesher failed: {e}")), current, ev);
+                return finish(&mut history, &mut fields_acc, &marked_flags, rec, Stop::RolledBack(format!("the mesher failed: {e}")), current, ev);
             }
         };
         let t = Instant::now();
@@ -570,15 +636,15 @@ pub fn run_amr(initial: MeshedProblem, goals: &[GoalSpec], mesher: &mut dyn FnMu
         rec.seconds.meshing = meshing;
         rec.seconds.checks = checks_s;
         if let Err(why) = checks {
-            return finish(&mut history, rec, Stop::RolledBack(why), current, ev);
+            return finish(&mut history, &mut fields_acc, &marked_flags, rec, Stop::RolledBack(why), current, ev);
         }
         let next_adj = next.model.mesh.adjacency();
         let next_ev = match evaluate(&next, goals, cfg, &next_adj) {
             Ok(e) => e,
-            Err(e) => return finish(&mut history, rec, Stop::RolledBack(format!("the new mesh could not be solved or estimated: {e}")), current, ev),
+            Err(e) => return finish(&mut history, &mut fields_acc, &marked_flags, rec, Stop::RolledBack(format!("the new mesh could not be solved or estimated: {e}")), current, ev),
         };
         if !cfg.budget.allows(next.model.mesh.n_dofs(), next.model.mesh.n_elems(), 8 * next_ev.cost.factor_nnz) {
-            return finish(&mut history, rec, Stop::BudgetExhausted, current, ev);
+            return finish(&mut history, &mut fields_acc, &marked_flags, rec, Stop::BudgetExhausted, current, ev);
         }
         // how far did the solution move: previous displacement carried onto the new mesh
         change = (|| {
@@ -588,6 +654,9 @@ pub fn run_amr(initial: MeshedProblem, goals: &[GoalSpec], mesher: &mut dyn FnMu
             let den: f64 = next_ev.u.iter().map(|b| b * b).sum::<f64>().sqrt();
             (den > 0.0).then_some(num / den)
         })();
+        if cfg.keep_fields == FieldRetention::All {
+            fields_acc.push(cycle_fields(rec.cycle, &current, &ev, &marked_flags));
+        }
         history.push(rec);
         current = next;
         ev = next_ev;

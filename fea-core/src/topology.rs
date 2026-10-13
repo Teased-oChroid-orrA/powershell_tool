@@ -30,6 +30,7 @@ pub(crate) fn corner_faces(kind: ElementKind) -> Vec<Vec<usize>> {
         Quad4 | Quad8 | Quad9 => vec![vec![0, 1], vec![1, 2], vec![2, 3], vec![3, 0]],
         Tet4 | Tet10 => TET_FACES.iter().map(|f| f.to_vec()).collect(),
         Hex8 | Hex20 | Hex27 => HEX_FACES.iter().map(|f| f.to_vec()).collect(),
+        Wedge6 | Wedge15 => vec![vec![0, 2, 1], vec![3, 4, 5], vec![0, 1, 4, 3], vec![1, 2, 5, 4], vec![2, 0, 3, 5]],
     }
 }
 
@@ -78,10 +79,11 @@ impl Mesh {
         let mut all: Vec<([usize; 4], (usize, usize, usize))> = Vec::with_capacity(n_faces);
         let local: Vec<Vec<Vec<usize>>> = self.blocks.iter().map(|b| local_faces(b.kind)).collect();
         for (bi, blk) in self.blocks.iter().enumerate() {
-            let ncorner = if blk.kind.dim() == 2 { 2 } else if blk.kind.is_simplex() { 3 } else { 4 };
+            let ncorners: Vec<usize> = corner_faces(blk.kind).iter().map(Vec::len).collect();
             for e in 0..blk.n_elems() {
                 let conn = blk.elem(e);
                 for (fi, lf) in local[bi].iter().enumerate() {
+                    let ncorner = ncorners[fi];
                     let mut key = [usize::MAX; 4];
                     for (slot, &l) in key.iter_mut().zip(&lf[..ncorner]) {
                         *slot = conn[l];
@@ -176,9 +178,10 @@ mod tests {
         let mut count: HashMap<Vec<usize>, (u32, BoundaryFace)> = HashMap::new();
         let mut order = Vec::new();
         for (bi, blk) in m.blocks.iter().enumerate() {
-            let ncorner = if blk.kind.dim() == 2 { 2 } else if blk.kind.is_simplex() { 3 } else { 4 };
+            let ncorners: Vec<usize> = corner_faces(blk.kind).iter().map(Vec::len).collect();
             for e in 0..blk.n_elems() {
-                for lf in local_faces(blk.kind) {
+                for (fi, lf) in local_faces(blk.kind).into_iter().enumerate() {
+                    let ncorner = ncorners[fi];
                     let nodes: Vec<usize> = lf.iter().map(|&l| blk.elem(e)[l]).collect();
                     let mut key = nodes[..ncorner].to_vec();
                     key.sort_unstable();

@@ -26,6 +26,17 @@ pub fn grid(physics: Physics, kind: ElementKind, mat: Elastic, div: [usize; 3], 
     if div[..d].contains(&0) {
         return Err("every division count must be at least 1".into());
     }
+    if matches!(kind, ElementKind::Wedge6 | ElementKind::Wedge15) {
+        // triangles in the plane, swept along z in `div[2]` layers
+        let tri = if kind == ElementKind::Wedge6 { ElementKind::Tri3 } else { ElementKind::Tri6 };
+        let plane = grid(Physics::PlaneStrain { thickness: 1.0 }, tri, mat, [div[0], div[1], 1], &|p| p)?;
+        let levels: Vec<f64> = (0..=div[2]).map(|k| k as f64 / div[2] as f64).collect();
+        let mut mesh = crate::sweep::extrude(&plane, &levels)?;
+        for x in &mut mesh.nodes {
+            *x = map(*x);
+        }
+        return Ok(mesh);
+    }
     let mut mesh = Mesh::new(physics);
     if kind.is_simplex() {
         simplex_grid(&mut mesh, kind, mat, div, map)?;

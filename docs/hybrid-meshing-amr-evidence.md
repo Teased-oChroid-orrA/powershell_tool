@@ -188,3 +188,35 @@ are not provided; their evidence is the change from mesh to mesh, reported as su
   as the half-width of the *active region*, which makes the resolution rule twice as strict there); the recovered-stress
   indicator at off-Gauss points of a plastic element uses the history of the nearest Gauss point; no adjoint estimate for
   contact (unsymmetric with friction; the plastic adjoint above excludes contact states explicitly).
+
+## Phase 10: profile, scaling, diagnostics
+
+Measured with `cargo test -p fea-core --release --test amr_bench -- --ignored --nocapture` (macOS arm64, release). Time per call
+at about 13k dofs on the L-shape:
+
+| Stage | Time |
+|---|---|
+| sparse solve (faer Cholesky) | 32 ms |
+| ZZ / SPR recovery indicator | 9-13 ms |
+| recovered-stress DWR (dual from the primal factor) | 39-43 ms |
+| enriched-dual DWR (uniform refine + dual solve) | 320-346 ms |
+| equilibrated H(div) reconstruction | 350-600 ms (1150 ms before the Schur solve and the edge-flux precomputation) |
+| hybrid mesh generation | 158 ms (unstructured 129 ms) |
+| state transfer (nodal interpolation) | 19.5 ms |
+
+Findings: the equilibrated estimator was the slowest stage; the patch KKT systems are now solved by a Schur complement with
+iterative refinement and the edge fluxes are precomputed per edge instead of per patch (about 2-3x). The enriched-dual estimate
+costs about ten primal solves, which is why the controller fuses it with cheap indicators and runs it only on the cycles that
+need a goal estimate. Hybrid generation is slightly dearer than unstructured meshing and pays only when the structured blocks
+are anisotropic (see Phase 3).
+
+Determinism: `tests/amr_bench.rs::deterministic_counts` fixes the L-shape cycle sizes (270, 472, 892 dofs); parallel code never
+reduces floats across threads.
+
+Diagnostics: `AmrResult::report_json` / `NlResult::report_json` (`adaptivity/report.rs`) serialise the per-cycle record (dofs,
+elements, goal value and estimate, effectivity, marked count, per-estimator reliability, stop reason) and, with
+`AmrConfig::keep_fields`, the per-element fields of each cycle (`CycleFields`) for post-mortem plotting.
+
+Phase 11 follow-up (prismatic 3D hybrid): Wedge6 / Wedge15 elements and `extrude` of Tri elements. `tests/wedge.rs`: a
+Hex+Wedge extrusion of the 2D hybrid mesh is conforming, passes the 3D affine patch test (displacement 1e-12, stress 1e-9) and
+reproduces the 2D plane-strain solution to 1e-9; exact strain energy on a wedge grid for both orders.

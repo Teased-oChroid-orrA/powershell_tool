@@ -36,9 +36,11 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::time::Instant;
 
-pub(crate) const NQ: usize = 6; // Gauss points per direction (triangles: collapsed rule, edges: 1D rule)
+/// Gauss points per direction of the triangle rule: degree 6 is exact for every product of the local problems (RT degree 2
+/// against RT degree 2) and for the squared error of the reconstruction.
+pub(crate) const NQ: usize = 4;
 
-/// Gauss-Legendre points and weights on `[-1, 1]` (6 points).
+/// Gauss-Legendre points and weights on `[-1, 1]` (6 points): the verification of the reconstructed field samples the edges here.
 pub(crate) const GL6: [(f64, f64); 6] = [
     (-0.932_469_514_203_152, 0.171_324_492_379_170_35),
     (-0.661_209_386_466_264_5, 0.360_761_573_048_138_6),
@@ -48,13 +50,16 @@ pub(crate) const GL6: [(f64, f64); 6] = [
     (0.932_469_514_203_152, 0.171_324_492_379_170_35),
 ];
 
+/// 3-point rule on `[-1, 1]`: exact to degree 5, enough for the edge moments (RT trace of degree 3 against `P_2`).
+const GL3: [(f64, f64); 3] = [(-0.774_596_669_241_483_4, 5.0 / 9.0), (0.0, 8.0 / 9.0), (0.774_596_669_241_483_4, 5.0 / 9.0)];
+
 /// Collapsed Gauss rule on the reference triangle `(0,0), (1,0), (0,1)`: points `(xi, eta)` and weights (sum 1/2).
 pub(crate) fn tri_rule() -> Vec<([f64; 2], f64)> {
+    let gl = crate::element::gauss_legendre_unit(NQ);
     let mut out = Vec::with_capacity(NQ * NQ);
-    for &(ui, wi) in &GL6 {
-        for &(vj, wj) in &GL6 {
-            let (u, v) = (0.5 * (ui + 1.0), 0.5 * (vj + 1.0));
-            out.push(([u * (1.0 - v), v], 0.25 * wi * wj * (1.0 - v)));
+    for &(u, wu) in &gl {
+        for &(v, wv) in &gl {
+            out.push(([u * (1.0 - v), v], wu * wv * (1.0 - v)));
         }
     }
     out
@@ -109,38 +114,115 @@ fn n_rt(k: usize) -> usize {
     (k + 1) * (k + 3)
 }
 
-/// Dense solve with partial pivoting; `None` for a singular matrix.
-fn solve_dense(a: &mut [f64], n: usize, b: &mut [f64]) -> Option<()> {
-    for col in 0..n {
-        let piv = (col..n).max_by(|&i, &j| a[i * n + col].abs().total_cmp(&a[j * n + col].abs()))?;
-        if a[piv * n + col].abs() < 1e-300 {
-            return None;
-        }
-        if piv != col {
-            for c in 0..n {
-                a.swap(piv * n + c, col * n + c);
+/// Lower Cholesky factor (row major) of a symmetric positive definite matrix; `None` if it is not positive definite.
+fn chol_factor(n: usize, a: &[f64]) -> Option<Vec<f64>> {
+    let mut l = vec![0.0; n * n];
+    for i in 0..n {
+        for j in 0..=i {
+            let mut s = a[i * n + j];
+            for k in 0..j {
+                s -= l[i * n + k] * l[j * n + k];
             }
-            b.swap(piv, col);
-        }
-        let d = a[col * n + col];
-        for r in col + 1..n {
-            let f = a[r * n + col] / d;
-            if f != 0.0 {
-                for c in col..n {
-                    a[r * n + c] -= f * a[col * n + c];
+            if i == j {
+                if !(s > 0.0) {
+                    return None;
                 }
-                b[r] -= f * b[col];
+                l[i * n + i] = s.sqrt();
+            } else {
+                l[i * n + j] = s / l[j * n + j];
             }
         }
     }
-    for col in (0..n).rev() {
-        let mut s = b[col];
-        for c in col + 1..n {
-            s -= a[col * n + c] * b[c];
+    Some(l)
+}
+
+/// Solve `L L^T x = b` in place.
+fn chol_solve(l: &[f64], n: usize, b: &mut [f64]) {
+    for i in 0..n {
+        let mut s = b[i];
+        for k in 0..i {
+            s -= l[i * n + k] * b[k];
         }
-        b[col] = s / a[col * n + col];
+        b[i] = s / l[i * n + i];
     }
-    Some(())
+    for i in (0..n).rev() {
+        let mut s = b[i];
+        for k in i + 1..n {
+            s -= l[k * n + i] * b[k];
+        }
+        b[i] = s / l[i * n + i];
+    }
+}
+
+/// Minimise `sum_m a_m^T M_m a_m / 2 - a^T r` subject to `C a = d` (the rows of `C` over all elements of the patch, `M_m` given by
+/// its Cholesky factor `blocks[m]`) for several right-hand sides at once, by eliminating the stress unknowns:
+/// `(C M^-1 C^T) lambda = C M^-1 r - d`, `a = M^-1 (r - C^T lambda)`. Dependent constraint rows (the divergence theorem makes some
+/// of them so) make the Schur complement singular; a small diagonal shift leaves the answer unchanged when the data are
+/// compatible (the component along the null space cancels), two steps of iterative refinement drive the constraint residual to
+/// round-off, and the returned defect is the largest remaining `|C a - d|` relative to `scale`, the compatibility defect.
+#[allow(clippy::type_complexity)]
+fn schur_solve(c: &[&Vec<f64>], blocks: &[&[f64]], nb: usize, rs: &[Vec<f64>], ds: &[Vec<f64>], scale: f64) -> Option<(Vec<Vec<f64>>, f64)> {
+    let (nc, n_el) = (c.len(), blocks.len());
+    // Z = M^-1 C^T, one vector per (element, row)
+    let mut z = vec![0.0; n_el * nc * nb];
+    for m in 0..n_el {
+        for (i, ci) in c.iter().enumerate() {
+            let zz = &mut z[(m * nc + i) * nb..(m * nc + i + 1) * nb];
+            zz.copy_from_slice(&ci[m * nb..(m + 1) * nb]);
+            chol_solve(blocks[m], nb, zz);
+        }
+    }
+    let mut s = vec![0.0; nc * nc];
+    for i in 0..nc {
+        for j in 0..=i {
+            let mut v = 0.0;
+            for m in 0..n_el {
+                let zj = &z[(m * nc + j) * nb..(m * nc + j + 1) * nb];
+                v += c[i][m * nb..(m + 1) * nb].iter().zip(zj).map(|(a, b)| a * b).sum::<f64>();
+            }
+            s[i * nc + j] = v;
+            s[j * nc + i] = v;
+        }
+    }
+    let dmax = (0..nc).map(|i| s[i * nc + i]).fold(0.0f64, f64::max);
+    let shift = 1e-13 * dmax.max(f64::MIN_POSITIVE);
+    for i in 0..nc {
+        s[i * nc + i] += shift;
+    }
+    let l = chol_factor(nc, &s)?;
+    let apply_c = |a: &[f64]| -> Vec<f64> { c.iter().map(|ci| ci.iter().zip(a).map(|(x, y)| x * y).sum()).collect() };
+    let mut out = Vec::new();
+    let mut defect = 0.0f64;
+    for (r, d) in rs.iter().zip(ds) {
+        // y = M^-1 r
+        let mut y = r.clone();
+        for m in 0..n_el {
+            chol_solve(blocks[m], nb, &mut y[m * nb..(m + 1) * nb]);
+        }
+        let mut lambda = vec![0.0; nc];
+        let mut a: Vec<f64> = y.clone();
+        // lambda from  S lambda = C y - d, then a = y - Z lambda; refine on the constraint residual C a - d
+        let mut resid: Vec<f64> = apply_c(&a).iter().zip(d).map(|(x, y)| x - y).collect();
+        for _ in 0..3 {
+            let mut dl = resid.clone();
+            chol_solve(&l, nc, &mut dl);
+            for i in 0..nc {
+                lambda[i] += dl[i];
+            }
+            for m in 0..n_el {
+                for (i, dli) in dl.iter().enumerate() {
+                    let zi = &z[(m * nc + i) * nb..(m * nc + i + 1) * nb];
+                    for (aj, zj) in a[m * nb..(m + 1) * nb].iter_mut().zip(zi) {
+                        *aj -= dli * zj;
+                    }
+                }
+            }
+            resid = apply_c(&a).iter().zip(d).map(|(x, y)| x - y).collect();
+        }
+        defect = defect.max(resid.iter().fold(0.0f64, |m, v| m.max(v.abs())) / scale.max(f64::MIN_POSITIVE));
+        out.push(a);
+    }
+    Some((out, defect))
 }
 
 struct ElemData {
@@ -160,9 +242,11 @@ struct ElemData {
     q_test: Vec<Vec<f64>>,
     q_sigma: Vec<[f64; 3]>,
     q_lambda: Vec<[f64; 3]>,
-    /// mass matrix of the RT basis
-    mass: Vec<f64>,
+    /// mass matrix of the RT basis (lower Cholesky factor, row major)
+    mass_chol: Vec<f64>,
     body: [f64; 2],
+    /// `v_j . n` of the RT basis on each local edge at the 3 Gauss points of the edge (global parametrisation), `[q * nb + j]`
+    edge_flux: [Vec<f64>; 3],
 }
 
 /// The reconstruction: per element and stress row, the coefficients of the RT basis.
@@ -248,12 +332,25 @@ pub fn reconstruct(ctx: &EstimatorContext) -> Result<Reconstruction, MeshError> 
             q_sigma.push([st[0], st[1], st[3]]);
             q_lambda.push([1.0 - r[0] - r[1], r[0], r[1]]);
         }
-        elems.push(ElemData { block: te.block, corners: te.corners, p, c, s, grad, q_x, q_w, q_v, q_div, q_test, q_sigma, q_lambda, mass, body: tm.body[te.block] });
+        elems.push(ElemData { block: te.block, corners: te.corners, p, c, s, grad, q_x, q_w, q_v, q_div, q_test, q_sigma, q_lambda, mass_chol: chol_factor(nb, &mass).ok_or_else(|| MeshError::Failed("the RT mass matrix of an element is not positive definite".into()))?, body: tm.body[te.block], edge_flux: [Vec::new(), Vec::new(), Vec::new()] });
     }
     if stress_scale <= 0.0 {
         stress_scale = 1.0;
     }
     let (edges, elem_edges, traction) = (tm.edges, tm.elem_edges, tm.traction);
+    for (ei, el) in elems.iter_mut().enumerate() {
+        for kk in 0..3 {
+            let ed = &edges[elem_edges[ei][kk]];
+            let n = outward_normal(&el.p, kk);
+            let mut flux = Vec::with_capacity(GL3.len() * nb);
+            for &(t, _) in &GL3 {
+                let x = ed.point(t);
+                let (val, _) = rt_basis(k, (x[0] - el.c[0]) / el.s, (x[1] - el.c[1]) / el.s);
+                flux.extend(val.iter().map(|v| v[0] * n[0] + v[1] * n[1]));
+            }
+            el.edge_flux[kk] = flux;
+        }
+    }
 
     // vertex patches
     let n_nodes = mesh.nodes.len();
@@ -270,6 +367,7 @@ pub fn reconstruct(ctx: &EstimatorContext) -> Result<Reconstruction, MeshError> 
         let n_a = n_el * nb;
         let mut parts = Vec::new();
         let mut defect = 0.0f64;
+        let mut built: Vec<(Vec<(Vec<f64>, f64)>, Vec<f64>)> = Vec::with_capacity(2);
         for row in 0..2usize {
             let constrained = ctx.bc.fixed[2 * a + row];
             // constraints as dense rows over the n_a unknowns with their right-hand sides
@@ -305,15 +403,11 @@ pub fn reconstruct(ctx: &EstimatorContext) -> Result<Reconstruction, MeshError> 
                 let ei = members[m];
                 let el = &elems[ei];
                 let ed = &edges[elem_edges[ei][kk]];
-                // physical normal used for the moment: the element's outward normal times `sign`
-                let n = outward_normal(&el.p, kk);
-                for &(t, w) in &GL6 {
-                    let x = ed.point(t);
-                    let (xl, yl) = ((x[0] - el.c[0]) / el.s, (x[1] - el.c[1]) / el.s);
-                    let (val, _) = rt_basis(k, xl, yl);
-                    let pl = legendre(l, t);
-                    for j in 0..nb {
-                        c[m * nb + j] += sign * w * 0.5 * ed.len * pl * (val[j][0] * n[0] + val[j][1] * n[1]);
+                for (q, &(t, w)) in GL3.iter().enumerate() {
+                    let wq = sign * w * 0.5 * ed.len * legendre(l, t);
+                    let flux = &el.edge_flux[kk][q * nb..(q + 1) * nb];
+                    for (cj, fj) in c[m * nb..(m + 1) * nb].iter_mut().zip(flux) {
+                        *cj += wq * fj;
                     }
                 }
             };
@@ -369,7 +463,7 @@ pub fn reconstruct(ctx: &EstimatorContext) -> Result<Reconstruction, MeshError> 
                                 edge_row(mm, k1, l, 1.0, &mut c);
                                 // rhs: int psi_a t_row P_l ds with psi_a = (1 -/+ t)/2 along the edge
                                 let mut d = 0.0;
-                                for &(tt, w) in &GL6 {
+                                for &(tt, w) in &GL3 {
                                     let psi = if ed.a == a { 0.5 * (1.0 - tt) } else { 0.5 * (1.0 + tt) };
                                     d += w * 0.5 * ed.len * psi * legendre(l, tt) * t[row];
                                 }
@@ -379,62 +473,35 @@ pub fn reconstruct(ctx: &EstimatorContext) -> Result<Reconstruction, MeshError> 
                     }
                 }
             }
-            // independent constraint rows (Gram-Schmidt); a dependent row's leftover rhs is the compatibility defect
-            let mut basis: Vec<(Vec<f64>, f64)> = Vec::new(); // orthonormal rows with transformed rhs
-            let mut kept: Vec<usize> = Vec::new();
-            let scale_rhs = rows.iter().map(|(_, d)| d.abs()).fold(0.0f64, f64::max).max(stress_scale * el_scale(&elems, members));
-            for (idx, (c, d)) in rows.iter().enumerate() {
-                let norm0 = c.iter().map(|v| v * v).sum::<f64>().sqrt();
-                if norm0 == 0.0 {
-                    defect = defect.max(d.abs() / scale_rhs);
-                    continue;
-                }
-                let (mut cc, mut dd) = (c.clone(), *d);
-                for _ in 0..2 {
-                    for (q, dq) in &basis {
-                        let proj: f64 = cc.iter().zip(q).map(|(a, b)| a * b).sum();
-                        for (x, qv) in cc.iter_mut().zip(q) {
-                            *x -= proj * qv;
-                        }
-                        dd -= proj * dq;
-                    }
-                }
-                let n1 = cc.iter().map(|v| v * v).sum::<f64>().sqrt();
-                if n1 > 1e-9 * norm0 {
-                    for x in cc.iter_mut() {
-                        *x /= n1;
-                    }
-                    basis.push((cc, dd / n1));
-                    kept.push(idx);
-                } else {
-                    defect = defect.max(dd.abs() / scale_rhs);
-                }
+            built.push((rows, r));
+        }
+        // Both rows of a vertex share the constraint matrix unless one of the displacement components is constrained there
+        // (then the boundary edges differ): solve them together, once, in the Schur complement of the constraints.
+        let scale_rhs = stress_scale * el_scale(&elems, members);
+        let blocks: Vec<&[f64]> = members.iter().map(|&ei| elems[ei].mass_chol.as_slice()).collect();
+        let solved: Vec<(usize, Vec<Vec<f64>>)> = if ctx.bc.fixed[2 * a] == ctx.bc.fixed[2 * a + 1] {
+            let rows: Vec<&Vec<f64>> = built[0].0.iter().map(|x| &x.0).collect();
+            let ds = vec![built[0].0.iter().map(|x| x.1).collect::<Vec<_>>(), built[1].0.iter().map(|x| x.1).collect::<Vec<_>>()];
+            let rs = vec![built[0].1.clone(), built[1].1.clone()];
+            let (a_all, dfx) = schur_solve(&rows, &blocks, nb, &rs, &ds, scale_rhs).ok_or_else(|| MeshError::Failed(format!("the local reconstruction problem at node {a} is singular")))?;
+            defect = defect.max(dfx);
+            vec![(0, a_all)]
+        } else {
+            let mut out = Vec::new();
+            for (row, (rows_r, r)) in built.iter().enumerate() {
+                let rows: Vec<&Vec<f64>> = rows_r.iter().map(|x| &x.0).collect();
+                let ds = vec![rows_r.iter().map(|x| x.1).collect::<Vec<_>>()];
+                let (a_all, dfx) = schur_solve(&rows, &blocks, nb, std::slice::from_ref(r), &ds, scale_rhs).ok_or_else(|| MeshError::Failed(format!("the local reconstruction problem at node {a} is singular")))?;
+                defect = defect.max(dfx);
+                out.push((row, a_all));
             }
-            // KKT system
-            let nc = kept.len();
-            let n = n_a + nc;
-            let mut kkt = vec![0.0; n * n];
-            let mut rhs = vec![0.0; n];
-            for (m, &ei) in members.iter().enumerate() {
-                let el = &elems[ei];
-                for i in 0..nb {
-                    for j in 0..nb {
-                        kkt[(m * nb + i) * n + m * nb + j] = el.mass[i * nb + j];
-                    }
+            out
+        };
+        for (first_row, sols) in &solved {
+            for (k, sol) in sols.iter().enumerate() {
+                for (m, &ei) in members.iter().enumerate() {
+                    parts.push((ei, first_row + k, sol[m * nb..(m + 1) * nb].to_vec()));
                 }
-            }
-            rhs[..n_a].copy_from_slice(&r[..n_a]);
-            for (ci, &ri) in kept.iter().enumerate() {
-                let (c, d) = &rows[ri];
-                for j in 0..n_a {
-                    kkt[(n_a + ci) * n + j] = c[j];
-                    kkt[j * n + n_a + ci] = c[j];
-                }
-                rhs[n_a + ci] = *d;
-            }
-            solve_dense(&mut kkt, n, &mut rhs).ok_or_else(|| MeshError::Failed(format!("the local reconstruction problem at node {a} is singular")))?;
-            for (m, &ei) in members.iter().enumerate() {
-                parts.push((ei, row, rhs[m * nb..(m + 1) * nb].to_vec()));
             }
         }
         Ok(PatchSolution { parts, defect })

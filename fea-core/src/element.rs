@@ -24,9 +24,12 @@ pub enum ElementKind {
     Hex8,
     Hex20,
     Hex27,
+    /// Triangular prism (VTK wedge): the transition between hexahedra and the triangles of an extruded unstructured region.
+    Wedge6,
+    Wedge15,
 }
 
-pub const ALL_KINDS: [ElementKind; 10] = [
+pub const ALL_KINDS: [ElementKind; 12] = [
     ElementKind::Tri3,
     ElementKind::Tri6,
     ElementKind::Quad4,
@@ -37,6 +40,8 @@ pub const ALL_KINDS: [ElementKind; 10] = [
     ElementKind::Hex8,
     ElementKind::Hex20,
     ElementKind::Hex27,
+    ElementKind::Wedge6,
+    ElementKind::Wedge15,
 ];
 
 impl ElementKind {
@@ -59,10 +64,23 @@ impl ElementKind {
             Self::Hex8 => 8,
             Self::Hex20 => 20,
             Self::Hex27 => 27,
+            Self::Wedge6 => 6,
+            Self::Wedge15 => 15,
         }
     }
 
     /// Simplex (triangle / tetrahedron) rather than tensor-product element.
+    /// Volume (area) of the reference element: the sum of the quadrature weights.
+    pub fn reference_measure(self) -> f64 {
+        match self {
+            Self::Tri3 | Self::Tri6 => 0.5,
+            Self::Tet4 | Self::Tet10 => 1.0 / 6.0,
+            Self::Wedge6 | Self::Wedge15 => 1.0,
+            Self::Quad4 | Self::Quad8 | Self::Quad9 => 4.0,
+            Self::Hex8 | Self::Hex20 | Self::Hex27 => 8.0,
+        }
+    }
+
     pub fn is_simplex(self) -> bool {
         matches!(self, Self::Tri3 | Self::Tri6 | Self::Tet4 | Self::Tet10)
     }
@@ -72,6 +90,7 @@ impl ElementKind {
         match self {
             Self::Tri3 | Self::Tri6 => 3,
             Self::Quad4 | Self::Quad8 | Self::Quad9 | Self::Tet4 | Self::Tet10 => 4,
+            Self::Wedge6 | Self::Wedge15 => 6,
             _ => 8,
         }
     }
@@ -89,6 +108,8 @@ impl ElementKind {
             Self::Hex8 => 12,
             Self::Hex20 => 25,
             Self::Hex27 => 29,
+            Self::Wedge6 => 13,
+            Self::Wedge15 => 26,
         }
     }
 
@@ -105,12 +126,14 @@ impl ElementKind {
             Self::Hex8 => &HEX27[..8],
             Self::Hex20 => &HEX27[..20],
             Self::Hex27 => &HEX27,
+            Self::Wedge6 => &WEDGE15[..6],
+            Self::Wedge15 => &WEDGE15,
         }
     }
 
     /// Tabulated shape functions and quadrature (computed on first use).
     pub fn table(self) -> &'static ShapeTable {
-        static TABLES: [OnceLock<ShapeTable>; 10] = [const { OnceLock::new() }; 10];
+        static TABLES: [OnceLock<ShapeTable>; 12] = [const { OnceLock::new() }; 12];
         let idx = ALL_KINDS.iter().position(|k| *k == self).unwrap();
         TABLES[idx].get_or_init(|| ShapeTable::build(self))
     }
@@ -122,7 +145,7 @@ impl ElementKind {
         if !self.is_simplex() {
             return self.table();
         }
-        static MASS: [OnceLock<ShapeTable>; 10] = [const { OnceLock::new() }; 10];
+        static MASS: [OnceLock<ShapeTable>; 12] = [const { OnceLock::new() }; 12];
         let idx = ALL_KINDS.iter().position(|k| *k == self).unwrap();
         MASS[idx].get_or_init(|| ShapeTable::build_with(self, mass_quadrature(self)))
     }
@@ -137,6 +160,7 @@ impl ElementKind {
             Self::Quad4 | Self::Hex8 => multilinear_shape(self, xi, &mut n, &mut dn),
             Self::Quad9 | Self::Hex27 => lagrange_shape(self, xi, &mut n, &mut dn),
             Self::Quad8 | Self::Hex20 => serendipity_shape(self, xi, &mut n, &mut dn),
+            Self::Wedge6 | Self::Wedge15 => wedge_shape(self, xi, &mut n, &mut dn),
         }
         (n, dn)
     }
@@ -198,6 +222,65 @@ const HEX27: [[f64; 3]; 27] = [
     [0., 0., 1.],
     [0., 0., 0.],
 ];
+
+/// Wedge nodes (VTK order): bottom corners (z = -1), top corners (z = +1), bottom / top in-plane edge midsides (0-1, 1-2, 2-0),
+/// vertical edge midsides (0-3, 1-4, 2-5). The in-plane coordinates are those of the unit triangle.
+const WEDGE15: [[f64; 3]; 15] = [
+    [0., 0., -1.],
+    [1., 0., -1.],
+    [0., 1., -1.],
+    [0., 0., 1.],
+    [1., 0., 1.],
+    [0., 1., 1.],
+    [0.5, 0., -1.],
+    [0.5, 0.5, -1.],
+    [0., 0.5, -1.],
+    [0.5, 0., 1.],
+    [0.5, 0.5, 1.],
+    [0., 0.5, 1.],
+    [0., 0., 0.],
+    [1., 0., 0.],
+    [0., 1., 0.],
+];
+
+/// Triangular prism: barycentric coordinates `L` of the unit triangle times the axial coordinate `zeta` in `[-1, 1]`.
+/// Wedge6 `N = L_i (1 + s zeta) / 2`; Wedge15 corners `N = 1/2 L_i (2 L_i - 1)(1 + s zeta) - 1/2 L_i (1 - zeta^2)`, in-plane
+/// midsides `N = 2 L_a L_b (1 + s zeta)`, vertical midsides `N = L_i (1 - zeta^2)`.
+fn wedge_shape(kind: ElementKind, xi: [f64; 3], n: &mut [f64; MAX_NODES], dn: &mut [[f64; 3]; MAX_NODES]) {
+    let z = xi[2];
+    let l = [1.0 - xi[0] - xi[1], xi[0], xi[1]];
+    let dl = [[-1.0, -1.0], [1.0, 0.0], [0.0, 1.0]];
+    let tri_edges: [[usize; 2]; 3] = [[0, 1], [1, 2], [2, 0]];
+    if kind == ElementKind::Wedge6 {
+        for a in 0..6 {
+            let (i, s) = (a % 3, if a < 3 { -1.0 } else { 1.0 });
+            n[a] = l[i] * 0.5 * (1.0 + s * z);
+            dn[a] = [dl[i][0] * 0.5 * (1.0 + s * z), dl[i][1] * 0.5 * (1.0 + s * z), l[i] * 0.5 * s];
+        }
+        return;
+    }
+    for a in 0..6 {
+        let (i, s) = (a % 3, if a < 3 { -1.0 } else { 1.0 });
+        let f = 1.0 + s * z;
+        let q = 0.5 * l[i] * (2.0 * l[i] - 1.0);
+        let dq = [0.5 * (4.0 * l[i] - 1.0) * dl[i][0], 0.5 * (4.0 * l[i] - 1.0) * dl[i][1]];
+        n[a] = q * f - 0.5 * l[i] * (1.0 - z * z);
+        dn[a] = [dq[0] * f - 0.5 * dl[i][0] * (1.0 - z * z), dq[1] * f - 0.5 * dl[i][1] * (1.0 - z * z), q * s + l[i] * z];
+    }
+    for (e, &[p, q]) in tri_edges.iter().enumerate() {
+        for (lvl, s) in [(0usize, -1.0f64), (1, 1.0)] {
+            let a = 6 + 3 * lvl + e;
+            let f = 1.0 + s * z;
+            n[a] = 2.0 * l[p] * l[q] * f;
+            dn[a] = [2.0 * (dl[p][0] * l[q] + l[p] * dl[q][0]) * f, 2.0 * (dl[p][1] * l[q] + l[p] * dl[q][1]) * f, 2.0 * l[p] * l[q] * s];
+        }
+    }
+    for i in 0..3 {
+        let a = 12 + i;
+        n[a] = l[i] * (1.0 - z * z);
+        dn[a] = [dl[i][0] * (1.0 - z * z), dl[i][1] * (1.0 - z * z), -2.0 * z * l[i]];
+    }
+}
 
 /// Edge (corner pair) of every midside node, Tri6 then Tet10 (nodes after the corners).
 const TRI6_EDGES: [[usize; 2]; 3] = [[0, 1], [1, 2], [2, 0]];
@@ -472,6 +555,21 @@ fn mass_quadrature(kind: ElementKind) -> (Vec<[f64; 3]>, Vec<f64>) {
     (xi, w)
 }
 
+/// Triangle rule (`n` Gauss points per direction, collapsed) times a 1D rule along the axis; the weights sum to 1.
+fn wedge_rule(n: usize, axial: &[(f64, f64)]) -> (Vec<[f64; 3]>, Vec<f64>) {
+    let gl = gauss_legendre_unit(n);
+    let (mut xi, mut w) = (Vec::new(), Vec::new());
+    for &(u, wu) in &gl {
+        for &(v, wv) in &gl {
+            for &(z, wz) in axial {
+                xi.push([u * (1.0 - v), v, z]);
+                w.push(wu * wv * (1.0 - v) * wz);
+            }
+        }
+    }
+    (xi, w)
+}
+
 fn quadrature(kind: ElementKind) -> (Vec<[f64; 3]>, Vec<f64>) {
     match kind {
         ElementKind::Tri3 => (vec![[1.0 / 3.0, 1.0 / 3.0, 0.0]], vec![0.5]),
@@ -486,6 +584,9 @@ fn quadrature(kind: ElementKind) -> (Vec<[f64; 3]>, Vec<f64>) {
         ElementKind::Quad8 | ElementKind::Quad9 => tensor(&GL3, 2),
         ElementKind::Hex8 => tensor(&GL2, 3),
         ElementKind::Hex20 | ElementKind::Hex27 => tensor(&GL3, 3),
+        // triangle (collapsed Gauss, degree 2 / 4) times Gauss-Legendre along the axis: exact for the mass products
+        ElementKind::Wedge6 => wedge_rule(2, &GL2),
+        ElementKind::Wedge15 => wedge_rule(3, &GL3),
     }
 }
 
@@ -569,12 +670,7 @@ mod tests {
     #[test]
     fn quadrature_weights_sum_to_the_reference_measure() {
         for k in ALL_KINDS {
-            let want = match (k.is_simplex(), k.dim()) {
-                (true, 2) => 0.5,
-                (true, _) => 1.0 / 6.0,
-                (false, 2) => 4.0,
-                (false, _) => 8.0,
-            };
+            let want = k.reference_measure();
             let s: f64 = k.table().w.iter().sum();
             assert!((s - want).abs() < 1e-13, "{k:?} {s}");
         }
