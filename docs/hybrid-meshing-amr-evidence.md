@@ -242,3 +242,12 @@ Factorization reuse, evaluated and not done: the coarse dual solve (31 ms) refac
 (32 ms in total). Reusing the factor would save about 30 ms of a cycle that costs about 1 s, and `Solution` does not keep the
 factor; the cost does not justify widening that type. The enriched dual solves on a different (refined) mesh and cannot reuse it.
 Allocation and cache behaviour were not studied beyond the equilibrated precomputation above.
+
+Allocations and cache (closing the last Phase 10 items). A counting allocator (`tests/alloc_profile.rs`) found the equilibrated
+reconstruction at 2.5 M heap allocations (703 MB) for 13k dofs, almost all from `rt_basis` returning two `Vec`s per evaluation
+point, called by the verification and the indicators at hundreds of thousands of points. `RtBasis` now fills stack buffers:
+0.73 M allocations (519 MB). The verification pass and the edge-flux precomputation also run in parallel (maxima, and per-element
+partial sums added in element order, so results are identical). Reconstruction time at 13k dofs: 1150 ms (start of Phase 10) ->
+299 -> 261 -> 203 -> 170 ms. The remaining allocations are the dense patch matrices (a few hundred doubles, resident in L1/L2
+while a patch is solved; no cache-bound stage was found), the mesher (1.75 M allocations, 111 ms: left alone, it is the
+Delaunay kernel and not a Phase 10 hot spot) and the solve (14 k allocations for 274 MB, a handful of large arrays).

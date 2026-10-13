@@ -91,23 +91,53 @@ fn mono(a: usize, b: usize, x: f64, y: f64) -> f64 {
 /// Raviart-Thomas basis of degree `k` in scaled local coordinates: `P_k^2` (monomial times a unit vector) and `x * P~_k`.
 /// Returns `(values, divergences)`; values are `[nb][2]`, divergences `[nb]` (with respect to the scaled coordinates).
 fn rt_basis(k: usize, x: f64, y: f64) -> (Vec<[f64; 2]>, Vec<f64>) {
-    let mut val = Vec::new();
-    let mut div = Vec::new();
-    for (a, b) in monomials(k) {
-        let m = mono(a, b, x, y);
-        let dx = if a > 0 { a as f64 * mono(a - 1, b, x, y) } else { 0.0 };
-        let dy = if b > 0 { b as f64 * mono(a, b - 1, x, y) } else { 0.0 };
-        val.push([m, 0.0]);
-        div.push(dx);
-        val.push([0.0, m]);
-        div.push(dy);
+    let mut b = RtBasis::default();
+    b.fill(k, x, y);
+    (b.val[..b.n].to_vec(), b.div[..b.n].to_vec())
+}
+
+/// Largest RT basis the stack buffers hold (degree up to 3: `(k + 1)(k + 3) = 24`).
+const MAX_RT: usize = 24;
+
+/// The RT basis at a point without heap allocation (the evaluation points of the verification and the indicators number in the
+/// hundred thousands).
+struct RtBasis {
+    n: usize,
+    val: [[f64; 2]; MAX_RT],
+    div: [f64; MAX_RT],
+}
+
+impl Default for RtBasis {
+    fn default() -> Self {
+        Self { n: 0, val: [[0.0; 2]; MAX_RT], div: [0.0; MAX_RT] }
     }
-    for a in 0..=k {
-        let m = mono(a, k - a, x, y);
-        val.push([m * x, m * y]);
-        div.push((2 + k) as f64 * m);
+}
+
+impl RtBasis {
+    fn fill(&mut self, k: usize, x: f64, y: f64) {
+        assert!(n_rt(k) <= MAX_RT, "RT degree {k} exceeds the stack buffers");
+        let mut n = 0;
+        for deg in 0..=k {
+            for a in 0..=deg {
+                let b = deg - a;
+                let m = mono(a, b, x, y);
+                let dx = if a > 0 { a as f64 * mono(a - 1, b, x, y) } else { 0.0 };
+                let dy = if b > 0 { b as f64 * mono(a, b - 1, x, y) } else { 0.0 };
+                self.val[n] = [m, 0.0];
+                self.div[n] = dx;
+                self.val[n + 1] = [0.0, m];
+                self.div[n + 1] = dy;
+                n += 2;
+            }
+        }
+        for a in 0..=k {
+            let m = mono(a, k - a, x, y);
+            self.val[n] = [m * x, m * y];
+            self.div[n] = (2 + k) as f64 * m;
+            n += 1;
+        }
+        self.n = n;
     }
-    (val, div)
 }
 
 fn n_rt(k: usize) -> usize {
@@ -341,7 +371,7 @@ pub fn reconstruct(ctx: &EstimatorContext) -> Result<Reconstruction, MeshError> 
         stress_scale = 1.0;
     }
     let (edges, elem_edges, traction) = (tm.edges, tm.elem_edges, tm.traction);
-    for (ei, el) in elems.iter_mut().enumerate() {
+    elems.par_iter_mut().enumerate().for_each(|(ei, el)| {
         for kk in 0..3 {
             let ed = &edges[elem_edges[ei][kk]];
             let n = outward_normal(&el.p, kk);
@@ -353,7 +383,7 @@ pub fn reconstruct(ctx: &EstimatorContext) -> Result<Reconstruction, MeshError> 
             }
             el.edge_flux[kk] = flux;
         }
-    }
+    });
 
     // vertex patches
     let n_nodes = mesh.nodes.len();
@@ -537,10 +567,11 @@ impl Reconstruction {
     /// `sigma*` rows at physical point `x` of element `ei`: `[[sxx, sxy], [syx, syy]]`.
     pub fn stress_at(&self, ei: usize, x: [f64; 2]) -> [[f64; 2]; 2] {
         let el = &self.elems[ei];
-        let (val, _) = rt_basis(self.k, (x[0] - el.c[0]) / el.s, (x[1] - el.c[1]) / el.s);
+        let mut b = RtBasis::default();
+        b.fill(self.k, (x[0] - el.c[0]) / el.s, (x[1] - el.c[1]) / el.s);
         let mut out = [[0.0; 2]; 2];
         for row in 0..2 {
-            for (j, v) in val.iter().enumerate() {
+            for (j, v) in b.val[..b.n].iter().enumerate() {
                 out[row][0] += self.coef[ei][row][j] * v[0];
                 out[row][1] += self.coef[ei][row][j] * v[1];
             }
@@ -550,10 +581,11 @@ impl Reconstruction {
 
     fn div_at(&self, ei: usize, x: [f64; 2]) -> [f64; 2] {
         let el = &self.elems[ei];
-        let (_, dv) = rt_basis(self.k, (x[0] - el.c[0]) / el.s, (x[1] - el.c[1]) / el.s);
+        let mut b = RtBasis::default();
+        b.fill(self.k, (x[0] - el.c[0]) / el.s, (x[1] - el.c[1]) / el.s);
         let mut out = [0.0; 2];
         for row in 0..2 {
-            for (j, d) in dv.iter().enumerate() {
+            for (j, d) in b.div[..b.n].iter().enumerate() {
                 out[row] += self.coef[ei][row][j] * d / el.s;
             }
         }
@@ -562,54 +594,76 @@ impl Reconstruction {
 
     fn verify(&mut self, ctx: &EstimatorContext, traction: &HashMap<usize, [f64; 2]>) {
         let scale = self.report.stress_scale;
-        let (mut div_res, mut jump, mut neu) = (0.0f64, 0.0f64, 0.0f64);
-        for (ei, el) in self.elems.iter().enumerate() {
-            let hs = el.s;
-            for &x in &el.q_x {
-                let d = self.div_at(ei, x);
-                for row in 0..2 {
-                    div_res = div_res.max((d[row] + el.body[row]).abs() * hs / scale);
-                }
-            }
-        }
-        for (eid, ed) in self.edges.iter().enumerate() {
-            for &(t, _) in &GL6 {
-                let x = ed.point(t);
-                if ed.owners.len() == 2 {
-                    let (e1, k1) = ed.owners[0];
-                    let (e2, k2) = ed.owners[1];
-                    let (n1, n2) = (outward_normal(&self.elems[e1].p, k1), outward_normal(&self.elems[e2].p, k2));
-                    let (s1, s2) = (self.stress_at(e1, x), self.stress_at(e2, x));
+        // Maxima are order independent and the squared sums are accumulated per element in parallel, then added in element order,
+        // so the report is identical to a serial pass.
+        let this = &*self;
+        let div_res = this
+            .elems
+            .par_iter()
+            .enumerate()
+            .map(|(ei, el)| {
+                let mut m = 0.0f64;
+                for &x in &el.q_x {
+                    let d = this.div_at(ei, x);
                     for row in 0..2 {
-                        let f1 = s1[row][0] * n1[0] + s1[row][1] * n1[1];
-                        let f2 = s2[row][0] * n2[0] + s2[row][1] * n2[1];
-                        jump = jump.max((f1 + f2).abs() / scale);
+                        m = m.max((d[row] + el.body[row]).abs() * el.s / scale);
                     }
-                } else {
-                    let (e1, k1) = ed.owners[0];
-                    let n = outward_normal(&self.elems[e1].p, k1);
-                    let s = self.stress_at(e1, x);
-                    let tr = traction.get(&eid).copied().unwrap_or([0.0, 0.0]);
-                    for row in 0..2 {
-                        // a row is checked only where both end nodes are free in that component
-                        if ctx.bc.fixed[2 * ed.a + row] || ctx.bc.fixed[2 * ed.b + row] {
-                            continue;
+                }
+                m
+            })
+            .reduce(|| 0.0, f64::max);
+        let (jump, neu) = this
+            .edges
+            .par_iter()
+            .enumerate()
+            .map(|(eid, ed)| {
+                let (mut jump, mut neu) = (0.0f64, 0.0f64);
+                for &(t, _) in &GL6 {
+                    let x = ed.point(t);
+                    if ed.owners.len() == 2 {
+                        let (e1, k1) = ed.owners[0];
+                        let (e2, k2) = ed.owners[1];
+                        let (n1, n2) = (outward_normal(&this.elems[e1].p, k1), outward_normal(&this.elems[e2].p, k2));
+                        let (s1, s2) = (this.stress_at(e1, x), this.stress_at(e2, x));
+                        for row in 0..2 {
+                            let f1 = s1[row][0] * n1[0] + s1[row][1] * n1[1];
+                            let f2 = s2[row][0] * n2[0] + s2[row][1] * n2[1];
+                            jump = jump.max((f1 + f2).abs() / scale);
                         }
-                        let f = s[row][0] * n[0] + s[row][1] * n[1];
-                        neu = neu.max((f - tr[row]).abs() / scale);
+                    } else {
+                        let (e1, k1) = ed.owners[0];
+                        let n = outward_normal(&this.elems[e1].p, k1);
+                        let s = this.stress_at(e1, x);
+                        let tr = traction.get(&eid).copied().unwrap_or([0.0, 0.0]);
+                        for row in 0..2 {
+                            // a row is checked only where both end nodes are free in that component
+                            if ctx.bc.fixed[2 * ed.a + row] || ctx.bc.fixed[2 * ed.b + row] {
+                                continue;
+                            }
+                            let f = s[row][0] * n[0] + s[row][1] * n[1];
+                            neu = neu.max((f - tr[row]).abs() / scale);
+                        }
                     }
                 }
-            }
-        }
-        let (mut skew2, mut tot2) = (0.0f64, 0.0f64);
-        for (ei, el) in self.elems.iter().enumerate() {
-            for (q, &x) in el.q_x.iter().enumerate() {
-                let s = self.stress_at(ei, x);
-                let sk = 0.5 * (s[0][1] - s[1][0]);
-                skew2 += el.q_w[q] * sk * sk;
-                tot2 += el.q_w[q] * (s[0][0] * s[0][0] + s[1][1] * s[1][1] + 0.5 * (s[0][1] + s[1][0]).powi(2) + sk * sk);
-            }
-        }
+                (jump, neu)
+            })
+            .reduce(|| (0.0, 0.0), |a, b| (a.0.max(b.0), a.1.max(b.1)));
+        let parts: Vec<(f64, f64)> = this
+            .elems
+            .par_iter()
+            .enumerate()
+            .map(|(ei, el)| {
+                let (mut skew2, mut tot2) = (0.0f64, 0.0f64);
+                for (q, &x) in el.q_x.iter().enumerate() {
+                    let s = this.stress_at(ei, x);
+                    let sk = 0.5 * (s[0][1] - s[1][0]);
+                    skew2 += el.q_w[q] * sk * sk;
+                    tot2 += el.q_w[q] * (s[0][0] * s[0][0] + s[1][1] * s[1][1] + 0.5 * (s[0][1] + s[1][0]).powi(2) + sk * sk);
+                }
+                (skew2, tot2)
+            })
+            .collect();
+        let (skew2, tot2) = parts.iter().fold((0.0f64, 0.0f64), |a, p| (a.0 + p.0, a.1 + p.1));
         self.report.max_div_residual = div_res;
         self.report.max_normal_jump = jump;
         self.report.max_neumann_residual = neu;
