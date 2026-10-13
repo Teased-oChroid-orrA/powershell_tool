@@ -157,8 +157,7 @@ real terminal run to verify beyond its `TestBackend` tests - `cargo run
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push to `main` and on pull
-requests: `cargo test --workspace` on Linux. `.github/workflows/app-tui-build.yml`
+Only the build workflows remain; run the tests locally with `cargo test --workspace`. `.github/workflows/app-tui-build.yml`
 (manual, or on a `v*` tag) builds `app-tui` for `x86_64-pc-windows-msvc`
 on a Windows runner and uploads the exe. `.github/workflows/rust-build.yml`
 (manual) does the same for `search-cli`. `.github/workflows/build.yml` is

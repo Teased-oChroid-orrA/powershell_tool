@@ -151,8 +151,9 @@ test gate.
   matching. Use exact path exclusions, not bare substring wildcards, and
   diff the result.
 
-- **Hosted Windows CI is the only Windows evidence.** `windows-tests.yml` runs the whole workspace on a hosted Windows runner
-  (`ci.yml` is Linux only). Hosted runners are not one machine: a numerical failure that appears only on some runs is first a
+- **Hosted Windows CI is the only Windows evidence.** The test workflows (`ci.yml`, `windows-tests.yml`, `solid-kernel-occt.yml`) were
+  removed once the build workflows were the only gate wanted; run the workspace tests locally, and rerun the Windows exe builds
+  (`app-tui-build.yml`, `rust-build.yml`) by hand. A test workflow can be restored from git history. Hosted runners are not one machine: a numerical failure that appears only on some runs is first a
   hardware question (`Win32_Processor` name; `private-gemm-x86` 0.1.20 returned wrong products on AMD EPYC 7763 hosts, fixed by
   the 0.1.22 pin in `Cargo.lock`). New workflow files cannot be dispatched until they are on the default branch: give them a
   `pull_request` trigger. Every push cancels the in-flight run of the same workflow (batch pushes).

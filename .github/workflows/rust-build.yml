@@ -1,7 +1,7 @@
 name: Build search-cli Windows executable
 
 # Builds the `search-cli` headless entry point (issue #6 §60) for win-x64 on
-# a Windows runner. Tests run in `ci.yml` (Linux, whole workspace), not here.
+# a Windows runner. Tests are run locally (`cargo test --workspace`), not here.
 #
 # `app` (dioxus-native) and `app-egui` (egui/eframe, its own standalone
 # Cargo workspace) have been removed from this repository - `app-tui` (see
@@ -10,7 +10,7 @@ name: Build search-cli Windows executable
 
 on:
   workflow_dispatch: {}
-  # Release builds only; `ci.yml` is the per-push test gate.
+  # Release builds only.
   push:
     tags:
       - "v*"

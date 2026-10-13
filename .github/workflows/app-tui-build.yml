@@ -7,7 +7,7 @@ on:
         description: "Build with STEP / OpenCASCADE support (LGPL: ships the notices; needs the static-CRT OCCT build to link, see ADR-019)"
         type: boolean
         default: false
-  # Release builds only; `ci.yml` is the per-push test gate.
+  # Release builds only.
   push:
     tags:
       - "v*"
