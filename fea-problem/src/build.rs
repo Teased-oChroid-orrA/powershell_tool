@@ -1,7 +1,8 @@
 //! Problem -> mesh: a sketch meshed by `fea-core`'s unstructured mesher (optionally extruded), or an
 //! imported Gmsh / Abaqus mesh.
 
-use crate::problem::{Analysis, Geometry, Problem, Shape};
+use crate::problem::{Analysis, Geometry, MeshStrategy, Problem, Shape};
+use fea_core::meshing::hybrid::{mesh_hybrid_2d, ElementFamily, HybridOptions2d, Strategy};
 use fea_core::adapt::SizeField;
 use fea_core::delaunay::MeshOptions;
 use fea_core::geometry::{Curve, Loop, Region, Segment};
@@ -110,7 +111,7 @@ pub fn hole_problems(p: &Problem) -> Vec<(usize, String)> {
 
 /// Size function: `size` away from holes, `size * hole_factor` at a hole edge, blended over two hole
 /// reaches.
-fn size_function(p: &Problem) -> Box<dyn Fn([f64; 2]) -> f64> {
+pub fn size_function(p: &Problem) -> Box<dyn Fn([f64; 2]) -> f64> {
     let (h, f) = (p.mesh.size, p.mesh.hole_factor);
     let holes: Vec<([f64; 2], f64)> = match &p.geometry {
         Geometry::Sketch { holes, .. } => holes.iter().map(|s| (s.centre(), s.reach())).collect(),
@@ -197,7 +198,7 @@ pub fn estimate_mesh(p: &Problem) -> Result<MeshEstimate, String> {
 /// possibly offset) meshed with the plate's element type and registered as surfaces `bN/od` (outer) and `bN/id` (bore).
 /// The plate's own hole surface is kept as `plate_holeH`, and the name `holeH` is re-pointed at the bore so that a load or
 /// support on the hole acts on the bushing.
-pub fn add_bushings(p: &Problem, mesh: &mut Mesh, field: Option<&SizeField>) -> Result<(), String> {
+pub fn add_bushings(p: &Problem, mesh: &mut Mesh, field: Option<&dyn Fn([f64; 2]) -> f64>) -> Result<(), String> {
     let Geometry::Sketch { holes, .. } = &p.geometry else { return Ok(()) };
     for (i, b) in p.bushings.iter().enumerate() {
         let n = i + 1;
@@ -210,7 +211,7 @@ pub fn add_bushings(p: &Problem, mesh: &mut Mesh, field: Option<&SizeField>) -> 
         // along the interface (a mesh much finer on one side converges worse than a matched pair).
         let cap = wall.max(r / 25.0);
         let h = (p.mesh.size * p.mesh.hole_factor).min(cap);
-        let size = |x: [f64; 2]| field.map_or(h, |sf| sf.at(x).min(cap));
+        let size = |x: [f64; 2]| field.map_or(h, |sf| sf(x).min(cap));
         let bm = mesh_region(&region, physics_of(p), p.mesh.element.kind(), &size, mesh_options())?;
         let plate = mesh.surfaces.get(&format!("hole{}", b.hole)).cloned().ok_or_else(|| format!("bushing {n}: the plate has no surface hole{}", b.hole))?;
         mesh.surfaces.insert(format!("plate_hole{}", b.hole), plate);
@@ -223,6 +224,37 @@ pub fn add_bushings(p: &Problem, mesh: &mut Mesh, field: Option<&SizeField>) -> 
 
 /// Mesh a sketch problem. `field` overrides the size function (an adaptive pass).
 pub fn sketch_mesh(p: &Problem, field: Option<&SizeField>) -> Result<Mesh, String> {
+    match field {
+        Some(f) => sketch_mesh_sized(p, Some(&|x| f.at(x))),
+        None => sketch_mesh_sized(p, None),
+    }
+}
+
+/// One planar region meshed by the strategy of the problem. A bushing annulus is always unstructured (its outer boundary is
+/// curved, which the hybrid mesher reports as unsupported anyway).
+fn mesh_planar(p: &Problem, region: &Region, physics: Physics, size: &dyn Fn([f64; 2]) -> f64, notes: &mut Vec<String>) -> Result<Mesh, String> {
+    match p.mesh.strategy {
+        MeshStrategy::Unstructured => mesh_region(region, physics, p.mesh.element.kind(), size, mesh_options()),
+        MeshStrategy::Hybrid => {
+            let family = if p.mesh.element.is_quadratic() { ElementFamily::Quadratic } else { ElementFamily::Linear };
+            let mut opt = HybridOptions2d::new(physics, family);
+            opt.mesh = mesh_options();
+            let h = mesh_hybrid_2d(region, size, &opt).map_err(|e| e.to_string())?;
+            if let Strategy::Unstructured { reason } = &h.report.strategy {
+                notes.push(format!("Hybrid meshing was not used (the plain unstructured mesh is shown): {reason}."));
+            }
+            Ok(h.mesh)
+        }
+    }
+}
+
+/// [`sketch_mesh`] with the size override as a plain function (the adaptive passes of the goal-oriented controller).
+pub fn sketch_mesh_sized(p: &Problem, field: Option<&dyn Fn([f64; 2]) -> f64>) -> Result<Mesh, String> {
+    sketch_mesh_noted(p, field, &mut Vec::new())
+}
+
+/// [`sketch_mesh_sized`] that also reports why a requested strategy was not used (`notes`).
+pub fn sketch_mesh_noted(p: &Problem, field: Option<&dyn Fn([f64; 2]) -> f64>, notes: &mut Vec<String>) -> Result<Mesh, String> {
     p.validate_geometry()?;
     let region = region_of(p)?;
     let Geometry::Sketch { depth, layers, .. } = &p.geometry else { return Err("not a sketch problem".into()) };
@@ -234,13 +266,13 @@ pub fn sketch_mesh(p: &Problem, field: Option<&SizeField>) -> Result<Mesh, Strin
     let base = size_function(p);
     // An adaptive pass sizes the mesh from the error field, but the user's refinement zones still apply.
     let size = |x: [f64; 2]| match field {
-        Some(sf) => sf.at(x).min(p.mesh.size * zone_factor(&p.mesh.refine, x)),
+        Some(sf) => sf(x).min(p.mesh.size * zone_factor(&p.mesh.refine, x)),
         None => base(x),
     };
-    let mut mesh = mesh_region(&region, physics_2d, p.mesh.element.kind(), &size, mesh_options())?;
+    let mut mesh = mesh_planar(p, &region, physics_2d, &size, notes)?;
     // The sketch's other regions are separate bodies: meshed alone and appended with their own surface names.
     for (k, reg) in extra_regions_of(p)?.iter().enumerate() {
-        let m = mesh_region(reg, physics_2d, p.mesh.element.kind(), &size, mesh_options())?;
+        let m = mesh_planar(p, reg, physics_2d, &size, notes)?;
         mesh.append(&m, &format!("r{}/", k + 2))?;
     }
     add_bushings(p, &mut mesh, field)?;

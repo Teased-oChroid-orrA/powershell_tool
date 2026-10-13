@@ -1,8 +1,8 @@
 //! Problem -> results: boundary conditions and loads from names, solve, stress recovery, summary,
 //! optional adaptive remeshing.
 
-use crate::build::{imported_mesh, sketch_mesh};
-use crate::problem::{Analysis, Geometry, Load, Problem, Support};
+use crate::build::{imported_mesh, sketch_mesh, sketch_mesh_noted, sketch_mesh_sized};
+use crate::problem::{AdaptMode, MeshStrategy, Analysis, Geometry, Load, Problem, Support};
 use crate::thermal::Study;
 use fea_core::adapt::{refine, AdaptOptions};
 use fea_core::kernel::von_mises;
@@ -787,25 +787,77 @@ fn notes(_p: &Problem, mesh: &Mesh) -> Vec<String> {
 /// ZZ estimate meets `target_error` with the fewest unknowns the passes find. `import_text` is the file content for an imported mesh.
 pub fn solve(p: &Problem, import_text: Option<&str>) -> Result<Solved, String> {
     p.validate()?;
+    let mut mesh_notes = Vec::new();
     let first = match &p.geometry {
-        Geometry::Sketch { .. } => sketch_mesh(p, None)?,
+        Geometry::Sketch { .. } => sketch_mesh_noted(p, None, &mut mesh_notes)?,
         Geometry::Imported { .. } => imported_mesh(p, import_text.ok_or("the mesh file has not been read")?)?,
         Geometry::Solid { .. } => crate::solid::solid_mesh(p)?.0,
     };
     let adaptive = matches!(p.geometry, Geometry::Sketch { .. }) && p.analysis != Analysis::Solid && p.mesh.adapt_passes > 0 && p.study.is_structural();
+    let goal_oriented = adaptive && p.mesh.adapt_mode == AdaptMode::GoalOriented;
+    if goal_oriented && !p.bushings.is_empty() {
+        return Err("goal-oriented adaptivity does not support bushings (contact); use the ZZ error estimate".into());
+    }
     let mut history = Vec::new();
-    let first = solve_mesh(p, first)?;
-    let pass = if adaptive {
-        let order = if p.mesh.element.is_quadratic() { 2.0 } else { 1.0 };
-        let opt = AdaptOptions { target_rel_error: p.mesh.target_error, order, h_min: p.mesh.size / 16.0, h_max: p.mesh.size * 2.0, ..AdaptOptions::default() };
-        refine(first, p.mesh.adapt_passes as usize, p.mesh.element.is_quad(), &opt, |field| solve_mesh(p, sketch_mesh(p, Some(field))?), |pass| history.push(info(pass)))?
+    let pass = if goal_oriented {
+        solve_goal_oriented(p, first, &mut history)?
     } else {
-        history.push(info(&first));
-        first
+        let first = solve_mesh(p, first)?;
+        if adaptive {
+            let order = if p.mesh.element.is_quadratic() { 2.0 } else { 1.0 };
+            let opt = AdaptOptions { target_rel_error: p.mesh.target_error, order, h_min: p.mesh.size / 16.0, h_max: p.mesh.size * 2.0, ..AdaptOptions::default() };
+            refine(first, p.mesh.adapt_passes as usize, p.mesh.element.is_quad(), &opt, |field| solve_mesh(p, sketch_mesh(p, Some(field))?), |pass| history.push(info(pass)))?
+        } else {
+            history.push(info(&first));
+            first
+        }
     };
-    let summary = summarize(p, &pass);
+    let mut summary = summarize(p, &pass);
+    summary.notes.extend(mesh_notes);
     let zz_eta = pass.zz.eta.clone();
     Ok(Solved { problem: p.clone(), model: pass.model, u: pass.u, temperature: pass.heat.map(|h| h.0), nodal: pass.nodal, summary, history, zz_eta })
+}
+
+/// Goal-oriented adaptivity (`fea_core::adaptivity::run_amr`) on the compliance of a structural sketch problem: the adjoint
+/// (enriched-dual) estimate fused with the ZZ physics criterion at `target_error`, Dorfler marking, a remesh per cycle at the
+/// size field the controller asks for. The final mesh is solved again through the ordinary path (`solve_mesh`) so that the
+/// result carries every check and summary of any other solve. `history` gets one entry per cycle: the physics error is the
+/// controller's; the maximum von Mises stress is known only for the final mesh (0 for the others).
+fn solve_goal_oriented(p: &Problem, first: Mesh, history: &mut Vec<PassInfo>) -> Result<Pass, String> {
+    use fea_core::adaptivity::{run_amr, AdaptSize, AmrConfig, GoalSpec, MeshedProblem};
+    // every mesh the controller builds, before the loads touch it: the accepted one is solved again through `solve_mesh`
+    let raws = std::cell::RefCell::new(Vec::<Mesh>::new());
+    // The unstructured quadrilateral mesh is the triangle mesh with every triangle split into quadrilaterals: its edges are about
+    // half the size the mesher was asked for. The hybrid mesher keeps quadrilaterals at the requested size.
+    let quad_scale = if p.mesh.element.is_quad() && p.mesh.strategy == MeshStrategy::Unstructured { 0.5 } else { 1.0 };
+    let meshed = |mut mesh: Mesh| -> Result<MeshedProblem, String> {
+        raws.borrow_mut().push(mesh.clone());
+        let bc = apply_supports(&mesh, &p.supports)?;
+        let loads = build_loads(&mut mesh, p)?;
+        Ok(MeshedProblem { model: Model::new(mesh)?, loads, bc, labels: None, quad_scale })
+    };
+    let order = if p.mesh.element.is_quadratic() { 2.0 } else { 1.0 };
+    let mut cfg = AmrConfig { max_cycles: p.mesh.adapt_passes as usize, physics_tolerance: Some(p.mesh.target_error), ..AmrConfig::default() };
+    cfg.adapt.order = order;
+    cfg.adapt.h_min = p.mesh.size / 16.0;
+    cfg.adapt.h_max = p.mesh.size * 2.0;
+    // The compliance `f.u = 2 W` is wanted to a relative error of `target_error^2` (the energy-norm error `e` of the physics
+    // criterion enters the compliance as `e^2`), judged against the first mesh.
+    let compliance = 2.0 * solve_mesh(p, first.clone())?.strain_energy;
+    let goals = [GoalSpec::compliance(Some(p.mesh.target_error * p.mesh.target_error * compliance))];
+    let mut mesher = |s: &AdaptSize| -> Result<MeshedProblem, String> { meshed(sketch_mesh_sized(p, Some(&|x| s.at([x[0], x[1], 0.0])))?) };
+    let result = run_amr(meshed(first)?, &goals, &mut mesher, &cfg).map_err(|e| e.to_string())?;
+    for rec in &result.history {
+        // nodes follow from the dofs of a plane problem (2 per node)
+        history.push(PassInfo { nodes: rec.dofs / 2, elements: rec.elements, zz_error: rec.physics_error, max_von_mises: 0.0 });
+    }
+    let accepted = &result.problem.model.mesh.nodes;
+    let raw = raws.into_inner().into_iter().rev().find(|m| &m.nodes == accepted).ok_or("the accepted adaptive mesh was not found among the built ones")?;
+    let pass = solve_mesh(p, raw)?;
+    if let Some(last) = history.last_mut() {
+        *last = PassInfo { nodes: pass.model.mesh.nodes.len(), elements: pass.model.mesh.n_elems(), zz_error: pass.zz.relative(), max_von_mises: pass.nodal.iter().map(von_mises).fold(0.0f64, f64::max) };
+    }
+    Ok(pass)
 }
 
 fn info(pass: &Pass) -> PassInfo {

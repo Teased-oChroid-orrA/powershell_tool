@@ -33,6 +33,8 @@ pub enum FieldRow {
     Depth,
     Layers,
     Element,
+    MeshStrategyRow,
+    AdaptModeRow,
     MeshSize,
     HoleFactor,
     AdaptPasses,
@@ -148,6 +150,9 @@ pub fn field_rows(p: &Problem) -> Vec<FieldRow> {
     r.push(Header("Mesh"));
     if is_sketch(p) {
         r.push(Element);
+        if d == 2 {
+            r.push(MeshStrategyRow);
+        }
     }
     r.push(MeshSize);
     if is_sketch(p) {
@@ -157,6 +162,7 @@ pub fn field_rows(p: &Problem) -> Vec<FieldRow> {
         if d == 2 {
             r.push(AdaptPasses);
             if p.mesh.adapt_passes > 0 {
+                r.push(AdaptModeRow);
                 r.push(TargetError);
             }
         }
@@ -266,6 +272,8 @@ pub fn row_label(p: &Problem, row: FieldRow) -> String {
         Depth => "Extrusion Depth".into(),
         Layers => "Extrusion Layers".into(),
         Element => "Element Type".into(),
+        MeshStrategyRow => "Mesh Strategy".into(),
+        AdaptModeRow => "Adaptivity Driver".into(),
         MeshSize => "Element Size".into(),
         HoleFactor => "Size At Holes".into(),
         AdaptPasses => "Adaptive Passes".into(),
@@ -507,6 +515,8 @@ pub fn row_value(p: &Problem, names: &[String], import_len: Option<usize>, row: 
             _ => String::new(),
         },
         Element => p.mesh.element.label().to_string(),
+        MeshStrategyRow => p.mesh.strategy.label().to_string(),
+        AdaptModeRow => p.mesh.adapt_mode.label().to_string(),
         SupportKind(s) => match p.supports.get(s) {
             Some(Support::Edge { .. }) => "Edge".to_string(),
             Some(Support::Point { .. }) => "Point (nearest node)".to_string(),
@@ -560,6 +570,8 @@ pub fn field_hint(row: FieldRow) -> &'static str {
         HoleAdd => "Adds a circular hole near the middle of the outline.",
         Depth | Layers => "3D only: the sketch is extruded along z in this many layers; the end faces are named start (z = 0) and end.",
         Element => "Quadratic elements (Quad8 / Quad9 / Tri6) are the accurate choice; linear ones need a much finer mesh. A 3D extrusion needs a quadrilateral type.",
+        MeshStrategyRow => "Hybrid: structured quadrilateral blocks in the regular regions and an unstructured triangle mesh around holes and corners, welded conforming. Needs a rectilinear outline and gentle grading (Size At Holes about 0.3 or more); otherwise it falls back to the unstructured mesh and the result notes say why. At Size 0.3 / holes 0.3 the plate with a hole needs about 5 times fewer unknowns for the same peak stress (within 2 %).",
+        AdaptModeRow => "ZZ: refine where the stress-recovery error is large. Goal-oriented: adjoint error estimate of the compliance fused with that criterion (no bushings).",
         MeshSize => "Target element edge length away from holes.",
         HoleFactor => "Element size at a hole edge as a fraction of the size above (blends back over about two hole radii).",
         AdaptPasses => "Remeshing passes driven by the error estimate (0 = off): each pass makes elements smaller where the error is large.",
@@ -753,6 +765,16 @@ pub fn apply_row_action(p: &mut Problem, names: &[String], row: FieldRow, forwar
                 let all: Vec<_> = fea_problem::ElementChoice::ALL.iter().copied().filter(|e| p.analysis != fea_problem::Analysis::Solid || e.is_quad()).collect();
                 let i = all.iter().position(|e| *e == p.mesh.element).unwrap_or(0);
                 p.mesh.element = all[if forward { (i + 1) % all.len() } else { (i + all.len() - 1) % all.len() }];
+            }
+            MeshStrategyRow => {
+                let all = fea_problem::MeshStrategy::ALL;
+                let i = all.iter().position(|e| *e == p.mesh.strategy).unwrap_or(0);
+                p.mesh.strategy = all[if forward { (i + 1) % all.len() } else { (i + all.len() - 1) % all.len() }];
+            }
+            AdaptModeRow => {
+                let all = fea_problem::AdaptMode::ALL;
+                let i = all.iter().position(|e| *e == p.mesh.adapt_mode).unwrap_or(0);
+                p.mesh.adapt_mode = all[if forward { (i + 1) % all.len() } else { (i + all.len() - 1) % all.len() }];
             }
             SupportKind(s) => {
                 if let Some(sup) = p.supports.get_mut(s) {

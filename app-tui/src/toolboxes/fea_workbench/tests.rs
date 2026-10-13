@@ -631,3 +631,20 @@ fn nothing_meshes_or_solves_by_itself_until_asked() {
     handle_key(&mut s, key(KeyCode::Char('a')));
     assert!(s.auto_solve);
 }
+
+#[test]
+fn the_mesh_strategy_and_adaptivity_driver_rows_cycle_and_the_driver_needs_adaptive_passes() {
+    let mut s = FeaWorkbenchState::default();
+    assert!(s.rows().contains(&FieldRow::MeshStrategyRow));
+    select(&mut s, FieldRow::MeshStrategyRow);
+    handle_key(&mut s, key(KeyCode::Right));
+    assert_eq!(s.problem.mesh.strategy, fea_problem::MeshStrategy::Hybrid);
+    handle_key(&mut s, key(KeyCode::Left));
+    assert_eq!(s.problem.mesh.strategy, fea_problem::MeshStrategy::Unstructured);
+    s.problem.mesh.adapt_passes = 2;
+    select(&mut s, FieldRow::AdaptModeRow);
+    handle_key(&mut s, key(KeyCode::Right));
+    assert_eq!(s.problem.mesh.adapt_mode, fea_problem::AdaptMode::GoalOriented);
+    s.problem.mesh.adapt_passes = 0;
+    assert!(!s.rows().contains(&FieldRow::AdaptModeRow), "no passes, no driver to choose");
+}

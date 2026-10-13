@@ -52,3 +52,20 @@ Every failure path returns `MeshError` or a reliability status; there is no sile
 See the evidence doc: L-shape goal AMR (892 dofs, error 0.098 against uniform > 8046 dofs for 0.375), eigenvalue effectivity 1.00,
 Hertz line contact (+0.4 % half-width, -0.3 % peak pressure), plastic tangent adjoint against finite difference 5e-5, Phase 10
 timing table.
+
+## In the application (FEA Workbench)
+
+Both systems are reachable from the workbench's Mesh section, for 2D sketch problems:
+
+- **Mesh Strategy** (`Problem.mesh.strategy`): Unstructured (default, unchanged behaviour) or Hybrid (`meshing::hybrid`). A hybrid request
+  that the outline or size field does not suit returns the unstructured mesh and adds a result note with the reason. Measured on
+  the template plate with a hole (size 0.3, Size At Holes 0.3, Quad8 choice): 7.5k dofs against 37k for the plain mesh, peak von
+  Mises 1.7 % apart, strain energy 1e-6 apart (`fea-problem/tests/hybrid_goal.rs`). With the template's own Size At Holes of 0.1 the
+  size field grades too steeply (the hybrid size jump is 8.1 against a limit of 6; a 0.035 triangle next to a 0.28 quadrilateral at
+  the interface of a structured run) and the fallback is taken. Not yet improved: structured runs spanning a steep size gradient.
+- **Adaptivity Driver** (`Problem.mesh.adapt_mode`, shown when Adaptive Passes > 0): ZZ error estimate (default, unchanged) or
+  Goal-oriented, which runs `adaptivity::run_amr` on the compliance (tolerance `target_error^2` of the first mesh's compliance)
+  fused with the ZZ criterion, then solves the accepted mesh through the ordinary path. No bushings (contact), structural 2D
+  sketches only. Everything else in this document (eigenvalue and plasticity/contact AMR, the equilibrated and enriched-dual
+  estimators as separate calls, the 3D prismatic hybrid, the size predictor, multi-material meshes) is a `fea-core` library API
+  and has no workbench control yet.

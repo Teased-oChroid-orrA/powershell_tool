@@ -314,8 +314,52 @@ impl Shape {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum MeshStrategy {
+    #[default]
+    Unstructured,
+    Hybrid,
+}
+
+impl MeshStrategy {
+    pub const ALL: [MeshStrategy; 2] = [MeshStrategy::Unstructured, MeshStrategy::Hybrid];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MeshStrategy::Unstructured => "Unstructured",
+            MeshStrategy::Hybrid => "Hybrid (structured + unstructured)",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum AdaptMode {
+    #[default]
+    Zz,
+    GoalOriented,
+}
+
+impl AdaptMode {
+    pub const ALL: [AdaptMode; 2] = [AdaptMode::Zz, AdaptMode::GoalOriented];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AdaptMode::Zz => "ZZ error estimate",
+            AdaptMode::GoalOriented => "Goal-oriented (compliance)",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MeshSpec {
+    /// How a sketch region is meshed: all-unstructured (default) or hybrid structured blocks with unstructured cells around the
+    /// features (a mixed Quad/Tri mesh, with the unstructured mesh as the explicit fallback when the region is unsuitable).
+    #[serde(default)]
+    pub strategy: MeshStrategy,
+    /// What drives the adaptive passes: the ZZ error estimate (default) or goal-oriented adaptivity on the compliance (adjoint
+    /// error estimate fused with the ZZ physics criterion, Dorfler marking; structural 2D sketches without bushings).
+    #[serde(default)]
+    pub adapt_mode: AdaptMode,
     pub element: ElementChoice,
     /// Target element edge length away from refinement.
     pub size: f64,
@@ -337,7 +381,7 @@ pub struct MeshSpec {
 
 impl Default for MeshSpec {
     fn default() -> Self {
-        Self { element: ElementChoice::Quad8, size: 0.25, hole_factor: 0.35, adapt_passes: 2, target_error: 0.02, refine: Vec::new(), reorient: false }
+        Self { strategy: MeshStrategy::default(), adapt_mode: AdaptMode::default(), element: ElementChoice::Quad8, size: 0.25, hole_factor: 0.35, adapt_passes: 2, target_error: 0.02, refine: Vec::new(), reorient: false }
     }
 }
 

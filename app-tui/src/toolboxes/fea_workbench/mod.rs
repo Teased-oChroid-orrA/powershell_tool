@@ -760,7 +760,7 @@ pub fn handle_key(state: &mut FeaWorkbenchState, key: KeyEvent) -> (bool, Vec<Ef
         KeyCode::Left | KeyCode::Right => {
             let forward = key.code == KeyCode::Right;
             match row {
-                Some(r @ (FieldRow::Template | FieldRow::Analysis | FieldRow::Element | FieldRow::SupportEdge(_) | FieldRow::LoadEdge(_))) => (true, state.activate(r, forward)),
+                Some(r @ (FieldRow::Template | FieldRow::Analysis | FieldRow::Element | FieldRow::MeshStrategyRow | FieldRow::AdaptModeRow | FieldRow::SupportEdge(_) | FieldRow::LoadEdge(_))) => (true, state.activate(r, forward)),
                 _ => (false, Vec::new()),
             }
         }
