@@ -3,10 +3,18 @@
 //! the controller asks a caller-supplied mesher for the next mesh (through a size field, as `adapt.rs` does) and keeps or
 //! rolls back the step. Estimator code never calls a mesher and a mesher never sees an estimator.
 
+pub mod dwr;
+pub mod estimator;
+pub mod goal;
+pub mod patch;
 pub mod snapshot;
 pub mod transaction;
 pub mod transfer;
 
+pub use estimator::{AdjacencyCache, ErrorEstimator, ErrorField, EstimatorContext, Indicator, Reliability, ZzEstimator};
+pub use dwr::{DwrEstimator, DwrGoalEstimator, DwrResult};
+pub use goal::LinearFunctional;
+pub use patch::PatchTopology;
 pub use snapshot::SolverSnapshot;
 pub use transaction::{attempt, Attempt};
 pub use transfer::{NodalInterpolation, StateTransferOperator, Transferred};

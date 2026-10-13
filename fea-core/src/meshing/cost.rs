@@ -37,7 +37,7 @@ impl MeshCost {
         let d = mesh.dim();
         let assembly_units: f64 = mesh.blocks.iter().map(|b| b.n_elems() as f64 * ((b.kind.n_nodes() * d) as f64).powi(2)).sum();
         let factor_nnz = red.factor_nnz();
-        Ok(Self { dofs: mesh.n_dofs(), elements: mesh.n_elems(), matrix_nnz: model.pattern.col_ptr.last().map_or(0, |&n| n as usize * d * d), factor_nnz, assembly_units, factor_units: (factor_nnz as f64).powf(1.5) })
+        Ok(Self { dofs: mesh.n_dofs(), elements: mesh.n_elems(), matrix_nnz: model.pattern.col_ptr.last().map_or(0, |&n| n * d * d), factor_nnz, assembly_units, factor_units: (factor_nnz as f64).powf(1.5) })
     }
 }
 

@@ -10,6 +10,8 @@
 //! returns Delaunay topology, whose flips cannot improve the angle criterion, and size changes belong to the adaptation
 //! step.
 
+#![allow(clippy::needless_range_loop)] // index-parallel numeric kernels read clearer as loops
+
 use super::adjacency::Adjacency;
 use super::quality::element_quality;
 use crate::element::ElementKind;

@@ -36,3 +36,22 @@ the phase issues. Appended per phase; nothing here is a projection.
 - Cost model (`predictions_track_measured_solve_times`, `--release --ignored`): calibrated on a 100x100 Quad8 mesh, predicted /
   measured time of assemble+factor+solve is 0.57 (50x50), 0.84 (70x70), 1.27 (140x140): good to a factor of 2 over a 4x range
   and poor on very small meshes (fixed overheads, ratio 0.21 at 20x20), so it ranks candidates that differ by more than ~50 %.
+
+## Phase 5: dual-weighted residual estimate (2026-10-13)
+
+`cargo test -p fea-core --test dwr -- --nocapture`. Plane-strain Lame cylinder (a = 1, b = 2, p = 1000), quarter model; exact
+quantities from the closed form. Effectivity = estimated error / true error (exact minus discrete). Below ~1e-5 relative
+the closed form is limited by the circle being approximated by quadratic edges, so those rows are informational.
+
+| goal | mesh | h = 0.5 | h = 0.25 | h = 0.125 |
+|---|---|---|---|---|
+| compliance `f.u` | Tri6 | 1.83 | 1.04 | 0.55 (err 2.7e-6, floor) |
+| compliance `f.u` | Quad8 | 2.95 | within [0.5, 2] | within [0.5, 2] |
+| mean `sigma_xx`, band `r < 1.6` | Tri6 | 1.26 | 1.10 | 0.64 (floor) |
+| mean `sigma_xx`, band `r < 1.6` | Quad8 | 1.17 | 0.57 | 1.60 (floor) |
+
+- The dual solve reuses one factorisation for any number of goals; reciprocity `f.z = J(u_h)` holds to 1e-9, the compliance dual
+  equals the primal solution, the dual residual is < 1e-10, the estimate is linear in the goal (2 g1 - 3 g2 to 1e-7), and the
+  field is bit-identical on one and many threads (60 x 60 Quad8).
+- A reaction sum fixed by equilibrium (true error 0) is estimated at 2e-4 .. 6e-5 of its value: small, not zero.
+- Point goals are reported `Degraded` (singular dual); plastic blocks and nodal temperature fields `Unsupported`.
