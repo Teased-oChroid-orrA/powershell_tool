@@ -134,9 +134,54 @@ fn edge_of_area(a: f64) -> f64 {
     (4.0 * a / 3.0f64.sqrt()).sqrt()
 }
 
-/// Build the size field of the next mesh from the ZZ estimate of the current one. `quad_split`
-/// marks quadrilateral meshes produced by the three-quads-per-triangle split (each quad is a third
-/// of a triangle, so its area is tripled to recover the triangle size the mesher asks for).
+/// Corner triangles of every element of a 2D mesh (a quadrilateral is fanned into two), with the element each belongs to.
+fn corner_triangles(mesh: &Mesh) -> (Vec<[usize; 3]>, Vec<usize>) {
+    let (mut tris, mut owner) = (Vec::new(), Vec::new());
+    let mut e = 0;
+    for blk in &mesh.blocks {
+        let nc = blk.kind.n_corners();
+        for conn in blk.conn.chunks_exact(blk.kind.n_nodes()) {
+            let c = &conn[..nc];
+            tris.push([c[0], c[1], c[2]]);
+            owner.push(e);
+            if matches!(blk.kind, ElementKind::Quad4 | ElementKind::Quad8 | ElementKind::Quad9) {
+                tris.push([c[0], c[2], c[3]]);
+                owner.push(e);
+            }
+            e += 1;
+        }
+    }
+    (tris, owner)
+}
+
+/// Equilateral-equivalent edge length of every element of a 2D mesh (global element order): the size the mesher was asked for
+/// when it produced the element. `quad_split` marks quadrilateral meshes produced by the three-quads-per-triangle split (each
+/// quad is a third of a triangle, so its area is tripled to recover the triangle size the mesher asks for).
+pub fn element_sizes_2d(mesh: &Mesh, quad_split: bool) -> Result<Vec<f64>, String> {
+    if mesh.dim() != 2 {
+        return Err("adaptive remeshing is for 2D meshes".into());
+    }
+    let pts: Vec<[f64; 2]> = mesh.nodes.iter().map(|x| [x[0], x[1]]).collect();
+    let mut out = Vec::with_capacity(mesh.n_elems());
+    for blk in &mesh.blocks {
+        let nc = blk.kind.n_corners();
+        for conn in blk.conn.chunks_exact(blk.kind.n_nodes()) {
+            let c = &conn[..nc];
+            let mut tris = vec![[c[0], c[1], c[2]]];
+            if matches!(blk.kind, ElementKind::Quad4 | ElementKind::Quad8 | ElementKind::Quad9) {
+                tris.push([c[0], c[2], c[3]]);
+            }
+            let area: f64 = tris.iter().map(|t| 0.5 * ((pts[t[1]][0] - pts[t[0]][0]) * (pts[t[2]][1] - pts[t[0]][1]) - (pts[t[1]][1] - pts[t[0]][1]) * (pts[t[2]][0] - pts[t[0]][0])).abs()).sum();
+            let a_tri = if quad_split && nc == 4 { 3.0 * area } else { area };
+            out.push(edge_of_area(a_tri));
+        }
+    }
+    Ok(out)
+}
+
+/// Build the size field of the next mesh from the ZZ estimate of the current one. `quad_split` marks quadrilateral meshes
+/// produced by the three-quads-per-triangle split (each quad is a third of a triangle, so its area is tripled to recover the
+/// triangle size the mesher asks for).
 pub fn adapted_size_field(mesh: &Mesh, zz: &ZzEstimate, quad_split: bool, opt: &AdaptOptions) -> Result<SizeField, String> {
     if mesh.dim() != 2 {
         return Err("adaptive remeshing is for 2D meshes".into());
@@ -146,33 +191,48 @@ pub fn adapted_size_field(mesh: &Mesh, zz: &ZzEstimate, quad_split: bool, opt: &
         return Err(format!("{} error values for {} elements", zz.eta.len(), n_elems));
     }
     let target = opt.target_rel_error * (zz.norm * zz.norm + zz.total * zz.total).sqrt() / (n_elems as f64).sqrt();
-    // Corner triangles of every element (a quad is fanned into two).
+    let h_old = element_sizes_2d(mesh, quad_split)?;
+    let h_elem: Vec<f64> = (0..n_elems)
+        .map(|e| {
+            let ratio = if zz.eta[e] > 0.0 { (target / zz.eta[e]).powf(1.0 / opt.order) } else { opt.max_factor };
+            (h_old[e] * ratio.clamp(opt.min_factor, opt.max_factor)).clamp(opt.h_min, opt.h_max)
+        })
+        .collect();
+    size_field_from_element_sizes(mesh, &h_elem, opt)
+}
+
+/// The size field of a 2D mesh from a target size per element (global element order): geometric mean at the nodes, then the
+/// grading limit of `opt` along the corner edges (`opt.h_min`, `h_max` bound the result of the caller's sizes only).
+pub fn size_field_from_element_sizes(mesh: &Mesh, h_elem: &[f64], opt: &AdaptOptions) -> Result<SizeField, String> {
+    size_field_at_nodes(mesh, h_elem, opt, NodalSize::GeometricMean)
+}
+
+/// How the sizes of the elements around a node combine into the node's size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodalSize {
+    /// Geometric mean: smooth, but one small element among many neighbours barely moves the node's size.
+    GeometricMean,
+    /// Smallest: a request to refine one element is honoured at all its nodes (the grading limit then spreads it).
+    Min,
+}
+
+/// [`size_field_from_element_sizes`] with a choice of the nodal combination.
+pub fn size_field_at_nodes(mesh: &Mesh, h_elem: &[f64], opt: &AdaptOptions, combine: NodalSize) -> Result<SizeField, String> {
+    if mesh.dim() != 2 {
+        return Err("adaptive remeshing is for 2D meshes".into());
+    }
+    if h_elem.len() != mesh.n_elems() {
+        return Err(format!("{} sizes for {} elements", h_elem.len(), mesh.n_elems()));
+    }
+    if let Some(i) = h_elem.iter().position(|h| !(h.is_finite() && *h > 0.0)) {
+        return Err(format!("the target size of element {i} is {}", h_elem[i]));
+    }
     let n_nodes = mesh.nodes.len();
     let pts: Vec<[f64; 2]> = mesh.nodes.iter().map(|x| [x[0], x[1]]).collect();
-    let mut tris: Vec<[usize; 3]> = Vec::new();
-    let mut h_elem: Vec<f64> = Vec::with_capacity(n_elems);
-    let mut elem_tris: Vec<(usize, usize)> = Vec::new(); // range into `tris` per element
-    let mut e = 0;
-    for blk in &mesh.blocks {
-        let nc = blk.kind.n_corners();
-        for conn in blk.conn.chunks_exact(blk.kind.n_nodes()) {
-            let c = &conn[..nc];
-            let first = tris.len();
-            tris.push([c[0], c[1], c[2]]);
-            if matches!(blk.kind, ElementKind::Quad4 | ElementKind::Quad8 | ElementKind::Quad9) {
-                tris.push([c[0], c[2], c[3]]);
-            }
-            let area: f64 = tris[first..].iter().map(|t| 0.5 * ((pts[t[1]][0] - pts[t[0]][0]) * (pts[t[2]][1] - pts[t[0]][1]) - (pts[t[1]][1] - pts[t[0]][1]) * (pts[t[2]][0] - pts[t[0]][0])).abs()).sum();
-            let a_tri = if quad_split && nc == 4 { 3.0 * area } else { area };
-            let h_old = edge_of_area(a_tri);
-            let ratio = if zz.eta[e] > 0.0 { (target / zz.eta[e]).powf(1.0 / opt.order) } else { opt.max_factor };
-            h_elem.push((h_old * ratio.clamp(opt.min_factor, opt.max_factor)).clamp(opt.h_min, opt.h_max));
-            elem_tris.push((first, tris.len()));
-            e += 1;
-        }
-    }
-    // Nodal size: geometric mean of the adjacent elements' sizes.
+    let (tris, _) = corner_triangles(mesh);
+    // Nodal size: combination of the adjacent elements' sizes.
     let (mut sum, mut cnt) = (vec![0.0f64; n_nodes], vec![0u32; n_nodes]);
+    let mut smallest = vec![f64::INFINITY; n_nodes];
     let mut e = 0;
     for blk in &mesh.blocks {
         let nc = blk.kind.n_corners();
@@ -180,11 +240,18 @@ pub fn adapted_size_field(mesh: &Mesh, zz: &ZzEstimate, quad_split: bool, opt: &
             for &v in &conn[..nc] {
                 sum[v] += h_elem[e].ln();
                 cnt[v] += 1;
+                smallest[v] = smallest[v].min(h_elem[e]);
             }
             e += 1;
         }
     }
-    let mut h: Vec<f64> = (0..n_nodes).map(|i| if cnt[i] > 0 { (sum[i] / cnt[i] as f64).exp() } else { f64::INFINITY }).collect();
+    let mut h: Vec<f64> = (0..n_nodes)
+        .map(|i| match combine {
+            _ if cnt[i] == 0 => f64::INFINITY,
+            NodalSize::GeometricMean => (sum[i] / cnt[i] as f64).exp(),
+            NodalSize::Min => smallest[i],
+        })
+        .collect();
     // Grading limit along the triangle edges (a few relaxation sweeps converge it).
     for _ in 0..(n_nodes.min(200)) {
         let mut changed = false;
@@ -206,7 +273,6 @@ pub fn adapted_size_field(mesh: &Mesh, zz: &ZzEstimate, quad_split: bool, opt: &
             break;
         }
     }
-    let _ = elem_tris;
     // Midside and interior nodes carry no size; give them the mean of their element's corners so the
     // background triangles only reference corner nodes (they are the only vertices of `tris`).
     Ok(SizeField::new(pts, tris, h.into_iter().map(|v| if v.is_finite() { v } else { opt.h_max.min(1e30) }).collect()))
@@ -316,41 +382,81 @@ fn edge_of_volume(v: f64) -> f64 {
     (6.0 * 2.0f64.sqrt() * v).cbrt()
 }
 
-/// Build the size field of the next tetrahedral mesh from the ZZ estimate of the current one (error equidistribution as
-/// in [`adapted_size_field`]; `quad_split` does not apply). Works on `Tet4` and `Tet10` meshes.
-pub fn adapted_size_field_3d(mesh: &Mesh, zz: &ZzEstimate, opt: &AdaptOptions) -> Result<SizeField3, String> {
+/// Edge length of the regular tetrahedron of the volume of every element of a tetrahedral mesh (global element order).
+pub fn element_sizes_3d(mesh: &Mesh) -> Result<Vec<f64>, String> {
     if mesh.dim() != 3 || !mesh.blocks.iter().all(|b| matches!(b.kind, ElementKind::Tet4 | ElementKind::Tet10)) {
         return Err("3D adaptive remeshing needs a tetrahedral mesh".into());
     }
+    let mut out = Vec::with_capacity(mesh.n_elems());
+    for blk in &mesh.blocks {
+        for conn in blk.conn.chunks_exact(blk.kind.n_nodes()) {
+            let p = |i: usize| mesh.nodes[conn[i]];
+            let (a, b, c, d) = (p(0), p(1), p(2), p(3));
+            let (u, v, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]], [d[0] - a[0], d[1] - a[1], d[2] - a[2]]);
+            let vol = ((u[0] * (v[1] * w[2] - v[2] * w[1]) - u[1] * (v[0] * w[2] - v[2] * w[0]) + u[2] * (v[0] * w[1] - v[1] * w[0])) / 6.0).abs();
+            out.push(edge_of_volume(vol));
+        }
+    }
+    Ok(out)
+}
+
+/// Build the size field of the next tetrahedral mesh from the ZZ estimate of the current one (error equidistribution as
+/// in [`adapted_size_field`]; `quad_split` does not apply). Works on `Tet4` and `Tet10` meshes.
+pub fn adapted_size_field_3d(mesh: &Mesh, zz: &ZzEstimate, opt: &AdaptOptions) -> Result<SizeField3, String> {
+    let h_old = element_sizes_3d(mesh)?;
     let n_elems = mesh.n_elems();
     if zz.eta.len() != n_elems {
         return Err(format!("{} error values for {} elements", zz.eta.len(), n_elems));
     }
     let target = opt.target_rel_error * (zz.norm * zz.norm + zz.total * zz.total).sqrt() / (n_elems as f64).sqrt();
+    let h_elem: Vec<f64> = (0..n_elems)
+        .map(|e| {
+            let ratio = if zz.eta[e] > 0.0 { (target / zz.eta[e]).powf(1.0 / opt.order) } else { opt.max_factor };
+            (h_old[e] * ratio.clamp(opt.min_factor, opt.max_factor)).clamp(opt.h_min, opt.h_max)
+        })
+        .collect();
+    size_field_from_element_sizes_3d(mesh, &h_elem, opt)
+}
+
+/// The size field of a tetrahedral mesh from a target size per element (see [`size_field_from_element_sizes`]).
+pub fn size_field_from_element_sizes_3d(mesh: &Mesh, h_elem: &[f64], opt: &AdaptOptions) -> Result<SizeField3, String> {
+    size_field_at_nodes_3d(mesh, h_elem, opt, NodalSize::GeometricMean)
+}
+
+/// [`size_field_from_element_sizes_3d`] with a choice of the nodal combination.
+pub fn size_field_at_nodes_3d(mesh: &Mesh, h_elem: &[f64], opt: &AdaptOptions, combine: NodalSize) -> Result<SizeField3, String> {
+    if mesh.dim() != 3 || !mesh.blocks.iter().all(|b| matches!(b.kind, ElementKind::Tet4 | ElementKind::Tet10)) {
+        return Err("3D adaptive remeshing needs a tetrahedral mesh".into());
+    }
+    if h_elem.len() != mesh.n_elems() {
+        return Err(format!("{} sizes for {} elements", h_elem.len(), mesh.n_elems()));
+    }
+    if let Some(i) = h_elem.iter().position(|h| !(h.is_finite() && *h > 0.0)) {
+        return Err(format!("the target size of element {i} is {}", h_elem[i]));
+    }
     let n_nodes = mesh.nodes.len();
-    let mut tets: Vec<[usize; 4]> = Vec::with_capacity(n_elems);
-    let mut h_elem: Vec<f64> = Vec::with_capacity(n_elems);
+    let mut tets: Vec<[usize; 4]> = Vec::with_capacity(mesh.n_elems());
     for blk in &mesh.blocks {
         for conn in blk.conn.chunks_exact(blk.kind.n_nodes()) {
-            let t = [conn[0], conn[1], conn[2], conn[3]];
-            let p = |i: usize| mesh.nodes[t[i]];
-            let (a, b, c, d) = (p(0), p(1), p(2), p(3));
-            let (u, v, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]], [d[0] - a[0], d[1] - a[1], d[2] - a[2]]);
-            let vol = ((u[0] * (v[1] * w[2] - v[2] * w[1]) - u[1] * (v[0] * w[2] - v[2] * w[0]) + u[2] * (v[0] * w[1] - v[1] * w[0])) / 6.0).abs();
-            let e = tets.len();
-            let ratio = if zz.eta[e] > 0.0 { (target / zz.eta[e]).powf(1.0 / opt.order) } else { opt.max_factor };
-            h_elem.push((edge_of_volume(vol) * ratio.clamp(opt.min_factor, opt.max_factor)).clamp(opt.h_min, opt.h_max));
-            tets.push(t);
+            tets.push([conn[0], conn[1], conn[2], conn[3]]);
         }
     }
     let (mut sum, mut cnt) = (vec![0.0f64; n_nodes], vec![0u32; n_nodes]);
+    let mut smallest = vec![f64::INFINITY; n_nodes];
     for (e, t) in tets.iter().enumerate() {
         for &v in t {
             sum[v] += h_elem[e].ln();
             cnt[v] += 1;
+            smallest[v] = smallest[v].min(h_elem[e]);
         }
     }
-    let mut h: Vec<f64> = (0..n_nodes).map(|i| if cnt[i] > 0 { (sum[i] / cnt[i] as f64).exp() } else { f64::INFINITY }).collect();
+    let mut h: Vec<f64> = (0..n_nodes)
+        .map(|i| match combine {
+            _ if cnt[i] == 0 => f64::INFINITY,
+            NodalSize::GeometricMean => (sum[i] / cnt[i] as f64).exp(),
+            NodalSize::Min => smallest[i],
+        })
+        .collect();
     let dist = |i: usize, j: usize| {
         let (a, b) = (mesh.nodes[i], mesh.nodes[j]);
         ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()

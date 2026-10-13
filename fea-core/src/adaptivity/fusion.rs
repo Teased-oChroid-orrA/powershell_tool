@@ -387,7 +387,7 @@ mod tests {
         // a field of the wrong length is refused
         let short = field("zz", &[1.0, 2.0]);
         let mismatched = FusionInput { adjoint: &[(1.0, &adj)], physics: &[(PhysicsEstimator::SprPlus, &short)], zones: None, capped: None, protected: None };
-        assert!(matches!(fuse(&mismatched, &FusionConfig { strict: true, ..Default::default() }), Err(_)));
+        assert!(fuse(&mismatched, &FusionConfig { strict: true, ..Default::default() }).is_err());
     }
 
     #[test]

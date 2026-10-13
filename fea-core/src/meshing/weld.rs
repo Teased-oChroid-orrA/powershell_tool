@@ -23,6 +23,25 @@ impl NodeWelder {
         std::array::from_fn(|c| (x[c] / self.cell).floor() as i64)
     }
 
+    /// Index of an existing node within `tol` of `x`, without inserting anything.
+    pub fn find(&self, nodes: &[[f64; 3]], x: [f64; 3]) -> Option<usize> {
+        let k = self.key(x);
+        for di in -1..=1 {
+            for dj in -1..=1 {
+                for dk in -1..=1 {
+                    if let Some(v) = self.bins.get(&[k[0] + di, k[1] + dj, k[2] + dk]) {
+                        for &n in v {
+                            if (0..3).map(|c| (nodes[n][c] - x[c]).powi(2)).sum::<f64>().sqrt() <= self.tol {
+                                return Some(n);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Index of an existing node within `tol` of `x` in `nodes`, else append `x` and return its index.
     pub fn node(&mut self, nodes: &mut Vec<[f64; 3]>, x: [f64; 3]) -> usize {
         let k = self.key(x);

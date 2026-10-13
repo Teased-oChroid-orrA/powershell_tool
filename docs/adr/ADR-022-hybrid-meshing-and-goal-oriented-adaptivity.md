@@ -31,7 +31,13 @@ hybrid structured/unstructured mesher (System B) and a goal-oriented, multicrite
    equal accuracy. Anisotropic structured blocks are cheaper but their accuracy is a modelling assumption, so they are
    eligible only on request. Measured result (evidence doc): an isotropic structured block is **not** cheaper than a graded
    Delaunay mesh; an anisotropic one on a slender member with a local feature is (38 % fewer unknowns at equal energy error).
-5. **Goal-oriented estimate by recovered-stress dual weighting** (System A, Phase 5): `eta_e = int_e (sigma*(u) - sigma_h(u)) :
+5. **Goal-oriented estimate** (System A, Phases 5 and 8). Two estimators, chosen by measurement (evidence doc, Phase 8):
+   the **enriched-dual** estimate (the mesh is refined uniformly once, the dual is solved there, `J(u) - J(u_h) ~ (z_f - P z_h) .
+   (f - K u_h)` with nodal sharing among the coarse elements) is the controller's choice for 2D triangle and quadrilateral
+   meshes; the **recovered-stress** form below is the fallback for other meshes and the cheap option. A residual-based form with
+   a polynomial-fit dual was built, failed (wrong sign), and removed.
+
+   Recovered-stress form (Phase 5): `eta_e = int_e (sigma*(u) - sigma_h(u)) :
    C^-1 : (sigma*(z) - sigma_h(z))` from `a(e_u, e_z) = J(u) - J(u_h)` and Galerkin orthogonality, with the dual `z` from the
    primal factorisation (`K` symmetric). It needs no enriched space, works for every element family and inherits SPR
    improvements; effectivity is measured against closed-form quantities of interest.

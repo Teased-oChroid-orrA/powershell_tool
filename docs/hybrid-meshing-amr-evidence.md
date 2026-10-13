@@ -89,3 +89,39 @@ the closed form is limited by the circle being approximated by quadratic edges, 
   (unsymmetric with friction), (2) a smoothed contact-pressure field, because pointwise Gauss-point pressures on non-matching
   deformable meshes scatter (`fea-core/AGENTS.md`, contact pitfalls), (3) master/slave pair consistency in the patch topology.
   They are Phase 9 work.
+
+## Phase 8: the adaptive loop (2026-10-13)
+
+`cargo test -p fea-core --test amr -- --nocapture`. L-shaped plate (re-entrant corner, clamped left edge, 100 per unit
+length downward traction on the lower arm's free end, Tri6, plane stress), quantity of interest = smooth-weighted mean of
+`sigma_yy` around (1.5, 0.5) (a bump of radius 0.45); reference value from a uniform h = 0.02 mesh (18.421).
+
+- **Which dual estimate.** Three were measured against the true error on uniform meshes and on an adapted one
+  (`J_ref - J_h`; estimate signed the same way):
+
+  | mesh | true | recovered-stress DWR | residual DWR, cubic-fit dual | enriched-dual DWR |
+  |---|---|---|---|---|
+  | h = 0.4 | -3.134 | -5.232 | +0.085 | -2.255 |
+  | h = 0.2 | -1.822 | -1.701 | +0.063 | -1.098 |
+  | h = 0.1 | -0.531 | -1.036 | +0.035 | -0.344 |
+  | h = 0.05 | -0.181 | -0.418 | +0.012 | -0.157 |
+  | adapted, 1086 dofs | -0.164 | -2.054 | +0.013 | -0.245 |
+
+  The recovered-stress estimate is dominated by the re-entrant corner (1.26 of the -2.05 sits in one element) where SPR is not
+  superconvergent, so on adapted meshes it does not fall with the error. The residual estimate with a polynomial-fit dual has
+  the wrong sign: the Galerkin-orthogonality test of its residual assembly passes (it is exact), so the fault is the dual
+  reconstruction; it was removed. The enriched dual (one uniform h-refinement, the goal rebuilt there) keeps the sign and
+  tracks the error within a factor 0.6-1.5 (0.68-0.73 along the adaptive run). It is the controller's estimator wherever the
+  mesh can be refined (2D triangles and quadrilaterals); other meshes fall back to the recovered-stress form.
+- **Goal-oriented against uniform refinement** (tolerance 0.5 absolute): the loop stops after two adaptation steps at 892
+  unknowns with a true error of 0.098; uniform refinement has an error of 0.375 at 8046 unknowns.
+- **Strategies** (same problem, goal tolerance 0.2): adjoint only 892 dofs, goal error 0.098, physics error 7.1 %; physics only
+  2744 dofs, goal error 0.056, physics error 4.1 %; constraint-preserving fusion with a 2 % physics requirement 10918 dofs, goal
+  error 0.067, physics error 1.9 %. The physics requirement, not the goal, sets the cost near a re-entrant corner.
+- **Stops are explicit and tested**: budget (`max_dofs`), cycle limit, mesher failure, a mesher that silently drops the
+  load (caught by the load-resultant check) or the restraints, an unreachable physics tolerance under a singular-zone size cap
+  and a growth limit of 3 per cycle (without it every element became mandatory and the mesh grew fourfold per cycle).
+- **Hybrid and unstructured meshers** behind the same loop (12 x 4 plate with a hole, `sigma_xx` at the hole top, reference
+  J = 2059.16): both stop converged with a physical error under 0.4 %; the estimate sees the discretisation error of the mesh it
+  is given, not the approximation of the circle by the boundary elements (true errors 6.8 and 3.6 at the first mesh against
+  estimates of -0.8 and +0.2), so that end-to-end check is on the quantity, not on the effectivity.

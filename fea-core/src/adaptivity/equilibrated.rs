@@ -27,8 +27,8 @@
 #![allow(clippy::needless_range_loop)] // index-parallel numeric kernels read clearer as loops
 
 use super::estimator::{ErrorEstimator, ErrorField, EstimatorContext, Indicator, Reliability};
+use super::trimesh::{outward_normal, TriEdge, TriMesh};
 use crate::analysis::stress_at_xi;
-use crate::element::ElementKind;
 use crate::mesh::Physics;
 use crate::meshing::MeshError;
 use crate::recover::complementary_energy;
@@ -36,10 +36,10 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::time::Instant;
 
-const NQ: usize = 6; // Gauss points per direction (triangles: collapsed rule, edges: 1D rule)
+pub(crate) const NQ: usize = 6; // Gauss points per direction (triangles: collapsed rule, edges: 1D rule)
 
 /// Gauss-Legendre points and weights on `[-1, 1]` (6 points).
-const GL6: [(f64, f64); 6] = [
+pub(crate) const GL6: [(f64, f64); 6] = [
     (-0.932_469_514_203_152, 0.171_324_492_379_170_35),
     (-0.661_209_386_466_264_5, 0.360_761_573_048_138_6),
     (-0.238_619_186_083_196_9, 0.467_913_934_572_691),
@@ -49,7 +49,7 @@ const GL6: [(f64, f64); 6] = [
 ];
 
 /// Collapsed Gauss rule on the reference triangle `(0,0), (1,0), (0,1)`: points `(xi, eta)` and weights (sum 1/2).
-fn tri_rule() -> Vec<([f64; 2], f64)> {
+pub(crate) fn tri_rule() -> Vec<([f64; 2], f64)> {
     let mut out = Vec::with_capacity(NQ * NQ);
     for &(ui, wi) in &GL6 {
         for &(vj, wj) in &GL6 {
@@ -165,34 +165,11 @@ struct ElemData {
     body: [f64; 2],
 }
 
-struct EdgeRec {
-    a: usize,
-    b: usize,
-    pa: [f64; 2],
-    pb: [f64; 2],
-    len: f64,
-    owners: Vec<(usize, usize)>, // (element, local edge)
-}
-
-impl EdgeRec {
-    fn point(&self, t: f64) -> [f64; 2] {
-        let s = 0.5 * (t + 1.0);
-        [self.pa[0] + s * (self.pb[0] - self.pa[0]), self.pa[1] + s * (self.pb[1] - self.pa[1])]
-    }
-}
-
-/// Outward normal of local edge `k` of `e` (edge from corner k to k+1, counter-clockwise element).
-fn outward_normal(e: &ElemData, k: usize) -> [f64; 2] {
-    let (p, q) = (e.p[k], e.p[(k + 1) % 3]);
-    let l = (q[0] - p[0]).hypot(q[1] - p[1]);
-    [(q[1] - p[1]) / l, -(q[0] - p[0]) / l]
-}
-
 /// The reconstruction: per element and stress row, the coefficients of the RT basis.
 pub struct Reconstruction {
     k: usize,
     elems: Vec<ElemData>,
-    edges: Vec<EdgeRec>,
+    edges: Vec<TriEdge>,
     coef: Vec<[Vec<f64>; 2]>,
     pub report: EquilibrationReport,
 }
@@ -229,169 +206,54 @@ struct PatchSolution {
     defect: f64,
 }
 
-fn unsupported(why: impl Into<String>) -> MeshError {
-    MeshError::Unsupported(why.into())
-}
-
 /// Reconstruct the equilibrated stress of a solved model. Errors with `Unsupported` outside the supported class.
 pub fn reconstruct(ctx: &EstimatorContext) -> Result<Reconstruction, MeshError> {
     let model = ctx.model;
     let mesh = &model.mesh;
-    if !matches!(mesh.physics, Physics::PlaneStress { .. } | Physics::PlaneStrain { .. }) {
-        return Err(unsupported("the equilibrated reconstruction is for plane stress and plane strain"));
-    }
-    if ctx.loads.temperature.is_some() {
-        return Err(unsupported("nodal temperature fields"));
-    }
-    if !ctx.loads.nodal.is_empty() {
-        return Err(unsupported("nodal point loads (a point force is not in H(div))"));
-    }
-    if !ctx.loads.field_faces.is_empty() {
-        return Err(unsupported("position-dependent boundary force fields"));
-    }
-    if mesh.blocks.iter().any(|b| b.plasticity.is_some()) {
-        return Err(unsupported("plastic blocks"));
-    }
-    let mut p_deg = 1usize;
-    for b in &mesh.blocks {
-        match b.kind {
-            ElementKind::Tri3 => {}
-            ElementKind::Tri6 => p_deg = 2,
-            other => return Err(unsupported(format!("{other:?} elements (triangles only)"))),
-        }
-    }
-    let k = p_deg;
+    let tm = TriMesh::build(ctx)?;
+    let k = tm.degree;
     let nb = n_rt(k);
     let tests = monomials(k);
     let rule = tri_rule();
-    let plane_strain = matches!(mesh.physics, Physics::PlaneStrain { .. });
-
-    // body force of every block
-    let mut body_of_block = vec![[0.0f64; 2]; mesh.blocks.len()];
-    for (b, f) in body_of_block.iter_mut().enumerate() {
-        if let Some(g) = ctx.loads.body {
-            f[0] += g[0];
-            f[1] += g[1];
-        }
-        for &(bb, g) in &ctx.loads.block_body {
-            if bb == b {
-                f[0] += g[0];
-                f[1] += g[1];
-            }
-        }
-    }
-
-    // elements
-    let mut elems: Vec<ElemData> = Vec::with_capacity(mesh.n_elems());
-    let mut affine = true;
+    let affine = tm.affine;
     let mut stress_scale = 0.0f64;
-    for (bi, blk) in mesh.blocks.iter().enumerate() {
-        let nn = blk.kind.n_nodes();
-        for e in 0..blk.n_elems() {
-            let conn = blk.elem(e);
-            let corners = [conn[0], conn[1], conn[2]];
-            let p: [[f64; 2]; 3] = std::array::from_fn(|a| [mesh.nodes[corners[a]][0], mesh.nodes[corners[a]][1]]);
-            let area = 0.5 * ((p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) - (p[1][1] - p[0][1]) * (p[2][0] - p[0][0]));
-            if area <= 0.0 {
-                return Err(MeshError::InvalidElements { count: 1, first: (bi, e) });
-            }
-            let h = (p[1][0] - p[0][0]).hypot(p[1][1] - p[0][1]);
-            if nn == 6 {
-                for m in 0..3 {
-                    let (q0, q1) = (p[m], p[(m + 1) % 3]);
-                    let mid = mesh.nodes[conn[3 + m]];
-                    if (mid[0] - 0.5 * (q0[0] + q1[0])).hypot(mid[1] - 0.5 * (q0[1] + q1[1])) > 1e-9 * h {
-                        affine = false;
-                    }
+    let mut elems: Vec<ElemData> = Vec::with_capacity(tm.elems.len());
+    for te in &tm.elems {
+        let blk = &mesh.blocks[te.block];
+        let conn = blk.elem(te.local);
+        let (p, c, s, area, grad) = (te.p, te.c, te.s, te.area, te.grad);
+        let xyz: Vec<[f64; 3]> = conn.iter().map(|&n| mesh.nodes[n]).collect();
+        let ue: Vec<f64> = conn.iter().flat_map(|&n| [ctx.u[2 * n], ctx.u[2 * n + 1]]).collect();
+        let (mut q_x, mut q_w, mut q_v, mut q_div, mut q_test, mut q_sigma, mut q_lambda) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let mut mass = vec![0.0; nb * nb];
+        for &(r, wref) in &rule {
+            let x = [p[0][0] + (p[1][0] - p[0][0]) * r[0] + (p[2][0] - p[0][0]) * r[1], p[0][1] + (p[1][1] - p[0][1]) * r[0] + (p[2][1] - p[0][1]) * r[1]];
+            let w = 2.0 * area * wref;
+            let (xl, yl) = ((x[0] - c[0]) / s, (x[1] - c[1]) / s);
+            let (val, dv) = rt_basis(k, xl, yl);
+            let divp: Vec<f64> = dv.iter().map(|d| d / s).collect();
+            let test: Vec<f64> = tests.iter().map(|&(a, b)| mono(a, b, xl, yl)).collect();
+            let st = stress_at_xi(blk.kind, mesh.physics, &blk.material, &xyz, &ue, [r[0], r[1], 0.0], ctx.loads.delta_t).map_err(MeshError::Failed)?;
+            stress_scale = stress_scale.max(st[0].abs()).max(st[1].abs()).max(st[3].abs());
+            for i in 0..nb {
+                for j in 0..nb {
+                    mass[i * nb + j] += w * (val[i][0] * val[j][0] + val[i][1] * val[j][1]);
                 }
             }
-            let c = [(p[0][0] + p[1][0] + p[2][0]) / 3.0, (p[0][1] + p[1][1] + p[2][1]) / 3.0];
-            let s = (2.0 * area).sqrt();
-            let grad: [[f64; 2]; 3] = std::array::from_fn(|a| {
-                let (b, cc) = (p[(a + 1) % 3], p[(a + 2) % 3]);
-                [(b[1] - cc[1]) / (2.0 * area), (cc[0] - b[0]) / (2.0 * area)]
-            });
-            let xyz: Vec<[f64; 3]> = conn.iter().map(|&n| mesh.nodes[n]).collect();
-            let ue: Vec<f64> = conn.iter().flat_map(|&n| [ctx.u[2 * n], ctx.u[2 * n + 1]]).collect();
-            let (mut q_x, mut q_w, mut q_v, mut q_div, mut q_test, mut q_sigma, mut q_lambda) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
-            let mut mass = vec![0.0; nb * nb];
-            for &(r, wref) in &rule {
-                let x = [p[0][0] + (p[1][0] - p[0][0]) * r[0] + (p[2][0] - p[0][0]) * r[1], p[0][1] + (p[1][1] - p[0][1]) * r[0] + (p[2][1] - p[0][1]) * r[1]];
-                let w = 2.0 * area * wref;
-                let (xl, yl) = ((x[0] - c[0]) / s, (x[1] - c[1]) / s);
-                let (val, dv) = rt_basis(k, xl, yl);
-                let divp: Vec<f64> = dv.iter().map(|d| d / s).collect();
-                let test: Vec<f64> = tests.iter().map(|&(a, b)| mono(a, b, xl, yl)).collect();
-                let st = stress_at_xi(blk.kind, mesh.physics, &blk.material, &xyz, &ue, [r[0], r[1], 0.0], ctx.loads.delta_t).map_err(MeshError::Failed)?;
-                stress_scale = stress_scale.max(st[0].abs()).max(st[1].abs()).max(st[3].abs());
-                for i in 0..nb {
-                    for j in 0..nb {
-                        mass[i * nb + j] += w * (val[i][0] * val[j][0] + val[i][1] * val[j][1]);
-                    }
-                }
-                q_x.push(x);
-                q_w.push(w);
-                q_v.push(val);
-                q_div.push(divp);
-                q_test.push(test);
-                q_sigma.push([st[0], st[1], st[3]]);
-                q_lambda.push([1.0 - r[0] - r[1], r[0], r[1]]);
-            }
-            elems.push(ElemData { block: bi, corners, p, c, s, grad, q_x, q_w, q_v, q_div, q_test, q_sigma, q_lambda, mass, body: body_of_block[bi] });
+            q_x.push(x);
+            q_w.push(w);
+            q_v.push(val);
+            q_div.push(divp);
+            q_test.push(test);
+            q_sigma.push([st[0], st[1], st[3]]);
+            q_lambda.push([1.0 - r[0] - r[1], r[0], r[1]]);
         }
+        elems.push(ElemData { block: te.block, corners: te.corners, p, c, s, grad, q_x, q_w, q_v, q_div, q_test, q_sigma, q_lambda, mass, body: tm.body[te.block] });
     }
     if stress_scale <= 0.0 {
         stress_scale = 1.0;
     }
-
-    // edges
-    let mut edge_ids: HashMap<(usize, usize), usize> = HashMap::new();
-    let mut edges: Vec<EdgeRec> = Vec::new();
-    let mut elem_edges: Vec<[usize; 3]> = Vec::with_capacity(elems.len());
-    for (ei, el) in elems.iter().enumerate() {
-        let mut ids = [0usize; 3];
-        for kk in 0..3 {
-            let (n0, n1) = (el.corners[kk], el.corners[(kk + 1) % 3]);
-            let key = (n0.min(n1), n0.max(n1));
-            let id = *edge_ids.entry(key).or_insert_with(|| {
-                let (pa, pb) = if n0 < n1 { (el.p[kk], el.p[(kk + 1) % 3]) } else { (el.p[(kk + 1) % 3], el.p[kk]) };
-                let len = (pb[0] - pa[0]).hypot(pb[1] - pa[1]);
-                edges.push(EdgeRec { a: key.0, b: key.1, pa, pb, len, owners: Vec::new() });
-                edges.len() - 1
-            });
-            edges[id].owners.push((ei, kk));
-            ids[kk] = id;
-        }
-        elem_edges.push(ids);
-    }
-    if edges.iter().any(|e| e.owners.len() > 2) {
-        return Err(MeshError::NonConforming("an edge is shared by more than two elements".into()));
-    }
-
-    // applied boundary tractions per edge (stress units): Traction is constant, Pressure follows the outward normal
-    let mut traction: HashMap<usize, [f64; 2]> = HashMap::new();
-    let mut add_load = |nodes: &[usize], load: crate::loads::SurfaceLoad| -> Result<(), MeshError> {
-        let key = (nodes[0].min(nodes[1]), nodes[0].max(nodes[1]));
-        let id = *edge_ids.get(&key).ok_or_else(|| MeshError::Failed("a loaded face is not an edge of the mesh".into()))?;
-        let t = match load {
-            crate::loads::SurfaceLoad::Traction(t) => [t[0], t[1]],
-            crate::loads::SurfaceLoad::Pressure(p) => {
-                let (ei, kk) = edges[id].owners[0];
-                let n = outward_normal(&elems[ei], kk);
-                [-p * n[0], -p * n[1]]
-            }
-        };
-        let e = traction.entry(id).or_insert([0.0, 0.0]);
-        e[0] += t[0];
-        e[1] += t[1];
-        Ok(())
-    };
-    for (nodes, load) in &ctx.loads.faces {
-        add_load(nodes, *load)?;
-    }
-    for (nodes, p) in &ctx.loads.followers {
-        add_load(nodes, crate::loads::SurfaceLoad::Pressure(*p))?;
-    }
+    let (edges, elem_edges, traction) = (tm.edges, tm.elem_edges, tm.traction);
 
     // vertex patches
     let n_nodes = mesh.nodes.len();
@@ -444,7 +306,7 @@ pub fn reconstruct(ctx: &EstimatorContext) -> Result<Reconstruction, MeshError> 
                 let el = &elems[ei];
                 let ed = &edges[elem_edges[ei][kk]];
                 // physical normal used for the moment: the element's outward normal times `sign`
-                let n = outward_normal(el, kk);
+                let n = outward_normal(&el.p, kk);
                 for &(t, w) in &GL6 {
                     let x = ed.point(t);
                     let (xl, yl) = ((x[0] - el.c[0]) / el.s, (x[1] - el.c[1]) / el.s);
@@ -593,7 +455,7 @@ pub fn reconstruct(ctx: &EstimatorContext) -> Result<Reconstruction, MeshError> 
         }
     }
     let mut rec = Reconstruction { k, elems, edges, coef, report: EquilibrationReport { degree: k, patches: vertices.len(), max_compat_defect: max_defect, affine, stress_scale, ..Default::default() } };
-    rec.verify(ctx, &traction, plane_strain);
+    rec.verify(ctx, &traction);
     Ok(rec)
 }
 
@@ -628,7 +490,7 @@ impl Reconstruction {
         out
     }
 
-    fn verify(&mut self, ctx: &EstimatorContext, traction: &HashMap<usize, [f64; 2]>, _plane_strain: bool) {
+    fn verify(&mut self, ctx: &EstimatorContext, traction: &HashMap<usize, [f64; 2]>) {
         let scale = self.report.stress_scale;
         let (mut div_res, mut jump, mut neu) = (0.0f64, 0.0f64, 0.0f64);
         for (ei, el) in self.elems.iter().enumerate() {
@@ -646,7 +508,7 @@ impl Reconstruction {
                 if ed.owners.len() == 2 {
                     let (e1, k1) = ed.owners[0];
                     let (e2, k2) = ed.owners[1];
-                    let (n1, n2) = (outward_normal(&self.elems[e1], k1), outward_normal(&self.elems[e2], k2));
+                    let (n1, n2) = (outward_normal(&self.elems[e1].p, k1), outward_normal(&self.elems[e2].p, k2));
                     let (s1, s2) = (self.stress_at(e1, x), self.stress_at(e2, x));
                     for row in 0..2 {
                         let f1 = s1[row][0] * n1[0] + s1[row][1] * n1[1];
@@ -655,7 +517,7 @@ impl Reconstruction {
                     }
                 } else {
                     let (e1, k1) = ed.owners[0];
-                    let n = outward_normal(&self.elems[e1], k1);
+                    let n = outward_normal(&self.elems[e1].p, k1);
                     let s = self.stress_at(e1, x);
                     let tr = traction.get(&eid).copied().unwrap_or([0.0, 0.0]);
                     for row in 0..2 {

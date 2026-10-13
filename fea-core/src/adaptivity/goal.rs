@@ -121,6 +121,55 @@ impl LinearFunctional {
         Ok(Self { name: format!("mean stress[{comp}] over {n_sel} elements"), gradient: g, offset: 0.0, regularised: n_sel > 1 })
     }
 
+    /// `int w sigma[comp] dV / int w dV` with a smooth non-negative weight `w` (a bump around the point of interest). Unlike
+    /// the element-selecting [`average_stress`](Self::average_stress), its limit under refinement does not depend on which
+    /// elements the region boundary happens to cut, so a convergence study of it is meaningful.
+    pub fn weighted_stress(model: &Model, comp: usize, w: &dyn Fn(&[f64; 3]) -> f64) -> Result<Self, MeshError> {
+        if comp >= 6 {
+            return Err(MeshError::Failed("stress component must be 0..6".into()));
+        }
+        let d = model.mesh.dim();
+        let mut g = vec![0.0; model.mesh.n_dofs()];
+        let mut work = Work::new();
+        let mut wsum = 0.0;
+        for blk in &model.mesh.blocks {
+            let t = blk.kind.table();
+            let (nn, ngp) = (t.nn, t.ngp);
+            let mut ue = vec![0.0; nn * d];
+            for e in 0..blk.n_elems() {
+                let conn = blk.elem(e);
+                let xyz: Vec<[f64; 3]> = conn.iter().map(|&n| model.mesh.nodes[n]).collect();
+                kernel::geometry(blk.kind, model.mesh.physics, &xyz, &mut work).map_err(|er| MeshError::Failed(er.to_string()))?;
+                for gp in 0..ngp {
+                    let sh = t.n_at(gp);
+                    let pos: [f64; 3] = std::array::from_fn(|k| (0..nn).map(|a| sh[a] * xyz[a][k]).sum());
+                    let wt = w(&pos);
+                    if !(wt.is_finite() && wt >= 0.0) {
+                        return Err(MeshError::Failed(format!("the weight is {wt} at ({}, {}, {})", pos[0], pos[1], pos[2])));
+                    }
+                    if wt == 0.0 {
+                        continue;
+                    }
+                    wsum += work.wdet[gp] * wt;
+                    for a in 0..nn {
+                        for i in 0..d {
+                            ue.iter_mut().for_each(|v| *v = 0.0);
+                            ue[a * d + i] = 1.0;
+                            let strain = kernel::strain_at(blk.kind, model.mesh.physics, &work, gp, &ue);
+                            let s = kernel::stress_from_strain(model.mesh.physics, &blk.material, strain, 0.0);
+                            g[conn[a] * d + i] += work.wdet[gp] * wt * s[comp];
+                        }
+                    }
+                }
+            }
+        }
+        if wsum <= 0.0 {
+            return Err(MeshError::Failed("the weight vanishes on the whole mesh".into()));
+        }
+        g.iter_mut().for_each(|v| *v /= wsum);
+        Ok(Self { name: format!("weighted stress[{comp}]"), gradient: g, offset: 0.0, regularised: true })
+    }
+
     /// Sum of the support reactions of `comp` over the dofs `nodes` (a reaction force). `J(u) = sum_i (K u - f)_i`, so
     /// `dJ/du = K e` and `offset = -sum f_i`.
     pub fn reaction(model: &Model, loads: &Loads, nodes: &[usize], comp: usize) -> Result<Self, MeshError> {
