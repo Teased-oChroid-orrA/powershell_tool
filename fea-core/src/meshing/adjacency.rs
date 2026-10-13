@@ -195,8 +195,8 @@ pub struct ConformityReport {
     /// Shared faces whose two owners disagree on a node of the face (midside or centre nodes differ, or order of the
     /// interpolation differs: Tri6 against Quad4, say).
     pub mismatched_faces: usize,
-    /// Nodes lying on the interior of a boundary face of an element they do not belong to (hanging nodes or cracks), at most
-    /// `LIST_LIMIT` listed.
+    /// Nodes lying on the interior of a boundary face of an element they do not belong to (hanging nodes or cracks), or that
+    /// are a corner of one element and a midside node of another (an edge split on one side only). Ascending.
     pub hanging_nodes: Vec<usize>,
     pub n_hanging: usize,
     /// Pairs of distinct nodes at the same place (a weld that did not happen).
@@ -205,8 +205,6 @@ pub struct ConformityReport {
     pub unused_nodes: usize,
     pub components: usize,
 }
-
-const LIST_LIMIT: usize = 16;
 
 impl ConformityReport {
     pub fn is_conforming(&self) -> bool {
@@ -387,6 +385,21 @@ pub fn check_conformity(mesh: &Mesh, adj: &Adjacency) -> ConformityReport {
     }
     // hanging nodes: a node on the interior of a boundary face it does not belong to
     let mut hanging: Vec<usize> = Vec::new();
+    // ... or one that is a vertex for one element and a midside node for another (a split edge on one side only)
+    let (mut corner_role, mut mid_role) = (vec![false; mesh.nodes.len()], vec![false; mesh.nodes.len()]);
+    for b in &mesh.blocks {
+        let nc = b.kind.n_corners();
+        for e in 0..b.n_elems() {
+            for (a, &n) in b.elem(e).iter().enumerate() {
+                if a < nc {
+                    corner_role[n] = true;
+                } else {
+                    mid_role[n] = true;
+                }
+            }
+        }
+    }
+    hanging.extend((0..mesh.nodes.len()).filter(|&n| corner_role[n] && mid_role[n]));
     for f in adj.boundary_faces() {
         let (g, lf) = f.owners[0];
         let (b, e) = adj.local(g as usize);
@@ -429,7 +442,7 @@ pub fn check_conformity(mesh: &Mesh, adj: &Adjacency) -> ConformityReport {
     hanging.sort_unstable();
     hanging.dedup();
     rep.n_hanging = hanging.len();
-    rep.hanging_nodes = hanging.into_iter().take(LIST_LIMIT).collect();
+    rep.hanging_nodes = hanging;
     let _ = d;
     rep
 }

@@ -192,7 +192,7 @@ impl Loop {
     }
 
     /// Whether `p` is inside (even-odd crossing count of the closed polyline; arcs sampled finely).
-    fn contains(&self, p: [f64; 2]) -> bool {
+    pub fn contains(&self, p: [f64; 2]) -> bool {
         let poly = self.polyline();
         let mut crossings = 0;
         for k in 0..poly.len() {

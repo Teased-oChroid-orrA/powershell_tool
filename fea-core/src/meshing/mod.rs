@@ -4,7 +4,10 @@
 //! do not depend on each other.
 
 pub mod adjacency;
+pub mod hybrid;
+pub mod partition;
 pub mod quality;
+pub mod weld;
 
 use crate::mesh::Mesh;
 
