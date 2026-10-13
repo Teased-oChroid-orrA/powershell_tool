@@ -23,10 +23,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup .NET 8 SDK
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '8.0.x'
 
@@ -41,7 +41,7 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - name: Cache Cargo registry/target
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -82,7 +82,7 @@ jobs:
         # Fixed by setting EnableMsixTooling=true in the .csproj -
         # WindowsPackageType=None remains the actual, separately-verified
         # control for "no MSIX output," unaffected by that change.
-        uses: microsoft/setup-msbuild@v2
+        uses: microsoft/setup-msbuild@v3
 
       - name: Restore
         run: dotnet restore TextInFilesSearch.sln
@@ -263,7 +263,7 @@ jobs:
           Get-ChildItem -Path "publish/TextInFilesSearch" | Format-Table Name, Length
 
       - name: Upload published artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: TextInFilesSearch-win-x64-self-contained
           path: publish/TextInFilesSearch/

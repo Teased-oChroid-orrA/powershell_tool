@@ -18,7 +18,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Rust toolchain (stable, MSVC)
         uses: dtolnay/rust-toolchain@stable
@@ -26,7 +26,7 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - name: Cache Cargo registry and target
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -68,7 +68,7 @@ jobs:
           Get-ChildItem -Recurse dist | Format-Table FullName, Length
 
       - name: Upload app-tui release folder
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: app-tui-win-x64
           path: dist

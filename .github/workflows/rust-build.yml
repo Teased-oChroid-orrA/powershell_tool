@@ -20,7 +20,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Rust toolchain (stable, MSVC)
         uses: dtolnay/rust-toolchain@stable
@@ -28,7 +28,7 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - name: Cache Cargo registry/target
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -46,7 +46,7 @@ jobs:
           Get-Item "target/x86_64-pc-windows-msvc/release/search-cli.exe" | Format-List Name, Length, LastWriteTime
 
       - name: Upload built search-cli exe
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: search-cli-win-x64
           path: target/x86_64-pc-windows-msvc/release/search-cli.exe
