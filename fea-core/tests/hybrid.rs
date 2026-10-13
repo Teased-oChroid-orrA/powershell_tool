@@ -256,3 +256,53 @@ fn smoothing_improves_the_unstructured_part_and_leaves_the_structured_part_and_b
     let (e1, ..) = solve_tension(mesh);
     assert!(((e1 - e0) / e0).abs() < 1e-3, "{e0} {e1}");
 }
+
+#[test]
+fn the_size_predictor_refines_the_hole_and_reduces_the_energy_error_at_the_same_base_size() {
+    use fea_core::meshing::predictor::{GeometryRules, SizePredictor2d};
+    let r = plate(true);
+    // judge: a fine reference mesh. The strain energy is the robust global measure; one nodal stress is noisy at this size.
+    let (e_ref, s_ref, ..) = solve_tension(mesh_region(&r, PHYS, ElementKind::Tri6, &|_| 0.04, MeshOptions::default()).unwrap());
+    let mut p = SizePredictor2d::new(1.2, 0.05, 0.35).unwrap();
+    p.add_geometry(&r, GeometryRules::default());
+    let predicted = mesh_unstructured_2d(&r, &p.size_fn(), &options(ElementFamily::Quadratic), "predictor").unwrap();
+    let uniform = mesh_unstructured_2d(&r, &|_| 1.2, &options(ElementFamily::Quadratic), "uniform").unwrap();
+    let (e_p, s_p, ..) = solve_tension(predicted.mesh.clone());
+    let (e_u, s_u, ..) = solve_tension(uniform.mesh.clone());
+    let err = |x: f64, y: f64| ((x - y) / y).abs();
+    eprintln!("energy error: predictor {:.2e} ({} nodes)  uniform {:.2e} ({} nodes); hole-top stress {s_p:.1} / {s_u:.1} vs {s_ref:.1}", err(e_p, e_ref), predicted.mesh.nodes.len(), err(e_u, e_ref), uniform.mesh.nodes.len());
+    assert!(err(e_p, e_ref) < err(e_u, e_ref), "predictor energy error {} not below uniform {}", err(e_p, e_ref), err(e_u, e_ref));
+    assert!(err(s_p, s_ref) < 0.03);
+    assert!(predicted.mesh.quality().min_scaled_jacobian > 0.2);
+}
+
+#[test]
+fn a_bimaterial_bar_welds_conformingly_and_reproduces_the_series_spring_elongation() {
+    use fea_core::meshing::multimaterial::{mesh_multi_material_2d, MaterialRegion2d};
+    // nu = 0 in both materials: uniform axial stress is then the exact solution and the interface carries no mismatch
+    let (e1, e2) = (E, 4.0 * E);
+    let rect = |x0: f64, x1: f64, e: f64| Region::new(Loop::rectangle(x0, 0.0, x1, 4.0).unwrap(), vec![], Elastic::new(e, 0.0)).unwrap();
+    let parts = vec![MaterialRegion2d { name: "soft".into(), region: rect(0.0, 9.0, e1) }, MaterialRegion2d { name: "stiff".into(), region: rect(9.0, 20.0, e2) }];
+    for family in [ElementFamily::Linear, ElementFamily::Quadratic] {
+        let mut opt = options(family);
+        opt.partition = PartitionOptions2d { extra_boxes: vec![([2.0, 1.0], [4.0, 3.0])], ..Default::default() };
+        let m = mesh_multi_material_2d(&parts, &|p| 0.5 + 0.05 * p[0], &opt).unwrap();
+        assert!(m.conformity.is_conforming() && m.conformity.components == 1, "{family:?}: {}", m.conformity.summary());
+        assert!(m.interfaces.len() == 1 && m.interfaces[0].2.len() >= 3, "{:?}", m.interfaces.iter().map(|i| (&i.0, &i.1, i.2.len())).collect::<Vec<_>>());
+        let blocks: Vec<&str> = m.mesh.blocks.iter().map(|b| b.name.as_str()).collect();
+        assert!(blocks.iter().any(|b| b.starts_with("soft/")) && blocks.iter().any(|b| b.starts_with("stiff/")), "{blocks:?}");
+        eprintln!("{family:?}: strategy {:?}, {} nodes, {} elements", m.strategy, m.mesh.nodes.len(), m.mesh.n_elems());
+        assert!(m.labels.count(fea_core::meshing::RegionKind::Structured) > 0, "expected structured blocks to survive next to the interface");
+        let model = Model::new(m.mesh).unwrap();
+        let mut bc = model.dirichlet();
+        for &n in model.mesh.node_set("left").unwrap() {
+            bc.fix(n, 0, 0.0);
+        }
+        bc.fix(model.mesh.node_set("left").unwrap()[0], 1, 0.0);
+        let loads = Loads { faces: model.mesh.surfaces["right"].iter().map(|f| (f.clone(), SurfaceLoad::Traction([SIGMA, 0.0, 0.0]))).collect(), ..Loads::default() };
+        let sol = model.solve_static(&loads, &bc).unwrap();
+        let want = SIGMA * (9.0 / e1 + 11.0 / e2);
+        let tip = model.mesh.node_set("right").unwrap().iter().map(|&n| sol.u[2 * n]).fold(f64::INFINITY, f64::min);
+        assert!((tip - want).abs() < 1e-9 * want, "{family:?}: tip {tip:e} vs {want:e}");
+    }
+}

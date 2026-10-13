@@ -6,7 +6,9 @@
 pub mod adjacency;
 pub mod cost;
 pub mod hybrid;
+pub mod multimaterial;
 pub mod partition;
+pub mod predictor;
 pub mod quality;
 pub mod smooth;
 pub mod weld;

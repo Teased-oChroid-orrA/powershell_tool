@@ -147,9 +147,20 @@ fn dist_to_curve(c: &Curve, p: [f64; 2]) -> f64 {
 /// Node sets and surfaces by segment name, from the boundary faces of the meshed union: a boundary face belongs to the segment
 /// both of whose corner nodes lie on it. Independent of which mesher produced the face.
 pub fn assign_names(mesh: &mut Mesh, region: &Region) {
-    let (lo, hi) = region.bounds();
-    let tol = 1e-7 * (hi[0] - lo[0]).hypot(hi[1] - lo[1]);
-    let segs: Vec<&Segment> = region.loops().flat_map(|l| l.segments.iter()).collect();
+    assign_names_of(mesh, &[region]);
+}
+
+/// [`assign_names`] for a mesh made of several regions: a boundary face of the union takes the name of the segment of any region
+/// it lies on. Faces on a material interface are interior to the union and are not named.
+pub fn assign_names_of(mesh: &mut Mesh, regions: &[&Region]) {
+    let tol = regions
+        .iter()
+        .map(|r| {
+            let (lo, hi) = r.bounds();
+            1e-7 * (hi[0] - lo[0]).hypot(hi[1] - lo[1])
+        })
+        .fold(f64::INFINITY, f64::min);
+    let segs: Vec<&Segment> = regions.iter().flat_map(|r| r.loops()).flat_map(|l| l.segments.iter()).collect();
     mesh.node_sets.clear();
     mesh.surfaces.clear();
     for f in mesh.boundary_faces() {

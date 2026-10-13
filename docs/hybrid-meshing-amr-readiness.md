@@ -11,6 +11,8 @@ Epic #25, decision record `docs/adr/ADR-022-hybrid-meshing-and-goal-oriented-ada
 | Hybrid 2D mesh with automatic fallback | `meshing::hybrid::mesh_hybrid_2d`, `mesh_unstructured_2d`, `mesh_best_2d` (cost-selected) |
 | Conformity / quality gates | `Mesh::conformity()`, `Mesh::quality()`, `QualityThresholds` |
 | Cost prediction | `meshing::cost::{CostModel, Workload, choose}` |
+| Initial size prediction | `meshing::predictor::SizePredictor2d` (arcs, re-entrant corners, loads / restraints / contact lines) |
+| Multi-material meshes | `meshing::multimaterial::mesh_multi_material_2d` (conforming weld or explicit failure) |
 | 3D hybrid (prismatic) | `sweep::extrude` of a hybrid 2D mesh: Hex8/20 + Wedge6/15 |
 | Linear-static AMR | `adaptivity::run_amr(MeshedProblem, AmrConfig, GoalSpec)` |
 | Goal functionals | `adaptivity::goal::LinearFunctional` constructors |
@@ -41,7 +43,8 @@ Every failure path returns `MeshError` or a reliability status; there is no sile
 - Buckling error bound; local topology-preserving refinement and coarsening (adaptivity is remeshing-based).
 - 3D enriched dual and 3D equilibrated reconstruction.
 - General hex-against-tet transitions (declined, ADR-022 addendum).
-- Initial size predictor from curvature, loads and contact; multi-material tags through the hybrid mesher (issue #16 open items).
+- Wedge import from Gmsh / Abaqus (node orderings not verified; none is imported today). Multi-material 3D (sweep keeps block materials but is not tested across an interface).
+- Size predictor takes loads, restraints and contacts as explicit points / lines from the caller; it does not read a `Model`.
 - Windows evidence only from hosted CI (PR #26).
 
 ## Benchmark history

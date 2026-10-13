@@ -49,6 +49,8 @@ Does not own: any UI, material tables (`mechanics-core`), the lug physics (`lug-
 | Adaptive vs uniform refinement, size field, the shared loop | `tests/adapt.rs` |
 | Sweeps vs 2D / axisymmetric solutions | `tests/sweep.rs` |
 | Wedge elements, Hex+Wedge hybrid patch test and 2D equivalence | `tests/wedge.rs` |
+| Size prediction before any solution (geometry + point/line sources, `g`-Lipschitz) | `src/meshing/predictor.rs` |
+| Multi-material planar meshes (per-region hybrid, forced-unstructured interface cells, weld + conformity gate) | `src/meshing/multimaterial.rs` |
 | Gmsh / Abaqus import and round trip | `tests/import.rs` |
 | Solve report, condition estimate | `src/report.rs`, `tests/report.rs` |
 | Validation, adaptive solve, nonlinear ladder | `src/validate.rs`, `src/strategy.rs`, `tests/strategy.rs` |

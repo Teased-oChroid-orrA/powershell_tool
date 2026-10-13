@@ -220,3 +220,14 @@ elements, goal value and estimate, effectivity, marked count, per-estimator reli
 Phase 11 follow-up (prismatic 3D hybrid): Wedge6 / Wedge15 elements and `extrude` of Tri elements. `tests/wedge.rs`: a
 Hex+Wedge extrusion of the 2D hybrid mesh is conforming, passes the 3D affine patch test (displacement 1e-12, stress 1e-9) and
 reproduces the 2D plane-strain solution to 1e-9; exact strain energy on a wedge grid for both orders.
+
+Size predictor (`meshing/predictor.rs`): sources (arcs by `r * arc_angle`, re-entrant corners found from the interior angle, points,
+lines) graded at rate `g`; the field is `g`-Lipschitz by construction (test over a point grid). Plate with a hole, Tri6, same base
+size 1.2: strain energy error against a fine reference (h = 0.04) 2.1e-4 with the predictor (698 nodes) against 9.2e-4 uniform (391
+nodes). The two meshes do not have equal unknowns, so this shows the predictor puts elements where the error is, not an equal-cost
+gain. The error of one nodal stress is not a usable judge at this size (+1.4 % with the predictor, +0.2 % uniform: nodal noise).
+
+Multi-material (`meshing/multimaterial.rs`): two-material bar (E and 4E, nu = 0), Linear and Quadratic: conforming union, elongation
+equal to the series-spring value to 1e-9. Cells touching a shared boundary are forced unstructured so both sides place the same
+interface nodes; without that, the hybrid parts did not weld (7 and 15 hanging nodes) and the function fell back to unstructured
+for every part, with the reason reported.
