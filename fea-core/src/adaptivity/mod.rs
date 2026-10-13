@@ -1,0 +1,12 @@
+//! Goal-oriented adaptive refinement (epic #25, System A). The pieces are independent of every mesh generator: an estimator
+//! reads a solved [`crate::Model`] and returns an element-wise error field; fusion and marking turn fields into a marked set;
+//! the controller asks a caller-supplied mesher for the next mesh (through a size field, as `adapt.rs` does) and keeps or
+//! rolls back the step. Estimator code never calls a mesher and a mesher never sees an estimator.
+
+pub mod snapshot;
+pub mod transaction;
+pub mod transfer;
+
+pub use snapshot::SolverSnapshot;
+pub use transaction::{attempt, Attempt};
+pub use transfer::{NodalInterpolation, StateTransferOperator, Transferred};

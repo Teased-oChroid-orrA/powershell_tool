@@ -1,6 +1,7 @@
 //! General finite-element kernel. See `Cargo.toml`.
 pub mod adapt;
 pub mod amg;
+pub mod adaptivity;
 pub mod analysis;
 pub mod assembly;
 pub mod contact;
@@ -20,6 +21,7 @@ pub mod locate;
 pub mod material;
 pub mod loads;
 pub mod mesh;
+pub mod meshing;
 pub mod mesh2d;
 pub mod mpc;
 pub mod nonlinear;

@@ -23,7 +23,7 @@ const HEX_FACES: [[usize; 4]; 6] = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [3
 const TET_FACES: [[usize; 3]; 4] = [[0, 2, 1], [0, 1, 3], [1, 2, 3], [2, 0, 3]];
 
 /// Corner-node faces of an element, oriented outward (counter-clockwise from outside).
-fn corner_faces(kind: ElementKind) -> Vec<Vec<usize>> {
+pub(crate) fn corner_faces(kind: ElementKind) -> Vec<Vec<usize>> {
     use ElementKind::*;
     match kind {
         Tri3 | Tri6 => vec![vec![0, 1], vec![1, 2], vec![2, 0]],
@@ -40,7 +40,7 @@ fn node_at(kind: ElementKind, x: [f64; 3]) -> Option<usize> {
 
 /// Local node lists of every face of `kind` (corners, then midsides of consecutive corner pairs,
 /// then the face centre if the element has one).
-fn local_faces(kind: ElementKind) -> Vec<Vec<usize>> {
+pub(crate) fn local_faces(kind: ElementKind) -> Vec<Vec<usize>> {
     let nc = kind.node_coords();
     corner_faces(kind)
         .into_iter()
