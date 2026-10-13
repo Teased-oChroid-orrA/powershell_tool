@@ -58,6 +58,7 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 | Toolbench (multi-tool dashboard shell, `app/`-specific) | `docs/toolbench-status.md` — **CLOSED/OBSOLETE**, `app/` deleted; current dashboard shell is `app-tui/src/widgets/` |
 | Bushing Workbench tool (`app/`-specific) | `docs/bushing-workbench-status.md` — **CLOSED/OBSOLETE**, `app/` deleted; current implementation is `app-tui/src/toolboxes/bushing/` |
 | UI performance / visual-polish rework | `docs/epic-ui-performance-and-design.md` — epic doc that fed the issue-11 phase 10-15 UI rework and supersedes rust-rewrite-status's old polish TODOs |
+| Hybrid meshing + goal-oriented AMR epic | `docs/epic-hybrid-meshing-goal-amr.md` — source epic text (phases 0-10); tracked in a GitHub epic issue, branch `feature/hybrid-meshing-goal-oriented-amr` |
 
 ### Find It Fast — standalone topic docs
 | Looking for... | Go to |
