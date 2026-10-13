@@ -3,7 +3,7 @@
 Real-world-sized DOCX/PPTX/XLSX/RTF/PDF files used **only** by
 `search-core/benches/discovery_and_extraction.rs`'s per-format
 extraction benchmark - not correctness fixtures (those live in
-`tests/TextInFilesSearch.Tests/Fixtures/` and stay tiny/hand-crafted on
+`search-core/test-data/` and stay tiny/hand-crafted on
 purpose, reused byte-identical by `search-core/tests/fixtures.rs`).
 
 ## Why these exist
@@ -66,5 +66,5 @@ biggest real tiers for those two formats. Documented as a real gap in
 ## Not used for correctness testing
 
 These files are extraction-*performance* fixtures only. `extract_lines_by_extension`'s
-*correctness* is still proven against `tests/TextInFilesSearch.Tests/Fixtures/`'s
+*correctness* is still proven against `search-core/test-data/`'s
 original, hand-verified fixtures - unrelated to this directory.

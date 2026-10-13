@@ -53,9 +53,9 @@ Pressure Vessel Analyzer, Preload Analysis, Lug Analysis, an FEA Workbench
 the result) and Material Lookup
 (placeholders remain for Dupes/Rename/Logs).
 
-**Mid-migration, three tiers deep: PowerShell -> C#/WinUI -> Rust.** Older
-tiers are kept as byte-for-byte-tested references, never deleted, never
-called from the newer tier (see "Reference-only tiers").
+**Migration complete: PowerShell -> C#/WinUI -> Rust.** The PowerShell and
+C#/WinUI tiers were removed from the tree (recoverable from git history;
+`docs/` keeps the record). Rust is the only implementation.
 
 **`app-tui/` (ratatui/crossterm) is the sole active GUI head.** The earlier
 Rust heads `app/` (dioxus-native) and `app-egui/` (egui) were deleted on
@@ -70,7 +70,7 @@ nodes.
 ## Intent Layer
 
 > TL;DR: Rust-first, GS Engineering "Toolbench" desktop app (search +
-> engineering solvers), migrating PowerShell -> C#/WinUI -> Rust, with
+> engineering solvers), migrated from PowerShell/C# to Rust, with
 > `app-tui` as the sole active GUI head. Find your area below and read its
 > `AGENTS.md` **before modifying code there**.
 
@@ -93,8 +93,6 @@ nodes.
 | Shared math (Lamé, materials) | `engineering-math/`, `mechanics-core/` | *(no node)* | No re-export shim; import directly. |
 | CLI | `cli/` | *(no node)* | Second `search-core` consumer. |
 | Design/history docs + ADRs | `docs/` | `docs/AGENTS.md` | Append-only record + index. |
-| Legacy C#/WinUI app | `src/` | `src/AGENTS.md` | Frozen reference, do not extend. |
-| Original PowerShell tool | `powershell/` | *(reference only)* | Never called from Rust. |
 
 ## Why the migration happened
 
@@ -104,16 +102,13 @@ and debug on any platform. `app-tui/` (a terminal UI, no windowing system)
 is the simplest way to satisfy that, which is why the two GUI-toolkit heads
 were dropped.
 
-## Reference-only tiers — hard boundary
+## Removed tiers
 
-Neither `powershell/` nor `src/` (the C#/WinUI app) has a runtime or build
-dependency from the active Rust stack, and nothing in Rust calls out to
-either. **Never** add a PowerShell invocation, a C#/.NET reference, or any
-shell-out to either from Rust code. **Never** add new features to `src/` —
-if something's missing from the Rust port, port it into `search-core`/
-`app-tui` instead. They exist only so behavior can be diffed against if a
-discrepancy is ever suspected. See `src/AGENTS.md` for the full rule set and
-test gate.
+The C#/WinUI app (`src/`), its test harness, the PowerShell tool and the
+.NET solution files were deleted; their fixtures live on in
+`search-core/test-data/` and `search-core/assets/`. **Never** reintroduce a
+PowerShell or .NET dependency. Behavior can still be diffed against git
+history if a discrepancy is ever suspected.
 
 ## Global Invariants
 
@@ -144,12 +139,6 @@ test gate.
   together filled a disk. Watch usage on this workspace, especially before
   long training/build runs, and don't assume `cargo clean` is unnecessary
   just because a build "worked last time."
-- **(Historical, C#-era, still worth knowing if you ever script an
-  archive/export of this repo)**: an XML comment containing `--` once broke
-  a `.csproj` file outright, and a `zip -x "*.git*"` packaging command once
-  silently excluded the entire `.github/` folder via substring wildcard
-  matching. Use exact path exclusions, not bare substring wildcards, and
-  diff the result.
 
 - **Hosted Windows CI is the only Windows evidence.** The test workflows (`ci.yml`, `windows-tests.yml`, `solid-kernel-occt.yml`) were
   removed once the build workflows were the only gate wanted; run the workspace tests locally, and rerun the Windows exe builds
@@ -218,9 +207,7 @@ The app writes `toolbench-debug.log` into the folder it was launched from (`app-
   (see `docs/AGENTS.md`).
 
 ### Never
-- Add a PowerShell invocation, C#/.NET reference, or shell-out to `src/` or
-  `powershell/` from Rust code.
-- Add new features to `src/` (the frozen C#/WinUI reference app).
+- Add a PowerShell or C#/.NET dependency or shell-out.
 - Re-derive or duplicate the PINN/AMR narrative (now entirely in the
   separate `NeuralNetwork-Stress-Solver` sibling repo, with no consumer left
   in this one — see "What this project is" above) into this repo's docs.
@@ -252,4 +239,3 @@ full index mapping decision topics to ADR numbers.
 | Understand why an architecture decision was made | `docs/AGENTS.md` -> `docs/adr/` |
 | Understand a past epic's implementation history | `docs/AGENTS.md` -> `docs/issue-N-*.md` |
 | Continue issue #12 FEA roadmap / direct-wgpu work | `docs/issue-12-claude-handoff.md` -> `docs/issue-12-phase-12.md` .. `phase-18.md`; draft PR #13 |
-| Run the C#/WinUI reference app's own tests | `src/AGENTS.md` |

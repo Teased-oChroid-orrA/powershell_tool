@@ -125,7 +125,7 @@ fn bench_extraction(_tmp_root: &Path) {
 /// benchmarking - see `search-core/benches/data/README.md` for exact
 /// provenance/license/original filenames.
 fn format_fixtures() -> Vec<(&'static str, &'static str, std::path::PathBuf)> {
-    let tiny_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/TextInFilesSearch.Tests/Fixtures");
+    let tiny_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-data");
     let sized_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("benches/data");
     vec![
         (".docx", "tiny", tiny_dir.join("test.docx")),

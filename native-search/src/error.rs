@@ -1,6 +1,4 @@
-//! Error classification for the FFI boundary. Mirrors issue #2 Section 18.
-//! A Rust panic must never cross into .NET, so every status here is a value,
-//! never an unwind - see `catch_unwind` usage in `ffi.rs`.
+//! Error classification for the engine: every failure is a value with a status code.
 
 use std::fmt;
 

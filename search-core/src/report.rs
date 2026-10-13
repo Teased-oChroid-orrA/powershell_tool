@@ -19,7 +19,7 @@ use crate::models::{FileSearchStatus, GroupByMode, LineHit, MatchMode, SearchRun
 /// no banner if missing at runtime), `include_bytes!` embeds it at compile
 /// time - if the asset were ever missing, the build itself would fail
 /// rather than silently producing a bannerless report.
-const BANNER_JPG: &[u8] = include_bytes!("../../src/TextInFilesSearch.Core/Assets/Banner.jpg");
+const BANNER_JPG: &[u8] = include_bytes!("../assets/Banner.jpg");
 
 fn banner_data_uri() -> &'static str {
     static URI: OnceLock<String> = OnceLock::new();

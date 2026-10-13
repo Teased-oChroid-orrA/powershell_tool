@@ -49,7 +49,7 @@
 //!   combined, not misrepresented as pure serialization).
 //!
 //! All four phases run against the same real hit set, built once from real
-//! DOCX/PPTX/XLSX/RTF/PDF fixtures (`tests/TextInFilesSearch.Tests/Fixtures/`
+//! DOCX/PPTX/XLSX/RTF/PDF fixtures (`search-core/test-data/`
 //! and `search-core/benches/data/`, per the task's own instruction to reuse
 //! those rather than trivial synthetic strings) - not four disconnected
 //! synthetic experiments.
@@ -79,7 +79,7 @@ struct RealFile {
 /// Real fixture files this benchmark reuses, per the task's own
 /// instruction - the tiny correctness fixtures
 /// `search-core/tests/fixtures.rs` uses (via the same
-/// `tests/TextInFilesSearch.Tests/Fixtures/` directory
+/// `search-core/test-data/` directory
 /// `discovery_and_extraction.rs` already reads from) plus the real
 /// medium/large/xlarge documents in `search-core/benches/data/` (Apache
 /// POI/Tika/PDFBox test-data, sample-files.com, arXiv.org - see that
@@ -90,7 +90,7 @@ struct RealFile {
 /// real per-line matching/highlighting/serialization content.
 fn real_fixture_files() -> Vec<(&'static str, PathBuf)> {
     let tiny_dir =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/TextInFilesSearch.Tests/Fixtures");
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("test-data");
     let sized_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("benches/data");
     vec![
         (".docx", tiny_dir.join("test.docx")),

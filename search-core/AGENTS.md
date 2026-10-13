@@ -3,7 +3,7 @@
 ## Purpose
 Owns: business logic for searching text inside files — settings/models, matching, text extraction (TXT/DOCX/PPTX/XLSX/ZIP/RTF/PDF, optional OCR), robust async file I/O, incremental caching, HTML/CSV/JSON/JSONL reporting, parallel orchestration, and the policy layer over the `native-search` fast-index crate.
 Does not own: any GUI (`app/`, `app-egui/`), CLI parsing (`cli/`), or `native-search`'s own indexing internals (`native-search/src/engine.rs`) — this crate only calls that engine in-process.
-Plain Rust library, zero GUI dependency — `cargo test -p search-core` must build/pass with no GUI toolchain present (1:1 port of C# `TextInFilesSearch.Core`'s own Core/head split; see `docs/rust-rewrite-status.md`). Never add a dependency that pulls in Dioxus, egui, or any windowing toolkit.
+Plain Rust library, zero GUI dependency — `cargo test -p search-core` must build/pass with no GUI toolchain present (a 1:1 port of the removed C# `TextInFilesSearch.Core`; see `docs/rust-rewrite-status.md`; fixtures in `test-data/`, report banner in `assets/`). Never add a dependency that pulls in Dioxus, egui, or any windowing toolkit.
 
 ## Code Map
 

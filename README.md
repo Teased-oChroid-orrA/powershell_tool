@@ -13,13 +13,13 @@ Holes, Bushing Workbench, Lug Analysis, Pressure Vessel Analyzer, Preload
 Analysis and Material Lookup.
 Placeholders remain for Dupes, Rename and Logs.
 
-## Project status: mid-migration, Rust is the active implementation
+## Project status: Rust only
 
-This project is being migrated from **C#/WinUI 3** to **Rust**.
+This project was migrated from **C#/WinUI 3** to **Rust**.
 The Rust stack (`native-search/`, `search-core/`, `app-tui/`, `cli/` and
-the solver crates) is where active development happens; the original C#/WinUI app (`src/`) and
-the PowerShell tool it was itself migrated from (`powershell/`) are kept
-as working references only - not built on, not deleted. See
+the solver crates) is the whole implementation; the original C#/WinUI app and
+the PowerShell tool it was itself migrated from have been removed from the tree
+(still in git history). See
 [`docs/rust-rewrite-status.md`](docs/rust-rewrite-status.md) for exactly
 why (short version: WinUI 3 cannot be built, run, or debugged on a
 non-Windows machine at all, turning every UI iteration into a
@@ -44,8 +44,6 @@ app-tui/          ratatui terminal GUI - the sole GUI head (Toolbench)
 cli/              Headless CLI entry point, same search-core engine
 bushing-solver/, fastened-joint-solver/, pressure-vessel-solver/,
 engineering-math/, mechanics-core/   Engineering solvers and shared math
-src/              C#/WinUI 3 app - reference only, not actively developed
-powershell/       The original PowerShell tool - reference only
 ```
 
 `search-core` is a plain Rust library with no GUI dependency at all - it
@@ -160,9 +158,7 @@ real terminal run to verify beyond its `TestBackend` tests - `cargo run
 Only the build workflows remain; run the tests locally with `cargo test --workspace`. `.github/workflows/app-tui-build.yml`
 (manual, or on a `v*` tag) builds `app-tui` for `x86_64-pc-windows-msvc`
 on a Windows runner and uploads the exe. `.github/workflows/rust-build.yml`
-(manual) does the same for `search-cli`. `.github/workflows/build.yml` is
-the separate manual CI gate for the C#/WinUI reference app, only
-relevant if that app is being deliberately touched during the migration.
+(manual) does the same for `search-cli`.
 
 ## Target environment
 
@@ -180,7 +176,7 @@ above - `rust-rewrite-status.md` (migration status), `architecture.md`
 performance numbers with caveats), `search-semantics.md` (the formal
 matching contract), `deployment-rust.md` (build/publish/clean-machine
 verification for the Rust heads), `deployment.md`/`offline-build.md`
-(the same for the C# reference app), `toolbench-status.md` (history of
+(historical, for the removed C# app), `toolbench-status.md` (history of
 the multi-tool dashboard shell - the old `app/` head's view; obsolete), and a series of
 `issue-*-status.md`/`issue-6-phase-*.md` docs recording the
 evidence-driven investigation and decisions behind specific features and

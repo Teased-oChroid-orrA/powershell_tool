@@ -1,5 +1,5 @@
 //! Parity tests against the same real embedded fixture files the C# test
-//! harness uses (`tests/TextInFilesSearch.Tests/Fixtures/*`), reused
+//! harness uses (`search-core/test-data/*`), reused
 //! byte-identical rather than regenerated - see
 //! `tests/TextInFilesSearch.Tests/Program.cs` Tests 14/27/28/29 for the C#
 //! side of these same expectations.
@@ -11,13 +11,13 @@ use search_core::extraction::{
 use search_core::models::{FileSearchStatus, SearchSettings};
 use search_core::orchestrator;
 
-const TEST_DOCX: &[u8] = include_bytes!("../../tests/TextInFilesSearch.Tests/Fixtures/test.docx");
-const TEST_PPTX: &[u8] = include_bytes!("../../tests/TextInFilesSearch.Tests/Fixtures/test.pptx");
-const TEST_PDF: &[u8] = include_bytes!("../../tests/TextInFilesSearch.Tests/Fixtures/test.pdf");
-const TEST_XLSX: &[u8] = include_bytes!("../../tests/TextInFilesSearch.Tests/Fixtures/test.xlsx");
-const TEST_ZIP: &[u8] = include_bytes!("../../tests/TextInFilesSearch.Tests/Fixtures/test.zip");
+const TEST_DOCX: &[u8] = include_bytes!("../test-data/test.docx");
+const TEST_PPTX: &[u8] = include_bytes!("../test-data/test.pptx");
+const TEST_PDF: &[u8] = include_bytes!("../test-data/test.pdf");
+const TEST_XLSX: &[u8] = include_bytes!("../test-data/test.xlsx");
+const TEST_ZIP: &[u8] = include_bytes!("../test-data/test.zip");
 const TEST_NOTES_PPTX: &[u8] =
-    include_bytes!("../../tests/TextInFilesSearch.Tests/Fixtures/test_notes.pptx");
+    include_bytes!("../test-data/test_notes.pptx");
 
 fn count_ci(haystack: &str, needle: &str) -> usize {
     let haystack_lower = haystack.to_lowercase();

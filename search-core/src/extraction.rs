@@ -2029,7 +2029,7 @@ mod tests {
 
     #[test]
     fn find_stream_blocks_matches_the_original_regex_on_real_pdf_fixtures() {
-        let fixtures_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/TextInFilesSearch.Tests/Fixtures");
+        let fixtures_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/test-data");
         let data_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/benches/data");
         for path in [
             format!("{fixtures_dir}/test.pdf"),
@@ -2430,7 +2430,7 @@ mod tests {
     #[ignore]
     fn profile_pdf_extraction_phases_on_real_documents() {
         let data_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/benches/data");
-        let fixtures_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/TextInFilesSearch.Tests/Fixtures");
+        let fixtures_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/test-data");
         print_pdf_profile("tiny.pdf", &format!("{fixtures_dir}/test.pdf"));
         print_pdf_profile("medium.pdf", &format!("{data_dir}/medium.pdf"));
         print_pdf_profile("large.pdf", &format!("{data_dir}/large.pdf"));

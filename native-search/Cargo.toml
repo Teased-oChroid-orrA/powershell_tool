@@ -7,7 +7,7 @@ publish = false
 
 [lib]
 name = "native_search"
-crate-type = ["cdylib", "lib"]
+crate-type = ["lib"]
 
 [dependencies]
 tantivy = "0.26"

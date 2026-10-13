@@ -4,20 +4,16 @@ members = ["native-search", "search-core", "app-tui", "cli", "bushing-solver", "
 
 # Moved here from native-search/Cargo.toml: Cargo ignores [profile.*]
 # sections in non-root workspace members. panic="unwind" (not "abort") is
-# required for native_search's cdylib since ffi.rs's catch_unwind-based
-# panic guard (issue #2 Section 18 - no panic may cross into .NET) only
-# works with unwinding, not abort.
+# required: app-tui's worker threads and native-search's writer-death
+# recovery rely on catch_unwind, which only works with unwinding.
 [profile.release]
 panic = "unwind"
 
 # native-search/ keeps its own [package] (license, version) - unaffected by
 # joining this workspace as a member. search-core/ is new (Rust rewrite of
-# TextInFilesSearch.Core - see docs/adr/ for the architecture decisions and
+# the former C# TextInFilesSearch.Core - see docs/adr/ for the architecture decisions and
 # docs/rust-rewrite-status.md for the current port status), consumed by
 # app-tui/ (the sole active GUI head - see root CLAUDE.md) and cli/.
-# src/TextInFilesSearch(.Core)/ (the C#/WinUI app) stays in the repo,
-# untouched, as a working reference during the transition - same treatment
-# this repo already gives powershell/.
 # cli/ (issue #6 §60) is a second, independent consumer of search-core -
 # proof search-core is actually usable with no GUI dependency at all. A
 # separate crate rather than a `[[bin]]` in search-core itself so
