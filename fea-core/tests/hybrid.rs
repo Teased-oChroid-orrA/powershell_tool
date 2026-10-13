@@ -226,3 +226,33 @@ fn hybrid_benefit_on_a_long_bar_with_a_hole() {
         eprintln!("{family:?} unstructured: dofs {:>6} energy err {:.2e} stress err {:.2e} wall {:.3}s", ru.2, e(ru), s(ru), ru.3);
     }
 }
+
+#[test]
+fn smoothing_improves_the_unstructured_part_and_leaves_the_structured_part_and_boundary_alone() {
+    use fea_core::meshing::smooth::{smooth, SmoothOptions};
+    let r = plate(true);
+    let h = mesh_hybrid_2d(&r, &|_| 0.35, &options(ElementFamily::Quadratic)).unwrap();
+    let mut mesh = h.mesh.clone();
+    let rep = smooth(&mut mesh, &SmoothOptions::default());
+    eprintln!("smoothing: {} movable, {} moves; min J {:.3} -> {:.3}; mean J {:.4} -> {:.4}", rep.movable_nodes, rep.moves, rep.min_scaled_jacobian_before, rep.min_scaled_jacobian_after, rep.mean_scaled_jacobian_before, rep.mean_scaled_jacobian_after);
+    assert!(rep.moves > 0);
+    assert!(rep.min_scaled_jacobian_after >= rep.min_scaled_jacobian_before - 1e-12);
+    assert!(rep.mean_scaled_jacobian_after > rep.mean_scaled_jacobian_before);
+    assert!(mesh.conformity().is_conforming());
+    // structured elements did not move
+    let mut g = 0;
+    for blk in &h.mesh.blocks {
+        for e in 0..blk.n_elems() {
+            if h.labels.0[g] == fea_core::meshing::RegionKind::Structured {
+                for &n in blk.elem(e) {
+                    assert_eq!(h.mesh.nodes[n], mesh.nodes[n]);
+                }
+            }
+            g += 1;
+        }
+    }
+    // smoothing does not change the answer beyond the discretisation: same energy within 0.1 %
+    let (e0, ..) = solve_tension(h.mesh.clone());
+    let (e1, ..) = solve_tension(mesh);
+    assert!(((e1 - e0) / e0).abs() < 1e-3, "{e0} {e1}");
+}

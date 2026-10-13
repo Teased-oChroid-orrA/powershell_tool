@@ -36,11 +36,13 @@ pub struct ElementQuality {
 pub struct QualityThresholds {
     pub min_scaled_jacobian: f64,
     pub max_edge_ratio: f64,
+    /// Largest accepted ratio of neighbouring element sizes (checked when the report carries the progression).
+    pub max_size_jump: f64,
 }
 
 impl Default for QualityThresholds {
     fn default() -> Self {
-        Self { min_scaled_jacobian: 0.1, max_edge_ratio: 50.0 }
+        Self { min_scaled_jacobian: 0.1, max_edge_ratio: 50.0, max_size_jump: 6.0 }
     }
 }
 
@@ -64,7 +66,7 @@ pub struct QualityReport {
 
 impl QualityReport {
     pub fn acceptable(&self, thr: &QualityThresholds) -> bool {
-        self.inverted == 0 && self.min_scaled_jacobian >= thr.min_scaled_jacobian && self.max_edge_ratio <= thr.max_edge_ratio
+        self.inverted == 0 && self.min_scaled_jacobian >= thr.min_scaled_jacobian && self.max_edge_ratio <= thr.max_edge_ratio && self.max_size_jump <= thr.max_size_jump
     }
 
     /// `Ok` if acceptable, else the reason as a typed error.
@@ -76,8 +78,8 @@ impl QualityReport {
             Ok(())
         } else {
             Err(super::MeshError::Failed(format!(
-                "mesh quality below the limits: minimum scaled Jacobian {:.3} (need {:.3}), largest edge ratio {:.1} (limit {:.1})",
-                self.min_scaled_jacobian, thr.min_scaled_jacobian, self.max_edge_ratio, thr.max_edge_ratio
+                "mesh quality below the limits: minimum scaled Jacobian {:.3} (need {:.3}), largest edge ratio {:.1} (limit {:.1}), largest size jump {:.1} (limit {:.1})",
+                self.min_scaled_jacobian, thr.min_scaled_jacobian, self.max_edge_ratio, thr.max_edge_ratio, self.max_size_jump, thr.max_size_jump
             )))
         }
     }

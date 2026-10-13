@@ -73,13 +73,15 @@ pub struct HybridOptions2d {
     /// varies slowly along its axis (elongated quads there, isotropic triangles only around the features). `[1, 1]` is the
     /// safe default; an anisotropic choice is the caller's modelling decision (adaptive refinement corrects it).
     pub structured_aspect: [f64; 2],
+    /// Quality-guarded smoothing of the interior simplex nodes after generation (`None` = off).
+    pub smooth: Option<super::smooth::SmoothOptions>,
     /// How often the structured divisions are doubled along an interface edge the unstructured mesher split further.
     pub max_refits: usize,
 }
 
 impl HybridOptions2d {
     pub fn new(physics: Physics, family: ElementFamily) -> Self {
-        Self { physics, family, partition: PartitionOptions2d::default(), mesh: MeshOptions::default(), min_structured_fraction: 0.15, structured_scale: 1.0, structured_aspect: [1.0, 1.0], quality: QualityThresholds::default(), max_refits: 4 }
+        Self { physics, family, partition: PartitionOptions2d::default(), mesh: MeshOptions::default(), min_structured_fraction: 0.15, structured_scale: 1.0, structured_aspect: [1.0, 1.0], smooth: Some(super::smooth::SmoothOptions::default()), quality: QualityThresholds::default(), max_refits: 4 }
     }
 }
 
@@ -486,7 +488,10 @@ fn report_of(mesh: &Mesh, labels: &ElementLabels, strategy: Strategy, grid: Opti
 
 /// Plain unstructured mesh of the whole region (Tri3 / Tri6), the fallback and the baseline of the hybrid one.
 pub fn mesh_unstructured_2d(region: &Region, size: &dyn Fn([f64; 2]) -> f64, opt: &HybridOptions2d, reason: &str) -> Result<HybridMesh2d, MeshError> {
-    let mesh = mesh_region(region, opt.physics, opt.family.tri(), size, opt.mesh).map_err(MeshError::Failed)?;
+    let mut mesh = mesh_region(region, opt.physics, opt.family.tri(), size, opt.mesh).map_err(MeshError::Failed)?;
+    if let Some(so) = &opt.smooth {
+        super::smooth::smooth(&mut mesh, so);
+    }
     let labels = ElementLabels::uniform(&mesh, RegionKind::Unstructured);
     let report = report_of(&mesh, &labels, Strategy::Unstructured { reason: reason.to_string() }, None, 0);
     report.quality.require(&opt.quality)?;
@@ -534,6 +539,9 @@ pub fn mesh_hybrid_2d(region: &Region, size: &dyn Fn([f64; 2]) -> f64, opt: &Hyb
             let s = structured_part(region, &grid, &divs, opt.physics, opt.family)?.ok_or_else(|| MeshError::Failed("no structured cells".into()))?;
             parts.push(s);
             let mut mesh = merge(&parts, 1e-9 * diag)?;
+            if let Some(so) = &opt.smooth {
+                super::smooth::smooth(&mut mesh, so);
+            }
             // blocks: each unstructured part contributes one block, then the structured one
             let structured_block = n_unstructured_blocks;
             assign_names(&mut mesh, region);
@@ -613,6 +621,47 @@ pub fn mesh_hybrid_2d(region: &Region, size: &dyn Fn([f64; 2]) -> f64, opt: &Hyb
         }
     }
     fallback(format!("the hybrid construction could not be verified ({last_problem})"))
+}
+
+/// A mesh chosen among candidates by predicted total cost.
+#[derive(Debug, Clone)]
+pub struct Selection {
+    pub chosen: HybridMesh2d,
+    pub name: String,
+    pub choice: super::cost::Choice,
+}
+
+/// Generate the candidate meshes of `region` (the unstructured baseline, the isotropic hybrid, and, when
+/// `opt.structured_aspect` is anisotropic, the anisotropic hybrid) and pick the cheapest by predicted cost for `workload`.
+/// The baseline is always eligible and listed first; the anisotropic candidate is eligible only with `allow_unvalidated`
+/// (its accuracy is the caller's modelling assumption until an error estimate confirms it).
+pub fn mesh_best_2d(region: &Region, size: &dyn Fn([f64; 2]) -> f64, opt: &HybridOptions2d, model: &super::cost::CostModel, workload: &super::cost::Workload, allow_unvalidated: bool) -> Result<Selection, MeshError> {
+    use super::cost::{choose, Candidate, Equivalence};
+    use std::time::Instant;
+    let mut built: Vec<(String, HybridMesh2d, f64, Equivalence)> = Vec::new();
+    let t = Instant::now();
+    let base = mesh_unstructured_2d(region, size, opt, "baseline")?;
+    built.push(("unstructured".into(), base, t.elapsed().as_secs_f64(), Equivalence::Nominal));
+    let mut iso = opt.clone();
+    iso.structured_aspect = [1.0, 1.0];
+    let t = Instant::now();
+    let h = mesh_hybrid_2d(region, size, &iso)?;
+    let dt = t.elapsed().as_secs_f64();
+    if h.report.strategy == Strategy::Hybrid {
+        built.push(("hybrid".into(), h, dt, Equivalence::Nominal));
+    }
+    if opt.structured_aspect != [1.0, 1.0] {
+        let t = Instant::now();
+        let h = mesh_hybrid_2d(region, size, opt)?;
+        let dt = t.elapsed().as_secs_f64();
+        if h.report.strategy == Strategy::Hybrid {
+            built.push((format!("hybrid anisotropic {:?}", opt.structured_aspect), h, dt, Equivalence::NeedsValidation));
+        }
+    }
+    let candidates: Vec<Candidate> = built.iter().map(|(n, h, t, e)| Candidate { name: n.clone(), mesh: h.mesh.clone(), generation_seconds: *t, equivalence: *e }).collect();
+    let choice = choose(&candidates, model, workload, allow_unvalidated)?;
+    let (name, chosen, ..) = built.swap_remove(choice.index);
+    Ok(Selection { chosen, name, choice })
 }
 
 #[cfg(test)]
@@ -709,5 +758,25 @@ mod tests {
         assert!(h.report.conformity.is_conforming(), "{}", h.report.conformity.summary());
         assert!(h.report.structured_elements > 0);
         assert!((mesh_area(&h.mesh) - r.area()).abs() < 1e-3 * r.area());
+    }
+
+    #[test]
+    fn the_selection_lists_the_candidates_and_never_picks_an_unvalidated_one_unasked() {
+        use crate::meshing::cost::{CostModel, Workload};
+        let bar = Region::new(Loop::rectangle(0.0, 0.0, 30.0, 3.0).unwrap(), vec![Loop::circle([15.0, 1.5], 0.5, "hole").unwrap()], steel()).unwrap();
+        let mut opt = HybridOptions2d::new(Physics::PlaneStress { thickness: 1.0 }, ElementFamily::Quadratic);
+        opt.structured_aspect = [4.0, 1.0];
+        // solving dominates: a nonlinear analysis with 200 factorisations
+        let model = CostModel { assembly_s_per_unit: 1e-8, factor_s_per_unit: 1e-9, solve_s_per_factor_nnz: 1e-8 };
+        let work = Workload::nonlinear(200.0);
+        let size = |_: [f64; 2]| 0.3;
+        let strict = mesh_best_2d(&bar, &size, &opt, &model, &work, false).unwrap();
+        assert!(strict.choice.predictions.len() >= 2);
+        assert!(!strict.name.contains("anisotropic"), "{}", strict.name);
+        let loose = mesh_best_2d(&bar, &size, &opt, &model, &work, true).unwrap();
+        let dofs = |name: &str| loose.choice.predictions.iter().find(|p| p.0.starts_with(name)).map(|p| p.1.dofs);
+        assert!(dofs("hybrid anisotropic").unwrap() < dofs("unstructured").unwrap(), "{:?}", loose.choice.predictions.iter().map(|p| (&p.0, p.1.dofs)).collect::<Vec<_>>());
+        assert!(loose.name.contains("anisotropic"), "{} {:?}", loose.name, loose.choice.predictions.iter().map(|p| (&p.0, p.2)).collect::<Vec<_>>());
+        assert!(loose.chosen.report.conformity.is_conforming());
     }
 }

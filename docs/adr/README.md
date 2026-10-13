@@ -29,3 +29,4 @@ for Sections 13 and 15.
 | [019](ADR-019-solid-kernel-opencascade.md) | OpenCascade (via `opencascade`) is the B-rep kernel; tetrahedral volume mesher in `fea-core` | Accepted (spike evidence); binding changed to `cadrum` by addendum 2026-10-11 |
 | [020](ADR-020-failure-guidance-diagnosis-remedies-questions.md) | Failure guidance: state-based diagnosis, remedies and questions as data, ranking only behind the measured gate | Proposed (core built, UI awaits approval) |
 | [021](ADR-021-thermal-studies.md) | Thermal studies (steady conduction, thermal stress) as a study of the same `Problem`, not a second schema | Accepted |
+| [022](ADR-022-hybrid-meshing-and-goal-oriented-adaptivity.md) | Hybrid structured/unstructured meshing and goal-oriented adaptivity in `fea-core` | Accepted (direct user direction; epic #25) |
