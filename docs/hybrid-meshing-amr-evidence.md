@@ -125,3 +125,30 @@ length downward traction on the lower arm's free end, Tri6, plane stress), quant
   J = 2059.16): both stop converged with a physical error under 0.4 %; the estimate sees the discretisation error of the mesh it
   is given, not the approximation of the circle by the boundary elements (true errors 6.8 and 3.6 at the first mesh against
   estimates of -0.8 and +0.2), so that end-to-end check is on the quantity, not on the effectivity.
+
+## Phase 9 (part 1): eigenvalues, and two kernel defects the eigenvalue check exposed (2026-10-13)
+
+`cargo test -p fea-core --test eigen --test dynamics --test recovery -- --nocapture`.
+
+- **Defect 1: simplex consistent mass.** `kernel::mass` integrated `rho N_a N_b` with the stiffness rule: one point for Tri3 /
+  Tet4 (a rank-one element mass) and a degree-2 rule for Tri6 / Tet10 (the products are degree 4). Frequencies of triangle and
+  tetrahedron models carried a quadrature error larger than the discretisation error (axial bar, Tri6, h = 0.2: the eigenvalue
+  error was 2.49e-5, of which 1.1e-5 was quadrature; after the fix 1.36e-5). `ElementKind::mass_table` now gives collapsed Gauss
+  rules exact for the mass products (4 / 9 points on triangles, 27 / 64 on tetrahedra); tensor-product elements were already
+  exact. The same kernel serves the heat-capacity matrix and the mass objective of `optimize.rs`.
+- **Defect 2: error integrals sampled at superconvergent points.** `zz_error_field` and `stress_error_energy` integrated the
+  recovered-minus-finite-element stress with the stiffness Gauss points, where the finite-element stress is (nearly)
+  superconvergent, so they saw a fraction of the error between those points (for the axial-bar mode: 0.06-0.2 of the energy
+  error). They use `recover::error_rule` now (4-5 Gauss points per direction, collapsed on simplices); with it the ZZ estimate
+  equals the true stress-energy error (ratio 0.8-1.25 on five element families, `tests/recovery.rs`).
+- **Eigenvalue estimate** (`adaptivity::eigen`): `w_h - w ~ sum eta_e^2` with `eta_e` the recovered-stress energy error of the mass-normalised
+  mode, no dual solve. Axial bar (Tri6, E = rho = 1, nu = 0, mode 0 / mode 1), estimate / true error: 1.35 / 1.37 (h = 0.4),
+  1.03 / 1.48 (0.2), 1.05 / 1.13 (0.1), 1.01 / 1.01 (0.05), 1.00 / 1.00 (0.025). The same identity on Quad9 grids holds to four
+  digits (`delta lambda` 8.085e-5 against `a(e, e)` 8.114e-5).
+- **Loop**: following the second axial mode to a relative tolerance of 2e-4 takes three adaptations (376 dofs); every cycle's
+  mode is recognised by the modal assurance criterion (MAC >= 0.99995). A square with rollers on all sides and nu = 0 has the
+  triple eigenvalue pi^2: the three modes form a cluster, the estimate is the cluster's and `Degraded`, and the cluster is followed as a
+  unit. A mesher that changes the physics (both ends clamped) makes the followed mode unrecognisable and the run stops with
+  `ModeLost`.
+- Buckling: the same indicator marks, but the geometric-stiffness term of the same order is not estimated, so a buckling value is
+  never presented as an error bound (documented in the module; no buckling loop is built).

@@ -10,7 +10,6 @@
 
 use crate::analysis::{GaussStress, Model};
 use crate::element::ElementKind;
-use crate::kernel::{self, Work};
 use crate::mesh::Elastic;
 use rayon::prelude::*;
 
@@ -238,6 +237,101 @@ impl SprRecovery {
     }
 }
 
+use crate::element::gauss_legendre_unit;
+
+/// Quadrature for the error integrals: richer than the stiffness rule. The stiffness Gauss points are (nearly) the points where
+/// the finite-element stress is superconvergent, so a recovered-minus-finite-element difference sampled there misses the error
+/// between them (an eigenvalue test showed an energy error five to seven times too small). Points in natural coordinates and
+/// weights summing to the reference measure of the element.
+fn error_rule(kind: ElementKind) -> Vec<([f64; 3], f64)> {
+    let quadratic = kind.n_nodes() > kind.n_corners();
+    let n = if quadratic { 5 } else { 4 };
+    let gl = gauss_legendre_unit(n);
+    let mut out = Vec::new();
+    match kind {
+        ElementKind::Quad4 | ElementKind::Quad8 | ElementKind::Quad9 => {
+            for &(a, wa) in &gl {
+                for &(b, wb) in &gl {
+                    out.push(([2.0 * a - 1.0, 2.0 * b - 1.0, 0.0], 4.0 * wa * wb));
+                }
+            }
+        }
+        ElementKind::Hex8 | ElementKind::Hex20 | ElementKind::Hex27 => {
+            let gl = gauss_legendre_unit(n - 1);
+            for &(a, wa) in &gl {
+                for &(b, wb) in &gl {
+                    for &(c, wc) in &gl {
+                        out.push(([2.0 * a - 1.0, 2.0 * b - 1.0, 2.0 * c - 1.0], 8.0 * wa * wb * wc));
+                    }
+                }
+            }
+        }
+        ElementKind::Tri3 | ElementKind::Tri6 => {
+            for &(u, wu) in &gl {
+                for &(v, wv) in &gl {
+                    out.push(([u * (1.0 - v), v, 0.0], wu * wv * (1.0 - v)));
+                }
+            }
+        }
+        ElementKind::Tet4 | ElementKind::Tet10 => {
+            let gl = gauss_legendre_unit(n - 1);
+            for &(a, wa) in &gl {
+                for &(b, wb) in &gl {
+                    for &(c, wc) in &gl {
+                        out.push(([a * (1.0 - b) * (1.0 - c), b * (1.0 - c), c], wa * wb * wc * (1.0 - b) * (1.0 - c) * (1.0 - c)));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// One point of the error rule inside an element: shape functions, physical weight (Jacobian, thickness or `2 pi r` included).
+struct ErrorPoint {
+    n: Vec<f64>,
+    weight: f64,
+    xi: [f64; 3],
+}
+
+fn error_points(kind: ElementKind, physics: crate::mesh::Physics, xyz: &[[f64; 3]]) -> Result<Vec<ErrorPoint>, String> {
+    let (nn, d) = (kind.n_nodes(), kind.dim());
+    let scale = match physics {
+        crate::mesh::Physics::PlaneStress { thickness } | crate::mesh::Physics::PlaneStrain { thickness } => thickness,
+        _ => 1.0,
+    };
+    let mut out = Vec::new();
+    for (xi, wref) in error_rule(kind) {
+        let (n, dn) = kind.shape(xi);
+        let mut jac = [[0.0f64; 3]; 3];
+        for a in 0..nn {
+            for i in 0..d {
+                for k in 0..d {
+                    jac[i][k] += xyz[a][i] * dn[a][k];
+                }
+            }
+        }
+        let det = if d == 2 {
+            jac[0][0] * jac[1][1] - jac[0][1] * jac[1][0]
+        } else {
+            jac[0][0] * (jac[1][1] * jac[2][2] - jac[1][2] * jac[2][1]) - jac[0][1] * (jac[1][0] * jac[2][2] - jac[1][2] * jac[2][0]) + jac[0][2] * (jac[1][0] * jac[2][1] - jac[1][1] * jac[2][0])
+        };
+        if det.is_nan() || det <= 0.0 || !det.is_finite() {
+            return Err(format!("inverted or degenerate element (Jacobian {det:.3e} in the error quadrature)"));
+        }
+        let mut w = wref * det * scale;
+        if matches!(physics, crate::mesh::Physics::Axisymmetric) {
+            let r: f64 = (0..nn).map(|a| n[a] * xyz[a][0]).sum();
+            if r.is_nan() || r <= 0.0 {
+                return Err(format!("axisymmetric element with radius {r:.3e} in the error quadrature"));
+            }
+            w *= 2.0 * std::f64::consts::PI * r;
+        }
+        out.push(ErrorPoint { n: n[..nn].to_vec(), weight: w, xi });
+    }
+    Ok(out)
+}
+
 impl Model {
     /// SPR nodal stresses from the Gauss-point stresses (`gauss_stresses` output). Patches span every element around a node
     /// whatever its material: use [`recover_spr_by_material`](Self::recover_spr_by_material) for a mesh with several materials.
@@ -454,33 +548,36 @@ impl Model {
         let rec = self.recover_spr_by_material(&gauss)?;
         let (mut eta, mut norm2) = (Vec::with_capacity(self.mesh.n_elems()), 0.0f64);
         for (bi, blk) in self.mesh.blocks.iter().enumerate() {
-            let t = blk.kind.table();
-            let nn = t.nn;
-            // Per element: the error energy and the recovered-stress energy (summed afterwards, in element order).
-            let one = |(work, xyz): &mut (Work, Vec<[f64; 3]>), e: usize| -> Result<(f64, f64), String> {
+            let nn = blk.kind.n_nodes();
+            let d = self.mesh.dim();
+            // Per element: the error energy and the recovered-stress energy (summed afterwards, in element order), integrated with
+            // the error rule at points where both the recovered and the finite-element stress are evaluated.
+            let one = |(xyz, ue): &mut (Vec<[f64; 3]>, Vec<f64>), e: usize| -> Result<(f64, f64), String> {
                 let conn = blk.elem(e);
                 for (a, &nd) in conn.iter().enumerate() {
                     xyz[a] = self.mesh.nodes[nd];
+                    for i in 0..d {
+                        ue[a * d + i] = u[nd * d + i];
+                    }
                 }
-                kernel::geometry(blk.kind, self.mesh.physics, xyz, work).map_err(|er| er.to_string())?;
                 let (mut e2, mut n2) = (0.0, 0.0);
-                for g in 0..t.ngp {
-                    let nsh = t.n_at(g);
+                for pt in error_points(blk.kind, self.mesh.physics, xyz)? {
                     let mut star = [0.0; 6];
                     for (a, &nd) in conn.iter().enumerate() {
                         let r = rec.at(bi, nd);
                         for c in 0..6 {
-                            star[c] += nsh[a] * r[c];
+                            star[c] += pt.n[a] * r[c];
                         }
                     }
-                    let h = gauss[bi][e * t.ngp + g].1;
+                    let dt = delta_t + field.map_or(0.0, |tf| conn.iter().enumerate().map(|(a, &nd)| pt.n[a] * tf[nd]).sum::<f64>());
+                    let h = crate::analysis::stress_at_xi(blk.kind, self.mesh.physics, &blk.material, xyz, ue, pt.xi, dt)?;
                     let diff: [f64; 6] = std::array::from_fn(|c| star[c] - h[c]);
-                    e2 += work.wdet[g] * complementary_energy(&blk.material, &diff) * 2.0;
-                    n2 += work.wdet[g] * complementary_energy(&blk.material, &star) * 2.0;
+                    e2 += pt.weight * complementary_energy(&blk.material, &diff) * 2.0;
+                    n2 += pt.weight * complementary_energy(&blk.material, &star) * 2.0;
                 }
                 Ok((e2, n2))
             };
-            let init = || (Work::new(), vec![[0.0; 3]; nn]);
+            let init = || (vec![[0.0; 3]; nn], vec![0.0; nn * d]);
             let per_elem: Vec<(f64, f64)> = if blk.n_elems() >= PARALLEL_NODES {
                 (0..blk.n_elems()).into_par_iter().map_init(init, |st, e| one(st, e)).collect::<Result<_, _>>()?
             } else {
@@ -499,25 +596,64 @@ impl Model {
     /// Energy norm `sqrt(int (sigma_exact - sigma_h) : C^-1 : (sigma_exact - sigma_h))` of the true
     /// stress error against a known stress field (verification and convergence studies).
     pub fn stress_error_energy(&self, u: &[f64], delta_t: f64, exact: impl Fn(&[f64; 3]) -> [f64; 6]) -> Result<f64, String> {
-        let gauss = self.gauss_stresses(u, delta_t)?;
-        let mut work = Work::new();
+        let d = self.mesh.dim();
         let mut sum = 0.0;
-        for (bi, blk) in self.mesh.blocks.iter().enumerate() {
-            let t = blk.kind.table();
-            let mut xyz = vec![[0.0; 3]; t.nn];
+        for blk in &self.mesh.blocks {
+            let nn = blk.kind.n_nodes();
+            let (mut xyz, mut ue) = (vec![[0.0; 3]; nn], vec![0.0; nn * d]);
             for e in 0..blk.n_elems() {
-                for (a, &nd) in blk.elem(e).iter().enumerate() {
+                let conn = blk.elem(e);
+                for (a, &nd) in conn.iter().enumerate() {
                     xyz[a] = self.mesh.nodes[nd];
+                    for i in 0..d {
+                        ue[a * d + i] = u[nd * d + i];
+                    }
                 }
-                kernel::geometry(blk.kind, self.mesh.physics, &xyz, &mut work).map_err(|er| er.to_string())?;
-                for g in 0..t.ngp {
-                    let (x, h) = &gauss[bi][e * t.ngp + g];
-                    let ex = exact(x);
+                for pt in error_points(blk.kind, self.mesh.physics, &xyz)? {
+                    let x: [f64; 3] = std::array::from_fn(|k| (0..nn).map(|a| pt.n[a] * xyz[a][k]).sum());
+                    let h = crate::analysis::stress_at_xi(blk.kind, self.mesh.physics, &blk.material, &xyz, &ue, pt.xi, delta_t)?;
+                    let ex = exact(&x);
                     let diff: [f64; 6] = std::array::from_fn(|c| ex[c] - h[c]);
-                    sum += work.wdet[g] * complementary_energy(&blk.material, &diff) * 2.0;
+                    sum += pt.weight * complementary_energy(&blk.material, &diff) * 2.0;
                 }
             }
         }
         Ok(sum.sqrt())
+    }
+}
+
+#[cfg(test)]
+mod rule_tests {
+    use super::*;
+    use crate::element::ALL_KINDS;
+
+    #[test]
+    fn the_error_rules_integrate_polynomials_over_every_reference_element() {
+        for kind in ALL_KINDS {
+            let rule = error_rule(kind);
+            let measure: f64 = rule.iter().map(|r| r.1).sum();
+            let want = match (kind.is_simplex(), kind.dim()) {
+                (true, 2) => 0.5,
+                (true, _) => 1.0 / 6.0,
+                (false, 2) => 4.0,
+                (false, _) => 8.0,
+            };
+            assert!((measure - want).abs() < 1e-13, "{kind:?}: measure {measure} vs {want}");
+            // the squared difference of two fields of the element's order: degree 2 (linear kinds) or 4 (quadratic kinds)
+            let quadratic = kind.n_nodes() > kind.n_corners();
+            let p = if quadratic { 2 } else { 1 };
+            let got: f64 = rule.iter().map(|(x, w)| w * x[0].powi(p) * x[1].powi(p)).sum();
+            let exact = match (kind.is_simplex(), kind.dim(), quadratic) {
+                (true, 2, false) => 1.0 / 24.0,           // int x y over the unit triangle = 1!1!/4!
+                (true, 2, true) => 4.0 / 720.0,           // 2!2!/6!
+                (true, _, false) => 1.0 / 120.0,          // 1!1!/5!
+                (true, _, true) => 4.0 / 5040.0,          // 2!2!/7!
+                (false, 2, false) => 0.0,                 // odd in x
+                (false, 2, true) => 4.0 / 9.0,            // (2/3)^2
+                (false, _, false) => 0.0,
+                (false, _, true) => 8.0 / 9.0,            // (2/3)(2/3)(2)
+            };
+            assert!((got - exact).abs() < 1e-12, "{kind:?}: {got} vs {exact}");
+        }
     }
 }

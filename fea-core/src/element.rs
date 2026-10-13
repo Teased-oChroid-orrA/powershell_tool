@@ -115,6 +115,18 @@ impl ElementKind {
         TABLES[idx].get_or_init(|| ShapeTable::build(self))
     }
 
+    /// Tabulated shape functions on a rule exact for the consistent mass `int N_a N_b` (twice the polynomial order of the
+    /// element): the stiffness rule of a simplex is not (a one-point rule makes the Tri3 / Tet4 element mass singular and the
+    /// three-point rule of Tri6 misses the fourth-degree products), the tensor-product rules are.
+    pub fn mass_table(self) -> &'static ShapeTable {
+        if !self.is_simplex() {
+            return self.table();
+        }
+        static MASS: [OnceLock<ShapeTable>; 10] = [const { OnceLock::new() }; 10];
+        let idx = ALL_KINDS.iter().position(|k| *k == self).unwrap();
+        MASS[idx].get_or_init(|| ShapeTable::build_with(self, mass_quadrature(self)))
+    }
+
     /// Shape functions `n` and natural derivatives `dn[node][axis]` at `xi`.
     pub fn shape(self, xi: [f64; 3]) -> ([f64; MAX_NODES], [[f64; 3]; MAX_NODES]) {
         let mut n = [0.0; MAX_NODES];
@@ -346,7 +358,10 @@ pub struct ShapeTable {
 
 impl ShapeTable {
     fn build(kind: ElementKind) -> Self {
-        let (xi, w) = quadrature(kind);
+        Self::build_with(kind, quadrature(kind))
+    }
+
+    fn build_with(kind: ElementKind, (xi, w): (Vec<[f64; 3]>, Vec<f64>)) -> Self {
         let (dim, nn) = (kind.dim(), kind.n_nodes());
         let mut n = Vec::with_capacity(xi.len() * nn);
         let mut dn = Vec::with_capacity(xi.len() * nn * dim);
@@ -389,6 +404,70 @@ fn tensor(rule: &[(f64, f64)], dim: usize) -> (Vec<[f64; 3]>, Vec<f64>) {
                 w.push(rule[i].1 * rule[j].1 * if dim == 3 { rule[k].1 } else { 1.0 });
             }
         }
+    }
+    (xi, w)
+}
+
+/// `n` Gauss-Legendre nodes and weights on `[0, 1]` (weights sum to 1).
+pub(crate) fn gauss_legendre_unit(n: usize) -> Vec<(f64, f64)> {
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut x = (std::f64::consts::PI * (i as f64 + 0.75) / (n as f64 + 0.5)).cos();
+        let legendre = |x: f64| -> (f64, f64) {
+            let (mut p0, mut p1) = (1.0, x);
+            for k in 2..=n {
+                let p2 = ((2 * k - 1) as f64 * x * p1 - (k - 1) as f64 * p0) / k as f64;
+                p0 = p1;
+                p1 = p2;
+            }
+            (p1, n as f64 * (x * p1 - p0) / (x * x - 1.0))
+        };
+        for _ in 0..100 {
+            let (p, dp) = legendre(x);
+            let dx = p / dp;
+            x -= dx;
+            if dx.abs() < 1e-15 {
+                break;
+            }
+        }
+        let (_, dp) = legendre(x);
+        out.push((0.5 * (1.0 - x), 0.5 * 2.0 / ((1.0 - x * x) * dp * dp)));
+    }
+    out.sort_by(|a, b| a.0.total_cmp(&b.0));
+    out
+}
+
+/// Collapsed (Duffy) Gauss rules of the simplices, exact for the mass products: degree 2 and 4 on triangles (4 and 9 points),
+/// 2 and 4 on tetrahedra (27 and 64 points). Only simplices have a mass rule of their own.
+fn mass_quadrature(kind: ElementKind) -> (Vec<[f64; 3]>, Vec<f64>) {
+    let (mut xi, mut w) = (Vec::new(), Vec::new());
+    match kind {
+        ElementKind::Tri3 | ElementKind::Tri6 => {
+            let gl = gauss_legendre_unit(if kind == ElementKind::Tri3 { 2 } else { 3 });
+            for &(u, wu) in &gl {
+                for &(v, wv) in &gl {
+                    xi.push([u * (1.0 - v), v, 0.0]);
+                    w.push(0.5 * wu * wv * 2.0 * (1.0 - v));
+                }
+            }
+            // the collapsed weights above sum to 1 (area measure 1/2): scale to the reference triangle
+            let s: f64 = w.iter().sum();
+            w.iter_mut().for_each(|x| *x *= 0.5 / s);
+        }
+        ElementKind::Tet4 | ElementKind::Tet10 => {
+            let gl = gauss_legendre_unit(if kind == ElementKind::Tet4 { 3 } else { 4 });
+            for &(a, wa) in &gl {
+                for &(b, wb) in &gl {
+                    for &(c, wc) in &gl {
+                        xi.push([a * (1.0 - b) * (1.0 - c), b * (1.0 - c), c]);
+                        w.push(wa * wb * wc * (1.0 - b) * (1.0 - c) * (1.0 - c));
+                    }
+                }
+            }
+            let s: f64 = w.iter().sum();
+            w.iter_mut().for_each(|x| *x *= (1.0 / 6.0) / s);
+        }
+        _ => unreachable!("only simplices have a separate mass rule"),
     }
     (xi, w)
 }

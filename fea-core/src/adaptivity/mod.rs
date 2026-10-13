@@ -5,6 +5,7 @@
 
 pub mod controller;
 pub mod dwr;
+pub mod eigen;
 pub mod enrich;
 pub mod equilibrated;
 pub mod estimator;
@@ -19,6 +20,7 @@ pub(crate) mod trimesh;
 pub mod zones;
 
 pub use equilibrated::{reconstruct, EquilibratedEstimator, EquilibrationReport, Reconstruction};
+pub use eigen::{clusters, estimate_modes, run_eigen_amr, track, EigenConfig, EigenResult, EigenStop, ModeEstimate};
 pub use enrich::EnrichedDwrEstimator;
 pub use estimator::{AdjacencyCache, ErrorEstimator, ErrorField, EstimatorContext, Indicator, Reliability, ZzEstimator};
 pub use dwr::{DwrEstimator, DwrGoalEstimator, DwrResult};

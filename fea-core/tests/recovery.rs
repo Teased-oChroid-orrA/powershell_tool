@@ -311,3 +311,31 @@ fn recovery_is_bit_identical_on_one_thread_and_many() {
         assert!(many.1.iter().flatten().any(|v| *v != 0.0) && many.3 > 0.0, "{kind:?}: the comparison saw real data");
     }
 }
+
+#[test]
+fn the_zz_estimate_equals_the_true_stress_energy_error_on_a_smooth_field_not_a_fraction_of_it() {
+    // The error integrals used the stiffness Gauss points, where the finite-element stress is superconvergent: an eigenmode of
+    // an axial bar (exact stress known) gave an energy error five to seven times too small. With the richer rule the estimate
+    // matches the true error on every element family.
+    use std::f64::consts::PI;
+    for kind in [ElementKind::Tri3, ElementKind::Tri6, ElementKind::Quad4, ElementKind::Quad8, ElementKind::Quad9] {
+        let n = if matches!(kind, ElementKind::Tri3 | ElementKind::Quad4) { 24 } else { 12 };
+        let mut mesh = fea_core::generate::grid(Physics::PlaneStress { thickness: 1.0 }, kind, Elastic::new(1.0, 0.0), [n, 2, 1], &|p| [p[0], 0.25 * p[1], 0.0]).unwrap();
+        mesh.set_density_all(1.0).unwrap();
+        let model = Model::new(mesh).unwrap();
+        let mut bc = model.dirichlet();
+        for (nd, x) in model.mesh.nodes.iter().enumerate() {
+            bc.fix(nd, 1, 0.0);
+            if x[0] < 1e-12 {
+                bc.fix(nd, 0, 0.0);
+            }
+        }
+        let m = &model.modal(&bc, &fea_core::ModalOptions { n_modes: 1, ..Default::default() }).unwrap().modes[0];
+        let node = model.mesh.nodes.iter().position(|x| (x[0] - 1.0).abs() < 1e-9).unwrap();
+        let u: Vec<f64> = m.shape.iter().map(|v| v * m.shape[2 * node].signum()).collect();
+        let (k, c) = (PI / 2.0, 8.0f64.sqrt());
+        let truth = model.stress_error_energy(&u, 0.0, |x| [c * k * (k * x[0]).cos(), 0.0, 0.0, 0.0, 0.0, 0.0]).unwrap();
+        let zz = model.zz_error(&u, 0.0).unwrap().total;
+        assert!(zz / truth > 0.8 && zz / truth < 1.25, "{kind:?}: ZZ {zz:.4e} against the true error {truth:.4e} (ratio {})", zz / truth);
+    }
+}

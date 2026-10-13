@@ -386,3 +386,66 @@ fn streamed_transient_states_match_recorded_history_and_preserve_diagnostics() {
         &mut |step, _, _| if step == 3 { Err("observer cancelled".into()) } else { Ok(()) }).unwrap_err();
     assert_eq!(error, "observer cancelled");
 }
+
+#[test]
+fn the_consistent_mass_of_the_simplices_integrates_the_products_of_shape_functions_exactly() {
+    use fea_core::kernel::{mass, Work};
+    // unit triangle / tetrahedron; rho = 3. u = v = x^2 is in the quadratic space, so u^T M u must equal rho int x^4 exactly
+    // (1/30 over the unit triangle, 1/210 over the unit tetrahedron); the linear elements reproduce rho int x^2.
+    for (kind, phys, power, exact_int) in [
+        (ElementKind::Tri3, Physics::PlaneStress { thickness: 1.0 }, 1, 1.0 / 12.0),
+        (ElementKind::Tri6, Physics::PlaneStress { thickness: 1.0 }, 2, 1.0 / 30.0),
+        (ElementKind::Tet4, Physics::Solid, 1, 1.0 / 60.0),
+        (ElementKind::Tet10, Physics::Solid, 2, 1.0 / 210.0),
+    ] {
+        let nodes: Vec<[f64; 3]> = kind.node_coords().to_vec();
+        let nn = kind.n_nodes();
+        let mut me = vec![0.0; nn * nn];
+        mass(kind, phys, 3.0, &nodes, &mut Work::new(), &mut me).unwrap();
+        let f: Vec<f64> = nodes.iter().map(|x| x[0].powi(power)).collect();
+        let quad: f64 = (0..nn).map(|a| (0..nn).map(|b| f[a] * me[a * nn + b] * f[b]).sum::<f64>()).sum();
+        assert!((quad - 3.0 * exact_int).abs() < 1e-13, "{kind:?}: u^T M u = {quad}, exact {}", 3.0 * exact_int);
+        // the element mass is positive definite (a one-point rule would make it rank one): every pivot of a Cholesky is positive
+        let mut l = vec![0.0; nn * nn];
+        for i in 0..nn {
+            for j in 0..=i {
+                let mut s = me[i * nn + j];
+                for k in 0..j {
+                    s -= l[i * nn + k] * l[j * nn + k];
+                }
+                if i == j {
+                    // Tri6 / Tet10 element masses are indefinite-free but have zero-ish corner rows only for serendipity; quadratic
+                    // Lagrange simplices are positive definite
+                    assert!(s > 1e-12, "{kind:?}: pivot {i} = {s}");
+                    l[i * nn + i] = s.sqrt();
+                } else {
+                    l[i * nn + j] = s / l[j * nn + j];
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn modal_frequencies_on_triangles_converge_to_the_closed_form_at_the_rate_of_the_energy_error() {
+    // axial bar on Tri6 / Tri3 grids (nu = 0, only axial motion): omega_1 = pi / 2; the eigenvalue error must shrink by about 16 for
+    // Tri6 and 4 for Tri3 when h is halved (it stalled at a quarter of that while the mass was under-integrated)
+    for (kind, ratio_lo) in [(ElementKind::Tri6, 12.0), (ElementKind::Tri3, 3.2)] {
+        let errs: Vec<f64> = [8usize, 16].iter().map(|&n| {
+            let mut mesh = grid(Physics::PlaneStress { thickness: 1.0 }, kind, Elastic::new(1.0, 0.0), [n, 1, 1], &|p| [p[0], 0.25 * p[1], 0.0]).unwrap();
+            mesh.set_density_all(1.0).unwrap();
+            let model = Model::new(mesh).unwrap();
+            let mut bc = model.dirichlet();
+            for (nd, x) in model.mesh.nodes.iter().enumerate() {
+                bc.fix(nd, 1, 0.0);
+                if x[0] < 1e-12 {
+                    bc.fix(nd, 0, 0.0);
+                }
+            }
+            let w2 = model.modal(&bc, &ModalOptions { n_modes: 1, ..ModalOptions::default() }).unwrap().modes[0].omega2;
+            w2 - (PI / 2.0) * (PI / 2.0)
+        }).collect();
+        assert!(errs[0] > 0.0 && errs[1] > 0.0, "{kind:?}: consistent-mass frequencies converge from above: {errs:?}");
+        assert!(errs[0] / errs[1] > ratio_lo, "{kind:?}: error ratio {} for halved h ({errs:?})", errs[0] / errs[1]);
+    }
+}

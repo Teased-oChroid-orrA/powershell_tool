@@ -31,7 +31,7 @@ impl Default for Work {
 
 impl Work {
     pub fn new() -> Self {
-        Self { grad: vec![0.0; 27 * MAX_NODES * 3], wdet: vec![0.0; 27], radius: vec![0.0; 27], cm_grad: vec![0.0; 27 * MAX_NODES * 3] }
+        Self { grad: vec![0.0; 64 * MAX_NODES * 3], wdet: vec![0.0; 64], radius: vec![0.0; 64], cm_grad: vec![0.0; 27 * MAX_NODES * 3] }
     }
 }
 
@@ -54,7 +54,11 @@ impl std::fmt::Display for ElementError {
 
 /// Physical gradients and integration weights of one element.
 pub fn geometry(kind: ElementKind, physics: Physics, xyz: &[[f64; 3]], work: &mut Work) -> Result<(), ElementError> {
-    let t = kind.table();
+    geometry_with(kind.table(), physics, xyz, work)
+}
+
+/// [`geometry`] on a given rule (the mass rule of a simplex differs from its stiffness rule).
+pub fn geometry_with(t: &crate::element::ShapeTable, physics: Physics, xyz: &[[f64; 3]], work: &mut Work) -> Result<(), ElementError> {
     let (nn, d) = (t.nn, t.dim);
     let scale = match physics {
         Physics::PlaneStress { thickness } | Physics::PlaneStrain { thickness } => thickness,
@@ -508,8 +512,8 @@ pub fn body_load(kind: ElementKind, physics: Physics, body: [f64; 3], xyz: &[[f6
 /// Consistent mass of one element as `nn x nn` scalars (`me[a * nn + b] = rho * integral N_a N_b`): the mass matrix of a
 /// continuum element is this times the identity on the displacement components.
 pub fn mass(kind: ElementKind, physics: Physics, rho: f64, xyz: &[[f64; 3]], work: &mut Work, me: &mut [f64]) -> Result<(), ElementError> {
-    geometry(kind, physics, xyz, work)?;
-    let t = kind.table();
+    let t = kind.mass_table();
+    geometry_with(t, physics, xyz, work)?;
     let nn = t.nn;
     me[..nn * nn].fill(0.0);
     for g in 0..t.ngp {

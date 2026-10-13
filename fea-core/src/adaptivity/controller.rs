@@ -246,7 +246,7 @@ struct Evaluation {
     h_elem: Vec<f64>,
 }
 
-fn element_sizes(problem: &MeshedProblem) -> Result<Vec<f64>, MeshError> {
+pub(crate) fn element_sizes(problem: &MeshedProblem) -> Result<Vec<f64>, MeshError> {
     let mesh = &problem.model.mesh;
     if mesh.dim() == 3 && mesh.blocks.iter().all(|b| matches!(b.kind, crate::ElementKind::Tet4 | crate::ElementKind::Tet10)) {
         return element_sizes_3d(mesh).map_err(MeshError::Failed);
@@ -412,7 +412,7 @@ fn materials(mesh: &Mesh) -> Vec<Elastic> {
 
 /// Everything the adaptation must preserve from `old` to `new`: the applied load resultant, the material set, the measure of the
 /// domain and the presence of restraints. A silent loss of a load or a restraint would otherwise look like a good solve.
-fn state_check(old: &MeshedProblem, new: &MeshedProblem, tol: f64) -> Result<(), String> {
+pub(crate) fn state_check(old: &MeshedProblem, new: &MeshedProblem, tol: f64) -> Result<(), String> {
     let (fo, fn_) = (total_force(old).map_err(|e| e.to_string())?, total_force(new).map_err(|e| e.to_string())?);
     let scale = fo.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     for c in 0..3 {
