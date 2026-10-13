@@ -6,6 +6,7 @@
 pub mod dwr;
 pub mod equilibrated;
 pub mod estimator;
+pub mod fusion;
 pub mod goal;
 pub mod patch;
 pub mod snapshot;
@@ -16,6 +17,7 @@ pub mod zones;
 pub use equilibrated::{reconstruct, EquilibratedEstimator, EquilibrationReport, Reconstruction};
 pub use estimator::{AdjacencyCache, ErrorEstimator, ErrorField, EstimatorContext, Indicator, Reliability, ZzEstimator};
 pub use dwr::{DwrEstimator, DwrGoalEstimator, DwrResult};
+pub use fusion::{fuse, normalise, FusionConfig, FusionInput, FusionStrategy, Fused, GoalCombine, Normalization};
 pub use goal::LinearFunctional;
 pub use patch::PatchTopology;
 pub use snapshot::SolverSnapshot;
