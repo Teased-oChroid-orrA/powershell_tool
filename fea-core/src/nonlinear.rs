@@ -148,6 +148,83 @@ fn accumulate_tangent_2d(k: &mut [f64], nn: usize, gr: &[f64], tangent: &[[f64; 
     }
 }
 
+/// The constitutive update of one plastic Gauss point from its displacement gradient `h` (the hoop entry already set for
+/// axisymmetry) and its state at the start of the step: the single authoritative path of the element kernel and of every
+/// stress read-out of a nonlinear state.
+fn plastic_update_at(blk: &Block, j2: &J2, mo: Moduli, plane_stress: bool, h: &M3, old: &GpState) -> Result<Update, String> {
+    Ok(if j2.large_strain {
+        let mut f = *h;
+        for (i, row) in f.iter_mut().enumerate() {
+            row[i] += 1.0;
+        }
+        if j2.neo_hookean {
+            neo_hookean_update(mo, h, old)
+        } else if plane_stress {
+            finite_strain_plane_stress(mo, &j2.law, &f, old, 1.0 - blk.material.nu / (1.0 - blk.material.nu) * (h[0][0] + h[1][1])).map(|r| r.0)
+        } else {
+            finite_strain_update(mo, &j2.law, &f, old)
+        }
+        .ok_or_else(|| "material state failed (inverted element or non-positive stretch)".to_string())?
+    } else {
+        let eps: M3 = std::array::from_fn(|i| std::array::from_fn(|j| 0.5 * (h[i][j] + h[j][i])));
+        match (&blk.material.aniso, plane_stress) {
+            (Some(an), true) => small_strain_plane_stress_aniso(&an.d, &j2.law, &eps, old).0,
+            (Some(an), false) => small_strain_update_aniso(&an.d, &j2.law, &eps, old),
+            (None, true) => small_strain_plane_stress(mo, &j2.law, &eps, old).0,
+            (None, false) => small_strain_update(mo, &j2.law, &eps, old),
+        }
+    })
+}
+
+
+/// Stress (library order `xx, yy, zz, xy, yz, zx`) of a small-strain plastic point at natural coordinates `xi` of an element, from
+/// the element displacements `ue` and the material state `old` at the start of the step. The return map is evaluated at `xi`
+/// with that state (for a point that is not a Gauss point the state is the caller's choice, e.g. the nearest Gauss point's).
+pub(crate) fn plastic_stress_at(blk: &Block, physics: Physics, xyz: &[[f64; 3]], ue: &[f64], xi: [f64; 3], old: &GpState) -> Result<([f64; 6], GpState), String> {
+    let j2 = blk.plasticity.ok_or("not a plastic block")?;
+    if j2.large_strain {
+        return Err("the stress read-out of a finite-strain state is the first Piola-Kirchhoff stress, which this read-out does not provide".into());
+    }
+    let kind = blk.kind;
+    let (nn, d) = (kind.n_nodes(), kind.dim());
+    let (n, dn) = kind.shape(xi);
+    let mut jac = [[0.0f64; 3]; 3];
+    for a in 0..nn {
+        for i in 0..d {
+            for k in 0..d {
+                jac[i][k] += xyz[a][i] * dn[a][k];
+            }
+        }
+    }
+    let inv = crate::material::inverse(&{
+        let mut m = jac;
+        for (i, row) in m.iter_mut().enumerate().skip(d) {
+            row[i] = 1.0;
+        }
+        m
+    })
+    .ok_or("degenerate element in the stress read-out")?;
+    // grad_i = sum_k inv[k][i] dN/dxi_k
+    let mut h = [[0.0f64; 3]; 3];
+    for a in 0..nn {
+        for i in 0..d {
+            for k in 0..d {
+                let g: f64 = (0..d).map(|m| inv[m][k] * dn[a][m]).sum();
+                h[i][k] += ue[a * d + i] * g;
+            }
+        }
+    }
+    if matches!(physics, Physics::Axisymmetric) {
+        let r: f64 = (0..nn).map(|a| n[a] * xyz[a][0]).sum();
+        let ur: f64 = (0..nn).map(|a| n[a] * ue[a * 2]).sum();
+        h[2][2] = if r > 1e-12 { ur / r } else { h[0][0] };
+    }
+    let mo = Moduli::new(blk.material.e, blk.material.nu);
+    let up = plastic_update_at(blk, &j2, mo, matches!(physics, Physics::PlaneStress { .. }), &h, old)?;
+    let s = &up.stress;
+    Ok(([s[0][0], s[1][1], s[2][2], s[0][1], s[1][2], s[2][0]], up.state))
+}
+
 /// Element internal force `fe` and tangent `ke` (`(a*d+i, b*d+k)`, row major) of one plastic element.
 #[allow(clippy::too_many_arguments)] // a hot kernel: every input is a distinct piece of element data
 fn plastic_element(blk: &Block, physics: Physics, xyz: &[[f64; 3]], ue: &[f64], old: &[GpState], new: &mut [GpState], work: &mut Work, fe: &mut [f64], ke: Option<&mut [f64]>) -> Result<(), String> {
@@ -181,28 +258,7 @@ fn plastic_element(blk: &Block, physics: Physics, xyz: &[[f64; 3]], ue: &[f64], 
             let ur: f64 = (0..nn).map(|a| nsh[a] * ue[a * 2]).sum();
             h[2][2] = ur / radius;
         }
-        let up = if j2.large_strain {
-            let mut f = h;
-            for i in 0..3 {
-                f[i][i] += 1.0;
-            }
-            if j2.neo_hookean {
-                neo_hookean_update(mo, &h, &old[g])
-            } else if plane_stress {
-                finite_strain_plane_stress(mo, &j2.law, &f, &old[g], 1.0 - blk.material.nu / (1.0 - blk.material.nu) * (h[0][0] + h[1][1])).map(|r| r.0)
-            } else {
-                finite_strain_update(mo, &j2.law, &f, &old[g])
-            }
-            .ok_or_else(|| "material state failed (inverted element or non-positive stretch)".to_string())?
-        } else {
-            let eps: M3 = std::array::from_fn(|i| std::array::from_fn(|j| 0.5 * (h[i][j] + h[j][i])));
-            match (&blk.material.aniso, plane_stress) {
-                (Some(an), true) => small_strain_plane_stress_aniso(&an.d, &j2.law, &eps, &old[g]).0,
-                (Some(an), false) => small_strain_update_aniso(&an.d, &j2.law, &eps, &old[g]),
-                (None, true) => small_strain_plane_stress(mo, &j2.law, &eps, &old[g]).0,
-                (None, false) => small_strain_update(mo, &j2.law, &eps, &old[g]),
-            }
-        };
+        let up = plastic_update_at(blk, &j2, mo, plane_stress, &h, &old[g])?;
         new[g] = up.state;
         let (s, w) = (&up.stress, work.wdet[g]);
         for a in 0..nn {
@@ -501,6 +557,9 @@ pub enum Stop {
 pub struct NlSolution {
     pub u: Vec<f64>,
     pub state: NlState,
+    /// Material state at the start of the last accepted load step: with `u` it gives the consistent tangent of the final
+    /// state (the return mapping depends on the state it started from). `None` when no step was accepted.
+    pub prev_state: Option<NlState>,
     pub lambda: f64,
     pub steps: Vec<StepInfo>,
     /// Internal minus applied force at the fixed dofs.
@@ -616,6 +675,8 @@ struct Ctx<'a> {
     followers: Vec<(Vec<usize>, f64)>,
     /// Seconds spent (evaluation, factorisation, solves), reported under `NL_PROFILE`.
     timers: [Cell<f64>; 5],
+    /// State at the start of the last accepted step (`NlSolution::prev_state`).
+    last_start: RefCell<Option<NlState>>,
 }
 
 /// A converged state to continue from (load control with contact): the displacements and the
@@ -921,6 +982,42 @@ impl Ctx<'_> {
 }
 
 impl Model {
+    /// Cauchy stresses at the Gauss points of a small-strain nonlinear state: `u` the displacements and `old` the material
+    /// state at the start of the last accepted step (`NlSolution::prev_state`, or the virgin state for a single step), the same
+    /// path the element kernel takes. Elastic blocks give their linear stress.
+    pub fn nl_gauss_stresses(&self, u: &[f64], old: &NlState) -> Result<Vec<Vec<crate::analysis::GaussStress>>, String> {
+        let d = self.mesh.dim();
+        let elastic = self.gauss_stresses(u, 0.0)?;
+        let mut out = Vec::with_capacity(self.mesh.blocks.len());
+        for (bi, blk) in self.mesh.blocks.iter().enumerate() {
+            if blk.plasticity.is_none() {
+                out.push(elastic[bi].clone());
+                continue;
+            }
+            let t = blk.kind.table();
+            let (nn, ngp) = (t.nn, t.ngp);
+            let mut v = Vec::with_capacity(blk.n_elems() * ngp);
+            let mut xyz = vec![[0.0; 3]; nn];
+            let mut ue = vec![0.0; nn * d];
+            for e in 0..blk.n_elems() {
+                for (a, &nd) in blk.elem(e).iter().enumerate() {
+                    xyz[a] = self.mesh.nodes[nd];
+                    for i in 0..d {
+                        ue[a * d + i] = u[nd * d + i];
+                    }
+                }
+                for g in 0..ngp {
+                    let n = t.n_at(g);
+                    let pos: [f64; 3] = std::array::from_fn(|k| (0..nn).map(|a| n[a] * xyz[a][k]).sum());
+                    let (s, _) = plastic_stress_at(blk, self.mesh.physics, &xyz, &ue, t.xi[g], &old.gp[bi][e * ngp + g])?;
+                    v.push((pos, s));
+                }
+            }
+            out.push(v);
+        }
+        Ok(out)
+    }
+
     /// Reject a body that nothing holds: no prescribed displacement, no grounding spring and no contact touching any of
     /// its nodes. It would float (a singular system can still factorise and return an arbitrary rigid motion).
     fn check_not_floating(&self, bc: &Dirichlet, ground: &[(usize, f64)], contacts: &[ContactSpec]) -> Result<(), String> {
@@ -1051,7 +1148,7 @@ impl Model {
                 return Err("arc-length control needs zero prescribed displacements".into());
             }
         }
-        let mut ctx = Ctx { model: self, pat, contacts: contact_set, red, free, fixed, f_ext, bc, opt: opt.clone(), factorisations: Cell::new(0), stalled: Cell::new(0), held: Cell::new(0), events: RefCell::new(Vec::new()), start, ground: loads.ground.clone(), followers: loads.followers.clone(), timers: Default::default() };
+        let mut ctx = Ctx { model: self, pat, contacts: contact_set, red, free, fixed, f_ext, bc, opt: opt.clone(), factorisations: Cell::new(0), stalled: Cell::new(0), held: Cell::new(0), events: RefCell::new(Vec::new()), start, ground: loads.ground.clone(), followers: loads.followers.clone(), timers: Default::default(), last_start: RefCell::new(None) };
         let mut sol = match opt.control {
             Control::Load => ctx.run_load_control()?,
             Control::Arc { ds, lambda_max, max_steps } => ctx.run_arc_length(ds, lambda_max, max_steps)?,
@@ -1118,7 +1215,7 @@ impl Ctx<'_> {
             }
             norm(&net)
         };
-        NlSolution { u, state, lambda, steps, reactions, stop, factorisations: 0, stalled_solves: 0, held_solves: 0, elapsed_ms: 0.0, contact, contact_points, contact_weights, rigid_translation, ground_leak, events: self.events.borrow().clone(), profile: Profile::default() }
+        NlSolution { u, state, prev_state: self.last_start.borrow().clone(), lambda, steps, reactions, stop, factorisations: 0, stalled_solves: 0, held_solves: 0, elapsed_ms: 0.0, contact, contact_points, contact_weights, rigid_translation, ground_leak, events: self.events.borrow().clone(), profile: Profile::default() }
     }
 
     /// Newton iterations at load factor `lambda` from the converged `(u, state)`.
@@ -1528,6 +1625,7 @@ impl Ctx<'_> {
                     }
                     steps.push(StepInfo { lambda, iterations, residuals, max_ep, plastic_fraction: sn.plastic_fraction(), cuts: cuts_total, indefinite: false, master_force });
                     u = un;
+                    *self.last_start.borrow_mut() = Some(state.clone());
                     state = sn;
                     cuts_total = 0;
                     stagnated_cuts = 0; // (per load step, as documented: the budget was cumulative over the whole analysis)
@@ -1719,6 +1817,7 @@ impl Ctx<'_> {
                     steps.push(StepInfo { lambda: lam, iterations, residuals, max_ep, plastic_fraction: sn.plastic_fraction(), cuts, indefinite, master_force: Vec::new() });
                     dir = Some((du, dlam));
                     u = un;
+                    *self.last_start.borrow_mut() = Some(state.clone());
                     state = sn;
                     lambda = lam;
                     cuts = 0;

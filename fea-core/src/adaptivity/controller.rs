@@ -365,16 +365,6 @@ fn progress(goals: &[GoalOutcome], physics_rel: f64, cfg: &AmrConfig) -> f64 {
     m.max(physics_rel / cfg.physics_tolerance.unwrap_or(1.0))
 }
 
-fn total_force(problem: &MeshedProblem) -> Result<[f64; 3], MeshError> {
-    let f = loads::assemble(&problem.model.mesh, &problem.loads).map_err(MeshError::Failed)?;
-    let d = problem.model.mesh.dim();
-    let mut out = [0.0; 3];
-    for (i, v) in f.iter().enumerate() {
-        out[i % d] += v;
-    }
-    Ok(out)
-}
-
 fn measure(mesh: &Mesh) -> f64 {
     // 2D: area from the corner polygons; 3D: volume of the corner tetrahedra / hexahedra via the scaled-Jacobian free formula
     let mut total = 0.0;
@@ -413,23 +403,37 @@ fn materials(mesh: &Mesh) -> Vec<Elastic> {
 /// Everything the adaptation must preserve from `old` to `new`: the applied load resultant, the material set, the measure of the
 /// domain and the presence of restraints. A silent loss of a load or a restraint would otherwise look like a good solve.
 pub(crate) fn state_check(old: &MeshedProblem, new: &MeshedProblem, tol: f64) -> Result<(), String> {
-    let (fo, fn_) = (total_force(old).map_err(|e| e.to_string())?, total_force(new).map_err(|e| e.to_string())?);
+    state_check_parts((&old.model, &old.loads, &old.bc), (&new.model, &new.loads, &new.bc), tol)
+}
+
+/// [`state_check`] on the parts of a problem (the nonlinear loop has contact specifications besides).
+pub(crate) fn state_check_parts(old: (&Model, &Loads, &Dirichlet), new: (&Model, &Loads, &Dirichlet), tol: f64) -> Result<(), String> {
+    let force = |p: (&Model, &Loads, &Dirichlet)| -> Result<[f64; 3], MeshError> {
+        let f = loads::assemble(&p.0.mesh, p.1).map_err(MeshError::Failed)?;
+        let d = p.0.mesh.dim();
+        let mut out = [0.0; 3];
+        for (i, v) in f.iter().enumerate() {
+            out[i % d] += v;
+        }
+        Ok(out)
+    };
+    let (fo, fn_) = (force(old).map_err(|e| e.to_string())?, force(new).map_err(|e| e.to_string())?);
     let scale = fo.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     for c in 0..3 {
         if (fo[c] - fn_[c]).abs() > tol * scale.max(1e-300) {
             return Err(format!("the applied load resultant changed in component {c}: {} -> {}", fo[c], fn_[c]));
         }
     }
-    let (mo, mn) = (measure(&old.model.mesh), measure(&new.model.mesh));
+    let (mo, mn) = (measure(&old.0.mesh), measure(&new.0.mesh));
     if mo > 0.0 && (mo - mn).abs() > tol * mo {
         return Err(format!("the measure of the domain changed from {mo} to {mn}"));
     }
-    for m in materials(&old.model.mesh) {
-        if !materials(&new.model.mesh).contains(&m) {
+    for m in materials(&old.0.mesh) {
+        if !materials(&new.0.mesh).contains(&m) {
             return Err("a material of the previous mesh is missing from the new one".into());
         }
     }
-    if new.bc.fixed.iter().filter(|&&f| f).count() == 0 && old.bc.fixed.iter().any(|&f| f) {
+    if new.2.fixed.iter().filter(|&&f| f).count() == 0 && old.2.fixed.iter().any(|&f| f) {
         return Err("the new mesh has no restraints".into());
     }
     Ok(())

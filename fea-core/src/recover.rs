@@ -288,13 +288,13 @@ fn error_rule(kind: ElementKind) -> Vec<([f64; 3], f64)> {
 }
 
 /// One point of the error rule inside an element: shape functions, physical weight (Jacobian, thickness or `2 pi r` included).
-struct ErrorPoint {
-    n: Vec<f64>,
-    weight: f64,
-    xi: [f64; 3],
+pub(crate) struct ErrorPoint {
+    pub n: Vec<f64>,
+    pub weight: f64,
+    pub xi: [f64; 3],
 }
 
-fn error_points(kind: ElementKind, physics: crate::mesh::Physics, xyz: &[[f64; 3]]) -> Result<Vec<ErrorPoint>, String> {
+pub(crate) fn error_points(kind: ElementKind, physics: crate::mesh::Physics, xyz: &[[f64; 3]]) -> Result<Vec<ErrorPoint>, String> {
     let (nn, d) = (kind.n_nodes(), kind.dim());
     let scale = match physics {
         crate::mesh::Physics::PlaneStress { thickness } | crate::mesh::Physics::PlaneStrain { thickness } => thickness,

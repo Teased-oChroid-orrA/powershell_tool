@@ -152,3 +152,39 @@ length downward traction on the lower arm's free end, Tri6, plane stress), quant
   `ModeLost`.
 - Buckling: the same indicator marks, but the geometric-stiffness term of the same order is not estimated, so a buckling value is
   never presented as an error bound (documented in the module; no buckling loop is built).
+
+## Phase 9 (part 2): plasticity and contact (2026-10-13)
+
+`cargo test -p fea-core --test nonlinear_adapt -- --nocapture`. Supported formulation, stated: small-strain J2 plasticity (the
+tangent adjoint also covers finite strain through the same assembly, untested), monotone proportional loading for the warm
+start, frictionless or frictional contact for the loop. Goal-oriented *error estimates* of nonlinear and contact quantities
+are not provided; their evidence is the change from mesh to mesh, reported as such.
+
+- **Tangent-transpose adjoint** (`adaptivity::nonlinear::tangent_adjoint`; the driver now keeps `NlSolution::prev_state`, the
+  state at the start of the last accepted step, because the consistent tangent of a return map needs it). Plate with a hole,
+  4 % of the points yielded, goal = mean end displacement: `dJ/d(load scale) = z . f_ext` is 1.722297e-2 against a central
+  finite difference of the nonlinear solve of 1.722210e-2 (relative difference 5e-5).
+- **Stress read-out** (`Model::nl_gauss_stresses`, from the one constitutive path `plastic_update_at` that the element kernel
+  now also uses): the section force of the converged plastic state is within 1.7 % of the applied load.
+- **History transfer is approximate.** Interpolating plastic strain (inverse distance over the 4 nearest old Gauss points of
+  the block) keeps the state admissible (non-negative equivalent plastic strain, never above the old maximum) and the driver
+  re-equilibrates it in 6 iterations (19 from scratch), but the result differs from the from-scratch solution by 0.34 % and,
+  evaluated with the exact fine displacements, the transferred history leaves a residual of 3.1e3 where *ignoring* the history
+  (a virgin state, one-step return map) leaves 15: for monotone proportional loading the plastic state is a function of the
+  final strain and history interpolation is worse than no history. `warm_start_displacement` carries the displacements only
+  and takes the load in one step: 6 iterations against 19, and the same answer to all printed digits (1.499601e-2).
+  Non-monotone histories have no better transfer here; contact states are refused (`Unsupported`).
+- **Plastic loop** (`run_amr_nonlinear`, recovered-stress indicator of the nonlinear state): 528 -> 1988 -> 5976 -> 17932 dofs,
+  end displacement 1.4920e-2 -> 1.4996e-2 -> 1.5005e-2 -> 1.5006e-2 (changes 5e-3, 6e-4, 1e-4), converged on the stated
+  changes. With the displacement warm start the adapted meshes cost 19 Newton iterations in total instead of 68, same physics
+  (end displacement agrees to 5e-3 between the two runs).
+- **Contact: Hertz line contact** from a mesh that cannot see the patch (610 dofs, one active point). Contact protection (elements
+  near the active points must be at most half-width / 5, mandatory otherwise) refines it: 610, 1720, 2524, 3536, 5702, 11352, 17008
+  dofs; contact force 3753 -> 3501 -> 3486 -> 3485.8 (changes 6.7 %, 0.1 %, 0.6 %, 0.1 %, 0.0 %), converged. Against the Hertz
+  formulas evaluated with the FE force: contact half-width 0.02855 against 0.02842 (+0.4 %), peak pressure 155615 against 156161
+  (-0.3 %). Every cycle verifies that the contact tractions balance the master force (`sum (p n + t) w + F_master`, below
+  1e-9).
+- **Limits found**: the half-width of a symmetric half model is the full extent of its active points (the loop uses extent / 2
+  as the half-width of the *active region*, which makes the resolution rule twice as strict there); the recovered-stress
+  indicator at off-Gauss points of a plastic element uses the history of the nearest Gauss point; no adjoint estimate for
+  contact (unsymmetric with friction; the plastic adjoint above excludes contact states explicitly).
