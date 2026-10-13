@@ -66,6 +66,9 @@ impl Sketch {
     /// Constraints entity `id` (and, for a line / arc, its end points) already satisfies relative to the rest of
     /// the sketch, best first. Constraints already present are not suggested again.
     pub fn suggest(&self, id: Id, tol: &Tolerance) -> Vec<Suggestion> {
+        if self.check().is_err() {
+            return Vec::new();
+        }
         let mut out: Vec<Suggestion> = Vec::new();
         let mut push = |this: &Sketch, c: Constraint, rule: Rule, score: Option<f64>| {
             let Some(score) = score else { return };

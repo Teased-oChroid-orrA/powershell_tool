@@ -9,6 +9,8 @@ pub struct Camera {
     pub pitch: f32,
     pub zoom: f32,
     pub aspect: f32,
+    /// Screen-space shift in NDC (middle or right drag); applied after the projection.
+    pub pan: [f32; 2],
 }
 
 /// Normalisation from model coordinates to the unit-ish scene space: `(p - center) / span`.
@@ -59,7 +61,7 @@ impl Camera {
     /// Scene point to NDC `(x, y)` and shader depth.
     pub fn project(&self, p: [f32; 3]) -> ([f32; 2], f32) {
         let r = self.rotate(p);
-        ([r[0] * self.zoom / self.aspect, r[1] * self.zoom], 0.5 + r[2] * 0.25)
+        ([r[0] * self.zoom / self.aspect + self.pan[0], r[1] * self.zoom + self.pan[1]], 0.5 + r[2] * 0.25)
     }
     /// Window pixel (origin top-left) to NDC.
     pub fn ndc(px: f64, py: f64, width: f32, height: f32) -> [f32; 2] {
@@ -70,8 +72,8 @@ impl Camera {
     }
     /// Intersection of the view ray through `ndc` with the plane `axis = value` (scene space).
     pub fn unproject_to_plane(&self, ndc: [f32; 2], axis: usize, value: f32) -> Option<[f32; 3]> {
-        let rx = ndc[0] * self.aspect / self.zoom;
-        let ry = ndc[1] / self.zoom;
+        let rx = (ndc[0] - self.pan[0]) * self.aspect / self.zoom;
+        let ry = (ndc[1] - self.pan[1]) / self.zoom;
         let origin = self.unrotate([rx, ry, 0.0]);
         let dir = self.unrotate([0.0, 0.0, 1.0]);
         if dir[axis].abs() < 1e-4 {
@@ -159,7 +161,7 @@ mod tests {
     use fea_problem::members::{Edit, MemberKind};
 
     fn cam(yaw: f32, pitch: f32) -> Camera {
-        Camera { yaw, pitch, zoom: 1.6, aspect: 1.5 }
+        Camera { yaw, pitch, zoom: 1.6, aspect: 1.5, pan: [0.0, 0.0] }
     }
 
     #[test]

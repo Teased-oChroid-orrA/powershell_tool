@@ -458,28 +458,25 @@ impl Model {
     /// As [`gauss_stresses`](Self::gauss_stresses) with a nodal temperature field (`Loads::temperature`) on top of the
     /// uniform `delta_t`: the thermal strain is that of the temperature interpolated to each Gauss point.
     pub fn gauss_stresses_field(&self, u: &[f64], delta_t: f64, field: Option<&[f64]>) -> Result<Vec<Vec<GaussStress>>, String> {
+        use rayon::prelude::*;
+        /// Elements per block from which the stress evaluation runs in parallel (each element is independent).
+        const PARALLEL_ELEMS: usize = 1000;
         let d = self.mesh.dim();
-        let mut work = Work::new();
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(self.mesh.blocks.len());
         for blk in &self.mesh.blocks {
             let t = blk.kind.table();
-            let nn = t.nn;
-            let mut v = Vec::with_capacity(blk.n_elems() * t.ngp);
-            let mut xyz = vec![[0.0; 3]; nn];
-            let mut ue = vec![0.0; nn * d];
-            for conn in blk.conn.chunks_exact(nn) {
+            let (nn, ngp) = (t.nn, t.ngp);
+            let init = || (Work::new(), vec![[0.0; 3]; nn], vec![0.0; nn * d]);
+            let one = |(work, xyz, ue): &mut (Work, Vec<[f64; 3]>, Vec<f64>), o: &mut [GaussStress], conn: &[usize]| -> Result<(), String> {
                 for (a, &nd) in conn.iter().enumerate() {
                     xyz[a] = self.mesh.nodes[nd];
                     for i in 0..d {
                         ue[a * d + i] = u[nd * d + i];
                     }
                 }
-                kernel::geometry(blk.kind, self.mesh.physics, &xyz, &mut work).map_err(|e| e.to_string())?;
-                let gauss_t: Vec<f64> = match field {
-                    Some(tf) => kernel::gauss_temperatures(blk.kind, &conn.iter().map(|&n| tf[n]).collect::<Vec<_>>()),
-                    None => vec![0.0; t.ngp],
-                };
-                for g in 0..t.ngp {
+                kernel::geometry(blk.kind, self.mesh.physics, xyz, work).map_err(|e| e.to_string())?;
+                let gauss_t = field.map(|tf| kernel::gauss_temperatures(blk.kind, &conn.iter().map(|&n| tf[n]).collect::<Vec<_>>()));
+                for (g, slot) in o.iter_mut().enumerate() {
                     let n = t.n_at(g);
                     let mut pos = [0.0; 3];
                     for a in 0..nn {
@@ -487,8 +484,18 @@ impl Model {
                             pos[i] += n[a] * xyz[a][i];
                         }
                     }
-                    let strain = kernel::strain_at(blk.kind, self.mesh.physics, &work, g, &ue);
-                    v.push((pos, kernel::stress_from_strain(self.mesh.physics, &blk.material, strain, delta_t + gauss_t[g])));
+                    let strain = kernel::strain_at(blk.kind, self.mesh.physics, work, g, ue);
+                    *slot = (pos, kernel::stress_from_strain(self.mesh.physics, &blk.material, strain, delta_t + gauss_t.as_ref().map_or(0.0, |gt| gt[g])));
+                }
+                Ok(())
+            };
+            let mut v: Vec<GaussStress> = vec![([0.0; 3], [0.0; 6]); blk.n_elems() * ngp];
+            if blk.n_elems() >= PARALLEL_ELEMS {
+                v.par_chunks_mut(ngp).zip(blk.conn.par_chunks_exact(nn)).try_for_each_init(init, |st, (o, conn)| one(st, o, conn))?;
+            } else {
+                let mut st = init();
+                for (o, conn) in v.chunks_mut(ngp).zip(blk.conn.chunks_exact(nn)) {
+                    one(&mut st, o, conn)?;
                 }
             }
             out.push(v);

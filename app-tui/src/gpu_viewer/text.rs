@@ -45,7 +45,7 @@ pub fn fmt_value(v: f32) -> String {
     }
 }
 
-pub const HELP: [&str; 9] = [
+pub const HELP: [&str; 10] = [
     "Tab or [ ] : previous / next result",
     "F / Shift+F: next / previous scalar field",
     "M mesh   C contour   D deformation",
@@ -53,7 +53,8 @@ pub const HELP: [&str; 9] = [
     "Left/Right : step one frame",
     "Up/Down    : deformation gain",
     "+ / -      : playback speed",
-    "Drag orbit, wheel zoom, R reset camera",
+    "Drag orbit, wheel zoom at the cursor, R reset camera",
+    "Middle or right drag pans (a right click opens the menu)",
     "H or ? toggles this help; Esc closes",
 ];
 

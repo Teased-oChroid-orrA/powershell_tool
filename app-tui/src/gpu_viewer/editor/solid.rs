@@ -206,6 +206,9 @@ struct PreviewOut {
     names: Vec<String>,
 }
 
+/// Scene units per screen pixel at the default zoom and a typical 700 px viewport.
+const DEFAULT_SKETCH_PIXEL: f32 = 2.0 / (1.6 * 700.0);
+
 pub struct SolidSession {
     pub problem: Problem,
     pub path: PathBuf,
@@ -246,6 +249,8 @@ pub struct SolidSession {
     show_refine: bool,
     version: u64,
     built: Option<u64>,
+    /// Scene-space length of one screen pixel in the sketch view (sketch lines keep a constant pixel width).
+    sketch_pixel: f32,
     next_tag: u64,
     /// Scene-space node positions of the last built preview scene (picking).
     pick_positions: Vec<[f32; 3]>,
@@ -305,6 +310,7 @@ impl SolidSession {
             show_refine: true,
             version: 1,
             built: None,
+            sketch_pixel: DEFAULT_SKETCH_PIXEL,
             next_tag: 1,
             pick_positions: Vec::new(),
             sketching: None,

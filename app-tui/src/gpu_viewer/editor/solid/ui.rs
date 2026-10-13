@@ -258,6 +258,10 @@ impl Authoring for SolidSession {
         self.node_menu(node)
     }
 
+    fn set_view(&mut self, cam: &Camera, size: [f32; 2]) {
+        self.set_sketch_pixel(cam, size);
+    }
+
     fn overlay(&self, cam: &Camera, size: [f32; 2]) -> Vec<crate::gpu_viewer::editor::authoring::Overlay> {
         self.sketch_overlay(cam, size)
     }

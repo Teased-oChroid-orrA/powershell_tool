@@ -12,6 +12,19 @@ use crate::analysis::{GaussStress, Model};
 use crate::element::ElementKind;
 use crate::kernel::{self, Work};
 use crate::mesh::Elastic;
+use rayon::prelude::*;
+
+/// Node count from which the per-node stages of the recovery run in parallel. Every node's result depends only on
+/// read-only data, so the output is bit-identical for any thread count.
+const PARALLEL_NODES: usize = 2000;
+
+fn per_node<T: Send>(n: usize, f: impl Fn(usize) -> T + Sync + Send) -> Vec<T> {
+    if n >= PARALLEL_NODES {
+        (0..n).into_par_iter().map(f).collect()
+    } else {
+        (0..n).map(f).collect()
+    }
+}
 
 /// Number of polynomial terms of complete degree `p` in `d` variables.
 fn n_terms(d: usize, p: usize) -> usize {
@@ -46,8 +59,9 @@ struct Fit {
     centre: [f64; 3],
     scale: f64,
     degree: usize,
-    /// `coef[term][comp]`.
-    coef: Vec<[f64; 6]>,
+    /// `coef[term][comp]` for the first `n_terms(d, degree)` terms (at most 10).
+    coef: [[f64; 6]; 10],
+    nt: usize,
 }
 
 fn fit(d: usize, p: usize, centre: [f64; 3], samples: &[&GaussStress]) -> Option<Fit> {
@@ -61,8 +75,8 @@ fn fit(d: usize, p: usize, centre: [f64; 3], samples: &[&GaussStress]) -> Option
     if scale <= 0.0 {
         return None;
     }
-    let mut a = vec![0.0; nt * nt];
-    let mut rhs = vec![[0.0f64; 6]; nt];
+    let mut a = [0.0; 100];
+    let mut rhs = [[0.0f64; 6]; 10];
     let mut t = [0.0; 10];
     for s in samples {
         let x: [f64; 3] = std::array::from_fn(|i| if i < d { (s.0[i] - centre[i]) / scale } else { 0.0 });
@@ -77,7 +91,7 @@ fn fit(d: usize, p: usize, centre: [f64; 3], samples: &[&GaussStress]) -> Option
         }
     }
     // Cholesky with a conditioning check (a collinear or too-small sample set shows as a tiny pivot).
-    let mut l = vec![0.0; nt * nt];
+    let mut l = [0.0; 100];
     let dmax = (0..nt).map(|i| a[i * nt + i]).fold(0.0f64, f64::max);
     for i in 0..nt {
         for j in 0..=i {
@@ -95,9 +109,9 @@ fn fit(d: usize, p: usize, centre: [f64; 3], samples: &[&GaussStress]) -> Option
             }
         }
     }
-    let mut coef = vec![[0.0f64; 6]; nt];
+    let mut coef = [[0.0f64; 6]; 10];
     for c in 0..6 {
-        let mut y = vec![0.0; nt];
+        let mut y = [0.0; 10];
         for i in 0..nt {
             let mut s = rhs[i][c];
             for k in 0..i {
@@ -113,7 +127,7 @@ fn fit(d: usize, p: usize, centre: [f64; 3], samples: &[&GaussStress]) -> Option
             coef[i][c] = s / l[i * nt + i];
         }
     }
-    Some(Fit { centre, scale, degree: p, coef })
+    Some(Fit { centre, scale, degree: p, coef, nt })
 }
 
 impl Fit {
@@ -122,7 +136,7 @@ impl Fit {
         let mut t = [0.0; 10];
         terms(d, self.degree, xs, &mut t);
         let mut out = [0.0; 6];
-        for (k, c) in self.coef.iter().enumerate() {
+        for (k, c) in self.coef[..self.nt].iter().enumerate() {
             for q in 0..6 {
                 out[q] += t[k] * c[q];
             }
@@ -204,12 +218,7 @@ impl Model {
             }
             v
         };
-        let mut fits: Vec<Option<Fit>> = (0..n).map(|_| None).collect();
-        for nd in 0..n {
-            if corner[nd] {
-                fits[nd] = fit(d, degree[nd], self.mesh.nodes[nd], &samples_of(nd));
-            }
-        }
+        let fits: Vec<Option<Fit>> = per_node(n, |nd| if corner[nd] { fit(d, degree[nd], self.mesh.nodes[nd], &samples_of(nd)) } else { None });
         // Corner nodes without a well-posed patch: borrow from an edge-adjacent fitted node
         // (iterate outward), else fall back to lower degrees on the node's own patch.
         let mut neigh: Vec<Vec<usize>> = vec![Vec::new(); n];
@@ -256,24 +265,23 @@ impl Model {
                 break;
             }
         }
-        let mut out = vec![[0.0f64; 6]; n];
-        let mut done = vec![false; n];
-        for nd in 0..n {
+        // Corner nodes: the node's own polynomial, a borrowed one, or a lower-degree fit.
+        let at_corner: Vec<Option<[f64; 6]>> = per_node(n, |nd| {
             if !corner[nd] {
-                continue;
+                return None;
             }
             let x = self.mesh.nodes[nd];
-            if let (true, Some(m)) = (on_boundary[nd], borrowed[nd]) {
-                out[nd] = fits[m].as_ref().unwrap().eval(d, x);
+            Some(if let (true, Some(m)) = (on_boundary[nd], borrowed[nd]) {
+                fits[m].as_ref().unwrap().eval(d, x)
             } else if let Some(f) = &fits[nd] {
-                out[nd] = f.eval(d, x);
+                f.eval(d, x)
             } else if let Some(m) = borrowed[nd] {
-                out[nd] = fits[m].as_ref().unwrap().eval(d, x);
+                fits[m].as_ref().unwrap().eval(d, x)
             } else {
                 // Lower-degree fit on the node's own patch; the plain average as the last resort.
                 let s = samples_of(nd);
                 let low = (0..degree[nd]).rev().find_map(|p| fit(d, p, x, &s));
-                out[nd] = match low {
+                match low {
                     Some(f) => f.eval(d, x),
                     None => {
                         let mut avg = [0.0; 6];
@@ -284,10 +292,9 @@ impl Model {
                         }
                         avg
                     }
-                };
-            }
-            done[nd] = true;
-        }
+                }
+            })
+        });
         // Midside / face / interior nodes: average of the owning elements' corner polynomials at the node.
         let corner_value = |cn: usize, x: [f64; 3]| -> Option<[f64; 6]> {
             match (on_boundary[cn], borrowed[cn], &fits[cn]) {
@@ -296,9 +303,9 @@ impl Model {
                 _ => None,
             }
         };
-        for nd in 0..n {
-            if done[nd] {
-                continue;
+        let out: Vec<[f64; 6]> = per_node(n, |nd| {
+            if let Some(v) = at_corner[nd] {
+                return v;
             }
             let x = self.mesh.nodes[nd];
             let (mut sum, mut cnt) = ([0.0f64; 6], 0.0);
@@ -313,12 +320,14 @@ impl Model {
                     }
                 }
             }
+            let mut v = [0.0f64; 6];
             if cnt > 0.0 {
                 for c in 0..6 {
-                    out[nd][c] = sum[c] / cnt;
+                    v[c] = sum[c] / cnt;
                 }
             }
-        }
+            v
+        });
         Ok(out)
     }
 
@@ -332,19 +341,18 @@ impl Model {
     pub fn zz_error_field(&self, u: &[f64], delta_t: f64, field: Option<&[f64]>) -> Result<ZzEstimate, String> {
         let gauss = self.gauss_stresses_field(u, delta_t, field)?;
         let rec = self.recover_spr(&gauss)?;
-        let mut work = Work::new();
         let (mut eta, mut norm2) = (Vec::with_capacity(self.mesh.n_elems()), 0.0f64);
         for (bi, blk) in self.mesh.blocks.iter().enumerate() {
             let t = blk.kind.table();
             let nn = t.nn;
-            let mut xyz = vec![[0.0; 3]; nn];
-            for e in 0..blk.n_elems() {
+            // Per element: the error energy and the recovered-stress energy (summed afterwards, in element order).
+            let one = |(work, xyz): &mut (Work, Vec<[f64; 3]>), e: usize| -> Result<(f64, f64), String> {
                 let conn = blk.elem(e);
                 for (a, &nd) in conn.iter().enumerate() {
                     xyz[a] = self.mesh.nodes[nd];
                 }
-                kernel::geometry(blk.kind, self.mesh.physics, &xyz, &mut work).map_err(|er| er.to_string())?;
-                let mut e2 = 0.0;
+                kernel::geometry(blk.kind, self.mesh.physics, xyz, work).map_err(|er| er.to_string())?;
+                let (mut e2, mut n2) = (0.0, 0.0);
                 for g in 0..t.ngp {
                     let nsh = t.n_at(g);
                     let mut star = [0.0; 6];
@@ -356,9 +364,20 @@ impl Model {
                     let h = gauss[bi][e * t.ngp + g].1;
                     let diff: [f64; 6] = std::array::from_fn(|c| star[c] - h[c]);
                     e2 += work.wdet[g] * complementary_energy(&blk.material, &diff) * 2.0;
-                    norm2 += work.wdet[g] * complementary_energy(&blk.material, &star) * 2.0;
+                    n2 += work.wdet[g] * complementary_energy(&blk.material, &star) * 2.0;
                 }
+                Ok((e2, n2))
+            };
+            let init = || (Work::new(), vec![[0.0; 3]; nn]);
+            let per_elem: Vec<(f64, f64)> = if blk.n_elems() >= PARALLEL_NODES {
+                (0..blk.n_elems()).into_par_iter().map_init(init, |st, e| one(st, e)).collect::<Result<_, _>>()?
+            } else {
+                let mut st = init();
+                (0..blk.n_elems()).map(|e| one(&mut st, e)).collect::<Result<_, _>>()?
+            };
+            for (e2, n2) in per_elem {
                 eta.push(e2.sqrt());
+                norm2 += n2;
             }
         }
         let total = eta.iter().map(|x| x * x).sum::<f64>().sqrt();

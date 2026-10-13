@@ -510,3 +510,44 @@ fn roadmap_profiles_and_advisory_selection() {
         eprintln!("ROADMAP heldout n={n} aspect={aspect} solid={solid} free={dofs} in_domain={in_domain} advisory_iterative={choice} direct_ms={direct:.3} advised_ms={advised:.3} speed_ratio={:.3} displacement_difference={error:.3e} fallback_events={}",direct/advised,a.events.len());
     }
 }
+
+/// The recovery chain the adaptive loop runs after every solve: Gauss-point stresses, SPR nodal recovery, ZZ error.
+#[test]
+#[ignore]
+fn stress_recovery_throughput() {
+    for (label, kind, physics, div) in [
+        ("Quad9 100x100", ElementKind::Quad9, Physics::PlaneStress { thickness: 1.0 }, [100, 100, 1]),
+        ("Hex20 14^3", ElementKind::Hex20, Physics::Solid, [14, 14, 14]),
+        ("Tet10 10^3", ElementKind::Tet10, Physics::Solid, [10, 10, 10]),
+    ] {
+        let mesh = grid(physics, kind, MAT, div, &|p| p).unwrap();
+        let model = Model::new(mesh).unwrap();
+        let d = kind.dim();
+        let mut bc = model.dirichlet();
+        for (axis, name) in ["u0", "v0", "w0"].iter().enumerate().take(d) {
+            for &n in model.mesh.node_set(name).unwrap() {
+                bc.fix(n, axis, 0.0);
+            }
+        }
+        let mut loads = Loads::default();
+        for &n in model.mesh.node_set(if d == 2 { "v1" } else { "w1" }).unwrap() {
+            let mut f = [0.0; 3];
+            f[d - 1] = 1.0;
+            loads.nodal.push((n, f));
+        }
+        let sol = model.solve_static(&loads, &bc).unwrap();
+        let (t_gauss, gauss) = best(5, || model.gauss_stresses(&sol.u, 0.0).unwrap());
+        let (t_spr, spr) = best(5, || model.recover_spr(&gauss).unwrap());
+        // A checksum of the recovered field to full precision: an optimisation must leave it bit-identical.
+        let checksum: f64 = spr.iter().enumerate().map(|(i, s)| s.iter().enumerate().map(|(c, v)| v * (1.0 + 0.001 * (i % 97) as f64 + 0.01 * c as f64)).sum::<f64>()).sum();
+        let (t_zz, zz) = best(5, || model.zz_error(&sol.u, 0.0).unwrap());
+        eprintln!(
+            "BENCH recovery {label:<14} elems {:>7} | gauss {:>8.2} spr {:>8.2} zz_total {:>8.2} ms (zz {:.17e}, spr checksum {checksum:.17e})",
+            model.mesh.n_elems(),
+            ms(t_gauss),
+            ms(t_spr),
+            ms(t_zz),
+            zz.total
+        );
+    }
+}

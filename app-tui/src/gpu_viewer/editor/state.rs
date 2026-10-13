@@ -933,7 +933,7 @@ mod tests {
     #[test]
     fn a_box_selects_nodes_inside_and_members_with_both_ends_inside() {
         let s = EditorState::new(templates().remove(0));
-        let cam = crate::gpu_viewer::editor::camera::Camera { yaw: 0.0, pitch: 0.0, zoom: 1.0, aspect: 1.0 };
+        let cam = crate::gpu_viewer::editor::camera::Camera { yaw: 0.0, pitch: 0.0, zoom: 1.0, aspect: 1.0, pan: [0.0, 0.0] };
         let size = [800.0, 800.0];
         let all = super::super::camera::pick_box(&s.problem, &s.frame, &cam, [0.0, 0.0], size, size);
         assert_eq!(all.iter().filter(|h| matches!(h, Hit::Node(_))).count(), s.problem.nodes.len());

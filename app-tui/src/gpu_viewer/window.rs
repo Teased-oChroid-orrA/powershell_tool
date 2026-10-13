@@ -3,7 +3,7 @@
 //! and draws the scene into the rectangle the chrome leaves free.
 use super::{
     bench::Bench,
-    controller::{Command, LayoutOp, Pointer, UiAction, ViewState},
+    controller::{Command, LayoutOp, PanGesture, Pointer, UiAction, ViewState},
     editor::{
         authoring::Authoring,
         camera::Camera,
@@ -60,6 +60,8 @@ struct Viewer {
     quit_warned: bool,
     /// Window size used when there is no surface (tests).
     size_override: Option<(u32, u32)>,
+    /// A middle or right press in the viewport that may become a pan.
+    pan_gesture: Option<(MouseButton, PanGesture)>,
     /// A left-button gesture started on something the editor moves (a sketch point), so it does not orbit.
     grabbing: bool,
     /// Events for the next egui frame when there is no window (tests).
@@ -130,7 +132,7 @@ impl Viewer {
     /// Camera for the viewport (aspect of the region the scene is drawn into).
     fn camera(&self) -> Camera {
         let vp = self.viewport();
-        Camera { yaw: self.view.yaw, pitch: self.view.pitch, zoom: self.view.zoom, aspect: vp.w.max(1) as f32 / vp.h.max(1) as f32 }
+        Camera { yaw: self.view.yaw, pitch: self.view.pitch, zoom: self.view.zoom, aspect: vp.w.max(1) as f32 / vp.h.max(1) as f32, pan: self.view.pan }
     }
     /// Carry out what a ribbon button, tree row, menu entry or property row asks for.
     fn dispatch(&mut self, action: UiAction) {
@@ -340,6 +342,9 @@ impl Viewer {
     fn run_gui(&mut self, raw: egui::RawInput) -> egui::FullOutput {
         let vp = self.viewport();
         let cam = self.camera();
+        if let Some(ed) = &mut self.editor {
+            ed.set_view(&cam, [vp.w as f32, vp.h as f32]);
+        }
         let overlay = self.editor.as_ref().map(|e| e.overlay(&cam, [vp.w as f32, vp.h as f32])).unwrap_or_default();
         let input = GuiInput {
             view: &self.view,
@@ -365,6 +370,21 @@ impl Viewer {
             }
             _ => self.quit = true,
         }
+    }
+    /// Shift the view by a cursor offset in window pixels.
+    fn pan_by_pixels(&mut self, (dx, dy): (f64, f64)) {
+        let vp = self.viewport();
+        self.command(Command::Pan { dx: (2.0 * dx / vp.w.max(1) as f64) as f32, dy: (-2.0 * dy / vp.h.max(1) as f64) as f32 });
+    }
+    /// Wheel zoom that keeps the model point under the cursor where it is, so a small feature can be approached.
+    fn zoom_at(&mut self, lines: f32, at: (f64, f64)) {
+        let vp = self.viewport();
+        let (old_zoom, old_pan) = (self.view.zoom, self.view.pan);
+        self.command(Command::Zoom(lines));
+        let k = self.view.zoom / old_zoom;
+        let c = [(2.0 * (at.0 - vp.x as f64) / vp.w.max(1) as f64 - 1.0) as f32, (1.0 - 2.0 * (at.1 - vp.y as f64) / vp.h.max(1) as f64) as f32];
+        let pan = [c[0] - (c[0] - old_pan[0]) * k, c[1] - (c[1] - old_pan[1]) * k];
+        self.command(Command::Pan { dx: pan[0] - self.view.pan[0], dy: pan[1] - self.view.pan[1] });
     }
     fn command(&mut self, command: Command) {
         let scene = &self.project.scenes[self.project.selected];
@@ -408,22 +428,37 @@ impl Viewer {
                     self.model_box(a, b);
                 }
             }
-            Input::Press(MouseButton::Right) => {
-                if let Some(at) = self.pointer.cursor {
-                    self.open_context_menu(at);
+            // Right: a drag pans, a click (release without travel) opens the context menu. Opening on the
+            // release keeps the press egui is still handling from closing the new menu at once.
+            Input::Press(button @ (MouseButton::Right | MouseButton::Middle)) => {
+                self.pan_gesture = self.pointer.cursor.filter(|&at| self.viewport_point(at).is_some()).map(|at| (button, PanGesture::begin(at, button == MouseButton::Middle)));
+            }
+            Input::Release(button @ (MouseButton::Right | MouseButton::Middle)) => {
+                if let Some((started, gesture)) = self.pan_gesture.take_if(|(b, _)| *b == button) {
+                    if started == MouseButton::Right && gesture.is_click() {
+                        if let Some(at) = self.pointer.cursor {
+                            self.open_context_menu(at);
+                        }
+                    }
                 }
             }
             Input::Press(_) | Input::Release(_) => {}
             Input::Cursor(at) => {
+                let from = self.pointer.cursor;
                 if let Some(orbit) = self.pointer.moved(at) {
                     self.command(orbit);
+                }
+                if let (Some(from), Some((_, gesture))) = (from, self.pan_gesture.as_mut()) {
+                    if let Some(delta) = gesture.moved(from, at) {
+                        self.pan_by_pixels(delta);
+                    }
                 }
                 self.editor_pointer(at);
             }
             Input::Wheel(d) => {
-                let in_viewport = self.pointer.cursor.is_some_and(|at| self.viewport_point(at).is_some());
-                if in_viewport {
-                    self.command(Command::Zoom(d));
+                let cursor = self.pointer.cursor.filter(|&at| self.viewport_point(at).is_some());
+                if let Some(at) = cursor {
+                    self.zoom_at(d, at);
                 }
             }
         }
@@ -550,7 +585,7 @@ impl Viewer {
                         self.view.time,
                         if self.view.deformed { self.view.gain } else { 0.0 },
                         [self.view.yaw, self.view.pitch, self.view.zoom, vp.w.max(1) as f32 / vp.h.max(1) as f32],
-                        DisplayOptions { show_mesh: self.view.show_mesh, show_contour: self.view.show_contour, field: self.view.field, viewport: Some(scene_rect), background: Some(background) },
+                        DisplayOptions { show_mesh: self.view.show_mesh, show_contour: self.view.show_contour, field: self.view.field, viewport: Some(scene_rect), background: Some(background), pan: self.view.pan },
                     );
                     r.paint_egui(&view, &ctx, full.take().expect("painted once"), [size.0, size.1]);
                     r.queue.present(frame);
@@ -682,6 +717,7 @@ fn new_viewer(project: ViewerProject, editor: Option<Box<dyn Authoring>>) -> Vie
         gui: Gui::new(),
         egui_state: None,
         egui_press: false,
+        pan_gesture: None,
         quit: false,
         quit_warned: false,
         size_override: None,
@@ -850,6 +886,7 @@ mod tests {
         click(&mut v, button);
         move_to(&mut v, at);
         v.input(Input::Press(MouseButton::Right));
+        v.input(Input::Release(MouseButton::Right));
         frame(&mut v);
         assert!(v.gui.context_open(), "right-click opens the context menu");
         assert!(property_text(&v).contains("x "), "the node under the cursor was selected: {}", property_text(&v));
@@ -860,7 +897,71 @@ mod tests {
         let dock = target(&v, "Nodes");
         move_to(&mut v, dock);
         v.input(Input::Press(MouseButton::Right));
+        v.input(Input::Release(MouseButton::Right));
         assert!(!v.gui.context_open());
+    }
+
+    /// The real window gives egui the same secondary press and release the viewer sees; a menu opened on the
+    /// press was closed by that press ("pressed outside") when its first frame was not under the cursor.
+    #[test]
+    fn a_right_click_the_egui_also_sees_leaves_the_menu_open_across_frames_and_positions() {
+        for (fx, fy) in [(0.5, 0.5), (0.95, 0.5), (0.5, 0.95), (0.98, 0.98), (0.3, 0.2)] {
+            let mut v = member_viewer();
+            let vp = v.viewport();
+            move_to(&mut v, (vp.x as f64 + fx * vp.w as f64, vp.y as f64 + fy * vp.h as f64));
+            button(&mut v, MouseButton::Right, true);
+            frame(&mut v);
+            button(&mut v, MouseButton::Right, false);
+            for _ in 0..3 {
+                frame(&mut v);
+            }
+            assert!(v.gui.context_open(), "menu closed after a right click at {fx},{fy}");
+        }
+    }
+
+    #[test]
+    fn a_middle_or_right_drag_pans_a_right_click_does_not_and_the_wheel_zooms_about_the_cursor() {
+        let mut v = member_viewer();
+        let vp = v.viewport();
+        let start = (vp.x as f64 + 0.5 * vp.w as f64, vp.y as f64 + 0.5 * vp.h as f64);
+        // Middle drag: the view follows the cursor (200 px right = 400/width NDC), y is flipped.
+        move_to(&mut v, start);
+        button(&mut v, MouseButton::Middle, true);
+        move_to(&mut v, (start.0 + 100.0, start.1 + 50.0));
+        move_to(&mut v, (start.0 + 200.0, start.1 + 100.0));
+        button(&mut v, MouseButton::Middle, false);
+        let want = [(400.0 / vp.w as f64) as f32, (-200.0 / vp.h as f64) as f32];
+        assert!((v.view.pan[0] - want[0]).abs() < 1e-4 && (v.view.pan[1] - want[1]).abs() < 1e-4, "{:?} vs {want:?}", v.view.pan);
+        assert!(!v.gui.context_open());
+        // Right drag pans from the press point (not from where the 4 px threshold was crossed) and opens no menu.
+        v.command(Command::ResetCamera);
+        move_to(&mut v, start);
+        button(&mut v, MouseButton::Right, true);
+        move_to(&mut v, (start.0 + 40.0, start.1));
+        button(&mut v, MouseButton::Right, false);
+        assert!((v.view.pan[0] - 80.0 / vp.w as f32).abs() < 1e-4, "{:?}", v.view.pan);
+        assert!(!v.gui.context_open(), "a drag is not a click");
+        // A jitter of 2 px is still a click.
+        move_to(&mut v, start);
+        button(&mut v, MouseButton::Right, true);
+        move_to(&mut v, (start.0 + 2.0, start.1));
+        button(&mut v, MouseButton::Right, false);
+        frame(&mut v);
+        assert!(v.gui.context_open());
+        v.gui.close_floating();
+        // Wheel zoom keeps the model point under the cursor fixed: ndc = s * zoom + pan.
+        v.command(Command::ResetCamera);
+        let at = (vp.x as f64 + 0.8 * vp.w as f64, vp.y as f64 + 0.3 * vp.h as f64);
+        move_to(&mut v, at);
+        let c = [(2.0 * 0.8 - 1.0) as f32, (1.0 - 2.0 * 0.3) as f32];
+        let before = [c[0] / v.view.zoom, c[1] / v.view.zoom];
+        v.input(Input::Wheel(5.0));
+        assert!(v.view.zoom > super::super::controller::DEFAULT_ZOOM);
+        let after = [(c[0] - v.view.pan[0]) / v.view.zoom, (c[1] - v.view.pan[1]) / v.view.zoom];
+        assert!((before[0] - after[0]).abs() < 1e-4 && (before[1] - after[1]).abs() < 1e-4, "{before:?} {after:?}");
+        // R resets zoom and pan.
+        v.input(Input::Key(Key::Character("r".into())));
+        assert_eq!(v.view.pan, [0.0, 0.0]);
     }
 
     #[test]
@@ -911,6 +1012,7 @@ mod tests {
         // Right-click selects the node under the cursor; its first property is then edited with `e`.
         move_to(&mut v, at);
         v.input(Input::Press(MouseButton::Right));
+        v.input(Input::Release(MouseButton::Right));
         key(&mut v, NamedKey::Escape);
         v.input(Input::Key(Key::Character("e".into())));
         assert!(v.editor.as_ref().unwrap().prompting());
@@ -1183,6 +1285,7 @@ mod tests {
         click(&mut v, select);
         move_to(&mut v, at);
         v.input(Input::Press(MouseButton::Right));
+        v.input(Input::Release(MouseButton::Right));
         frame(&mut v);
         key(&mut v, NamedKey::Escape);
         assert!(labels(&v).iter().any(|l| l.starts_with("Node ") && l.ends_with(" card")), "{:?}", labels(&v));

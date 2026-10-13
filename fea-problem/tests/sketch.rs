@@ -838,3 +838,32 @@ mod splines {
         assert!(s.entity(spline).is_none());
     }
 }
+
+/// A sketch read from a hand-edited or damaged file names entities that are missing or of the wrong kind. Every
+/// entry point must report that, never panic (a panic would take the window down while loading a model).
+#[test]
+fn a_damaged_sketch_file_is_reported_not_panicked_on() {
+    let bad: Vec<(&str, &str)> = vec![
+        ("line ending at a missing point", r#"{"entities":[{"id":0,"type":"Point","x":0,"y":0},{"id":1,"type":"Line","a":0,"b":9}]}"#),
+        ("line whose end is a line", r#"{"entities":[{"id":0,"type":"Point","x":0,"y":0},{"id":1,"type":"Point","x":1,"y":0},{"id":2,"type":"Line","a":0,"b":1},{"id":3,"type":"Line","a":0,"b":2}]}"#),
+        ("radius of a line", r#"{"entities":[{"id":0,"type":"Point","x":0,"y":0},{"id":1,"type":"Point","x":1,"y":0},{"id":2,"type":"Line","a":0,"b":1}],"constraints":[{"id":3,"type":"Radius","e":2,"d":1}]}"#),
+        ("constraint on a missing entity", r#"{"entities":[{"id":0,"type":"Point","x":0,"y":0}],"constraints":[{"id":1,"type":"Horizontal","line":7}]}"#),
+        ("circle about a line", r#"{"entities":[{"id":0,"type":"Point","x":0,"y":0},{"id":1,"type":"Point","x":1,"y":0},{"id":2,"type":"Line","a":0,"b":1},{"id":3,"type":"Circle","c":2,"r":1}]}"#),
+        ("arc with a missing end", r#"{"entities":[{"id":0,"type":"Point","x":0,"y":0},{"id":1,"type":"Point","x":1,"y":0},{"id":2,"type":"Arc","c":0,"s":1,"e":8}]}"#),
+        ("spline through a missing point", r#"{"entities":[{"id":0,"type":"Point","x":0,"y":0},{"id":1,"type":"Spline","pts":[0,5]}]}"#),
+    ];
+    for (what, json) in bad {
+        let mut s: Sketch = serde_json::from_str(json).unwrap_or_else(|e| panic!("{what}: {e}"));
+        assert!(s.check().is_err(), "{what}: check must object");
+        let r = s.solve();
+        assert_eq!(r.status, Status::Conflicting, "{what}: {r:?}");
+        let err = s.profile().expect_err(what);
+        assert!(err.contains("damaged"), "{what}: {err}");
+        for e in s.entities.iter().map(|e| e.id).collect::<Vec<_>>() {
+            assert!(s.suggest(e, &fea_problem::sketch::infer::Tolerance::for_extent(1.0)).is_empty(), "{what}: no suggestions from a damaged sketch");
+        }
+    }
+    // The checked sketch of an ordinary drawing is fine.
+    let (s, _, _) = rough_rect();
+    assert!(s.check().is_ok());
+}

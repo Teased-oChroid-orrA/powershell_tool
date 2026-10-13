@@ -1000,6 +1000,19 @@ impl SolidSession {
 
     // ------------------------------------------------------------------ scene
 
+    /// Follow the zoom: a sketch line keeps its width in pixels (the scene is rebuilt when the pixel size changed
+    /// by more than 3 %). World-space tubes would scale with the zoom, so a thin profile (a 0.125 in rectangle on
+    /// a long edge) never separated into two lines however far one zoomed in.
+    pub(super) fn set_sketch_pixel(&mut self, cam: &Camera, size: [f32; 2]) {
+        let pixel = 2.0 / (cam.zoom.max(1e-3) * size[1].max(1.0));
+        if self.sketching.is_some() && (pixel / self.sketch_pixel - 1.0).abs() > 0.03 {
+            self.sketch_pixel = pixel;
+            self.touch();
+        } else if self.sketching.is_none() {
+            self.sketch_pixel = pixel;
+        }
+    }
+
     pub(super) fn sketch_scene(&self) -> Result<Scene, String> {
         let st = self.sketching.as_ref().ok_or("not sketching")?;
         let (plane, sk) = self.active_sketch().ok_or("the sketch feature is missing")?;
@@ -1008,27 +1021,28 @@ impl SolidSession {
         let mut b = Builder::new();
         // Axes through the sketch origin.
         let o = to([0.0, 0.0]);
-        b.tube([o[0] - 0.6, o[1], 0.0], [o[0] + 0.6, o[1], 0.0], 0.0012, [None, None], CODE_FRAME);
-        b.tube([o[0], o[1] - 0.6, 0.0], [o[0], o[1] + 0.6, 0.0], 0.0012, [None, None], CODE_FRAME);
+        let px = self.sketch_pixel;
+        b.tube([o[0] - 0.6, o[1], 0.0], [o[0] + 0.6, o[1], 0.0], 0.7 * px, [None, None], CODE_FRAME);
+        b.tube([o[0], o[1] - 0.6, 0.0], [o[0], o[1] + 0.6, 0.0], 0.7 * px, [None, None], CODE_FRAME);
         let defined = st.edit.last_report.is_some_and(|r| r.status == Status::FullyConstrained);
         let base = if defined { CODE_SUPPORT } else { CODE_TRUSS };
         for (id, p, q) in sketcher::sketch_segments(sk) {
             let sel = st.edit.selection.contains(&id);
             // Construction geometry is thinner and in the frame colour: it holds dimensions, not material.
-            let (radius, code) = if sel { (0.004, CODE_SELECTED) } else if sk.is_construction(id) { (0.0016, CODE_FRAME) } else { (0.0028, base) };
+            let (radius, code) = if sel { (2.4 * px, CODE_SELECTED) } else if sk.is_construction(id) { (0.9 * px, CODE_FRAME) } else { (1.6 * px, base) };
             b.tube(to(p), to(q), radius, [None, None], code);
         }
         for e in &sk.entities {
             if let Some(p) = sk.point(e.id) {
                 let sel = st.edit.selection.contains(&e.id);
-                b.cube(to(p), if sel { 0.0085 } else { 0.0055 }, None, if sel { CODE_SELECTED } else { CODE_FRAME });
+                b.cube(to(p), if sel { 4.8 * px } else { 3.0 * px }, None, if sel { CODE_SELECTED } else { CODE_FRAME });
             }
         }
         for (p, q) in st.edit.preview() {
-            b.tube(to(p), to(q), 0.0022, [None, None], CODE_LOAD);
+            b.tube(to(p), to(q), 1.3 * px, [None, None], CODE_LOAD);
         }
         if let Some(h) = st.edit.hover {
-            b.cube(to(h.at), 0.009, None, CODE_LOAD);
+            b.cube(to(h.at), 5.0 * px, None, CODE_LOAD);
         }
         b.into_scene(format!("{} | sketch on the {} (blue: under-defined, teal: fully defined)", self.problem.name, plane.label()))
     }

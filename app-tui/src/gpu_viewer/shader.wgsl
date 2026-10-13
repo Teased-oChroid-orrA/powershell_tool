@@ -1,4 +1,4 @@
-struct Params { frames: vec4<u32>, settings: vec4<f32>, camera: vec4<f32>, };
+struct Params { frames: vec4<u32>, settings: vec4<f32>, camera: vec4<f32>, pan: vec4<f32>, };
 @group(0) @binding(0) var<storage, read> samples: array<vec4<f32>>;
 @group(0) @binding(1) var<uniform> params: Params;
 @group(0) @binding(2) var<storage, read> fieldvals: array<f32>;
@@ -13,7 +13,7 @@ fn place(pos: vec3<f32>, i: u32) -> Out {
     let q = vec3<f32>(cy*p.x+sy*p.z, p.y, -sy*p.x+cy*p.z);
     let r = vec3<f32>(q.x, cp*q.y-sp*q.z, sp*q.y+cp*q.z);
     var o: Out;
-    o.position = vec4<f32>(r.x*params.camera.z/params.camera.w, r.y*params.camera.z, 0.5+r.z*0.25, 1.0);
+    o.position = vec4<f32>(r.x*params.camera.z/params.camera.w + params.pan.x, r.y*params.camera.z + params.pan.y, 0.5+r.z*0.25, 1.0);
     var v = s.w;
     let field = params.frames.w >> 8u;
     if field > 0u { v = fieldvals[(field - 1u) * params.frames.z + i]; }

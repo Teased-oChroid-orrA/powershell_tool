@@ -65,6 +65,7 @@ Does not own: any element, solver or mesher (`fea-core`), any UI or file access 
 - `Load::Bearing` and `Force` are plane-only (error for axisymmetric / solid, except `Force`, which works for 3D faces).
 - The terminal Workbench edits `geometry` row by row; for a problem with a `history` it would be overwritten at the next `apply_history`, so `field_rows` hides the geometry rows for such problems. Anything new that writes `geometry` must check `history.is_none()` or edit the history.
 - Mesh-refinement near holes uses the hole's bounding-circle reach: a long slot refines more widely than its width suggests.
+- `Sketch::check` (every reference names an existing entity of the right kind) guards `solve` (a damaged sketch reports `Status::Conflicting`), `loops`/`profile` (`Err("the sketch is damaged: ...")`) and `suggest` (empty). A sketch built with the `add_*` methods always passes; one read from a hand-edited file may not, and the solver, profile and inference index by those references (`expect`/`unreachable!`). Keep calling it at any new entry point that takes a deserialised `Sketch`.
 
 ## Boundaries
 ### Always

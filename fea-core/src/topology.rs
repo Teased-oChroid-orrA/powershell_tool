@@ -9,7 +9,6 @@
 
 use crate::element::ElementKind;
 use crate::mesh::Mesh;
-use std::collections::HashMap;
 
 /// A boundary face: node list ready for `Loads::faces` / `Mesh::surfaces`.
 #[derive(Debug, Clone, PartialEq)]
@@ -72,32 +71,46 @@ impl Mesh {
     /// Faces (edges in 2D) that belong to exactly one element, in load orientation. Faces shared by
     /// two blocks (material interfaces) are interior and not reported.
     pub fn boundary_faces(&self) -> Vec<BoundaryFace> {
-        struct Entry {
-            count: u32,
-            face: BoundaryFace,
-        }
-        let mut map: HashMap<Vec<usize>, Entry> = HashMap::new();
-        let mut order: Vec<Vec<usize>> = Vec::new();
+        // A face is identified by its sorted corner nodes (at most four). Sorting all (key, owner) pairs puts the
+        // copies of a face side by side; a face that appears once is on the boundary. No hashing, no per-face
+        // allocation until the boundary faces themselves are built, and the output keeps the element order.
+        let n_faces: usize = self.blocks.iter().map(|b| b.n_elems() * local_faces(b.kind).len()).sum();
+        let mut all: Vec<([usize; 4], (usize, usize, usize))> = Vec::with_capacity(n_faces);
+        let local: Vec<Vec<Vec<usize>>> = self.blocks.iter().map(|b| local_faces(b.kind)).collect();
         for (bi, blk) in self.blocks.iter().enumerate() {
-            let faces = local_faces(blk.kind);
             let ncorner = if blk.kind.dim() == 2 { 2 } else if blk.kind.is_simplex() { 3 } else { 4 };
             for e in 0..blk.n_elems() {
                 let conn = blk.elem(e);
-                for lf in &faces {
-                    let nodes: Vec<usize> = lf.iter().map(|&l| conn[l]).collect();
-                    let mut key: Vec<usize> = nodes[..ncorner].to_vec();
-                    key.sort_unstable();
-                    match map.get_mut(&key) {
-                        Some(en) => en.count += 1,
-                        None => {
-                            order.push(key.clone());
-                            map.insert(key, Entry { count: 1, face: BoundaryFace { nodes, block: bi, elem: e } });
-                        }
+                for (fi, lf) in local[bi].iter().enumerate() {
+                    let mut key = [usize::MAX; 4];
+                    for (slot, &l) in key.iter_mut().zip(&lf[..ncorner]) {
+                        *slot = conn[l];
                     }
+                    key[..ncorner].sort_unstable();
+                    all.push((key, (bi, e, fi)));
                 }
             }
         }
-        order.into_iter().filter_map(|k| map.remove(&k)).filter(|e| e.count == 1).map(|e| e.face).collect()
+        all.sort_unstable();
+        let mut once: Vec<(usize, usize, usize)> = Vec::new();
+        let mut i = 0;
+        while i < all.len() {
+            let mut j = i + 1;
+            while j < all.len() && all[j].0 == all[i].0 {
+                j += 1;
+            }
+            if j == i + 1 {
+                once.push(all[i].1);
+            }
+            i = j;
+        }
+        once.sort_unstable();
+        once.into_iter()
+            .map(|(bi, e, fi)| {
+                let conn = self.blocks[bi].elem(e);
+                BoundaryFace { nodes: local[bi][fi].iter().map(|&l| conn[l]).collect(), block: bi, elem: e }
+            })
+            .collect()
     }
 
     /// Boundary faces whose centroid satisfies `pred`, registered as the named surface (node lists,
@@ -154,6 +167,37 @@ mod tests {
     fn unit(kind: ElementKind, div: usize) -> Mesh {
         let phys = if kind.dim() == 3 { Physics::Solid } else { Physics::PlaneStrain { thickness: 1.0 } };
         grid(phys, kind, Elastic::new(1.0, 0.3), [div, div, div], &|p| p).unwrap()
+    }
+
+    /// The boundary faces by the obvious method: count every face (sorted corner nodes) in a map, keep those seen once,
+    /// in first-seen order.
+    fn boundary_faces_by_counting(m: &Mesh) -> Vec<BoundaryFace> {
+        use std::collections::HashMap;
+        let mut count: HashMap<Vec<usize>, (u32, BoundaryFace)> = HashMap::new();
+        let mut order = Vec::new();
+        for (bi, blk) in m.blocks.iter().enumerate() {
+            let ncorner = if blk.kind.dim() == 2 { 2 } else if blk.kind.is_simplex() { 3 } else { 4 };
+            for e in 0..blk.n_elems() {
+                for lf in local_faces(blk.kind) {
+                    let nodes: Vec<usize> = lf.iter().map(|&l| blk.elem(e)[l]).collect();
+                    let mut key = nodes[..ncorner].to_vec();
+                    key.sort_unstable();
+                    count.entry(key.clone()).and_modify(|c| c.0 += 1).or_insert_with(|| {
+                        order.push(key);
+                        (1, BoundaryFace { nodes, block: bi, elem: e })
+                    });
+                }
+            }
+        }
+        order.into_iter().map(|k| count.remove(&k).unwrap()).filter(|c| c.0 == 1).map(|c| c.1).collect()
+    }
+
+    #[test]
+    fn the_sorted_face_search_equals_counting_every_face() {
+        for kind in ALL_KINDS {
+            let m = unit(kind, 3);
+            assert_eq!(m.boundary_faces(), boundary_faces_by_counting(&m), "{kind:?}");
+        }
     }
 
     /// Outward normal times measure of one face from its corner nodes.

@@ -594,7 +594,7 @@ mod tests {
     }
 
     fn cam() -> Camera {
-        Camera { yaw: 0.0, pitch: 0.0, zoom: 1.6, aspect: 1.5 }
+        Camera { yaw: 0.0, pitch: 0.0, zoom: 1.6, aspect: 1.5, pan: [0.0, 0.0] }
     }
     const SIZE: [f32; 2] = [900.0, 600.0];
     fn session(p: MemberProblem) -> Session {

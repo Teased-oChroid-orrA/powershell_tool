@@ -175,7 +175,7 @@ fn surfaces_are_picked_by_name_and_clicks_assign_them_to_the_focused_edge() {
     let mut s = session("pick");
     meshed(&mut s);
     s.build_scene().unwrap();
-    let cam = Camera { yaw: 0.0, pitch: 0.0, zoom: 1.0, aspect: 1.0 };
+    let cam = Camera { yaw: 0.0, pitch: 0.0, zoom: 1.0, aspect: 1.0, pan: [0.0, 0.0] };
     let size = [800.0, 800.0];
     let mesh = s.preview.as_ref().unwrap().mesh.clone();
     // Pixel of a node on each named edge, offset by 3 px away from the line.
@@ -244,7 +244,7 @@ fn solving_runs_on_a_worker_and_the_results_carry_every_field() {
     // While results are shown a click does not edit the model.
     s.show_results = true;
     s.solved = Some(Arc::new(fea_problem::solve(&s.problem, None).unwrap()));
-    let cam = Camera { yaw: 0.0, pitch: 0.0, zoom: 1.0, aspect: 1.0 };
+    let cam = Camera { yaw: 0.0, pitch: 0.0, zoom: 1.0, aspect: 1.0, pan: [0.0, 0.0] };
     let depth = s.undo.len();
     assert!(s.click([100.0, 100.0], [800.0, 800.0], &cam));
     assert!(s.status.contains("press V"));
@@ -476,7 +476,7 @@ fn the_hole_tool_places_a_hole_where_the_front_face_is_clicked() {
     };
     let before = holes(&s).len();
     // Front view, centred on the part: the viewport centre is the part's centre.
-    let cam = Camera { yaw: 0.0, pitch: 0.0, zoom: 1.0, aspect: 1.0 };
+    let cam = Camera { yaw: 0.0, pitch: 0.0, zoom: 1.0, aspect: 1.0, pan: [0.0, 0.0] };
     let size = [800.0, 800.0];
     // Without the tool a click only selects.
     Authoring::click(&mut s, [400.0, 400.0], size, &cam);
@@ -507,7 +507,7 @@ fn shift_click_and_box_select_gather_surfaces_and_one_action_covers_them_all() {
     let mut s = session("multisel");
     meshed(&mut s);
     s.build_scene().unwrap();
-    let cam = Camera { yaw: 0.0, pitch: 0.0, zoom: 1.0, aspect: 1.0 };
+    let cam = Camera { yaw: 0.0, pitch: 0.0, zoom: 1.0, aspect: 1.0, pan: [0.0, 0.0] };
     let size = [800.0, 800.0];
     let mesh = s.preview.as_ref().unwrap().mesh.clone();
     let positions = s.pick_positions.clone();
@@ -560,8 +560,8 @@ fn solid_faces_are_picked_front_most_at_the_pixel() {
         (zs.iter().cloned().fold(f64::INFINITY, f64::min), zs.iter().cloned().fold(f64::NEG_INFINITY, f64::max))
     };
     let (zlo, zhi) = mesh.nodes.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), n| (a.min(n[2]), b.max(n[2])));
-    let front = Camera { yaw: 0.0, pitch: 0.0, zoom: 1.0, aspect: 1.0 };
-    let back = Camera { yaw: std::f32::consts::PI, pitch: 0.0, zoom: 1.0, aspect: 1.0 };
+    let front = Camera { yaw: 0.0, pitch: 0.0, zoom: 1.0, aspect: 1.0, pan: [0.0, 0.0] };
+    let back = Camera { yaw: std::f32::consts::PI, pitch: 0.0, zoom: 1.0, aspect: 1.0, pan: [0.0, 0.0] };
     // A node of a face lying wholly in the front plane: the front view must pick a front-plane face there
     // (the back face is behind the same pixel), the mirrored back view a back-plane face.
     let flat_at = |z: f64| mesh.surfaces.keys().find(|n| { let (lo, hi) = z_of(n); (lo - z).abs() < 1e-9 && (hi - z).abs() < 1e-9 }).cloned();

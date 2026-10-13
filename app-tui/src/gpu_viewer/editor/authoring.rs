@@ -174,6 +174,9 @@ pub trait Authoring {
     fn tree_menu(&self, _node: u32) -> Vec<Item> {
         Vec::new()
     }
+    /// The camera and viewport size (pixels) of the frame about to be drawn, so geometry whose size is meant to
+    /// be constant on the screen (sketch lines) can follow the zoom. Called every frame.
+    fn set_view(&mut self, _cam: &Camera, _size: [f32; 2]) {}
     /// Labels to draw on the model for the current camera (`size` is the viewport in pixels).
     fn overlay(&self, _cam: &Camera, _size: [f32; 2]) -> Vec<Overlay> {
         Vec::new()

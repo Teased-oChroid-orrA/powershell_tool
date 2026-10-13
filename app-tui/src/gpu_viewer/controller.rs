@@ -4,6 +4,11 @@
 use super::Scene;
 
 pub const DEFAULT_ZOOM: f32 = 1.6;
+pub const MIN_ZOOM: f32 = 0.1;
+/// Reaches 250x the default fit, enough to resolve a 0.001 in feature of a 10 in sketch.
+pub const MAX_ZOOM: f32 = 400.0;
+/// How far the view may be shifted off the viewport (NDC units; 2 = one viewport).
+pub const PAN_LIMIT: f32 = 400.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Command {
@@ -23,6 +28,8 @@ pub enum Command {
     Orbit { dx: f32, dy: f32 },
     /// Zoom by wheel lines.
     Zoom(f32),
+    /// Shift the view on the screen by an offset in NDC units (2 = the viewport's width or height).
+    Pan { dx: f32, dy: f32 },
     /// Select the next/previous scalar field of the active result (wraps).
     CycleField { forward: bool },
     ToggleHelp,
@@ -143,6 +150,8 @@ pub struct ViewState {
     pub yaw: f32,
     pub pitch: f32,
     pub zoom: f32,
+    /// Screen-space shift of the view in NDC units.
+    pub pan: [f32; 2],
     /// 0 = the scene's primary scalar, k = `scene.fields[k - 1]`.
     pub field: usize,
     pub show_help: bool,
@@ -161,6 +170,7 @@ impl ViewState {
             yaw: 0.0,
             pitch: 0.0,
             zoom: DEFAULT_ZOOM,
+            pan: [0.0, 0.0],
             field: 0,
             show_help: false,
         }
@@ -219,6 +229,7 @@ impl ViewState {
                 self.yaw = 0.0;
                 self.pitch = 0.0;
                 self.zoom = DEFAULT_ZOOM;
+                self.pan = [0.0, 0.0];
             }
             Command::StepFrame { forward } => {
                 self.paused = true;
@@ -255,7 +266,8 @@ impl ViewState {
                 (self.yaw, self.pitch) = v.angles();
             }
             Command::SetField(n) => self.field = if n <= scene.fields.len() { n } else { 0 },
-            Command::Zoom(lines) => self.zoom = (self.zoom * (1.0 + lines * 0.1)).clamp(0.1, 10.0),
+            Command::Zoom(lines) => self.zoom = (self.zoom * (1.0 + lines * 0.1)).clamp(MIN_ZOOM, MAX_ZOOM),
+            Command::Pan { dx, dy } => self.pan = [(self.pan[0] + dx).clamp(-PAN_LIMIT, PAN_LIMIT), (self.pan[1] + dy).clamp(-PAN_LIMIT, PAN_LIMIT)],
         }
     }
 }
@@ -301,6 +313,33 @@ impl Pointer {
         let click = self.press.take().filter(|_| !self.dragging);
         self.dragging = false;
         click
+    }
+}
+
+/// A pan gesture: the middle button, or the right button (whose release without travel is a click that
+/// opens the context menu). Positions are physical window pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PanGesture {
+    start: (f64, f64),
+    dragging: bool,
+}
+impl PanGesture {
+    /// A middle-button press pans at once; a right-button press only after `DRAG_PIXELS` of travel.
+    pub fn begin(at: (f64, f64), immediate: bool) -> Self {
+        Self { start: at, dragging: immediate }
+    }
+    /// Cursor moved from `from` to `to`: the pixel offset to pan by once the gesture is a drag.
+    pub fn moved(&mut self, from: (f64, f64), to: (f64, f64)) -> Option<(f64, f64)> {
+        if !self.dragging && (to.0 - self.start.0).hypot(to.1 - self.start.1) > DRAG_PIXELS {
+            self.dragging = true;
+            // Catch up with the travel so far, so the model follows the cursor from where it was pressed.
+            return Some((to.0 - self.start.0, to.1 - self.start.1));
+        }
+        self.dragging.then_some((to.0 - from.0, to.1 - from.1))
+    }
+    /// Button released: true when the gesture never became a drag (a click).
+    pub fn is_click(&self) -> bool {
+        !self.dragging
     }
 }
 
@@ -393,9 +432,17 @@ mod tests {
         for _ in 0..200 {
             v.apply(Command::Zoom(5.0), &s);
         }
-        assert_eq!(v.zoom, 10.0);
+        assert_eq!(v.zoom, MAX_ZOOM);
+        for _ in 0..400 {
+            v.apply(Command::Zoom(-5.0), &s);
+        }
+        assert_eq!(v.zoom, MIN_ZOOM);
+        for _ in 0..50 {
+            v.apply(Command::Pan { dx: 100.0, dy: -100.0 }, &s);
+        }
+        assert_eq!(v.pan, [PAN_LIMIT, -PAN_LIMIT], "the pan is bounded");
         v.apply(Command::ResetCamera, &s);
-        assert_eq!((v.yaw, v.pitch, v.zoom), (0.0, 0.0, DEFAULT_ZOOM));
+        assert_eq!((v.yaw, v.pitch, v.zoom, v.pan), (0.0, 0.0, DEFAULT_ZOOM, [0.0, 0.0]));
     }
 
     #[test]
@@ -478,7 +525,7 @@ mod tests {
         use crate::gpu_viewer::editor::camera::Camera;
         let cam = |v: StandardView| {
             let (yaw, pitch) = v.angles();
-            Camera { yaw, pitch, zoom: 1.0, aspect: 1.0 }
+            Camera { yaw, pitch, zoom: 1.0, aspect: 1.0, pan: [0.0, 0.0] }
         };
         let depth = |v, p: [f32; 3]| cam(v).project(p).1;
         // Nearer = smaller depth. Each view sees its own side of the model first.

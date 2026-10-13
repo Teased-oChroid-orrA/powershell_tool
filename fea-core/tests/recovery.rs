@@ -275,3 +275,39 @@ fn zero_and_large_finite_error_norms_have_a_defined_relative_estimate() {
     };
     assert!((large.relative() - 1.0 / 2.0_f64.sqrt()).abs() < 1e-15);
 }
+
+/// Gauss stresses, SPR and the ZZ estimate run their per-node and per-element stages in parallel on large meshes.
+/// Each item is computed independently from read-only data, so the answer must not depend on the thread count.
+#[test]
+fn recovery_is_bit_identical_on_one_thread_and_many() {
+    for (kind, physics, div) in [(ElementKind::Quad9, Physics::PlaneStress { thickness: 1.0 }, [40, 40, 1]), (ElementKind::Tet10, Physics::Solid, [8, 8, 8])] {
+        let mesh = grid(physics, kind, Elastic::new(E, NU), div, &|p| [p[0] * 1.3 + 0.1 * p[1], p[1] + 0.05 * p[0] * p[0], p[2]]).unwrap();
+        let model = Model::new(mesh).unwrap();
+        let d = kind.dim();
+        let mut bc = model.dirichlet();
+        for (axis, name) in ["u0", "v0", "w0"].iter().enumerate().take(d) {
+            for &n in model.mesh.node_set(name).unwrap() {
+                bc.fix(n, axis, 0.0);
+            }
+        }
+        let mut loads = Loads::default();
+        for &n in model.mesh.node_set(if d == 2 { "v1" } else { "w1" }).unwrap() {
+            let mut f = [0.0; 3];
+            f[d - 1] = 1.0;
+            f[0] = 0.3;
+            loads.nodal.push((n, f));
+        }
+        let u = model.solve_static(&loads, &bc).unwrap().u;
+        assert!(model.mesh.nodes.len() >= 2000 && model.mesh.n_elems() >= 1000, "{kind:?} must be above the parallel thresholds");
+        let run = || {
+            let gauss = model.gauss_stresses(&u, 0.0).unwrap();
+            let spr = model.recover_spr(&gauss).unwrap();
+            let zz = model.zz_error(&u, 0.0).unwrap();
+            (gauss, spr, zz.eta, zz.total, zz.norm)
+        };
+        let many = run();
+        let one = fea_core::sequentially(run);
+        assert!(many == one, "{kind:?}: the recovery differs between one thread and many");
+        assert!(many.1.iter().flatten().any(|v| *v != 0.0) && many.3 > 0.0, "{kind:?}: the comparison saw real data");
+    }
+}

@@ -294,6 +294,11 @@ impl Sketch {
     }
 
     fn solve_pulled(&mut self, pulls: &[(Id, [f64; 2])]) -> Report {
+        if self.check().is_err() {
+            // Nothing can be solved; name the constraints that cannot be evaluated.
+            let violated = self.constraints.iter().filter(|c| !self.accepts(&c.v)).map(|c| c.id).collect();
+            return Report { status: Status::Conflicting, dof: 0, max_residual: f64::INFINITY, violated, iterations: 0 };
+        }
         let l = Layout::new(self);
         let mut x = l.start(self);
         let (mut lambda, mut iterations) = (1e-3, 0);

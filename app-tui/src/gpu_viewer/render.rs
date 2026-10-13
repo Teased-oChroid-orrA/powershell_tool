@@ -32,6 +32,8 @@ struct Params {
     frames: [u32; 4],
     settings: [f32; 4],
     camera: [f32; 4],
+    /// `xy`: screen-space shift of the view in NDC.
+    pan: [f32; 4],
 }
 
 pub struct Renderer {
@@ -67,10 +69,12 @@ pub struct DisplayOptions {
     pub viewport: Option<[u32; 4]>,
     /// Clear colour (sRGB) behind the model; `None` is the dark default.
     pub background: Option<[u8; 3]>,
+    /// Screen-space shift of the view in NDC units.
+    pub pan: [f32; 2],
 }
 impl Default for DisplayOptions {
     fn default() -> Self {
-        Self { show_mesh: false, show_contour: true, field: 0, viewport: None, background: None }
+        Self { show_mesh: false, show_contour: true, field: 0, viewport: None, background: None, pan: [0.0, 0.0] }
     }
 }
 
@@ -141,7 +145,7 @@ impl Renderer {
         });
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("playback uniforms"),
-            size: 48,
+            size: std::mem::size_of::<Params>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -396,7 +400,7 @@ impl Renderer {
         camera: [f32; 4],
         options: DisplayOptions,
     ) {
-        let DisplayOptions { show_mesh, show_contour, field, viewport, background } = options;
+        let DisplayOptions { show_mesh, show_contour, field, viewport, background, pan } = options;
         // A stale index (result switched, field absent) falls back to the primary scalar.
         let field = if field <= scene.fields.len() { field } else { 0 };
         let range = match field.checked_sub(1) {
@@ -419,6 +423,7 @@ impl Renderer {
                 ],
                 settings: [blend, gain, range[0], range[1]],
                 camera,
+                pan: [pan[0], pan[1], 0.0, 0.0],
             }),
         );
         let mut encoder = self.device.create_command_encoder(&Default::default());
@@ -645,6 +650,61 @@ mod tests {
     }
     #[test]
     #[ignore = "requires a native graphics adapter; explicitly exercised during Phase 18 validation"]
+    fn pan_shifts_the_scene_on_the_screen_by_its_ndc_offset() {
+        let _guard = headless_guard();
+        pollster::block_on(async {
+            let adapter = test_adapter().await.expect("adapter required");
+            let scene = Scene {
+                label: "small".into(),
+                positions: vec![[-0.2, -0.2, 0.0], [0.2, -0.2, 0.0], [0.0, 0.2, 0.0]],
+                triangles: vec![0, 1, 2],
+                samples: vec![[0.0, 0.0, 0.0, 0.2], [0.0, 0.0, 0.0, 0.5], [0.0, 0.0, 0.0, 0.8]],
+                times: vec![0.0],
+                range: [0.0, 1.0],
+                gain: 1.0,
+                harmonic_period: None,
+                field_label: String::new(),
+                fields: Vec::new(),
+            };
+            let (w, h) = (128u32, 128u32);
+            let renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+            let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let centroid = |pan: [f32; 2]| {
+                renderer.draw_display(&texture.create_view(&Default::default()), &scene, 0.0, 1.0, [0.0, 0.0, 1.0, 1.0], DisplayOptions { pan, ..Default::default() });
+                let img = read_back(&renderer, &texture);
+                let clear = [(0.025f32 * 255.0).round() as u8, (0.03f32 * 255.0).round() as u8, (0.045f32 * 255.0).round() as u8];
+                let (mut sx, mut sy, mut n) = (0.0f64, 0.0f64, 0.0f64);
+                for y in 0..h {
+                    for x in 0..w {
+                        let px = &img[((y * w + x) * 4) as usize..][..4];
+                        if !(0..3).all(|k| px[k].abs_diff(clear[k]) <= 1) {
+                            sx += f64::from(x);
+                            sy += f64::from(y);
+                            n += 1.0;
+                        }
+                    }
+                }
+                assert!(n > 100.0, "the triangle is drawn");
+                (sx / n, sy / n)
+            };
+            let (x0, y0) = centroid([0.0, 0.0]);
+            // NDC +0.5 is a quarter of the width to the right; +0.25 is an eighth of the height up (y grows downward).
+            let (x1, y1) = centroid([0.5, 0.25]);
+            assert!((x1 - x0 - 0.25 * f64::from(w)).abs() < 1.5, "x {x0} -> {x1}");
+            assert!((y0 - y1 - 0.125 * f64::from(h)).abs() < 1.5, "y {y0} -> {y1}");
+        });
+    }
+    #[test]
+    #[ignore = "requires a native graphics adapter; explicitly exercised during Phase 18 validation"]
     fn headless_deformation_changes_pixels() {
         let _guard = headless_guard();
         pollster::block_on(async {
@@ -854,7 +914,7 @@ mod performance_tests {
                 r.draw(&view, &scene, *t, scene.gain, [0.0, 0.0, 1.6, 2.0]);
             }
             r.device.poll(wgpu::PollType::wait_indefinitely()).expect("device poll");
-            eprintln!("GPU profile: adapter={:?}, vertices={n}, triangles={}, frames={}, sample_bytes={}, uniform_bytes_per_frame=48, upload_ms={:.3}, playback_ms={:.3}",adapter.get_info(),scene.triangles.len()/3,scene.times.len(),scene.samples.len()*16,upload.as_secs_f64()*1000.0,start.elapsed().as_secs_f64()*1000.0);
+            eprintln!("GPU profile: adapter={:?}, vertices={n}, triangles={}, frames={}, sample_bytes={}, uniform_bytes_per_frame=64, upload_ms={:.3}, playback_ms={:.3}",adapter.get_info(),scene.triangles.len()/3,scene.times.len(),scene.samples.len()*16,upload.as_secs_f64()*1000.0,start.elapsed().as_secs_f64()*1000.0);
         });
     }
 }
@@ -891,7 +951,7 @@ mod snapshot_tests {
             r.paint_egui(&view, &ctx, pass, [w, h]);
         }
         let vp = gui.viewport_px((w, h));
-        let cam = crate::gpu_viewer::editor::camera::Camera { yaw: camera[0], pitch: camera[1], zoom: 1.5, aspect: vp.w as f32 / vp.h as f32 };
+        let cam = crate::gpu_viewer::editor::camera::Camera { yaw: camera[0], pitch: camera[1], zoom: 1.5, aspect: vp.w as f32 / vp.h as f32, pan: [0.0, 0.0] };
         let overlay = input.editor.map(|e| e.overlay(&cam, [vp.w as f32, vp.h as f32])).unwrap_or_default();
         let with_overlay = GuiInput { view: input.view, scenes: input.scenes, selected: input.selected, editor: input.editor, error: input.error, box_drag: input.box_drag, overlay: &overlay };
         let (output, _) = gui.run(raw(), &with_overlay);
@@ -907,6 +967,7 @@ mod snapshot_tests {
                 field: input.view.field,
                 viewport: Some(if input.editor.is_some_and(|e| !e.start_options().is_empty()) { [vp.x, vp.y, 0, 0] } else { [vp.x, vp.y, vp.w, vp.h] }),
                 background: Some(gui.background_rgb()),
+                ..Default::default()
             },
         );
         r.paint_egui(&view, &ctx, output, [w, h]);

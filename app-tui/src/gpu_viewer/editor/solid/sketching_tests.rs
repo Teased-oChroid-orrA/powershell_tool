@@ -7,7 +7,7 @@ use fea_problem::{history::FeatureKind, Shape};
 
 pub(super) const SIZE: [f32; 2] = [900.0, 600.0];
 pub(super) fn cam() -> Camera {
-    Camera { yaw: 0.0, pitch: 0.0, zoom: 1.6, aspect: 1.5 }
+    Camera { yaw: 0.0, pitch: 0.0, zoom: 1.6, aspect: 1.5, pan: [0.0, 0.0] }
 }
 pub(super) fn temp(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("solid-sketching-{name}-{}", std::process::id()));
@@ -564,4 +564,35 @@ fn a_selected_line_becomes_construction_geometry_and_leaves_the_profile() {
     assert!(sketch_of(&s).construction.is_empty(), "{}", s.status);
     act(&mut s, SketchAction::Finish);
     assert!(s.sketch_mode(), "the diagonal is real geometry again");
+}
+
+/// Sketch lines keep their width in pixels: world-space tubes scaled with the zoom, so a thin profile (two edges
+/// 0.125 apart on a 10 long sketch) stayed one blurred line however far the user zoomed in.
+#[test]
+fn sketch_lines_keep_their_pixel_width_at_every_zoom() {
+    let mut s = drawn_rectangle("pixelwidth");
+    let axis_width_px = |s: &SolidSession, zoom: f32| {
+        let scene = s.sketch_scene().unwrap();
+        // The first eight vertices are the horizontal axis tube; its y extent is the line width.
+        let (lo, hi) = scene.positions[..8].iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p[1]), hi.max(p[1])));
+        (hi - lo) * zoom * SIZE[1] / 2.0
+    };
+    let mut seen = Vec::new();
+    for zoom in [1.6, 16.0, 160.0, 0.4] {
+        let c = Camera { zoom, ..cam() };
+        s.set_sketch_pixel(&c, SIZE);
+        seen.push(axis_width_px(&s, zoom));
+    }
+    for w in &seen {
+        assert!((w - 1.4).abs() < 0.05, "axis line width in pixels {seen:?}");
+    }
+    // A zoom change makes the viewer rebuild the scene; the same zoom does not.
+    let c = Camera { zoom: 3.0, ..cam() };
+    s.set_sketch_pixel(&c, SIZE);
+    s.build_scene().unwrap();
+    assert!(!s.needs_scene());
+    s.set_sketch_pixel(&c, SIZE);
+    assert!(!s.needs_scene(), "an unchanged zoom keeps the built scene");
+    s.set_sketch_pixel(&Camera { zoom: 6.0, ..cam() }, SIZE);
+    assert!(s.needs_scene());
 }

@@ -317,6 +317,23 @@ mod plastic {
 
     const STRAINS: [[f64; 6]; 4] = [[0.0030, -0.0009, -0.0008, 0.0, 0.0, 0.0], [0.0042, 0.0011, -0.0020, 0.0016, 0.0, 0.0], [-0.0030, 0.0035, 0.0012, 0.0013, -0.0011, 0.0009], [0.0005, 0.0004, -0.0003, 0.0002, 0.0001, 0.0]];
 
+    /// A diverging Newton iterate hands the material an infinite or NaN strain. The update must answer with a
+    /// non-finite result (which the solver turns into a failed step), never panic inside a parallel assembly.
+    #[test]
+    fn a_non_finite_strain_gives_a_non_finite_update_instead_of_a_panic() {
+        let d = ortho();
+        // Whatever the magnitude, the update returns (the tangent may be garbage, the solver rejects such a step).
+        for exp in -3..=40 {
+            let big = 10f64.powi(exp);
+            let _ = small_strain_update_aniso(&d, &law(), &strain([big, -0.3 * big, 0.2 * big, 0.1 * big, 0.0, -0.05 * big]), &[0.0; 7]);
+        }
+        for bad in [f64::INFINITY, f64::NAN, 1.0e300] {
+            let up = small_strain_update_aniso(&d, &law(), &strain([bad, 0.001, -0.0005, 0.0, 0.0, 0.0]), &[0.0; 7]);
+            let finite = up.stress.iter().flatten().all(|v| v.is_finite()) && up.tangent.iter().flatten().all(|v| v.is_finite());
+            assert!(!finite, "strain {bad}: the result must be flagged non-finite");
+        }
+    }
+
     /// With an isotropic stiffness the anisotropic return mapping is the isotropic one: stress, plastic state and tangent.
     #[test]
     fn an_isotropic_stiffness_through_the_anisotropic_return_mapping_equals_the_isotropic_law() {

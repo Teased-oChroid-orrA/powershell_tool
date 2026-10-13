@@ -241,6 +241,9 @@ unit-tested core; `window.rs` maps winit events to egui and to `Input`, runs the
 - `Source` toggles keep the sketch in `saved_geometry` so going back loses nothing; the imported file's text lives in `import` and is matched to the path.
 - Templates replace the whole problem (`j` saves first); `set_problem` keeps the view flags (auto-solve, field, mesh, deform).
 - Real-terminal check done with `tmux` (170 x 50): true-colour half blocks render; a `TestBackend` test (`tests/rendering.rs`) guards that a contour paints many colours and that no size panics.
+- Mouse in the native window: left drag orbits (or drags a sketch point / box-selects with Shift), **middle drag or right drag pans** (`PanGesture`, `Camera::pan`, an NDC shift added after the projection in `shader.wgsl` and `Camera::project`/`unproject_to_plane`), the wheel zooms **about the cursor** (`Viewer::zoom_at` keeps the model point under the cursor fixed; zoom range 0.1..400). A right click (release without travel) opens the context menu **on release**: opening it on the press let the press egui was still handling close it at once (`floating_list` closes on any press outside its rect), which showed as a flashing menu. The test `a_right_click_the_egui_also_sees_leaves_the_menu_open_...` feeds egui the secondary press, which the older right-click test did not.
+- Sketch lines keep a constant **pixel** width: `Authoring::set_view` hands the camera and viewport to the session every frame, `SolidSession::set_sketch_pixel` rebuilds the sketch scene when the pixel size changes by more than 3 %, and `sketch_scene` sizes tubes in pixels. World-space tubes scaled with the zoom, so a thin profile never separated into two lines.
+- Extrude / Revolve / Sweep are on the Features tab (Solid group), not on the Sketch tab; they need the sketch finished first (`feature_availability`).
 
 ## Native window: benches, palette, selection (Phase 23, 2026-10-10)
 

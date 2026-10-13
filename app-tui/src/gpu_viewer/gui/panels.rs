@@ -1,6 +1,6 @@
 //! The parts of the window: top bar, tool pill, feature tree, property manager, status bar.
 use super::{
-    theme::{self, tone_color, Palette},
+    theme::{tone_color, Palette},
     with_alpha, Gui,
 };
 use crate::gpu_viewer::{
@@ -10,7 +10,7 @@ use crate::gpu_viewer::{
     results::{result_card, results_tree, GuiInput},
     text::{colormap, fmt_value},
     editor::authoring::StepState,
-    menu::{Item, Menu, Outcome},
+    menu::{Menu, Outcome},
     ui::{visible_nodes, DockItem, RibbonTab, TreeNode},
 };
 use egui::{Align, Align2, Color32, CornerRadius, FontId, Id, Layout, Margin, Order, Pos2, Rect, RichText, Sense, Stroke, Vec2};
@@ -495,9 +495,6 @@ fn section_title(ui: &mut egui::Ui, title: &str, p: &Palette) {
     ui.label(RichText::new(title.to_uppercase()).small().strong().color(p.accent));
     ui.add_space(2.0);
 }
-
-#[allow(dead_code)]
-fn unused(_: theme::Palette, _: Item) {}
 
 /// A small text button laid over a card header, `from_right` points in from the header's right edge.
 fn painter_text_button(ui: &mut egui::Ui, header: Rect, p: &Palette, label: &str, from_right: f32, width: f32) -> egui::Response {

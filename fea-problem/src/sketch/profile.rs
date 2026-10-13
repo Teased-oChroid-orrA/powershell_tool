@@ -222,6 +222,7 @@ impl Sketch {
     }
 
     fn loops(&self) -> Result<Vec<Loop>, String> {
+        self.check()?;
         let class = self.point_classes();
         let cls = |id: Id| class.iter().find(|c| c.0 == id).map(|c| c.1).expect("point");
         let mut out = Vec::new();

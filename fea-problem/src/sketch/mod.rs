@@ -251,6 +251,28 @@ impl Sketch {
             Constraint::Radius { e, .. } => round(e),
         }
     }
+    /// Is every reference in the sketch to an existing entity of the kind it needs? A sketch built through the
+    /// `add_*` methods always is; one read from a damaged or hand-edited file may not be, and the solver, the
+    /// profile and the inference all index by these references.
+    pub fn check(&self) -> Result<(), String> {
+        let point = |i: Id| self.kind(i) == Some(0);
+        for e in &self.entities {
+            let ok = match &e.v {
+                Entity::Point { .. } => true,
+                Entity::Line { a, b } => point(*a) && point(*b),
+                Entity::Circle { c, .. } => point(*c),
+                Entity::Arc { c, s, e } => point(*c) && point(*s) && point(*e),
+                Entity::Spline { pts } => pts.len() >= 2 && pts.iter().all(|p| point(*p)),
+            };
+            if !ok {
+                return Err(format!("the sketch is damaged: entity {} refers to a missing or wrong kind of point", e.id));
+            }
+        }
+        match self.constraints.iter().find(|c| !self.accepts(&c.v)) {
+            Some(c) => Err(format!("the sketch is damaged: constraint {} ({}) names a missing or wrong kind of entity", c.id, c.v.label())),
+            None => Ok(()),
+        }
+    }
     /// Endpoints `(a, b)` positions of a line.
     pub fn line_pts(&self, id: Id) -> Option<([f64; 2], [f64; 2])> {
         match self.entity(id)? {

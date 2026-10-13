@@ -65,6 +65,12 @@ fn main() -> io::Result<()> {
 /// the user's shell on every subsequent click - this hook (and the
 /// matching explicit disable on normal exit, in `main()`) is what prevents
 /// that, on both the panic path and the ordinary-exit path.
+/// Run a worker job so that a panic in it comes back as an error message instead of a task that dies without ever
+/// answering (the toolbox would wait on its result for ever).
+fn guarded<T>(what: &str, job: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).unwrap_or_else(|_| Err(format!("{what} stopped unexpectedly")))
+}
+
 fn enable_mouse_capture_failsafe() {
     let _ = execute!(stdout(), EnableMouseCapture);
     let previous_hook = std::panic::take_hook();
@@ -218,21 +224,22 @@ fn execute_effect(tx: &mpsc::UnboundedSender<AppEvent>, state: &mut AppState, ef
         Effect::RunEccentric { id, task, input, control } => {
             let tx = tx.clone();
             tokio::task::spawn_blocking(move || {
-                let result = app_tui::toolboxes::eccentric_bushing::model::run_controlled(task, &input, &control);
+                let result = guarded("the eccentric bushing analysis", || app_tui::toolboxes::eccentric_bushing::model::run_controlled(task, &input, &control));
                 let _ = tx.send(AppEvent::EccentricFinished { id, result: Box::new(result) });
             });
         }
         Effect::RunLugAnalysis { id, input, cache } => {
             let tx = tx.clone();
             tokio::task::spawn_blocking(move || {
-                let (result, cache) = app_tui::toolboxes::lug_analysis::model::run(&input, cache);
+                // The cache moves into the run; after a panic there is none to hand back.
+                let (result, cache) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app_tui::toolboxes::lug_analysis::model::run(&input, cache))).unwrap_or_else(|_| (Err("the lug analysis stopped unexpectedly".to_string()), None));
                 let _ = tx.send(AppEvent::LugAnalysisFinished { id, result: Box::new(result), cache });
             });
         }
         Effect::RunLugMeshTest { id, input } => {
             let tx = tx.clone();
             tokio::task::spawn_blocking(move || {
-                let result = app_tui::toolboxes::lug_analysis::mesh_test::run(&input);
+                let result = guarded("the mesh test", || app_tui::toolboxes::lug_analysis::mesh_test::run(&input));
                 let _ = tx.send(AppEvent::LugMeshTestFinished { id, result: Box::new(result) });
             });
         }
@@ -246,7 +253,7 @@ fn execute_effect(tx: &mpsc::UnboundedSender<AppEvent>, state: &mut AppState, ef
         Effect::RunFeaPreview { id, problem, import_text } => {
             let tx = tx.clone();
             tokio::task::spawn_blocking(move || {
-                let result = fea_problem::solve::preview(&problem, import_text.as_deref());
+                let result = guarded("the mesher", || fea_problem::solve::preview(&problem, import_text.as_deref()));
                 let _ = tx.send(AppEvent::FeaPreviewFinished { id, result: Box::new(result) });
             });
         }
