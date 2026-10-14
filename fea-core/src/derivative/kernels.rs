@@ -10,6 +10,8 @@ use super::policy::*;
 pub const ELEMENT_STIFFNESS: &str = "element.stiffness";
 pub const ELEMENT_MASS: &str = "element.mass";
 pub const ELEMENT_GEOMETRY: &str = "element.geometry";
+pub const ELEMENT_THERMAL_LOAD: &str = "element.thermal_load";
+pub const ELEMENT_GEOMETRIC_STIFFNESS: &str = "element.geometric_stiffness";
 pub const CONSTITUTIVE_J2: &str = "constitutive.j2";
 pub const CONSTITUTIVE_HYPERELASTIC: &str = "constitutive.hyperelastic";
 pub const CONTACT_PENALTY: &str = "contact.penalty";
@@ -26,6 +28,8 @@ impl DerivativePolicyEngine {
         e.register_scalar_kernel(ELEMENT_STIFFNESS, None);
         e.register_scalar_kernel(ELEMENT_MASS, None);
         e.register_scalar_kernel(ELEMENT_GEOMETRY, None);
+        e.register_scalar_kernel(ELEMENT_THERMAL_LOAD, None);
+        e.register_scalar_kernel(ELEMENT_GEOMETRIC_STIFFNESS, None);
         // penalty contact: smooth on a fixed active set; across a transition only the generalized derivative is honest
         e.register_scalar_kernel(CONTACT_PENALTY, None);
         e.register_generalized(CONTACT_PENALTY);

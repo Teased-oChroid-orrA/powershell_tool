@@ -192,3 +192,62 @@ pub fn mass<S: Scalar>(kind: ElementKind, physics: Physics, coords: &[[S; 3]], r
     }
     Ok(me)
 }
+
+/// Equivalent nodal force of the isotropic thermal strain `alpha dT_g` (`dT_g` the temperature change at Gauss point `g`):
+/// `f[(a, i)] = integral c0 dT grad_i N_a`, `c0 = alpha (d_eff lambda + 2 mu)`, as `kernel::thermal_load_with` computes it. With dual
+/// numbers the modulus, Poisson ratio, expansion coefficient, thickness and the coordinates are differentiable inputs.
+#[allow(clippy::too_many_arguments)]
+pub fn thermal_load<S: Scalar>(kind: ElementKind, physics: Physics, coords: &[[S; 3]], e: S, nu: S, alpha: S, thickness: S, dt: &[S]) -> Result<Vec<S>, ElementGeometryError> {
+    let t = kind.table();
+    let (nn, d) = (t.nn, t.dim);
+    let geo = geometry(t, physics, coords, thickness)?;
+    let one = S::cst(1.0);
+    let mu = e / (S::cst(2.0) * (one + nu));
+    let (lam, dim_eff) = match physics {
+        Physics::PlaneStress { .. } => (e * nu / (one - nu * nu), 2.0),
+        _ => (e * nu / ((one + nu) * (one - nu.scale(2.0))), 3.0),
+    };
+    let c0 = alpha * (lam.scale(dim_eff) + mu.scale(2.0));
+    let mut f = vec![S::cst(0.0); nn * d];
+    for (g, gg) in geo.iter().enumerate() {
+        let w = gg.weight * c0 * dt[g];
+        let n = t.n_at(g);
+        for a in 0..nn {
+            for i in 0..d {
+                f[a * d + i] = f[a * d + i] + w * gg.grad[a * d + i];
+            }
+            if matches!(physics, Physics::Axisymmetric) {
+                f[a * d] = f[a * d] + w * S::cst(n[a]) / gg.radius;
+            }
+        }
+    }
+    Ok(f)
+}
+
+/// Geometric (initial-stress) stiffness `kg[a * nn + b] = integral grad N_a . sigma . grad N_b` of one element for the stress
+/// `stress[g]` at each Gauss point (engineering ordering `xx, yy, zz, xy, yz, zx`; plane problems use `xx, yy, ., xy`), times the
+/// identity on the displacement components. Plane and 3D solids, as `kernel::geometric_stiffness`. With dual numbers, both the
+/// coordinates and the stress (hence, through the stress, the displacements and material constants) are differentiable inputs.
+pub fn geometric_stiffness<S: Scalar>(kind: ElementKind, physics: Physics, coords: &[[S; 3]], stress: &[[S; 6]], thickness: S) -> Result<Vec<S>, ElementGeometryError> {
+    let t = kind.table();
+    let (nn, d) = (t.nn, t.dim);
+    let geo = geometry(t, physics, coords, thickness)?;
+    let zero = S::cst(0.0);
+    let mut kg = vec![zero; nn * nn];
+    for (g, gg) in geo.iter().enumerate() {
+        let s = &stress[g];
+        let m = if d == 2 { [[s[0], s[3], zero], [s[3], s[1], zero], [zero; 3]] } else { [[s[0], s[3], s[5]], [s[3], s[1], s[4]], [s[5], s[4], s[2]]] };
+        for a in 0..nn {
+            for b in 0..nn {
+                let mut v = zero;
+                for i in 0..d {
+                    for j in 0..d {
+                        v = v + gg.grad[a * d + i] * m[i][j] * gg.grad[b * d + j];
+                    }
+                }
+                kg[a * nn + b] = kg[a * nn + b] + gg.weight * v;
+            }
+        }
+    }
+    Ok(kg)
+}

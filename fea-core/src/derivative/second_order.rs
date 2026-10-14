@@ -63,6 +63,9 @@ impl<'m> SecondOrderEngine<'m> {
         let m = self.model;
         let d = m.mesh.dim();
         let mut out = vec![0.0; m.mesh.n_dofs()];
+        if matches!(pi, LinearParam::ThermalExpansion(_) | LinearParam::UniformTemperature) || matches!(pj, LinearParam::ThermalExpansion(_) | LinearParam::UniformTemperature) {
+            return Ok(out); // the stiffness does not depend on them
+        }
         for (bi, blk) in m.mesh.blocks.iter().enumerate() {
             let acts = |p: LinearParam| match p {
                 LinearParam::ModulusScale(b) | LinearParam::PoissonRatio(b) => b == bi,
@@ -97,6 +100,7 @@ impl<'m> SecondOrderEngine<'m> {
                             Some(l) => coords[l][axis] = mk(m.mesh.nodes[node][axis], coords[l][axis]),
                             None => return false,
                         },
+                        LinearParam::ThermalExpansion(_) | LinearParam::UniformTemperature => unreachable!("returned above"),
                     }
                     true
                 };

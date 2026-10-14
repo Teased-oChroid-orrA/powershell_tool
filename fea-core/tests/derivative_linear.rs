@@ -193,6 +193,8 @@ fn perturb(mesh: &Mesh, p: LinearParam, s: f64) -> Mesh {
                 m.physics = Physics::PlaneStress { thickness: thickness + s };
             }
         }
+        LinearParam::ThermalExpansion(b) => m.blocks[b].material.alpha *= 1.0 + s,
+        LinearParam::UniformTemperature => unreachable!("a load parameter, not a mesh one"),
     }
     m
 }
@@ -260,6 +262,7 @@ fn exact_linear_sensitivities_match_finite_differences_and_direct_equals_adjoint
                 LinearParam::Thickness => 4e-3,
                 LinearParam::ModulusScale(_) => 4e-2,
                 LinearParam::PoissonRatio(_) => 4e-3,
+                LinearParam::ThermalExpansion(_) | LinearParam::UniformTemperature => unreachable!("not in this test's parameter list"),
             };
             let fd = richardson(&|s| response(&mesh, params[pi], s, &q)[qi], h);
             assert!((a - fd).abs() < 1e-6 * fd.abs().max(a.abs()).max(1e-12), "q{qi} {:?}: exact {a:e} vs finite difference {fd:e}", params[pi]);
@@ -328,5 +331,51 @@ fn shape_sensitivities_work_on_a_hybrid_quad_tri_mesh_including_the_interface_no
         let fd = richardson(&resp, 4e-3);
         let scale = adj[0].iter().fold(0.0f64, |m, v| m.max(v.abs()));
         assert!((adj[0][pi] - fd).abs() < 1e-5 * scale, "{p:?}: exact {:e} vs finite difference {fd:e} (largest sensitivity {scale:e})", adj[0][pi]);
+    }
+}
+
+#[test]
+fn the_generic_geometric_stiffness_reproduces_the_kernel_and_its_coordinate_and_stress_derivatives_are_exact() {
+    for kind in [ElementKind::Quad4, ElementKind::Tri6, ElementKind::Quad8] {
+        let xyz = skewed(kind);
+        let t = kind.table();
+        let physics = Physics::PlaneStress { thickness: 0.7 };
+        let stress: Vec<[f64; 6]> = (0..t.ngp).map(|g| [120.0 + 7.0 * g as f64, -40.0 + 3.0 * g as f64, 0.0, 25.0 - 2.0 * g as f64, 0.0, 0.0]).collect();
+        let mut work = Work::new();
+        let mut kref = vec![0.0; kind.n_nodes() * kind.n_nodes()];
+        kernel::geometric_stiffness(kind, physics, &stress, &xyz, &mut work, &mut kref).unwrap();
+        let plain = element::geometric_stiffness(kind, physics, &xyz, &stress, 0.7).unwrap();
+        // the kernel's weights already contain the thickness
+        let scale = kref.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        for (a, b) in kref.iter().zip(&plain) {
+            assert!((a - b).abs() < 1e-12 * scale, "{kind:?}: kernel {a} vs generic {b}");
+        }
+        // derivative with respect to the x coordinate of node 1 and with respect to the xx stress of Gauss point 0
+        type D = Dual<f64, 2>;
+        let mut cd: Vec<[D; 3]> = xyz.iter().map(|p| p.map(D::cst)).collect();
+        cd[1][0] = D::var(xyz[1][0], 0);
+        let mut sd: Vec<[D; 6]> = stress.iter().map(|s| s.map(D::cst)).collect();
+        sd[0][0] = D::var(stress[0][0], 1);
+        let kd = element::geometric_stiffness(kind, physics, &cd, &sd, D::cst(0.7)).unwrap();
+        let fd = |h: f64, which: usize| -> Vec<f64> {
+            let (mut xp, mut xm) = (xyz.clone(), xyz.clone());
+            let (mut sp, mut sm) = (stress.clone(), stress.clone());
+            if which == 0 {
+                xp[1][0] += h;
+                xm[1][0] -= h;
+            } else {
+                sp[0][0] += h;
+                sm[0][0] -= h;
+            }
+            let (kp, km) = (element::geometric_stiffness(kind, physics, &xp, &sp, 0.7).unwrap(), element::geometric_stiffness(kind, physics, &xm, &sm, 0.7).unwrap());
+            kp.iter().zip(&km).map(|(a, b)| (a - b) / (2.0 * h)).collect()
+        };
+        for which in 0..2 {
+            let r: Vec<f64> = fd(1e-4, which).iter().zip(fd(0.5e-4, which)).map(|(a, b)| (4.0 * b - a) / 3.0).collect();
+            for (i, v) in r.iter().enumerate() {
+                let exact = kd[i].d[which];
+                assert!((exact - v).abs() < 1e-6 * scale, "{kind:?} direction {which} entry {i}: exact {exact} vs difference {v}");
+            }
+        }
     }
 }

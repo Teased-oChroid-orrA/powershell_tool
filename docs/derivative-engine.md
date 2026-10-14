@@ -32,6 +32,10 @@ output count, step count and factorisation reuse. `PathSensitivityEngine::sensit
 | Penalty contact incl. friction (unsymmetric tangent) | fixed active set exact; transitions flagged | `derivative_contact` |
 | Unilateral contact | classical derivative on a strictly complementary branch; one-sided directional derivatives at biactive points (LCP); adjoint refused at a kink | `derivative_complementarity` |
 | Regularised (softplus) contact law | AD differentiable; converges to the unilateral solution as rho -> 0 | `derivative_complementarity` |
+| Thermal loads (uniform and nodal temperature field) in the linear sensitivities | exact element-level derivatives for modulus, Poisson ratio, expansion coefficient, thickness, coordinates, uniform temperature | `derivative_thermo` |
+| Staggered thermal-structural chain (steady conduction -> thermal strain -> displacement) | direct and adjoint for block conductivity, heat-load scale, modulus, Poisson ratio, expansion coefficient; constant conductivity only | `derivative_thermo` |
+| Geometric (initial-stress) stiffness | generic element kernel, exact coordinate and stress derivatives (the buckling-factor sensitivity itself is not provided) | `derivative_linear` |
+| Bolted-joint member compliance (axisymmetric FE stack, `fea-problem::joint`) | exact modulus and Poisson sensitivities, closed form for uncoupled members | `fea-problem/tests/joint.rs` |
 | Transient Newmark / HHT-alpha (consistent and lumped mass, Rayleigh) | direct, adjoint, checkpointed adjoint (bitwise equal to stored) | `derivative_transient` |
 | Hessian-vector products and Hessians (linear static) | forward-over-reverse and reverse-over-forward agree; nodal loads only | `derivative_second_order` |
 
@@ -44,7 +48,12 @@ output count, step count and factorisation reuse. `PathSensitivityEngine::sensit
   boundary the response is not differentiable; the engine returns the active-branch derivative with a flag or the one-sided derivatives, never a silent
   classical one.
 * Out of scope (documented, not attempted): eigenvalue / buckling sensitivities, large-strain plasticity paths, transient sensitivities through contact or
-  plasticity, second derivatives with surface/thermal loads, anisotropic elasticity in the exact element derivatives, 3D matrix-free plasticity.
+  plasticity (the transient and path engines refuse thermal loads with an explicit error rather than drop their parameter dependence), second derivatives with
+  surface/thermal loads, anisotropic elasticity in the exact element derivatives, 3D matrix-free plasticity, coupled thermal-structural *geometry* derivatives,
+  temperature-dependent conductivity. Material models the candidate list names but `fea-core` does not contain (viscoelasticity, damage, kinematic hardening)
+  have nothing to differentiate.
+* SIMD: dual lanes cost ~0.33 of a plain evaluation each (measured), i.e. the fixed-width lanes are auto-vectorised; no explicit SIMD was added because the
+  measured cost does not justify the portability risk on the Windows target.
 * Contact adjoint for frictional contact is available through the unsymmetric tangent solve of the penalty problem; the unilateral problem's adjoint is
   frictionless only.
 

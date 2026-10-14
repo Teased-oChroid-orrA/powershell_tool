@@ -359,6 +359,9 @@ pub struct PathSensitivityEngine<'m> {
 
 impl<'m> PathSensitivityEngine<'m> {
     pub fn new(model: &'m Model, loads: &Loads, bc: &Dirichlet) -> Result<Self, String> {
+        if loads.delta_t != 0.0 || loads.temperature.is_some() {
+            return Err("path sensitivities: thermal loads depend on the modulus and the geometry; the path engine does not differentiate them (use mechanical loads)".into());
+        }
         let red = Reduced::with_ordering(&model.pattern, bc, Some(&model.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?;
         let free: Vec<usize> = red.free_dofs().iter().map(|&d| d as usize).collect();
         let setup = Setup::new(model, loads::assemble(&model.mesh, loads)?, free)?;

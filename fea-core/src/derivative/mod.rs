@@ -28,6 +28,7 @@ pub mod policy;
 pub mod scalar;
 pub mod second_order;
 pub mod tape;
+pub mod thermo;
 pub mod transient;
 pub mod verify;
 

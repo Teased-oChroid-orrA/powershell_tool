@@ -140,6 +140,9 @@ impl<'m> TransientSensitivity<'m> {
             return Err("transient sensitivities: prescribed non-zero displacements are not supported".into());
         }
         m.check_constrained(self.bc)?;
+        if self.loads.delta_t != 0.0 || self.loads.temperature.is_some() {
+            return Err("transient sensitivities: thermal loads depend on the modulus and the geometry; the transient engine does not differentiate them (use mechanical loads)".into());
+        }
         let k = m.assemble()?;
         let mass = m.assemble_mass(opt.mass)?;
         let red = Reduced::with_ordering(&m.pattern, self.bc, Some(&m.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?;

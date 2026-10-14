@@ -26,6 +26,10 @@ pub enum LinearParam {
     PoissonRatio(usize),
     Thickness,
     Coord { node: usize, axis: usize },
+    /// Multiplier of the thermal expansion coefficient of a block, at 1.
+    ThermalExpansion(usize),
+    /// The uniform temperature change `Loads::delta_t`.
+    UniformTemperature,
 }
 
 impl From<Param> for LinearParam {
@@ -71,6 +75,9 @@ impl<'m> LinearSensitivityEngine<'m> {
         let m = self.model;
         let d = m.mesh.dim();
         let mut out = vec![0.0; m.mesh.n_dofs()];
+        if matches!(p, LinearParam::ThermalExpansion(_) | LinearParam::UniformTemperature) {
+            return Ok(out); // the stiffness does not depend on the expansion coefficient or the temperature
+        }
         if matches!(p, LinearParam::Thickness) && !matches!(m.mesh.physics, Physics::PlaneStress { .. } | Physics::PlaneStrain { .. }) {
             return Err("the thickness is a parameter of plane analyses only".into());
         }
@@ -106,6 +113,7 @@ impl<'m> LinearSensitivityEngine<'m> {
                         let l = local_node.expect("checked");
                         coords[l][axis] = D1::var(m.mesh.nodes[conn[l]][axis], 0);
                     }
+                    LinearParam::ThermalExpansion(_) | LinearParam::UniformTemperature => unreachable!("returned above"),
                 }
                 let ke = element::stiffness(blk.kind, m.mesh.physics, &coords, ev, nuv, tv).map_err(|er| er.to_string())?;
                 for a in 0..nn {
@@ -124,13 +132,78 @@ impl<'m> LinearSensitivityEngine<'m> {
         Ok(out)
     }
 
-    /// `df/dp` (the load vector's own dependence on the parameter).
+    /// `df/dp` (the load vector's own dependence on the parameter). The thermal part of the load is differentiated exactly at the
+    /// element level; the other geometry-dependent loads (tractions moving with the nodes) keep the central difference of the load
+    /// assembly, applied to the loads without their thermal part so that nothing is counted twice.
     fn df_dp(&self, p: LinearParam) -> Result<Vec<f64>, String> {
-        match p {
-            LinearParam::ModulusScale(_) | LinearParam::PoissonRatio(_) => Ok(vec![0.0; self.model.mesh.n_dofs()]),
-            LinearParam::Thickness => self.model.df_dp(self.loads, Param::Thickness),
-            LinearParam::Coord { node, axis } => self.model.df_dp(self.loads, Param::Coord { node, axis }),
+        let n = self.model.mesh.n_dofs();
+        let mechanical = || -> Loads { Loads { delta_t: 0.0, temperature: None, ..self.loads.clone() } };
+        let mut out = match p {
+            LinearParam::ModulusScale(_) | LinearParam::PoissonRatio(_) | LinearParam::ThermalExpansion(_) | LinearParam::UniformTemperature => vec![0.0; n],
+            LinearParam::Thickness => self.model.df_dp(&mechanical(), Param::Thickness)?,
+            LinearParam::Coord { node, axis } => self.model.df_dp(&mechanical(), Param::Coord { node, axis })?,
+        };
+        if self.loads.delta_t != 0.0 || self.loads.temperature.is_some() {
+            for (o, v) in out.iter_mut().zip(self.thermal_df(p)?) {
+                *o += v;
+            }
         }
+        Ok(out)
+    }
+
+    /// Exact derivative of the thermal load vector `f_th(E, nu, alpha, t, x, dT)` with respect to `p`.
+    fn thermal_df(&self, p: LinearParam) -> Result<Vec<f64>, String> {
+        let m = self.model;
+        let d = m.mesh.dim();
+        let mut out = vec![0.0; m.mesh.n_dofs()];
+        for (bi, blk) in m.mesh.blocks.iter().enumerate() {
+            let acts = match p {
+                LinearParam::ModulusScale(b) | LinearParam::PoissonRatio(b) | LinearParam::ThermalExpansion(b) => b == bi,
+                _ => true,
+            };
+            if !acts {
+                continue;
+            }
+            if blk.material.aniso.is_some() {
+                return Err(format!("block {bi}: anisotropic thermal loads are not supported by the exact derivatives"));
+            }
+            let nn = blk.kind.n_nodes();
+            for e in 0..blk.n_elems() {
+                let conn = blk.elem(e);
+                let local_node = match p {
+                    LinearParam::Coord { node, .. } => match conn.iter().position(|&n| n == node) {
+                        Some(l) => Some(l),
+                        None => continue,
+                    },
+                    _ => None,
+                };
+                let gauss: Vec<f64> = match &self.loads.temperature {
+                    Some(t) => crate::kernel::gauss_temperatures(blk.kind, &conn.iter().map(|&n| t[n]).collect::<Vec<_>>()),
+                    None => vec![0.0; blk.kind.table().ngp],
+                };
+                let mut coords: Vec<[D1; 3]> = conn.iter().map(|&n| m.mesh.nodes[n].map(D1::cst)).collect();
+                let (mut ev, mut nuv, mut av, mut tv) = (D1::cst(blk.material.e), D1::cst(blk.material.nu), D1::cst(blk.material.alpha), D1::cst(self.thickness()));
+                let mut dt: Vec<D1> = gauss.iter().map(|g| D1::cst(self.loads.delta_t + g)).collect();
+                match p {
+                    LinearParam::ModulusScale(_) => ev = D1::with(blk.material.e, [blk.material.e]),
+                    LinearParam::PoissonRatio(_) => nuv = D1::var(blk.material.nu, 0),
+                    LinearParam::ThermalExpansion(_) => av = D1::with(blk.material.alpha, [blk.material.alpha]),
+                    LinearParam::Thickness => tv = D1::var(self.thickness(), 0),
+                    LinearParam::Coord { axis, .. } => {
+                        let l = local_node.expect("checked");
+                        coords[l][axis] = D1::var(m.mesh.nodes[conn[l]][axis], 0);
+                    }
+                    LinearParam::UniformTemperature => dt = gauss.iter().map(|g| D1::with(self.loads.delta_t + g, [1.0])).collect(),
+                }
+                let fe = element::thermal_load(blk.kind, m.mesh.physics, &coords, ev, nuv, av, tv, &dt).map_err(|er| er.to_string())?;
+                for a in 0..nn {
+                    for i in 0..d {
+                        out[conn[a] * d + i] += fe[a * d + i].d[0];
+                    }
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Sensitivities `result[q][p]` of the quantities `J_q = grad_q . u` to `params`. `method = None` lets the policy choose.
