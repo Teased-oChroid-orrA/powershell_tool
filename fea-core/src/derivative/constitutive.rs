@@ -624,3 +624,70 @@ pub fn neo_hookean_pk1<S: Scalar>(g: S, lam: S, h: &[S; 9]) -> [S; 9] {
         g * (f[i][j] - finv[j][i]) + lam * lnj * finv[j][i]
     })
 }
+
+// ----------------------------------------------------------------------------------------------- plane stress
+
+/// Plane-stress version of an explicit model: the out-of-plane strain is the local unknown of `sigma_zz(eps_zz) = 0`, solved by a
+/// scalar Newton iteration in `f64` and differentiated implicitly like any other local system (the kernel does the same condensation
+/// in `material::small_strain_plane_stress`). The strain components `zz`, `yz` and `zx` of the input are ignored.
+#[derive(Debug, Clone)]
+pub struct PlaneStress<M: DifferentiableMaterial> {
+    pub inner: M,
+}
+
+impl<M: DifferentiableMaterial> DifferentiableMaterial for PlaneStress<M> {
+    fn parameter_names(&self) -> Vec<&'static str> {
+        self.inner.parameter_names()
+    }
+    fn parameters(&self) -> Vec<f64> {
+        self.inner.parameters()
+    }
+    fn n_local(&self) -> usize {
+        1
+    }
+    fn solve_local(&self, p: &[f64], strain: &[f64; VOIGT], old: &[f64; STATE]) -> Result<Vec<f64>, ConstitutiveError> {
+        type D = Dual<f64, 1>;
+        let pd: Vec<D> = p.iter().map(|&v| D::cst(v)).collect();
+        let od: [D; STATE] = std::array::from_fn(|i| D::cst(old[i]));
+        // start from the elastic condensation: eps_zz = -nu/(1-nu) (eps_xx + eps_yy)
+        let nu = p[1];
+        let mut ezz = -nu / (1.0 - nu) * (strain[0] + strain[1]);
+        let mut scale = 1e-300f64;
+        for it in 0..60 {
+            let mut e: [D; VOIGT] = std::array::from_fn(|i| D::cst(strain[i]));
+            e[2] = Dual::var(ezz, 0);
+            e[4] = D::cst(0.0);
+            e[5] = D::cst(0.0);
+            let u = self.inner.update::<D>(&pd, &e, &od, &[]);
+            let szz = u.stress[2];
+            scale = scale.max(u.stress.iter().fold(0.0f64, |m, s| m.max(s.v.abs())));
+            if szz.v.abs() <= 1e-14 * scale {
+                return Ok(vec![ezz]);
+            }
+            if szz.d[0] == 0.0 || !szz.d[0].is_finite() {
+                return Err(ConstitutiveError::LocalSolveFailed("the out-of-plane stiffness vanished".into()));
+            }
+            ezz -= szz.v / szz.d[0];
+            let _ = it;
+        }
+        Err(ConstitutiveError::LocalSolveFailed("the plane-stress condensation did not converge".into()))
+    }
+    fn update<S: Scalar>(&self, p: &[S], strain: &[S; VOIGT], old: &[S; STATE], q: &[S]) -> Update<S> {
+        let mut e = *strain;
+        e[2] = q[0];
+        e[4] = S::cst(0.0);
+        e[5] = S::cst(0.0);
+        let mut u = self.inner.update(p, &e, old, &[]);
+        u.residual = vec![u.stress[2]];
+        u
+    }
+    fn yield_margin(&self, p: &[f64], strain: &[f64; VOIGT], old: &[f64; STATE]) -> Option<f64> {
+        // the margin of the condensed state
+        let q = self.solve_local(p, strain, old).ok()?;
+        let mut e = *strain;
+        e[2] = q[0];
+        e[4] = 0.0;
+        e[5] = 0.0;
+        self.inner.yield_margin(p, &e, old)
+    }
+}
