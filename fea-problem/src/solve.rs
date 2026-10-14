@@ -26,6 +26,8 @@ pub enum Field {
     MinPrincipal,
     /// Steady temperature (thermal studies).
     Temperature,
+    /// Equivalent plastic strain (elastic-plastic material).
+    PlasticStrain,
 }
 
 impl Field {
@@ -34,6 +36,7 @@ impl Field {
     pub fn label(self) -> &'static str {
         match self {
             Field::Temperature => "Temperature",
+            Field::PlasticStrain => "Equivalent plastic strain",
             Field::VonMises => "von Mises stress",
             Field::Displacement => "Displacement magnitude",
             Field::Ux => "Displacement x",
@@ -91,6 +94,19 @@ pub struct Summary {
     pub interfaces: Vec<InterfaceResult>,
     /// What the heat solve found (thermal studies).
     pub heat: Option<crate::thermal::HeatSummary>,
+    /// The plastic state of an elastic-plastic result.
+    pub plastic: Option<PlasticSummary>,
+}
+
+/// What yielding did in an elastic-plastic solve.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlasticSummary {
+    /// Largest equivalent plastic strain at a Gauss point.
+    pub max_strain: f64,
+    /// Share of the Gauss points that have yielded.
+    pub yielded_fraction: f64,
+    pub load_steps: usize,
+    pub newton_iterations: usize,
 }
 
 pub struct Solved {
@@ -100,6 +116,8 @@ pub struct Solved {
     pub u: Vec<f64>,
     /// Steady temperature at every node (thermal studies).
     pub temperature: Option<Vec<f64>>,
+    /// Equivalent plastic strain at every node (elastic-plastic material).
+    pub plastic: Option<Vec<f64>>,
     /// `[xx, yy, zz, xy, yz, zx]` per node (SPR-recovered, averaged where SPR does not apply).
     pub nodal: Vec<[f64; 6]>,
     pub summary: Summary,
@@ -147,7 +165,7 @@ fn field_values(d: usize, u: &[f64], nodal: &[[f64; 6]], field: Field) -> Vec<f6
                 Field::MaxPrincipal => principal(s)[0],
                 Field::MinPrincipal => principal(s)[2],
                 // A temperature is not in these arrays: `Solved::node_values` answers it from the heat solution.
-                Field::Temperature => 0.0,
+                Field::Temperature | Field::PlasticStrain => 0.0,
             }
         })
         .collect()
@@ -158,6 +176,9 @@ impl Solved {
     pub fn node_values(&self, field: Field) -> Vec<f64> {
         if field == Field::Temperature {
             return self.temperature.clone().unwrap_or_else(|| vec![0.0; self.model.mesh.nodes.len()]);
+        }
+        if field == Field::PlasticStrain {
+            return self.plastic.clone().unwrap_or_else(|| vec![0.0; self.model.mesh.nodes.len()]);
         }
         field_values(self.model.mesh.dim(), &self.u, &self.nodal, field)
     }
@@ -176,6 +197,9 @@ impl Solved {
         }
         if self.problem.study.is_structural() {
             v.extend(Field::ALL);
+        }
+        if self.plastic.is_some() {
+            v.insert(1, Field::PlasticStrain);
         }
         v
     }
@@ -463,6 +487,13 @@ struct Pass {
     warnings: Vec<String>,
     /// Temperature at every node and the heat balance (thermal studies).
     heat: Option<(Vec<f64>, crate::thermal::HeatSummary)>,
+    /// Equivalent plastic strain per node and its summary (elastic-plastic material).
+    plastic: Option<PlasticPass>,
+}
+
+struct PlasticPass {
+    nodal: Vec<f64>,
+    summary: PlasticSummary,
 }
 
 /// What the interference fit of one bushing did, from the converged contact tractions (integrals, which are reliable:
@@ -503,7 +534,7 @@ fn solve_thermal_only(mesh: Mesh, setup: &crate::thermal::Setup) -> Result<Pass,
     let (n, d) = (model.mesh.nodes.len(), model.mesh.dim());
     let zz = fea_core::recover::ZzEstimate { eta: Vec::new(), total: 0.0, norm: 0.0 };
     let solve_ms = t0.elapsed().as_secs_f64() * 1e3;
-    Ok(Pass { model, u: vec![0.0; n * d], nodal: vec![[0.0; 6]; n], zz, reaction: [0.0; 3], applied: [0.0; 3], force_scale: 0.0, solve_ms, strain_energy: 0.0, interfaces: Vec::new(), warnings: Vec::new(), heat: Some((heat.temperature, summary)) })
+    Ok(Pass { model, u: vec![0.0; n * d], nodal: vec![[0.0; 6]; n], zz, reaction: [0.0; 3], applied: [0.0; 3], force_scale: 0.0, solve_ms, strain_energy: 0.0, interfaces: Vec::new(), warnings: Vec::new(), heat: Some((heat.temperature, summary)), plastic: None })
 }
 
 fn solve_mesh(p: &Problem, mut mesh: Mesh) -> Result<Pass, String> {
@@ -518,6 +549,11 @@ fn solve_mesh(p: &Problem, mut mesh: Mesh) -> Result<Pass, String> {
     let mut loads = build_loads(&mut mesh, p)?;
     if !p.bushings.is_empty() {
         return solve_mesh_contact(p, mesh, loads, bc);
+    }
+    if p.material.plastic {
+        attach_plasticity(&mut mesh, p)?;
+        let model = Model::new(mesh)?;
+        return solve_plastic_model(p, model, loads, bc);
     }
     let model = Model::new(mesh)?;
     // Thermal stress: the steady temperature on this mesh, as a temperature change from the stress-free state.
@@ -579,13 +615,55 @@ fn solve_mesh(p: &Problem, mut mesh: Mesh) -> Result<Pass, String> {
     let solve_ms = t0.elapsed().as_secs_f64() * 1e3;
     let field = loads.temperature.as_deref();
     let gauss = model.gauss_stresses_field(&sol.u, p.delta_t, field)?;
-    let nodal = match model.recover_spr(&gauss) {
+    let nodal = match recover_nodal(&model, &gauss) {
         Ok(v) => v,
         Err(_) => model.nodal_stresses_field(&sol.u, p.delta_t, field)?,
     };
-    let zz = model.zz_error_field(&sol.u, p.delta_t, field)?;
+    let mut zz = model.zz_error_field(&sol.u, p.delta_t, field)?;
+    if p.mesh.adapt_mode == AdaptMode::Equilibrated && d == 2 {
+        zz = equilibrated_estimate(&model, &loads, &bc, &sol.u, &zz, &mut warnings)?;
+    }
     let strain_energy = model.strain_energy(&sol.u)?;
-    Ok(Pass { model, u: sol.u, nodal, zz, reaction, applied, force_scale: scale, solve_ms, strain_energy, interfaces: Vec::new(), warnings, heat })
+    Ok(Pass { model, u: sol.u, nodal, zz, reaction, applied, force_scale: scale, solve_ms, strain_energy, interfaces: Vec::new(), warnings, heat, plastic: None })
+}
+
+/// Nodal stresses by SPR recovery with patches that never span two materials. A node on a material interface has a stress from
+/// each side; the one with the larger von Mises stress is kept, because the peak stress is what gets checked.
+fn recover_nodal(model: &Model, gauss: &[Vec<fea_core::analysis::GaussStress>]) -> Result<Vec<[f64; 6]>, String> {
+    let rec = model.recover_spr_by_material(gauss)?;
+    let mut out = vec![[0.0; 6]; model.mesh.nodes.len()];
+    let mut best = vec![f64::NEG_INFINITY; out.len()];
+    for (b, blk) in model.mesh.blocks.iter().enumerate() {
+        for &n in &blk.conn {
+            let v = rec.at(b, n);
+            let vm = von_mises(&v);
+            if vm > best[n] {
+                best[n] = vm;
+                out[n] = v;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The error estimate of a pass from the equilibrated stress reconstruction, in the shape the adaptive loop reads (element
+/// energy-norm errors against the energy norm of the recovered stress). A model the reconstruction does not cover is refused
+/// with the reason, never estimated some other way; a degraded estimate travels as a caveat.
+fn equilibrated_estimate(model: &Model, loads: &Loads, bc: &Dirichlet, u: &[f64], zz: &fea_core::recover::ZzEstimate, warnings: &mut Vec<String>) -> Result<fea_core::recover::ZzEstimate, String> {
+    use fea_core::adaptivity::{EquilibratedEstimator, ErrorEstimator, EstimatorContext, Reliability};
+    use fea_core::meshing::adjacency::Adjacency;
+    let adjacency = Adjacency::new(&model.mesh);
+    let ctx = EstimatorContext::new(model, loads, bc, u, &adjacency).map_err(|e| e.to_string())?;
+    let field = EquilibratedEstimator.estimate(&ctx).map_err(|e| e.to_string())?;
+    match &field.reliability {
+        Reliability::Unsupported(why) => Err(format!("the equilibrated error estimate does not cover this model: {why}; use the ZZ error estimate")),
+        Reliability::Failed(why) => Err(format!("the equilibrated error estimate failed: {why}")),
+        Reliability::Degraded(why) => {
+            warnings.push(format!("The equilibrated error estimate is degraded: {why}."));
+            Ok(fea_core::recover::ZzEstimate { eta: field.values, total: field.total, norm: zz.norm })
+        }
+        Reliability::Reliable => Ok(fea_core::recover::ZzEstimate { eta: field.values, total: field.total, norm: zz.norm }),
+    }
 }
 
 /// A plane problem with interference-fit bushings: the fit is installed first (frictional contact between each bushing
@@ -593,7 +671,16 @@ fn solve_mesh(p: &Problem, mut mesh: Mesh) -> Result<Pass, String> {
 /// A bushing's hole index with its bore and outer faces (node lists per face).
 type HoleFaces = (usize, Vec<Vec<usize>>, Vec<Vec<usize>>);
 
-fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> Result<Pass, String> {
+/// What the interference fits of a bushed mesh need to be solved: the faces that touch, the weak springs, the penalty.
+struct FitSetup {
+    hole_faces: Vec<HoleFaces>,
+    /// Weak springs on every bushing node keep a lost or frictionless fit from leaving a free body.
+    ground: Vec<(usize, f64)>,
+    tune: Tuning,
+    eps_n: f64,
+}
+
+fn fit_setup(p: &Problem, mesh: &Mesh) -> Result<FitSetup, String> {
     let d = mesh.dim();
     let hole_faces: Vec<HoleFaces> = p
         .bushings
@@ -605,7 +692,6 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
             Ok((b.hole, plate, od))
         })
         .collect::<Result<_, String>>()?;
-    // Weak springs on every bushing node keep a lost or frictionless fit from leaving a free body.
     let mut ground = Vec::new();
     for (bi, blk) in mesh.blocks.iter().enumerate().skip(1) {
         let k = 1e-9 * p.bushings.get(bi - 1).map_or(p.material.e, |b| b.material.e) * if let Physics::PlaneStress { thickness } | Physics::PlaneStrain { thickness } = mesh.physics { thickness } else { 1.0 };
@@ -616,6 +702,30 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
             }
         }
     }
+    let r_hole: f64 = hole_faces.iter().map(|(h, ..)| match &p.geometry {
+        Geometry::Sketch { holes, .. } => holes.get(h - 1).map_or(1.0, |s| s.reach()),
+        _ => 1.0,
+    }).fold(f64::INFINITY, f64::min);
+    let e_min = p.bushings.iter().map(|b| b.material.e).fold(p.material.e, f64::min);
+    let tune = Tuning { newton_tol: 1e-6, ..Tuning::friction() };
+    let eps_n = tune.eps_n(e_min, r_hole);
+    Ok(FitSetup { hole_faces, ground, tune, eps_n })
+}
+
+/// The contact interfaces of the fits on `mesh`.
+fn fit_specs(p: &Problem, mesh: &Mesh, setup: &FitSetup) -> Vec<fea_core::contact::ContactSpec> {
+    let mut v = Vec::new();
+    for (b, (_, plate, od)) in p.bushings.iter().zip(&setup.hole_faces) {
+        let face = plate.iter().map(|f| f.iter().map(|&n| mesh.nodes[n]).fold(0.0f64, |m, x| m.max((x[0] - mesh.nodes[f[0]][0]).hypot(x[1] - mesh.nodes[f[0]][1])))).fold(0.0f64, f64::max);
+        v.extend(interference_contacts(&format!("fit{}", b.hole), plate.clone(), od.clone(), setup.eps_n, b.friction, 0.5 * b.interference, 6.0 * face));
+    }
+    v
+}
+
+fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> Result<Pass, String> {
+    let d = mesh.dim();
+    let setup = fit_setup(p, &mesh)?;
+    let (ground, tune) = (setup.ground.clone(), setup.tune);
     let model = Model::new(mesh)?;
     // The kernel's model check, minus what a bushed model fails on purpose: the bushing is held by contact alone (a rigid-body
     // finding), and a fit with no applied load is a real case (no-load). Inverted elements, non-finite loads and values and
@@ -626,21 +736,7 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
         return Err(blocking.join("; "));
     }
     let warnings: Vec<String> = issues.iter().filter(|i| i.severity == fea_core::Severity::Warning && !matches!(i.code, "low_order_element" | "no_load")).map(|i| i.message.clone()).collect();
-    let r_hole: f64 = hole_faces.iter().map(|(h, ..)| match &p.geometry {
-        Geometry::Sketch { holes, .. } => holes.get(h - 1).map_or(1.0, |s| s.reach()),
-        _ => 1.0,
-    }).fold(f64::INFINITY, f64::min);
-    let e_min = p.bushings.iter().map(|b| b.material.e).fold(p.material.e, f64::min);
-    let tune = Tuning { newton_tol: 1e-6, ..Tuning::friction() };
-    let eps_n = tune.eps_n(e_min, r_hole);
-    let specs = || -> Vec<fea_core::contact::ContactSpec> {
-        let mut v = Vec::new();
-        for (b, (_, plate, od)) in p.bushings.iter().zip(&hole_faces) {
-            let face = plate.iter().map(|f| f.iter().map(|&n| model.mesh.nodes[n]).fold(0.0f64, |m, x| m.max((x[0] - model.mesh.nodes[f[0]][0]).hypot(x[1] - model.mesh.nodes[f[0]][1])))).fold(0.0f64, f64::max);
-            v.extend(interference_contacts(&format!("fit{}", b.hole), plate.clone(), od.clone(), eps_n, b.friction, 0.5 * b.interference, 6.0 * face));
-        }
-        v
-    };
+    let specs = || fit_specs(p, &model.mesh, &setup);
     let t0 = std::time::Instant::now();
     let fit_loads = Loads { ground: ground.clone(), ..Loads::default() };
     let mut sol = model.solve_nonlinear_contact(&fit_loads, &bc, specs(), &tune.options(1)).map_err(|e| format!("the interference fit could not be solved: {e}"))?;
@@ -669,7 +765,7 @@ fn solve_mesh_contact(p: &Problem, mesh: Mesh, loads: Loads, bc: Dirichlet) -> R
     let strain_energy = model.strain_energy(&sol.u)?;
     let interfaces = p.bushings.iter().enumerate().map(|(i, b)| interface_result(&sol, 2 * i, b.hole, b.friction, match &p.geometry { Geometry::Sketch { holes, .. } => holes[b.hole - 1].centre(), _ => [0.0, 0.0] })).collect();
     let scale = force_scale(&f, &sol.reactions);
-    Ok(Pass { model, u: sol.u, nodal, zz, reaction, applied, force_scale: scale, solve_ms, strain_energy, interfaces, warnings, heat: None })
+    Ok(Pass { model, u: sol.u, nodal, zz, reaction, applied, force_scale: scale, solve_ms, strain_energy, interfaces, warnings, heat: None, plastic: None })
 }
 
 /// The fit interface of one bushing (its two contact passes, indices `first` and `first + 1`) from the tractions.
@@ -766,11 +862,12 @@ fn summarize(p: &Problem, pass: &Pass) -> Summary {
         equilibrium_error,
         strain_energy: pass.strain_energy,
         zz_error: pass.zz.relative(),
-        margin: p.material.yield_stress.filter(|_| max_vm.value > 0.0).map(|y| y / max_vm.value - 1.0),
+        margin: p.material.yield_stress.filter(|_| max_vm.value > 0.0 && !p.has_region_materials()).map(|y| y / max_vm.value - 1.0),
         solve_ms: pass.solve_ms,
         notes: notes(p, mesh).into_iter().chain(pass.warnings.iter().cloned()).collect(),
         interfaces: pass.interfaces.clone(),
         heat: pass.heat.as_ref().map(|h| h.1.clone()),
+        plastic: pass.plastic.as_ref().map(|q| q.summary.clone()),
     }
 }
 
@@ -799,8 +896,13 @@ pub fn solve(p: &Problem, import_text: Option<&str>) -> Result<Solved, String> {
         return Err("goal-oriented adaptivity does not support bushings (contact); use the ZZ error estimate".into());
     }
     let mut history = Vec::new();
-    let pass = if goal_oriented {
-        solve_goal_oriented(p, first, &mut history)?
+    if p.material.plastic && goal_oriented {
+        return Err("goal-oriented adaptivity is for elastic materials; an elastic-plastic problem adapts on its own recovery-based indicator".into());
+    }
+    let pass = if p.material.plastic && adaptive {
+        solve_plastic_adaptive(p, first, &mut history, &mut mesh_notes)?
+    } else if goal_oriented {
+        solve_goal_oriented(p, first, &mut history, &mut mesh_notes)?
     } else {
         let first = solve_mesh(p, first)?;
         if adaptive {
@@ -813,9 +915,122 @@ pub fn solve(p: &Problem, import_text: Option<&str>) -> Result<Solved, String> {
         }
     };
     let mut summary = summarize(p, &pass);
+    if p.mesh.bond_regions && p.has_region_materials() {
+        mesh_notes.push("Several materials: the yield margin is not given, and at a material interface the stress shown is that of the side with the larger von Mises stress.".into());
+    }
     summary.notes.extend(mesh_notes);
     let zz_eta = pass.zz.eta.clone();
-    Ok(Solved { problem: p.clone(), model: pass.model, u: pass.u, temperature: pass.heat.map(|h| h.0), nodal: pass.nodal, summary, history, zz_eta })
+    Ok(Solved { problem: p.clone(), model: pass.model, u: pass.u, temperature: pass.heat.map(|h| h.0), plastic: pass.plastic.map(|q| q.nodal), nodal: pass.nodal, summary, history, zz_eta })
+}
+
+// ----------------------------------------------------------------------------- elastic-plastic
+
+/// Load steps of an elastic-plastic solve (the loads grow from zero to their full value in this many increments, more where
+/// the solver has to cut them).
+const PLASTIC_STEPS: usize = 8;
+
+/// J2 plasticity with linear hardening on every block of `mesh`.
+fn attach_plasticity(mesh: &mut Mesh, p: &Problem) -> Result<(), String> {
+    use fea_core::material::J2;
+    let y = p.material.yield_stress.ok_or("an elastic-plastic material needs a yield stress")?;
+    // the table runs to a plastic strain of 1, far beyond what a small-strain analysis means
+    let law = mechanics_core::hardening::Hardening::linear(y, p.material.hardening, 1.0)?;
+    for b in 0..mesh.blocks.len() {
+        mesh.set_plasticity(b, J2::small(law))?;
+    }
+    Ok(())
+}
+
+fn plastic_options() -> fea_core::nonlinear::NlOptions {
+    fea_core::nonlinear::NlOptions { steps: PLASTIC_STEPS, tol: 1e-8, ..Default::default() }
+}
+
+/// Equivalent plastic strain at the nodes: the mean of an element's Gauss values, averaged over the elements at the node.
+fn nodal_plastic_strain(mesh: &Mesh, state: &fea_core::nonlinear::NlState) -> Vec<f64> {
+    let (mut sum, mut count) = (vec![0.0; mesh.nodes.len()], vec![0.0; mesh.nodes.len()]);
+    for (b, blk) in mesh.blocks.iter().enumerate() {
+        let ngp = blk.kind.table().ngp;
+        if state.gp[b].is_empty() {
+            continue;
+        }
+        for e in 0..blk.n_elems() {
+            let mean = (0..ngp).map(|g| state.gp[b][e * ngp + g][6]).sum::<f64>() / ngp as f64;
+            for &n in blk.elem(e) {
+                sum[n] += mean;
+                count[n] += 1.0;
+            }
+        }
+    }
+    sum.iter().zip(&count).map(|(s, c)| if *c > 0.0 { s / c } else { 0.0 }).collect()
+}
+
+/// Solve the elastic-plastic model (small strain, load control) and read it out like any other pass.
+fn solve_plastic_model(p: &Problem, model: Model, loads: Loads, bc: Dirichlet) -> Result<Pass, String> {
+    let issues = model.validate(&loads, &bc);
+    if let Some(e) = issues.iter().find(|i| i.severity == fea_core::Severity::Error) {
+        return Err(e.message.clone());
+    }
+    let t0 = std::time::Instant::now();
+    let sol = model.solve_nonlinear(&loads, &bc, &plastic_options()).map_err(|e| format!("the elastic-plastic solve failed: {e}"))?;
+    plastic_pass(p, model, &loads, sol, t0.elapsed().as_secs_f64() * 1e3)
+}
+
+fn plastic_pass(p: &Problem, model: Model, loads: &Loads, sol: fea_core::nonlinear::NlSolution, solve_ms: f64) -> Result<Pass, String> {
+    use fea_core::nonlinear::{NlState, Stop};
+    if sol.stop != Stop::Completed {
+        return Err(format!("the elastic-plastic solve stopped at {:.0} % of the load ({:?}): the structure may be at its collapse load, or the load steps could not be completed", 100.0 * sol.lambda, sol.stop));
+    }
+    let d = model.mesh.dim();
+    let f = loads::assemble(&model.mesh, loads)?;
+    let (reaction, applied) = totals(d, &sol.reactions, &f);
+    let virgin = NlState::new(&model.mesh);
+    let old = sol.prev_state.as_ref().unwrap_or(&virgin);
+    let gauss = model.nl_gauss_stresses(&sol.u, old)?;
+    let nodal = recover_nodal(&model, &gauss)?;
+    let zz = fea_core::adaptivity::nl_zz_estimate(&model, &sol).map_err(|e| e.to_string())?;
+    let work: f64 = f.iter().zip(&sol.u).map(|(a, b)| a * b).sum();
+    let summary = PlasticSummary { max_strain: sol.state.max_ep(), yielded_fraction: sol.state.plastic_fraction(), load_steps: sol.steps.len(), newton_iterations: sol.steps.iter().map(|s| s.iterations).sum() };
+    let ep = nodal_plastic_strain(&model.mesh, &sol.state);
+    let scale = force_scale(&f, &sol.reactions);
+    let warnings = vec!["Elastic-plastic result: small strain, J2 yield with linear hardening; the strain energy shown is the external work f.u / 2, and the nodal stresses are recovered from the converged stress state.".to_string()];
+    let _ = p;
+    Ok(Pass { model, u: sol.u, nodal, zz, reaction, applied, force_scale: scale, solve_ms, strain_energy: 0.5 * work, interfaces: Vec::new(), warnings, heat: None, plastic: Some(PlasticPass { nodal: ep, summary }) })
+}
+
+/// Adaptive remeshing of an elastic-plastic problem (`adaptivity::run_amr_nonlinear`): a recovery-based indicator of the
+/// converged plastic state, the external work as the quantity watched from mesh to mesh. `history` gets one entry per mesh.
+fn solve_plastic_adaptive(p: &Problem, first: Mesh, history: &mut Vec<PassInfo>, notes: &mut Vec<String>) -> Result<Pass, String> {
+    use fea_core::adaptivity::{run_amr_nonlinear, AdaptSize, NlAmrConfig, NlGoal, NlProblem};
+    let quad_scale = if p.mesh.element.is_quad() && p.mesh.strategy == MeshStrategy::Unstructured { 0.5 } else { 1.0 };
+    let meshed = |mut mesh: Mesh| -> Result<NlProblem, String> {
+        attach_plasticity(&mut mesh, p)?;
+        let bc = apply_supports(&mesh, &p.supports)?;
+        let loads = build_loads(&mut mesh, p)?;
+        Ok(NlProblem { model: Model::new(mesh)?, loads, bc, contacts: Vec::new(), labels: None, quad_scale })
+    };
+    let mut cfg = NlAmrConfig { nl: plastic_options(), max_cycles: p.mesh.adapt_passes as usize, physics_tolerance: Some(p.mesh.target_error), ..NlAmrConfig::default() };
+    cfg.adapt.order = if p.mesh.element.is_quadratic() { 2.0 } else { 1.0 };
+    cfg.adapt.h_min = p.mesh.size / 16.0;
+    cfg.adapt.h_max = p.mesh.size * 2.0;
+    let work = NlGoal::new("external work", p.mesh.target_error, |prob, sol| loads::assemble(&prob.model.mesh, &prob.loads).map(|f| f.iter().zip(&sol.u).map(|(a, b)| a * b).sum()).unwrap_or(f64::NAN));
+    let mut mesher = |s: &AdaptSize| meshed(sketch_mesh_sized(p, Some(&|x| s.at([x[0], x[1], 0.0])))?);
+    let t0 = std::time::Instant::now();
+    let result = run_amr_nonlinear(meshed(first)?, &[work], &mut mesher, &cfg).map_err(|e| e.to_string())?;
+    for rec in &result.history {
+        history.push(PassInfo { nodes: rec.dofs / p.analysis_dim(), elements: rec.elements, zz_error: rec.physics_error, max_von_mises: 0.0 });
+    }
+    notes.push(format!(
+        "Elastic-plastic adaptivity: {} cycle(s), stopped: {:?}; peak plastic strain {:.3e}, {:.0} % of the Gauss points yielded.",
+        result.history.len().saturating_sub(1),
+        result.stop,
+        result.solution.state.max_ep(),
+        100.0 * result.solution.state.plastic_fraction()
+    ));
+    let pass = plastic_pass(p, result.problem.model, &result.problem.loads, result.solution, t0.elapsed().as_secs_f64() * 1e3)?;
+    if let Some(last) = history.last_mut() {
+        *last = info(&pass);
+    }
+    Ok(pass)
 }
 
 /// Goal-oriented adaptivity (`fea_core::adaptivity::run_amr`) on the compliance of a structural sketch problem: the adjoint
@@ -823,7 +1038,7 @@ pub fn solve(p: &Problem, import_text: Option<&str>) -> Result<Solved, String> {
 /// size field the controller asks for. The final mesh is solved again through the ordinary path (`solve_mesh`) so that the
 /// result carries every check and summary of any other solve. `history` gets one entry per cycle: the physics error is the
 /// controller's; the maximum von Mises stress is known only for the final mesh (0 for the others).
-fn solve_goal_oriented(p: &Problem, first: Mesh, history: &mut Vec<PassInfo>) -> Result<Pass, String> {
+fn solve_goal_oriented(p: &Problem, first: Mesh, history: &mut Vec<PassInfo>, notes: &mut Vec<String>) -> Result<Pass, String> {
     use fea_core::adaptivity::{run_amr, AdaptSize, AmrConfig, GoalSpec, MeshedProblem};
     // every mesh the controller builds, before the loads touch it: the accepted one is solved again through `solve_mesh`
     let raws = std::cell::RefCell::new(Vec::<Mesh>::new());
@@ -847,6 +1062,15 @@ fn solve_goal_oriented(p: &Problem, first: Mesh, history: &mut Vec<PassInfo>) ->
     let goals = [GoalSpec::compliance(Some(p.mesh.target_error * p.mesh.target_error * compliance))];
     let mut mesher = |s: &AdaptSize| -> Result<MeshedProblem, String> { meshed(sketch_mesh_sized(p, Some(&|x| s.at([x[0], x[1], 0.0])))?) };
     let result = run_amr(meshed(first)?, &goals, &mut mesher, &cfg).map_err(|e| e.to_string())?;
+    if let Some(last) = result.history.last() {
+        notes.push(format!(
+            "Goal-oriented adaptivity: {} cycle(s), goal estimator {}, physics estimator {}, stopped: {:?}.",
+            result.history.len() - 1,
+            last.goal_estimator,
+            last.physics_estimator,
+            result.stop
+        ));
+    }
     for rec in &result.history {
         // nodes follow from the dofs of a plane problem (2 per node)
         history.push(PassInfo { nodes: rec.dofs / 2, elements: rec.elements, zz_error: rec.physics_error, max_von_mises: 0.0 });

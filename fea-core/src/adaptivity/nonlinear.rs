@@ -407,7 +407,18 @@ pub struct NlResult {
 /// Error indicators of a nonlinear state: SPR+ recovery of the Gauss-point stresses against the stress of the state evaluated at
 /// the error-rule points (a plastic point takes the history of its nearest Gauss point). Small-strain plasticity only.
 fn nl_zz(p: &NlProblem, sol: &NlSolution) -> Result<(Vec<f64>, f64), MeshError> {
-    let model = &p.model;
+    nl_zz_of(&p.model, sol)
+}
+
+/// The recovery-based error estimate of the converged state `sol` of `model` (small-strain plasticity; see [`nl_zz`]): element
+/// energy-norm indicators against the energy norm of the recovered stress, in the shape the linear loop reads.
+pub fn nl_zz_estimate(model: &Model, sol: &NlSolution) -> Result<crate::recover::ZzEstimate, MeshError> {
+    let (eta, norm) = nl_zz_of(model, sol)?;
+    let total = eta.iter().map(|v| v * v).sum::<f64>().sqrt();
+    Ok(crate::recover::ZzEstimate { eta, total, norm })
+}
+
+fn nl_zz_of(model: &Model, sol: &NlSolution) -> Result<(Vec<f64>, f64), MeshError> {
     let mesh = &model.mesh;
     let d = mesh.dim();
     let virgin = NlState::new(mesh);

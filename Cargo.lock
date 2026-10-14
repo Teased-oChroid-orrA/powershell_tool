@@ -1588,6 +1588,7 @@ name = "fea-problem"
 version = "0.1.0"
 dependencies = [
  "fea-core",
+ "mechanics-core",
  "serde",
  "serde_json",
  "solid-kernel",

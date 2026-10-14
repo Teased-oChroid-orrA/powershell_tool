@@ -16,6 +16,7 @@ occt = ["solid-kernel/occt"]
 
 [dependencies]
 fea-core = { path = "../fea-core" }
+mechanics-core = { path = "../mechanics-core" }
 solid-kernel = { path = "../solid-kernel" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }

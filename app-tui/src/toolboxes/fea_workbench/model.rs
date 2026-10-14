@@ -664,7 +664,7 @@ pub fn new_bushing(p: &Problem) -> Option<fea_problem::Bushing> {
         Shape::Circle { r, .. } if !p.bushings.iter().any(|b| b.hole == i + 1) => Some((i, *r)),
         _ => None,
     })?;
-    Some(fea_problem::Bushing { hole: i + 1, inner_diameter: 1.5 * r, offset: [0.0, 0.0], interference: 0.008 * r, friction: 0.15, material: fea_problem::MaterialSpec { name: "Steel (bushing)".into(), e: 29.0e6, nu: 0.3, alpha: 6.5e-6, yield_stress: None, density: 0.283 / 386.089 } })
+    Some(fea_problem::Bushing { hole: i + 1, inner_diameter: 1.5 * r, offset: [0.0, 0.0], interference: 0.008 * r, friction: 0.15, material: fea_problem::MaterialSpec { name: "Steel (bushing)".into(), e: 29.0e6, nu: 0.3, alpha: 6.5e-6, yield_stress: None, density: 0.283 / 386.089, plastic: false, hardening: 0.0 } })
 }
 
 /// Drop the bushings of a removed hole and renumber the later ones.

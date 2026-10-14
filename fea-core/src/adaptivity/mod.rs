@@ -34,5 +34,5 @@ pub use transaction::{attempt, Attempt};
 pub use zones::{DefaultZoneResolver, PhysicsEstimator, PhysicsZoneResolver, Zone, ZoneMap, ZoneSpec};
 pub use transfer::{NodalInterpolation, StateTransferOperator, Transferred};
 pub use controller::{run_amr, AdaptSize, AmrConfig, AmrResult, CycleFields, CycleRecord, FieldRetention, GoalOutcome, GoalSpec, MeshedProblem, StagnationRule, Stop};
-pub use nonlinear::{run_amr_nonlinear, NlAmrConfig, NlCycle, NlGoal, NlProblem, NlResult, NlStop, reequilibrate, warm_start_displacement, tangent_adjoint, transfer_history, HistoryTransfer, ReEquilibration, TangentAdjoint};
+pub use nonlinear::{nl_zz_estimate, run_amr_nonlinear, NlAmrConfig, NlCycle, NlGoal, NlProblem, NlResult, NlStop, reequilibrate, warm_start_displacement, tangent_adjoint, transfer_history, HistoryTransfer, ReEquilibration, TangentAdjoint};
 pub use marking::{dorfler, trim_to_budget, Budget, Marked};

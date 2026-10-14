@@ -383,3 +383,22 @@ fn a_bimaterial_bar_welds_conformingly_and_reproduces_the_series_spring_elongati
         assert!((tip - want).abs() < 1e-9 * want, "{family:?}: tip {tip:e} vs {want:e}");
     }
 }
+
+#[test]
+fn bonded_regions_weld_even_when_one_side_split_the_shared_boundary_further() {
+    use fea_core::meshing::multimaterial::{mesh_multi_material_2d, mesh_multi_material_unstructured_2d, MaterialRegion2d};
+    // Two 6 x 2 bars at size 0.4: the unstructured mesher splits the shared edge where it is encroached, which depends on the
+    // interior, so the two sides first disagree (3 hanging nodes); cutting the edge at the nodes of both sides makes them match.
+    let part = |name: &str, x0: f64, e: f64| MaterialRegion2d { name: name.into(), region: Region::new(Loop::rectangle(x0, 0.0, x0 + 6.0, 2.0).unwrap(), vec![], Elastic::new(e, NU)).unwrap() };
+    for family in [ElementFamily::Linear, ElementFamily::Quadratic] {
+        let parts = [part("a", 0.0, 30e6), part("b", 6.0, 10e6)];
+        let opt = options(family);
+        for (label, m) in [("unstructured", mesh_multi_material_unstructured_2d(&parts, &|_| 0.4, &opt)), ("hybrid", mesh_multi_material_2d(&parts, &|_| 0.4, &opt))] {
+            let m = m.unwrap_or_else(|e| panic!("{family:?} {label}: {e}"));
+            assert!(m.conformity.is_conforming(), "{family:?} {label}: {}", m.conformity.summary());
+            assert_eq!(m.conformity.components, 1);
+            assert!(!m.interfaces.is_empty() && m.interfaces[0].2.len() >= 2, "{family:?} {label}: {:?}", m.interfaces.iter().map(|i| i.2.len()).collect::<Vec<_>>());
+            assert_eq!(m.quality.inverted, 0);
+        }
+    }
+}

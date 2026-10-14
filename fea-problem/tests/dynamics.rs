@@ -65,3 +65,45 @@ fn a_mixed_sign_stress_state_still_gives_buckling_factors() {
     assert!(r.modes.iter().all(|m| m.load_factor > 0.0 && m.residual < 1e-8), "{:?}", r.modes.iter().map(|m| (m.load_factor, m.residual)).collect::<Vec<_>>());
     assert!(r.modes.windows(2).all(|w| w[1].load_factor >= w[0].load_factor));
 }
+
+#[test]
+fn adaptive_frequencies_refine_where_the_lowest_modes_are_unresolved_and_move_toward_the_converged_values() {
+    let mut p = beam();
+    p.mesh.size = 1.0; // deliberately coarse
+    p.mesh.element = fea_problem::ElementChoice::Tri3;
+    p.mesh.target_error = 0.02;
+    p.mesh.adapt_passes = 0;
+    let coarse = modal(&p, None, 3).unwrap();
+    assert!(coarse.adapt.is_empty(), "no passes, one mesh");
+    // the converged values: a uniformly fine quadratic mesh
+    let mut fine = p.clone();
+    fine.mesh.size = 0.125;
+    fine.mesh.element = fea_problem::ElementChoice::Tri6;
+    let reference = modal(&fine, None, 3).unwrap();
+    p.mesh.adapt_passes = 4;
+    let adaptive = modal(&p, None, 3).unwrap();
+    assert!(adaptive.adapt.len() > 1, "{:?}", adaptive.adapt);
+    assert!(adaptive.adapt.last().unwrap().elements > adaptive.adapt[0].elements, "the mesh was refined: {:?}", adaptive.adapt);
+    assert_eq!(adaptive.adapt[0].elements, coarse.model.mesh.n_elems());
+    assert_eq!(adaptive.model.mesh.n_elems(), adaptive.adapt.last().unwrap().elements, "the result is on the last mesh");
+    let err = |m: &fea_problem::dynamics::ModalSolved, i: usize| (m.modes[i].frequency_hz / reference.modes[i].frequency_hz - 1.0).abs();
+    eprintln!("meshes {:?}", adaptive.adapt);
+    for i in 0..3 {
+        eprintln!("mode {}: coarse error {:.2e}, adaptive error {:.2e}", i + 1, err(&coarse, i), err(&adaptive, i));
+        assert!(err(&adaptive, i) < 0.5 * err(&coarse, i), "mode {i}: adaptive {:.2e} against coarse {:.2e}", err(&adaptive, i), err(&coarse, i));
+    }
+    assert!(adaptive.adapt.last().unwrap().max_error < adaptive.adapt[0].max_error, "{:?}", adaptive.adapt);
+    // the report says so
+    let lines = fea_problem::dynamics::DynSolved::Modal(adaptive).lines();
+    assert!(lines.iter().any(|l| l.contains("adaptive")), "{lines:?}");
+}
+
+#[test]
+fn adaptive_frequencies_are_for_2d_sketches_only() {
+    let mut p = beam();
+    p.analysis = fea_problem::Analysis::Solid;
+    p.mesh.adapt_passes = 3;
+    p.mesh.size = 0.5;
+    let r = modal(&p, None, 2).unwrap();
+    assert!(r.adapt.is_empty() && r.adapt_stop.is_none());
+}

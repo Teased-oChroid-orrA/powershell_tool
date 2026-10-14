@@ -90,6 +90,17 @@ pub struct MaterialSpec {
     /// Only the natural-frequency analysis uses it; `0` = not given.
     #[serde(default)]
     pub density: f64,
+    /// Elastic-plastic response: J2 plasticity with this yield stress and `hardening` (small strain, loads applied in steps).
+    /// Off, `yield_stress` only feeds the margin readout.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plastic: bool,
+    /// Tangent modulus after yield (stress per unit plastic strain); `0` is perfectly plastic.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub hardening: f64,
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
 }
 
 impl MaterialSpec {
@@ -336,15 +347,20 @@ impl MeshStrategy {
 pub enum AdaptMode {
     #[default]
     Zz,
+    /// The element error comes from an equilibrated (H(div)) stress reconstruction instead of the ZZ recovery: a statically
+    /// admissible stress field, so the estimate is an energy-norm measure that does not rely on superconvergence. Triangle
+    /// meshes of plane problems only (`Unstructured` strategy, Tri3 or Tri6).
+    Equilibrated,
     GoalOriented,
 }
 
 impl AdaptMode {
-    pub const ALL: [AdaptMode; 2] = [AdaptMode::Zz, AdaptMode::GoalOriented];
+    pub const ALL: [AdaptMode; 3] = [AdaptMode::Zz, AdaptMode::Equilibrated, AdaptMode::GoalOriented];
 
     pub fn label(self) -> &'static str {
         match self {
             AdaptMode::Zz => "ZZ error estimate",
+            AdaptMode::Equilibrated => "Equilibrated stress (triangles)",
             AdaptMode::GoalOriented => "Goal-oriented (compliance)",
         }
     }
@@ -360,6 +376,15 @@ pub struct MeshSpec {
     /// error estimate fused with the ZZ physics criterion, Dorfler marking; structural 2D sketches without bushings).
     #[serde(default)]
     pub adapt_mode: AdaptMode,
+    /// Join the sketch's regions along the boundaries they share (one welded, conforming mesh with each region's own
+    /// material); otherwise every region is its own body. Needs matching boundaries: the mesh refuses a mismatch.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bond_regions: bool,
+    /// Predict where the mesh must be fine before any solution exists (`meshing::predictor`): curved boundaries, re-entrant
+    /// corners and point loads / restraints get a finer size that grows back to `size` with distance. Never coarser than the
+    /// size field without it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub predict_sizes: bool,
     pub element: ElementChoice,
     /// Target element edge length away from refinement.
     pub size: f64,
@@ -381,7 +406,7 @@ pub struct MeshSpec {
 
 impl Default for MeshSpec {
     fn default() -> Self {
-        Self { strategy: MeshStrategy::default(), adapt_mode: AdaptMode::default(), element: ElementChoice::Quad8, size: 0.25, hole_factor: 0.35, adapt_passes: 2, target_error: 0.02, refine: Vec::new(), reorient: false }
+        Self { strategy: MeshStrategy::default(), adapt_mode: AdaptMode::default(), bond_regions: false, predict_sizes: false, element: ElementChoice::Quad8, size: 0.25, hole_factor: 0.35, adapt_passes: 2, target_error: 0.02, refine: Vec::new(), reorient: false }
     }
 }
 
@@ -555,6 +580,10 @@ pub struct Problem {
     /// Plane problems: out-of-plane thickness (loads are per this thickness).
     pub thickness: f64,
     pub material: MaterialSpec,
+    /// Materials of the sketch's other regions (the second onwards, in region order); a missing or empty entry is `material`.
+    /// Regions are separate bodies unless `mesh.bond_regions` joins them along their shared boundaries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub region_materials: Vec<Option<MaterialSpec>>,
     pub geometry: Geometry,
     pub mesh: MeshSpec,
     pub supports: Vec<Support>,
@@ -583,6 +612,21 @@ fn version() -> u32 {
 }
 
 impl Problem {
+    /// Degrees of freedom per node of the analysis (a plane or axisymmetric problem has 2, a solid 3).
+    pub fn analysis_dim(&self) -> usize {
+        if self.analysis == Analysis::Solid { 3 } else { 2 }
+    }
+
+    /// Material of region `k` (0 = the outline and holes of `geometry`, 1.. = its `regions`).
+    pub fn region_material(&self, k: usize) -> &MaterialSpec {
+        k.checked_sub(1).and_then(|i| self.region_materials.get(i)).and_then(Option::as_ref).unwrap_or(&self.material)
+    }
+
+    /// Whether any region has a material of its own.
+    pub fn has_region_materials(&self) -> bool {
+        self.region_materials.iter().any(|m| m.as_ref().is_some_and(|m| *m != self.material))
+    }
+
     /// Rebuild `geometry` (and `analysis`, for a solid feature) from the feature history. Supports and loads are
     /// untouched: they refer to names (`edgeN`, `holeN`, `start`, `end`) that the rebuild reproduces.
     pub fn apply_history(&mut self) -> Result<(), String> {
@@ -704,6 +748,14 @@ impl Problem {
                 for s in std::iter::once(outer).chain(holes.iter()).chain(regions.iter().flat_map(|r| std::iter::once(&r.outer).chain(r.holes.iter()))) {
                     check_shape(s)?;
                 }
+                if self.region_materials.len() > regions.len() {
+                    return Err(format!("{} region materials for {} extra regions", self.region_materials.len(), regions.len()));
+                }
+                for (i, m) in self.region_materials.iter().enumerate() {
+                    if let Some(m) = m {
+                        m.elastic().validate().map_err(|e| format!("region {} material: {e}", i + 2))?;
+                    }
+                }
                 if !regions.is_empty() && !self.bushings.is_empty() {
                     return Err("a bushing is placed in a hole of the first region; a sketch with several regions cannot have bushings".into());
                 }
@@ -760,9 +812,34 @@ impl Problem {
         Ok(())
     }
 
+    /// The elastic-plastic request is consistent: a yield stress, a plain structural study, and no features that need other solvers.
+    fn validate_plasticity(&self) -> Result<(), String> {
+        if !self.material.plastic {
+            return Ok(());
+        }
+        match self.material.yield_stress {
+            Some(y) if y.is_finite() && y > 0.0 => {}
+            _ => return Err("an elastic-plastic material needs a positive yield stress".into()),
+        }
+        if !(self.material.hardening.is_finite() && self.material.hardening >= 0.0) {
+            return Err("the hardening modulus must be zero or positive".into());
+        }
+        if !self.bushings.is_empty() {
+            return Err("an elastic-plastic material does not combine with bushings (the contact fit has its own solver)".into());
+        }
+        if self.study != crate::thermal::Study::Structural {
+            return Err("an elastic-plastic material is for the structural study (not thermal)".into());
+        }
+        if self.has_region_materials() {
+            return Err("an elastic-plastic material applies to one material; regions with materials of their own are not supported with it".into());
+        }
+        Ok(())
+    }
+
     /// Everything needed to solve: a meshable geometry and at least one support.
     pub fn validate(&self) -> Result<(), String> {
         self.validate_geometry()?;
+        self.validate_plasticity()?;
         if self.study.is_thermal() {
             self.thermal.validate()?;
             if self.thermal.supports.is_empty() && !self.thermal.loads.iter().any(|l| matches!(l, crate::thermal::HeatLoad::Convection { .. })) {

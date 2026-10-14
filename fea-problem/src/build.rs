@@ -3,6 +3,8 @@
 
 use crate::problem::{Analysis, Geometry, MeshStrategy, Problem, Shape};
 use fea_core::meshing::hybrid::{mesh_hybrid_2d, ElementFamily, HybridOptions2d, Strategy};
+use fea_core::meshing::multimaterial::{mesh_multi_material_2d, mesh_multi_material_unstructured_2d, MaterialRegion2d};
+use fea_core::meshing::predictor::{GeometryRules, SizePredictor2d};
 use fea_core::adapt::SizeField;
 use fea_core::delaunay::MeshOptions;
 use fea_core::geometry::{Curve, Loop, Region, Segment};
@@ -70,7 +72,7 @@ pub fn region_of(p: &Problem) -> Result<Region, String> {
     let Geometry::Sketch { outer, holes, .. } = &p.geometry else { return Err("not a sketch problem".into()) };
     let outer_loop = shape_loop(outer, true, true, "outer")?;
     let hole_loops = holes.iter().enumerate().map(|(i, h)| shape_loop(h, false, false, &format!("hole{}", i + 1))).collect::<Result<Vec<_>, _>>()?;
-    Region::new(outer_loop, hole_loops, p.material.elastic())
+    Region::new(outer_loop, hole_loops, p.region_material(0).elastic())
 }
 
 /// The meshable regions of the sketch's other regions (islands, separate outlines), in the order of `r2/`, `r3/`, ...
@@ -78,10 +80,11 @@ pub fn extra_regions_of(p: &Problem) -> Result<Vec<Region>, String> {
     let Geometry::Sketch { regions, .. } = &p.geometry else { return Ok(Vec::new()) };
     regions
         .iter()
-        .map(|r| {
+        .enumerate()
+        .map(|(k, r)| {
             let outer = shape_loop(&r.outer, true, true, "outer")?;
             let holes = r.holes.iter().enumerate().map(|(i, h)| shape_loop(h, false, false, &format!("hole{}", i + 1))).collect::<Result<Vec<_>, _>>()?;
-            Region::new(outer, holes, p.material.elastic())
+            Region::new(outer, holes, p.region_material(k + 1).elastic())
         })
         .collect()
 }
@@ -118,6 +121,7 @@ pub fn size_function(p: &Problem) -> Box<dyn Fn([f64; 2]) -> f64> {
         Geometry::Imported { .. } | Geometry::Solid { .. } => Vec::new(),
     };
     let zones = p.mesh.refine.clone();
+    let predictor = predictor_of(p);
     Box::new(move |x| {
         let mut k = 1.0f64;
         for (c, r) in &holes {
@@ -125,8 +129,45 @@ pub fn size_function(p: &Problem) -> Box<dyn Fn([f64; 2]) -> f64> {
             let t = (d / (2.0 * r)).min(1.0);
             k = k.min(f + (1.0 - f) * t);
         }
-        h * k.min(zone_factor(&zones, x))
+        let size = h * k.min(zone_factor(&zones, x));
+        predictor.as_ref().map_or(size, |pr| size.min(pr.size(x)))
     })
+}
+
+/// How fine the point loads and restraints ask for the mesh, relative to the element size.
+const POINT_FEATURE_FACTOR: f64 = 0.25;
+/// Growth of the predicted size per unit distance from a feature.
+const PREDICTOR_GRADING: f64 = 0.3;
+
+/// The size predictor of a sketch problem (`MeshSpec::predict_sizes`): the curved boundaries and re-entrant corners of every
+/// region, and the points the supports and loads name.
+fn predictor_of(p: &Problem) -> Option<SizePredictor2d> {
+    if !p.mesh.predict_sizes {
+        return None;
+    }
+    let h = p.mesh.size;
+    let mut predictor = SizePredictor2d::new(h, h / 16.0, PREDICTOR_GRADING).ok()?;
+    let regions = std::iter::once(region_of(p)).chain(extra_regions_of(p).ok()?.into_iter().map(Ok)).collect::<Result<Vec<_>, _>>().ok()?;
+    for r in &regions {
+        predictor.add_geometry(r, GeometryRules::default());
+    }
+    for at in feature_points(p) {
+        predictor.add_point(at, POINT_FEATURE_FACTOR * h);
+    }
+    Some(predictor)
+}
+
+/// Where a support or a load acts at a single node: sharp features of the solution (a concentrated force is a singularity).
+pub fn feature_points(p: &Problem) -> Vec<[f64; 2]> {
+    let supports = p.supports.iter().filter_map(|s| match s {
+        crate::problem::Support::Point { x, y, .. } => Some([*x, *y]),
+        crate::problem::Support::Edge { .. } => None,
+    });
+    let loads = p.loads.iter().filter_map(|l| match l {
+        crate::problem::Load::Point { x, y, .. } => Some([*x, *y]),
+        _ => None,
+    });
+    supports.chain(loads).collect()
 }
 
 /// Size multiplier of the refinement zones at `x` (1 outside them).
@@ -239,6 +280,8 @@ fn mesh_planar(p: &Problem, region: &Region, physics: Physics, size: &dyn Fn([f6
             let family = if p.mesh.element.is_quadratic() { ElementFamily::Quadratic } else { ElementFamily::Linear };
             let mut opt = HybridOptions2d::new(physics, family);
             opt.mesh = mesh_options();
+            // a concentrated load or restraint is a singularity: the regular blocks stay clear of it
+            opt.partition.extra_boxes = feature_points(p).into_iter().map(|at| (at, at)).collect();
             let h = mesh_hybrid_2d(region, size, &opt).map_err(|e| e.to_string())?;
             if let Strategy::Unstructured { reason } = &h.report.strategy {
                 notes.push(format!("Hybrid meshing was not used (the plain unstructured mesh is shown): {reason}."));
@@ -251,6 +294,36 @@ fn mesh_planar(p: &Problem, region: &Region, physics: Physics, size: &dyn Fn([f6
 /// [`sketch_mesh`] with the size override as a plain function (the adaptive passes of the goal-oriented controller).
 pub fn sketch_mesh_sized(p: &Problem, field: Option<&dyn Fn([f64; 2]) -> f64>) -> Result<Mesh, String> {
     sketch_mesh_noted(p, field, &mut Vec::new())
+}
+
+/// `region` with `prefix` in front of the name of every boundary segment.
+fn prefixed(region: &Region, prefix: &str) -> Result<Region, String> {
+    let rename = |l: &Loop| Loop::new(l.segments.iter().map(|s| Segment { curve: s.curve, name: format!("{prefix}{}", s.name) }).collect());
+    Region::new(rename(&region.outer)?, region.holes.iter().map(rename).collect::<Result<Vec<_>, _>>()?, region.material)
+}
+
+/// The regions of a sketch joined along their shared boundaries: one conforming mesh, each region with its own material
+/// (`meshing::multimaterial`). The first region keeps the plain boundary names, region `k` has `rk/` in front of its own.
+/// A boundary two regions share is interior to the union and carries no name; a mismatch between the two sides is an error.
+fn mesh_bonded(p: &Problem, first: &Region, extras: &[Region], physics: Physics, size: &dyn Fn([f64; 2]) -> f64, notes: &mut Vec<String>) -> Result<Mesh, String> {
+    let mut parts = vec![MaterialRegion2d { name: "r1".into(), region: first.clone() }];
+    for (k, r) in extras.iter().enumerate() {
+        parts.push(MaterialRegion2d { name: format!("r{}", k + 2), region: prefixed(r, &format!("r{}/", k + 2))? });
+    }
+    let family = if p.mesh.element.is_quadratic() { ElementFamily::Quadratic } else { ElementFamily::Linear };
+    let mut opt = HybridOptions2d::new(physics, family);
+    opt.mesh = mesh_options();
+    opt.partition.extra_boxes = feature_points(p).into_iter().map(|at| (at, at)).collect();
+    let hybrid = p.mesh.strategy == MeshStrategy::Hybrid;
+    let m = if hybrid { mesh_multi_material_2d(&parts, size, &opt) } else { mesh_multi_material_unstructured_2d(&parts, size, &opt) }.map_err(|e| e.to_string())?;
+    match &m.strategy {
+        Strategy::Unstructured { reason } if hybrid => notes.push(format!("Hybrid meshing was not used for the bonded regions (the plain unstructured mesh is shown): {reason}.")),
+        _ => {}
+    }
+    if !hybrid && p.mesh.element.is_quad() {
+        notes.push("Bonded regions are meshed with triangles under the Unstructured strategy (the quadrilateral choice applies to the Hybrid strategy).".into());
+    }
+    Ok(m.mesh)
 }
 
 /// [`sketch_mesh_sized`] that also reports why a requested strategy was not used (`notes`).
@@ -269,12 +342,18 @@ pub fn sketch_mesh_noted(p: &Problem, field: Option<&dyn Fn([f64; 2]) -> f64>, n
         Some(sf) => sf(x).min(p.mesh.size * zone_factor(&p.mesh.refine, x)),
         None => base(x),
     };
-    let mut mesh = mesh_planar(p, &region, physics_2d, &size, notes)?;
-    // The sketch's other regions are separate bodies: meshed alone and appended with their own surface names.
-    for (k, reg) in extra_regions_of(p)?.iter().enumerate() {
-        let m = mesh_planar(p, reg, physics_2d, &size, notes)?;
-        mesh.append(&m, &format!("r{}/", k + 2))?;
-    }
+    let extras = extra_regions_of(p)?;
+    let mut mesh = if p.mesh.bond_regions && !extras.is_empty() {
+        mesh_bonded(p, &region, &extras, physics_2d, &size, notes)?
+    } else {
+        let mut mesh = mesh_planar(p, &region, physics_2d, &size, notes)?;
+        // The sketch's other regions are separate bodies: meshed alone and appended with their own surface names.
+        for (k, reg) in extras.iter().enumerate() {
+            let m = mesh_planar(p, reg, physics_2d, &size, notes)?;
+            mesh.append(&m, &format!("r{}/", k + 2))?;
+        }
+        mesh
+    };
     add_bushings(p, &mut mesh, field)?;
     if p.analysis == Analysis::Solid {
         let body = p.history.as_ref().map(|h| h.rebuild()).transpose()?;
