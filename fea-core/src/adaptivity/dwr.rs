@@ -55,12 +55,13 @@ pub fn solve_duals(ctx: &EstimatorContext, goals: &[&LinearFunctional]) -> Resul
     model.check_constrained(ctx.bc).map_err(MeshError::Failed)?;
     let k = model.assemble().map_err(MeshError::Failed)?;
     let red = Reduced::with_ordering(&model.pattern, ctx.bc, Some(&model.mesh.nodes), Ordering::Auto).map_err(|e| MeshError::Failed(e.to_string()))?;
-    let fac = red.factor(&k).map_err(|e| MeshError::Failed(e.to_string()))?;
     let free: Vec<usize> = red.free_dofs().iter().map(|&d| d as usize).collect();
+    // the shared tangent solver of the derivative engine: the adjoint equation `K^T z = g` is solved there for every consumer
+    let solver = crate::derivative::linalg::TangentSolver::new(&red, &model.pattern, &k, model.mesh.n_dofs(), &free, &[]).map_err(|e| MeshError::Failed(e.to_string()))?;
     let mut out = Vec::new();
     for g in goals {
-        let mut rhs: Vec<f64> = free.iter().map(|&d| g.gradient[d]).collect();
-        fac.solve_reduced(&mut rhs);
+        let rhs: Vec<f64> = free.iter().map(|&d| g.gradient[d]).collect();
+        let rhs = solver.solve_transpose(&rhs).map_err(MeshError::Failed)?;
         let mut z = vec![0.0; model.mesh.n_dofs()];
         for (&d, v) in free.iter().zip(&rhs) {
             z[d] = *v;

@@ -46,10 +46,11 @@ pub fn tangent_adjoint(model: &Model, bc: &Dirichlet, sol: &NlSolution, goal: &L
     let (_, k) = assemble_nl_public(&model.mesh, &model.pattern, &sol.u, old, &mut new, true).map_err(MeshError::Failed)?;
     let k = k.ok_or_else(|| MeshError::Failed("no tangent was assembled".into()))?;
     let red = Reduced::with_ordering(&model.pattern, bc, Some(&model.mesh.nodes), Ordering::Auto).map_err(|e| MeshError::Failed(e.to_string()))?;
-    let fac = red.factor_any(&k).map_err(|e| MeshError::Failed(e.to_string()))?;
     let free: Vec<usize> = red.free_dofs().iter().map(|&d| d as usize).collect();
-    let mut rhs: Vec<f64> = free.iter().map(|&d| goal.gradient[d]).collect();
-    fac.solve_reduced(&mut rhs);
+    // the same tangent solver the optimisation sensitivities use (`derivative::path`): one adjoint code path
+    let solver = crate::derivative::linalg::TangentSolver::new(&red, &model.pattern, &k, model.mesh.n_dofs(), &free, &[]).map_err(|e| MeshError::Failed(e.to_string()))?;
+    let rhs: Vec<f64> = free.iter().map(|&d| goal.gradient[d]).collect();
+    let rhs = solver.solve_transpose(&rhs).map_err(MeshError::Failed)?;
     let mut z = vec![0.0; model.mesh.n_dofs()];
     for (&d, v) in free.iter().zip(&rhs) {
         z[d] = *v;

@@ -317,8 +317,8 @@ impl EnrichedDwrEstimator {
         fmodel.check_constrained(&fbc).map_err(MeshError::Failed)?;
         let k = fmodel.assemble().map_err(MeshError::Failed)?;
         let red = Reduced::with_ordering(&fmodel.pattern, &fbc, Some(&fmodel.mesh.nodes), Ordering::Auto).map_err(|e| MeshError::Failed(e.to_string()))?;
-        let fac = red.factor(&k).map_err(|e| MeshError::Failed(e.to_string()))?;
         let free: Vec<usize> = red.free_dofs().iter().map(|&x| x as usize).collect();
+        let solver = crate::derivative::linalg::TangentSolver::new(&red, &fmodel.pattern, &k, fmodel.mesh.n_dofs(), &free, &[]).map_err(|e| MeshError::Failed(e.to_string()))?;
         let f = loads::assemble(&fmodel.mesh, &floads).map_err(MeshError::Failed)?;
         // the coarse solution on the fine mesh, with the prescribed values on the constrained dofs
         let u_fine = rf.prolong(&ctx.model.mesh, ctx.u);
@@ -328,8 +328,8 @@ impl EnrichedDwrEstimator {
         let mut results = Vec::new();
         for (idx, goal) in coarse_goals.iter().enumerate() {
             let gf = builders[idx](&fmodel, &floads)?;
-            let mut rhs: Vec<f64> = free.iter().map(|&i| gf.gradient[i]).collect();
-            fac.solve_reduced(&mut rhs);
+            let rhs: Vec<f64> = free.iter().map(|&i| gf.gradient[i]).collect();
+            let rhs = solver.solve_transpose(&rhs).map_err(MeshError::Failed)?;
             let mut zf = vec![0.0; u_fine.len()];
             for (&i, v) in free.iter().zip(&rhs) {
                 zf[i] = *v;
