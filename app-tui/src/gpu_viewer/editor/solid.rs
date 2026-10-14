@@ -153,10 +153,10 @@ pub fn feature_of(row: FieldRow) -> Feature {
         HeatSupportAdd => Feature::HeatSupport(usize::MAX),
         HeatLoadKind(l) | HeatLoadEdge(l) | HeatLoadParam(l, _) | HeatLoadRemove(l) => Feature::HeatLoad(l),
         HeatLoadAdd => Feature::HeatLoad(usize::MAX),
-        Material | Young | Poisson | Alpha | Density | Yield | DeltaT => Feature::Material,
+        Material | Young | Poisson | Alpha | Density | Yield | PlasticRow | HardeningRow | DeltaT => Feature::Material,
         Source | ImportPath | OuterKind | Outer(_) | PolyPoint(..) | PolyAdd | PolyRemove | HoleAdd | Depth | Layers => Feature::Geometry,
         HoleKind(h) | Hole(h, _) | HoleRemove(h) => Feature::Hole(h),
-        Element | MeshStrategyRow | AdaptModeRow | MeshSize | HoleFactor | AdaptPasses | TargetError | Reorient => Feature::Mesh,
+        Element | MeshStrategyRow | AdaptModeRow | PredictRow | BondRegionsRow | RegionMaterial(_) | MeshSize | HoleFactor | AdaptPasses | TargetError | Reorient => Feature::Mesh,
         SupportKind(s) | SupportEdge(s) | SupportCoord(s, _) | SupportComp(s, _) | SupportRemove(s) => Feature::Support(s),
         SupportAdd => Feature::Support(usize::MAX),
         LoadKind(l) | LoadEdge(l) | LoadParam(l, _) | LoadRemove(l) => Feature::Load(l),
@@ -575,7 +575,7 @@ impl SolidSession {
     }
     fn cycle_focused(&mut self, forward: bool) {
         use FieldRow::*;
-        if let Some(r @ (Template | Analysis | Element | MeshStrategyRow | AdaptModeRow | SupportEdge(_) | LoadEdge(_))) = self.focused_row() {
+        if let Some(r @ (Template | Analysis | Element | MeshStrategyRow | AdaptModeRow | PredictRow | BondRegionsRow | PlasticRow | SupportEdge(_) | LoadEdge(_))) = self.focused_row() {
             self.activate(r, forward);
         }
     }

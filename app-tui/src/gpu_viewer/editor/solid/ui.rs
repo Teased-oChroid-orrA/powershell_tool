@@ -67,7 +67,7 @@ impl SolidSession {
         } else {
             Err(match row {
                 FieldRow::HoleAdd | FieldRow::Element if self.problem.history.is_some() => "this model is built from a feature history: edit its sketch (Features > Edit selected sketch)".to_string(),
-                FieldRow::HoleAdd | FieldRow::Element | FieldRow::MeshStrategyRow | FieldRow::AdaptModeRow => "only sketch geometry has this (switch the source to Sketch)".to_string(),
+                FieldRow::HoleAdd | FieldRow::Element | FieldRow::MeshStrategyRow | FieldRow::AdaptModeRow | FieldRow::PredictRow => "only sketch geometry has this (switch the source to Sketch)".to_string(),
                 FieldRow::BushingAdd => "bushings need a plane analysis with a circular hole".to_string(),
                 _ => "not available for this model".to_string(),
             })

@@ -50,7 +50,7 @@ Does not own: any UI, material tables (`mechanics-core`), the lug physics (`lug-
 | Sweeps vs 2D / axisymmetric solutions | `tests/sweep.rs` |
 | Wedge elements, Hex+Wedge hybrid patch test and 2D equivalence | `tests/wedge.rs` |
 | Size prediction before any solution (geometry + point/line sources, `g`-Lipschitz) | `src/meshing/predictor.rs` |
-| Multi-material planar meshes (per-region hybrid, forced-unstructured interface cells, weld + conformity gate) | `src/meshing/multimaterial.rs` |
+| Multi-material planar meshes (per-region hybrid or unstructured, forced-unstructured interface cells, shared boundaries cut at both sides' nodes until the weld conforms, conformity gate) | `src/meshing/multimaterial.rs` |
 | Gmsh / Abaqus import and round trip | `tests/import.rs` |
 | Solve report, condition estimate | `src/report.rs`, `tests/report.rs` |
 | Validation, adaptive solve, nonlinear ladder | `src/validate.rs`, `src/strategy.rs`, `tests/strategy.rs` |
@@ -60,7 +60,7 @@ Does not own: any UI, material tables (`mechanics-core`), the lug physics (`lug-
 | Adjoint sensitivities, block-sizing optimiser | `src/sensitivity.rs`, `src/optimize.rs`, `tests/sensitivity.rs`, `tests/optimize.rs` |
 | Neo-Hookean hyperelasticity | `src/material.rs::neo_hookean_update`, `tests/hyperelastic.rs` |
 | Mesh adjacency, conformity check, element quality, welding, quality-guarded smoothing, solver-cost model (epic #25, `docs/hybrid-meshing-amr-evidence.md`) | `src/meshing/{adjacency,quality,weld,smooth,cost}.rs` |
-| 2D hybrid structured / unstructured mesher (cell partition of a rectilinear region, welded Quad + Tri blocks, explicit fallback, candidate selection by predicted cost) | `src/meshing/{partition,hybrid}.rs`, `tests/hybrid.rs` |
+| 2D hybrid structured / unstructured mesher (cell partition of a region with a rectilinear, angled or curved outline, boundary-layer cut cells, stretch guard, welded Quad + Tri blocks, explicit fallback, candidate selection by predicted cost) | `src/meshing/{partition,hybrid}.rs`, `tests/hybrid.rs` |
 | Goal-oriented adaptivity: estimators (ZZ, recovered-stress DWR, enriched-dual DWR, equilibrated H(div) stress), goals, zones, fusion, Doerfler marking, the solve-estimate-mark-remesh loop, eigenvalue loop, snapshots / transfer / rollback | `src/adaptivity/`, `tests/{dwr,equilibrated,spr_interface,amr,eigen}.rs` (design: `docs/adr/ADR-022-hybrid-meshing-and-goal-oriented-adaptivity.md`) |
 | Speed baseline (ignored tests; the faer-vs-lug-solver gate lives in `lug-solver/tests/sparse_speed_gate.rs`) | `tests/bench.rs` |
 
@@ -140,6 +140,8 @@ Does not own: any UI, material tables (`mechanics-core`), the lug physics (`lug-
   - *Which goal-oriented estimate*: the recovered-stress DWR is dominated by singular corners and does not fall with the error on adapted meshes; a residual DWR with a polynomial-fit dual had the wrong sign (removed); the h-enriched dual (`adaptivity::enrich`, 2D triangles and quadrilaterals) is the controller's estimate (effectivity 0.7-1.0). None of them sees boundary-approximation error (a circle by quadratic edges).
   - *Controller*: refinement is size-field remeshing (`NodalSize::Min` so one marked element is honoured at its nodes); without `max_growth` an unreachable physics tolerance makes every element mandatory and the mesh grows fourfold per cycle.
   - *Nonlinear*: `NlSolution::prev_state` is the state at the start of the last accepted step (the consistent tangent of a return map needs it); `plastic_update_at` is the single constitutive path of the element kernel and of every stress read-out. Plastic history interpolation between meshes is approximate and, for monotone proportional loading, worse than no history: use `warm_start_displacement`. The nonlinear loop judges nonlinear and contact quantities by their change between meshes, not by an error estimate.
+  - *Hybrid mesher, outlines*: the cells a non-axis-aligned boundary crosses (or comes within `BOUNDARY_PAD` sizes of) are unstructured and `trace_regions` follows the true boundary pieces cut at the grid lines (nodes keyed by lattice index or rounded position; a failure to close is an explicit fallback). The grid subdivision must count only structured and boundary cells of a strip: the smallest size over the whole other axis sliced regular blocks into slivers (the template plate with a hole fell back at size jump 8.1). `balanced_divisions` hands cells that would stretch past 3x to the unstructured mesher; `remove_pinches` gives up the smaller cell of a checkerboard corner (the unstructured loop would touch itself).
+  - *Hybrid mesher, multi-material*: the unstructured mesher splits an encroached boundary segment where the interior asks for it, so two regions do not necessarily place the same interface nodes; `split_shared` cuts the shared segments at the union of both sides' corner nodes and meshes again.
   - *Hybrid mesher*: isotropic structured blocks are not cheaper than a graded Delaunay mesh; only an anisotropic block on a slender member with a local feature is (38 % fewer unknowns at equal energy error). Selection is by predicted cost (`meshing::cost`), never by default.
 
 ## Boundaries

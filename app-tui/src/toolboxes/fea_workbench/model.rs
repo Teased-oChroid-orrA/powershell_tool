@@ -16,6 +16,9 @@ pub enum FieldRow {
     Alpha,
     Density,
     Yield,
+    /// Elastic or elastic-plastic response (J2 yield with linear hardening).
+    PlasticRow,
+    HardeningRow,
     DeltaT,
     Source,
     ImportPath,
@@ -35,6 +38,10 @@ pub enum FieldRow {
     Element,
     MeshStrategyRow,
     AdaptModeRow,
+    PredictRow,
+    BondRegionsRow,
+    /// Material of the sketch's region `k + 2`.
+    RegionMaterial(usize),
     MeshSize,
     HoleFactor,
     AdaptPasses,
@@ -85,7 +92,7 @@ pub enum EditKind {
 pub fn edit_kind(row: FieldRow) -> EditKind {
     use FieldRow::*;
     match row {
-        Thickness | Young | Poisson | Alpha | Density | Yield | DeltaT | Conductivity | HeatSource | ReferenceTemp | HeatSupportCoord(..) | HeatSupportTemp(..) | HeatLoadParam(..) | Outer(..) | PolyPoint(..) | Hole(..) | Depth | Layers | MeshSize | HoleFactor | AdaptPasses | TargetError | SupportCoord(..) | LoadParam(..) | BushingParam(..) => EditKind::Number,
+        Thickness | Young | Poisson | Alpha | Density | Yield | HardeningRow | DeltaT | Conductivity | HeatSource | ReferenceTemp | HeatSupportCoord(..) | HeatSupportTemp(..) | HeatLoadParam(..) | Outer(..) | PolyPoint(..) | Hole(..) | Depth | Layers | MeshSize | HoleFactor | AdaptPasses | TargetError | SupportCoord(..) | LoadParam(..) | BushingParam(..) => EditKind::Number,
         SupportComp(..) => EditKind::Component,
         ImportPath => EditKind::Text,
         _ => EditKind::Action,
@@ -111,7 +118,14 @@ pub fn field_rows(p: &Problem) -> Vec<FieldRow> {
     if matches!(p.analysis, fea_problem::Analysis::PlaneStress | fea_problem::Analysis::PlaneStrain) {
         r.push(Thickness);
     }
-    r.extend([Header("Material"), Material, Young, Poisson, Alpha, Density, Yield, DeltaT, Header("Geometry")]);
+    r.extend([Header("Material"), Material, Young, Poisson, Alpha, Density, Yield]);
+    if p.study == fea_problem::Study::Structural && p.bushings.is_empty() {
+        r.push(PlasticRow);
+        if p.material.plastic {
+            r.push(HardeningRow);
+        }
+    }
+    r.extend([DeltaT, Header("Geometry")]);
     // A model built from a feature history gets its geometry from the history: it is edited there (native CAD
     // window), not row by row, or the next rebuild would silently undo the edit.
     if p.history.is_none() {
@@ -150,8 +164,13 @@ pub fn field_rows(p: &Problem) -> Vec<FieldRow> {
     r.push(Header("Mesh"));
     if is_sketch(p) {
         r.push(Element);
-        if d == 2 {
-            r.push(MeshStrategyRow);
+        r.push(MeshStrategyRow);
+        r.push(PredictRow);
+        if let Geometry::Sketch { regions, .. } = &p.geometry {
+            if !regions.is_empty() {
+                r.push(BondRegionsRow);
+                r.extend((0..regions.len()).map(RegionMaterial));
+            }
         }
     }
     r.push(MeshSize);
@@ -250,6 +269,8 @@ pub fn row_label(p: &Problem, row: FieldRow) -> String {
         Alpha => "Thermal Expansion".into(),
         Density => "Mass Density".into(),
         Yield => "Yield Stress".into(),
+        PlasticRow => "Material Model".into(),
+        HardeningRow => "Hardening Modulus".into(),
         DeltaT => "Temperature Change".into(),
         Source => "Geometry From".into(),
         ImportPath => "Mesh File".into(),
@@ -274,6 +295,9 @@ pub fn row_label(p: &Problem, row: FieldRow) -> String {
         Element => "Element Type".into(),
         MeshStrategyRow => "Mesh Strategy".into(),
         AdaptModeRow => "Adaptivity Driver".into(),
+        PredictRow => "Auto Size Features".into(),
+        BondRegionsRow => "Bond Regions".into(),
+        RegionMaterial(k) => format!("  Region {} Material", k + 2),
         MeshSize => "Element Size".into(),
         HoleFactor => "Size At Holes".into(),
         AdaptPasses => "Adaptive Passes".into(),
@@ -332,6 +356,7 @@ pub fn number_value(p: &Problem, row: FieldRow) -> Option<f64> {
         Alpha => p.material.alpha,
         Density => p.material.density,
         Yield => p.material.yield_stress.unwrap_or(0.0),
+        HardeningRow => p.material.hardening,
         DeltaT => p.delta_t,
         Outer(i) => match &p.geometry {
             Geometry::Sketch { outer, .. } => outer.params().get(i)?.1,
@@ -386,6 +411,7 @@ pub fn set_number(p: &mut Problem, row: FieldRow, v: f64) {
         Alpha => p.material.alpha = v,
         Density if v >= 0.0 => p.material.density = v,
         Yield => p.material.yield_stress = (v > 0.0).then_some(v),
+        HardeningRow if v >= 0.0 => p.material.hardening = v,
         DeltaT => p.delta_t = v,
         Outer(i) => {
             if let Geometry::Sketch { outer, .. } = &mut p.geometry {
@@ -483,6 +509,8 @@ pub fn row_value(p: &Problem, names: &[String], import_len: Option<usize>, row: 
         StudyKind => p.study.label().to_string(),
         Material => p.material.name.clone(),
         Yield => p.material.yield_stress.map_or("none".to_string(), format_number),
+        HardeningRow => format_number(p.material.hardening),
+        PlasticRow => if p.material.plastic { "Elastic-plastic (J2)" } else { "Elastic" }.to_string(),
         Source => match &p.geometry {
             Geometry::Sketch { .. } => "Sketch",
             Geometry::Imported { .. } => "Imported mesh file",
@@ -517,6 +545,12 @@ pub fn row_value(p: &Problem, names: &[String], import_len: Option<usize>, row: 
         Element => p.mesh.element.label().to_string(),
         MeshStrategyRow => p.mesh.strategy.label().to_string(),
         AdaptModeRow => p.mesh.adapt_mode.label().to_string(),
+        PredictRow => if p.mesh.predict_sizes { "On" } else { "Off" }.to_string(),
+        BondRegionsRow => if p.mesh.bond_regions { "On (one welded body)" } else { "Off (separate bodies)" }.to_string(),
+        RegionMaterial(k) => {
+            let m = p.region_material(k + 1);
+            if p.region_materials.get(k).is_some_and(Option::is_some) { m.name.clone() } else { format!("{} (same as the part)", m.name) }
+        }
         SupportKind(s) => match p.supports.get(s) {
             Some(Support::Edge { .. }) => "Edge".to_string(),
             Some(Support::Point { .. }) => "Point (nearest node)".to_string(),
@@ -570,8 +604,13 @@ pub fn field_hint(row: FieldRow) -> &'static str {
         HoleAdd => "Adds a circular hole near the middle of the outline.",
         Depth | Layers => "3D only: the sketch is extruded along z in this many layers; the end faces are named start (z = 0) and end.",
         Element => "Quadratic elements (Quad8 / Quad9 / Tri6) are the accurate choice; linear ones need a much finer mesh. A 3D extrusion needs a quadrilateral type.",
-        MeshStrategyRow => "Hybrid: structured quadrilateral blocks in the regular regions and an unstructured triangle mesh around holes and corners, welded conforming. Needs a rectilinear outline and gentle grading (Size At Holes about 0.3 or more); otherwise it falls back to the unstructured mesh and the result notes say why. At Size 0.3 / holes 0.3 the plate with a hole needs about 5 times fewer unknowns for the same peak stress (within 2 %).",
-        AdaptModeRow => "ZZ: refine where the stress-recovery error is large. Goal-oriented: adjoint error estimate of the compliance fused with that criterion (no bushings).",
+        MeshStrategyRow => "Hybrid: structured quadrilateral blocks in the regular regions, an unstructured triangle mesh around holes, corners, point loads and along angled or curved outlines (a thin layer that follows the true boundary), welded conforming. A cell whose elements would stretch more than 3x goes to the triangle mesh too. When the region is too small or too irregular it falls back to the unstructured mesh and the result notes say why. For a 3D extrusion it gives hexahedra and wedges. The plate with a hole needs about 4-5 times fewer unknowns for the same peak stress (within 2 %).",
+        AdaptModeRow => "ZZ: refine where the stress-recovery error is large. Equilibrated: the error comes from an equilibrated stress reconstruction (triangle elements, Unstructured strategy, plane problems). Goal-oriented: adjoint (enriched-dual) error estimate of the compliance fused with the equilibrated / ZZ criterion (no bushings, elastic). Natural frequencies (n) refine on the eigenvalue estimate whenever Adaptive Passes > 0; an elastic-plastic material refines on the recovery estimate of its plastic state.",
+        PredictRow => "On: before any solution exists the mesh is made finer at curved boundaries (an element spans at most 0.35 rad of an arc), re-entrant corners and point loads / restraints, growing back to Element Size with distance. Never coarser than without it.",
+        BondRegionsRow => "A sketch with several closed profiles: Off keeps them as separate bodies (each needs its own supports); On welds them along the boundaries they share into one body, each region with its own material. The shared boundaries must coincide exactly.",
+        RegionMaterial(_) => "Enter opens the material browser for this region (E, Poisson's ratio, expansion and yield come from it). Only used when the regions are bonded.",
+        PlasticRow => "Elastic-plastic: J2 yield at the Yield Stress with linear hardening (small strain); the loads are applied in 8 steps and the result adds the equivalent plastic strain field. Not with bushings, thermal studies or region materials.",
+        HardeningRow => "Tangent modulus after yield (stress per unit plastic strain); 0 is perfectly plastic.",
         MeshSize => "Target element edge length away from holes.",
         HoleFactor => "Element size at a hole edge as a fraction of the size above (blends back over about two hole radii).",
         AdaptPasses => "Remeshing passes driven by the error estimate (0 = off): each pass makes elements smaller where the error is large.",
@@ -692,6 +731,9 @@ pub fn apply_row_action(p: &mut Problem, names: &[String], row: FieldRow, forwar
                 fix_element_for(p);
             }
             Reorient => p.mesh.reorient = !p.mesh.reorient,
+            PlasticRow => p.material.plastic = !p.material.plastic && p.material.yield_stress.is_some(),
+            PredictRow => p.mesh.predict_sizes = !p.mesh.predict_sizes,
+            BondRegionsRow => p.mesh.bond_regions = !p.mesh.bond_regions,
             StudyKind => {
                 let all = fea_problem::Study::ALL;
                 let i = all.iter().position(|a| *a == p.study).unwrap_or(0);
@@ -882,7 +924,21 @@ pub fn commit_edit(p: &mut Problem, row: FieldRow, kind: EditKind, text: &str) -
 
 /// Copy a catalog material's properties into the problem.
 pub fn apply_material(p: &mut Problem, m: &mechanics_core::materials::Material) {
-    let mat = &mut p.material;
+    set_material(&mut p.material, m);
+}
+
+/// Copy a catalog material's properties into the material of region `k + 2` (the part's material, plus these, if it had none).
+pub fn apply_region_material(p: &mut Problem, k: usize, m: &mechanics_core::materials::Material) {
+    if p.region_materials.len() <= k {
+        p.region_materials.resize(k + 1, None);
+    }
+    let mut mat = p.region_materials[k].clone().unwrap_or_else(|| p.material.clone());
+    mat.plastic = false;
+    set_material(&mut mat, m);
+    p.region_materials[k] = Some(mat);
+}
+
+fn set_material(mat: &mut fea_problem::MaterialSpec, m: &mechanics_core::materials::Material) {
     mat.name = m.name.to_string();
     mat.e = m.e_ksi * 1000.0;
     mat.nu = m.nu;

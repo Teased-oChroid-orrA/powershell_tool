@@ -69,3 +69,18 @@ regions meet on shared quadrilateral faces: the union is conforming by construct
 **declined**; a solid that is not a prism-like extrusion keeps the tetrahedral mesher (`tetmesh.rs`, `solid-kernel`).
 Evidence: `tests/wedge.rs` (Hex+Wedge conformity, 3D affine patch test to 1e-12 in displacement and 1e-9 in stress, extruded
 plane-strain solution equal to the 2D one to 1e-9, exact wedge-grid strain energy), element tests over `ALL_KINDS`.
+
+## Addendum: non-rectilinear outlines, stretch guard, workbench controls
+
+- **Outlines.** The partition no longer requires an axis-aligned outer boundary. Cut-cell style: cells the boundary crosses (or comes
+  within one local size of, for angled and curved pieces) are unstructured and the unstructured region's loop uses the true boundary
+  pieces, cut at the grid lines. Mapped (transfinite) boundary-following blocks and structured strips along angled edges were not
+  built: they need a per-block mapping and a second interface rule, and the cut cells reuse the interface machinery unchanged.
+- **Stretch guard instead of graded rows.** A structured cell whose elements would exceed 3x the requested aspect is given to the
+  unstructured mesher. Per-cell graded transition rows would need non-uniform interface spacing shared with the unstructured side;
+  the guard bounds the same quality loss with the existing uniform interfaces.
+- **Multi-material.** Shared boundaries are cut at the corner nodes of both sides and re-meshed until the weld conforms (the
+  assumption that both sides place the same nodes was false when a segment is encroached).
+- **Workbench.** The controls listed in the readiness document are `Problem` fields with serde defaults, so older files read
+  unchanged. Contact AMR through `run_amr_nonlinear` is not exposed for interference fits (measurement in the readiness document).
+

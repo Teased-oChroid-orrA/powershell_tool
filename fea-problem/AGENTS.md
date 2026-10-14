@@ -11,6 +11,7 @@ Does not own: any element, solver or mesher (`fea-core`), any UI or file access 
 |---|---|
 | `Problem`, `Shape`, `Support`, `Load`, `MeshSpec`, JSON, `edge_names`, validation, editing helpers (`params` / `set_param` / `next_kind`) | `src/problem.rs` |
 | Sketch to `Region` to mesh (size function, hole refinement, extrusion, element cap), imported mesh | `src/build.rs` |
+| Mesh controls (`MeshSpec`: strategy, `predict_sizes`, `adapt_mode`, `bond_regions`; `Problem::region_materials`; `MaterialSpec::plastic`) and their drivers: `build::size_function` (predictor), `build::mesh_bonded`, `solve::{equilibrated_estimate, solve_goal_oriented, solve_plastic_adaptive}`, `dynamics::modal_adaptive` | `src/problem.rs`, `src/build.rs`, `src/solve.rs`, `src/dynamics.rs`, `tests/mesh_controls.rs`, `tests/hybrid_goal.rs`, `tests/dynamics.rs` |
 | `solve`, `preview`, supports -> `Dirichlet`, loads (incl. the bearing cosine load), result fields, summary, adaptive passes | `src/solve.rs` |
 | Field to pixel grid (triangle fill, edges, deformed shape, 3D front face) | `src/raster.rs` |
 | Plain-text report, one-line support / load descriptions | `src/report.rs` |
@@ -45,6 +46,10 @@ Does not own: any element, solver or mesher (`fea-core`), any UI or file access 
 - `Problem` equality includes `history` on purpose (it is model data); do not put derived or self-changing data in it.
 
 ## Pitfalls
+- Elastic-plastic (`material.plastic`): J2, small strain, 8 load steps (`PLASTIC_STEPS`), nodal stress from `nl_gauss_stresses`, `strain_energy` is `f.u / 2`. It is refused with bushings, thermal studies, region materials and the goal-oriented driver (`Problem::validate`, `solve`). Adaptive passes run `run_amr_nonlinear`.
+- Contact AMR for bushings (`run_amr_nonlinear` with the two-pass fit contacts) was built and removed: the patch is the whole bore, so the contact-protection rule refined everything (5-26k elements against 1.25k, 110-196 s) and the controller's balance check sees 3-11 % on a deformable interface. Do not re-add it without a contact-patch rule that fits a fit.
+- Bonded regions (`mesh.bond_regions`) need coinciding shared boundaries; a mismatch is `the material interfaces do not match`. Region `k` boundary names are `rk/...`; the first region keeps plain names. The Unstructured strategy meshes bonded regions with triangles (a note says so for quadrilateral choices).
+- Natural frequencies are adaptive (`dynamics::modal_adaptive`) whenever `adapt_passes > 0` on a 2D sketch; `ModalSolved::adapt` lists the meshes.
 - `solve_mesh` runs the kernel's `Model::validate`: errors stop the solve, warnings land in `Summary::notes`. Before 2026-10-11 it
   did not, and a NaN load solved to a silent zero. Bushing (contact) solves skip it on purpose (held only by contact).
 - `Geometry::Solid` is solved from its cached surface mesh only; a missing or stale cache (hash of the STEP text) is refused,

@@ -26,6 +26,9 @@ Does not own: the problem schema, meshing, solving, results, rasterising or the 
 - Keys (both cases, Windows Caps Lock): `u` mesh, `r` solve, `n` natural frequencies, `b` buckling, `[` `]` mode, `a` automatic mode (mesh and solve by themselves), `v` field, `m` mesh lines, `x` deformed shape, `d` full report in Results, `e` report, `p` `.vtu`, `c` nodal results `.csv`, `j` save JSON, `o` open JSON (path prompt), PageUp / PageDown scroll Results. Files go to `<app data>/fea-workbench/<problem-name>.{json,txt,vtu,csv}`.
 - Support components are numbers or `free`: Space toggles Free / Fixed 0, typing a number prescribes it. Edge rows cycle through `FeaWorkbenchState::names()` (the sketch's edges, or the imported mesh's set and surface names once previewed).
 
+## Mesh and material controls
+- Rows added with the epic #25 work (all default to the earlier behaviour): `Mesh Strategy` (also for extrusions: Hex + Wedge), `Auto Size Features` (`mesh.predict_sizes`), `Adaptivity Driver` (ZZ / Equilibrated / Goal-oriented), `Bond Regions` and `Region k Material` (a sketch with extra regions; Enter opens the material browser with `material_target` set), `Material Model` / `Hardening Modulus` (elastic-plastic; hidden with bushings or thermal studies). `n` refines frequencies on the eigenvalue estimate when `Adaptive Passes > 0`. The readout shows the plastic summary; the result has an `Equivalent plastic strain` field.
+
 ## Pitfalls
 - Number rows accept `e` / `E` / `+` so `2.9e7` can be typed; text rows (mesh path) accept any graphic character.
 - `Source` toggles keep the sketch in `saved_geometry` so going back loses nothing; the imported file's text lives in `import` and is matched to the path.

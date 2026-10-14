@@ -83,6 +83,8 @@ pub struct FeaWorkbenchState {
     pub edit: Option<EditKind>,
     pub edit_buffer: EditBuffer,
     pub material_browser: Option<MaterialLookupState>,
+    /// The region (0 = the second region) the open material browser is picking for; `None` picks the part's material.
+    material_target: Option<usize>,
     pub prompt: Option<Prompt>,
     /// The sketch kept while the geometry source is an imported file (and back).
     saved_geometry: Option<Geometry>,
@@ -144,6 +146,7 @@ impl FeaWorkbenchState {
             edit: None,
             edit_buffer: EditBuffer::default(),
             material_browser: None,
+            material_target: None,
             prompt: None,
             saved_geometry: None,
             import: None,
@@ -236,8 +239,10 @@ impl FeaWorkbenchState {
                 (self.auto_solve, self.field, self.show_mesh, self.deform) = (auto, field, mesh, deform);
                 return Vec::new();
             }
-            Material => {
-                let current = crate::toolboxes::material_lookup::model::catalog().iter().position(|m| m.name == p.material.name).unwrap_or(0);
+            Material | RegionMaterial(_) => {
+                self.material_target = if let RegionMaterial(k) = row { Some(k) } else { None };
+                let name = if let RegionMaterial(k) = row { p.region_material(k + 1).name.clone() } else { p.material.name.clone() };
+                let current = crate::toolboxes::material_lookup::model::catalog().iter().position(|m| m.name == name).unwrap_or(0);
                 let mut browser = MaterialLookupState { picking: true, ..MaterialLookupState::default() };
                 if let Some(pos) = browser.hits.iter().position(|&i| i == current) {
                     browser.cursor = pos;
@@ -682,7 +687,10 @@ pub fn handle_key(state: &mut FeaWorkbenchState, key: KeyEvent) -> (bool, Vec<Ef
         match key.code {
             KeyCode::Enter => {
                 if let Some(i) = browser.current() {
-                    model::apply_material(&mut state.problem, material_lookup::model::catalog()[i]);
+                    match state.material_target.take() {
+                        Some(k) => model::apply_region_material(&mut state.problem, k, material_lookup::model::catalog()[i]),
+                        None => model::apply_material(&mut state.problem, material_lookup::model::catalog()[i]),
+                    }
                 }
                 state.material_browser = None;
                 return (true, Vec::new());
@@ -760,7 +768,7 @@ pub fn handle_key(state: &mut FeaWorkbenchState, key: KeyEvent) -> (bool, Vec<Ef
         KeyCode::Left | KeyCode::Right => {
             let forward = key.code == KeyCode::Right;
             match row {
-                Some(r @ (FieldRow::Template | FieldRow::Analysis | FieldRow::Element | FieldRow::MeshStrategyRow | FieldRow::AdaptModeRow | FieldRow::SupportEdge(_) | FieldRow::LoadEdge(_))) => (true, state.activate(r, forward)),
+                Some(r @ (FieldRow::Template | FieldRow::Analysis | FieldRow::Element | FieldRow::MeshStrategyRow | FieldRow::AdaptModeRow | FieldRow::PredictRow | FieldRow::BondRegionsRow | FieldRow::PlasticRow | FieldRow::SupportEdge(_) | FieldRow::LoadEdge(_))) => (true, state.activate(r, forward)),
                 _ => (false, Vec::new()),
             }
         }

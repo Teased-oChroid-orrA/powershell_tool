@@ -251,3 +251,41 @@ partial sums added in element order, so results are identical). Reconstruction t
 299 -> 261 -> 203 -> 170 ms. The remaining allocations are the dense patch matrices (a few hundred doubles, resident in L1/L2
 while a patch is solved; no cache-bound stage was found), the mesher (1.75 M allocations, 111 ms: left alone, it is the
 Delaunay kernel and not a Phase 10 hot spot) and the solve (14 k allocations for 274 MB, a handful of large arrays).
+
+## Widening the hybrid mesher and the workbench controls
+
+Hybrid outlines (`tests/hybrid_shapes.rs`, 120 deterministic random convex polygons, discs, chamfered and sheared plates, half with a
+hole, both element families): 117 stay hybrid, all 120 conforming with no inverted element; the 3 fallbacks are regions too small to
+leave regular area. Disc R = 5: 40 % regular area at h = 0.5, 66 % at 0.25; trapezoid 58 % / 77 %. Exact affine patch test on an
+angled-edge hybrid (Linear and Quadratic) to 1e-12 in displacement. Lame quarter annulus (a = 2, b = 5, Quad8 hybrid against the
+unstructured mesh of the same size): radial displacement error 7.1e-4 against 6.5e-4 at h = 0.5 and 1.25e-4 against 1.43e-4 at
+0.25.
+
+Template plate with a hole, Size At Holes 0.1 (was a fallback, jump 8.1): hybrid, 74 % regular, size jump 1.63 (plain mesh 1.65).
+Cause: the grid subdivision took the smallest size over the whole other axis of a strip, so the fine cells at the hole cut the
+regular end blocks into 0.027-high slivers; the strips now count only structured and boundary cells. Steep gradient, plate 12 x 4,
+size 0.1 + 0.9 x/12: edge ratio 7.5 before the stretch guard, 2.5 after (1320 -> 1109 elements; the plain mesh has 1504); a
+thirty-fold gradient falls back with "5 % regular" instead of producing elements 30 times longer than high; a radial gradient
+keeps 84 % regular at edge ratio 3.0 (1744 elements against 2057; before the guard 1344 at edge ratio 6.0).
+
+Bonded regions of two bars (6 x 2, size 0.4): the plain unstructured parts disagree on the shared edge (3 hanging nodes, the
+mesher splits an encroached boundary segment where the other side did not); cutting the edge at the corner nodes of both sides
+and meshing again welds them (Linear and Quadratic, unstructured and hybrid). Elongation of the stiff / soft pair equals the
+series-spring value within 0.5 % for both strategies.
+
+Extruded plate with a hole (template, Quad8 / Hex20 + Wedge15, depth 0.5, 3 layers): 93 552 dofs unstructured, 23 274 hybrid,
+strain energy 2.41141 against 2.41039 (0.04 %), peak von Mises 21 964 against 21 191 (3.5 %).
+
+Equilibrated driver (plate with a hole, Tri6, size 0.6, target 1 %): first-mesh estimate differs from ZZ, and the two adaptive runs agree
+within the test's bounds of 1 % in strain energy and 6 % in peak stress.
+
+Eigenvalue AMR through the workbench path (cantilever 10 x 1, Tri3, size 1.0, target 2 %, 4 passes): 40 -> 101 -> 248 -> 746 -> 1947
+elements, the estimated eigenvalue error 0.53 -> 0.019; frequency error against a size-0.125 Tri6 reference 30.5 % -> 0.84 %
+(mode 1), 30.7 % -> 0.98 % (mode 2), 0.26 % -> 0.009 % (mode 3).
+
+Elastic-plastic (`material.plastic`): a bar at 30 000 over a 20 000 yield with H = 1e6 follows the bilinear curve (tip displacement
+and a uniform plastic strain of 0.01 to 1e-4, Quad8 and Tri6). Plate with a hole, yield 40 000, H = 2e5, load 21 000: external-work
+error against a 22 587-element reference 3.8e-5 on 681 elements and 3.5e-6 on the 2808-element adaptive mesh.
+
+Contact AMR on the bushed lug: see the readiness document (not exposed).
+

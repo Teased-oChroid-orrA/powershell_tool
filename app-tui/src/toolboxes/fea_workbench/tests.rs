@@ -644,7 +644,76 @@ fn the_mesh_strategy_and_adaptivity_driver_rows_cycle_and_the_driver_needs_adapt
     s.problem.mesh.adapt_passes = 2;
     select(&mut s, FieldRow::AdaptModeRow);
     handle_key(&mut s, key(KeyCode::Right));
+    assert_eq!(s.problem.mesh.adapt_mode, fea_problem::AdaptMode::Equilibrated);
+    handle_key(&mut s, key(KeyCode::Right));
     assert_eq!(s.problem.mesh.adapt_mode, fea_problem::AdaptMode::GoalOriented);
     s.problem.mesh.adapt_passes = 0;
     assert!(!s.rows().contains(&FieldRow::AdaptModeRow), "no passes, no driver to choose");
+}
+
+#[test]
+fn the_predictor_the_plastic_material_and_the_region_rows_edit_the_problem() {
+    let mut s = FeaWorkbenchState::default();
+    // size predictor
+    select(&mut s, FieldRow::PredictRow);
+    assert!(!s.problem.mesh.predict_sizes);
+    handle_key(&mut s, key(KeyCode::Right));
+    assert!(s.problem.mesh.predict_sizes);
+    handle_key(&mut s, key(KeyCode::Char(' ')));
+    assert!(!s.problem.mesh.predict_sizes);
+    // elastic-plastic: the hardening row exists only while it is on, and a material without yield cannot be made plastic
+    assert!(s.rows().contains(&FieldRow::PlasticRow) && !s.rows().contains(&FieldRow::HardeningRow));
+    select(&mut s, FieldRow::PlasticRow);
+    handle_key(&mut s, key(KeyCode::Char(' ')));
+    assert!(s.problem.material.plastic && s.rows().contains(&FieldRow::HardeningRow));
+    select(&mut s, FieldRow::HardeningRow);
+    handle_key(&mut s, key(KeyCode::Enter));
+    for _ in 0..8 {
+        handle_key(&mut s, key(KeyCode::Backspace));
+    }
+    type_text(&mut s, "250000");
+    handle_key(&mut s, key(KeyCode::Enter));
+    assert_eq!(s.problem.material.hardening, 250_000.0);
+    s.problem.material.yield_stress = None;
+    s.problem.material.plastic = false;
+    select(&mut s, FieldRow::PlasticRow);
+    handle_key(&mut s, key(KeyCode::Char(' ')));
+    assert!(!s.problem.material.plastic, "no yield stress, no plasticity");
+    // a sketch with a second region offers the bond switch and a material per region
+    assert!(!s.rows().contains(&FieldRow::BondRegionsRow));
+    if let fea_problem::Geometry::Sketch { regions, .. } = &mut s.problem.geometry {
+        regions.push(fea_problem::SketchRegion { outer: fea_problem::Shape::Rect { x0: 20.0, y0: 0.0, x1: 22.0, y1: 1.0 }, holes: Vec::new() });
+    }
+    assert!(s.rows().contains(&FieldRow::BondRegionsRow) && s.rows().contains(&FieldRow::RegionMaterial(0)));
+    select(&mut s, FieldRow::BondRegionsRow);
+    handle_key(&mut s, key(KeyCode::Right));
+    assert!(s.problem.mesh.bond_regions);
+    select(&mut s, FieldRow::RegionMaterial(0));
+    handle_key(&mut s, key(KeyCode::Enter));
+    assert!(s.material_browser.is_some(), "Enter opens the material browser for the region");
+    let want = crate::toolboxes::material_lookup::model::catalog()[s.material_browser.as_ref().unwrap().current().unwrap()];
+    handle_key(&mut s, key(KeyCode::Enter));
+    assert!(s.material_browser.is_none());
+    let got = s.problem.region_materials[0].as_ref().expect("the region has a material of its own");
+    assert_eq!(got.name, want.name);
+    assert_ne!(s.problem.material.name, "", "the part's material is untouched");
+    assert!((got.e - want.e_ksi * 1000.0).abs() < 1e-6);
+}
+
+#[test]
+fn an_elastic_plastic_solve_shows_the_plastic_strain_field_and_the_summary() {
+    let mut s = FeaWorkbenchState::default();
+    s.problem = fea_problem::templates::templates().into_iter().nth(0).unwrap().1;
+    s.problem.material.plastic = true;
+    s.problem.material.yield_stress = Some(15_000.0); // the hole edge carries about 2.7 x the 10000 traction
+    s.problem.material.hardening = 2.0e5;
+    s.problem.mesh.size = 0.8;
+    s.problem.mesh.adapt_passes = 0;
+    let e = handle_key(&mut s, key(KeyCode::Char('r'))).1;
+    run_effects(&mut s, e);
+    let solved = s.solved.as_ref().expect("solved");
+    assert!(solved.summary.plastic.as_ref().is_some_and(|q| q.max_strain > 0.0), "{:?}", solved.summary.plastic);
+    assert!(solved.fields().contains(&fea_problem::Field::PlasticStrain));
+    let text: String = super::view::readout_lines(&crate::theme::Theme::default(), &s).iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("Plastic strain"), "{text}");
 }

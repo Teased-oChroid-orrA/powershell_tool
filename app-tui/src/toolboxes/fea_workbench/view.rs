@@ -278,6 +278,12 @@ pub fn readout_lines<'a>(theme: &Theme, state: &FeaWorkbenchState) -> Vec<Line<'
             if let Some(m) = sm.margin {
                 lines.push(tone(if m >= 0.0 { StatusTone::Success } else { StatusTone::Danger }, format!("Yield margin     {m:+.2} (yield / peak von Mises - 1)")));
             }
+            if let Some(q) = &sm.plastic {
+                lines.push(tone(
+                    if q.max_strain > 0.0 { StatusTone::Warning } else { StatusTone::Success },
+                    format!("Plastic strain   peak {:.3e}, {:.0} % of the Gauss points yielded ({} load steps, {} Newton iterations)", q.max_strain, 100.0 * q.yielded_fraction, q.load_steps, q.newton_iterations),
+                ));
+            }
             lines.push(Line::from(format!("Reactions        ({:.2}, {:.2}, {:.2})", sm.reaction[0], sm.reaction[1], sm.reaction[2])));
         }
         lines.push(Line::from(Span::styled(format!("{} nodes, {} elements, {} dofs, solved in {:.0} ms ({} pass{})", sm.nodes, sm.elements, sm.dofs, sm.solve_ms, s.history.len(), if s.history.len() == 1 { "" } else { "es" }), theme.disabled_style())));
