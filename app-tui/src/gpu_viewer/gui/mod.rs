@@ -9,14 +9,15 @@ mod panels;
 pub mod theme;
 
 use super::{
-    controller::{Panel, Visible},
+    controller::{Command, Panel, UiAction, Visible},
+    display::Background,
     editor::{adapt::Adapt, authoring::StepState},
     results::GuiInput,
     menu::{palette_entries, Entry, Item, Outcome},
     menus::{self, MenuContext},
     ui::RibbonTab,
 };
-use egui::{Align2, Color32, Id, Order, Pos2, Rect, Vec2};
+use egui::{Align, Align2, Color32, Id, Layout, Order, Pos2, Rect, Vec2};
 use std::collections::{HashMap, HashSet};
 use theme::Palette;
 
@@ -55,6 +56,10 @@ pub struct Gui {
     collapsed: HashSet<u32>,
     palette: Option<PaletteState>,
     floating: Option<Floating>,
+    /// The custom background colour panel is open.
+    bg_picker: bool,
+    /// Where the floating list was drawn last frame (points).
+    floating_rect: Option<Rect>,
     hint: Option<String>,
     viewport: Option<Rect>,
     /// Interactive controls of the last frame by label, in points (tests click them).
@@ -102,6 +107,8 @@ impl Gui {
             collapsed: HashSet::new(),
             palette: None,
             floating: None,
+            bg_picker: false,
+            floating_rect: None,
             hint: None,
             viewport: None,
             targets: Vec::new(),
@@ -168,6 +175,12 @@ impl Gui {
             Panel::Properties => self.visible.properties = !self.visible.properties,
             Panel::Status => self.visible.status = !self.visible.status,
         }
+    }
+    pub fn toggle_background_picker(&mut self) {
+        self.bg_picker = !self.bg_picker;
+    }
+    pub fn background_picker_open(&self) -> bool {
+        self.bg_picker
     }
     pub fn open_palette(&mut self) {
         self.palette = Some(PaletteState { fresh: true, ..Default::default() });
@@ -237,6 +250,16 @@ impl Gui {
     #[cfg(test)]
     pub(crate) fn palette_open(&self) -> bool {
         self.palette.is_some()
+    }
+    /// Count and widest width (points) of the controls drawn inside `area`.
+    #[cfg(test)]
+    pub(crate) fn target_rects_inside(&self, area: Rect) -> (usize, f32) {
+        let inside: Vec<&Rect> = self.targets.iter().map(|(_, r)| r).filter(|r| area.contains_rect(**r)).collect();
+        (inside.len(), inside.iter().map(|r| r.width()).fold(0.0, f32::max))
+    }
+    #[cfg(test)]
+    pub(crate) fn floating_rect(&self) -> Option<Rect> {
+        self.floating_rect
     }
     #[cfg(test)]
     pub(crate) fn context_open(&self) -> bool {
@@ -325,6 +348,7 @@ impl Gui {
         self.start_card(ui.ctx(), input, &p, out, hint);
         self.selection_box(ui.ctx(), input, &p);
         self.floating_list(ui.ctx(), &p, out, hint);
+        self.background_picker(ui.ctx(), input.view.background, &p, out);
         self.palette_window(ui.ctx(), &menus, &p, out);
         self.adapt.frame_end();
     }
@@ -404,21 +428,71 @@ impl Gui {
         painter.rect(r, 2.0, p.accent.gamma_multiply(0.16), egui::Stroke::new(1.0, p.accent), egui::StrokeKind::Inside);
     }
 
+    /// The panel for custom viewport colours: one colour or a top-to-bottom gradient. Every change is applied at once.
+    fn background_picker(&mut self, ctx: &egui::Context, current: Background, p: &Palette, out: &mut Vec<Outcome>) {
+        if !self.bg_picker {
+            return;
+        }
+        let theme = self.background_rgb();
+        let (top, bottom) = current.colors(theme);
+        let (mut top, mut bottom, mut gradient) = (top, bottom, matches!(current, Background::Gradient { .. } | Background::GreyToWhite | Background::BlackToGrey));
+        let mut open = true;
+        let mut changed = false;
+        // Bottom left of the model: the tool pill owns the top, the inspector the right.
+        let at = self.viewport.map_or(Pos2::new(240.0, 400.0), |r| r.left_bottom() + Vec2::new(16.0, -16.0));
+        egui::Window::new("Background").id(Id::new("background-picker")).order(Order::Foreground).open(&mut open).collapsible(false).resizable(false).pivot(Align2::LEFT_BOTTOM).fixed_pos(at).frame(panels::popup_frame(p).inner_margin(egui::Margin::same(12))).show(ctx, |ui| {
+            changed |= ui.checkbox(&mut gradient, "Gradient (top to bottom)").changed();
+            ui.horizontal(|ui| {
+                changed |= egui::color_picker::color_edit_button_srgb(ui, &mut top).changed();
+                ui.label(if gradient { "Top" } else { "Colour" });
+            });
+            if gradient {
+                ui.horizontal(|ui| {
+                    changed |= egui::color_picker::color_edit_button_srgb(ui, &mut bottom).changed();
+                    ui.label("Bottom");
+                });
+            }
+        });
+        // A preset stays itself until a colour or the gradient switch is touched.
+        if changed {
+            let next = if gradient { Background::Gradient { top, bottom } } else { Background::Solid(top) };
+            out.push(Outcome::Action(UiAction::Command(Command::SetBackground(next))));
+        }
+        self.bg_picker = open;
+    }
+
     /// Right-click menu and the lists a click on the model asks for.
     fn floating_list(&mut self, ctx: &egui::Context, p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>) {
         let Some(f) = self.floating.take() else { return };
         let mut chosen = false;
         let resp = egui::Area::new(Id::new("floating-list")).fade_in(false).order(Order::Foreground).fixed_pos(f.at).constrain(true).show(ctx, |ui| {
             panels::popup_frame(p).show(ui, |ui| {
-                ui.set_min_width(210.0);
-                chosen = self.items_ui(ui, &f.items, p, out, hint);
+                ui.set_width(Self::list_width(ui, &f.items));
+                chosen = ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| self.items_ui(ui, &f.items, p, out, hint)).inner;
             });
         });
+        self.floating_rect = Some(resp.response.rect);
         let pressed_outside = ctx.input(|i| i.pointer.any_pressed()) && ctx.input(|i| i.pointer.interact_pos()).is_some_and(|q| !resp.response.rect.contains(q));
         let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
         if !(chosen || pressed_outside || escape) {
             self.floating = Some(f);
         }
+    }
+
+    /// Width a list of entries needs: the widest label plus its shortcut and the button padding.
+    fn list_width(ui: &egui::Ui, items: &[Item]) -> f32 {
+        let text = |t: egui::RichText| egui::WidgetText::from(t).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Button).size().x;
+        let pad = 2.0 * ui.spacing().button_padding.x + ui.spacing().icon_spacing;
+        let widest = items
+            .iter()
+            .map(|i| match i {
+                Item::Entry(e) if e.shortcut.is_empty() => text(egui::RichText::new(&e.label)) + pad,
+                Item::Entry(e) => text(egui::RichText::new(&e.label)) + text(egui::RichText::new(&e.shortcut).small()) + pad + 24.0,
+                Item::Heading(h) => text(egui::RichText::new(h).small()),
+                Item::Separator => 0.0,
+            })
+            .fold(0.0, f32::max);
+        widest.ceil().clamp(120.0, 420.0)
     }
 
     /// One list of entries: entries, separators and headings. True when an entry was chosen.
@@ -448,9 +522,6 @@ impl Gui {
         let mut b = egui::Button::new(label).selected(e.checked == Some(true));
         if !e.shortcut.is_empty() && wide {
             b = b.shortcut_text(egui::RichText::new(&e.shortcut).small().color(p.dim));
-        }
-        if wide {
-            b = b.min_size(Vec2::new(ui.available_width().max(190.0), 0.0));
         }
         let r = ui.add(b);
         self.targets.push((e.label.clone(), r.rect));

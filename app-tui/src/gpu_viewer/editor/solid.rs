@@ -184,6 +184,11 @@ fn preview_key(p: &Problem) -> Problem {
     Problem { supports: Vec::new(), loads: Vec::new(), delta_t: 0.0, name: String::new(), study: fea_problem::Study::default(), thermal: fea_problem::ThermalSpec::default(), ..p.clone() }
 }
 
+/// What the un-meshed body depends on: the geometry and the analysis, not the mesh settings, the loads or the name.
+fn body_key(p: &Problem) -> Problem {
+    Problem { mesh: fea_problem::MeshSpec { strategy: p.mesh.strategy, ..Default::default() }, bushings: Vec::new(), region_materials: Vec::new(), ..preview_key(p) }
+}
+
 struct Prompt {
     kind: EditKind,
     label: String,
@@ -191,6 +196,8 @@ struct Prompt {
     /// `None`: free text (the material search, or a file path when `open`).
     row: Option<FieldRow>,
     open: bool,
+    /// The text is a suggestion: the first key typed replaces it (a new load's placeholder value).
+    fresh: bool,
     /// A solid operation waiting for its number(s) (hole diameter, ...); `row` is `None`.
     op: Option<stepops::PromptOp>,
 }
@@ -230,6 +237,14 @@ pub struct SolidSession {
     preview: Option<Preview>,
     preview_error: Option<String>,
     preview_worker: Worker<PreviewOut>,
+    /// The un-meshed body of a 3D model (`fea_problem::solve::body_preview`), kept for the geometry it was made from.
+    body: Option<Preview>,
+    body_worker: Worker<PreviewOut>,
+    /// The geometry the running body job was started for, and the one that last failed (not retried until it changes).
+    /// The scene built last is the un-meshed body (`Authoring::shows_body_only`).
+    showing_body: bool,
+    body_started: Option<Problem>,
+    body_failed: Option<Problem>,
     solve_worker: Worker<Solved>,
     pub tool: SolidTool,
     pub bench: Bench,
@@ -295,6 +310,11 @@ impl SolidSession {
             preview: None,
             preview_error: None,
             preview_worker: Worker::new("solid-preview"),
+            body: None,
+            body_worker: Worker::new("solid-body"),
+            showing_body: false,
+            body_started: None,
+            body_failed: None,
             solve_worker: Worker::new("solid-solve"),
             tool: SolidTool::Select,
             bench: Bench::Static,
@@ -492,7 +512,7 @@ impl SolidSession {
                 }
             }
             Material => {
-                self.prompt = Some(Prompt { kind: EditKind::Text, label: "material search".into(), text: String::new(), row: None, open: false, op: None });
+                self.prompt = Some(Prompt { kind: EditKind::Text, label: "material search".into(), text: String::new(), row: None, open: false, fresh: false, op: None });
                 self.status = "Type part of a material name (e.g. 7075 T6), Enter picks the first match.".into();
             }
             Source => {
@@ -525,7 +545,7 @@ impl SolidSession {
     }
     fn begin_edit(&mut self, row: FieldRow, kind: EditKind, first: Option<char>) {
         let text = model::edit_start_text(&self.problem, row, kind, first);
-        self.prompt = Some(Prompt { kind, label: model::row_label(&self.problem, row), text, row: Some(row), open: false, op: None });
+        self.prompt = Some(Prompt { kind, label: model::row_label(&self.problem, row), text, row: Some(row), open: false, fresh: false, op: None });
         self.touch();
     }
     fn commit_prompt(&mut self) {
@@ -820,6 +840,17 @@ impl SolidSession {
             self.touch();
             changed = true;
         }
+        if let Some((_, answer)) = self.body_worker.poll() {
+            // A body that cannot be built simply is not shown (the sketch outline stays) and is not retried until the geometry changes.
+            match answer {
+                Ok(out) => {
+                    self.body = Some(Preview { key: out.key, mesh: Arc::new(out.mesh), names: out.names });
+                    self.touch();
+                    changed = true;
+                }
+                Err(_) => self.body_failed = self.body_started.take(),
+            }
+        }
         if let Some((_, answer)) = self.solve_worker.poll() {
             match answer {
                 Ok(solved) => {
@@ -846,7 +877,33 @@ impl SolidSession {
             changed = true;
         }
         changed |= self.poll_study();
+        changed |= self.maybe_start_body();
         changed | (self.mesh_requested && self.maybe_start_preview())
+    }
+    fn body_current(&self) -> bool {
+        self.body.as_ref().is_some_and(|b| b.key == body_key(&self.problem))
+    }
+    /// Build the un-meshed body of a 3D model whenever there is none for its geometry (and no analysis mesh either).
+    fn maybe_start_body(&mut self) -> bool {
+        let wanted = self.problem.analysis == fea_problem::Analysis::Solid && matches!(self.problem.geometry, Geometry::Sketch { .. });
+        if !wanted || self.sketching.is_some() || self.preview_current() || self.body_current() || self.body_worker.is_busy() || self.body_failed.as_ref() == Some(&body_key(&self.problem)) || self.problem.validate_geometry().is_err() {
+            return false;
+        }
+        let key = body_key(&self.problem);
+        self.body_started = Some(key.clone());
+        let (tag, job) = (self.take_tag(), self.problem.clone());
+        self.body_worker
+            .start(tag, move || {
+                let mesh = fea_problem::solve::body_preview(&job)?;
+                let names = fea_problem::build::mesh_names(&mesh);
+                Ok(PreviewOut { key, mesh, names })
+            })
+            .is_ok()
+    }
+    /// The mesh the viewport shows and picks on: the analysis mesh when it is current, else the body's.
+    fn shown_mesh(&self) -> Option<&Arc<Mesh>> {
+        let p = preview_key(&self.problem);
+        self.preview.as_ref().filter(|m| m.key == p).or_else(|| self.body.as_ref().filter(|b| b.key == body_key(&self.problem))).map(|m| &m.mesh)
     }
     fn maybe_start_preview(&mut self) -> bool {
         if self.sketching.is_some() || self.preview_worker.is_busy() {
@@ -935,6 +992,7 @@ impl SolidSession {
         scene
     }
     fn build_scene_inner(&mut self) -> Result<Scene, String> {
+        self.showing_body = false;
         if self.sketching.is_some() {
             self.pick_positions.clear();
             return self.sketch_scene();
@@ -948,15 +1006,13 @@ impl SolidSession {
             SceneSource::from_solved(&solved, solved.default_field()).build()?
         } else if let Some(p) = self.preview.as_ref().filter(|p| p.key == preview_key(&self.problem)) {
             let mesh = p.mesh.clone();
-            let codes = self.node_codes(&mesh);
-            let zero = vec![0.0; mesh.nodes.len() * mesh.dim()];
             let label = format!("{} | geometry: blue body, teal support, yellow load, red selected", self.problem.name);
-            let mut scene = Scene::from_frames(&mesh, &[zero], vec![0.0], &codes, label)?;
-            scene.range = [0.0, 3.0];
-            scene.field_label = "entity state (see color key)".into();
-            self.pick_positions = scene.positions.clone();
-            self.add_rings(&mut scene, refining::mesh_to_scene(&mesh), refining::ring_code);
-            scene
+            self.geometry_scene(&mesh, label, true)?
+        } else if let Some(mesh) = self.shown_mesh().cloned() {
+            // No analysis mesh yet: the body itself, with its supports and loads, ready to pick on.
+            let label = format!("{} | body (not meshed): blue body, teal support, yellow load, red selected", self.problem.name);
+            self.showing_body = true;
+            self.geometry_scene(&mesh, label, false)?
         } else {
             self.pick_positions.clear();
             let why = match (&self.preview_error, self.meshing()) {
@@ -969,13 +1025,26 @@ impl SolidSession {
         };
         Ok(scene)
     }
+    /// The model's geometry on `mesh` with the state of its entities (support, load, selected) as colours.
+    fn geometry_scene(&mut self, mesh: &Mesh, label: String, rings: bool) -> Result<Scene, String> {
+        let codes = self.node_codes(mesh);
+        let zero = vec![0.0; mesh.nodes.len() * mesh.dim()];
+        let mut scene = Scene::from_frames(mesh, &[zero], vec![0.0], &codes, label)?;
+        scene.range = [0.0, 3.0];
+        scene.field_label = "entity state (see color key)".into();
+        self.pick_positions = scene.positions.clone();
+        if rings {
+            self.add_rings(&mut scene, refining::mesh_to_scene(mesh), refining::ring_code);
+        }
+        Ok(scene)
+    }
     pub fn needs_scene(&self) -> bool {
         self.built != Some(self.version)
     }
 
     /// Name of the surface under a viewport pixel (nearest within `PICK_RADIUS`, front-most on ties).
     pub fn pick(&self, cam: &Camera, px: [f32; 2], size: [f32; 2]) -> Option<String> {
-        let mesh = &self.preview.as_ref()?.mesh;
+        let mesh = self.shown_mesh()?;
         pick_surface(mesh, &self.pick_positions, cam, px, size, PICK_RADIUS)
     }
 
@@ -1080,7 +1149,11 @@ impl SolidSession {
                     self.status.clear();
                 }
                 Key::Backspace => {
-                    prompt.text.pop();
+                    if std::mem::take(&mut prompt.fresh) {
+                        prompt.text.clear();
+                    } else {
+                        prompt.text.pop();
+                    }
                 }
                 Key::Enter => self.commit_prompt(),
                 Key::Char(c) => {
@@ -1089,6 +1162,9 @@ impl SolidSession {
                         EditKind::Component => is_edit_char(c) || c.is_ascii_alphabetic(),
                         _ => c.is_ascii_graphic() || c == ' ',
                     };
+                    if ok && std::mem::take(&mut prompt.fresh) {
+                        prompt.text.clear();
+                    }
                     if ok && prompt.text.len() < 200 {
                         prompt.text.push(c);
                     }
@@ -1205,8 +1281,8 @@ impl SolidSession {
         if self.prompt.is_some() || self.show_results || self.show_study {
             return;
         }
-        let Some(p) = self.preview.as_ref().filter(|p| p.key == preview_key(&self.problem)) else { return };
-        let found = surfaces_in_box(&p.mesh, &self.pick_positions, cam, a, b, size);
+        let Some(mesh) = self.shown_mesh().cloned() else { return };
+        let found = surfaces_in_box(&mesh, &self.pick_positions, cam, a, b, size);
         if !additive {
             self.clear_selection();
         }

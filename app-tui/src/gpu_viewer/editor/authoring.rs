@@ -155,6 +155,10 @@ pub trait Authoring {
     fn initial_view(&self) -> Option<crate::gpu_viewer::controller::StandardView> {
         None
     }
+    /// The scene is the model's body, not an analysis mesh: the mesh lines would draw its stand-in tessellation.
+    fn shows_body_only(&self) -> bool {
+        false
+    }
     /// Draw element edges when the window opens.
     fn default_mesh_lines(&self) -> bool {
         false

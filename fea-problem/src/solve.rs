@@ -1107,6 +1107,43 @@ pub fn preview(p: &Problem, import_text: Option<&str>) -> Result<Mesh, String> {
     }
 }
 
+/// The body of an extruded, revolved or swept model as a coarse surface mesh, without its analysis mesh: what the viewer
+/// shows before anyone has asked for the real mesh. Only the geometry matters (supports, loads, element choice, adaptive
+/// passes, refinement zones and the extrusion's layers are dropped); the size follows the part, fine enough that a
+/// circle is a smooth polygon. Needs a 3D model built from a sketch.
+pub fn body_preview(p: &Problem) -> Result<Mesh, String> {
+    use crate::history::Body;
+    let Geometry::Sketch { outer, depth, regions, holes, layers } = &p.geometry else { return Err("only a model built from a sketch has a body to show".into()) };
+    if p.analysis != Analysis::Solid {
+        return Err("a plane model has no body".into());
+    }
+    let extruded = p.history.as_ref().map_or(true, |h| h.rebuild().is_ok_and(|b| matches!(b.body, Body::Extrude { .. })));
+    let (lo, hi) = outer.bounds();
+    let diag = (hi[0] - lo[0]).hypot(hi[1] - lo[1]).max(*depth).max(1e-12);
+    let mut last = String::new();
+    for divisions in [36.0, 90.0, 220.0] {
+        let mut body = p.clone();
+        body.supports.clear();
+        body.loads.clear();
+        body.bushings.clear();
+        body.geometry = Geometry::Sketch { outer: outer.clone(), holes: holes.clone(), depth: *depth, layers: if extruded { 1 } else { *layers }, regions: regions.clone() };
+        body.mesh = crate::problem::MeshSpec {
+            size: diag / divisions,
+            hole_factor: 1.0,
+            adapt_passes: 0,
+            predict_sizes: false,
+            refine: Vec::new(),
+            element: crate::problem::ElementChoice::Quad4,
+            ..p.mesh.clone()
+        };
+        match preview(&body, None) {
+            Ok(mesh) => return Ok(mesh),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
 impl std::fmt::Debug for Solved {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Solved({}: {} nodes, {} elements)", self.problem.name, self.summary.nodes, self.summary.elements)

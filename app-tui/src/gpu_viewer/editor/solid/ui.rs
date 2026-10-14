@@ -238,6 +238,9 @@ impl Authoring for SolidSession {
     fn default_mesh_lines(&self) -> bool {
         true
     }
+    fn shows_body_only(&self) -> bool {
+        self.showing_body
+    }
     fn initial_view(&self) -> Option<crate::gpu_viewer::controller::StandardView> {
         (self.problem.analysis == fea_problem::Analysis::Solid).then_some(crate::gpu_viewer::controller::StandardView::Isometric)
     }
@@ -400,10 +403,9 @@ impl Authoring for SolidSession {
             return self.sketch_context();
         }
         let mut items = Vec::new();
-        if let Some(name) = self.selected.as_ref() {
-            let name = if self.multi.is_empty() { name.clone() } else { format!("{} surfaces", self.all_selected().len()) };
-            items.push(item(entry(&format!("Support on {name}"), "", SolidAction::SupportOnSelected)));
-            items.push(item(entry(&format!("Load on {name}"), "", SolidAction::LoadOnSelected)));
+        if self.selected.is_some() {
+            items.extend(self.surface_menu());
+            items.push(Item::Separator);
             items.push(item(entry("Assign to focused row", "", SolidAction::AssignSelection).when(self.assign_availability())));
             items.push(item(entry("Clear selection", "Esc", SolidAction::ClearSelection)));
             items.push(Item::Separator);

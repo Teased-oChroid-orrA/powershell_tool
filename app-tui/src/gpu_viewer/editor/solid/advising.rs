@@ -156,14 +156,50 @@ impl SolidSession {
             }
         }
         self.status = format!("Added a {} on {}.", kind.label(), names.join(", "));
+        // A load is useless at its placeholder value: ask for the magnitude at once.
+        if matches!(kind, BcKind::Pressure | BcKind::Bearing) {
+            let row = FieldRow::LoadParam(self.problem.loads.len() - 1, 0);
+            if let Some(i) = self.rows().iter().position(|r| *r == row) {
+                self.focus = i;
+                self.begin_edit(row, model::edit_kind(row), None);
+                if let Some(p) = self.prompt.as_mut() {
+                    p.fresh = true;
+                }
+            }
+        }
     }
 
-    /// Items of the surface popup: the kinds that fit the surface, in the rules' (or learned) order.
-    pub(super) fn boundary_items(&mut self) -> Vec<Item> {
+    /// What can be done to the selected surface(s), in one list: the boundary conditions that fit them (ranked), then
+    /// what is already applied there (edit its value, remove it). The right-click menu of a face and of a tree row.
+    pub(super) fn surface_menu(&self) -> Vec<Item> {
         let names = self.all_selected();
         let label = if names.len() == 1 { format!("'{}'", names[0]) } else { format!("{} surfaces", names.len()) };
-        let kinds = self.boundary_offer(names.first().map_or("", String::as_str));
-        let mut items: Vec<Item> = kinds.into_iter().map(|k| Item::Entry(Entry::new(format!("{} on {label}", capital(k.label())), "", ui(SolidAction::BoundaryKind(k))))).collect();
+        let entry = |text: String, a: SolidAction| Item::Entry(Entry::new(text, "", ui(a)));
+        let mut items: Vec<Item> = self.boundary_offer(names.first().map_or("", String::as_str)).into_iter().map(|k| entry(format!("{} on {label}", capital(k.label())), SolidAction::BoundaryKind(k))).collect();
+        let on = |edge: Option<&str>| edge.is_some_and(|e| names.iter().any(|n| n == e));
+        let mut applied = Vec::new();
+        for (i, sup) in self.problem.supports.iter().enumerate() {
+            if on(sup.edge()) {
+                applied.push(entry(format!("Remove support on '{}'", sup.edge().unwrap_or_default()), SolidAction::Activate(FieldRow::SupportRemove(i))));
+            }
+        }
+        for (i, load) in self.problem.loads.iter().enumerate() {
+            if on(load.edge()) {
+                let edge = load.edge().unwrap_or_default();
+                applied.push(entry(format!("Edit the load on '{edge}'..."), SolidAction::Activate(FieldRow::LoadParam(i, 0))));
+                applied.push(entry(format!("Remove the load on '{edge}'"), SolidAction::Activate(FieldRow::LoadRemove(i))));
+            }
+        }
+        if !applied.is_empty() {
+            items.push(Item::Separator);
+            items.extend(applied);
+        }
+        items
+    }
+
+    /// Items of the surface popup a click on the model asks for.
+    pub(super) fn boundary_items(&mut self) -> Vec<Item> {
+        let mut items = self.surface_menu();
         items.push(Item::Entry(Entry::new("Assign to focused row", "", ui(SolidAction::AssignSelection)).when(self.assign_availability())));
         items
     }

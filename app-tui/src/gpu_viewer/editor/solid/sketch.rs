@@ -55,7 +55,7 @@ impl SolidSession {
     }
     /// Model-space point under the pixel on the part's front face (`z` = top of the extrusion, or 0 for a 2D model).
     fn front_face_point(&self, cam: &Camera, px: [f32; 2], size: [f32; 2]) -> Option<[f64; 2]> {
-        let mesh = &self.preview.as_ref().filter(|p| p.key == preview_key(&self.problem))?.mesh;
+        let mesh = self.shown_mesh()?;
         let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
         for p in &mesh.nodes {
             for a in 0..3 {

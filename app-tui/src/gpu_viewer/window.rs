@@ -4,6 +4,7 @@
 use super::{
     bench::Bench,
     controller::{Command, LayoutOp, PanGesture, Pointer, UiAction, ViewState},
+    display::DisplaySettings,
     editor::{
         authoring::Authoring,
         camera::Camera,
@@ -71,6 +72,8 @@ struct Viewer {
     test_time: f64,
     /// When the learned layout was last written.
     layout_flushed: Instant,
+    /// Where the display style and background persist (`DisplaySettings::path`); `None` in tests.
+    display_file: Option<std::path::PathBuf>,
     /// Interactive model editor, when this window was opened as one.
     editor: Option<Box<dyn Authoring>>,
 }
@@ -150,6 +153,7 @@ impl Viewer {
             }
             UiAction::SwitchBench(b) => self.switch_bench(b),
             UiAction::OpenPalette => self.gui.open_palette(),
+            UiAction::BackgroundPicker => self.gui.toggle_background_picker(),
             UiAction::Editor(a) => {
                 if let Some(ed) = &mut self.editor {
                     ed.act(a);
@@ -388,7 +392,25 @@ impl Viewer {
     }
     fn command(&mut self, command: Command) {
         let scene = &self.project.scenes[self.project.selected];
+        let before = (self.view.style, self.view.background);
         self.view.apply(command, scene);
+        if before != (self.view.style, self.view.background) {
+            self.save_display();
+        }
+    }
+    /// Take the stored display style and background and keep them up to date from now on.
+    fn attach_display_store(&mut self, path: Option<std::path::PathBuf>) {
+        if let Some(p) = &path {
+            let s = DisplaySettings::load_from(p);
+            (self.view.style, self.view.background) = (s.style, s.background);
+        }
+        self.display_file = path;
+    }
+    fn save_display(&mut self) {
+        let Some(path) = &self.display_file else { return };
+        if let Err(e) = (DisplaySettings { style: self.view.style, background: self.view.background }).save_to(path) {
+            self.error = Some(format!("could not save the display settings: {e}"));
+        }
     }
 
     /// One unit of window input.
@@ -569,7 +591,7 @@ impl Viewer {
         }
         let vp = self.viewport();
         let size = self.window_size();
-        let background = self.gui.background_rgb();
+        let background = self.view.background.colors(self.gui.background_rgb());
         // An empty model has nothing to draw (the start card says how to begin): clear the viewport only.
         let empty = self.editor.as_ref().is_some_and(|e| !e.start_options().is_empty());
         let scene_rect = if empty { [vp.x, vp.y, 0, 0] } else { [vp.x, vp.y, vp.w, vp.h] };
@@ -585,7 +607,7 @@ impl Viewer {
                         self.view.time,
                         if self.view.deformed { self.view.gain } else { 0.0 },
                         [self.view.yaw, self.view.pitch, self.view.zoom, vp.w.max(1) as f32 / vp.h.max(1) as f32],
-                        DisplayOptions { show_mesh: self.view.show_mesh, show_contour: self.view.show_contour, field: self.view.field, viewport: Some(scene_rect), background: Some(background), pan: self.view.pan },
+                        DisplayOptions { show_mesh: self.view.show_mesh && !self.editor.as_ref().is_some_and(|e| e.shows_body_only()), show_contour: self.view.show_contour, field: self.view.field, viewport: Some(scene_rect), background: Some(background), style: self.view.style_for(&self.project.scenes[self.project.selected]), shade: self.project.scenes[self.project.selected].fields.is_empty(), pan: self.view.pan },
                     );
                     r.paint_egui(&view, &ctx, full.take().expect("painted once"), [size.0, size.1]);
                     r.queue.present(frame);
@@ -725,6 +747,7 @@ fn new_viewer(project: ViewerProject, editor: Option<Box<dyn Authoring>>) -> Vie
         test_events: Vec::new(),
         test_time: 0.0,
         layout_flushed: Instant::now(),
+        display_file: None,
         editor,
     }
 }
@@ -733,6 +756,7 @@ fn launch(project: ViewerProject, editor: Option<Box<dyn Authoring>>) -> Result<
     let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
     let mut app = new_viewer(project, editor);
     app.gui.attach_layout_store();
+    app.attach_display_store(DisplaySettings::path());
     event_loop.run_app(&mut app).map_err(|e| e.to_string())?;
     if app.editor.as_ref().is_some_and(|ed| ed.dirty()) {
         eprintln!("note: the model had unsaved changes when the window closed");
@@ -743,6 +767,7 @@ fn launch(project: ViewerProject, editor: Option<Box<dyn Authoring>>) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gpu_viewer::display::{Background, DisplayStyle};
     use crate::gpu_viewer::editor::session::Session;
 
     #[test]
@@ -917,6 +942,49 @@ mod tests {
             }
             assert!(v.gui.context_open(), "menu closed after a right click at {fx},{fy}");
         }
+    }
+
+    #[test]
+    fn the_display_style_and_background_persist_between_sessions_and_the_picker_toggles() {
+        let path = std::env::temp_dir().join(format!("window-display-{}", std::process::id())).join("display.json");
+        let _ = std::fs::remove_file(&path);
+        let mut v = member_viewer();
+        v.attach_display_store(Some(path.clone()));
+        assert_eq!(v.view.style, DisplayStyle::Wireframe);
+        v.dispatch(UiAction::Command(Command::SetStyle(DisplayStyle::HiddenLinesRemoved)));
+        v.dispatch(UiAction::Command(Command::SetBackground(Background::BlackToGrey)));
+        let mut next = member_viewer();
+        next.attach_display_store(Some(path.clone()));
+        assert_eq!((next.view.style, next.view.background), (DisplayStyle::HiddenLinesRemoved, Background::BlackToGrey));
+        // Another command leaves the stored choice alone (and a viewer without a store never writes).
+        let mut free = member_viewer();
+        free.dispatch(UiAction::Command(Command::SetStyle(DisplayStyle::Shaded)));
+        assert_eq!(DisplaySettings::load_from(&path).style, DisplayStyle::HiddenLinesRemoved);
+        assert!(!v.gui.background_picker_open());
+        v.dispatch(UiAction::BackgroundPicker);
+        frame(&mut v);
+        assert!(v.gui.background_picker_open());
+        v.dispatch(UiAction::BackgroundPicker);
+        assert!(!v.gui.background_picker_open());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// The right-click list is as large as its entries, not as large as the room the window leaves it.
+    #[test]
+    fn the_context_menu_is_sized_to_its_entries() {
+        let mut v = member_viewer();
+        let vp = v.viewport();
+        move_to(&mut v, (vp.x as f64 + 0.3 * vp.w as f64, vp.y as f64 + 0.3 * vp.h as f64));
+        v.input(Input::Press(MouseButton::Right));
+        v.input(Input::Release(MouseButton::Right));
+        for _ in 0..3 {
+            frame(&mut v);
+        }
+        let area = v.gui.floating_rect().expect("menu open");
+        let (rows, widest) = v.gui.target_rects_inside(area);
+        eprintln!("area {area:?} rows {rows} widest {widest}");
+        assert!(rows > 0);
+        assert!(area.width() < 380.0 && area.width() <= widest + 24.0, "menu {} wide for entries {} wide", area.width(), widest);
     }
 
     #[test]

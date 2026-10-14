@@ -62,7 +62,7 @@ impl SolidSession {
             self.status = e;
             return;
         }
-        self.prompt = Some(Prompt { kind: EditKind::Text, label: op.label().into(), text: String::new(), row: None, open: false, op: Some(op) });
+        self.prompt = Some(Prompt { kind: EditKind::Text, label: op.label().into(), text: String::new(), row: None, open: false, fresh: false, op: Some(op) });
         self.status = "Type the size and press Enter (Esc cancels).".into();
         self.touch();
     }

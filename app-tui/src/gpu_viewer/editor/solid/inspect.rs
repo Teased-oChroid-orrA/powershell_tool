@@ -170,14 +170,7 @@ impl SolidSession {
         let entry = |label: String, a: SolidAction| Entry::new(label, "", ui(a));
         let mut out: Vec<Item> = Vec::new();
         if (T_SURFACE_BASE..super::sketching::T_HISTORY_BASE).contains(&node) {
-            let names = self.all_selected();
-            let label = if names.len() == 1 { format!("'{}'", names[0]) } else { format!("{} surfaces", names.len()) };
-            let kinds = self.boundary_offer(names.first().map_or("", String::as_str));
-            out.extend(kinds.into_iter().map(|k| {
-                let text = k.label();
-                Item::Entry(entry(format!("{}{} on {label}", text[..1].to_uppercase(), &text[1..]), SolidAction::BoundaryKind(k)))
-            }));
-            out.push(Item::Entry(entry("Assign to focused row".into(), SolidAction::AssignSelection).when(self.assign_availability())));
+            out.extend(self.surface_menu());
             return out;
         }
         if node >= super::sketching::T_HISTORY_BASE {

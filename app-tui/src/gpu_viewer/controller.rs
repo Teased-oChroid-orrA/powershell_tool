@@ -1,7 +1,10 @@
 //! Pure viewer controller: display state and the commands that change it. The winit runner only
 //! maps input to `Command`; nothing here touches the window or the GPU, so every operation is
 //! unit-testable and a future in-window panel or editor can issue the same commands.
-use super::Scene;
+use super::{
+    display::{Background, DisplayStyle},
+    Scene,
+};
 
 pub const DEFAULT_ZOOM: f32 = 1.6;
 pub const MIN_ZOOM: f32 = 0.1;
@@ -37,6 +40,10 @@ pub enum Command {
     StandardView(StandardView),
     /// Select scalar field `n` (0 = the primary one); a stale index falls back to the primary.
     SetField(usize),
+    /// Draw the model as shaded, with edges, hidden lines visible / removed, or wireframe.
+    SetStyle(DisplayStyle),
+    /// The viewport background.
+    SetBackground(Background),
 }
 
 /// CAD standard views, defined by where the viewer stands: front at -z (x right, y up on the screen),
@@ -98,6 +105,8 @@ pub enum UiAction {
     SelectResult(usize),
     /// Adaptive layout controls (Window menu).
     Layout(LayoutOp),
+    /// Open or close the background colour picker (View menu).
+    BackgroundPicker,
     /// Close the window.
     Quit,
 }
@@ -155,6 +164,8 @@ pub struct ViewState {
     /// 0 = the scene's primary scalar, k = `scene.fields[k - 1]`.
     pub field: usize,
     pub show_help: bool,
+    pub style: DisplayStyle,
+    pub background: Background,
 }
 
 impl ViewState {
@@ -173,6 +184,8 @@ impl ViewState {
             pan: [0.0, 0.0],
             field: 0,
             show_help: false,
+            style: DisplayStyle::default(),
+            background: Background::default(),
         }
     }
 
@@ -183,6 +196,16 @@ impl ViewState {
         self.time = 0.0;
         self.speed = default_speed(scene);
         self.field = 0;
+    }
+
+    /// The style actually drawn: a result is always painted with its contour, so a style without a surface shows it
+    /// as shaded with edges. The chosen style is kept and returns with the model.
+    pub fn style_for(&self, scene: &Scene) -> DisplayStyle {
+        if !scene.fields.is_empty() && !self.style.paints_surface() {
+            DisplayStyle::ShadedEdges
+        } else {
+            self.style
+        }
     }
 
     /// Colour range of the selected field (falls back to the primary if the index is stale).
@@ -223,6 +246,8 @@ impl ViewState {
             Command::TogglePause => self.paused = !self.paused,
             Command::Rewind => self.time = 0.0,
             Command::ToggleMesh => self.show_mesh = !self.show_mesh,
+            Command::SetStyle(style) => self.style = style,
+            Command::SetBackground(background) => self.background = background,
             Command::ToggleContour => self.show_contour = !self.show_contour,
             Command::ToggleDeformation => self.deformed = !self.deformed,
             Command::ResetCamera => {

@@ -1,6 +1,7 @@
 //! Direct wgpu companion viewport. Scene construction is pure; process/window I/O belongs to runners.
 pub mod bench;
 pub mod controller;
+pub mod display;
 pub mod editor;
 #[cfg(feature = "gpu-viewer")]
 pub mod gui;

@@ -47,6 +47,35 @@ impl ScalarField {
     }
 }
 impl Scene {
+    /// The model's visible edges as vertex-index pairs: boundary edges (one triangle, or more than two) and creases whose
+    /// two faces differ by more than `crease_deg`. A flat triangulated face contributes only its outline, so the result
+    /// follows the shape and not the mesh density. Face orientation is ignored (a flat plate may mix windings).
+    pub fn feature_edges(&self, crease_deg: f32) -> Vec<u32> {
+        use std::collections::HashMap;
+        let p = |i: u32| self.positions[i as usize];
+        let mut edges: HashMap<(u32, u32), Vec<[f32; 3]>> = HashMap::new();
+        for t in self.triangles.chunks_exact(3) {
+            let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
+            let (u, v) = (std::array::from_fn::<f32, 3, _>(|k| b[k] - a[k]), std::array::from_fn::<f32, 3, _>(|k| c[k] - a[k]));
+            let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            let n = if len > 0.0 { [n[0] / len, n[1] / len, n[2] / len] } else { [0.0; 3] };
+            for (i, j) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                edges.entry((i.min(j), i.max(j))).or_default().push(n);
+            }
+        }
+        let cos = crease_deg.to_radians().cos();
+        let mut out: Vec<(u32, u32)> = edges
+            .into_iter()
+            .filter(|(_, ns)| match ns.as_slice() {
+                [a, b] => (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]).abs() < cos,
+                _ => true,
+            })
+            .map(|(e, _)| e)
+            .collect();
+        out.sort_unstable();
+        out.into_iter().flat_map(|(i, j)| [i, j]).collect()
+    }
     pub fn duration(&self) -> f32 {
         self.harmonic_period
             .unwrap_or_else(|| *self.times.last().unwrap_or(&0.0))
@@ -639,5 +668,34 @@ mod session_tests {
         assert_eq!(before, scene.samples);
         assert_eq!(scene.times, vec![0.0, 1.0]);
         assert!(scene.append_displacements(&[0.0; 8], 2, 1.0, 0.5).is_err());
+    }
+}
+
+#[cfg(test)]
+mod feature_edge_tests {
+    use super::*;
+    fn scene(positions: Vec<[f32; 3]>, triangles: Vec<u32>) -> Scene {
+        Scene { label: "t".into(), samples: vec![[0.0; 4]; positions.len()], positions, triangles, times: vec![0.0], range: [0.0, 1.0], gain: 1.0, harmonic_period: None, field_label: String::new(), fields: Vec::new() }
+    }
+    #[test]
+    fn a_cube_has_its_twelve_edges_and_no_face_diagonals() {
+        let v: Vec<[f32; 3]> = (0..8).map(|i| [(i & 1) as f32, ((i >> 1) & 1) as f32, ((i >> 2) & 1) as f32]).collect();
+        let quads = [[0, 1, 3, 2], [4, 6, 7, 5], [0, 4, 5, 1], [2, 3, 7, 6], [0, 2, 6, 4], [1, 5, 7, 3]];
+        let tris: Vec<u32> = quads.iter().flat_map(|q| [q[0], q[1], q[2], q[0], q[2], q[3]]).collect();
+        let e = scene(v, tris).feature_edges(30.0);
+        assert_eq!(e.len() / 2, 12, "{e:?}");
+    }
+    #[test]
+    fn a_flat_face_is_its_outline_whatever_its_triangulation_or_winding() {
+        // A 2 x 1 grid of squares, the second one wound the other way: 6 outline edges, the two diagonals and the shared edge are not features.
+        let v = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [2.0, 1.0, 0.0]];
+        let e = scene(v, vec![0, 1, 4, 0, 4, 3, 1, 4, 2, 2, 4, 5]).feature_edges(30.0);
+        assert_eq!(e.len() / 2, 6, "{e:?}");
+    }
+    #[test]
+    fn a_gentle_fold_is_smooth_and_a_sharp_one_is_an_edge() {
+        let fold = |h: f32| scene(vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, h], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [2.0, 1.0, h]], vec![0, 1, 4, 0, 4, 3, 1, 2, 5, 1, 5, 4]).feature_edges(30.0).len() / 2;
+        assert_eq!(fold(0.1), 6, "a 6 degree fold is not a feature");
+        assert_eq!(fold(1.5), 7, "a 56 degree fold is");
     }
 }

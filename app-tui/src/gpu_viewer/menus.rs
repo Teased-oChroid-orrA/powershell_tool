@@ -5,6 +5,7 @@
 use super::{
     bench::Bench,
     controller::{Command, LayoutOp, Panel, StandardView, UiAction, ViewState, Visible},
+    display::{Background, DisplayStyle},
     editor::authoring::Authoring,
     menu::{Entry, Item, Menu},
     ui::RibbonTab,
@@ -33,6 +34,8 @@ fn ok_if(e: Entry, ok: bool, why: &str) -> Entry {
 /// Display, orientation, animation and result-navigation entries, grouped as the ribbon shows them.
 struct ViewEntries {
     display: Vec<Entry>,
+    style: Vec<Entry>,
+    background: Vec<Entry>,
     orientation: Vec<Entry>,
     animation: Vec<Entry>,
     results: Vec<Entry>,
@@ -50,7 +53,20 @@ fn view_entries(c: &MenuContext) -> ViewEntries {
     }
     results.push(ok_if(cmd("Next field", "F", Command::CycleField { forward: true }), nfields > 1, "this result has a single field"));
     results.push(ok_if(cmd("Previous field", "Shift+F", Command::CycleField { forward: false }), nfields > 1, "this result has a single field"));
+    let shown = v.style_for(scene);
+    let style = DisplayStyle::ALL
+        .iter()
+        .map(|s| {
+            let colours = scene.fields.is_empty() || s.paints_surface();
+            ok_if(cmd(s.label(), "", Command::SetStyle(*s)).checked(shown == *s), colours, "a result is drawn with its colours: show the model (V) to use this style")
+        })
+        .collect();
+    let mut background: Vec<Entry> = Background::PRESETS.iter().map(|b| cmd(b.label(), "", Command::SetBackground(*b)).checked(v.background == *b)).collect();
+    let custom = matches!(v.background, Background::Solid(_) | Background::Gradient { .. });
+    background.push(Entry::new("Custom colours...", "", UiAction::BackgroundPicker).checked(custom));
     ViewEntries {
+        style,
+        background,
         display: vec![
             cmd("Mesh edges", "M", Command::ToggleMesh).checked(v.show_mesh),
             cmd("Contour", "C", Command::ToggleContour).checked(v.show_contour),
@@ -85,6 +101,12 @@ fn view_menu(c: &MenuContext) -> Menu {
     out.extend(items(e.results));
     out.push(Item::Separator);
     out.extend(items(e.display));
+    out.push(Item::Separator);
+    out.push(Item::Heading("Display style".into()));
+    out.extend(items(e.style));
+    out.push(Item::Separator);
+    out.push(Item::Heading("Background".into()));
+    out.extend(items(e.background));
     out.push(Item::Separator);
     out.extend(items(e.orientation));
     out.push(Item::Separator);
@@ -130,7 +152,7 @@ fn help_menu(c: &MenuContext) -> Menu {
 /// The ribbon's View tab (always last): display, orientation, animation, results.
 pub fn view_tab(c: &MenuContext) -> RibbonTab {
     let e = view_entries(c);
-    let mut tab = RibbonTab::new("View").group("Display", e.display).group("Orientation", e.orientation);
+    let mut tab = RibbonTab::new("View").group("Display", e.display).group("Style", e.style).group("Background", e.background).group("Orientation", e.orientation);
     if c.scene.duration() > 0.0 {
         tab = tab.group("Animation", e.animation);
     }
@@ -159,16 +181,41 @@ pub fn bar(c: &MenuContext) -> Vec<Menu> {
     menus
 }
 
-/// Right-click menu: the model's operations for the current selection, then the display toggles.
+/// Drop the entries that cannot run now (the menu bar and the palette keep them and say why) and the separators
+/// and headings that leave nothing under them: a context menu offers what the selection can do.
+fn applicable(items: Vec<Item>) -> Vec<Item> {
+    let mut out: Vec<Item> = Vec::new();
+    for item in items {
+        match item {
+            Item::Entry(e) if !e.enabled => {}
+            Item::Entry(e) => out.push(Item::Entry(e)),
+            other => {
+                // No leading or doubled separator or heading.
+                if !matches!(out.last(), None | Some(Item::Separator | Item::Heading(_))) || matches!(other, Item::Heading(_)) {
+                    out.push(other);
+                }
+            }
+        }
+    }
+    while matches!(out.last(), Some(Item::Separator | Item::Heading(_))) {
+        out.pop();
+    }
+    out
+}
+
+/// Right-click menu: what the model can do with the current selection, then the display toggles that apply (contour
+/// and deformation exist only for a result).
 pub fn context(c: &MenuContext) -> Vec<Item> {
-    let mut items = c.editor.map(|e| e.context_menu()).unwrap_or_default();
+    let mut items = applicable(c.editor.map(|e| e.context_menu()).unwrap_or_default());
     if !items.is_empty() {
         items.push(Item::Separator);
     }
     let v = c.view;
     items.push(Item::Entry(cmd("Mesh edges", "M", Command::ToggleMesh).checked(v.show_mesh)));
-    items.push(Item::Entry(cmd("Contour", "C", Command::ToggleContour).checked(v.show_contour)));
-    items.push(Item::Entry(cmd("Deformation", "D", Command::ToggleDeformation).checked(v.deformed)));
+    if !c.scene.fields.is_empty() {
+        items.push(Item::Entry(cmd("Contour", "C", Command::ToggleContour).checked(v.show_contour)));
+        items.push(Item::Entry(cmd("Deformation", "D", Command::ToggleDeformation).checked(v.deformed)));
+    }
     items.push(Item::Entry(cmd("Reset camera", "R", Command::ResetCamera)));
     items
 }
@@ -320,8 +367,11 @@ mod tests {
     fn context_menu_lists_selection_properties_and_gated_operations() {
         let (v, s, mut ed) = (ViewState::new(&scene()), scene(), session());
         let empty = context(&ctx(&v, &s, Some(&ed)));
-        assert!(!find(&empty, "Delete selection").enabled);
-        assert_eq!(find(&empty, "Delete selection").reason.as_deref(), Some("select a node or member first"));
+        let has = |items: &[Item], label: &str| items.iter().any(|i| matches!(i, Item::Entry(e) if e.label == label));
+        assert!(!has(&empty, "Delete selection"), "an operation that cannot run is not offered");
+        assert!(empty.iter().all(|i| !matches!(i, Item::Entry(e) if !e.enabled)));
+        let delete = find(&bar(&ctx(&v, &s, Some(&ed))).into_iter().find(|m| m.title == "Edit").unwrap().items, "Delete selection").clone();
+        assert_eq!(delete.reason.as_deref(), Some("select a node or member first"), "the menu bar still explains it");
         assert!(!empty.iter().any(|i| matches!(i, Item::Entry(e) if e.label.starts_with("Edit ") && !e.label.starts_with("Edit plane"))), "nothing selected: only the working plane is editable");
         ed.state.commit(fea_problem::members::Edit::AddNode { pos: [1.0, 2.0, 0.0] }).unwrap();
         let id = ed.state.problem.nodes[0].id;
@@ -332,10 +382,40 @@ mod tests {
     }
 
     #[test]
+    fn the_view_menu_offers_every_style_and_background_and_a_result_keeps_its_surface() {
+        let (mut v, mut s) = (ViewState::new(&scene()), scene());
+        let menu = |v: &ViewState, s: &Scene| bar(&ctx(v, s, None)).into_iter().find(|m| m.title == "View").unwrap().items;
+        let view = menu(&v, &s);
+        for style in DisplayStyle::ALL {
+            assert_eq!(find(&view, style.label()).checked, Some(style == DisplayStyle::Wireframe), "{style:?}: wireframe is the default");
+        }
+        for b in Background::PRESETS {
+            assert_eq!(find(&view, b.label()).checked, Some(b == Background::Theme));
+        }
+        assert_eq!(find(&view, "Custom colours...").checked, Some(false));
+        v.apply(Command::SetBackground(Background::Solid([1, 2, 3])), &s);
+        assert_eq!(find(&menu(&v, &s), "Custom colours...").checked, Some(true));
+        // A result is painted with its contour: the styles without a surface are unavailable and it shows shaded with edges.
+        s.fields.push(crate::gpu_viewer::scene::ScalarField::from_f64("f", &[0.0, 1.0]).unwrap());
+        let view = menu(&v, &s);
+        assert!(!find(&view, "Wireframe").enabled && find(&view, "Wireframe").reason.is_some());
+        assert!(find(&view, "Shaded").enabled);
+        assert_eq!(find(&view, "Shaded with edges").checked, Some(true));
+        assert_eq!(v.style, DisplayStyle::Wireframe, "the chosen style is kept for the model");
+        // The ribbon's View tab offers them too.
+        let tab = view_tab(&ctx(&v, &s, None));
+        assert!(tab.groups.iter().any(|g| g.title == "Style") && tab.groups.iter().any(|g| g.title == "Background"));
+    }
+
+    #[test]
     fn viewer_context_menu_is_the_display_toggles() {
-        let (v, s) = (ViewState::new(&scene()), scene());
+        let (v, mut s) = (ViewState::new(&scene()), scene());
+        let items = context(&ctx(&v, &s, None));
+        assert_eq!(find(&items, "Mesh edges").checked, Some(false));
+        let has = |items: &[Item], label: &str| items.iter().any(|i| matches!(i, Item::Entry(e) if e.label == label));
+        assert!(!has(&items, "Contour") && !has(&items, "Deformation"), "no result, no contour or deformation");
+        s.fields.push(crate::gpu_viewer::scene::ScalarField::from_f64("f", &[0.0, 1.0]).unwrap());
         let items = context(&ctx(&v, &s, None));
         assert_eq!(find(&items, "Contour").checked, Some(true));
-        assert_eq!(find(&items, "Mesh edges").checked, Some(false));
     }
 }

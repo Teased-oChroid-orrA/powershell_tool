@@ -316,3 +316,33 @@ Records: `docs/issue-12-phase-24.md`, `docs/adr/ADR-015-parametric-sketch-histor
 - Pitfall: `rank::Ranker::record` takes `&mut self` and returns the refit summary; ignore it with `let _` only where no
   panel shows `last_fit`.
 
+## Native window: display styles, backgrounds, un-meshed body (2026-10-14)
+
+- **Display style** (`gpu_viewer/display.rs`, `ViewState::style`, `Command::SetStyle`): Shaded, Shaded with edges, Hidden lines visible
+  (HLV), Hidden lines removed (HLR), **Wireframe (the default)**. Edges are the model's *feature edges* (`Scene::feature_edges`: boundary
+  edges plus creases over 35 degrees, so a flat face is its outline whatever its mesh), never the mesh's triangles; the mesh is the
+  separate `Mesh edges` overlay (`show_mesh`) drawn over the body. Render passes per style (`Renderer::draw_display`): background
+  gradient pass, then the surface (colour for Shaded*, depth-only `depth_pipeline` for HLR/HLV, none for Wireframe), HLV's dimmed hidden
+  edges (depth `Always`), the visible edges (`LessEqual`, pulled toward the camera in `shader.wgsl::vs_mesh`), the mesh overlay. A result
+  keeps its contour: `ViewState::style_for` turns a style without a surface into Shaded with edges while a result is shown, and the
+  View menu disables those styles with the reason. Lines are 1 px (wgpu `LineList`); thicker edges need quads.
+- **Background** (`display::Background`, View menu presets + `Custom colours...` panel `Gui::background_picker`): theme, black, white,
+  grey, grey-to-white and black-to-grey gradients, custom solid or gradient. Style and background persist in
+  `<app data>/fea-editor/display.json` (`DisplaySettings`; only `window::launch` attaches it, tests never touch the user's file).
+  Edge and mesh line colours follow the background's luminance (`display::line_colors`).
+- **Un-meshed body**: a 3D sketch-based model (extrude / revolve / sweep) builds `fea_problem::solve::body_preview` on its own worker
+  (`SolidSession::body`, keyed by `body_key`: geometry only) so the solid is visible before *Generate mesh*; the analysis mesh then
+  replaces it (`shown_mesh`). Picking and box select work on the body. A failing body is remembered (`body_failed`) and not retried
+  every frame. It is a coarse mesh drawn through the same scene path, so `Authoring::shows_body_only` suppresses the mesh overlay
+  while it is shown: the mesh lines appear (on top of the body) only once the real mesh exists.
+- **Context menu** (`menus::context`) offers what the selection can do: entries that cannot run are dropped (the menu bar and the palette
+  keep them and say why), Contour/Deformation appear only for a result, and the list is as wide as its widest entry
+  (`Gui::list_width`; `ui.available_width()` inside an `Area` made it screen-wide). Place a new floating panel away from the tool pill (top)
+  and the inspector (right).
+- Render checks: `-- --ignored display_styles_paint_what_cad_says`, and the RGBA dumps `body_styles_snapshot` (`FEA_SNAPSHOT_BODY_OUT`)
+  and `context_menu_snapshot` (`FEA_SNAPSHOT_MENU_OUT`) for a visual review.
+- **Surface menu** (`SolidSession::surface_menu`, one list for a face's right-click, a tree row and the click popup): the boundary conditions
+  that fit the selected face(s) (ranked), then what is already applied there (edit / remove). Adding a pressure or pin load opens its
+  magnitude prompt at once with `Prompt::fresh` (the first key typed replaces the placeholder). Styles without a surface still fill
+  state-coloured faces (`fs_highlight`, geometry view only). The background pass covers the whole window, not just the viewport: a
+  gradient that stopped at the viewport rectangle left a darker strip behind the right-hand dock.

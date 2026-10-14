@@ -1,4 +1,4 @@
-use super::Scene;
+use super::{display::{line_colors, DisplayStyle}, Scene};
 use wgpu::util::DeviceExt;
 #[cfg(test)]
 static HEADLESS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -34,13 +34,29 @@ struct Params {
     camera: [f32; 4],
     /// `xy`: screen-space shift of the view in NDC.
     pan: [f32; 4],
+    /// Linear colours of the feature edges, the hidden edges, the mesh lines and the background's top and bottom.
+    line: [f32; 4],
+    hidden: [f32; 4],
+    mesh: [f32; 4],
+    bg_top: [f32; 4],
+    bg_bottom: [f32; 4],
 }
+
+/// Two faces meeting at more than this angle share a visible edge.
+const FEATURE_CREASE_DEG: f32 = 35.0;
 
 pub struct Renderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pipeline: wgpu::RenderPipeline,
     mesh_pipeline: wgpu::RenderPipeline,
+    /// The surface written to the depth buffer only (hidden-line styles).
+    depth_pipeline: wgpu::RenderPipeline,
+    edge_pipeline: wgpu::RenderPipeline,
+    /// Only the state-coloured faces (support, load, selection), for the styles without a surface.
+    highlight_pipeline: wgpu::RenderPipeline,
+    hidden_pipeline: wgpu::RenderPipeline,
+    bg_pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     bind: wgpu::BindGroup,
     uniform: wgpu::Buffer,
@@ -49,6 +65,9 @@ pub struct Renderer {
     count: u32,
     edges: wgpu::Buffer,
     edge_count: u32,
+    /// The model's feature edges (`Scene::feature_edges`).
+    feature: wgpu::Buffer,
+    feature_count: u32,
     depth: wgpu::TextureView,
     size: (u32, u32),
     /// Paints the egui chrome over the scene (`paint_egui`).
@@ -67,14 +86,17 @@ pub struct DisplayOptions {
     /// Pixel rectangle `[x, y, width, height]` the scene is drawn into (docked UI panels surround it);
     /// `None` is the whole target. The caller passes the matching aspect in the camera parameters.
     pub viewport: Option<[u32; 4]>,
-    /// Clear colour (sRGB) behind the model; `None` is the dark default.
-    pub background: Option<[u8; 3]>,
+    /// Background (sRGB) behind the model as `(top, bottom)`; `None` is the dark default.
+    pub background: Option<([u8; 3], [u8; 3])>,
+    pub style: DisplayStyle,
+    /// Light the surface (a geometry view); a result keeps its contour colours exact.
+    pub shade: bool,
     /// Screen-space shift of the view in NDC units.
     pub pan: [f32; 2],
 }
 impl Default for DisplayOptions {
     fn default() -> Self {
-        Self { show_mesh: false, show_contour: true, field: 0, viewport: None, background: None, pan: [0.0, 0.0] }
+        Self { show_mesh: false, show_contour: true, field: 0, viewport: None, background: None, style: DisplayStyle::Shaded, shade: false, pan: [0.0, 0.0] }
     }
 }
 
@@ -196,37 +218,61 @@ impl Renderer {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("FEA surface"),
+        let make = |label: &str, vs: &str, fs: &str, lines: bool, depth_write: bool, compare: wgpu::CompareFunction, colour: wgpu::ColorWrites| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pl),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some(vs),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout { array_stride: 12, step_mode: wgpu::VertexStepMode::Vertex, attributes: &wgpu::vertex_attr_array![0=>Float32x3] })],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(fs),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: colour })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: if lines { wgpu::PrimitiveTopology::LineList } else { wgpu::PrimitiveTopology::TriangleList },
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(depth_write),
+                    depth_compare: Some(compare),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        use wgpu::CompareFunction::{Always, Less, LessEqual};
+        let pipeline = make("FEA surface", "vs", "fs", false, true, Less, wgpu::ColorWrites::ALL);
+        let depth_pipeline = make("FEA surface depth only", "vs", "fs", false, true, Less, wgpu::ColorWrites::empty());
+        let mesh_pipeline = make("FEA mesh overlay", "vs_mesh", "fs_mesh", true, false, LessEqual, wgpu::ColorWrites::ALL);
+        let highlight_pipeline = make("FEA highlighted faces", "vs_mesh", "fs_highlight", false, false, LessEqual, wgpu::ColorWrites::ALL);
+        let edge_pipeline = make("FEA feature edges", "vs_mesh", "fs_edge", true, false, LessEqual, wgpu::ColorWrites::ALL);
+        let hidden_pipeline = make("FEA hidden edges", "vs_mesh", "fs_hidden", true, false, Always, wgpu::ColorWrites::ALL);
+        let bg_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("FEA background"),
             layout: Some(&pl),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: 12,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0=>Float32x3],
-                })],
-            },
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_bg"), compilation_options: Default::default(), buffers: &[] },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: Some("fs"),
+                entry_point: Some("fs_bg"),
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
+                targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
             }),
-            primitive: wgpu::PrimitiveState {
-                cull_mode: None,
-                ..Default::default()
-            },
+            primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
+                depth_write_enabled: Some(false),
+                depth_compare: Some(Always),
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
@@ -245,49 +291,16 @@ impl Renderer {
             usage: wgpu::BufferUsages::INDEX,
         });
         let depth = Self::depth(&device, width, height);
-        let mesh_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("FEA mesh overlay"),
-            layout: Some(&pl),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_mesh"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: 12,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0=>Float32x3],
-                })],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_mesh"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::LineList,
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            multiview_mask: None,
-            cache: None,
-        });
         let edge_data = Self::edge_indices(scene);
         let edges = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("mesh edges"),
             contents: bytemuck::cast_slice(&edge_data),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        let feature_data = scene.feature_edges(FEATURE_CREASE_DEG);
+        let feature = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("feature edges"),
+            contents: bytemuck::cast_slice(&feature_data),
             usage: wgpu::BufferUsages::INDEX,
         });
         Ok(Self {
@@ -295,6 +308,13 @@ impl Renderer {
             queue,
             pipeline,
             mesh_pipeline,
+            depth_pipeline,
+            edge_pipeline,
+            highlight_pipeline,
+            hidden_pipeline,
+            bg_pipeline,
+            feature,
+            feature_count: feature_data.len() as u32,
             layout,
             bind,
             uniform,
@@ -351,6 +371,13 @@ impl Renderer {
                 contents: bytemuck::cast_slice(&data),
                 usage: wgpu::BufferUsages::INDEX,
             });
+        let feature_data = scene.feature_edges(FEATURE_CREASE_DEG);
+        self.feature = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("feature edges"),
+            contents: bytemuck::cast_slice(&feature_data),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        self.feature_count = feature_data.len() as u32;
         self.bind = bind;
         self.vertices = vertices;
         self.indices = indices;
@@ -400,7 +427,7 @@ impl Renderer {
         camera: [f32; 4],
         options: DisplayOptions,
     ) {
-        let DisplayOptions { show_mesh, show_contour, field, viewport, background, pan } = options;
+        let DisplayOptions { show_mesh, show_contour, field, viewport, background, style, shade, pan } = options;
         // A stale index (result switched, field absent) falls back to the primary scalar.
         let field = if field <= scene.fields.len() { field } else { 0 };
         let range = match field.checked_sub(1) {
@@ -411,6 +438,13 @@ impl Renderer {
         let gain = scene.harmonic_period.map_or(gain, |period| {
             gain * (std::f32::consts::TAU * time / period).sin()
         });
+        let (top, bottom) = background.unwrap_or(([6, 8, 12], [6, 8, 12]));
+        let lines = line_colors(top, bottom);
+        let lin = |c: f32| {
+            if !self.srgb { c } else if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        };
+        let rgba = |c: [f32; 3]| [lin(c[0]), lin(c[1]), lin(c[2]), 1.0];
+        let rgb8 = |c: [u8; 3]| rgba(c.map(|v| f32::from(v) / 255.0));
         self.queue.write_buffer(
             &self.uniform,
             0,
@@ -419,11 +453,16 @@ impl Renderer {
                     a as u32,
                     b as u32,
                     scene.positions.len() as u32,
-                    u32::from(!show_contour) | (field as u32) << 8,
+                    u32::from(!show_contour) | u32::from(shade) << 1 | (field as u32) << 8,
                 ],
                 settings: [blend, gain, range[0], range[1]],
                 camera,
                 pan: [pan[0], pan[1], 0.0, 0.0],
+                line: rgba(lines.visible),
+                hidden: rgba(lines.hidden),
+                mesh: rgba(lines.mesh),
+                bg_top: rgb8(top),
+                bg_bottom: rgb8(bottom),
             }),
         );
         let mut encoder = self.device.create_command_encoder(&Default::default());
@@ -435,15 +474,9 @@ impl Renderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(match background {
-                            Some([r, g, b]) => {
-                                let lin = |c: u8| {
-                                    let c = f64::from(c) / 255.0;
-                                    if !self.srgb { c } else if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
-                                };
-                                wgpu::Color { r: lin(r), g: lin(g), b: lin(b), a: 1.0 }
-                            }
-                            None => wgpu::Color { r: 0.025, g: 0.03, b: 0.045, a: 1.0 },
+                        load: wgpu::LoadOp::Clear({
+                            let [r, g, b, _] = rgb8(top);
+                            wgpu::Color { r: f64::from(r), g: f64::from(g), b: f64::from(b), a: 1.0 }
                         }),
                         store: wgpu::StoreOp::Store,
                     },
@@ -467,21 +500,43 @@ impl Renderer {
                 [x, y, w.min(self.size.0 - x), h.min(self.size.1 - y)]
             });
             let draw_scene = vp[2] > 0 && vp[3] > 0;
+            pass.set_bind_group(0, &self.bind, &[]);
+            // The background covers the whole window (the docks and the strip beside the viewport show it too);
+            // the model is drawn into the viewport rectangle.
+            if background.is_some_and(|(t, b)| t != b) {
+                pass.set_viewport(0.0, 0.0, self.size.0 as f32, self.size.1 as f32, 0.0, 1.0);
+                pass.set_scissor_rect(0, 0, self.size.0, self.size.1);
+                pass.set_pipeline(&self.bg_pipeline);
+                pass.draw(0..3, 0..1);
+            }
             if draw_scene {
                 pass.set_viewport(vp[0] as f32, vp[1] as f32, vp[2] as f32, vp[3] as f32, 0.0, 1.0);
                 pass.set_scissor_rect(vp[0], vp[1], vp[2], vp[3]);
-            }
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.bind, &[]);
-            pass.set_vertex_buffer(0, self.vertices.slice(..));
-            pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-            if draw_scene {
-                pass.draw_indexed(0..self.count, 0, 0..1);
-            }
-            if show_mesh && draw_scene {
-                pass.set_pipeline(&self.mesh_pipeline);
-                pass.set_index_buffer(self.edges.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..self.edge_count, 0, 0..1);
+                pass.set_vertex_buffer(0, self.vertices.slice(..));
+                if style.occludes() {
+                    pass.set_pipeline(if style.paints_surface() { &self.pipeline } else { &self.depth_pipeline });
+                    pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..self.count, 0, 0..1);
+                }
+                if shade && !style.paints_surface() {
+                    pass.set_pipeline(&self.highlight_pipeline);
+                    pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..self.count, 0, 0..1);
+                }
+                if style.draws_edges() && self.feature_count > 0 {
+                    pass.set_index_buffer(self.feature.slice(..), wgpu::IndexFormat::Uint32);
+                    if style.draws_hidden_edges() {
+                        pass.set_pipeline(&self.hidden_pipeline);
+                        pass.draw_indexed(0..self.feature_count, 0, 0..1);
+                    }
+                    pass.set_pipeline(&self.edge_pipeline);
+                    pass.draw_indexed(0..self.feature_count, 0, 0..1);
+                }
+                if show_mesh {
+                    pass.set_pipeline(&self.mesh_pipeline);
+                    pass.set_index_buffer(self.edges.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..self.edge_count, 0, 0..1);
+                }
             }
         }
         self.queue.submit(Some(encoder.finish()));
@@ -582,6 +637,117 @@ impl Renderer {
             .chunks_exact(stride as usize)
             .flat_map(|row| row[..(width * 4) as usize].iter().copied())
             .collect()
+    }
+
+    #[cfg(test)]
+    fn cube() -> Scene {
+        let positions: Vec<[f32; 3]> = (0..8).map(|i| [(i & 1) as f32 - 0.5, ((i >> 1) & 1) as f32 - 0.5, ((i >> 2) & 1) as f32 - 0.5]).collect();
+        let quads = [[0, 1, 3, 2], [4, 6, 7, 5], [0, 4, 5, 1], [2, 3, 7, 6], [0, 2, 6, 4], [1, 5, 7, 3]];
+        Scene {
+            label: "cube".into(),
+            samples: vec![[0.0; 4]; 8],
+            positions,
+            triangles: quads.iter().flat_map(|q| [q[0], q[1], q[2], q[0], q[2], q[3]]).collect(),
+            times: vec![0.0],
+            range: [0.0, 1.0],
+            gain: 1.0,
+            harmonic_period: None,
+            field_label: String::new(),
+            fields: Vec::new(),
+        }
+    }
+
+    /// Surface-less styles still show the faces that carry a state (a support, a load, the selection), and the
+    /// background gradient covers the whole target, not only the viewport the model is drawn into.
+    #[test]
+    #[ignore = "requires a native graphics adapter"]
+    fn wireframe_highlights_state_faces_and_the_background_spans_the_window() {
+        let _guard = headless_guard();
+        pollster::block_on(async {
+            let adapter = test_adapter().await.expect("adapter required");
+            let mut scene = cube();
+            // The x = 0 face (vertices with bit 0 clear) is a load (code 2) on the geometry view's 0..3 scale.
+            for (i, s) in scene.samples.iter_mut().enumerate() {
+                s[3] = if i & 1 == 0 { 2.0 } else { 0.0 };
+            }
+            scene.range = [0.0, 3.0];
+            let (w, h) = (160u32, 160u32);
+            let renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+            let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let black = Some(([0u8; 3], [0u8; 3]));
+            let draw = |style, shade, viewport, background| {
+                renderer.draw_display(&texture.create_view(&Default::default()), &scene, 0.0, 1.0, [0.9, -0.4, 1.2, 1.0], DisplayOptions { style, shade, viewport, background, ..Default::default() });
+                read_back(&renderer, &texture)
+            };
+            let painted = |img: &[u8]| img.chunks_exact(4).filter(|p| p[..3].iter().any(|c| *c > 3)).count();
+            let plain = draw(DisplayStyle::Wireframe, false, None, black);
+            let lit = draw(DisplayStyle::Wireframe, true, None, black);
+            assert!(painted(&lit) > painted(&plain) + 500, "the state face is filled in wireframe: {} vs {}", painted(&lit), painted(&plain));
+            let hlr = draw(DisplayStyle::HiddenLinesRemoved, true, None, black);
+            assert!(painted(&hlr) > painted(&draw(DisplayStyle::HiddenLinesRemoved, false, None, black)), "and in hidden lines removed");
+            // The gradient reaches the pixels beside the viewport rectangle.
+            let img = draw(DisplayStyle::Wireframe, false, Some([60, 0, 40, 160]), Some(([0; 3], [200; 3])));
+            let px = |x: u32, y: u32| img[((y * w + x) * 4) as usize];
+            assert!(px(2, h - 3) > px(2, 2) + 150, "left strip: bottom {} top {}", px(2, h - 3), px(2, 2));
+            assert!(px(w - 3, h - 3) > px(w - 3, 2) + 150, "right strip: bottom {} top {}", px(w - 3, h - 3), px(w - 3, 2));
+        });
+    }
+
+    /// Each display style paints what CAD says: shaded fills the faces, wireframe only the edges, hidden lines
+    /// removed only the edges in front, hidden lines visible those and the dimmed rest; a gradient runs top to bottom.
+    #[test]
+    #[ignore = "requires a native graphics adapter"]
+    fn display_styles_paint_what_cad_says() {
+        let _guard = headless_guard();
+        pollster::block_on(async {
+            let adapter = test_adapter().await.expect("adapter required");
+            let scene = cube();
+            let (w, h) = (160u32, 160u32);
+            let renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+            let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let black = Some(([0u8; 3], [0u8; 3]));
+            let draw = |style, background| {
+                renderer.draw_display(&texture.create_view(&Default::default()), &scene, 0.0, 1.0, [0.6, -0.5, 1.2, 1.0], DisplayOptions { style, background, ..Default::default() });
+                read_back(&renderer, &texture)
+            };
+            let painted = |img: &[u8]| img.chunks_exact(4).filter(|p| p[..3].iter().any(|c| *c > 3)).count();
+            let bright = |img: &[u8]| img.chunks_exact(4).filter(|p| p[..3].iter().all(|c| *c > 200)).count();
+            let shaded = draw(DisplayStyle::Shaded, black);
+            let with_edges = draw(DisplayStyle::ShadedEdges, black);
+            let hlv = draw(DisplayStyle::HiddenLinesVisible, black);
+            let hlr = draw(DisplayStyle::HiddenLinesRemoved, black);
+            let wire = draw(DisplayStyle::Wireframe, black);
+            assert!(painted(&shaded) > (w * h) as usize / 8, "shaded fills the faces");
+            assert_eq!(bright(&shaded), 0, "shaded draws no edges");
+            assert!(bright(&with_edges) > 100, "shaded with edges draws its edges");
+            assert!(painted(&wire) < painted(&shaded) / 4 && bright(&wire) > 100, "wireframe is edges only");
+            assert!(painted(&hlr) < painted(&shaded) / 4 && bright(&hlr) > 50, "hidden lines removed shows no fill, only edges");
+            assert!(bright(&hlr) < bright(&wire), "the edges behind the cube are removed");
+            assert!(painted(&hlv) > painted(&hlr), "hidden lines visible adds the dimmed hidden edges");
+            assert_eq!(bright(&hlv), bright(&hlr), "the visible edges are the same ones as with hidden lines removed");
+            // A gradient runs from the top colour to the bottom one.
+            let grad = draw(DisplayStyle::Wireframe, Some(([0; 3], [200; 3])));
+            let px = |img: &[u8], x: u32, y: u32| img[((y * w + x) * 4) as usize];
+            assert!(px(&grad, 2, h - 3) > px(&grad, 2, 2) + 150, "bottom {} top {}", px(&grad, 2, h - 3), px(&grad, 2, 2));
+        });
     }
 
 #[cfg(test)]
@@ -966,7 +1132,7 @@ mod snapshot_tests {
                 show_contour: true,
                 field: input.view.field,
                 viewport: Some(if input.editor.is_some_and(|e| !e.start_options().is_empty()) { [vp.x, vp.y, 0, 0] } else { [vp.x, vp.y, vp.w, vp.h] }),
-                background: Some(gui.background_rgb()),
+                background: Some((gui.background_rgb(), gui.background_rgb())),
                 ..Default::default()
             },
         );
@@ -997,6 +1163,89 @@ mod snapshot_tests {
             let input = GuiInput { view: &view, scenes: &project.scenes, selected: project.selected, editor: None, error: None, box_drag: None, overlay: &[] };
             draw(&mut r, &mut gui, &texture, &input, [0.35, 0.4], true);
             std::fs::write(out, read_back(&r, &texture)).unwrap();
+        });
+    }
+
+    /// The right-click menu of a selected face and the background panel over the editor window, as one raw RGBA dump:
+    /// `FEA_SNAPSHOT_MENU_OUT=/dir cargo test ... context_menu_snapshot -- --ignored`.
+    #[test]
+    #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_MENU_OUT"]
+    fn context_menu_snapshot() {
+        use crate::gpu_viewer::editor::solid::{SolidAction, SolidSession};
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_MENU_OUT") else { return };
+        let _guard = headless_guard();
+        let mut problem = fea_problem::templates::templates().into_iter().map(|(_, p)| p).find(|p| p.analysis == fea_problem::Analysis::Solid).unwrap();
+        problem.mesh.size = 0.3;
+        let mut session = SolidSession::new(problem, "demo-menu.json".into());
+        let t = std::time::Instant::now();
+        while session.scene().map_or(true, |s| !s.label.contains("body (not meshed)")) {
+            session.poll();
+            assert!(t.elapsed().as_secs() < 60, "body did not finish");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        session.do_action(SolidAction::SelectSurface(1));
+        pollster::block_on(async {
+            let adapter = test_adapter().await.expect("adapter required");
+            let (w, h) = (1280u32, 800u32);
+            let scene = session.scene().unwrap();
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+            let texture = target(&r, w, h);
+            let mut gui = Gui::new();
+            gui.ctx().set_theme(egui::Theme::Dark);
+            let view = ViewState::new(&scene);
+            let scenes = [scene];
+            let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+            let ctx = crate::gpu_viewer::menus::MenuContext { view: &view, scene: input.scene(), results: 1, editor: input.editor, visible: Default::default(), adaptive: true };
+            gui.open_context((640.0, 300.0), crate::gpu_viewer::menus::context(&ctx));
+            gui.toggle_background_picker();
+            draw(&mut r, &mut gui, &texture, &input, [-0.6, -0.5], false);
+            std::fs::write(format!("{dir}/context.rgba"), read_back(&r, &texture)).unwrap();
+        });
+    }
+
+    /// The un-meshed 3D body in every display style and the same body meshed, as raw RGBA dumps:
+    /// `FEA_SNAPSHOT_BODY_OUT=/dir cargo test ... body_styles_snapshot -- --ignored`.
+    #[test]
+    #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_BODY_OUT"]
+    fn body_styles_snapshot() {
+        use crate::gpu_viewer::editor::solid::{SolidAction, SolidSession};
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_BODY_OUT") else { return };
+        let _guard = headless_guard();
+        let mut problem = fea_problem::templates::templates().into_iter().map(|(_, p)| p).find(|p| p.analysis == fea_problem::Analysis::Solid).unwrap();
+        problem.mesh.size = 0.3;
+        let mut session = SolidSession::new(problem, "demo-body.json".into());
+        let t = std::time::Instant::now();
+        while session.scene().map_or(true, |s| !s.label.contains("body (not meshed)")) {
+            session.poll();
+            assert!(t.elapsed().as_secs() < 60, "body did not finish");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let body = session.scene().unwrap();
+        session.do_action(SolidAction::GenerateMesh);
+        while session.preview_summary().is_err() {
+            session.poll();
+            assert!(t.elapsed().as_secs() < 120, "mesh did not finish");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let meshed = session.scene().unwrap();
+        pollster::block_on(async {
+            let adapter = test_adapter().await.expect("adapter required");
+            let (w, h) = (640u32, 420u32);
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &body, w, h).await.unwrap();
+            let texture = target(&r, w, h);
+            let shot = |r: &mut Renderer, scene: &Scene, name: &str, style: DisplayStyle, mesh: bool, bg: ([u8; 3], [u8; 3])| {
+                r.set_scene(scene).unwrap();
+                r.draw_display(&texture.create_view(&Default::default()), scene, 0.0, 1.0, [-0.6, -0.5, 1.5, w as f32 / h as f32], DisplayOptions { show_mesh: mesh, style, shade: true, background: Some(bg), ..Default::default() });
+                std::fs::write(format!("{dir}/{name}.rgba"), read_back(r, &texture)).unwrap();
+            };
+            let grey_white = ([112u8; 3], [255u8; 3]);
+            for (k, style) in DisplayStyle::ALL.into_iter().enumerate() {
+                shot(&mut r, &body, &format!("body-{k}"), style, false, grey_white);
+            }
+            shot(&mut r, &body, "hl-wire", DisplayStyle::Wireframe, false, grey_white);
+            shot(&mut r, &body, "hl-hlr", DisplayStyle::HiddenLinesRemoved, false, grey_white);
+            shot(&mut r, &meshed, "meshed-wire", DisplayStyle::Wireframe, true, ([0; 3], [112; 3]));
+            shot(&mut r, &meshed, "meshed-shaded-edges", DisplayStyle::ShadedEdges, true, grey_white);
         });
     }
 

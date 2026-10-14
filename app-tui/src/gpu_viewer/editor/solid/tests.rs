@@ -361,7 +361,7 @@ fn ribbon_menus_and_context_menu_explain_what_is_unavailable() {
     let mut s = s;
     s.selected = Some("top".into());
     let labels: Vec<String> = Authoring::context_menu(&s).into_iter().filter_map(|i| if let crate::gpu_viewer::menu::Item::Entry(e) = i { Some(e.label) } else { None }).collect();
-    assert!(labels.contains(&"Support on top".to_string()) && labels.contains(&"Solve".to_string()), "{labels:?}");
+    assert!(labels.contains(&"Fixed support on 'top'".to_string()) && labels.contains(&"Solve".to_string()), "{labels:?}");
 }
 
 #[test]
@@ -656,4 +656,116 @@ fn a_thermal_study_is_set_up_solved_and_shown_as_a_temperature_field() {
     s.do_action(SolidAction::Activate(FieldRow::StudyKind));
     s.do_action(SolidAction::Activate(FieldRow::StudyKind));
     assert_eq!(s.problem.study, Study::Structural);
+}
+
+/// Run `poll` until the un-meshed body of the current geometry exists.
+fn body_ready(s: &mut SolidSession) {
+    let t = Instant::now();
+    while !s.body_current() {
+        s.poll();
+        assert!(t.elapsed().as_secs() < 60, "the body did not finish");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn a_3d_model_shows_its_body_before_it_is_meshed_and_the_mesh_then_replaces_the_stand_in() {
+    let mut p = plate();
+    p.analysis = fea_problem::Analysis::Solid;
+    let mut s = SolidSession::new(p, temp("body"));
+    assert!(s.preview.is_none() && !s.body_current());
+    body_ready(&mut s);
+    let scene = s.build_scene().unwrap();
+    assert!(scene.label.contains("body (not meshed)"), "{}", scene.label);
+    assert!(scene.triangles.len() > 12 * 3, "a real surface, not the placeholder triangle or the sketch outline tubes");
+    assert!(s.preview.is_none(), "the body is not the analysis mesh");
+    // The body is a surface to pick on: a click on it selects a named face.
+    let cam = Camera { yaw: 0.6, pitch: -0.5, zoom: 1.2, aspect: 1.0, pan: [0.0, 0.0] };
+    let size = [800.0, 800.0];
+    assert!(s.pick(&cam, [400.0, 400.0], size).is_some(), "the body can be picked before it is meshed");
+    // Changing the mesh settings does not rebuild the body; changing the geometry does.
+    let key = body_key(&s.problem);
+    s.problem.mesh.size = 0.7;
+    assert_eq!(key, body_key(&s.problem));
+    // Meshing replaces the stand-in with the analysis mesh.
+    meshed(&mut s);
+    let scene = s.build_scene().unwrap();
+    assert!(scene.label.contains("geometry:") && !scene.label.contains("not meshed"), "{}", scene.label);
+}
+
+#[test]
+fn a_plane_model_never_builds_a_body_and_a_failing_body_is_not_retried_every_frame() {
+    let mut s = session("nobody");
+    for _ in 0..5 {
+        s.poll();
+    }
+    assert!(s.body.is_none() && !s.body_worker.is_busy());
+    let mut p = plate();
+    p.analysis = fea_problem::Analysis::Solid;
+    let mut s = SolidSession::new(p, temp("body-fail"));
+    let failed = body_key(&s.problem);
+    s.body_failed = Some(failed);
+    for _ in 0..5 {
+        s.poll();
+    }
+    assert!(s.body.is_none() && !s.body_worker.is_busy(), "a geometry whose body failed is left alone");
+}
+
+#[test]
+fn the_mesh_overlay_is_suppressed_while_only_the_body_is_shown_and_returns_with_the_mesh() {
+    let mut p = plate();
+    p.analysis = fea_problem::Analysis::Solid;
+    let mut s = SolidSession::new(p, temp("body-lines"));
+    assert!(!Authoring::shows_body_only(&s), "nothing built yet");
+    body_ready(&mut s);
+    s.build_scene().unwrap();
+    assert!(Authoring::shows_body_only(&s));
+    meshed(&mut s);
+    s.build_scene().unwrap();
+    assert!(!Authoring::shows_body_only(&s), "the analysis mesh is shown: its lines may be drawn");
+}
+
+#[test]
+fn picking_ignores_a_stale_mesh_after_the_geometry_changes() {
+    let mut p = plate();
+    p.analysis = fea_problem::Analysis::Solid;
+    let mut s = SolidSession::new(p, temp("stale-pick"));
+    meshed(&mut s);
+    s.build_scene().unwrap();
+    s.problem.mesh.size = 0.9;
+    if let fea_problem::Geometry::Sketch { depth, .. } = &mut s.problem.geometry {
+        *depth += 0.5;
+    }
+    s.touch();
+    s.build_scene().unwrap();
+    let cam = Camera { yaw: 0.6, pitch: -0.5, zoom: 1.2, aspect: 1.0, pan: [0.0, 0.0] };
+    // Neither the stale analysis mesh nor a body that is not built yet may be picked on (and nothing may panic).
+    assert!(!s.preview_current() && !s.body_current());
+    assert!(s.pick(&cam, [400.0, 400.0], [800.0, 800.0]).is_none());
+}
+
+#[test]
+fn a_surface_menu_offers_what_fits_then_what_is_applied_and_a_new_load_asks_for_its_value() {
+    let mut s = session("surface-menu");
+    s.selected = Some("top".into());
+    let labels = |s: &SolidSession| -> Vec<String> { s.surface_menu().into_iter().filter_map(|i| if let crate::gpu_viewer::menu::Item::Entry(e) = i { Some(e.label) } else { None }).collect() };
+    let before = labels(&s);
+    assert!(before.iter().any(|l| l == "Fixed support on 'top'") && before.iter().any(|l| l == "Pressure load on 'top'"), "{before:?}");
+    assert!(!before.iter().any(|l| l.starts_with("Remove") || l.starts_with("Edit the load")), "nothing applied there yet: {before:?}");
+    // A pressure load asks for its magnitude straight away, on the new load's first parameter.
+    s.do_action(SolidAction::BoundaryKind(fea_problem::advice::BcKind::Pressure));
+    assert!(s.prompting(), "the magnitude is asked for at once");
+    let new = s.problem.loads.len() - 1;
+    assert_eq!(s.prompt.as_ref().and_then(|p| p.row), Some(FieldRow::LoadParam(new, 0)));
+    type_text(&mut s, "2500");
+    assert!(!s.prompting() && s.problem.loads[new].params(2).first().map(|p| p.1) == Some(2500.0), "{:?}", s.problem.loads[new]);
+    // Now the menu also lists what is applied on that face.
+    let after = labels(&s);
+    assert!(after.iter().any(|l| l == "Edit the load on 'top'...") && after.iter().any(|l| l == "Remove the load on 'top'"), "{after:?}");
+    s.do_action(SolidAction::Activate(FieldRow::LoadRemove(new)));
+    assert!(s.problem.loads.len() == new, "the load was removed through the menu's action");
+    // A support gets a Remove entry, and it is the same list from a tree row and from the click popup.
+    s.do_action(SolidAction::BoundaryKind(fea_problem::advice::BcKind::Fixed));
+    assert!(labels(&s).iter().any(|l| l == "Remove support on 'top'"));
+    assert_eq!(labels(&s), Authoring::tree_menu(&s, ui::T_SURFACE_BASE).into_iter().filter_map(|i| if let crate::gpu_viewer::menu::Item::Entry(e) = i { Some(e.label) } else { None }).filter(|l| l != "Assign to focused row").collect::<Vec<_>>());
 }
