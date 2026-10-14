@@ -47,6 +47,49 @@ fn options(family: ElementFamily) -> HybridOptions2d {
     HybridOptions2d::new(PHYS, family)
 }
 
+/// An affine displacement field on every boundary node: the interior must reproduce it exactly and the stress must be uniform.
+fn assert_patch_test(mesh: Mesh, label: &str) {
+    let model = Model::new(mesh).unwrap();
+    // affine displacement field on every boundary node; the interior must reproduce it and the stress must be uniform
+    let (a, b, c, d, e, f) = (1.0e-4, 2.0e-5, -3.0e-5, 4.0e-5, 5.0e-6, -7.0e-6);
+    let field = |x: &[f64; 3]| [a * x[0] + b * x[1] + e, c * x[0] + d * x[1] + f];
+    let mut bc = model.dirichlet();
+    let mut on_boundary = vec![false; model.mesh.nodes.len()];
+    for face in model.mesh.boundary_faces() {
+        for &n in &face.nodes {
+            on_boundary[n] = true;
+        }
+    }
+    for n in 0..model.mesh.nodes.len() {
+        if on_boundary[n] {
+            let u = field(&model.mesh.nodes[n]);
+            bc.fix(n, 0, u[0]);
+            bc.fix(n, 1, u[1]);
+        }
+    }
+    let sol = model.solve_static(&Loads::default(), &bc).unwrap();
+    let mut worst_u = 0.0f64;
+    for (n, x) in model.mesh.nodes.iter().enumerate() {
+        let u = field(x);
+        worst_u = worst_u.max((sol.u[2 * n] - u[0]).abs()).max((sol.u[2 * n + 1] - u[1]).abs());
+    }
+    assert!(worst_u < 1e-12, "{label}: displacement error {worst_u:e}");
+    let lam = E * NU / (1.0 - NU * NU);
+    let mu = E / (2.0 * (1.0 + NU));
+    let (ex, ey, gxy) = (a, d, b + c);
+    let want = [lam * (ex + ey) + 2.0 * mu * ex, lam * (ex + ey) + 2.0 * mu * ey, 0.0, mu * gxy];
+    let gauss = model.gauss_stresses(&sol.u, 0.0).unwrap();
+    let mut worst_s = 0.0f64;
+    for blk in &gauss {
+        for (_, s) in blk {
+            for k in [0usize, 1, 3] {
+                worst_s = worst_s.max((s[k] - want[k]).abs() / want[0].abs());
+            }
+        }
+    }
+    assert!(worst_s < 1e-9, "{label}: stress error {worst_s:e}");
+}
+
 #[test]
 fn a_mixed_quad_tri_mesh_passes_the_patch_test_exactly() {
     // an unstructured block is forced into the middle of a hole-free plate: Quad8 | Tri6 | Quad8
@@ -57,46 +100,80 @@ fn a_mixed_quad_tri_mesh_passes_the_patch_test_exactly() {
         let h = mesh_hybrid_2d(&r, &|_| 0.5, &opt).unwrap();
         assert_eq!(h.report.strategy, Strategy::Hybrid);
         assert!(h.report.structured_elements > 0 && h.report.unstructured_elements > 0);
-        let model = Model::new(h.mesh).unwrap();
-        // affine displacement field on every boundary node; the interior must reproduce it and the stress must be uniform
-        let (a, b, c, d, e, f) = (1.0e-4, 2.0e-5, -3.0e-5, 4.0e-5, 5.0e-6, -7.0e-6);
-        let field = |x: &[f64; 3]| [a * x[0] + b * x[1] + e, c * x[0] + d * x[1] + f];
-        let mut bc = model.dirichlet();
-        let mut on_boundary = vec![false; model.mesh.nodes.len()];
-        for face in model.mesh.boundary_faces() {
-            for &n in &face.nodes {
-                on_boundary[n] = true;
-            }
-        }
-        for n in 0..model.mesh.nodes.len() {
-            if on_boundary[n] {
-                let u = field(&model.mesh.nodes[n]);
-                bc.fix(n, 0, u[0]);
-                bc.fix(n, 1, u[1]);
-            }
-        }
-        let sol = model.solve_static(&Loads::default(), &bc).unwrap();
-        let mut worst_u = 0.0f64;
-        for (n, x) in model.mesh.nodes.iter().enumerate() {
-            let u = field(x);
-            worst_u = worst_u.max((sol.u[2 * n] - u[0]).abs()).max((sol.u[2 * n + 1] - u[1]).abs());
-        }
-        assert!(worst_u < 1e-12, "{family:?}: displacement error {worst_u:e}");
-        let lam = E * NU / (1.0 - NU * NU);
-        let mu = E / (2.0 * (1.0 + NU));
-        let (ex, ey, gxy) = (a, d, b + c);
-        let want = [lam * (ex + ey) + 2.0 * mu * ex, lam * (ex + ey) + 2.0 * mu * ey, 0.0, mu * gxy];
-        let gauss = model.gauss_stresses(&sol.u, 0.0).unwrap();
-        let mut worst_s = 0.0f64;
-        for blk in &gauss {
-            for (_, s) in blk {
-                for k in [0usize, 1, 3] {
-                    worst_s = worst_s.max((s[k] - want[k]).abs() / want[0].abs());
-                }
-            }
-        }
-        assert!(worst_s < 1e-9, "{family:?}: stress error {worst_s:e}");
+        assert_patch_test(h.mesh, &format!("{family:?}"));
     }
+}
+
+#[test]
+fn a_hybrid_mesh_with_angled_edges_passes_the_patch_test_exactly() {
+    // The legs of the trapezoid are meshed by the unstructured layer, the rest by Quad blocks: the interface between them is
+    // conforming, so an affine field is still reproduced exactly (straight edges, so the elements are affine too).
+    let outer = Loop::polygon(&[[0.0, 0.0], [12.0, 0.0], [10.0, 4.0], [2.0, 4.0]], "e").unwrap();
+    let r = Region::new(outer, vec![], Elastic::new(E, NU)).unwrap();
+    for family in [ElementFamily::Linear, ElementFamily::Quadratic] {
+        let h = mesh_hybrid_2d(&r, &|_| 0.4, &options(family)).unwrap();
+        assert_eq!(h.report.strategy, Strategy::Hybrid, "{family:?}");
+        assert!(h.report.structured_elements > 0 && h.report.unstructured_elements > 0);
+        assert_patch_test(h.mesh, &format!("trapezoid {family:?}"));
+    }
+}
+
+/// Quarter annulus `2 <= r <= 5` under internal pressure, plane strain: the largest radial displacement error against Lame's
+/// solution relative to the displacement at the bore.
+fn lame_error(mesh: Mesh) -> f64 {
+    const A: f64 = 2.0;
+    const B: f64 = 5.0;
+    let p = 1000.0;
+    let model = Model::new(mesh).unwrap();
+    let mut bc = model.dirichlet();
+    for &n in model.mesh.node_set("xaxis").unwrap() {
+        bc.fix(n, 1, 0.0);
+    }
+    for &n in model.mesh.node_set("yaxis").unwrap() {
+        bc.fix(n, 0, 0.0);
+    }
+    let loads = Loads { faces: model.mesh.surfaces["inner"].iter().map(|f| (f.clone(), SurfaceLoad::Pressure(p))).collect(), ..Loads::default() };
+    let sol = model.solve_static(&loads, &bc).unwrap();
+    let ur_exact = |r: f64| (1.0 + NU) / E * (p * A * A / (B * B - A * A)) * ((1.0 - 2.0 * NU) * r + B * B / r);
+    let mut worst = 0.0f64;
+    for (n, x) in model.mesh.nodes.iter().enumerate() {
+        let r = x[0].hypot(x[1]);
+        let ur = (sol.u[n * 2] * x[0] + sol.u[n * 2 + 1] * x[1]) / r;
+        worst = worst.max((ur - ur_exact(r)).abs() / ur_exact(A));
+    }
+    worst
+}
+
+#[test]
+fn a_hybrid_mesh_of_a_curved_region_converges_to_lame_like_the_unstructured_one() {
+    use fea_core::geometry::{Curve, Segment};
+    use std::f64::consts::FRAC_PI_2;
+    let seg = |curve, name: &str| Segment { curve, name: name.to_string() };
+    let outer = Loop::new(vec![
+        seg(Curve::line([2.0, 0.0], [5.0, 0.0]), "xaxis"),
+        seg(Curve::arc([0.0, 0.0], 5.0, 0.0, FRAC_PI_2), "outer"),
+        seg(Curve::line([0.0, 5.0], [0.0, 2.0]), "yaxis"),
+        seg(Curve::arc([0.0, 0.0], 2.0, FRAC_PI_2, 0.0), "inner"),
+    ])
+    .unwrap();
+    let r = Region::new(outer, vec![], Elastic::new(E, NU)).unwrap();
+    let phys = Physics::PlaneStrain { thickness: 1.0 };
+    let mut previous = f64::INFINITY;
+    for h in [0.5, 0.25] {
+        let mut opt = HybridOptions2d::new(phys, ElementFamily::Quadratic);
+        opt.smooth = None;
+        let hybrid = mesh_hybrid_2d(&r, &|_| h, &opt).unwrap();
+        assert_eq!(hybrid.report.strategy, Strategy::Hybrid, "h = {h}");
+        assert!(hybrid.report.conformity.is_conforming() && hybrid.report.structured_elements > 0);
+        let plain = mesh_unstructured_2d(&r, &|_| h, &opt, "baseline").unwrap();
+        let (e_h, e_u) = (lame_error(hybrid.mesh), lame_error(plain.mesh));
+        eprintln!("h = {h}: Lame radial displacement error hybrid {e_h:.2e}, unstructured {e_u:.2e}");
+        // the same order of accuracy as the plain quadratic mesh of the same size, and converging
+        assert!(e_h < 4.0 * e_u + 1e-4, "h = {h}: hybrid {e_h:e} vs unstructured {e_u:e}");
+        assert!(e_h < previous / 2.5, "h = {h}: no convergence ({previous:e} -> {e_h:e})");
+        previous = e_h;
+    }
+    assert!(previous < 5e-4, "finest hybrid error {previous:e}");
 }
 
 #[test]

@@ -230,8 +230,8 @@ pub fn sketch_mesh(p: &Problem, field: Option<&SizeField>) -> Result<Mesh, Strin
     }
 }
 
-/// One planar region meshed by the strategy of the problem. A bushing annulus is always unstructured (its outer boundary is
-/// curved, which the hybrid mesher reports as unsupported anyway).
+/// One planar region meshed by the strategy of the problem. The bushing annuli are always unstructured (`add_bushings` meshes
+/// them directly: they are thin rings around a bore, with no worthwhile regular area).
 fn mesh_planar(p: &Problem, region: &Region, physics: Physics, size: &dyn Fn([f64; 2]) -> f64, notes: &mut Vec<String>) -> Result<Mesh, String> {
     match p.mesh.strategy {
         MeshStrategy::Unstructured => mesh_region(region, physics, p.mesh.element.kind(), size, mesh_options()),

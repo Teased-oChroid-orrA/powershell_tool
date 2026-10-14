@@ -58,6 +58,30 @@ impl Curve {
         }
     }
 
+    /// The part between parameters `t0` and `t1` (`t0 < t1`); its end points are exactly `point(t0)` and `point(t1)`.
+    pub fn sub(&self, t0: f64, t1: f64) -> Curve {
+        match *self {
+            Curve::Line { .. } => Curve::Line { a: self.point(t0), b: self.point(t1) },
+            Curve::Arc { c, r, a0, a1 } => Curve::Arc { c, r, a0: a0 + t0 * (a1 - a0), a1: a0 + t1 * (a1 - a0) },
+        }
+    }
+
+    /// Unit tangent in the direction of travel at parameter `t`.
+    pub fn tangent(&self, t: f64) -> [f64; 2] {
+        match *self {
+            Curve::Line { a, b } => {
+                let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+                let l = dx.hypot(dy);
+                [dx / l, dy / l]
+            }
+            Curve::Arc { a0, a1, .. } => {
+                let th = a0 + t * (a1 - a0);
+                let s = if a1 >= a0 { 1.0 } else { -1.0 };
+                [-s * th.sin(), s * th.cos()]
+            }
+        }
+    }
+
     fn reversed(&self) -> Curve {
         match *self {
             Curve::Line { a, b } => Curve::Line { a: b, b: a },

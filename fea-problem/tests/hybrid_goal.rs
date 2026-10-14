@@ -1,5 +1,5 @@
 //! The hybrid mesh strategy and goal-oriented adaptivity as the workbench uses them: through `Problem` and `solve`.
-use fea_problem::{build, solve, templates, AdaptMode, MeshStrategy, Problem};
+use fea_problem::{build, solve, templates, AdaptMode, Geometry, MeshStrategy, Problem, Shape};
 
 fn plate() -> Problem {
     let mut p = templates::templates()[0].1.clone();
@@ -31,10 +31,30 @@ fn a_hybrid_plate_has_both_element_families_the_same_names_and_the_same_physics(
 }
 
 #[test]
-fn a_hybrid_request_that_cannot_be_met_falls_back_and_says_why() {
+fn a_steep_grading_next_to_the_hole_stays_hybrid_and_agrees_with_the_plain_mesh() {
+    // Regression: the grid used to be cut along the whole strip by the fine size next to the hole, which sliced the regular
+    // end blocks into slivers and tripped the size-jump gate (jump 8.1 against 6.0, so the mesh fell back to unstructured).
     let mut p = plate();
     p.mesh.size = 0.5;
-    p.mesh.hole_factor = 0.05; // grading too steep for structured blocks next to the hole
+    p.mesh.hole_factor = 0.05;
+    p.mesh.strategy = MeshStrategy::Hybrid;
+    let hybrid = solve::solve(&p, None).unwrap();
+    assert!(!hybrid.summary.notes.iter().any(|n| n.contains("Hybrid meshing was not used")), "{:?}", hybrid.summary.notes);
+    p.mesh.strategy = MeshStrategy::Unstructured;
+    let plain = solve::solve(&p, None).unwrap();
+    let rel = |a: f64, b: f64| ((a - b) / b).abs();
+    assert!(rel(hybrid.summary.strain_energy, plain.summary.strain_energy) < 0.01, "energy {} vs {}", hybrid.summary.strain_energy, plain.summary.strain_energy);
+    assert!(rel(hybrid.summary.max_von_mises.value, plain.summary.max_von_mises.value) < 0.05, "peak {} vs {}", hybrid.summary.max_von_mises.value, plain.summary.max_von_mises.value);
+    assert!(hybrid.summary.equilibrium_error < 1e-6);
+}
+
+#[test]
+fn a_hybrid_request_that_cannot_be_met_falls_back_and_says_why() {
+    // A hole that fills most of a small plate leaves no worthwhile regular block.
+    let mut p = plate();
+    p.geometry = Geometry::Sketch { outer: Shape::Rect { x0: 0.0, y0: 0.0, x1: 4.0, y1: 4.0 }, holes: vec![Shape::Circle { cx: 2.0, cy: 2.0, r: 1.6 }], depth: 1.0, layers: 1, regions: Vec::new() };
+    p.mesh.size = 0.4;
+    p.mesh.hole_factor = 0.5;
     p.mesh.strategy = MeshStrategy::Hybrid;
     let s = solve::solve(&p, None).unwrap();
     assert!(s.summary.notes.iter().any(|n| n.contains("Hybrid meshing was not used")), "{:?}", s.summary.notes);
