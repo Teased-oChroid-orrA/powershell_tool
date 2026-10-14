@@ -18,6 +18,7 @@ pub mod element;
 pub mod hyperdual;
 pub mod linalg;
 pub mod linear_sens;
+pub mod matrix_free;
 pub mod ops;
 pub mod path;
 pub mod policy;

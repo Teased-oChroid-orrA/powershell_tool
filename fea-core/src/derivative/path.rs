@@ -147,36 +147,36 @@ pub fn solve_path(model: &Model, loads: &Loads, bc: &Dirichlet, opt: &PathOption
 }
 
 /// One Gauss point with everything needed to evaluate its strain and to assemble its forces.
-struct Gp {
-    block: usize,
-    elem: usize,
+pub(crate) struct Gp {
+    pub(crate) block: usize,
+    pub(crate) elem: usize,
     /// Position of the point in its element.
-    g: usize,
+    pub(crate) g: usize,
     /// Integration weight (`w |J|`, thickness, `2 pi r` already in).
-    w: f64,
+    pub(crate) w: f64,
     /// Strain per unit displacement of each of the element's dofs, tensor-shear Voigt.
-    b: Vec<[f64; VOIGT]>,
-    dofs: Vec<usize>,
+    pub(crate) b: Vec<[f64; VOIGT]>,
+    pub(crate) dofs: Vec<usize>,
 }
 
 /// Work conjugacy of the tensor-shear Voigt order: `f . du = w sigma^T W eps(du)`.
-const W: [f64; VOIGT] = [1.0, 1.0, 1.0, 2.0, 2.0, 2.0];
+pub(crate) const W: [f64; VOIGT] = [1.0, 1.0, 1.0, 2.0, 2.0, 2.0];
 
-enum Law {
+pub(crate) enum Law {
     Elastic { plane_stress: bool },
     Plastic { plane_stress: bool, table: J2Table },
 }
 
-struct Setup<'m> {
-    model: &'m Model,
-    gps: Vec<Gp>,
-    laws: Vec<Law>,
-    free: Vec<usize>,
-    f_ext: Vec<f64>,
+pub(crate) struct Setup<'m> {
+    pub(crate) model: &'m Model,
+    pub(crate) gps: Vec<Gp>,
+    pub(crate) laws: Vec<Law>,
+    pub(crate) free: Vec<usize>,
+    pub(crate) f_ext: Vec<f64>,
 }
 
 impl<'m> Setup<'m> {
-    fn new(model: &'m Model, loads: &Loads, red: &Reduced) -> Result<Self, String> {
+    pub(crate) fn new(model: &'m Model, f_ext: Vec<f64>, free: Vec<usize>) -> Result<Self, String> {
         let physics = model.mesh.physics;
         let d = model.mesh.dim();
         let mut gps = Vec::new();
@@ -239,10 +239,10 @@ impl<'m> Setup<'m> {
                 }
             }
         }
-        Ok(Self { model, gps, laws, free: red.free_dofs().iter().map(|&d| d as usize).collect(), f_ext: loads::assemble(&model.mesh, loads)? })
+        Ok(Self { model, gps, laws, free, f_ext })
     }
 
-    fn strain(&self, gp: &Gp, u: &[f64]) -> [f64; VOIGT] {
+    pub(crate) fn strain(&self, gp: &Gp, u: &[f64]) -> [f64; VOIGT] {
         let mut e = [0.0; VOIGT];
         for (col, &dof) in gp.b.iter().zip(&gp.dofs) {
             let ud = u[dof];
@@ -255,7 +255,7 @@ impl<'m> Setup<'m> {
         e
     }
 
-    fn sens(&self, gp: &Gp, u: &[f64], old: &[f64; STATE]) -> Result<MaterialSensitivities, String> {
+    pub(crate) fn sens(&self, gp: &Gp, u: &[f64], old: &[f64; STATE]) -> Result<MaterialSensitivities, String> {
         let strain = self.strain(gp, u);
         let blk = &self.model.mesh.blocks[gp.block];
         let r = match &self.laws[gp.block] {
@@ -315,7 +315,7 @@ impl<'m> Setup<'m> {
         f
     }
 
-    fn gp_states(&self, st: &NlState) -> Vec<[f64; STATE]> {
+    pub(crate) fn gp_states(&self, st: &NlState) -> Vec<[f64; STATE]> {
         self.gps.iter().map(|gp| st.gp[gp.block].get(gp.elem * self.model.mesh.blocks[gp.block].kind.table().ngp + gp.g).copied().unwrap_or([0.0; STATE])).collect()
     }
 }
@@ -360,7 +360,8 @@ pub struct PathSensitivityEngine<'m> {
 impl<'m> PathSensitivityEngine<'m> {
     pub fn new(model: &'m Model, loads: &Loads, bc: &Dirichlet) -> Result<Self, String> {
         let red = Reduced::with_ordering(&model.pattern, bc, Some(&model.mesh.nodes), Ordering::Auto).map_err(|e| e.to_string())?;
-        let setup = Setup::new(model, loads, &red)?;
+        let free: Vec<usize> = red.free_dofs().iter().map(|&d| d as usize).collect();
+        let setup = Setup::new(model, loads::assemble(&model.mesh, loads)?, free)?;
         Ok(Self { setup, red })
     }
 

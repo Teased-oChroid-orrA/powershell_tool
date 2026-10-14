@@ -691,3 +691,39 @@ impl<M: DifferentiableMaterial> DifferentiableMaterial for PlaneStress<M> {
         self.inner.yield_margin(p, &e, old)
     }
 }
+
+// ----------------------------------------------------------------------------------------------- stress Jacobian-vector product
+
+/// `d stress = C : d strain` for one strain increment, without forming `C`: one forward-mode evaluation of the update with the strain
+/// seeded along `dstrain` and the local unknowns seeded along their own axes, then the implicit correction
+/// `dq = -F_q^-1 F_eps dstrain`. This is the matrix-free tangent action of the constitutive law.
+pub fn stress_jvp<M: DifferentiableMaterial>(model: &M, p: &[f64], strain: &[f64; VOIGT], old: &[f64; STATE], dstrain: &[f64; VOIGT]) -> Result<[f64; VOIGT], ConstitutiveError> {
+    type D = Dual<f64, 8>;
+    let nq = model.n_local();
+    if nq > 7 {
+        return Err(ConstitutiveError::Invalid("a local system of more than 7 unknowns is not supported by the matrix-free product".into()));
+    }
+    let q = model.solve_local(p, strain, old)?;
+    let ps: Vec<D> = p.iter().map(|&v| D::cst(v)).collect();
+    let eps: [D; VOIGT] = std::array::from_fn(|i| {
+        let mut d = [0.0; 8];
+        d[0] = dstrain[i];
+        Dual::with(strain[i], d)
+    });
+    let st: [D; STATE] = std::array::from_fn(|i| D::cst(old[i]));
+    let qs: Vec<D> = (0..nq).map(|k| Dual::var(q[k], k + 1)).collect();
+    let out = model.update::<D>(&ps, &eps, &st, &qs);
+    let mut dq = vec![0.0; nq];
+    if nq > 0 {
+        let fq: Vec<f64> = (0..nq).flat_map(|r| (0..nq).map(move |c| (r, c))).map(|(r, c)| out.residual[r].d[c + 1]).collect();
+        let rhs: Vec<f64> = (0..nq).map(|r| out.residual[r].d[0]).collect();
+        dq = lu_solve(nq, 1, &fq, &rhs)?.into_iter().map(|v| -v).collect();
+    }
+    Ok(std::array::from_fn(|i| {
+        let mut s = out.stress[i].d[0];
+        for k in 0..nq {
+            s += out.stress[i].d[k + 1] * dq[k];
+        }
+        s
+    }))
+}
