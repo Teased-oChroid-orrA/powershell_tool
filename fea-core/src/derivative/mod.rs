@@ -14,8 +14,10 @@
 pub mod complex;
 pub mod constitutive;
 pub mod dual;
+pub mod element;
 pub mod hyperdual;
 pub mod linalg;
+pub mod linear_sens;
 pub mod ops;
 pub mod path;
 pub mod policy;

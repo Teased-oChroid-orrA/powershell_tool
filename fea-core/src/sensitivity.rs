@@ -37,7 +37,7 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
 
 impl Model {
     /// Elements `(block, element)` a parameter touches.
-    fn affected(&self, p: Param) -> Vec<(usize, usize)> {
+    pub(crate) fn affected(&self, p: Param) -> Vec<(usize, usize)> {
         match p {
             Param::ModulusScale(b) | Param::DensityScale(b) => (0..self.mesh.blocks.get(b).map_or(0, |bl| bl.n_elems())).map(|e| (b, e)).collect(),
             Param::Thickness => self.mesh.blocks.iter().enumerate().flat_map(|(b, bl)| (0..bl.n_elems()).map(move |e| (b, e))).collect(),
@@ -184,7 +184,7 @@ impl Model {
 
     /// `df/dp` (full vector): the load vector's dependence on the parameter. Only the geometry (a coordinate, the thickness) changes
     /// it; central difference of the assembly.
-    fn df_dp(&self, loads: &Loads, p: Param) -> Result<Vec<f64>, String> {
+    pub(crate) fn df_dp(&self, loads: &Loads, p: Param) -> Result<Vec<f64>, String> {
         let (h, perturbed): (f64, Box<dyn Fn(f64) -> Model>) = match p {
             Param::ModulusScale(_) | Param::DensityScale(_) => return Ok(vec![0.0; self.mesh.n_dofs()]),
             Param::Coord { node, axis } => {
