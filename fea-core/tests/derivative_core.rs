@@ -420,8 +420,8 @@ fn the_fea_kernel_registry_selects_a_method_per_kernel_and_the_generalized_one_a
     let ctx = DerivativeContext::new(DerivativeRequest::Jacobian, 6, 6);
     assert_eq!(engine.select(CONSTITUTIVE_J2, &ctx).unwrap().method, DerivativeMethod::Analytic);
     // an element stiffness has no closed form registered: AD is chosen, and which direction depends on the shape of the map
-    let wide = DerivativeContext::new(DerivativeRequest::Jacobian, 40, 2);
-    let tall = DerivativeContext::new(DerivativeRequest::Jacobian, 2, 40);
+    let wide = DerivativeContext::new(DerivativeRequest::Jacobian, 400, 2);
+    let tall = DerivativeContext::new(DerivativeRequest::Jacobian, 2, 400);
     let a = engine.select(ELEMENT_STIFFNESS, &wide).unwrap().method;
     let b = engine.select(ELEMENT_STIFFNESS, &tall).unwrap().method;
     assert_eq!((a, b), (DerivativeMethod::ReverseAd, DerivativeMethod::ForwardAd));
