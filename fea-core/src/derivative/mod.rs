@@ -25,6 +25,7 @@ pub mod ops;
 pub mod path;
 pub mod policy;
 pub mod scalar;
+pub mod second_order;
 pub mod tape;
 pub mod transient;
 pub mod verify;
