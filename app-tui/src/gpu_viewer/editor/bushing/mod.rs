@@ -467,7 +467,14 @@ impl Authoring for BushingSession {
     }
     fn select_at(&mut self, _px: [f32; 2], _size: [f32; 2], _cam: &Camera) {}
     fn scene(&mut self) -> Result<Scene, String> {
-        self.fea.scene()
+        // The fit moves things by thousandths of an inch: at the window's automatic exaggeration the bodies drift apart, so
+        // a result opens at its true size (View > Larger deformation exaggerates it again).
+        self.fea.scene().map(|mut s| {
+            if self.fea.shows_result() {
+                s.gain = 1.0;
+            }
+            s
+        })
     }
     fn needs_scene(&self) -> bool {
         self.fea.needs_scene()

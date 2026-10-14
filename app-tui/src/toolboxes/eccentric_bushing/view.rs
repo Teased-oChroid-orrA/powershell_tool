@@ -37,7 +37,7 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &EccentricState
     draw_readout(frame, readout_area, theme, state, bushing);
 }
 
-fn display_value(state: &EccentricState, row: FieldRow) -> String {
+pub(crate) fn display_value(state: &EccentricState, row: FieldRow) -> String {
     match row {
         FieldRow::Header(_) | FieldRow::AdvancedSection => String::new(),
         FieldRow::Number(t) => model::format_value(t, state.ui.number_value(t)),

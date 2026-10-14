@@ -34,7 +34,7 @@ pub const WORKBENCHES: [Workbench; 10] = [
     Workbench { id: "pressure-vessel", name: "Pressure Vessel", summary: "Shell and head stresses, Lamé thick wall.", opens: Opens::Terminal(ToolId::PressureVessel) },
     Workbench { id: "preload", name: "Preload Analysis", summary: "Fastened joint preload and member stiffness.", opens: Opens::Terminal(ToolId::PreloadAnalysis) },
     Workbench { id: "lug", name: "Lug Analysis", summary: "Pin-loaded lug on the general FE kernel.", opens: Opens::Terminal(ToolId::LugAnalysis) },
-    Workbench { id: "eccentric-bushing", name: "Eccentric Bushing", summary: "Spin capacity and maximum offset of an offset bore.", opens: Opens::Terminal(ToolId::EccentricBushing) },
+    Workbench { id: "eccentric-bushing", name: "Eccentric Bushing", summary: "Spin capacity and maximum offset of an offset bore.", opens: Opens::Window(EditorKind::Eccentric) },
     Workbench { id: "fea", name: "FEA Workbench", summary: "Sketch, STEP or mesh; supports, loads, solve, contour.", opens: Opens::Window(EditorKind::Solid) },
     Workbench { id: "members", name: "Frame and Truss", summary: "Nodes, truss and frame members, supports and loads.", opens: Opens::Window(EditorKind::Members) },
     Workbench { id: "material-lookup", name: "Material Lookup", summary: "About 1,400 materials; type to search.", opens: Opens::Terminal(ToolId::MaterialLookup) },

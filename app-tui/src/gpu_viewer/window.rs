@@ -755,6 +755,12 @@ pub fn run_bushing(mut session: super::editor::bushing::BushingSession) -> Resul
     launch(ViewerProject::single(scene), Some(Box::new(session)))
 }
 
+/// Open the Eccentric Bushing workbench on `session`.
+pub fn run_eccentric(mut session: super::editor::eccentric::EccentricSession) -> Result<(), String> {
+    let scene = super::editor::authoring::Authoring::scene(&mut session)?;
+    launch(ViewerProject::single(scene), Some(Box::new(session)))
+}
+
 fn new_viewer(project: ViewerProject, editor: Option<Box<dyn Authoring>>) -> Viewer {
     let mut view = ViewState::new(&project.scenes[project.selected]);
     view.show_mesh = editor.as_ref().is_some_and(|e| e.default_mesh_lines());

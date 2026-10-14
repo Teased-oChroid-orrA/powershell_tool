@@ -1415,7 +1415,7 @@ mod snapshot_tests {
         model.commit_number(NumberTarget::EdgeDist, 0.42);
         let mut session = BushingSession::new(&BushingFile::capture(&model, "Wing fitting rev C"), std::env::temp_dir().join("bushing-snapshot.json"));
         let t = std::time::Instant::now();
-        let mut wait = |s: &mut BushingSession, done: &dyn Fn(&BushingSession) -> bool| {
+        let wait = |s: &mut BushingSession, done: &dyn Fn(&BushingSession) -> bool| {
             while !done(s) {
                 s.poll();
                 assert!(t.elapsed().as_secs() < 180);
@@ -1466,6 +1466,51 @@ mod snapshot_tests {
             draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
             std::fs::write(format!("{dir}/bushing-result.rgba"), read_back(&r, &texture)).unwrap();
         });
+    }
+
+    /// The Eccentric Bushing workbench before and after an analysis, as raw RGBA dumps:
+    /// `FEA_SNAPSHOT_ECC_OUT=/dir cargo test ... eccentric_snapshot -- --ignored`.
+    #[test]
+    #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_ECC_OUT"]
+    fn eccentric_snapshot() {
+        use crate::gpu_viewer::editor::eccentric::{file::EccentricFile, EccentricAct, EccentricSession};
+        use crate::gpu_viewer::editor::session::EditorAction;
+        use crate::toolboxes::eccentric_bushing::model::EccentricUi;
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_ECC_OUT") else { return };
+        let _guard = headless_guard();
+        let ui = EccentricUi { offset: 0.04, ..EccentricUi::default() };
+        let mut session = EccentricSession::new(&EccentricFile::new("Wing fitting offset bore", "none.json", &ui), std::env::temp_dir().join("ecc-snapshot.json"));
+        let t = std::time::Instant::now();
+        let wait = |s: &mut EccentricSession, done: &dyn Fn(&EccentricSession) -> bool| {
+            while !done(s) {
+                s.poll();
+                assert!(t.elapsed().as_secs() < 240);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        wait(&mut session, &|s| s.fea().preview_summary().is_ok());
+        let shoot = |session: &mut EccentricSession, step: &str, name: &str| {
+            pollster::block_on(async {
+                let adapter = test_adapter().await.expect("adapter required");
+                let (w, h) = (1360u32, 860u32);
+                let scene = session.scene().unwrap();
+                let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+                let texture = target(&r, w, h);
+                let mut gui = Gui::new();
+                gui.ctx().set_theme(egui::Theme::Dark);
+                let view = ViewState::new(&scene);
+                let scenes = [scene];
+                let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+                gui.select_tab_named(&input, step);
+                draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+                std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
+            });
+        };
+        shoot(&mut session, "Inputs", "ecc-inputs");
+        session.act(EditorAction::Eccentric(EccentricAct::Analyse));
+        session.act(EditorAction::Eccentric(EccentricAct::Step("Analysis")));
+        wait(&mut session, &|s| s.state().analysis.is_some() && !s.solving());
+        shoot(&mut session, "Analysis", "ecc-result");
     }
 
     /// The un-meshed 3D body in every display style and the same body meshed, as raw RGBA dumps:

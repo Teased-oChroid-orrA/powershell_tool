@@ -13,6 +13,7 @@ pub mod learning;
 pub mod rank;
 pub mod adapt;
 pub mod bushing;
+pub mod eccentric;
 pub mod solid;
 pub mod sketcher;
 

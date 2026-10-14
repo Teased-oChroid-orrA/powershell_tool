@@ -234,7 +234,7 @@ full index mapping decision topics to ADR numbers.
 | Change bushing/pressure-vessel solvers | `bushing-solver/AGENTS.md` |
 | Change the edge-distance cross-checks | `edge-check/AGENTS.md` |
 | Change the lug FE (mesh, contact, solve) | `lug-solver/AGENTS.md` |
-| Change the Bushing window (inputs, checks, housing/bushing FE view) or the dashboard | `app-tui/src/gpu_viewer/editor/bushing/AGENTS.md`, `app-tui/AGENTS.md` (Native window) |
+| Change the Bushing or Eccentric Bushing window (inputs, checks, housing/bushing FE view) or the dashboard | `app-tui/src/gpu_viewer/editor/{bushing,eccentric}/AGENTS.md`, `app-tui/AGENTS.md` (Native window) |
 | Change the eccentric bushing spin check / maximum offset | `eccentric-bushing/AGENTS.md`, `app-tui/src/toolboxes/eccentric_bushing/AGENTS.md` |
 | Change the FEA Workbench or the problem schema | `app-tui/src/toolboxes/fea_workbench/AGENTS.md`, `fea-problem/AGENTS.md` |
 | Understand why an architecture decision was made | `docs/AGENTS.md` -> `docs/adr/` |

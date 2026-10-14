@@ -203,6 +203,7 @@ fn solving_shows_the_fit_pressure_beside_the_closed_form_and_a_change_makes_it_s
     assert!(s.needs_scene());
     s.scene().unwrap();
     assert!(s.shows_result(), "the result is shown once solved");
+    assert_eq!(s.scene().unwrap().gain, 1.0, "a fit result opens at its true size");
     let fe = texts(&s.inspector());
     assert!(fe.contains("Fit pressure, FE") && fe.contains("Closed form") && fe.contains("Max von Mises"), "{fe}");
     assert_eq!(s.step_state("Simulation"), Some(crate::gpu_viewer::editor::authoring::StepState::Done));

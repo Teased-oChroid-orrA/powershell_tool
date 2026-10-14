@@ -47,6 +47,8 @@ pub enum EditorKind {
     Solid,
     /// The bushing press-fit workbench (`editor::bushing::file::BushingFile`).
     Bushing,
+    /// The eccentric-bushing spin-capacity workbench (`editor::eccentric::file::EccentricFile`).
+    Eccentric,
 }
 impl EditorKind {
     /// Command-line flag of the editor process.
@@ -55,16 +57,18 @@ impl EditorKind {
             EditorKind::Members => "--gpu-editor",
             EditorKind::Solid => "--gpu-solid",
             EditorKind::Bushing => "--gpu-bushing",
+            EditorKind::Eccentric => "--gpu-eccentric",
         }
     }
     pub fn from_flag(flag: &str) -> Option<Self> {
-        [EditorKind::Members, EditorKind::Solid, EditorKind::Bushing].into_iter().find(|k| k.flag() == flag)
+        [EditorKind::Members, EditorKind::Solid, EditorKind::Bushing, EditorKind::Eccentric].into_iter().find(|k| k.flag() == flag)
     }
     pub fn title(self) -> &'static str {
         match self {
             EditorKind::Members => "Member editor",
             EditorKind::Solid => "Solid editor",
             EditorKind::Bushing => "Bushing workbench",
+            EditorKind::Eccentric => "Eccentric bushing workbench",
         }
     }
     /// File used when none is given.
@@ -73,6 +77,7 @@ impl EditorKind {
             EditorKind::Members => "member-model.json",
             EditorKind::Solid => "solid-model.json",
             EditorKind::Bushing => "bushing-case.json",
+            EditorKind::Eccentric => "eccentric-case.json",
         }
     }
 }
@@ -93,6 +98,7 @@ pub fn run_native_editor(kind: EditorKind, path: &std::path::Path) -> Result<(),
                 window::run_solid(problem, path.to_path_buf())
             }
             EditorKind::Bushing => window::run_bushing(editor::bushing::BushingSession::open(path)?),
+            EditorKind::Eccentric => window::run_eccentric(editor::eccentric::EccentricSession::open(path)?),
         }
     }
     #[cfg(not(feature = "gpu-viewer"))]
@@ -125,7 +131,7 @@ mod tests {
 
     #[test]
     fn editor_flags_round_trip_and_unknown_flags_are_not_editors() {
-        for k in [EditorKind::Members, EditorKind::Solid, EditorKind::Bushing] {
+        for k in [EditorKind::Members, EditorKind::Solid, EditorKind::Bushing, EditorKind::Eccentric] {
             assert_eq!(EditorKind::from_flag(k.flag()), Some(k));
         }
         assert_eq!(EditorKind::from_flag("--gpu-viewer"), None);

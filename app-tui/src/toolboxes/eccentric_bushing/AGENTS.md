@@ -2,6 +2,8 @@
 
 > TL;DR: Thin bridge over the `eccentric-bushing` solver. Reads bore, ID, interference, friction, length, load and materials from the live Bushing Workbench model (`state.bushing.model`; nothing is entered twice) and adds the offset, load angle, housing (round boss, or the Bushing Workbench's edge distance as a plate) and the pin (clearance, friction, modulus, Poisson's ratio). Manual runs (`r` analyse, `m` max offset, `l` max load) on a worker (`Effect::RunEccentric` -> `AppEvent::EccentricFinished`).
 
+> The native window has a second front end over this toolbox: `gpu_viewer/editor/eccentric/` (node there). It reuses `EccentricState`, `model.rs` and `view::display_value` unchanged (`display_value` is `pub(crate)` for it). Keep this toolbox free of window types.
+
 ## Purpose
 Owns: UI state, key routing, rendering, report text. Does not own: any mechanics (`eccentric-bushing/AGENTS.md`).
 

@@ -11,7 +11,7 @@ use fea_problem::{
 /// Weight density to mass density in the inch / lbf / second system.
 const G_INCH: f64 = 386.089;
 
-fn material(m: &mechanics_core::materials::Material) -> MaterialSpec {
+pub(crate) fn material(m: &mechanics_core::materials::Material) -> MaterialSpec {
     let density = m.extra.map_or(0.1, |x| if x.density_lb_in3 > 0.0 { x.density_lb_in3 } else { 0.1 });
     MaterialSpec { name: m.name.to_string(), e: m.e_ksi * 1000.0, nu: m.nu, alpha: m.alpha_u_f * 1e-6, yield_stress: Some(m.sy_ksi * 1000.0), density: density / G_INCH, plastic: false, hardening: 0.0 }
 }
