@@ -8,6 +8,7 @@ pub mod contact;
 pub mod dense;
 pub mod dynamics;
 pub mod delaunay;
+pub mod derivative;
 pub mod element;
 pub mod fit;
 pub mod fields;
