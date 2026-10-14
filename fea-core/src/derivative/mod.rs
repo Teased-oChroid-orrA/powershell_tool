@@ -11,6 +11,7 @@
 //! The [`DerivativePolicyEngine`] selects among the registered methods from a [`DerivativeContext`]; incompatible selections are
 //! rejected with the reason.
 
+pub mod complementarity;
 pub mod complex;
 pub mod constitutive;
 pub mod contact;
