@@ -183,3 +183,26 @@ fn for_one_step_the_path_adjoint_is_the_tangent_adjoint_the_adaptivity_code_uses
     let single: f64 = adj.z.iter().zip(&f).map(|(a, b)| a * b).sum();
     assert!((exact[0][0] - single).abs() < 1e-8 * single.abs(), "path adjoint {:e} vs tangent adjoint {:e}", exact[0][0], single);
 }
+
+#[test]
+fn the_policy_chooses_direct_for_few_parameters_and_adjoint_for_few_quantities_and_the_choice_does_not_change_the_numbers() {
+    use fea_core::derivative::SensitivityMethod;
+    let opt = PathOptions { steps: 3, ..PathOptions::default() };
+    let (model, loads, bc) = build(ElementKind::Tri3, Physics::PlaneStrain { thickness: 1.0 }, &NOMINAL);
+    let sol = solve_path(&model, &loads, &bc, &opt).unwrap();
+    let engine = PathSensitivityEngine::new(&model, &loads, &bc).unwrap();
+    let all = qois(&model);
+    let many_params = [NlParam::ModulusScale(0), NlParam::PoissonRatio(0), NlParam::YieldScale(0), NlParam::HardeningScale(0), NlParam::LoadScale];
+    // one quantity, five parameters: the adjoint needs one backward sweep, the direct method five forward ones
+    let (adj, rep, plan) = engine.sensitivities(&sol, &many_params, &all[..1], None, JacobianStrategy::Recompute).unwrap();
+    assert_eq!(plan.method, SensitivityMethod::DiscreteAdjoint, "{:?}", plan.reasons);
+    assert_eq!(rep.method, plan.method);
+    // two quantities, one parameter: direct
+    let (_, _, plan1) = engine.sensitivities(&sol, &many_params[..1], &all, None, JacobianStrategy::Recompute).unwrap();
+    assert_eq!(plan1.method, SensitivityMethod::Direct, "{:?}", plan1.reasons);
+    // forcing the other method gives the same numbers
+    let (dir, _, _) = engine.sensitivities(&sol, &many_params, &all[..1], Some(SensitivityMethod::Direct), JacobianStrategy::Recompute).unwrap();
+    for p in 0..many_params.len() {
+        assert!((dir[0][p] - adj[0][p]).abs() < 1e-8 * dir[0][p].abs().max(1e-12) + 1e-14, "param {p}: {:e} vs {:e}", dir[0][p], adj[0][p]);
+    }
+}

@@ -239,9 +239,9 @@ pub trait DerivativePolicy {
     fn select(&self, context: &DerivativeContext, candidates: &[DerivativeCapabilities]) -> Result<DerivativePlan, DerivativeError>;
 }
 
-/// Relative costs of the AD modes, in units of one kernel evaluation. The defaults come from the operation counts of the
-/// implementations (a dual number with `W` directions does `1 + W` multiply-adds per operation; a tape records one node per
-/// operation and sweeps at about 1.5 operations per node) and are refit by the benchmark suite (`tests/derivative_bench.rs`).
+/// Relative costs of the AD modes, in units of one kernel evaluation. The defaults are measured on the Quad8 element stiffness by
+/// `tests/derivative_bench.rs` (which prints the refit for the machine it runs on): a dual lane adds about a third of a plain
+/// evaluation (the lanes vectorise), recording a tape costs about 13 and one sweep about 11.5, complex step 1.75, hyper-dual 3.3.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CostCalibration {
     pub dual_lane: f64,
@@ -255,7 +255,7 @@ pub struct CostCalibration {
 
 impl Default for CostCalibration {
     fn default() -> Self {
-        Self { dual_lane: 1.0, tape_record: 2.0, tape_sweep: 1.5, complex: 4.0, hyperdual: 4.0, tape_node_bytes: 24.0, dual_lane_bytes: 8.0 }
+        Self { dual_lane: 0.33, tape_record: 13.0, tape_sweep: 11.5, complex: 1.75, hyperdual: 3.3, tape_node_bytes: 24.0, dual_lane_bytes: 8.0 }
     }
 }
 

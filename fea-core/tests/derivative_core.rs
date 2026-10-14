@@ -410,3 +410,31 @@ fn the_sensitivity_policy_picks_direct_adjoint_or_matrix_free_from_the_dimension
     assert!(select_sensitivity(&mf).is_err());
     assert!(select_sensitivity(&SensitivityContext::static_linear(10, 0, 1)).is_err());
 }
+
+#[test]
+fn the_fea_kernel_registry_selects_a_method_per_kernel_and_the_generalized_one_across_a_contact_transition() {
+    use fea_core::derivative::kernels::*;
+    use fea_core::derivative::*;
+    let engine = DerivativePolicyEngine::with_fea_kernels();
+    // smooth constitutive tangent: the analytic derivative is cheapest
+    let ctx = DerivativeContext::new(DerivativeRequest::Jacobian, 6, 6);
+    assert_eq!(engine.select(CONSTITUTIVE_J2, &ctx).unwrap().method, DerivativeMethod::Analytic);
+    // an element stiffness has no closed form registered: AD is chosen, and which direction depends on the shape of the map
+    let wide = DerivativeContext::new(DerivativeRequest::Jacobian, 40, 2);
+    let tall = DerivativeContext::new(DerivativeRequest::Jacobian, 2, 40);
+    let a = engine.select(ELEMENT_STIFFNESS, &wide).unwrap().method;
+    let b = engine.select(ELEMENT_STIFFNESS, &tall).unwrap().method;
+    assert_eq!((a, b), (DerivativeMethod::ReverseAd, DerivativeMethod::ForwardAd));
+    // contact across a transition: the smooth methods are refused, the generalized derivative is chosen and says so
+    let mut transition = DerivativeContext::new(DerivativeRequest::JacobianVectorProduct, 10, 10);
+    transition.smoothness = Smoothness::Semismooth;
+    transition.contact = ContactStatus::Transition;
+    let plan = engine.select(CONTACT_UNILATERAL, &transition).unwrap();
+    assert_eq!((plan.method, plan.semantics), (DerivativeMethod::Generalized, DerivativeSemantics::Generalized));
+    // a kernel nobody registered is an explicit error, not a silent finite difference
+    assert!(matches!(engine.select("nonexistent.kernel", &ctx), Err(DerivativeError::UnknownKernel(_))));
+    let names = engine.kernels();
+    for k in [ELEMENT_STIFFNESS, ELEMENT_MASS, ELEMENT_GEOMETRY, CONSTITUTIVE_J2, CONSTITUTIVE_HYPERELASTIC, CONTACT_PENALTY, CONTACT_UNILATERAL] {
+        assert!(names.iter().any(|n| n == k), "{k} is registered");
+    }
+}

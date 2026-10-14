@@ -18,6 +18,7 @@ pub mod contact;
 pub mod dual;
 pub mod element;
 pub mod hyperdual;
+pub mod kernels;
 pub mod linalg;
 pub mod linear_sens;
 pub mod matrix_free;

@@ -41,7 +41,7 @@ impl<'m> MatrixFreeTangent<'m> {
         let old_gp = setup.gp_states(old);
         let mut c = Vec::new();
         let mut symmetric = true;
-        if mode == MatrixFreeMode::Cached || true {
+        {
             let all: Result<Vec<[f64; 36]>, String> = setup.gps.par_iter().zip(old_gp.par_iter()).map(|(gp, o)| setup.sens(gp, u, o).map(|s| std::array::from_fn(|i| s.d_stress_d_strain[i]))).collect();
             let all = all?;
             // the tangent is symmetric in the work-conjugate pairing when W C is

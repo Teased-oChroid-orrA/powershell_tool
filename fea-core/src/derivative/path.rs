@@ -501,6 +501,22 @@ impl<'m> PathSensitivityEngine<'m> {
             .collect()
     }
 
+    /// Direct or adjoint, chosen by [`super::select_sensitivity`] from the number of parameters, quantities and steps (or the
+    /// `forced` method); the returned [`SensitivityPlan`] says why. A matrix-free choice is answered by the adjoint here (the
+    /// per-step tangent is assembled and factorised once either way).
+    pub fn sensitivities(&self, sol: &PathSolution, params: &[NlParam], qois: &[Qoi], forced: Option<super::SensitivityMethod>, strategy: JacobianStrategy) -> Result<(SensitivityMatrix, PathReport, super::SensitivityPlan), String> {
+        let n = self.setup.model.mesh.n_dofs();
+        let mut ctx = super::SensitivityContext::static_linear(n, params.len(), qois.len());
+        ctx.steps = sol.steps;
+        let plan = super::select_sensitivity(&ctx).map_err(|e| e.to_string())?;
+        let method = forced.unwrap_or(plan.method);
+        let (m, rep) = match method {
+            super::SensitivityMethod::Direct => self.direct(sol, params, qois)?,
+            _ => self.adjoint(sol, params, qois, strategy)?,
+        };
+        Ok((m, rep, plan))
+    }
+
     /// Discrete adjoint sensitivities of every quantity for every parameter: one backward sweep per quantity, whatever the number of
     /// parameters.
     pub fn adjoint(&self, sol: &PathSolution, params: &[NlParam], qois: &[Qoi], strategy: JacobianStrategy) -> Result<(SensitivityMatrix, PathReport), String> {
