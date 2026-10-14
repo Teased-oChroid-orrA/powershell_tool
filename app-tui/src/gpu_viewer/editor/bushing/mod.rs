@@ -13,6 +13,7 @@ mod picker;
 
 use super::{
     authoring::{Authoring, Card, Overlay},
+    handoff,
     camera::Camera,
     session::{EditorAction, Key, KeyResult, Mods},
     solid::{SolidAction, SolidSession},
@@ -58,6 +59,8 @@ pub enum BushingAct {
     AllFixes,
     SelectFix(usize),
     ApplyFix(usize),
+    /// Open the case in the FEA workbench (saved first); it comes back through the FEA workbench's Send.
+    OpenInFea,
     Undo,
     Redo,
     Save,
@@ -91,11 +94,20 @@ pub struct BushingSession {
     /// The problem last handed to the FE session.
     fe_key: Option<fea_problem::Problem>,
     mesh_wanted: bool,
-    last_fea_status: String,
     edge_jobs: Vec<(u64, Receiver<Option<EdgeCheckRun>>)>,
     step: &'static str,
     /// Only the fixes of this check are listed (`None`: all of them).
     fix_kind: Option<CheckKind>,
+    /// The case file's modification time when this window last read or wrote it: another time means another window changed it.
+    stamp: Option<std::time::SystemTime>,
+    beat_at: std::time::Instant,
+    watch_at: std::time::Instant,
+}
+
+impl Drop for BushingSession {
+    fn drop(&mut self) {
+        handoff::clear_beat(&self.path);
+    }
 }
 
 const UNDO_LIMIT: usize = 100;
@@ -124,11 +136,14 @@ impl BushingSession {
             fe_note: None,
             fe_key: None,
             mesh_wanted: false,
-            last_fea_status: String::new(),
             edge_jobs: Vec::new(),
             step: "Inputs",
             fix_kind: None,
+            stamp: None,
+            beat_at: std::time::Instant::now(),
+            watch_at: std::time::Instant::now(),
         };
+        s.stamp = handoff::stamp(&s.path);
         s.refresh_fea();
         s
     }
@@ -204,10 +219,63 @@ impl BushingSession {
         match std::fs::write(&self.path, self.snapshot().to_json()) {
             Ok(()) => {
                 self.dirty = false;
+                self.stamp = handoff::stamp(&self.path);
                 self.status = format!("Saved {}.", self.path.display());
             }
             Err(e) => self.status = format!("Could not save {}: {e}", self.path.display()),
         }
+    }
+    /// Hand the case to the FEA workbench: the file is saved first (what comes back goes into it), the derived model written.
+    fn open_in_fea(&mut self) {
+        if self.dirty || !self.path.exists() {
+            self.save();
+            if self.dirty {
+                return;
+            }
+        }
+        self.status = match fe::housing_problem(&self.st.model).and_then(|p| handoff::open_in_fea(&self.path, crate::gpu_viewer::EditorKind::Bushing, &p)) {
+            Ok(msg) => msg,
+            Err(e) => format!("Could not open the FEA workbench: {e}"),
+        };
+    }
+    /// Make the next `poll` look at the case file (tests; otherwise it looks once a second).
+    #[cfg(test)]
+    pub(crate) fn make_watch_due(&mut self) {
+        self.watch_at = std::time::Instant::now() - std::time::Duration::from_secs(5);
+    }
+    /// Once a second: keep the heartbeat while this case is linked to an FEA file, and take in a change another window made to
+    /// the case file (the FEA workbench's Send) unless there are unsaved edits here.
+    fn watch(&mut self) -> bool {
+        if self.watch_at.elapsed() < std::time::Duration::from_secs(1) {
+            return false;
+        }
+        self.watch_at = std::time::Instant::now();
+        if handoff::Link::exists(&handoff::fea_path(&self.path)) && self.beat_at.elapsed() >= std::time::Duration::from_secs(2) {
+            self.beat_at = std::time::Instant::now();
+            handoff::beat(&self.path);
+        }
+        let now = handoff::stamp(&self.path);
+        if now == self.stamp {
+            return false;
+        }
+        self.stamp = now;
+        let Some(text) = now.and_then(|_| std::fs::read_to_string(&self.path).ok()) else { return false };
+        if self.dirty {
+            self.status = "The case file changed on disk (the FEA workbench sent a model); this window has unsaved edits: save to keep them, or reopen the file for the new inputs.".into();
+            return true;
+        }
+        match BushingFile::from_json(&text) {
+            Ok(f) => {
+                self.undo.push(self.snapshot());
+                self.redo.clear();
+                let skipped = f.apply(&mut self.st.model);
+                self.changed();
+                self.dirty = false;
+                self.status = if skipped.is_empty() { "Updated from the FEA workbench.".into() } else { format!("Updated from the FEA workbench; not applied: {}.", skipped.join("; ")) };
+            }
+            Err(why) => self.status = format!("The case file changed on disk but cannot be read: {why}"),
+        }
+        true
     }
     /// The report text beside the file (`name.report.txt`).
     fn export(&mut self) {
@@ -343,6 +411,8 @@ impl BushingSession {
     // ------------------------------------------------------------------ dispatch
 
     fn do_act(&mut self, a: BushingAct) {
+        // A message stays until the next thing the person does.
+        self.status.clear();
         match a {
             BushingAct::Row(r) => self.activate_row(r),
             BushingAct::Step(s) => self.step = s,
@@ -381,6 +451,7 @@ impl BushingSession {
             BushingAct::Undo => self.undo(),
             BushingAct::Redo => self.redo(),
             BushingAct::Save => self.save(),
+            BushingAct::OpenInFea => self.open_in_fea(),
             BushingAct::Export => self.export(),
             BushingAct::GenerateMesh => {
                 self.status.clear();
@@ -480,7 +551,7 @@ impl Authoring for BushingSession {
         self.fea.needs_scene()
     }
     fn poll(&mut self) -> bool {
-        let mut changed = self.fea.poll();
+        let mut changed = self.fea.poll() | self.watch();
         // The mesh follows the inputs a moment after they settle: one job at a time.
         if self.mesh_wanted && !self.fea.meshing() {
             self.mesh_wanted = false;
@@ -518,11 +589,6 @@ impl Authoring for BushingSession {
             changed = true;
         }
         self.st.expire_edge_notice();
-        if self.fea.status != self.last_fea_status {
-            self.last_fea_status = self.fea.status.clone();
-            self.status.clear();
-            changed = true;
-        }
         changed
     }
     fn prompting(&self) -> bool {

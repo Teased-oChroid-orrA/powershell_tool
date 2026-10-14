@@ -341,6 +341,7 @@ impl BushingSession {
                 .group("Fit", vec![row("Fit type", FieldRow::ToggleFitType), row("Bore diameter", FieldRow::Number(NumberTarget::BoreDia)), row("Bushing ID", FieldRow::Number(NumberTarget::IdBushing)), row("Interference", FieldRow::Number(NumberTarget::Interference)), row("Friction", FieldRow::Number(NumberTarget::Friction))])
                 .group("Materials", vec![row("Housing material", FieldRow::OpenHousingMaterialPicker), row("Bushing material", FieldRow::OpenBushingMaterialPicker)])
                 .group("Housing and load", vec![row("Edge distance", FieldRow::Number(NumberTarget::EdgeDist)), row("Width", FieldRow::Number(NumberTarget::HousingWidth)), row("Length", FieldRow::Number(NumberTarget::HousingLen)), row("Pin load", FieldRow::Number(NumberTarget::Load))])
+                .group("FEA workbench", vec![entry("Edit in the FEA workbench", "", BushingAct::OpenInFea).when(self.fe_note.as_ref().map_or(Ok(()), |why| Err(format!("no FE model yet: {why}"))))])
                 .group("Edit", vec![entry("Undo", "Ctrl/Cmd+Z", BushingAct::Undo).when(self.undo_availability()), entry("Redo", "Ctrl/Cmd+Shift+Z", BushingAct::Redo).when(self.redo_availability()), entry("Save", "Ctrl/Cmd+S", BushingAct::Save)]),
             RibbonTab::new("Checks")
                 .group("Cross-check", vec![entry("Edge check", "", BushingAct::EdgeCheck(false)).when(edge.clone()), entry("Edge check + contact FE", "", BushingAct::EdgeCheck(true)).when(edge), entry("Cancel", "Esc", BushingAct::CancelEdgeCheck).when(self.cancel_edge_availability())])
@@ -391,7 +392,7 @@ impl BushingSession {
         let all = |tab: &str| tabs.iter().find(|t| t.title == tab).map(|t| t.groups.iter().flat_map(|g| g.buttons.clone()).collect::<Vec<_>>()).unwrap_or_default();
         let pick = |tab: &str, labels: &[&str]| all(tab).into_iter().filter(|e| labels.contains(&e.label.as_str())).map(Item::Entry).collect::<Vec<_>>();
         vec![
-            Menu { title: "File".into(), items: [pick("Inputs", &["Save"]), pick("Checks", &["Export report"])].concat() },
+            Menu { title: "File".into(), items: [pick("Inputs", &["Save", "Edit in the FEA workbench"]), pick("Checks", &["Export report"])].concat() },
             Menu { title: "Edit".into(), items: pick("Inputs", &["Undo", "Redo"]) },
             Menu { title: "Tools".into(), items: [pick("Checks", &["Edge check", "Edge check + contact FE", "Cancel", "Fixes"])].concat() },
             Menu { title: "Simulation".into(), items: all("Simulation").into_iter().map(Item::Entry).collect() },

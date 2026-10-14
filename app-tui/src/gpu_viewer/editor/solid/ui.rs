@@ -355,6 +355,7 @@ impl Authoring for SolidSession {
         vec![
             RibbonTab::new("Model")
                 .group("Problem", vec![entry("New part", "Ctrl/Cmd+N", SolidAction::NewPart).when(self.replace_availability()), entry("Open file", "Ctrl/Cmd+O", SolidAction::OpenFile).when(self.replace_availability()), entry("Next template", "", SolidAction::NextTemplate), act("Analysis type", "", Analysis), entry("Material library", "", SolidAction::OpenCard(CardForm::Materials)), entry("Units", "", SolidAction::OpenCard(CardForm::Units))])
+                .group("Send", vec![entry("To Bushing", "", SolidAction::SendTo(crate::gpu_viewer::EditorKind::Bushing)).when(self.send_availability(crate::gpu_viewer::EditorKind::Bushing)), entry("To Eccentric", "", SolidAction::SendTo(crate::gpu_viewer::EditorKind::Eccentric)).when(self.send_availability(crate::gpu_viewer::EditorKind::Eccentric))])
                 .group(
                     "Geometry",
                     vec![
@@ -456,7 +457,7 @@ impl Authoring for SolidSession {
             },
             Menu {
                 title: "Tools".into(),
-                items: vec![act("Analysis type", Analysis), item(entry("Material library...", "", SolidAction::OpenCard(CardForm::Materials))), item(entry("Units...", "", SolidAction::OpenCard(CardForm::Units))), act("Element type", Element), act("Adaptive passes", AdaptPasses), item(entry("Refine where recommended", "", SolidAction::RefineAll).when(self.refine_availability())), item(entry("Show refinement hints", "", SolidAction::ToggleRefineShow).checked(self.show_refine)), item(entry("Generate mesh", "", SolidAction::GenerateMesh).when(self.mesh_availability()))],
+                items: vec![item(entry("Send to the Bushing workbench", "", SolidAction::SendTo(crate::gpu_viewer::EditorKind::Bushing)).when(self.send_availability(crate::gpu_viewer::EditorKind::Bushing))), item(entry("Send to the Eccentric Bushing workbench", "", SolidAction::SendTo(crate::gpu_viewer::EditorKind::Eccentric)).when(self.send_availability(crate::gpu_viewer::EditorKind::Eccentric))), Item::Separator, act("Analysis type", Analysis), item(entry("Material library...", "", SolidAction::OpenCard(CardForm::Materials))), item(entry("Units...", "", SolidAction::OpenCard(CardForm::Units))), act("Element type", Element), act("Adaptive passes", AdaptPasses), item(entry("Refine where recommended", "", SolidAction::RefineAll).when(self.refine_availability())), item(entry("Show refinement hints", "", SolidAction::ToggleRefineShow).checked(self.show_refine)), item(entry("Generate mesh", "", SolidAction::GenerateMesh).when(self.mesh_availability()))],
             },
             Menu { title: "Simulation".into(), items: self.simulation_items() },
             Menu { title: "Advisor".into(), items: self.advisor_items() },

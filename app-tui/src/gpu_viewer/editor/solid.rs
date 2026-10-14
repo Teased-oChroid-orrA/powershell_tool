@@ -60,6 +60,8 @@ enum Boundary {
 /// What the ribbon, menus, tree and property rows ask the solid session to do.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SolidAction {
+    /// Send the bushing model to the Bushing or Eccentric Bushing workbench (`handoff`).
+    SendTo(crate::gpu_viewer::EditorKind),
     /// Click a property row: focus it and edit or activate it.
     Focus(usize),
     /// Perform a row's action (cycle, add, remove, toggle) without needing it focused.
@@ -345,6 +347,15 @@ pub struct SolidSession {
     fix_preview: Option<FixRef>,
     /// Colour the bushings' own material as "selected" so the bushing and its housing read apart (the Bushing workbench).
     pub highlight_bushings: bool,
+    handoff_beat: Option<std::time::Instant>,
+}
+
+impl Drop for SolidSession {
+    fn drop(&mut self) {
+        if super::handoff::Link::exists(&self.path) {
+            super::handoff::clear_beat(&self.path);
+        }
+    }
 }
 
 fn is_edit_char(c: char) -> bool {
@@ -408,6 +419,7 @@ impl SolidSession {
             findings_cache: std::cell::RefCell::new(None),
             fix_preview: None,
             highlight_bushings: false,
+            handoff_beat: None,
         }
     }
 
@@ -562,6 +574,20 @@ impl SolidSession {
         self.clamp_focus();
         // A sketch open in Sketch mode may have been replaced along with the problem.
         self.drop_sketch_mode_if_orphaned();
+    }
+    /// Why this model cannot go to the workbench `kind` (`Ok` when it can).
+    pub fn send_availability(&self, kind: crate::gpu_viewer::EditorKind) -> Result<(), String> {
+        if self.sketching.is_some() {
+            return Err("finish the sketch first".into());
+        }
+        super::handoff::sendable(&self.problem, kind)
+    }
+    /// Hand the model (as it is now, saved or not) to the workbench `kind`: its case file takes what changed and it opens.
+    fn send_to(&mut self, kind: crate::gpu_viewer::EditorKind) {
+        self.status = match self.send_availability(kind).and_then(|()| super::handoff::send_from_fea(&self.path, &self.problem, kind)) {
+            Ok(msg) => msg,
+            Err(e) => format!("Cannot send to {}: {e}", kind.title()),
+        };
     }
     /// Take `problem` as the model without an undo step or a dirty mark: the caller derives it from something else
     /// (the Bushing workbench's inputs) and owns the saving. A result or mesh for the old problem is stale from here.
@@ -925,6 +951,13 @@ impl SolidSession {
     /// Collect finished jobs and start a requested mesh.
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
+        // While this file belongs to a bushing case, say so: the case's window then opens no second FEA window on it.
+        if self.handoff_beat.is_none_or(|t| t.elapsed() >= Duration::from_secs(2)) {
+            self.handoff_beat = Some(std::time::Instant::now());
+            if super::handoff::Link::exists(&self.path) {
+                super::handoff::beat(&self.path);
+            }
+        }
         if let Some((_, answer)) = self.preview_worker.poll() {
             self.mesh_requested = false;
             match answer {
@@ -1223,6 +1256,7 @@ impl SolidSession {
             SolidAction::Undo => self.undo(),
             SolidAction::Redo => self.redo(),
             SolidAction::Save => self.save(),
+            SolidAction::SendTo(kind) => self.send_to(kind),
             SolidAction::Load => self.load(),
             SolidAction::NextTemplate => self.activate(FieldRow::Template, true),
             SolidAction::NewPart => self.new_part(),

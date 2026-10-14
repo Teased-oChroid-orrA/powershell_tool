@@ -289,6 +289,7 @@ impl EccentricSession {
                 .group("Eccentricity", vec![row("Offset", FieldRow::Number(NumberTarget::Offset)), row("Load angle", FieldRow::Number(NumberTarget::LoadAngle))])
                 .group("Housing and pin", vec![row("Boss OD / bore", FieldRow::Number(NumberTarget::BossFactor)), row("Housing", FieldRow::ToggleHousing), row("Pin clearance", FieldRow::Number(NumberTarget::PinClearance)), row("Pin friction", FieldRow::Number(NumberTarget::PinFriction))])
                 .group("Bushing case", vec![entry("Reload", "", EccentricAct::ReloadBushing), entry("Edit in the Bushing workbench", "", EccentricAct::OpenBushing)])
+                .group("FEA workbench", vec![entry("Edit in the FEA workbench", "", EccentricAct::OpenInFea).when(model::build_input(&self.bushing, &self.st.ui).map(|_| ()))])
                 .group("Edit", vec![entry("Undo", "Ctrl/Cmd+Z", EccentricAct::Undo).when(if self.undo.is_empty() { Err("nothing to undo".to_string()) } else { Ok(()) }), entry("Redo", "Ctrl/Cmd+Shift+Z", EccentricAct::Redo).when(if self.redo.is_empty() { Err("nothing to redo".to_string()) } else { Ok(()) }), entry("Save", "Ctrl/Cmd+S", EccentricAct::Save)]),
             RibbonTab::new("Analysis")
                 .group(
@@ -318,7 +319,7 @@ impl EccentricSession {
         let save: Vec<Item> = all("Inputs", Some("Edit")).into_iter().filter(|i| matches!(i, Item::Entry(e) if e.label == "Save")).collect();
         let undo: Vec<Item> = all("Inputs", Some("Edit")).into_iter().filter(|i| matches!(i, Item::Entry(e) if e.label != "Save")).collect();
         vec![
-            Menu { title: "File".into(), items: [save, all("Analysis", Some("Export"))].concat() },
+            Menu { title: "File".into(), items: [save, all("Inputs", Some("FEA workbench")), all("Analysis", Some("Export"))].concat() },
             Menu { title: "Edit".into(), items: undo },
             Menu { title: "Analysis".into(), items: all("Analysis", None) },
         ]

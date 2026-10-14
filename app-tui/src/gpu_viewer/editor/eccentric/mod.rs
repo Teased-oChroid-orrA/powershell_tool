@@ -12,6 +12,7 @@ pub mod vtu;
 
 use super::{
     authoring::{Authoring, Card, Overlay},
+    handoff,
     bushing::file::BushingFile,
     camera::Camera,
     session::{EditorAction, Key, KeyResult, Mods},
@@ -44,6 +45,8 @@ pub enum EccentricAct {
     Cancel,
     ReloadBushing,
     OpenBushing,
+    /// Open the case in the FEA workbench (saved first); it comes back through the FEA workbench's Send.
+    OpenInFea,
     ToggleProfile,
     ToggleResult,
     ExportReport,
@@ -79,7 +82,6 @@ pub struct EccentricSession {
     fe_note: Option<String>,
     fe_key: Option<fea_problem::Problem>,
     mesh_wanted: bool,
-    last_fea_status: String,
     jobs: Vec<(u64, Receiver<Answer>)>,
     /// The `.vtu` text of the last analysis and the inputs it was solved for.
     vtu: Option<(Inputs, String)>,
@@ -91,6 +93,17 @@ pub struct EccentricSession {
     version: u64,
     built: Option<u64>,
     step: &'static str,
+    /// Modification times of the case file and of the Bushing case when this window last read or wrote them.
+    stamp: Option<std::time::SystemTime>,
+    bushing_stamp: Option<std::time::SystemTime>,
+    beat_at: std::time::Instant,
+    watch_at: std::time::Instant,
+}
+
+impl Drop for EccentricSession {
+    fn drop(&mut self) {
+        handoff::clear_beat(&self.path);
+    }
 }
 
 const UNDO_LIMIT: usize = 100;
@@ -119,7 +132,6 @@ impl EccentricSession {
             fe_note: None,
             fe_key: None,
             mesh_wanted: false,
-            last_fea_status: String::new(),
             jobs: Vec::new(),
             vtu: None,
             show_result: true,
@@ -128,7 +140,12 @@ impl EccentricSession {
             version: 1,
             built: None,
             step: "Inputs",
+            stamp: None,
+            bushing_stamp: None,
+            beat_at: std::time::Instant::now(),
+            watch_at: std::time::Instant::now(),
         };
+        s.stamp = handoff::stamp(&s.path);
         s.reload_bushing();
         s
     }
@@ -179,13 +196,71 @@ impl EccentricSession {
             Err(_) => format!("no Bushing case at {}; the Bushing defaults stand", path.display()),
         };
         self.bushing = model;
+        self.bushing_stamp = handoff::stamp(&path);
         self.inputs_changed();
+    }
+    /// Hand the case to the FEA workbench: saved first (what comes back goes into it), the derived model written.
+    fn open_in_fea(&mut self) {
+        if self.dirty || !self.path.exists() {
+            self.save();
+            if self.dirty {
+                return;
+            }
+        }
+        self.status = match fe::preview_problem(&self.bushing, &self.st.ui).and_then(|p| handoff::open_in_fea(&self.path, crate::gpu_viewer::EditorKind::Eccentric, &p)) {
+            Ok(msg) => msg,
+            Err(e) => format!("Could not open the FEA workbench: {e}"),
+        };
+    }
+    /// Make the next `poll` look at the files (tests; otherwise it looks once a second).
+    #[cfg(test)]
+    pub(crate) fn make_watch_due(&mut self) {
+        self.watch_at = std::time::Instant::now() - std::time::Duration::from_secs(5);
+    }
+    /// Once a second: keep the heartbeat while this case is linked to an FEA file, and take in what the FEA workbench's Send
+    /// wrote: the Bushing case it read is simply reloaded, this case's own inputs unless there are unsaved edits.
+    fn watch(&mut self) -> bool {
+        if self.watch_at.elapsed() < std::time::Duration::from_secs(1) {
+            return false;
+        }
+        self.watch_at = std::time::Instant::now();
+        if handoff::Link::exists(&handoff::fea_path(&self.path)) && self.beat_at.elapsed() >= std::time::Duration::from_secs(2) {
+            self.beat_at = std::time::Instant::now();
+            handoff::beat(&self.path);
+        }
+        let mut changed = false;
+        let own = handoff::stamp(&self.path);
+        if own != self.stamp {
+            self.stamp = own;
+            changed = true;
+            let text = own.and_then(|_| std::fs::read_to_string(&self.path).ok());
+            if self.dirty {
+                self.status = "The case file changed on disk (the FEA workbench sent a model); this window has unsaved edits: save to keep them, or reopen the file for the new inputs.".into();
+            } else if let Some(text) = text {
+                match EccentricFile::from_json(&text) {
+                    Ok(f) => {
+                        self.undo.push(self.st.ui.clone());
+                        self.redo.clear();
+                        self.st.ui = f.ui();
+                        self.bushing_case = f.bushing_case;
+                        self.reload_bushing();
+                        self.dirty = false;
+                        self.status = "Updated from the FEA workbench.".into();
+                    }
+                    Err(why) => self.status = format!("The case file changed on disk but cannot be read: {why}"),
+                }
+            }
+        }
+        if handoff::stamp(&self.case_path()) != self.bushing_stamp {
+            changed = true;
+            self.reload_bushing();
+            self.status = "The Bushing case changed on disk: reloaded.".into();
+        }
+        changed
     }
     fn open_bushing(&mut self) {
         let case = self.case_path();
-        let spawned = std::env::current_exe().map_err(|e| e.to_string()).and_then(|exe| {
-            std::process::Command::new(exe).arg(crate::gpu_viewer::EditorKind::Bushing.flag()).arg(&case).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().map(|_| ()).map_err(|e| e.to_string())
-        });
+        let spawned = handoff::launch(crate::gpu_viewer::EditorKind::Bushing, &case);
         self.status = match spawned {
             Ok(()) => format!("Opened {} in the Bushing workbench; save it there, then reload here.", case.display()),
             Err(e) => format!("Could not open the Bushing workbench: {e}"),
@@ -237,6 +312,7 @@ impl EccentricSession {
         match std::fs::write(&self.path, self.case_file().to_json()) {
             Ok(()) => {
                 self.dirty = false;
+                self.stamp = handoff::stamp(&self.path);
                 self.status = format!("Saved {}.", self.path.display());
             }
             Err(e) => self.status = format!("Could not save {}: {e}", self.path.display()),
@@ -362,6 +438,8 @@ impl EccentricSession {
     }
 
     fn do_act(&mut self, a: EccentricAct) {
+        // A message stays until the next thing the person does.
+        self.status.clear();
         match a {
             EccentricAct::Row(r) => self.activate_row(r),
             EccentricAct::Step(s) => self.step = s,
@@ -369,6 +447,7 @@ impl EccentricSession {
             EccentricAct::Cancel => self.st.cancel(),
             EccentricAct::ReloadBushing => self.reload_bushing(),
             EccentricAct::OpenBushing => self.open_bushing(),
+            EccentricAct::OpenInFea => self.open_in_fea(),
             EccentricAct::ToggleProfile => self.st.show_profile = !self.st.show_profile,
             EccentricAct::ToggleResult => {
                 self.show_result = !self.show_result;
@@ -484,7 +563,7 @@ impl Authoring for EccentricSession {
         self.built != Some(self.version) || self.fea.needs_scene()
     }
     fn poll(&mut self) -> bool {
-        let mut changed = self.fea.poll();
+        let mut changed = self.fea.poll() | self.watch();
         if self.mesh_wanted && !self.fea.meshing() {
             self.mesh_wanted = false;
             if self.fea.mesh_availability().is_ok() {
@@ -512,10 +591,6 @@ impl Authoring for EccentricSession {
             let effects = self.st.finish(id, result, &self.bushing);
             self.version += 1;
             self.run_effects(effects);
-        }
-        if self.fea.status != self.last_fea_status {
-            self.last_fea_status = self.fea.status.clone();
-            changed = true;
         }
         changed
     }

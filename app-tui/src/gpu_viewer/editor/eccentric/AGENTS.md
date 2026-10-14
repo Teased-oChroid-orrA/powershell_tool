@@ -20,6 +20,7 @@ Does not own: any mechanics (`eccentric-bushing/AGENTS.md`; the crate is unchang
 - A result is fresh only for the exact `Inputs` it ran for (`EccentricState` stores them; `result_is_current` / `analysis_is_current`). A stale result is listed as stale and is not drawn; the picture of the inputs returns.
 - The Bushing case file is read at open and on Reload; changing it elsewhere does not change an open session. A missing or unusable case leaves the Bushing workbench's defaults and says so in the card.
 - The picture is read-only (no picking). Its mesh is its own (`fe.rs`), not the solver's: do not compare its stresses with an analysis. The solved scene opens at true size (`gain = 1`).
+- **FEA hand-off** (`handoff.rs`, `EccentricAct::OpenInFea`): like the Bushing window's; the FEA workbench's Send also writes the Bushing case this one reads (the offset, load angle and boss go to this case file, everything shared to the Bushing case), and `watch` reloads both.
 - Switches (axial condition, housing, capacity basis, direct spin check, Advanced) work whether or not the Advanced rows are open: the ribbon offers some of them.
 
 ## Pitfalls
