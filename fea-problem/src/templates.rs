@@ -12,7 +12,7 @@ fn sketch(outer: Shape, holes: Vec<Shape>) -> Geometry {
 }
 
 fn base(name: &str, analysis: Analysis, geometry: Geometry) -> Problem {
-    Problem { version: FORMAT_VERSION, name: name.into(), analysis, thickness: 0.25, material: steel(), region_materials: Vec::new(), geometry, mesh: MeshSpec::default(), supports: Vec::new(), loads: Vec::new(), delta_t: 0.0, bushings: Vec::new(), study: Study::default(), thermal: ThermalSpec::default(), history: None }
+    Problem { version: FORMAT_VERSION, name: name.into(), analysis, thickness: 0.25, material: steel(), region_materials: Vec::new(), geometry, mesh: MeshSpec::default(), supports: Vec::new(), loads: Vec::new(), cases: Vec::new(), active_case: 0, delta_t: 0.0, bushings: Vec::new(), study: Study::default(), thermal: ThermalSpec::default(), history: None }
 }
 
 /// A new, empty part: Sketch1 (empty) on the Front plane and no body yet. It cannot be meshed or solved until the

@@ -1200,6 +1200,14 @@ mod snapshot_tests {
             gui.toggle_background_picker();
             draw(&mut r, &mut gui, &texture, &input, [-0.6, -0.5], false);
             std::fs::write(format!("{dir}/context.rgba"), read_back(&r, &texture)).unwrap();
+            // The same face with the Pressure card open beside where the menu was.
+            gui.toggle_background_picker();
+            gui.close_floating();
+            let mut session = session;
+            session.do_action(SolidAction::OpenCard(crate::gpu_viewer::editor::solid::CardForm::Pressure));
+            let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+            draw(&mut r, &mut gui, &texture, &input, [-0.6, -0.5], false);
+            std::fs::write(format!("{dir}/card.rgba"), read_back(&r, &texture)).unwrap();
         });
     }
 

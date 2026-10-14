@@ -176,6 +176,17 @@ impl SolidSession {
         if node >= super::sketching::T_HISTORY_BASE {
             return self.history_node_menu(node);
         }
+        if (super::ui::T_CASE_BASE..super::ui::T_CASE_BASE + 1_000).contains(&node) {
+            let i = (node - super::ui::T_CASE_BASE) as usize;
+            let name = self.problem.cases.get(i).map_or(String::new(), |c| c.name.clone());
+            return vec![
+                Item::Entry(entry(format!("Make '{name}' active"), SolidAction::SetCase(i))),
+                Item::Entry(entry("Edit this load case...".into(), SolidAction::OpenCard(super::CardForm::Case(i)))),
+                Item::Entry(entry("Remove this load case".into(), SolidAction::RemoveCase(i))),
+                Item::Separator,
+                Item::Entry(entry("New load case".into(), SolidAction::NewCase)),
+            ];
+        }
         let Some(f) = node_feature(node) else { return out };
         for row in self.rows() {
             if matches!(row, FieldRow::Header(_)) || feature_of(row) != f || edit_kind(row) != EditKind::Action {

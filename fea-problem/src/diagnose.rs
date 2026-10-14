@@ -245,11 +245,11 @@ impl Edit {
             },
             Edit::Drop(target) => match target {
                 Target::Support(i) if *i < p.supports.len() => {
-                    p.supports.remove(*i);
+                    p.remove_support(*i);
                     Ok(())
                 }
                 Target::Load(i) if *i < p.loads.len() => {
-                    p.loads.remove(*i);
+                    p.remove_load(*i);
                     Ok(())
                 }
                 Target::HeatSupport(i) if *i < p.thermal.supports.len() => {

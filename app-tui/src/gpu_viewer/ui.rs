@@ -159,3 +159,27 @@ mod tests {
         assert_eq!(ids(&visible_nodes(&t, &HashSet::from([1]))), [1, 5]);
     }
 }
+
+/// One row of a value card.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CardRow {
+    /// A switch (a held direction, a support kept in a case).
+    Toggle { label: String, on: bool, action: super::controller::UiAction },
+    /// A text field; edits are reported with `index` (`Authoring::card_field`).
+    Field { label: String, text: String, index: usize, unit: String },
+    /// A line of explanation.
+    Text(String),
+}
+
+/// A small form the window shows next to the face it concerns: a constraint's directions, a load's numbers, a
+/// load case's switches. `apply` runs on the button or Enter, `cancel` on the button or Esc.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValueCard {
+    pub title: String,
+    /// Small caption beside the title (the Nastran card the form writes).
+    pub tag: String,
+    pub rows: Vec<CardRow>,
+    pub apply_label: String,
+    pub apply: super::controller::UiAction,
+    pub cancel: super::controller::UiAction,
+}

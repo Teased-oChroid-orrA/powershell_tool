@@ -58,6 +58,9 @@ pub struct Gui {
     floating: Option<Floating>,
     /// The custom background colour panel is open.
     bg_picker: bool,
+    /// Where the last right-click menu opened (the value card appears beside it) and the title of the card shown.
+    menu_at: Option<Pos2>,
+    card_key: Option<String>,
     /// Where the floating list was drawn last frame (points).
     floating_rect: Option<Rect>,
     hint: Option<String>,
@@ -108,6 +111,8 @@ impl Gui {
             palette: None,
             floating: None,
             bg_picker: false,
+            menu_at: None,
+            card_key: None,
             floating_rect: None,
             hint: None,
             viewport: None,
@@ -189,7 +194,9 @@ impl Gui {
     /// Show `items` at a window pixel (right click, or the list a click on the model asked for).
     pub fn open_context(&mut self, at_px: (f64, f64), items: Vec<Item>) {
         let ppp = self.ctx.pixels_per_point().max(0.1);
-        self.floating = Some(Floating { at: Pos2::new(at_px.0 as f32 / ppp, at_px.1 as f32 / ppp), items });
+        let at = Pos2::new(at_px.0 as f32 / ppp, at_px.1 as f32 / ppp);
+        self.menu_at = Some(at);
+        self.floating = Some(Floating { at, items });
         self.palette = None;
     }
     /// Close whatever floats (palette, context list); true when something was open.
@@ -304,6 +311,7 @@ impl Gui {
         if let Some((at, node)) = self.pending_tree_menu.take() {
             let items = input.editor.map(|e| e.tree_menu(node)).unwrap_or_default();
             if !items.is_empty() {
+                self.menu_at = Some(at);
                 self.floating = Some(Floating { at, items });
                 self.palette = None;
             }
@@ -348,6 +356,7 @@ impl Gui {
         self.start_card(ui.ctx(), input, &p, out, hint);
         self.selection_box(ui.ctx(), input, &p);
         self.floating_list(ui.ctx(), &p, out, hint);
+        self.value_card(ui.ctx(), input, &p, out, hint);
         self.background_picker(ui.ctx(), input.view.background, &p, out);
         self.palette_window(ui.ctx(), &menus, &p, out);
         self.adapt.frame_end();
@@ -426,6 +435,95 @@ impl Gui {
         let r = Rect::from_two_pos(pt(a), pt(b));
         let painter = ctx.layer_painter(egui::LayerId::new(Order::Foreground, Id::new("selection-box")));
         painter.rect(r, 2.0, p.accent.gamma_multiply(0.16), egui::Stroke::new(1.0, p.accent), egui::StrokeKind::Inside);
+    }
+
+    /// The value card an editor has open (a constraint's directions, a load's numbers, a load case), beside the face's menu.
+    fn value_card(&mut self, ctx: &egui::Context, input: &GuiInput, p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>) {
+        use crate::gpu_viewer::ui::CardRow;
+        let Some(card) = input.editor.and_then(|e| e.value_card()) else {
+            if self.card_key.take().is_some() {
+                self.menu_at = None;
+            }
+            return;
+        };
+        let fresh = self.card_key.as_deref() != Some(card.title.as_str());
+        self.card_key = Some(card.title.clone());
+        let vp = self.viewport.unwrap_or(Rect::from_min_size(Pos2::new(240.0, 60.0), Vec2::new(600.0, 500.0)));
+        let at = self.menu_at.map_or(vp.left_top() + Vec2::new(24.0, 90.0), |m| m + Vec2::new(10.0, 0.0));
+        let mut first = true;
+        let mut applied = false;
+        egui::Area::new(Id::new("value-card")).fade_in(false).order(Order::Foreground).fixed_pos(at).constrain(true).show(ctx, |ui| {
+            panels::popup_frame(p).show(ui, |ui| {
+                ui.set_width(270.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(&card.title).strong());
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(egui::RichText::new(&card.tag).small().monospace().color(p.dim));
+                    });
+                });
+                ui.add_space(4.0);
+                for row in &card.rows {
+                    match row {
+                        CardRow::Toggle { label, on, action } => {
+                            let r = ui.add(egui::Button::new(label).selected(*on).min_size(Vec2::new(ui.available_width(), 0.0)));
+                            self.targets.push((label.clone(), r.rect));
+                            if r.clicked() {
+                                out.push(Outcome::Action(*action));
+                            }
+                        }
+                        CardRow::Field { label, text, index, unit } => {
+                            ui.horizontal(|ui| {
+                                ui.label(label);
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if !unit.is_empty() {
+                                        ui.label(egui::RichText::new(unit).small().color(p.dim));
+                                    }
+                                    let mut edited = text.clone();
+                                    let r = ui.add(egui::TextEdit::singleline(&mut edited).id(Id::new(("card-field", *index))).desired_width(110.0).horizontal_align(Align::RIGHT));
+                                    self.targets.push((format!("{label} field"), r.rect));
+                                    if fresh && first {
+                                        // The first field takes the keyboard with its text selected: typing replaces the suggestion.
+                                        r.request_focus();
+                                        let id = Id::new(("card-field", *index));
+                                        if let Some(mut st) = egui::TextEdit::load_state(ctx, id) {
+                                            st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(text.chars().count()))));
+                                            st.store(ctx, id);
+                                        }
+                                    }
+                                    first = false;
+                                    if edited != *text {
+                                        out.push(Outcome::CardField { index: *index, text: edited });
+                                    }
+                                    if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                        applied = true;
+                                    }
+                                });
+                            });
+                        }
+                        CardRow::Text(t) => {
+                            ui.label(egui::RichText::new(t).small().color(p.dim));
+                        }
+                    }
+                }
+                ui.add_space(6.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let go = ui.add(egui::Button::new(egui::RichText::new(&card.apply_label).color(p.on_accent)).fill(p.accent));
+                    self.targets.push((card.apply_label.clone(), go.rect));
+                    if go.clicked() {
+                        applied = true;
+                    }
+                    let no = ui.button("Cancel");
+                    self.targets.push(("Cancel".into(), no.rect));
+                    if no.clicked() {
+                        out.push(Outcome::Action(card.cancel));
+                    }
+                });
+            });
+        });
+        if applied {
+            out.push(Outcome::Action(card.apply));
+        }
+        let _ = hint;
     }
 
     /// The panel for custom viewport colours: one colour or a top-to-bottom gradient. Every change is applied at once.

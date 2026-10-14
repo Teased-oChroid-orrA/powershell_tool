@@ -361,7 +361,7 @@ fn ribbon_menus_and_context_menu_explain_what_is_unavailable() {
     let mut s = s;
     s.selected = Some("top".into());
     let labels: Vec<String> = Authoring::context_menu(&s).into_iter().filter_map(|i| if let crate::gpu_viewer::menu::Item::Entry(e) = i { Some(e.label) } else { None }).collect();
-    assert!(labels.contains(&"Fixed support on 'top'".to_string()) && labels.contains(&"Solve".to_string()), "{labels:?}");
+    assert!(labels.contains(&"Fixed".to_string()) && labels.contains(&"Solve".to_string()), "{labels:?}");
 }
 
 #[test]
@@ -744,28 +744,182 @@ fn picking_ignores_a_stale_mesh_after_the_geometry_changes() {
     assert!(s.pick(&cam, [400.0, 400.0], [800.0, 800.0]).is_none());
 }
 
+fn entry_labels(items: Vec<crate::gpu_viewer::menu::Item>) -> Vec<String> {
+    items.into_iter().filter_map(|i| if let crate::gpu_viewer::menu::Item::Entry(e) = i { Some(e.label) } else { None }).collect()
+}
+fn card_fields(s: &SolidSession) -> Vec<(String, String)> {
+    s.card_view().unwrap().rows.into_iter().filter_map(|r| if let crate::gpu_viewer::ui::CardRow::Field { label, text, .. } = r { Some((label, text)) } else { None }).collect()
+}
+fn set_field(s: &mut SolidSession, i: usize, text: &str) {
+    s.card_set_field(i, text.into());
+}
+
 #[test]
-fn a_surface_menu_offers_what_fits_then_what_is_applied_and_a_new_load_asks_for_its_value() {
-    let mut s = session("surface-menu");
+fn the_face_menu_lists_constraints_then_loads_then_what_is_applied() {
+    let mut s = session("face-menu");
     s.selected = Some("top".into());
-    let labels = |s: &SolidSession| -> Vec<String> { s.surface_menu().into_iter().filter_map(|i| if let crate::gpu_viewer::menu::Item::Entry(e) = i { Some(e.label) } else { None }).collect() };
-    let before = labels(&s);
-    assert!(before.iter().any(|l| l == "Fixed support on 'top'") && before.iter().any(|l| l == "Pressure load on 'top'"), "{before:?}");
-    assert!(!before.iter().any(|l| l.starts_with("Remove") || l.starts_with("Edit the load")), "nothing applied there yet: {before:?}");
-    // A pressure load asks for its magnitude straight away, on the new load's first parameter.
-    s.do_action(SolidAction::BoundaryKind(fea_problem::advice::BcKind::Pressure));
-    assert!(s.prompting(), "the magnitude is asked for at once");
-    let new = s.problem.loads.len() - 1;
-    assert_eq!(s.prompt.as_ref().and_then(|p| p.row), Some(FieldRow::LoadParam(new, 0)));
-    type_text(&mut s, "2500");
-    assert!(!s.prompting() && s.problem.loads[new].params(2).first().map(|p| p.1) == Some(2500.0), "{:?}", s.problem.loads[new]);
-    // Now the menu also lists what is applied on that face.
-    let after = labels(&s);
-    assert!(after.iter().any(|l| l == "Edit the load on 'top'...") && after.iter().any(|l| l == "Remove the load on 'top'"), "{after:?}");
-    s.do_action(SolidAction::Activate(FieldRow::LoadRemove(new)));
-    assert!(s.problem.loads.len() == new, "the load was removed through the menu's action");
-    // A support gets a Remove entry, and it is the same list from a tree row and from the click popup.
-    s.do_action(SolidAction::BoundaryKind(fea_problem::advice::BcKind::Fixed));
-    assert!(labels(&s).iter().any(|l| l == "Remove support on 'top'"));
-    assert_eq!(labels(&s), Authoring::tree_menu(&s, ui::T_SURFACE_BASE).into_iter().filter_map(|i| if let crate::gpu_viewer::menu::Item::Entry(e) = i { Some(e.label) } else { None }).filter(|l| l != "Assign to focused row").collect::<Vec<_>>());
+    let labels = entry_labels(s.surface_menu());
+    for want in ["Fixed", "Hold directions...", "Slides on the face", "Pressure...", "Force...", "Traction..."] {
+        assert!(labels.iter().any(|l| l == want), "{want} in {labels:?}");
+    }
+    assert!(!labels.iter().any(|l| l.starts_with("Remove") || l.starts_with("Edit the load") || l.starts_with("Change directions")), "nothing applied on 'top' yet: {labels:?}");
+    // The same list from a tree row, and a hole adds the pin load.
+    assert_eq!(entry_labels(Authoring::tree_menu(&s, ui::T_SURFACE_BASE)).into_iter().filter(|l| l != "Assign to focused row").collect::<Vec<_>>(), labels);
+    s.selected = Some("hole1".into());
+    assert!(entry_labels(s.surface_menu()).iter().any(|l| l == "Pin load..."));
+}
+
+#[test]
+fn a_pressure_card_adds_nothing_until_apply_and_a_bad_number_keeps_it_open() {
+    let mut s = session("pressure-card");
+    s.selected = Some("top".into());
+    let loads = s.problem.loads.len();
+    s.do_action(SolidAction::OpenCard(CardForm::Pressure));
+    assert!(s.prompting());
+    assert_eq!(card_fields(&s), [("Pressure".to_string(), "1000".to_string())]);
+    assert_eq!(s.problem.loads.len(), loads, "opening the card changes nothing");
+    set_field(&mut s, 0, "12x");
+    s.do_action(SolidAction::CardApply);
+    assert!(s.card_view().is_some() && s.status.contains("not a number"), "{}", s.status);
+    assert_eq!(s.problem.loads.len(), loads);
+    set_field(&mut s, 0, "2500");
+    s.do_action(SolidAction::CardApply);
+    assert!(s.card_view().is_none());
+    assert!(matches!(s.problem.loads.last(), Some(fea_problem::Load::Pressure { edge, p }) if edge == "top" && *p == 2500.0), "{:?}", s.problem.loads.last());
+    // One undo step removes it again.
+    s.undo();
+    assert_eq!(s.problem.loads.len(), loads);
+    // Undo drops the selection, so pick the face again. Cancel leaves the model alone; Esc is the same.
+    s.selected = Some("top".into());
+    s.do_action(SolidAction::OpenCard(CardForm::Pressure));
+    s.handle_key(Key::Escape, Mods::default());
+    assert!(s.card_view().is_none() && s.problem.loads.len() == loads);
+    // Enter applies the open card.
+    s.do_action(SolidAction::OpenCard(CardForm::Pressure));
+    s.handle_key(Key::Enter, Mods::default());
+    assert_eq!(s.problem.loads.len(), loads + 1);
+}
+
+#[test]
+fn force_traction_and_pin_cards_write_their_loads_and_the_menu_then_edits_them() {
+    use fea_problem::Load;
+    let mut s = session("load-cards");
+    s.selected = Some("right".into());
+    s.do_action(SolidAction::OpenCard(CardForm::Force));
+    assert_eq!(card_fields(&s).len(), 2, "a plane model has two components");
+    set_field(&mut s, 0, "300");
+    set_field(&mut s, 1, "-50");
+    s.do_action(SolidAction::CardApply);
+    assert!(matches!(s.problem.loads.last(), Some(Load::Force { edge, fx, fy, .. }) if edge == "right" && *fx == 300.0 && *fy == -50.0), "{:?}", s.problem.loads.last());
+    s.do_action(SolidAction::OpenCard(CardForm::Traction));
+    set_field(&mut s, 0, "42");
+    s.do_action(SolidAction::CardApply);
+    assert!(matches!(s.problem.loads.last(), Some(Load::Traction { tx, .. }) if *tx == 42.0));
+    s.selected = Some("hole1".into());
+    s.do_action(SolidAction::OpenCard(CardForm::Bearing));
+    set_field(&mut s, 0, "800");
+    set_field(&mut s, 1, "200");
+    s.do_action(SolidAction::CardApply);
+    assert!(matches!(s.problem.loads.last(), Some(Load::Bearing { hole: 1, fx, fy }) if *fx == 800.0 && *fy == 200.0), "{:?}", s.problem.loads.last());
+    // A pin load is for a hole.
+    s.selected = Some("right".into());
+    let n = s.problem.loads.len();
+    s.do_action(SolidAction::OpenCard(CardForm::Bearing));
+    assert!(s.card_view().is_none() && s.status.contains("pick a hole"), "{}", s.status);
+    assert_eq!(s.problem.loads.len(), n);
+    // The menu of 'right' offers to edit and remove what is on it; editing writes the new numbers in place.
+    let labels = entry_labels(s.surface_menu());
+    assert!(labels.iter().any(|l| l == "Edit the load on 'right'...") && labels.iter().any(|l| l == "Remove the load on 'right'"), "{labels:?}");
+    let i = s.problem.loads.iter().position(|l| matches!(l, Load::Force { .. })).unwrap();
+    s.do_action(SolidAction::OpenCard(CardForm::EditLoad(i)));
+    assert_eq!(card_fields(&s)[0], ("Force x".to_string(), "300".to_string()));
+    set_field(&mut s, 0, "310");
+    s.do_action(SolidAction::CardApply);
+    assert!(matches!(&s.problem.loads[i], Load::Force { fx, fy, .. } if *fx == 310.0 && *fy == -50.0));
+}
+
+#[test]
+fn the_directions_card_holds_chosen_directions_with_a_displacement_and_can_be_changed() {
+    let mut s = session("hold-card");
+    s.selected = Some("bottom".into());
+    s.do_action(SolidAction::OpenCard(CardForm::Hold));
+    let rows = s.card_view().unwrap().rows;
+    assert!(rows.iter().any(|r| matches!(r, crate::gpu_viewer::ui::CardRow::Toggle { label, on: true, .. } if label == "Hold y")));
+    s.do_action(SolidAction::CardToggle(0));
+    s.do_action(SolidAction::CardApply);
+    let sup = s.problem.supports.last().unwrap().clone();
+    assert_eq!((sup.edge(), sup.comps()), (Some("bottom"), [None, Some(0.0), None]), "only y is held");
+    assert!(s.card_view().is_none());
+    // Holding nothing is refused.
+    s.do_action(SolidAction::OpenCard(CardForm::Hold));
+    s.do_action(SolidAction::CardToggle(0));
+    s.do_action(SolidAction::CardToggle(1));
+    s.do_action(SolidAction::CardApply);
+    assert!(s.card_view().is_some() && s.status.contains("at least one"));
+    s.do_action(SolidAction::CardCancel);
+    // Change directions: x held and moved by 0.5, y released.
+    let i = s.problem.supports.len() - 1;
+    s.do_action(SolidAction::OpenCard(CardForm::EditHold(i)));
+    s.do_action(SolidAction::CardToggle(0));
+    s.do_action(SolidAction::CardToggle(1));
+    set_field(&mut s, 0, "0.5");
+    s.do_action(SolidAction::CardApply);
+    assert_eq!(s.problem.supports[i].comps(), [Some(0.5), None, None]);
+}
+
+#[test]
+fn gravity_is_one_body_force_that_the_card_sets_changes_and_removes() {
+    use fea_problem::Load;
+    let mut s = session("gravity-card");
+    let body = |s: &SolidSession| s.problem.loads.iter().filter(|l| matches!(l, Load::Body { .. })).count();
+    assert_eq!(body(&s), 0);
+    s.do_action(SolidAction::OpenCard(CardForm::Gravity));
+    assert!(card_fields(&s)[1].1.starts_with('-'), "the suggestion pulls down: {:?}", card_fields(&s));
+    s.do_action(SolidAction::CardApply);
+    assert_eq!(body(&s), 1);
+    s.do_action(SolidAction::OpenCard(CardForm::Gravity));
+    set_field(&mut s, 1, "-0.25");
+    s.do_action(SolidAction::CardApply);
+    assert_eq!(body(&s), 1, "the card edits the one body force");
+    assert!(s.problem.loads.iter().any(|l| matches!(l, Load::Body { by, .. } if *by == -0.25)));
+    s.do_action(SolidAction::OpenCard(CardForm::Gravity));
+    set_field(&mut s, 0, "0");
+    set_field(&mut s, 1, "0");
+    s.do_action(SolidAction::CardApply);
+    assert_eq!(body(&s), 0, "zero removes it");
+}
+
+#[test]
+fn load_cases_are_made_edited_activated_and_decide_what_a_solve_uses() {
+    let mut s = session("cases");
+    s.problem.loads.push(fea_problem::Load::Pressure { edge: "top".into(), p: 500.0 });
+    assert!(entry_labels(s.simulation_items_for_test()).iter().any(|l| l == "New load case"));
+    assert!(s.problem.cases.is_empty());
+    s.do_action(SolidAction::NewCase);
+    assert_eq!(s.problem.cases.len(), 2, "the first case keeps what the problem solved before");
+    let card = s.card_view().unwrap();
+    assert_eq!(card.title, "Load case 2");
+    // Name it and switch the traction off in it.
+    set_field(&mut s, 0, "Pressure only");
+    set_field(&mut s, 1, "0");
+    s.do_action(SolidAction::CardApply);
+    assert_eq!(s.problem.cases[1].name, "Pressure only");
+    assert_eq!(s.problem.resolved().loads.len(), 1);
+    // The tree lists the cases; clicking one makes it active, and the result goes stale because it is another case.
+    let labels: Vec<String> = Authoring::tree(&s).into_iter().map(|n| n.label).collect();
+    assert!(labels.iter().any(|l| l == "Load cases (2)") && labels.iter().any(|l| l == "Pressure only (active)"), "{labels:?}");
+    meshed(&mut s);
+    solved(&mut s);
+    assert!(s.current_solution().is_some());
+    let applied = s.current_solution().unwrap().summary.applied;
+    assert!(applied[0].abs() < 1e-6 && applied[1].abs() > 1.0, "only the pressure acted: {applied:?}");
+    s.do_action(SolidAction::SetCase(0));
+    assert!(s.current_solution().is_none(), "another case has no result yet");
+    solved(&mut s);
+    assert!(s.current_solution().unwrap().summary.applied[0].abs() > 1.0, "case 1 has the traction");
+    // The tree row's menu edits and removes; removing down to one case is the plain model again.
+    let node = ui::T_CASE_BASE + 1;
+    assert!(entry_labels(Authoring::tree_menu(&s, node)).iter().any(|l| l == "Remove this load case"));
+    s.do_action(SolidAction::RemoveCase(1));
+    assert!(s.problem.cases.is_empty());
 }

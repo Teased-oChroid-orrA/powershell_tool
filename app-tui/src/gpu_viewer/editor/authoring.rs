@@ -159,6 +159,12 @@ pub trait Authoring {
     fn shows_body_only(&self) -> bool {
         false
     }
+    /// The form to show beside the model (a constraint's directions, a load's numbers), if one is open.
+    fn value_card(&self) -> Option<crate::gpu_viewer::ui::ValueCard> {
+        None
+    }
+    /// The text of field `index` of the value card changed.
+    fn card_field(&mut self, _index: usize, _text: String) {}
     /// Draw element edges when the window opens.
     fn default_mesh_lines(&self) -> bool {
         false

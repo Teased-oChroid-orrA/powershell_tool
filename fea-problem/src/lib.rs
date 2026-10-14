@@ -2,6 +2,7 @@
 pub mod advice;
 pub mod benchmark;
 pub mod build;
+pub mod cases;
 pub mod diagnose;
 pub mod dynamics;
 pub mod history;
@@ -17,6 +18,7 @@ pub mod solve;
 pub mod templates;
 pub mod thermal;
 
+pub use cases::LoadCase;
 pub use problem::{AdaptMode, MeshStrategy, Analysis, Bushing, ElementChoice, Geometry, Load, MaterialSpec, MeshSpec, Problem, RefineRegion, Seg, Shape, SketchRegion, Support};
 pub use solve::{solve, Field, Solved};
 pub use thermal::{HeatLoad, HeatSummary, HeatSupport, Study, ThermalSpec};

@@ -88,7 +88,7 @@ impl SolidSession {
             return;
         }
         let text = self.path.to_string_lossy().into_owned();
-        self.prompt = Some(Prompt { kind: EditKind::Text, label: "open problem (.json), mesh (.msh / .inp) or STEP solid (.step / .stp)".into(), text, row: None, open: true, fresh: false, op: None });
+        self.prompt = Some(Prompt { kind: EditKind::Text, label: "open problem (.json), mesh (.msh / .inp) or STEP solid (.step / .stp)".into(), text, row: None, open: true, op: None });
         self.status = "Type the path and press Enter (Esc cancels).".into();
         self.touch();
     }

@@ -162,10 +162,17 @@ pub enum DynKind {
 
 /// Run `kind` for `n_modes` modes.
 pub fn run(kind: DynKind, p: &Problem, import_text: Option<&str>, n_modes: usize) -> Result<DynSolved, String> {
-    match kind {
-        DynKind::Modal => modal(p, import_text, n_modes).map(DynSolved::Modal),
-        DynKind::Buckling => buckling(p, import_text, n_modes).map(DynSolved::Buckling),
+    // A load case studies its own supports and loads; the result stays tied to the full problem.
+    let case = p.resolved();
+    let mut solved = match kind {
+        DynKind::Modal => modal(&case, import_text, n_modes).map(DynSolved::Modal),
+        DynKind::Buckling => buckling(&case, import_text, n_modes).map(DynSolved::Buckling),
+    }?;
+    match &mut solved {
+        DynSolved::Modal(m) => m.problem = p.clone(),
+        DynSolved::Buckling(b) => b.problem = p.clone(),
     }
+    Ok(solved)
 }
 
 impl DynSolved {

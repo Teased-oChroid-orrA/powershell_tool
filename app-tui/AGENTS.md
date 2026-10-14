@@ -346,3 +346,14 @@ Records: `docs/issue-12-phase-24.md`, `docs/adr/ADR-015-parametric-sketch-histor
   magnitude prompt at once with `Prompt::fresh` (the first key typed replaces the placeholder). Styles without a surface still fill
   state-coloured faces (`fs_highlight`, geometry view only). The background pass covers the whole window, not just the viewport: a
   gradient that stopped at the viewport rectangle left a darker strip behind the right-hand dock.
+- **Value cards and load cases** (`solid/cards.rs`, `ui::ValueCard`, `Authoring::value_card/card_field`, `Gui::value_card`): a face menu
+  entry that needs numbers (`Hold directions...`, `Pressure...`, `Force...`, `Traction...`, `Pin load...`, `Gravity / body force...`, a
+  case's switches and factors, and the *edit* forms of a support or load) opens a card beside the menu; nothing is written until
+  `Apply` (one undo step), `Cancel`/Esc leaves the model alone, Enter applies, a bad number keeps the card open with the reason. The first
+  field opens focused with its text selected, so the first keys replace the suggestion. `Fixed` and `Slides on the face` stay
+  immediate (`BoundaryKind`), so the advisor's recording is unchanged (`record_boundary_choice`). A solid has no rotations: the
+  directions card has x, y, z only (and a prescribed displacement per held direction). `fea_problem::cases` holds load cases:
+  `Problem::cases` / `active_case`, entries are included at factor 1 unless a case says otherwise, `Problem::resolved()` is what a
+  solve sees (`solve` and `dynamics::run` resolve it and keep the full problem in the result, so stale checks and saved files still
+  see the cases). Removing a support or load must go through `Problem::remove_support/remove_load` so cases keep pointing at the same
+  entries. The terminal Workbench has no case rows; it still solves the active case.

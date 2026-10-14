@@ -73,16 +73,17 @@ fn the_surface_popup_offers_the_kinds_that_fit_in_the_rules_order() {
     select(&mut s, "left");
     s.popup = true;
     let first = Authoring::take_popup(&mut s).unwrap();
-    assert!(entries(&first)[0].starts_with("Fixed support on 'left'"), "{:?}", entries(&first));
+    assert_eq!(entries(&first)[0], "Fixed", "{:?}", entries(&first));
+    assert!(entries(&first).contains(&"Hold directions...".to_string()) && entries(&first).contains(&"Pressure...".to_string()) && entries(&first).contains(&"Force...".to_string()), "{:?}", entries(&first));
     // With a support in place the same click offers a load first; a hole offers the pin load.
     s.do_action(SolidAction::BoundaryKind(BcKind::Fixed));
     assert_eq!(s.problem.supports.len(), 1);
     select(&mut s, "right");
     s.popup = true;
-    assert!(entries(&Authoring::take_popup(&mut s).unwrap())[0].starts_with("Pressure load on 'right'"));
+    assert_eq!(entries(&Authoring::take_popup(&mut s).unwrap())[0], "Pressure...");
     select(&mut s, "hole1");
     s.popup = true;
-    assert!(entries(&Authoring::take_popup(&mut s).unwrap())[0].starts_with("Pin (bearing) load on 'hole1'"));
+    assert_eq!(entries(&Authoring::take_popup(&mut s).unwrap())[0], "Pin load...");
     s.do_action(SolidAction::BoundaryKind(BcKind::Bearing));
     assert!(matches!(s.problem.loads.last(), Some(fea_problem::Load::Bearing { hole: 1, .. })));
     // A bearing load on an outline edge is refused with the reason and changes nothing.

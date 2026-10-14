@@ -837,9 +837,7 @@ pub fn apply_row_action(p: &mut Problem, names: &[String], row: FieldRow, forwar
                 }
             }
             SupportRemove(s) => {
-                if s < p.supports.len() {
-                    p.supports.remove(s);
-                }
+                p.remove_support(s);
             }
             SupportAdd => p.supports.push(Support::fixed(&first)),
             LoadKind(l) => {
@@ -855,9 +853,7 @@ pub fn apply_row_action(p: &mut Problem, names: &[String], row: FieldRow, forwar
                 }
             }
             LoadRemove(l) => {
-                if l < p.loads.len() {
-                    p.loads.remove(l);
-                }
+                p.remove_load(l);
             }
             LoadAdd => p.loads.push(default_load(&first)),
             BushingAdd => {

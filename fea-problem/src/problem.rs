@@ -588,6 +588,12 @@ pub struct Problem {
     pub mesh: MeshSpec,
     pub supports: Vec<Support>,
     pub loads: Vec<Load>,
+    /// Load cases (see `cases`): empty means every support and load acts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cases: Vec<crate::cases::LoadCase>,
+    /// Index of the case a solve uses.
+    #[serde(default, skip_serializing_if = "is_zero_index")]
+    pub active_case: usize,
     /// Uniform temperature change from the stress-free state.
     #[serde(default)]
     pub delta_t: f64,
@@ -605,6 +611,10 @@ pub struct Problem {
     /// `geometry` (and `analysis` for a solid) from it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<crate::history::History>,
+}
+
+fn is_zero_index(n: &usize) -> bool {
+    *n == 0
 }
 
 fn version() -> u32 {

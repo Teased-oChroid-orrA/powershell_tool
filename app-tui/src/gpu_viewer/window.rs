@@ -236,6 +236,11 @@ impl Viewer {
                 Some(ed) => ed.set_status(reason),
                 None => self.error = Some(reason),
             },
+            Outcome::CardField { index, text } => {
+                if let Some(ed) = &mut self.editor {
+                    ed.card_field(index, text);
+                }
+            }
         }
     }
     fn menu_context(&self) -> MenuContext<'_> {
@@ -1547,14 +1552,14 @@ mod tests {
             for ix in 1..16 {
                 let at = ((r.x + r.w * ix / 16) as f64, (r.y + r.h * iy / 10) as f64);
                 click(&mut v, at);
-                if let Some(item) = labels(&v).into_iter().find(|l| l.starts_with("Fixed support on '")) {
-                    picked = Some((at, item));
+                if labels(&v).iter().any(|l| l == "Hold directions...") {
+                    picked = Some((at, "Fixed".to_string()));
                     break 'scan;
                 }
             }
         }
         let (at, item) = picked.expect("some click in the viewport must land on the part and open the surface menu");
-        let face = item.trim_start_matches("Fixed support on '").trim_end_matches('\'').to_string();
+        let face = v.editor.as_ref().unwrap().tree().into_iter().find(|n| n.selected && n.glyph == 's').map(|n| n.label).expect("the picked surface is selected in the tree");
         assert!(["left", "right", "top", "bottom", "start", "end", "hole1"].contains(&face.as_str()), "a named face of the extruded plate: {face}");
         // The tree shows the picked surface as selected, and choosing the menu entry adds the support on it.
         let selected: Vec<String> = v.editor.as_ref().unwrap().tree().into_iter().filter(|n| n.selected && n.label == face).map(|n| n.label).collect();
@@ -1563,6 +1568,83 @@ mod tests {
         click(&mut v, entry);
         assert_eq!(supports(&v), "Supports (1)", "{}", v.editor.as_ref().unwrap().status());
         assert!(v.editor.as_ref().unwrap().status().contains(&face), "{}", v.editor.as_ref().unwrap().status());
+    }
+
+    /// The whole path a person takes: right-click a face of the part, choose Pressure, type the number, press Apply.
+    #[test]
+    fn a_right_click_on_a_face_chooses_a_pressure_types_the_number_and_applies_it() {
+        let mut problem = fea_problem::templates::templates().into_iter().find(|(n, _)| n.contains("3D")).unwrap().1;
+        problem.mesh.size = 1.0;
+        problem.loads.clear();
+        let mut v = viewer(Some(Box::new(crate::gpu_viewer::editor::solid::SolidSession::new(problem, std::env::temp_dir().join("window-bc-card-test.json")))));
+        // The body shows before any mesh exists; wait for it.
+        let t = Instant::now();
+        while !v.scene().label.contains("body (not meshed)") {
+            v.editor.as_mut().unwrap().poll();
+            frame(&mut v);
+            assert!(t.elapsed().as_secs() < 60, "the body did not appear");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        frame(&mut v);
+        let loads = |v: &Viewer| tree_labels(v).into_iter().find(|l| l.starts_with("Loads (")).unwrap();
+        assert_eq!(loads(&v), "Loads (0)");
+        // Find a point of the viewport on the part and right-click it.
+        let r = v.viewport();
+        let mut at = None;
+        'scan: for iy in 1..10 {
+            for ix in 1..16 {
+                let p = ((r.x + r.w * ix / 16) as f64, (r.y + r.h * iy / 10) as f64);
+                move_to(&mut v, p);
+                v.input(Input::Press(MouseButton::Right));
+                v.input(Input::Release(MouseButton::Right));
+                frame(&mut v);
+                if labels(&v).iter().any(|l| l == "Pressure...") {
+                    at = Some(p);
+                    break 'scan;
+                }
+                key(&mut v, NamedKey::Escape);
+            }
+        }
+        let at = at.expect("a right-click on the part opens the face menu");
+        let face = v.editor.as_ref().unwrap().tree().into_iter().find(|n| n.selected && n.glyph == 's').map(|n| n.label).expect("the face is selected");
+        let labels_now = labels(&v);
+        for want in ["Fixed", "Hold directions...", "Pressure...", "Force...", "Traction..."] {
+            assert!(labels_now.iter().any(|l| l == want), "{want} in {labels_now:?}");
+        }
+        let pressure = target(&v, "Pressure...");
+        click(&mut v, pressure);
+        frame(&mut v);
+        assert!(v.editor.as_ref().unwrap().value_card().is_some(), "choosing Pressure opens its card");
+        let field = target(&v, "Pressure field");
+        // The card opens beside the face's menu, inside the window.
+        let (w, h) = v.window_size();
+        assert!(field.0 > 0.0 && field.0 < w as f64 && field.1 > 0.0 && field.1 < h as f64, "{field:?}");
+        assert_eq!(loads(&v), "Loads (0)", "nothing is added until Apply");
+        type_text(&mut v, "2500");
+        frame(&mut v);
+        let text = v.editor.as_ref().unwrap().value_card().unwrap().rows.into_iter().find_map(|r| if let crate::gpu_viewer::ui::CardRow::Field { text, .. } = r { Some(text) } else { None }).unwrap();
+        assert_eq!(text, "2500", "the first keys replace the suggested value");
+        let apply = target(&v, "Apply");
+        click(&mut v, apply);
+        frame(&mut v);
+        assert!(v.editor.as_ref().unwrap().value_card().is_none(), "Apply closes the card");
+        assert_eq!(loads(&v), "Loads (1)", "{}", v.editor.as_ref().unwrap().status());
+        // Right-clicking the same face now also offers to edit and remove what is on it.
+        move_to(&mut v, at);
+        v.input(Input::Press(MouseButton::Right));
+        v.input(Input::Release(MouseButton::Right));
+        frame(&mut v);
+        let again = labels(&v);
+        assert!(again.iter().any(|l| l == &format!("Edit the load on '{face}'...")) && again.iter().any(|l| l == &format!("Remove the load on '{face}'")), "{again:?}");
+        // Cancel from a card leaves everything as it was.
+        let hold = target(&v, "Hold directions...");
+        click(&mut v, hold);
+        frame(&mut v);
+        let cancel = target(&v, "Cancel");
+        click(&mut v, cancel);
+        frame(&mut v);
+        assert!(v.editor.as_ref().unwrap().value_card().is_none());
+        assert_eq!(tree_labels(&v).into_iter().find(|l| l.starts_with("Supports (")).unwrap(), "Supports (1)", "the template's own support; nothing added");
     }
 
     /// The whole STEP workflow with a real mouse: open a cube, mesh it, click a face, cut a hole in it from the Insert menu's

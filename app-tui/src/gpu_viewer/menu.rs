@@ -68,6 +68,8 @@ pub enum Outcome {
     Action(UiAction),
     /// A disabled entry was chosen; the reason is for the status line.
     Blocked(String),
+    /// The text of field `index` of the value card changed.
+    CardField { index: usize, text: String },
 }
 
 /// Subsequence score of `query` in `text` (case-insensitive): `None` when it does not match; lower is better

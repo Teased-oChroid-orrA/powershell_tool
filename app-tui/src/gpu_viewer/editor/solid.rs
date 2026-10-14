@@ -25,6 +25,7 @@ use std::{
 };
 
 mod bench_support;
+mod cards;
 mod sketch;
 mod advising;
 mod guidance;
@@ -36,6 +37,7 @@ mod refining;
 mod sketching;
 mod study;
 mod ui;
+pub use cards::CardForm;
 pub use sketch::SolidTool;
 pub use advising::AdvisorOp;
 pub use sketching::{FeatureParam, PlaneChoice, SketchAction};
@@ -111,6 +113,16 @@ pub enum SolidAction {
     Answer(usize, usize, usize),
     /// Add this kind of support / load on the selected surfaces.
     BoundaryKind(fea_problem::advice::BcKind),
+    /// Open the value card that finishes a constraint, a load or a load case.
+    OpenCard(CardForm),
+    CardToggle(usize),
+    CardApply,
+    CardCancel,
+    /// Add a load case and open its card.
+    NewCase,
+    /// Make load case `i` the active one.
+    SetCase(usize),
+    RemoveCase(usize),
     Advisor(AdvisorOp),
     /// The pointer is on (`Some`) / left (`None`) a guidance fix: highlight the surfaces it would touch.
     PreviewFix(Option<FixRef>),
@@ -196,8 +208,6 @@ struct Prompt {
     /// `None`: free text (the material search, or a file path when `open`).
     row: Option<FieldRow>,
     open: bool,
-    /// The text is a suggestion: the first key typed replaces it (a new load's placeholder value).
-    fresh: bool,
     /// A solid operation waiting for its number(s) (hole diameter, ...); `row` is `None`.
     op: Option<stepops::PromptOp>,
 }
@@ -230,6 +240,8 @@ pub struct SolidSession {
     /// A surface click asks for the list of applicable boundary conditions (taken by the window).
     popup: bool,
     prompt: Option<Prompt>,
+    /// The value card open beside the model (`cards`).
+    card: Option<cards::CardState>,
     saved_geometry: Option<Geometry>,
     /// `(path, text)` of an imported mesh file.
     import: Option<(String, String)>,
@@ -304,6 +316,7 @@ impl SolidSession {
             multi: BTreeSet::new(),
             popup: false,
             prompt: None,
+            card: None,
             saved_geometry: None,
             import: None,
             template,
@@ -371,7 +384,7 @@ impl SolidSession {
         self.solved.as_ref().filter(|s| s.problem == self.problem)
     }
     pub fn prompting(&self) -> bool {
-        self.prompt.is_some() || self.typing_active()
+        self.prompt.is_some() || self.card.is_some() || self.typing_active()
     }
     pub fn prompt_text(&self) -> Option<(&str, &str)> {
         self.prompt.as_ref().map(|p| (p.label.as_str(), p.text.as_str()))
@@ -512,7 +525,7 @@ impl SolidSession {
                 }
             }
             Material => {
-                self.prompt = Some(Prompt { kind: EditKind::Text, label: "material search".into(), text: String::new(), row: None, open: false, fresh: false, op: None });
+                self.prompt = Some(Prompt { kind: EditKind::Text, label: "material search".into(), text: String::new(), row: None, open: false, op: None });
                 self.status = "Type part of a material name (e.g. 7075 T6), Enter picks the first match.".into();
             }
             Source => {
@@ -545,7 +558,7 @@ impl SolidSession {
     }
     fn begin_edit(&mut self, row: FieldRow, kind: EditKind, first: Option<char>) {
         let text = model::edit_start_text(&self.problem, row, kind, first);
-        self.prompt = Some(Prompt { kind, label: model::row_label(&self.problem, row), text, row: Some(row), open: false, fresh: false, op: None });
+        self.prompt = Some(Prompt { kind, label: model::row_label(&self.problem, row), text, row: Some(row), open: false, op: None });
         self.touch();
     }
     fn commit_prompt(&mut self) {
@@ -948,13 +961,14 @@ impl SolidSession {
                 }
             }
         };
-        for s in &self.problem.supports {
-            if let Some(e) = s.edge() {
+        let case = self.problem.case();
+        for (i, s) in self.problem.supports.iter().enumerate() {
+            if let (Some(e), true) = (s.edge(), case.is_none_or(|c| c.support_on(i))) {
                 mark(e, 1.0);
             }
         }
-        for l in &self.problem.loads {
-            if let Some(e) = l.edge() {
+        for (i, l) in self.problem.loads.iter().enumerate() {
+            if let (Some(e), true) = (l.edge(), case.is_none_or(|c| c.factor(i) != 0.0)) {
                 mark(e, 2.0);
             }
         }
@@ -1115,6 +1129,13 @@ impl SolidSession {
             SolidAction::SolidOp(op) => self.begin_solid_op(op),
             SolidAction::Answer(f, q, o) => self.do_answer(f, q, o),
             SolidAction::BoundaryKind(k) => self.add_boundary_kind(k),
+            SolidAction::OpenCard(form) => self.open_card(form),
+            SolidAction::CardToggle(i) => self.card_toggle(i),
+            SolidAction::CardApply => self.card_apply(),
+            SolidAction::CardCancel => self.card_cancel(),
+            SolidAction::NewCase => self.new_case(),
+            SolidAction::SetCase(i) => self.set_case(i),
+            SolidAction::RemoveCase(i) => self.remove_case(i),
             SolidAction::Advisor(op) => self.do_advisor_op(op),
             SolidAction::PreviewFix(f) => {
                 if self.fix_preview != f {
@@ -1137,6 +1158,14 @@ impl SolidSession {
     }
 
     pub fn handle_key(&mut self, key: Key, mods: Mods) -> KeyResult {
+        if self.card.is_some() && self.prompt.is_none() {
+            match key {
+                Key::Escape => self.card_cancel(),
+                Key::Enter => self.card_apply(),
+                _ => {}
+            }
+            return KeyResult::Handled;
+        }
         if self.prompt.is_none() {
             if let Some(r) = self.sketch_key(key, mods) {
                 return r;
@@ -1149,11 +1178,7 @@ impl SolidSession {
                     self.status.clear();
                 }
                 Key::Backspace => {
-                    if std::mem::take(&mut prompt.fresh) {
-                        prompt.text.clear();
-                    } else {
-                        prompt.text.pop();
-                    }
+                    prompt.text.pop();
                 }
                 Key::Enter => self.commit_prompt(),
                 Key::Char(c) => {
@@ -1162,9 +1187,6 @@ impl SolidSession {
                         EditKind::Component => is_edit_char(c) || c.is_ascii_alphabetic(),
                         _ => c.is_ascii_graphic() || c == ' ',
                     };
-                    if ok && std::mem::take(&mut prompt.fresh) {
-                        prompt.text.clear();
-                    }
                     if ok && prompt.text.len() < 200 {
                         prompt.text.push(c);
                     }

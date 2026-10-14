@@ -883,6 +883,16 @@ fn notes(_p: &Problem, mesh: &Mesh) -> Vec<String> {
 /// Build, solve and (for 2D sketches with `adapt_passes > 0`) refine until the passes run out or the
 /// ZZ estimate meets `target_error` with the fewest unknowns the passes find. `import_text` is the file content for an imported mesh.
 pub fn solve(p: &Problem, import_text: Option<&str>) -> Result<Solved, String> {
+    if p.cases.is_empty() {
+        return solve_resolved(p, import_text);
+    }
+    // A load case solves its own supports and loads; the result stays tied to the full problem (stale checks, saved files).
+    let mut solved = solve_resolved(&p.resolved(), import_text)?;
+    solved.problem = p.clone();
+    Ok(solved)
+}
+
+fn solve_resolved(p: &Problem, import_text: Option<&str>) -> Result<Solved, String> {
     p.validate()?;
     let mut mesh_notes = Vec::new();
     let first = match &p.geometry {

@@ -149,49 +149,86 @@ impl SolidSession {
             return;
         }
         self.edit(|p| *p = next);
+        self.record_boundary_choice(kind);
+        self.status = format!("Added a {} on {}.", kind.label(), names.join(", "));
+    }
+
+    /// Remember (when recording is on) which of the offered kinds was taken.
+    pub(super) fn record_boundary_choice(&mut self, kind: BcKind) {
         let offer = self.advisors.bc_offer.borrow_mut().take();
         if let Some((sit, offered)) = offer {
             if let Ok(Some(fit)) = self.advisors.boundary.record(sit, offered, Some(kind)) {
                 self.advisors.last_fit = Some(fit);
             }
         }
-        self.status = format!("Added a {} on {}.", kind.label(), names.join(", "));
-        // A load is useless at its placeholder value: ask for the magnitude at once.
-        if matches!(kind, BcKind::Pressure | BcKind::Bearing) {
-            let row = FieldRow::LoadParam(self.problem.loads.len() - 1, 0);
-            if let Some(i) = self.rows().iter().position(|r| *r == row) {
-                self.focus = i;
-                self.begin_edit(row, model::edit_kind(row), None);
-                if let Some(p) = self.prompt.as_mut() {
-                    p.fresh = true;
-                }
-            }
-        }
     }
 
-    /// What can be done to the selected surface(s), in one list: the boundary conditions that fit them (ranked), then
-    /// what is already applied there (edit its value, remove it). The right-click menu of a face and of a tree row.
+    /// What can be done to the selected surface(s), in one list: the constraints that fit them, the loads that fit them
+    /// (each opens its value card), the thermal conditions of a thermal study, then what is already applied there (edit,
+    /// remove). The right-click menu of a face and of a tree row. The advisor still orders what it offers: the section
+    /// of the kind it ranks first comes first.
     pub(super) fn surface_menu(&self) -> Vec<Item> {
+        use super::cards::CardForm;
         let names = self.all_selected();
         let label = if names.len() == 1 { format!("'{}'", names[0]) } else { format!("{} surfaces", names.len()) };
         let entry = |text: String, a: SolidAction| Item::Entry(Entry::new(text, "", ui(a)));
-        let mut items: Vec<Item> = self.boundary_offer(names.first().map_or("", String::as_str)).into_iter().map(|k| entry(format!("{} on {label}", capital(k.label())), SolidAction::BoundaryKind(k))).collect();
+        let offer = self.boundary_offer(names.first().map_or("", String::as_str));
+        let (mut constrain, mut load) = (Vec::new(), Vec::new());
+        for k in &offer {
+            match k {
+                BcKind::Fixed => {
+                    constrain.push(entry("Fixed".into(), SolidAction::BoundaryKind(BcKind::Fixed)));
+                    constrain.push(entry("Hold directions...".into(), SolidAction::OpenCard(CardForm::Hold)));
+                }
+                BcKind::Roller => constrain.push(entry("Slides on the face".into(), SolidAction::BoundaryKind(BcKind::Roller))),
+                BcKind::Pressure => {
+                    load.push(entry("Pressure...".into(), SolidAction::OpenCard(CardForm::Pressure)));
+                    load.push(entry("Force...".into(), SolidAction::OpenCard(CardForm::Force)));
+                    load.push(entry("Traction...".into(), SolidAction::OpenCard(CardForm::Traction)));
+                }
+                BcKind::Bearing => load.push(entry("Pin load...".into(), SolidAction::OpenCard(CardForm::Bearing))),
+                _ => {}
+            }
+        }
+        let thermal: Vec<Item> = offer.iter().filter(|k| matches!(k, BcKind::FixedTemperature | BcKind::HeatFlux | BcKind::Convection)).map(|k| entry(format!("{}", capital(k.label())), SolidAction::BoundaryKind(*k))).collect();
+        let first_load = offer.iter().position(|k| matches!(k, BcKind::Pressure | BcKind::Bearing));
+        let first_constrain = offer.iter().position(|k| matches!(k, BcKind::Fixed | BcKind::Roller));
+        let sections = if first_load < first_constrain { [("Load", load), ("Constrain", constrain)] } else { [("Constrain", constrain), ("Load", load)] };
+        let mut items: Vec<Item> = Vec::new();
+        for (title, entries) in sections {
+            if !entries.is_empty() {
+                if !items.is_empty() {
+                    items.push(Item::Separator);
+                }
+                items.push(Item::Heading(format!("{title} {label}")));
+                items.extend(entries);
+            }
+        }
+        if !thermal.is_empty() {
+            if !items.is_empty() {
+                items.push(Item::Separator);
+            }
+            items.push(Item::Heading(format!("Thermal {label}")));
+            items.extend(thermal);
+        }
         let on = |edge: Option<&str>| edge.is_some_and(|e| names.iter().any(|n| n == e));
         let mut applied = Vec::new();
         for (i, sup) in self.problem.supports.iter().enumerate() {
             if on(sup.edge()) {
+                applied.push(entry(format!("Change directions on '{}'...", sup.edge().unwrap_or_default()), SolidAction::OpenCard(CardForm::EditHold(i))));
                 applied.push(entry(format!("Remove support on '{}'", sup.edge().unwrap_or_default()), SolidAction::Activate(FieldRow::SupportRemove(i))));
             }
         }
         for (i, load) in self.problem.loads.iter().enumerate() {
             if on(load.edge()) {
                 let edge = load.edge().unwrap_or_default();
-                applied.push(entry(format!("Edit the load on '{edge}'..."), SolidAction::Activate(FieldRow::LoadParam(i, 0))));
+                applied.push(entry(format!("Edit the load on '{edge}'..."), SolidAction::OpenCard(CardForm::EditLoad(i))));
                 applied.push(entry(format!("Remove the load on '{edge}'"), SolidAction::Activate(FieldRow::LoadRemove(i))));
             }
         }
         if !applied.is_empty() {
             items.push(Item::Separator);
+            items.push(Item::Heading(format!("Already on {label}")));
             items.extend(applied);
         }
         items

@@ -36,6 +36,8 @@ pub(super) const T_SURFACES: u32 = 5;
 pub(super) const T_HEAT_SUPPORTS: u32 = 6;
 pub(super) const T_HEAT_LOADS: u32 = 7;
 pub(super) const T_FEATURE_BASE: u32 = 100;
+pub(super) const T_CASES: u32 = 8;
+pub(super) const T_CASE_BASE: u32 = T_FEATURE_BASE + 6_000;
 pub(super) const T_SURFACE_BASE: u32 = 10_000;
 
 impl SolidSession {
@@ -43,11 +45,20 @@ impl SolidSession {
     fn simulation_entries(&self) -> Vec<Entry> {
         let cancel = entry(if Self::bench_study(self.bench).is_some() { "Cancel study" } else { "Cancel solve" }, "Esc", SolidAction::CancelSolve).when(if self.solving() { Ok(()) } else { Err("no solve is running".into()) });
         match Self::bench_study(self.bench) {
-            None => vec![
-                entry("Solve", "Ctrl/Cmd+Enter", SolidAction::Solve).when(self.solve_availability()),
-                cancel,
-                entry("Show results", "V", SolidAction::ShowResults).when(self.results_availability()).checked(self.show_results),
-            ],
+            None => {
+                let cases = self.problem.cases.len();
+                let active = self.problem.active_case_index();
+                let case_only = |what: &str| if cases > 0 { Ok(()) } else { Err(format!("{what}: add a second load case first (Simulation > New load case)")) };
+                vec![
+                    entry("Solve", "Ctrl/Cmd+Enter", SolidAction::Solve).when(self.solve_availability()),
+                    cancel,
+                    entry("Show results", "V", SolidAction::ShowResults).when(self.results_availability()).checked(self.show_results),
+                    entry("Gravity / body force...", "", SolidAction::OpenCard(CardForm::Gravity)),
+                    entry("New load case", "", SolidAction::NewCase),
+                    entry("Edit load case...", "", SolidAction::OpenCard(CardForm::Case(active))).when(case_only("there is only the model's own set of supports and loads")),
+                    entry("Next load case", "", SolidAction::SetCase((active + 1) % cases.max(1))).when(if cases > 1 { Ok(()) } else { Err("there is one load case at most".to_string()) }),
+                ]
+            }
             Some(kind) => vec![
                 entry("Run study", "Ctrl/Cmd+Enter", SolidAction::RunStudy(kind)).when(self.study_availability(kind)),
                 cancel,
@@ -59,6 +70,10 @@ impl SolidSession {
     }
     fn simulation_items(&self) -> Vec<Item> {
         self.simulation_entries().into_iter().map(Item::Entry).collect()
+    }
+    #[cfg(test)]
+    pub(super) fn simulation_items_for_test(&self) -> Vec<Item> {
+        self.simulation_items()
     }
     /// `Ok` when `row` exists for the current analysis / geometry source.
     pub(super) fn row_available(&self, row: FieldRow) -> Result<(), String> {
@@ -117,6 +132,13 @@ impl SolidSession {
             for (l, load) in p.loads.iter().enumerate() {
                 let target = load.edge().map_or("point".to_string(), str::to_string);
                 out.push(node(T_FEATURE_BASE + 2_000 + l as u32, 2, '>', format!("{} on {target}", self.row_value(FieldRow::LoadKind(l))), Feature::Load(l)));
+            }
+        }
+        if p.study.is_structural() && !p.cases.is_empty() {
+            out.push(TreeNode::new(T_CASES, 1, '+', format!("Load cases ({})", p.cases.len())).folder());
+            for (i, case) in p.cases.iter().enumerate() {
+                let active = i == p.active_case_index();
+                out.push(TreeNode::new(T_CASE_BASE + i as u32, 2, 'c', format!("{}{}", case.name, if active { " (active)" } else { "" })).selected(active).on_click(ui(SolidAction::SetCase(i))));
             }
         }
         if p.study.is_thermal() {
@@ -210,6 +232,12 @@ impl Authoring for SolidSession {
     }
     fn needs_scene(&self) -> bool {
         SolidSession::needs_scene(self)
+    }
+    fn value_card(&self) -> Option<crate::gpu_viewer::ui::ValueCard> {
+        self.card_view()
+    }
+    fn card_field(&mut self, index: usize, text: String) {
+        self.card_set_field(index, text);
     }
     fn poll(&mut self) -> bool {
         SolidSession::poll(self)
@@ -408,6 +436,10 @@ impl Authoring for SolidSession {
             items.push(Item::Separator);
             items.push(item(entry("Assign to focused row", "", SolidAction::AssignSelection).when(self.assign_availability())));
             items.push(item(entry("Clear selection", "Esc", SolidAction::ClearSelection)));
+            items.push(Item::Separator);
+        }
+        if self.selected.is_none() && self.problem.study.is_structural() {
+            items.push(item(entry("Gravity / body force...", "", SolidAction::OpenCard(CardForm::Gravity))));
             items.push(Item::Separator);
         }
         items.push(item(entry("Solve", "Ctrl/Cmd+Enter", SolidAction::Solve).when(self.solve_availability())));
