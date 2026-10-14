@@ -115,18 +115,25 @@ fn default_key() -> [[u8; 3]; 4] {
 }
 
 /// What persists between sessions.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DisplaySettings {
     pub style: DisplayStyle,
     pub background: Background,
     /// Body, support, load and selected colours of the colour key.
     #[serde(default = "default_key")]
     pub key_colours: [[u8; 3]; 4],
+    /// Where the colour key and the result legend were left, as fractions of the viewport (`None`: their starting places).
+    #[serde(default)]
+    pub panel_pos: [Option<[f32; 2]>; 2],
 }
 impl Default for DisplaySettings {
     fn default() -> Self {
-        Self { style: DisplayStyle::default(), background: Background::default(), key_colours: default_key_colours() }
+        Self { style: DisplayStyle::default(), background: Background::default(), key_colours: default_key_colours(), panel_pos: [None; 2] }
     }
+}
+/// A stored panel position kept only when it is finite, clamped into the viewport.
+pub fn sanitize_panel_pos(p: Option<[f32; 2]>) -> Option<[f32; 2]> {
+    p.filter(|p| p.iter().all(|v| v.is_finite())).map(|p| p.map(|v| v.clamp(0.0, 1.0)))
 }
 const FILE: &str = "display.json";
 impl DisplaySettings {
@@ -181,6 +188,15 @@ mod tests {
         let old = r#"{"style":"Wireframe","background":"Theme"}"#;
         let s: DisplaySettings = serde_json::from_str(old).unwrap();
         assert_eq!(s.key_colours, k);
+        assert_eq!(s.panel_pos, [None; 2], "an old file has no stored positions");
+    }
+
+    #[test]
+    fn a_stored_panel_position_is_clamped_and_a_non_finite_one_is_dropped() {
+        assert_eq!(sanitize_panel_pos(Some([-0.5, 3.0])), Some([0.0, 1.0]));
+        assert_eq!(sanitize_panel_pos(Some([f32::NAN, 0.5])), None);
+        assert_eq!(sanitize_panel_pos(Some([f32::INFINITY, 0.5])), None);
+        assert_eq!(sanitize_panel_pos(None), None);
     }
 
     #[test]
@@ -201,7 +217,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("fea-editor").join(FILE);
         assert_eq!(DisplaySettings::load_from(&path), DisplaySettings::default());
-        let s = DisplaySettings { style: DisplayStyle::HiddenLinesRemoved, background: Background::Gradient { top: [10, 20, 30], bottom: [200, 210, 220] }, key_colours: [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]] };
+        let s = DisplaySettings { style: DisplayStyle::HiddenLinesRemoved, background: Background::Gradient { top: [10, 20, 30], bottom: [200, 210, 220] }, key_colours: [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]], panel_pos: [Some([0.25, 0.5]), None] };
         s.save_to(&path).unwrap();
         assert_eq!(DisplaySettings::load_from(&path), s);
         std::fs::write(&path, "{ not json").unwrap();

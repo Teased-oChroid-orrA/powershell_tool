@@ -397,9 +397,9 @@ impl Viewer {
     }
     fn command(&mut self, command: Command) {
         let scene = &self.project.scenes[self.project.selected];
-        let before = (self.view.style, self.view.background, self.view.key_colours);
+        let before = self.view.display_settings();
         self.view.apply(command, scene);
-        if before != (self.view.style, self.view.background, self.view.key_colours) {
+        if before != self.view.display_settings() {
             self.save_display();
         }
     }
@@ -408,12 +408,13 @@ impl Viewer {
         if let Some(p) = &path {
             let s = DisplaySettings::load_from(p);
             (self.view.style, self.view.background, self.view.key_colours) = (s.style, s.background, s.key_colours);
+            self.view.panel_pos = s.panel_pos.map(super::display::sanitize_panel_pos);
         }
         self.display_file = path;
     }
     fn save_display(&mut self) {
         let Some(path) = &self.display_file else { return };
-        if let Err(e) = (DisplaySettings { style: self.view.style, background: self.view.background, key_colours: self.view.key_colours }).save_to(path) {
+        if let Err(e) = self.view.display_settings().save_to(path) {
             self.error = Some(format!("could not save the display settings: {e}"));
         }
     }
@@ -1450,6 +1451,19 @@ mod tests {
         let vp = v.gui.viewport_px(v.window_size());
         let ppp = v.gui.ctx().pixels_per_point();
         assert!(after.min.x * ppp >= vp.x as f32 - 1.0 && after.max.x * ppp <= (vp.x + vp.w) as f32 + 1.0, "inside the viewport");
+        // Where it was left is kept as a fraction of the viewport, and a new session starts it there.
+        let frac = v.view.panel_pos[0].expect("the drag's end is recorded");
+        let vpp = v.gui.viewport_px(v.window_size());
+        let ppp = v.gui.ctx().pixels_per_point();
+        assert!((frac[0] * vpp.w as f32 / ppp + vpp.x as f32 / ppp - after.min.x).abs() < 3.0, "fraction {frac:?} matches {after:?}");
+        assert_eq!(DisplaySettings::load_from(&path).panel_pos[0], Some(frac));
+        let mut again = member_viewer();
+        again.attach_display_store(Some(path.clone()));
+        // The test viewer already drew a frame before the store was attached; the real window attaches it before the first.
+        again.gui.ctx().memory_mut(|m| m.reset_areas());
+        frame(&mut again);
+        let restored = again.gui.ctx().memory(|m| m.area_rect(id)).expect("the key is shown");
+        assert!((restored.min.x - after.min.x).abs() < 3.0 && (restored.min.y - after.min.y).abs() < 3.0, "restored {restored:?} vs {after:?}");
         // A swatch is a colour: choosing one sets it, the view keeps it, and the file keeps it for the next session.
         v.dispatch(UiAction::Command(Command::SetKeyColour(1, [250, 10, 20])));
         assert_eq!(v.view.key_colours[1], [250, 10, 20]);

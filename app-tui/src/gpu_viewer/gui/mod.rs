@@ -521,8 +521,11 @@ impl Gui {
         };
         // Both can be dragged anywhere in the viewport (the position is kept while the window runs). The key starts under the tool
         // pill at the right edge, the result legend at the bottom right.
-        let start = if geometry { Pos2::new(vp.right() - 150.0, vp.top() + 150.0) } else { Pos2::new(vp.right() - 270.0, vp.bottom() - 270.0) };
-        egui::Area::new(Id::new(if geometry { "colour-key" } else { "contour-legend" })).fade_in(false).movable(true).constrain_to(vp).default_pos(start).order(Order::Middle).show(ctx, |ui| {
+        let slot = usize::from(!geometry);
+        let default = if geometry { Pos2::new(vp.right() - 150.0, vp.top() + 150.0) } else { Pos2::new(vp.right() - 270.0, vp.bottom() - 270.0) };
+        // A stored position is a fraction of the viewport, so a resized window cannot strand the panel (`constrain_to` keeps it inside).
+        let start = input.view.panel_pos[slot].map_or(default, |f| Pos2::new(vp.left() + f[0] * vp.width(), vp.top() + f[1] * vp.height()));
+        let shown = egui::Area::new(Id::new(if geometry { "colour-key" } else { "contour-legend" })).fade_in(false).movable(true).constrain_to(vp).default_pos(start).order(Order::Middle).show(ctx, |ui| {
             panels::popup_frame(p).fill(p.panel).inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| {
                 // Text that can be selected would take the drag that moves the panel.
                 ui.style_mut().interaction.selectable_labels = false;
@@ -590,6 +593,12 @@ impl Gui {
                 }
             });
         });
+        // Where the panel was left is kept, relative to the viewport.
+        if shown.response.drag_stopped() {
+            let min = shown.response.rect.min;
+            let frac = [(min.x - vp.left()) / vp.width().max(1.0), (min.y - vp.top()) / vp.height().max(1.0)];
+            out.push(Outcome::Action(UiAction::Command(Command::SetPanelPos(slot, frac))));
+        }
     }
 
     /// The value card an editor has open (a constraint's directions, a load's numbers, a load case), beside the face's menu.

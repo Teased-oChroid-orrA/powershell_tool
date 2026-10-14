@@ -52,6 +52,8 @@ pub enum Command {
     SetKeyColour(usize, [u8; 3]),
     /// Back to the default colours of the key.
     ResetKeyColours,
+    /// Where panel `.0` (0 colour key, 1 result legend) was left, as fractions of the viewport.
+    SetPanelPos(usize, [f32; 2]),
 }
 
 /// CAD standard views, defined by where the viewer stands: front at -z (x right, y up on the screen),
@@ -176,6 +178,8 @@ pub struct ViewState {
     pub background: Background,
     /// Body, support, load and selected colours of the model's colour key.
     pub key_colours: [[u8; 3]; 4],
+    /// Where the colour key and the result legend were left (fractions of the viewport); kept between sessions.
+    pub panel_pos: [Option<[f32; 2]>; 2],
     /// A static result swings between undeformed and deformed.
     pub animate: bool,
     /// Wall-clock seconds the window has run (drives that swing; playback `time` stays with the result).
@@ -183,6 +187,11 @@ pub struct ViewState {
 }
 
 impl ViewState {
+    /// The part of the view that persists between sessions.
+    pub fn display_settings(&self) -> super::display::DisplaySettings {
+        super::display::DisplaySettings { style: self.style, background: self.background, key_colours: self.key_colours, panel_pos: self.panel_pos }
+    }
+
     pub fn new(scene: &Scene) -> Self {
         Self {
             show_mesh: false,
@@ -201,6 +210,7 @@ impl ViewState {
             style: DisplayStyle::default(),
             background: Background::default(),
             key_colours: super::display::default_key_colours(),
+            panel_pos: [None; 2],
             animate: true,
             clock: 0.0,
         }
@@ -272,6 +282,11 @@ impl ViewState {
             Command::SetKeyColour(k, c) => {
                 if let Some(slot) = self.key_colours.get_mut(k) {
                     *slot = c;
+                }
+            }
+            Command::SetPanelPos(k, p) => {
+                if let Some(slot) = self.panel_pos.get_mut(k) {
+                    *slot = super::display::sanitize_panel_pos(Some(p));
                 }
             }
             Command::ResetKeyColours => self.key_colours = super::display::default_key_colours(),
