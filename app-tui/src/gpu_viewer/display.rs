@@ -105,11 +105,28 @@ pub fn line_colors(top: [u8; 3], bottom: [u8; 3]) -> LineColors {
     LineColors { visible, hidden: toward(0.72), mesh: toward(0.5) }
 }
 
+/// The colours of the model's own state in a geometry view: body, support, load, selected. The defaults are the contour
+/// colour map at 0, 1/3, 2/3 and 1 (the scene codes 0..3), which is what the model was always drawn with.
+pub fn default_key_colours() -> [[u8; 3]; 4] {
+    std::array::from_fn(|k| super::text::colormap(k as f32 / 3.0))
+}
+fn default_key() -> [[u8; 3]; 4] {
+    default_key_colours()
+}
+
 /// What persists between sessions.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DisplaySettings {
     pub style: DisplayStyle,
     pub background: Background,
+    /// Body, support, load and selected colours of the colour key.
+    #[serde(default = "default_key")]
+    pub key_colours: [[u8; 3]; 4],
+}
+impl Default for DisplaySettings {
+    fn default() -> Self {
+        Self { style: DisplayStyle::default(), background: Background::default(), key_colours: default_key_colours() }
+    }
 }
 const FILE: &str = "display.json";
 impl DisplaySettings {
@@ -157,6 +174,16 @@ mod tests {
     }
 
     #[test]
+    fn the_default_key_is_the_contour_map_and_an_old_settings_file_without_it_reads_as_the_default() {
+        let k = default_key_colours();
+        assert_eq!(k[0], super::super::text::colormap(0.0));
+        assert_eq!(k[3], super::super::text::colormap(1.0));
+        let old = r#"{"style":"Wireframe","background":"Theme"}"#;
+        let s: DisplaySettings = serde_json::from_str(old).unwrap();
+        assert_eq!(s.key_colours, k);
+    }
+
+    #[test]
     fn line_colours_contrast_with_the_ground() {
         let on_black = line_colors([0; 3], [0; 3]);
         let on_white = line_colors([255; 3], [255; 3]);
@@ -174,7 +201,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("fea-editor").join(FILE);
         assert_eq!(DisplaySettings::load_from(&path), DisplaySettings::default());
-        let s = DisplaySettings { style: DisplayStyle::HiddenLinesRemoved, background: Background::Gradient { top: [10, 20, 30], bottom: [200, 210, 220] } };
+        let s = DisplaySettings { style: DisplayStyle::HiddenLinesRemoved, background: Background::Gradient { top: [10, 20, 30], bottom: [200, 210, 220] }, key_colours: [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]] };
         s.save_to(&path).unwrap();
         assert_eq!(DisplaySettings::load_from(&path), s);
         std::fs::write(&path, "{ not json").unwrap();

@@ -397,9 +397,9 @@ impl Viewer {
     }
     fn command(&mut self, command: Command) {
         let scene = &self.project.scenes[self.project.selected];
-        let before = (self.view.style, self.view.background);
+        let before = (self.view.style, self.view.background, self.view.key_colours);
         self.view.apply(command, scene);
-        if before != (self.view.style, self.view.background) {
+        if before != (self.view.style, self.view.background, self.view.key_colours) {
             self.save_display();
         }
     }
@@ -407,13 +407,13 @@ impl Viewer {
     fn attach_display_store(&mut self, path: Option<std::path::PathBuf>) {
         if let Some(p) = &path {
             let s = DisplaySettings::load_from(p);
-            (self.view.style, self.view.background) = (s.style, s.background);
+            (self.view.style, self.view.background, self.view.key_colours) = (s.style, s.background, s.key_colours);
         }
         self.display_file = path;
     }
     fn save_display(&mut self) {
         let Some(path) = &self.display_file else { return };
-        if let Err(e) = (DisplaySettings { style: self.view.style, background: self.view.background }).save_to(path) {
+        if let Err(e) = (DisplaySettings { style: self.view.style, background: self.view.background, key_colours: self.view.key_colours }).save_to(path) {
             self.error = Some(format!("could not save the display settings: {e}"));
         }
     }
@@ -613,7 +613,7 @@ impl Viewer {
                         if self.view.swing(&self.project.scenes[self.project.selected]).is_some() { self.view.clock } else { self.view.time },
                         if self.view.deformed { self.view.gain } else { 0.0 },
                         [self.view.yaw, self.view.pitch, self.view.zoom, vp.w.max(1) as f32 / vp.h.max(1) as f32],
-                        DisplayOptions { show_mesh: self.view.show_mesh && !self.editor.as_ref().is_some_and(|e| e.shows_body_only()), show_contour: self.view.show_contour, field: self.view.field, viewport: Some(scene_rect), background: Some(background), style: self.view.style_for(&self.project.scenes[self.project.selected], geometry), swing: self.view.swing(&self.project.scenes[self.project.selected]), shade: geometry, pan: self.view.pan },
+                        DisplayOptions { show_mesh: self.view.show_mesh && !self.editor.as_ref().is_some_and(|e| e.shows_body_only()), show_contour: self.view.show_contour, field: self.view.field, viewport: Some(scene_rect), background: Some(background), style: self.view.style_for(&self.project.scenes[self.project.selected], geometry), swing: self.view.swing(&self.project.scenes[self.project.selected]), shade: geometry, key_colours: geometry.then_some(self.view.key_colours), pan: self.view.pan },
                     );
                     r.paint_egui(&view, &ctx, full.take().expect("painted once"), [size.0, size.1]);
                     r.queue.present(frame);
@@ -1415,6 +1415,54 @@ mod tests {
             let vp = v.gui.viewport_px((width, 800));
             assert!(pill.right() * v.gui.ctx().pixels_per_point() <= (vp.x + vp.w) as f32 + 1.0, "width {width}: the pill stays inside the viewport");
         }
+    }
+
+    /// The colour key can be dragged anywhere in the viewport, each swatch is a colour picker whose choice is kept, and
+    /// the glyphs and the model use it.
+    #[test]
+    fn the_colour_key_moves_and_its_colours_change_and_persist() {
+        let path = std::env::temp_dir().join(format!("window-key-{}", std::process::id())).join("display.json");
+        let _ = std::fs::remove_file(&path);
+        let mut v = member_viewer();
+        v.attach_display_store(Some(path.clone()));
+        frame(&mut v);
+        let id = egui::Id::new("colour-key");
+        let area = |v: &Viewer| v.gui.ctx().memory(|m| m.area_rect(id)).expect("the colour key is shown");
+        for name in ["Body colour", "Support colour", "Load colour", "Selected colour"] {
+            assert!(v.gui.target_labels().iter().any(|l| l == name), "{name} in {:?}", v.gui.target_labels());
+        }
+        // Drag it by its heading: the key follows the pointer and stays inside the viewport.
+        let before = area(&v);
+        let grab = before.min + egui::vec2(24.0, 14.0);
+        v.test_events.push(egui::Event::PointerMoved(grab));
+        frame(&mut v);
+        v.test_events.push(egui::Event::PointerButton { pos: grab, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        frame(&mut v);
+        for step in 1..=5 {
+            v.test_events.push(egui::Event::PointerMoved(grab - egui::vec2(24.0 * step as f32, 0.0) + egui::vec2(0.0, 18.0 * step as f32)));
+            frame(&mut v);
+        }
+        v.test_events.push(egui::Event::PointerButton { pos: grab - egui::vec2(120.0, -90.0), button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+        frame(&mut v);
+        frame(&mut v);
+        let after = area(&v);
+        assert!((after.min.x - (before.min.x - 120.0)).abs() < 3.0 && (after.min.y - (before.min.y + 90.0)).abs() < 3.0, "moved from {before:?} to {after:?}");
+        let vp = v.gui.viewport_px(v.window_size());
+        let ppp = v.gui.ctx().pixels_per_point();
+        assert!(after.min.x * ppp >= vp.x as f32 - 1.0 && after.max.x * ppp <= (vp.x + vp.w) as f32 + 1.0, "inside the viewport");
+        // A swatch is a colour: choosing one sets it, the view keeps it, and the file keeps it for the next session.
+        v.dispatch(UiAction::Command(Command::SetKeyColour(1, [250, 10, 20])));
+        assert_eq!(v.view.key_colours[1], [250, 10, 20]);
+        let mut next = member_viewer();
+        next.attach_display_store(Some(path.clone()));
+        assert_eq!(next.view.key_colours[1], [250, 10, 20]);
+        frame(&mut v);
+        assert!(v.gui.target_labels().iter().any(|l| l == "Reset colours"), "a changed key offers its reset");
+        let reset = target(&v, "Reset colours");
+        click(&mut v, reset);
+        frame(&mut v);
+        assert_eq!(v.view.key_colours, crate::gpu_viewer::display::default_key_colours());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     /// A result shows what its colours mean, can be cycled through every field, and so can a mode shape.

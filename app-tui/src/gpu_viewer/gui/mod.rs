@@ -441,7 +441,8 @@ impl Gui {
                 OverlayKind::Load => {
                     let Some(tip) = o.tip else { continue };
                     let tip = Pos2::new(origin.x + tip[0] / ppp, origin.y + tip[1] / ppp);
-                    let col = p.warn;
+                    let [kr, kg, kb] = input.view.key_colours[2];
+                    let col = Color32::from_rgb(kr, kg, kb);
                     let dir = (tip - at).normalized();
                     let side = Vec2::new(-dir.y, dir.x);
                     back.line_segment([at, tip], egui::Stroke::new(2.5, col));
@@ -454,7 +455,8 @@ impl Gui {
                 OverlayKind::Support => {
                     let out = o.tip.map_or(Vec2::new(0.0, -1.0), |t| Vec2::new(t[0], t[1]));
                     let side = Vec2::new(-out.y, out.x);
-                    let col = p.good;
+                    let [kr, kg, kb] = input.view.key_colours[1];
+                    let col = Color32::from_rgb(kr, kg, kb);
                     // A triangle standing on the face with hatching under it, and the held directions beside.
                     let base = at + out * 22.0;
                     back.add(egui::Shape::convex_polygon(vec![at, base + side * 12.0, base - side * 12.0], with_alpha(col, 200), egui::Stroke::new(1.5, col)));
@@ -517,16 +519,33 @@ impl Gui {
             let [r, g, b] = colormap(t);
             Color32::from_rgb(r, g, b)
         };
-        egui::Area::new(Id::new("contour-legend")).fade_in(false).interactable(!geometry).order(Order::Middle).pivot(Align2::RIGHT_BOTTOM).fixed_pos(Pos2::new(vp.right() - 14.0, vp.bottom() - 14.0)).show(ctx, |ui| {
+        // Both can be dragged anywhere in the viewport (the position is kept while the window runs). The key starts under the tool
+        // pill at the right edge, the result legend at the bottom right.
+        let start = if geometry { Pos2::new(vp.right() - 150.0, vp.top() + 150.0) } else { Pos2::new(vp.right() - 270.0, vp.bottom() - 270.0) };
+        egui::Area::new(Id::new(if geometry { "colour-key" } else { "contour-legend" })).fade_in(false).movable(true).constrain_to(vp).default_pos(start).order(Order::Middle).show(ctx, |ui| {
             panels::popup_frame(p).fill(p.panel).inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| {
+                // Text that can be selected would take the drag that moves the panel.
+                ui.style_mut().interaction.selectable_labels = false;
                 if geometry {
-                    ui.label(egui::RichText::new("COLOUR KEY").small().strong().color(p.dim));
-                    for (name, code) in [("Body", 0.0f32), ("Support", 1.0), ("Load", 2.0), ("Selected", 3.0)] {
+                    ui.label(egui::RichText::new("COLOUR KEY  (drag to move)").small().strong().color(p.dim));
+                    for (k, name) in ["Body", "Support", "Load", "Selected"].into_iter().enumerate() {
                         ui.horizontal(|ui| {
-                            let (rect, _) = ui.allocate_exact_size(Vec2::new(14.0, 14.0), egui::Sense::hover());
-                            ui.painter().rect_filled(rect, 3.0, swatch(code / 3.0));
+                            // Clicking the swatch opens a colour picker; every change is applied at once and kept.
+                            let mut rgb = input.view.key_colours[k];
+                            let r = egui::color_picker::color_edit_button_srgb(ui, &mut rgb);
+                            self.targets.push((format!("{name} colour"), r.rect));
+                            if r.changed() {
+                                out.push(Outcome::Action(UiAction::Command(Command::SetKeyColour(k, rgb))));
+                            }
                             ui.label(name);
                         });
+                    }
+                    if input.view.key_colours != crate::gpu_viewer::display::default_key_colours() {
+                        let r = ui.small_button("Reset colours");
+                        self.targets.push(("Reset colours".into(), r.rect));
+                        if r.clicked() {
+                            out.push(Outcome::Action(UiAction::Command(Command::ResetKeyColours)));
+                        }
                     }
                     return;
                 }

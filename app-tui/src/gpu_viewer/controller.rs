@@ -48,6 +48,10 @@ pub enum Command {
     SetStyle(DisplayStyle),
     /// The viewport background.
     SetBackground(Background),
+    /// Colour `.0` (0 body, 1 support, 2 load, 3 selected) of the model's colour key.
+    SetKeyColour(usize, [u8; 3]),
+    /// Back to the default colours of the key.
+    ResetKeyColours,
 }
 
 /// CAD standard views, defined by where the viewer stands: front at -z (x right, y up on the screen),
@@ -170,6 +174,8 @@ pub struct ViewState {
     pub show_help: bool,
     pub style: DisplayStyle,
     pub background: Background,
+    /// Body, support, load and selected colours of the model's colour key.
+    pub key_colours: [[u8; 3]; 4],
     /// A static result swings between undeformed and deformed.
     pub animate: bool,
     /// Wall-clock seconds the window has run (drives that swing; playback `time` stays with the result).
@@ -194,6 +200,7 @@ impl ViewState {
             show_help: false,
             style: DisplayStyle::default(),
             background: Background::default(),
+            key_colours: super::display::default_key_colours(),
             animate: true,
             clock: 0.0,
         }
@@ -262,6 +269,12 @@ impl ViewState {
             Command::ToggleMesh => self.show_mesh = !self.show_mesh,
             Command::SetStyle(style) => self.style = style,
             Command::SetBackground(background) => self.background = background,
+            Command::SetKeyColour(k, c) => {
+                if let Some(slot) = self.key_colours.get_mut(k) {
+                    *slot = c;
+                }
+            }
+            Command::ResetKeyColours => self.key_colours = super::display::default_key_colours(),
             Command::ToggleContour => self.show_contour = !self.show_contour,
             Command::ToggleDeformation => self.deformed = !self.deformed,
             Command::ToggleAnimate => self.animate = !self.animate,
@@ -649,6 +662,20 @@ mod swing_tests {
         v.apply(Command::ToggleAnimate, &scene(1));
         assert!(!v.animate);
     }
+    #[test]
+    fn the_colour_key_colours_are_set_one_at_a_time_and_reset() {
+        let mut v = ViewState::new(&scene(0));
+        let default = v.key_colours;
+        assert_eq!(default, super::super::display::default_key_colours());
+        v.apply(Command::SetKeyColour(1, [250, 10, 20]), &scene(0));
+        assert_eq!(v.key_colours[1], [250, 10, 20]);
+        assert_eq!((v.key_colours[0], v.key_colours[2], v.key_colours[3]), (default[0], default[2], default[3]));
+        v.apply(Command::SetKeyColour(9, [1, 2, 3]), &scene(0));
+        assert_eq!(v.key_colours[1], [250, 10, 20], "a colour that does not exist is ignored");
+        v.apply(Command::ResetKeyColours, &scene(0));
+        assert_eq!(v.key_colours, default);
+    }
+
     #[test]
     fn true_scale_draws_the_deformation_at_its_real_size() {
         let mut v = ViewState::new(&scene(1));

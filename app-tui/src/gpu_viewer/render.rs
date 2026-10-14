@@ -40,6 +40,8 @@ struct Params {
     mesh: [f32; 4],
     bg_top: [f32; 4],
     bg_bottom: [f32; 4],
+    /// Linear colours of the model's state codes 0..3 (body, support, load, selected).
+    key: [[f32; 4]; 4],
 }
 
 /// Two faces meeting at more than this angle share a visible edge.
@@ -93,12 +95,14 @@ pub struct DisplayOptions {
     pub swing: Option<f32>,
     /// Light the surface (a geometry view); a result keeps its contour colours exact.
     pub shade: bool,
+    /// Colours (sRGB) of the geometry view's state codes; `None` draws them with the contour map. Set only with `shade`.
+    pub key_colours: Option<[[u8; 3]; 4]>,
     /// Screen-space shift of the view in NDC units.
     pub pan: [f32; 2],
 }
 impl Default for DisplayOptions {
     fn default() -> Self {
-        Self { show_mesh: false, show_contour: true, field: 0, viewport: None, background: None, style: DisplayStyle::Shaded, swing: None, shade: false, pan: [0.0, 0.0] }
+        Self { show_mesh: false, show_contour: true, field: 0, viewport: None, background: None, style: DisplayStyle::Shaded, swing: None, shade: false, key_colours: None, pan: [0.0, 0.0] }
     }
 }
 
@@ -429,7 +433,7 @@ impl Renderer {
         camera: [f32; 4],
         options: DisplayOptions,
     ) {
-        let DisplayOptions { show_mesh, show_contour, field, viewport, background, style, swing, shade, pan } = options;
+        let DisplayOptions { show_mesh, show_contour, field, viewport, background, style, swing, shade, key_colours, pan } = options;
         // A stale index (result switched, field absent) falls back to the primary scalar.
         let field = if field <= scene.fields.len() { field } else { 0 };
         let range = match field.checked_sub(1) {
@@ -457,7 +461,7 @@ impl Renderer {
                     a as u32,
                     b as u32,
                     scene.positions.len() as u32,
-                    u32::from(!show_contour) | u32::from(shade) << 1 | (field as u32) << 8,
+                    u32::from(!show_contour) | u32::from(shade) << 1 | u32::from(key_colours.is_some()) << 2 | (field as u32) << 8,
                 ],
                 settings: [blend, gain, range[0], range[1]],
                 camera,
@@ -467,6 +471,7 @@ impl Renderer {
                 mesh: rgba(lines.mesh),
                 bg_top: rgb8(top),
                 bg_bottom: rgb8(bottom),
+                key: key_colours.map_or([[0.0; 4]; 4], |k| k.map(rgb8)),
             }),
         );
         let mut encoder = self.device.create_command_encoder(&Default::default());
@@ -754,6 +759,51 @@ impl Renderer {
             assert!((half - still).abs() < 1.5 && (still - full).abs() < 1.5, "a static draw with the same gain is the fully deformed one: {half} {still} {full}");
         });
     }
+    /// The model's state colours are the user's: a face coded as a support is drawn in the chosen colour, and the default
+    /// colours are what the contour map always gave.
+    #[test]
+    #[ignore = "requires a native graphics adapter"]
+    fn the_key_colours_decide_how_the_models_states_are_drawn() {
+        let _guard = headless_guard();
+        pollster::block_on(async {
+            let adapter = test_adapter().await.expect("adapter required");
+            let mut scene = cube();
+            for (i, s) in scene.samples.iter_mut().enumerate() {
+                s[3] = if i & 1 == 0 { 1.0 } else { 0.0 };
+            }
+            scene.range = [0.0, 3.0];
+            let (w, h) = (160u32, 160u32);
+            let renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+            let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let draw = |key: Option<[[u8; 3]; 4]>, style| {
+                renderer.draw_display(&texture.create_view(&Default::default()), &scene, 0.0, 1.0, [0.9, -0.4, 1.2, 1.0], DisplayOptions { style, shade: true, key_colours: key, ..Default::default() });
+                read_back(&renderer, &texture)
+            };
+            let red = |img: &[u8]| img.chunks_exact(4).filter(|p| p[0] > 120 && p[0] as i32 > p[1] as i32 + 80 && p[0] as i32 > p[2] as i32 + 80).count();
+            let default = crate::gpu_viewer::display::default_key_colours();
+            let plain = draw(None, DisplayStyle::Shaded);
+            let same = draw(Some(default), DisplayStyle::Shaded);
+            // The defaults reproduce the contour map's colours (to rounding).
+            let diff = plain.iter().zip(&same).filter(|(a, b)| (**a as i32 - **b as i32).abs() > 2).count();
+            assert!(diff < 40, "{diff} bytes differ between the map and its default key");
+            assert_eq!(red(&plain), 0, "teal support faces have no red");
+            let mut custom = default;
+            custom[1] = [255, 0, 0];
+            assert!(red(&draw(Some(custom), DisplayStyle::Shaded)) > 300, "the support face is red when the support colour is");
+            // The highlight pass of a wireframe uses the key too.
+            assert!(red(&draw(Some(custom), DisplayStyle::Wireframe)) > 100, "and in a wireframe");
+        });
+    }
+
     /// Each display style paints what CAD says: shaded fills the faces, wireframe only the edges, hidden lines
     /// removed only the edges in front, hidden lines visible those and the dimmed rest; a gradient runs top to bottom.
     #[test]

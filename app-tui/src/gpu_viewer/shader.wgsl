@@ -1,6 +1,7 @@
 struct Params {
     frames: vec4<u32>, settings: vec4<f32>, camera: vec4<f32>, pan: vec4<f32>,
     line: vec4<f32>, hidden: vec4<f32>, mesh: vec4<f32>, bg_top: vec4<f32>, bg_bottom: vec4<f32>,
+    key: array<vec4<f32>, 4>,
 };
 @group(0) @binding(0) var<storage, read> samples: array<vec4<f32>>;
 @group(0) @binding(1) var<uniform> params: Params;
@@ -32,6 +33,13 @@ fn place(pos: vec3<f32>, i: u32) -> Out {
     o.position.z = o.position.z - 1e-5;
     return o;
 }
+// The model's state colour at a normalised scene value (codes 0..3 over the 0..1 range): the user's key colours,
+// blended between neighbouring codes exactly as the contour map is, so a face next to a support fades the same way.
+fn key_colour(t: f32) -> vec3<f32> {
+    let x = clamp(t, 0.0, 1.0) * 3.0;
+    let i = min(u32(floor(x)), 2u);
+    return mix(params.key[i].rgb, params.key[i + 1u].rgb, x - f32(i));
+}
 // Bit 0 of `frames.w`: no contour, paint the neutral body colour. Bit 1: light the surface from the viewer
 // (a geometry view; a result keeps its contour colours exact).
 @fragment fn fs(o: Out) -> @location(0) vec4<f32> {
@@ -44,6 +52,7 @@ fn place(pos: vec3<f32>, i: u32) -> Out {
     } else {
         let t = clamp(o.value,0.0,1.0);
         c = vec3<f32>(t, 0.3+0.6*(1.0-abs(2.0*t-1.0)), 1.0-t);
+        if (params.frames.w & 4u) != 0u { c = key_colour(o.value); }
     }
     if (params.frames.w & 2u) != 0u { c = c * light; }
     return vec4<f32>(c, 1.0);
@@ -54,6 +63,7 @@ fn place(pos: vec3<f32>, i: u32) -> Out {
     let code = o.value * (params.settings.w - params.settings.z) + params.settings.z;
     if code < 0.5 { discard; }
     let t = clamp(o.value, 0.0, 1.0);
+    if (params.frames.w & 4u) != 0u { return vec4<f32>(key_colour(o.value), 1.0); }
     return vec4<f32>(t, 0.3 + 0.6 * (1.0 - abs(2.0 * t - 1.0)), 1.0 - t, 1.0);
 }
 @fragment fn fs_mesh(o: Out) -> @location(0) vec4<f32> { return vec4<f32>(params.mesh.rgb, 1.0); }
