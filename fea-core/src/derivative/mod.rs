@@ -26,6 +26,7 @@ pub mod path;
 pub mod policy;
 pub mod scalar;
 pub mod tape;
+pub mod transient;
 pub mod verify;
 
 pub use policy::*;
