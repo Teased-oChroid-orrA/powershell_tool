@@ -20,11 +20,15 @@ pub enum Command {
     ToggleMesh,
     ToggleContour,
     ToggleDeformation,
+    /// Move a static result between undeformed and deformed (a live view of how the part moves).
+    ToggleAnimate,
     ResetCamera,
     /// Pause and move one stored frame (or 1/120 of a harmonic period) forward or back.
     StepFrame { forward: bool },
     GainUp,
     GainDown,
+    /// Draw the deformation at its true size (the viewer exaggerates it so it can be seen).
+    TrueScale,
     SpeedUp,
     SpeedDown,
     /// Camera orbit by cursor movement in pixels.
@@ -166,6 +170,10 @@ pub struct ViewState {
     pub show_help: bool,
     pub style: DisplayStyle,
     pub background: Background,
+    /// A static result swings between undeformed and deformed.
+    pub animate: bool,
+    /// Wall-clock seconds the window has run (drives that swing; playback `time` stays with the result).
+    pub clock: f32,
 }
 
 impl ViewState {
@@ -186,6 +194,8 @@ impl ViewState {
             show_help: false,
             style: DisplayStyle::default(),
             background: Background::default(),
+            animate: true,
+            clock: 0.0,
         }
     }
 
@@ -235,6 +245,9 @@ impl ViewState {
 
     /// Advance playback by `dt` seconds of wall time (no-op when paused or static).
     pub fn advance(&mut self, scene: &Scene, dt: f32) {
+        if !self.paused {
+            self.clock = (self.clock + dt) % 3600.0;
+        }
         let end = scene.duration();
         if !self.paused && end > 0.0 {
             self.time = (self.time + dt * self.speed) % end;
@@ -250,6 +263,7 @@ impl ViewState {
             Command::SetBackground(background) => self.background = background,
             Command::ToggleContour => self.show_contour = !self.show_contour,
             Command::ToggleDeformation => self.deformed = !self.deformed,
+            Command::ToggleAnimate => self.animate = !self.animate,
             Command::ResetCamera => {
                 self.yaw = 0.0;
                 self.pitch = 0.0;
@@ -276,6 +290,7 @@ impl ViewState {
             }
             Command::GainUp => self.gain = (self.gain * 1.25).min(1e12),
             Command::GainDown => self.gain /= 1.25,
+            Command::TrueScale => self.gain = 1.0,
             Command::SpeedUp => self.speed = (self.speed * 2.0).min(1024.0),
             Command::SpeedDown => self.speed = (self.speed / 2.0).max(1.0 / 1024.0),
             Command::Orbit { dx, dy } => {
@@ -580,5 +595,64 @@ mod tests {
         v.apply(Command::SetField(7), &s);
         assert_eq!(v.field, 0, "an index past the fields falls back to the primary scalar");
         assert_eq!(StandardView::ALL.len(), 7);
+    }
+}
+
+/// Seconds one swing of an animated static result takes.
+pub const SWING_PERIOD: f32 = 2.4;
+
+impl ViewState {
+    /// The swing of a static result as `Some(period)`: only a result (it has fields) that does not move by itself,
+    /// shown deformed, with animation on and not paused.
+    pub fn swing(&self, scene: &Scene) -> Option<f32> {
+        (self.animate && self.deformed && !self.paused && scene.duration() == 0.0 && !scene.fields.is_empty()).then_some(SWING_PERIOD)
+    }
+}
+
+#[cfg(test)]
+mod swing_tests {
+    use super::*;
+    fn scene(fields: usize) -> Scene {
+        Scene {
+            label: "t".into(),
+            positions: vec![[0.0; 3]],
+            triangles: vec![],
+            samples: vec![[0.0; 4]],
+            times: vec![0.0],
+            range: [0.0, 1.0],
+            gain: 5.0,
+            harmonic_period: None,
+            field_label: String::new(),
+            fields: (0..fields).map(|_| super::super::scene::ScalarField::from_f64("f", &[0.0]).unwrap()).collect(),
+        }
+    }
+    #[test]
+    fn only_a_static_result_swings_and_only_while_it_is_shown_deformed_animated_and_running() {
+        let mut v = ViewState::new(&scene(1));
+        assert_eq!(v.swing(&scene(1)), Some(SWING_PERIOD));
+        assert_eq!(v.swing(&scene(0)), None, "a model with no result does not move");
+        let mut moving = scene(1);
+        moving.harmonic_period = Some(1.0);
+        assert_eq!(v.swing(&moving), None, "a mode shape moves by itself");
+        v.animate = false;
+        assert_eq!(v.swing(&scene(1)), None);
+        v.animate = true;
+        v.deformed = false;
+        assert_eq!(v.swing(&scene(1)), None);
+        v.deformed = true;
+        v.paused = true;
+        assert_eq!(v.swing(&scene(1)), None);
+        v.paused = false;
+        v.advance(&scene(1), 0.5);
+        assert!((v.clock - 0.5).abs() < 1e-6 && v.time == 0.0, "the clock runs, the result's own time does not");
+        v.apply(Command::ToggleAnimate, &scene(1));
+        assert!(!v.animate);
+    }
+    #[test]
+    fn true_scale_draws_the_deformation_at_its_real_size() {
+        let mut v = ViewState::new(&scene(1));
+        assert_eq!(v.gain, 5.0);
+        v.apply(Command::TrueScale, &scene(1));
+        assert_eq!(v.gain, 1.0);
     }
 }

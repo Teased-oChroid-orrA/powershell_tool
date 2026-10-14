@@ -23,6 +23,8 @@ pub(super) struct Findings {
     learned: bool,
     /// Findings from a result are part of the list: a new result is a new state.
     solved_id: Option<usize>,
+    /// Which mesh the before-solve checks looked at.
+    mesh_id: Option<usize>,
     list: Vec<Diagnosis>,
 }
 
@@ -56,12 +58,18 @@ impl SolidSession {
         }
         let learned = self.advisors.guidance.settings.use_learned && self.advisors.guidance.learned_available().is_ok();
         let solved_id = self.current_solution().map(|s| std::sync::Arc::as_ptr(s) as usize);
+        let mesh = self.shown_mesh();
+        let mesh_id = mesh.map(|m| std::sync::Arc::as_ptr(m) as usize);
         if let Some(c) = self.findings_cache.borrow().as_ref() {
-            if c.problem == self.problem && c.error == self.failure && c.learned == learned && c.solved_id == solved_id {
+            if c.problem == self.problem && c.error == self.failure && c.learned == learned && c.solved_id == solved_id && c.mesh_id == mesh_id {
                 return c.list.clone();
             }
         }
         let mut list = diagnose(&self.problem, self.failure.as_deref());
+        // What the mesh shows without a solve: supports that leave the part free to float or spin.
+        if let Some(m) = mesh {
+            list.extend(fea_problem::diagnose::diagnose_mesh(&self.problem, m));
+        }
         // What only a result can show (a displacement far too large for a linear model).
         if let Some(sol) = self.current_solution() {
             list.extend(fea_problem::diagnose::diagnose_result(sol));
@@ -70,8 +78,13 @@ impl SolidSession {
             let (order, _) = self.advisors.guidance.order(&d.class, &offered_kinds(d));
             d.remedies.sort_by_key(|r| order.iter().position(|k| *k == r.kind).unwrap_or(usize::MAX));
         }
-        *self.findings_cache.borrow_mut() = Some(Findings { problem: self.problem.clone(), error: self.failure.clone(), learned, solved_id, list: list.clone() });
+        *self.findings_cache.borrow_mut() = Some(Findings { problem: self.problem.clone(), error: self.failure.clone(), learned, solved_id, mesh_id, list: list.clone() });
         list
+    }
+
+    /// A certain failure the checks found before the solve: the supports leave a rigid-body motion free.
+    pub(super) fn predicted_blocker(&self) -> Option<String> {
+        self.findings().into_iter().find(|d| d.class == fea_problem::diagnose::FailureClass::UnderConstrained && d.summary.starts_with("Before solving")).map(|d| d.summary)
     }
 
     /// What order the remedies are in because of: "rules", "simulated prior" or "measured" (the gate was passed on the user's
@@ -131,7 +144,10 @@ impl SolidSession {
                 items.extend(asks);
             }
         }
-        Some(Card::new("guidance", if failed { "Solve failed" } else { "Check" }, if failed { Relevance::Primary } else { Relevance::Context }, items))
+        // A problem found before the solve (a forecast of absurd deformation, a free rigid-body motion) is as important as a
+        // failure: it is the run that would be wasted.
+        let predicted = findings.iter().any(|d| d.summary.starts_with("Before solving"));
+        Some(Card::new("guidance", if failed { "Solve failed" } else if predicted { "Check before solving" } else { "Check" }, if failed || predicted { Relevance::Primary } else { Relevance::Context }, items))
     }
 
     /// The one-click fix the status bar offers after a failed solve: the best remedy of the first finding.

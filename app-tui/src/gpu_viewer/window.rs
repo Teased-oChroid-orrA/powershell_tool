@@ -609,10 +609,10 @@ impl Viewer {
                     r.draw_display(
                         &view,
                         &self.project.scenes[self.project.selected],
-                        self.view.time,
+                        if self.view.swing(&self.project.scenes[self.project.selected]).is_some() { self.view.clock } else { self.view.time },
                         if self.view.deformed { self.view.gain } else { 0.0 },
                         [self.view.yaw, self.view.pitch, self.view.zoom, vp.w.max(1) as f32 / vp.h.max(1) as f32],
-                        DisplayOptions { show_mesh: self.view.show_mesh && !self.editor.as_ref().is_some_and(|e| e.shows_body_only()), show_contour: self.view.show_contour, field: self.view.field, viewport: Some(scene_rect), background: Some(background), style: self.view.style_for(&self.project.scenes[self.project.selected]), shade: self.project.scenes[self.project.selected].fields.is_empty(), pan: self.view.pan },
+                        DisplayOptions { show_mesh: self.view.show_mesh && !self.editor.as_ref().is_some_and(|e| e.shows_body_only()), show_contour: self.view.show_contour, field: self.view.field, viewport: Some(scene_rect), background: Some(background), style: self.view.style_for(&self.project.scenes[self.project.selected]), swing: self.view.swing(&self.project.scenes[self.project.selected]), shade: self.project.scenes[self.project.selected].fields.is_empty(), pan: self.view.pan },
                     );
                     r.paint_egui(&view, &ctx, full.take().expect("painted once"), [size.0, size.1]);
                     r.queue.present(frame);

@@ -934,8 +934,36 @@ pub fn apply_region_material(p: &mut Problem, k: usize, m: &mechanics_core::mate
     p.region_materials[k] = Some(mat);
 }
 
+/// Weight density (lb/in^3) of a curated typical material, which the table itself does not carry.
+fn curated_density(id: &str) -> Option<f64> {
+    Some(match id {
+        "al7075" | "al7075t6" => 0.101,
+        "al2024" | "al2024t3" | "washer_al" => 0.100,
+        "al7050" => 0.102,
+        "steel" | "washer_steel" => 0.283,
+        "steel4340" => 0.283,
+        "ph157mo" | "ph174" => 0.277,
+        "ti6al4v" => 0.160,
+        "inconel718" => 0.297,
+        "inconel625" => 0.305,
+        "cfrp_qi" => 0.057,
+        "bronze" => 0.272,
+        "beryllium" => 0.298,
+        _ => return None,
+    })
+}
+
+/// The mass density (lbf s^2/in^4: weight density over g = 386.089 in/s^2) of a catalog material, when it is known.
+pub fn mass_density(m: &mechanics_core::materials::Material) -> Option<f64> {
+    m.extra.map(|x| x.density_lb_in3).filter(|d| *d > 0.0).or_else(|| curated_density(m.id)).map(|d| d / 386.089)
+}
+
 fn set_material(mat: &mut fea_problem::MaterialSpec, m: &mechanics_core::materials::Material) {
     mat.name = m.name.to_string();
+    // The catalog knows the weight density: dynamics and gravity need it, and the old material's value would be wrong.
+    if let Some(rho) = mass_density(m) {
+        mat.density = rho;
+    }
     mat.e = m.e_ksi * 1000.0;
     mat.nu = m.nu;
     mat.alpha = m.alpha_u_f * 1e-6;

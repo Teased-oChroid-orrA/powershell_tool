@@ -85,7 +85,22 @@ pub fn result_card(input: &GuiInput) -> Card {
         ));
         out.push(DockItem::text(format!("speed x{:.3}", view.speed), Tone::Dim));
     }
-    out.push(DockItem::text(format!("gain x{:.3}{}", view.gain, if view.deformed { "" } else { " (deformation off)" }), Tone::Dim));
+    out.push(DockItem::text(
+        format!(
+            "drawn x{:.3} the true size{}",
+            view.gain,
+            if !view.deformed {
+                " (deformation off)"
+            } else if (view.gain - 1.0).abs() < 1e-3 {
+                " (true scale)"
+            } else if view.gain > 1.0 {
+                ": exaggerated to be visible (View > True scale)"
+            } else {
+                ""
+            }
+        ),
+        Tone::Dim,
+    ));
     if let Some(e) = input.error {
         for l in wrap(e, 48) {
             out.push(DockItem::text(l, Tone::Warn));

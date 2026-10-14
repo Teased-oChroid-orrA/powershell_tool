@@ -161,6 +161,10 @@ impl SolidSession {
         }
         out.push(Item::Separator);
         out.push(Item::Entry(Entry::new("Clear model", "", ui(SolidAction::ClearModel)).when(when)));
+        out.push(Item::Separator);
+        for kind in ExportKind::ALL {
+            out.push(Item::Entry(Entry::new(kind.label(), "", ui(SolidAction::Export(kind))).when(self.results_availability())));
+        }
         out
     }
 }

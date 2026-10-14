@@ -674,7 +674,7 @@ impl FeaWorkbenchState {
 
 /// The part of the inputs the mesh depends on (supports, loads and material values do not).
 pub(crate) fn preview_key(p: &Problem) -> Problem {
-    Problem { supports: Vec::new(), loads: Vec::new(), delta_t: 0.0, name: String::new(), study: fea_problem::Study::default(), thermal: fea_problem::ThermalSpec::default(), ..p.clone() }
+    Problem { supports: Vec::new(), loads: Vec::new(), cases: Vec::new(), active_case: 0, delta_t: 0.0, name: String::new(), study: fea_problem::Study::default(), thermal: fea_problem::ThermalSpec::default(), ..p.clone() }
 }
 
 fn is_edit_char(c: char) -> bool {

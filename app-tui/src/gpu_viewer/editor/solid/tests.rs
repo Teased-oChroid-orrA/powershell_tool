@@ -923,3 +923,195 @@ fn load_cases_are_made_edited_activated_and_decide_what_a_solve_uses() {
     s.do_action(SolidAction::RemoveCase(1));
     assert!(s.problem.cases.is_empty());
 }
+
+#[test]
+fn supports_and_loads_are_drawn_on_the_model_as_glyphs_that_follow_the_camera_and_the_case() {
+    use crate::gpu_viewer::editor::authoring::OverlayKind;
+    let mut s = session("glyphs");
+    s.problem.loads.push(fea_problem::Load::Pressure { edge: "top".into(), p: 500.0 });
+    meshed(&mut s);
+    s.build_scene().unwrap();
+    let cam = Camera { yaw: 0.0, pitch: 0.0, zoom: 1.0, aspect: 1.0, pan: [0.0, 0.0] };
+    let size = [800.0, 800.0];
+    let glyphs = Authoring::overlay(&s, &cam, size);
+    let loads: Vec<_> = glyphs.iter().filter(|g| g.kind == OverlayKind::Load).collect();
+    let supports: Vec<_> = glyphs.iter().filter(|g| g.kind == OverlayKind::Support).collect();
+    assert_eq!((loads.len(), supports.len()), (2, 2), "the template has a traction, a pressure and two supports: {glyphs:?}");
+    // The traction pulls the part to the right (+x leaves the right face); the pressure on the top pushes down into it.
+    let traction = loads.iter().find(|g| g.text == "10000").expect("traction label");
+    assert!(traction.tip.unwrap()[0] > traction.px[0] + 20.0, "{traction:?}");
+    let pressure = loads.iter().find(|g| g.text == "500").expect("pressure label");
+    assert!(pressure.tip.unwrap()[1] > pressure.px[1] + 20.0, "pushes down: tail above tip on the screen: {pressure:?}");
+    // The roller on the left holds x only; the support glyph says so and points out of the face (to the left).
+    let roller = supports.iter().find(|g| g.text == "x").expect("a support holding x");
+    assert!(roller.tip.unwrap()[0] < -0.5, "{roller:?}");
+    // Turning the camera moves the glyphs; a load case that switches the pressure off removes its arrow.
+    let turned = Authoring::overlay(&s, &Camera { yaw: 0.8, ..cam }, size);
+    assert_ne!(turned.iter().map(|g| g.px[0] as i32).collect::<Vec<_>>(), glyphs.iter().map(|g| g.px[0] as i32).collect::<Vec<_>>());
+    s.problem.add_case("Pull only");
+    let last = s.problem.cases.len() - 1;
+    s.problem.cases[last].set_factor(1, 0.0);
+    let case_glyphs = Authoring::overlay(&s, &cam, size);
+    assert_eq!(case_glyphs.iter().filter(|g| g.kind == OverlayKind::Load).count(), 1);
+}
+
+#[test]
+fn the_material_library_searches_filters_and_applies_with_its_density() {
+    use crate::gpu_viewer::ui::CardRow;
+    let mut s = session("materials");
+    let before = s.problem.material.clone();
+    s.do_action(SolidAction::OpenCard(CardForm::Materials));
+    let card = s.card_view().unwrap();
+    assert_eq!(card.title, "Material library");
+    let choices = |s: &SolidSession| -> Vec<(String, SolidAction)> {
+        s.card_view().unwrap().rows.into_iter().filter_map(|r| match r {
+            CardRow::Choice { label, action: UiAction::Editor(EditorAction::Solid(a)), .. } if !label.starts_with("Group:") && !label.starts_with("Sort by:") => Some((label, a)),
+            _ => None,
+        }).collect()
+    };
+    let all = choices(&s);
+    assert!(all.len() == 12, "twelve rows are shown of the whole catalog: {}", all.len());
+    // Searching narrows the list live; every hit contains every word.
+    set_field(&mut s, 0, "7075 t6");
+    let hits = choices(&s);
+    assert!(!hits.is_empty() && hits.len() < all.len() + 1 && hits.iter().all(|(l, _)| l.contains("7075")), "{hits:?}");
+    // The group filter and the sort key cycle.
+    let titles = |s: &SolidSession| s.card_view().unwrap().rows.into_iter().filter_map(|r| if let CardRow::Choice { label, .. } = r { Some(label) } else { None }).take(2).collect::<Vec<_>>();
+    let g0 = titles(&s);
+    s.do_action(SolidAction::CardMaterialGroup);
+    s.do_action(SolidAction::CardMaterialSort);
+    assert_ne!(titles(&s), g0, "group and sort changed the rows");
+    // Clearing the group, pick a curated aluminium: E, nu, expansion, yield and the DENSITY follow.
+    for _ in 0..crate::toolboxes::material_lookup::model::groups().len() {
+        s.do_action(SolidAction::CardMaterialGroup);
+        if titles(&s)[0].starts_with("Group: All") {
+            break;
+        }
+    }
+    set_field(&mut s, 0, "7075 typical");
+    let (_, apply) = choices(&s).into_iter().find(|(l, _)| l == "Al 7075-T6 (typical)").expect("the curated material");
+    s.do_action(apply);
+    assert!(s.card_view().is_none());
+    let m = &s.problem.material;
+    assert_eq!(m.name, "Al 7075-T6 (typical)");
+    assert!((m.e - 10.3e6).abs() < 1.0 && (m.nu - 0.33).abs() < 1e-12 && m.yield_stress == Some(70_000.0));
+    assert!((m.density * 386.089 - 0.101).abs() < 1e-9, "weight density 0.101 lb/in3, not the old {}: {}", before.density * 386.089, m.density * 386.089);
+    // One undo returns the old material; Enter in the search takes the first match.
+    s.undo();
+    assert_eq!(s.problem.material, before);
+    s.do_action(SolidAction::OpenCard(CardForm::Materials));
+    set_field(&mut s, 0, "Ti-6Al-4V");
+    s.handle_key(Key::Enter, Mods::default());
+    assert!(s.problem.material.name.contains("Ti-6Al-4V"), "{}", s.problem.material.name);
+    // A handbook material carries its own density.
+    s.do_action(SolidAction::OpenCard(CardForm::Materials));
+    set_field(&mut s, 0, "2024");
+    let first = choices(&s)[0].1;
+    s.do_action(first);
+    assert!(s.problem.material.density > 0.0);
+}
+
+#[test]
+fn the_check_card_warns_before_the_solve_and_a_certain_failure_is_not_started() {
+    use fea_problem::{diagnose::FailureClass, Support};
+    // Modulus in ksi beside loads in psi: forecast before any solve, one click repairs it.
+    let mut s = session("precheck-scale");
+    s.problem.material.e = 29_000.0;
+    let found = s.findings();
+    let scale = found.iter().find(|d| d.class == FailureClass::ScaleSuspect).expect("a forecast");
+    assert!(scale.summary.starts_with("Before solving"), "{}", scale.summary);
+    let card = Authoring::inspector(&s).into_iter().find(|c| c.id == "guidance").expect("the check card");
+    assert_eq!(card.title, "Check before solving");
+    assert_eq!(card.relevance, crate::gpu_viewer::editor::authoring::Relevance::Primary);
+    s.do_action(SolidAction::Answer(found.iter().position(|d| d.class == FailureClass::ScaleSuspect).unwrap(), 0, 0));
+    assert!((s.problem.material.e - 29.0e6).abs() < 1.0);
+    assert!(!s.findings().iter().any(|d| d.class == FailureClass::ScaleSuspect));
+
+    // A roller alone: once the mesh exists the check sees the free motion and Solve says why it will not run.
+    let mut s = session("precheck-rigid");
+    s.problem.supports = vec![Support::roller("left", 0)];
+    assert!(s.solve_availability().is_ok(), "no mesh yet: nothing to check against");
+    meshed(&mut s);
+    let err = s.solve_availability().unwrap_err();
+    assert!(err.starts_with("Before solving") && err.contains("Check card"), "{err}");
+    s.do_action(SolidAction::Solve);
+    assert!(!s.solving() && s.status.starts_with("Before solving"), "{}", s.status);
+    // Supporting the part properly lifts the block.
+    s.problem.supports.push(Support::fixed("right"));
+    s.touch();
+    assert!(s.solve_availability().is_ok(), "{:?}", s.solve_availability());
+}
+
+#[test]
+fn the_simulation_tab_offers_every_kind_of_analysis_in_one_click() {
+    use crate::gpu_viewer::bench::Bench;
+    let mut s = session("analysis");
+    let tab = Authoring::ribbon(&s).into_iter().find(|t| t.title == "Simulation").unwrap();
+    let group = tab.groups.iter().find(|g| g.title == "Analysis").expect("an Analysis group");
+    let labels: Vec<(&str, bool)> = group.buttons.iter().map(|b| (b.label.as_str(), b.checked == Some(true))).collect();
+    for want in ["Static stress", "Modal / vibration", "Buckling", "Transient", "Structural", "Thermal (steady)", "Thermal stress"] {
+        assert!(labels.iter().any(|(l, _)| *l == want), "{want} in {labels:?}");
+    }
+    assert!(labels.contains(&("Static stress", true)) && labels.contains(&("Structural", true)));
+    // The benches are plain actions the window handles; the physics is a model edit.
+    let buckling = group.buttons.iter().find(|b| b.label == "Buckling").unwrap();
+    assert_eq!(buckling.action, Bench::Buckling.action());
+    s.do_action(SolidAction::SetStudy(fea_problem::Study::Thermal));
+    assert_eq!(s.problem.study, fea_problem::Study::Thermal);
+    s.undo();
+    assert_eq!(s.problem.study, fea_problem::Study::Structural);
+    // The menu lists them under a heading, ahead of the run commands.
+    let menu = Authoring::menus(&s).into_iter().find(|m| m.title == "Simulation").unwrap();
+    assert!(matches!(menu.items.first(), Some(crate::gpu_viewer::menu::Item::Heading(h)) if h == "Analysis"));
+}
+
+/// Run `poll` until the current study is of `kind`.
+fn study_done(s: &mut SolidSession, kind: StudyKind) {
+    let t = Instant::now();
+    while s.current_study().map(|c| c.kind) != Some(kind) {
+        s.poll();
+        assert!(!s.status.starts_with("Study failed"), "{}", s.status);
+        assert!(t.elapsed().as_secs() < 120, "the study did not finish: {}", s.status);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn the_dynamic_studies_run_from_the_window_and_their_scenes_move_by_themselves() {
+    let mut s = session("studies");
+    // Natural frequencies: harmonic mode shapes (the shader swings them), with a frequency in each label.
+    s.do_action(SolidAction::RunStudy(StudyKind::Modal));
+    study_done(&mut s, StudyKind::Modal);
+    let study = s.current_study().expect("modal result");
+    assert!(study.scenes.len() >= 2, "several modes");
+    assert!(study.scenes.iter().all(|sc| sc.harmonic_period.is_some_and(|p| p > 0.0)), "every mode shape moves on its own");
+    assert!(study.scenes[0].label.to_lowercase().contains("hz") || study.scenes[0].label.to_lowercase().contains("mode"), "{}", study.scenes[0].label);
+    // The load-release transient is an animation with a duration.
+    s.do_action(SolidAction::RunStudy(StudyKind::Transient));
+    study_done(&mut s, StudyKind::Transient);
+    let transient = s.current_study().expect("transient result");
+    assert!(transient.scenes[0].duration() > 0.0 && transient.scenes[0].times.len() > 2, "frames over time");
+}
+
+#[test]
+fn a_result_is_exported_as_report_paraview_and_csv_next_to_the_model() {
+    let mut s = session("export");
+    // Nothing to export before a solve, and the File menu says so.
+    s.do_action(SolidAction::Export(ExportKind::Csv));
+    assert!(s.status.contains("Solve the model first"), "{}", s.status);
+    let file = Authoring::menus(&s).into_iter().find(|m| m.title == "File").unwrap();
+    let csv = file.items.iter().find_map(|i| if let crate::gpu_viewer::menu::Item::Entry(e) = i { (e.label == ExportKind::Csv.label()).then_some(e.clone()) } else { None }).expect("an export entry");
+    assert!(!csv.enabled);
+    meshed(&mut s);
+    solved(&mut s);
+    for kind in ExportKind::ALL {
+        s.do_action(SolidAction::Export(kind));
+        assert!(s.status.starts_with("Wrote "), "{}", s.status);
+    }
+    let dir = s.path.parent().unwrap().to_path_buf();
+    let read = |ext: &str| std::fs::read_to_string(dir.join(format!("model-results.{ext}"))).unwrap();
+    assert!(read("vtu").contains("<VTKFile"), "a ParaView file");
+    let csv = read("csv");
+    assert!(csv.starts_with("node,x,y") && csv.lines().count() > 100, "one row per node");
+    assert!(!read("txt").is_empty());
+}

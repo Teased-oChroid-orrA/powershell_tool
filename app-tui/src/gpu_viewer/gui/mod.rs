@@ -418,6 +418,37 @@ impl Gui {
                     painter.rect(rect, 4.0, with_alpha(p.panel, 235), egui::Stroke::new(1.0, p.accent), egui::StrokeKind::Inside);
                     painter.galley(rect.center() - galley.size() / 2.0, galley, p.text);
                 }
+                OverlayKind::Load => {
+                    let Some(tip) = o.tip else { continue };
+                    let tip = Pos2::new(origin.x + tip[0] / ppp, origin.y + tip[1] / ppp);
+                    let col = p.warn;
+                    let dir = (tip - at).normalized();
+                    let side = Vec2::new(-dir.y, dir.x);
+                    painter.line_segment([at, tip], egui::Stroke::new(2.5, col));
+                    painter.add(egui::Shape::convex_polygon(vec![tip, tip - dir * 11.0 + side * 5.0, tip - dir * 11.0 - side * 5.0], col, egui::Stroke::NONE));
+                    let galley = painter.layout_no_wrap(o.text.clone(), egui::FontId::monospace(11.0), p.text);
+                    let rect = Rect::from_center_size(at - dir * 10.0, galley.size() + Vec2::new(8.0, 3.0));
+                    painter.rect(rect, 3.0, with_alpha(p.panel, 225), egui::Stroke::new(1.0, col), egui::StrokeKind::Inside);
+                    painter.galley(rect.center() - galley.size() / 2.0, galley, p.text);
+                }
+                OverlayKind::Support => {
+                    let out = o.tip.map_or(Vec2::new(0.0, -1.0), |t| Vec2::new(t[0], t[1]));
+                    let side = Vec2::new(-out.y, out.x);
+                    let col = p.good;
+                    // A triangle standing on the face with hatching under it, and the held directions beside.
+                    let base = at + out * 22.0;
+                    painter.add(egui::Shape::convex_polygon(vec![at, base + side * 12.0, base - side * 12.0], with_alpha(col, 200), egui::Stroke::new(1.5, col)));
+                    for k in [-1.0f32, 0.0, 1.0] {
+                        let a = base + side * (12.0 * k);
+                        painter.line_segment([a, a + out * 7.0 - side * 4.0], egui::Stroke::new(1.5, col));
+                    }
+                    if !o.text.is_empty() {
+                        let galley = painter.layout_no_wrap(o.text.clone(), egui::FontId::monospace(11.0), p.text);
+                        let rect = Rect::from_center_size(base + out * 24.0, galley.size() + Vec2::new(6.0, 2.0));
+                        painter.rect(rect, 3.0, with_alpha(p.panel, 225), egui::Stroke::new(1.0, col), egui::StrokeKind::Inside);
+                        painter.galley(rect.center() - galley.size() / 2.0, galley, p.text);
+                    }
+                }
                 OverlayKind::Constraint => {
                     let galley = painter.layout_no_wrap(o.text.clone(), egui::FontId::monospace(10.0), p.dim);
                     let rect = Rect::from_center_size(at, galley.size() + Vec2::new(6.0, 2.0));
@@ -454,7 +485,7 @@ impl Gui {
         let mut applied = false;
         egui::Area::new(Id::new("value-card")).fade_in(false).order(Order::Foreground).fixed_pos(at).constrain(true).show(ctx, |ui| {
             panels::popup_frame(p).show(ui, |ui| {
-                ui.set_width(270.0);
+                ui.set_width(card.width);
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(&card.title).strong());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -502,6 +533,14 @@ impl Gui {
                         }
                         CardRow::Text(t) => {
                             ui.label(egui::RichText::new(t).small().color(p.dim));
+                        }
+                        CardRow::Choice { label, detail, action, current } => {
+                            let text = egui::RichText::new(label);
+                            let r = ui.add(egui::Button::new(text).selected(*current).min_size(Vec2::new(ui.available_width(), 0.0)).shortcut_text(egui::RichText::new(detail).small().color(p.dim)));
+                            self.targets.push((label.clone(), r.rect));
+                            if r.clicked() {
+                                out.push(Outcome::Action(*action));
+                            }
                         }
                     }
                 }

@@ -143,7 +143,18 @@ impl SolidSession {
             }
             if sol.problem.study.is_structural() {
                 result.push(DockItem::text(format!("max von Mises {:.4e}", s.max_von_mises.value), Tone::Normal));
-                result.push(DockItem::text(format!("max displacement {:.4e}", s.max_displacement.value), Tone::Normal));
+                let size = {
+                    let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+                    for n in &sol.model.mesh.nodes {
+                        for k in 0..3 {
+                            lo[k] = lo[k].min(n[k]);
+                            hi[k] = hi[k].max(n[k]);
+                        }
+                    }
+                    (0..3).map(|k| hi[k] - lo[k]).fold(0.0f64, f64::max)
+                };
+                let share = if size > 0.0 { format!(" ({:.3} % of the part's size)", 100.0 * s.max_displacement.value / size) } else { String::new() };
+                result.push(DockItem::text(format!("max displacement {:.4e}{share}", s.max_displacement.value), Tone::Normal));
                 if let Some(m) = s.margin {
                     result.push(DockItem::text(format!("yield margin {m:+.3}"), if m < 0.0 { Tone::Warn } else { Tone::On }));
                 }

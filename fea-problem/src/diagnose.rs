@@ -347,6 +347,7 @@ pub fn diagnose(p: &Problem, error: Option<&str>) -> Vec<Diagnosis> {
     if p.study.is_structural() && error.is_some_and(|e| e.contains("rigid-body") && e.contains("constrained")) && !p.supports.is_empty() {
         out.push(under_constrained(p));
     }
+    out.extend(scale_forecast(p));
     out.extend(mesh_too_fine(p));
     out.extend(mesh_too_coarse(p));
     if out.is_empty() {
@@ -355,6 +356,183 @@ pub fn diagnose(p: &Problem, error: Option<&str>) -> Vec<Diagnosis> {
         }
     }
     out
+}
+
+/// Before any solve: will this model deform far too much for a linear analysis? The part is read as a bar along its long
+/// side: the load components along it stretch it (`F L / (A E)`), the transverse ones bend it like a cantilever
+/// (`4 F L^3 / (E t h^3)`), with the section `h x t` (the short side by the thickness or depth). It is an estimate to catch
+/// a unit slip or a load that is orders of magnitude too large before a solve is spent on it; the same 5 % of the part's
+/// length that `diagnose_result` uses decides, so a model that passes here and fails there is a real surprise.
+pub fn predicted_displacement(p: &Problem) -> Option<(f64, f64)> {
+    let case = p.resolved();
+    if !p.study.is_structural() || case.supports.is_empty() || case.loads.is_empty() {
+        return None;
+    }
+    let Geometry::Sketch { outer, depth, .. } = &case.geometry else { return None };
+    let (lo, hi) = outer.bounds();
+    let (w, h) = (hi[0] - lo[0], hi[1] - lo[1]);
+    let t = if case.analysis == Analysis::Solid { *depth } else { case.thickness };
+    let e = case.material.e;
+    if !(w > 0.0 && h > 0.0 && t > 0.0 && e > 0.0 && e.is_finite()) {
+        return None;
+    }
+    let along_x = w >= h;
+    let (long, short) = (w.max(h), w.min(h));
+    // Force components along and across the long side (model force units).
+    let (mut along, mut across) = (0.0f64, 0.0f64);
+    let mut add = |fx: f64, fy: f64| {
+        let (a, c) = if along_x { (fx.abs(), fy.abs()) } else { (fy.abs(), fx.abs()) };
+        along += a;
+        across += c;
+    };
+    for l in &case.loads {
+        match l {
+            Load::Pressure { edge, p } => match edge.as_str() {
+                "left" | "right" => add(p * h * t, 0.0),
+                "top" | "bottom" => add(0.0, p * w * t),
+                _ => {}
+            },
+            Load::Traction { edge, tx, ty, .. } => {
+                let len = if matches!(edge.as_str(), "left" | "right") { h } else { w };
+                add(tx * len * t, ty * len * t);
+            }
+            Load::Force { fx, fy, .. } | Load::Point { fx, fy, .. } | Load::Bearing { fx, fy, .. } => add(*fx, *fy),
+            Load::Body { bx, by, .. } => add(bx * w * h * t, by * w * h * t),
+        }
+    }
+    let axial = along * long / (short * t * e);
+    let bending = 4.0 * across * long.powi(3) / (e * t * short.powi(3));
+    let u = axial + bending;
+    u.is_finite().then_some((u, long))
+}
+
+fn scale_forecast(p: &Problem) -> Option<Diagnosis> {
+    let (u, long) = predicted_displacement(p)?;
+    if u <= 0.05 * long {
+        return None;
+    }
+    let q = Question {
+        id: "modulus_units",
+        text: "Is Young's modulus in a different unit from the loads and lengths?".into(),
+        options: vec![("Yes: it is 1000 times too small".into(), Edit::ScaleModulus { factor: 1e3 }), ("Yes: it is 1000 times too large".into(), Edit::ScaleModulus { factor: 1e-3 })],
+    };
+    Some(Diagnosis {
+        class: FailureClass::ScaleSuspect,
+        summary: format!("Before solving: the loads would move this part by about {:.0} % of its length, far more than a linear model can describe.", 100.0 * u / long),
+        evidence: vec![format!("estimated displacement {u:.3e} on a length of {long:.3e}, modulus {:.3e}; a bar estimate from the loads, supports and section", p.material.e), "the usual cause is a unit slip between the modulus, the loads and the lengths, or a load far too large".into()],
+        remedies: Vec::new(),
+        questions: vec![q],
+    })
+}
+
+/// Rigid-body motions (translations and rotations) the supports leave free on `mesh`, counted from the supported nodes
+/// and the held directions alone: the same condition the solver trips over, found before a solve is spent on it.
+pub fn free_rigid_motions(p: &Problem, mesh: &fea_core::Mesh) -> usize {
+    let dim = mesh.dim();
+    if p.analysis == Analysis::Axisymmetric || mesh.nodes.is_empty() {
+        return 0;
+    }
+    let case = p.resolved();
+    let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    for n in &mesh.nodes {
+        for k in 0..3 {
+            lo[k] = lo[k].min(n[k]);
+            hi[k] = hi[k].max(n[k]);
+        }
+    }
+    let span = (0..3).map(|k| hi[k] - lo[k]).fold(0.0f64, f64::max).max(1e-300);
+    let at = |i: usize| -> [f64; 3] { std::array::from_fn(|k| (mesh.nodes[i][k] - 0.5 * (lo[k] + hi[k])) / span) };
+    // Rigid motion m at a node: the displacement it gives each direction.
+    let modes = if dim == 3 { 6 } else { 3 };
+    let motion = |m: usize, x: [f64; 3], comp: usize| -> f64 {
+        if m < dim {
+            return f64::from(u8::from(m == comp));
+        }
+        if dim == 2 {
+            return [-x[1], x[0]][comp];
+        }
+        match m - 3 {
+            0 => [0.0, -x[2], x[1]][comp],
+            1 => [x[2], 0.0, -x[0]][comp],
+            _ => [-x[1], x[0], 0.0][comp],
+        }
+    };
+    // Normal equations of the restraint rows: A^T A (modes x modes).
+    let mut g = vec![vec![0.0f64; modes]; modes];
+    let mut add_node = |i: usize, held: [bool; 3]| {
+        let x = at(i);
+        for comp in 0..dim {
+            if !held[comp] {
+                continue;
+            }
+            let row: Vec<f64> = (0..modes).map(|m| motion(m, x, comp)).collect();
+            for a in 0..modes {
+                for b in 0..modes {
+                    g[a][b] += row[a] * row[b];
+                }
+            }
+        }
+    };
+    for s in &case.supports {
+        let held: [bool; 3] = s.comps().map(|c| c.is_some());
+        match s {
+            Support::Edge { edge, .. } => {
+                let mut nodes: std::collections::BTreeSet<usize> = mesh.node_sets.get(edge).into_iter().flatten().copied().collect();
+                nodes.extend(mesh.surfaces.get(edge).into_iter().flatten().flatten().copied());
+                nodes.into_iter().filter(|i| *i < mesh.nodes.len()).for_each(|i| add_node(i, held));
+            }
+            Support::Point { x, y, z, .. } => {
+                let near = (0..mesh.nodes.len()).min_by(|a, b| {
+                    let d = |i: usize| (mesh.nodes[i][0] - x).powi(2) + (mesh.nodes[i][1] - y).powi(2) + (mesh.nodes[i][2] - z).powi(2);
+                    d(*a).total_cmp(&d(*b))
+                });
+                if let Some(i) = near {
+                    add_node(i, held);
+                }
+            }
+        }
+    }
+    // Rank by Gaussian elimination with a pivot threshold relative to the largest diagonal term.
+    let scale = (0..modes).map(|i| g[i][i]).fold(0.0f64, f64::max);
+    if scale <= 0.0 {
+        return modes;
+    }
+    let tol = 1e-9 * scale;
+    let mut rank = 0;
+    let mut col_used = vec![false; modes];
+    for _ in 0..modes {
+        // Largest remaining diagonal pivot.
+        let Some(k) = (0..modes).filter(|k| !col_used[*k]).max_by(|a, b| g[*a][*a].total_cmp(&g[*b][*b])) else { break };
+        if g[k][k] <= tol {
+            break;
+        }
+        col_used[k] = true;
+        rank += 1;
+        let pivot = g[k][k];
+        for i in 0..modes {
+            if i != k {
+                let f = g[i][k] / pivot;
+                for j in 0..modes {
+                    g[i][j] -= f * g[k][j];
+                }
+            }
+        }
+    }
+    modes - rank
+}
+
+/// Findings that need the mesh but no solve: today, supports that leave a rigid-body motion free.
+pub fn diagnose_mesh(p: &Problem, mesh: &fea_core::Mesh) -> Vec<Diagnosis> {
+    if !p.study.is_structural() || p.resolved().supports.is_empty() {
+        return Vec::new();
+    }
+    let free = free_rigid_motions(p, mesh);
+    if free == 0 {
+        return Vec::new();
+    }
+    let mut d = under_constrained(p);
+    d.summary = format!("Before solving: the supports leave {free} rigid-body motion{} of the part free, so it would float or spin and the solver would stop (or report an enormous displacement).", if free == 1 { "" } else { "s" });
+    vec![d]
 }
 
 fn surface_of_support(s: &Support) -> Option<&str> {

@@ -27,6 +27,8 @@ pub struct Overlay {
     pub px: [f32; 2],
     pub text: String,
     pub kind: OverlayKind,
+    /// `Load`: the arrow's tip (viewport pixel). `Support`: unit direction on the screen pointing out of the face.
+    pub tip: Option<[f32; 2]>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OverlayKind {
@@ -34,6 +36,10 @@ pub enum OverlayKind {
     Dimension,
     /// A geometric constraint: a small glyph.
     Constraint,
+    /// A load: an arrow from `px` to `tip`, the magnitude as text.
+    Load,
+    /// A support: a symbol on the face at `px` (held directions as text).
+    Support,
 }
 
 /// How much a card of the inspector matters right now.

@@ -68,8 +68,19 @@ impl SolidSession {
             ],
         }
     }
+    /// What kind of analysis the window is set up for: the benches (static, frequencies, buckling, transient) and the
+    /// physics of the model (structural, thermal, thermal stress). One click each, in the Simulation tab and menu.
+    fn analysis_entries(&self) -> Vec<Entry> {
+        let mut v: Vec<Entry> = [Bench::Static, Bench::Modal, Bench::Buckling, Bench::Transient].into_iter().map(|b| Entry::new(b.label(), "", b.action()).checked(self.bench == b)).collect();
+        v.extend(fea_problem::Study::ALL.into_iter().map(|st| entry(st.label(), "", SolidAction::SetStudy(st)).checked(self.problem.study == st)));
+        v
+    }
     fn simulation_items(&self) -> Vec<Item> {
-        self.simulation_entries().into_iter().map(Item::Entry).collect()
+        let mut items: Vec<Item> = vec![Item::Heading("Analysis".into())];
+        items.extend(self.analysis_entries().into_iter().map(Item::Entry));
+        items.push(Item::Separator);
+        items.extend(self.simulation_entries().into_iter().map(Item::Entry));
+        items
     }
     #[cfg(test)]
     pub(super) fn simulation_items_for_test(&self) -> Vec<Item> {
@@ -294,7 +305,11 @@ impl Authoring for SolidSession {
     }
 
     fn overlay(&self, cam: &Camera, size: [f32; 2]) -> Vec<crate::gpu_viewer::editor::authoring::Overlay> {
-        self.sketch_overlay(cam, size)
+        if self.sketching.is_some() {
+            self.sketch_overlay(cam, size)
+        } else {
+            self.bc_overlay(cam, size)
+        }
     }
 
     fn focus_step(&self) -> Option<&'static str> {
@@ -317,7 +332,7 @@ impl Authoring for SolidSession {
         let imported = matches!(self.problem.geometry, Geometry::Imported { .. });
         vec![
             RibbonTab::new("Model")
-                .group("Problem", vec![entry("New part", "Ctrl/Cmd+N", SolidAction::NewPart).when(self.replace_availability()), entry("Open file", "Ctrl/Cmd+O", SolidAction::OpenFile).when(self.replace_availability()), entry("Next template", "", SolidAction::NextTemplate), act("Analysis type", "", Analysis), act("Material", "", Material)])
+                .group("Problem", vec![entry("New part", "Ctrl/Cmd+N", SolidAction::NewPart).when(self.replace_availability()), entry("Open file", "Ctrl/Cmd+O", SolidAction::OpenFile).when(self.replace_availability()), entry("Next template", "", SolidAction::NextTemplate), act("Analysis type", "", Analysis), entry("Material library", "", SolidAction::OpenCard(CardForm::Materials))])
                 .group(
                     "Geometry",
                     vec![
@@ -352,7 +367,7 @@ impl Authoring for SolidSession {
                 "Mesh",
                 vec![act("Element type", "", Element), act("Element size", "", MeshSize), act("Adaptive passes", "", AdaptPasses), act("Target error", "", TargetError), entry("Refine where recommended", "", SolidAction::RefineAll).when(self.refine_availability()), entry("Show refinement hints", "", SolidAction::ToggleRefineShow).checked(self.show_refine), entry("Generate mesh", "", SolidAction::GenerateMesh).when(self.mesh_availability())],
             ),
-            RibbonTab::new("Simulation").group("Study", self.simulation_entries()),
+            RibbonTab::new("Simulation").group("Analysis", self.analysis_entries()).group("Study", self.simulation_entries()),
         ]
     }
 
@@ -419,7 +434,7 @@ impl Authoring for SolidSession {
             },
             Menu {
                 title: "Tools".into(),
-                items: vec![act("Analysis type", Analysis), act("Material", Material), act("Element type", Element), act("Adaptive passes", AdaptPasses), item(entry("Refine where recommended", "", SolidAction::RefineAll).when(self.refine_availability())), item(entry("Show refinement hints", "", SolidAction::ToggleRefineShow).checked(self.show_refine)), item(entry("Generate mesh", "", SolidAction::GenerateMesh).when(self.mesh_availability()))],
+                items: vec![act("Analysis type", Analysis), item(entry("Material library...", "", SolidAction::OpenCard(CardForm::Materials))), act("Element type", Element), act("Adaptive passes", AdaptPasses), item(entry("Refine where recommended", "", SolidAction::RefineAll).when(self.refine_availability())), item(entry("Show refinement hints", "", SolidAction::ToggleRefineShow).checked(self.show_refine)), item(entry("Generate mesh", "", SolidAction::GenerateMesh).when(self.mesh_availability()))],
             },
             Menu { title: "Simulation".into(), items: self.simulation_items() },
             Menu { title: "Advisor".into(), items: self.advisor_items() },

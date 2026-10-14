@@ -169,6 +169,8 @@ pub enum CardRow {
     Field { label: String, text: String, index: usize, unit: String },
     /// A line of explanation.
     Text(String),
+    /// A pickable line (a material of the library): `label`, a dim `detail`, and what choosing it does.
+    Choice { label: String, detail: String, action: super::controller::UiAction, current: bool },
 }
 
 /// A small form the window shows next to the face it concerns: a constraint's directions, a load's numbers, a
@@ -176,6 +178,8 @@ pub enum CardRow {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ValueCard {
     pub title: String,
+    /// Width in points.
+    pub width: f32,
     /// Small caption beside the title (the Nastran card the form writes).
     pub tag: String,
     pub rows: Vec<CardRow>,

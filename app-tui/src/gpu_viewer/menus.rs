@@ -71,8 +71,10 @@ fn view_entries(c: &MenuContext) -> ViewEntries {
             cmd("Mesh edges", "M", Command::ToggleMesh).checked(v.show_mesh),
             cmd("Contour", "C", Command::ToggleContour).checked(v.show_contour),
             cmd("Deformation", "D", Command::ToggleDeformation).checked(v.deformed),
+            cmd("Animate deformation", "", Command::ToggleAnimate).checked(v.animate),
             cmd("Larger deformation", gain_keys.0, Command::GainUp),
             cmd("Smaller deformation", gain_keys.1, Command::GainDown),
+            cmd("True scale (x1)", "", Command::TrueScale),
         ],
         orientation: {
             let mut o: Vec<Entry> = StandardView::ALL.iter().map(|s| cmd(s.label(), "", Command::StandardView(*s))).collect();
@@ -215,6 +217,7 @@ pub fn context(c: &MenuContext) -> Vec<Item> {
     if !c.scene.fields.is_empty() {
         items.push(Item::Entry(cmd("Contour", "C", Command::ToggleContour).checked(v.show_contour)));
         items.push(Item::Entry(cmd("Deformation", "D", Command::ToggleDeformation).checked(v.deformed)));
+        items.push(Item::Entry(cmd("Animate deformation", "", Command::ToggleAnimate).checked(v.animate)));
     }
     items.push(Item::Entry(cmd("Reset camera", "R", Command::ResetCamera)));
     items

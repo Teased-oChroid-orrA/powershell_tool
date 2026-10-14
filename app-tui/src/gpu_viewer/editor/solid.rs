@@ -25,6 +25,7 @@ use std::{
 };
 
 mod bench_support;
+mod glyphs;
 mod cards;
 mod sketch;
 mod advising;
@@ -118,6 +119,10 @@ pub enum SolidAction {
     CardToggle(usize),
     CardApply,
     CardCancel,
+    /// Apply catalog material `i` (the material library card).
+    ApplyMaterial(usize),
+    CardMaterialGroup,
+    CardMaterialSort,
     /// Add a load case and open its card.
     NewCase,
     /// Make load case `i` the active one.
@@ -127,8 +132,40 @@ pub enum SolidAction {
     /// The pointer is on (`Some`) / left (`None`) a guidance fix: highlight the surfaces it would touch.
     PreviewFix(Option<FixRef>),
     RunStudy(StudyKind),
+    /// Write the current result next to the model file: a text report, a ParaView file or a nodal CSV.
+    Export(ExportKind),
+    /// Structural, steady thermal or thermal-stress study of the model.
+    SetStudy(fea_problem::Study),
     ShowStudy,
     StudyStep(bool),
+}
+
+/// What a result is written as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportKind {
+    /// The text report (problem, mesh, extremes, equilibrium).
+    Report,
+    /// ParaView: displacement and every stress field.
+    Vtu,
+    /// One row per node: position, displacement, stresses.
+    Csv,
+}
+impl ExportKind {
+    pub const ALL: [ExportKind; 3] = [Self::Report, Self::Vtu, Self::Csv];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Report => "Export report (.txt)",
+            Self::Vtu => "Export for ParaView (.vtu)",
+            Self::Csv => "Export nodal results (.csv)",
+        }
+    }
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Report => "txt",
+            Self::Vtu => "vtu",
+            Self::Csv => "csv",
+        }
+    }
 }
 
 /// A guidance fix by position: remedy `.1` of finding `.0`, or option `.2` of question `.1` of finding `.0`.
@@ -193,7 +230,7 @@ pub fn removal_of(row: FieldRow) -> Option<FieldRow> {
 
 /// The part of the inputs the mesh depends on (supports, loads and material values do not).
 fn preview_key(p: &Problem) -> Problem {
-    Problem { supports: Vec::new(), loads: Vec::new(), delta_t: 0.0, name: String::new(), study: fea_problem::Study::default(), thermal: fea_problem::ThermalSpec::default(), ..p.clone() }
+    Problem { supports: Vec::new(), loads: Vec::new(), cases: Vec::new(), active_case: 0, delta_t: 0.0, name: String::new(), study: fea_problem::Study::default(), thermal: fea_problem::ThermalSpec::default(), ..p.clone() }
 }
 
 /// What the un-meshed body depends on: the geometry and the analysis, not the mesh settings, the loads or the name.
@@ -429,7 +466,32 @@ impl SolidSession {
         if self.current_solution().is_some() {
             return Err("results are already current for this model".into());
         }
+        // A solve that is certain to fail is not started (the Check card offers the fixes).
+        if let Some(why) = self.predicted_blocker() {
+            return Err(format!("{why} Fix it from the Check card."));
+        }
         Ok(())
+    }
+    /// Write the current result beside the model file (`<model>-results.<ext>`).
+    pub(super) fn export(&mut self, kind: ExportKind) {
+        let Some(sol) = self.current_solution().cloned() else {
+            self.status = "Solve the model first: there is no current result to export.".into();
+            return;
+        };
+        let text = match kind {
+            ExportKind::Report => Ok(fea_problem::report::report(&sol)),
+            ExportKind::Vtu => sol.vtu(),
+            ExportKind::Csv => Ok(sol.csv()),
+        };
+        let stem = self.path.file_stem().map_or("model".to_string(), |s| s.to_string_lossy().to_string());
+        let path = self.path.with_file_name(format!("{stem}-results.{}", kind.extension()));
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        self.status = match text.and_then(|t| std::fs::write(&path, t).map_err(|e| e.to_string())) {
+            Ok(()) => format!("Wrote {}", path.display()),
+            Err(e) => format!("Export failed: {e}"),
+        };
     }
     pub fn results_availability(&self) -> Result<(), String> {
         self.current_solution().map(|_| ()).ok_or_else(|| "solve the model first".into())
@@ -1129,9 +1191,17 @@ impl SolidSession {
             SolidAction::SolidOp(op) => self.begin_solid_op(op),
             SolidAction::Answer(f, q, o) => self.do_answer(f, q, o),
             SolidAction::BoundaryKind(k) => self.add_boundary_kind(k),
+            SolidAction::Export(kind) => self.export(kind),
+            SolidAction::SetStudy(study) => {
+                self.edit(|p| p.study = study);
+                self.status = format!("Study: {}.", study.label());
+            }
             SolidAction::OpenCard(form) => self.open_card(form),
             SolidAction::CardToggle(i) => self.card_toggle(i),
             SolidAction::CardApply => self.card_apply(),
+            SolidAction::ApplyMaterial(i) => self.apply_material_index(i),
+            SolidAction::CardMaterialGroup => self.card_material_cycle(false),
+            SolidAction::CardMaterialSort => self.card_material_cycle(true),
             SolidAction::CardCancel => self.card_cancel(),
             SolidAction::NewCase => self.new_case(),
             SolidAction::SetCase(i) => self.set_case(i),

@@ -357,3 +357,19 @@ Records: `docs/issue-12-phase-24.md`, `docs/adr/ADR-015-parametric-sketch-histor
   solve sees (`solve` and `dynamics::run` resolve it and keep the full problem in the result, so stale checks and saved files still
   see the cases). Removing a support or load must go through `Problem::remove_support/remove_load` so cases keep pointing at the same
   entries. The terminal Workbench has no case rows; it still solves the active case.
+- **Analysis kinds, live motion, glyphs, library, forecasts (2026-10-14)**: the Simulation tab/menu lists every analysis in one click
+  (`analysis_entries`: the benches Static / Modal / Buckling / Transient via `UiAction::SwitchBench`, and `SolidAction::SetStudy`
+  for Structural / Thermal / Thermal stress). A static result swings between undeformed and deformed (`ViewState::swing`,
+  `DisplayOptions::swing`, View > Animate deformation); mode shapes and the transient move by themselves. The viewer draws the
+  deformation exaggerated (`Scene` gain = 8 % of the part at the peak): the result card says "drawn xN the true size" and View >
+  True scale (x1) shows the real shape. Supports and loads are glyphs over the model (`solid/glyphs.rs`, `OverlayKind::{Load, Support}`,
+  painted by `Gui::model_labels`): arrows along the load with the magnitude, a hatched triangle on each supported face with the held
+  directions; they follow the camera and the active case and are not drawn while sketching, in a study view, or without a mesh. The
+  material library is a value card (`CardForm::Materials`, search + group + sort over `material_lookup::model`); applying a material
+  also sets its mass density (`model::mass_density`: handbook weight density, or the curated table's, over g = 386.089), because
+  dynamics and gravity need it and the old material's density was silently kept. Results export from File (report, `.vtu`, `.csv`,
+  beside the model file). Checks before a solve: `fea_problem::diagnose` forecasts the displacement from the loads, supports and section
+  (`predicted_displacement`, 5 % of the part's length, a bar/cantilever estimate for sketch geometry) and `diagnose_mesh` counts the
+  rigid-body motions the supports leave free on the shown mesh (`free_rigid_motions`); a free motion blocks Solve with the reason
+  (`predicted_blocker`) and both appear as the primary "Check before solving" card. These are deterministic physics checks; the learned
+  ranker only reorders their remedies.

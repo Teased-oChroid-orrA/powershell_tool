@@ -89,6 +89,8 @@ pub struct DisplayOptions {
     /// Background (sRGB) behind the model as `(top, bottom)`; `None` is the dark default.
     pub background: Option<([u8; 3], [u8; 3])>,
     pub style: DisplayStyle,
+    /// Period (s) of a swing between undeformed and deformed for a static result; `time` is the clock.
+    pub swing: Option<f32>,
     /// Light the surface (a geometry view); a result keeps its contour colours exact.
     pub shade: bool,
     /// Screen-space shift of the view in NDC units.
@@ -96,7 +98,7 @@ pub struct DisplayOptions {
 }
 impl Default for DisplayOptions {
     fn default() -> Self {
-        Self { show_mesh: false, show_contour: true, field: 0, viewport: None, background: None, style: DisplayStyle::Shaded, shade: false, pan: [0.0, 0.0] }
+        Self { show_mesh: false, show_contour: true, field: 0, viewport: None, background: None, style: DisplayStyle::Shaded, swing: None, shade: false, pan: [0.0, 0.0] }
     }
 }
 
@@ -427,7 +429,7 @@ impl Renderer {
         camera: [f32; 4],
         options: DisplayOptions,
     ) {
-        let DisplayOptions { show_mesh, show_contour, field, viewport, background, style, shade, pan } = options;
+        let DisplayOptions { show_mesh, show_contour, field, viewport, background, style, swing, shade, pan } = options;
         // A stale index (result switched, field absent) falls back to the primary scalar.
         let field = if field <= scene.fields.len() { field } else { 0 };
         let range = match field.checked_sub(1) {
@@ -438,6 +440,8 @@ impl Renderer {
         let gain = scene.harmonic_period.map_or(gain, |period| {
             gain * (std::f32::consts::TAU * time / period).sin()
         });
+        // A static result swings smoothly from undeformed to deformed and back.
+        let gain = swing.map_or(gain, |period| gain * 0.5 * (1.0 - (std::f32::consts::TAU * time / period).cos()));
         let (top, bottom) = background.unwrap_or(([6, 8, 12], [6, 8, 12]));
         let lines = line_colors(top, bottom);
         let lin = |c: f32| {
@@ -702,6 +706,54 @@ impl Renderer {
         });
     }
 
+    /// A static result swings: at the start of a swing the part is undeformed, half a period later fully deformed.
+    #[test]
+    #[ignore = "requires a native graphics adapter"]
+    fn a_static_result_swings_between_undeformed_and_deformed() {
+        let _guard = headless_guard();
+        pollster::block_on(async {
+            let adapter = test_adapter().await.expect("adapter required");
+            let mut scene = cube();
+            // Every vertex moves +x by 0.4 in the one stored frame; a field makes it a result.
+            scene.samples = scene.positions.iter().map(|_| [0.4, 0.0, 0.0, 0.0]).collect();
+            scene.fields.push(crate::gpu_viewer::scene::ScalarField::from_f64("f", &[0.0; 8]).unwrap());
+            let (w, h) = (160u32, 160u32);
+            let renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+            let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let draw = |time: f32, swing: Option<f32>| {
+                renderer.draw_display(&texture.create_view(&Default::default()), &scene, time, 1.0, [0.0, 0.0, 1.0, 1.0], DisplayOptions { swing, ..Default::default() });
+                read_back(&renderer, &texture)
+            };
+            // The mean x of the painted pixels.
+            let centre = |img: &[u8]| {
+                let (mut sum, mut n) = (0.0f64, 0.0f64);
+                for (i, p) in img.chunks_exact(4).enumerate() {
+                    if p[..3].iter().any(|c| *c > 20) {
+                        sum += (i as u32 % w) as f64;
+                        n += 1.0;
+                    }
+                }
+                sum / n.max(1.0)
+            };
+            let start = centre(&draw(0.0, Some(2.0)));
+            let half = centre(&draw(1.0, Some(2.0)));
+            let still = centre(&draw(1.0, None));
+            let full = centre(&draw(0.0, None));
+            let undeformed = centre(&draw(0.0, Some(2.0)));
+            assert!((start - undeformed).abs() < 1e-9, "the same time draws the same frame");
+            assert!(half > start + 10.0, "half a period later the part has moved right: {start} -> {half}");
+            assert!((half - still).abs() < 1.5 && (still - full).abs() < 1.5, "a static draw with the same gain is the fully deformed one: {half} {still} {full}");
+        });
+    }
     /// Each display style paints what CAD says: shaded fills the faces, wireframe only the edges, hidden lines
     /// removed only the edges in front, hidden lines visible those and the dimmed rest; a gradient runs top to bottom.
     #[test]
@@ -1208,6 +1260,18 @@ mod snapshot_tests {
             let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
             draw(&mut r, &mut gui, &texture, &input, [-0.6, -0.5], false);
             std::fs::write(format!("{dir}/card.rgba"), read_back(&r, &texture)).unwrap();
+            // The material library, and the Simulation tab with its Analysis group.
+            session.do_action(SolidAction::CardCancel);
+            session.do_action(SolidAction::OpenCard(crate::gpu_viewer::editor::solid::CardForm::Materials));
+            session.do_action(SolidAction::CardMaterialGroup);
+            let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+            draw(&mut r, &mut gui, &texture, &input, [-0.6, -0.5], false);
+            std::fs::write(format!("{dir}/library.rgba"), read_back(&r, &texture)).unwrap();
+            session.do_action(SolidAction::CardCancel);
+            let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+            gui.select_tab_named(&input, "Simulation");
+            draw(&mut r, &mut gui, &texture, &input, [-0.6, -0.5], false);
+            std::fs::write(format!("{dir}/simulation.rgba"), read_back(&r, &texture)).unwrap();
         });
     }
 

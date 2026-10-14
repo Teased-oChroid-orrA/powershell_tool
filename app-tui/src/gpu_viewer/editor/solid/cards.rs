@@ -31,6 +31,8 @@ pub enum CardForm {
     EditHold(usize),
     /// Change the numbers of load `.0`.
     EditLoad(usize),
+    /// Search the material library and apply a material to the model.
+    Materials,
     /// Name, supports kept and load factors of load case `.0`.
     Case(usize),
 }
@@ -42,7 +44,13 @@ pub(super) struct CardState {
     names: Vec<String>,
     toggles: Vec<bool>,
     fields: Vec<String>,
+    /// Material library: the group filter and the sort key (indices).
+    group: usize,
+    sort: usize,
 }
+
+/// Library rows shown at once.
+const MATERIAL_ROWS: usize = 12;
 
 const AXES: [&str; 3] = ["x", "y", "z"];
 
@@ -81,6 +89,7 @@ impl SolidSession {
         }
         let comps = |v: &[f64]| v.iter().take(dim).map(|x| format!("{x}")).collect::<Vec<_>>();
         let (toggles, fields) = match form {
+            CardForm::Materials => (Vec::new(), vec![String::new()]),
             CardForm::Hold => (vec![true; dim], vec!["0".to_string(); dim]),
             CardForm::EditHold(_) => {
                 let c = edit_support.as_ref().map(Support::comps).unwrap_or([None; 3]);
@@ -113,7 +122,7 @@ impl SolidSession {
             (_, Some(l)) => l.edge().map(|e| vec![e.to_string()]).unwrap_or_default(),
             _ => names,
         };
-        self.card = Some(CardState { form, names, toggles, fields });
+        self.card = Some(CardState { form, names, toggles, fields, group: 0, sort: 0 });
         self.status.clear();
         self.touch();
     }
@@ -156,7 +165,27 @@ impl SolidSession {
         let cancel = ui(SolidAction::CardCancel);
         let apply = ui(SolidAction::CardApply);
         let mut rows = Vec::new();
+        let mut width = 270.0;
         let (title, tag, apply_label) = match c.form {
+            CardForm::Materials => {
+                use crate::toolboxes::material_lookup::model as lib;
+                width = 400.0;
+                let query = lib::Query { text: c.fields[0].clone(), group: c.group, sort: lib::SortKey::ALL[c.sort % lib::SortKey::ALL.len()], ..Default::default() };
+                let hits = lib::filter_sort(&query);
+                rows.push(CardRow::Field { label: "Search".into(), text: c.fields[0].clone(), index: 0, unit: String::new() });
+                let group = lib::groups().get(c.group).cloned().unwrap_or_default();
+                rows.push(CardRow::Choice { label: format!("Group: {group}"), detail: "click for the next group".into(), action: ui(SolidAction::CardMaterialGroup), current: false });
+                rows.push(CardRow::Choice { label: format!("Sort by: {}", query.sort.label()), detail: "click for the next key".into(), action: ui(SolidAction::CardMaterialSort), current: false });
+                rows.push(CardRow::Text(format!("{} match{} (showing {}). Now: {}.", hits.len(), if hits.len() == 1 { "" } else { "es" }, hits.len().min(MATERIAL_ROWS), self.problem.material.name)));
+                let cat = lib::catalog();
+                for &i in hits.iter().take(MATERIAL_ROWS) {
+                    let m = cat[i];
+                    let rho = lib::density(m).map_or(String::new(), |d| format!("  rho {d:.3}"));
+                    let detail = format!("E {} ksi  Fty {}{rho}", crate::toolboxes::fea_workbench::model::format_number(m.e_ksi), crate::toolboxes::fea_workbench::model::format_number(m.sy_ksi));
+                    rows.push(CardRow::Choice { label: m.name.to_string(), detail, action: ui(SolidAction::ApplyMaterial(i)), current: m.name == self.problem.material.name });
+                }
+                ("Material library".to_string(), "MIL-HDBK-5J".to_string(), "Use first match".to_string())
+            }
             CardForm::Hold | CardForm::EditHold(_) => {
                 for a in 0..dim {
                     rows.push(CardRow::Toggle { label: format!("Hold {}", AXES[a]), on: c.toggles[a], action: ui(SolidAction::CardToggle(a)) });
@@ -222,13 +251,18 @@ impl SolidSession {
                 (format!("Load case {}", i + 1), "LOAD / SPCADD".into(), "Apply".into())
             }
         };
-        Some(ValueCard { title, tag, rows, apply_label, apply, cancel })
+        Some(ValueCard { title, width, tag, rows, apply_label, apply, cancel })
     }
 
     /// Write the card into the model. A bad number keeps the card open and says what is wrong.
     pub(super) fn card_apply(&mut self) {
         let Some(c) = self.card.clone() else { return };
         let dim = self.card_dim();
+        if c.form == CardForm::Materials {
+            // Enter in the search takes the first match.
+            self.card_apply_first_material();
+            return;
+        }
         let parsed: Result<Vec<f64>, String> = match c.form {
             CardForm::Case(_) => c.fields.iter().skip(1).enumerate().map(|(l, t)| number(t, &format!("Factor of load {}", l + 1))).collect(),
             _ => c.fields.iter().enumerate().map(|(i, t)| number(t, &format!("{}", ["First value", "Second value", "Third value"][i.min(2)]))).collect(),
@@ -246,6 +280,7 @@ impl SolidSession {
             n => format!("{n} surfaces"),
         };
         match c.form {
+            CardForm::Materials => unreachable!("handled before the numbers are read"),
             CardForm::Hold | CardForm::EditHold(_) => {
                 if !c.toggles.iter().any(|t| *t) {
                     self.status = "Hold at least one direction.".into();
@@ -346,6 +381,43 @@ impl SolidSession {
         }
         self.card = None;
         self.touch();
+    }
+
+    fn card_material_query(&self) -> Option<crate::toolboxes::material_lookup::model::Query> {
+        use crate::toolboxes::material_lookup::model as lib;
+        let c = self.card.as_ref().filter(|c| c.form == CardForm::Materials)?;
+        Some(lib::Query { text: c.fields[0].clone(), group: c.group, sort: lib::SortKey::ALL[c.sort % lib::SortKey::ALL.len()], ..Default::default() })
+    }
+    fn card_apply_first_material(&mut self) {
+        use crate::toolboxes::material_lookup::model as lib;
+        let typed = self.card.as_ref().is_some_and(|c| !c.fields[0].trim().is_empty());
+        match self.card_material_query().and_then(|q| lib::filter_sort(&q).first().copied()) {
+            Some(i) if typed => self.apply_material_index(i),
+            _ => {
+                self.card = None;
+                self.touch();
+            }
+        }
+    }
+    /// Apply catalog material `i` to the model and close the library.
+    pub(super) fn apply_material_index(&mut self, i: usize) {
+        let Some(m) = crate::toolboxes::material_lookup::model::catalog().get(i).copied() else { return };
+        self.edit(|p| model::apply_material(p, m));
+        let rho = model::mass_density(m).map_or("density unchanged (not in the library)".to_string(), |d| format!("density {:.3e}", d));
+        self.status = format!("Material {} applied: E, nu, expansion, yield, {rho}.", m.name);
+        self.card = None;
+        self.touch();
+    }
+    pub(super) fn card_material_cycle(&mut self, sort: bool) {
+        use crate::toolboxes::material_lookup::model as lib;
+        if let Some(c) = self.card.as_mut().filter(|c| c.form == CardForm::Materials) {
+            if sort {
+                c.sort = (c.sort + 1) % lib::SortKey::ALL.len();
+            } else {
+                c.group = (c.group + 1) % lib::groups().len();
+            }
+            self.touch();
+        }
     }
 
     // ------------------------------------------------------------------ load cases

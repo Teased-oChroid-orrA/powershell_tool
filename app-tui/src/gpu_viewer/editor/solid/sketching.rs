@@ -321,7 +321,7 @@ impl SolidSession {
             }
             placed.push(p);
             if p[0] >= 0.0 && p[1] >= 0.0 && p[0] <= size[0] && p[1] <= size[1] {
-                out.push(Overlay { px: p, text, kind });
+                out.push(Overlay { px: p, text, kind, tip: None });
             }
         }
         out
