@@ -13,6 +13,7 @@
 
 pub mod complex;
 pub mod constitutive;
+pub mod contact;
 pub mod dual;
 pub mod element;
 pub mod hyperdual;

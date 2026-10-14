@@ -231,7 +231,8 @@ pub struct TaylorReport {
 pub fn taylor_test(f: &dyn Fn(&[f64]) -> Vec<f64>, jv: &dyn Fn(&[f64], &[f64]) -> Vec<f64>, x: &[f64], v: &[f64], steps: &[f64], floor: f64) -> TaylorReport {
     let f0 = f(x);
     let j = jv(x, v);
-    let scale = f0.iter().fold(0.0f64, |m, a| m.max(a.abs())).max(1e-300);
+    // the scale of the rounding floor: the values of `f`, and the size of the action tested (`f` is ~0 at a solution)
+    let scale = f0.iter().chain(&j).fold(0.0f64, |m, a| m.max(a.abs())).max(1e-300);
     let (mut zeroth, mut first) = (Vec::new(), Vec::new());
     for &e in steps {
         let xe: Vec<f64> = x.iter().zip(v).map(|(a, b)| a + e * b).collect();
