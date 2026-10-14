@@ -38,6 +38,9 @@ fn main() -> io::Result<()> {
         let path = std::env::args_os().nth(2).ok_or_else(|| io::Error::other("missing GPU scene path"))?;
         return app_tui::gpu_viewer::run(std::path::Path::new(&path)).map_err(io::Error::other);
     }
+    if matches!(std::env::args().nth(1).as_deref(), Some("--gpu-dashboard" | "--gui")) {
+        return app_tui::gpu_viewer::run_dashboard().map_err(io::Error::other);
+    }
     if let Some(kind) = std::env::args().nth(1).as_deref().and_then(app_tui::gpu_viewer::EditorKind::from_flag) {
         let path = std::env::args_os().nth(2).map_or_else(|| std::path::PathBuf::from(kind.default_file()), std::path::PathBuf::from);
         return app_tui::gpu_viewer::run_native_editor(kind, &path).map_err(io::Error::other);
@@ -84,6 +87,17 @@ fn disable_mouse_capture_best_effort() {
     let _ = execute!(stdout(), DisableMouseCapture);
 }
 
+/// The toolbox named by `--toolbox <slug>`, if any.
+fn toolbox_arg() -> Option<app_tui::nav::ToolId> {
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        if a == "--toolbox" {
+            return args.next().and_then(|s| app_tui::nav::ToolId::from_slug(&s));
+        }
+    }
+    None
+}
+
 async fn run(terminal: &mut ratatui::DefaultTerminal) -> io::Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
 
@@ -116,6 +130,10 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> io::Result<()> {
     });
 
     let mut state = AppState::default();
+    // `--toolbox <slug>` starts on that toolbox (what the dashboard opens in a new terminal).
+    if let Some(tool) = toolbox_arg() {
+        state.nav.activate(tool);
+    }
     let mut tick_count: u64 = 0;
     // Render-derived hit-test scratch, rebuilt every frame by
     // `shell::draw` - deliberately not part of `AppState` (see

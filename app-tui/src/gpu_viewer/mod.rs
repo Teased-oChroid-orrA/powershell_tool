@@ -1,6 +1,7 @@
 //! Direct wgpu companion viewport. Scene construction is pure; process/window I/O belongs to runners.
 pub mod bench;
 pub mod controller;
+pub mod dashboard;
 pub mod display;
 pub mod editor;
 #[cfg(feature = "gpu-viewer")]
@@ -92,6 +93,18 @@ pub fn run_native_editor(kind: EditorKind, path: &std::path::Path) -> Result<(),
     {
         let _ = (kind, path);
         Err("rebuild with the gpu-viewer feature to open the native editor".into())
+    }
+}
+
+/// Open the Toolbench dashboard window (`--gpu-dashboard`).
+pub fn run_dashboard() -> Result<(), String> {
+    #[cfg(feature = "gpu-viewer")]
+    {
+        window::run_dashboard()
+    }
+    #[cfg(not(feature = "gpu-viewer"))]
+    {
+        Err("rebuild with the gpu-viewer feature to open the dashboard".into())
     }
 }
 

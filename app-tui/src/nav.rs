@@ -43,6 +43,28 @@ impl ToolId {
         ToolId::Logs,
     ];
 
+    /// Command-line name (`app-tui --toolbox <slug>`), also the dashboard's workbench id.
+    pub fn slug(self) -> &'static str {
+        match self {
+            ToolId::Search => "search",
+            ToolId::FastenerHole => "fastener-hole",
+            ToolId::Bushing => "bushing",
+            ToolId::EccentricBushing => "eccentric-bushing",
+            ToolId::LugAnalysis => "lug",
+            ToolId::FeaWorkbench => "fea",
+            ToolId::PressureVessel => "pressure-vessel",
+            ToolId::PreloadAnalysis => "preload",
+            ToolId::MaterialLookup => "material-lookup",
+            ToolId::Dupes => "dupes",
+            ToolId::Rename => "rename",
+            ToolId::Logs => "logs",
+        }
+    }
+
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|t| t.slug() == slug)
+    }
+
     pub fn title(self) -> &'static str {
         match self {
             ToolId::Search => "Search Files",
@@ -174,6 +196,14 @@ mod tests {
             let expected = !matches!(tool, ToolId::Dupes | ToolId::Rename | ToolId::Logs);
             assert_eq!(tool.enabled(), expected, "{tool:?} enabled state");
         }
+    }
+
+    #[test]
+    fn slugs_are_distinct_and_round_trip() {
+        for tool in ToolId::ALL {
+            assert_eq!(ToolId::from_slug(tool.slug()), Some(tool));
+        }
+        assert_eq!(ToolId::from_slug("nope"), None);
     }
 
     #[test]

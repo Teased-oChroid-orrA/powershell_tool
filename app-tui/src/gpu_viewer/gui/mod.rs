@@ -5,8 +5,10 @@
 //!
 //! The front end only reads what the editor and the viewer expose (`Authoring::tree/properties/ribbon/menus`,
 //! `menus::bar`) and reports clicks as `Outcome`s; availability rules stay with the model that owns them.
+mod dashboard;
 mod panels;
 pub mod theme;
+pub use dashboard::DashEvent;
 
 use super::{
     controller::{Command, Panel, UiAction, Visible},

@@ -1367,6 +1367,39 @@ mod snapshot_tests {
         });
     }
 
+    /// The Toolbench dashboard in both themes, as raw RGBA dumps: `FEA_SNAPSHOT_DASH_OUT=/dir cargo test ... dashboard_snapshot -- --ignored`.
+    #[test]
+    #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_DASH_OUT"]
+    fn dashboard_snapshot() {
+        use crate::gpu_viewer::dashboard::{unix_now, Dashboard, Recents};
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_DASH_OUT") else { return };
+        let _guard = headless_guard();
+        let mut recents = Recents::default();
+        let now = unix_now();
+        recents.record("fea", Some("/work/bracket.json".into()), now - 7_200);
+        recents.record("members", Some("/work/wing-truss.json".into()), now - 90_000);
+        let mut dash = Dashboard::new(recents, None);
+        pollster::block_on(async {
+            let adapter = test_adapter().await.expect("adapter required");
+            let (w, h) = (1280u32, 800u32);
+            let scene = Scene { label: "d".into(), positions: vec![[0.0; 3]; 3], triangles: vec![0, 1, 2], samples: vec![[0.0; 4]; 3], times: vec![0.0], range: [0.0, 1.0], gain: 1.0, harmonic_period: None, field_label: String::new(), fields: Vec::new() };
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+            for (name, theme) in [("light", egui::Theme::Light), ("dark", egui::Theme::Dark)] {
+                let texture = target(&r, w, h);
+                let mut gui = Gui::new();
+                gui.ctx().set_theme(theme);
+                let view = texture.create_view(&Default::default());
+                let ctx = gui.ctx().clone();
+                for _ in 0..3 {
+                    let raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w as f32, h as f32))), ..Default::default() };
+                    let (out, _) = gui.run_dashboard(raw, &mut dash);
+                    r.paint_egui(&view, &ctx, out, [w, h]);
+                }
+                std::fs::write(format!("{dir}/dashboard-{name}.rgba"), read_back(&r, &texture)).unwrap();
+            }
+        });
+    }
+
     /// The un-meshed 3D body in every display style and the same body meshed, as raw RGBA dumps:
     /// `FEA_SNAPSHOT_BODY_OUT=/dir cargo test ... body_styles_snapshot -- --ignored`.
     #[test]

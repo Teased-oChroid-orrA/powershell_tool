@@ -76,6 +76,8 @@ struct Viewer {
     display_file: Option<std::path::PathBuf>,
     /// Interactive model editor, when this window was opened as one.
     editor: Option<Box<dyn Authoring>>,
+    /// This window is the Toolbench dashboard: no model, just the list of workbenches.
+    dashboard: Option<super::dashboard::Dashboard>,
 }
 
 /// winit key to editor key (letters keep their case; unsupported keys are `None`).
@@ -349,6 +351,14 @@ impl Viewer {
     }
     /// Run one egui frame from the current state and carry out what was clicked; returns what to paint.
     fn run_gui(&mut self, raw: egui::RawInput) -> egui::FullOutput {
+        if let Some(mut dash) = self.dashboard.take() {
+            let (full, events) = self.gui.run_dashboard(raw, &mut dash);
+            for super::gui::DashEvent::Open(id, file) in events {
+                dash.launch(id, file);
+            }
+            self.dashboard = Some(dash);
+            return full;
+        }
         let vp = self.viewport();
         let cam = self.camera();
         if let Some(ed) = &mut self.editor {
@@ -521,7 +531,7 @@ impl Viewer {
     fn key_pressed(&mut self, key: &Key) {
         // While a number is being typed every key belongs to the prompt; otherwise Ctrl/Cmd+K opens the palette.
         let typing = self.editor.as_ref().is_some_and(|ed| ed.prompting());
-        if !typing && opens_palette(key, self.mods) {
+        if !typing && self.dashboard.is_none() && opens_palette(key, self.mods) {
             self.gui.open_palette();
             return;
         }
@@ -599,7 +609,7 @@ impl Viewer {
         let size = self.window_size();
         let background = self.view.background.colors(self.gui.background_rgb());
         // An empty model has nothing to draw (the start card says how to begin): clear the viewport only.
-        let empty = self.editor.as_ref().is_some_and(|e| !e.start_options().is_empty());
+        let empty = self.dashboard.is_some() || self.editor.as_ref().is_some_and(|e| !e.start_options().is_empty());
         let geometry = self.editor.as_ref().is_some_and(|e| e.geometry_view());
         let scene_rect = if empty { [vp.x, vp.y, 0, 0] } else { [vp.x, vp.y, vp.w, vp.h] };
         let ctx = self.gui.ctx().clone();
@@ -634,6 +644,7 @@ impl Viewer {
         }
         if let Some(w) = &self.window {
             w.set_title(&match &self.editor {
+                _ if self.dashboard.is_some() => "GS Engineering Toolbench".to_string(),
                 Some(ed) => ed.title(),
                 None => format!("FEA GPU viewport | result {}/{}", self.project.selected + 1, self.project.scenes.len()),
             });
@@ -726,6 +737,18 @@ pub fn run_solid(problem: fea_problem::Problem, path: std::path::PathBuf) -> Res
     launch(ViewerProject::single(scene), Some(Box::new(ed)))
 }
 
+/// Open the Toolbench dashboard (`--gpu-dashboard`): the list of workbenches, each opened in its own process.
+pub fn run_dashboard() -> Result<(), String> {
+    let scene = Scene { label: "dashboard".into(), positions: vec![[0.0; 3]; 3], triangles: vec![0, 1, 2], samples: vec![[0.0; 4]; 3], times: vec![0.0], range: [0.0, 1.0], gain: 1.0, harmonic_period: None, field_label: String::new(), fields: Vec::new() };
+    let mut app = new_viewer(ViewerProject::single(scene), None);
+    let file = super::dashboard::Recents::path();
+    app.dashboard = Some(super::dashboard::Dashboard::new(file.as_deref().map(super::dashboard::Recents::load_from).unwrap_or_default(), file));
+    let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
+    app.gui.attach_layout_store();
+    event_loop.run_app(&mut app).map_err(|e| e.to_string())?;
+    app.error.map_or(Ok(()), Err)
+}
+
 fn new_viewer(project: ViewerProject, editor: Option<Box<dyn Authoring>>) -> Viewer {
     let mut view = ViewState::new(&project.scenes[project.selected]);
     view.show_mesh = editor.as_ref().is_some_and(|e| e.default_mesh_lines());
@@ -756,6 +779,7 @@ fn new_viewer(project: ViewerProject, editor: Option<Box<dyn Authoring>>) -> Vie
         layout_flushed: Instant::now(),
         display_file: None,
         editor,
+        dashboard: None,
     }
 }
 
