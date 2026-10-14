@@ -98,6 +98,11 @@ impl Hardening {
         Self::table(&pts)
     }
 
+    /// The tabulated `(equivalent plastic strain, yield stress)` points.
+    pub fn points(&self) -> &[(f64, f64)] {
+        &self.pts[..self.n]
+    }
+
     /// Yield stress at equivalent plastic strain `ep`.
     pub fn stress(&self, ep: f64) -> f64 {
         let p = &self.pts[..self.n];

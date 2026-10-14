@@ -125,11 +125,21 @@ impl Model {
 
     /// Conduction matrix at the temperature field `t` (only a conductivity table looks at it).
     fn conduction_matrix(&self, spat: &Pattern, t: &[f64]) -> Result<BlockMatrix, String> {
+        self.conduction_matrix_block(spat, t, None)
+    }
+
+    /// The conduction matrix of one block alone (`only = Some(b)`: the other blocks contribute zero) or of all of them. Conduction is
+    /// linear in a block's conductivity, so the block matrix is the derivative with respect to that block's conductivity scale.
+    pub(crate) fn conduction_matrix_block(&self, spat: &Pattern, t: &[f64], only: Option<usize>) -> Result<BlockMatrix, String> {
         let props = self.thermal_props()?;
         let mesh = &self.mesh;
         assemble_scalar_identity(mesh, spat, |bi, e, xyz, work, ke| {
             let blk = &mesh.blocks[bi];
             let nn = blk.kind.n_nodes();
+            if only.is_some_and(|b| b != bi) {
+                ke[..nn * nn].fill(0.0);
+                return Ok(());
+            }
             let conn = blk.elem(e);
             let tn: Vec<f64> = conn.iter().map(|&n| t[n]).collect();
             kernel::conduction(blk.kind, mesh.physics, &|tg| props[bi].conductivity.at(tg), &tn[..nn], xyz, work, ke)
@@ -144,7 +154,7 @@ impl Model {
 
     /// Add `h N_a N_b` of every convection face to `k`; returns the right-hand side of all heat loads and the heat the
     /// sources, fluxes and point inputs put in (the convection's `h T_ambient` is on the right-hand side but is not an input).
-    fn heat_system(&self, spat: &Pattern, loads: &HeatLoads, k: &mut BlockMatrix) -> Result<(Vec<f64>, f64), String> {
+    pub(crate) fn heat_system(&self, spat: &Pattern, loads: &HeatLoads, k: &mut BlockMatrix) -> Result<(Vec<f64>, f64), String> {
         let mesh = &self.mesh;
         let n = mesh.nodes.len();
         let mut f = vec![0.0; n];

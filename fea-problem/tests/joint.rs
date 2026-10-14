@@ -83,3 +83,36 @@ fn bad_stacks_are_refused_with_a_reason() {
     // A bearing diameter no larger than the hole has no annulus.
     assert!(member_compliance(&[layer(0.5, 1.0e7, 0.5, None)], 0.5, 1.0).unwrap_err().contains("no width"));
 }
+
+#[test]
+fn compliance_sensitivities_are_exact_for_uncoupled_members_and_match_differences_for_coupled_ones() {
+    use fea_problem::joint::member_compliance_sensitivities;
+    // nu = 0: members in series, C = sum t_k / (E_k A), so the derivative with respect to a modulus multiplier is -C_k
+    let mut stack = [layer(0.3, 10.0e6, 0.25, Some(1.5)), layer(0.2, 29.0e6, 0.25, Some(1.5)), layer(0.4, 16.0e6, 0.25, Some(1.5))];
+    for l in &mut stack {
+        l.nu = 0.0;
+    }
+    let s = member_compliance_sensitivities(&stack, 1.5, 1.5).unwrap();
+    for (k, l) in stack.iter().enumerate() {
+        let ck = l.thickness / (l.e * area(1.5, 0.25));
+        assert!((s.modulus_scale[k] / -ck - 1.0).abs() < 1e-8, "member {k}: {:e} vs {:e}", s.modulus_scale[k], -ck);
+    }
+    // a Poisson-coupled stack with a narrow bearing on a wide plate: against central differences of the full FE compliance
+    let stack = [layer(0.5, 10.0e6, 0.4, Some(5.0)), layer(0.4, 29.0e6, 0.4, Some(5.0))];
+    let s = member_compliance_sensitivities(&stack, 1.0, 1.0).unwrap();
+    let c = |st: &[Layer; 2]| member_compliance(st, 1.0, 1.0).unwrap().compliance;
+    for k in 0..2 {
+        let (h_e, h_nu) = (1e-3, 1e-4);
+        let (mut p, mut m) = (stack, stack);
+        p[k].e *= 1.0 + h_e;
+        m[k].e *= 1.0 - h_e;
+        let fd_e = (c(&p) - c(&m)) / (2.0 * h_e);
+        assert!((s.modulus_scale[k] - fd_e).abs() < 1e-6 * fd_e.abs(), "modulus {k}: {:e} vs {fd_e:e}", s.modulus_scale[k]);
+        let (mut p, mut m) = (stack, stack);
+        p[k].nu += h_nu;
+        m[k].nu -= h_nu;
+        let fd_nu = (c(&p) - c(&m)) / (2.0 * h_nu);
+        assert!((s.poisson[k] - fd_nu).abs() < 1e-6 * fd_nu.abs().max(1e-30), "poisson {k}: {:e} vs {fd_nu:e}", s.poisson[k]);
+    }
+    assert!((s.compliance - member_compliance(&stack, 1.0, 1.0).unwrap().compliance).abs() < 1e-12 * s.compliance);
+}

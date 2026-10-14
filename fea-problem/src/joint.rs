@@ -45,6 +45,43 @@ pub fn member_compliance(layers: &[Layer], head_diameter: f64, nut_diameter: f64
 
 pub fn member_compliance_sized(layers: &[Layer], head_diameter: f64, nut_diameter: f64, size_fraction: f64) -> Result<MemberFe, String> {
     let clock = std::time::Instant::now();
+    let (model, loads, bc, r_big) = member_model(layers, head_diameter, nut_diameter, size_fraction)?;
+    let sol = model.solve_static_with(&loads, &bc, fea_core::SolveMethod::Direct)?;
+    // The head and nut loads balance only if the pressures integrate to equal forces: check, not assume.
+    let net = (0..model.mesh.nodes.len()).map(|n| sol.reactions[n * 2 + 1]).sum::<f64>();
+    if net.abs() > 1e-6 {
+        return Err(format!("the head and nut loads do not balance (net {net:.2e}): the bearing faces are mismatched"));
+    }
+    let u = model.strain_energy(&sol.u)?;
+    Ok(MemberFe { compliance: 2.0 * u, elements: model.mesh.n_elems(), dofs: model.mesh.n_dofs(), outer_radius_used: r_big, ms: clock.elapsed().as_secs_f64() * 1e3 })
+}
+
+/// Exact derivatives of the member compliance with respect to each member's modulus and Poisson's ratio (the mesh does not depend on
+/// them), from the adjoint of `C = f . u` (the problem is self-adjoint): `dC/dp = -u . (dK/dp) u`. `modulus_scale[k]` is the
+/// derivative with respect to a multiplier of member `k`'s modulus at 1 (so `-C_k` for a stack of uncoupled members), `poisson[k]`
+/// the derivative per unit Poisson's ratio. Thickness and diameters change the mesh topology and are not differentiated.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemberSensitivities {
+    pub compliance: f64,
+    pub modulus_scale: Vec<f64>,
+    pub poisson: Vec<f64>,
+}
+
+pub fn member_compliance_sensitivities(layers: &[Layer], head_diameter: f64, nut_diameter: f64) -> Result<MemberSensitivities, String> {
+    use fea_core::derivative::linear_sens::{LinearParam, LinearSensitivityEngine};
+    let (model, loads, bc, _) = member_model(layers, head_diameter, nut_diameter, SIZE_FRACTION)?;
+    let f = fea_core::loads::assemble(&model.mesh, &loads)?;
+    let sol = model.solve_static_with(&loads, &bc, fea_core::SolveMethod::Direct)?;
+    let compliance = f.iter().zip(&sol.u).map(|(a, b)| a * b).sum::<f64>();
+    let params: Vec<LinearParam> = (0..layers.len()).map(LinearParam::ModulusScale).chain((0..layers.len()).map(LinearParam::PoissonRatio)).collect();
+    let (r, _) = LinearSensitivityEngine::new(&model, &loads, &bc).sensitivities(&[f], &params, Some(fea_core::derivative::SensitivityMethod::DiscreteAdjoint))?;
+    let n = layers.len();
+    Ok(MemberSensitivities { compliance, modulus_scale: r[0][..n].to_vec(), poisson: r[0][n..].to_vec() })
+}
+
+/// The axisymmetric member-stack model, its bearing loads and the axial rigid-motion constraint, plus the outer radius given to
+/// members without one.
+fn member_model(layers: &[Layer], head_diameter: f64, nut_diameter: f64, size_fraction: f64) -> Result<(Model, Loads, fea_core::Dirichlet, f64), String> {
     if layers.is_empty() {
         return Err("the stack has no members".into());
     }
@@ -149,12 +186,5 @@ pub fn member_compliance_sized(layers: &[Layer], head_diameter: f64, nut_diamete
     };
     let mut bc = model.dirichlet();
     bc.fix(0, 1, 0.0); // the one free rigid motion of a revolved body is the axial translation
-    let sol = model.solve_static_with(&loads, &bc, fea_core::SolveMethod::Direct)?;
-    // The head and nut loads balance only if the pressures integrate to equal forces: check, not assume.
-    let net = (0..model.mesh.nodes.len()).map(|n| sol.reactions[n * 2 + 1]).sum::<f64>();
-    if net.abs() > 1e-6 {
-        return Err(format!("the head and nut loads do not balance (net {net:.2e}): the bearing faces are mismatched"));
-    }
-    let u = model.strain_energy(&sol.u)?;
-    Ok(MemberFe { compliance: 2.0 * u, elements: model.mesh.n_elems(), dofs: model.mesh.n_dofs(), outer_radius_used: r_big, ms: clock.elapsed().as_secs_f64() * 1e3 })
+    Ok((model, loads, bc, r_big))
 }
