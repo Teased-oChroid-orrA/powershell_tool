@@ -79,6 +79,8 @@ pub enum EditorAction {
     ToggleLoads,
     /// Solid-model editing (see `solid`).
     Solid(super::solid::SolidAction),
+    /// The Bushing workbench (see `bushing`).
+    Bushing(super::bushing::BushingAct),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tone {
@@ -313,7 +315,7 @@ impl Session {
             EditorAction::ToggleSupports => self.state.show_supports = !self.state.show_supports,
             EditorAction::ToggleLoads => self.state.show_loads = !self.state.show_loads,
             // A member session never receives solid actions (its UI does not offer them).
-            EditorAction::Solid(_) => {}
+            EditorAction::Solid(_) | EditorAction::Bushing(_) => {}
         }
         self.touch();
     }

@@ -95,7 +95,7 @@ impl ReamerPickerState {
     /// label-only update would) merges its labels onto that built-in's row
     /// instead of appearing as a duplicate - only a library entry with
     /// genuinely different data becomes its own new row.
-    fn visible(&self) -> Vec<(ReamerEntry, Vec<String>)> {
+    pub(crate) fn visible(&self) -> Vec<(ReamerEntry, Vec<String>)> {
         let needle = self.filter_text.trim().to_lowercase();
         let mut all: Vec<(ReamerEntry, Vec<String>)> = reamers::all_reamers().into_iter().map(|e| (e.clone(), Vec::new())).collect();
         for li in &self.library {

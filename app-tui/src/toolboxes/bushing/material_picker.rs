@@ -219,7 +219,7 @@ impl MaterialPickerState {
         Self { open: true, target: Some(target), library: material_persistence::load(), ..Default::default() }
     }
 
-    fn visible_indices(&self, model: &BushingModel) -> Vec<usize> {
+    pub(crate) fn visible_indices(&self, model: &BushingModel) -> Vec<usize> {
         let needle = self.filter_text.trim().to_lowercase();
         let catalog = model.material_catalog();
         if needle.is_empty() {

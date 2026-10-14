@@ -2,6 +2,8 @@
 
 > TL;DR: Thin bridge over `bushing-solver`/`mechanics-core`; `model.rs` computes nothing itself. Adds material picker, reamer catalog picker (primary way to set Bore Diameter), friction picker, Bushing ID library, fit-type selector. Libraries use `src/library.rs`.
 
+> The native window has a second front end over this toolbox: `gpu_viewer/editor/bushing/` (node there). It reuses `BushingState`, `model.rs`, `advice.rs` and `edge_check.rs` unchanged; the picker `visible` lists, `view::{row_text, display_value}`, `activate_selected`, `BushingModel::set_number` and `edge_check::table_rows` are `pub`/`pub(crate)` for it. Keep them stable, and keep this toolbox free of window types.
+
 ## Purpose
 Owns: UI state/key routing/rendering, pickers, and library wiring (reamer, material, Bushing ID) for the bushing solver.
 Does not own: any Lamé/press-fit/tolerance math (`bushing-solver/AGENTS.md`).

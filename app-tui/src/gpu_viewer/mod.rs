@@ -45,6 +45,8 @@ pub enum EditorKind {
     Members,
     /// A meshed solid (`fea_problem::Problem`, the Workbench's file format).
     Solid,
+    /// The bushing press-fit workbench (`editor::bushing::file::BushingFile`).
+    Bushing,
 }
 impl EditorKind {
     /// Command-line flag of the editor process.
@@ -52,15 +54,17 @@ impl EditorKind {
         match self {
             EditorKind::Members => "--gpu-editor",
             EditorKind::Solid => "--gpu-solid",
+            EditorKind::Bushing => "--gpu-bushing",
         }
     }
     pub fn from_flag(flag: &str) -> Option<Self> {
-        [EditorKind::Members, EditorKind::Solid].into_iter().find(|k| k.flag() == flag)
+        [EditorKind::Members, EditorKind::Solid, EditorKind::Bushing].into_iter().find(|k| k.flag() == flag)
     }
     pub fn title(self) -> &'static str {
         match self {
             EditorKind::Members => "Member editor",
             EditorKind::Solid => "Solid editor",
+            EditorKind::Bushing => "Bushing workbench",
         }
     }
     /// File used when none is given.
@@ -68,6 +72,7 @@ impl EditorKind {
         match self {
             EditorKind::Members => "member-model.json",
             EditorKind::Solid => "solid-model.json",
+            EditorKind::Bushing => "bushing-case.json",
         }
     }
 }
@@ -87,6 +92,7 @@ pub fn run_native_editor(kind: EditorKind, path: &std::path::Path) -> Result<(),
                 let problem = if path.exists() { editor::solid::read_problem(path)? } else { fea_problem::templates::templates().remove(0).1 };
                 window::run_solid(problem, path.to_path_buf())
             }
+            EditorKind::Bushing => window::run_bushing(editor::bushing::BushingSession::open(path)?),
         }
     }
     #[cfg(not(feature = "gpu-viewer"))]
@@ -119,7 +125,7 @@ mod tests {
 
     #[test]
     fn editor_flags_round_trip_and_unknown_flags_are_not_editors() {
-        for k in [EditorKind::Members, EditorKind::Solid] {
+        for k in [EditorKind::Members, EditorKind::Solid, EditorKind::Bushing] {
             assert_eq!(EditorKind::from_flag(k.flag()), Some(k));
         }
         assert_eq!(EditorKind::from_flag("--gpu-viewer"), None);

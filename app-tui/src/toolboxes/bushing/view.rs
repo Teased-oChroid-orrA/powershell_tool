@@ -156,7 +156,7 @@ fn draw_edge_tip(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingSt
 }
 
 /// Label of a row; tolerance rows read "... Tol" or "... Limits" by entry mode.
-fn row_text(mode: model::ToleranceMode, row: FieldRow) -> &'static str {
+pub(crate) fn row_text(mode: model::ToleranceMode, row: FieldRow) -> &'static str {
     match row {
         FieldRow::Tol(group) => group.label(mode),
         other => model::row_label(other),
@@ -167,7 +167,7 @@ fn compute_label_width(mode: model::ToleranceMode, rows: &[FieldRow]) -> u16 {
     rows.iter().filter(|r| !matches!(r, FieldRow::Header(_))).map(|r| row_text(mode, *r).len()).max().unwrap_or(0) as u16 + 2
 }
 
-fn display_value(model: &BushingModel, row: FieldRow) -> String {
+pub(crate) fn display_value(model: &BushingModel, row: FieldRow) -> String {
     match row {
         FieldRow::Header(_) | FieldRow::AdvancedSection => String::new(),
         FieldRow::ToggleFitType => model::label_fit_type(model.fit_type).to_string(),

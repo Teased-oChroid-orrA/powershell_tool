@@ -475,7 +475,7 @@ impl BushingState {
         }
     }
 
-    fn activate_selected(&mut self) {
+    pub(crate) fn activate_selected(&mut self) {
         self.last_applied = None;
         self.input_error = None;
         let rows = model::field_rows(&self.model);

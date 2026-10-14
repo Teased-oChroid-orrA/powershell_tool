@@ -3,7 +3,6 @@
 //! viewer's own View / Window / Help menus and View ribbon tab and composes them in CAD order
 //! (File, Edit, View, Insert, Tools, Simulation, Window, Help). Pure: reads state, returns data.
 use super::{
-    bench::Bench,
     controller::{Command, LayoutOp, Panel, StandardView, UiAction, ViewState, Visible},
     display::{Background, DisplayStyle},
     editor::authoring::Authoring,
@@ -123,10 +122,13 @@ fn window_menu(c: &MenuContext) -> Menu {
     let mut items = Vec::new();
     if let Some(ed) = c.editor {
         // Benches keep the other studies' menus out of the way; the model is kept across solid benches.
-        for b in Bench::ALL {
-            items.push(Item::Entry(Entry::new(format!("Bench: {}", b.label()), "", b.action()).checked(ed.bench() == b)));
+        let benches = ed.benches();
+        for b in &benches {
+            items.push(Item::Entry(Entry::new(format!("Bench: {}", b.label()), "", b.action()).checked(ed.bench() == *b)));
         }
-        items.push(Item::Separator);
+        if !benches.is_empty() {
+            items.push(Item::Separator);
+        }
     }
     items.extend([
         panel("Tool bar", Panel::Ribbon, v.ribbon),

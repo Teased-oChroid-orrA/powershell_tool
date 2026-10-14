@@ -470,6 +470,45 @@ pub fn section_lines_with<'a>(theme: &Theme, run: Option<&EdgeCheckRun>, stale: 
     (lines, tags)
 }
 
+/// One check's line of the "min e/D" table: three cells (Strength, Bearing, 1st yield), each with whether that check needs
+/// more edge distance than there is, and the bearing target's failure probability. For a window that draws its own table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TableRow {
+    pub name: String,
+    pub cells: [(String, bool); 3],
+    pub p_fail: String,
+    /// The model could not be evaluated; the cells are empty.
+    pub error: Option<String>,
+    pub topic: Option<EdgeTopic>,
+}
+
+/// The "min e/D" table of a run: one row per check, then the solver's own legacy check for comparison.
+pub fn table_rows(run: &EdgeCheckRun, model: &BushingModel) -> Vec<TableRow> {
+    let r = &run.report;
+    let (si, qi, yi) = (target_index("Strength"), target_index("Bearing"), target_index("First yield"));
+    let none = || [("-".to_string(), false), ("-".to_string(), false), ("-".to_string(), false)];
+    let mut rows = Vec::new();
+    for m in &r.models {
+        let Some(topic) = EdgeTopic::for_model(m.id) else { continue };
+        if let Some(err) = &m.error {
+            rows.push(TableRow { name: short_name(m.id).to_string(), cells: none(), p_fail: "-".into(), error: Some(err.clone()), topic: Some(topic) });
+            continue;
+        }
+        let at = |i: usize| m.targets.get(i).and_then(|t| t.as_ref());
+        rows.push(TableRow {
+            name: short_name(m.id).to_string(),
+            cells: [fmt_cell(r, at(si).map(|t| t.e_min)), fmt_cell(r, at(qi).map(|t| t.e_min)), fmt_cell(r, at(yi).map(|t| t.e_min))],
+            p_fail: at(qi).and_then(|t| t.mc.as_ref()).map_or("-".to_string(), |mc| format!("{:.0}%", mc.p_fail * 100.0)),
+            error: None,
+            topic: Some(topic),
+        });
+    }
+    let out = &model.output;
+    let legacy = |v: f64| (format!("{v:.2}"), v.is_finite() && v > r.edge / r.bore_diameter + 1e-9);
+    rows.push(TableRow { name: "Legacy solver".into(), cells: [legacy(out.ed_min_strength), legacy(out.ed_min_sequence), ("-".to_string(), false)], p_fail: "-".into(), error: None, topic: Some(EdgeTopic::Legacy) });
+    rows
+}
+
 /// "This run" paragraphs for a tooltip: the numbers behind a table row.
 pub fn detail_lines(topic: EdgeTopic, run: Option<&EdgeCheckRun>, model: &BushingModel) -> Vec<String> {
     if topic == EdgeTopic::Legacy {

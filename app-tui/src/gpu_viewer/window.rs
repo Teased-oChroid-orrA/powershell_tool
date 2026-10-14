@@ -749,6 +749,12 @@ pub fn run_dashboard() -> Result<(), String> {
     app.error.map_or(Ok(()), Err)
 }
 
+/// Open the Bushing workbench on `session`.
+pub fn run_bushing(mut session: super::editor::bushing::BushingSession) -> Result<(), String> {
+    let scene = super::editor::authoring::Authoring::scene(&mut session)?;
+    launch(ViewerProject::single(scene), Some(Box::new(session)))
+}
+
 fn new_viewer(project: ViewerProject, editor: Option<Box<dyn Authoring>>) -> Viewer {
     let mut view = ViewState::new(&project.scenes[project.selected]);
     view.show_mesh = editor.as_ref().is_some_and(|e| e.default_mesh_lines());
@@ -1501,6 +1507,36 @@ mod tests {
         frame(&mut v);
         assert_eq!(v.view.key_colours, crate::gpu_viewer::display::default_key_colours());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// The Bushing workbench through the real window: a click on an input starts a typed edit, the typed number reaches the
+    /// solver, the verdict and the housing picture follow, and a step tab brings that step's cards.
+    #[test]
+    fn the_bushing_workbench_edits_an_input_by_click_and_typing_and_the_verdict_follows() {
+        let dir = std::env::temp_dir().join(format!("window-bushing-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let session = crate::gpu_viewer::editor::bushing::BushingSession::open(&dir.join("case.json")).unwrap();
+        let mut v = viewer(Some(Box::new(session)));
+        frame(&mut v);
+        // The default case already fails the edge-distance check, so that input carries the marker.
+        assert!(property_text(&v).contains("! Edge Distance  0.7500 in"), "{}", property_text(&v));
+        let at = target(&v, "! Edge Distance");
+        click(&mut v, at);
+        assert!(v.editor.as_ref().unwrap().prompting());
+        for c in "0.3".chars() {
+            v.input(Input::Key(Key::Character(c.to_string().into())));
+        }
+        v.input(Input::Key(Key::Named(NamedKey::Enter)));
+        frame(&mut v);
+        assert!(!v.editor.as_ref().unwrap().prompting());
+        assert!(property_text(&v).contains("Edge Distance  0.3000 in"), "{}", property_text(&v));
+        assert!(property_text(&v).contains("REVIEW") && property_text(&v).contains("margin -"), "a 0.3 in edge distance fails: {}", property_text(&v));
+        // The step tabs bring the other cards; the tree names the failing check.
+        let checks = target(&v, "Checks tab");
+        click(&mut v, checks);
+        assert!(property_text(&v).contains("Contact pressure"), "{}", property_text(&v));
+        assert!(tree_labels(&v).iter().any(|l| l.starts_with("Checks (") && !l.starts_with("Checks (0")), "{:?}", tree_labels(&v));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// A result shows what its colours mean, can be cycled through every field, and so can a mode shape.

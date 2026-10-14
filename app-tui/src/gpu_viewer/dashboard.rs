@@ -30,7 +30,7 @@ pub struct Workbench {
 pub const WORKBENCHES: [Workbench; 10] = [
     Workbench { id: "search", name: "Search", summary: "Keyword filters across text, Office, zip, rtf and pdf files. HTML report, CSV and JSON export.", opens: Opens::Terminal(ToolId::Search) },
     Workbench { id: "fastener-hole", name: "Fastener Hole", summary: "Hole, fastener and edge-distance geometry.", opens: Opens::Terminal(ToolId::FastenerHole) },
-    Workbench { id: "bushing", name: "Bushing", summary: "Press fit, tolerance stack, edge-distance cross-check and verified fixes.", opens: Opens::Terminal(ToolId::Bushing) },
+    Workbench { id: "bushing", name: "Bushing", summary: "Press fit, tolerance stack, edge-distance cross-check and verified fixes.", opens: Opens::Window(EditorKind::Bushing) },
     Workbench { id: "pressure-vessel", name: "Pressure Vessel", summary: "Shell and head stresses, Lamé thick wall.", opens: Opens::Terminal(ToolId::PressureVessel) },
     Workbench { id: "preload", name: "Preload Analysis", summary: "Fastened joint preload and member stiffness.", opens: Opens::Terminal(ToolId::PreloadAnalysis) },
     Workbench { id: "lug", name: "Lug Analysis", summary: "Pin-loaded lug on the general FE kernel.", opens: Opens::Terminal(ToolId::LugAnalysis) },

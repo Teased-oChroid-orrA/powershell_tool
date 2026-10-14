@@ -1009,6 +1009,11 @@ impl BushingModel {
         self.recompute();
     }
 
+    /// Sets one number without recomputing, for a caller that sets many and then calls [`recompute`](Self::recompute).
+    pub fn set_number(&mut self, target: NumberTarget, raw: f64) {
+        self.set_number_raw(target, raw);
+    }
+
     fn set_number_raw(&mut self, target: NumberTarget, raw: f64) {
         match target {
             NumberTarget::BoreDia => self.bore_dia = raw,

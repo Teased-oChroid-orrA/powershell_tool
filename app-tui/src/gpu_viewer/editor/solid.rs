@@ -343,6 +343,8 @@ pub struct SolidSession {
     findings_cache: std::cell::RefCell<Option<guidance::Findings>>,
     /// The guidance fix the pointer is on: its surfaces are highlighted in the preview mesh (presentation only).
     fix_preview: Option<FixRef>,
+    /// Colour the bushings' own material as "selected" so the bushing and its housing read apart (the Bushing workbench).
+    pub highlight_bushings: bool,
 }
 
 fn is_edit_char(c: char) -> bool {
@@ -405,6 +407,7 @@ impl SolidSession {
             failure: None,
             findings_cache: std::cell::RefCell::new(None),
             fix_preview: None,
+            highlight_bushings: false,
         }
     }
 
@@ -559,6 +562,15 @@ impl SolidSession {
         self.clamp_focus();
         // A sketch open in Sketch mode may have been replaced along with the problem.
         self.drop_sketch_mode_if_orphaned();
+    }
+    /// Take `problem` as the model without an undo step or a dirty mark: the caller derives it from something else
+    /// (the Bushing workbench's inputs) and owns the saving. A result or mesh for the old problem is stale from here.
+    pub fn set_derived(&mut self, problem: Problem) {
+        self.problem = problem;
+        self.saved_geometry = None;
+        self.failure = None;
+        self.clear_selection();
+        self.touch();
     }
     fn replace(&mut self, problem: Problem) {
         self.saved_geometry = None;
@@ -1027,6 +1039,25 @@ impl SolidSession {
         out.extend(mesh.surfaces.get(name).into_iter().flatten().flatten().copied());
         out
     }
+    /// The nodes of bushing `n` (1-based): the connected piece of the mesh that holds its bore. A bushing shares no node with
+    /// its housing (they meet by contact only), so flooding from the bore through the elements reaches exactly the bushing.
+    fn bushing_nodes(mesh: &Mesh, n: usize) -> BTreeSet<usize> {
+        let mut set = Self::nodes_of(mesh, &format!("b{n}/id"));
+        loop {
+            let before = set.len();
+            for b in &mesh.blocks {
+                let per = b.kind.n_nodes();
+                for el in b.conn.chunks(per) {
+                    if el.iter().any(|v| set.contains(v)) {
+                        set.extend(el.iter().copied());
+                    }
+                }
+            }
+            if set.len() == before {
+                return set;
+            }
+        }
+    }
     /// Per-node state codes of the preview scene.
     fn node_codes(&self, mesh: &Mesh) -> Vec<f64> {
         let mut codes = vec![0.0_f64; mesh.nodes.len()];
@@ -1057,6 +1088,15 @@ impl SolidSession {
         });
         for name in focused.iter().chain(self.all_selected().iter()).chain(self.fix_preview_surfaces().iter()) {
             mark(name, 3.0);
+        }
+        if self.highlight_bushings {
+            for n in 1..=self.problem.bushings.len() {
+                for v in Self::bushing_nodes(mesh, n) {
+                    if v < codes.len() {
+                        codes[v] = 3.0;
+                    }
+                }
+            }
         }
         codes
     }

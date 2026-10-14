@@ -40,13 +40,27 @@ struct PathPrompt {
 
 /// One selectable row: a user-saved size or a standard drill.
 #[derive(Clone, Copy)]
-enum IdRow<'a> {
+pub(crate) enum IdRow<'a> {
     User(&'a LibraryItem<PersistedBushingId>),
     Drill(&'static DrillEntry),
 }
 
 impl IdRow<'_> {
-    fn id_in(&self) -> f64 {
+    /// What the row is called: the saved label or the drill's.
+    pub(crate) fn label(&self) -> String {
+        match self {
+            IdRow::User(li) => li.item.label.clone(),
+            IdRow::Drill(d) => d.label.clone(),
+        }
+    }
+    /// A short note under the label: a saved size's tags, or the drill's kind.
+    pub(crate) fn detail(&self) -> String {
+        match self {
+            IdRow::User(li) => format!("saved{}", if li.labels.is_empty() { String::new() } else { format!(", {}", li.labels.join(", ")) }),
+            IdRow::Drill(d) => format!("{} drill{}", d.kind.name(), if d.common { ", common" } else { "" }),
+        }
+    }
+    pub(crate) fn id_in(&self) -> f64 {
         match self {
             IdRow::User(li) => li.item.id_in,
             IdRow::Drill(d) => d.nominal_in,
@@ -96,7 +110,7 @@ impl BushingIdPickerState {
 
     /// The user's saved entries first, then every standard drill size, both
     /// narrowed by the filter (label, decimal size, kind or `common`).
-    fn visible(&self) -> Vec<IdRow<'_>> {
+    pub(crate) fn visible(&self) -> Vec<IdRow<'_>> {
         let needle = self.filter_text.trim().to_lowercase();
         let user = self.library.iter().map(IdRow::User);
         let drills = drills::all_drills().into_iter().map(IdRow::Drill);

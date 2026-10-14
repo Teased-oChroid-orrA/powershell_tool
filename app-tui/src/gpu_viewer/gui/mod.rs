@@ -533,7 +533,8 @@ impl Gui {
                 ui.style_mut().interaction.selectable_labels = false;
                 if geometry {
                     ui.label(egui::RichText::new("COLOUR KEY  (drag to move)").small().strong().color(p.dim));
-                    for (k, name) in ["Body", "Support", "Load", "Selected"].into_iter().enumerate() {
+                    let labels = input.editor.map_or(["Body", "Support", "Load", "Selected"], |e| e.key_labels());
+                    for (k, name) in labels.into_iter().enumerate() {
                         ui.horizontal(|ui| {
                             // Clicking the swatch opens a colour picker; every change is applied at once and kept.
                             let mut rgb = input.view.key_colours[k];

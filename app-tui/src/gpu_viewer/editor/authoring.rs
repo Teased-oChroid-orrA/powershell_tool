@@ -107,6 +107,14 @@ pub fn flatten(cards: Vec<Card>) -> Vec<DockItem> {
 pub trait Authoring {
     /// The bench this session is showing.
     fn bench(&self) -> crate::gpu_viewer::bench::Bench;
+    /// The benches the Window menu offers for this model (a workbench that is one study offers none).
+    fn benches(&self) -> Vec<crate::gpu_viewer::bench::Bench> {
+        crate::gpu_viewer::bench::Bench::ALL.to_vec()
+    }
+    /// What the four colours of the model's colour key stand for.
+    fn key_labels(&self) -> [&'static str; 4] {
+        ["Body", "Support", "Load", "Selected"]
+    }
     /// File the model is saved to (sibling benches' files live beside it).
     fn path(&self) -> &std::path::Path;
     /// Switch to another bench of the same model kind in place; false when the model kind differs.
