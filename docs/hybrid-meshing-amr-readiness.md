@@ -71,7 +71,7 @@ timing table.
 
 Controls (2D and, for the strategy and predictor, extruded sketch problems; every one defaults to the previous behaviour):
 
-- **Mesh Strategy** (`mesh.strategy`): Unstructured or Hybrid; a request the region does not suit returns the unstructured mesh and
+- **Mesh Strategy** (`mesh.strategy`): Hybrid (the default for a new problem; a saved problem without the field keeps Unstructured) or Unstructured; a request the region does not suit returns the unstructured mesh and
   adds a result note with the reason. An extruded sketch gives Hex20 + Wedge15. The template plate with a hole at Size At Holes 0.1,
   which used to fall back (size jump 8.1 against 6), now meshes hybrid with jump 1.63.
 - **Auto Size Features** (`mesh.predict_sizes`): `SizePredictor2d` over arcs (0.35 rad), re-entrant corners and point loads /
@@ -97,3 +97,12 @@ contact patch is the whole bore, so the contact-protection rule refines everythi
 driver, 110 and 196 s), the controller's force-balance check (rigid master against slave tractions, 1e-3) sees 3-11 % on a
 two-pass deformable interface, and the peak stress (0.7 %) and fit force (1e-4) are the same as the ZZ driver's. The ZZ passes
 remain the bushed-plate driver. A contact problem with a rigid pin is the case the controller was built for.
+
+## Hybrid as the default (2026-10-14)
+
+`MeshSpec::default()` and every template mesh Hybrid. Consequences, all handled and tested:
+
+- The equilibrated driver covers triangle meshes only, so with Adaptivity Driver = Equilibrated the region is meshed unstructured and a result note says so.
+- The element forecast (`build::estimate_mesh`) counts structured cells at one quadrilateral per `h x h` and the unstructured cells at 4.2 per unit area at size 1 (measured, within ~30 % over the templates), and now includes bushing annuli.
+- A refinement zone in a hybrid mesh also subdivides the grid lines through the regular blocks around it ("refines there and only there" holds for the unstructured strategy).
+- Hybrid meshes end the adaptive loop on slightly different meshes in different unit systems (2.9 % in peak von Mises at the 2 % target, 1e-4 at 0.5 %): discretisation, not a unit dependence.

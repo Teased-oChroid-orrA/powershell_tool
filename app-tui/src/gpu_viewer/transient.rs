@@ -176,6 +176,8 @@ mod tests {
             .next()
             .unwrap();
         p.material.density = 1.0;
+        // the all-unstructured mesh is the large one this test needs (the hybrid default is much smaller)
+        p.mesh.strategy = fea_problem::MeshStrategy::Unstructured;
         let mesh = fea_problem::solve::preview(&p, None).unwrap();
         assert!(mesh.n_dofs() * 241 > SAMPLE_BUDGET);
         assert!(display_stride(mesh.nodes.len(), 240).is_ok());
