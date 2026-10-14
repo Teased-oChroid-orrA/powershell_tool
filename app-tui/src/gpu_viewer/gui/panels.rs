@@ -125,8 +125,15 @@ impl Gui {
     pub(super) fn tool_pill(&mut self, ctx: &egui::Context, tabs: &[RibbonTab], p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>) {
         let Some(tab) = self.selected_tab(tabs).cloned() else { return };
         let Some(vp) = self.viewport else { return };
-        let width = (vp.width() - 40.0).max(160.0);
-        let shown = egui::Area::new(Id::new("tool-pill")).fade_in(false).order(Order::Middle).pivot(Align2::CENTER_TOP).fixed_pos(Pos2::new(vp.center().x, vp.top() + 12.0)).show(ctx, |ui| {
+        // With the tree folded to its chip the pill starts to the right of the chip instead of running under it.
+        let (pivot, at_x, width) = match self.chip_rect {
+            Some(chip) => {
+                let left = chip.right() + 10.0;
+                (Align2::LEFT_TOP, left, (vp.right() - 12.0 - left - 24.0).max(160.0))
+            }
+            None => (Align2::CENTER_TOP, vp.center().x, (vp.width() - 40.0).max(160.0)),
+        };
+        let shown = egui::Area::new(Id::new("tool-pill")).fade_in(false).order(Order::Middle).pivot(pivot).fixed_pos(Pos2::new(at_x, vp.top() + 12.0)).show(ctx, |ui| {
             popup_frame(p).fill(p.raised).inner_margin(Margin::symmetric(10, 6)).show(ui, |ui| {
                 ui.set_max_width(width);
                 ui.horizontal_wrapped(|ui| {
@@ -169,7 +176,7 @@ impl Gui {
     /// The tree folded to a chip over the model; one click opens it.
     pub(super) fn tree_chip(&mut self, ctx: &egui::Context, p: &Palette) {
         let Some(vp) = self.viewport else { return };
-        egui::Area::new(Id::new("tree-chip")).fade_in(false).order(Order::Middle).fixed_pos(Pos2::new(vp.left() + 12.0, vp.top() + 12.0)).show(ctx, |ui| {
+        let shown = egui::Area::new(Id::new("tree-chip")).fade_in(false).order(Order::Middle).fixed_pos(Pos2::new(vp.left() + 12.0, vp.top() + 12.0)).show(ctx, |ui| {
             popup_frame(p).fill(p.raised).inner_margin(Margin::symmetric(4, 3)).show(ui, |ui| {
                 let r = ui.add(egui::Button::new("Feature tree").small());
                 self.targets.push(("Feature tree".into(), r.rect));
@@ -179,6 +186,7 @@ impl Gui {
                 }
             });
         });
+        self.chip_rect = Some(shown.response.rect);
     }
 
     /// An empty model shows how to begin, centred over the viewport.

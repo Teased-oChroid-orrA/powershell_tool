@@ -217,6 +217,7 @@ impl SolidSession {
             if on(sup.edge()) {
                 applied.push(entry(format!("Change directions on '{}'...", sup.edge().unwrap_or_default()), SolidAction::OpenCard(CardForm::EditHold(i))));
                 applied.push(entry(format!("Remove support on '{}'", sup.edge().unwrap_or_default()), SolidAction::Activate(FieldRow::SupportRemove(i))));
+                applied.extend(self.convert_items(true, i));
             }
         }
         for (i, load) in self.problem.loads.iter().enumerate() {
@@ -224,6 +225,7 @@ impl SolidSession {
                 let edge = load.edge().unwrap_or_default();
                 applied.push(entry(format!("Edit the load on '{edge}'..."), SolidAction::OpenCard(CardForm::EditLoad(i))));
                 applied.push(entry(format!("Remove the load on '{edge}'"), SolidAction::Activate(FieldRow::LoadRemove(i))));
+                applied.extend(self.convert_items(false, i));
             }
         }
         if !applied.is_empty() {
@@ -232,6 +234,41 @@ impl SolidSession {
             items.extend(applied);
         }
         items
+    }
+
+    /// Entries that change support `i` / load `i` to another kind (the current kind is not offered).
+    pub(super) fn convert_items(&self, support: bool, i: usize) -> Vec<Item> {
+        use fea_problem::conversion::{LoadKind, SupportKind};
+        let entry = |text: String, a: SolidAction| Item::Entry(Entry::new(text, "", ui(a)));
+        let mut out = Vec::new();
+        if support {
+            let Some(s) = self.problem.supports.get(i) else { return out };
+            let name = s.edge().map_or("a point".to_string(), |e| format!("'{e}'"));
+            out.push(Item::Heading(format!("Change the support on {name} to")));
+            for k in SupportKind::ALL {
+                let current = match (k, s) {
+                    (SupportKind::Point, fea_problem::Support::Point { .. }) => true,
+                    (SupportKind::Fixed, fea_problem::Support::Edge { .. }) => s.comps().iter().take(self.problem.analysis_dim()).all(|c| c.is_some()),
+                    (SupportKind::Slides, fea_problem::Support::Edge { .. }) => s.comps().iter().take(self.problem.analysis_dim()).filter(|c| c.is_some()).count() == 1,
+                    _ => false,
+                };
+                if !current {
+                    out.push(entry(k.label().to_string(), SolidAction::ConvertSupport(i, k)));
+                }
+            }
+        } else {
+            let Some(l) = self.problem.loads.get(i) else { return out };
+            let Some(now) = LoadKind::of(l) else { return out };
+            let name = l.edge().map_or("a point".to_string(), |e| format!("'{e}'"));
+            out.push(Item::Heading(format!("Change the load on {name} to")));
+            let plane = matches!(self.problem.analysis, Analysis::PlaneStress | Analysis::PlaneStrain);
+            for k in LoadKind::ALL {
+                if k != now && (k != LoadKind::Bearing || plane) {
+                    out.push(entry(k.label().to_string(), SolidAction::ConvertLoad(i, k)));
+                }
+            }
+        }
+        out
     }
 
     /// Items of the surface popup a click on the model asks for.

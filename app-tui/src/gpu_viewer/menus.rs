@@ -53,11 +53,12 @@ fn view_entries(c: &MenuContext) -> ViewEntries {
     }
     results.push(ok_if(cmd("Next field", "F", Command::CycleField { forward: true }), nfields > 1, "this result has a single field"));
     results.push(ok_if(cmd("Previous field", "Shift+F", Command::CycleField { forward: false }), nfields > 1, "this result has a single field"));
-    let shown = v.style_for(scene);
+    let geometry = c.editor.is_some_and(|e| e.geometry_view());
+    let shown = v.style_for(scene, geometry);
     let style = DisplayStyle::ALL
         .iter()
         .map(|s| {
-            let colours = scene.fields.is_empty() || s.paints_surface();
+            let colours = geometry || s.paints_surface();
             ok_if(cmd(s.label(), "", Command::SetStyle(*s)).checked(shown == *s), colours, "a result is drawn with its colours: show the model (V) to use this style")
         })
         .collect();
@@ -386,8 +387,9 @@ mod tests {
 
     #[test]
     fn the_view_menu_offers_every_style_and_background_and_a_result_keeps_its_surface() {
-        let (mut v, mut s) = (ViewState::new(&scene()), scene());
-        let menu = |v: &ViewState, s: &Scene| bar(&ctx(v, s, None)).into_iter().find(|m| m.title == "View").unwrap().items;
+        let (mut v, mut s, ed) = (ViewState::new(&scene()), scene(), session());
+        // An editor showing the model: a geometry view, which any style can draw.
+        let menu = |v: &ViewState, s: &Scene| bar(&ctx(v, s, Some(&ed))).into_iter().find(|m| m.title == "View").unwrap().items;
         let view = menu(&v, &s);
         for style in DisplayStyle::ALL {
             assert_eq!(find(&view, style.label()).checked, Some(style == DisplayStyle::Wireframe), "{style:?}: wireframe is the default");
@@ -398,13 +400,16 @@ mod tests {
         assert_eq!(find(&view, "Custom colours...").checked, Some(false));
         v.apply(Command::SetBackground(Background::Solid([1, 2, 3])), &s);
         assert_eq!(find(&menu(&v, &s), "Custom colours...").checked, Some(true));
-        // A result is painted with its contour: the styles without a surface are unavailable and it shows shaded with edges.
+        // A result (or a mode shape) is painted with its contour: with no editor showing the model, the styles without a
+        // surface are unavailable and it shows shaded with edges.
         s.fields.push(crate::gpu_viewer::scene::ScalarField::from_f64("f", &[0.0, 1.0]).unwrap());
-        let view = menu(&v, &s);
+        let view = bar(&ctx(&v, &s, None)).into_iter().find(|m| m.title == "View").unwrap().items;
         assert!(!find(&view, "Wireframe").enabled && find(&view, "Wireframe").reason.is_some());
         assert!(find(&view, "Shaded").enabled);
         assert_eq!(find(&view, "Shaded with edges").checked, Some(true));
         assert_eq!(v.style, DisplayStyle::Wireframe, "the chosen style is kept for the model");
+        assert_eq!(v.style_for(&s, false), DisplayStyle::ShadedEdges);
+        assert_eq!(v.style_for(&s, true), DisplayStyle::Wireframe, "the model itself keeps the chosen style");
         // The ribbon's View tab offers them too.
         let tab = view_tab(&ctx(&v, &s, None));
         assert!(tab.groups.iter().any(|g| g.title == "Style") && tab.groups.iter().any(|g| g.title == "Background"));

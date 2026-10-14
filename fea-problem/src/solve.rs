@@ -24,6 +24,10 @@ pub enum Field {
     Sxy,
     MaxPrincipal,
     MinPrincipal,
+    /// von Mises equivalent of the elastic strain.
+    EqStrain,
+    MaxPrincipalStrain,
+    MinPrincipalStrain,
     /// Steady temperature (thermal studies).
     Temperature,
     /// Equivalent plastic strain (elastic-plastic material).
@@ -31,7 +35,7 @@ pub enum Field {
 }
 
 impl Field {
-    pub const ALL: [Field; 11] = [Field::VonMises, Field::Displacement, Field::MaxPrincipal, Field::MinPrincipal, Field::Sxx, Field::Syy, Field::Szz, Field::Sxy, Field::Ux, Field::Uy, Field::Uz];
+    pub const ALL: [Field; 14] = [Field::VonMises, Field::Displacement, Field::MaxPrincipal, Field::MinPrincipal, Field::EqStrain, Field::MaxPrincipalStrain, Field::MinPrincipalStrain, Field::Sxx, Field::Syy, Field::Szz, Field::Sxy, Field::Ux, Field::Uy, Field::Uz];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -48,6 +52,9 @@ impl Field {
             Field::Sxy => "Shear stress xy",
             Field::MaxPrincipal => "Max principal stress",
             Field::MinPrincipal => "Min principal stress",
+            Field::EqStrain => "Equivalent strain",
+            Field::MaxPrincipalStrain => "Max principal strain",
+            Field::MinPrincipalStrain => "Min principal strain",
         }
     }
 }
@@ -126,6 +133,12 @@ pub struct Solved {
     pub zz_eta: Vec<f64>,
 }
 
+/// The structural fields of a displacement vector `u` (`d` per node) and its nodal stresses, with their labels: what a mode
+/// shape can show besides its displacement. A mode's amplitude is arbitrary, so the values are relative.
+pub fn structural_fields(d: usize, u: &[f64], nodal: &[[f64; 6]], e: f64, nu: f64) -> Vec<(Field, Vec<f64>)> {
+    Field::ALL.into_iter().filter(|f| *f != Field::Displacement).map(|f| (f, field_values(d, u, nodal, f, e, nu))).collect()
+}
+
 /// Sorted (descending) principal values of a symmetric stress in the library order.
 pub fn principal(s: &[f64; 6]) -> [f64; 3] {
     let (xx, yy, zz, xy, yz, zx) = (s[0], s[1], s[2], s[3], s[4], s[5]);
@@ -146,7 +159,17 @@ pub fn principal(s: &[f64; 6]) -> [f64; 3] {
 }
 
 /// Values of `field` at every node from displacements `u` (`d` per node) and nodal stresses.
-fn field_values(d: usize, u: &[f64], nodal: &[[f64; 6]], field: Field) -> Vec<f64> {
+/// Elastic strain tensor `[xx, yy, zz, xy, yz, zx]` (tensor shears) of a stress state: Hooke's law of an isotropic material.
+fn elastic_strain(s: &[f64; 6], e: f64, nu: f64) -> [f64; 6] {
+    if !(e > 0.0 && e.is_finite()) {
+        return [0.0; 6];
+    }
+    let tr = s[0] + s[1] + s[2];
+    let f = |i: usize| ((1.0 + nu) * s[i] - if i < 3 { nu * tr } else { 0.0 }) / e;
+    [f(0), f(1), f(2), f(3), f(4), f(5)]
+}
+
+fn field_values(d: usize, u: &[f64], nodal: &[[f64; 6]], field: Field, e: f64, nu: f64) -> Vec<f64> {
     nodal
         .iter()
         .enumerate()
@@ -164,6 +187,9 @@ fn field_values(d: usize, u: &[f64], nodal: &[[f64; 6]], field: Field) -> Vec<f6
                 Field::Sxy => s[3],
                 Field::MaxPrincipal => principal(s)[0],
                 Field::MinPrincipal => principal(s)[2],
+                Field::EqStrain => if e > 0.0 { 2.0 * (1.0 + nu) * von_mises(s) / (3.0 * e) } else { 0.0 },
+                Field::MaxPrincipalStrain => principal(&elastic_strain(s, e, nu))[0],
+                Field::MinPrincipalStrain => principal(&elastic_strain(s, e, nu))[2],
                 // A temperature is not in these arrays: `Solved::node_values` answers it from the heat solution.
                 Field::Temperature | Field::PlasticStrain => 0.0,
             }
@@ -180,7 +206,7 @@ impl Solved {
         if field == Field::PlasticStrain {
             return self.plastic.clone().unwrap_or_else(|| vec![0.0; self.model.mesh.nodes.len()]);
         }
-        field_values(self.model.mesh.dim(), &self.u, &self.nodal, field)
+        field_values(self.model.mesh.dim(), &self.u, &self.nodal, field, self.problem.material.e, self.problem.material.nu)
     }
 
     /// The field a viewer opens on: the temperature of a thermal-only study, else the von Mises stress.
@@ -843,7 +869,7 @@ fn balance_error(physics: &Physics, reaction: &[f64; 3], applied: &[f64; 3], sca
 
 fn summarize(p: &Problem, pass: &Pass) -> Summary {
     let mesh = &pass.model.mesh;
-    let val = |f| field_values(mesh.dim(), &pass.u, &pass.nodal, f);
+    let val = |f| field_values(mesh.dim(), &pass.u, &pass.nodal, f, p.material.e, p.material.nu);
     let (vm, disp, p1, p3) = (val(Field::VonMises), val(Field::Displacement), val(Field::MaxPrincipal), val(Field::MinPrincipal));
     let max_vm = extreme(&vm, &mesh.nodes, true);
     // A fit alone applies no load: the reactions are then judged against the force the interference fit transmits.

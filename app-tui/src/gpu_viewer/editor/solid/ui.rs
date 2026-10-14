@@ -114,6 +114,7 @@ impl SolidSession {
         let mut out = vec![TreeNode::new(T_ROOT, 0, 'M', format!("{}{}", p.name, if self.dirty { " *" } else { "" })).tone(Tone::Title).selected(focus_feature == Some(Feature::Problem)).on_click(ui(SolidAction::FocusFeature(Feature::Problem)))];
         out.push(node(T_FEATURE_BASE, 1, 'A', format!("Analysis: {}", self.row_value(FieldRow::Analysis)), Feature::Problem));
         out.push(node(T_FEATURE_BASE + 1, 1, 'm', format!("Material: {}", p.material.name), Feature::Material));
+        out.push(TreeNode::new(T_FEATURE_BASE + 5, 1, 'u', format!("Units: {}", p.units.label())).on_click(ui(SolidAction::OpenCard(CardForm::Units))));
         out.push(TreeNode::new(T_GEOMETRY, 1, '+', "Geometry").folder());
         if p.history.is_none() {
             out.push(node(T_FEATURE_BASE + 2, 2, 'o', match &p.geometry {
@@ -277,6 +278,27 @@ impl Authoring for SolidSession {
     fn default_mesh_lines(&self) -> bool {
         true
     }
+    fn geometry_view(&self) -> bool {
+        self.showing_geometry
+    }
+    fn shows_result(&self) -> bool {
+        self.showing_result
+    }
+    fn field_unit(&self, label: &str) -> String {
+        let u = self.problem.units;
+        let l = label.to_lowercase();
+        if l.contains("strain") {
+            "strain".into()
+        } else if l.contains("stress") {
+            u.stress().into()
+        } else if l.contains("displacement") && !l.contains("arbitrary") {
+            u.length().into()
+        } else if l.contains("temperature") {
+            u.temperature().into()
+        } else {
+            String::new()
+        }
+    }
     fn shows_body_only(&self) -> bool {
         self.showing_body
     }
@@ -332,7 +354,7 @@ impl Authoring for SolidSession {
         let imported = matches!(self.problem.geometry, Geometry::Imported { .. });
         vec![
             RibbonTab::new("Model")
-                .group("Problem", vec![entry("New part", "Ctrl/Cmd+N", SolidAction::NewPart).when(self.replace_availability()), entry("Open file", "Ctrl/Cmd+O", SolidAction::OpenFile).when(self.replace_availability()), entry("Next template", "", SolidAction::NextTemplate), act("Analysis type", "", Analysis), entry("Material library", "", SolidAction::OpenCard(CardForm::Materials))])
+                .group("Problem", vec![entry("New part", "Ctrl/Cmd+N", SolidAction::NewPart).when(self.replace_availability()), entry("Open file", "Ctrl/Cmd+O", SolidAction::OpenFile).when(self.replace_availability()), entry("Next template", "", SolidAction::NextTemplate), act("Analysis type", "", Analysis), entry("Material library", "", SolidAction::OpenCard(CardForm::Materials)), entry("Units", "", SolidAction::OpenCard(CardForm::Units))])
                 .group(
                     "Geometry",
                     vec![
@@ -434,7 +456,7 @@ impl Authoring for SolidSession {
             },
             Menu {
                 title: "Tools".into(),
-                items: vec![act("Analysis type", Analysis), item(entry("Material library...", "", SolidAction::OpenCard(CardForm::Materials))), act("Element type", Element), act("Adaptive passes", AdaptPasses), item(entry("Refine where recommended", "", SolidAction::RefineAll).when(self.refine_availability())), item(entry("Show refinement hints", "", SolidAction::ToggleRefineShow).checked(self.show_refine)), item(entry("Generate mesh", "", SolidAction::GenerateMesh).when(self.mesh_availability()))],
+                items: vec![act("Analysis type", Analysis), item(entry("Material library...", "", SolidAction::OpenCard(CardForm::Materials))), item(entry("Units...", "", SolidAction::OpenCard(CardForm::Units))), act("Element type", Element), act("Adaptive passes", AdaptPasses), item(entry("Refine where recommended", "", SolidAction::RefineAll).when(self.refine_availability())), item(entry("Show refinement hints", "", SolidAction::ToggleRefineShow).checked(self.show_refine)), item(entry("Generate mesh", "", SolidAction::GenerateMesh).when(self.mesh_availability()))],
             },
             Menu { title: "Simulation".into(), items: self.simulation_items() },
             Menu { title: "Advisor".into(), items: self.advisor_items() },

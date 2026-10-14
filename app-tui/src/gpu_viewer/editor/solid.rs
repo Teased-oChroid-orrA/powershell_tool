@@ -123,6 +123,10 @@ pub enum SolidAction {
     ApplyMaterial(usize),
     CardMaterialGroup,
     CardMaterialSort,
+    /// Rescale the whole model into another unit system.
+    ConvertUnits(fea_problem::UnitSystem),
+    /// Read the model's numbers as another unit system (no rescaling).
+    DeclareUnits(fea_problem::UnitSystem),
     /// Add a load case and open its card.
     NewCase,
     /// Make load case `i` the active one.
@@ -134,6 +138,10 @@ pub enum SolidAction {
     RunStudy(StudyKind),
     /// Write the current result next to the model file: a text report, a ParaView file or a nodal CSV.
     Export(ExportKind),
+    /// Change load `.0` to another kind, keeping its resultant.
+    ConvertLoad(usize, fea_problem::conversion::LoadKind),
+    /// Change support `.0` to another kind.
+    ConvertSupport(usize, fea_problem::conversion::SupportKind),
     /// Structural, steady thermal or thermal-stress study of the model.
     SetStudy(fea_problem::Study),
     ShowStudy,
@@ -292,6 +300,10 @@ pub struct SolidSession {
     /// The geometry the running body job was started for, and the one that last failed (not retried until it changes).
     /// The scene built last is the un-meshed body (`Authoring::shows_body_only`).
     showing_body: bool,
+    /// The scene built last is the model itself (not sketch tubes, a result, a study).
+    showing_geometry: bool,
+    /// ... or a result, a mode shape or a transient.
+    showing_result: bool,
     body_started: Option<Problem>,
     body_failed: Option<Problem>,
     solve_worker: Worker<Solved>,
@@ -363,6 +375,8 @@ impl SolidSession {
             body: None,
             body_worker: Worker::new("solid-body"),
             showing_body: false,
+            showing_geometry: false,
+            showing_result: false,
             body_started: None,
             body_failed: None,
             solve_worker: Worker::new("solid-solve"),
@@ -1069,6 +1083,8 @@ impl SolidSession {
     }
     fn build_scene_inner(&mut self) -> Result<Scene, String> {
         self.showing_body = false;
+        self.showing_geometry = false;
+        self.showing_result = false;
         if self.sketching.is_some() {
             self.pick_positions.clear();
             return self.sketch_scene();
@@ -1076,18 +1092,22 @@ impl SolidSession {
         let showing = self.current_solution().filter(|_| self.show_results).cloned();
         let scene = if let Some(study_scene) = self.study_scene() {
             self.pick_positions.clear();
+            self.showing_result = true;
             study_scene
         } else if let Some(solved) = showing {
             self.pick_positions.clear();
+            self.showing_result = true;
             SceneSource::from_solved(&solved, solved.default_field()).build()?
         } else if let Some(p) = self.preview.as_ref().filter(|p| p.key == preview_key(&self.problem)) {
             let mesh = p.mesh.clone();
             let label = format!("{} | geometry: blue body, teal support, yellow load, red selected", self.problem.name);
+            self.showing_geometry = true;
             self.geometry_scene(&mesh, label, true)?
         } else if let Some(mesh) = self.shown_mesh().cloned() {
             // No analysis mesh yet: the body itself, with its supports and loads, ready to pick on.
             let label = format!("{} | body (not meshed): blue body, teal support, yellow load, red selected", self.problem.name);
             self.showing_body = true;
+            self.showing_geometry = true;
             self.geometry_scene(&mesh, label, false)?
         } else {
             self.pick_positions.clear();
@@ -1191,6 +1211,8 @@ impl SolidSession {
             SolidAction::SolidOp(op) => self.begin_solid_op(op),
             SolidAction::Answer(f, q, o) => self.do_answer(f, q, o),
             SolidAction::BoundaryKind(k) => self.add_boundary_kind(k),
+            SolidAction::ConvertLoad(i, kind) => self.convert_load(i, kind),
+            SolidAction::ConvertSupport(i, kind) => self.convert_support(i, kind),
             SolidAction::Export(kind) => self.export(kind),
             SolidAction::SetStudy(study) => {
                 self.edit(|p| p.study = study);
@@ -1200,6 +1222,8 @@ impl SolidSession {
             SolidAction::CardToggle(i) => self.card_toggle(i),
             SolidAction::CardApply => self.card_apply(),
             SolidAction::ApplyMaterial(i) => self.apply_material_index(i),
+            SolidAction::ConvertUnits(u) => self.convert_units(u),
+            SolidAction::DeclareUnits(u) => self.declare_units(u),
             SolidAction::CardMaterialGroup => self.card_material_cycle(false),
             SolidAction::CardMaterialSort => self.card_material_cycle(true),
             SolidAction::CardCancel => self.card_cancel(),

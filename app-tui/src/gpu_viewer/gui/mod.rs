@@ -61,6 +61,8 @@ pub struct Gui {
     /// Where the last right-click menu opened (the value card appears beside it) and the title of the card shown.
     menu_at: Option<Pos2>,
     card_key: Option<String>,
+    /// Where the folded feature tree's chip was drawn this frame (the tool pill keeps clear of it).
+    chip_rect: Option<Rect>,
     /// Where the floating list was drawn last frame (points).
     floating_rect: Option<Rect>,
     hint: Option<String>,
@@ -113,6 +115,7 @@ impl Gui {
             bg_picker: false,
             menu_at: None,
             card_key: None,
+            chip_rect: None,
             floating_rect: None,
             hint: None,
             viewport: None,
@@ -265,6 +268,14 @@ impl Gui {
         (inside.len(), inside.iter().map(|r| r.width()).fold(0.0, f32::max))
     }
     #[cfg(test)]
+    pub(crate) fn chip_rect(&self) -> Option<Rect> {
+        self.chip_rect
+    }
+    #[cfg(test)]
+    pub(crate) fn pill_rect(&self) -> Option<Rect> {
+        self.pill_rect
+    }
+    #[cfg(test)]
     pub(crate) fn floating_rect(&self) -> Option<Rect> {
         self.floating_rect
     }
@@ -303,6 +314,7 @@ impl Gui {
         let p = theme::current(ui.ctx());
         self.now = ui.ctx().input(|i| i.time);
         self.pill_rect = None;
+        self.chip_rect = None;
         let mctx = MenuContext { view: input.view, scene: input.scene(), results: if input.editor.is_some() { 1 } else { input.scenes.len() }, editor: input.editor, visible: self.visible, adaptive: self.adapt.enabled };
         let menus = menus::bar(&mctx);
         let tabs = menus::ribbon(&mctx);
@@ -356,6 +368,7 @@ impl Gui {
         self.start_card(ui.ctx(), input, &p, out, hint);
         self.selection_box(ui.ctx(), input, &p);
         self.floating_list(ui.ctx(), &p, out, hint);
+        self.contour_legend(ui.ctx(), input, &p, out);
         self.value_card(ui.ctx(), input, &p, out, hint);
         self.background_picker(ui.ctx(), input.view.background, &p, out);
         self.palette_window(ui.ctx(), &menus, &p, out);
@@ -407,6 +420,13 @@ impl Gui {
         }
         let ppp = ctx.pixels_per_point();
         let painter = ctx.layer_painter(egui::LayerId::new(Order::Middle, Id::new("model-labels"))).with_clip_rect(vp);
+        // Supports and loads sit under the docks, the tool pill and every card: a glyph is part of the model, not of the chrome.
+        let back = ctx.layer_painter(egui::LayerId::new(Order::Background, Id::new("bc-glyphs"))).with_clip_rect(vp);
+        let inner = vp.shrink(6.0);
+        let clamp_in = |r: Rect| -> Rect {
+            let d = Vec2::new((inner.left() - r.left()).max(0.0) - (r.right() - inner.right()).max(0.0), (inner.top() - r.top()).max(0.0) - (r.bottom() - inner.bottom()).max(0.0));
+            r.translate(d)
+        };
         // The window's viewport pixels are physical; egui draws in points.
         let origin = vp.min;
         for o in input.overlay {
@@ -424,12 +444,12 @@ impl Gui {
                     let col = p.warn;
                     let dir = (tip - at).normalized();
                     let side = Vec2::new(-dir.y, dir.x);
-                    painter.line_segment([at, tip], egui::Stroke::new(2.5, col));
-                    painter.add(egui::Shape::convex_polygon(vec![tip, tip - dir * 11.0 + side * 5.0, tip - dir * 11.0 - side * 5.0], col, egui::Stroke::NONE));
-                    let galley = painter.layout_no_wrap(o.text.clone(), egui::FontId::monospace(11.0), p.text);
-                    let rect = Rect::from_center_size(at - dir * 10.0, galley.size() + Vec2::new(8.0, 3.0));
-                    painter.rect(rect, 3.0, with_alpha(p.panel, 225), egui::Stroke::new(1.0, col), egui::StrokeKind::Inside);
-                    painter.galley(rect.center() - galley.size() / 2.0, galley, p.text);
+                    back.line_segment([at, tip], egui::Stroke::new(2.5, col));
+                    back.add(egui::Shape::convex_polygon(vec![tip, tip - dir * 11.0 + side * 5.0, tip - dir * 11.0 - side * 5.0], col, egui::Stroke::NONE));
+                    let galley = back.layout_no_wrap(o.text.clone(), egui::FontId::monospace(11.0), p.text);
+                    let rect = clamp_in(Rect::from_center_size(at - dir * 10.0, galley.size() + Vec2::new(8.0, 3.0)));
+                    back.rect(rect, 3.0, with_alpha(p.panel, 225), egui::Stroke::new(1.0, col), egui::StrokeKind::Inside);
+                    back.galley(rect.center() - galley.size() / 2.0, galley, p.text);
                 }
                 OverlayKind::Support => {
                     let out = o.tip.map_or(Vec2::new(0.0, -1.0), |t| Vec2::new(t[0], t[1]));
@@ -437,16 +457,16 @@ impl Gui {
                     let col = p.good;
                     // A triangle standing on the face with hatching under it, and the held directions beside.
                     let base = at + out * 22.0;
-                    painter.add(egui::Shape::convex_polygon(vec![at, base + side * 12.0, base - side * 12.0], with_alpha(col, 200), egui::Stroke::new(1.5, col)));
+                    back.add(egui::Shape::convex_polygon(vec![at, base + side * 12.0, base - side * 12.0], with_alpha(col, 200), egui::Stroke::new(1.5, col)));
                     for k in [-1.0f32, 0.0, 1.0] {
                         let a = base + side * (12.0 * k);
-                        painter.line_segment([a, a + out * 7.0 - side * 4.0], egui::Stroke::new(1.5, col));
+                        back.line_segment([a, a + out * 7.0 - side * 4.0], egui::Stroke::new(1.5, col));
                     }
                     if !o.text.is_empty() {
-                        let galley = painter.layout_no_wrap(o.text.clone(), egui::FontId::monospace(11.0), p.text);
-                        let rect = Rect::from_center_size(base + out * 24.0, galley.size() + Vec2::new(6.0, 2.0));
-                        painter.rect(rect, 3.0, with_alpha(p.panel, 225), egui::Stroke::new(1.0, col), egui::StrokeKind::Inside);
-                        painter.galley(rect.center() - galley.size() / 2.0, galley, p.text);
+                        let galley = back.layout_no_wrap(o.text.clone(), egui::FontId::monospace(11.0), p.text);
+                        let rect = clamp_in(Rect::from_center_size(base + out * 24.0, galley.size() + Vec2::new(6.0, 2.0)));
+                        back.rect(rect, 3.0, with_alpha(p.panel, 225), egui::Stroke::new(1.0, col), egui::StrokeKind::Inside);
+                        back.galley(rect.center() - galley.size() / 2.0, galley, p.text);
                     }
                 }
                 OverlayKind::Constraint => {
@@ -466,6 +486,91 @@ impl Gui {
         let r = Rect::from_two_pos(pt(a), pt(b));
         let painter = ctx.layer_painter(egui::LayerId::new(Order::Foreground, Id::new("selection-box")));
         painter.rect(r, 2.0, p.accent.gamma_multiply(0.16), egui::Stroke::new(1.0, p.accent), egui::StrokeKind::Inside);
+    }
+
+    /// What the colours mean, bottom right of the model: the field's name and unit over a colour bar with its values for a
+    /// result (click the name for the next field), or the colour key of the model's own state (body, support, load, selected).
+    fn contour_legend(&mut self, ctx: &egui::Context, input: &GuiInput, p: &Palette, out: &mut Vec<Outcome>) {
+        use crate::gpu_viewer::text::colormap;
+        // Four significant figures: a tick label is read at a glance.
+        let legend_value = |v: f32| -> String {
+            let a = v.abs();
+            if v == 0.0 {
+                "0".into()
+            } else if !(1e-2..1e5).contains(&a) {
+                format!("{v:.3e}")
+            } else if a >= 100.0 {
+                format!("{v:.1}")
+            } else {
+                format!("{v:.3}")
+            }
+        };
+        let Some(vp) = self.viewport else { return };
+        let geometry = input.editor.is_some_and(|e| e.geometry_view());
+        let scene = input.scene();
+        // Only the model's own state or a result has colours worth explaining (a sketch's tubes or a placeholder have none).
+        let result = input.editor.is_none_or(|e| e.shows_result());
+        if !(geometry || result && input.view.show_contour) {
+            return;
+        }
+        let swatch = |t: f32| {
+            let [r, g, b] = colormap(t);
+            Color32::from_rgb(r, g, b)
+        };
+        egui::Area::new(Id::new("contour-legend")).fade_in(false).interactable(!geometry).order(Order::Middle).pivot(Align2::RIGHT_BOTTOM).fixed_pos(Pos2::new(vp.right() - 14.0, vp.bottom() - 14.0)).show(ctx, |ui| {
+            panels::popup_frame(p).fill(p.panel).inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| {
+                if geometry {
+                    ui.label(egui::RichText::new("COLOUR KEY").small().strong().color(p.dim));
+                    for (name, code) in [("Body", 0.0f32), ("Support", 1.0), ("Load", 2.0), ("Selected", 3.0)] {
+                        ui.horizontal(|ui| {
+                            let (rect, _) = ui.allocate_exact_size(Vec2::new(14.0, 14.0), egui::Sense::hover());
+                            ui.painter().rect_filled(rect, 3.0, swatch(code / 3.0));
+                            ui.label(name);
+                        });
+                    }
+                    return;
+                }
+                let view = input.view;
+                let name = view.field_name(scene);
+                let unit = input.editor.map(|e| e.field_unit(&name)).unwrap_or_default();
+                let [lo, hi] = view.range(scene);
+                let title = if unit.is_empty() { name.clone() } else { format!("{name} [{unit}]") };
+                ui.set_max_width(250.0);
+                let cycles = !scene.fields.is_empty();
+                let r = ui.add(egui::Button::new(egui::RichText::new(&title).strong()).frame(false).wrap());
+                self.targets.push((format!("{name} legend"), r.rect));
+                if cycles {
+                    let r = r.on_hover_text("Click, or press F, for the next result field");
+                    if r.clicked() {
+                        out.push(Outcome::Action(UiAction::Command(Command::CycleField { forward: true })));
+                    }
+                }
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let (bar, _) = ui.allocate_exact_size(Vec2::new(16.0, 170.0), egui::Sense::hover());
+                    let n = 48;
+                    for k in 0..n {
+                        let t0 = k as f32 / n as f32;
+                        let y0 = bar.bottom() - bar.height() * (t0 + 1.0 / n as f32);
+                        ui.painter().rect_filled(Rect::from_min_size(Pos2::new(bar.left(), y0), Vec2::new(bar.width(), bar.height() / n as f32 + 0.5)), 0.0, swatch(t0 + 0.5 / n as f32));
+                    }
+                    ui.painter().rect_stroke(bar, 0.0, egui::Stroke::new(1.0, p.line), egui::StrokeKind::Inside);
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        // Five ticks from the largest value at the top to the smallest at the bottom.
+                        for (k, frac) in [1.0f32, 0.75, 0.5, 0.25, 0.0].into_iter().enumerate() {
+                            ui.label(egui::RichText::new(legend_value(lo + (hi - lo) * frac)).monospace().size(11.0).color(p.text));
+                            if k < 4 {
+                                ui.add_space(170.0 / 4.0 - 14.0);
+                            }
+                        }
+                    });
+                });
+                if cycles {
+                    ui.label(egui::RichText::new(format!("field {} of {}", view.field.min(scene.fields.len()) + 1, scene.fields.len() + 1)).small().color(p.dim));
+                }
+            });
+        });
     }
 
     /// The value card an editor has open (a constraint's directions, a load's numbers, a load case), beside the face's menu.

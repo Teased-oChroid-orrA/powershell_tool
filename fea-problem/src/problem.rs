@@ -594,6 +594,9 @@ pub struct Problem {
     /// Index of the case a solve uses.
     #[serde(default, skip_serializing_if = "is_zero_index")]
     pub active_case: usize,
+    /// The consistent unit system every number of the problem is written in (see `units`).
+    #[serde(default, skip_serializing_if = "is_inch_psi")]
+    pub units: crate::units::UnitSystem,
     /// Uniform temperature change from the stress-free state.
     #[serde(default)]
     pub delta_t: f64,
@@ -611,6 +614,10 @@ pub struct Problem {
     /// `geometry` (and `analysis` for a solid) from it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<crate::history::History>,
+}
+
+fn is_inch_psi(u: &crate::units::UnitSystem) -> bool {
+    *u == crate::units::UnitSystem::InchPsi
 }
 
 fn is_zero_index(n: &usize) -> bool {

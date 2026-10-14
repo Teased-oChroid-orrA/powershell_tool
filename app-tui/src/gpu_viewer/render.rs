@@ -1275,6 +1275,48 @@ mod snapshot_tests {
         });
     }
 
+    /// A solved static result with its legend, the feature tree folded to its chip, and the glyphs of the supports and
+    /// loads, as raw RGBA dumps: `FEA_SNAPSHOT_RESULT_OUT=/dir cargo test ... result_legend_snapshot -- --ignored`.
+    #[test]
+    #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_RESULT_OUT"]
+    fn result_legend_snapshot() {
+        use crate::gpu_viewer::editor::solid::{SolidAction, SolidSession};
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_RESULT_OUT") else { return };
+        let _guard = headless_guard();
+        let mut problem = fea_problem::templates::templates().remove(0).1;
+        problem.mesh.size = 0.6;
+        let mut session = SolidSession::new(problem, "demo-result.json".into());
+        session.do_action(SolidAction::GenerateMesh);
+        let t = std::time::Instant::now();
+        while session.preview_summary().is_err() {
+            session.poll();
+            assert!(t.elapsed().as_secs() < 60);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        session.solve();
+        while !session.poll() || session.solving() {
+            assert!(t.elapsed().as_secs() < 120);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        pollster::block_on(async {
+            let adapter = test_adapter().await.expect("adapter required");
+            let (w, h) = (1280u32, 800u32);
+            let scene = session.scene().unwrap();
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+            let texture = target(&r, w, h);
+            let mut gui = Gui::new();
+            gui.ctx().set_theme(egui::Theme::Dark);
+            gui.toggle_tree_open();
+            let mut view = ViewState::new(&scene);
+            view.field = 0;
+            let scenes = [scene];
+            let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+            gui.select_tab_named(&input, "Simulation");
+            draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+            std::fs::write(format!("{dir}/result.rgba"), read_back(&r, &texture)).unwrap();
+        });
+    }
+
     /// The un-meshed 3D body in every display style and the same body meshed, as raw RGBA dumps:
     /// `FEA_SNAPSHOT_BODY_OUT=/dir cargo test ... body_styles_snapshot -- --ignored`.
     #[test]

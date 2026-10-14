@@ -233,7 +233,7 @@ fn solving_runs_on_a_worker_and_the_results_carry_every_field() {
     assert!(s.status.starts_with("Solved"));
     assert!(s.solve_availability().unwrap_err().contains("already current"));
     let scene = s.build_scene().unwrap();
-    assert_eq!(scene.fields.len(), 10, "11 fields: the primary plus ten selectable ones");
+    assert_eq!(scene.fields.len(), 13, "14 fields: the primary plus thirteen selectable ones (stresses, strains, displacements)");
     assert!(texts(&s).iter().any(|t| t == "Result") && texts(&s).iter().any(|t| t.starts_with("max von Mises")));
     // Editing makes the result stale and returns to the model.
     s.focus = row_index(&s, FieldRow::MeshSize);
@@ -936,14 +936,15 @@ fn supports_and_loads_are_drawn_on_the_model_as_glyphs_that_follow_the_camera_an
     let glyphs = Authoring::overlay(&s, &cam, size);
     let loads: Vec<_> = glyphs.iter().filter(|g| g.kind == OverlayKind::Load).collect();
     let supports: Vec<_> = glyphs.iter().filter(|g| g.kind == OverlayKind::Support).collect();
-    assert_eq!((loads.len(), supports.len()), (2, 2), "the template has a traction, a pressure and two supports: {glyphs:?}");
+    // The roller on the left face and the point support at its centre land on one spot: one glyph names both directions.
+    assert_eq!((loads.len(), supports.len()), (2, 1), "a traction, a pressure and the two supports merged: {glyphs:?}");
     // The traction pulls the part to the right (+x leaves the right face); the pressure on the top pushes down into it.
     let traction = loads.iter().find(|g| g.text == "10000").expect("traction label");
     assert!(traction.tip.unwrap()[0] > traction.px[0] + 20.0, "{traction:?}");
     let pressure = loads.iter().find(|g| g.text == "500").expect("pressure label");
     assert!(pressure.tip.unwrap()[1] > pressure.px[1] + 20.0, "pushes down: tail above tip on the screen: {pressure:?}");
     // The roller on the left holds x only; the support glyph says so and points out of the face (to the left).
-    let roller = supports.iter().find(|g| g.text == "x").expect("a support holding x");
+    let roller = supports.iter().find(|g| g.text == "xy").expect("the merged support holding x and y");
     assert!(roller.tip.unwrap()[0] < -0.5, "{roller:?}");
     // Turning the camera moves the glyphs; a load case that switches the pressure off removes its arrow.
     let turned = Authoring::overlay(&s, &Camera { yaw: 0.8, ..cam }, size);
@@ -1114,4 +1115,146 @@ fn a_result_is_exported_as_report_paraview_and_csv_next_to_the_model() {
     let csv = read("csv");
     assert!(csv.starts_with("node,x,y") && csv.lines().count() > 100, "one row per node");
     assert!(!read("txt").is_empty());
+}
+
+#[test]
+fn a_mode_shape_offers_the_same_fields_as_a_static_result_and_each_has_real_values() {
+    let mut s = session("mode-fields");
+    s.do_action(SolidAction::RunStudy(StudyKind::Modal));
+    study_done(&mut s, StudyKind::Modal);
+    let scene = &s.current_study().unwrap().scenes[0];
+    let names: Vec<&str> = scene.fields.iter().map(|f| f.label.as_str()).collect();
+    for want in ["von Mises stress (relative)", "Max principal stress (relative)", "Equivalent strain (relative)", "Max principal strain (relative)", "Min principal strain (relative)", "Stress xx (relative)", "Displacement x (relative)"] {
+        assert!(names.contains(&want), "{want} in {names:?}");
+    }
+    let vm = scene.fields.iter().find(|f| f.label.starts_with("von Mises")).unwrap();
+    assert!(vm.range[1] > vm.range[0] && vm.values.iter().all(|v| v.is_finite() && *v >= 0.0), "{:?}", vm.range);
+    // Hooke's law ties the strain field to the stress field: equivalent strain = 2 (1 + nu) vM / (3 E).
+    let eq = scene.fields.iter().find(|f| f.label.starts_with("Equivalent strain")).unwrap();
+    let (e, nu) = (s.problem.material.e as f32, s.problem.material.nu as f32);
+    let k = 2.0 * (1.0 + nu) / (3.0 * e);
+    for (a, b) in vm.values.iter().zip(&eq.values) {
+        assert!((a * k - b).abs() <= 1e-3 * b.abs() + 1e-12, "{a} {b}");
+    }
+    // The viewer cycles through them like a static result's.
+    let mut v = crate::gpu_viewer::controller::ViewState::new(scene);
+    for _ in 0..3 {
+        v.apply(crate::gpu_viewer::controller::Command::CycleField { forward: true }, scene);
+    }
+    assert_eq!(v.field, 3);
+    assert_eq!(v.field_name(scene), scene.fields[2].label);
+}
+
+#[test]
+fn the_unit_system_is_converted_or_declared_from_a_card_and_every_card_and_the_library_follow_it() {
+    use crate::gpu_viewer::ui::CardRow;
+    use fea_problem::UnitSystem;
+    let mut s = session("units");
+    assert_eq!(s.problem.units, UnitSystem::InchPsi);
+    assert!(Authoring::tree(&s).iter().any(|n| n.label == "Units: inch, lbf, psi"));
+    s.do_action(SolidAction::OpenCard(CardForm::Units));
+    let labels: Vec<String> = s.card_view().unwrap().rows.into_iter().filter_map(|r| if let CardRow::Choice { label, .. } = r { Some(label) } else { None }).collect();
+    for want in ["Convert to mm, N, MPa", "Convert to m, N, Pa", "Declare as mm, N, MPa", "Declare as m, N, Pa"] {
+        assert!(labels.iter().any(|l| l == want), "{want} in {labels:?}");
+    }
+    let e_before = s.problem.material.e;
+    s.do_action(SolidAction::ConvertUnits(UnitSystem::MmMpa));
+    assert!(s.card_view().is_none());
+    assert_eq!(s.problem.units, UnitSystem::MmMpa);
+    assert!((s.problem.material.e / e_before - 6.894_757e-3).abs() < 1e-6, "29e6 psi is about 2e5 MPa: {}", s.problem.material.e);
+    assert!(s.status.contains("rescaled"), "{}", s.status);
+    assert!(Authoring::tree(&s).iter().any(|n| n.label == "Units: mm, N, MPa"));
+    // The cards speak the new units, and so does the legend.
+    s.selected = Some("top".into());
+    s.do_action(SolidAction::OpenCard(CardForm::Pressure));
+    let unit = s.card_view().unwrap().rows.into_iter().find_map(|r| if let CardRow::Field { unit, .. } = r { Some(unit) } else { None }).unwrap();
+    assert_eq!(unit, "MPa");
+    s.do_action(SolidAction::CardCancel);
+    assert_eq!(Authoring::field_unit(&s, "von Mises stress"), "MPa");
+    assert_eq!(Authoring::field_unit(&s, "Displacement magnitude"), "mm");
+    assert_eq!(Authoring::field_unit(&s, "Equivalent strain"), "strain");
+    // A library material arrives in the model's units: 7075-T6 is 10 300 ksi = 71 016 MPa, with its mass density in tonne/mm3 units.
+    s.do_action(SolidAction::OpenCard(CardForm::Materials));
+    set_field(&mut s, 0, "7075 typical");
+    let first = s.card_view().unwrap().rows.into_iter().find_map(|r| if let CardRow::Choice { label, action: UiAction::Editor(EditorAction::Solid(a)), .. } = r { (label == "Al 7075-T6 (typical)").then_some(a) } else { None }).unwrap();
+    s.do_action(first);
+    assert!((s.problem.material.e - 71_016.0).abs() < 5.0, "{}", s.problem.material.e);
+    let rho_kg_m3 = s.problem.material.density * UnitSystem::MmMpa.density_kg_m3();
+    assert!((rho_kg_m3 - 2796.0).abs() < 5.0, "{rho_kg_m3}");
+    // Declaring rescales nothing.
+    let e = s.problem.material.e;
+    s.do_action(SolidAction::DeclareUnits(UnitSystem::MeterPa));
+    assert_eq!((s.problem.units, s.problem.material.e), (UnitSystem::MeterPa, e));
+    // A geometry that cannot be rescaled refuses a conversion and says why.
+    let mut imported = SolidSession::new(fea_problem::templates::imported("x.msh"), temp("units-imported"));
+    imported.do_action(SolidAction::ConvertUnits(UnitSystem::MmMpa));
+    assert!(imported.status.contains("declare its units instead"), "{}", imported.status);
+    assert_eq!(imported.problem.units, UnitSystem::InchPsi);
+}
+
+#[test]
+fn a_support_or_load_changes_kind_from_its_menu_and_a_point_force_becomes_a_pressure_on_the_picked_face() {
+    use fea_problem::{Load, Support};
+    let mut s = session("convert");
+    s.problem.loads = vec![Load::Traction { edge: "right".into(), tx: 10_000.0, ty: 0.0, tz: 0.0 }, Load::Point { x: 6.0, y: 4.0, z: 0.0, fx: 0.0, fy: -300.0, fz: 0.0 }];
+    s.problem.supports = vec![Support::roller("left", 0), Support::Point { x: 0.0, y: 2.0, z: 0.0, ux: None, uy: Some(0.0), uz: None }];
+    // The tree row of a load lists what it can become (not what it is), and an edit entry.
+    let load_node = ui::T_FEATURE_BASE + 2_000;
+    let menu = entry_labels(Authoring::tree_menu(&s, load_node));
+    assert!(menu.iter().any(|l| l == "Edit values..."), "{menu:?}");
+    for want in ["Pressure", "Force", "Point force"] {
+        assert!(menu.iter().any(|l| l == want), "{want} in {menu:?}");
+    }
+    assert!(!menu.iter().any(|l| l == "Traction"), "its own kind is not offered");
+    // The face menu of 'right' offers it too.
+    s.selected = Some("right".into());
+    assert!(entry_labels(s.surface_menu()).iter().any(|l| l == "Force"));
+    s.do_action(SolidAction::ConvertLoad(0, fea_problem::conversion::LoadKind::Force));
+    assert!(matches!(&s.problem.loads[0], Load::Force { fx, .. } if (fx - 10_000.0).abs() < 1e-6), "{:?}", s.problem.loads[0]);
+    assert!(s.status.starts_with("Converted to a force"), "{}", s.status);
+    // One undo returns the traction.
+    s.undo();
+    assert!(matches!(&s.problem.loads[0], Load::Traction { .. }));
+    // A point force (no surface of its own) becomes a pressure on the picked face; the pull along it is not a pressure.
+    s.selected = Some("top".into());
+    s.do_action(SolidAction::ConvertLoad(1, fea_problem::conversion::LoadKind::Pressure));
+    assert!(matches!(&s.problem.loads[1], Load::Pressure { edge, p } if edge == "top" && (p - 100.0).abs() < 1e-6), "300 down into a top face of area 3: pressure 100: {:?}", s.problem.loads[1]);
+    // Supports: the point support becomes a fixed face; the roller becomes a point.
+    s.selected = Some("bottom".into());
+    let node = ui::T_FEATURE_BASE + 1_000 + 1;
+    let menu = entry_labels(Authoring::tree_menu(&s, node));
+    assert!(menu.iter().any(|l| l == "Change directions..."), "{menu:?}");
+    assert!(menu.iter().any(|l| l == "Fixed") && menu.iter().any(|l| l == "Slides on the face"), "{menu:?}");
+    s.do_action(SolidAction::ConvertSupport(1, fea_problem::conversion::SupportKind::Fixed));
+    assert!(matches!(&s.problem.supports[1], Support::Edge { edge, uy: Some(_), ux: Some(_), .. } if edge == "bottom"), "{:?}", s.problem.supports[1]);
+    s.do_action(SolidAction::ConvertSupport(0, fea_problem::conversion::SupportKind::Point));
+    assert!(matches!(&s.problem.supports[0], Support::Point { x, .. } if x.abs() < 1e-9), "{:?}", s.problem.supports[0]);
+    // A refused conversion changes nothing and says why.
+    let before = s.problem.clone();
+    s.do_action(SolidAction::ConvertLoad(0, fea_problem::conversion::LoadKind::Bearing));
+    assert_eq!(s.problem, before);
+    assert!(s.status.contains("hole"), "{}", s.status);
+}
+
+#[test]
+fn an_imported_mesh_is_forecast_from_its_mesh_before_a_solve_and_the_units_slip_is_named() {
+    use fea_problem::diagnose::FailureClass;
+    let inp = "*NODE\n1,0,0\n2,1,0\n3,2,0\n4,0,1\n5,1,1\n6,2,1\n*ELEMENT, TYPE=CPS4\n1,1,2,5,4\n2,2,3,6,5\n*NSET, NSET=LEFT\n1,4\n*NSET, NSET=RIGHT\n3,6\n";
+    let mut p = fea_problem::templates::templates().into_iter().find(|(n, _)| *n == "Cantilever beam").unwrap().1;
+    p.geometry = fea_problem::Geometry::Imported { path: "bar.inp".into() };
+    p.thickness = 1.0;
+    p.supports = vec![Support::fixed("LEFT")];
+    p.loads = vec![fea_problem::Load::Force { edge: "RIGHT".into(), fx: 100.0, fy: 0.0, fz: 0.0 }];
+    p.material.e = 290.0;
+    let mut s = SolidSession::new(p, temp("imported-forecast"));
+    s.import = Some(("bar.inp".into(), inp.into()));
+    assert!(!s.findings().iter().any(|d| d.summary.contains("would move this part")), "no mesh yet: nothing to read the size from");
+    meshed(&mut s);
+    let found = s.findings();
+    let scale = found.iter().find(|d| d.class == FailureClass::ScaleSuspect && d.summary.contains("would move this part")).expect("a forecast from the imported mesh");
+    assert!(scale.questions[0].options.len() >= 2);
+    // A sound modulus raises nothing.
+    s.problem.material.e = 29.0e6;
+    s.touch();
+    assert!(!s.findings().iter().any(|d| d.class == FailureClass::ScaleSuspect));
 }

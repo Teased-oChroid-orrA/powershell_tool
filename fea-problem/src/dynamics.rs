@@ -240,6 +240,20 @@ impl DynSolved {
         }
     }
 
+    /// What a mode shape shows besides its displacement magnitude: stresses and strains of the mode (relative to its arbitrary
+    /// amplitude) and the displacement components. Empty when the stresses of the shape cannot be recovered.
+    pub fn mode_fields(&self, i: usize) -> Vec<(String, Vec<f64>)> {
+        let (problem, model) = match self {
+            DynSolved::Modal(m) => (&m.problem, &m.model),
+            DynSolved::Buckling(b) => (&b.problem, &b.model),
+        };
+        let Ok(nodal) = model.nodal_stresses(self.shape(i), 0.0) else { return Vec::new() };
+        crate::solve::structural_fields(model.mesh.dim(), self.shape(i), &nodal, problem.material.e, problem.material.nu)
+            .into_iter()
+            .map(|(f, v)| (format!("{} (relative)", f.label()), v))
+            .collect()
+    }
+
     /// Title of the contour of mode `i`.
     pub fn title(&self, i: usize) -> String {
         match self {

@@ -208,10 +208,11 @@ impl ViewState {
         self.field = 0;
     }
 
-    /// The style actually drawn: a result is always painted with its contour, so a style without a surface shows it
-    /// as shaded with edges. The chosen style is kept and returns with the model.
-    pub fn style_for(&self, scene: &Scene) -> DisplayStyle {
-        if !scene.fields.is_empty() && !self.style.paints_surface() {
+    /// The style actually drawn. Only a geometry view (the model, its supports and loads) can be drawn without a surface;
+    /// a result, a mode shape or a transient is painted with its colours, so a style without a surface shows it as shaded
+    /// with edges. The chosen style is kept and returns with the model.
+    pub fn style_for(&self, _scene: &Scene, geometry: bool) -> DisplayStyle {
+        if !geometry && !self.style.paints_surface() {
             DisplayStyle::ShadedEdges
         } else {
             self.style

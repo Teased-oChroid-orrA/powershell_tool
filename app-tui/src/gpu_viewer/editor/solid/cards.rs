@@ -33,6 +33,8 @@ pub enum CardForm {
     EditLoad(usize),
     /// Search the material library and apply a material to the model.
     Materials,
+    /// The unit system: convert the model to another, or declare the one its numbers are written in.
+    Units,
     /// Name, supports kept and load factors of load case `.0`.
     Case(usize),
 }
@@ -90,6 +92,7 @@ impl SolidSession {
         let comps = |v: &[f64]| v.iter().take(dim).map(|x| format!("{x}")).collect::<Vec<_>>();
         let (toggles, fields) = match form {
             CardForm::Materials => (Vec::new(), vec![String::new()]),
+            CardForm::Units => (Vec::new(), Vec::new()),
             CardForm::Hold => (vec![true; dim], vec!["0".to_string(); dim]),
             CardForm::EditHold(_) => {
                 let c = edit_support.as_ref().map(Support::comps).unwrap_or([None; 3]);
@@ -161,12 +164,32 @@ impl SolidSession {
             1 => format!(" on '{}'", c.names[0]),
             n => format!(" on {n} surfaces"),
         };
+        let units = self.problem.units;
+        let body_unit = format!("{}/{}^3", units.force(), units.length());
         let field = |label: String, index: usize, unit: &str| CardRow::Field { label, text: c.fields[index].clone(), index, unit: unit.to_string() };
         let cancel = ui(SolidAction::CardCancel);
         let apply = ui(SolidAction::CardApply);
         let mut rows = Vec::new();
         let mut width = 270.0;
         let (title, tag, apply_label) = match c.form {
+            CardForm::Units => {
+                width = 380.0;
+                let now = self.problem.units;
+                let geometry_ok = self.problem.can_convert_units();
+                rows.push(CardRow::Text(format!("The model is written in {} (lengths in {}, forces in {}, stresses in {}).", now.label(), now.length(), now.force(), now.stress())));
+                rows.push(CardRow::Text("Convert rescales every length, force, stress, density and expansion. Declare keeps the numbers and only changes what they mean (use it when they were typed in another system).".into()));
+                for sys in fea_problem::UnitSystem::ALL.into_iter().filter(|s| *s != now) {
+                    let detail = match &geometry_ok {
+                        Ok(()) => "rescales the model".to_string(),
+                        Err(_) => "not possible for this geometry".to_string(),
+                    };
+                    rows.push(CardRow::Choice { label: format!("Convert to {}", sys.label()), detail, action: ui(SolidAction::ConvertUnits(sys)), current: false });
+                }
+                for sys in fea_problem::UnitSystem::ALL.into_iter().filter(|s| *s != now) {
+                    rows.push(CardRow::Choice { label: format!("Declare as {}", sys.label()), detail: "keeps the numbers".into(), action: ui(SolidAction::DeclareUnits(sys)), current: false });
+                }
+                ("Units".to_string(), now.label().to_string(), "Close".to_string())
+            }
             CardForm::Materials => {
                 use crate::toolboxes::material_lookup::model as lib;
                 width = 400.0;
@@ -190,7 +213,7 @@ impl SolidSession {
                 for a in 0..dim {
                     rows.push(CardRow::Toggle { label: format!("Hold {}", AXES[a]), on: c.toggles[a], action: ui(SolidAction::CardToggle(a)) });
                     if c.toggles[a] {
-                        rows.push(field(format!("{} displacement", AXES[a]), a, ""));
+                        rows.push(field(format!("{} displacement", AXES[a]), a, units.length()));
                     }
                 }
                 if dim == 3 {
@@ -202,37 +225,48 @@ impl SolidSession {
                 (format!("{}{target}", if matches!(c.form, CardForm::EditHold(_)) { "Change directions" } else { "Hold directions" }), format!("SPC1 {}", if held.is_empty() { "-".to_string() } else { held }), "Apply".to_string())
             }
             CardForm::Pressure => {
-                rows.push(field("Pressure".into(), 0, "force / area"));
+                rows.push(field("Pressure".into(), 0, units.stress()));
                 rows.push(CardRow::Text("Positive pushes into the face.".into()));
                 (format!("Pressure{target}"), "PLOAD4".into(), "Apply".into())
             }
             CardForm::Force => {
                 for a in 0..dim {
-                    rows.push(field(format!("Force {}", AXES[a]), a, "force"));
+                    rows.push(field(format!("Force {}", AXES[a]), a, units.force()));
                 }
                 (format!("Force{target}"), "FORCE".into(), "Apply".into())
             }
             CardForm::Traction => {
                 for a in 0..dim {
-                    rows.push(field(format!("Traction {}", AXES[a]), a, "force / area"));
+                    rows.push(field(format!("Traction {}", AXES[a]), a, units.stress()));
                 }
                 (format!("Traction{target}"), "PLOAD4 dir".into(), "Apply".into())
             }
             CardForm::Bearing => {
-                rows.push(field("Force x".into(), 0, "force"));
-                rows.push(field("Force y".into(), 1, "force"));
+                rows.push(field("Force x".into(), 0, units.force()));
+                rows.push(field("Force y".into(), 1, units.force()));
                 (format!("Pin load{target}"), "bearing".into(), "Apply".into())
             }
             CardForm::EditLoad(i) => {
                 let params = self.problem.loads.get(i).map(|l| l.params(dim)).unwrap_or_default();
                 for (k, (label, _)) in params.iter().enumerate() {
-                    rows.push(field((*label).to_string(), k, ""));
+                    let unit = if label.contains("Pressure") || label.contains("Traction") {
+                        units.stress().to_string()
+                    } else if label.contains("Force") {
+                        units.force().to_string()
+                    } else if label.contains("Body") {
+                        body_unit.clone()
+                    } else if matches!(*label, "X" | "Y" | "Z") {
+                        units.length().to_string()
+                    } else {
+                        String::new()
+                    };
+                    rows.push(field((*label).to_string(), k, &unit));
                 }
                 (format!("Edit load{target}"), "load".into(), "Apply".into())
             }
             CardForm::Gravity => {
                 for a in 0..dim {
-                    rows.push(field(format!("Body force {}", AXES[a]), a, "force / volume"));
+                    rows.push(field(format!("Body force {}", AXES[a]), a, &body_unit));
                 }
                 rows.push(CardRow::Text("Weight density pulls down with a negative y. Zero removes it.".into()));
                 ("Gravity / body force".into(), "GRAV".into(), "Apply".into())
@@ -258,6 +292,11 @@ impl SolidSession {
     pub(super) fn card_apply(&mut self) {
         let Some(c) = self.card.clone() else { return };
         let dim = self.card_dim();
+        if c.form == CardForm::Units {
+            self.card = None;
+            self.touch();
+            return;
+        }
         if c.form == CardForm::Materials {
             // Enter in the search takes the first match.
             self.card_apply_first_material();
@@ -280,7 +319,7 @@ impl SolidSession {
             n => format!("{n} surfaces"),
         };
         match c.form {
-            CardForm::Materials => unreachable!("handled before the numbers are read"),
+            CardForm::Materials | CardForm::Units => unreachable!("handled before the numbers are read"),
             CardForm::Hold | CardForm::EditHold(_) => {
                 if !c.toggles.iter().any(|t| *t) {
                     self.status = "Hold at least one direction.".into();
@@ -403,7 +442,7 @@ impl SolidSession {
     pub(super) fn apply_material_index(&mut self, i: usize) {
         let Some(m) = crate::toolboxes::material_lookup::model::catalog().get(i).copied() else { return };
         self.edit(|p| model::apply_material(p, m));
-        let rho = model::mass_density(m).map_or("density unchanged (not in the library)".to_string(), |d| format!("density {:.3e}", d));
+        let rho = model::mass_density(m, self.problem.units).map_or("density unchanged (not in the library)".to_string(), |d| format!("density {:.3e}", d));
         self.status = format!("Material {} applied: E, nu, expansion, yield, {rho}.", m.name);
         self.card = None;
         self.touch();
@@ -417,6 +456,64 @@ impl SolidSession {
                 c.group = (c.group + 1) % lib::groups().len();
             }
             self.touch();
+        }
+    }
+
+    pub(super) fn convert_units(&mut self, to: fea_problem::UnitSystem) {
+        let mut next = self.problem.clone();
+        match next.convert_units(to) {
+            Ok(()) => {
+                self.edit(|p| *p = next);
+                self.status = format!("The model is now in {}: every length, force, stress, density and expansion was rescaled (thermal values were not).", to.label());
+                self.card = None;
+                self.touch();
+            }
+            Err(e) => self.status = e,
+        }
+    }
+    pub(super) fn declare_units(&mut self, to: fea_problem::UnitSystem) {
+        self.edit(|p| p.declare_units(to));
+        self.status = format!("The numbers are now read as {}; nothing was rescaled.", to.label());
+        self.card = None;
+        self.touch();
+    }
+
+    /// Measurements of the model's surfaces: from the mesh being shown when there is one, else from the sketch or the STEP tessellation.
+    fn surface_facts(&self) -> Option<fea_problem::facts::Facts> {
+        self.shown_mesh().and_then(|m| fea_problem::facts::Facts::from_mesh(m, self.problem.thickness)).or_else(|| fea_problem::facts::Facts::of(&self.problem))
+    }
+
+    pub(super) fn convert_load(&mut self, i: usize, to: fea_problem::conversion::LoadKind) {
+        let Some(facts) = self.surface_facts() else {
+            self.status = "The surfaces' sizes are not known yet: generate the mesh first.".into();
+            return;
+        };
+        // A point force has no surface of its own: the picked one, else the nearest.
+        let own_surface = self.problem.loads.get(i).is_some_and(|l| l.edge().is_some() || matches!(l, fea_problem::Load::Bearing { .. }));
+        let surface = if own_surface { None } else { self.selected.clone() };
+        let mut next = self.problem.clone();
+        match next.convert_load(i, to, surface.as_deref(), &facts) {
+            Ok(notes) => {
+                self.edit(|p| *p = next);
+                self.status = format!("Converted to a {}{}", to.label().to_lowercase(), if notes.is_empty() { ".".to_string() } else { format!(": {}.", notes.join("; ")) });
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
+    pub(super) fn convert_support(&mut self, i: usize, to: fea_problem::conversion::SupportKind) {
+        let Some(facts) = self.surface_facts() else {
+            self.status = "The surfaces' sizes are not known yet: generate the mesh first.".into();
+            return;
+        };
+        let surface = if self.problem.supports.get(i).is_some_and(|s| s.edge().is_some()) { None } else { self.selected.clone() };
+        let mut next = self.problem.clone();
+        match next.convert_support(i, to, surface.as_deref(), &facts) {
+            Ok(notes) => {
+                self.edit(|p| *p = next);
+                self.status = format!("Support changed to: {}{}", to.label().to_lowercase(), if notes.is_empty() { ".".to_string() } else { format!(" ({}).", notes.join("; ")) });
+            }
+            Err(e) => self.status = e,
         }
     }
 

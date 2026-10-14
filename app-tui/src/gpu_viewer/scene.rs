@@ -478,7 +478,7 @@ impl SceneSource {
                     values: d.magnitude(mode),
                     period,
                     field_label: if period.is_some() { "mass-normalized displacement magnitude (arbitrary amplitude)" } else { "buckling displacement magnitude (arbitrary amplitude)" }.into(),
-                    fields: Vec::new(),
+                    fields: d.mode_fields(mode),
                     label: format!("{} | {}", d.title(mode), if period.is_some() { "harmonic mode; seconds; mass-normalized magnitude" } else { "static buckling shape" }),
                 }
             })

@@ -161,6 +161,19 @@ pub trait Authoring {
     fn initial_view(&self) -> Option<crate::gpu_viewer::controller::StandardView> {
         None
     }
+    /// The scene is a result of a computation (a static result, a mode shape, a transient): the colours are values.
+    fn shows_result(&self) -> bool {
+        false
+    }
+    /// The unit a result field is measured in (for the legend), by the field's label.
+    fn field_unit(&self, _label: &str) -> String {
+        String::new()
+    }
+    /// The scene is the model itself (its supports and loads in colour), not a result, a mode shape or a transient: only
+    /// such a view may be drawn as a wireframe or with hidden lines, and only it is lit and has its state faces highlighted.
+    fn geometry_view(&self) -> bool {
+        true
+    }
     /// The scene is the model's body, not an analysis mesh: the mesh lines would draw its stand-in tessellation.
     fn shows_body_only(&self) -> bool {
         false

@@ -111,6 +111,8 @@ pub enum Edit {
     SetBushingModulus { bushing: usize, e: f64 },
     /// Multiply the plate's Young's modulus by `factor`.
     ScaleModulus { factor: f64 },
+    /// Say the numbers are in another unit system (nothing is rescaled).
+    DeclareUnits(crate::units::UnitSystem),
     /// Make hole `n` (1-based) at least `to` thick: a circle's diameter, a slot's width, a rectangle's shorter side.
     WidenHole { hole: usize, to: f64 },
 }
@@ -142,7 +144,7 @@ impl Edit {
             Edit::RemoveHole(n) => vec![format!("hole{n}")],
             Edit::Reorient => Vec::new(),
             Edit::WidenHole { hole, .. } => vec![format!("hole{hole}")],
-            Edit::ScaleModulus { .. } => Vec::new(),
+            Edit::ScaleModulus { .. } | Edit::DeclareUnits(_) => Vec::new(),
             Edit::SetBushingModulus { bushing, .. } => p.bushings.get(*bushing).map(|b| format!("hole{}", b.hole)).into_iter().collect(),
         }
     }
@@ -183,6 +185,10 @@ impl Edit {
             },
             Edit::Reorient => {
                 p.mesh.reorient = true;
+                Ok(())
+            }
+            Edit::DeclareUnits(system) => {
+                p.declare_units(*system);
                 Ok(())
             }
             Edit::ScaleModulus { factor } => {
@@ -347,6 +353,7 @@ pub fn diagnose(p: &Problem, error: Option<&str>) -> Vec<Diagnosis> {
     if p.study.is_structural() && error.is_some_and(|e| e.contains("rigid-body") && e.contains("constrained")) && !p.supports.is_empty() {
         out.push(under_constrained(p));
     }
+    out.extend(units_suspect(p));
     out.extend(scale_forecast(p));
     out.extend(mesh_too_fine(p));
     out.extend(mesh_too_coarse(p));
@@ -358,56 +365,105 @@ pub fn diagnose(p: &Problem, error: Option<&str>) -> Vec<Diagnosis> {
     out
 }
 
-/// Before any solve: will this model deform far too much for a linear analysis? The part is read as a bar along its long
-/// side: the load components along it stretch it (`F L / (A E)`), the transverse ones bend it like a cantilever
-/// (`4 F L^3 / (E t h^3)`), with the section `h x t` (the short side by the thickness or depth). It is an estimate to catch
-/// a unit slip or a load that is orders of magnitude too large before a solve is spent on it; the same 5 % of the part's
-/// length that `diagnose_result` uses decides, so a model that passes here and fails there is a real surprise.
-pub fn predicted_displacement(p: &Problem) -> Option<(f64, f64)> {
+/// Before any solve: will this model deform far too much for a linear analysis? The part is read as a bar along the long
+/// side of its bounding box: the load components along it stretch it (`F L / (A E)`, `A` the product of the other two
+/// extents), the transverse ones bend it like a cantilever (`4 F L^3 / (E b h^3)` for a force along an axis of extent `h`,
+/// `b` the extent of the third). It is an estimate to catch a unit slip or a load orders of magnitude too large before a
+/// solve is spent on it; the same 5 % of the part's length that `diagnose_result` uses decides, so a model that passes here
+/// and fails there is a real surprise. Returns the displacement and the length it is judged against.
+pub fn predicted_displacement_on(p: &Problem, facts: &crate::facts::Facts) -> Option<(f64, f64)> {
     let case = p.resolved();
-    if !p.study.is_structural() || case.supports.is_empty() || case.loads.is_empty() {
+    if !p.study.is_structural() || case.supports.is_empty() || case.loads.is_empty() || p.analysis == Analysis::Axisymmetric {
         return None;
     }
-    let Geometry::Sketch { outer, depth, .. } = &case.geometry else { return None };
-    let (lo, hi) = outer.bounds();
-    let (w, h) = (hi[0] - lo[0], hi[1] - lo[1]);
-    let t = if case.analysis == Analysis::Solid { *depth } else { case.thickness };
     let e = case.material.e;
-    if !(w > 0.0 && h > 0.0 && t > 0.0 && e > 0.0 && e.is_finite()) {
+    let ext = facts.extent;
+    if !(ext.iter().all(|v| *v > 0.0 && v.is_finite()) && e > 0.0 && e.is_finite()) {
         return None;
     }
-    let along_x = w >= h;
-    let (long, short) = (w.max(h), w.min(h));
-    // Force components along and across the long side (model force units).
-    let (mut along, mut across) = (0.0f64, 0.0f64);
-    let mut add = |fx: f64, fy: f64| {
-        let (a, c) = if along_x { (fx.abs(), fy.abs()) } else { (fy.abs(), fx.abs()) };
-        along += a;
-        across += c;
+    let a = (0..3).max_by(|i, j| ext[*i].total_cmp(&ext[*j]))?;
+    let long = ext[a];
+    // Force vector (model force units) of every load, as far as the facts say where it acts.
+    let mut total = [0.0f64; 3];
+    let mut add = |f: [f64; 3]| {
+        for k in 0..3 {
+            total[k] += f[k].abs();
+        }
     };
     for l in &case.loads {
         match l {
-            Load::Pressure { edge, p } => match edge.as_str() {
-                "left" | "right" => add(p * h * t, 0.0),
-                "top" | "bottom" => add(0.0, p * w * t),
-                _ => {}
-            },
-            Load::Traction { edge, tx, ty, .. } => {
-                let len = if matches!(edge.as_str(), "left" | "right") { h } else { w };
-                add(tx * len * t, ty * len * t);
+            Load::Pressure { edge, p } => {
+                if let Some(f) = facts.faces.get(edge).filter(|f| norm(f.normal) > 0.0) {
+                    add([p * f.area * f.normal[0], p * f.area * f.normal[1], p * f.area * f.normal[2]]);
+                }
             }
-            Load::Force { fx, fy, .. } | Load::Point { fx, fy, .. } | Load::Bearing { fx, fy, .. } => add(*fx, *fy),
-            Load::Body { bx, by, .. } => add(bx * w * h * t, by * w * h * t),
+            Load::Traction { edge, tx, ty, tz } => {
+                if let Some(f) = facts.faces.get(edge) {
+                    add([tx * f.area, ty * f.area, tz * f.area]);
+                }
+            }
+            Load::Force { fx, fy, fz, .. } | Load::Point { fx, fy, fz, .. } => add([*fx, *fy, *fz]),
+            Load::Bearing { fx, fy, .. } => add([*fx, *fy, 0.0]),
+            Load::Body { bx, by, bz } => {
+                let v = ext[0] * ext[1] * ext[2];
+                add([bx * v, by * v, bz * v]);
+            }
         }
     }
-    let axial = along * long / (short * t * e);
-    let bending = 4.0 * across * long.powi(3) / (e * t * short.powi(3));
+    let others: Vec<usize> = (0..3).filter(|k| *k != a).collect();
+    let area = ext[others[0]] * ext[others[1]];
+    let axial = total[a] * long / (area * e);
+    let bending: f64 = others.iter().map(|&k| {
+        let j = others.iter().copied().find(|j| *j != k).unwrap_or(k);
+        4.0 * total[k] * long.powi(3) / (e * ext[j] * ext[k].powi(3))
+    }).sum();
     let u = axial + bending;
     u.is_finite().then_some((u, long))
 }
 
+fn norm(a: [f64; 3]) -> f64 {
+    (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
+}
+
+/// [`predicted_displacement_on`] for the geometry the problem itself describes (a sketch or a STEP solid).
+pub fn predicted_displacement(p: &Problem) -> Option<(f64, f64)> {
+    predicted_displacement_on(p, &crate::facts::Facts::of(p)?)
+}
+
+/// Before any solve: is the modulus something a structural material can have in the declared units? A modulus far outside
+/// 0.1 GPa .. 1.2 TPa is a unit slip (GPa typed into a model in psi, psi into one in MPa). The question offers the unit
+/// systems in which the number would be a plausible modulus.
+fn units_suspect(p: &Problem) -> Option<Diagnosis> {
+    if !p.study.is_structural() {
+        return None;
+    }
+    let pa = p.modulus_pa();
+    if !(pa.is_finite() && pa > 0.0) || (1e8..=1.2e12).contains(&pa) {
+        return None;
+    }
+    let mut options: Vec<(String, Edit)> = Vec::new();
+    for sys in crate::units::UnitSystem::ALL {
+        let other = sys.stress_to_pa(p.material.e);
+        if sys != p.units && (1e9..=5e11).contains(&other) {
+            options.push((format!("Yes: these numbers are in {} (a modulus of {:.3e} {})", sys.label(), p.material.e, sys.stress()), Edit::DeclareUnits(sys)));
+        }
+    }
+    options.push(("Yes: the modulus is 1000 times too small".into(), Edit::ScaleModulus { factor: 1e3 }));
+    options.push(("Yes: the modulus is 1000 times too large".into(), Edit::ScaleModulus { factor: 1e-3 }));
+    Some(Diagnosis {
+        class: FailureClass::ScaleSuspect,
+        summary: format!("Before solving: a modulus of {:.3e} {} is {:.3e} Pa, outside what structural materials have (about 0.1 GPa to 1.2 TPa).", p.material.e, p.units.stress(), pa),
+        evidence: vec![format!("the model is declared in {}", p.units.label()), "if this is rubber or foam, ignore this".into()],
+        remedies: Vec::new(),
+        questions: vec![Question { id: "units", text: "Is the model written in a different unit system from the one declared?".into(), options }],
+    })
+}
+
 fn scale_forecast(p: &Problem) -> Option<Diagnosis> {
-    let (u, long) = predicted_displacement(p)?;
+    forecast_finding(p, predicted_displacement(p)?)
+}
+
+fn forecast_finding(p: &Problem, (u, long): (f64, f64)) -> Option<Diagnosis> {
     if u <= 0.05 * long {
         return None;
     }
@@ -526,13 +582,20 @@ pub fn diagnose_mesh(p: &Problem, mesh: &fea_core::Mesh) -> Vec<Diagnosis> {
     if !p.study.is_structural() || p.resolved().supports.is_empty() {
         return Vec::new();
     }
+    let mut out = Vec::new();
+    // An imported mesh has no sketch to read the size from: the forecast reads the mesh.
+    if matches!(p.geometry, Geometry::Imported { .. }) {
+        let facts = crate::facts::Facts::from_mesh(mesh, p.thickness);
+        out.extend(facts.and_then(|f| predicted_displacement_on(p, &f)).and_then(|r| forecast_finding(p, r)));
+    }
     let free = free_rigid_motions(p, mesh);
     if free == 0 {
-        return Vec::new();
+        return out;
     }
     let mut d = under_constrained(p);
     d.summary = format!("Before solving: the supports leave {free} rigid-body motion{} of the part free, so it would float or spin and the solver would stop (or report an enormous displacement).", if free == 1 { "" } else { "s" });
-    vec![d]
+    out.push(d);
+    out
 }
 
 fn surface_of_support(s: &Support) -> Option<&str> {

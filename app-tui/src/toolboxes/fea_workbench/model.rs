@@ -920,7 +920,8 @@ pub fn commit_edit(p: &mut Problem, row: FieldRow, kind: EditKind, text: &str) -
 
 /// Copy a catalog material's properties into the problem.
 pub fn apply_material(p: &mut Problem, m: &mechanics_core::materials::Material) {
-    set_material(&mut p.material, m);
+    let units = p.units;
+    set_material(&mut p.material, m, units);
 }
 
 /// Copy a catalog material's properties into the material of region `k + 2` (the part's material, plus these, if it had none).
@@ -930,7 +931,7 @@ pub fn apply_region_material(p: &mut Problem, k: usize, m: &mechanics_core::mate
     }
     let mut mat = p.region_materials[k].clone().unwrap_or_else(|| p.material.clone());
     mat.plastic = false;
-    set_material(&mut mat, m);
+    set_material(&mut mat, m, p.units);
     p.region_materials[k] = Some(mat);
 }
 
@@ -953,21 +954,23 @@ fn curated_density(id: &str) -> Option<f64> {
     })
 }
 
-/// The mass density (lbf s^2/in^4: weight density over g = 386.089 in/s^2) of a catalog material, when it is known.
-pub fn mass_density(m: &mechanics_core::materials::Material) -> Option<f64> {
-    m.extra.map(|x| x.density_lb_in3).filter(|d| *d > 0.0).or_else(|| curated_density(m.id)).map(|d| d / 386.089)
+/// The mass density of a catalog material in the unit system of the problem (the library gives a weight density in
+/// lb/in^3), when it is known.
+pub fn mass_density(m: &mechanics_core::materials::Material, units: fea_problem::UnitSystem) -> Option<f64> {
+    m.extra.map(|x| x.density_lb_in3).filter(|d| *d > 0.0).or_else(|| curated_density(m.id)).map(|d| units.from_weight_density(d))
 }
 
-fn set_material(mat: &mut fea_problem::MaterialSpec, m: &mechanics_core::materials::Material) {
+/// The library is in ksi, lb/in^3 and microstrain per deg F; the problem's numbers are in its own unit system.
+fn set_material(mat: &mut fea_problem::MaterialSpec, m: &mechanics_core::materials::Material, units: fea_problem::UnitSystem) {
     mat.name = m.name.to_string();
     // The catalog knows the weight density: dynamics and gravity need it, and the old material's value would be wrong.
-    if let Some(rho) = mass_density(m) {
+    if let Some(rho) = mass_density(m, units) {
         mat.density = rho;
     }
-    mat.e = m.e_ksi * 1000.0;
+    mat.e = units.from_ksi(m.e_ksi);
     mat.nu = m.nu;
-    mat.alpha = m.alpha_u_f * 1e-6;
-    mat.yield_stress = (m.sy_ksi > 0.0).then_some(m.sy_ksi * 1000.0);
+    mat.alpha = units.from_microstrain_per_f(m.alpha_u_f);
+    mat.yield_stress = (m.sy_ksi > 0.0).then(|| units.from_ksi(m.sy_ksi));
 }
 
 /// Next selectable (non-header) row from `selected` in direction `delta`, wrapping.

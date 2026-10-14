@@ -599,6 +599,7 @@ impl Viewer {
         let background = self.view.background.colors(self.gui.background_rgb());
         // An empty model has nothing to draw (the start card says how to begin): clear the viewport only.
         let empty = self.editor.as_ref().is_some_and(|e| !e.start_options().is_empty());
+        let geometry = self.editor.as_ref().is_some_and(|e| e.geometry_view());
         let scene_rect = if empty { [vp.x, vp.y, 0, 0] } else { [vp.x, vp.y, vp.w, vp.h] };
         let ctx = self.gui.ctx().clone();
         let mut full = Some(full);
@@ -612,7 +613,7 @@ impl Viewer {
                         if self.view.swing(&self.project.scenes[self.project.selected]).is_some() { self.view.clock } else { self.view.time },
                         if self.view.deformed { self.view.gain } else { 0.0 },
                         [self.view.yaw, self.view.pitch, self.view.zoom, vp.w.max(1) as f32 / vp.h.max(1) as f32],
-                        DisplayOptions { show_mesh: self.view.show_mesh && !self.editor.as_ref().is_some_and(|e| e.shows_body_only()), show_contour: self.view.show_contour, field: self.view.field, viewport: Some(scene_rect), background: Some(background), style: self.view.style_for(&self.project.scenes[self.project.selected]), swing: self.view.swing(&self.project.scenes[self.project.selected]), shade: self.project.scenes[self.project.selected].fields.is_empty(), pan: self.view.pan },
+                        DisplayOptions { show_mesh: self.view.show_mesh && !self.editor.as_ref().is_some_and(|e| e.shows_body_only()), show_contour: self.view.show_contour, field: self.view.field, viewport: Some(scene_rect), background: Some(background), style: self.view.style_for(&self.project.scenes[self.project.selected], geometry), swing: self.view.swing(&self.project.scenes[self.project.selected]), shade: geometry, pan: self.view.pan },
                     );
                     r.paint_egui(&view, &ctx, full.take().expect("painted once"), [size.0, size.1]);
                     r.queue.present(frame);
@@ -1182,7 +1183,7 @@ mod tests {
         let solve = target(&v, "Solve");
         click(&mut v, solve);
         wait(&mut v, &|v| !v.scene().fields.is_empty());
-        assert_eq!(v.scene().fields.len(), 10);
+        assert_eq!(v.scene().fields.len(), 13, "14 fields: the primary plus thirteen selectable ones (stresses, strains, displacements)");
         frame(&mut v);
         assert!(v.gui.target_labels().iter().any(|l| l == "Result card"), "the Simulation step shows the result card: {:?}", v.gui.target_labels());
         // V returns to the editable model.
@@ -1393,6 +1394,66 @@ mod tests {
         let chip = target(&v, "Feature tree");
         click(&mut v, chip);
         assert!(v.gui.tree_is_open() && v.viewport().w == open.w);
+    }
+
+    /// With the tree folded the chip that opens it must not sit under the tool pill (it used to overlap the analysis tools).
+    #[test]
+    fn the_folded_trees_chip_and_the_tool_pill_never_overlap_at_any_window_width() {
+        for width in [1400u32, 1100, 900, 700] {
+            let mut problem = fea_problem::templates::templates().remove(0).1;
+            problem.mesh.size = 1.0;
+            let ed = crate::gpu_viewer::editor::solid::SolidSession::new(problem, std::env::temp_dir().join("window-chip-test.json"));
+            let mut v = viewer(Some(Box::new(ed)));
+            v.size_override = Some((width, 800));
+            frame(&mut v);
+            let fold = target(&v, "Fold the feature tree");
+            click(&mut v, fold);
+            frame(&mut v);
+            let (chip, pill) = (v.gui.chip_rect().expect("the chip is shown"), v.gui.pill_rect().expect("the pill is shown"));
+            assert!(!chip.intersects(pill), "width {width}: chip {chip:?} overlaps the tool pill {pill:?}");
+            assert!(pill.left() >= chip.right(), "width {width}: the pill starts to the right of the chip");
+            let vp = v.gui.viewport_px((width, 800));
+            assert!(pill.right() * v.gui.ctx().pixels_per_point() <= (vp.x + vp.w) as f32 + 1.0, "width {width}: the pill stays inside the viewport");
+        }
+    }
+
+    /// A result shows what its colours mean, can be cycled through every field, and so can a mode shape.
+    #[test]
+    fn a_result_shows_a_labelled_legend_whose_title_cycles_the_field_and_modes_have_the_same_fields() {
+        let mut problem = fea_problem::templates::templates().remove(0).1;
+        problem.mesh.size = 1.0;
+        let ed = crate::gpu_viewer::editor::solid::SolidSession::new(problem, std::env::temp_dir().join("window-legend-test.json"));
+        let mut v = viewer(Some(Box::new(ed)));
+        // The model itself: a colour key, no field.
+        frame(&mut v);
+        assert!(v.gui.target_labels().iter().all(|l| !l.ends_with(" legend")), "no result yet: {:?}", v.gui.target_labels());
+        let tab = target(&v, "Simulation tab");
+        click(&mut v, tab);
+        let solve = target(&v, "Solve");
+        click(&mut v, solve);
+        let t = Instant::now();
+        while v.scene().fields.is_empty() {
+            v.editor.as_mut().unwrap().poll();
+            frame(&mut v);
+            assert!(t.elapsed().as_secs() < 120, "timed out");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        frame(&mut v);
+        let legend = v.gui.target_labels().into_iter().find(|l| l.ends_with(" legend")).expect("a legend for the result");
+        assert!(legend.starts_with("von Mises stress"), "{legend}");
+        // Clicking the title shows the next field, and its name is on the legend.
+        let first = v.view.field;
+        let title = target(&v, &legend);
+        click(&mut v, title);
+        frame(&mut v);
+        assert_eq!(v.view.field, first + 1);
+        let next = v.gui.target_labels().into_iter().find(|l| l.ends_with(" legend")).unwrap();
+        assert_ne!(next, legend, "the legend names the new field");
+        // Strains are among the fields.
+        let names: Vec<String> = v.scene().fields.iter().map(|f| f.label.clone()).collect();
+        for want in ["Equivalent strain", "Max principal strain", "Min principal strain"] {
+            assert!(names.iter().any(|n| n == want), "{want} in {names:?}");
+        }
     }
 
     #[test]

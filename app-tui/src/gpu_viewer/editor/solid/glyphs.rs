@@ -177,6 +177,44 @@ impl SolidSession {
             };
             out.push(Overlay { px: tail, text: label, kind: OverlayKind::Load, tip: Some(tip) });
         }
+        Self::declutter(out)
+    }
+
+    /// Glyphs that land on the same spot would draw over each other (a roller on a face and a point support at its
+    /// centre, two loads on one face): supports there merge into one glyph naming every held direction, and loads fan out
+    /// sideways so every arrow and label stays readable.
+    fn declutter(glyphs: Vec<Overlay>) -> Vec<Overlay> {
+        let near = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 10.0 && (a[1] - b[1]).abs() < 10.0;
+        let mut out: Vec<Overlay> = Vec::new();
+        for g in glyphs {
+            match g.kind {
+                OverlayKind::Support => {
+                    if let Some(prev) = out.iter_mut().find(|o| o.kind == OverlayKind::Support && near(o.px, g.px)) {
+                        let mut dirs: Vec<char> = prev.text.chars().chain(g.text.chars()).collect();
+                        dirs.sort_unstable();
+                        dirs.dedup();
+                        prev.text = dirs.into_iter().collect();
+                    } else {
+                        out.push(g);
+                    }
+                }
+                OverlayKind::Load => {
+                    let crowd = out.iter().filter(|o| o.kind == OverlayKind::Load && near(o.px, g.px)).count();
+                    let mut g = g;
+                    if crowd > 0 {
+                        // Sideways of the arrow, a little further each time.
+                        let (tail, tip) = (g.px, g.tip.unwrap_or(g.px));
+                        let d = [tip[0] - tail[0], tip[1] - tail[1]];
+                        let l = (d[0] * d[0] + d[1] * d[1]).sqrt().max(1e-3);
+                        let side = [-d[1] / l * 22.0 * crowd as f32, d[0] / l * 22.0 * crowd as f32];
+                        g.px = [tail[0] + side[0], tail[1] + side[1]];
+                        g.tip = Some([tip[0] + side[0], tip[1] + side[1]]);
+                    }
+                    out.push(g);
+                }
+                _ => out.push(g),
+            }
+        }
         out
     }
 }

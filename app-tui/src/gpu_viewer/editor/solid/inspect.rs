@@ -216,6 +216,18 @@ impl SolidSession {
             }
             Feature::Support(_) | Feature::Load(_) | Feature::HeatSupport(_) | Feature::HeatLoad(_) => {
                 out.push(Item::Separator);
+                match f {
+                    Feature::Support(i) => {
+                        out.push(Item::Entry(entry("Change directions...".into(), SolidAction::OpenCard(super::CardForm::EditHold(i)))));
+                        out.extend(self.convert_items(true, i));
+                    }
+                    Feature::Load(i) => {
+                        out.push(Item::Entry(entry("Edit values...".into(), SolidAction::OpenCard(super::CardForm::EditLoad(i)))));
+                        out.extend(self.convert_items(false, i));
+                    }
+                    _ => {}
+                }
+                out.push(Item::Separator);
                 out.push(Item::Entry(entry("Assign to the selected surface".into(), SolidAction::AssignSelection).when(self.assign_availability())));
             }
             _ => {}
