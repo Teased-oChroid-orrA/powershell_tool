@@ -12,6 +12,7 @@
 //! rejected with the reason.
 
 pub mod complex;
+pub mod constitutive;
 pub mod dual;
 pub mod hyperdual;
 pub mod ops;
