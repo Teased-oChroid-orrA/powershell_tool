@@ -175,6 +175,10 @@ fn zone_factor(zones: &[crate::problem::RefineRegion], x: [f64; 2]) -> f64 {
     zones.iter().fold(1.0, |k, z| k.min(z.factor(x)))
 }
 
+/// Elements per unit area at element size 1 in the unstructured cells of a hybrid mesh (triangles plus the grading buffer around the
+/// features), measured against the mesher over the templates, element sizes and hole factors.
+const HYBRID_UNSTRUCTURED_PER_AREA: f64 = 4.2;
+
 /// Elements per unit area at element size 1, measured against the mesher (see `estimate_mesh`).
 pub fn elements_per_area(quad: bool) -> f64 {
     if quad { 9.5 } else { 3.2 }
@@ -201,10 +205,23 @@ pub fn estimate_mesh(p: &Problem) -> Result<MeshEstimate, String> {
     // than a square tiling.
     let per_area = elements_per_area(p.mesh.element.is_quad());
     let base = size_function(p);
+    // A hybrid mesh has one regular quadrilateral per `h x h` where the partition keeps structured cells, and triangles elsewhere.
+    let hybrid = p.mesh.strategy == MeshStrategy::Hybrid && !(p.mesh.adapt_mode == crate::problem::AdaptMode::Equilibrated && p.mesh.adapt_passes > 0);
+    let grids: Vec<Option<fea_core::meshing::partition::CellGrid>> = regions
+        .iter()
+        .map(|r| {
+            if !hybrid {
+                return None;
+            }
+            let mut opt = fea_core::meshing::partition::PartitionOptions2d::default();
+            opt.extra_boxes = feature_points(p).into_iter().map(|at| (at, at)).collect();
+            fea_core::meshing::partition::classify_2d(r, &base, &opt).ok()
+        })
+        .collect();
     let zones = &p.mesh.refine;
     let mut out = MeshEstimate { elements: 0.0, per_zone: vec![0.0; zones.len()], core_share: 0.0, touched_share: 0.0 };
     let (mut cells, mut core, mut touched) = (0.0, 0.0, 0.0);
-    for region in &regions {
+    for (region, grid) in regions.iter().zip(&grids) {
         let (lo, hi) = region.bounds();
         let (dx, dy) = ((hi[0] - lo[0]) / n as f64, (hi[1] - lo[1]) / n as f64);
         for i in 0..n {
@@ -214,7 +231,15 @@ pub fn estimate_mesh(p: &Problem) -> Result<MeshEstimate, String> {
                     continue;
                 }
                 let h = base(x);
-                let e = per_area * dx * dy / (h * h);
+                let density = match grid {
+                    Some(g) => {
+                        let ci = g.xs.partition_point(|&l| l <= x[0]).saturating_sub(1).min(g.nx() - 1);
+                        let cj = g.ys.partition_point(|&l| l <= x[1]).saturating_sub(1).min(g.ny() - 1);
+                        if g.at(ci, cj) == fea_core::meshing::partition::CellState::Structured { 1.0 } else { HYBRID_UNSTRUCTURED_PER_AREA }
+                    }
+                    None => per_area,
+                };
+                let e = density * dx * dy / (h * h);
                 out.elements += e;
                 cells += 1.0;
                 let best = zones.iter().enumerate().map(|(k, z)| (k, z.factor(x))).filter(|(_, f)| *f < 1.0 - 1e-9).min_by(|a, b| a.1.total_cmp(&b.1));
@@ -225,6 +250,17 @@ pub fn estimate_mesh(p: &Problem) -> Result<MeshEstimate, String> {
                         core += 1.0;
                     }
                 }
+            }
+        }
+    }
+    // bushing annuli are meshed directly with the plate's element type
+    if let Geometry::Sketch { holes, .. } = &p.geometry {
+        for b in &p.bushings {
+            if let Some(Shape::Circle { r, .. }) = holes.get(b.hole.wrapping_sub(1)) {
+                let ri = 0.5 * b.inner_diameter;
+                let wall = r - ri - b.offset[0].hypot(b.offset[1]);
+                let h = (p.mesh.size * p.mesh.hole_factor).min(wall.max(r / 25.0));
+                out.elements += per_area * std::f64::consts::PI * (r * r - ri * ri) / (h * h);
             }
         }
     }
@@ -274,7 +310,12 @@ pub fn sketch_mesh(p: &Problem, field: Option<&SizeField>) -> Result<Mesh, Strin
 /// One planar region meshed by the strategy of the problem. The bushing annuli are always unstructured (`add_bushings` meshes
 /// them directly: they are thin rings around a bore, with no worthwhile regular area).
 fn mesh_planar(p: &Problem, region: &Region, physics: Physics, size: &dyn Fn([f64; 2]) -> f64, notes: &mut Vec<String>) -> Result<Mesh, String> {
-    match p.mesh.strategy {
+    // The equilibrated driver reconstructs the stress on triangle meshes only; a hybrid mesh has quadrilateral blocks.
+    let equilibrated = p.mesh.adapt_mode == crate::problem::AdaptMode::Equilibrated && p.mesh.adapt_passes > 0;
+    if equilibrated && p.mesh.strategy == MeshStrategy::Hybrid {
+        notes.push("The equilibrated adaptivity driver covers triangle meshes only: the region is meshed unstructured instead of hybrid.".into());
+    }
+    match if equilibrated { MeshStrategy::Unstructured } else { p.mesh.strategy } {
         MeshStrategy::Unstructured => mesh_region(region, physics, p.mesh.element.kind(), size, mesh_options()),
         MeshStrategy::Hybrid => {
             let family = if p.mesh.element.is_quadratic() { ElementFamily::Quadratic } else { ElementFamily::Linear };

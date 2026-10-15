@@ -89,3 +89,19 @@ fn goal_oriented_adaptivity_reduces_the_error_estimate_and_solves_through_the_or
     p.bushings.push(fea_problem::Bushing { hole: 1, inner_diameter: 0.8, offset: [0.0, 0.0], interference: 0.001, friction: 0.2, material: p.material.clone() });
     assert!(solve::solve(&p, None).unwrap_err().contains("bushings"));
 }
+
+#[test]
+fn a_new_problem_meshes_hybrid_by_default_at_the_template_sizes() {
+    // The reported case: the default plate-with-a-hole template, as is and with other sizes at the hole, was all-unstructured.
+    assert_eq!(fea_problem::MeshSpec::default().strategy, MeshStrategy::Hybrid);
+    for hole_factor in [0.1, 0.2, 0.4, 0.8] {
+        let mut p = fea_problem::templates::templates().remove(0).1;
+        p.mesh.hole_factor = hole_factor;
+        assert_eq!(p.mesh.strategy, MeshStrategy::Hybrid, "the template carries the default");
+        let s = fea_problem::solve(&p, None).unwrap();
+        let kinds: Vec<_> = s.model.mesh.blocks.iter().map(|b| b.kind).collect();
+        assert!(kinds.contains(&fea_core::ElementKind::Quad8), "regular quadrilateral blocks at hole factor {hole_factor}: {kinds:?}");
+        assert!(kinds.contains(&fea_core::ElementKind::Tri6), "unstructured triangles around the hole: {kinds:?}");
+        assert!(s.summary.notes.iter().all(|n| !n.contains("Hybrid meshing was not used")), "{:?}", s.summary.notes);
+    }
+}

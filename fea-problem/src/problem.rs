@@ -327,13 +327,15 @@ impl Shape {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum MeshStrategy {
-    #[default]
     Unstructured,
+    /// Regular structured blocks where the geometry allows, unstructured elsewhere; falls back to `Unstructured` with a result note
+    /// when the region does not suit it. The default.
+    #[default]
     Hybrid,
 }
 
 impl MeshStrategy {
-    pub const ALL: [MeshStrategy; 2] = [MeshStrategy::Unstructured, MeshStrategy::Hybrid];
+    pub const ALL: [MeshStrategy; 2] = [MeshStrategy::Hybrid, MeshStrategy::Unstructured];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -366,11 +368,16 @@ impl AdaptMode {
     }
 }
 
+fn legacy_strategy() -> MeshStrategy {
+    MeshStrategy::Unstructured
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MeshSpec {
-    /// How a sketch region is meshed: all-unstructured (default) or hybrid structured blocks with unstructured cells around the
+    /// How a sketch region is meshed: hybrid structured blocks (default) or all-unstructured; hybrid has structured blocks with unstructured cells around the
     /// features (a mixed Quad/Tri mesh, with the unstructured mesh as the explicit fallback when the region is unsuitable).
-    #[serde(default)]
+    /// A saved problem without the field keeps the all-unstructured mesh it was made with; a new problem defaults to `Hybrid`.
+    #[serde(default = "legacy_strategy")]
     pub strategy: MeshStrategy,
     /// What drives the adaptive passes: the ZZ error estimate (default) or goal-oriented adaptivity on the compliance (adjoint
     /// error estimate fused with the ZZ physics criterion, Dorfler marking; structural 2D sketches without bushings).

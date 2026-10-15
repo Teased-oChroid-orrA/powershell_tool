@@ -71,6 +71,9 @@ fn supports_and_loads_get_regions_at_their_surfaces_and_resolution_follows_the_m
 fn applying_a_region_refines_the_mesh_there_and_only_there() {
     let mut p = l_bracket();
     p.mesh.hole_factor = 1.0;
+    // "Only there" is a property of the unstructured mesh. A hybrid mesh keeps its regular blocks on one tensor grid, so a zone's
+    // refinement also subdivides the grid lines through the blocks around it (checked below: finer near the corner, some spread).
+    p.mesh.strategy = fea_problem::MeshStrategy::Unstructured;
     let corner = refinement_regions(&p).into_iter().find(|r| r.kind == RegionKind::ReentrantCorner).unwrap();
     let (near, far) = (corner.centre, [5.5, 0.4]);
     let (before_near, before_far) = (nodes_within(&p, near, corner.radius), nodes_within(&p, far, 0.5));
@@ -80,6 +83,13 @@ fn applying_a_region_refines_the_mesh_there_and_only_there() {
     assert!(after_near > 4 * before_near, "level 3 is 8x finer in length: {before_near} -> {after_near}");
     assert!(after_far <= before_far + before_far / 4 + 2, "far away the mesh is unchanged: {before_far} -> {after_far}");
     assert!(refinement_regions(&p).iter().any(|r| r.kind == RegionKind::ReentrantCorner && r.applied), "applied zones are marked");
+    // the hybrid default is refined at the corner too
+    let mut h = l_bracket();
+    h.mesh.hole_factor = 1.0;
+    assert_eq!(h.mesh.strategy, fea_problem::MeshStrategy::Hybrid);
+    let before = nodes_within(&h, near, corner.radius);
+    apply_region(&mut h, &corner, 3).unwrap();
+    assert!(nodes_within(&h, near, corner.radius) > 4 * before, "hybrid: finer at the corner");
     // Applying again at a lower level lowers the zone instead of stacking another one.
     apply_region(&mut p, &corner, 1).unwrap();
     assert_eq!(p.mesh.refine.len(), 1);

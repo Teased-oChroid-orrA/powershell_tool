@@ -319,6 +319,8 @@ fn plate_with_a_hair_slot() -> fea_problem::Problem {
     if let Geometry::Sketch { holes, .. } = &mut p.geometry {
         *holes = vec![Shape::Slot { cx: 6.0, cy: 2.0, length: 2.0, width: 1e-5, angle: 0.0 }];
     }
+    // The all-unstructured mesher is the one that chases the sliver (the hybrid default meshes this plate: the slot stays in the mesh).
+    p.mesh.strategy = fea_problem::MeshStrategy::Unstructured;
     // The adaptive passes (on by default) are what chase the sliver: without them the same mesh solves.
     assert!(p.mesh.adapt_passes > 0);
     p

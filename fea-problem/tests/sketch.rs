@@ -697,9 +697,11 @@ mod regions {
         let name_of = |id| names.iter().find(|(i, _)| *i == id).map(|(_, n)| n.clone());
         assert_eq!(name_of(hole).as_deref(), Some("hole1"));
         assert_eq!(name_of(island).as_deref(), Some("r2/outer"));
-        let p = problem_of(s);
+        let mut p = problem_of(s);
         assert_eq!(p.edge_names(), ["bottom", "right", "top", "left", "hole1", "r2/outer"]);
-        // The mesh has the island as a separate body with its own surface.
+        // The mesh has the island as a separate body with its own surface (one block per body: the all-unstructured strategy; a
+        // hybrid mesh splits each body into a quadrilateral and a triangle block).
+        p.mesh.strategy = fea_problem::MeshStrategy::Unstructured;
         let mesh = build::sketch_mesh(&p, None).unwrap();
         assert!(mesh.surfaces.contains_key("r2/outer") && mesh.surfaces.contains_key("hole1"));
         assert_eq!(mesh.blocks.len(), 2, "plate and island are separate blocks");

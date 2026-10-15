@@ -101,10 +101,13 @@ fn the_equilibrated_driver_refuses_a_model_it_does_not_cover_and_says_why() {
     let e = solve::solve(&p, None).unwrap_err();
     assert!(e.contains("equilibrated") && e.contains("ZZ"), "{e}");
     p.mesh.element = fea_problem::ElementChoice::Tri6;
+    // A hybrid mesh has quadrilateral blocks, which the equilibrated reconstruction does not cover: the driver meshes the region
+    // with triangles instead and says so, rather than refusing the (default) hybrid strategy.
     p.mesh.strategy = MeshStrategy::Hybrid;
     p.mesh.hole_factor = 1.0;
-    let e = solve::solve(&p, None).unwrap_err();
-    assert!(e.contains("equilibrated"), "{e}");
+    let s = solve::solve(&p, None).unwrap();
+    assert!(s.summary.notes.iter().any(|n| n.contains("triangle meshes only")), "{:?}", s.summary.notes);
+    assert!(s.model.mesh.blocks.iter().all(|b| matches!(b.kind, fea_core::ElementKind::Tri3 | fea_core::ElementKind::Tri6)));
 }
 
 #[test]

@@ -637,10 +637,11 @@ fn the_mesh_strategy_and_adaptivity_driver_rows_cycle_and_the_driver_needs_adapt
     let mut s = FeaWorkbenchState::default();
     assert!(s.rows().contains(&FieldRow::MeshStrategyRow));
     select(&mut s, FieldRow::MeshStrategyRow);
+    assert_eq!(s.problem.mesh.strategy, fea_problem::MeshStrategy::Hybrid, "a new problem meshes hybrid by default");
     handle_key(&mut s, key(KeyCode::Right));
-    assert_eq!(s.problem.mesh.strategy, fea_problem::MeshStrategy::Hybrid);
-    handle_key(&mut s, key(KeyCode::Left));
     assert_eq!(s.problem.mesh.strategy, fea_problem::MeshStrategy::Unstructured);
+    handle_key(&mut s, key(KeyCode::Left));
+    assert_eq!(s.problem.mesh.strategy, fea_problem::MeshStrategy::Hybrid);
     s.problem.mesh.adapt_passes = 2;
     select(&mut s, FieldRow::AdaptModeRow);
     handle_key(&mut s, key(KeyCode::Right));
