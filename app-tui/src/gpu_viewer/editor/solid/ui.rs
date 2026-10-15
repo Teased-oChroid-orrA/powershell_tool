@@ -37,6 +37,7 @@ pub(super) const T_HEAT_SUPPORTS: u32 = 6;
 pub(super) const T_HEAT_LOADS: u32 = 7;
 pub(super) const T_FEATURE_BASE: u32 = 100;
 pub(super) const T_CASES: u32 = 8;
+pub(super) const T_CONTACTS: u32 = 9;
 pub(super) const T_CASE_BASE: u32 = T_FEATURE_BASE + 6_000;
 pub(super) const T_SURFACE_BASE: u32 = 10_000;
 
@@ -95,6 +96,7 @@ impl SolidSession {
                 FieldRow::HoleAdd | FieldRow::Element if self.problem.history.is_some() => "this model is built from a feature history: edit its sketch (Features > Edit selected sketch)".to_string(),
                 FieldRow::HoleAdd | FieldRow::Element | FieldRow::MeshStrategyRow | FieldRow::AdaptModeRow | FieldRow::PredictRow => "only sketch geometry has this (switch the source to Sketch)".to_string(),
                 FieldRow::BushingAdd => "bushings need a plane analysis with a circular hole".to_string(),
+                FieldRow::ContactAdd => "contact needs a plane sketch with more than one region (separate bodies)".to_string(),
                 _ => "not available for this model".to_string(),
             })
         }
@@ -170,6 +172,12 @@ impl SolidSession {
             out.push(TreeNode::new(T_BUSHINGS, 1, '+', format!("Bushings ({})", p.bushings.len())).folder());
             for b in 0..p.bushings.len() {
                 out.push(node(T_FEATURE_BASE + 3_000 + b as u32, 2, 'B', format!("Bushing {}", b + 1), Feature::Bushing(b)));
+            }
+        }
+        if !p.contacts.is_empty() {
+            out.push(TreeNode::new(T_CONTACTS, 1, '+', format!("Contacts ({})", p.contacts.len())).folder());
+            for (c, pair) in p.contacts.iter().enumerate() {
+                out.push(node(T_FEATURE_BASE + 7_000 + c as u32, 2, 'C', format!("{} / {}", pair.a, pair.b), Feature::Contact(c)));
             }
         }
         let names = self.names();
@@ -371,6 +379,7 @@ impl Authoring for SolidSession {
                         act("Add support", "", SupportAdd),
                         act("Add load", "", LoadAdd),
                         act("Add bushing", "", BushingAdd),
+                        act("Add contact", "", ContactAdd),
                         entry("Support on surface", "", SolidAction::SupportOnSelected).when(self.selected_ok()),
                         entry("Load on surface", "", SolidAction::LoadOnSelected).when(self.selected_ok()),
                         entry("Assign surface", "", SolidAction::AssignSelection).when(self.assign_availability()),
@@ -446,6 +455,7 @@ impl Authoring for SolidSession {
                     act("Support", SupportAdd),
                     act("Load", LoadAdd),
                     act("Bushing", BushingAdd),
+                    act("Contact between bodies", ContactAdd),
                     Item::Separator,
                     item(entry("Support on selected surface", "", SolidAction::SupportOnSelected).when(self.selected_ok())),
                     item(entry("Load on selected surface", "", SolidAction::LoadOnSelected).when(self.selected_ok())),

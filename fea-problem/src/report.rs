@@ -135,6 +135,12 @@ pub fn report(s: &Solved) -> String {
             let _ = writeln!(o, "  hole {}: mean pressure {:.0}, peak {:.0}, open over {:.0} deg, friction torque capacity {:.2}, {:.0} % of the force at its friction limit", f.hole, f.mean_pressure, f.peak_pressure, f.open_arc_deg, f.torque_capacity, 100.0 * f.slip_share);
         }
     }
+    if !sm.contacts.is_empty() {
+        let _ = writeln!(o, "\nContact pairs");
+        for c in &sm.contacts {
+            let _ = writeln!(o, "  {} / {}: normal force {:.4}, shear force {:.4}, mean pressure {:.0}, {:.0} % of the interface in contact, {:.0} % of the force at its friction limit", c.a, c.b, c.normal_force, c.tangential_force, c.mean_pressure, 100.0 * c.contact_share, 100.0 * c.slip_share);
+        }
+    }
     if let Some(b) = crate::benchmark::check(s) {
         let _ = writeln!(o);
         for line in b.lines() {

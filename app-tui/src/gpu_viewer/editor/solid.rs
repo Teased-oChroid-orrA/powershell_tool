@@ -196,6 +196,8 @@ pub enum Feature {
     Support(usize),
     Load(usize),
     Bushing(usize),
+    /// A contact pair (`usize::MAX`: the group).
+    Contact(usize),
     /// Conductivity, heat generation and the stress-free temperature.
     Thermal,
     HeatSupport(usize),
@@ -222,6 +224,8 @@ pub fn feature_of(row: FieldRow) -> Feature {
         LoadAdd => Feature::Load(usize::MAX),
         BushingParam(b, _) | BushingRemove(b) => Feature::Bushing(b),
         BushingAdd => Feature::Bushing(usize::MAX),
+        ContactA(c) | ContactB(c) | ContactFriction(c) | ContactRemove(c) => Feature::Contact(c),
+        ContactAdd => Feature::Contact(usize::MAX),
     }
 }
 
@@ -232,6 +236,7 @@ pub fn removal_of(row: FieldRow) -> Option<FieldRow> {
         Feature::Support(s) if s != usize::MAX => Some(FieldRow::SupportRemove(s)),
         Feature::Load(l) if l != usize::MAX => Some(FieldRow::LoadRemove(l)),
         Feature::Bushing(b) if b != usize::MAX => Some(FieldRow::BushingRemove(b)),
+        Feature::Contact(c) if c != usize::MAX => Some(FieldRow::ContactRemove(c)),
         Feature::HeatSupport(s) if s != usize::MAX => Some(FieldRow::HeatSupportRemove(s)),
         Feature::HeatLoad(l) if l != usize::MAX => Some(FieldRow::HeatLoadRemove(l)),
         _ => None,
@@ -240,7 +245,7 @@ pub fn removal_of(row: FieldRow) -> Option<FieldRow> {
 
 /// The part of the inputs the mesh depends on (supports, loads and material values do not).
 fn preview_key(p: &Problem) -> Problem {
-    Problem { supports: Vec::new(), loads: Vec::new(), cases: Vec::new(), active_case: 0, delta_t: 0.0, name: String::new(), study: fea_problem::Study::default(), thermal: fea_problem::ThermalSpec::default(), ..p.clone() }
+    Problem { supports: Vec::new(), loads: Vec::new(), contacts: Vec::new(), cases: Vec::new(), active_case: 0, delta_t: 0.0, name: String::new(), study: fea_problem::Study::default(), thermal: fea_problem::ThermalSpec::default(), ..p.clone() }
 }
 
 /// What the un-meshed body depends on: the geometry and the analysis, not the mesh settings, the loads or the name.
@@ -722,7 +727,7 @@ impl SolidSession {
     }
     fn cycle_focused(&mut self, forward: bool) {
         use FieldRow::*;
-        if let Some(r @ (Template | Analysis | Element | MeshStrategyRow | AdaptModeRow | PredictRow | BondRegionsRow | PlasticRow | SupportEdge(_) | LoadEdge(_))) = self.focused_row() {
+        if let Some(r @ (Template | Analysis | Element | MeshStrategyRow | AdaptModeRow | PredictRow | BondRegionsRow | PlasticRow | SupportEdge(_) | LoadEdge(_) | ContactA(_) | ContactB(_))) = self.focused_row() {
             self.activate(r, forward);
         }
     }
@@ -1119,7 +1124,12 @@ impl SolidSession {
             Feature::Hole(h) => Some(format!("hole{}", h + 1)),
             _ => None,
         });
-        for name in focused.iter().chain(self.all_selected().iter()).chain(self.fix_preview_surfaces().iter()) {
+        // A focused contact pair lights both its surfaces.
+        let contact: Vec<String> = match self.focused_row().map(feature_of) {
+            Some(Feature::Contact(c)) => self.problem.contacts.get(c).map(|x| vec![x.a.clone(), x.b.clone()]).unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        for name in contact.iter().chain(focused.iter()).chain(self.all_selected().iter()).chain(self.fix_preview_surfaces().iter()) {
             mark(name, 3.0);
         }
         if self.highlight_bushings {

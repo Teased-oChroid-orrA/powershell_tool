@@ -674,7 +674,7 @@ impl FeaWorkbenchState {
 
 /// The part of the inputs the mesh depends on (supports, loads and material values do not).
 pub(crate) fn preview_key(p: &Problem) -> Problem {
-    Problem { supports: Vec::new(), loads: Vec::new(), cases: Vec::new(), active_case: 0, delta_t: 0.0, name: String::new(), study: fea_problem::Study::default(), thermal: fea_problem::ThermalSpec::default(), ..p.clone() }
+    Problem { supports: Vec::new(), loads: Vec::new(), contacts: Vec::new(), cases: Vec::new(), active_case: 0, delta_t: 0.0, name: String::new(), study: fea_problem::Study::default(), thermal: fea_problem::ThermalSpec::default(), ..p.clone() }
 }
 
 fn is_edit_char(c: char) -> bool {
@@ -768,7 +768,7 @@ pub fn handle_key(state: &mut FeaWorkbenchState, key: KeyEvent) -> (bool, Vec<Ef
         KeyCode::Left | KeyCode::Right => {
             let forward = key.code == KeyCode::Right;
             match row {
-                Some(r @ (FieldRow::Template | FieldRow::Analysis | FieldRow::Element | FieldRow::MeshStrategyRow | FieldRow::AdaptModeRow | FieldRow::PredictRow | FieldRow::BondRegionsRow | FieldRow::PlasticRow | FieldRow::SupportEdge(_) | FieldRow::LoadEdge(_))) => (true, state.activate(r, forward)),
+                Some(r @ (FieldRow::Template | FieldRow::Analysis | FieldRow::Element | FieldRow::MeshStrategyRow | FieldRow::AdaptModeRow | FieldRow::PredictRow | FieldRow::BondRegionsRow | FieldRow::PlasticRow | FieldRow::SupportEdge(_) | FieldRow::LoadEdge(_) | FieldRow::ContactA(_) | FieldRow::ContactB(_))) => (true, state.activate(r, forward)),
                 _ => (false, Vec::new()),
             }
         }

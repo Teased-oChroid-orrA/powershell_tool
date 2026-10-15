@@ -571,6 +571,30 @@ impl Bushing {
     }
 }
 
+/// Frictional contact between two named surfaces (edges of a plane model) of different bodies: two members laid on one another
+/// that press and slide, a pin against a plate. The surfaces are those of [`Problem::edge_names`] (the first region has plain
+/// names, the others `r2/...`); each side acts once as the slave of the other, so neither mesh is privileged. The bodies are
+/// the sketch's regions, so the problem needs more than one and `mesh.bond_regions` off. Friction is Coulomb; `0` slides freely.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContactPair {
+    pub a: String,
+    pub b: String,
+    #[serde(default)]
+    pub friction: f64,
+}
+
+impl ContactPair {
+    /// Editable numbers, in a fixed order.
+    pub fn params(&self) -> Vec<(&'static str, f64)> {
+        vec![("Friction", self.friction)]
+    }
+    pub fn set_param(&mut self, i: usize, v: f64) {
+        if i == 0 {
+            self.friction = v;
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Problem {
     #[serde(default = "version")]
@@ -603,6 +627,9 @@ pub struct Problem {
     /// Interference-fit bushings in circular holes (plane analyses only).
     #[serde(default)]
     pub bushings: Vec<Bushing>,
+    /// Frictional contact between surfaces of different bodies (plane analyses with several regions).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contacts: Vec<ContactPair>,
     /// What a solve computes: stresses, a steady temperature field, or the thermal stress of that field.
     #[serde(default)]
     pub study: crate::thermal::Study,
@@ -718,6 +745,7 @@ impl Problem {
         self.supports.clear();
         self.loads.clear();
         self.bushings.clear();
+        self.contacts.clear();
     }
 
     /// Everything needed to mesh the problem (no supports or loads yet).
@@ -829,6 +857,43 @@ impl Problem {
         Ok(())
     }
 
+    /// The contact pairs name existing surfaces of two bodies, in a model that can solve them.
+    fn validate_contacts(&self) -> Result<(), String> {
+        if self.contacts.is_empty() {
+            return Ok(());
+        }
+        let Geometry::Sketch { regions, .. } = &self.geometry else { return Err("contact is for a 2D sketch with several regions (separate bodies)".into()) };
+        if !matches!(self.analysis, Analysis::PlaneStress | Analysis::PlaneStrain) {
+            return Err("contact is available for plane stress and plane strain analyses".into());
+        }
+        if regions.is_empty() || self.mesh.bond_regions {
+            return Err("contact needs separate bodies: a sketch with more than one region, not bonded (Mesh > Bond regions off)".into());
+        }
+        if !self.bushings.is_empty() {
+            return Err("contact pairs do not combine with bushings yet (a sketch with several regions cannot have bushings)".into());
+        }
+        if self.study.is_thermal() || self.material.plastic {
+            return Err("contact pairs are for the elastic structural study".into());
+        }
+        let names = self.edge_names();
+        let region_of = |n: &str| n.split_once('/').and_then(|(p, _)| p.strip_prefix('r')?.parse::<usize>().ok()).unwrap_or(1);
+        for (i, c) in self.contacts.iter().enumerate() {
+            let n = i + 1;
+            for s in [&c.a, &c.b] {
+                if !names.contains(s) {
+                    return Err(format!("contact {n}: there is no surface called {s} (the surfaces are {})", names.join(", ")));
+                }
+            }
+            if region_of(&c.a) == region_of(&c.b) {
+                return Err(format!("contact {n}: {} and {} belong to the same body; a contact joins two bodies", c.a, c.b));
+            }
+            if !(0.0..=2.0).contains(&c.friction) {
+                return Err(format!("contact {n}: friction must be in 0..2"));
+            }
+        }
+        Ok(())
+    }
+
     /// The elastic-plastic request is consistent: a yield stress, a plain structural study, and no features that need other solvers.
     fn validate_plasticity(&self) -> Result<(), String> {
         if !self.material.plastic {
@@ -856,6 +921,7 @@ impl Problem {
     /// Everything needed to solve: a meshable geometry and at least one support.
     pub fn validate(&self) -> Result<(), String> {
         self.validate_geometry()?;
+        self.validate_contacts()?;
         self.validate_plasticity()?;
         if self.study.is_thermal() {
             self.thermal.validate()?;

@@ -298,11 +298,14 @@ pub fn readout_lines<'a>(theme: &Theme, state: &FeaWorkbenchState) -> Vec<Line<'
     for f in &sm.interfaces {
         lines.push(Line::from(format!("Bushing in hole {}: fit pressure {:.0} mean / {:.0} peak, friction torque capacity {:.2}{}", f.hole, f.mean_pressure, f.peak_pressure, f.torque_capacity, if f.open_arc_deg > 0.0 { format!(", open over {:.0} deg", f.open_arc_deg) } else { String::new() })));
     }
+    for c in &sm.contacts {
+        lines.push(Line::from(format!("Contact {} / {}: {:.1} normal, {:.1} shear ({:.0} % of the interface in contact, {:.0} % of the force at its friction limit)", c.a, c.b, c.normal_force, c.tangential_force, 100.0 * c.contact_share, 100.0 * c.slip_share)));
+    }
     for note in &sm.notes {
         lines.push(tone(StatusTone::Warning, format!("\u{26a0} {note}")));
     }
     // A contact solve balances to its Newton tolerance, a linear one to rounding.
-    if s.problem.study.is_structural() && sm.equilibrium_error > if sm.interfaces.is_empty() { 1e-6 } else { 1e-3 } {
+    if s.problem.study.is_structural() && sm.equilibrium_error > if sm.interfaces.is_empty() && sm.contacts.is_empty() { 1e-6 } else { 1e-3 } {
         lines.push(tone(StatusTone::Warning, format!("\u{26a0} reactions and loads differ by {:.1e} (relative): check the supports and loads", sm.equilibrium_error)));
     }
     if !s.problem.study.is_structural() {

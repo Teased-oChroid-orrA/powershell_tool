@@ -1258,3 +1258,58 @@ fn an_imported_mesh_is_forecast_from_its_mesh_before_a_solve_and_the_units_slip_
     s.touch();
     assert!(!s.findings().iter().any(|d| d.class == FailureClass::ScaleSuspect));
 }
+
+/// Two bodies on one another, the lower held at its foot, the upper pressed on its top: the contact workflow of the editor.
+fn stacked() -> Problem {
+    let mut p = templates().remove(0).1;
+    p.analysis = fea_problem::Analysis::PlaneStress;
+    p.geometry = Geometry::Sketch {
+        outer: fea_problem::Shape::Rect { x0: 0.0, y0: 0.0, x1: 2.0, y1: 1.0 },
+        holes: Vec::new(),
+        depth: 1.0,
+        layers: 4,
+        regions: vec![fea_problem::SketchRegion { outer: fea_problem::Shape::Rect { x0: 0.0, y0: 1.0, x1: 2.0, y1: 2.0 }, holes: Vec::new() }],
+    };
+    p.mesh.size = 0.25;
+    p.mesh.adapt_passes = 0;
+    p.supports = vec![Support::roller("bottom", 1), Support::Point { x: 0.0, y: 0.0, z: 0.0, ux: Some(0.0), uy: None, uz: None }];
+    p.loads = vec![fea_problem::Load::Pressure { edge: "r2/top".into(), p: 1000.0 }];
+    p
+}
+
+#[test]
+fn a_contact_between_two_bodies_is_added_edited_solved_and_reported_in_the_editor() {
+    let mut s = SolidSession::new(stacked(), temp("contact"));
+    assert!(s.rows().contains(&FieldRow::ContactAdd), "a sketch with two regions offers contact");
+    assert!(SolidSession::new(plate(), temp("nocontact")).row_available(FieldRow::ContactAdd).is_err(), "a single body does not");
+    s.do_action(SolidAction::Activate(FieldRow::ContactAdd));
+    assert_eq!(s.problem.contacts.len(), 1);
+    let c = &s.problem.contacts[0];
+    assert_eq!((c.a.as_str(), c.b.as_str(), c.friction), ("top", "r2/bottom", 0.2), "the facing surfaces of the two bodies");
+    // The surfaces cycle through the model's own names, and the friction is a typed number.
+    s.do_action(SolidAction::Activate(FieldRow::ContactB(0)));
+    assert_ne!(s.problem.contacts[0].b, "r2/bottom");
+    s.problem.contacts[0].b = "r2/bottom".into();
+    s.do_action(SolidAction::Activate(FieldRow::ContactFriction(0)));
+    for _ in 0..6 {
+        s.handle_key(Key::Backspace, Mods::default());
+    }
+    type_text(&mut s, "0");
+    assert_eq!(s.problem.contacts[0].friction, 0.0);
+    // It appears in the tree, its feature owns its rows and focusing it lights both surfaces.
+    let tree = Authoring::tree(&s);
+    assert!(tree.iter().any(|n| n.label == "Contacts (1)"));
+    let node = tree.iter().find(|n| n.label == "top / r2/bottom").expect("the pair is a tree row");
+    assert_eq!(super::inspect::node_feature(node.id), Some(Feature::Contact(0)));
+    assert_eq!(removal_of(FieldRow::ContactFriction(0)), Some(FieldRow::ContactRemove(0)));
+    // Solve: the interface carries the applied force, and the result card says so.
+    solved(&mut s);
+    let sol = s.current_solution().expect("solved").clone();
+    let applied = 1000.0 * 2.0 * s.problem.thickness;
+    let k = &sol.summary.contacts[0];
+    assert!((k.normal_force - applied).abs() / applied < 0.03, "{} of {applied}", k.normal_force);
+    assert!(texts(&s).iter().any(|t| t.starts_with("contact top / r2/bottom")), "{:?}", texts(&s));
+    // Removing it takes the pair out and the solve is then a refusal, not a silent single body.
+    s.do_action(SolidAction::Activate(FieldRow::ContactRemove(0)));
+    assert!(s.problem.contacts.is_empty());
+}

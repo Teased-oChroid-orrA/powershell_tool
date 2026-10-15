@@ -24,7 +24,7 @@ fn ui(a: SolidAction) -> UiAction {
 
 /// The feature a feature-tree row stands for (`None` for result, surface and history rows).
 pub(super) fn node_feature(node: u32) -> Option<Feature> {
-    use super::ui::{T_BUSHINGS, T_FEATURE_BASE, T_GEOMETRY, T_HEAT_LOADS, T_HEAT_SUPPORTS, T_LOADS, T_ROOT, T_SUPPORTS};
+    use super::ui::{T_BUSHINGS, T_CONTACTS, T_FEATURE_BASE, T_GEOMETRY, T_HEAT_LOADS, T_HEAT_SUPPORTS, T_LOADS, T_ROOT, T_SUPPORTS};
     let rel = |base: u32| node.checked_sub(T_FEATURE_BASE + base).map(|n| n as usize);
     Some(match node {
         T_ROOT => Feature::Problem,
@@ -32,6 +32,7 @@ pub(super) fn node_feature(node: u32) -> Option<Feature> {
         T_SUPPORTS => Feature::Support(usize::MAX),
         T_LOADS => Feature::Load(usize::MAX),
         T_BUSHINGS => Feature::Bushing(usize::MAX),
+        T_CONTACTS => Feature::Contact(usize::MAX),
         T_HEAT_SUPPORTS => Feature::HeatSupport(usize::MAX),
         T_HEAT_LOADS => Feature::HeatLoad(usize::MAX),
         n if n == T_FEATURE_BASE + 4 => Feature::Thermal,
@@ -43,6 +44,7 @@ pub(super) fn node_feature(node: u32) -> Option<Feature> {
         n if (T_FEATURE_BASE + 1_000..T_FEATURE_BASE + 2_000).contains(&n) => Feature::Support(rel(1_000)?),
         n if (T_FEATURE_BASE + 2_000..T_FEATURE_BASE + 3_000).contains(&n) => Feature::Load(rel(2_000)?),
         n if (T_FEATURE_BASE + 3_000..T_FEATURE_BASE + 4_000).contains(&n) => Feature::Bushing(rel(3_000)?),
+        n if (T_FEATURE_BASE + 7_000..T_FEATURE_BASE + 8_000).contains(&n) => Feature::Contact(rel(7_000)?),
         n if (T_FEATURE_BASE + 4_000..T_FEATURE_BASE + 5_000).contains(&n) => Feature::HeatSupport(rel(4_000)?),
         n if (T_FEATURE_BASE + 5_000..T_FEATURE_BASE + 6_000).contains(&n) => Feature::HeatLoad(rel(5_000)?),
         _ => return None,
@@ -60,6 +62,8 @@ impl SolidSession {
             Feature::Support(s) if s != usize::MAX => format!("Support {}", s + 1),
             Feature::Load(l) if l != usize::MAX => format!("Load {}", l + 1),
             Feature::Bushing(b) if b != usize::MAX => format!("Bushing {}", b + 1),
+            Feature::Contact(c) if c != usize::MAX => format!("Contact {}", c + 1),
+            Feature::Contact(_) => "Contacts".into(),
             Feature::Thermal => "Thermal".into(),
             Feature::HeatSupport(s) if s != usize::MAX => format!("Fixed temperature {}", s + 1),
             Feature::HeatLoad(l) if l != usize::MAX => format!("Heat load {}", l + 1),
@@ -157,6 +161,10 @@ impl SolidSession {
                 result.push(DockItem::text(format!("max displacement {:.4e}{share}", s.max_displacement.value), Tone::Normal));
                 if let Some(m) = s.margin {
                     result.push(DockItem::text(format!("yield margin {m:+.3}"), if m < 0.0 { Tone::Warn } else { Tone::On }));
+                }
+                for c in &s.contacts {
+                    result.push(DockItem::text(format!("contact {} / {}: {:.1} normal, {:.1} shear", c.a, c.b, c.normal_force, c.tangential_force), Tone::Normal));
+                    result.push(DockItem::text(format!("  {:.0} % of it touching, {:.0} % at the friction limit", 100.0 * c.contact_share, 100.0 * c.slip_share), if c.contact_share < 0.999 { Tone::Warn } else { Tone::Dim }));
                 }
                 result.push(DockItem::text(format!("equilibrium error {:.1e}", s.equilibrium_error), Tone::Dim));
             }

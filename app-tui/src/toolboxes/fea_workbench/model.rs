@@ -60,6 +60,12 @@ pub enum FieldRow {
     BushingParam(usize, usize),
     BushingRemove(usize),
     BushingAdd,
+    /// The two surfaces of contact pair `.0`, its friction, its removal; adding a pair.
+    ContactA(usize),
+    ContactB(usize),
+    ContactFriction(usize),
+    ContactRemove(usize),
+    ContactAdd,
     Conductivity,
     HeatSource,
     ReferenceTemp,
@@ -92,7 +98,7 @@ pub enum EditKind {
 pub fn edit_kind(row: FieldRow) -> EditKind {
     use FieldRow::*;
     match row {
-        Thickness | Young | Poisson | Alpha | Density | Yield | HardeningRow | DeltaT | Conductivity | HeatSource | ReferenceTemp | HeatSupportCoord(..) | HeatSupportTemp(..) | HeatLoadParam(..) | Outer(..) | PolyPoint(..) | Hole(..) | Depth | Layers | MeshSize | HoleFactor | AdaptPasses | TargetError | SupportCoord(..) | LoadParam(..) | BushingParam(..) => EditKind::Number,
+        Thickness | Young | Poisson | Alpha | Density | Yield | HardeningRow | DeltaT | Conductivity | HeatSource | ReferenceTemp | HeatSupportCoord(..) | HeatSupportTemp(..) | HeatLoadParam(..) | Outer(..) | PolyPoint(..) | Hole(..) | Depth | Layers | MeshSize | HoleFactor | AdaptPasses | TargetError | SupportCoord(..) | LoadParam(..) | BushingParam(..) | ContactFriction(..) => EditKind::Number,
         SupportComp(..) => EditKind::Component,
         ImportPath => EditKind::Text,
         _ => EditKind::Action,
@@ -248,6 +254,14 @@ pub fn field_rows(p: &Problem) -> Vec<FieldRow> {
         }
         r.push(BushingAdd);
     }
+    // Contact between the bodies (the sketch's regions) of a plane problem.
+    if plane && matches!(&p.geometry, Geometry::Sketch { regions, .. } if !regions.is_empty()) {
+        r.push(Header("Contact"));
+        for c in 0..p.contacts.len() {
+            r.extend([ContactA(c), ContactB(c), ContactFriction(c), ContactRemove(c)]);
+        }
+        r.push(ContactAdd);
+    }
     r
 }
 
@@ -316,6 +330,11 @@ pub fn row_label(p: &Problem, row: FieldRow) -> String {
         BushingParam(b, i) => format!("  Bushing {} {}", b + 1, p.bushings.get(b).and_then(|x| x.params().get(i).map(|(l, _)| *l)).unwrap_or("")),
         BushingRemove(b) => format!("  Remove Bushing {}", b + 1),
         BushingAdd => "Add Bushing".into(),
+        ContactA(_) => "  Surface A".into(),
+        ContactB(_) => "  Surface B".into(),
+        ContactFriction(_) => "  Friction".into(),
+        ContactRemove(c) => format!("  Remove Contact {}", c + 1),
+        ContactAdd => "Add Contact".into(),
         Conductivity => "Conductivity".into(),
         HeatSource => "Heat Generation".into(),
         ReferenceTemp => "Stress-Free Temperature".into(),
@@ -386,6 +405,7 @@ pub fn number_value(p: &Problem, row: FieldRow) -> Option<f64> {
         SupportComp(s, c) => p.supports.get(s)?.comps()[c]?,
         LoadParam(l, i) => p.loads.get(l)?.params(d).get(i)?.1,
         BushingParam(b, i) => p.bushings.get(b)?.params().get(i)?.1,
+        ContactFriction(c) => p.contacts.get(c)?.friction,
         Conductivity => p.thermal.conductivity,
         HeatSource => p.thermal.source,
         ReferenceTemp => p.thermal.reference,
@@ -466,6 +486,11 @@ pub fn set_number(p: &mut Problem, row: FieldRow, v: f64) {
                 bu.set_param(i, v);
             }
         }
+        ContactFriction(c) => {
+            if let Some(pair) = p.contacts.get_mut(c) {
+                pair.friction = v.clamp(0.0, 2.0);
+            }
+        }
         Conductivity if v > 0.0 => p.thermal.conductivity = v,
         HeatSource => p.thermal.source = v,
         ReferenceTemp => p.thermal.reference = v,
@@ -526,7 +551,7 @@ pub fn row_value(p: &Problem, names: &[String], import_len: Option<usize>, row: 
             Geometry::Sketch { outer, .. } => outer.label().to_string(),
             _ => String::new(),
         },
-        PolyAdd | PolyRemove | HoleAdd | HoleRemove(_) | SupportAdd | SupportRemove(_) | LoadAdd | LoadRemove(_) | BushingAdd | BushingRemove(_) | HeatSupportAdd | HeatSupportRemove(_) | HeatLoadAdd | HeatLoadRemove(_) => "Enter".to_string(),
+        PolyAdd | PolyRemove | HoleAdd | HoleRemove(_) | SupportAdd | SupportRemove(_) | LoadAdd | LoadRemove(_) | BushingAdd | BushingRemove(_) | ContactAdd | ContactRemove(_) | HeatSupportAdd | HeatSupportRemove(_) | HeatLoadAdd | HeatLoadRemove(_) => "Enter".to_string(),
         HeatSupportKind(s) => match p.thermal.supports.get(s) {
             Some(fea_problem::HeatSupport::Temperature { .. }) => "Edge".to_string(),
             Some(fea_problem::HeatSupport::Point { .. }) => "Point (nearest node)".to_string(),
@@ -557,6 +582,8 @@ pub fn row_value(p: &Problem, names: &[String], import_len: Option<usize>, row: 
             None => String::new(),
         },
         SupportEdge(s) => p.supports.get(s).and_then(|x| x.edge()).map(|e| edge_text(e, names)).unwrap_or_default(),
+        ContactA(c) => p.contacts.get(c).map(|x| edge_text(&x.a, names)).unwrap_or_default(),
+        ContactB(c) => p.contacts.get(c).map(|x| edge_text(&x.b, names)).unwrap_or_default(),
         LoadKind(l) => p.loads.get(l).map_or(String::new(), |x| x.label().to_string()),
         LoadEdge(l) => p.loads.get(l).and_then(|x| x.edge()).map(|e| edge_text(e, names)).unwrap_or_default(),
         SupportComp(s, c) => match p.supports.get(s).and_then(|x| x.comps()[c]) {
@@ -565,7 +592,7 @@ pub fn row_value(p: &Problem, names: &[String], import_len: Option<usize>, row: 
             None => "Free".to_string(),
         },
         Layers | AdaptPasses => format!("{}", number_value(p, row).unwrap_or(0.0).round()),
-        Thickness | Young | Poisson | Alpha | Density | DeltaT | Conductivity | HeatSource | ReferenceTemp | HeatSupportCoord(..) | HeatSupportTemp(..) | HeatLoadParam(..) | Outer(..) | PolyPoint(..) | Hole(..) | Depth | MeshSize | HoleFactor | TargetError | SupportCoord(..) | LoadParam(..) | BushingParam(..) => {
+        Thickness | Young | Poisson | Alpha | Density | DeltaT | Conductivity | HeatSource | ReferenceTemp | HeatSupportCoord(..) | HeatSupportTemp(..) | HeatLoadParam(..) | Outer(..) | PolyPoint(..) | Hole(..) | Depth | MeshSize | HoleFactor | TargetError | SupportCoord(..) | LoadParam(..) | BushingParam(..) | ContactFriction(..) => {
             let _ = d;
             number_value(p, row).map_or(String::new(), format_number)
         }
@@ -626,6 +653,10 @@ pub fn field_hint(row: FieldRow) -> &'static str {
         LoadAdd => "Adds a pressure on the first edge.",
         BushingParam(..) => "A bushing pressed into a circular hole of a plane problem: its outer diameter is the hole's plus the diametral interference, in frictional contact with the plate. The bore may be offset from the hole centre (an eccentric bushing). A load or support on holeN then acts on the bushing's bore. A bushed problem is solved with contact (seconds) on r, not automatically.",
         BushingRemove(_) => "Removes this bushing.",
+        ContactA(_) | ContactB(_) => "Name of a surface of one of the two bodies (the sketch's regions; the first has plain names, the others r2/, r3/...). Enter or Right: next; Left: previous.",
+        ContactFriction(_) => "Coulomb friction between the two surfaces. 0 slides freely. A body no support holds is held by this friction: with 0 it needs a support that stops its sliding.",
+        ContactRemove(_) => "Removes this contact pair.",
+        ContactAdd => "Adds contact between the first two bodies: the first surface of the first region facing the second against the nearest surface of the next region, friction 0.2. Choose the surfaces that touch.",
         StudyKind => "Structural (stresses from supports and loads), Thermal (steady temperature from fixed temperatures, heat fluxes and convection) or Thermal stress (the temperature field, then the stresses it causes).",
         Conductivity => "Thermal conductivity in consistent units (energy per time, length and degree). The temperatures do not depend on it when only temperatures are fixed.",
         HeatSource => "Heat generated per unit volume and time (0 = none).",
@@ -704,6 +735,36 @@ pub fn new_bushing(p: &Problem) -> Option<fea_problem::Bushing> {
         _ => None,
     })?;
     Some(fea_problem::Bushing { hole: i + 1, inner_diameter: 1.5 * r, offset: [0.0, 0.0], interference: 0.008 * r, friction: 0.15, material: fea_problem::MaterialSpec { name: "Steel (bushing)".into(), e: 29.0e6, nu: 0.3, alpha: 6.5e-6, yield_stress: None, density: 0.283 / 386.089, plastic: false, hardening: 0.0 } })
+}
+
+/// A default contact pair for a sketch with several regions: the facing surfaces of the first two bodies (the pair of
+/// outer surfaces, one from each region, whose midpoints are closest), friction 0.2.
+pub fn new_contact(p: &Problem) -> Option<fea_problem::ContactPair> {
+    let Geometry::Sketch { outer, regions, .. } = &p.geometry else { return None };
+    let first = regions.first()?;
+    let mid = |s: &Shape, k: usize| -> Option<[f64; 2]> {
+        // The edge named by its index in the outline's own order: rectangles bottom, right, top, left.
+        match s {
+            Shape::Rect { x0, y0, x1, y1 } => Some([[(x0 + x1) / 2.0, *y0], [*x1, (y0 + y1) / 2.0], [(x0 + x1) / 2.0, *y1], [*x0, (y0 + y1) / 2.0]][k]),
+            _ => None,
+        }
+    };
+    let names = ["bottom", "right", "top", "left"];
+    let mut best: Option<(f64, usize, usize)> = None;
+    for a in 0..4 {
+        for b in 0..4 {
+            let (Some(ma), Some(mb)) = (mid(outer, a), mid(&first.outer, b)) else { continue };
+            let d = (ma[0] - mb[0]).hypot(ma[1] - mb[1]);
+            if best.is_none_or(|(bd, ..)| d < bd) {
+                best = Some((d, a, b));
+            }
+        }
+    }
+    let (a, b) = match best {
+        Some((_, a, b)) => (names[a].to_string(), format!("r2/{}", names[b])),
+        None => ("outer".to_string(), "r2/outer".to_string()),
+    };
+    Some(fea_problem::ContactPair { a, b, friction: 0.2 })
 }
 
 /// Drop the bushings of a removed hole and renumber the later ones.
@@ -864,6 +925,30 @@ pub fn apply_row_action(p: &mut Problem, names: &[String], row: FieldRow, forwar
             BushingRemove(b) => {
                 if b < p.bushings.len() {
                     p.bushings.remove(b);
+                }
+            }
+            ContactA(c) => {
+                if let Some(pair) = p.contacts.get_mut(c) {
+                    if let Some(next) = cycle_name(&pair.a, names, forward) {
+                        pair.a = next;
+                    }
+                }
+            }
+            ContactB(c) => {
+                if let Some(pair) = p.contacts.get_mut(c) {
+                    if let Some(next) = cycle_name(&pair.b, names, forward) {
+                        pair.b = next;
+                    }
+                }
+            }
+            ContactRemove(c) => {
+                if c < p.contacts.len() {
+                    p.contacts.remove(c);
+                }
+            }
+            ContactAdd => {
+                if let Some(pair) = new_contact(p) {
+                    p.contacts.push(pair);
                 }
             }
             _ => return false,
