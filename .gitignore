@@ -12,3 +12,11 @@ nuget.config
 
 # Diagnostic log written next to wherever the app is launched
 toolbench-debug.log*
+
+# Workbench case files written next to wherever the app was started (bushing / eccentric cases, their FEA hand-off files)
+/bushing-case*.json
+/eccentric-case*.json
+*.fea.json
+*.fea.previous.json
+*.fea.link.json
+*.json.open
