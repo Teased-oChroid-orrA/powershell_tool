@@ -219,17 +219,28 @@ fn spawn(w: &Workbench, file: Option<&Path>) -> Result<(), String> {
         return c.spawn().map(|_| ()).map_err(|e| format!("{program}: {e}"));
     }
     if os == "macos" {
-        let dir = tempfile::tempdir().map_err(|e| e.to_string())?.keep();
-        let script = dir.join(format!("toolbench-{}.command", w.id));
-        std::fs::write(&script, macos_script(&exe, &args)).map_err(|e| e.to_string())?;
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
-        let mut c = Command::new("open");
-        c.arg(&script);
-        quiet(&mut c);
-        return c.spawn().map(|_| ()).map_err(|e| format!("open: {e}"));
+        return open_macos_script(w, &exe, &args);
     }
     Err(format!("no terminal is known for {os}; run app-tui in a terminal"))
+}
+
+/// macOS: Terminal runs a `.command` script (the only way to hand it arguments). Unix-only code: the Windows build must still compile.
+#[cfg(unix)]
+fn open_macos_script(w: &Workbench, exe: &Path, args: &[String]) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::{Command, Stdio};
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?.keep();
+    let script = dir.join(format!("toolbench-{}.command", w.id));
+    std::fs::write(&script, macos_script(exe, args)).map_err(|e| e.to_string())?;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    let mut c = Command::new("open");
+    c.arg(&script).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    c.spawn().map(|_| ()).map_err(|e| format!("open: {e}"))
+}
+
+#[cfg(not(unix))]
+fn open_macos_script(_: &Workbench, _: &Path, _: &[String]) -> Result<(), String> {
+    Err("this build has no macOS terminal launcher".into())
 }
 
 #[cfg(test)]
