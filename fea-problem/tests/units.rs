@@ -7,6 +7,10 @@ fn plate() -> Problem {
     let mut p = templates::templates().remove(0).1;
     p.mesh.size = 1.0;
     p.mesh.adapt_passes = 0;
+    // These tests are about the conversion, and the answer is compared at its peak node: the all-unstructured mesher breaks ties
+    // by round-off, so the converted problem differs from the original by a fraction of a percent; a hybrid mesh (structured
+    // blocks plus a graded unstructured fill) differs by about 3 %. Pin the strategy so a change of the default is not a unit bug.
+    p.mesh.strategy = fea_problem::MeshStrategy::Unstructured;
     p.loads.push(Load::Pressure { edge: "top".into(), p: 500.0 });
     p
 }
@@ -60,6 +64,7 @@ fn a_converted_problem_gives_the_same_physical_answer_in_every_system() {
 fn a_solid_with_a_history_a_body_force_and_a_prescribed_displacement_converts_whole() {
     let mut p = templates::templates().into_iter().map(|(_, p)| p).find(|p| p.analysis == Analysis::Solid).unwrap();
     p.mesh.size = 1.0;
+    p.mesh.strategy = fea_problem::MeshStrategy::Unstructured; // see `plate`
     p.loads.push(Load::Body { bx: 0.0, by: -0.283, bz: 0.0 });
     p.supports.push(Support::Point { x: 0.0, y: 0.0, z: 0.0, ux: Some(0.0), uy: Some(0.001), uz: None });
     p.history = Some(fea_problem::history::History::from_problem(&p).unwrap());
