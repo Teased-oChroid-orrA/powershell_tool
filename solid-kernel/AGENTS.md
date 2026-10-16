@@ -96,3 +96,5 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - [Phase 29 global curve distance brackets](../docs/issue-46-phase-29.md): deterministic bounded search and positive-weight Cartesian hull conditioning.
 
 - [Phase 30 surface patch enclosures](../docs/issue-46-phase-30.md): shared Bounds3, outward tensor recurrence, bounded patch work and indexed span queries.
+
+- [Phase 31 merged foundations and surface distance](../docs/issue-46-phase-31.md): PR #65 transition, continuation branch and shared bounded curve/surface search.

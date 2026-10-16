@@ -214,3 +214,5 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Phase 29 global curve distance brackets](issue-46-phase-29.md): deterministic bounded search and positive-weight Cartesian hull conditioning.
 
 - [Phase 30 surface patch enclosures](issue-46-phase-30.md): shared Bounds3, outward tensor recurrence, bounded patch work and indexed span queries.
+
+- [Phase 31 merged foundations and surface distance](issue-46-phase-31.md): PR #65 transition, continuation branch and shared bounded curve/surface search.

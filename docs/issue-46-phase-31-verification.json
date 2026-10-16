@@ -1,0 +1,28 @@
+{
+  "source_commit": "730a878b1ea85a9387c19a289003c52cb37187d2",
+  "merged_pr": 65,
+  "foundation_main_merge": "37cf93220fee91cc1ced09f4acb2a7b2b6e26303",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 125,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 108,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "development_failures": [],
+  "not_verified": [
+    "Unique projection/parameter error, trimmed surfaces and full spline B-Rep",
+    "Broader epic gates and latest Windows/macOS execution"
+  ]
+}
