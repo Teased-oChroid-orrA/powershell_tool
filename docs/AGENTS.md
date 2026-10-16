@@ -164,3 +164,5 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 
 - [Issue 46 Phase 4](issue-46-phase-4.md): bounded native analytic STEP geometry, declared unit normalization and independent reference checks.
 - [Issue 46 Phase 5](issue-46-phase-5.md): sampled planar trim validation/classification and remaining periodic/solid gates.
+
+- [Issue 46 Phase 6](issue-46-phase-6.md): cylindrical trim charts, explicit tilted-reference limit and current native support matrix; draft PR #65.

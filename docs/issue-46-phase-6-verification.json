@@ -1,0 +1,38 @@
+{
+  "source_commit": "05e9f0ee77f5f04b6afb5c616ed6f167c64c9019",
+  "scope": "sampled single-bound cylindrical charts; not native solid/tessellation",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked -j1",
+      "passed": 40,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked -j1",
+      "passed": 31,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "fixture_cylindrical_faces": 10,
+  "independent_reference": {
+    "geometry": "OCCT translated cylinder r=2 mm h=3 mm axis Z",
+    "developed_area_mm2": "12*pi",
+    "absolute_tolerance": 1e-12
+  },
+  "development_failure_retained_as_refusal": {
+    "geometry": "OCCT cylinder at [7,-4,2], axis [1,2,3], r=2, h=3",
+    "initial_width_mm": 12.566370614360283,
+    "circumference_mm": 12.566370614359172,
+    "reason": "single-turn certificate not established; no tolerance relaxation"
+  },
+  "not_verified": [
+    "general periodic/rotated geometry uncertainty",
+    "cylindrical holes/unseamed bands",
+    "exact curved trim intersections",
+    "native triangulation and global solid validity",
+    "constrained volume recovery",
+    "later native code on hosted Windows/macOS"
+  ]
+}
