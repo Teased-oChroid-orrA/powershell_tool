@@ -224,7 +224,21 @@ fn independent_occt_cube_and_cylinder_exports_have_correct_normals_and_chords() 
     )
     .unwrap();
     assert_eq!(model.body().faces.len(), 6);
+    let mut cube_area = 0.;
     for face in model.body().faces.values() {
+        let trims = model.sampled_planar_trims(face.id, 1000).unwrap();
+        assert_eq!(trims.loops.len(), 1);
+        let points = &trims.loops[0].points;
+        assert_eq!(points.len(), 4);
+        cube_area += (0..points.len())
+            .map(|i| {
+                let a = points[i];
+                let b = points[(i + 1) % points.len()];
+                a[0] * b[1] - a[1] * b[0]
+            })
+            .sum::<f64>()
+            .abs()
+            / 2.;
         let id = face.bounds[0].edges[0].edge;
         let p = model.edge_points(id).unwrap()[0];
         let uv = model.surface(face.id).unwrap().project(p).unwrap().chart;
@@ -232,6 +246,7 @@ fn independent_occt_cube_and_cylinder_exports_have_correct_normals_and_chords() 
         let outward = (p[0] - 1.) * n[0] + (p[1] - 1.5) * n[1] + (p[2] - 2.) * n[2];
         assert!(outward > 0.);
     }
+    assert!((cube_area - 52.).abs() < 1e-12);
     let cylinder = Brep::cylinder([0., 0., 0.], 2., [0., 0., 1.], 3.)
         .to_step_text()
         .unwrap();
@@ -256,4 +271,29 @@ fn independent_occt_cube_and_cylinder_exports_have_correct_normals_and_chords() 
         }
     }
     assert_eq!(circles, 2);
+}
+
+#[test]
+fn bracket_planar_trims_classify_holes_without_bound_order_guesses() {
+    let data = inventory(SOURCE, Limits::default()).unwrap();
+    let model = AnalyticModel::read(&data, Options::default()).unwrap();
+    let mut planes = 0;
+    let mut holes = 0;
+    for face in model.body().faces.values() {
+        if matches!(model.surface(face.id), Some(Surface::Plane(_))) {
+            assert!(matches!(
+                model.sampled_planar_trims(face.id, 0).unwrap_err().kind,
+                solid_kernel::step::ErrorKind::Limit
+            ));
+            let trims = model.sampled_planar_trims(face.id, 2_000_000).unwrap();
+            assert_eq!(trims.loops.len(), face.bounds.len());
+            assert_eq!(trims.loops.iter().filter(|l| l.is_outer).count(), 1);
+            holes += trims.loops.iter().filter(|l| !l.is_outer).count();
+            planes += 1;
+        } else {
+            assert!(model.sampled_planar_trims(face.id, 2_000_000).is_err());
+        }
+    }
+    assert_eq!(planes, 28);
+    assert!(holes > 0);
 }
