@@ -15,6 +15,7 @@
 pub mod analytic_step;
 pub mod chart_mesh;
 pub mod native_surface;
+pub mod triangle_intersection;
 pub mod planar_step;
 pub mod cylindrical_step;
 mod bvh;
@@ -250,6 +251,13 @@ impl SurfaceSolid {
         if volume.abs() < 1e-300 {
             return Err("the surface encloses no volume".into());
         }
+        Ok(Self::from_oriented_mesh(SurfaceMesh { vertices, triangles, face }))
+    }
+
+    // Called after either the legacy repair/validation path or the sealed
+    // sampled-facet intersection gate; this stage never welds or changes indices.
+    fn from_oriented_mesh(mesh: SurfaceMesh) -> Self {
+        let SurfaceMesh { vertices, triangles, face } = mesh;
         let normal: Vec<V3> = triangles.iter().map(|t| unit(cross(sub(vertices[t[1]], vertices[t[0]]), sub(vertices[t[2]], vertices[t[0]])))).collect();
         // Angle-weighted vertex normals and summed edge normals.
         let mut vertex_normal = vec![[0.0; 3]; vertices.len()];
@@ -278,7 +286,7 @@ impl SurfaceSolid {
         }
         let bvh = Bvh::build(&vertices, &triangles);
         let faces = face.iter().max().map_or(0, |m| m + 1);
-        Ok(Self { vertices, triangles, face, normal, vertex_normal, edge_normal, bvh, faces, lo, hi })
+        Self { vertices, triangles, face, normal, vertex_normal, edge_normal, bvh, faces, lo, hi }
     }
 
     /// Number of model faces (one more than the largest face tag).

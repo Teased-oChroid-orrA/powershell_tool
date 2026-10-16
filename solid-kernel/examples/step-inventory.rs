@@ -108,7 +108,19 @@ fn run() -> Result<(), String> {
                 .map_err(|e| e.to_string())?;
             println!("Closed sampled surface: {} vertices, {} triangles, {} source faces, signed volume {} mm³ ({:.3} s)",
                 surface.mesh.vertices.len(),surface.mesh.triangles.len(),surface.source_faces.len(),surface.signed_volume_mm3,started.elapsed().as_secs_f64());
-            println!("Global geometric intersections and exact CAD validity are not certified.");
+            let checked = surface
+                .check_intersections(2_000_000, |pairs| {
+                    if pairs % 8192 == 0 {
+                        eprintln!("Native facet intersection check: {pairs} candidate pairs");
+                    }
+                    true
+                })
+                .map_err(|e| e.to_string())?;
+            println!(
+                "Sampled facet intersection check passed: {} candidate pairs",
+                checked.pairs_checked()
+            );
+            println!("Exact trimmed CAD validity remains uncertified.");
         }
     }
     for (name, count) in result.counts() {

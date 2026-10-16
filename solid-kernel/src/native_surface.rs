@@ -45,7 +45,7 @@ fn fail(kind: ErrorKind, s: impl Into<String>) -> Error {
         detail: s.into(),
     }
 }
-fn validate_connectivity(mesh: &SurfaceMesh) -> Result<(), Error> {
+pub(crate) fn validate_connectivity(mesh: &SurfaceMesh) -> Result<(), Error> {
     let mut edges = BTreeMap::<(usize, usize), (usize, i64)>::new();
     let mut unique = BTreeMap::new();
     for (triangle_id, t) in mesh.triangles.iter().enumerate() {
@@ -105,7 +105,42 @@ fn validate_connectivity(mesh: &SurfaceMesh) -> Result<(), Error> {
             ));
         }
     }
+    let mut neighbours = vec![Vec::new(); mesh.vertices.len()];
+    for &(a, b) in edges.keys() {
+        neighbours[a].push(b);
+        neighbours[b].push(a);
+    }
+    let mut reached = BTreeSet::new();
+    let mut pending = vec![0];
+    while let Some(v) = pending.pop() {
+        if reached.insert(v) {
+            pending.extend(&neighbours[v]);
+        }
+    }
+    if reached.len() != mesh.vertices.len() {
+        return Err(fail(
+            ErrorKind::Topology,
+            "native sampled surface requires one connected shell",
+        ));
+    }
     Ok(())
+}
+pub(crate) fn signed_volume(mesh: &SurfaceMesh) -> Result<f64, Error> {
+    let origin = mesh
+        .vertices
+        .first()
+        .copied()
+        .ok_or_else(|| fail(ErrorKind::Geometry, "empty sampled surface"))?;
+    let mut volume = 0.;
+    let mut correction = 0.;
+    for t in &mesh.triangles {
+        let [a, b, c] = t.map(|i| sub(mesh.vertices[i], origin));
+        let term = dot(a, cross(b, c)) / 6. - correction;
+        let sum = volume + term;
+        correction = (sum - volume) - term;
+        volume = sum;
+    }
+    Ok(volume)
 }
 impl AnalyticModel {
     /// Assemble all faces or fail. Callback runs before each bounded face job and
@@ -213,20 +248,7 @@ impl AnalyticModel {
             source_faces.push(face.id);
         }
         validate_connectivity(&mesh)?;
-        let origin = mesh
-            .vertices
-            .first()
-            .copied()
-            .ok_or_else(|| fail(ErrorKind::Geometry, "empty sampled surface"))?;
-        let mut volume = 0.;
-        let mut correction = 0.;
-        for t in &mesh.triangles {
-            let [a, b, c] = t.map(|i| sub(mesh.vertices[i], origin));
-            let term = dot(a, cross(b, c)) / 6. - correction;
-            let sum = volume + term;
-            correction = (sum - volume) - term;
-            volume = sum;
-        }
+        let volume = signed_volume(&mesh)?;
         if !volume.is_finite() || volume <= 0. {
             return Err(fail(
                 ErrorKind::Geometry,

@@ -27,7 +27,7 @@ fn fail(kind: ErrorKind, message: &str) -> Error {
         detail: message.into(),
     }
 }
-fn sign(a: P, b: P, c: P) -> Result<Ordering, Error> {
+pub(crate) fn sign(a: P, b: P, c: P) -> Result<Ordering, Error> {
     orientation(
         [a[0], a[1], 0.],
         [b[0], b[1], 0.],
@@ -44,7 +44,7 @@ fn sign(a: P, b: P, c: P) -> Result<Ordering, Error> {
 fn between(a: P, b: P, p: P) -> bool {
     (0..2).all(|i| a[i].min(b[i]) <= p[i] && p[i] <= a[i].max(b[i]))
 }
-fn intersects(a: P, b: P, c: P, d: P) -> Result<bool, Error> {
+pub(crate) fn intersects(a: P, b: P, c: P, d: P) -> Result<bool, Error> {
     let [s, t, u, v] = [
         sign(a, b, c)?,
         sign(a, b, d)?,

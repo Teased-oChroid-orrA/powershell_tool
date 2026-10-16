@@ -574,3 +574,93 @@ fn native_bracket_volume_converges_toward_independent_occt_reference() {
     assert!(observations[1].1 < observations[0].1, "{observations:?}");
     assert!(observations[1].1 / reference < 1e-3, "{observations:?}");
 }
+
+#[test]
+fn bracket_sampled_facets_pass_global_intersection_checks() {
+    let model = AnalyticModel::read(
+        &inventory(SOURCE, Limits::default()).unwrap(),
+        Options::default(),
+    )
+    .unwrap();
+    let surface = model
+        .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+        .unwrap();
+    let checked = surface.check_intersections(2_000_000, |_| true).unwrap();
+    assert_eq!(checked.surface().source_faces.len(), 38);
+    assert!(checked.pairs_checked() > 0);
+}
+
+#[cfg(feature = "occt")]
+#[test]
+fn native_step_to_checked_distance_solid_and_both_tet_orders_pass_tension_patch() {
+    use fea_core::{Elastic, Loads, Model, SurfaceLoad};
+    use solid_kernel::{mesh_volume, VolumeParams};
+    let text = solid_kernel::cad::Brep::box_from_corners([0., 0., 0.], [1., 1., 3.])
+        .to_step_text()
+        .unwrap();
+    let model = AnalyticModel::read(
+        &inventory(&text, Limits::default()).unwrap(),
+        Options::default(),
+    )
+    .unwrap();
+    let native = model
+        .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+        .unwrap()
+        .check_intersections(10000, |_| true)
+        .unwrap()
+        .into_distance_solid();
+    let solid = native.solid();
+    assert_eq!(native.source_faces().len(), 6);
+    assert_eq!(solid.triangle_count(), 12);
+    assert!((solid.signed_distance([0.5, 0.5, 1.5]) + 0.5).abs() < 1e-12);
+    let normals = solid.face_normals();
+    let top = normals.iter().position(|n| n[2] > 0.9).unwrap();
+    let bottom = normals.iter().position(|n| n[2] < -0.9).unwrap();
+    let (e, nu, sigma) = (200e3, 0.3, 50.);
+    for quadratic in [false, true] {
+        let (mesh, report) = mesh_volume(
+            solid,
+            Elastic::new(e, nu),
+            VolumeParams {
+                base: 0.5,
+                boundary_size: 0.4,
+                quadratic,
+            },
+            &|_| 1.,
+        )
+        .unwrap();
+        assert!((report.volume - 3.).abs() < 1e-6);
+        let top_faces = mesh.surfaces[&format!("face{}", top + 1)].clone();
+        let bottom_nodes: Vec<_> = mesh.surfaces[&format!("face{}", bottom + 1)]
+            .iter()
+            .flatten()
+            .copied()
+            .collect();
+        let model = Model::new(mesh).unwrap();
+        let mut bc = model.dirichlet();
+        for n in bottom_nodes {
+            bc.fix(n, 2, 0.);
+        }
+        for (n, x) in model.mesh.nodes.iter().enumerate() {
+            if x[0].abs() < 1e-9 && x[2].abs() < 1e-9 {
+                bc.fix(n, 0, 0.);
+            }
+            if x[1].abs() < 1e-9 && x[2].abs() < 1e-9 {
+                bc.fix(n, 1, 0.);
+            }
+        }
+        let mut loads = Loads::default();
+        for face in top_faces {
+            loads
+                .faces
+                .push((face, SurfaceLoad::Traction([0., 0., sigma])));
+        }
+        let solution = model.solve_static(&loads, &bc).unwrap();
+        let expected = sigma * 3. / e;
+        for (n, x) in model.mesh.nodes.iter().enumerate() {
+            if (x[2] - 3.).abs() < 1e-9 {
+                assert!((solution.u[n * 3 + 2] - expected).abs() < 1e-6 * expected);
+            }
+        }
+    }
+}
