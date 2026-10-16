@@ -127,7 +127,7 @@ pub struct CheckedSurface {
     pairs_checked: usize,
 }
 /// Source association and every explicitly requested repair, retained together.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NativeGeometryMetadata {
     pub source_document: Option<crate::step::DocumentFingerprint>,
     pub source_faces: Vec<u64>,
@@ -135,6 +135,37 @@ pub struct NativeGeometryMetadata {
     pub face_orientation_adjustments: Vec<crate::orientation_repair::FaceOrientationChange>,
 }
 impl NativeGeometryMetadata {
+    /// Remap a stored face selection by document and source entity identity.
+    /// Refuse missing/ambiguous identities rather than choosing a nearby face.
+    pub fn face_tag(&self, reference: crate::step::EntityReference) -> Result<usize, Error> {
+        if self.source_document != Some(reference.document) {
+            return Err(fail(
+                ErrorKind::DanglingReference,
+                "face selection belongs to different or unknown STEP source bytes",
+            ));
+        }
+        let mut matches = self
+            .source_faces
+            .iter()
+            .enumerate()
+            .filter(|(_, id)| **id == reference.entity);
+        let (tag, _) = matches.next().ok_or_else(|| {
+            fail(
+                ErrorKind::DanglingReference,
+                format!(
+                    "source face #{} is absent from regenerated geometry",
+                    reference.entity
+                ),
+            )
+        })?;
+        if matches.next().is_some() {
+            return Err(fail(
+                ErrorKind::Topology,
+                "ambiguous source face identity in regenerated geometry",
+            ));
+        }
+        Ok(tag)
+    }
     /// Construct a document-scoped face reference; no positional/tag fallback.
     pub fn face_reference(&self, tag: usize) -> Option<crate::step::EntityReference> {
         Some(crate::step::EntityReference {
@@ -150,6 +181,9 @@ pub struct NativeDistanceSolid {
     metadata: NativeGeometryMetadata,
 }
 impl NativeDistanceSolid {
+    pub fn metadata(&self) -> &NativeGeometryMetadata {
+        &self.metadata
+    }
     pub fn solid(&self) -> &crate::SurfaceSolid {
         &self.solid
     }

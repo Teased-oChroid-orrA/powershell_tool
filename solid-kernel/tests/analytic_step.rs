@@ -595,7 +595,7 @@ fn bracket_sampled_facets_pass_global_intersection_checks() {
 #[test]
 fn native_step_to_checked_distance_solid_and_both_tet_orders_pass_tension_patch() {
     use fea_core::{Elastic, Loads, Model, SurfaceLoad};
-    use solid_kernel::{mesh_volume, VolumeParams};
+    use solid_kernel::VolumeParams;
     let text = solid_kernel::cad::Brep::box_from_corners([0., 0., 0.], [1., 1., 3.])
         .to_step_text()
         .unwrap();
@@ -617,26 +617,33 @@ fn native_step_to_checked_distance_solid_and_both_tet_orders_pass_tension_patch(
     let normals = solid.face_normals();
     let top = normals.iter().position(|n| n[2] > 0.9).unwrap();
     let bottom = normals.iter().position(|n| n[2] < -0.9).unwrap();
+    let top_reference = native.metadata().face_reference(top).unwrap();
+    let bottom_reference = native.metadata().face_reference(bottom).unwrap();
     let (e, nu, sigma) = (200e3, 0.3, 50.);
     for quadratic in [false, true] {
-        let (mesh, report) = mesh_volume(
-            solid,
-            Elastic::new(e, nu),
-            VolumeParams {
-                base: 0.5,
-                boundary_size: 0.4,
-                quadratic,
-            },
-            &|_| 1.,
-        )
-        .unwrap();
-        assert!((report.volume - 3.).abs() < 1e-6);
-        let top_faces = mesh.surfaces[&format!("face{}", top + 1)].clone();
-        let bottom_nodes: Vec<_> = mesh.surfaces[&format!("face{}", bottom + 1)]
+        let generated = native
+            .mesh_volume(
+                Elastic::new(e, nu),
+                VolumeParams {
+                    base: 0.5,
+                    boundary_size: 0.4,
+                    quadratic,
+                },
+                &|_| 1.,
+            )
+            .unwrap();
+        assert!((generated.report().volume - 3.).abs() < 1e-6);
+        assert!(generated.unresolved_faces().is_empty());
+        let top_faces = generated.boundary(top_reference).unwrap().to_vec();
+        let bottom_nodes: Vec<_> = generated
+            .boundary(bottom_reference)
+            .unwrap()
             .iter()
             .flatten()
             .copied()
             .collect();
+        let (mesh, _, metadata) = generated.into_parts();
+        assert_eq!(metadata.face_reference(top), Some(top_reference));
         let model = Model::new(mesh).unwrap();
         let mut bc = model.dirichlet();
         for n in bottom_nodes {
@@ -868,4 +875,58 @@ fn native_face_associations_keep_exact_source_identity_through_geometry_checks()
     assert!(changed
         .resolve_reference(metadata.face_reference(0).unwrap())
         .is_err());
+}
+
+#[test]
+fn stored_face_selections_remap_across_changed_native_triangulations() {
+    use solid_kernel::step::{DocumentFingerprint, EntityReference};
+    let data = inventory(SOURCE, Limits::default()).unwrap();
+    let generated = |chord_mm| {
+        AnalyticModel::read(
+            &data,
+            Options {
+                chord_mm,
+                ..Options::default()
+            },
+        )
+        .unwrap()
+        .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+        .unwrap()
+        .check_intersections(2_000_000, |_| true)
+        .unwrap()
+        .into_distance_solid()
+    };
+    let coarse = generated(0.05);
+    let fine = generated(0.005);
+    assert!(fine.solid().triangle_count() > coarse.solid().triangle_count());
+    let references: Vec<_> = (0..coarse.source_faces().len())
+        .map(|tag| coarse.metadata().face_reference(tag).unwrap())
+        .collect();
+    for reference in &references {
+        let tag = fine.metadata().face_tag(*reference).unwrap();
+        assert_eq!(fine.metadata().face_reference(tag), Some(*reference));
+    }
+    let (_, mut reordered) = fine.into_parts();
+    reordered.source_faces.reverse();
+    for reference in &references {
+        let tag = reordered.face_tag(*reference).unwrap();
+        assert_eq!(reordered.source_faces[tag], reference.entity);
+    }
+    let reference = references[0];
+    assert!(reordered
+        .face_tag(EntityReference {
+            document: DocumentFingerprint([0; 32]),
+            ..reference
+        })
+        .is_err());
+    assert!(reordered
+        .face_tag(EntityReference {
+            entity: u64::MAX,
+            ..reference
+        })
+        .is_err());
+    reordered.source_faces.push(reference.entity);
+    assert!(reordered.face_tag(reference).is_err());
+    reordered.source_document = None;
+    assert!(reordered.face_tag(reference).is_err());
 }
