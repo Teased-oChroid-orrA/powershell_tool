@@ -18,6 +18,8 @@ mod native_math;
 mod native_interval;
 pub mod native_surface;
 pub mod geometry_bounds;
+mod geometry_distance;
+pub mod nurbs_surface_distance;
 pub mod nurbs;
 pub mod nurbs_distance;
 pub mod nurbs_sample;
