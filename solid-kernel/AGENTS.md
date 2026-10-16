@@ -32,3 +32,9 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
   instead of guessing. Never use the kernel id as a persistent face name.
 - Meshing a solid thinner than about two boundary elements is not resolved (see `fea-core/src/tetmesh.rs`).
 - The `occt` feature downloads or needs a ~30 MB prebuilt OCCT: keep it opt-in so default builds and tests stay offline. ADR-019 addendum records why `cadrum` replaced `opencascade`.
+
+- **Tessellation/welding correction (2026-10-15)**: welding checks Euclidean distance in neighbouring grid cells, not bucket
+  equality, and volume integration uses a translated origin. `occt::Brep::tessellate` locally splits coincident interior
+  curved-face chords by projecting their midpoints onto the exact trimmed kernel face; face tags and manifold acceptance
+  remain intact. The NEMA17 fixture needs eight extra triangles; global very fine tessellation was prohibitively expensive.
+  Kernel validity alone does not prove a particular triangle tessellation is a closed manifold.

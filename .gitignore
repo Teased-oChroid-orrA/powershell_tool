@@ -20,3 +20,8 @@ toolbench-debug.log*
 *.fea.previous.json
 *.fea.link.json
 *.json.open
+
+# Local release qualification evidence
+/qualification.json
+
+/scripts/__pycache__/

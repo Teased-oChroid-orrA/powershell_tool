@@ -1,17 +1,37 @@
-# Text In Files Search
+# GS Engineering Toolbench
 
-A native Windows desktop app that recursively searches a folder for
-keyword filters across `.txt`, `.log`, `.docx`, `.pptx` (slides, speaker
-notes, and SmartArt diagram text), `.xlsx`, `.zip` (recursing into
-entries, including nested zips), `.rtf`, `.pdf`, and dozens of other
-code/config/data extensions - producing a live-updating HTML report plus
-optional CSV/JSON/JSONL export.
+A Rust engineering application with native GPU workbenches for modelling,
+finite-element analysis, aircraft frame/truss members, bushings and eccentric
+bushings. The dashboard also opens the terminal tools for search, fastener holes,
+lug analysis, pressure vessels, preload and material lookup.
 
-The GUI (`app-tui/`, a ratatui/crossterm terminal UI) is a multi-tool
-"GS Engineering Toolbench": Search is the first tool, alongside Fastener
-Holes, Bushing Workbench, Lug Analysis, Pressure Vessel Analyzer, Preload
-Analysis and Material Lookup.
-Placeholders remain for Dupes, Rename and Logs.
+The search engine handles text, Office documents, archives and PDFs, with live
+progress, an optional persistent index and streamed reports. Rust is the sole
+implementation; the earlier PowerShell and C# applications remain in git history.
+
+## Native engineering workbenches
+
+Start the native dashboard with `cargo run --release -p app-tui -- --gui`.
+It opens FEA modelling and aircraft frame/truss, Bushing and Eccentric Bushing
+workbenches, and launches terminal tools where those remain the interface.
+The viewport uses direct Rust wgpu with egui controls. The terminal interface
+remains available with `cargo run -p app-tui`.
+
+For STEP import and solid editing, build with `--features occt` (OpenCASCADE).
+On Windows with the self-contained static CRT, use `--features occt-source`.
+The release folder must include `THIRD-PARTY-NOTICES.md` and `licenses/`.
+A default build can display and solve a saved tessellation without the CAD kernel.
+
+Choose the model's unit system in the Units dropdown; conversion preserves the
+physical model. STEP coordinates are normalized by OpenCASCADE to millimetres.
+Results remain subject to the displayed convergence, equilibrium and formulation
+checks; an exaggerated deformation is labelled separately from true scale.
+
+Run `python scripts/qualify.py` for the complete workspace and terminal-only
+checks. Add `--gpu` on a machine with a native GPU adapter, and `--cad` to include
+STEP kernel tests. The JSON report records the tested commit, commands and exits.
+Native desktop interaction and clean-machine packaged startup still require a
+platform smoke check; a successful compile alone does not establish those.
 
 ## Project status: Rust only
 
@@ -40,7 +60,7 @@ export for large result sets, and more - see "Features" below).
 ```
 native-search/    Tantivy-backed indexing/search engine ("Fast re-search")
 search-core/      Plain Rust library - all business logic, zero GUI dependency
-app-tui/          ratatui terminal GUI - the sole GUI head (Toolbench)
+app-tui/          Native wgpu/egui workbenches and ratatui terminal tools
 cli/              Headless CLI entry point, same search-core engine
 bushing-solver/, fastened-joint-solver/, pressure-vessel-solver/,
 engineering-math/, mechanics-core/   Engineering solvers and shared math
@@ -50,7 +70,9 @@ engineering-math/, mechanics-core/   Engineering solvers and shared math
 builds and its full test suite runs on any platform's toolchain
 (including this repo's own CI, on Linux, for speed). `app-tui` and `cli`
 are both thin heads built on top of it; all real logic lives in
-`search-core`, not duplicated in either head. See
+`search-core`, not duplicated in either head. Engineering workbenches call the
+FEA and domain solver crates directly; their modelling and native controls live
+in `app-tui/src/gpu_viewer`. See
 [`CLAUDE.md`](CLAUDE.md) for the project map and the `AGENTS.md` file in
 each crate for its contracts and pitfalls (why `fancy-regex` not
 `regex`, why hand-rolled OOXML/PDF extraction instead of a parser crate,
@@ -111,10 +133,10 @@ measured performance numbers - not fabricated ones.
 
 ## Building and running (Rust stack)
 
-Requires the Rust toolchain (`rustup`) - nothing else. Works on macOS,
-Linux, or Windows; the GUI is a terminal UI with no windowing system, so
-the full app - not just `search-core` - is developable and runnable on
-any platform.
+Requires the Rust toolchain (`rustup`). Native workbenches run on Windows, macOS
+and Linux/X11 with a supported graphics driver; default builds include wgpu.
+Use `--no-default-features` for the terminal-only application. Optional STEP
+editing needs the OpenCASCADE feature described above.
 
 ```sh
 # Run the GUI locally (any platform)
@@ -155,10 +177,13 @@ real terminal run to verify beyond its `TestBackend` tests - `cargo run
 
 ## CI
 
-Only the build workflows remain; run the tests locally with `cargo test --workspace`. `.github/workflows/app-tui-build.yml`
-(manual, or on a `v*` tag) builds `app-tui` for `x86_64-pc-windows-msvc`
-on a Windows runner and uploads the exe. `.github/workflows/rust-build.yml`
-(manual) does the same for `search-cli`.
+`.github/workflows/qualification.yml` runs workspace and terminal-only checks on
+Linux, macOS and Windows for relevant pull requests, or by manual dispatch.
+`python scripts/qualify.py` runs the same checks locally. Native GPU and CAD
+checks are explicit options because they require a graphics adapter or CAD kernel.
+The manually dispatched/tagged `app-tui-build.yml` and `rust-build.yml` workflows
+produce the Windows application and search CLI release artifacts. Native desktop
+interaction and clean-machine startup must also be verified for a release.
 
 ## Target environment
 
