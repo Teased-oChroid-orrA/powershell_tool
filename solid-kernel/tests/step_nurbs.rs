@@ -150,13 +150,90 @@ fn spline_declaration_extraction_does_not_enable_partial_native_body_import() {
     let end = source[line.offset..].find(';').unwrap() + line.offset + 1;
     changed.replace_range(line.offset..end,&format!("#{}=B_SPLINE_CURVE_WITH_KNOTS('diagnostic',1,(#{},#{}),.POLYLINE_FORM.,.F.,.U.,(2,2),(0.,1.),.UNSPECIFIED.);",line.id,points[0],points[1]));
     let data = inventory(&changed, Limits::default()).unwrap();
-    assert_eq!(
-        read_curve(&data, line.id, 1., CurveLimits::default())
-            .unwrap()
-            .curve
-            .degree(),
-        1
+    let binding = solid_kernel::step_body::BodyContext::read(&data).unwrap();
+    let edge_ref = data.entity_reference(edge.id).unwrap();
+    let declaration = binding
+        .read_spline_curve(&data, edge_ref, CurveLimits::default())
+        .unwrap();
+    assert_eq!(declaration.curve.degree(), 1);
+    assert_eq!(declaration.source, data.entity_reference(line.id).unwrap());
+    assert_eq!(declaration.millimetres_per_source_unit, 1.);
+    assert!(binding
+        .read_spline_curve(
+            &data,
+            data.entity_reference(body.id).unwrap(),
+            CurveLimits::default()
+        )
+        .unwrap_err()
+        .detail
+        .contains("not an edge"));
+    let changed_document = inventory(&(changed.clone() + "\n"), Limits::default()).unwrap();
+    assert!(binding
+        .read_spline_curve(
+            &changed_document,
+            changed_document.entity_reference(edge.id).unwrap(),
+            CurveLimits::default()
+        )
+        .is_err());
+    let new_binding = solid_kernel::step_body::BodyContext::read(&changed_document).unwrap();
+    assert!(new_binding
+        .read_spline_curve(&changed_document, edge_ref, CurveLimits::default())
+        .is_err());
+    let contexts = data.length_contexts().unwrap();
+    let assigned = contexts
+        .iter()
+        .find(|c| c.context == binding.length_context().entity)
+        .unwrap();
+    let unit = &data.entities()[&assigned.unit];
+    let mut metres = changed.clone();
+    let end = unit.offset + metres[unit.offset..].find(';').unwrap() + 1;
+    metres.replace_range(
+        unit.offset..end,
+        &format!(
+            "#{}=(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT($,.METRE.));",
+            unit.id
+        ),
     );
+    let metric_data = inventory(&metres, Limits::default()).unwrap();
+    let metric_binding = solid_kernel::step_body::BodyContext::read(&metric_data).unwrap();
+    let metric = metric_binding
+        .read_spline_curve(
+            &metric_data,
+            metric_data.entity_reference(edge.id).unwrap(),
+            CurveLimits::default(),
+        )
+        .unwrap();
+    assert_eq!(metric.millimetres_per_source_unit, 1000.);
+    assert_eq!(metric.curve.domain(), declaration.curve.domain());
+    for parameter in declaration.curve.domain() {
+        assert_eq!(
+            metric.curve.evaluate(parameter).unwrap(),
+            declaration
+                .curve
+                .evaluate(parameter)
+                .unwrap()
+                .map(|x| x * 1000.)
+        );
+    }
+    // A cyclic 3D wrapper must refuse before reaching either geometry reader.
+    let mut cycle = changed.clone();
+    let current = &data.entities()[&line.id];
+    let end = current.offset + cycle[current.offset..].find(';').unwrap() + 1;
+    cycle.replace_range(
+        current.offset..end,
+        &format!("#{}=SURFACE_CURVE('',#{},(),.CURVE_3D.);", line.id, line.id),
+    );
+    let cyclic = inventory(&cycle, Limits::default()).unwrap();
+    let cyclic_binding = solid_kernel::step_body::BodyContext::read(&cyclic).unwrap();
+    assert!(cyclic_binding
+        .read_spline_curve(
+            &cyclic,
+            cyclic.entity_reference(edge.id).unwrap(),
+            CurveLimits::default()
+        )
+        .unwrap_err()
+        .detail
+        .contains("cyclic/deep"));
     let error = solid_kernel::analytic_step::AnalyticModel::read(
         &data,
         solid_kernel::analytic_step::Options::default(),

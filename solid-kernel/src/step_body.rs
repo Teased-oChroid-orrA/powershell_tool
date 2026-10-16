@@ -129,6 +129,25 @@ impl BodyContext {
             .ok_or_else(|| error(entity, "source reference is not a face of this body"))?;
         crate::step_nurbs_surface::read_surface(data, face.surface, self.scale_mm, limits)
     }
+    /// Read an edge's terminal spline declaration using this body's source
+    /// units. Wrapper traversal is bounded; p-curves, trims and edge agreement
+    /// are not certified by declaration extraction.
+    pub fn read_spline_curve(
+        &self,
+        data: &Inventory,
+        edge: EntityReference,
+        limits: crate::nurbs::Limits,
+    ) -> Result<crate::step_nurbs::StepSplineDeclaration, Error> {
+        data.resolve_reference(self.context)?;
+        let entity = data.resolve_reference(edge)?;
+        let edge = self
+            .body
+            .edges
+            .get(&edge.entity)
+            .ok_or_else(|| error(entity, "source reference is not an edge of this body"))?;
+        let geometry = crate::analytic_step::curve_geometry(data, edge.curve)?;
+        crate::step_nurbs::read_curve(data, geometry.id, self.scale_mm, limits)
+    }
     pub(crate) fn into_parts(self) -> (RawBody, f64) {
         (self.body, self.scale_mm)
     }

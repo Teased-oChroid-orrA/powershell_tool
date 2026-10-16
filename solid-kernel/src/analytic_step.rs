@@ -234,42 +234,50 @@ fn radius(e: &Entity, v: &Value, scale: f64) -> Result<f64, Error> {
         Err(error(e, "invalid or unsupported geometric radius"))
     }
 }
-fn curve(data: &Inventory, mut id: u64, scale: f64) -> Result<Curve, Error> {
+/// Resolve only the bounded 3D curve wrapper chain. Associated p-curves are
+/// not validated here; terminal geometry remains the caller's responsibility.
+pub(crate) fn curve_geometry(data: &Inventory, mut id: u64) -> Result<&Entity, Error> {
     let mut seen = BTreeSet::new();
     loop {
         let e = &data.entities()[&id];
         if seen.len() >= 32 || !seen.insert(id) {
             return Err(error(e, "cyclic/deep curve wrapper"));
         }
-        let c = match e.components.as_slice() {
-            [c] => c,
-            _ => return Err(error(e, "unsupported complex 3D curve")),
-        };
-        match (c.name.as_str(), c.args.as_slice()) {
-            ("SURFACE_CURVE" | "SEAM_CURVE", [Value::String(_), Value::Ref(base), _, _]) => {
+        if let [c] = e.components.as_slice() {
+            if let ("SURFACE_CURVE" | "SEAM_CURVE", [Value::String(_), Value::Ref(base), _, _]) =
+                (c.name.as_str(), c.args.as_slice())
+            {
                 id = *base;
+                continue;
             }
-            ("LINE", [Value::String(_), Value::Ref(p), Value::Ref(v)]) => {
-                let ve = &data.entities()[v];
-                let direction = match call(ve, "VECTOR")? {
-                    [Value::String(_), Value::Ref(d), length] if scalar(ve, length)? > 0. => {
-                        direction(data, *d)?
-                    }
-                    _ => return Err(error(ve, "unsupported line vector")),
-                };
-                return Ok(Curve::Line {
-                    origin: point(data, *p, scale)?,
-                    direction,
-                });
-            }
-            ("CIRCLE", [Value::String(_), Value::Ref(f), r]) => {
-                return Ok(Curve::Circle {
-                    frame: frame(data, *f, scale)?,
-                    radius: radius(e, r, scale)?,
-                })
-            }
-            _ => return Err(error(e, "unsupported referenced 3D curve geometry")),
         }
+        return Ok(e);
+    }
+}
+fn curve(data: &Inventory, id: u64, scale: f64) -> Result<Curve, Error> {
+    let e = curve_geometry(data, id)?;
+    let [c] = e.components.as_slice() else {
+        return Err(error(e, "unsupported complex 3D curve"));
+    };
+    match (c.name.as_str(), c.args.as_slice()) {
+        ("LINE", [Value::String(_), Value::Ref(p), Value::Ref(v)]) => {
+            let ve = &data.entities()[v];
+            let direction = match call(ve, "VECTOR")? {
+                [Value::String(_), Value::Ref(d), length] if scalar(ve, length)? > 0. => {
+                    direction(data, *d)?
+                }
+                _ => return Err(error(ve, "unsupported line vector")),
+            };
+            Ok(Curve::Line {
+                origin: point(data, *p, scale)?,
+                direction,
+            })
+        }
+        ("CIRCLE", [Value::String(_), Value::Ref(f), r]) => Ok(Curve::Circle {
+            frame: frame(data, *f, scale)?,
+            radius: radius(e, r, scale)?,
+        }),
+        _ => Err(error(e, "unsupported referenced 3D curve geometry")),
     }
 }
 fn surface(data: &Inventory, id: u64, scale: f64) -> Result<Surface, Error> {
