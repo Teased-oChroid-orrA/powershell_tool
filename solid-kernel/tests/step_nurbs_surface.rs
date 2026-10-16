@@ -183,7 +183,61 @@ fn matching_planar_spline_declaration_does_not_enable_partial_native_body_import
     let end = changed.rfind("ENDSEC;").unwrap();
     changed.insert_str(end, &records);
     let data = inventory(&changed, Limits::default()).unwrap();
-    let declaration = read_surface(&data, entity.id, 1., SurfaceLimits::default()).unwrap();
+    let binding = solid_kernel::step_body::BodyContext::read(&data).unwrap();
+    let face_ref = data.entity_reference(face.id).unwrap();
+    let declaration = binding
+        .read_spline_surface(&data, face_ref, SurfaceLimits::default())
+        .unwrap();
+    assert_eq!(declaration.millimetres_per_source_unit, 1.);
+    assert_eq!(
+        declaration.source,
+        data.entity_reference(entity.id).unwrap()
+    );
+    assert!(binding
+        .read_spline_surface(
+            &data,
+            data.entity_reference(binding.body().id).unwrap(),
+            SurfaceLimits::default()
+        )
+        .unwrap_err()
+        .detail
+        .contains("not a face"));
+    let contexts = data.length_contexts().unwrap();
+    let assigned = contexts
+        .iter()
+        .find(|c| c.context == binding.length_context().entity)
+        .unwrap();
+    let unit = &data.entities()[&assigned.unit];
+    let mut metres = changed.clone();
+    let end = unit.offset + metres[unit.offset..].find(';').unwrap() + 1;
+    metres.replace_range(
+        unit.offset..end,
+        &format!(
+            "#{}=(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT($,.METRE.));",
+            unit.id
+        ),
+    );
+    let metric_data = inventory(&metres, Limits::default()).unwrap();
+    let metric_binding = solid_kernel::step_body::BodyContext::read(&metric_data).unwrap();
+    let metric_face = metric_data.entity_reference(face.id).unwrap();
+    assert!(binding
+        .read_spline_surface(&metric_data, metric_face, SurfaceLimits::default())
+        .is_err());
+    assert!(metric_binding
+        .read_spline_surface(&metric_data, face_ref, SurfaceLimits::default())
+        .is_err());
+    let metric = metric_binding
+        .read_spline_surface(&metric_data, metric_face, SurfaceLimits::default())
+        .unwrap();
+    assert_eq!(metric.millimetres_per_source_unit, 1000.);
+    assert_eq!(metric.surface.domain(), declaration.surface.domain());
+    for uv in [[0., 0.], [0.25, -0.75], [-20., 30.]] {
+        let original = declaration.surface.evaluate(uv).unwrap();
+        let scaled = metric.surface.evaluate(uv).unwrap();
+        for axis in 0..3 {
+            assert!((original[axis] * 1000. - scaled[axis]).abs() < 1e-8);
+        }
+    }
     for parameters in [[0., 0.], [0.25, -0.75], [-20., 30.]] {
         let expected = plane.point(parameters).unwrap();
         let actual = declaration.surface.evaluate(parameters).unwrap();

@@ -104,6 +104,31 @@ impl BodyContext {
     pub fn millimetres_per_source_unit(&self) -> f64 {
         self.scale_mm
     }
+    /// Extract the spline declaration of a face in this exact source body,
+    /// using its assigned length context. This does not validate trims, geometry
+    /// regularity or the full B-Rep. Analytic surfaces refuse this spline-only API.
+    pub fn read_spline_surface(
+        &self,
+        data: &Inventory,
+        face: EntityReference,
+        limits: crate::nurbs_surface::Limits,
+    ) -> Result<crate::step_nurbs_surface::StepSurfaceDeclaration, Error> {
+        // Resolve both references before looking up numeric topology identifiers.
+        data.resolve_reference(self.context)?;
+        let entity = data.resolve_reference(face)?;
+        if face.document != self.context.document {
+            return Err(error(
+                entity,
+                "face belongs to a different source body document",
+            ));
+        }
+        let face = self
+            .body
+            .faces
+            .get(&face.entity)
+            .ok_or_else(|| error(entity, "source reference is not a face of this body"))?;
+        crate::step_nurbs_surface::read_surface(data, face.surface, self.scale_mm, limits)
+    }
     pub(crate) fn into_parts(self) -> (RawBody, f64) {
         (self.body, self.scale_mm)
     }
