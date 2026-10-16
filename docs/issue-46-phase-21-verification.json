@@ -1,0 +1,46 @@
+{
+  "source_commit": "7e2d7a8a8c99d6d08dc4b7785f05a1e287ec05d8",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 83,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 66,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "supported_declarations": [
+    "simple polynomial B_SPLINE_CURVE_WITH_KNOTS",
+    "complete complex polynomial/rational B_SPLINE_CURVE_WITH_KNOTS"
+  ],
+  "preserved": [
+    "exact-source curve and Cartesian-control references",
+    "name/form/logical flags/knot specification",
+    "explicit caller-provided mm scale"
+  ],
+  "numerical": "Rational quarter-circle at 25.4 mm/source-unit retains relative analytic radius criterion 1e-12.",
+  "negative_cases": [
+    "Unknown/duplicate/missing components",
+    "Huge multiplicities and invalid counts",
+    "Budget/logical/scale/underflow refusals",
+    "Full native body still refuses an endpoint-matching spline replacing an actual bracket line"
+  ],
+  "development_failures": [
+    "E0507 attempted borrowed weight move; fixed by borrowing without cloning arrays"
+  ],
+  "not_verified": [
+    "Body/representation unit-context binding",
+    "Declared flags/form semantic certificates",
+    "Projection/sampling/surfaces/trims and full B-Rep integration",
+    "General CAD/PLC and later epic gates"
+  ]
+}
