@@ -49,10 +49,16 @@ fn template(name: &str) -> Option<crate::Problem> {
     templates().into_iter().find(|(n, _)| *n == name).map(|(_, p)| p)
 }
 
+/// Whether this exact unedited template has an independent reference check.
+pub fn supports(p: &crate::Problem) -> bool {
+    matches!(p.name.as_str(), "Cantilever beam" | "Thick cylinder (axisymmetric)" | "Plate with a hole")
+        && template(&p.name).as_ref() == Some(p)
+}
+
 /// The benchmark of `s`, when its problem is exactly one of the starting templates that has a closed form.
 pub fn check(s: &Solved) -> Option<Benchmark> {
     let name = s.problem.name.as_str();
-    if template(name).as_ref() != Some(&s.problem) {
+    if !supports(&s.problem) {
         return None;
     }
     let (e, nu) = (s.problem.material.e, s.problem.material.nu);
