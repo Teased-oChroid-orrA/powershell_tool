@@ -1,5 +1,6 @@
-//! Boundary-preserving triangulation of validated sampled face charts. This is
-//! not exact trimmed CAD certification, surface-error control or solid validity.
+//! Boundary-preserving triangulation of validated sampled face charts.
+//! Cylindrical interior chords obey the sampling error bound. Exact trims and
+//! global solid validity require their separate gates.
 use crate::{
     analytic_step::{AnalyticModel, Surface},
     planar_step::{classify, TrimLoop},
@@ -30,6 +31,7 @@ impl HasPosition for ChartVertex {
 }
 #[derive(Debug, Clone)]
 pub struct ChartMesh {
+    pub chart_adjustments: Vec<crate::cylindrical_step::ChartAdjustment>,
     pub face_id: u64,
     pub vertices: Vec<ChartVertex>,
     /// Counterclockwise in the analytic chart, before source face sense.
@@ -279,6 +281,7 @@ fn triangulate(
         }
     }
     Ok(ChartMesh {
+        chart_adjustments: Vec::new(),
         face_id,
         vertices,
         triangles,
@@ -290,10 +293,33 @@ impl AnalyticModel {
         face_id: u64,
         max_work: usize,
     ) -> Result<ChartMesh, Error> {
-        let loops = match self.surface(face_id) {
-            Some(Surface::Plane(_)) => self.sampled_planar_trims(face_id, max_work)?.loops,
+        self.triangulate_sampled_chart_with_policy(
+            face_id,
+            max_work,
+            crate::cylindrical_step::ChartPolicy::Strict,
+        )
+    }
+    pub fn triangulate_sampled_chart_with_policy(
+        &self,
+        face_id: u64,
+        max_work: usize,
+        policy: crate::cylindrical_step::ChartPolicy,
+    ) -> Result<ChartMesh, Error> {
+        let (loops, adjustments) = match self.surface(face_id) {
+            Some(Surface::Plane(_)) => (
+                self.sampled_planar_trims(face_id, max_work)?.loops,
+                Vec::new(),
+            ),
             Some(Surface::Cylinder { .. }) => {
-                vec![self.sampled_cylindrical_trims(face_id, max_work)?.boundary]
+                let trims = match policy {
+                    crate::cylindrical_step::ChartPolicy::Strict => {
+                        self.sampled_cylindrical_trims(face_id, max_work)?
+                    }
+                    crate::cylindrical_step::ChartPolicy::CanonicalizeWithinTolerance => {
+                        self.canonicalized_cylindrical_trims(face_id, max_work)?
+                    }
+                };
+                (vec![trims.boundary], trims.adjustments)
             }
             None => return Err(fail(ErrorKind::Geometry, "unknown face")),
         };
@@ -331,14 +357,16 @@ impl AnalyticModel {
                 });
             }
         }
-        triangulate(
+        let mut mesh = triangulate(
             face_id,
             &loops,
             vertices,
             max_work,
             self.surface(face_id),
             self.chord_tolerance_mm(),
-        )
+        )?;
+        mesh.chart_adjustments = adjustments;
+        Ok(mesh)
     }
 }
 #[cfg(test)]

@@ -129,6 +129,7 @@ pub struct CheckedSurface {
 /// Checked single-shell distance geometry with its original source-face mapping.
 /// Assemblies and nested/cavity shells are not admitted by this native gate.
 pub struct NativeDistanceSolid {
+    chart_adjustments: Vec<crate::cylindrical_step::ChartAdjustment>,
     solid: crate::SurfaceSolid,
     source_faces: Vec<u64>,
 }
@@ -139,13 +140,23 @@ impl NativeDistanceSolid {
     pub fn source_faces(&self) -> &[u64] {
         &self.source_faces
     }
-    pub fn into_parts(self) -> (crate::SurfaceSolid, Vec<u64>) {
-        (self.solid, self.source_faces)
+    pub fn chart_adjustments(&self) -> &[crate::cylindrical_step::ChartAdjustment] {
+        &self.chart_adjustments
+    }
+    pub fn into_parts(
+        self,
+    ) -> (
+        crate::SurfaceSolid,
+        Vec<u64>,
+        Vec<crate::cylindrical_step::ChartAdjustment>,
+    ) {
+        (self.solid, self.source_faces, self.chart_adjustments)
     }
 }
 impl CheckedSurface {
     pub fn into_distance_solid(self) -> NativeDistanceSolid {
         NativeDistanceSolid {
+            chart_adjustments: self.inner.chart_adjustments,
             solid: crate::SurfaceSolid::from_oriented_mesh(self.inner.mesh),
             source_faces: self.inner.source_faces,
         }
@@ -326,6 +337,7 @@ mod checked_surface_tests {
             }
         }
         SampledSurface {
+            chart_adjustments: Vec::new(),
             mesh,
             source_faces: vec![42],
             signed_volume_mm3: 99.,
@@ -362,6 +374,7 @@ mod checked_surface_tests {
         ];
         mesh.face = vec![0; 12];
         let folded = SampledSurface {
+            chart_adjustments: Vec::new(),
             mesh,
             source_faces: vec![42],
             signed_volume_mm3: 99.,

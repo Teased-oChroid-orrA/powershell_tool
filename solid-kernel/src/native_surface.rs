@@ -10,6 +10,7 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
+    pub chart_policy: crate::cylindrical_step::ChartPolicy,
     pub vertices: usize,
     pub triangles: usize,
     pub face_work: usize,
@@ -18,6 +19,7 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
+            chart_policy: crate::cylindrical_step::ChartPolicy::Strict,
             vertices: 1_000_000,
             triangles: 2_000_000,
             face_work: 2_000_000,
@@ -32,6 +34,7 @@ pub struct Progress {
 }
 #[derive(Debug)]
 pub struct SampledSurface {
+    pub chart_adjustments: Vec<crate::cylindrical_step::ChartAdjustment>,
     pub mesh: SurfaceMesh,
     /// Face tags map to source IDs only within this physical file. No persistent
     /// naming across CAD edits/re-exports is promised.
@@ -175,6 +178,7 @@ impl AnalyticModel {
         let mut mesh = SurfaceMesh::default();
         let mut identities = BTreeMap::<SampleKey, usize>::new();
         let mut source_faces = Vec::new();
+        let mut chart_adjustments = Vec::new();
         for (tag, face) in self.body().faces.values().enumerate() {
             if !progress(Progress {
                 completed_faces: tag,
@@ -185,7 +189,11 @@ impl AnalyticModel {
                     "native surface generation cancelled",
                 ));
             }
-            let chart = self.triangulate_sampled_chart(face.id, limits.face_work)?;
+            let chart = self.triangulate_sampled_chart_with_policy(
+                face.id,
+                limits.face_work,
+                limits.chart_policy,
+            )?;
             if chart.triangles.len() > limits.triangles.saturating_sub(mesh.triangles.len()) {
                 return Err(fail(ErrorKind::Limit, "surface triangle budget exceeded"));
             }
@@ -245,6 +253,7 @@ impl AnalyticModel {
                 mesh.triangles.push(t);
                 mesh.face.push(tag);
             }
+            chart_adjustments.extend(chart.chart_adjustments);
             source_faces.push(face.id);
         }
         validate_connectivity(&mesh)?;
@@ -265,6 +274,7 @@ impl AnalyticModel {
             ));
         }
         Ok(SampledSurface {
+            chart_adjustments,
             mesh,
             source_faces,
             signed_volume_mm3: volume,

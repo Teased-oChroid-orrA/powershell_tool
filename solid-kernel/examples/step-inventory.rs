@@ -11,15 +11,22 @@ fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let path = args
         .next()
-        .ok_or("usage: step-inventory FILE.step [--analytic|--surface]")?;
+        .ok_or("usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface]")?;
     let mode = match args.next() {
         None => 0,
         Some(flag) if flag == "--analytic" => 1,
         Some(flag) if flag == "--surface" => 2,
-        _ => return Err("usage: step-inventory FILE.step [--analytic|--surface]".into()),
+        Some(flag) if flag == "--canonical-surface" => 3,
+        _ => {
+            return Err(
+                "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface]".into(),
+            )
+        }
     };
     if args.next().is_some() {
-        return Err("usage: step-inventory FILE.step [--analytic|--surface]".into());
+        return Err(
+            "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface]".into(),
+        );
     }
     let limits = Limits::default();
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -95,10 +102,18 @@ fn run() -> Result<(), String> {
         println!("Native analytic subset: {} mm/source unit; {} shared-edge samples; {} untrimmed surfaces",
             model.millimetres_per_source_unit(), samples, model.body().faces.len());
         println!("Trimmed domains, shell orientation, self-intersections and solid validity remain uncertified.");
-        if mode == 2 {
+        if mode >= 2 {
             let started = std::time::Instant::now();
+            let surface_limits = solid_kernel::native_surface::Limits {
+                chart_policy: if mode == 3 {
+                    solid_kernel::cylindrical_step::ChartPolicy::CanonicalizeWithinTolerance
+                } else {
+                    solid_kernel::cylindrical_step::ChartPolicy::Strict
+                },
+                ..solid_kernel::native_surface::Limits::default()
+            };
             let surface = model
-                .sampled_surface(solid_kernel::native_surface::Limits::default(), |p| {
+                .sampled_surface(surface_limits, |p| {
                     eprintln!(
                         "Native surface generation: {}/{} faces",
                         p.completed_faces, p.total_faces
@@ -108,6 +123,14 @@ fn run() -> Result<(), String> {
                 .map_err(|e| e.to_string())?;
             println!("Closed sampled surface: {} vertices, {} triangles, {} source faces, signed volume {} mm³ ({:.3} s)",
                 surface.mesh.vertices.len(),surface.mesh.triangles.len(),surface.source_faces.len(),surface.signed_volume_mm3,started.elapsed().as_secs_f64());
+            if mode == 3 {
+                let largest = surface
+                    .chart_adjustments
+                    .iter()
+                    .map(|a| a.world_deviation_mm)
+                    .fold(0., f64::max);
+                println!("Explicit chart canonicalization: {} changed samples; max surface projection deviation {} mm (geometry tolerance {} mm); world boundary coordinates unchanged",surface.chart_adjustments.len(),largest,model.geometry_tolerance_mm());
+            }
             let checked = surface
                 .check_intersections(2_000_000, |pairs| {
                     if pairs % 8192 == 0 {

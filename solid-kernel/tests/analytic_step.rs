@@ -3,6 +3,7 @@ use solid_kernel::{
     step::{inventory, Limits},
 };
 const SOURCE: &str = include_str!("../../nema17-motor-bracket.step");
+const TILTED_SOURCE: &str = include_str!("data/tilted-cylinder.step");
 #[test]
 fn bracket_analytic_edges_and_surfaces_are_consistent_without_occt() {
     let data = inventory(SOURCE, Limits::default()).unwrap();
@@ -662,5 +663,100 @@ fn native_step_to_checked_distance_solid_and_both_tet_orders_pass_tension_patch(
                 assert!((solution.u[n * 3 + 2] - expected).abs() < 1e-6 * expected);
             }
         }
+    }
+}
+
+#[test]
+fn explicit_tilted_cylinder_chart_canonicalization_reports_every_bounded_adjustment() {
+    let text = TILTED_SOURCE;
+    let model = AnalyticModel::read(
+        &inventory(&text, Limits::default()).unwrap(),
+        Options::default(),
+    )
+    .unwrap();
+    let face = model
+        .body()
+        .faces
+        .values()
+        .find(|f| matches!(model.surface(f.id), Some(Surface::Cylinder { .. })))
+        .unwrap();
+    assert!(model.sampled_cylindrical_trims(face.id, 100000).is_err());
+    assert_eq!(
+        model
+            .canonicalized_cylindrical_trims(face.id, 0)
+            .unwrap_err()
+            .kind,
+        solid_kernel::step::ErrorKind::Limit
+    );
+    let canonical = model
+        .canonicalized_cylindrical_trims(face.id, 100000)
+        .unwrap();
+    assert!(!canonical.adjustments.is_empty());
+    for adjustment in canonical.adjustments {
+        assert_ne!(adjustment.before, adjustment.after);
+        assert!(adjustment.world_deviation_mm <= model.geometry_tolerance_mm());
+        assert!(
+            (adjustment.before[0] - adjustment.after[0])
+                .hypot(adjustment.before[1] - adjustment.after[1])
+                <= model.geometry_tolerance_mm()
+        );
+    }
+}
+
+#[test]
+fn explicit_canonicalized_tilted_cylinder_passes_facet_checks_and_keeps_reports() {
+    use solid_kernel::{cylindrical_step::ChartPolicy, native_surface::Limits as SurfaceLimits};
+    let text = TILTED_SOURCE;
+    let model = AnalyticModel::read(
+        &inventory(&text, Limits::default()).unwrap(),
+        Options {
+            chord_mm: 0.001,
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    assert!(model
+        .sampled_surface(SurfaceLimits::default(), |_| true)
+        .unwrap_err()
+        .detail
+        .contains("single-turn"));
+    for face in model.body().faces.values() {
+        let chart = model
+            .triangulate_sampled_chart_with_policy(
+                face.id,
+                2_000_000,
+                ChartPolicy::CanonicalizeWithinTolerance,
+            )
+            .unwrap();
+        for v in chart.vertices {
+            match v.source {
+                solid_kernel::chart_mesh::SampleKey::Vertex(id) => {
+                    assert_eq!(v.world, model.vertex(id).unwrap())
+                }
+                solid_kernel::chart_mesh::SampleKey::EdgePoint { edge, index } => {
+                    assert_eq!(v.world, model.edge_points(edge).unwrap()[index])
+                }
+                _ => {}
+            }
+        }
+    }
+    let surface = model
+        .sampled_surface(
+            SurfaceLimits {
+                chart_policy: ChartPolicy::CanonicalizeWithinTolerance,
+                ..SurfaceLimits::default()
+            },
+            |_| true,
+        )
+        .unwrap();
+    let count = surface.chart_adjustments.len();
+    assert!(count > 0);
+    let checked = surface.check_intersections(2_000_000, |_| true).unwrap();
+    let native = checked.into_distance_solid();
+    assert_eq!(native.chart_adjustments().len(), count);
+    let exact = 12. * std::f64::consts::PI;
+    assert!((native.solid().volume() - exact).abs() / exact < 1e-3);
+    for adjustment in native.chart_adjustments() {
+        assert!(adjustment.world_deviation_mm <= model.geometry_tolerance_mm());
     }
 }

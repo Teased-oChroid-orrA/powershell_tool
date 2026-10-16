@@ -308,6 +308,8 @@ pub struct AnalyticModel {
     edges: BTreeMap<u64, Vec<V3>>,
     scale_mm: f64,
     chord_mm: f64,
+    geometry_tolerance_mm: f64,
+    curves: BTreeMap<u64, Curve>,
 }
 pub(crate) fn chord_angle(radius: f64, chord_mm: f64) -> f64 {
     (4. * (chord_mm / (2. * radius)).min(0.5).sqrt().asin()).min(FRAC_PI_2)
@@ -468,6 +470,34 @@ fn on_surface(e: &Entity, s: &Surface, c: &Curve, a: V3, b: V3, tol: f64) -> Res
     }
 }
 impl AnalyticModel {
+    pub fn geometry_tolerance_mm(&self) -> f64 {
+        self.geometry_tolerance_mm
+    }
+    // Fixed chart coordinates of supported curves on a cylinder. Applying
+    // them is explicit canonicalization, never a modification of source points.
+    pub(crate) fn cylindrical_edge_constraint(
+        &self,
+        face: u64,
+        edge: u64,
+    ) -> Option<[Option<f64>; 2]> {
+        let surface = self.surface(face)?;
+        let Surface::Cylinder { frame, .. } = surface else {
+            return None;
+        };
+        match &self.curves[&edge] {
+            Curve::Circle { frame: c, .. } => {
+                Some([None, Some(dot(sub(c.origin, frame.origin), frame.z))])
+            }
+            Curve::Line { .. } => Some([
+                Some(
+                    surface
+                        .project(self.vertices[&self.body.edges[&edge].start])?
+                        .chart[0],
+                ),
+                None,
+            ]),
+        }
+    }
     pub fn chord_tolerance_mm(&self) -> f64 {
         self.chord_mm
     }
@@ -635,6 +665,8 @@ impl AnalyticModel {
             edges,
             scale_mm: scale,
             chord_mm: opt.chord_mm,
+            geometry_tolerance_mm: opt.geometry_tolerance_mm,
+            curves,
         })
     }
 }

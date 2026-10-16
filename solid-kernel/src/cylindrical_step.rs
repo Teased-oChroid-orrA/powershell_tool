@@ -5,7 +5,14 @@ use crate::{
     planar_step::{classify, TrimLoop},
     step::{Error, ErrorKind},
 };
+use std::collections::BTreeMap;
 use std::f64::consts::TAU;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChartPolicy {
+    #[default]
+    Strict,
+    CanonicalizeWithinTolerance,
+}
 #[derive(Debug, Clone)]
 pub struct CylindricalTrims {
     pub face_id: u64,
@@ -13,6 +20,18 @@ pub struct CylindricalTrims {
     /// Opposite sides of a seam may represent identical world points.
     pub boundary: TrimLoop,
     pub circumference_mm: f64,
+    pub adjustments: Vec<ChartAdjustment>,
+}
+/// Explicit parameter-only adjustment. Authoritative world boundary samples
+/// are unchanged; both parameter and surface-projection shifts are bounded.
+#[derive(Debug, Clone)]
+pub struct ChartAdjustment {
+    pub face: u64,
+    pub edge: u64,
+    pub sample: usize,
+    pub before: [f64; 2],
+    pub after: [f64; 2],
+    pub world_deviation_mm: f64,
 }
 fn fail(kind: ErrorKind, text: &str) -> Error {
     Error {
@@ -45,6 +64,24 @@ impl AnalyticModel {
         face_id: u64,
         max_work: usize,
     ) -> Result<CylindricalTrims, Error> {
+        self.cylindrical_trims_impl(face_id, max_work, false)
+    }
+    /// Explicitly canonicalize analytic chart invariants within the existing
+    /// geometry tolerance, returning every changed sample. No topology/world
+    /// coordinate is changed and strict import remains the default.
+    pub fn canonicalized_cylindrical_trims(
+        &self,
+        face_id: u64,
+        max_work: usize,
+    ) -> Result<CylindricalTrims, Error> {
+        self.cylindrical_trims_impl(face_id, max_work, true)
+    }
+    fn cylindrical_trims_impl(
+        &self,
+        face_id: u64,
+        max_work: usize,
+        canonicalize: bool,
+    ) -> Result<CylindricalTrims, Error> {
         let face = self
             .body()
             .faces
@@ -62,7 +99,47 @@ impl AnalyticModel {
             ));
         }
         let bound = &face.bounds[0];
-        let mut remaining = max_work;
+        let anchor_work = if canonicalize {
+            bound
+                .edges
+                .len()
+                .checked_mul(2)
+                .ok_or_else(|| fail(ErrorKind::Limit, "chart anchor work overflow"))?
+        } else {
+            0
+        };
+        if anchor_work > max_work {
+            return Err(fail(ErrorKind::Limit, "chart anchor budget exceeded"));
+        }
+        let mut anchors = BTreeMap::<u64, [Option<f64>; 2]>::new();
+        if canonicalize {
+            for usage in &bound.edges {
+                let edge = &self.body().edges[&usage.edge];
+                let fixed = self.cylindrical_edge_constraint(face_id, edge.id).unwrap();
+                for vertex in [edge.start, edge.end] {
+                    let anchor = anchors.entry(vertex).or_insert([None, None]);
+                    for axis in 0..2 {
+                        if let Some(mut value) = fixed[axis] {
+                            if let Some(old) = anchor[axis] {
+                                if axis == 0 {
+                                    value = unwrap_u(value, old, period)?;
+                                }
+                                if (value - old).abs() > self.geometry_tolerance_mm() {
+                                    return Err(fail(
+                                        ErrorKind::Geometry,
+                                        "ambiguous cylindrical chart anchors",
+                                    ));
+                                }
+                            } else {
+                                anchor[axis] = Some(value);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut adjustments = Vec::new();
+        let mut remaining = max_work - anchor_work;
         let mut points: Vec<[f64; 2]> = Vec::new();
         for usage in &bound.edges {
             let samples = self.edge_points(usage.edge).unwrap();
@@ -73,15 +150,67 @@ impl AnalyticModel {
                 )
             })?;
             for i in 0..samples.len() - 1 {
-                let p = samples[if usage.forward {
+                let sample = if usage.forward {
                     i
                 } else {
                     samples.len() - 1 - i
-                }];
+                };
+                let p = samples[sample];
                 let mut chart = surface
                     .project(p)
                     .ok_or_else(|| fail(ErrorKind::Geometry, "unresolved cylindrical projection"))?
                     .chart;
+                if canonicalize {
+                    let before = chart;
+                    let fixed = self
+                        .cylindrical_edge_constraint(face_id, usage.edge)
+                        .unwrap();
+                    for axis in 0..2 {
+                        if let Some(value) = fixed[axis] {
+                            chart[axis] = value;
+                        }
+                    }
+                    let edge = &self.body().edges[&usage.edge];
+                    let vertex = if sample == 0 {
+                        Some(edge.start)
+                    } else if sample == samples.len() - 1 {
+                        Some(edge.end)
+                    } else {
+                        None
+                    };
+                    if let Some(vertex) = vertex {
+                        for axis in 0..2 {
+                            if let Some(value) = anchors[&vertex][axis] {
+                                chart[axis] = value;
+                            }
+                        }
+                    }
+                    chart[0] = unwrap_u(chart[0], before[0], period)?;
+                    let projected = surface.point(chart).ok_or_else(|| {
+                        fail(ErrorKind::Geometry, "unresolved canonical chart projection")
+                    })?;
+                    let world_deviation_mm = crate::norm(crate::sub(projected, p));
+                    let parameter_shift = (chart[0] - before[0]).hypot(chart[1] - before[1]);
+                    if !world_deviation_mm.is_finite()
+                        || world_deviation_mm > self.geometry_tolerance_mm()
+                        || parameter_shift > self.geometry_tolerance_mm()
+                    {
+                        return Err(fail(
+                            ErrorKind::Geometry,
+                            "chart canonicalization exceeds the geometry tolerance",
+                        ));
+                    }
+                    if chart != before {
+                        adjustments.push(ChartAdjustment {
+                            face: face_id,
+                            edge: usage.edge,
+                            sample,
+                            before,
+                            after: chart,
+                            world_deviation_mm,
+                        });
+                    }
+                }
                 if let Some(last) = points.last() {
                     chart[0] = unwrap_u(chart[0], last[0], period)?;
                 }
@@ -129,6 +258,7 @@ impl AnalyticModel {
             face_id,
             boundary: loops.into_iter().next().unwrap(),
             circumference_mm: period,
+            adjustments,
         })
     }
 }
