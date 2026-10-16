@@ -9,11 +9,18 @@ fn main() {
 }
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
-    let usage = "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface] [--repair-orientation]";
+    let usage = "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface] [--repair-orientation] [--plc] [--star-seed X,Y,Z] [--trial-kernel] (kernel coordinates in mm)";
     let path = args.next().ok_or(usage)?;
+    if path == "--help" {
+        println!("{usage}");
+        return Ok(());
+    }
+    let mut plc_requested = false;
+    let mut kernel = None;
+    let mut trial_kernel = false;
     let mut mode = 0;
     let mut repair_orientation = false;
-    for flag in args {
+    while let Some(flag) = args.next() {
         if flag == "--analytic" {
             mode = mode.max(1);
         } else if flag == "--surface" {
@@ -23,9 +30,32 @@ fn run() -> Result<(), String> {
         } else if flag == "--repair-orientation" {
             repair_orientation = true;
             mode = mode.max(2);
+        } else if flag == "--plc" {
+            plc_requested = true;
+            mode = mode.max(2);
+        } else if flag == "--star-seed" {
+            let value = args.next().ok_or("--star-seed requires X,Y,Z in mm")?;
+            let coordinates = value
+                .to_str()
+                .ok_or("kernel point must be three finite coordinates in mm")?
+                .split(',')
+                .map(str::parse::<f64>)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| "kernel point must be three finite coordinates in mm")?;
+            if coordinates.len() != 3 || coordinates.iter().any(|x| !x.is_finite()) {
+                return Err("kernel point must be three finite coordinates in mm".into());
+            }
+            kernel = Some([coordinates[0], coordinates[1], coordinates[2]]);
+            plc_requested = true;
+            mode = mode.max(2);
+        } else if flag == "--trial-kernel" {
+            trial_kernel = true;
         } else {
             return Err(usage.into());
         }
+    }
+    if trial_kernel && kernel.is_none() {
+        return Err("--trial-kernel requires --star-seed X,Y,Z in mm".into());
     }
     let limits = Limits::default();
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -170,6 +200,56 @@ fn run() -> Result<(), String> {
                 checked.pairs_checked()
             );
             println!("Exact trimmed CAD validity remains uncertified.");
+            if plc_requested {
+                use solid_kernel::{
+                    plc::{Limits as PlcLimits, ValidatedPlc},
+                    plc_star::StarSeed,
+                };
+                let plc = ValidatedPlc::new(checked, PlcLimits::default(), |done, total| {
+                    if done % 8192 == 0 || done == total {
+                        eprintln!("Native PLC admission: {done}/{total} facets");
+                    }
+                    true
+                })
+                .map_err(|e| e.to_string())?;
+                println!(
+                    "Checked triangulated PLC: {} vertices, {} facets, {} segment constraints",
+                    plc.vertices().len(),
+                    plc.facets().len(),
+                    plc.segments().len()
+                );
+                if let Some(point) = kernel {
+                    let mut seed = StarSeed::new(plc, point, 100_000, |done, total| {
+                        if done % 8192 == 0 || done == total {
+                            eprintln!("Native star seed: {done}/{total} boundary facets");
+                        }
+                        true
+                    })
+                    .map_err(|e| e.to_string())?;
+                    println!("Strict star-kernel seed: {} points, {} tetrahedra, {} preserved boundary facets; supplied kernel {:?} mm",seed.topology().points().len(),seed.topology().cells().len(),seed.topology().boundary().len(),point);
+                    if trial_kernel {
+                        let mut last_phase = None;
+                        let (updated, report) = seed
+                            .try_vertex_mean_kernel(|p| {
+                                if last_phase != Some(p.phase)
+                                    || p.completed % 8192 == 0
+                                    || p.completed == p.total
+                                {
+                                    eprintln!(
+                                        "Native kernel trial {:?}: {}/{}",
+                                        p.phase, p.completed, p.total
+                                    );
+                                    last_phase = Some(p.phase);
+                                }
+                                true
+                            })
+                            .map_err(|e| e.to_string())?;
+                        seed = updated;
+                        println!("Kernel trial: accepted={}; before {:?} mm; candidate {:?} mm; minimum scaled Jacobian {} -> {}; worst edge ratio {} -> {}; refusal {:?}",report.accepted,report.before_point,report.candidate_point,report.before_quality.min_scaled_jacobian,report.after_quality.min_scaled_jacobian,report.before_quality.max_edge_ratio,report.after_quality.max_edge_ratio,report.refusal);
+                    }
+                    println!("Diagnostic seed complete: {} cells. General PLC recovery and solver analysis are not performed.",seed.topology().cells().len());
+                }
+            }
         }
     }
     for (name, count) in result.counts() {
