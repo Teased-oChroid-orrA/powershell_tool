@@ -116,3 +116,11 @@ Draft API update: `NativeDistanceSolid::into_parts` now yields `(SurfaceSolid, N
 Next: explicit face-reference remapping across native triangulation regeneration, then broader exchange/assembly/exact trims and PLC recovery; all later epic gates still open. Retain OCCT, strict defaults, no extra hosted CI or main merge. Verification results are appended after complete checks below.
 
 Phase 11 final verification at `d5c73a95e2779fdd56289a050ddb3f0bc1b8814d`: **60 CAD-enabled / 48 feature-off tests**, CAD-enabled app lib/tests compile; all pass, no new failure. [Evidence](issue-46-phase-11-verification.json).
+
+## Phase 12 regenerated face selections — 2026-10-16
+
+[Phase 12](issue-46-phase-12.md) records `98cd85a`: identity-based face lookup remaps stored selections across coarse/fine native triangulations and refuses unknown/missing/mismatched/duplicate source IDs. `NativeVolumeMesh` retains mesh/report/metadata immutably; checked native geometry delegates to the existing volume mesher and resolves source references to nonempty generated boundary regions. Empty/absent regions are explicitly unresolved and enumerable, never rebound. Native bar Tet4/Tet10 tension patches now use source references for loads/supports. No full coverage, exact CAD, AMR/history/material/contact transfer or PLC claim. Source coordinate units remain mm, caller material units must be consistent.
+
+Next P1: validated immutable PLC boundary admission from checked sampled geometry, then bounded constrained recovery; maintain clear distinction from existing convex-hull Delaunay. Broader native exchange/assembly/exact trims and later epic gates remain open. No new dependency, hosted CI, production/main change or OCCT retirement. Final check results are appended below.
+
+Phase 12 final verification at `98cd85a8720c7a70f8eb3fce7030e55beb59ac10`: **62 CAD-enabled / 50 feature-off tests and CAD-enabled app lib/tests compilation pass**, no failures/ignored checks. [Evidence](issue-46-phase-12-verification.json).
