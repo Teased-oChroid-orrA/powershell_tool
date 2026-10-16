@@ -14,6 +14,7 @@
 
 pub mod analytic_step;
 pub mod chart_mesh;
+mod native_math;
 pub mod native_surface;
 pub mod nurbs;
 pub mod nurbs_surface;

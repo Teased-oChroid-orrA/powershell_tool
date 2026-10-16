@@ -5,6 +5,7 @@ use crate::{
     step::{Error, ErrorKind},
     V3,
 };
+use fea_core::derivative::{dual::Dual, Scalar};
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
     pub control_points: usize,
@@ -28,6 +29,37 @@ pub struct NurbsSurface {
     control_points: Vec<V3>,
     weights: Vec<f64>,
     blends: usize,
+    work_limit: usize,
+}
+#[derive(Debug, Clone, Copy)]
+pub struct SurfaceDifferential {
+    pub point: V3,
+    pub du: V3,
+    pub dv: V3,
+    pub sides: [nurbs::ParameterSide; 2],
+}
+impl SurfaceDifferential {
+    /// Computed tangent-cross direction, not a CAD regularity certificate.
+    /// Scaling directions first avoids overflowing/underflowing their cross.
+    pub fn computed_unit_normal(&self) -> Result<V3, Error> {
+        if self.point.iter().any(|x| !x.is_finite()) {
+            return Err(nurbs::fail(
+                ErrorKind::Geometry,
+                "nonfinite surface differential point",
+            ));
+        }
+        let normalized = |v| {
+            crate::native_math::normalize_direction(v).map_err(|_| {
+                nurbs::fail(
+                    ErrorKind::Geometry,
+                    "singular or invalid surface differential",
+                )
+            })
+        };
+        let u = normalized(self.du)?;
+        let v = normalized(self.dv)?;
+        normalized(crate::cross(u, v))
+    }
 }
 impl NurbsSurface {
     /// Control net is row-major: index = v_index * u_count + u_index.
@@ -87,6 +119,7 @@ impl NurbsSurface {
             control_points,
             weights,
             blends,
+            work_limit: limits.evaluation_blends,
         })
     }
     pub fn domain(&self) -> [[f64; 2]; 2] {
@@ -112,6 +145,65 @@ impl NurbsSurface {
     }
     pub fn evaluation_blends(&self) -> usize {
         self.blends
+    }
+    /// First parameter partials using the existing dual-number implementation.
+    /// Three inline scalar lanes count against the same constructor work cap.
+    /// C0 knots refuse and endpoints are explicitly one-sided. No global CAD/
+    /// topology/solver sensitivity or geometric regularity certificate implied.
+    pub fn differential(&self, parameters: [f64; 2]) -> Result<SurfaceDifferential, Error> {
+        let work = self
+            .blends
+            .checked_mul(3)
+            .ok_or_else(|| nurbs::fail(ErrorKind::Limit, "surface differential work overflow"))?;
+        if work > self.work_limit {
+            return Err(nurbs::fail(
+                ErrorKind::Limit,
+                "surface differential blend budget exceeded",
+            ));
+        }
+        let [u, v] = parameters;
+        let (us, u_side) = self.u.differential_span(u)?;
+        let (vs, v_side) = self.v.differential_span(v)?;
+        let up = Dual::<f64, 2>::var(u, 0);
+        let vp = Dual::<f64, 2>::var(v, 1);
+        let h = self.v.homogeneous(vs, vp, |j| {
+            self.u.homogeneous(us, up, |i| {
+                let k = j * self.dimensions[0] + i;
+                Ok(
+                    nurbs::homogeneous_control(self.control_points[k], self.weights[k])
+                        .map(Dual::<f64, 2>::cst),
+                )
+            })
+        })?;
+        let values = nurbs::project(h)?;
+        let mut point = values.map(|x| x.v);
+        let du = values.map(|x| x.d[0]);
+        let dv = values.map(|x| x.d[1]);
+        if du.iter().chain(&dv).any(|x| !x.is_finite()) {
+            return Err(nurbs::fail(
+                ErrorKind::Geometry,
+                "nonfinite surface parameter partial",
+            ));
+        }
+        if u_side != nurbs::ParameterSide::Interior && v_side != nurbs::ParameterSide::Interior {
+            let i = if u_side == nurbs::ParameterSide::LowerEndpoint {
+                0
+            } else {
+                self.dimensions[0] - 1
+            };
+            let j = if v_side == nurbs::ParameterSide::LowerEndpoint {
+                0
+            } else {
+                self.dimensions[1] - 1
+            };
+            point = self.control_points[j * self.dimensions[0] + i];
+        }
+        Ok(SurfaceDifferential {
+            point,
+            du,
+            dv,
+            sides: [u_side, v_side],
+        })
     }
     /// Retains homogeneous weights through both basis recurrences; projecting
     /// individual rows first would change the rational surface. No clamping.
@@ -178,6 +270,29 @@ mod tests {
         )
         .unwrap()
     }
+    fn quarter_sphere() -> NurbsSurface {
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        let s = NurbsSurface::new_clamped(
+            [2, 2],
+            [vec![0., 0., 0., 1., 1., 1.], vec![0., 0., 0., 1., 1., 1.]],
+            [3, 3],
+            vec![
+                [1., 0., 0.],
+                [1., 1., 0.],
+                [0., 1., 0.],
+                [1., 0., 1.],
+                [1., 1., 1.],
+                [0., 1., 1.],
+                [0., 0., 1.],
+                [0., 0., 1.],
+                [0., 0., 1.],
+            ],
+            vec![1., w, 1., w, w * w, w, 1., w, 1.],
+            Limits::default(),
+        )
+        .unwrap();
+        s
+    }
     #[test]
     fn bilinear_plane_and_authoritative_corners_match_analytic_coordinates() {
         let s = plane(Limits::default()).unwrap();
@@ -201,26 +316,7 @@ mod tests {
     }
     #[test]
     fn rational_spherical_patch_preserves_analytic_radius_including_pole() {
-        let w = std::f64::consts::FRAC_1_SQRT_2;
-        let s = NurbsSurface::new_clamped(
-            [2, 2],
-            [vec![0., 0., 0., 1., 1., 1.], vec![0., 0., 0., 1., 1., 1.]],
-            [3, 3],
-            vec![
-                [1., 0., 0.],
-                [1., 1., 0.],
-                [0., 1., 0.],
-                [1., 0., 1.],
-                [1., 1., 1.],
-                [0., 1., 1.],
-                [0., 0., 1.],
-                [0., 0., 1.],
-                [0., 0., 1.],
-            ],
-            vec![1., w, 1., w, w * w, w, 1., w, 1.],
-            Limits::default(),
-        )
-        .unwrap();
+        let s = quarter_sphere();
         assert_eq!(s.evaluation_blends(), 12);
         for u in [0., 0.125, 0.5, 0.875, 1.] {
             for v in [0., 0.25, 0.5, 0.75, 1.] {
@@ -317,5 +413,146 @@ mod tests {
             Limits::default()
         )
         .is_err());
+    }
+    #[test]
+    fn plane_and_cylinder_parameter_partials_and_normals_match_analytic_geometry() {
+        let p = plane(Limits::default()).unwrap();
+        let d = p.differential([0.25, 0.75]).unwrap();
+        assert_eq!(d.du, [2., 0., 4.]);
+        assert_eq!(d.dv, [0., 3., 9.]);
+        let n = d.computed_unit_normal().unwrap();
+        let norm = 14f64.sqrt();
+        for axis in 0..3 {
+            assert!((n[axis] - [-2., -3., 1.][axis] / norm).abs() < 1e-12);
+        }
+        let corner = p.differential([0., 0.]).unwrap();
+        assert_eq!(corner.point, p.control_points()[0]);
+        assert_eq!(corner.sides, [nurbs::ParameterSide::LowerEndpoint; 2]);
+        let s = quarter_cylinder();
+        for u in [0., 0.25, 0.5, 0.75, 1.] {
+            for v in [0., 0.25, 0.75, 1.] {
+                let d = s.differential([u, v]).unwrap();
+                let n = d.computed_unit_normal().unwrap();
+                assert!((d.point[0] * d.du[0] + d.point[1] * d.du[1]).abs() < 1e-12);
+                assert!(d.du[2].abs() < 1e-12);
+                for axis in 0..3 {
+                    assert!((d.dv[axis] - [0., 0., 3.][axis]).abs() < 1e-12);
+                    assert!((n[axis] - [d.point[0], d.point[1], 0.][axis]).abs() < 1e-12);
+                }
+            }
+        }
+    }
+    #[test]
+    fn regular_spherical_normals_match_radial_directions_and_singular_poles_refuse() {
+        let s = quarter_sphere();
+        for u in [0., 0.25, 0.5, 0.75, 1.] {
+            for v in [0., 0.25, 0.5, 0.75] {
+                let d = s.differential([u, v]).unwrap();
+                let n = d.computed_unit_normal().unwrap();
+                for axis in 0..3 {
+                    assert!((n[axis] - d.point[axis]).abs() < 1e-12);
+                }
+            }
+        }
+        let pole = s.differential([0.3, 1.]).unwrap();
+        assert_eq!(pole.point, [0., 0., 1.]);
+        assert_eq!(pole.du, [0.; 3]);
+        assert!(pole.computed_unit_normal().is_err());
+        assert_eq!(pole.sides[1], nurbs::ParameterSide::UpperEndpoint);
+    }
+    #[test]
+    fn differential_work_caps_and_c0_surface_knots_are_explicit_refusals() {
+        let s = plane(Limits {
+            evaluation_blends: 3,
+            ..Limits::default()
+        })
+        .unwrap();
+        assert!(s.evaluate([0.25, 0.75]).is_ok());
+        assert_eq!(
+            s.differential([0.25, 0.75]).unwrap_err().kind,
+            ErrorKind::Limit
+        );
+        let s = NurbsSurface::new_clamped(
+            [1, 1],
+            [vec![0., 0., 0.5, 1., 1.], vec![0., 0., 1., 1.]],
+            [3, 2],
+            vec![
+                [0., 0., 0.],
+                [1., 0., 0.],
+                [1., 1., 0.],
+                [0., 0., 1.],
+                [1., 0., 1.],
+                [1., 1., 1.],
+            ],
+            vec![1.; 6],
+            Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(s.evaluate([0.5, 0.5]).unwrap(), [1., 0., 0.5]);
+        assert!(s
+            .differential([0.5, 0.5])
+            .unwrap_err()
+            .detail
+            .contains("C0"));
+    }
+    #[test]
+    fn parameter_length_scaling_and_existing_taylor_verifier_check_surface_differentials() {
+        let original = quarter_cylinder();
+        let scaled = NurbsSurface::new_clamped(
+            original.degrees(),
+            [
+                original.knots_u().iter().map(|u| 10. + 20. * u).collect(),
+                original.knots_v().iter().map(|v| -5. + 10. * v).collect(),
+            ],
+            original.dimensions(),
+            original
+                .control_points()
+                .iter()
+                .map(|p| p.map(|x| 25.4 * x))
+                .collect(),
+            original.weights().iter().map(|w| 7. * w).collect(),
+            Limits::default(),
+        )
+        .unwrap();
+        let a = original.differential([0.3, 0.4]).unwrap();
+        let b = scaled.differential([16., -1.]).unwrap();
+        for axis in 0..3 {
+            assert!((b.point[axis] - 25.4 * a.point[axis]).abs() < 1e-12);
+            assert!((b.du[axis] - 25.4 / 20. * a.du[axis]).abs() < 1e-12);
+            assert!((b.dv[axis] - 25.4 / 10. * a.dv[axis]).abs() < 1e-12);
+        }
+        let report = fea_core::derivative::verify::taylor_test(
+            &|x| original.evaluate([x[0], x[1]]).unwrap().to_vec(),
+            &|x, v| {
+                let d = original.differential([x[0], x[1]]).unwrap();
+                (0..3).map(|i| d.du[i] * v[0] + d.dv[i] * v[1]).collect()
+            },
+            &[0.3, 0.4],
+            &[0.4, -0.3],
+            &[0.02, 0.01, 0.005, 0.0025],
+            1e-14,
+        );
+        assert!(report.observed_order > 1.9, "{report:?}");
+    }
+    #[test]
+    fn computed_normals_handle_extreme_direction_scales_and_refuse_zero_or_parallel_partials() {
+        for scale in [1e-300, 1e300] {
+            let d = SurfaceDifferential {
+                point: [0.; 3],
+                du: [scale, 0., 0.],
+                dv: [0., scale, 0.],
+                sides: [nurbs::ParameterSide::Interior; 2],
+            };
+            assert_eq!(d.computed_unit_normal().unwrap(), [0., 0., 1.]);
+        }
+        for (du, dv) in [([0.; 3], [0., 1., 0.]), ([1., 0., 0.], [2., 0., 0.])] {
+            let d = SurfaceDifferential {
+                point: [0.; 3],
+                du,
+                dv,
+                sides: [nurbs::ParameterSide::Interior; 2],
+            };
+            assert!(d.computed_unit_normal().is_err());
+        }
     }
 }

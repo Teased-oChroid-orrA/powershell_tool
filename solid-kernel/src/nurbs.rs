@@ -4,6 +4,7 @@ use crate::{
     step::{Error, ErrorKind},
     V3,
 };
+use fea_core::derivative::{dual::Dual, Scalar};
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
     pub control_points: usize,
@@ -160,12 +161,30 @@ impl Basis {
             self.knots.partition_point(|k| *k <= t) - 1
         })
     }
-    pub(crate) fn homogeneous(
+    pub(crate) fn differential_span(&self, t: f64) -> Result<(usize, ParameterSide), Error> {
+        let span = self.span(t)?;
+        let [lo, hi] = self.domain();
+        if t == lo {
+            return Ok((span, ParameterSide::LowerEndpoint));
+        }
+        if t == hi {
+            return Ok((span, ParameterSide::UpperEndpoint));
+        }
+        let first = self.knots.partition_point(|k| *k < t);
+        if span + 1 - first >= self.degree {
+            return Err(fail(
+                ErrorKind::Geometry,
+                "first derivative is not certified at an interior C0 knot",
+            ));
+        }
+        Ok((span, ParameterSide::Interior))
+    }
+    pub(crate) fn homogeneous<S: Scalar>(
         &self,
         span: usize,
-        t: f64,
-        mut control: impl FnMut(usize) -> Result<[f64; 4], Error>,
-    ) -> Result<[f64; 4], Error> {
+        t: S,
+        mut control: impl FnMut(usize) -> Result<[S; 4], Error>,
+    ) -> Result<[S; 4], Error> {
         let p = self.degree;
         let mut d = (0..=p)
             .map(|j| control(span - p + j))
@@ -180,15 +199,15 @@ impl Basis {
                         "invalid active B-spline knot span",
                     ));
                 }
-                let alpha = (t - self.knots[i]) / denominator;
-                if !(0. ..=1.).contains(&alpha) {
+                let alpha = (t - S::cst(self.knots[i])) / S::cst(denominator);
+                if !alpha.value().is_finite() || alpha.lt(&S::cst(0.)) || alpha.gt(&S::cst(1.)) {
                     return Err(fail(
                         ErrorKind::Geometry,
                         "B-spline interpolation parameter outside active span",
                     ));
                 }
                 for axis in 0..4 {
-                    d[j][axis] = (1. - alpha) * d[j - 1][axis] + alpha * d[j][axis];
+                    d[j][axis] = (S::cst(1.) - alpha) * d[j - 1][axis] + alpha * d[j][axis];
                 }
             }
         }
@@ -198,21 +217,37 @@ impl Basis {
 pub(crate) fn homogeneous_control(p: V3, w: f64) -> [f64; 4] {
     [p[0] * w, p[1] * w, p[2] * w, w]
 }
-pub(crate) fn project(h: [f64; 4]) -> Result<V3, Error> {
-    if !h[3].is_finite() || h[3] <= 0. {
+pub(crate) fn project<S: Scalar>(h: [S; 4]) -> Result<[S; 3], Error> {
+    if !h[3].value().is_finite() || h[3].le(&S::cst(0.)) {
         return Err(fail(
             ErrorKind::Geometry,
             "invalid evaluated rational denominator",
         ));
     }
     let point = [h[0] / h[3], h[1] / h[3], h[2] / h[3]];
-    if point.iter().any(|x| !x.is_finite() || x.abs() > 1e30) {
+    if point
+        .iter()
+        .any(|x| !x.value().is_finite() || x.gt(&S::cst(1e30)) || x.lt(&S::cst(-1e30)))
+    {
         return Err(fail(
             ErrorKind::Geometry,
             "evaluated B-spline exceeds geometry arithmetic domain",
         ));
     }
     Ok(point)
+}
+/// Endpoint derivatives are one-sided from inside the active domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParameterSide {
+    Interior,
+    LowerEndpoint,
+    UpperEndpoint,
+}
+#[derive(Debug, Clone, Copy)]
+pub struct CurveDifferential {
+    pub point: V3,
+    pub tangent: V3,
+    pub side: ParameterSide,
 }
 #[derive(Debug, Clone)]
 pub struct NurbsCurve {
@@ -251,6 +286,35 @@ impl NurbsCurve {
     }
     pub fn knots(&self) -> &[f64] {
         self.basis.knots()
+    }
+    /// Local parameter tangent from existing fea-core dual arithmetic. This is
+    /// not a derivative through CAD edits, meshing or a global FEA response.
+    /// Interior C0 knots refuse; domain endpoints report one-sided semantics.
+    pub fn differential(&self, t: f64) -> Result<CurveDifferential, Error> {
+        let (span, side) = self.basis.differential_span(t)?;
+        let parameter = Dual::<f64, 1>::var(t, 0);
+        let values = project(self.basis.homogeneous(span, parameter, |i| {
+            Ok(homogeneous_control(self.control_points[i], self.weights[i])
+                .map(Dual::<f64, 1>::cst))
+        })?)?;
+        let mut point = values.map(|x| x.v);
+        let tangent = values.map(|x| x.d[0]);
+        if tangent.iter().any(|x| !x.is_finite()) {
+            return Err(fail(
+                ErrorKind::Geometry,
+                "nonfinite spline parameter tangent",
+            ));
+        }
+        if side == ParameterSide::LowerEndpoint {
+            point = self.control_points[0];
+        } else if side == ParameterSide::UpperEndpoint {
+            point = *self.control_points.last().unwrap();
+        }
+        Ok(CurveDifferential {
+            point,
+            tangent,
+            side,
+        })
     }
     /// O(degree²) homogeneous de Boor evaluation. Authoritative endpoints remain
     /// exact; invalid/outside parameters refuse rather than clamping.
@@ -472,5 +536,113 @@ mod tests {
             .kind,
             ErrorKind::Limit
         );
+    }
+    #[test]
+    fn rational_parameter_tangents_match_independent_analytic_formulas_and_endpoint_sides() {
+        let c = quarter();
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        for t in [0., 0.1, 0.25, 0.5, 0.9, 1.] {
+            let d = 1. + 2. * (w - 1.) * t + 2. * (1. - w) * t * t;
+            let dd = 2. * (w - 1.) + 4. * (1. - w) * t;
+            let nx = 1. + 2. * (w - 1.) * t + (1. - 2. * w) * t * t;
+            let ny = 2. * w * t + (1. - 2. * w) * t * t;
+            let dx = ((2. * (w - 1.) + 2. * (1. - 2. * w) * t) * d - nx * dd) / (d * d);
+            let dy = ((2. * w + 2. * (1. - 2. * w) * t) * d - ny * dd) / (d * d);
+            let differential = c.differential(t).unwrap();
+            assert!((differential.tangent[0] - dx).abs() < 1e-12);
+            assert!((differential.tangent[1] - dy).abs() < 1e-12);
+            assert_eq!(differential.tangent[2], 0.);
+            assert!(
+                (differential.point[0] * differential.tangent[0]
+                    + differential.point[1] * differential.tangent[1])
+                    .abs()
+                    < 1e-12
+            );
+            assert_eq!(
+                differential.side,
+                if t == 0. {
+                    ParameterSide::LowerEndpoint
+                } else if t == 1. {
+                    ParameterSide::UpperEndpoint
+                } else {
+                    ParameterSide::Interior
+                }
+            );
+        }
+    }
+    #[test]
+    fn parameter_and_length_scaling_and_taylor_remainders_verify_local_curve_differentials() {
+        let original = quarter();
+        let scaled = NurbsCurve::new_clamped(
+            2,
+            original.knots().iter().map(|u| 10. + 20. * u).collect(),
+            original
+                .control_points()
+                .iter()
+                .map(|p| p.map(|x| 25.4 * x))
+                .collect(),
+            original.weights().iter().map(|w| 7. * w).collect(),
+            Limits::default(),
+        )
+        .unwrap();
+        for t in [0., 0.125, 0.5, 0.875, 1.] {
+            let a = original.differential(t).unwrap();
+            let b = scaled.differential(10. + 20. * t).unwrap();
+            for axis in 0..3 {
+                assert!((b.point[axis] - 25.4 * a.point[axis]).abs() < 1e-12);
+                assert!((b.tangent[axis] - 25.4 / 20. * a.tangent[axis]).abs() < 1e-12);
+            }
+        }
+        let report = fea_core::derivative::verify::taylor_test(
+            &|x| original.evaluate(x[0]).unwrap().to_vec(),
+            &|x, v| {
+                original
+                    .differential(x[0])
+                    .unwrap()
+                    .tangent
+                    .map(|d| d * v[0])
+                    .to_vec()
+            },
+            &[0.3],
+            &[0.7],
+            &[0.02, 0.01, 0.005, 0.0025],
+            1e-14,
+        );
+        assert!(report.observed_order > 1.9, "{report:?}");
+    }
+    #[test]
+    fn c0_knots_refuse_classical_tangents_and_rational_endpoint_values_remain_authoritative() {
+        let c = NurbsCurve::new_clamped(
+            1,
+            vec![0., 0., 0.5, 1., 1.],
+            vec![[0., 0., 0.], [2., 0., 0.], [2., 4., 0.]],
+            vec![1.; 3],
+            Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(c.differential(0.25).unwrap().tangent, [4., 0., 0.]);
+        assert_eq!(c.differential(0.75).unwrap().tangent, [0., 8., 0.]);
+        assert_eq!(c.evaluate(0.5).unwrap(), [2., 0., 0.]);
+        assert!(c.differential(0.5).unwrap_err().detail.contains("C0"));
+        let points = vec![[1.2345, -2.345, 3.456], [4.5678, 6.789, -1.234]];
+        let c = NurbsCurve::new_clamped(
+            1,
+            vec![0., 0., 1., 1.],
+            points.clone(),
+            vec![3., 7.],
+            Limits::default(),
+        )
+        .unwrap();
+        for (t, index, ratio) in [(0., 0, 7. / 3.), (1., 1, 3. / 7.)] {
+            let differential = c.differential(t).unwrap();
+            assert_eq!(differential.point, points[index]);
+            for axis in 0..3 {
+                assert!(
+                    (differential.tangent[axis] - ratio * (points[1][axis] - points[0][axis]))
+                        .abs()
+                        < 1e-12
+                );
+            }
+        }
     }
 }
