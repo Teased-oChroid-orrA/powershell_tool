@@ -226,3 +226,15 @@ An additional verified normalization defect was reproduced: `[1e-300,1e300,0]` s
 Final checks at source `92698088cd1300a17fafee37d62da885486ae5e0`: **104 CAD-enabled tests, 87 feature-off tests, and CAD-enabled application lib/tests compilation pass**, with zero final failures/ignored tests. The pre-fix reproduction is recorded separately. [Verification](issue-46-phase-24-verification.json).
 
 No dependency, production backend, main, hosted CI or OCCT retirement change. Full spline-backed B-Rep import remains explicitly refused pending context/placement binding, bounded sampling/projection and trim/locus validation. General CAD/assemblies, PLC recovery, quality and P2/P3/final gates remain open. Next: share the strict single-body representation/unit-context binding before adding more native geometry integration.
+
+## Phase 25 shared context — 2026-10-16
+
+Source `c6bd290` extracts the existing strict single-body representation/context admission from AnalyticModel into `step_body::BodyContext`. Both paths now use one implementation. The immutable context exposes raw source-unit topology, a document-scoped length-context reference and its declared millimetres-per-source-unit factor. It does not normalize the raw coordinates or certify geometry.
+
+Existing assembly/mapping, multiple-body, ambiguous representation, unsupported item and absent length-context refusals remain. No inferred units or fallback scale is introduced. Two new regressions verify millimetre/metre factors with unchanged raw point identities/coordinates, exact-document rejection after source edits, and duplicate/missing direct representation refusal. Existing analytic importer tests exercise the extracted path.
+
+An initial compile error used Result-style `?` on the source-reference Option; corrected with an explicit missing-context error before qualification. No final code change to dependencies, tolerances, production backend or main. This is reusable context admission for subsequent spline declaration integration, not full spline-backed B-Rep support or assembly placement support.
+
+Source-specific final results are recorded in [verification](issue-46-phase-25-verification.json). Native spline-body sampling/projection/trims and broader CAD/PLC/quality/P2/P3/final gates remain open. No hosted CI was dispatched.
+
+Final checks at `c6bd290ca89f85320db2c7f6dcc57ce342c42967`: **106 CAD-enabled / 89 feature-off tests and CAD-enabled app lib/tests compilation pass**, zero final failures/ignored checks.

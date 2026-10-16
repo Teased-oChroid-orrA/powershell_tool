@@ -84,3 +84,5 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - `step_nurbs_surface::read_surface` preserves source/Cartesian-control refs and declared flags, transposes STEP U-row/V-column nets to evaluator V-major order, scales only coordinates (not knots), and enforces aggregate caps. Shared component/knot parsing with curves; unconditional degree<control-count validation precedes allocation even with caller-relaxed caps. Equivalent bracket spline plane still refuses full body import. See `docs/issue-46-phase-23.md`.
 
 - [Phase 24 local spline differentials](../docs/issue-46-phase-24.md): shared Dual arithmetic, one-sided endpoints, singularity/work guards and qualification.
+
+- [Phase 25 shared body/unit-context binding](../docs/issue-46-phase-25.md): strict source representation admission reused by analytic import.
