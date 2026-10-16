@@ -17,6 +17,7 @@ pub mod chart_mesh;
 mod native_math;
 mod native_interval;
 pub mod native_surface;
+pub mod geometry_bounds;
 pub mod nurbs;
 pub mod nurbs_distance;
 pub mod nurbs_sample;

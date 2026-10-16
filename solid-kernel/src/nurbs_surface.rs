@@ -146,6 +146,94 @@ impl NurbsSurface {
     pub fn evaluation_blends(&self) -> usize {
         self.blends
     }
+    /// Enclose the exact real tensor surface over a closed U/V rectangle.
+    /// Uses shared outward-rounded de Boor arithmetic without row projection.
+    /// Patch and two-lane blend budgets refuse before returning partial bounds.
+    /// This is not a regularity, injectivity, trim or unique-projection proof.
+    pub fn enclose(
+        &self,
+        domain: [[f64; 2]; 2],
+        max_patches: usize,
+    ) -> Result<crate::geometry_bounds::Bounds3, Error> {
+        use crate::native_interval::Interval;
+        let urange = self.u.span_range(domain[0])?;
+        let vrange = self.v.span_range(domain[1])?;
+        let work = self
+            .blends
+            .checked_mul(2)
+            .ok_or_else(|| nurbs::fail(ErrorKind::Limit, "surface interval work overflow"))?;
+        let mut used = 0usize;
+        let mut patches = 0usize;
+        let mut result: Option<[Interval; 3]> = None;
+        for us in urange {
+            if self.u.knots()[us] == self.u.knots()[us + 1] {
+                continue;
+            }
+            let up = Interval::new(
+                domain[0][0].max(self.u.knots()[us]),
+                domain[0][1].min(self.u.knots()[us + 1]),
+            );
+            for vs in vrange.clone() {
+                if self.v.knots()[vs] == self.v.knots()[vs + 1] {
+                    continue;
+                }
+                if patches >= max_patches || self.work_limit.saturating_sub(used) < work {
+                    return Err(nurbs::fail(
+                        ErrorKind::Limit,
+                        "surface interval patch/blend budget exceeded",
+                    ));
+                }
+                patches += 1;
+                used += work;
+                let vp = Interval::new(
+                    domain[1][0].max(self.v.knots()[vs]),
+                    domain[1][1].min(self.v.knots()[vs + 1]),
+                );
+                let h = self.v.homogeneous(vs, vp, |j| {
+                    self.u.homogeneous(us, up, |i| {
+                        let k = j * self.dimensions[0] + i;
+                        let w = Interval::point(self.weights[k]);
+                        let p = self.control_points[k].map(Interval::point);
+                        Ok([p[0] * w, p[1] * w, p[2] * w, w])
+                    })
+                })?;
+                if h[3].lo <= 0. {
+                    return Err(nurbs::fail(
+                        ErrorKind::Geometry,
+                        "surface interval denominator not positive",
+                    ));
+                }
+                let projected = [h[0] / h[3], h[1] / h[3], h[2] / h[3]];
+                let bounds: [Interval; 3] = std::array::from_fn(|axis| {
+                    let mut hull = Interval::new(f64::INFINITY, f64::NEG_INFINITY);
+                    for j in vs - self.v.degree()..=vs {
+                        for i in us - self.u.degree()..=us {
+                            hull = hull.hull(Interval::point(
+                                self.control_points[j * self.dimensions[0] + i][axis],
+                            ));
+                        }
+                    }
+                    projected[axis].intersect(hull)
+                });
+                if bounds.iter().any(|b| !b.finite()) {
+                    return Err(nurbs::fail(
+                        ErrorKind::Geometry,
+                        "nonfinite surface interval",
+                    ));
+                }
+                result = Some(match result {
+                    None => bounds,
+                    Some(old) => std::array::from_fn(|i| old[i].hull(bounds[i])),
+                });
+            }
+        }
+        let result =
+            result.ok_or_else(|| nurbs::fail(ErrorKind::Geometry, "empty surface interval"))?;
+        Ok(crate::geometry_bounds::Bounds3 {
+            min: result.map(|x| x.lo),
+            max: result.map(|x| x.hi),
+        })
+    }
     /// First parameter partials using the existing dual-number implementation.
     /// Three inline scalar lanes count against the same constructor work cap.
     /// C0 knots refuse and endpoints are explicitly one-sided. No global CAD/
@@ -554,5 +642,131 @@ mod tests {
             };
             assert!(d.computed_unit_normal().is_err());
         }
+    }
+    #[test]
+    fn patch_enclosures_contain_independent_plane_cylinder_and_sphere_geometry() {
+        let p = plane(Limits::default()).unwrap();
+        let b = p.enclose([[0.2, 0.8], [0.1, 0.9]], 1).unwrap();
+        for u in [0.2, 0.3, 0.7, 0.8] {
+            for v in [0.1, 0.4, 0.8, 0.9] {
+                let exact = [2. * u, 3. * v, 1. + 4. * u + 9. * v];
+                for i in 0..3 {
+                    assert!(b.min[i] <= exact[i] && exact[i] <= b.max[i]);
+                }
+            }
+        }
+        for (kind, surface) in [quarter_cylinder(), quarter_sphere()]
+            .into_iter()
+            .enumerate()
+        {
+            for domain in [
+                [[0., 1.], [0., 1.]],
+                [[0.3, 0.31], [0.6, 0.61]],
+                [[1., 1.], [1., 1.]],
+            ] {
+                let b = surface.enclose(domain, 1).unwrap();
+                for i in 0..=10 {
+                    for j in 0..=10 {
+                        let uv = [
+                            domain[0][0] + (domain[0][1] - domain[0][0]) * (i as f64 / 10.),
+                            domain[1][0] + (domain[1][1] - domain[1][0]) * (j as f64 / 10.),
+                        ];
+                        // Independent analytic reference, not a rounded evaluator
+                        // point which can sit one ulp outside the exact CP hull.
+                        let arc = |t: f64| {
+                            let w = std::f64::consts::FRAC_1_SQRT_2;
+                            let a = (1. - t) * (1. - t);
+                            let b = 2. * w * t * (1. - t);
+                            let c = t * t;
+                            [(a + b) / (a + b + c), (b + c) / (a + b + c)]
+                        };
+                        let a = arc(uv[0]);
+                        let v = arc(uv[1]);
+                        let point = if kind == 0 {
+                            [a[0], a[1], 3. * uv[1]]
+                        } else {
+                            [a[0] * v[0], a[1] * v[0], v[1]]
+                        };
+                        for k in 0..3 {
+                            assert!(
+                                b.min[k] <= point[k] && point[k] <= b.max[k],
+                                "{point:?} {b:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn patch_enclosure_budgets_and_domains_refuse_and_cartesian_hulls_keep_constants_exact() {
+        let plane = plane(Limits {
+            evaluation_blends: 3,
+            ..Limits::default()
+        })
+        .unwrap();
+        assert!(plane.evaluate([0.5, 0.5]).is_ok());
+        assert_eq!(
+            plane.enclose([[0., 1.], [0., 1.]], 1).unwrap_err().kind,
+            ErrorKind::Limit
+        );
+        let s = quarter_cylinder();
+        assert_eq!(
+            s.enclose([[0., 1.], [0., 1.]], 0).unwrap_err().kind,
+            ErrorKind::Limit
+        );
+        for d in [
+            [[-0.1, 1.], [0., 1.]],
+            [[0.8, 0.2], [0., 1.]],
+            [[0., 1.], [0., f64::NAN]],
+        ] {
+            assert!(s.enclose(d, 10).is_err());
+        }
+        let s = NurbsSurface::new_clamped(
+            [1, 1],
+            [vec![0., 0., 1., 1.], vec![0., 0., 1., 1.]],
+            [2, 2],
+            vec![[1., 2., 3.]; 4],
+            vec![1., 3., 7., 11.],
+            Limits::default(),
+        )
+        .unwrap();
+        let b = s.enclose([[0., 1.], [0., 1.]], 1).unwrap();
+        assert_eq!(b.min, [1., 2., 3.]);
+        assert_eq!(b.max, b.min);
+    }
+    #[test]
+    fn every_intersected_tensor_patch_is_counted_including_c0_endpoint_neighbours() {
+        let mut points = Vec::new();
+        for j in 0..3 {
+            for i in 0..3 {
+                points.push([i as f64, j as f64, (2 * i + 3 * j) as f64]);
+            }
+        }
+        let s = NurbsSurface::new_clamped(
+            [1, 1],
+            [vec![0., 0., 0.5, 1., 1.], vec![0., 0., 0.5, 1., 1.]],
+            [3, 3],
+            points,
+            vec![1.; 9],
+            Limits::default(),
+        )
+        .unwrap();
+        let d = [[0.25, 0.75], [0.25, 0.75]];
+        assert_eq!(s.enclose(d, 3).unwrap_err().kind, ErrorKind::Limit);
+        let b = s.enclose(d, 4).unwrap();
+        for u in [0.25, 0.5, 0.75] {
+            for v in [0.25, 0.5, 0.75] {
+                let p = [2. * u, 2. * v, 4. * u + 6. * v];
+                for k in 0..3 {
+                    assert!(b.min[k] <= p[k] && p[k] <= b.max[k]);
+                }
+            }
+        }
+        assert_eq!(
+            s.enclose([[0.5; 2]; 2], 3).unwrap_err().kind,
+            ErrorKind::Limit
+        );
+        assert!(s.enclose([[0.5; 2]; 2], 4).is_ok());
     }
 }

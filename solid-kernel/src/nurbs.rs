@@ -212,6 +212,27 @@ impl Basis {
             self.knots.partition_point(|k| *k <= t) - 1
         })
     }
+    /// Active spans meeting a closed subdomain, found without scanning every
+    /// unrelated knot. Endpoint-only neighbours remain included for continuity.
+    pub(crate) fn span_range(
+        &self,
+        domain: [f64; 2],
+    ) -> Result<std::ops::RangeInclusive<usize>, Error> {
+        self.span(domain[0])?;
+        let last = self.span(domain[1])?;
+        if domain[0] > domain[1] {
+            return Err(fail(
+                ErrorKind::Geometry,
+                "reversed spline enclosure domain",
+            ));
+        }
+        let first = self
+            .knots
+            .partition_point(|k| *k < domain[0])
+            .saturating_sub(1)
+            .max(self.degree);
+        Ok(first..=last)
+    }
     pub(crate) fn differential_span(&self, t: f64) -> Result<(usize, ParameterSide), Error> {
         let span = self.span(t)?;
         let [lo, hi] = self.domain();
@@ -296,13 +317,8 @@ pub struct CurveDifferential {
     pub tangent: V3,
     pub side: ParameterSide,
 }
-/// Axis-aligned enclosure of the exact rational curve on a parameter interval.
-/// Bounds include arithmetic rounding. They are not an injectivity/trim proof.
-#[derive(Debug, Clone, Copy)]
-pub struct CurveBounds {
-    pub min: V3,
-    pub max: V3,
-}
+/// Compatibility name for the shared three-dimensional geometry bounds.
+pub use crate::geometry_bounds::Bounds3 as CurveBounds;
 #[derive(Debug, Clone)]
 pub struct NurbsCurve {
     basis: Basis,
@@ -347,17 +363,10 @@ impl NurbsCurve {
     pub fn enclose(&self, parameters: [f64; 2], max_spans: usize) -> Result<CurveBounds, Error> {
         use crate::native_interval::Interval;
         let [lo, hi] = parameters;
-        self.basis.span(lo)?;
-        self.basis.span(hi)?;
-        if lo > hi {
-            return Err(fail(
-                ErrorKind::Geometry,
-                "reversed spline enclosure domain",
-            ));
-        }
+        let spans = self.basis.span_range(parameters)?;
         let mut bounds: Option<[Interval; 3]> = None;
         let mut count = 0usize;
-        for span in self.basis.degree..self.control_points.len() {
+        for span in spans {
             let a = lo.max(self.basis.knots[span]);
             let b = hi.min(self.basis.knots[span + 1]);
             if self.basis.knots[span] == self.basis.knots[span + 1] || a > b {
