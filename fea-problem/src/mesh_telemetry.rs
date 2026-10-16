@@ -179,13 +179,9 @@ pub struct BenchmarkStore {
 impl BenchmarkStore {
     pub fn record(&mut self, evidence: &VerifiedPerformance) {
         let r = &evidence.record;
-        self.entries.retain(|e| {
-            !(e.record.workload == r.workload
-                && e.record.architecture == r.architecture
-                && e.record.logical_parallelism == r.logical_parallelism
-                && e.record.application_version == r.application_version
-                && e.record.source_revision == r.source_revision)
-        });
+        // Repeated independent trials matter for variability; deduplicate the
+        // identical measurement, not every sample of the same workload.
+        self.entries.retain(|e| e.record != *r);
         self.entries.push_back(Entry {
             record: r.clone(),
             trusted: true,
@@ -239,7 +235,7 @@ impl BenchmarkStore {
                 continue;
             }
             if let Ok(record) = serde_json::from_str::<PerformanceRecord>(line) {
-                if record.valid() {
+                if record.valid() && !out.entries.iter().any(|e| e.record == record) {
                     out.entries.push_back(Entry {
                         record,
                         trusted: false,
@@ -281,6 +277,10 @@ mod tests {
         assert_eq!(BenchmarkStore::decode(&corrupt).unwrap().len(), 1);
         assert!(BenchmarkStore::decode("{\"schema\":999}\n").is_err());
         assert!(BenchmarkStore::decode(&"x".repeat(MAX_STORE_BYTES + 1)).is_err());
+        let mut repeat = proof.clone();
+        repeat.record.total_seconds += 1.;
+        store.record(&repeat);
+        assert_eq!(store.len(), 2, "independent timing samples must survive");
         store.clear();
         assert!(store.is_empty());
         let mut edited = p;
