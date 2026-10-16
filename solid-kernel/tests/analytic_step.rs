@@ -930,3 +930,71 @@ fn stored_face_selections_remap_across_changed_native_triangulations() {
     reordered.source_document = None;
     assert!(reordered.face_tag(reference).is_err());
 }
+
+#[test]
+fn validated_plc_preserves_every_bracket_constraint_and_source_face() {
+    use solid_kernel::plc::{Limits as PlcLimits, ValidatedPlc};
+    use solid_kernel::step::ErrorKind;
+    let data = inventory(SOURCE, Limits::default()).unwrap();
+    let model = AnalyticModel::read(&data, Options::default()).unwrap();
+    let checked = || {
+        model
+            .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+            .unwrap()
+            .check_intersections(2_000_000, |_| true)
+            .unwrap()
+    };
+    let original = checked();
+    let vertices = original.surface().mesh.vertices.clone();
+    let facets = original.surface().mesh.triangles.clone();
+    let mut progress = Vec::new();
+    let plc = ValidatedPlc::new(original, PlcLimits::default(), |done, total| {
+        progress.push((done, total));
+        true
+    })
+    .unwrap();
+    assert_eq!(plc.vertices(), vertices);
+    assert_eq!(plc.facets(), facets);
+    assert_eq!(plc.segments().len(), 1467);
+    assert_eq!(progress.first(), Some(&(0, 978)));
+    assert_eq!(progress.last(), Some(&(978, 978)));
+    for (i, tri) in plc.facets().iter().enumerate() {
+        let reference = plc.facet_source_reference(i).unwrap();
+        assert!(data
+            .resolve_reference(reference)
+            .unwrap()
+            .components
+            .iter()
+            .any(|c| c.name == "ADVANCED_FACE"));
+        for j in 0..3 {
+            let mut edge = [tri[j], tri[(j + 1) % 3]];
+            edge.sort();
+            assert!(plc.segments().binary_search(&edge).is_ok());
+        }
+    }
+    assert!(plc.facet_source_reference(facets.len()).is_none());
+    assert_eq!(
+        plc.into_distance_solid().metadata().source_document,
+        Some(data.document_fingerprint())
+    );
+    let limited = ValidatedPlc::new(
+        checked(),
+        PlcLimits {
+            segments: 1,
+            ..PlcLimits::default()
+        },
+        |_, _| true,
+    );
+    assert_eq!(limited.err().unwrap().kind, ErrorKind::Limit);
+    let limited = ValidatedPlc::new(
+        checked(),
+        PlcLimits {
+            facets: 1,
+            ..PlcLimits::default()
+        },
+        |_, _| true,
+    );
+    assert_eq!(limited.err().unwrap().kind, ErrorKind::Limit);
+    let cancelled = ValidatedPlc::new(checked(), PlcLimits::default(), |done, _| done < 256);
+    assert_eq!(cancelled.err().unwrap().kind, ErrorKind::Cancelled);
+}
