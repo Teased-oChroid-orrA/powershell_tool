@@ -64,3 +64,5 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - `plc::ValidatedPlc` accepts only an immutable globally checked single-shell sampled surface; retains all triangular facets/undirected edge constraints/source-face reports with explicit budgets and cancellation. Input admission only, not recovered volume meshing or exact CAD certification. See `docs/issue-46-phase-13.md`.
 
 - `plc_star::StarSeed` requires exact strict interior-side visibility from a supplied kernel point to every validated PLC facet; preserves the boundary exactly. It is a limited conforming fan seed, not Delaunay/general PLC recovery or production strategy. Holes/nonvisible facets refuse, solver quality gates remain. See `docs/issue-46-phase-14.md`.
+
+- Current diagnostic capabilities/limits and pilot corpus: `docs/issue-46-native-support-matrix-2026-10-16.md`. Hollow tube preserves the through-hole; valid thin-wall/near-boundary positive seeds still refuse solver conversion under unchanged quality limits (Phase 15).

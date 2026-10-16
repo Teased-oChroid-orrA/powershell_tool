@@ -140,3 +140,11 @@ Phase 13 final checks at `2367cf573c438a018f25072c0095592c7426c2ed`: **63 CAD-en
 This is a limited diagnostic conforming seed only. General constrained recovery/refinement, cavities/regions, automatic kernel search, source-boundary solver tagging and sliver optimization remain open, as do broader native CAD and all later epic gates. No new dependency, hosted CI, tolerance relaxation or production/main change. Final qualified checks follow below.
 
 Phase 14 final checks at `f1937f1b6c03237a2317e9f0d0a8f8f2a7f9831c`: **65 CAD-enabled / 52 feature-off tests and CAD-enabled app lib/tests compilation pass**, no failures/ignored checks. Hole-bearing bracket refusal passes. [Verification](issue-46-phase-14-verification.json).
+
+## Phase 15 hollow-domain and quality-refusal corpus — 2026-10-16
+
+[Phase 15](issue-46-phase-15.md), source `60e9e08`, adds only CAD-enabled regressions. Hollow tube r=1..2 mm, L=3 mm: four native source faces, analytic 9π mm³ volume criterion and hole/wall/exterior signed-distance signs pass. Thin plate (0.01 mm) and near-boundary (1e-12 mm) bar kernel seeds preserve valid geometry/positive topology but must fail unchanged solver quality limits. These refusal cases are not optimized solver meshes or successful training samples. [Support snapshot](issue-46-native-support-matrix-2026-10-16.md) consolidates all diagnostic scope and remaining gates.
+
+Next implementation priorities remain general native CAD/assembly/exact trim and conservative healing coverage, general PLC recovery/refinement and sliver/conditioning qualification before P2/P3/final gates. Source references currently support identical-source regeneration, not cross-edit naming or general AMR/material/contact/history transfer. Star seeds retain generic solver boundary tags; source wrapper migration remains open. Production stays OCCT-backed, no feature/main merge or retirement approval is implied. Final CAD check result follows; feature-off/app evidence remains Phase 14 for this test-only increment.
+
+Phase 15 qualified source `60e9e086f4bf41d8a276e0ca0c9e92285088763a`: **67 CAD-enabled tests pass**, no failures/ignored tests. Feature-off (52 tests) and app compilation reuse Phase 14 evidence for unchanged implementation. [Verification](issue-46-phase-15-verification.json).
