@@ -165,3 +165,26 @@ fn spline_declaration_extraction_does_not_enable_partial_native_body_import() {
     assert_eq!(error.detail, "unsupported referenced 3D curve geometry");
     assert_eq!(error.offset, data.entities()[&line.id].offset);
 }
+
+#[test]
+fn invalid_degree_cannot_override_mathematical_admission_with_a_relaxed_resource_cap() {
+    let source =
+        file(&RATIONAL.replace("B_SPLINE_CURVE(2,", "B_SPLINE_CURVE(9223372036854775807,"));
+    let data = inventory(&source, Limits::default()).unwrap();
+    let result = std::panic::catch_unwind(|| {
+        read_curve(
+            &data,
+            1,
+            1.,
+            CurveLimits {
+                degree: usize::MAX,
+                ..CurveLimits::default()
+            },
+        )
+    });
+    assert!(
+        result.is_ok(),
+        "invalid degree must return an error before allocation"
+    );
+    assert_eq!(result.unwrap().unwrap_err().kind, ErrorKind::Geometry);
+}

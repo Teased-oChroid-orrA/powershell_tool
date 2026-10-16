@@ -28,6 +28,7 @@ mod bvh;
 pub mod cad;
 pub mod step;
 pub mod step_nurbs;
+pub mod step_nurbs_surface;
 mod step_units;
 mod step_topology;
 #[cfg(feature = "occt")]

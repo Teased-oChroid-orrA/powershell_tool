@@ -27,14 +27,14 @@ pub struct StepSplineDeclaration {
     /// representation context or infer units from entity names/header labels.
     pub millimetres_per_source_unit: f64,
 }
-fn fail(e: &Entity, detail: impl Into<String>) -> Error {
+pub(crate) fn fail(e: &Entity, detail: impl Into<String>) -> Error {
     Error {
         offset: e.offset,
         kind: ErrorKind::Geometry,
         detail: detail.into(),
     }
 }
-fn logical(e: &Entity, v: &Value) -> Result<Logical, Error> {
+pub(crate) fn logical(e: &Entity, v: &Value) -> Result<Logical, Error> {
     match v {
         Value::Enum(s) if s == "T" => Ok(Logical::True),
         Value::Enum(s) if s == "F" => Ok(Logical::False),
@@ -42,7 +42,7 @@ fn logical(e: &Entity, v: &Value) -> Result<Logical, Error> {
         _ => Err(fail(e, "invalid STEP spline logical declaration")),
     }
 }
-fn integer(e: &Entity, v: &Value) -> Result<usize, Error> {
+pub(crate) fn integer(e: &Entity, v: &Value) -> Result<usize, Error> {
     match v {
         Value::Integer(n) => {
             usize::try_from(*n).map_err(|_| fail(e, "negative/out-of-range spline count"))
@@ -53,104 +53,114 @@ fn integer(e: &Entity, v: &Value) -> Result<usize, Error> {
         )),
     }
 }
-fn enumeration(e: &Entity, v: &Value, allowed: &[&str]) -> Result<String, Error> {
+pub(crate) fn enumeration(e: &Entity, v: &Value, allowed: &[&str]) -> Result<String, Error> {
     match v {
         Value::Enum(s) if allowed.contains(&s.as_str()) => Ok(s.clone()),
         _ => Err(fail(e, "unsupported spline form/knot specification")),
     }
 }
-/// Read one actual spline declaration. Supported: simple polynomial
-/// B_SPLINE_CURVE_WITH_KNOTS and complete complex polynomial/rational variants.
-/// Metadata is retained as declared, never used as a geometric certificate.
-pub fn read_curve(
-    data: &Inventory,
-    id: u64,
-    scale_mm: f64,
-    limits: Limits,
-) -> Result<StepSplineDeclaration, Error> {
-    let e = data.entities().get(&id).ok_or_else(|| Error {
-        offset: 0,
-        kind: ErrorKind::DanglingReference,
-        detail: format!("missing spline entity #{id}"),
+pub(crate) const KNOT_SPECS: &[&str] = &[
+    "UNIFORM_KNOTS",
+    "QUASI_UNIFORM_KNOTS",
+    "PIECEWISE_BEZIER_KNOTS",
+    "UNSPECIFIED",
+];
+pub(crate) enum SplineKind {
+    Curve,
+    Surface,
+}
+pub(crate) struct Parts<'a> {
+    pub name: &'a str,
+    pub base: &'a [Value],
+    pub knots: &'a [Value],
+    pub weights: Option<&'a Value>,
+}
+pub(crate) fn complex_parts(e: &Entity, kind: SplineKind) -> Result<Parts<'_>, Error> {
+    if !(6..=7).contains(&e.components.len()) {
+        return Err(fail(e, "unsupported complex spline declaration shape"));
+    }
+    let (bounded, base, knots, category, rational) = match kind {
+        SplineKind::Curve => (
+            "BOUNDED_CURVE",
+            "B_SPLINE_CURVE",
+            "B_SPLINE_CURVE_WITH_KNOTS",
+            "CURVE",
+            "RATIONAL_B_SPLINE_CURVE",
+        ),
+        SplineKind::Surface => (
+            "BOUNDED_SURFACE",
+            "B_SPLINE_SURFACE",
+            "B_SPLINE_SURFACE_WITH_KNOTS",
+            "SURFACE",
+            "RATIONAL_B_SPLINE_SURFACE",
+        ),
+    };
+    let allowed = [
+        bounded,
+        base,
+        knots,
+        category,
+        rational,
+        "GEOMETRIC_REPRESENTATION_ITEM",
+        "REPRESENTATION_ITEM",
+    ];
+    let mut components = BTreeMap::new();
+    for call in &e.components {
+        if !allowed.contains(&call.name.as_str())
+            || components
+                .insert(call.name.as_str(), call.args.as_slice())
+                .is_some()
+        {
+            return Err(fail(e, "unknown or duplicate complex spline component"));
+        }
+    }
+    let get = |name| {
+        components
+            .get(name)
+            .copied()
+            .ok_or_else(|| fail(e, format!("missing complex spline component {name}")))
+    };
+    for wrapper in [bounded, category, "GEOMETRIC_REPRESENTATION_ITEM"] {
+        if !get(wrapper)?.is_empty() {
+            return Err(fail(e, "unexpected spline wrapper arguments"));
+        }
+    }
+    let [Value::String(name)] = get("REPRESENTATION_ITEM")? else {
+        return Err(fail(e, "invalid spline representation item"));
+    };
+    let weights = match components.get(rational) {
+        None => None,
+        Some(args) => match args {
+            [value] => Some(value),
+            _ => return Err(fail(e, "invalid rational spline component")),
+        },
+    };
+    Ok(Parts {
+        name,
+        base: get(base)?,
+        knots: get(knots)?,
+        weights,
+    })
+}
+pub(crate) fn expanded_knots(
+    e: &Entity,
+    multiplicities: &[Value],
+    values: &[Value],
+    controls: usize,
+    degree: usize,
+) -> Result<Vec<f64>, Error> {
+    crate::nurbs::validate_degree(degree, controls).map_err(|mut error| {
+        error.offset = e.offset;
+        error
     })?;
-    if !scale_mm.is_finite() || scale_mm <= 0. {
-        return Err(fail(e, "spline source scale must be finite and positive"));
-    }
-    let (name, base, knot_data, weight_data) = match e.components.as_slice() {
-        [call] if call.name == "B_SPLINE_CURVE_WITH_KNOTS" && call.args.len() == 9 => {
-            let Value::String(name) = &call.args[0] else {
-                return Err(fail(e, "invalid spline representation name"));
-            };
-            (name.as_str(), &call.args[1..6], &call.args[6..9], None)
-        }
-        calls if (6..=7).contains(&calls.len()) => {
-            let mut components = BTreeMap::new();
-            for call in calls {
-                if !matches!(
-                    call.name.as_str(),
-                    "BOUNDED_CURVE"
-                        | "B_SPLINE_CURVE"
-                        | "B_SPLINE_CURVE_WITH_KNOTS"
-                        | "CURVE"
-                        | "GEOMETRIC_REPRESENTATION_ITEM"
-                        | "RATIONAL_B_SPLINE_CURVE"
-                        | "REPRESENTATION_ITEM"
-                ) || components
-                    .insert(call.name.as_str(), call.args.as_slice())
-                    .is_some()
-                {
-                    return Err(fail(e, "unknown or duplicate complex spline component"));
-                }
-            }
-            let get = |name| {
-                components
-                    .get(name)
-                    .copied()
-                    .ok_or_else(|| fail(e, format!("missing complex spline component {name}")))
-            };
-            for wrapper in ["BOUNDED_CURVE", "CURVE", "GEOMETRIC_REPRESENTATION_ITEM"] {
-                if !get(wrapper)?.is_empty() {
-                    return Err(fail(e, "unexpected spline wrapper arguments"));
-                }
-            }
-            let [Value::String(name)] = get("REPRESENTATION_ITEM")? else {
-                return Err(fail(e, "invalid spline representation item"));
-            };
-            let weights = match components.get("RATIONAL_B_SPLINE_CURVE") {
-                None => None,
-                Some(args) => match args {
-                    [value] => Some(value),
-                    _ => return Err(fail(e, "invalid rational spline component")),
-                },
-            };
-            (
-                name.as_str(),
-                get("B_SPLINE_CURVE")?,
-                get("B_SPLINE_CURVE_WITH_KNOTS")?,
-                weights,
-            )
-        }
-        _ => return Err(fail(e, "unsupported STEP spline declaration shape")),
-    };
-    let [degree, Value::List(controls), form, closed, self_intersection] = base else {
-        return Err(fail(e, "invalid B_SPLINE_CURVE fields"));
-    };
-    let degree = integer(e, degree)?;
-    if degree > limits.degree || controls.len() > limits.control_points {
-        return Err(Error {
-            offset: e.offset,
-            kind: ErrorKind::Limit,
-            detail: "spline degree/control-point budget exceeded".into(),
-        });
-    }
     let expected = controls
-        .len()
         .checked_add(degree)
         .and_then(|n| n.checked_add(1))
-        .ok_or_else(|| fail(e, "spline knot expansion count overflow"))?;
-    let [Value::List(multiplicities), Value::List(values), spec] = knot_data else {
-        return Err(fail(e, "invalid B_SPLINE_CURVE_WITH_KNOTS fields"));
-    };
+        .ok_or_else(|| Error {
+            offset: e.offset,
+            kind: ErrorKind::Limit,
+            detail: "spline knot expansion count overflow".into(),
+        })?;
     if values.len() != multiplicities.len() || values.len() < 2 || values.len() > expected {
         return Err(fail(e, "invalid spline distinct-knot/multiplicity counts"));
     }
@@ -177,6 +187,60 @@ pub fn read_curve(
             "spline knot expansion does not match degree/control count",
         ));
     }
+    Ok(knots)
+}
+/// Read one actual spline declaration. Supported: simple polynomial
+/// B_SPLINE_CURVE_WITH_KNOTS and complete complex polynomial/rational variants.
+/// Metadata is retained as declared, never used as a geometric certificate.
+pub fn read_curve(
+    data: &Inventory,
+    id: u64,
+    scale_mm: f64,
+    limits: Limits,
+) -> Result<StepSplineDeclaration, Error> {
+    let e = data.entities().get(&id).ok_or_else(|| Error {
+        offset: 0,
+        kind: ErrorKind::DanglingReference,
+        detail: format!("missing spline entity #{id}"),
+    })?;
+    if !scale_mm.is_finite() || scale_mm <= 0. {
+        return Err(fail(e, "spline source scale must be finite and positive"));
+    }
+    let parts = match e.components.as_slice() {
+        [call] if call.name == "B_SPLINE_CURVE_WITH_KNOTS" && call.args.len() == 9 => {
+            let Value::String(name) = &call.args[0] else {
+                return Err(fail(e, "invalid spline representation name"));
+            };
+            Parts {
+                name,
+                base: &call.args[1..6],
+                knots: &call.args[6..9],
+                weights: None,
+            }
+        }
+        _ => complex_parts(e, SplineKind::Curve)?,
+    };
+    let Parts {
+        name,
+        base,
+        knots: knot_data,
+        weights: weight_data,
+    } = parts;
+    let [degree, Value::List(controls), form, closed, self_intersection] = base else {
+        return Err(fail(e, "invalid B_SPLINE_CURVE fields"));
+    };
+    let degree = integer(e, degree)?;
+    if degree > limits.degree || controls.len() > limits.control_points {
+        return Err(Error {
+            offset: e.offset,
+            kind: ErrorKind::Limit,
+            detail: "spline degree/control-point budget exceeded".into(),
+        });
+    }
+    let [Value::List(multiplicities), Value::List(values), spec] = knot_data else {
+        return Err(fail(e, "invalid B_SPLINE_CURVE_WITH_KNOTS fields"));
+    };
+    let knots = expanded_knots(e, multiplicities, values, controls.len(), degree)?;
     let weights = match weight_data {
         None => vec![1.; controls.len()],
         Some(Value::List(weights)) if weights.len() == controls.len() => weights
@@ -218,16 +282,7 @@ pub fn read_curve(
         )?,
         declared_closed: logical(e, closed)?,
         declared_self_intersection: logical(e, self_intersection)?,
-        declared_knot_spec: enumeration(
-            e,
-            spec,
-            &[
-                "UNIFORM_KNOTS",
-                "QUASI_UNIFORM_KNOTS",
-                "PIECEWISE_BEZIER_KNOTS",
-                "UNSPECIFIED",
-            ],
-        )?,
+        declared_knot_spec: enumeration(e, spec, KNOT_SPECS)?,
         millimetres_per_source_unit: scale_mm,
     })
 }

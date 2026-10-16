@@ -54,6 +54,15 @@ pub(crate) fn validate_controls(
     }
     Ok(())
 }
+pub(crate) fn validate_degree(degree: usize, controls: usize) -> Result<(), Error> {
+    if degree == 0 || controls <= degree {
+        return Err(fail(
+            ErrorKind::Geometry,
+            "B-spline degree must be positive and smaller than control count",
+        ));
+    }
+    Ok(())
+}
 /// Shared validated basis and homogeneous recurrence for curves and surfaces.
 #[derive(Debug, Clone)]
 pub(crate) struct Basis {
@@ -74,11 +83,12 @@ impl Basis {
                 "B-spline control-point/degree budget exceeded",
             ));
         }
+        validate_degree(degree, n)?;
         let count = n
             .checked_add(degree)
             .and_then(|n| n.checked_add(1))
             .ok_or_else(|| fail(ErrorKind::Limit, "B-spline knot count overflow"))?;
-        if degree == 0 || n <= degree || knots.len() != count {
+        if knots.len() != count {
             return Err(fail(
                 ErrorKind::Geometry,
                 "invalid B-spline degree/control/knot counts",
