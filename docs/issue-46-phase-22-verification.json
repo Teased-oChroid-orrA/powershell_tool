@@ -1,0 +1,38 @@
+{
+  "source_commit": "96bb22a2240db1c3a07cb90cacf8cc8b48dd74ea",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 88,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 71,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "numerical_cases": [
+    "Bilinear analytic plane/authoritative corners",
+    "Rational quarter-cylinder radius and axial coordinate",
+    "Rational spherical patch radius/pole point",
+    "Affine parameter/common-weight invariance",
+    "Global net/degree/blend and parameter/grid refusal",
+    "All prior curve/declaration regressions retained"
+  ],
+  "analytic_error_limit": 1e-12,
+  "default_limits": {
+    "control_points": 4096,
+    "degree_each_axis": 16,
+    "homogeneous_interpolation_blends": 100000
+  },
+  "storage": "V-major: v_index*u_count+u_index",
+  "prior_app_compile": "7e2d7a8; new evaluator has no production caller",
+  "not_verified": [
+    "STEP surface mapping",
+    "Normals/derivatives/projection/trims/pole topology",
+    "Full B-Rep import and remaining epic gates"
+  ]
+}

@@ -196,3 +196,5 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Issue 46 Phase 20: native coordinate unit-underflow refusal](issue-46-phase-20.md).
 
 - [Issue 46 Phase 21: bounded STEP spline declarations and source metadata](issue-46-phase-21.md).
+
+- [Issue 46 Phase 22: bounded tensor-product rational surface evaluation](issue-46-phase-22.md).
