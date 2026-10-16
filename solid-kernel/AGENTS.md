@@ -54,3 +54,5 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - `triangle_intersection`: bounded exact-sign sampled facet checks and immutable checked single-shell ownership; native distance-solid bridge skips welding/repair and preserves source face IDs. Not exact CAD/PLC certification. Evidence: `docs/issue-46-phase-8.md`.
 
 - `ChartPolicy` defaults to strict. Explicit cylindrical parameter canonicalization stays within the existing model geometry tolerance and records every face/bound/oriented-use/edge/sample adjustment; world/source coordinates do not change. Preserve reports through checked geometry conversion. Generated tilted-cylinder fixture runs feature-off; see `docs/issue-46-phase-9.md`.
+
+- `orientation_repair`: explicit whole-source-face parity repair, strict default, atomic cancellation and complete face-sense reports. Reject mixed-face/nonorientable/nonmanifold/disconnected inputs; retain global geometric checks. `NativeDistanceSolid::into_parts` returns solid plus `NativeGeometryMetadata` containing all source associations/reports. See `docs/issue-46-phase-10.md`.
