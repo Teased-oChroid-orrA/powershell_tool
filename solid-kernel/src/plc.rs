@@ -93,6 +93,9 @@ impl ValidatedPlc {
     pub fn checked_surface(&self) -> &CheckedSurface {
         &self.checked
     }
+    pub(crate) fn into_checked_surface(self) -> CheckedSurface {
+        self.checked
+    }
     pub fn into_distance_solid(self) -> NativeDistanceSolid {
         self.checked.into_distance_solid()
     }

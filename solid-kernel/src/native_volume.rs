@@ -10,17 +10,16 @@ use fea_core::{mesh::Mesh, tetmesh::MeshReport, Elastic};
 /// Geometry and source associations stay together while selections are resolved.
 /// Any caller modifying the mesh after `into_parts` must revalidate associations.
 #[derive(Debug)]
-pub struct NativeVolumeMesh {
+pub struct NativeBoundaryMesh {
     mesh: Mesh,
-    report: MeshReport,
     metadata: NativeGeometryMetadata,
 }
-impl NativeVolumeMesh {
+impl NativeBoundaryMesh {
+    pub(crate) fn new(mesh: Mesh, metadata: NativeGeometryMetadata) -> Self {
+        Self { mesh, metadata }
+    }
     pub fn mesh(&self) -> &Mesh {
         &self.mesh
-    }
-    pub fn report(&self) -> &MeshReport {
-        &self.report
     }
     pub fn metadata(&self) -> &NativeGeometryMetadata {
         &self.metadata
@@ -51,8 +50,35 @@ impl NativeVolumeMesh {
             .filter(|reference| self.boundary(*reference).is_err())
             .collect()
     }
+    pub fn into_parts(self) -> (Mesh, NativeGeometryMetadata) {
+        (self.mesh, self.metadata)
+    }
+}
+/// Existing lattice mesh plus its numerical meshing report and source selections.
+#[derive(Debug)]
+pub struct NativeVolumeMesh {
+    boundary: NativeBoundaryMesh,
+    report: MeshReport,
+}
+impl NativeVolumeMesh {
+    pub fn mesh(&self) -> &Mesh {
+        self.boundary.mesh()
+    }
+    pub fn report(&self) -> &MeshReport {
+        &self.report
+    }
+    pub fn metadata(&self) -> &NativeGeometryMetadata {
+        self.boundary.metadata()
+    }
+    pub fn boundary(&self, reference: EntityReference) -> Result<&[Vec<usize>], Error> {
+        self.boundary.boundary(reference)
+    }
+    pub fn unresolved_faces(&self) -> Vec<EntityReference> {
+        self.boundary.unresolved_faces()
+    }
     pub fn into_parts(self) -> (Mesh, MeshReport, NativeGeometryMetadata) {
-        (self.mesh, self.report, self.metadata)
+        let (mesh, metadata) = self.boundary.into_parts();
+        (mesh, self.report, metadata)
     }
 }
 impl NativeDistanceSolid {
@@ -70,9 +96,8 @@ impl NativeDistanceSolid {
         }
         let (mesh, report) = crate::mesh_volume(self.solid(), material, params, size)?;
         Ok(NativeVolumeMesh {
-            mesh,
+            boundary: NativeBoundaryMesh::new(mesh, self.metadata().clone()),
             report,
-            metadata: self.metadata().clone(),
         })
     }
 }
@@ -94,8 +119,7 @@ mod tests {
         mesh.surfaces.insert("face1".into(), vec![vec![0, 1, 2]]);
         mesh.surfaces.insert("face2".into(), vec![]);
         let generated = NativeVolumeMesh {
-            mesh,
-            metadata,
+            boundary: NativeBoundaryMesh::new(mesh, metadata),
             report: MeshReport {
                 tets: 0,
                 nodes: 0,

@@ -592,9 +592,45 @@ fn bracket_sampled_facets_pass_global_intersection_checks() {
 }
 
 #[cfg(feature = "occt")]
+fn assert_axial_bar_patch(
+    mesh: fea_core::Mesh,
+    top_faces: Vec<Vec<usize>>,
+    bottom_nodes: Vec<usize>,
+) {
+    use fea_core::{Loads, Model, SurfaceLoad};
+    let (e, sigma) = (200e3, 50.);
+    let model = Model::new(mesh).unwrap();
+    let mut bc = model.dirichlet();
+    for n in bottom_nodes {
+        bc.fix(n, 2, 0.);
+    }
+    for (n, x) in model.mesh.nodes.iter().enumerate() {
+        if x[0].abs() < 1e-9 && x[2].abs() < 1e-9 {
+            bc.fix(n, 0, 0.);
+        }
+        if x[1].abs() < 1e-9 && x[2].abs() < 1e-9 {
+            bc.fix(n, 1, 0.);
+        }
+    }
+    let mut loads = Loads::default();
+    for face in top_faces {
+        loads
+            .faces
+            .push((face, SurfaceLoad::Traction([0., 0., sigma])));
+    }
+    let solution = model.solve_static(&loads, &bc).unwrap();
+    let expected = sigma * 3. / e;
+    for (n, x) in model.mesh.nodes.iter().enumerate() {
+        if (x[2] - 3.).abs() < 1e-9 {
+            assert!((solution.u[n * 3 + 2] - expected).abs() < 1e-6 * expected);
+        }
+    }
+}
+
+#[cfg(feature = "occt")]
 #[test]
 fn native_step_to_checked_distance_solid_and_both_tet_orders_pass_tension_patch() {
-    use fea_core::{Elastic, Loads, Model, SurfaceLoad};
+    use fea_core::Elastic;
     use solid_kernel::VolumeParams;
     let text = solid_kernel::cad::Brep::box_from_corners([0., 0., 0.], [1., 1., 3.])
         .to_step_text()
@@ -619,7 +655,7 @@ fn native_step_to_checked_distance_solid_and_both_tet_orders_pass_tension_patch(
     let bottom = normals.iter().position(|n| n[2] < -0.9).unwrap();
     let top_reference = native.metadata().face_reference(top).unwrap();
     let bottom_reference = native.metadata().face_reference(bottom).unwrap();
-    let (e, nu, sigma) = (200e3, 0.3, 50.);
+    let (e, nu) = (200e3, 0.3);
     for quadratic in [false, true] {
         let generated = native
             .mesh_volume(
@@ -644,32 +680,7 @@ fn native_step_to_checked_distance_solid_and_both_tet_orders_pass_tension_patch(
             .collect();
         let (mesh, _, metadata) = generated.into_parts();
         assert_eq!(metadata.face_reference(top), Some(top_reference));
-        let model = Model::new(mesh).unwrap();
-        let mut bc = model.dirichlet();
-        for n in bottom_nodes {
-            bc.fix(n, 2, 0.);
-        }
-        for (n, x) in model.mesh.nodes.iter().enumerate() {
-            if x[0].abs() < 1e-9 && x[2].abs() < 1e-9 {
-                bc.fix(n, 0, 0.);
-            }
-            if x[1].abs() < 1e-9 && x[2].abs() < 1e-9 {
-                bc.fix(n, 1, 0.);
-            }
-        }
-        let mut loads = Loads::default();
-        for face in top_faces {
-            loads
-                .faces
-                .push((face, SurfaceLoad::Traction([0., 0., sigma])));
-        }
-        let solution = model.solve_static(&loads, &bc).unwrap();
-        let expected = sigma * 3. / e;
-        for (n, x) in model.mesh.nodes.iter().enumerate() {
-            if (x[2] - 3.).abs() < 1e-9 {
-                assert!((solution.u[n * 3 + 2] - expected).abs() < 1e-6 * expected);
-            }
-        }
+        assert_axial_bar_patch(mesh, top_faces, bottom_nodes);
     }
 }
 
@@ -1051,6 +1062,31 @@ fn exact_kernel_star_seed_preserves_bar_boundary_and_refuses_nonvisible_center()
             .resolve_reference(seed.plc().facet_source_reference(i).unwrap())
             .is_ok());
     }
+    let face_at = |z: f64| {
+        let facet = seed
+            .plc()
+            .facets()
+            .iter()
+            .position(|f| f.iter().all(|v| seed.plc().vertices()[*v][2] == z))
+            .unwrap();
+        seed.plc().facet_source_reference(facet).unwrap()
+    };
+    let (top_reference, bottom_reference) = (face_at(3.), face_at(0.));
+    let generated = seed
+        .into_solver_mesh(fea_core::Elastic::new(200e3, 0.3))
+        .unwrap();
+    assert!(generated.unresolved_faces().is_empty());
+    let top_faces = generated.boundary(top_reference).unwrap().to_vec();
+    let bottom_nodes = generated
+        .boundary(bottom_reference)
+        .unwrap()
+        .iter()
+        .flatten()
+        .copied()
+        .collect();
+    let (mesh, metadata) = generated.into_parts();
+    assert_eq!(metadata.source_document, Some(data.document_fingerprint()));
+    assert_axial_bar_patch(mesh, top_faces, bottom_nodes);
     for center in [[0., 0., 0.], [2., 0.5, 1.5], [f64::NAN, 0., 0.]] {
         assert_eq!(
             StarSeed::new(plc(), center, 100, |_, _| true)
@@ -1181,8 +1217,7 @@ fn valid_thin_wall_and_near_boundary_seeds_cannot_bypass_solver_quality_limits()
         let seed = StarSeed::new(plc, center, 100, |_, _| true).unwrap();
         assert_eq!(seed.topology().cells().len(), 12);
         let error = seed
-            .topology()
-            .to_mesh(fea_core::Elastic::new(200e3, 0.3))
+            .into_solver_mesh(fea_core::Elastic::new(200e3, 0.3))
             .unwrap_err();
         assert!(
             matches!(error,fea_core::meshing::MeshError::Failed(ref detail) if detail.contains("mesh quality below the limits"))

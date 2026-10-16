@@ -203,15 +203,22 @@ impl NativeDistanceSolid {
     }
 }
 impl CheckedSurface {
-    pub fn into_distance_solid(self) -> NativeDistanceSolid {
-        NativeDistanceSolid {
-            solid: crate::SurfaceSolid::from_oriented_mesh(self.inner.mesh),
-            metadata: NativeGeometryMetadata {
+    pub(crate) fn into_geometry_parts(self) -> (SurfaceMesh, NativeGeometryMetadata) {
+        (
+            self.inner.mesh,
+            NativeGeometryMetadata {
                 source_document: self.inner.source_document,
                 source_faces: self.inner.source_faces,
                 chart_adjustments: self.inner.chart_adjustments,
                 face_orientation_adjustments: self.inner.face_orientation_adjustments,
             },
+        )
+    }
+    pub fn into_distance_solid(self) -> NativeDistanceSolid {
+        let (mesh, metadata) = self.into_geometry_parts();
+        NativeDistanceSolid {
+            solid: crate::SurfaceSolid::from_oriented_mesh(mesh),
+            metadata,
         }
     }
     pub fn surface(&self) -> &SampledSurface {

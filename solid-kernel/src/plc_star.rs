@@ -77,10 +77,69 @@ impl StarSeed {
         }
         Ok(Self { plc, topology })
     }
+    /// Convert only through existing quality/conformity gates, then restore
+    /// source-tagged boundary regions from the exactly preserved PLC facets.
+    pub fn into_solver_mesh(
+        self,
+        material: fea_core::Elastic,
+    ) -> Result<crate::native_volume::NativeBoundaryMesh, fea_core::meshing::MeshError> {
+        if self
+            .plc
+            .checked_surface()
+            .surface()
+            .source_document
+            .is_none()
+        {
+            return Err(fea_core::meshing::MeshError::Unsupported(
+                "source-tagged solver conversion requires a known STEP document".into(),
+            ));
+        }
+        let mut mesh = self.topology.to_mesh(material)?;
+        let (surface, metadata) = self.plc.into_checked_surface().into_geometry_parts();
+        mesh.surfaces.clear();
+        for (facet, tag) in surface.triangles.into_iter().zip(surface.face) {
+            mesh.surfaces
+                .entry(format!("face{}", tag + 1))
+                .or_default()
+                .push(facet.to_vec());
+        }
+        Ok(crate::native_volume::NativeBoundaryMesh::new(
+            mesh, metadata,
+        ))
+    }
     pub fn topology(&self) -> &TetTopology {
         &self.topology
     }
     pub fn plc(&self) -> &ValidatedPlc {
         &self.plc
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn unknown_source_cannot_create_source_tagged_solver_regions() {
+        let surface = crate::native_surface::SampledSurface {
+            source_document: None,
+            face_orientation_adjustments: vec![],
+            chart_adjustments: vec![],
+            source_faces: vec![1, 2, 3, 4],
+            signed_volume_mm3: 1. / 6.,
+            mesh: crate::SurfaceMesh {
+                vertices: vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
+                triangles: vec![[1, 2, 3], [0, 3, 2], [0, 1, 3], [0, 2, 1]],
+                face: vec![0, 1, 2, 3],
+            },
+        };
+        let checked = surface.check_intersections(100, |_| true).unwrap();
+        let plc = ValidatedPlc::new(checked, crate::plc::Limits::default(), |_, _| true).unwrap();
+        let seed = StarSeed::new(plc, [0.25; 3], 100, |_, _| true).unwrap();
+        let material = fea_core::Elastic::new(200e3, 0.3);
+        seed.topology().to_mesh(material).unwrap();
+        assert!(matches!(
+            seed.into_solver_mesh(material),
+            Err(fea_core::meshing::MeshError::Unsupported(_))
+        ));
     }
 }
