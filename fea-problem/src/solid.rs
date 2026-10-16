@@ -129,7 +129,7 @@ pub fn resolution_note(p: &Problem, mesh: &Mesh) -> Option<String> {
 /// Tessellate STEP text into a cache (chord deflection `deflection`). Needs the OpenCascade kernel.
 #[cfg(feature = "occt")]
 pub fn tessellate_step(step: &str, deflection: f64) -> Result<SolidCache, String> {
-    let brep = solid_kernel::occt::Brep::from_step_text(step)?;
+    let brep = solid_kernel::cad::Brep::from_step_text(step)?;
     Ok(SolidCache::new(step, brep.tessellate(deflection)?, deflection))
 }
 
@@ -315,7 +315,7 @@ pub fn flat_face(c: &SolidCache, face: usize) -> Result<([f64; 3], [f64; 3]), St
 
 #[cfg(feature = "occt")]
 pub fn import_step(step: &str) -> Result<StepImport, String> {
-    let brep = solid_kernel::occt::Brep::from_step_text(step)?;
+    let brep = solid_kernel::cad::Brep::from_step_text(step)?;
     let (lo, hi) = brep.bounds();
     let diag = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
     if !(diag.is_finite() && diag > 0.0) {
@@ -345,7 +345,7 @@ pub fn import_step(step: &str) -> Result<StepImport, String> {
 #[cfg(feature = "occt")]
 pub fn apply_op(step: &str, cache: &SolidCache, op: &SolidOp,
 ) -> Result<(String, SolidCache), String> {
-    use solid_kernel::occt::{Bool, Brep};
+    use solid_kernel::cad::{Bool, Brep};
     let brep = Brep::from_step_text(step)?;
     let (lo, hi) = brep.bounds();
     let diag = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();

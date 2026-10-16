@@ -13,6 +13,7 @@
 //! here depends on it, which is also what makes this part testable on analytic shapes.
 
 mod bvh;
+pub mod cad;
 #[cfg(feature = "occt")]
 pub mod occt;
 
