@@ -1,0 +1,42 @@
+{
+  "source_commit": "9aa603f0434f3b4faf237eed8b30c87ef57ac967",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 95,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 78,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "supported_declarations": [
+    "simple polynomial B_SPLINE_SURFACE_WITH_KNOTS",
+    "complete complex polynomial/rational variants"
+  ],
+  "storage_mapping": "STEP U rows/V columns -> evaluator V-major; Cartesian source refs retain same transposition",
+  "units": "Scale coordinates only; U/V knot domains remain original; context/placement binding is caller responsibility",
+  "numerical_cases": [
+    "Rational quarter-cylinder + 25.4 scale; 1e-12 criteria",
+    "Equivalent bracket plane spline matches analytic points within 1e-12",
+    "Default native body refuses that exact unsupported surface"
+  ],
+  "development_failures": [
+    "Pre-fix curve malformed-degree test captured Vec capacity overflow and failed (101)",
+    "Pre-fix surface malformed-degree test captured Vec capacity overflow and failed (101)"
+  ],
+  "fix": "Shared unconditional degree/control-count validation before allocation, independent of caller resource caps",
+  "additional_documentation_fix": "Root OCCT default/prebuilt versus occt-source/CMake note corrected",
+  "not_verified": [
+    "Derivative/normal/projection/sampling/trims",
+    "Full B-Rep/assembly and remaining CAD/PLC/epic gates"
+  ]
+}
