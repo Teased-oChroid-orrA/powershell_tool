@@ -174,3 +174,5 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Issue 46 Phase 9](issue-46-phase-9.md): explicit cylindrical parameter canonicalization, complete adjustment reports and strict-mode preservation.
 
 - [Issue 46 Phase 10: explicit atomic whole-face orientation repair](issue-46-phase-10.md), [verification](issue-46-phase-10-verification.json).
+
+- [Issue 46 Phase 11: exact-document source associations](issue-46-phase-11.md), [dependency audit](issue-46-phase-11-dependency-audit.md).

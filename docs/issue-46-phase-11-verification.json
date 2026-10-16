@@ -1,0 +1,28 @@
+{
+  "source_commit": "d5c73a95e2779fdd56289a050ddb3f0bc1b8814d",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 60,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 48,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "associations": "All 38 bracket source faces survive checked distance conversion, resolve in identical source, and refuse altered source. Independent SHA-256 fixture, missing/reused IDs and whitespace-only source changes verified.",
+  "dependencies": "Reuse locked sha2 0.10.9; no package versions changed; elected MIT notice shipped.",
+  "not_verified": [
+    "Cross-edit/export persistent naming",
+    "General material/BC/contact/AMR transfer",
+    "Remaining CAD/PLC/epic gates"
+  ]
+}
