@@ -111,7 +111,7 @@ pub fn sample(
             "require finite positive spline sampling tolerance",
         ));
     }
-    let cancelled = || fail(ErrorKind::Geometry, "spline sampling cancelled");
+    let cancelled = || fail(ErrorKind::Cancelled, "spline sampling cancelled");
     if !progress(Progress {
         enclosures: 0,
         accepted_segments: 0,
@@ -333,6 +333,10 @@ mod tests {
     #[test]
     fn cancellation_and_all_budgets_refuse_without_a_partial_result() {
         let c = quarter();
+        assert_eq!(
+            sample(&c, Options::default(), |_| false).unwrap_err().kind,
+            ErrorKind::Cancelled
+        );
         assert!(sample(&c, Options::default(), |_| false)
             .unwrap_err()
             .detail

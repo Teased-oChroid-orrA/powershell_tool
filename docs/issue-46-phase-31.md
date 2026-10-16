@@ -1,0 +1,13 @@
+# Issue 46 — Phase 31: merged foundations and bounded surface distance
+
+User authorization on 2026-10-16 explicitly requests merging completed work and continuing all open gates. PR #65 was reviewed against its frozen evidence and merged into `main` at `37cf93220fee91cc1ced09f4acb2a7b2b6e26303`; the completed feature branch was deleted locally/remotely. Its tree matches qualified source plus documentation (121 CAD-enabled/104 feature-off tests and application compilation). No new code was introduced by the merge, and no redundant baseline/hosted workflow was dispatched. OCCT retirement was not requested or performed.
+
+Continuation branch `feature/native-cad-spline-import` starts exactly at that merge. Source `730a878` introduces untrimmed rational-surface distance brackets using a single shared `geometry_distance` branch-and-bound implementation. Existing curve distance signatures/results stay compatible through a thin adapter; both paths use the same interval box-distance, queue, objective-gap termination, work limits and cancellation.
+
+All nonempty tensor knot cells participate. Initialization samples their corners/centres and uses patch boxes for lower distance bounds. Refinement chooses the largest parameter width normalized by its complete axis domain, avoiding bias from different U/V units. Singular or nonunique minima can produce valid distance brackets, but candidate UV is not a unique projection or nearest-position/parameter error bound. No local Newton residual is used as a global certificate. Trimmed face domains, regularity and full B-Rep import remain separate gates.
+
+Four new regression groups cover complete-rectangle interior/edge/corner/on-surface distances, rational cylinder and nonunique minima, later tensor cells, explicit coordinate/parameter scaling, constant singular surfaces, limits and initial/final cancellation. Existing four curve-distance groups pass through the shared engine. Default resource/tolerance limits are unchanged; low interpolation caps still refuse rather than silently expanding.
+
+No dependency, tolerance relaxation, production CAD strategy change or OCCT retirement. Source/rg was used because CodeGraph remains unavailable. Final source-specific regression/application checks are recorded in [verification](issue-46-phase-31-verification.json). All broader CAD/trim/PLC/quality/P2/P3/final gates remain open. Next is source-bound spline-edge sampling and endpoint/orientation agreement, followed by edge/surface loci and p-curves/trim integration.
+
+Final source checks: **125 CAD-enabled / 108 feature-off tests and application lib/tests compilation pass**, zero final failures/ignored tests.

@@ -338,3 +338,61 @@ No new dependency, hosted CI, production backend switch, main change or OCCT ret
 Final checks at `d3e81dcda5ab418753a4e1779980294a9c00ac2f`: **121 CAD-enabled / 104 feature-off tests and CAD-enabled app lib/tests compilation pass**, zero final failures/ignored tests. Initial reference-test failures remain recorded separately.
 
 Fresh-agent starting point: `nurbs_sample` and `nurbs_distance` are bounded curve APIs; `NurbsSurface::enclose` now supplies tensor patch boxes. Preserve exact-real versus rounded evaluator distinction. Next is bounded surface-distance/projection candidates, followed by source-bound edge endpoint/locus and p-curve/trim checks. Do not claim native spline body support from these standalone APIs. Source/rg fallback remains necessary: CodeGraph is unavailable. Production OCCT/main stay unchanged; representative learning/conditioning and all broader epic gates remain open.
+
+## Phase 31 merged foundations and surface distance — 2026-10-16
+
+User authorization on 2026-10-16 explicitly requests merging completed work and continuing all open gates. PR #65 was reviewed against its frozen evidence and merged into `main` at `37cf93220fee91cc1ced09f4acb2a7b2b6e26303`; the completed feature branch was deleted locally/remotely. Its tree matches qualified source plus documentation (121 CAD-enabled/104 feature-off tests and application compilation). No new code was introduced by the merge, and no redundant baseline/hosted workflow was dispatched. OCCT retirement was not requested or performed.
+
+Continuation branch `feature/native-cad-spline-import` starts exactly at that merge. Source `730a878` introduces untrimmed rational-surface distance brackets using a single shared `geometry_distance` branch-and-bound implementation. Existing curve distance signatures/results stay compatible through a thin adapter; both paths use the same interval box-distance, queue, objective-gap termination, work limits and cancellation.
+
+All nonempty tensor knot cells participate. Initialization samples their corners/centres and uses patch boxes for lower distance bounds. Refinement chooses the largest parameter width normalized by its complete axis domain, avoiding bias from different U/V units. Singular or nonunique minima can produce valid distance brackets, but candidate UV is not a unique projection or nearest-position/parameter error bound. No local Newton residual is used as a global certificate. Trimmed face domains, regularity and full B-Rep import remain separate gates.
+
+Four new regression groups cover complete-rectangle interior/edge/corner/on-surface distances, rational cylinder and nonunique minima, later tensor cells, explicit coordinate/parameter scaling, constant singular surfaces, limits and initial/final cancellation. Existing four curve-distance groups pass through the shared engine. Default resource/tolerance limits are unchanged; low interpolation caps still refuse rather than silently expanding.
+
+No dependency, tolerance relaxation, production CAD strategy change or OCCT retirement. Source/rg was used because CodeGraph remains unavailable. Final source-specific regression/application checks are recorded in [verification](issue-46-phase-31-verification.json). All broader CAD/trim/PLC/quality/P2/P3/final gates remain open. Next is source-bound spline-edge sampling and endpoint/orientation agreement, followed by edge/surface loci and p-curves/trim integration.
+
+Final source checks: **125 CAD-enabled / 108 feature-off tests and application lib/tests compilation pass**, zero final failures/ignored tests.
+
+## Phase 32 — 2026-10-16
+
+Source `ed9757d` adds immutable `SampledSplineEdge` results, with subsequent shared-declaration reuse/diagnostic corrections qualified at the final source recorded below. The source body/edge/document context selects the spline and declared mm factor. Natural-parameter samples, topological edge direction, VERTEX_POINT references, control declarations, length context, normalized source endpoints and endpoint-distance upper bounds remain distinct and inspectable. No endpoint snapping or inferred trim occurs.
+
+The complete clamped spline endpoints must agree with their corresponding source vertices under the existing geometry tolerance (default 1e-7 mm). Interval endpoint bounds include real-curve versus binary64 evaluation uncertainty. Sampling retains the existing whole-interval Hausdorff bound, progress, cancellation and resource limits; a final commit callback can still cancel atomically. Errors preserve actual point offsets or add the source edge offset to runtime diagnostics.
+
+Three source integration groups use the real bracket with an endpoint-matching linear spline replacement. They verify exact-document/source/order metadata, mm/metre scaling without knot changes, both stale-reference directions, reversed valid sense, wrong orientation, inconsistent controls, unsupported interior trims, cancellation and invalid/work-limited requests. A fourth group added in Phase 33 covers body admission. This stage alone does not certify curve simplicity, p-curves, surface loci or a B-Rep.
+
+Targeted tests passed at this increment. One combined full regression gate validates Phases 32–35 together, avoiding redundant complete suite rebuilds between closely related integration changes. See [verification](issue-46-phase-32-verification.json). OCCT stays production; general curved/piecewise spline-body and trim gates remain open.
+
+Combined qualification at `2042c2d136829591f03cc7f4ad2d3e8c6198777a`: **130 CAD-enabled / 113 feature-off tests and CAD-enabled app lib/tests compilation pass**, zero final failures/ignored tests.
+
+## Phase 33 — 2026-10-16
+
+Source `23aba83` admits exactly one new native-body curve class: full-domain, two-control, positive-weight degree-one spline segments (simple polynomial or complete complex rational declarations). Such a curve traces its control segment even when weights change its parameter speed. Degree/control count, full-domain endpoint agreement, source sense and budgets are verified before reducing its geometric locus to the existing analytic line path. No form/closed/self-intersection tag is used as a geometry certificate. Interior trims and curved/piecewise/higher-order splines remain explicitly refused.
+
+The source STEP declaration, topology IDs, fingerprint and original vertices remain intact. Existing authoritative source-vertex world samples remain shared by incident faces. Actual spline controls and source-vertex chords both undergo face-locus checks; endpoint agreement is not substituted for surface agreement. Reuse of the decoded declaration avoids repeated spline parsing, and the BodyContext is borrowed during construction rather than cloning all raw topology.
+
+An actual bracket line replaced by the verified spline produces **bitwise-identical sampled mesh geometry** to the original analytic bracket and passes global sampled facet checks. Nonuniform rational weights also preserve the native edge samples; contradictory orientation and even a collinear quadratic with a line-like form tag still refuse. This is a strict new subset, not general spline import or a production backend switch.
+
+Initial test compilation used nonexistent `validate_global`/`triangle_intersection::Limits` names (E0599/E0433). Source inspection corrected it to the existing consuming `check_intersections` API; no production API or assertions were weakened. Targeted suites then passed. Final combined source verification is in [verification](issue-46-phase-33-verification.json). General spline faces, curved/piecewise curves, p-curves/trims and all broader epic gates remain open.
+
+Combined qualification at `2042c2d136829591f03cc7f4ad2d3e8c6198777a`: **130 CAD-enabled / 113 feature-off tests and CAD-enabled app lib/tests compilation pass**, zero final failures/ignored tests.
+
+## Phase 34 — 2026-10-16
+
+Source `4ee9b41` fixes a reproduced existing native analytic geometry bug. With default tolerance 1e-7 mm, vertices at plane offset 0.75e-7 could be individually within tolerance of a line at 1.5e-7 and of the plane at zero. The old surface check evaluated only those nearby vertices, incorrectly accepting the declared line outside surface tolerance. The new expected-error regression failed before the fix (exit 101).
+
+The finite declared line locus between projected endpoint parameters now participates in the whole-locus surface check. Original endpoint/surface residual checks remain independently required, preventing a nearby line from hiding vertices outside surface tolerance. Plane and cylindrical-generator variants are verified, along with the inverse endpoint-outside/line-inside case. Circle-specific full-locus checks remain; no tolerance increase or world-point relocation occurs.
+
+An initial combined qualification reached the existing malformed-radius test and failed its stable `disagrees` diagnostic assertion (28 tests passed / 1 failed in that suite). The stricter early endpoint check correctly rejected the model but used different wording. Follow-up `2042c2d` preserves the mismatch diagnostic family and reports the residual numerically; the existing assertion is unchanged. The failed run is preserved separately. [Final combined verification](issue-46-phase-34-verification.json).
+
+Combined qualification at `2042c2d136829591f03cc7f4ad2d3e8c6198777a`: **130 CAD-enabled / 113 feature-off tests and CAD-enabled app lib/tests compilation pass**, zero final failures/ignored tests.
+
+## Phase 35 — 2026-10-16
+
+Source `d11d77a` corrects cancellation classification across spline sampling, the shared curve/surface distance engine and source-bound spline-edge wrappers. Callback cancellation now returns the existing `ErrorKind::Cancelled`; invalid geometry remains `Geometry` and exhausted budgets remain `Limit`. Source offsets, messages and final cancellation boundaries remain intact. No unconverged/partial result is returned.
+
+New discriminant assertions reproduced `Geometry` instead of `Cancelled` in two unit tests (two other filtered tests passed, exit 101) and the source-edge integration test (exit 101). All affected paths were corrected; the surface distance API shares the corrected engine. These expected pre-fix failures are recorded separately from final qualification. Existing cancellation-message and atomic-result checks remain, rather than being replaced by type-only checks.
+
+[Final combined verification](issue-46-phase-35-verification.json) covers all Phases 32–35 at the latest source, including the Phase 34 diagnostic compatibility correction. No dependency, tolerance/resource-limit increase, production backend switch, hosted workflow dispatch or OCCT retirement. Work continues through native surface/trim and broader meshing/roadmap gates.
+
+Combined qualification at `2042c2d136829591f03cc7f4ad2d3e8c6198777a`: **130 CAD-enabled / 113 feature-off tests and CAD-enabled app lib/tests compilation pass**, zero final failures/ignored tests.

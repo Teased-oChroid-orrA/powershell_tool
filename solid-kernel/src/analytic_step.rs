@@ -1,5 +1,6 @@
 //! Native analytic geometry feasibility checks, not trimmed B-Rep/solid validity.
-//! Supported subset: one directly represented, unplaced body; line/circle edges;
+//! Supported subset: one directly represented, unplaced body; line/circle edges
+//! and verified full-domain two-control degree-one splines;
 //! plane/cylinder surfaces. All coordinates are normalized to millimetres.
 use crate::{
     step::{Entity, Error, ErrorKind, Inventory, RawBody, Value},
@@ -254,8 +255,7 @@ pub(crate) fn curve_geometry(data: &Inventory, mut id: u64) -> Result<&Entity, E
         return Ok(e);
     }
 }
-fn curve(data: &Inventory, id: u64, scale: f64) -> Result<Curve, Error> {
-    let e = curve_geometry(data, id)?;
+fn curve(data: &Inventory, e: &Entity, scale: f64) -> Result<Curve, Error> {
     let [c] = e.components.as_slice() else {
         return Err(error(e, "unsupported complex 3D curve"));
     };
@@ -433,6 +433,33 @@ fn samples(
     Ok(points)
 }
 fn on_surface(e: &Entity, s: &Surface, c: &Curve, a: V3, b: V3, tol: f64) -> Result<(), Error> {
+    for point in [a, b] {
+        let projection = s
+            .project(point)
+            .ok_or_else(|| error(e, "unresolved edge endpoint/surface projection"))?;
+        if projection.residual_mm > tol {
+            return Err(error(
+                e,
+                format!(
+                    "declared edge endpoint/surface geometry disagrees by {:e} mm",
+                    projection.residual_mm
+                ),
+            ));
+        }
+    }
+    // Topological vertices may be within tolerance of both entities without
+    // the declared curve itself satisfying the surface tolerance. Evaluate its
+    // actual finite locus between projected endpoint parameters as well.
+    let (a, b) = if let Curve::Line { origin, direction } = c {
+        let project = |p| add(*origin, mul(*direction, dot(sub(p, *origin), *direction)));
+        let points = (project(a), project(b));
+        if !finite(points.0) || !finite(points.1) {
+            return Err(error(e, "nonfinite declared line locus"));
+        }
+        points
+    } else {
+        (a, b)
+    };
     let deviation = match (s, c) {
         (Surface::Plane(f), Curve::Line { .. }) => dot(sub(a, f.origin), f.z)
             .abs()
@@ -561,7 +588,9 @@ impl AnalyticModel {
                 "require finite 0 < geometry tolerance <= chord tolerance",
             ));
         }
-        let (body, scale) = crate::step_body::BodyContext::read(data)?.into_parts();
+        let context = crate::step_body::BodyContext::read(data)?;
+        let body = context.body();
+        let scale = context.millimetres_per_source_unit();
         let mut vertices = BTreeMap::new();
         for v in body.vertices.values() {
             let p = scale_coordinates(&data.entities()[&v.point], v.coordinates, scale)?;
@@ -570,9 +599,54 @@ impl AnalyticModel {
         let mut curves = BTreeMap::new();
         let mut edges = BTreeMap::new();
         let mut total = 0usize;
+        let mut spline_segments = BTreeMap::new();
         for edge in body.edges.values() {
             let e = &data.entities()[&edge.id];
-            let c = curve(data, edge.curve, scale)?;
+            let geometry = curve_geometry(data, edge.curve)?;
+            let c = if geometry
+                .components
+                .iter()
+                .any(|c| c.name == "B_SPLINE_CURVE_WITH_KNOTS")
+            {
+                let reference = data.entity_reference(edge.id).unwrap();
+                let declaration =
+                    context.read_spline_curve(data, reference, crate::nurbs::Limits::default())?;
+                if declaration.curve.degree() != 1 || declaration.curve.control_points().len() != 2
+                {
+                    return Err(error(geometry,"native body supports only full-domain two-control degree-one splines; curved/piecewise spline loci remain unsupported"));
+                }
+                // Geometric reduction only: a positive-weight degree-one span
+                // traces its control segment. Source declarations/IDs stay intact.
+                // Full-domain endpoint agreement is mandatory; no inferred trims.
+                let accepted = crate::step_spline_edge::sample_declaration(
+                    &context,
+                    data,
+                    reference,
+                    crate::step_spline_edge::Options {
+                        geometry_tolerance_mm: opt.geometry_tolerance_mm,
+                        curve_limits: crate::nurbs::Limits::default(),
+                        sampling: crate::nurbs_sample::Options {
+                            tolerance: opt.chord_mm,
+                            max_segments: opt
+                                .max_edge_points
+                                .min(opt.max_total_points.saturating_sub(total))
+                                .saturating_sub(1),
+                            ..crate::nurbs_sample::Options::default()
+                        },
+                    },
+                    declaration,
+                    |_| true,
+                )?;
+                let points = accepted.declaration().curve.control_points();
+                spline_segments.insert(edge.id, [points[0], points[1]]);
+                Curve::Line {
+                    origin: points[0],
+                    direction: unit(geometry, sub(points[1], points[0]))?,
+                }
+            } else {
+                curve(data, geometry, scale)?
+            };
+
             let p = samples(
                 e,
                 &c,
@@ -593,6 +667,19 @@ impl AnalyticModel {
             for bound in &face.bounds {
                 for u in &bound.edges {
                     let edge = &body.edges[&u.edge];
+                    if let Some(points) = spline_segments.get(&edge.id) {
+                        // Validate the actual spline locus as well as authoritative
+                        // source-vertex chords; endpoint agreement alone is not
+                        // an edge/surface certificate.
+                        on_surface(
+                            &data.entities()[&face.id],
+                            &s,
+                            &curves[&edge.id],
+                            points[0],
+                            points[1],
+                            opt.geometry_tolerance_mm,
+                        )?;
+                    }
                     on_surface(
                         &data.entities()[&face.id],
                         &s,
@@ -605,6 +692,7 @@ impl AnalyticModel {
             }
             surfaces.insert(face.id, s);
         }
+        let (body, scale) = context.into_parts();
         Ok(Self {
             document: data.document_fingerprint(),
             body,
@@ -650,5 +738,54 @@ mod conversion_tests {
         let error = point(&data, 1, 1e-21).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Geometry);
         assert!(error.detail.contains("underflow"));
+    }
+    #[test]
+    fn surface_locus_uses_declared_line_not_only_nearby_topological_vertices() {
+        let e = Entity {
+            id: 1,
+            offset: 17,
+            components: vec![],
+        };
+        let surface = Surface::Plane(Frame {
+            origin: [0.; 3],
+            x: [1., 0., 0.],
+            y: [0., 1., 0.],
+            z: [0., 0., 1.],
+        });
+        let line = Curve::Line {
+            origin: [0., 0., 1.5e-7],
+            direction: [1., 0., 0.],
+        };
+        let a = [0., 0., 0.75e-7];
+        let b = [1., 0., 0.75e-7];
+        let opt = Options::default();
+        assert!(samples(&e, &line, a, b, false, true, opt, 10).is_ok());
+        assert!(on_surface(&e, &surface, &line, a, b, opt.geometry_tolerance_mm).is_err());
+        let near = Curve::Line {
+            origin: [0., 0., 0.5e-7],
+            direction: [1., 0., 0.],
+        };
+        let a = [0., 0., 1.25e-7];
+        let b = [1., 0., 1.25e-7];
+        assert!(samples(&e, &near, a, b, false, true, opt, 10).is_ok());
+        assert!(on_surface(&e, &surface, &near, a, b, opt.geometry_tolerance_mm).is_err());
+
+        let cylinder = Surface::Cylinder {
+            frame: Frame {
+                origin: [0.; 3],
+                x: [1., 0., 0.],
+                y: [0., 1., 0.],
+                z: [0., 0., 1.],
+            },
+            radius: 1.,
+        };
+        let generator = Curve::Line {
+            origin: [1. + 1.5e-7, 0., 0.],
+            direction: [0., 0., 1.],
+        };
+        let a = [1. + 0.75e-7, 0., 0.];
+        let b = [1. + 0.75e-7, 0., 1.];
+        assert!(samples(&e, &generator, a, b, false, true, opt, 10).is_ok());
+        assert!(on_surface(&e, &cylinder, &generator, a, b, opt.geometry_tolerance_mm).is_err());
     }
 }
