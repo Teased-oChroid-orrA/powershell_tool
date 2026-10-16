@@ -67,19 +67,24 @@ impl SolidSession {
         }
         let (problem, import) = (self.problem.clone(), self.import_text());
         let tag = self.take_tag();
-        let started = self.study_worker.start(tag, move || {
+        let started = self.study_worker.start_observed(tag, move |progress| {
+            progress.stage("Meshing and solving study");
             let scenes = match kind {
                 StudyKind::Modal | StudyKind::Buckling => {
                     let (dk, n) = if kind == StudyKind::Modal { (DynKind::Modal, 6) } else { (DynKind::Buckling, 3) };
                     let solved = dynamics::run(dk, &problem, import.as_deref(), n)?;
                     SceneSource::from_dynamic(&solved).into_iter().map(SceneSource::build).collect::<Result<Vec<_>, _>>()?
                 }
-                StudyKind::Transient => vec![transient::run(&problem, import.as_deref())?],
+                StudyKind::Transient => vec![transient::run_cancellable(&problem, import.as_deref(),
+                    &|p| progress.stage(p.text()),
+                    &|| progress.cancelled(),
+                )?],
             };
             if scenes.is_empty() {
                 return Err("the study produced no result".into());
             }
-            Ok(Study { kind, problem, scenes })
+            Ok(Study { kind, problem, scenes,
+            })
         });
         self.status = match started {
             Ok(()) => format!("{}: computing...", kind.label()),

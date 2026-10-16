@@ -10,11 +10,11 @@ use super::{
     session::{Key, KeyResult, Mods},
     worker::Worker,
 };
+use crate::gpu_viewer::bench::Bench;
 use crate::{
     gpu_viewer::{controller::Command, scene::SceneSource, Scene},
     toolboxes::fea_workbench::model::{self, EditCommit, EditKind, FieldRow},
 };
-use crate::gpu_viewer::bench::Bench;
 use fea_core::Mesh;
 use fea_problem::{templates::templates, Geometry, Problem, Solved};
 use std::{
@@ -24,23 +24,24 @@ use std::{
     time::Duration,
 };
 
-mod bench_support;
-mod glyphs;
-mod cards;
-mod sketch;
 mod advising;
-mod guidance;
-pub mod stepops;
-mod inspect;
+mod bench_support;
+mod cards;
 mod corpus;
+mod glyphs;
+mod guidance;
+mod inspect;
 mod models;
+mod picking;
 mod refining;
+mod sketch;
 mod sketching;
+pub mod stepops;
 mod study;
 mod ui;
+pub use advising::AdvisorOp;
 pub use cards::CardForm;
 pub use sketch::SolidTool;
-pub use advising::AdvisorOp;
 pub use sketching::{FeatureParam, PlaneChoice, SketchAction};
 pub use study::{Study, StudyKind};
 
@@ -281,6 +282,7 @@ const DEFAULT_SKETCH_PIXEL: f32 = 2.0 / (1.6 * 700.0);
 pub struct SolidSession {
     pub problem: Problem,
     pub path: PathBuf,
+    saved_revision: Option<String>,
     pub focus: usize,
     pub status: String,
     pub dirty: bool,
@@ -337,6 +339,7 @@ pub struct SolidSession {
     next_tag: u64,
     /// Scene-space node positions of the last built preview scene (picking).
     pick_positions: Vec<[f32; 3]>,
+    pick_index: std::cell::RefCell<Option<picking::Index>>,
     /// Sketch mode (editing one sketch of the feature history).
     sketching: Option<sketching::Sketching>,
     /// A number being typed for a dimension or a feature parameter.
@@ -374,6 +377,7 @@ impl SolidSession {
         let template = templates().iter().position(|(_, p)| p.name == problem.name).unwrap_or(0);
         Self {
             problem,
+            saved_revision: crate::persistence::revision(&path),
             path,
             focus: 1,
             status: history_error.map(|e| format!("The feature history cannot be rebuilt: {e}")).unwrap_or_default(),
@@ -415,6 +419,7 @@ impl SolidSession {
             sketch_pixel: DEFAULT_SKETCH_PIXEL,
             next_tag: 1,
             pick_positions: Vec::new(),
+            pick_index: std::cell::RefCell::new(None),
             sketching: None,
             typing: None,
             selected_feature: None,
@@ -444,11 +449,13 @@ impl SolidSession {
         }
     }
     pub fn import_len(&self) -> Option<usize> {
-        let Geometry::Imported { path } = &self.problem.geometry else { return None };
+        let Geometry::Imported { path, .. } = &self.problem.geometry else { return None;
+        };
         self.import.as_ref().filter(|(p, _)| p == path).map(|(_, t)| t.len())
     }
     fn import_text(&self) -> Option<String> {
-        let Geometry::Imported { path } = &self.problem.geometry else { return None };
+        let Geometry::Imported { path, .. } = &self.problem.geometry else { return None;
+        };
         self.import.as_ref().filter(|(p, _)| p == path).map(|(_, t)| t.clone())
     }
     pub fn current_solution(&self) -> Option<&Arc<Solved>> {
@@ -464,7 +471,8 @@ impl SolidSession {
         self.solve_worker.is_running() || self.study_worker.is_running()
     }
     pub fn solve_elapsed(&self) -> Option<Duration> {
-        self.solve_worker.elapsed().or_else(|| self.study_worker.elapsed()).filter(|_| self.solving())
+        self.solve_worker.elapsed().or_else(|| self.study_worker.elapsed()).or_else(|| self.preview_worker.elapsed())
+            .or_else(|| self.body_worker.elapsed())
     }
     pub fn meshing(&self) -> bool {
         self.preview_worker.is_running()
@@ -522,7 +530,7 @@ impl SolidSession {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        self.status = match text.and_then(|t| std::fs::write(&path, t).map_err(|e| e.to_string())) {
+        self.status = match text.and_then(|t| crate::persistence::write(&path, t).map_err(|e| e.to_string())) {
             Ok(()) => format!("Wrote {}", path.display()),
             Err(e) => format!("Export failed: {e}"),
         };
@@ -844,15 +852,24 @@ impl SolidSession {
     // ------------------------------------------------------------------ files
 
     pub fn save(&mut self) {
+        if crate::persistence::revision(&self.path) != self.saved_revision {
+            self.status = "Save conflict: this file changed externally. Reopen it before saving; your edits remain in recovery.".into();
+            let _ = crate::persistence::write(
+                self.path.with_extension("recovery.json"),
+                self.problem.to_json().unwrap_or_default(),
+            );
+            return;
+        }
         let result = self.problem.to_json().and_then(|json| {
             if let Some(dir) = self.path.parent().filter(|d| !d.as_os_str().is_empty()) {
                 std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
             }
-            std::fs::write(&self.path, json).map_err(|e| e.to_string())
+            crate::persistence::write(&self.path, json).map_err(|e| e.to_string())
         });
         match result {
             Ok(()) => {
                 self.dirty = false;
+                self.saved_revision = crate::persistence::revision(&self.path);
                 self.status = format!("Saved {}", self.path.display());
             }
             Err(e) => self.status = format!("Save failed: {e}"),
@@ -864,6 +881,7 @@ impl SolidSession {
                 // The history is authoritative over the geometry stored beside it.
                 let history_error = p.apply_history().err();
                 self.replace(p);
+                self.saved_revision = crate::persistence::revision(&self.path);
                 self.dirty = false;
                 self.status = match history_error {
                     Some(e) => format!("Loaded {}, but its feature history cannot be rebuilt: {e}", self.path.display()),
@@ -888,7 +906,10 @@ impl SolidSession {
         self.fold_error_zones();
         let (problem, import) = (self.problem.clone(), self.import_text());
         let tag = self.take_tag();
-        match self.solve_worker.start(tag, move || fea_problem::solve(&problem, import.as_deref())) {
+        match self.solve_worker.start_observed(tag, move |progress| fea_problem::solve::solve_observed(&problem, import.as_deref(), &|stage| {
+            if progress.cancelled() { return Err("solve cancelled".into()); }
+            progress.stage(stage); Ok(())
+        })) {
             Ok(()) => self.status = "Solving...".into(),
             Err(e) => self.status = e,
         }
@@ -956,6 +977,18 @@ impl SolidSession {
     /// Collect finished jobs and start a requested mesh.
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
+        for update in [
+            self.advisors.constraints.poll(),
+            self.advisors.boundary.poll(),
+            self.advisors.refinement.poll(),
+            self.advisors.guidance.poll(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            self.advisors.last_fit = Some(update);
+            changed = true;
+        }
         // While this file belongs to a bushing case, say so: the case's window then opens no second FEA window on it.
         if self.handoff_beat.is_none_or(|t| t.elapsed() >= Duration::from_secs(2)) {
             self.handoff_beat = Some(std::time::Instant::now());
@@ -968,7 +1001,12 @@ impl SolidSession {
             match answer {
                 Ok(out) => {
                     self.status = format!("Mesh generated: {} nodes, {} elements.", out.mesh.nodes.len(), out.mesh.n_elems());
-                    self.preview = Some(Preview { key: out.key, mesh: Arc::new(out.mesh), names: out.names });
+                    if let Some(note) = fea_problem::solid::resolution_note(&self.problem, &out.mesh) {
+                        self.status.push(' ');
+                        self.status.push_str(&note);
+                    }
+                    self.preview = Some(Preview { key: out.key, mesh: Arc::new(out.mesh), names: out.names,
+                    });
                     self.preview_error = None;
                 }
                 Err(e) => {
@@ -983,7 +1021,8 @@ impl SolidSession {
             // A body that cannot be built simply is not shown (the sketch outline stays) and is not retried until the geometry changes.
             match answer {
                 Ok(out) => {
-                    self.body = Some(Preview { key: out.key, mesh: Arc::new(out.mesh), names: out.names });
+                    self.body = Some(Preview { key: out.key, mesh: Arc::new(out.mesh), names: out.names,
+                    });
                     self.touch();
                     changed = true;
                 }
@@ -1024,7 +1063,8 @@ impl SolidSession {
     }
     /// Build the un-meshed body of a 3D model whenever there is none for its geometry (and no analysis mesh either).
     fn maybe_start_body(&mut self) -> bool {
-        let wanted = self.problem.analysis == fea_problem::Analysis::Solid && matches!(self.problem.geometry, Geometry::Sketch { .. });
+        let wanted = self.problem.analysis == fea_problem::Analysis::Solid && matches!(self.problem.geometry, Geometry::Sketch { .. } | Geometry::Solid { .. }
+            );
         if !wanted || self.sketching.is_some() || self.preview_current() || self.body_current() || self.body_worker.is_busy() || self.body_failed.as_ref() == Some(&body_key(&self.problem)) || self.problem.validate_geometry().is_err() {
             return false;
         }
@@ -1062,10 +1102,12 @@ impl SolidSession {
         let import = self.import_text();
         let key = preview_key(&self.problem);
         let (tag, job_key) = (self.take_tag(), key.clone());
-        let started = self.preview_worker.start(tag, move || {
+        let started = self.preview_worker.start_observed(tag, move |progress| {
+            progress.stage("Generating analysis mesh");
             let mesh = fea_problem::solve::preview(&job_key, import.as_deref())?;
             let names = fea_problem::build::mesh_names(&mesh);
-            Ok(PreviewOut { key: job_key, mesh, names })
+            Ok(PreviewOut { key: job_key, mesh, names,
+            })
         });
         started.is_ok()
     }
@@ -1224,7 +1266,23 @@ impl SolidSession {
     /// Name of the surface under a viewport pixel (nearest within `PICK_RADIUS`, front-most on ties).
     pub fn pick(&self, cam: &Camera, px: [f32; 2], size: [f32; 2]) -> Option<String> {
         let mesh = self.shown_mesh()?;
-        pick_surface(mesh, &self.pick_positions, cam, px, size, PICK_RADIUS)
+        if self.pick_positions.len() != mesh.nodes.len() {
+            return None;
+        }
+        let mut index = self.pick_index.borrow_mut();
+        if index
+            .as_ref()
+            .is_none_or(|i| i.version != self.version || i.camera != *cam || i.size != size)
+        {
+            *index = Some(picking::Index::new(mesh, &self.pick_positions,
+                *cam,
+                size,
+                self.version,
+            ));
+        }
+        index
+            .as_ref()?
+            .pick(mesh.dim() == 3, &self.pick_positions, px, PICK_RADIUS)
     }
 
     // ------------------------------------------------------------------ input
@@ -1430,7 +1488,8 @@ impl SolidSession {
     pub fn click(&mut self, px: [f32; 2], size: [f32; 2], cam: &Camera) -> bool {
         self.click_with(px, size, cam, false)
     }
-    pub fn click_with(&mut self, px: [f32; 2], size: [f32; 2], cam: &Camera, additive: bool) -> bool {
+    pub fn click_with(&mut self, px: [f32; 2], size: [f32; 2], cam: &Camera, additive: bool,
+    ) -> bool {
         if self.sketching.is_some() {
             self.sketch_click(px, size, cam, additive);
             return true;
@@ -1473,7 +1532,8 @@ impl SolidSession {
         true
     }
     /// Select every surface whose centre falls inside the pixel box (Shift-drag in the viewport).
-    pub fn box_select(&mut self, a: [f32; 2], b: [f32; 2], size: [f32; 2], cam: &Camera, additive: bool) {
+    pub fn box_select(&mut self, a: [f32; 2], b: [f32; 2], size: [f32; 2], cam: &Camera, additive: bool,
+    ) {
         if self.sketching.is_some() {
             self.sketch_box(a, b, size, cam, additive);
             return;
@@ -1481,7 +1541,8 @@ impl SolidSession {
         if self.prompt.is_some() || self.show_results || self.show_study {
             return;
         }
-        let Some(mesh) = self.shown_mesh().cloned() else { return };
+        let Some(mesh) = self.shown_mesh().cloned() else { return;
+        };
         let found = surfaces_in_box(&mesh, &self.pick_positions, cam, a, b, size);
         if !additive {
             self.clear_selection();
@@ -1514,6 +1575,18 @@ impl SolidSession {
             self.touch();
         }
     }
+}
+
+/// Open a native model or STEP source, keeping the CAD source separate from the saved FEA project.
+pub fn open_path(path: &Path) -> Result<(Problem, PathBuf), String> {
+    let step = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("step") || e.eq_ignore_ascii_case("stp"));
+    if step {
+        let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let name = path.file_stem().unwrap_or_default().to_string_lossy();
+        return Ok((Problem::from_step(&name, &text)?, path.with_extension("fea.json")));
+    }
+    let problem = if path.exists() { read_problem(path)? } else { templates().remove(0).1 };
+    Ok((problem, path.to_path_buf()))
 }
 
 /// Read a problem file written by this editor or the terminal Workbench.
@@ -1555,19 +1628,40 @@ fn depth_at(pts: &[([f32; 2], f32)], px: [f32; 2]) -> Option<f32> {
 /// polygons: the front-most face whose projection contains the pixel wins (depth interpolated at the
 /// pixel, not a face average), and near misses within `radius` fall back to the nearest face outline.
 /// Scene-space `positions` match the node indices of `mesh`.
-pub fn pick_surface(mesh: &Mesh, positions: &[[f32; 3]], cam: &Camera, px: [f32; 2], size: [f32; 2], radius: f32) -> Option<String> {
+pub fn pick_surface(mesh: &Mesh, positions: &[[f32; 3]], cam: &Camera, px: [f32; 2], size: [f32; 2], radius: f32,
+) -> Option<String> {
     if positions.len() != mesh.nodes.len() {
         return None;
     }
+    pick_faces(
+        mesh.dim() == 3,
+        positions,
+        cam,
+        px,
+        size,
+        radius,
+        mesh.surfaces
+            .iter()
+            .flat_map(|(n, faces)| faces.iter().map(move |f| (n, f))),
+    )
+}
+
+fn pick_faces<'a>(
+    solid: bool,
+    positions: &[[f32; 3]],
+    cam: &Camera,
+    px: [f32; 2],
+    size: [f32; 2],
+    radius: f32,
+    faces: impl Iterator<Item = (&'a String, &'a Vec<usize>)>,
+) -> Option<String> {
     let screen = |i: usize| {
         let (n, d) = cam.project(positions[i]);
         (Camera::pixel(n, size[0], size[1]), d)
     };
-    let solid = mesh.dim() == 3;
     // (inside?, outline distance, depth): inside faces rank by depth, outlines by distance then depth.
     let mut best: Option<((u8, f32, f32), &String)> = None;
-    for (name, faces) in &mesh.surfaces {
-        for face in faces {
+    for (name, face) in faces {
             if face.iter().any(|&n| n >= positions.len()) || face.is_empty() {
                 continue;
             }
@@ -1598,13 +1692,14 @@ pub fn pick_surface(mesh: &Mesh, positions: &[[f32; 3]], cam: &Camera, px: [f32;
                 best = Some(((rank, dist, depth), name));
             }
         }
-    }
     best.map(|(_, n)| n.clone())
 }
 
 /// Names of the surfaces with a face whose centre projects into the pixel box `a`..`b`.
-pub fn surfaces_in_box(mesh: &Mesh, positions: &[[f32; 3]], cam: &Camera, a: [f32; 2], b: [f32; 2], size: [f32; 2]) -> BTreeSet<String> {
-    let (lo, hi) = ([a[0].min(b[0]), a[1].min(b[1])], [a[0].max(b[0]), a[1].max(b[1])]);
+pub fn surfaces_in_box(mesh: &Mesh, positions: &[[f32; 3]], cam: &Camera, a: [f32; 2], b: [f32; 2], size: [f32; 2],
+) -> BTreeSet<String> {
+    let (lo, hi) = ([a[0].min(b[0]), a[1].min(b[1])], [a[0].max(b[0]), a[1].max(b[1])],
+    );
     let mut out = BTreeSet::new();
     if positions.len() != mesh.nodes.len() {
         return out;
@@ -1633,16 +1728,16 @@ pub fn surfaces_in_box(mesh: &Mesh, positions: &[[f32; 3]], cam: &Camera, a: [f3
 }
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
-mod sketching_tests;
-#[cfg(test)]
-mod models_tests;
+mod advising_tests;
 #[cfg(test)]
 mod corpus_tests;
 #[cfg(test)]
+mod guidance_tests;
+#[cfg(test)]
+mod models_tests;
+#[cfg(test)]
 mod refining_tests;
 #[cfg(test)]
-mod advising_tests;
+mod sketching_tests;
 #[cfg(test)]
-mod guidance_tests;
+mod tests;

@@ -149,7 +149,7 @@ impl DisplaySettings {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        std::fs::write(path, serde_json::to_string_pretty(self).map_err(std::io::Error::other)?)
+        crate::persistence::write(path, serde_json::to_string_pretty(self).map_err(std::io::Error::other)?)
     }
 }
 
@@ -220,7 +220,7 @@ mod tests {
         let s = DisplaySettings { style: DisplayStyle::HiddenLinesRemoved, background: Background::Gradient { top: [10, 20, 30], bottom: [200, 210, 220] }, key_colours: [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]], panel_pos: [Some([0.25, 0.5]), None] };
         s.save_to(&path).unwrap();
         assert_eq!(DisplaySettings::load_from(&path), s);
-        std::fs::write(&path, "{ not json").unwrap();
+        crate::persistence::write(&path, "{ not json").unwrap();
         assert_eq!(DisplaySettings::load_from(&path), DisplaySettings::default());
         let _ = std::fs::remove_dir_all(dir);
     }

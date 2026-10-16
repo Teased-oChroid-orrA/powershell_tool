@@ -409,7 +409,7 @@ impl SolidSession {
                     (false, _) => Ok("Learned ranking off: the rules decide the order.".to_string()),
                 }
             }
-            AdvisorOp::Train => joined(each!(|r| r.train())),
+            AdvisorOp::Train => joined(each!(|r| r.train_background())),
             AdvisorOp::ToggleAutoTrain => {
                 let on = !self.advisors.constraints.settings.auto_train;
                 all_ok(each!(|r| r.set_auto_train(on))).map(|()| if on { "Learning continues as you work: the model is refitted as your recordings grow (needs recording on).".into() } else { "Automatic refitting off: use Train from recordings.".to_string() })
@@ -418,11 +418,13 @@ impl SolidSession {
                 let corpus = corpus::build(corpus::SESSIONS, corpus::SEED);
                 let installed = self.advisors.constraints.install_corpus(&corpus.constraints).and(self.advisors.boundary.install_corpus(&corpus.boundary)).and(self.advisors.refinement.install_corpus(&corpus.refinement));
                 installed.and_then(|()| {
-                    let fits = joined(each!(|r| r.train()))?;
+                    let fits = joined(each!(|r| r.train_background()))?;
                     Ok(format!("Built {} simulated sketch, {} boundary and {} mesh-density offers (a prior, not your data). {fits}", corpus.constraints.len(), corpus.boundary.len(), corpus.refinement.len()))
                 })
             }
-            AdvisorOp::DeleteRecordings => all_ok(each!(|r| r.delete_recordings())).map(|()| "Recordings deleted.".to_string()),
+            AdvisorOp::DeleteRecordings => {
+                all_ok(each!(|r| r.delete_recordings())).map(|()| "Recordings deleted.".to_string())
+            }
         };
         self.status = result.unwrap_or_else(|e| e);
         self.findings_cache.borrow_mut().take();
@@ -452,4 +454,3 @@ fn capital(s: &str) -> String {
     let mut c = s.chars();
     c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
 }
-

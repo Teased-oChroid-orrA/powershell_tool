@@ -12,9 +12,9 @@ pub mod vtu;
 
 use super::{
     authoring::{Authoring, Card, Overlay},
-    handoff,
     bushing::file::BushingFile,
     camera::Camera,
+    handoff,
     session::{EditorAction, Key, KeyResult, Mods},
     solid::{SolidAction, SolidSession},
 };
@@ -95,6 +95,7 @@ pub struct EccentricSession {
     step: &'static str,
     /// Modification times of the case file and of the Bushing case when this window last read or wrote them.
     stamp: Option<std::time::SystemTime>,
+    saved_revision: Option<String>,
     bushing_stamp: Option<std::time::SystemTime>,
     beat_at: std::time::Instant,
     watch_at: std::time::Instant,
@@ -141,11 +142,13 @@ impl EccentricSession {
             built: None,
             step: "Inputs",
             stamp: None,
+            saved_revision: None,
             bushing_stamp: None,
             beat_at: std::time::Instant::now(),
             watch_at: std::time::Instant::now(),
         };
         s.stamp = handoff::stamp(&s.path);
+        s.saved_revision = crate::persistence::revision(&s.path);
         s.reload_bushing();
         s
     }
@@ -245,9 +248,12 @@ impl EccentricSession {
                         self.bushing_case = f.bushing_case;
                         self.reload_bushing();
                         self.dirty = false;
+                        self.saved_revision = crate::persistence::revision(&self.path);
                         self.status = "Updated from the FEA workbench.".into();
                     }
-                    Err(why) => self.status = format!("The case file changed on disk but cannot be read: {why}"),
+                    Err(why) => {
+                        self.status = format!("The case file changed on disk but cannot be read: {why}")
+                    }
                 }
             }
         }
@@ -309,10 +315,15 @@ impl EccentricSession {
         }
     }
     fn save(&mut self) {
-        match std::fs::write(&self.path, self.case_file().to_json()) {
+        if crate::persistence::revision(&self.path) != self.saved_revision {
+            self.status = "Save conflict: file changed externally; reopen before saving.".into();
+            return;
+        }
+        match crate::persistence::write(&self.path, self.case_file().to_json()) {
             Ok(()) => {
                 self.dirty = false;
                 self.stamp = handoff::stamp(&self.path);
+                self.saved_revision = crate::persistence::revision(&self.path);
                 self.status = format!("Saved {}.", self.path.display());
             }
             Err(e) => self.status = format!("Could not save {}: {e}", self.path.display()),
@@ -321,7 +332,7 @@ impl EccentricSession {
     fn write(&mut self, target: PathBuf, text: Option<String>, what: &str) {
         match text {
             None => self.status = format!("Nothing to export: run the {what} first."),
-            Some(t) => match std::fs::write(&target, t) {
+            Some(t) => match crate::persistence::write(&target, t) {
                 Ok(()) => self.status = format!("Wrote {}.", target.display()),
                 Err(e) => self.status = format!("Could not write {}: {e}", target.display()),
             },
@@ -624,6 +635,20 @@ impl Authoring for EccentricSession {
     }
     fn title(&self) -> String {
         format!("Eccentric bushing | {}{}", self.name, if self.dirty { " *" } else { "" })
+    }
+    fn restore_recovery(&mut self) -> Result<(), String> {
+        let text = std::fs::read_to_string(self.path.with_extension("recovery.json"))
+            .map_err(|e| e.to_string())?;
+        let f = EccentricFile::from_json(&text)?;
+        self.undo.push(self.st.ui.clone());
+        self.st.ui = f.ui();
+        self.bushing_case = f.bushing_case;
+        self.reload_bushing();
+        self.dirty = true;
+        Ok(())
+    }
+    fn recovery_json(&self) -> Result<String, String> {
+        Ok(self.case_file().to_json())
     }
     fn dirty(&self) -> bool {
         self.dirty

@@ -147,6 +147,7 @@ fn with_the_simulated_prior_the_hole_hint_on_a_coarse_mesh_leads_with_level_3_on
     let first = |s: &SolidSession| lines(s).into_iter().find(|l| l.starts_with("Refine hole at level")).unwrap();
     assert!(first(&s).contains("level 2"), "rules first: {}", first(&s));
     s.do_action(SolidAction::Advisor(AdvisorOp::BuildCorpus));
+    super::advising_tests::wait_for_corpus(&mut s);
     assert!(first(&s).contains("level 2"), "building the prior changes nothing by itself");
     s.do_action(SolidAction::Advisor(AdvisorOp::ToggleLearned));
     assert!(s.advisors.refinement.settings.use_learned, "{}", s.status);

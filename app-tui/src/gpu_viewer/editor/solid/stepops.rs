@@ -33,7 +33,9 @@ impl SolidSession {
                 Ok(p) => {
                     let faces = p.edge_names().len();
                     self.start_model(p);
-                    self.status = format!("Opened {path}: {faces} faces. Pick a face for a support or load, then Generate mesh.");
+                    self.path = Path::new(path).with_extension("fea.json");
+                    self.saved_revision = crate::persistence::revision(&self.path);
+                    self.status = format!("Opened {path}: {faces} faces; millimetres, N, MPa; default steel (review Material). Pick a face for a support or load, then Generate mesh.");
                 }
                 Err(e) => self.status = format!("Could not open {path}: {e}"),
             },

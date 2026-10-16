@@ -313,3 +313,19 @@ mod flow {
         let _ = EccentricAct::Undo;
     }
 }
+
+#[test]
+fn si_handoff_preserves_bushing_dimensions_and_forces_in_its_inch_system() {
+    for units in [fea_problem::UnitSystem::MmMpa, fea_problem::UnitSystem::MeterPa] {
+        let mut model = BushingModel::default();
+        let mut problem = bushing_fe::housing_problem(&model).unwrap();
+        if let Geometry::Sketch { holes, .. } = &mut problem.geometry {
+            if let Shape::Circle { r, .. } = &mut holes[0] { *r = 0.3125; }
+        }
+        problem.loads = vec![Load::Bearing { hole: 1, fx: -1500.0, fy: 0.0 }];
+        problem.convert_units(units).unwrap();
+        bushing_from_problem(&mut model, &problem).unwrap();
+        assert!((model.bore_dia-0.625).abs()<1e-12);
+        assert!((model.load-1500.0).abs()<1e-9);
+    }
+}

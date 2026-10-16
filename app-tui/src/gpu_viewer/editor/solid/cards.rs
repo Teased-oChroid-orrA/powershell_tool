@@ -166,7 +166,8 @@ impl SolidSession {
         };
         let units = self.problem.units;
         let body_unit = format!("{}/{}^3", units.force(), units.length());
-        let field = |label: String, index: usize, unit: &str| CardRow::Field { label, text: c.fields[index].clone(), index, unit: unit.to_string() };
+        let field = |label: String, index: usize, unit: &str| CardRow::Field { label, text: c.fields[index].clone(), index, unit: unit.to_string(),
+        };
         let cancel = ui(SolidAction::CardCancel);
         let apply = ui(SolidAction::CardApply);
         let mut rows = Vec::new();
@@ -177,52 +178,67 @@ impl SolidSession {
                 let now = self.problem.units;
                 let geometry_ok = self.problem.can_convert_units();
                 rows.push(CardRow::Text(format!("The model is written in {} (lengths in {}, forces in {}, stresses in {}).", now.label(), now.length(), now.force(), now.stress())));
-                rows.push(CardRow::Text("Convert rescales every length, force, stress, density and expansion. Declare keeps the numbers and only changes what they mean (use it when they were typed in another system).".into()));
-                for sys in fea_problem::UnitSystem::ALL.into_iter().filter(|s| *s != now) {
-                    let detail = match &geometry_ok {
-                        Ok(()) => "rescales the model".to_string(),
-                        Err(_) => "not possible for this geometry".to_string(),
-                    };
-                    rows.push(CardRow::Choice { label: format!("Convert to {}", sys.label()), detail, action: ui(SolidAction::ConvertUnits(sys)), current: false });
+                rows.push(CardRow::Text("Convert preserves physical geometry, mechanical and thermal data, including external mesh and CAD coordinates. Declare keeps the numbers and only changes what they mean (use it when they were typed in another system).".into()));
+                if geometry_ok.is_ok() {
+                    rows.push(CardRow::Select {
+                        label: "Unit system".into(),
+                        selected: now.label().into(),
+                        options: fea_problem::UnitSystem::ALL.into_iter().map(|sys| (sys.label().into(), ui(SolidAction::ConvertUnits(sys))))
+                            .collect(),
+                    });
+                } else {
+                    rows.push(CardRow::Text(geometry_ok.unwrap_err()));
                 }
                 for sys in fea_problem::UnitSystem::ALL.into_iter().filter(|s| *s != now) {
-                    rows.push(CardRow::Choice { label: format!("Declare as {}", sys.label()), detail: "keeps the numbers".into(), action: ui(SolidAction::DeclareUnits(sys)), current: false });
+                    rows.push(CardRow::Choice { label: format!("Declare as {}", sys.label()), detail: "keeps the numbers".into(), action: ui(SolidAction::DeclareUnits(sys)), current: false,
+                    });
                 }
-                ("Units".to_string(), now.label().to_string(), "Close".to_string())
+                ("Units".to_string(), now.label().to_string(), "Close".to_string(),
+                )
             }
             CardForm::Materials => {
                 use crate::toolboxes::material_lookup::model as lib;
                 width = 400.0;
                 let query = lib::Query { text: c.fields[0].clone(), group: c.group, sort: lib::SortKey::ALL[c.sort % lib::SortKey::ALL.len()], ..Default::default() };
                 let hits = lib::filter_sort(&query);
-                rows.push(CardRow::Field { label: "Search".into(), text: c.fields[0].clone(), index: 0, unit: String::new() });
+                rows.push(CardRow::Field { label: "Search".into(), text: c.fields[0].clone(), index: 0, unit: String::new(),
+                });
                 let group = lib::groups().get(c.group).cloned().unwrap_or_default();
-                rows.push(CardRow::Choice { label: format!("Group: {group}"), detail: "click for the next group".into(), action: ui(SolidAction::CardMaterialGroup), current: false });
-                rows.push(CardRow::Choice { label: format!("Sort by: {}", query.sort.label()), detail: "click for the next key".into(), action: ui(SolidAction::CardMaterialSort), current: false });
+                rows.push(CardRow::Choice { label: format!("Group: {group}"), detail: "click for the next group".into(), action: ui(SolidAction::CardMaterialGroup), current: false,
+                });
+                rows.push(CardRow::Choice { label: format!("Sort by: {}", query.sort.label()), detail: "click for the next key".into(), action: ui(SolidAction::CardMaterialSort), current: false,
+                });
                 rows.push(CardRow::Text(format!("{} match{} (showing {}). Now: {}.", hits.len(), if hits.len() == 1 { "" } else { "es" }, hits.len().min(MATERIAL_ROWS), self.problem.material.name)));
                 let cat = lib::catalog();
                 for &i in hits.iter().take(MATERIAL_ROWS) {
                     let m = cat[i];
                     let rho = lib::density(m).map_or(String::new(), |d| format!("  rho {d:.3}"));
                     let detail = format!("E {} ksi  Fty {}{rho}", crate::toolboxes::fea_workbench::model::format_number(m.e_ksi), crate::toolboxes::fea_workbench::model::format_number(m.sy_ksi));
-                    rows.push(CardRow::Choice { label: m.name.to_string(), detail, action: ui(SolidAction::ApplyMaterial(i)), current: m.name == self.problem.material.name });
+                    rows.push(CardRow::Choice { label: m.name.to_string(), detail, action: ui(SolidAction::ApplyMaterial(i)), current: m.name == self.problem.material.name,
+                    });
                 }
-                ("Material library".to_string(), "MIL-HDBK-5J".to_string(), "Use first match".to_string())
+                ("Material library".to_string(), "MIL-HDBK-5J".to_string(), "Use first match".to_string(),
+                )
             }
             CardForm::Hold | CardForm::EditHold(_) => {
                 for a in 0..dim {
-                    rows.push(CardRow::Toggle { label: format!("Hold {}", AXES[a]), on: c.toggles[a], action: ui(SolidAction::CardToggle(a)) });
+                    rows.push(CardRow::Toggle { label: format!("Hold {}", AXES[a]), on: c.toggles[a], action: ui(SolidAction::CardToggle(a)),
+                    });
                     if c.toggles[a] {
-                        rows.push(field(format!("{} displacement", AXES[a]), a, units.length()));
+                        rows.push(field(format!("{} displacement", AXES[a]), a, units.length(),
+                        ));
                     }
                 }
                 if dim == 3 {
-                    rows.push(CardRow::Text("A solid element has no rotations: holding all three is a fixed face.".into()));
+                    rows.push(CardRow::Text("A solid element has no rotations: holding all three is a fixed face.".into(),
+                    ));
                 } else {
-                    rows.push(CardRow::Text("Hold one direction and the face slides in the other (a roller).".into()));
+                    rows.push(CardRow::Text("Hold one direction and the face slides in the other (a roller).".into(),
+                    ));
                 }
                 let held: String = (0..dim).filter(|a| c.toggles[*a]).map(|a| char::from(b'1' + a as u8)).collect();
-                (format!("{}{target}", if matches!(c.form, CardForm::EditHold(_)) { "Change directions" } else { "Hold directions" }), format!("SPC1 {}", if held.is_empty() { "-".to_string() } else { held }), "Apply".to_string())
+                (format!("{}{target}", if matches!(c.form, CardForm::EditHold(_)) { "Change directions" } else { "Hold directions" }), format!("SPC1 {}", if held.is_empty() { "-".to_string() } else { held }), "Apply".to_string(),
+                )
             }
             CardForm::Pressure => {
                 rows.push(field("Pressure".into(), 0, units.stress()));
@@ -239,12 +255,14 @@ impl SolidSession {
                 for a in 0..dim {
                     rows.push(field(format!("Traction {}", AXES[a]), a, units.stress()));
                 }
-                (format!("Traction{target}"), "PLOAD4 dir".into(), "Apply".into())
+                (format!("Traction{target}"), "PLOAD4 dir".into(), "Apply".into(),
+                )
             }
             CardForm::Bearing => {
                 rows.push(field("Force x".into(), 0, units.force()));
                 rows.push(field("Force y".into(), 1, units.force()));
-                (format!("Pin load{target}"), "bearing".into(), "Apply".into())
+                (format!("Pin load{target}"), "bearing".into(), "Apply".into(),
+                )
             }
             CardForm::EditLoad(i) => {
                 let params = self.problem.loads.get(i).map(|l| l.params(dim)).unwrap_or_default();
@@ -268,24 +286,35 @@ impl SolidSession {
                 for a in 0..dim {
                     rows.push(field(format!("Body force {}", AXES[a]), a, &body_unit));
                 }
-                rows.push(CardRow::Text("Weight density pulls down with a negative y. Zero removes it.".into()));
+                rows.push(CardRow::Text("Weight density pulls down with a negative y. Zero removes it.".into(),
+                ));
                 ("Gravity / body force".into(), "GRAV".into(), "Apply".into())
             }
             CardForm::Case(i) => {
-                rows.push(CardRow::Field { label: "Name".into(), text: c.fields[0].clone(), index: 0, unit: String::new() });
+                rows.push(CardRow::Field { label: "Name".into(), text: c.fields[0].clone(), index: 0, unit: String::new(),
+                });
                 for (s, on) in c.toggles.iter().enumerate() {
-                    let label = self.problem.supports.get(s).map_or("support".to_string(), |sup| format!("Support on {}", sup.edge().unwrap_or("point")));
-                    rows.push(CardRow::Toggle { label, on: *on, action: ui(SolidAction::CardToggle(s)) });
+                    let label = self.problem.supports.get(s).map_or("support".to_string(), |sup| {
+                            format!("Support on {}", sup.edge().unwrap_or("point"))
+                        });
+                    rows.push(CardRow::Toggle { label, on: *on, action: ui(SolidAction::CardToggle(s)),
+                    });
                 }
                 for l in 0..self.problem.loads.len() {
-                    let label = self.problem.loads.get(l).map_or("load".to_string(), |load| format!("{} on {}", load.label(), load.edge().unwrap_or("point")));
-                    rows.push(CardRow::Field { label, text: c.fields[l + 1].clone(), index: l + 1, unit: "factor".into() });
+                    let label = self.problem.loads.get(l).map_or("load".to_string(), |load| {
+                            format!("{} on {}", load.label(), load.edge().unwrap_or("point"))
+                        });
+                    rows.push(CardRow::Field { label, text: c.fields[l + 1].clone(), index: l + 1, unit: "factor".into(),
+                    });
                 }
-                rows.push(CardRow::Text("A factor of 0 switches a load off; 2 doubles it.".into()));
-                (format!("Load case {}", i + 1), "LOAD / SPCADD".into(), "Apply".into())
+                rows.push(CardRow::Text("A factor of 0 switches a load off; 2 doubles it.".into(),
+                ));
+                (format!("Load case {}", i + 1), "LOAD / SPCADD".into(), "Apply".into(),
+                )
             }
         };
-        Some(ValueCard { title, width, tag, rows, apply_label, apply, cancel })
+        Some(ValueCard { title, width, tag, rows, apply_label, apply, cancel,
+        })
     }
 
     /// Write the card into the model. A bad number keeps the card open and says what is wrong.
@@ -464,7 +493,7 @@ impl SolidSession {
         match next.convert_units(to) {
             Ok(()) => {
                 self.edit(|p| *p = next);
-                self.status = format!("The model is now in {}: every length, force, stress, density and expansion was rescaled (thermal values were not).", to.label());
+                self.status = format!("The model is now in {}: every length, force, stress, density and expansion was rescaled including thermal quantities.", to.label());
                 self.card = None;
                 self.touch();
             }

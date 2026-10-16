@@ -1,4 +1,5 @@
 //! Recommendations, boundary-kind ranking and the opt-in learning loop through the solid session.
+use super::sketching_tests::new_sketch;
 use super::*;
 use crate::gpu_viewer::{
     editor::{
@@ -9,7 +10,6 @@ use crate::gpu_viewer::{
     menu::Item,
     ui::DockItem,
 };
-use super::sketching_tests::new_sketch;
 use fea_problem::{advice::BcKind, sketch::infer::Rule, Support};
 
 fn temp(name: &str) -> PathBuf {
@@ -25,6 +25,14 @@ fn session(name: &str) -> SolidSession {
     let mut s = SolidSession::new(p, temp(name).join("model.json"));
     s.advisors = advising::Advisors::in_dir(temp(&format!("{name}-advisor")));
     s
+}
+pub(super) fn wait_for_corpus(s: &mut SolidSession) {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while s.advisors.constraints.bundle.is_none() || s.advisors.boundary.bundle.is_none() || s.advisors.refinement.bundle.is_none() {
+        s.poll();
+        assert!(std::time::Instant::now() < until, "corpus training did not finish");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
 }
 fn rows(s: &SolidSession) -> Vec<String> {
     s.properties().into_iter().filter_map(|i| match i {
@@ -153,17 +161,22 @@ fn learned_constraint_order_needs_a_trained_gated_model_and_then_reorders() {
     let store = Store::new(dir, "constraints");
     for session in 0..60u64 {
         for _ in 0..12 {
-            store.append(&Recorded { session, situation: sit, offered: rules.clone(), taken: Some(target) }).unwrap();
+            store.append(&Recorded { session, situation: sit, offered: rules.clone(), taken: Some(target),
+                }).unwrap();
         }
     }
     s.do_action(SolidAction::Advisor(AdvisorOp::Train));
-    assert!(s.status.contains("eligible to use"), "{}", s.status);
+    let until=std::time::Instant::now()+std::time::Duration::from_secs(10);
+    while s.advisors.constraints.bundle.is_none() { s.poll(); assert!(std::time::Instant::now()<until); std::thread::sleep(std::time::Duration::from_millis(2)); }
+    let report=s.advisors.constraints.bundle.as_ref().unwrap().report.summary("Constraints");
+    assert!(report.contains("eligible to use"), "{report}");
     s.do_action(SolidAction::Advisor(AdvisorOp::ToggleLearned));
     assert!(s.advisors.constraints.settings.use_learned, "{}", s.status);
     // A new sketch with the same situation now shows the learned order first; the set is unchanged.
     s.do_action(SolidAction::Sketch(SketchAction::Finish)); // fails (open profile) and stays: leave via undo-free path
     let mut s2 = SolidSession::new(s.problem.clone(), temp("learn2").join("m.json"));
-    s2.advisors = advising::Advisors::in_dir(s.advisors.constraints.store.as_ref().unwrap().dir().to_path_buf());
+    s2.advisors = advising::Advisors::in_dir(s.advisors.constraints.store.as_ref().unwrap().dir().to_path_buf(),
+    );
     let rules2 = draw(&mut s2);
     assert_eq!(rules2[0], target, "{rules2:?}");
     let mut a = rules.clone();
@@ -204,7 +217,9 @@ fn building_the_corpus_trains_both_rankers_and_the_learned_order_is_opt_in_and_l
 
     assert!(entries(&s.advisor_items()).contains(&"Build training corpus (simulated prior)".to_string()));
     s.do_action(SolidAction::Advisor(AdvisorOp::BuildCorpus));
-    assert!(s.status.contains("simulated") && s.status.contains("SIMULATED"), "{}", s.status);
+    assert!(s.status.contains("simulated") && s.status.contains("background"), "{}", s.status);
+    wait_for_corpus(&mut s);
+    assert!(s.advisors.boundary.bundle.as_ref().unwrap().report.summary("Boundary").contains("SIMULATED"));
     assert!(s.advisors.boundary.bundle.is_some() && s.advisors.constraints.bundle.is_some());
     // Nothing is switched on by building it.
     assert!(!s.advisors.boundary.settings.use_learned && s.boundary_offer("bottom") == rules);
@@ -226,6 +241,7 @@ fn building_the_corpus_trains_both_rankers_and_the_learned_order_is_opt_in_and_l
 fn your_own_recordings_keep_refining_the_model_while_you_work() {
     let mut s = session("corpus-online");
     s.do_action(SolidAction::Advisor(AdvisorOp::BuildCorpus));
+    wait_for_corpus(&mut s);
     s.do_action(SolidAction::Advisor(AdvisorOp::ToggleRecord));
     assert!(s.advisors.boundary.settings.record && s.advisors.boundary.settings.auto_train);
     let before = s.advisors.boundary.bundle.as_ref().unwrap().report.real_sessions;
@@ -235,6 +251,21 @@ fn your_own_recordings_keep_refining_the_model_while_you_work() {
         let _ = s.boundary_items();
         s.do_action(SolidAction::BoundaryKind(BcKind::Fixed));
         s.do_action(SolidAction::Undo);
+    }
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while s
+        .advisors
+        .boundary
+        .bundle
+        .as_ref()
+        .unwrap()
+        .report
+        .real_sessions
+        <= before
+    {
+        s.poll();
+        assert!(std::time::Instant::now() < until);
+        std::thread::sleep(std::time::Duration::from_millis(2));
     }
     let b = s.advisors.boundary.bundle.as_ref().unwrap();
     assert!(b.report.real_sessions > before, "refitted from the recordings: {}", b.report.summary("x"));

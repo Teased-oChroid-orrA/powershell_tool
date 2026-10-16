@@ -217,10 +217,13 @@ impl Gui {
         let _ = hint;
         egui::Panel::bottom("status").exact_size(26.0).show_separator_line(false).frame(bar_frame(p, Margin::symmetric(12, 4))).show(ui, |ui| {
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                let (text, alert) = match (&self.hint, input.error, input.editor.map(|e| e.status()).filter(|s| !s.is_empty())) {
-                    (Some(h), _, _) => (h.clone(), false),
-                    (None, Some(e), _) => (e.to_string(), true),
-                    (None, None, Some(s)) => (s, false),
+                let running = input.editor.is_some_and(|e| e.solving_for().is_some());
+                let status = input.editor.map(|e| e.status()).filter(|s| !s.is_empty());
+                let (text, alert) = match (input.error, running, &self.hint, status) {
+                    (Some(e), _, _, _) => (e.to_string(), true),
+                    (None, true, _, Some(s)) => (s, false),
+                    (None, _, Some(h), _) => (h.clone(), false),
+                    (None, _, None, Some(s)) => (s, false),
                     _ => ("Ready".to_string(), false),
                 };
                 // After a failed solve the best fix is one click away.
@@ -236,7 +239,7 @@ impl Gui {
                     let scene = input.scene();
                     let mut right = format!("result {}/{} | {}", input.selected + 1, input.scenes.len(), input.view.field_name(scene));
                     if let Some(e) = input.editor {
-                        right = format!("{} | {right}", if e.solving() { format!("Solving... {:.1}s", e.solving_for().map_or(0.0, |d| d.as_secs_f32())) } else if e.dirty() { "Modified".into() } else { "Saved".into() });
+                        right = format!("{} | {right}", if let Some(elapsed) = e.solving_for() { format!("Working... {:.1}s", elapsed.as_secs_f32()) } else if e.dirty() { "Modified".into() } else { "Saved".into() });
                     }
                     ui.label(RichText::new(right).small().color(p.dim));
                 });

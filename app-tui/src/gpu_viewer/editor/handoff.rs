@@ -52,7 +52,7 @@ impl Link {
         link_path(fea).exists()
     }
     pub fn save(&self, fea: &Path) -> Result<(), String> {
-        std::fs::write(link_path(fea), serde_json::to_string_pretty(self).map_err(|e| e.to_string())?).map_err(|e| format!("cannot write {}: {e}", link_path(fea).display()))
+        crate::persistence::write(link_path(fea), serde_json::to_string_pretty(self).map_err(|e| e.to_string())?).map_err(|e| format!("cannot write {}: {e}", link_path(fea).display()))
     }
     pub(crate) fn rel(fea: &Path, case: &Path) -> String {
         case.strip_prefix(fea.parent().unwrap_or(Path::new(""))).unwrap_or(case).to_string_lossy().into_owned()
@@ -89,7 +89,7 @@ fn beat_path(file: &Path) -> PathBuf {
 }
 /// A window has `file` open: touch its heartbeat.
 pub fn beat(file: &Path) {
-    let _ = std::fs::write(beat_path(file), std::process::id().to_string());
+    let _ = crate::persistence::write(beat_path(file), std::process::id().to_string());
 }
 /// The window closed.
 pub fn clear_beat(file: &Path) {
@@ -213,6 +213,9 @@ fn apply_shared(m: &mut BushingModel, base: &Shared, new: &Shared) -> Vec<String
 /// Take an edited FEA model into a bushing case: the bore, bushing ID, interference, friction, materials, thickness, pin load,
 /// and the housing's edge distance and width. `m` is the case's model; only what differs from what that model derives changes.
 pub fn bushing_from_problem(m: &mut BushingModel, new: &Problem) -> Result<Vec<String>, String> {
+    let mut inch = new.clone();
+    inch.convert_units(fea_problem::UnitSystem::InchPsi)?;
+    let new = &inch;
     let base = bushing_fe::housing_problem(m)?;
     let (b, n) = (shared(&base)?, shared(new)?);
     let ((bc, bo), (nc, no)) = (housing(&base)?, housing(new)?);
@@ -233,6 +236,9 @@ pub fn bushing_from_problem(m: &mut BushingModel, new: &Problem) -> Result<Vec<S
 
 /// The same for the eccentric workbench: the shared inputs go to the bushing model, the offset, load angle and housing to `ui`.
 pub fn eccentric_from_problem(m: &mut BushingModel, ui: &mut EccentricUi, new: &Problem) -> Result<Vec<String>, String> {
+    let mut inch = new.clone();
+    inch.convert_units(fea_problem::UnitSystem::InchPsi)?;
+    let new = &inch;
     let base = eccentric_fe::preview_problem(m, ui)?;
     let (b, n) = (shared(&base)?, shared(new)?);
     let ((bc, bo), (nc, no)) = (housing(&base)?, housing(new)?);
@@ -293,7 +299,7 @@ fn read_bushing(case: &Path) -> Result<(BushingModel, String), String> {
 }
 
 fn write(path: &Path, text: &str) -> Result<(), String> {
-    std::fs::write(path, text).map_err(|e| format!("cannot write {}: {e}", path.display()))
+    crate::persistence::write(path, text).map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
 
 /// Open a case in the FEA workbench: its derived `problem` is written beside it as `<case>.fea.json` (an FEA file already

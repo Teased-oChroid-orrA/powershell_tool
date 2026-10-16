@@ -1,6 +1,7 @@
 //! The solid editor's contribution to the CAD chrome: feature tree, property manager (the shared
 //! Workbench rows), ribbon, menus and context menu, plus the `Authoring` impl the window drives.
 use super::*;
+use crate::gpu_viewer::editor::session::Tone;
 use crate::{
     gpu_viewer::{
         controller::UiAction,
@@ -11,7 +12,6 @@ use crate::{
     },
     toolboxes::fea_workbench::model::row_value,
 };
-use crate::gpu_viewer::editor::session::Tone;
 
 fn ui(a: SolidAction) -> UiAction {
     UiAction::Editor(EditorAction::Solid(a))
@@ -219,7 +219,8 @@ impl Authoring for SolidSession {
     fn click_with(&mut self, px: [f32; 2], size: [f32; 2], cam: &Camera, additive: bool) -> bool {
         SolidSession::click_with(self, px, size, cam, additive)
     }
-    fn box_select(&mut self, a: [f32; 2], b: [f32; 2], size: [f32; 2], cam: &Camera, additive: bool) {
+    fn box_select(&mut self, a: [f32; 2], b: [f32; 2], size: [f32; 2], cam: &Camera, additive: bool,
+    ) {
         SolidSession::box_select(self, a, b, size, cam, additive)
     }
     fn take_popup(&mut self) -> Option<Vec<Item>> {
@@ -269,7 +270,11 @@ impl Authoring for SolidSession {
         SolidSession::solving(self)
     }
     fn status(&self) -> String {
-        self.status.clone()
+        self.study_worker
+            .progress()
+            .or_else(|| self.solve_worker.progress())
+            .or_else(|| self.preview_worker.progress())
+            .unwrap_or_else(|| self.status.clone())
     }
     fn set_status(&mut self, text: String) {
         self.status = text;
@@ -279,6 +284,15 @@ impl Authoring for SolidSession {
     }
     fn title(&self) -> String {
         format!("{} | {}{}", self.bench.label(), self.problem.name, if self.dirty { " *" } else { "" })
+    }
+    fn restore_recovery(&mut self) -> Result<(), String> {
+        let p = super::read_problem(&self.path.with_extension("recovery.json"))?;
+        self.replace(p);
+        self.dirty = true;
+        Ok(())
+    }
+    fn recovery_json(&self) -> Result<String, String> {
+        self.problem.to_json()
     }
     fn dirty(&self) -> bool {
         self.dirty
@@ -334,7 +348,8 @@ impl Authoring for SolidSession {
         self.set_sketch_pixel(cam, size);
     }
 
-    fn overlay(&self, cam: &Camera, size: [f32; 2]) -> Vec<crate::gpu_viewer::editor::authoring::Overlay> {
+    fn overlay(&self, cam: &Camera, size: [f32; 2],
+    ) -> Vec<crate::gpu_viewer::editor::authoring::Overlay> {
         if self.sketching.is_some() {
             self.sketch_overlay(cam, size)
         } else {

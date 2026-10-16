@@ -128,7 +128,7 @@ impl Recents {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        std::fs::write(path, serde_json::to_string_pretty(self).map_err(std::io::Error::other)?)
+        crate::persistence::write(path, serde_json::to_string_pretty(self).map_err(std::io::Error::other)?)
     }
     /// Put `workbench`/`path` first (an older entry for the same pair is replaced) and keep the newest few.
     pub fn record(&mut self, workbench: &str, path: Option<String>, now: u64) {
@@ -231,7 +231,7 @@ fn open_macos_script(w: &Workbench, exe: &Path, args: &[String]) -> Result<(), S
     use std::process::{Command, Stdio};
     let dir = tempfile::tempdir().map_err(|e| e.to_string())?.keep();
     let script = dir.join(format!("toolbench-{}.command", w.id));
-    std::fs::write(&script, macos_script(exe, args)).map_err(|e| e.to_string())?;
+    crate::persistence::write(&script, macos_script(exe, args)).map_err(|e| e.to_string())?;
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
     let mut c = Command::new("open");
     c.arg(&script).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
@@ -317,7 +317,7 @@ mod tests {
         r.record("fea", Some("a.json".into()), 5);
         r.save_to(&path).unwrap();
         assert_eq!(Recents::load_from(&path), r);
-        std::fs::write(&path, "{ nope").unwrap();
+        crate::persistence::write(&path, "{ nope").unwrap();
         assert_eq!(Recents::load_from(&path), Recents::default());
         let _ = std::fs::remove_dir_all(dir);
     }

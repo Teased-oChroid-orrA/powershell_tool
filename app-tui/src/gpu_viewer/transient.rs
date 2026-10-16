@@ -12,6 +12,23 @@ pub fn run_with_progress(
     import: Option<&str>,
     progress: &dyn Fn(GenerationProgress),
 ) -> Result<Scene, String> {
+    run_cancellable(p, import, progress, &|| false)
+}
+
+pub fn run_cancellable(
+    p: &Problem,
+    import: Option<&str>,
+    progress: &dyn Fn(GenerationProgress),
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Scene, String> {
+    let check = || {
+        if cancelled() {
+            Err("animation cancelled".to_string())
+        } else {
+            Ok(())
+        }
+    };
+    check()?;
     progress(GenerationProgress::stage("Validating animation inputs"));
     p.validate()?;
     if !p.bushings.is_empty()
@@ -21,6 +38,7 @@ pub fn run_with_progress(
     {
         return Err("free vibration needs positive mass density, mechanical loads and no contact bushings or thermal load".into());
     }
+    check()?;
     progress(GenerationProgress::stage("Meshing animation model"));
     let mut mesh = fea_problem::solve::preview(p, import)?;
     let stride = display_stride(mesh.nodes.len(), 240)?;
@@ -47,6 +65,7 @@ pub fn run_with_progress(
     let loads = fea_problem::solve::build_loads(&mut mesh, p)?;
     mesh.set_density_all(p.material.density)?;
     let model = Model::new(mesh)?;
+    check()?;
     progress(GenerationProgress::stage("Computing fundamental frequency"));
     let modal = model.modal(
         &bc,
@@ -64,6 +83,7 @@ pub fn run_with_progress(
     if !omega.is_finite() || omega <= 0.0 {
         return Err("invalid fundamental frequency".into());
     }
+    check()?;
     progress(GenerationProgress::stage("Solving initial loaded state"));
     let initial =
         model.solve_adaptive(&loads, &bc, &fea_core::strategy::Requirements::default())?;
@@ -92,6 +112,7 @@ pub fn run_with_progress(
             ..Default::default()
         },
         &mut |step, time, u| {
+            check()?;
             progress(GenerationProgress {
                 stage: "Integrating free vibration",
                 completed: step,
@@ -103,6 +124,7 @@ pub fn run_with_progress(
             Ok(())
         },
     )?;
+    check()?;
     progress(GenerationProgress::stage("Checking residuals and energy"));
     AcceptanceReport::transient(
         &result,
@@ -122,6 +144,7 @@ pub fn run_with_progress(
         1.0
     };
     scene.validate()?;
+    check()?;
     progress(GenerationProgress::stage("Opening native viewport"));
     Ok(scene)
 }

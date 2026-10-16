@@ -20,3 +20,5 @@ pub mod toolboxes;
 pub mod widgets;
 
 pub mod gpu_viewer;
+
+pub mod persistence;

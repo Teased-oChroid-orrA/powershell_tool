@@ -46,8 +46,8 @@ pub fn open(bench: Bench, path: &Path) -> Result<Box<dyn Authoring>, String> {
         problem.validate()?;
         Ok(Box::new(member_session(problem, path.to_path_buf())))
     } else {
-        let problem = if path.exists() { solid::read_problem(path)? } else { fea_problem::templates::templates().remove(0).1 };
-        let mut ed = solid::SolidSession::new(problem, path.to_path_buf());
+        let (problem, destination) = solid::open_path(path)?;
+        let mut ed = solid::SolidSession::new(problem, destination);
         ed.set_bench(bench);
         Ok(Box::new(ed))
     }

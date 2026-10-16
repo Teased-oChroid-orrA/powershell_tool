@@ -225,6 +225,15 @@ fn recording_keeps_learning_refitting_as_the_recordings_grow() {
     assert!(r.bundle.is_none());
     // The next offer triggers a fit that includes the prior and the user's recordings so far.
     let fit = r.record(Sit::A, OFFER.to_vec(), Some(Cand::X)).unwrap().expect("refitted");
+    assert!(fit.contains("background"), "{fit}");
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let fit = loop {
+        if let Some(report) = r.poll() {
+            break report;
+        }
+        assert!(std::time::Instant::now() < until);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    };
     assert!(fit.contains("SIMULATED"), "{fit}");
     let b = r.bundle.as_ref().expect("fitted");
     assert_eq!(b.report.real_sessions, 1);
@@ -256,7 +265,14 @@ fn a_refit_that_stops_passing_the_gate_switches_the_learned_ranking_off() {
     for e in sessions(60, 12, Some(Cand::X)) {
         store.append(&e).unwrap();
     }
-    r.train().unwrap();
+    r.train_background().unwrap();
+    let until=std::time::Instant::now()+std::time::Duration::from_secs(10);
+    while r.fitting.is_busy() {
+        r.poll();
+        assert!(std::time::Instant::now()<until);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
     assert!(!r.settings.use_learned && !r.order(&Sit::A, &OFFER).1);
+    assert!(!store.load_settings().use_learned, "gate rejection is persisted");
     std::fs::remove_dir_all(store.dir()).unwrap();
 }

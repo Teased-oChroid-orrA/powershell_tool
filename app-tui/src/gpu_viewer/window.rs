@@ -22,7 +22,7 @@ use std::{sync::Arc, time::Instant};
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
-    event_loop::{ActiveEventLoop, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{Key, ModifiersState, NamedKey},
     window::{Window, WindowId},
 };
@@ -48,6 +48,8 @@ struct Viewer {
     renderer: Option<Renderer>,
     config: Option<wgpu::SurfaceConfiguration>,
     last: Instant,
+    next_redraw: Instant,
+    occluded: bool,
     pointer: Pointer,
     mods: ModifiersState,
     error: Option<String>,
@@ -72,6 +74,7 @@ struct Viewer {
     test_time: f64,
     /// When the learned layout was last written.
     layout_flushed: Instant,
+    recovery_flushed: Instant,
     /// Where the display style and background persist (`DisplaySettings::path`); `None` in tests.
     display_file: Option<std::path::PathBuf>,
     /// Interactive model editor, when this window was opened as one.
@@ -164,6 +167,34 @@ impl Viewer {
             UiAction::TogglePanel(p) => self.gui.toggle(p),
             UiAction::Layout(op) => self.layout_op(op),
             UiAction::Quit => self.request_quit(),
+            UiAction::CancelClose => {
+                self.gui.confirm_close = false;
+                self.quit_warned = false;
+            }
+            UiAction::DiscardAndClose => self.quit = true,
+            UiAction::RestoreRecovery => {
+                if let Some(ed) = &mut self.editor {
+                    let message = match ed.restore_recovery() {
+                        Ok(()) => "Recovered model as an unsaved edit; review then Save.".into(),
+                        Err(e) => format!("Recovery failed: {e}"),
+                    };
+                    ed.set_status(message);
+                }
+            }
+            UiAction::SaveAndClose => {
+                if let Some(ed) = &mut self.editor {
+                    ed.key(
+                        session::Key::Char('s'),
+                        session::Mods {
+                            command: true,
+                            shift: false,
+                        },
+                    );
+                }
+                if !self.editor.as_ref().is_some_and(|ed| ed.dirty()) {
+                    self.quit = true;
+                }
+            }
         }
     }
     /// Window > Adaptive layout, What has the layout learned?, Reset learned layout, the tree.
@@ -383,9 +414,13 @@ impl Viewer {
     /// Close the window, unless the editor holds unsaved changes: the first request only says so.
     fn request_quit(&mut self) {
         match &mut self.editor {
-            Some(ed) if ed.dirty() && !self.quit_warned => {
+            Some(ed) if ed.dirty() => {
                 self.quit_warned = true;
-                ed.set_status("Unsaved changes: save with Ctrl/Cmd+S, or close again to discard them.".into());
+                self.gui.confirm_close = true;
+                ed.set_status(
+                    "Unsaved changes: choose Save and close, Discard changes, or Keep editing."
+                        .into(),
+                );
             }
             _ => self.quit = true,
         }
@@ -529,6 +564,14 @@ impl Viewer {
     }
 
     fn key_pressed(&mut self, key: &Key) {
+        if self.gui.confirm_close {
+            match key {
+                Key::Named(NamedKey::Escape) => self.dispatch(UiAction::CancelClose),
+                Key::Named(NamedKey::Enter) => self.dispatch(UiAction::SaveAndClose),
+                _ => {}
+            }
+            return;
+        }
         // While a number is being typed every key belongs to the prompt; otherwise Ctrl/Cmd+K opens the palette.
         let typing = self.editor.as_ref().is_some_and(|ed| ed.prompting());
         if !typing && self.dashboard.is_none() && opens_palette(key, self.mods) {
@@ -544,7 +587,8 @@ impl Viewer {
         }
         if self.editor.is_some() {
             if let Some(k) = editor_key(key) {
-                let mods = session::Mods { command: self.mods.control_key() || self.mods.super_key(), shift: self.mods.shift_key() };
+                let mods = session::Mods { command: self.mods.control_key() || self.mods.super_key(), shift: self.mods.shift_key(),
+                };
                 // While a number is being typed every key belongs to the prompt.
                 let result = self.editor.as_mut().map(|ed| ed.key(k, mods)).unwrap_or(KeyResult::Unhandled);
                 match result {
@@ -576,11 +620,19 @@ impl Viewer {
                 }
             }
             Key::Character(c) if c.eq_ignore_ascii_case("m") => self.command(Command::ToggleMesh),
-            Key::Character(c) if c.eq_ignore_ascii_case("c") => self.command(Command::ToggleContour),
-            Key::Character(c) if c.eq_ignore_ascii_case("d") => self.command(Command::ToggleDeformation),
+            Key::Character(c) if c.eq_ignore_ascii_case("c") => {
+                self.command(Command::ToggleContour)
+            }
+            Key::Character(c) if c.eq_ignore_ascii_case("d") => {
+                self.command(Command::ToggleDeformation)
+            }
             Key::Character(c) if c.eq_ignore_ascii_case("r") => self.command(Command::ResetCamera),
-            Key::Character(c) if c.eq_ignore_ascii_case("f") => self.command(Command::CycleField { forward: c != "F" }),
-            Key::Character(c) if c.eq_ignore_ascii_case("h") || c == "?" => self.command(Command::ToggleHelp),
+            Key::Character(c) if c.eq_ignore_ascii_case("f") => {
+                self.command(Command::CycleField { forward: c != "F" })
+            }
+            Key::Character(c) if c.eq_ignore_ascii_case("h") || c == "?" => {
+                self.command(Command::ToggleHelp)
+            }
             Key::Named(NamedKey::ArrowRight) => self.command(Command::StepFrame { forward: true }),
             Key::Named(NamedKey::ArrowLeft) => self.command(Command::StepFrame { forward: false }),
             Key::Named(NamedKey::ArrowUp) => self.command(Command::GainUp),
@@ -599,9 +651,17 @@ impl Viewer {
         let scene = &self.project.scenes[self.project.selected];
         self.view.advance(scene, dt);
         self.sync_editor_scene();
-        let (Some(window), Some(state)) = (self.window.clone(), self.egui_state.as_mut()) else { return };
+        let (Some(window), Some(state)) = (self.window.clone(), self.egui_state.as_mut()) else { return;
+        };
         let raw = state.take_egui_input(&window);
         let full = self.run_gui(raw);
+        let delay = full
+            .viewport_output
+            .values()
+            .map(|v| v.repaint_delay)
+            .min()
+            .unwrap_or(std::time::Duration::from_secs(30));
+        self.next_redraw = now + delay.min(std::time::Duration::from_secs(30));
         if let Some(state) = self.egui_state.as_mut() {
             state.handle_platform_output(&window, full.platform_output.clone());
         }
@@ -623,13 +683,18 @@ impl Viewer {
                         &self.project.scenes[self.project.selected],
                         if self.view.swing(&self.project.scenes[self.project.selected]).is_some() { self.view.clock } else { self.view.time },
                         if self.view.deformed { self.view.gain } else { 0.0 },
-                        [self.view.yaw, self.view.pitch, self.view.zoom, vp.w.max(1) as f32 / vp.h.max(1) as f32],
-                        DisplayOptions { show_mesh: self.view.show_mesh && !self.editor.as_ref().is_some_and(|e| e.shows_body_only()), show_contour: self.view.show_contour, field: self.view.field, viewport: Some(scene_rect), background: Some(background), style: self.view.style_for(&self.project.scenes[self.project.selected], geometry), swing: self.view.swing(&self.project.scenes[self.project.selected]), shade: geometry, key_colours: geometry.then_some(self.view.key_colours), pan: self.view.pan },
+                        [self.view.yaw, self.view.pitch, self.view.zoom, vp.w.max(1) as f32 / vp.h.max(1) as f32,
+                        ],
+                        DisplayOptions { show_mesh: self.view.show_mesh && !self.editor.as_ref().is_some_and(|e| e.shows_body_only()), show_contour: self.view.show_contour, field: self.view.field, viewport: Some(scene_rect), background: Some(background), style: self.view.style_for(&self.project.scenes[self.project.selected], geometry), swing: self.view.swing(&self.project.scenes[self.project.selected]), shade: geometry, key_colours: geometry.then_some(self.view.key_colours), pan: self.view.pan,
+                        },
                     );
-                    r.paint_egui(&view, &ctx, full.take().expect("painted once"), [size.0, size.1]);
+                    r.paint_egui(&view, &ctx, full.take().expect("painted once"), [size.0, size.1],
+                    );
                     r.queue.present(frame);
                 }
-                wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => s.configure(&r.device, c),
+                wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
+                    s.configure(&r.device, c)
+                }
                 // Skip the frame and retry: timeouts and occlusion are transient, and wgpu reports a
                 // surface validation error through its uncaptured-error handler.
                 wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Validation => {}
@@ -665,6 +730,9 @@ impl ApplicationHandler for Viewer {
         }
     }
     fn window_event(&mut self, e: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+        if !matches!(event, WindowEvent::RedrawRequested) {
+            self.next_redraw = Instant::now();
+        }
         // egui sees every event first (pointer position, text, scrolling); what it does not use reaches the model.
         if let (Some(state), Some(window)) = (self.egui_state.as_mut(), self.window.as_ref()) {
             let _ = state.on_window_event(window, &event);
@@ -692,12 +760,22 @@ impl ApplicationHandler for Viewer {
                 let key = if self.mods.alt_key() { winit::platform::modifier_supplement::KeyEventExtModifierSupplement::key_without_modifiers(&event) } else { event.logical_key };
                 self.input(Input::Key(key))
             }
-            WindowEvent::MouseInput { state, button, .. } => self.input(if state == ElementState::Pressed { Input::Press(button) } else { Input::Release(button) }),
-            WindowEvent::CursorMoved { position, .. } => self.input(Input::Cursor((position.x, position.y))),
+            WindowEvent::MouseInput { state, button, .. } => {
+                self.input(if state == ElementState::Pressed { Input::Press(button) } else { Input::Release(button) })
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.input(Input::Cursor((position.x, position.y)))
+            }
             WindowEvent::MouseWheel { delta, .. } => self.input(Input::Wheel(match delta {
                 MouseScrollDelta::LineDelta(_, y) => y,
                 MouseScrollDelta::PixelDelta(p) => p.y as f32 / 100.0,
             })),
+            WindowEvent::Occluded(hidden) => {
+                self.occluded = hidden;
+                if !hidden {
+                    self.next_redraw = Instant::now();
+                }
+            }
             WindowEvent::RedrawRequested => self.redraw(e),
             _ => {}
         }
@@ -706,13 +784,52 @@ impl ApplicationHandler for Viewer {
         if self.quit {
             e.exit();
         }
-        self.editor.as_mut().map(|ed| ed.poll());
+        let changed = self.editor.as_mut().is_some_and(|ed| ed.poll());
+        let now = Instant::now();
+        let moving = !self.view.paused
+            && (self.scene().duration() > 0.0 || self.view.swing(self.scene()).is_some());
+        if moving && !self.occluded {
+            self.next_redraw = self
+                .next_redraw
+                .min(self.last + std::time::Duration::from_millis(16));
+        }
+        if self
+            .editor
+            .as_ref()
+            .is_some_and(|ed| ed.solving_for().is_some())
+        {
+            self.next_redraw = self
+                .next_redraw
+                .min(self.last + std::time::Duration::from_millis(100));
+        }
+        if changed {
+            self.next_redraw = now;
+        }
+        // Poll worker completion and linked files without repainting unchanged chrome.
+        e.set_control_flow(ControlFlow::WaitUntil(if self.occluded { now + std::time::Duration::from_millis(250) } else { self.next_redraw.min(now + std::time::Duration::from_millis(250)) }));
+        if self.recovery_flushed.elapsed().as_secs() >= 30 {
+            self.recovery_flushed = Instant::now();
+            if let Some(ed) = &mut self.editor {
+                if ed.dirty() {
+                    if let Ok(json) = ed.recovery_json() {
+                        if let Err(e) = crate::persistence::write(
+                            ed.path().with_extension("recovery.json"),
+                            json,
+                        ) {
+                            ed.set_status(format!("Recovery snapshot failed: {e}"));
+                        }
+                    }
+                }
+            }
+        }
         if self.layout_flushed.elapsed().as_secs() >= 30 {
             self.layout_flushed = Instant::now();
             self.gui.flush_layout();
         }
-        if let Some(w) = &self.window {
+        if !self.occluded && now >= self.next_redraw {
+            if let Some(w) = &self.window {
             w.request_redraw();
+            }
         }
     }
 }
@@ -775,6 +892,8 @@ fn new_viewer(project: ViewerProject, editor: Option<Box<dyn Authoring>>) -> Vie
         renderer: None,
         config: None,
         last: Instant::now(),
+        next_redraw: Instant::now(),
+        occluded: false,
         pointer: Pointer::default(),
         mods: ModifiersState::default(),
         error: None,
@@ -789,6 +908,7 @@ fn new_viewer(project: ViewerProject, editor: Option<Box<dyn Authoring>>) -> Vie
         test_events: Vec::new(),
         test_time: 0.0,
         layout_flushed: Instant::now(),
+        recovery_flushed: Instant::now(),
         display_file: None,
         editor,
         dashboard: None,
@@ -1271,7 +1391,7 @@ mod tests {
     }
 
     #[test]
-    fn closing_with_unsaved_changes_warns_once_then_closes() {
+    fn closing_with_unsaved_changes_requires_an_explicit_discard() {
         let mut v = member_viewer();
         v.request_quit();
         assert!(v.quit, "a clean model closes at once");
@@ -1284,7 +1404,9 @@ mod tests {
         v.request_quit();
         assert!(!v.quit && v.editor.as_ref().unwrap().status().contains("Unsaved"));
         v.request_quit();
-        assert!(v.quit, "asking again discards");
+        assert!(!v.quit, "repeated close never discards implicitly");
+        v.dispatch(UiAction::DiscardAndClose);
+        assert!(v.quit);
     }
 
     #[test]
@@ -1847,7 +1969,8 @@ mod tests {
         let step = solid_kernel::occt::Brep::box_from_corners([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]).to_step_text().unwrap();
         let path = dir.join("cube.step");
         std::fs::write(&path, step).unwrap();
-        let mut ed = SolidSession::new(fea_problem::templates::templates().remove(0).1, dir.join("model.json"));
+        let mut ed = SolidSession::new(fea_problem::templates::templates().remove(0).1, dir.join("model.json"),
+        );
         ed.open_path(path.to_str().unwrap());
         let mut v = viewer(Some(Box::new(ed)));
         let tab = target(&v, "Mesh tab");
@@ -1869,15 +1992,14 @@ mod tests {
             for ix in 1..16 {
                 let at = ((r.x + r.w * ix / 16) as f64, (r.y + r.h * iy / 10) as f64);
                 click(&mut v, at);
-                if let Some(item) = labels(&v).into_iter().find(|l| l.starts_with("Fixed support on '")) {
-                    first = Some(item);
+                if labels(&v).iter().any(|l| l == "Fixed") {
+                    first = v.editor.as_ref().unwrap().tree().into_iter().find(|n| n.selected && n.label.starts_with("face")).map(|n| n.label);
                     break 'scan;
                 }
             }
         }
-        let item = first.expect("a click lands on the cube");
-        let held = item.trim_start_matches("Fixed support on '").trim_end_matches('\'').to_string();
-        let entry = target(&v, &item);
+        let held = first.expect("a click lands on a cube face");
+        let entry = target(&v, "Fixed");
         click(&mut v, entry);
         // Pick a different face with the mouse for the hole.
         let mut hole_face = None;
@@ -1885,8 +2007,7 @@ mod tests {
             for ix in 1..16 {
                 let at = ((r.x + r.w * ix / 16) as f64, (r.y + r.h * iy / 10) as f64);
                 click(&mut v, at);
-                if let Some(item) = labels(&v).into_iter().find(|l| l.starts_with("Fixed support on '")) {
-                    let name = item.trim_start_matches("Fixed support on '").trim_end_matches('\'').to_string();
+                if let Some(name) = v.editor.as_ref().unwrap().tree().into_iter().find(|n| n.selected && n.label.starts_with("face")).map(|n| n.label) {
                     if name != held {
                         hole_face = Some(name);
                         break 'scan2;
@@ -1897,7 +2018,8 @@ mod tests {
         let hole_face = hole_face.expect("a second face is pickable");
         // Close the surface menu (it stays selected), then run the hole action on the selection.
         key(&mut v, NamedKey::Escape);
-        v.dispatch(UiAction::Editor(session::EditorAction::Solid(SolidAction::SolidOp(PromptOp::Hole))));
+        v.dispatch(UiAction::Editor(session::EditorAction::Solid(SolidAction::SolidOp(PromptOp::Hole),
+        )));
         frame(&mut v);
         v.input(Input::Key(Key::Character("2".into())));
         key(&mut v, NamedKey::Enter);
@@ -1945,4 +2067,26 @@ mod tests {
         frame(&mut v);
         assert!(labels(&v).iter().any(|l| l == "New part"));
     }
+    #[test]
+    fn the_units_dropdown_converts_the_saved_physical_model_through_real_clicks() {
+        let dir=tempfile::tempdir().unwrap();
+        let path=dir.path().join("units.json");
+        let problem=fea_problem::templates::templates().remove(0).1;
+        let physical_e=problem.modulus_pa();
+        let physical_thickness=problem.thickness*problem.units.length_m();
+        let ed=crate::gpu_viewer::editor::solid::SolidSession::new(problem,path.clone());
+        let mut v=viewer(Some(Box::new(ed)));
+        let at=target(&v,"Units:"); click(&mut v,at);
+        let at=target(&v,"Unit system dropdown"); click(&mut v,at);
+        let at=target(&v,"mm, N, MPa");
+        assert_ne!(v.gui.ctx().layer_id_at(pos(at)),Some(egui::LayerId::new(egui::Order::Foreground,egui::Id::new("value-card"))));
+        click(&mut v,at);
+        assert!(v.editor.as_ref().unwrap().status().contains("rescaled"));
+        v.dispatch(UiAction::Editor(crate::gpu_viewer::editor::session::EditorAction::Solid(crate::gpu_viewer::editor::solid::SolidAction::Save)));
+        let converted=fea_problem::Problem::from_json(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(converted.units,fea_problem::UnitSystem::MmMpa);
+        assert!((converted.modulus_pa()/physical_e-1.0).abs()<1e-12);
+        assert!((converted.thickness*converted.units.length_m()/physical_thickness-1.0).abs()<1e-12);
+    }
+
 }

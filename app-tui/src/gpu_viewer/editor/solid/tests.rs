@@ -476,7 +476,8 @@ fn the_hole_tool_places_a_hole_where_the_front_face_is_clicked() {
     };
     let before = holes(&s).len();
     // Front view, centred on the part: the viewport centre is the part's centre.
-    let cam = Camera { yaw: 0.0, pitch: 0.0, zoom: 1.0, aspect: 1.0, pan: [0.0, 0.0] };
+    let cam = Camera { yaw: 0.0, pitch: 0.0, zoom: 1.0, aspect: 1.0, pan: [0.0, 0.0],
+    };
     let size = [800.0, 800.0];
     // Without the tool a click only selects.
     Authoring::click(&mut s, [400.0, 400.0], size, &cam);
@@ -498,7 +499,9 @@ fn the_hole_tool_places_a_hole_where_the_front_face_is_clicked() {
     // Esc leaves the tool; an imported mesh has no holes to add.
     s.handle_key(Key::Escape, Mods::default());
     assert_eq!(s.tool, SolidTool::Select);
-    s.problem.geometry = Geometry::Imported { path: "x.msh".into() };
+    s.problem.geometry = Geometry::Imported { path: "x.msh".into(),
+        scale: Default::default(),
+    };
     assert!(s.hole_availability().is_err());
 }
 
@@ -1153,8 +1156,11 @@ fn the_unit_system_is_converted_or_declared_from_a_card_and_every_card_and_the_l
     assert_eq!(s.problem.units, UnitSystem::InchPsi);
     assert!(Authoring::tree(&s).iter().any(|n| n.label == "Units: inch, lbf, psi"));
     s.do_action(SolidAction::OpenCard(CardForm::Units));
-    let labels: Vec<String> = s.card_view().unwrap().rows.into_iter().filter_map(|r| if let CardRow::Choice { label, .. } = r { Some(label) } else { None }).collect();
-    for want in ["Convert to mm, N, MPa", "Convert to m, N, Pa", "Declare as mm, N, MPa", "Declare as m, N, Pa"] {
+    assert!(s.card_view().unwrap().rows.iter().any(|r| matches!(r, CardRow::Select { options, selected, .. } if options.len()==3 && selected=="inch, lbf, psi")));
+    let labels: Vec<String> = s.card_view().unwrap().rows.into_iter().filter_map(|r| {
+            if let CardRow::Choice { label, .. } = r { Some(label) } else { None }
+        }).collect();
+    for want in ["Declare as mm, N, MPa", "Declare as m, N, Pa"] {
         assert!(labels.iter().any(|l| l == want), "{want} in {labels:?}");
     }
     let e_before = s.problem.material.e;
@@ -1167,7 +1173,9 @@ fn the_unit_system_is_converted_or_declared_from_a_card_and_every_card_and_the_l
     // The cards speak the new units, and so does the legend.
     s.selected = Some("top".into());
     s.do_action(SolidAction::OpenCard(CardForm::Pressure));
-    let unit = s.card_view().unwrap().rows.into_iter().find_map(|r| if let CardRow::Field { unit, .. } = r { Some(unit) } else { None }).unwrap();
+    let unit = s.card_view().unwrap().rows.into_iter().find_map(|r| {
+            if let CardRow::Field { unit, .. } = r { Some(unit) } else { None }
+        }).unwrap();
     assert_eq!(unit, "MPa");
     s.do_action(SolidAction::CardCancel);
     assert_eq!(Authoring::field_unit(&s, "von Mises stress"), "MPa");
@@ -1176,7 +1184,10 @@ fn the_unit_system_is_converted_or_declared_from_a_card_and_every_card_and_the_l
     // A library material arrives in the model's units: 7075-T6 is 10 300 ksi = 71 016 MPa, with its mass density in tonne/mm3 units.
     s.do_action(SolidAction::OpenCard(CardForm::Materials));
     set_field(&mut s, 0, "7075 typical");
-    let first = s.card_view().unwrap().rows.into_iter().find_map(|r| if let CardRow::Choice { label, action: UiAction::Editor(EditorAction::Solid(a)), .. } = r { (label == "Al 7075-T6 (typical)").then_some(a) } else { None }).unwrap();
+    let first = s.card_view().unwrap().rows.into_iter().find_map(|r| {
+            if let CardRow::Choice { label, action: UiAction::Editor(EditorAction::Solid(a)), .. } = r { (label == "Al 7075-T6 (typical)").then_some(a) } else { None
+            }
+        }).unwrap();
     s.do_action(first);
     assert!((s.problem.material.e - 71_016.0).abs() < 5.0, "{}", s.problem.material.e);
     let rho_kg_m3 = s.problem.material.density * UnitSystem::MmMpa.density_kg_m3();
@@ -1186,10 +1197,11 @@ fn the_unit_system_is_converted_or_declared_from_a_card_and_every_card_and_the_l
     s.do_action(SolidAction::DeclareUnits(UnitSystem::MeterPa));
     assert_eq!((s.problem.units, s.problem.material.e), (UnitSystem::MeterPa, e));
     // A geometry that cannot be rescaled refuses a conversion and says why.
-    let mut imported = SolidSession::new(fea_problem::templates::imported("x.msh"), temp("units-imported"));
+    let mut imported = SolidSession::new(fea_problem::templates::imported("x.msh"), temp("units-imported"),
+    );
     imported.do_action(SolidAction::ConvertUnits(UnitSystem::MmMpa));
-    assert!(imported.status.contains("declare its units instead"), "{}", imported.status);
-    assert_eq!(imported.problem.units, UnitSystem::InchPsi);
+    assert!(imported.status.contains("rescaled"), "{}", imported.status);
+    assert_eq!(imported.problem.units, UnitSystem::MmMpa);
 }
 
 #[test]
@@ -1241,17 +1253,22 @@ fn an_imported_mesh_is_forecast_from_its_mesh_before_a_solve_and_the_units_slip_
     use fea_problem::diagnose::FailureClass;
     let inp = "*NODE\n1,0,0\n2,1,0\n3,2,0\n4,0,1\n5,1,1\n6,2,1\n*ELEMENT, TYPE=CPS4\n1,1,2,5,4\n2,2,3,6,5\n*NSET, NSET=LEFT\n1,4\n*NSET, NSET=RIGHT\n3,6\n";
     let mut p = fea_problem::templates::templates().into_iter().find(|(n, _)| *n == "Cantilever beam").unwrap().1;
-    p.geometry = fea_problem::Geometry::Imported { path: "bar.inp".into() };
+    p.geometry = fea_problem::Geometry::Imported { path: "bar.inp".into(),
+        scale: Default::default(),
+    };
     p.thickness = 1.0;
     p.supports = vec![Support::fixed("LEFT")];
-    p.loads = vec![fea_problem::Load::Force { edge: "RIGHT".into(), fx: 100.0, fy: 0.0, fz: 0.0 }];
+    p.loads = vec![fea_problem::Load::Force { edge: "RIGHT".into(), fx: 100.0, fy: 0.0, fz: 0.0,
+    }];
     p.material.e = 290.0;
     let mut s = SolidSession::new(p, temp("imported-forecast"));
     s.import = Some(("bar.inp".into(), inp.into()));
     assert!(!s.findings().iter().any(|d| d.summary.contains("would move this part")), "no mesh yet: nothing to read the size from");
     meshed(&mut s);
     let found = s.findings();
-    let scale = found.iter().find(|d| d.class == FailureClass::ScaleSuspect && d.summary.contains("would move this part")).expect("a forecast from the imported mesh");
+    let scale = found.iter().find(|d| {
+            d.class == FailureClass::ScaleSuspect && d.summary.contains("would move this part")
+        }).expect("a forecast from the imported mesh");
     assert!(scale.questions[0].options.len() >= 2);
     // A sound modulus raises nothing.
     s.problem.material.e = 29.0e6;
@@ -1312,4 +1329,21 @@ fn a_contact_between_two_bodies_is_added_edited_solved_and_reported_in_the_edito
     // Removing it takes the pair out and the solve is then a refusal, not a silent single body.
     s.do_action(SolidAction::Activate(FieldRow::ContactRemove(0)));
     assert!(s.problem.contacts.is_empty());
+}
+
+#[test]
+fn externally_changed_model_is_not_overwritten_and_edits_are_recoverable() {
+    let dir=tempfile::tempdir().unwrap(); let path=dir.path().join("case.json");
+    let p=fea_problem::templates::templates().remove(0).1;
+    crate::persistence::write(&path,p.to_json().unwrap()).unwrap();
+    let mut s=SolidSession::new(p,path.clone());
+    s.problem.name="my changes".into(); s.dirty=true;
+    std::fs::write(&path,"external changes").unwrap();
+    s.save();
+    assert!(s.status.contains("conflict")); assert!(s.dirty);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(),"external changes");
+    assert_eq!(read_problem(&path.with_extension("recovery.json")).unwrap().name,"my changes");
+    s.problem.name="other".into();
+    Authoring::restore_recovery(&mut s).unwrap();
+    assert_eq!(s.problem.name,"my changes"); assert!(s.dirty);
 }

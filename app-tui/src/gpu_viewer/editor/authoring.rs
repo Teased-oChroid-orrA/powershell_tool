@@ -146,12 +146,20 @@ pub trait Authoring {
         None
     }
     /// Shift-drag box (viewport pixels): select everything whose centre is inside.
-    fn box_select(&mut self, _a: [f32; 2], _b: [f32; 2], _size: [f32; 2], _cam: &Camera, _additive: bool) {}
+    fn box_select(&mut self, _a: [f32; 2], _b: [f32; 2], _size: [f32; 2], _cam: &Camera, _additive: bool,
+    ) {}
     /// Right press: select what is under the cursor without applying a tool.
     fn select_at(&mut self, px: [f32; 2], size: [f32; 2], cam: &Camera);
     /// Scene for the current state; the placeholder for a model that cannot be drawn yet.
     fn scene(&mut self) -> Result<Scene, String>;
     fn needs_scene(&self) -> bool;
+    /// A model snapshot for crash recovery, separate from explicit Save.
+    fn recovery_json(&self) -> Result<String, String> {
+        Err("recovery unavailable".into())
+    }
+    fn restore_recovery(&mut self) -> Result<(), String> {
+        Err("recovery unavailable".into())
+    }
     /// Collect finished background work; true when something changed.
     fn poll(&mut self) -> bool;
     /// A number or text is being typed: every key belongs to it.

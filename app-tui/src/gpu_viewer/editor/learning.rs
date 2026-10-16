@@ -9,12 +9,14 @@
 //! 3. *Use* (explicit, gated): the model may be enabled only when the saved report says it is
 //!    [`Verdict::Eligible`]: enough sessions, enough held-out events, a significant top-1 gain
 //!    (paired sign test) and no top-3 regression. Contexts the model has not seen defer to the rules.
-use super::advisory::{evaluate, suggest, Baseline, Context, CountModel, Event, Metrics, Suggestion, Trace, ADVISORY_VERSION, MIN_SUPPORT};
 use super::advisory::Advisor;
+use super::advisory::{evaluate, suggest, Baseline, Context, CountModel, Event, Metrics, Suggestion, Trace, ADVISORY_VERSION, MIN_SUPPORT,
+};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::io::Write;
 use std::{
     collections::BTreeSet,
-    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -227,23 +229,11 @@ impl Store {
         self.dir.join("events.jsonl")
     }
     pub fn append(&self, r: &Recorded) -> Result<(), String> {
-        std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(self.events()).map_err(|e| e.to_string())?;
-        let line = serde_json::to_string(r).map_err(|e| e.to_string())?;
-        writeln!(f, "{line}").map_err(|e| e.to_string())
+        crate::persistence::append_json(&self.events(), r).map_err(|e| e.to_string())
     }
     /// Newest `MAX_EVENTS` events; unreadable lines (a torn last write) are skipped.
     pub fn read(&self) -> Result<Vec<Recorded>, String> {
-        let text = match std::fs::read_to_string(self.events()) {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(e.to_string()),
-        };
-        let mut all: Vec<Recorded> = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
-        if all.len() > MAX_EVENTS {
-            all.drain(..all.len() - MAX_EVENTS);
-        }
-        Ok(all)
+        crate::persistence::read_recent(&self.events(), MAX_EVENTS).map_err(|e| e.to_string())
     }
     pub fn has_recordings(&self) -> bool {
         std::fs::metadata(self.events()).is_ok_and(|m| m.len() > 0)
@@ -263,14 +253,16 @@ impl Store {
     }
     pub fn save_settings(&self, s: &Settings) -> Result<(), String> {
         std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
-        std::fs::write(self.dir.join("settings.json"), serde_json::to_string_pretty(s).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+        crate::persistence::write(self.dir.join("settings.json"), serde_json::to_string_pretty(s).map_err(|e| e.to_string())?,
+        ).map_err(|e| e.to_string())
     }
     pub fn load_bundle(&self) -> Option<Bundle> {
         std::fs::read_to_string(self.dir.join("model.json")).ok().and_then(|t| serde_json::from_str(&t).ok())
     }
     pub fn save_bundle(&self, b: &Bundle) -> Result<(), String> {
         std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
-        std::fs::write(self.dir.join("model.json"), serde_json::to_string_pretty(b).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+        crate::persistence::write(self.dir.join("model.json"), serde_json::to_string_pretty(b).map_err(|e| e.to_string())?,
+        ).map_err(|e| e.to_string())
     }
 }
 
