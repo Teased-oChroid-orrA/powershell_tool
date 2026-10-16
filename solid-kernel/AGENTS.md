@@ -90,3 +90,5 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - `step_body::BodyContext::read_spline_surface` binds declarations to exact-document body-face references and assigned units; full spline B-Rep import remains refused. See [Phase 26](../docs/issue-46-phase-26.md).
 
 - [Phase 27 source-bound spline curves](../docs/issue-46-phase-27.md): shared bounded wrapper resolution and exact-document edge/unit binding.
+
+- [Phase 28 rational curve enclosures and sampling](../docs/issue-46-phase-28.md): shared outward-rounded recurrence, whole-interval Hausdorff bounds, progress/cancellation and resource limits.

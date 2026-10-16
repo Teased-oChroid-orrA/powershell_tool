@@ -1,0 +1,36 @@
+{
+  "source_commit": "166279e61b964c846cda71f8c4add6be76287305",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 114,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 97,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "development_failures": [],
+  "evidence_logs_prefix": "native-curve-sampling-",
+  "sampling_development": {
+    "circle_segments": 4094,
+    "circle_enclosure_calls": 24561,
+    "tolerance": 0.001,
+    "four_test_runner_seconds": 0.04,
+    "standalone_benchmark": false
+  },
+  "not_verified": [
+    "Full spline B-Rep, projection and p-curve/trim/locus validation",
+    "Representative CAD sampling performance/memory",
+    "Windows/macOS execution",
+    "Remaining epic gates"
+  ]
+}
