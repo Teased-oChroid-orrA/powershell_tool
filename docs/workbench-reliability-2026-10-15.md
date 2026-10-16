@@ -132,3 +132,26 @@ restoration are not claimed.
 - Future product breadth is proposed in [the breadth roadmap](workbench-breadth-2026-10-15.md). It is not permission to merge
   or an assertion those capabilities are implemented. Camera fit/padding for rotated models in small windows is a future
   navigation increment; the current Reset camera remains a fixed preset. No camera preference redesign was bundled here.
+
+## Completed local qualification and final verification ledger
+
+The broad CAD-enabled Linux qualification completed successfully: **137 targets, 2,568 passed, 0 failed, 86 intentionally
+ignored**. Both the workspace command and the terminal-only bin/lib/tests compile exited 0. The report records its starting
+commit `df837a1` and `dirty: true` honestly: documentation and later follow-up work were present during implementation.
+Do not describe that as an untouched-main baseline or an immutable final-head run.
+
+A final performance review found that selection changes were invalidating the picking cache because it used the whole UI
+revision. The cache now uses immutable mesh identity (a Weak reference, preventing address reuse without retaining obsolete
+mesh buffers), camera and viewport. **370 native tests passed** after that change. An additional focused regression passed
+for selection reuse, camera invalidation, replacement-mesh invalidation and releasing the previous mesh's buffers. The final
+software-Vulkan command passed **9 tests** again. Profiling now reports the actual **208-byte** uniform payload; the earlier
+64-byte printout was stale after display settings expanded. This changes measurement output, not GPU upload behavior.
+The optional qualification GPU phase retains the selected CAD feature to avoid an unnecessary feature-switch rebuild.
+The final terminal-only compile also passed after the cache change.
+
+The final validation sequence freezes the committed worktree and runs `scripts/qualify.py --cad --gpu --jobs 1` once more.
+Its exact-head, clean-worktree result is recorded in `/workspace/reliability-evidence/qualification-clean.json` and in draft
+[PR #45](https://github.com/Teased-oChroid-orrA/powershell_tool/pull/45), alongside the current hosted Linux/macOS/Windows checks.
+Read the PR's current validation status for that last run; do not substitute the earlier dirty-worktree report. No further
+implementation edits are intended during this frozen run. Platform smoke limitations and optional ignored soaks remain as
+stated above. The draft PR remains unmerged, and issue #12 remains closed.

@@ -15,11 +15,15 @@ parser.add_argument('--output', default='qualification.json')
 args = parser.parse_args()
 root = pathlib.Path(__file__).resolve().parents[1]
 base = ['cargo', 'test', '--workspace', '--locked', '-j', str(args.jobs), '--no-fail-fast']
+cad_feature = 'app-tui/occt-source' if sys.platform == 'win32' else 'app-tui/occt'
 if args.cad:
-    base += ['--features', 'app-tui/occt-source' if sys.platform == 'win32' else 'app-tui/occt']
+    base += ['--features', cad_feature]
 commands = [base, ['cargo', 'check', '-p', 'app-tui', '--no-default-features', '--bins', '--lib', '--tests', '--locked', '-j', str(args.jobs)]]
 if args.gpu:
-    commands.append(['cargo', 'test', '-p', 'app-tui', '--lib', '--locked', '-j', str(args.jobs), '--', '--ignored', 'gpu_viewer', '--skip', 'snapshot'])
+    gpu = ['cargo', 'test', '-p', 'app-tui', '--lib', '--locked', '-j', str(args.jobs)]
+    if args.cad:
+        gpu += ['--features', cad_feature]
+    commands.append(gpu + ['--', '--ignored', 'gpu_viewer', '--skip', 'snapshot'])
 report = {'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip(), 'platform': sys.platform, 'dirty': bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=root, text=True).strip()), 'checks': []}
 failed = False
 for command in commands:

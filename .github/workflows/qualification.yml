@@ -9,6 +9,9 @@ on:
       - 'fea-problem/**'
       - 'solid-kernel/**'
       - 'fea-core/**'
+concurrency:
+  group: qualification-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
 jobs:
   qualify:
     runs-on: ${{ matrix.os }}
@@ -25,6 +28,7 @@ jobs:
             ~/.cargo/registry
             target
           key: qualification-${{ runner.os }}-${{ hashFiles('Cargo.lock', '.github/workflows/qualification.yml', 'scripts/qualify.py') }}
+          restore-keys: qualification-${{ runner.os }}-
       - run: python scripts/qualify.py --jobs 2
         env:
           CARGO_INCREMENTAL: '0'
