@@ -1,0 +1,84 @@
+{
+  "epic": 46,
+  "draft_pr": 65,
+  "branch": "feature/native-cad-advanced-meshing",
+  "snapshot_date": "2026-10-16",
+  "latest_qualified_source": "bfc91ef46eadc79b368e99499633a5a921c5c94b",
+  "epic_complete": false,
+  "production_backend": "OCCT retained",
+  "main_verified_remote": "8ba27a2fd21b88f7790d3ac2f530b498e3b031c2",
+  "merge_or_retirement_approved": false,
+  "local_tests": {
+    "cad_enabled": 70,
+    "feature_off": 53,
+    "failed": 0,
+    "ignored": 0
+  },
+  "latest_app_compile_source": "93f0fb6",
+  "hosted_ci": "No additional runs for diagnostic increments; current native source lacks new Windows/macOS qualification.",
+  "progress_documents": [
+    "issue-46-phase-1.md",
+    "issue-46-phase-2.md",
+    "issue-46-phase-3.md",
+    "issue-46-phase-4.md",
+    "issue-46-phase-5.md",
+    "issue-46-phase-6.md",
+    "issue-46-phase-7.md",
+    "issue-46-phase-8.md",
+    "issue-46-phase-9.md",
+    "issue-46-phase-10.md",
+    "issue-46-phase-11.md",
+    "issue-46-phase-12.md",
+    "issue-46-phase-13.md",
+    "issue-46-phase-14.md",
+    "issue-46-phase-15.md",
+    "issue-46-phase-16.md",
+    "issue-46-phase-17.md"
+  ],
+  "support_matrix": "issue-46-native-support-matrix-2026-10-16.md",
+  "handoff": "issue-46-claude-handoff.md",
+  "open_gates": {
+    "51": [
+      "Broader exchange/geometry/assembly/exact trims/healing",
+      "Cross-edit naming and general association transfers"
+    ],
+    "52": [
+      "General constrained recovery/refinement",
+      "Cavities/regions/multiple components"
+    ],
+    "53": [
+      "General sliver elimination and solver conditioning evidence"
+    ],
+    "54": [
+      "Mature strategy selection across newly qualified methods"
+    ],
+    "55": [
+      "CAD-conforming curved high-order qualification"
+    ],
+    "56": [
+      "General 3D hybrid transitions"
+    ],
+    "57": [
+      "Metric tensor/complexity qualification"
+    ],
+    "58": [
+      "Directional adaptation"
+    ],
+    "59": [
+      "ALE and state/history transfer"
+    ],
+    "60": [
+      "Verified solver-aware advanced optimization"
+    ],
+    "61": [
+      "Representative verified corpus before learning"
+    ],
+    "62": [
+      "AMR/autotuner production qualification"
+    ],
+    "63": [
+      "Production parity and separately approved retirement"
+    ]
+  },
+  "p0_status": "Audited foundations implemented; keep source scope/review/merge acceptance gates open in issues 47\u201350 and 64."
+}

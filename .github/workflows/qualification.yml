@@ -1,6 +1,12 @@
 name: Workbench qualification
 on:
   workflow_dispatch:
+    inputs:
+      scope:
+        description: Full matrix or targeted Windows foundations/derivative regression
+        type: choice
+        options: [workspace, foundations]
+        default: workspace
   pull_request:
     paths-ignore:
       - 'docs/**'
@@ -11,6 +17,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   qualify:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'foundations'
     name: qualify (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -42,4 +49,28 @@ jobs:
         if: always()
         with:
           name: qualification-${{ runner.os }}
+          path: qualification.json
+
+  foundations-windows:
+    if: github.event_name == 'workflow_dispatch' && inputs.scope == 'foundations'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: qualification-${{ runner.os }}-${{ hashFiles('Cargo.lock', '.github/workflows/qualification.yml', 'scripts/qualify.py') }}
+          restore-keys: qualification-${{ runner.os }}-
+      - run: python scripts/qualify.py --scope foundations --jobs 2
+        env:
+          CARGO_INCREMENTAL: '0'
+          CARGO_PROFILE_TEST_DEBUG: '0'
+          CARGO_PROFILE_DEV_DEBUG: '0'
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: foundations-Windows
           path: qualification.json

@@ -1,0 +1,25 @@
+{
+  "epic": 46,
+  "draft_pr": 65,
+  "branch": "feature/native-cad-advanced-meshing",
+  "snapshot_date": "2026-10-16",
+  "latest_qualified_source": "166279e61b964c846cda71f8c4add6be76287305",
+  "epic_complete": false,
+  "previous_progress_snapshot": "issue-46-progress-phase-27.json",
+  "tests": {
+    "cad_enabled": 114,
+    "feature_off": 97,
+    "failed": 0,
+    "ignored": 0,
+    "app_cad_lib_tests_compile": "passed at same source"
+  },
+  "later_increments": [
+    "Phase 28 shared outward-rounded de Boor enclosures and cancellable Hausdorff-bounded sampling"
+  ],
+  "native_body_spline_support": "still refused until sampling/surface/trim gates pass",
+  "production_backend": "OCCT retained",
+  "remaining_gates": "All open CAD/PLC/quality/P2/P3/retirement gates in previous snapshot remain open; declarations/evaluation do not close #51.",
+  "handoff": "issue-46-claude-handoff.md",
+  "hosted_ci": "No additional dispatch; latest native source lacks new Windows/macOS execution qualification.",
+  "merge_or_retirement_approved": false
+}

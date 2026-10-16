@@ -1,0 +1,25 @@
+{
+  "epic": 46,
+  "draft_pr": 65,
+  "branch": "feature/native-cad-advanced-meshing",
+  "snapshot_date": "2026-10-16",
+  "latest_qualified_source": "d355037d06abaf578410d7158ac9ac3b2ce408ce",
+  "epic_complete": false,
+  "previous_progress_snapshot": "issue-46-progress-phase-28.json",
+  "tests": {
+    "cad_enabled": 118,
+    "feature_off": 101,
+    "failed": 0,
+    "ignored": 0,
+    "app_cad_lib_tests_compile": "passed at same source"
+  },
+  "later_increments": [
+    "Phase 29 deterministic global curve distance brackets and Cartesian convex-hull conditioning"
+  ],
+  "native_body_spline_support": "still refused until sampling/surface/trim gates pass",
+  "production_backend": "OCCT retained",
+  "remaining_gates": "All open CAD/PLC/quality/P2/P3/retirement gates in previous snapshot remain open; declarations/evaluation do not close #51.",
+  "handoff": "issue-46-claude-handoff.md",
+  "hosted_ci": "No additional dispatch; latest native source lacks new Windows/macOS execution qualification.",
+  "merge_or_retirement_approved": false
+}

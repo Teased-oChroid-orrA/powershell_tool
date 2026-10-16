@@ -1,0 +1,31 @@
+{
+  "source_commit": "98cd85a8720c7a70f8eb3fce7030e55beb59ac10",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 62,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 50,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "numerical": "Native STEP bar Tet4/Tet10 source-reference support/load selections retain existing 1e-6 relative displacement criterion.",
+  "negative_cases": [
+    "Changed/missing/unknown/ambiguous source face lookup",
+    "Empty or absent volume boundary regions refuse selection"
+  ],
+  "not_verified": [
+    "Complete CAD-face volume coverage",
+    "General CAD edit/AMR/history/material/contact transfer",
+    "PLC recovery and remaining epic gates"
+  ]
+}

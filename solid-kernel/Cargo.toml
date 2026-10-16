@@ -8,8 +8,8 @@ publish = false
 # B-rep solids for the FEA preprocessor (ADR-019). The part that does not need a C++ toolchain: a face-tagged,
 # watertight surface mesh with signed-distance and per-face distance queries (BVH), and the tetrahedral volume
 # meshing of it through `fea-core::tetmesh`. The `occt` feature adds the OpenCascade side (modelling, booleans,
-# fillets, STEP, tessellation into that surface mesh); it compiles OCCT from source (about 25 minutes the first
-# time, CMake required, `CMAKE_POLICY_VERSION_MINIMUM=3.5` with CMake 4), so it is off by default.
+# fillets, STEP, tessellation into that surface mesh); it uses a prebuilt OCCT by default
+# (OCCT_ROOT overrides its location). The separate occt-source feature requires CMake and a longer build.
 [features]
 default = []
 occt = ["dep:cadrum"]
@@ -20,3 +20,9 @@ occt-source = ["occt", "cadrum/source"]
 [dependencies]
 fea-core = { path = "../fea-core" }
 cadrum = { version = "0.9", default-features = false, optional = true }
+
+# Audited MIT OR Apache-2.0; bounded 2D chart CDT, not a CAD/3D kernel.
+spade = "=2.15.1"
+
+# Reuse locked RustCrypto SHA-256 for exact-source association identity.
+sha2 = { version = "=0.10.9", default-features = false }

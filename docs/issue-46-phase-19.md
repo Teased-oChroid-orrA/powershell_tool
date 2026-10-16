@@ -1,0 +1,11 @@
+# Issue 46 — Phase 19: bounded rational B-spline curve evaluation
+
+Source `6cf9dfe` adds `nurbs::NurbsCurve`, a geometry foundation for clamped continuous positive-weight rational B-spline curves. Construction validates degree/control/weight/knot counts, monotonic knots, clamping, continuous interior multiplicities, native arithmetic envelopes and explicit control-point/degree budgets. The full expanded knot vector is owned privately. Periodic/unclamped/discontinuous curves and nonpositive/invalid weights refuse explicitly.
+
+Homogeneous de Boor evaluation uses O(degree²) work and O(degree) scratch. The default degree cap is 16 and control-point cap 4,096. Exact endpoint requests return the original authoritative endpoint controls. Out-of-domain/nonfinite parameters are errors, never clamped silently. This is numerical curve evaluation only: it does not certify exact trim intersections, projection error or B-Rep validity, and does not change the analytic STEP importer or production backend capabilities.
+
+Five analytic/invariance regressions verify: rational quadratic quarter-circle radius/midpoint/endpoints within 1e-12; polynomial Bezier and piecewise-linear spans; affine knot reparameterization and common weight scaling; rational cubic degree-elevation equivalence and repeated-knot continuous joins; malformed/nonfinite/discontinuous/budget/parameter refusal. No CAD exporter result is assumed to be the analytic truth.
+
+No dependency, tolerance relaxation, hosted CI, production importer/strategy/main change or OCCT retirement. Next is bounded source-declaration mapping with source identities/explicit units, followed by separately verified geometric sampling/projection/surface/trim integration. The native B-Rep subset remains LINE/CIRCLE on PLANE/CYLINDRICAL_SURFACE until those gates pass. General native CAD and constrained recovery/quality/P2/P3/final gates remain open. Full test results are recorded in the companion verification report.
+
+Phase 19 final checks at `6cf9dfeba1f05384357b37be0b995c7f235c4572`: **75 CAD-enabled / 58 feature-off tests pass**, no failures/ignored checks. App compilation remains Phase 16 for unchanged production callers. [Verification](issue-46-phase-19-verification.json).

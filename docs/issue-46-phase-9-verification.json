@@ -1,0 +1,39 @@
+{
+  "source_commit": "8ab1b2be2a64fe9c3b27e19d19480b293b61da59",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 54,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 42,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "cli": {
+    "canonical_exit_code": 0,
+    "strict_expected_exit_code": 1,
+    "changed_samples": 22,
+    "max_projection_deviation_mm": 1.407097852748628e-12,
+    "geometry_tolerance_mm": 1e-07,
+    "candidate_pairs": 2275,
+    "vertices": 59,
+    "triangles": 114,
+    "source_faces": 3
+  },
+  "scope": "explicit parameter-only canonicalization; original world/source data unchanged",
+  "not_verified": [
+    "general sewing/healing",
+    "cylindrical holes and assemblies/cavities",
+    "exact trim validity/B-splines",
+    "general PLC recovery and later epic gates"
+  ]
+}

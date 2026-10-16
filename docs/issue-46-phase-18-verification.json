@@ -1,0 +1,98 @@
+{
+  "source_commit": "f349ed3c0ad49ab5239493ad7ef556c9e108e4db",
+  "feature_source": "53a223f",
+  "build": {
+    "command": "cargo build -p solid-kernel --example step-inventory --locked --offline -j1",
+    "exit_code": 0
+  },
+  "standalone_cases": [
+    {
+      "case": "plc-bracket",
+      "arguments": [
+        "nema17-motor-bracket.step",
+        "--plc"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0
+    },
+    {
+      "case": "plc-tilted-seed",
+      "arguments": [
+        "solid-kernel/tests/data/tilted-cylinder.step",
+        "--canonical-surface",
+        "--star-seed",
+        "7.4,-3.2,3.2",
+        "--trial-kernel"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0
+    },
+    {
+      "case": "plc-strict-refusal",
+      "arguments": [
+        "solid-kernel/tests/data/tilted-cylinder.step",
+        "--plc"
+      ],
+      "exit_code": 1,
+      "expected_exit_code": 1
+    },
+    {
+      "case": "plc-hole-refusal",
+      "arguments": [
+        "nema17-motor-bracket.step",
+        "--star-seed",
+        "0,0,0"
+      ],
+      "exit_code": 1,
+      "expected_exit_code": 1
+    },
+    {
+      "case": "plc-invalid-center",
+      "arguments": [
+        "nema17-motor-bracket.step",
+        "--star-seed",
+        "1,NaN,3"
+      ],
+      "exit_code": 1,
+      "expected_exit_code": 1
+    },
+    {
+      "case": "plc-missing-center",
+      "arguments": [
+        "/not-a-file.step",
+        "--trial-kernel"
+      ],
+      "exit_code": 1,
+      "expected_exit_code": 1
+    },
+    {
+      "case": "plc-help",
+      "arguments": [
+        "--help"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0
+    }
+  ],
+  "additional_assertions": [
+    "Unique kernel phase progress",
+    "Candidate quality printed for declined trial",
+    "Bracket constraint counts unchanged"
+  ],
+  "reused_checks": {
+    "core_source": "bfc91ef",
+    "cad_enabled_tests": 70,
+    "feature_off_tests": 53,
+    "app_compile_source": "93f0fb6",
+    "reason": "Only developer example CLI changed; library and production callers unchanged."
+  },
+  "development_failures": [
+    "E0425 stale progress-variable rename, corrected",
+    "E0282 unused untyped progress state due missed helper replacement, corrected"
+  ],
+  "not_verified": [
+    "Solver analysis in CLI",
+    "Production availability",
+    "General CAD/PLC and later epic gates"
+  ]
+}

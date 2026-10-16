@@ -1,0 +1,11 @@
+# Issue 46 — Phase 11: exact-document native source associations
+
+Source `d5c73a9` adds deterministic SHA-256 fingerprints of the exact bounded, accepted STEP physical-file bytes and `EntityReference { document, entity }`. `Inventory::resolve_reference` rejects a different document before considering an entity ID and explicitly refuses absent IDs. Identical reloads preserve references. Even a whitespace-only source change invalidates associations conservatively; no semantic geometry equivalence or cross-export persistent naming is claimed.
+
+The fingerprint travels through `AnalyticModel`, sampled surface, immutable intersection checking and `NativeGeometryMetadata`. Metadata constructs face references from the original source IDs rather than treating generated triangle or vector indices as persistent CAD identity. Arbitrary diagnostic mesh fixtures have no source document and cannot create document-scoped references. This remains native diagnostic infrastructure; production OCCT selections and the application schema are not migrated.
+
+Regressions verify an independently computed SHA-256 fixture value, identical reloads, missing IDs, changed entities with reused IDs, whitespace changes and mismatched fingerprints. The actual bracket regression resolves all 38 regenerated source-face associations back to ADVANCED_FACE records after checked distance-solid conversion, and refuses lookup in a modified document. This is the foundation for explicit reference remapping during regeneration; material/contact/BC/AMR association transfer and naming across CAD edits remain open.
+
+The existing locked RustCrypto sha2 0.10.9 is reused without default features. No package version changes; the lockfile also normalizes spade's package ordering. The elected MIT notice is shipped and the [dependency audit](issue-46-phase-11-dependency-audit.md) records the boundary. No custom hashing, runtime network, tolerance relaxation, hosted CI or production/main change. Verification results are recorded separately by source revision. General native exchange/exact trims/assemblies, PLC recovery and subsequent epic gates remain open.
+
+Final frozen-source checks: **60 CAD-enabled tests, 48 feature-off tests and CAD-enabled app lib/tests compilation pass**, no failures/ignored tests. [Verification](issue-46-phase-11-verification.json).

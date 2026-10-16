@@ -38,3 +38,61 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
   curved-face chords by projecting their midpoints onto the exact trimmed kernel face; face tags and manifold acceptance
   remain intact. The NEMA17 fixture needs eight extra triangles; global very fine tessellation was prohibitively expensive.
   Kernel validity alone does not prove a particular triangle tessellation is a closed manifold.
+
+- `src/cad.rs` owns backend-neutral profile/boolean/face contracts and the production shape handle; the existing OCCT adapter dispatches through it. `occt` retains compatibility exports. Capability availability is not a claim of exchange-entity/healing parity. Evidence: `docs/issue-46-phase-1.md`.
+
+- `src/step.rs` / `step_units.rs`: bounded native physical-file inventory and assigned length-unit metadata. These do not construct/validate geometric B-Rep or certify CAD import. `examples/step-inventory.rs` runs without OCCT; unsupported input/unit semantics are explicit. Evidence: `docs/issue-46-phase-2.md`.
+
+- `step_topology`: raw local body connectivity with cumulative expansion limits. Edge-use counts/closed loops are not geometric validity or a manifold certificate; explicit/unset outer-loop roles and unplaced source coordinates remain distinct. See `docs/issue-46-phase-3.md`.
+
+- `analytic_step` normalizes one directly represented analytic body to millimetres and validates/samples LINE/CIRCLE and PLANE/CYLINDRICAL_SURFACE geometry. It is not a trimmed-solid importer. `planar_step` classifies bounded sampled planar trim polygons, not exact curve intersections. No production switch; keep OCCT. Evidence: `docs/issue-46-phase-4.md` and `phase-5.md`.
+
+- `cylindrical_step`: bounded sampled single-bound periodic charts. All bracket cylinders pass, but a tilted export fails the strict turn certificate; no silent seam snapping. No exact trims or solid/tessellation guarantee. See `docs/issue-46-phase-6.md` for the current native support matrix and refusal regression.
+
+- `chart_mesh` / `native_surface`: diagnostic fixed-boundary CDT, source sample keys, bounded batched curved refinement, closed oriented edges/cyclic vertex links and per-face cancellation. Short arcs require an interior sample. This is not global geometric validity or a production CAD switch. See `docs/issue-46-phase-7.md`; CLI `step-inventory FILE --surface` needs no OCCT.
+
+- `triangle_intersection`: bounded exact-sign sampled facet checks and immutable checked single-shell ownership; native distance-solid bridge skips welding/repair and preserves source face IDs. Not exact CAD/PLC certification. Evidence: `docs/issue-46-phase-8.md`.
+
+- `ChartPolicy` defaults to strict. Explicit cylindrical parameter canonicalization stays within the existing model geometry tolerance and records every face/bound/oriented-use/edge/sample adjustment; world/source coordinates do not change. Preserve reports through checked geometry conversion. Generated tilted-cylinder fixture runs feature-off; see `docs/issue-46-phase-9.md`.
+
+- `orientation_repair`: explicit whole-source-face parity repair, strict default, atomic cancellation and complete face-sense reports. Reject mixed-face/nonorientable/nonmanifold/disconnected inputs; retain global geometric checks. `NativeDistanceSolid::into_parts` returns solid plus `NativeGeometryMetadata` containing all source associations/reports. See `docs/issue-46-phase-10.md`.
+
+- Native `Inventory` fingerprints exact accepted source bytes with locked SHA-256; `EntityReference` binds numeric entity IDs to that document and rejects mismatched/missing references. Fingerprints survive analytic/sampled/checked-distance metadata. Whitespace changes invalidate references; this is not cross-edit persistent naming or a geometric certificate. See `docs/issue-46-phase-11.md`.
+
+- `native_volume`: immutable diagnostic mesh/report/source metadata bridge using the existing lattice mesher. Resolve stored selections by document + source face ID; absent/empty generated boundary regions remain explicit unresolved references. Nonempty region is not complete CAD coverage. No PLC/new production capability. See `docs/issue-46-phase-12.md`.
+
+- `plc::ValidatedPlc` accepts only an immutable globally checked single-shell sampled surface; retains all triangular facets/undirected edge constraints/source-face reports with explicit budgets and cancellation. Input admission only, not recovered volume meshing or exact CAD certification. See `docs/issue-46-phase-13.md`.
+
+- `plc_star::StarSeed` requires exact strict interior-side visibility from a supplied kernel point to every validated PLC facet; preserves the boundary exactly. It is a limited conforming fan seed, not Delaunay/general PLC recovery or production strategy. Holes/nonvisible facets refuse, solver quality gates remain. See `docs/issue-46-phase-14.md`.
+
+- Current diagnostic capabilities/limits and pilot corpus: `docs/issue-46-native-support-matrix-2026-10-16.md`. Hollow tube preserves the through-hole; valid thin-wall/near-boundary positive seeds still refuse solver conversion under unchanged quality limits (Phase 15).
+
+- `plc_star::StarSeed::into_solver_mesh` reuses unchanged quality/conformity gates and restores original PLC source-face regions; refuses unknown source documents. `NativeBoundaryMesh` shares reference selection/metadata ownership with the existing lattice wrapper. Tet4 seed and lattice Tet4/Tet10 use the same analytic bar patch. See `docs/issue-46-phase-16.md`.
+
+- `StarSeed::try_vertex_mean_kernel` trials one reported interior-point move: exact kernel/boundary proof, strict minimum-Jacobian improvement, non-worsening worst edge ratio, staged cancellation. Boundary vertices/facets/source IDs stay unchanged; concave outside-kernel means refuse. Solver gates remain independent. Limited pilot, not general sliver elimination/optimization. See `docs/issue-46-phase-17.md`.
+
+- Feature-off developer CLI adds `--plc`, `--star-seed X,Y,Z` (mm), `--trial-kernel`; explicit chart/orientation flags combine, strict defaults remain. Staged progress and candidate/retained quality are reported; no material or solver analysis inferred. Seven standalone cases verified. See `docs/issue-46-phase-18.md`.
+
+- `nurbs::NurbsCurve` is bounded clamped/continuous positive-weight curve evaluation, not STEP/B-Rep import. Authoritative endpoints, no parameter clamping; degree/control/arithmetic limits and analytical rational-circle/degree-elevation tests. Native analytic body support remains unchanged until source/sampling/surface/trim gates pass. See `docs/issue-46-phase-19.md`.
+
+- Native coordinate unit conversion now uses one helper for point declarations and raw body vertices: reject nonzero-to-zero underflow before allowing true zeros, retain source offsets and existing arithmetic envelope. Radius/unit-factor paths already reject zero underflow. Reproduced/fixed in `docs/issue-46-phase-20.md`.
+
+- `step_nurbs::read_curve` extracts supported simple/complex rational/polynomial declarations, bounded knot expansion, Cartesian control-source refs and declared flags/form/name. Caller must explicitly bind mm scale/context; tags are not geometry certificates. Reuses corrected point/scalar path. Full AnalyticModel still rejects spline-backed bodies until sampling/surface/trim gates pass. See `docs/issue-46-phase-21.md`.
+
+- `nurbs_surface::NurbsSurface` uses the same validated homogeneous basis as curves; global net/degree/blend budgets, V-major storage (`v*u_count+u`), authoritative corners/no parameter clamping. Analytic plane/cylinder/sphere/parameter invariance checks; poles are point evaluation only. No STEP surface/B-Rep/projection/normal/trim support yet. See `docs/issue-46-phase-22.md`.
+
+- `step_nurbs_surface::read_surface` preserves source/Cartesian-control refs and declared flags, transposes STEP U-row/V-column nets to evaluator V-major order, scales only coordinates (not knots), and enforces aggregate caps. Shared component/knot parsing with curves; unconditional degree<control-count validation precedes allocation even with caller-relaxed caps. Equivalent bracket spline plane still refuses full body import. See `docs/issue-46-phase-23.md`.
+
+- [Phase 24 local spline differentials](../docs/issue-46-phase-24.md): shared Dual arithmetic, one-sided endpoints, singularity/work guards and qualification.
+
+- [Phase 25 shared body/unit-context binding](../docs/issue-46-phase-25.md): strict source representation admission reused by analytic import.
+
+- `step_body::BodyContext::read_spline_surface` binds declarations to exact-document body-face references and assigned units; full spline B-Rep import remains refused. See [Phase 26](../docs/issue-46-phase-26.md).
+
+- [Phase 27 source-bound spline curves](../docs/issue-46-phase-27.md): shared bounded wrapper resolution and exact-document edge/unit binding.
+
+- [Phase 28 rational curve enclosures and sampling](../docs/issue-46-phase-28.md): shared outward-rounded recurrence, whole-interval Hausdorff bounds, progress/cancellation and resource limits.
+
+- [Phase 29 global curve distance brackets](../docs/issue-46-phase-29.md): deterministic bounded search and positive-weight Cartesian hull conditioning.
+
+- [Phase 30 surface patch enclosures](../docs/issue-46-phase-30.md): shared Bounds3, outward tensor recurrence, bounded patch work and indexed span queries.

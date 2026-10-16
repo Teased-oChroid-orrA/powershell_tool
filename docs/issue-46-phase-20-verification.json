@@ -1,0 +1,38 @@
+{
+  "source_commit": "0f9301c583612f1ac977bc919b499e9c8859f49e",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 78,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 61,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "reproduced_failure": {
+    "old_point_decoder": "Accepted [0,0,0] for nonzero source 1e-310 at scale 1e-21",
+    "regression_before_fix": "1 expected failing test, exit 101; unwrap_err on Ok zero point"
+  },
+  "fixed_paths": [
+    "CARTESIAN_POINT declaration decoding",
+    "Raw source body vertex normalization"
+  ],
+  "numerical_checks": [
+    "Ordinary inch-to-mm conversion",
+    "True zero preservation",
+    "Mixed visible/underflow component refusal",
+    "Invalid scale/arithmetic range refusal",
+    "Actual bracket vertex + YOCTO units refuses at source point offset"
+  ],
+  "source_audit": "Radius and unit-factor multiplication already reject zero underflow; no production AnalyticModel callers found.",
+  "prior_app_compile": "93f0fb6",
+  "not_verified": [
+    "Production OCCT/material conversion changes (none made)",
+    "General CAD/PLC and later epic gates"
+  ]
+}

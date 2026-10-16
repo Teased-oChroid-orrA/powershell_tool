@@ -1,0 +1,30 @@
+{
+  "source_commit": "0b19cd0ac3bd3c57ecf4f808d9daec280673a81d",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 106,
+      "failed": 0,
+      "ignored": 0,
+      "log": "native-bound-surface-qualified.log"
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 89,
+      "failed": 0,
+      "ignored": 0,
+      "log": "native-bound-surface-feature-off.log"
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0,
+      "log": "native-bound-surface-app.log"
+    }
+  ],
+  "development_failures": [],
+  "not_verified": [
+    "Full spline B-Rep, bounded sampling/projection and trim/locus validation",
+    "Windows/macOS execution",
+    "Remaining CAD/PLC/quality/P2/P3/final gates"
+  ]
+}

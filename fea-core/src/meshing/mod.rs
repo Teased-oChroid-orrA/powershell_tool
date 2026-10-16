@@ -5,12 +5,15 @@
 
 pub mod adjacency;
 pub mod cost;
+pub mod compatibility;
 pub mod hybrid;
 pub mod multimaterial;
 pub mod partition;
 pub mod predictor;
 pub mod quality;
 pub mod smooth;
+pub mod tet_topology;
+pub mod tet_delaunay;
 pub mod weld;
 
 use crate::mesh::Mesh;

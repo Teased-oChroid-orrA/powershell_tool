@@ -1,0 +1,36 @@
+{
+  "source_commit": "2367cf573c438a018f25072c0095592c7426c2ed",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 63,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 51,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "bracket": {
+    "vertices": 469,
+    "facets": 978,
+    "segments": 1467,
+    "all_source_faces_preserved": true
+  },
+  "negative_cases": [
+    "facet limit",
+    "segment limit",
+    "cancellation during admission"
+  ],
+  "scope": "immutable checked single-shell triangulated PLC input, not a tetrahedralizer",
+  "prior_app_compile": "98cd85a; additive PLC API not used by production app",
+  "not_verified": [
+    "General constrained recovery",
+    "Cavities/multi-region input",
+    "Exact CAD boundaries",
+    "Remaining epic gates"
+  ]
+}

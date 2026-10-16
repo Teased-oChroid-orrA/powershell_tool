@@ -1,0 +1,32 @@
+{
+  "source_commit": "c6bd290ca89f85320db2c7f6dcc57ce342c42967",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 106,
+      "failed": 0,
+      "ignored": 0,
+      "log": "native-body-context-qualified.log"
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 89,
+      "failed": 0,
+      "ignored": 0,
+      "log": "native-body-context-feature-off.log"
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0,
+      "log": "native-body-context-app.log"
+    }
+  ],
+  "development_failures": [
+    "Initial E0277 from Option ? in Result-returning reader, corrected before tests"
+  ],
+  "not_verified": [
+    "Full spline-body geometry/placement/trim validation",
+    "Windows/macOS execution",
+    "Remaining epic gates"
+  ]
+}

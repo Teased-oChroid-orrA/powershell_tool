@@ -1,0 +1,35 @@
+{
+  "source_commit": "60e9e086f4bf41d8a276e0ca0c9e92285088763a",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 67,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "reused_evidence": {
+    "source_commit": "f1937f1",
+    "feature_off_tests_passed": 52,
+    "app_cad_lib_tests_compile": "passed",
+    "reason": "Only CAD-gated regression tests added; no implementation change."
+  },
+  "tube": {
+    "outer_radius_mm": 2,
+    "inner_radius_mm": 1,
+    "length_mm": 3,
+    "source_faces": 4,
+    "analytic_volume_mm3": "9*pi",
+    "relative_volume_error_limit": 0.001,
+    "hole_wall_exterior_distance_checks": "passed"
+  },
+  "quality_negatives": [
+    "0.01 mm plate: valid geometry, positive seed, unchanged quality gate refuses solver mesh",
+    "1e-12 mm distance to bar boundary kernel: positive seed, unchanged quality gate refuses solver mesh"
+  ],
+  "not_verified": [
+    "Sliver elimination",
+    "Representative performance/conditioning corpus",
+    "General PLC/CAD and remaining epic gates"
+  ]
+}

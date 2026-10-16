@@ -151,3 +151,66 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Workbench breadth roadmap (2026-10-15)](workbench-breadth-2026-10-15.md): proposed follow-on capabilities, ordered increments and release evidence; not implementation status.
 
 - [Clean Linux workbench qualification report](workbench-qualification-linux-2026-10-15.json): exact tested commit and exits for workspace/CAD, terminal-only and explicit software-GPU phases.
+
+## Native CAD and advanced meshing tracking
+
+- [Issue 46 execution index](issue-46-execution-plan.md), [Claude Code handoff](issue-46-claude-handoff.md), and [tracking manifest](issue-46-tracking.json): prioritized native CAD/meshing and Pillar 7 autotuning work after reliability PR #45.
+
+- [Issue 46 Phase 0 audit](issue-46-phase-0-audit.md), [Phase 1 implementation](issue-46-phase-1.md), and [verification](issue-46-phase-1-verification.json): current foundation milestone and native-CAD gates still open.
+
+- [Issue 46 Phase 2](issue-46-phase-2.md): native STEP inventory, declared-unit resolution and remaining geometric B-Rep gates.
+
+- [Issue 46 Phase 3](issue-46-phase-3.md): bounded raw body connectivity, source identity and the next native analytic-geometry gate.
+
+- [Issue 46 Phase 4](issue-46-phase-4.md): bounded native analytic STEP geometry, declared unit normalization and independent reference checks.
+- [Issue 46 Phase 5](issue-46-phase-5.md): sampled planar trim validation/classification and remaining periodic/solid gates.
+
+- [Issue 46 Phase 6](issue-46-phase-6.md): cylindrical trim charts, explicit tilted-reference limit and current native support matrix; draft PR #65.
+
+- [Issue 46 Phase 7](issue-46-phase-7.md): native chart CDT/surface assembly, independent volume convergence and remaining global validity gate; [dependency audit](issue-46-phase-7-dependency-audit.md).
+
+- [Issue 46 Phase 8](issue-46-phase-8.md): sampled global intersections, checked distance-solid bridge and Tet4/Tet10 patch verification.
+
+- [Issue 46 Phase 9](issue-46-phase-9.md): explicit cylindrical parameter canonicalization, complete adjustment reports and strict-mode preservation.
+
+- [Issue 46 Phase 10: explicit atomic whole-face orientation repair](issue-46-phase-10.md), [verification](issue-46-phase-10-verification.json).
+
+- [Issue 46 Phase 11: exact-document source associations](issue-46-phase-11.md), [dependency audit](issue-46-phase-11-dependency-audit.md).
+
+- [Issue 46 Phase 12: regenerated source face selections and native volume bridge](issue-46-phase-12.md).
+
+- [Issue 46 Phase 13: immutable validated triangulated PLC admission](issue-46-phase-13.md).
+
+- [Issue 46 Phase 14: certified star-kernel boundary-conforming seeds](issue-46-phase-14.md).
+
+- [Issue 46 native support snapshot, 2026-10-16](issue-46-native-support-matrix-2026-10-16.md); [Phase 15 hollow-domain/thin-wall verification](issue-46-phase-15.md).
+
+- [Issue 46 Phase 16: source-tagged conforming-seed solver bridge](issue-46-phase-16.md).
+
+- [Issue 46 Phase 17: bounded reported kernel-quality trial](issue-46-phase-17.md).
+
+- [Issue 46 Phase 18: runnable PLC/seed CLI diagnostics](issue-46-phase-18.md), [verification](issue-46-phase-18-verification.json).
+
+- [Issue 46 Phase 19: bounded rational B-spline curve evaluation](issue-46-phase-19.md).
+
+- [Issue 46 Phase 20: native coordinate unit-underflow refusal](issue-46-phase-20.md).
+
+- [Issue 46 Phase 21: bounded STEP spline declarations and source metadata](issue-46-phase-21.md).
+
+- [Issue 46 Phase 22: bounded tensor-product rational surface evaluation](issue-46-phase-22.md).
+
+- [Issue 46 Phase 23: STEP rational surface nets and allocation admission](issue-46-phase-23.md).
+
+- [Phase 24 local spline differentials](issue-46-phase-24.md): shared Dual arithmetic, one-sided endpoints, singularity/work guards and qualification.
+
+- [Phase 25 shared body/unit-context binding](issue-46-phase-25.md): strict source representation admission reused by analytic import.
+
+- [Phase 26 source-bound spline surfaces](issue-46-phase-26.md): exact-document face selection and declared-unit integration.
+
+- [Phase 27 source-bound spline curves](issue-46-phase-27.md): shared bounded wrapper resolution and exact-document edge/unit binding.
+
+- [Phase 28 rational curve enclosures and sampling](issue-46-phase-28.md): shared outward-rounded recurrence, whole-interval Hausdorff bounds, progress/cancellation and resource limits.
+
+- [Phase 29 global curve distance brackets](issue-46-phase-29.md): deterministic bounded search and positive-weight Cartesian hull conditioning.
+
+- [Phase 30 surface patch enclosures](issue-46-phase-30.md): shared Bounds3, outward tensor recurrence, bounded patch work and indexed span queries.

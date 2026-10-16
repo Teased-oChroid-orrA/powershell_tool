@@ -1,0 +1,9 @@
+# Issue 46 — Phase 5: sampled planar trim validation
+
+Source `7a40278a5bbf2c41ba566f613edb98a8118fd883` adds `solid-kernel::planar_step` and `AnalyticModel::sampled_planar_trims`. It projects shared edge samples into planar face charts, preserves source traversal and classifies one outer loop with unnested holes by containment rather than input order/winding. Explicit outer declarations must agree. Exact-sign predicates reuse the existing checked 3D predicate with an embedded plane; no dependency was added.
+
+Crossing/touching polygons, adjacent overlapping segments, zero-length edges, disconnected outer regions and nested islands fail explicitly. A caller-supplied work budget covers projected-point expansion, intersection comparisons and containment work; there is no unbounded Cartesian comparison pass. Nonplanar/periodic faces remain rejected. These checks certify the **sampled polygons**, not the original exact curved trims; finer curve intersections may remain hidden by sampling.
+
+All 28 planar bracket faces classify successfully, retaining every source bound and identifying holes without guessing the unspecified FACE_BOUND roles. Independent OCCT cube export gives six four-corner trim polygons with total area 52 mm² within 1e-12. Negative polygon cases and zero-work budgets are regression-tested. **36 CAD-enabled solid-kernel tests passed** at the committed source; eight default-feature focused checks also passed before the commit. No production importer, tolerance, dependency or hosted CI change. [Verification](issue-46-phase-5-verification.json).
+
+Next: periodic cylindrical trim charts/seams and robust boundary-preserving triangulation, then shell/intersection certification and constrained volume recovery. The native path is still a diagnostic foundation. OCCT remains required for production CAD workflows; the epic and #51 remain open.

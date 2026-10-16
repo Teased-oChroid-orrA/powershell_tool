@@ -1,0 +1,27 @@
+{
+  "epic": 46,
+  "draft_pr": 65,
+  "branch": "feature/native-cad-advanced-meshing",
+  "snapshot_date": "2026-10-16",
+  "latest_qualified_source": "92698088cd1300a17fafee37d62da885486ae5e0",
+  "epic_complete": false,
+  "previous_progress_snapshot": "issue-46-progress-phase-21.json",
+  "tests": {
+    "cad_enabled": 104,
+    "feature_off": 87,
+    "failed": 0,
+    "ignored": 0,
+    "app_cad_lib_tests_compile": "passed at same source"
+  },
+  "later_increments": [
+    "Phase 22 tensor rational surface evaluation",
+    "Phase 23 STEP surface declarations and pre-allocation admission",
+    "Phase 24 local spline differentials and normalization underflow refusal"
+  ],
+  "native_body_spline_support": "still refused until sampling/surface/trim gates pass",
+  "production_backend": "OCCT retained",
+  "remaining_gates": "All open CAD/PLC/quality/P2/P3/retirement gates in previous snapshot remain open; declarations/evaluation do not close #51.",
+  "handoff": "issue-46-claude-handoff.md",
+  "hosted_ci": "No additional dispatch; latest native source lacks new Windows/macOS execution qualification.",
+  "merge_or_retirement_approved": false
+}

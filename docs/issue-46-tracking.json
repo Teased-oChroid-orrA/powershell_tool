@@ -1,0 +1,224 @@
+{
+  "epic": 46,
+  "branch": "feature/native-cad-advanced-meshing",
+  "base_merge": "8ba27a2fd21b88f7790d3ac2f530b498e3b031c2",
+  "status": "planned; source orientation only; implementation not started",
+  "issues": [
+    {
+      "key": "audit",
+      "number": 47,
+      "url": "https://github.com/Teased-oChroid-orrA/powershell_tool/issues/47",
+      "priority": "P0",
+      "title": "Repository capability, dependency and license audit",
+      "dependencies": [],
+      "id": 5878284782
+    },
+    {
+      "key": "isolation",
+      "number": 48,
+      "url": "https://github.com/Teased-oChroid-orrA/powershell_tool/issues/48",
+      "priority": "P0",
+      "title": "Isolate CAD backends behind capability-aware interfaces",
+      "dependencies": [
+        "audit"
+      ],
+      "id": 5878284946
+    },
+    {
+      "key": "predicates",
+      "number": 49,
+      "url": "https://github.com/Teased-oChroid-orrA/powershell_tool/issues/49",
+      "priority": "P0",
+      "title": "Robust 3D predicates and transactional mesh topology",
+      "dependencies": [
+        "audit"
+      ],
+      "id": 5878285089
+    },
+    {
+      "key": "telemetry",
+      "number": 50,
+      "url": "https://github.com/Teased-oChroid-orrA/powershell_tool/issues/50",
+      "priority": "P0",
+      "title": "Start verified workload telemetry and bounded benchmark storage",
+      "dependencies": [
+        "audit"
+      ],
+      "id": 5878285233
+    },
+    {
+      "key": "registry",
+      "number": 64,
+      "url": "https://github.com/Teased-oChroid-orrA/powershell_tool/issues/64",
+      "priority": "P0",
+      "title": "Early deterministic compatibility registry",
+      "dependencies": [
+        "audit"
+      ],
+      "id": 5878321040
+    },
+    {
+      "key": "brep",
+      "number": 51,
+      "url": "https://github.com/Teased-oChroid-orrA/powershell_tool/issues/51",
+      "priority": "P1",
+      "title": "Native B-Rep exchange, validation, healing and persistent associations",
+      "dependencies": [
+        "isolation",
+        "predicates"
+      ],
+      "id": 5878285372
+    },
+    {
+      "key": "constrained",
+      "number": 52,
+      "url": "https://github.com/Teased-oChroid-orrA/powershell_tool/issues/52",
+      "priority": "P1",
+      "title": "Constrained 3D tetrahedralization and boundary recovery",
+      "dependencies": [
+        "predicates",
+        "isolation"
+      ],
+      "id": 5878285520
+    },
+    {
+      "key": "quality",
+      "number": 53,
+      "url": "https://github.com/Teased-oChroid-orrA/powershell_tool/issues/53",
+      "priority": "P1",
+      "title": "Sliver elimination, mesh validity and solver conditioning",
+      "dependencies": [
+        "constrained"
+      ],
+      "id": 5878285670
+    },
+    {
+      "key": "selector",
+      "number": 54,
+      "url": "https://github.com/Teased-oChroid-orrA/powershell_tool/issues/54",
+      "priority": "P1",
+      "title": "Deterministic compatibility registry and strategy selection",
+      "dependencies": [
+        "telemetry",
+        "isolation",
+        "registry"
+      ],
+      "id": 5878285809
+    },
+    {
+      "key": "curved",
+      "number": 55,
+      "url": "https://github.com/Teased-oChroid-orrA/powershell_tool/issues/55",
+      "priority": "P2",
+      "title": "High-order curved CAD-conforming elements",
+      "dependencies": [
+        "brep",
+        "quality"
+      ],
+      "id": 5878285922
+    },
+    {
+      "key": "hybrid",
+      "number": 56,
+      "url": "https://github.com/Teased-oChroid-orrA/powershell_tool/issues/56",
+      "priority": "P2",
+      "title": "Integrate structured and unstructured meshes with verified transitions",
+      "dependencies": [
+        "quality",
+        "selector"
+      ],
+      "id": 5878286048
+    },
+    {
+      "key": "metric",
+      "number": 57,
+      "url": "https://github.com/Teased-oChroid-orrA/powershell_tool/issues/57",
+      "priority": "P2",
+      "title": "Validated metric tensors and size/complexity budgets",
+      "dependencies": [
+        "quality"
+      ],
+      "id": 5878286189
+    },
+    {
+      "key": "anisotropic",
+      "number": 58,
+      "url": "https://github.com/Teased-oChroid-orrA/powershell_tool/issues/58",
+      "priority": "P2",
+      "title": "Metric-driven anisotropic adaptation",
+      "dependencies": [
+        "metric",
+        "brep"
+      ],
+      "id": 5878286299
+    },
+    {
+      "key": "motion",
+      "number": 59,
+      "url": "https://github.com/Teased-oChroid-orrA/powershell_tool/issues/59",
+      "priority": "P3",
+      "title": "Mesh motion, ALE and consistent state/history transfer",
+      "dependencies": [
+        "anisotropic",
+        "hybrid"
+      ],
+      "id": 5878286434
+    },
+    {
+      "key": "cost",
+      "number": 60,
+      "url": "https://github.com/Teased-oChroid-orrA/powershell_tool/issues/60",
+      "priority": "P3",
+      "title": "Solver-aware cost models and advanced optimization",
+      "dependencies": [
+        "quality",
+        "selector",
+        "telemetry"
+      ],
+      "id": 5878286556
+    },
+    {
+      "key": "learning",
+      "number": 61,
+      "url": "https://github.com/Teased-oChroid-orrA/powershell_tool/issues/61",
+      "priority": "P3",
+      "title": "Optional confidence-aware performance learning",
+      "dependencies": [
+        "cost"
+      ],
+      "id": 5878286660
+    },
+    {
+      "key": "feedback",
+      "number": 62,
+      "url": "https://github.com/Teased-oChroid-orrA/powershell_tool/issues/62",
+      "priority": "P3",
+      "title": "AMR-informed recommendations and production autotuner qualification",
+      "dependencies": [
+        "selector",
+        "cost",
+        "anisotropic"
+      ],
+      "id": 5878286800
+    },
+    {
+      "key": "retirement",
+      "number": 63,
+      "url": "https://github.com/Teased-oChroid-orrA/powershell_tool/issues/63",
+      "priority": "Final",
+      "title": "Verified production parity and explicitly approved OCCT retirement",
+      "dependencies": [
+        "brep",
+        "quality",
+        "curved",
+        "hybrid",
+        "anisotropic",
+        "motion",
+        "cost",
+        "learning",
+        "feedback"
+      ],
+      "id": 5878286959
+    }
+  ]
+}

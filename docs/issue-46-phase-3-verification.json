@@ -1,0 +1,41 @@
+{
+  "source_commit": "28c630e8cb8339fb3c54bc7ace87d6cc4c19d545",
+  "scope": "raw local topology/connectivity; not geometric solid acceptance",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked -j1",
+      "passed": 28,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo run -p solid-kernel --example step-inventory --locked -j1 -- nema17-motor-bracket.step",
+      "exit_code": 0,
+      "body": 15,
+      "vertices": 70,
+      "edges": 114,
+      "faces": 38,
+      "loops": 52,
+      "edge_uses": 228,
+      "referenced_3d_curves": {
+        "LINE": 88,
+        "CIRCLE": 26
+      }
+    }
+  ],
+  "default_expansion_limits": {
+    "bodies": 1024,
+    "faces": 100000,
+    "edges": 200000,
+    "vertices": 200000,
+    "edge_uses": 400000,
+    "label_bytes": 8388608
+  },
+  "not_verified": [
+    "geometric validity/self-intersection",
+    "orientability and vertex-manifoldness",
+    "outer/inner trim classification",
+    "body representation/units/assembly placement mapping",
+    "production native tessellation/meshing"
+  ]
+}

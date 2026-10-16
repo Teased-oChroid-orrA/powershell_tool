@@ -1,0 +1,41 @@
+{
+  "source_commit": "3b55ed5614b601687a73d184ed490bc0de53981d",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 58,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 46,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "cli": {
+    "command": "step-inventory nema17-motor-bracket.step --repair-orientation",
+    "exit_code": 0,
+    "face_changes": 0,
+    "vertices": 469,
+    "triangles": 978,
+    "source_faces": 38,
+    "candidate_pairs": 98183
+  },
+  "regression": "Corrupted bracket source face: strict refusal, explicit repair exactly restores original mesh and preserves report through checked distance conversion; cancellation/nonorientability/nonmanifold/mixed-face rejection atomic.",
+  "development_failures": [
+    "Missing OCCT_ROOT caused initial SDK fetch failure; local installed SDK used thereafter.",
+    "Overlapping runs interleaved one log; clean qualified log rerun passed."
+  ],
+  "not_verified": [
+    "General B-Rep sewing/healing",
+    "Assemblies and exact trim coverage",
+    "PLC recovery",
+    "Remaining epic gates"
+  ]
+}

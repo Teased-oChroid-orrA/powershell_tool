@@ -1,0 +1,27 @@
+{
+  "source_commit": "f761f2c30055cd4c7a6067ba74969ce8e105099f",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 52,
+      "failed": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 40,
+      "failed": 0
+    },
+    {
+      "command": "cargo test -p fea-problem --features occt --lib --test problems --test solid --test units --locked --offline -j1",
+      "passed": 45,
+      "failed": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "bracket_candidate_pairs": 98183,
+  "bridge_reference": "native STEP bar through existing volume mesher, Tet4/Tet10 static tension; relative displacement tolerance 1e-6",
+  "scope": "single connected sampled shell; not exact CAD or PLC certification"
+}

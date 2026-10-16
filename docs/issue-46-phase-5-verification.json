@@ -1,0 +1,30 @@
+{
+  "source_commit": "7a40278a5bbf2c41ba566f613edb98a8118fd883",
+  "scope": "sampled planar polygon validation/classification only",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked -j1",
+      "passed": 36,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --lib --test analytic_step --locked -j1",
+      "passed": 8,
+      "failed": 0,
+      "scope": "default-feature development check"
+    }
+  ],
+  "fixture_planar_faces": 28,
+  "independent_reference": {
+    "geometry": "OCCT cube 2 x 3 x 4 mm",
+    "total_area_mm2": 52,
+    "absolute_area_tolerance": 1e-12
+  },
+  "not_verified": [
+    "exact curved-trim intersections",
+    "periodic cylindrical trim charts",
+    "native triangulation and solid validity",
+    "production CAD integration"
+  ]
+}

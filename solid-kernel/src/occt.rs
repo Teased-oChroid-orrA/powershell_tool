@@ -4,36 +4,8 @@ use crate::{SurfaceMesh, SurfaceSolid, V3};
 use cadrum::{DVec3, Edge, Solid, Tessellation};
 use std::path::Path;
 
-/// One closed loop of a sketch profile, in the plane of the profile.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Loop {
-    Polygon(Vec<[f64; 2]>),
-    Circle { centre: [f64; 2], radius: f64 },
-}
-
-/// An outer loop and the holes cut out of it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Profile {
-    pub outer: Loop,
-    pub holes: Vec<Loop>,
-}
-
-/// A face of a solid, in the order the kernel lists them (`SurfaceMesh::face` tags refer to this index). Normals are
-/// not asked of the kernel (its normal query throws for a curved face, which aborts the process): use
-/// `SurfaceSolid::face_normals`, taken from the tessellation.
-#[derive(Clone, Debug, PartialEq)]
-pub struct FaceInfo {
-    pub index: usize,
-    pub area: f64,
-    pub centre: V3,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Bool {
-    Union,
-    Cut,
-    Intersect,
-}
+// Compatibility exports; neutral contracts live outside the OCCT adapter.
+pub use crate::cad::{Bool, FaceInfo, Loop, Profile};
 
 /// A B-rep shape: normally one solid; a STEP file or a cut that splits the part can give several pieces.
 pub struct Brep {

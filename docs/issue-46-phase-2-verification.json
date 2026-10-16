@@ -1,0 +1,30 @@
+{
+  "source_commit": "b78068c8269cd5d949cfd3a28fed34fbecf8147f",
+  "scope": "native physical-file inventory and declared length units; not geometric B-Rep validation",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked -j1",
+      "passed": 23,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo run -p solid-kernel --example step-inventory --locked -j1 -- nema17-motor-bracket.step",
+      "exit_code": 0,
+      "occt_feature": false,
+      "fixture_entities": 3088,
+      "advanced_faces": 38,
+      "length_context": 3083,
+      "length_unit_entity": 3084,
+      "metres_per_source_length": 0.001
+    }
+  ],
+  "development_failure": "Dangling-reference source offset initially reported byte zero; the regression caught it and the entity source position is now retained.",
+  "unimplemented": [
+    "geometric B-Rep construction and validation",
+    "body-to-representation context/assembly placement mapping",
+    "native surface/curve evaluation and trimmed tessellation",
+    "healing and persistent edit identities",
+    "named/external physical-file sections and encoded-string interpretation"
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "source_commit": "bfc91ef46eadc79b368e99499633a5a921c5c94b",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 70,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 53,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "quality_trial": {
+    "before_min_scaled_jacobian": 2.82842712474619e-13,
+    "after_min_scaled_jacobian": 0.13483997249264842,
+    "before_max_edge_ratio": 3.1622776601683795,
+    "after_max_edge_ratio": 3.1622776601683795,
+    "boundary_points_and_facets": "unchanged",
+    "solver_quality_and_analytic_tension_patch": "passed; unchanged 1e-6 relative displacement criterion"
+  },
+  "negative_cases": [
+    "Centered point unchanged",
+    "Concave L-prism vertex mean outside kernel refused; original points/cells unchanged",
+    "Final cancellation refused before commit"
+  ],
+  "prior_app_compile": "93f0fb6; new optional diagnostic API has no production caller",
+  "not_verified": [
+    "General sliver elimination",
+    "Solver conditioning/performance corpus",
+    "General CAD/PLC and later epic gates"
+  ]
+}

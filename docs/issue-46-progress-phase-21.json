@@ -1,0 +1,28 @@
+{
+  "epic": 46,
+  "draft_pr": 65,
+  "branch": "feature/native-cad-advanced-meshing",
+  "snapshot_date": "2026-10-16",
+  "latest_qualified_source": "7e2d7a8a8c99d6d08dc4b7785f05a1e287ec05d8",
+  "epic_complete": false,
+  "previous_progress_snapshot": "issue-46-progress-2026-10-16.json",
+  "tests": {
+    "cad_enabled": 83,
+    "feature_off": 66,
+    "failed": 0,
+    "ignored": 0,
+    "app_cad_lib_tests_compile": "passed at same source"
+  },
+  "later_increments": [
+    "Phase 18 runnable PLC/seed diagnostics (seven cases)",
+    "Phase 19 bounded rational curve evaluation",
+    "Phase 20 reproduced/fixed coordinate scaling underflow",
+    "Phase 21 bounded STEP curve declaration mapping and metadata"
+  ],
+  "native_body_spline_support": "still refused until sampling/surface/trim gates pass",
+  "production_backend": "OCCT retained",
+  "remaining_gates": "All open CAD/PLC/quality/P2/P3/retirement gates in previous snapshot remain open; declarations/evaluation do not close #51.",
+  "handoff": "issue-46-claude-handoff.md",
+  "hosted_ci": "No additional dispatch; latest native source lacks new Windows/macOS execution qualification.",
+  "merge_or_retirement_approved": false
+}
