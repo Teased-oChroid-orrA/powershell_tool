@@ -69,7 +69,7 @@ impl<const D: usize> Ord for Node<D> {
         order
     }
 }
-fn distance_bounds(b: Bounds3, point: V3) -> Result<[f64; 2], Error> {
+pub(crate) fn distance_bounds(b: Bounds3, point: V3) -> Result<[f64; 2], Error> {
     let mut sum = Interval::point(0.);
     for i in 0..3 {
         let d = Interval::new(b.min[i], b.max[i]) - Interval::point(point[i]);
