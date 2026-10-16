@@ -64,6 +64,57 @@ pub(crate) fn validate_degree(degree: usize, controls: usize) -> Result<(), Erro
     }
     Ok(())
 }
+/// The recurrence needs arithmetic and a unit-interval blend only. This keeps
+/// interval enclosure on the same recurrence as existing Scalar/Dual evaluation.
+pub(crate) trait BlendValue:
+    Copy
+    + std::ops::Add<Output = Self>
+    + std::ops::Sub<Output = Self>
+    + std::ops::Mul<Output = Self>
+    + std::ops::Div<Output = Self>
+{
+    fn constant(x: f64) -> Self;
+    fn unit(self) -> Result<Self, Error>;
+    fn blend(self, a: Self, b: Self) -> Self;
+}
+impl<S: Scalar> BlendValue for S {
+    fn constant(x: f64) -> Self {
+        S::cst(x)
+    }
+    fn unit(self) -> Result<Self, Error> {
+        if !self.value().is_finite() || self.lt(&S::cst(0.)) || self.gt(&S::cst(1.)) {
+            Err(fail(
+                ErrorKind::Geometry,
+                "B-spline interpolation parameter outside active span",
+            ))
+        } else {
+            Ok(self)
+        }
+    }
+    fn blend(self, a: Self, b: Self) -> Self {
+        (S::cst(1.) - self) * a + self * b
+    }
+}
+impl BlendValue for crate::native_interval::Interval {
+    fn constant(x: f64) -> Self {
+        Self::point(x)
+    }
+    fn unit(self) -> Result<Self, Error> {
+        let clipped = self.intersect(Self::new(0., 1.));
+        if clipped.finite() {
+            Ok(clipped)
+        } else {
+            Err(fail(
+                ErrorKind::Geometry,
+                "invalid interval spline coefficient",
+            ))
+        }
+    }
+    fn blend(self, a: Self, b: Self) -> Self {
+        // Convexity is guaranteed by the active span and unit coefficient.
+        ((Self::point(1.) - self) * a + self * b).intersect(a.hull(b))
+    }
+}
 /// Shared validated basis and homogeneous recurrence for curves and surfaces.
 #[derive(Debug, Clone)]
 pub(crate) struct Basis {
@@ -179,7 +230,7 @@ impl Basis {
         }
         Ok((span, ParameterSide::Interior))
     }
-    pub(crate) fn homogeneous<S: Scalar>(
+    pub(crate) fn homogeneous<S: BlendValue>(
         &self,
         span: usize,
         t: S,
@@ -199,15 +250,11 @@ impl Basis {
                         "invalid active B-spline knot span",
                     ));
                 }
-                let alpha = (t - S::cst(self.knots[i])) / S::cst(denominator);
-                if !alpha.value().is_finite() || alpha.lt(&S::cst(0.)) || alpha.gt(&S::cst(1.)) {
-                    return Err(fail(
-                        ErrorKind::Geometry,
-                        "B-spline interpolation parameter outside active span",
-                    ));
-                }
+                let denominator =
+                    S::constant(self.knots[i + p - r + 1]) - S::constant(self.knots[i]);
+                let alpha = ((t - S::constant(self.knots[i])) / denominator).unit()?;
                 for axis in 0..4 {
-                    d[j][axis] = (S::cst(1.) - alpha) * d[j - 1][axis] + alpha * d[j][axis];
+                    d[j][axis] = alpha.blend(d[j - 1][axis], d[j][axis]);
                 }
             }
         }
@@ -249,6 +296,13 @@ pub struct CurveDifferential {
     pub tangent: V3,
     pub side: ParameterSide,
 }
+/// Axis-aligned enclosure of the exact rational curve on a parameter interval.
+/// Bounds include arithmetic rounding. They are not an injectivity/trim proof.
+#[derive(Debug, Clone, Copy)]
+pub struct CurveBounds {
+    pub min: V3,
+    pub max: V3,
+}
 #[derive(Debug, Clone)]
 pub struct NurbsCurve {
     basis: Basis,
@@ -286,6 +340,61 @@ impl NurbsCurve {
     }
     pub fn knots(&self) -> &[f64] {
         self.basis.knots()
+    }
+    /// Bound every parameter in a closed subdomain using outward interval de
+    /// Boor arithmetic. Each nonempty knot-span intersection costs one unit;
+    /// insufficient budgets refuse without returning a partial enclosure.
+    pub fn enclose(&self, parameters: [f64; 2], max_spans: usize) -> Result<CurveBounds, Error> {
+        use crate::native_interval::Interval;
+        let [lo, hi] = parameters;
+        self.basis.span(lo)?;
+        self.basis.span(hi)?;
+        if lo > hi {
+            return Err(fail(
+                ErrorKind::Geometry,
+                "reversed spline enclosure domain",
+            ));
+        }
+        let mut bounds: Option<[Interval; 3]> = None;
+        let mut count = 0usize;
+        for span in self.basis.degree..self.control_points.len() {
+            let a = lo.max(self.basis.knots[span]);
+            let b = hi.min(self.basis.knots[span + 1]);
+            if self.basis.knots[span] == self.basis.knots[span + 1] || a > b {
+                continue;
+            }
+            if count >= max_spans {
+                return Err(fail(
+                    ErrorKind::Limit,
+                    "spline enclosure knot-span budget exceeded",
+                ));
+            }
+            count += 1;
+            let h = self.basis.homogeneous(span, Interval::new(a, b), |i| {
+                let w = Interval::point(self.weights[i]);
+                let p = self.control_points[i].map(Interval::point);
+                Ok([p[0] * w, p[1] * w, p[2] * w, w])
+            })?;
+            if h[3].lo <= 0. {
+                return Err(fail(
+                    ErrorKind::Geometry,
+                    "rational enclosure denominator not positive",
+                ));
+            }
+            let xyz = [h[0] / h[3], h[1] / h[3], h[2] / h[3]];
+            if xyz.iter().any(|x| !x.finite()) {
+                return Err(fail(ErrorKind::Geometry, "nonfinite spline enclosure"));
+            }
+            bounds = Some(match bounds {
+                None => xyz,
+                Some(old) => std::array::from_fn(|i| old[i].hull(xyz[i])),
+            });
+        }
+        let bounds = bounds.ok_or_else(|| fail(ErrorKind::Geometry, "empty spline enclosure"))?;
+        Ok(CurveBounds {
+            min: bounds.map(|x| x.lo),
+            max: bounds.map(|x| x.hi),
+        })
     }
     /// Local parameter tangent from existing fea-core dual arithmetic. This is
     /// not a derivative through CAD edits, meshing or a global FEA response.
@@ -644,5 +753,70 @@ mod tests {
                 );
             }
         }
+    }
+    #[test]
+    fn interval_enclosures_contain_analytic_rational_curve_and_shrink_locally() {
+        let c = quarter();
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        for domain in [[0., 1.], [0.1, 0.9], [0.3, 0.31], [0., 0.], [1., 1.]] {
+            let b = c.enclose(domain, 1).unwrap();
+            for i in 0..=100 {
+                let t = domain[0] + (domain[1] - domain[0]) * (i as f64 / 100.);
+                let p = c.evaluate(t).unwrap();
+                let d = (1. - t) * (1. - t) + 2. * w * t * (1. - t) + t * t;
+                let analytic = [
+                    ((1. - t) * (1. - t) + 2. * w * t * (1. - t)) / d,
+                    (2. * w * t * (1. - t) + t * t) / d,
+                    0.,
+                ];
+                for axis in 0..3 {
+                    assert!(
+                        b.min[axis] <= p[axis] && p[axis] <= b.max[axis],
+                        "{domain:?} {p:?} {b:?}"
+                    );
+                    assert!(b.min[axis] <= analytic[axis] && analytic[axis] <= b.max[axis]);
+                }
+            }
+        }
+        let broad = c.enclose([0., 1.], 1).unwrap();
+        let narrow = c.enclose([0.3, 0.3001], 1).unwrap();
+        assert!(narrow.max[0] - narrow.min[0] < (broad.max[0] - broad.min[0]) * 0.001);
+    }
+    #[test]
+    fn whole_interval_checks_retain_excursions_hidden_from_midpoint_tests() {
+        let c = NurbsCurve::new_clamped(
+            3,
+            vec![0., 0., 0., 0., 1., 1., 1., 1.],
+            vec![[0., 0., 0.], [0., 10., 0.], [1., -10., 0.], [1., 0., 0.]],
+            vec![1.; 4],
+            Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(c.evaluate(0.5).unwrap()[1], 0.);
+        let b = c.enclose([0., 1.], 1).unwrap();
+        assert!(b.min[1] < -2. && b.max[1] > 2.);
+        for i in 0..=1000 {
+            let t = i as f64 / 1000.;
+            let y = 30. * t * (1. - t) * (1. - 2. * t);
+            assert!(b.min[1] <= y && y <= b.max[1]);
+        }
+    }
+    #[test]
+    fn enclosure_spans_budget_and_domain_refusals_are_explicit() {
+        let c = NurbsCurve::new_clamped(
+            1,
+            vec![0., 0., 0.5, 1., 1.],
+            vec![[0., 0., 0.], [2., 0., 0.], [2., 4., 0.]],
+            vec![1.; 3],
+            Limits::default(),
+        )
+        .unwrap();
+        let b = c.enclose([0., 1.], 2).unwrap();
+        assert!(b.min[0] <= 0. && b.max[0] >= 2. && b.min[1] <= 0. && b.max[1] >= 4.);
+        assert_eq!(c.enclose([0., 1.], 1).unwrap_err().kind, ErrorKind::Limit);
+        for d in [[-0.1, 1.], [0., 1.1], [0.7, 0.3], [f64::NAN, 0.5]] {
+            assert!(c.enclose(d, 100).is_err());
+        }
+        assert_eq!(c.enclose([0.1, 0.2], 0).unwrap_err().kind, ErrorKind::Limit);
     }
 }
