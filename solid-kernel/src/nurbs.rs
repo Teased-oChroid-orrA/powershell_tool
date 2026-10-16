@@ -381,7 +381,19 @@ impl NurbsCurve {
                     "rational enclosure denominator not positive",
                 ));
             }
-            let xyz = [h[0] / h[3], h[1] / h[3], h[2] / h[3]];
+            let projected = [h[0] / h[3], h[1] / h[3], h[2] / h[3]];
+            // Positive rational basis functions form a partition of unity.
+            // Intersect with the active Cartesian control hull to retain this
+            // exact correlation (notably for constant curves/nonuniform weights).
+            let xyz: [Interval; 3] = std::array::from_fn(|axis| {
+                let active = &self.control_points[span - self.basis.degree..=span];
+                let lo = active.iter().map(|p| p[axis]).fold(f64::INFINITY, f64::min);
+                let hi = active
+                    .iter()
+                    .map(|p| p[axis])
+                    .fold(f64::NEG_INFINITY, f64::max);
+                projected[axis].intersect(Interval::new(lo, hi))
+            });
             if xyz.iter().any(|x| !x.finite()) {
                 return Err(fail(ErrorKind::Geometry, "nonfinite spline enclosure"));
             }
