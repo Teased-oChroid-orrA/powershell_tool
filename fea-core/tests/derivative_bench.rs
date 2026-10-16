@@ -163,7 +163,7 @@ fn forward_mode_with_stack_lanes_does_not_allocate_beyond_the_result() {
 }
 
 #[test]
-fn path_sensitivities_are_bitwise_deterministic_across_thread_counts_and_the_adjoint_beats_differences() {
+fn path_sensitivities_are_bitwise_deterministic_and_report_measured_costs() {
     use fea_core::delaunay::MeshOptions;
     use fea_core::geometry::{Loop, Region};
     use fea_core::material::J2;
