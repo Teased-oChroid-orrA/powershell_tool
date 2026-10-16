@@ -28,6 +28,7 @@ pub mod native_volume;
 pub mod orientation_repair;
 pub mod triangle_intersection;
 pub mod planar_step;
+mod planar_spline;
 pub mod plc;
 pub mod plc_star;
 pub mod cylindrical_step;
