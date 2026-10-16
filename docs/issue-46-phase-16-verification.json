@@ -1,0 +1,33 @@
+{
+  "source_commit": "93f0fb60a867ee63a4533e8fbdf42d12e3b7b2a5",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 68,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 53,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "numerical": "Shared native seed Tet4 and lattice Tet4/Tet10 source-reference bar tension patch passes unchanged 1e-6 relative displacement criterion.",
+  "negative_cases": [
+    "Unknown-origin PLC cannot create source-tagged solver regions",
+    "Thin-wall and near-boundary seeds still fail unchanged solver quality gates"
+  ],
+  "api": "NativeVolumeMesh retains public API, delegates immutable source selection to NativeBoundaryMesh; StarSeed::into_solver_mesh preserves original outward source facets.",
+  "not_verified": [
+    "General PLC recovery/cavities/refinement",
+    "Automatic seed quality optimization",
+    "Broad native CAD/assembly/exact trims",
+    "Later epic gates"
+  ]
+}

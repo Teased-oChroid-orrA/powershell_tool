@@ -66,3 +66,5 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - `plc_star::StarSeed` requires exact strict interior-side visibility from a supplied kernel point to every validated PLC facet; preserves the boundary exactly. It is a limited conforming fan seed, not Delaunay/general PLC recovery or production strategy. Holes/nonvisible facets refuse, solver quality gates remain. See `docs/issue-46-phase-14.md`.
 
 - Current diagnostic capabilities/limits and pilot corpus: `docs/issue-46-native-support-matrix-2026-10-16.md`. Hollow tube preserves the through-hole; valid thin-wall/near-boundary positive seeds still refuse solver conversion under unchanged quality limits (Phase 15).
+
+- `plc_star::StarSeed::into_solver_mesh` reuses unchanged quality/conformity gates and restores original PLC source-face regions; refuses unknown source documents. `NativeBoundaryMesh` shares reference selection/metadata ownership with the existing lattice wrapper. Tet4 seed and lattice Tet4/Tet10 use the same analytic bar patch. See `docs/issue-46-phase-16.md`.
