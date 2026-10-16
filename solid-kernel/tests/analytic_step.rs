@@ -297,3 +297,99 @@ fn bracket_planar_trims_classify_holes_without_bound_order_guesses() {
     assert_eq!(planes, 28);
     assert!(holes > 0);
 }
+
+#[test]
+fn bracket_cylindrical_trims_close_across_the_periodic_seam() {
+    let model = AnalyticModel::read(
+        &inventory(SOURCE, Limits::default()).unwrap(),
+        Options::default(),
+    )
+    .unwrap();
+    let mut cylinders = 0;
+    for face in model.body().faces.values() {
+        if matches!(model.surface(face.id), Some(Surface::Cylinder { .. })) {
+            assert!(matches!(
+                model
+                    .sampled_cylindrical_trims(face.id, 0)
+                    .unwrap_err()
+                    .kind,
+                solid_kernel::step::ErrorKind::Limit
+            ));
+            let trims = model.sampled_cylindrical_trims(face.id, 2_000_000).unwrap();
+            assert!(trims.boundary.is_outer);
+            for chart in trims.boundary.points {
+                assert!(model
+                    .surface(face.id)
+                    .unwrap()
+                    .point(chart)
+                    .unwrap()
+                    .iter()
+                    .all(|x| x.is_finite()));
+            }
+            cylinders += 1;
+        }
+    }
+    assert_eq!(cylinders, 10);
+}
+
+#[cfg(feature = "occt")]
+#[test]
+fn independent_cylinder_chart_has_exact_developed_area() {
+    use solid_kernel::cad::Brep;
+    let text = Brep::cylinder([7., -4., 2.], 2., [0., 0., 1.], 3.)
+        .to_step_text()
+        .unwrap();
+    let model = AnalyticModel::read(
+        &inventory(&text, Limits::default()).unwrap(),
+        Options::default(),
+    )
+    .unwrap();
+    let mut lateral_faces = 0;
+    for face in model.body().faces.values() {
+        if matches!(model.surface(face.id), Some(Surface::Cylinder { .. })) {
+            let trims = model.sampled_cylindrical_trims(face.id, 100_000).unwrap();
+            let p = &trims.boundary.points;
+            let area = (0..p.len())
+                .map(|i| {
+                    let a = p[i];
+                    let b = p[(i + 1) % p.len()];
+                    a[0] * b[1] - a[1] * b[0]
+                })
+                .sum::<f64>()
+                .abs()
+                / 2.;
+            assert!((area - 12. * std::f64::consts::PI).abs() < 1e-12, "{area}");
+            lateral_faces += 1;
+        }
+    }
+    assert_eq!(lateral_faces, 1);
+}
+
+#[cfg(feature = "occt")]
+#[test]
+fn uncertain_tilted_cylinder_chart_is_refused_without_relaxing_turn_bound() {
+    use solid_kernel::cad::Brep;
+    let text = Brep::cylinder([7., -4., 2.], 2., [1., 2., 3.], 3.)
+        .to_step_text()
+        .unwrap();
+    let model = AnalyticModel::read(
+        &inventory(&text, Limits::default()).unwrap(),
+        Options::default(),
+    )
+    .unwrap();
+    let face = model
+        .body()
+        .faces
+        .values()
+        .find(|f| matches!(model.surface(f.id), Some(Surface::Cylinder { .. })))
+        .unwrap();
+    // The export's finite precision is sufficient for analytic consistency but
+    // not this stricter single-turn chart certificate. No partial chart escapes.
+    let error = model
+        .sampled_cylindrical_trims(face.id, 100_000)
+        .unwrap_err();
+    assert!(
+        error.detail.contains("cannot certify a single-turn"),
+        "{error}"
+    );
+}

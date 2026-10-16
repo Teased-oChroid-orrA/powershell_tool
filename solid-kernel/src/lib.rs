@@ -14,6 +14,7 @@
 
 pub mod analytic_step;
 pub mod planar_step;
+pub mod cylindrical_step;
 mod bvh;
 pub mod cad;
 pub mod step;

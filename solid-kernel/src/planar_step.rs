@@ -8,12 +8,13 @@ use fea_core::meshing::tet_topology::orientation;
 use std::cmp::Ordering;
 type P = [f64; 2];
 #[derive(Debug, Clone)]
-pub struct PlanarLoop {
+pub struct TrimLoop {
     pub bound_id: u64,
     /// No repeated closing point. Source traversal is retained, not rewound.
     pub points: Vec<P>,
     pub is_outer: bool,
 }
+pub type PlanarLoop = TrimLoop;
 #[derive(Debug, Clone)]
 pub struct PlanarTrims {
     pub face_id: u64,
@@ -76,7 +77,7 @@ fn inside(p: P, polygon: &[P]) -> Result<bool, Error> {
     }
     Ok(winding != 0)
 }
-fn classify(loops: &mut [PlanarLoop], max_checks: usize) -> Result<(), Error> {
+pub(crate) fn classify(loops: &mut [PlanarLoop], max_checks: usize) -> Result<(), Error> {
     let mut checks = 0usize;
     let mut charge = || {
         checks = checks
