@@ -177,3 +177,180 @@ fn dimension_mismatch_and_unimplemented_unit_subtypes_are_not_ignored() {
         .length_contexts()
         .is_err());
 }
+
+#[test]
+fn actual_bracket_retains_every_body_face_loop_and_edge_identity() {
+    let source = include_str!("../../nema17-motor-bracket.step");
+    let data = inventory(source, Limits::default()).unwrap();
+    let bodies = data.raw_bodies().unwrap();
+    assert_eq!(bodies.len(), 1);
+    let b = &bodies[0];
+    assert_eq!(b.faces.len(), 38);
+    assert_eq!(b.edges.len(), 114);
+    assert_eq!(b.vertices.len(), 70);
+    assert_eq!(b.faces.values().map(|f| f.bounds.len()).sum::<usize>(), 52);
+    assert_eq!(
+        b.faces
+            .values()
+            .flat_map(|f| &f.bounds)
+            .map(|b| b.edges.len())
+            .sum::<usize>(),
+        228
+    );
+    assert!(
+        b.faces
+            .values()
+            .flat_map(|f| &f.bounds)
+            .all(|b| !b.explicitly_outer),
+        "unspecified outer-loop roles must not be guessed"
+    );
+}
+#[test]
+fn broken_or_partial_body_topology_is_refused() {
+    let source = include_str!("../../nema17-motor-bracket.step");
+    let body = inventory(source, Limits::default())
+        .unwrap()
+        .raw_bodies()
+        .unwrap()
+        .remove(0);
+    let shell = body.shell;
+    let start = source.find(&format!("#{shell} = CLOSED_SHELL")).unwrap();
+    let end = start + source[start..].find(';').unwrap() + 1;
+    let face = *body.faces.keys().next().unwrap();
+    let changed = format!(
+        "{}#{shell}=CLOSED_SHELL('',(#{face}));{}",
+        &source[..start],
+        &source[end..]
+    );
+    let data = inventory(&changed, Limits::default()).unwrap();
+    assert_eq!(data.raw_bodies().unwrap_err().kind, ErrorKind::Topology);
+}
+
+fn replace_record(source: &str, offset: usize, record: &str) -> String {
+    let end = offset + source[offset..].find(';').unwrap() + 1;
+    format!("{}{}{}", &source[..offset], record, &source[end..])
+}
+#[test]
+fn broken_loop_is_rejected_without_geometric_welding_or_partial_success() {
+    let source = include_str!("../../nema17-motor-bracket.step");
+    let data = inventory(source, Limits::default()).unwrap();
+    let bodies = data.raw_bodies().unwrap();
+    let body = &bodies[0];
+    let bound = body
+        .faces
+        .values()
+        .flat_map(|f| &f.bounds)
+        .find(|b| {
+            b.edges
+                .iter()
+                .any(|u| body.edges[&u.edge].start != body.edges[&u.edge].end)
+        })
+        .unwrap();
+    let remove = bound
+        .edges
+        .iter()
+        .position(|u| body.edges[&u.edge].start != body.edges[&u.edge].end)
+        .unwrap();
+    let ids = bound
+        .edges
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != remove)
+        .map(|(_, u)| format!("#{}", u.id))
+        .collect::<Vec<_>>()
+        .join(",");
+    let changed = replace_record(
+        source,
+        data.entities()[&bound.loop_id].offset,
+        &format!("#{}=EDGE_LOOP('',({ids}));", bound.loop_id),
+    );
+    let error = inventory(&changed, Limits::default())
+        .unwrap()
+        .raw_bodies()
+        .unwrap_err();
+    assert!(error.detail.contains("not closed"), "{error}");
+}
+#[test]
+fn duplicated_faces_and_an_additional_unsupported_body_are_not_silently_skipped() {
+    let source = include_str!("../../nema17-motor-bracket.step");
+    let data = inventory(source, Limits::default()).unwrap();
+    let body = data.raw_bodies().unwrap().remove(0);
+    let mut ids = body
+        .faces
+        .keys()
+        .map(|i| format!("#{i}"))
+        .collect::<Vec<_>>();
+    ids.push(ids[0].clone());
+    let changed = replace_record(
+        source,
+        data.entities()[&body.shell].offset,
+        &format!("#{}=CLOSED_SHELL('',({}));", body.shell, ids.join(",")),
+    );
+    assert!(inventory(&changed, Limits::default())
+        .unwrap()
+        .raw_bodies()
+        .unwrap_err()
+        .detail
+        .contains("repeated face"));
+    let end = source.rfind("ENDSEC;").unwrap();
+    let changed = format!(
+        "{}#999999=BREP_WITH_VOIDS('',#{},());\n{}",
+        &source[..end],
+        body.shell,
+        &source[end..]
+    );
+    assert!(inventory(&changed, Limits::default())
+        .unwrap()
+        .raw_bodies()
+        .unwrap_err()
+        .detail
+        .contains("unsupported body kind"));
+}
+
+#[test]
+fn topology_expansion_budgets_are_cumulative_across_shared_shells() {
+    use solid_kernel::step::TopologyLimits;
+    let source = include_str!("../../nema17-motor-bracket.step");
+    let data = inventory(source, Limits::default()).unwrap();
+    let body = data.raw_bodies().unwrap().remove(0);
+    let end = source.rfind("ENDSEC;").unwrap();
+    let repeated = format!(
+        "{}#999999=MANIFOLD_SOLID_BREP('second',#{});\n{}",
+        &source[..end],
+        body.shell,
+        &source[end..]
+    );
+    let shared = inventory(&repeated, Limits::default()).unwrap();
+    assert_eq!(shared.raw_bodies().unwrap().len(), 2);
+    for limits in [
+        TopologyLimits {
+            bodies: 1,
+            ..TopologyLimits::default()
+        },
+        TopologyLimits {
+            faces: 38,
+            ..TopologyLimits::default()
+        },
+        TopologyLimits {
+            edges: 114,
+            ..TopologyLimits::default()
+        },
+        TopologyLimits {
+            vertices: 70,
+            ..TopologyLimits::default()
+        },
+        TopologyLimits {
+            edge_uses: 228,
+            ..TopologyLimits::default()
+        },
+        TopologyLimits {
+            label_bytes: 5,
+            ..TopologyLimits::default()
+        },
+    ] {
+        assert_eq!(
+            shared.raw_bodies_with_limits(limits).unwrap_err().kind,
+            ErrorKind::Limit
+        );
+    }
+}

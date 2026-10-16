@@ -36,6 +36,45 @@ fn run() -> Result<(), String> {
         }
         Err(e) => println!("Length-unit resolution unavailable: {e}"),
     }
+    match result.raw_bodies() {
+        Ok(bodies) => {
+            for b in bodies {
+                println!("Raw local body #{}: {} vertices, {} edges, {} faces (not geometric validation)", b.id,b.vertices.len(),b.edges.len(),b.faces.len());
+                let mut curve_kinds = std::collections::BTreeMap::<String, usize>::new();
+                for edge in b.edges.values() {
+                    let mut id = edge.curve;
+                    let mut seen = std::collections::BTreeSet::new();
+                    let kind = loop {
+                        if seen.len() >= 32 || !seen.insert(id) {
+                            break "UNRESOLVED_WRAPPER".into();
+                        }
+                        let entity = &result.entities()[&id];
+                        if let [call] = entity.components.as_slice() {
+                            if matches!(call.name.as_str(), "SURFACE_CURVE" | "SEAM_CURVE") {
+                                if let Some(solid_kernel::step::Value::Ref(base)) = call.args.get(1)
+                                {
+                                    id = *base;
+                                    continue;
+                                }
+                                break "UNRESOLVED_WRAPPER".into();
+                            }
+                        }
+                        break entity
+                            .components
+                            .iter()
+                            .map(|c| c.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join("+");
+                    };
+                    *curve_kinds.entry(kind).or_default() += 1;
+                }
+                for (kind, count) in curve_kinds {
+                    println!("Referenced 3D edge declaration {kind}: {count}");
+                }
+            }
+        }
+        Err(e) => println!("Raw topology extraction unavailable: {e}"),
+    }
     for (name, count) in result.counts() {
         println!("{name}: {count}");
     }

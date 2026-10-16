@@ -7,6 +7,9 @@
 //! enums and omitted/derived values. Named DATA/external sections, binary literals,
 //! encoded-string interpretation and schema/geometric validity are not implemented.
 //! Unsupported syntax is refused; no entity is silently dropped.
+pub use crate::step_topology::{
+    EdgeUse, RawBody, RawBound, RawEdge, RawFace, RawVertex, TopologyLimits,
+};
 pub use crate::step_units::LengthContext;
 use std::collections::BTreeMap;
 
@@ -44,6 +47,13 @@ impl Inventory {
     /// silently unified; geometry must bind to its own representation context.
     pub fn length_contexts(&self) -> Result<Vec<LengthContext>, Error> {
         crate::step_units::contexts(self)
+    }
+    /// Raw body connectivity, not geometric validity or placed/normalized solids.
+    pub fn raw_bodies(&self) -> Result<Vec<RawBody>, Error> {
+        crate::step_topology::bodies(self, TopologyLimits::default())
+    }
+    pub fn raw_bodies_with_limits(&self, limits: TopologyLimits) -> Result<Vec<RawBody>, Error> {
+        crate::step_topology::bodies(self, limits)
     }
     pub fn header(&self) -> &[Call] {
         &self.header
@@ -84,6 +94,7 @@ pub enum ErrorKind {
     DanglingReference,
     UnsupportedSection,
     Units,
+    Topology,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {

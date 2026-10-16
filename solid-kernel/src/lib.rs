@@ -16,6 +16,7 @@ mod bvh;
 pub mod cad;
 pub mod step;
 mod step_units;
+mod step_topology;
 #[cfg(feature = "occt")]
 pub mod occt;
 
