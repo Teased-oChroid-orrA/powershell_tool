@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Reproducible local/release qualification. Optional GPU checks require a native adapter."""
 import argparse
+import hashlib
 import json
 import pathlib
 import subprocess
@@ -24,7 +25,15 @@ if args.gpu:
     if args.cad:
         gpu += ['--features', cad_feature]
     commands.append(gpu + ['--', '--ignored', 'gpu_viewer', '--skip', 'snapshot'])
-report = {'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip(), 'platform': sys.platform, 'dirty': bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=root, text=True).strip()), 'checks': []}
+def source_state():
+    commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
+    status = subprocess.check_output(['git', 'status', '--porcelain'], cwd=root)
+    diff = subprocess.check_output(['git', 'diff', '--no-ext-diff', '--no-textconv', '--binary', 'HEAD'], cwd=root)
+    digest = hashlib.sha256(commit.encode() + b'\0' + status + b'\0' + diff).hexdigest()
+    return commit, bool(status.strip()), digest
+
+starting_commit, starting_dirty, starting_state = source_state()
+report = {'commit': starting_commit, 'platform': sys.platform, 'dirty': starting_dirty, 'checks': []}
 failed = False
 for command in commands:
     print('Running:', ' '.join(command), flush=True)
@@ -32,6 +41,11 @@ for command in commands:
     result = subprocess.run(command, cwd=root)
     failed |= result.returncode != 0
     report['checks'].append({'command': command, 'exit_code': result.returncode, 'seconds': time.monotonic() - started})
+ending_commit, ending_dirty, ending_state = source_state()
+report.update(ending_commit=ending_commit, ending_dirty=ending_dirty, source_changed=starting_state != ending_state)
+failed |= report['source_changed']
+if report['source_changed']:
+    print('Source changed during qualification; results are not a stable-revision qualification.', file=sys.stderr)
 report['passed'] = not failed
 pathlib.Path(args.output).write_text(json.dumps(report, indent=2) + '\n')
 sys.exit(1 if failed else 0)
