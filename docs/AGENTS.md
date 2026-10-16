@@ -170,3 +170,5 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Issue 46 Phase 7](issue-46-phase-7.md): native chart CDT/surface assembly, independent volume convergence and remaining global validity gate; [dependency audit](issue-46-phase-7-dependency-audit.md).
 
 - [Issue 46 Phase 8](issue-46-phase-8.md): sampled global intersections, checked distance-solid bridge and Tet4/Tet10 patch verification.
+
+- [Issue 46 Phase 9](issue-46-phase-9.md): explicit cylindrical parameter canonicalization, complete adjustment reports and strict-mode preservation.

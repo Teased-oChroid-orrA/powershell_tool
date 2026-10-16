@@ -52,3 +52,5 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - `chart_mesh` / `native_surface`: diagnostic fixed-boundary CDT, source sample keys, bounded batched curved refinement, closed oriented edges/cyclic vertex links and per-face cancellation. Short arcs require an interior sample. This is not global geometric validity or a production CAD switch. See `docs/issue-46-phase-7.md`; CLI `step-inventory FILE --surface` needs no OCCT.
 
 - `triangle_intersection`: bounded exact-sign sampled facet checks and immutable checked single-shell ownership; native distance-solid bridge skips welding/repair and preserves source face IDs. Not exact CAD/PLC certification. Evidence: `docs/issue-46-phase-8.md`.
+
+- `ChartPolicy` defaults to strict. Explicit cylindrical parameter canonicalization stays within the existing model geometry tolerance and records every face/bound/oriented-use/edge/sample adjustment; world/source coordinates do not change. Preserve reports through checked geometry conversion. Generated tilted-cylinder fixture runs feature-off; see `docs/issue-46-phase-9.md`.
