@@ -48,3 +48,5 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - `analytic_step` normalizes one directly represented analytic body to millimetres and validates/samples LINE/CIRCLE and PLANE/CYLINDRICAL_SURFACE geometry. It is not a trimmed-solid importer. `planar_step` classifies bounded sampled planar trim polygons, not exact curve intersections. No production switch; keep OCCT. Evidence: `docs/issue-46-phase-4.md` and `phase-5.md`.
 
 - `cylindrical_step`: bounded sampled single-bound periodic charts. All bracket cylinders pass, but a tilted export fails the strict turn certificate; no silent seam snapping. No exact trims or solid/tessellation guarantee. See `docs/issue-46-phase-6.md` for the current native support matrix and refusal regression.
+
+- `chart_mesh` / `native_surface`: diagnostic fixed-boundary CDT, source sample keys, bounded batched curved refinement, closed oriented edges/cyclic vertex links and per-face cancellation. Short arcs require an interior sample. This is not global geometric validity or a production CAD switch. See `docs/issue-46-phase-7.md`; CLI `step-inventory FILE --surface` needs no OCCT.

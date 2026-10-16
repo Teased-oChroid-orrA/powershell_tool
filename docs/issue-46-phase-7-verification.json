@@ -1,0 +1,58 @@
+{
+  "source_commit": "09323716dbf0c217e5530e103a5b5cb5ce0f6eb0",
+  "scope": "native analytic diagnostic surface; no global geometric/production certificate",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 47,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 36,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo run -p solid-kernel --example step-inventory --locked --offline -j1 -- nema17-motor-bracket.step --surface",
+      "exit_code": 0
+    }
+  ],
+  "standalone_observation": {
+    "source_commit": "09323716dbf0c217e5530e103a5b5cb5ce0f6eb0",
+    "command": "target/debug/examples/step-inventory nema17-motor-bracket.step --surface",
+    "exit_code": 0,
+    "wall_seconds": 0.014737905003130436,
+    "max_rss_kib": 9344,
+    "scope": "standalone native audit child via wait4; compiler/git excluded; single observation"
+  },
+  "fixture": {
+    "source_faces": 38,
+    "shared_edge_samples": 474,
+    "coarse": {
+      "chord_mm": 0.05,
+      "vertices": 469,
+      "triangles": 978,
+      "volume_mm3": 34654.80701112524
+    },
+    "fine": {
+      "chord_mm": 0.005,
+      "vertices": 1326,
+      "triangles": 2692,
+      "volume_mm3": 34633.56162623845
+    },
+    "independent_occt_tessellation": {
+      "deflection_mm": 0.005,
+      "volume_mm3": 34632.793504982576
+    }
+  },
+  "not_verified": [
+    "global triangle self-intersections",
+    "exact trimmed CAD validity",
+    "general assemblies/B-splines/healing/periodic holes",
+    "native production CAD integration",
+    "constrained PLC volume recovery",
+    "later native source on hosted Windows/macOS"
+  ]
+}

@@ -166,3 +166,5 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Issue 46 Phase 5](issue-46-phase-5.md): sampled planar trim validation/classification and remaining periodic/solid gates.
 
 - [Issue 46 Phase 6](issue-46-phase-6.md): cylindrical trim charts, explicit tilted-reference limit and current native support matrix; draft PR #65.
+
+- [Issue 46 Phase 7](issue-46-phase-7.md): native chart CDT/surface assembly, independent volume convergence and remaining global validity gate; [dependency audit](issue-46-phase-7-dependency-audit.md).
