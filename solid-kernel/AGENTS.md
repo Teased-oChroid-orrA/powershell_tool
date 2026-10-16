@@ -68,3 +68,5 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - Current diagnostic capabilities/limits and pilot corpus: `docs/issue-46-native-support-matrix-2026-10-16.md`. Hollow tube preserves the through-hole; valid thin-wall/near-boundary positive seeds still refuse solver conversion under unchanged quality limits (Phase 15).
 
 - `plc_star::StarSeed::into_solver_mesh` reuses unchanged quality/conformity gates and restores original PLC source-face regions; refuses unknown source documents. `NativeBoundaryMesh` shares reference selection/metadata ownership with the existing lattice wrapper. Tet4 seed and lattice Tet4/Tet10 use the same analytic bar patch. See `docs/issue-46-phase-16.md`.
+
+- `StarSeed::try_vertex_mean_kernel` trials one reported interior-point move: exact kernel/boundary proof, strict minimum-Jacobian improvement, non-worsening worst edge ratio, staged cancellation. Boundary vertices/facets/source IDs stay unchanged; concave outside-kernel means refuse. Solver gates remain independent. Limited pilot, not general sliver elimination/optimization. See `docs/issue-46-phase-17.md`.

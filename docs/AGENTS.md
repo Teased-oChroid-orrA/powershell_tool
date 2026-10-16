@@ -186,3 +186,5 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Issue 46 native support snapshot, 2026-10-16](issue-46-native-support-matrix-2026-10-16.md); [Phase 15 hollow-domain/thin-wall verification](issue-46-phase-15.md).
 
 - [Issue 46 Phase 16: source-tagged conforming-seed solver bridge](issue-46-phase-16.md).
+
+- [Issue 46 Phase 17: bounded reported kernel-quality trial](issue-46-phase-17.md).

@@ -31,3 +31,9 @@ All generated CAD cases use the retained OCCT export as an interchange source an
 ## Remaining completion gates
 
 #51 remains open for broader exchange/geometry/placement/assembly/exact trims/healing/persistent association coverage. #52 remains open for general constrained recovery/refinement/cavities/regions. #53 requires sliver elimination/quality and solver-conditioning evidence, not merely rejection tests. P2/P3 work and final parity remain open under the execution index. Production merge and OCCT retirement retain their separate approval gates. Do not close the epic based on this snapshot.
+
+## Later same-day increments
+
+Phase 16 (`93f0fb6`) supersedes the earlier seed-tagging limitation: the quality-gated native Tet4 seed now retains original source-face solver regions through the same immutable boundary-reference lookup as the lattice wrapper. Shared bar tension checks cover seed Tet4 and lattice Tet4/Tet10. Unknown provenance still refuses source-tagged conversion.
+
+Phase 17 (`bfc91ef`) adds a reported single interior kernel trial with exact visibility/boundary preservation and guarded quality improvement. Near-boundary bar quality improves enough to pass unchanged solver gates; a concave L-prism's outside-kernel mean is refused. This does not establish general sliver elimination, constrained recovery, representative conditioning/performance data or any later gate.
