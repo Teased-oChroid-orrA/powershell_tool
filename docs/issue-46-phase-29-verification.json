@@ -1,0 +1,31 @@
+{
+  "source_commit": "d355037d06abaf578410d7158ac9ac3b2ce408ce",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 118,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 101,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "development_failures": [
+    "Constant unequal-weight rational curve exhausted the original 100000 enclosure budget at 1e-6; 3 groups passed / 1 failed before Cartesian convex-hull tightening (exit 101)"
+  ],
+  "fix": "Intersect with exact active Cartesian control hull; original budgets/tolerances unchanged",
+  "evidence_logs_prefix": "native-curve-distance-",
+  "not_verified": [
+    "Unique or regular projection; nearest-parameter/position error bound",
+    "Full spline B-Rep and surface/p-curve/trim/locus gates",
+    "Representative CAD performance, Windows/macOS execution and remaining epic gates"
+  ]
+}

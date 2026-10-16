@@ -210,3 +210,5 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Phase 27 source-bound spline curves](issue-46-phase-27.md): shared bounded wrapper resolution and exact-document edge/unit binding.
 
 - [Phase 28 rational curve enclosures and sampling](issue-46-phase-28.md): shared outward-rounded recurrence, whole-interval Hausdorff bounds, progress/cancellation and resource limits.
+
+- [Phase 29 global curve distance brackets](issue-46-phase-29.md): deterministic bounded search and positive-weight Cartesian hull conditioning.

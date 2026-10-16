@@ -92,3 +92,5 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - [Phase 27 source-bound spline curves](../docs/issue-46-phase-27.md): shared bounded wrapper resolution and exact-document edge/unit binding.
 
 - [Phase 28 rational curve enclosures and sampling](../docs/issue-46-phase-28.md): shared outward-rounded recurrence, whole-interval Hausdorff bounds, progress/cancellation and resource limits.
+
+- [Phase 29 global curve distance brackets](../docs/issue-46-phase-29.md): deterministic bounded search and positive-weight Cartesian hull conditioning.
