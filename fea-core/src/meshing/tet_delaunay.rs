@@ -43,53 +43,46 @@ pub fn tetrahedralize_observed(
     if input.len() > limits.max_points {
         return Err(MeshError::LimitExceeded("point budget exceeded".into()));
     }
-    // Validates coordinate envelope and exact duplicates before arithmetic on bounds.
+    // Start from real non-coplanar points. Finite supervertices can steal hull
+    // tetrahedra even when the enclosure is large; handle the infinite-cell
+    // conflict cavity through visible boundary faces instead.
     TetTopology::new(input.to_vec(), vec![], limits.max_cells)?;
-    let mut lo = input[0];
-    let mut hi = lo;
-    for p in input {
-        for k in 0..3 {
-            lo[k] = lo[k].min(p[k]);
-            hi[k] = hi[k].max(p[k]);
+    let noncollinear = |p: Point| {
+        [(0, 1), (0, 2), (1, 2)].iter().any(|&(x, y)| {
+            let c = |q: Point| robust::Coord { x: q[x], y: q[y] };
+            robust::orient2d(c(input[0]), c(input[1]), c(p)) != 0.
+        })
+    };
+    let c = (2..input.len())
+        .find(|&i| noncollinear(input[i]))
+        .ok_or_else(|| MeshError::Unsupported("point set is collinear".into()))?;
+    let mut fourth = None;
+    for i in 2..input.len() {
+        if orientation(input[0], input[1], input[c], input[i])? != Ordering::Equal {
+            fourth = Some(i);
+            break;
         }
     }
-    let centre = std::array::from_fn::<_, 3, _>(|k| lo[k] + (hi[k] - lo[k]) * 0.5);
-    let scale = (0..3).map(|k| hi[k] - lo[k]).fold(0f64, f64::max) * 8.;
-    if !scale.is_finite() || scale == 0. {
-        return Err(MeshError::Failed(
-            "point set has zero or unsupported extent".into(),
-        ));
-    }
-    let mut points = input.to_vec();
-    let n = points.len();
-    for d in [[-1., -1., -1.], [1., -1., 1.], [-1., 1., 1.], [1., 1., -1.]] {
-        points.push(std::array::from_fn(|k| centre[k] + scale * d[k]));
-    }
-    let mut topology = TetTopology::new(
-        points.clone(),
-        vec![[n, n + 1, n + 2, n + 3]],
-        limits.max_cells,
-    )?;
+    let d = fourth.ok_or_else(|| MeshError::Unsupported("point set is coplanar".into()))?;
+    let seed = [0, 1, c, d];
+    let mut topology = TetTopology::new(input.to_vec(), vec![seed], limits.max_cells)?;
     for (index, &point) in input.iter().enumerate() {
         observe(index, input.len())?;
+        if seed.contains(&index) {
+            continue;
+        }
         let mut cavity = BTreeSet::new();
         for (i, t) in topology.cells().iter().enumerate() {
-            if sphere_side(t.map(|v| points[v]), point)? != SphereSide::Outside {
+            if sphere_side(t.map(|v| input[v]), point)? != SphereSide::Outside {
                 cavity.insert(i);
             }
         }
-        if cavity.is_empty() {
-            return Err(MeshError::Failed(
-                "no insertion cavity; numerical range or enclosure failure".into(),
-            ));
-        }
-        let mut boundary = BTreeMap::<[usize; 3], ([usize; 3], usize)>::new();
-        for &i in &cavity {
-            for f in faces(topology.cells()[i]) {
+        let mut owners = BTreeMap::<[usize; 3], Vec<(usize, [usize; 3])>>::new();
+        for (i, t) in topology.cells().iter().enumerate() {
+            for f in faces(*t) {
                 let mut k = f;
                 k.sort_unstable();
-                let e = boundary.entry(k).or_insert((f, 0));
-                e.1 += 1;
+                owners.entry(k).or_default().push((i, f));
             }
         }
         let mut cells: Vec<_> = topology
@@ -99,10 +92,25 @@ pub fn tetrahedralize_observed(
             .filter(|(i, _)| !cavity.contains(i))
             .map(|(_, t)| *t)
             .collect();
-        for (face, count) in boundary.values() {
-            if *count == 1 {
-                let [a, b, c] = *face;
-                if orientation(points[a], points[b], points[c], point)? == Ordering::Equal {
+        for entries in owners.values() {
+            let (owner, face) = entries[0];
+            let cone = match entries.as_slice() {
+                [(_, _)] => {
+                    let visible =
+                        orientation(input[face[0]], input[face[1]], input[face[2]], point)?
+                            == Ordering::Greater;
+                    cavity.contains(&owner) != visible
+                }
+                [(a, _), (b, _)] => cavity.contains(a) != cavity.contains(b),
+                _ => {
+                    return Err(MeshError::NonConforming(
+                        "non-manifold insertion cavity".into(),
+                    ))
+                }
+            };
+            if cone {
+                let [a, b, c] = face;
+                if orientation(input[a], input[b], input[c], point)? == Ordering::Equal {
                     continue;
                 }
                 if cells.len() >= limits.max_cells {
@@ -113,44 +121,33 @@ pub fn tetrahedralize_observed(
                 cells.push([a, b, c, index]);
             }
         }
-        let next = TetTopology::new(points.clone(), cells, limits.max_cells)?;
-        // Insertion inside the superstructure cannot change its outer boundary.
-        let signature = |t: &TetTopology| -> BTreeSet<_> {
-            t.boundary()
-                .iter()
-                .map(|f| {
-                    let mut f = *f;
-                    f.sort_unstable();
-                    f
-                })
-                .collect()
-        };
-        if signature(&topology) != signature(&next) {
-            return Err(MeshError::NonConforming(
-                "insertion changes the superstructure boundary".into(),
+        let next = TetTopology::new(input.to_vec(), cells, limits.max_cells)?;
+        if !next.cells().iter().any(|t| t.contains(&index)) {
+            return Err(MeshError::Failed(
+                "insertion did not retain its point".into(),
             ));
         }
         topology = next;
     }
-    let cells: Vec<_> = topology
-        .cells()
-        .iter()
-        .filter(|t| t.iter().all(|&v| v < n))
-        .copied()
-        .collect();
-    if cells.is_empty() {
-        return Err(MeshError::Unsupported(
-            "point set is not a resolved three-dimensional volume".into(),
+    let used: BTreeSet<_> = topology.cells().iter().flatten().copied().collect();
+    if used.len() != input.len() {
+        return Err(MeshError::Failed(
+            "not every input point belongs to a tetrahedron".into(),
         ));
     }
-    let used: BTreeSet<_> = cells.iter().flatten().copied().collect();
-    if used.len() != n {
-        return Err(MeshError::Failed(
-            "not every input point survived superstructure removal".into(),
-        ));
+    // A topologically closed boundary alone does not establish the convex hull.
+    for face in topology.boundary() {
+        for &p in input {
+            if orientation(input[face[0]], input[face[1]], input[face[2]], p)? == Ordering::Greater
+            {
+                return Err(MeshError::NonConforming(
+                    "final boundary is not the point-set convex hull".into(),
+                ));
+            }
+        }
     }
     observe(input.len(), input.len())?;
-    TetTopology::new(input.to_vec(), cells, limits.max_cells)
+    Ok(topology)
 }
 #[cfg(test)]
 mod tests {
@@ -237,6 +234,37 @@ mod tests {
         )
         .unwrap();
         assert!(sliver.to_mesh(crate::Elastic::new(1000., 0.3)).is_err());
+    }
+
+    #[test]
+    fn dense_interior_cloud_keeps_the_complete_analytic_hull() {
+        let mut p = Vec::new();
+        for x in [0., 1.] {
+            for y in [0., 1.] {
+                for z in [0., 1.] {
+                    p.push([x, y, z]);
+                }
+            }
+        }
+        let mut seed = 731u64;
+        while p.len() < 100 {
+            p.push(std::array::from_fn(|_| {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                0.01 + 0.98 * ((seed >> 32) as f64 / u32::MAX as f64)
+            }));
+        }
+        let t = tetrahedralize(&p, Limits::default()).unwrap();
+        assert!((volume(&t) - 1.).abs() < 1e-12, "volume {}", volume(&t));
+        for cell in t.cells() {
+            for (i, &point) in p.iter().enumerate() {
+                if !cell.contains(&i) {
+                    assert_ne!(
+                        sphere_side(cell.map(|j| p[j]), point).unwrap(),
+                        SphereSide::Inside
+                    );
+                }
+            }
+        }
     }
 
     #[test]
