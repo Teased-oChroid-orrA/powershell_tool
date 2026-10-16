@@ -329,14 +329,29 @@ mod tests {
         )
         .is_err());
         let p = [[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
+        let mut limited = p.to_vec();
+        limited.push([0.1, 0.1, 0.1]);
         assert!(tetrahedralize(
-            &p,
+            &limited,
             Limits {
-                max_points: 4,
+                max_points: 5,
                 max_cells: 1
             }
         )
         .is_err());
+        assert_eq!(
+            tetrahedralize(
+                &p,
+                Limits {
+                    max_points: 4,
+                    max_cells: 1
+                }
+            )
+            .unwrap()
+            .cells()
+            .len(),
+            1
+        );
         assert!((volume(&tetrahedralize(&p, Limits::default()).unwrap()) - 1. / 6.).abs() < 1e-15);
     }
 }
