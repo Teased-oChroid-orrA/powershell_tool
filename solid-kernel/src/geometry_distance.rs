@@ -153,7 +153,7 @@ pub(crate) fn distance<G: Geometry<D>, const D: usize>(
             "invalid geometry distance query/tolerance",
         ));
     }
-    let cancelled = || fail(ErrorKind::Geometry, "geometry distance query cancelled");
+    let cancelled = || fail(ErrorKind::Cancelled, "geometry distance query cancelled");
     if !progress(Progress {
         enclosures: 0,
         pending_intervals: 0,

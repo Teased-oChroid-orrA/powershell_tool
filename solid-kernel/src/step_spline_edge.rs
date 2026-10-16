@@ -93,7 +93,7 @@ pub fn sample(
     }) {
         return Err(Error {
             offset: entity.offset,
-            kind: ErrorKind::Geometry,
+            kind: ErrorKind::Cancelled,
             detail: "spline edge sampling cancelled".into(),
         });
     }
@@ -125,7 +125,11 @@ pub(crate) fn sample_declaration(
             "require finite 0 < geometry tolerance <= sampling tolerance",
         ));
     }
-    let cancelled = || fail("sampling cancelled");
+    let cancelled = || {
+        let mut error = fail("sampling cancelled");
+        error.kind = ErrorKind::Cancelled;
+        error
+    };
     if !progress(nurbs_sample::Progress {
         enclosures: 0,
         accepted_segments: 0,

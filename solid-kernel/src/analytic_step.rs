@@ -1,5 +1,6 @@
 //! Native analytic geometry feasibility checks, not trimmed B-Rep/solid validity.
-//! Supported subset: one directly represented, unplaced body; line/circle edges;
+//! Supported subset: one directly represented, unplaced body; line/circle edges
+//! and verified full-domain two-control degree-one splines;
 //! plane/cylinder surfaces. All coordinates are normalized to millimetres.
 use crate::{
     step::{Entity, Error, ErrorKind, Inventory, RawBody, Value},

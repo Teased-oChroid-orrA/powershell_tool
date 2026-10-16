@@ -162,6 +162,12 @@ mod tests {
     fn work_queue_input_and_cancellation_failures_never_return_unconverged_results() {
         let c = quarter();
         let query = [2., 2., 0.];
+        assert_eq!(
+            distance(&c, query, Options::default(), |_| false)
+                .unwrap_err()
+                .kind,
+            ErrorKind::Cancelled
+        );
         for opt in [
             Options {
                 max_enclosures: 0,

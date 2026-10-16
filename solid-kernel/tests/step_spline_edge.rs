@@ -246,6 +246,12 @@ fn source_edge_sampling_cancellation_work_limits_and_invalid_tolerances_are_atom
             .detail
             .contains("cancelled")
     );
+    assert_eq!(
+        step_spline_edge::sample(&context, &data, edge, Options::default(), |_| false)
+            .unwrap_err()
+            .kind,
+        solid_kernel::step::ErrorKind::Cancelled
+    );
     let mut complete_calls = 0;
     assert!(
         step_spline_edge::sample(&context, &data, edge, Options::default(), |p| {
