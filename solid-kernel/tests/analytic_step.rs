@@ -1109,3 +1109,83 @@ fn bracket_holes_are_refused_by_the_limited_star_seed_instead_of_filled() {
     assert_eq!(error.kind, solid_kernel::step::ErrorKind::Geometry);
     assert!(error.detail.contains("not strictly inside boundary facet"));
 }
+
+#[cfg(feature = "occt")]
+#[test]
+fn native_hollow_tube_preserves_the_through_hole_and_analytic_volume() {
+    use solid_kernel::cad::{Brep, Loop, Profile};
+    let brep = Brep::extrude(
+        &Profile {
+            outer: Loop::Circle {
+                centre: [0., 0.],
+                radius: 2.,
+            },
+            holes: vec![Loop::Circle {
+                centre: [0., 0.],
+                radius: 1.,
+            }],
+        },
+        0.,
+        3.,
+    )
+    .unwrap();
+    let text = brep.to_step_text().unwrap();
+    let data = inventory(&text, Limits::default()).unwrap();
+    let model = AnalyticModel::read(
+        &data,
+        Options {
+            chord_mm: 0.001,
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    let surface = model
+        .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+        .unwrap();
+    assert_eq!(surface.source_faces.len(), 4);
+    let exact = std::f64::consts::PI * 9.;
+    assert!((surface.signed_volume_mm3 - exact).abs() / exact < 1e-3);
+    let checked = surface.check_intersections(2_000_000, |_| true).unwrap();
+    let solid = checked.into_distance_solid();
+    assert!(solid.solid().signed_distance([0., 0., 1.5]) > 0.99);
+    assert!(solid.solid().signed_distance([1.5, 0., 1.5]) < -0.49);
+    assert!(solid.solid().signed_distance([3., 0., 1.5]) > 0.99);
+}
+
+#[cfg(feature = "occt")]
+#[test]
+fn valid_thin_wall_and_near_boundary_seeds_cannot_bypass_solver_quality_limits() {
+    use solid_kernel::{
+        plc::{Limits as PlcLimits, ValidatedPlc},
+        plc_star::StarSeed,
+    };
+    for (height, center) in [(0.01, [0.5, 0.5, 0.005]), (3., [1e-12, 0.5, 1.5])] {
+        let text = solid_kernel::cad::Brep::box_from_corners([0., 0., 0.], [1., 1., height])
+            .to_step_text()
+            .unwrap();
+        let model = AnalyticModel::read(
+            &inventory(&text, Limits::default()).unwrap(),
+            Options::default(),
+        )
+        .unwrap();
+        let surface = model
+            .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+            .unwrap();
+        assert!((surface.signed_volume_mm3 - height).abs() < 1e-12);
+        let plc = ValidatedPlc::new(
+            surface.check_intersections(10000, |_| true).unwrap(),
+            PlcLimits::default(),
+            |_, _| true,
+        )
+        .unwrap();
+        let seed = StarSeed::new(plc, center, 100, |_, _| true).unwrap();
+        assert_eq!(seed.topology().cells().len(), 12);
+        let error = seed
+            .topology()
+            .to_mesh(fea_core::Elastic::new(200e3, 0.3))
+            .unwrap_err();
+        assert!(
+            matches!(error,fea_core::meshing::MeshError::Failed(ref detail) if detail.contains("mesh quality below the limits"))
+        );
+    }
+}
