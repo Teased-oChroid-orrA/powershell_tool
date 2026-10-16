@@ -2,23 +2,27 @@ name: Workbench qualification
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - '.github/workflows/qualification.yml'
-      - 'scripts/qualify.py'
-      - 'app-tui/**'
-      - 'fea-problem/**'
-      - 'solid-kernel/**'
-      - 'fea-core/**'
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - '.gitignore'
 concurrency:
   group: qualification-${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 jobs:
   qualify:
+    name: qualify (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            cad_flags: --cad
+          - os: macos-latest
+            cad_flags: --cad
+          - os: windows-latest
+            cad_flags: ''
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -29,7 +33,7 @@ jobs:
             target
           key: qualification-${{ runner.os }}-${{ hashFiles('Cargo.lock', '.github/workflows/qualification.yml', 'scripts/qualify.py') }}
           restore-keys: qualification-${{ runner.os }}-
-      - run: python scripts/qualify.py --jobs 2
+      - run: python scripts/qualify.py --jobs 2 ${{ matrix.cad_flags }}
         env:
           CARGO_INCREMENTAL: '0'
           CARGO_PROFILE_TEST_DEBUG: '0'

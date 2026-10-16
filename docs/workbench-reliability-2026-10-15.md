@@ -155,3 +155,18 @@ Its exact-head, clean-worktree result is recorded in `/workspace/reliability-evi
 Read the PR's current validation status for that last run; do not substitute the earlier dirty-worktree report. No further
 implementation edits are intended during this frozen run. Platform smoke limitations and optional ignored soaks remain as
 stated above. The draft PR remains unmerged, and issue #12 remains closed.
+
+## Final clean application-source result
+
+The frozen run at **`99d33aff2b85a835618e6bbd03502fa8e03e4064`**, with **`dirty: false`**, passed all three qualification phases:
+
+- Locked workspace with `app-tui/occt`: **137 targets, 2,569 passed, 0 failed, 86 intentionally ignored**.
+- Terminal-only bin/lib/tests compile: **exit 0**.
+- Explicit native software-Vulkan checks (snapshot utilities excluded): **9 passed, 0 failed**.
+
+The immutable machine-readable report is [workbench-qualification-linux-2026-10-15.json](workbench-qualification-linux-2026-10-15.json).
+All application, solver and test sources remain identical to that tested revision. Only CI configuration and this verification
+record were adjusted afterward: hosted Linux/macOS now run the CAD feature as well, so the actual STEP regressions are not
+silently excluded from CI; Windows runs the default feature baseline (the source-built Windows CAD release remains separate).
+Source/dependency/data changes trigger qualification, while documentation-only PRs are excluded. Read PR #45 for the current
+hosted check outcomes. No merge or change to main was performed.
