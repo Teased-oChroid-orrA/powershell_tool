@@ -197,6 +197,49 @@ mod tests {
         assert!((volume(&tetrahedralize(&p, Limits::default()).unwrap()) - 1.).abs() < 1e-14);
     }
     #[test]
+    fn reference_mesh_passes_a_closed_form_tension_patch_and_rejects_slivers() {
+        let mut p = Vec::new();
+        for x in [0., 1.] {
+            for y in [0., 1.] {
+                for z in [0., 1.] {
+                    p.push([x, y, z]);
+                }
+            }
+        }
+        p.push([0.37, 0.41, 0.53]);
+        let mesh = tetrahedralize(&p, Limits::default())
+            .unwrap()
+            .to_mesh(crate::Elastic::new(1000., 0.))
+            .unwrap();
+        let model = crate::Model::new(mesh).unwrap();
+        let mut bc = model.dirichlet();
+        for (i, p) in model.mesh.nodes.iter().enumerate() {
+            if p[2] == 0. {
+                bc.fix_node(i);
+            }
+        }
+        let mut loads = crate::Loads::default();
+        for face in &model.mesh.surfaces["boundary"] {
+            if face.iter().all(|&i| model.mesh.nodes[i][2] == 1.) {
+                loads
+                    .faces
+                    .push((face.clone(), crate::SurfaceLoad::Traction([0., 0., 10.])));
+            }
+        }
+        let solved = model.solve_static(&loads, &bc).unwrap();
+        for (i, p) in model.mesh.nodes.iter().enumerate() {
+            assert!((solved.u[3 * i + 2] - 0.01 * p[2]).abs() < 1e-12);
+        }
+        let sliver = TetTopology::new(
+            vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0.2, 0.2, 1e-12]],
+            vec![[0, 1, 2, 3]],
+            10,
+        )
+        .unwrap();
+        assert!(sliver.to_mesh(crate::Elastic::new(1000., 0.3)).is_err());
+    }
+
+    #[test]
     #[ignore = "explicit reference-core scaling measurement"]
     fn reference_delaunay_scaling() {
         for count in [20, 100, 256] {

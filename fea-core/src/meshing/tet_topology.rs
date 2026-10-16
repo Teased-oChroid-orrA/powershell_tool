@@ -157,6 +157,35 @@ impl TetTopology {
             limit,
         })
     }
+    /// Convert the research topology to a Tet4 solver mesh only after the existing
+    /// quality and conformity gates pass. Boundary tags here are generic, not CAD IDs.
+    pub fn to_mesh(&self, material: crate::Elastic) -> Result<crate::Mesh, MeshError> {
+        let used: BTreeSet<_> = self.cells.iter().flatten().copied().collect();
+        if self.cells.is_empty() || used.len() != self.points.len() {
+            return Err(MeshError::NonConforming(
+                "solver mesh has empty cells or unused points".into(),
+            ));
+        }
+        let mut mesh = crate::Mesh::new(crate::Physics::Solid);
+        mesh.nodes = self.points.clone();
+        mesh.add_block(
+            crate::ElementKind::Tet4,
+            self.cells.iter().flatten().copied().collect(),
+            material,
+            "reference tetrahedra",
+        )
+        .map_err(MeshError::Failed)?;
+        mesh.surfaces.insert(
+            "boundary".into(),
+            self.boundary.iter().map(|f| f.to_vec()).collect(),
+        );
+        mesh.quality()
+            .require(&super::quality::QualityThresholds::default())?;
+        let adjacency = super::adjacency::Adjacency::new(&mesh);
+        let conformity = super::adjacency::check_conformity(&mesh, &adjacency);
+        conformity.require_conforming()?;
+        Ok(mesh)
+    }
     pub fn points(&self) -> &[Point] {
         &self.points
     }
