@@ -18,6 +18,7 @@ mod native_math;
 mod native_interval;
 pub mod native_surface;
 pub mod nurbs;
+pub mod nurbs_sample;
 pub mod nurbs_surface;
 pub mod native_volume;
 pub mod orientation_repair;
