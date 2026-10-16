@@ -86,6 +86,31 @@ pub fn sample(
     mut progress: impl FnMut(nurbs_sample::Progress) -> bool,
 ) -> Result<SampledSplineEdge, Error> {
     let entity = data.resolve_reference(edge)?;
+    if !progress(nurbs_sample::Progress {
+        enclosures: 0,
+        accepted_segments: 0,
+        pending_intervals: 0,
+    }) {
+        return Err(Error {
+            offset: entity.offset,
+            kind: ErrorKind::Geometry,
+            detail: "spline edge sampling cancelled".into(),
+        });
+    }
+    let declaration = context.read_spline_curve(data, edge, opt.curve_limits)?;
+    sample_declaration(context, data, edge, opt, declaration, progress)
+}
+/// Internal reuse of the source-bound declaration; callers must preserve the
+/// same context/edge. Numeric source identity is checked before endpoint work.
+pub(crate) fn sample_declaration(
+    context: &BodyContext,
+    data: &Inventory,
+    edge: EntityReference,
+    opt: Options,
+    declaration: StepSplineDeclaration,
+    mut progress: impl FnMut(nurbs_sample::Progress) -> bool,
+) -> Result<SampledSplineEdge, Error> {
+    let entity = data.resolve_reference(edge)?;
     let fail = |detail: &str| Error {
         offset: entity.offset,
         kind: ErrorKind::Geometry,
@@ -108,8 +133,16 @@ pub fn sample(
     }) {
         return Err(cancelled());
     }
-    let declaration = context.read_spline_curve(data, edge, opt.curve_limits)?;
-    let topology = &context.body().edges[&edge.entity];
+    data.resolve_reference(context.length_context())?;
+    let topology = context
+        .body()
+        .edges
+        .get(&edge.entity)
+        .ok_or_else(|| fail("source reference is not an edge of this body"))?;
+    let geometry = crate::analytic_step::curve_geometry(data, topology.curve)?;
+    if data.entity_reference(geometry.id) != Some(declaration.source) {
+        return Err(fail("declaration does not belong to this source edge"));
+    }
     let vertex_ids = [topology.start, topology.end];
     let vertices = vertex_ids.map(|id| data.entity_reference(id).unwrap());
     let mut endpoints = [[0.; 3]; 2];

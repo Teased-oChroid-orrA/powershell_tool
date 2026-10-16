@@ -276,3 +276,56 @@ fn source_edge_sampling_cancellation_work_limits_and_invalid_tolerances_are_atom
         .is_err());
     }
 }
+
+#[test]
+fn rational_single_span_body_import_is_geometric_and_curved_or_piecewise_loci_stay_gated() {
+    use solid_kernel::analytic_step::{AnalyticModel, Options as BodyOptions};
+    let (source, edge_id, curve_id) = fixture();
+    let data = inventory(&source, Limits::default()).unwrap();
+    let curve = &data.entities()[&curve_id];
+    let Value::List(cp) = &curve.components[0].args[2] else {
+        panic!("fixture");
+    };
+    let (Value::Ref(a), Value::Ref(b)) = (&cp[0], &cp[1]) else {
+        panic!("fixture");
+    };
+    let rational=replace(&source,curve.offset,&format!("#{}=(BOUNDED_CURVE() B_SPLINE_CURVE(1,(#{a},#{b}),.UNSPECIFIED.,.F.,.U.) B_SPLINE_CURVE_WITH_KNOTS((2,2),(10.,30.),.UNSPECIFIED.) CURVE() GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_CURVE((3.,7.)) REPRESENTATION_ITEM('nonuniform'));",curve_id));
+    let rational = inventory(&rational, Limits::default()).unwrap();
+    let imported = AnalyticModel::read(&rational, BodyOptions::default()).unwrap();
+    let reference = AnalyticModel::read(&data, BodyOptions::default()).unwrap();
+    assert_eq!(
+        imported.edge_points(edge_id),
+        reference.edge_points(edge_id)
+    );
+    // Even a collinear quadratic with a line-like form declaration is not the
+    // verified degree-one path: no inference or accidental broad capability.
+    let quadratic=replace(&source,curve.offset,&format!("#{}=B_SPLINE_CURVE_WITH_KNOTS('unsupported',2,(#{a},#{a},#{b}),.POLYLINE_FORM.,.F.,.U.,(3,3),(10.,30.),.UNSPECIFIED.);",curve_id));
+    let quadratic = inventory(&quadratic, Limits::default()).unwrap();
+    let error = AnalyticModel::read(&quadratic, BodyOptions::default()).unwrap_err();
+    assert!(error
+        .detail
+        .contains("only full-domain two-control degree-one"));
+    assert_eq!(error.offset, quadratic.entities()[&curve_id].offset);
+    let context = BodyContext::read(&data).unwrap();
+    let edge = &context.body().edges[&edge_id];
+    let edge_entity = &data.entities()[&edge_id];
+    let wrong = replace(
+        &source,
+        edge_entity.offset,
+        &format!(
+            "#{}=EDGE_CURVE('',#{},#{},#{},.{}.);",
+            edge_id,
+            edge.start,
+            edge.end,
+            edge.curve,
+            if edge.same_sense { "F" } else { "T" }
+        ),
+    );
+    assert!(AnalyticModel::read(
+        &inventory(&wrong, Limits::default()).unwrap(),
+        BodyOptions::default()
+    )
+    .unwrap_err()
+    .detail
+    .contains("endpoint agreement"));
+}

@@ -254,8 +254,7 @@ pub(crate) fn curve_geometry(data: &Inventory, mut id: u64) -> Result<&Entity, E
         return Ok(e);
     }
 }
-fn curve(data: &Inventory, id: u64, scale: f64) -> Result<Curve, Error> {
-    let e = curve_geometry(data, id)?;
+fn curve(data: &Inventory, e: &Entity, scale: f64) -> Result<Curve, Error> {
     let [c] = e.components.as_slice() else {
         return Err(error(e, "unsupported complex 3D curve"));
     };
@@ -561,7 +560,9 @@ impl AnalyticModel {
                 "require finite 0 < geometry tolerance <= chord tolerance",
             ));
         }
-        let (body, scale) = crate::step_body::BodyContext::read(data)?.into_parts();
+        let context = crate::step_body::BodyContext::read(data)?;
+        let body = context.body();
+        let scale = context.millimetres_per_source_unit();
         let mut vertices = BTreeMap::new();
         for v in body.vertices.values() {
             let p = scale_coordinates(&data.entities()[&v.point], v.coordinates, scale)?;
@@ -570,9 +571,54 @@ impl AnalyticModel {
         let mut curves = BTreeMap::new();
         let mut edges = BTreeMap::new();
         let mut total = 0usize;
+        let mut spline_segments = BTreeMap::new();
         for edge in body.edges.values() {
             let e = &data.entities()[&edge.id];
-            let c = curve(data, edge.curve, scale)?;
+            let geometry = curve_geometry(data, edge.curve)?;
+            let c = if geometry
+                .components
+                .iter()
+                .any(|c| c.name == "B_SPLINE_CURVE_WITH_KNOTS")
+            {
+                let reference = data.entity_reference(edge.id).unwrap();
+                let declaration =
+                    context.read_spline_curve(data, reference, crate::nurbs::Limits::default())?;
+                if declaration.curve.degree() != 1 || declaration.curve.control_points().len() != 2
+                {
+                    return Err(error(geometry,"native body supports only full-domain two-control degree-one splines; curved/piecewise spline loci remain unsupported"));
+                }
+                // Geometric reduction only: a positive-weight degree-one span
+                // traces its control segment. Source declarations/IDs stay intact.
+                // Full-domain endpoint agreement is mandatory; no inferred trims.
+                let accepted = crate::step_spline_edge::sample_declaration(
+                    &context,
+                    data,
+                    reference,
+                    crate::step_spline_edge::Options {
+                        geometry_tolerance_mm: opt.geometry_tolerance_mm,
+                        curve_limits: crate::nurbs::Limits::default(),
+                        sampling: crate::nurbs_sample::Options {
+                            tolerance: opt.chord_mm,
+                            max_segments: opt
+                                .max_edge_points
+                                .min(opt.max_total_points.saturating_sub(total))
+                                .saturating_sub(1),
+                            ..crate::nurbs_sample::Options::default()
+                        },
+                    },
+                    declaration,
+                    |_| true,
+                )?;
+                let points = accepted.declaration().curve.control_points();
+                spline_segments.insert(edge.id, [points[0], points[1]]);
+                Curve::Line {
+                    origin: points[0],
+                    direction: unit(geometry, sub(points[1], points[0]))?,
+                }
+            } else {
+                curve(data, geometry, scale)?
+            };
+
             let p = samples(
                 e,
                 &c,
@@ -593,6 +639,19 @@ impl AnalyticModel {
             for bound in &face.bounds {
                 for u in &bound.edges {
                     let edge = &body.edges[&u.edge];
+                    if let Some(points) = spline_segments.get(&edge.id) {
+                        // Validate the actual spline locus as well as authoritative
+                        // source-vertex chords; endpoint agreement alone is not
+                        // an edge/surface certificate.
+                        on_surface(
+                            &data.entities()[&face.id],
+                            &s,
+                            &curves[&edge.id],
+                            points[0],
+                            points[1],
+                            opt.geometry_tolerance_mm,
+                        )?;
+                    }
                     on_surface(
                         &data.entities()[&face.id],
                         &s,
@@ -605,6 +664,7 @@ impl AnalyticModel {
             }
             surfaces.insert(face.id, s);
         }
+        let (body, scale) = context.into_parts();
         Ok(Self {
             document: data.document_fingerprint(),
             body,

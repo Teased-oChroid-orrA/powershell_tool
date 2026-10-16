@@ -111,7 +111,7 @@ fn explicit_scaling_refuses_underflow_and_never_guesses_units() {
     }
 }
 #[test]
-fn spline_declaration_extraction_does_not_enable_partial_native_body_import() {
+fn verified_single_span_linear_spline_can_enter_the_native_body_pipeline() {
     let source = include_str!("../../nema17-motor-bracket.step");
     let data = inventory(source, Limits::default()).unwrap();
     let body = data.raw_bodies().unwrap().remove(0);
@@ -234,13 +234,26 @@ fn spline_declaration_extraction_does_not_enable_partial_native_body_import() {
         .unwrap_err()
         .detail
         .contains("cyclic/deep"));
-    let error = solid_kernel::analytic_step::AnalyticModel::read(
+    let original = solid_kernel::analytic_step::AnalyticModel::read(
+        &inventory(source, Limits::default()).unwrap(),
+        solid_kernel::analytic_step::Options::default(),
+    )
+    .unwrap();
+    let imported = solid_kernel::analytic_step::AnalyticModel::read(
         &data,
         solid_kernel::analytic_step::Options::default(),
     )
-    .unwrap_err();
-    assert_eq!(error.detail, "unsupported referenced 3D curve geometry");
-    assert_eq!(error.offset, data.entities()[&line.id].offset);
+    .unwrap();
+    assert_eq!(imported.edge_points(edge.id), original.edge_points(edge.id));
+    let surface = imported
+        .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+        .unwrap();
+    let reference_surface = original
+        .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+        .unwrap();
+    assert_eq!(surface.mesh, reference_surface.mesh);
+    let checked = surface.check_intersections(1_000_000, |_| true).unwrap();
+    assert!(!checked.surface().mesh.triangles.is_empty());
 }
 
 #[test]
