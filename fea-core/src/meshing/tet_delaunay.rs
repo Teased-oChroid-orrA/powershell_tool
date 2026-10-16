@@ -197,6 +197,23 @@ mod tests {
         assert!((volume(&tetrahedralize(&p, Limits::default()).unwrap()) - 1.).abs() < 1e-14);
     }
     #[test]
+    fn progress_can_cancel_without_publishing_a_partial_mesh() {
+        let p = [[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
+        let calls = std::cell::Cell::new(0);
+        let result = tetrahedralize_observed(&p, Limits::default(), &|done, total| {
+            assert_eq!(total, 4);
+            calls.set(calls.get() + 1);
+            if done == 2 {
+                Err(MeshError::Failed("cancelled".into()))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(matches!(result,Err(MeshError::Failed(e)) if e=="cancelled"));
+        assert_eq!(calls.get(), 3);
+    }
+
+    #[test]
     fn degeneracy_and_resource_limits_are_reported() {
         let p = [[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [1., 1., 0.]];
         assert!(tetrahedralize(&p, Limits::default()).is_err());
