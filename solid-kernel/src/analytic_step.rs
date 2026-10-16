@@ -438,7 +438,13 @@ fn on_surface(e: &Entity, s: &Surface, c: &Curve, a: V3, b: V3, tol: f64) -> Res
             .project(point)
             .ok_or_else(|| error(e, "unresolved edge endpoint/surface projection"))?;
         if projection.residual_mm > tol {
-            return Err(error(e, "edge endpoint is not on its declared surface"));
+            return Err(error(
+                e,
+                format!(
+                    "declared edge endpoint/surface geometry disagrees by {:e} mm",
+                    projection.residual_mm
+                ),
+            ));
         }
     }
     // Topological vertices may be within tolerance of both entities without
