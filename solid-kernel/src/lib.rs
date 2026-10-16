@@ -26,6 +26,7 @@ pub mod cylindrical_step;
 mod bvh;
 pub mod cad;
 pub mod step;
+pub mod step_nurbs;
 mod step_units;
 mod step_topology;
 #[cfg(feature = "occt")]

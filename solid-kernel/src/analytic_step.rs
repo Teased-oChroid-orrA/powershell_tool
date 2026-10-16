@@ -44,7 +44,7 @@ fn error(e: &Entity, s: impl Into<String>) -> Error {
         detail: s.into(),
     }
 }
-fn scalar(e: &Entity, v: &Value) -> Result<f64, Error> {
+pub(crate) fn scalar(e: &Entity, v: &Value) -> Result<f64, Error> {
     match v {
         Value::Real(x) if x.is_finite() => Ok(*x),
         Value::Integer(x) if x.unsigned_abs() <= 1u64 << 53 => Ok(*x as f64),
@@ -100,7 +100,7 @@ fn scale_coordinates(e: &Entity, source: V3, scale: f64) -> Result<V3, Error> {
     }
     Ok(result)
 }
-fn point(data: &Inventory, id: u64, scale: f64) -> Result<V3, Error> {
+pub(crate) fn point(data: &Inventory, id: u64, scale: f64) -> Result<V3, Error> {
     let e = &data.entities()[&id];
     let source = match call(e, "CARTESIAN_POINT")? {
         [Value::String(_), v] => vector3(e, v)?,
