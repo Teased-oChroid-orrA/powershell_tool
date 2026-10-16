@@ -151,3 +151,7 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Workbench breadth roadmap (2026-10-15)](workbench-breadth-2026-10-15.md): proposed follow-on capabilities, ordered increments and release evidence; not implementation status.
 
 - [Clean Linux workbench qualification report](workbench-qualification-linux-2026-10-15.json): exact tested commit and exits for workspace/CAD, terminal-only and explicit software-GPU phases.
+
+## Native CAD and advanced meshing tracking
+
+- [Issue 46 execution index](issue-46-execution-plan.md), [Claude Code handoff](issue-46-claude-handoff.md), and [tracking manifest](issue-46-tracking.json): prioritized native CAD/meshing and Pillar 7 autotuning work after reliability PR #45.
