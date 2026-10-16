@@ -1,0 +1,34 @@
+{
+  "source_commit": "92698088cd1300a17fafee37d62da885486ae5e0",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 104,
+      "failed": 0,
+      "ignored": 0,
+      "log": "native-spline-differential-qualified.log"
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 87,
+      "failed": 0,
+      "ignored": 0,
+      "log": "native-spline-differential-feature-off.log"
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0,
+      "log": "native-spline-differential-app.log"
+    }
+  ],
+  "scope": "Local knot-parameter differentials only; shared existing fea-core Dual/Scalar",
+  "development_failures": [
+    "Expected-error normalization regression failed before fix: nonzero component silently became zero (exit 101)"
+  ],
+  "not_verified": [
+    "Full spline B-Rep import, projection, sampling and trim validation",
+    "Global CAD/mesh/solver sensitivities",
+    "Windows/macOS execution",
+    "Remaining epic CAD/PLC/quality/P2/P3/final gates"
+  ]
+}

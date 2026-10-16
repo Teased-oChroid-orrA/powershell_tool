@@ -200,3 +200,5 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Issue 46 Phase 22: bounded tensor-product rational surface evaluation](issue-46-phase-22.md).
 
 - [Issue 46 Phase 23: STEP rational surface nets and allocation admission](issue-46-phase-23.md).
+
+- [Phase 24 local spline differentials](issue-46-phase-24.md): shared Dual arithmetic, one-sided endpoints, singularity/work guards and qualification.

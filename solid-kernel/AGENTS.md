@@ -82,3 +82,5 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - `nurbs_surface::NurbsSurface` uses the same validated homogeneous basis as curves; global net/degree/blend budgets, V-major storage (`v*u_count+u`), authoritative corners/no parameter clamping. Analytic plane/cylinder/sphere/parameter invariance checks; poles are point evaluation only. No STEP surface/B-Rep/projection/normal/trim support yet. See `docs/issue-46-phase-22.md`.
 
 - `step_nurbs_surface::read_surface` preserves source/Cartesian-control refs and declared flags, transposes STEP U-row/V-column nets to evaluator V-major order, scales only coordinates (not knots), and enforces aggregate caps. Shared component/knot parsing with curves; unconditional degree<control-count validation precedes allocation even with caller-relaxed caps. Equivalent bracket spline plane still refuses full body import. See `docs/issue-46-phase-23.md`.
+
+- [Phase 24 local spline differentials](../docs/issue-46-phase-24.md): shared Dual arithmetic, one-sided endpoints, singularity/work guards and qualification.
