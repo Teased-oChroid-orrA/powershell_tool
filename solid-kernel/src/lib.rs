@@ -28,6 +28,7 @@ pub mod cylindrical_step;
 mod bvh;
 pub mod cad;
 pub mod step;
+pub mod step_body;
 pub mod step_nurbs;
 pub mod step_nurbs_surface;
 mod step_units;

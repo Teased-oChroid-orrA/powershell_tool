@@ -553,74 +553,7 @@ impl AnalyticModel {
                 "require finite 0 < geometry tolerance <= chord tolerance",
             ));
         }
-        for e in data.entities().values() {
-            if e.components.iter().any(|c| {
-                matches!(
-                    c.name.as_str(),
-                    "MAPPED_ITEM"
-                        | "NEXT_ASSEMBLY_USAGE_OCCURRENCE"
-                        | "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION"
-                        | "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION"
-                )
-            }) {
-                return Err(error(e, "assembly/placement mapping is not implemented"));
-            }
-        }
-        if data.counts().get("MANIFOLD_SOLID_BREP") != Some(&1) {
-            return Err(fail("analytic scope requires exactly one supported body"));
-        }
-        let body = data.raw_bodies()?.remove(0);
-        let mut context = None;
-        for e in data.entities().values() {
-            for c in &e.components {
-                if matches!(
-                    c.name.as_str(),
-                    "ADVANCED_BREP_SHAPE_REPRESENTATION" | "SHAPE_REPRESENTATION"
-                ) {
-                    if let [Value::String(_), Value::List(items), Value::Ref(ctx)] =
-                        c.args.as_slice()
-                    {
-                        if items.iter().any(|v| *v == Value::Ref(body.id)) {
-                            if context.replace(*ctx).is_some() {
-                                return Err(error(
-                                    e,
-                                    "multiple body representations require explicit mapping",
-                                ));
-                            }
-                            for item in items {
-                                if let Value::Ref(id) = item {
-                                    let ie = &data.entities()[id];
-                                    if *id != body.id
-                                        && !ie
-                                            .components
-                                            .iter()
-                                            .all(|c| c.name == "AXIS2_PLACEMENT_3D")
-                                    {
-                                        return Err(error(ie, "unsupported representation item"));
-                                    }
-                                } else {
-                                    return Err(error(
-                                        e,
-                                        "unsupported representation item encoding",
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        let context = context.ok_or_else(|| fail("no direct body/representation association"))?;
-        let contexts = data.length_contexts()?;
-        let scale = contexts
-            .iter()
-            .find(|c| c.context == context)
-            .ok_or_else(|| fail("body representation has no assigned length context"))?
-            .metres
-            * 1000.;
-        if !scale.is_finite() || scale <= 0. {
-            return Err(fail("source length normalization overflows"));
-        }
+        let (body, scale) = crate::step_body::BodyContext::read(data)?.into_parts();
         let mut vertices = BTreeMap::new();
         for v in body.vertices.values() {
             let p = scale_coordinates(&data.entities()[&v.point], v.coordinates, scale)?;
