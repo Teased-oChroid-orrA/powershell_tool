@@ -998,3 +998,114 @@ fn validated_plc_preserves_every_bracket_constraint_and_source_face() {
     let cancelled = ValidatedPlc::new(checked(), PlcLimits::default(), |done, _| done < 256);
     assert_eq!(cancelled.err().unwrap().kind, ErrorKind::Cancelled);
 }
+
+#[cfg(feature = "occt")]
+#[test]
+fn exact_kernel_star_seed_preserves_bar_boundary_and_refuses_nonvisible_center() {
+    use solid_kernel::step::ErrorKind;
+    use solid_kernel::{
+        plc::{Limits as PlcLimits, ValidatedPlc},
+        plc_star::StarSeed,
+    };
+    let text = solid_kernel::cad::Brep::box_from_corners([0., 0., 0.], [1., 1., 3.])
+        .to_step_text()
+        .unwrap();
+    let data = inventory(&text, Limits::default()).unwrap();
+    let model = AnalyticModel::read(&data, Options::default()).unwrap();
+    let plc = || {
+        ValidatedPlc::new(
+            model
+                .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+                .unwrap()
+                .check_intersections(10000, |_| true)
+                .unwrap(),
+            PlcLimits::default(),
+            |_, _| true,
+        )
+        .unwrap()
+    };
+    let seed = StarSeed::new(plc(), [0.5, 0.5, 1.5], 100, |_, _| true).unwrap();
+    assert_eq!(seed.topology().points().len(), 9);
+    assert_eq!(seed.topology().cells().len(), 12);
+    assert_eq!(seed.topology().boundary().len(), 12);
+    let volume: f64 = seed
+        .topology()
+        .cells()
+        .iter()
+        .map(|t| {
+            let p = t.map(|id| seed.topology().points()[id]);
+            let a: [f64; 3] = std::array::from_fn(|i| p[1][i] - p[0][i]);
+            let b: [f64; 3] = std::array::from_fn(|i| p[2][i] - p[0][i]);
+            let c: [f64; 3] = std::array::from_fn(|i| p[3][i] - p[0][i]);
+            (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                + a[2] * (b[0] * c[1] - b[1] * c[0]))
+                / 6.
+        })
+        .sum();
+    assert!((volume - 3.).abs() < 1e-12);
+    seed.topology()
+        .to_mesh(fea_core::Elastic::new(200e3, 0.3))
+        .unwrap();
+    for i in 0..12 {
+        assert!(data
+            .resolve_reference(seed.plc().facet_source_reference(i).unwrap())
+            .is_ok());
+    }
+    for center in [[0., 0., 0.], [2., 0.5, 1.5], [f64::NAN, 0., 0.]] {
+        assert_eq!(
+            StarSeed::new(plc(), center, 100, |_, _| true)
+                .err()
+                .unwrap()
+                .kind,
+            ErrorKind::Geometry
+        );
+    }
+    assert_eq!(
+        StarSeed::new(plc(), [0.5, 0.5, 1.5], 1, |_, _| true)
+            .err()
+            .unwrap()
+            .kind,
+        ErrorKind::Limit
+    );
+    assert_eq!(
+        StarSeed::new(plc(), [0.5, 0.5, 1.5], 100, |_, _| false)
+            .err()
+            .unwrap()
+            .kind,
+        ErrorKind::Cancelled
+    );
+}
+
+#[test]
+fn bracket_holes_are_refused_by_the_limited_star_seed_instead_of_filled() {
+    use solid_kernel::{
+        plc::{Limits as PlcLimits, ValidatedPlc},
+        plc_star::StarSeed,
+    };
+    let data = inventory(SOURCE, Limits::default()).unwrap();
+    let model = AnalyticModel::read(&data, Options::default()).unwrap();
+    let checked = model
+        .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+        .unwrap()
+        .check_intersections(2_000_000, |_| true)
+        .unwrap();
+    let plc = ValidatedPlc::new(checked, PlcLimits::default(), |_, _| true).unwrap();
+    let center = std::array::from_fn(|axis| {
+        let lo = plc
+            .vertices()
+            .iter()
+            .map(|p| p[axis])
+            .fold(f64::INFINITY, f64::min);
+        let hi = plc
+            .vertices()
+            .iter()
+            .map(|p| p[axis])
+            .fold(f64::NEG_INFINITY, f64::max);
+        lo + (hi - lo) * 0.5
+    });
+    let error = StarSeed::new(plc, center, 10000, |_, _| true)
+        .err()
+        .unwrap();
+    assert_eq!(error.kind, solid_kernel::step::ErrorKind::Geometry);
+    assert!(error.detail.contains("not strictly inside boundary facet"));
+}

@@ -20,6 +20,7 @@ pub mod orientation_repair;
 pub mod triangle_intersection;
 pub mod planar_step;
 pub mod plc;
+pub mod plc_star;
 pub mod cylindrical_step;
 mod bvh;
 pub mod cad;
