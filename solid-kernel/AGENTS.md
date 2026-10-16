@@ -42,3 +42,5 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - `src/cad.rs` owns backend-neutral profile/boolean/face contracts and the production shape handle; the existing OCCT adapter dispatches through it. `occt` retains compatibility exports. Capability availability is not a claim of exchange-entity/healing parity. Evidence: `docs/issue-46-phase-1.md`.
 
 - `src/step.rs` / `step_units.rs`: bounded native physical-file inventory and assigned length-unit metadata. These do not construct/validate geometric B-Rep or certify CAD import. `examples/step-inventory.rs` runs without OCCT; unsupported input/unit semantics are explicit. Evidence: `docs/issue-46-phase-2.md`.
+
+- `step_topology`: raw local body connectivity with cumulative expansion limits. Edge-use counts/closed loops are not geometric validity or a manifold certificate; explicit/unset outer-loop roles and unplaced source coordinates remain distinct. See `docs/issue-46-phase-3.md`.

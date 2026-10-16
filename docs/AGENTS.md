@@ -159,3 +159,5 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Issue 46 Phase 0 audit](issue-46-phase-0-audit.md), [Phase 1 implementation](issue-46-phase-1.md), and [verification](issue-46-phase-1-verification.json): current foundation milestone and native-CAD gates still open.
 
 - [Issue 46 Phase 2](issue-46-phase-2.md): native STEP inventory, declared-unit resolution and remaining geometric B-Rep gates.
+
+- [Issue 46 Phase 3](issue-46-phase-3.md): bounded raw body connectivity, source identity and the next native analytic-geometry gate.

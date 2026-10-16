@@ -1,0 +1,13 @@
+# Issue 46 — Phase 3: bounded raw body topology
+
+Source `28c630e` adds `Inventory::raw_bodies` / `raw_bodies_with_limits`, with source-ID-preserving vertices, edges, directed uses, bounds, faces and simple manifold-body records. This is **raw local topology**, not a validated geometric solid or replacement CAD backend. [Verification](issue-46-phase-3-verification.json) records the checked revision.
+
+The reader follows every referenced loop, checks closure by vertex identity (without welding), retains orientation and geometry IDs, requires two uses per closed-shell edge and connected face adjacency, and refuses repeated faces, broken loops and known unsupported body kinds rather than returning a partial body list. Unspecified FACE_BOUND outer-loop roles stay unspecified. It does not certify orientation, vertex-manifoldness, self-intersection or trim geometry. Coordinates remain in their raw representation units; no assembly/world transform is assumed.
+
+Cumulative expansion budgets cover bodies, faces, edges, vertices, directed uses and copied labels. A small source can refer many bodies to one shared shell; a parser byte budget alone does not bound that expanded graph. Regression cases prove that the limits apply across the whole result and return an error rather than truncating it.
+
+The actual bracket retains **one body (#15), 70 vertices, 114 edges, 38 faces, 52 loops and 228 oriented uses**. All face bounds are FACE_BOUND without explicit outer tags. The audit command unwraps declared SURFACE_CURVE/SEAM_CURVE references with a cycle/depth guard and reports **88 referenced LINE and 26 CIRCLE declarations**. Auxiliary declarations are not confused with the actual 3D edge geometry. This informs the next analytic-geometry support matrix; it is not geometric acceptance.
+
+**28 CAD-enabled solid-kernel checks passed**, including 14 native inventory/unit/topology cases and all previous CAD/surface checks. The default no-OCCT audit example also ran on the fixture. Development caught a missing budget parameter in the helper signature; it was corrected before the passing run. No new dependency, application importer switch, numerical tolerance relaxation or additional hosted run was introduced.
+
+Next: bind representations to their unit contexts, handle placements explicitly and evaluate/validate supported native curves/surfaces before any trimmed tessellation or CAD-conforming volume-mesh claim. The current fixture's referenced geometry is analytic, but general native B-Rep, healing, assemblies, constrained PLC recovery and OCCT retirement remain open. Keep the existing OCCT path.
