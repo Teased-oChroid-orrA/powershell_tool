@@ -1,8 +1,8 @@
 //! Phase 8 benchmark and hardening suite for the derivative engine. It measures (and prints; run with `--nocapture`) the cost of
 //! each differentiation mode against the plain kernel and the analytic and difference references, refits the policy's
 //! [`CostCalibration`], counts allocations, and asserts the properties that must hold on any machine: exactness of AD against the
-//! closed forms, bitwise determinism across thread counts, and the relative ordering of costs the policy relies on. Wall-clock
-//! numbers are reported, never asserted against absolute thresholds.
+//! closed forms, bitwise determinism across thread counts, and deterministic storage/accuracy invariants. Wall-clock
+//! numbers are observations: SIMD, compiler choices and shared-runner scheduling can change their ordering.
 
 use fea_core::derivative::dual::Dual;
 use fea_core::derivative::element;
@@ -122,10 +122,25 @@ fn cost_of_each_mode_relative_to_the_plain_kernel_and_the_refit_calibration() {
     let cal = CostCalibration { dual_lane: (lane(t1, 1.0) + lane(t4, 4.0) + lane(t8, 8.0)) / 3.0, tape_record: t_rec / t_plain, tape_sweep: t_sweep / t_plain, complex: t_cx / t_plain, hyperdual: t_hd / t_plain, ..CostCalibration::default() };
     eprintln!("Quad8 stiffness: plain {t_plain:.0} ns; dual x1 {t1:.0}, x4 {t4:.0}, x8 {t8:.0}; tape record {t_rec:.0} ({nodes} nodes, {} B), sweep {t_sweep:.0}", tape.bytes());
     eprintln!("measured calibration on this machine: {cal:?}   (defaults {:?})", CostCalibration::default());
-    assert!(t1 < t4 && t4 < t8 * 1.05, "more lanes cost more: {t1} {t4} {t8}");
-    assert!(cal.dual_lane > 0.0 && cal.tape_record > 1.0 && cal.tape_sweep > 0.0);
-    // the policy's relative ordering depends on a lane being cheaper than a full extra evaluation, and on recording costing more than a lane
-    assert!(cal.dual_lane < 4.0, "a dual lane costs less than a few plain evaluations: {}", cal.dual_lane);
+    // Timings calibrate a model; relative speed is not a portable correctness law.
+    // On the Windows runner eight lanes were faster than four. Preserve the
+    // observations while verifying the numerical work in every lane instead.
+    for t in [t_plain,t1,t4,t8,t_rec,t_sweep,t_cx,t_hd] { assert!(t.is_finite() && t>0.0); }
+    for ratio in [cal.dual_lane,cal.tape_record,cal.tape_sweep,cal.complex,cal.hyperdual] { assert!(ratio.is_finite()); }
+    fn verify_lanes<const N:usize>(xyz:&[[f64;3]]) {
+        let plain=stiffness(xyz,1.0e5);
+        let coords:Vec<[Dual<f64,N>;3]>=xyz.iter().map(|p|p.map(Dual::cst)).collect();
+        let seed=std::array::from_fn(|i|(i+1) as f64);
+        let k=stiffness(&coords,Dual::<f64,N>::with(1.0e5,seed));
+        let scale=plain.iter().map(|v|v.abs()).fold(0.0,f64::max);
+        for (a,d) in plain.iter().zip(k) {
+            assert!((d.v-a).abs()/scale<1e-13);
+            for (j,&direction) in seed.iter().enumerate() {
+                assert!((d.d[j]-a/1.0e5*direction).abs()*1.0e5/(scale*direction)<1e-13);
+            }
+        }
+    }
+    verify_lanes::<1>(&xyz);verify_lanes::<4>(&xyz);verify_lanes::<8>(&xyz);
     assert!(nodes > 100, "the tape recorded the element ({nodes} nodes)");
     assert_eq!(tape.bytes() / nodes.max(1), 24, "bytes per recorded node must equal the calibration's {} B", CostCalibration::default().tape_node_bytes);
 }
@@ -205,7 +220,10 @@ fn path_sensitivities_are_bitwise_deterministic_across_thread_counts_and_the_adj
     });
     let t_fd = 2.0 * params.len() as f64 * t_solve;
     eprintln!("{} dofs, {} steps, {} parameters: one solve {:.1} ms; adjoint sweep {:.1} ms (+ the solve), direct {:.1} ms, central differences {:.1} ms (2 solves per parameter)", n, opt.steps, params.len(), t_solve / 1e6, t_adj / 1e6, t_dir / 1e6, t_fd / 1e6);
-    assert!(t_solve + t_adj < t_fd, "solve + adjoint ({:.1} ms) must beat central differences ({:.1} ms)", (t_solve + t_adj) / 1e6, t_fd / 1e6);
+    // Compare the independently computed sensitivities, not shared-runner speed.
+    for (adjoint,direct) in one.0[0].iter().zip(&one.1[0]) {
+        assert!((adjoint-direct).abs()/direct.abs().max(1e-30)<1e-10);
+    }
 }
 
 #[test]
@@ -248,6 +266,11 @@ fn matrix_free_tangent_against_the_assembled_matvec_cost_and_memory() {
     });
     let asm_bytes = k.vals.len() * 8;
     eprintln!("{n} dofs: assembled matvec {:.0} us ({} KiB), matrix-free cached {:.0} us ({} KiB), recompute {:.0} us ({} KiB)", t_asm / 1e3, asm_bytes / 1024, t_c / 1e3, cached.stored_bytes() / 1024, t_r / 1e3, recompute.stored_bytes() / 1024);
-    assert!(t_r > t_c * 0.9, "recomputing the constitutive tangent every product cannot be cheaper than reading it back");
+    let mut expected=vec![0.0;n];k.matvec_add(&model.pattern,&v,&mut expected);
+    let scale=expected.iter().map(|v|v.abs()).fold(0.0,f64::max);
+    for actual in [cached.apply_full(&v),recompute.apply_full(&v)] {
+        let error=actual.iter().zip(&expected).map(|(a,b)|(a-b).abs()).fold(0.0,f64::max);
+        assert!(error/scale<1e-12,"matrix-free relative error {}",error/scale);
+    }
     assert!(recompute.stored_bytes() < cached.stored_bytes());
 }
