@@ -1,0 +1,25 @@
+{
+  "epic": 46,
+  "draft_pr": 65,
+  "branch": "feature/native-cad-advanced-meshing",
+  "snapshot_date": "2026-10-16",
+  "latest_qualified_source": "69ae967c2a3b8fcb271f24c38167fed6d5fd5782",
+  "epic_complete": false,
+  "previous_progress_snapshot": "issue-46-progress-phase-26.json",
+  "tests": {
+    "cad_enabled": 106,
+    "feature_off": 89,
+    "failed": 0,
+    "ignored": 0,
+    "app_cad_lib_tests_compile": "passed at same source"
+  },
+  "later_increments": [
+    "Phase 27 exact-source edge/units binding with shared bounded 3D wrapper resolution"
+  ],
+  "native_body_spline_support": "still refused until sampling/surface/trim gates pass",
+  "production_backend": "OCCT retained",
+  "remaining_gates": "All open CAD/PLC/quality/P2/P3/retirement gates in previous snapshot remain open; declarations/evaluation do not close #51.",
+  "handoff": "issue-46-claude-handoff.md",
+  "hosted_ci": "No additional dispatch; latest native source lacks new Windows/macOS execution qualification.",
+  "merge_or_retirement_approved": false
+}

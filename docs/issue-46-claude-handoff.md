@@ -250,3 +250,17 @@ This binds declarations only: trims, regularity, exact surface/edge agreement, s
 Final checks at `0b19cd0ac3bd3c57ecf4f808d9daec280673a81d`: **106 CAD-enabled / 89 feature-off tests and CAD-enabled app lib/tests compilation pass**, zero failures/ignored checks.
 
 Next: equivalent source-bound curve extraction with shared bounded wrapper resolution, then separately verified curve sampling/projection and trim/locus gates. Do not enable spline-body success from declaration evaluation. All broader epic gates remain open; preserve OCCT and branch isolation.
+
+## Phase 27 bound curve declarations — 2026-10-16
+
+Source `69ae967` adds `BodyContext::read_spline_curve`: exact-document edge references resolve before numeric body lookup; the terminal spline declaration uses the body's declared length factor and retains the actual curve source reference. Non-edge and stale context/edge references refuse.
+
+The existing analytic importer and this reader now share one bounded 3D SURFACE_CURVE/SEAM_CURVE wrapper traversal, preserving the 32-entity/cycle refusal and analytic geometry errors. Complex terminal declarations remain available to the spline declaration reader while the strict analytic body reader still rejects unsupported spline geometry. Associated p-curves are not certified by this helper.
+
+The existing endpoint-matching spline replacement on the actual bracket now tests source-bound extraction, retained curve identity, declared mm/metre factors, authoritative endpoint scaling and unchanged knot domains. Both stale-reference directions, non-edge references and a cyclic wrapper refuse. Full native analytic body import still refuses the same exact unsupported curve.
+
+No dependency, tolerance, production backend, main or hosted CI change. Bounded spline sampling/projection, edge/surface locus and trim validation are still required before full spline-body support. General CAD/assemblies, PLC recovery/quality and all P2/P3/final gates remain open. Source-specific final evidence is recorded in [verification](issue-46-phase-27-verification.json).
+
+Final checks at `69ae967c2a3b8fcb271f24c38167fed6d5fd5782`: **106 CAD-enabled / 89 feature-off tests and CAD-enabled app lib/tests compilation pass**, zero failures/ignored checks.
+
+Next substantive CAD milestone: bounded rational-curve enclosures and error-controlled shared-edge sampling, followed by verified surface projection, p-curve/trim and edge/surface locus gates. Reuse existing basis arithmetic; a local Newton candidate or midpoint chord test alone is not a global projection/error certificate. Preserve budgets/cancellation and strict unsupported refusals. Body/curve/surface declaration binding is now implemented; do not repeat it. General PLC/quality and all P2/P3/final gates remain open; OCCT remains production.
