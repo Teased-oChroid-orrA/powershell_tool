@@ -1,0 +1,11 @@
+# Issue 46 — Phase 33: verified linear spline bodies
+
+Source `23aba83` admits exactly one new native-body curve class: full-domain, two-control, positive-weight degree-one spline segments (simple polynomial or complete complex rational declarations). Such a curve traces its control segment even when weights change its parameter speed. Degree/control count, full-domain endpoint agreement, source sense and budgets are verified before reducing its geometric locus to the existing analytic line path. No form/closed/self-intersection tag is used as a geometry certificate. Interior trims and curved/piecewise/higher-order splines remain explicitly refused.
+
+The source STEP declaration, topology IDs, fingerprint and original vertices remain intact. Existing authoritative source-vertex world samples remain shared by incident faces. Actual spline controls and source-vertex chords both undergo face-locus checks; endpoint agreement is not substituted for surface agreement. Reuse of the decoded declaration avoids repeated spline parsing, and the BodyContext is borrowed during construction rather than cloning all raw topology.
+
+An actual bracket line replaced by the verified spline produces **bitwise-identical sampled mesh geometry** to the original analytic bracket and passes global sampled facet checks. Nonuniform rational weights also preserve the native edge samples; contradictory orientation and even a collinear quadratic with a line-like form tag still refuse. This is a strict new subset, not general spline import or a production backend switch.
+
+Initial test compilation used nonexistent `validate_global`/`triangle_intersection::Limits` names (E0599/E0433). Source inspection corrected it to the existing consuming `check_intersections` API; no production API or assertions were weakened. Targeted suites then passed. Final combined source verification is in [verification](issue-46-phase-33-verification.json). General spline faces, curved/piecewise curves, p-curves/trims and all broader epic gates remain open.
+
+Combined qualification at `2042c2d136829591f03cc7f4ad2d3e8c6198777a`: **130 CAD-enabled / 113 feature-off tests and CAD-enabled app lib/tests compilation pass**, zero final failures/ignored tests.

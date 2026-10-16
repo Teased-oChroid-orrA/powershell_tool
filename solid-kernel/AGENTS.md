@@ -98,3 +98,11 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - [Phase 30 surface patch enclosures](../docs/issue-46-phase-30.md): shared Bounds3, outward tensor recurrence, bounded patch work and indexed span queries.
 
 - [Phase 31 merged foundations and surface distance](../docs/issue-46-phase-31.md): PR #65 transition, continuation branch and shared bounded curve/surface search.
+
+- [Phase 32 source-bound spline edges](../docs/issue-46-phase-32.md): source scope and verification.
+
+- [Phase 33 verified linear spline bodies](../docs/issue-46-phase-33.md): source scope and verification.
+
+- [Phase 34 declared line/surface validation](../docs/issue-46-phase-34.md): source scope and verification.
+
+- [Phase 35 structured spline cancellation](../docs/issue-46-phase-35.md): source scope and verification.

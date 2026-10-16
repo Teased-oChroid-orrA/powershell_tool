@@ -216,3 +216,11 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Phase 30 surface patch enclosures](issue-46-phase-30.md): shared Bounds3, outward tensor recurrence, bounded patch work and indexed span queries.
 
 - [Phase 31 merged foundations and surface distance](issue-46-phase-31.md): PR #65 transition, continuation branch and shared bounded curve/surface search.
+
+- [Phase 32 source-bound spline edges](issue-46-phase-32.md): source scope and verification.
+
+- [Phase 33 verified linear spline bodies](issue-46-phase-33.md): source scope and verification.
+
+- [Phase 34 declared line/surface validation](issue-46-phase-34.md): source scope and verification.
+
+- [Phase 35 structured spline cancellation](issue-46-phase-35.md): source scope and verification.

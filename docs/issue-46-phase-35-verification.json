@@ -1,0 +1,32 @@
+{
+  "feature_source": "d11d77a",
+  "qualified_source_commit": "2042c2d136829591f03cc7f4ad2d3e8c6198777a",
+  "qualification_scope": "Combined Phases 32\u201335 at final source, including diagnostic compatibility correction",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 130,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 113,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "development_failures": [
+    "Pre-fix cancellation discriminant unit run: 2 passed/2 failed (101)",
+    "Pre-fix source cancellation discriminant integration run: 0 passed/1 failed (101)"
+  ],
+  "evidence_logs_prefix": "native-spline-edge-body-",
+  "not_verified": [
+    "General curved/piecewise spline curves, spline faces, p-curves/trims and full CAD exchange",
+    "General PLC/quality/P2/P3/final gates; latest Windows/macOS execution"
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "epic": 46,
+  "draft_pr": 66,
+  "branch": "feature/native-cad-spline-import",
+  "snapshot_date": "2026-10-16",
+  "latest_qualified_source": "2042c2d136829591f03cc7f4ad2d3e8c6198777a",
+  "epic_complete": false,
+  "previous_progress_snapshot": "issue-46-progress-phase-31.json",
+  "tests": {
+    "cad_enabled": 130,
+    "feature_off": 113,
+    "failed": 0,
+    "ignored": 0,
+    "app_cad_lib_tests_compile": "passed at same source"
+  },
+  "later_increments": [
+    "32 source-bound spline endpoint/sampling validation",
+    "33 native full-domain positive degree-one/two-control spline bodies",
+    "34 declared line/surface locus and endpoint validation",
+    "35 structured cancellation diagnostics"
+  ],
+  "native_body_spline_support": "Only full-domain two-control positive degree-one spline curves on analytic faces; curved/piecewise curves and spline faces remain refused",
+  "production_backend": "OCCT retained",
+  "remaining_gates": "General CAD/assemblies, surface/curve/p-curve/trim integration, PLC recovery/refinement/cavities/regions, sliver/conditioning, P2/P3/final gates remain open; no epic/subissue closure from partial native support.",
+  "handoff": "issue-46-claude-handoff.md",
+  "hosted_ci": "No additional dispatch; latest native source lacks new Windows/macOS execution qualification.",
+  "foundation_pr_65_merged": "37cf93220fee91cc1ced09f4acb2a7b2b6e26303",
+  "completed_foundation_merge_approved": true,
+  "occt_retirement_approved": false
+}
