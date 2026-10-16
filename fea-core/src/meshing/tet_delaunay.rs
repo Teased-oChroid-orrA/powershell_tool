@@ -197,6 +197,38 @@ mod tests {
         assert!((volume(&tetrahedralize(&p, Limits::default()).unwrap()) - 1.).abs() < 1e-14);
     }
     #[test]
+    #[ignore = "explicit reference-core scaling measurement"]
+    fn reference_delaunay_scaling() {
+        for count in [20, 100, 256] {
+            let mut p = Vec::new();
+            for x in [0., 1.] {
+                for y in [0., 1.] {
+                    for z in [0., 1.] {
+                        p.push([x, y, z]);
+                    }
+                }
+            }
+            let mut seed = 731u64;
+            while p.len() < count {
+                let q = std::array::from_fn(|_| {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    0.01 + 0.98 * ((seed >> 32) as f64 / u32::MAX as f64)
+                });
+                p.push(q);
+            }
+            let start = std::time::Instant::now();
+            let t = tetrahedralize(&p, Limits::default()).unwrap();
+            let seconds = start.elapsed().as_secs_f64();
+            assert!((volume(&t) - 1.).abs() < 1e-12);
+            eprintln!(
+                "reference_delaunay points={} cells={} seconds={seconds:.6}",
+                p.len(),
+                t.cells().len()
+            );
+        }
+    }
+
+    #[test]
     fn progress_can_cancel_without_publishing_a_partial_mesh() {
         let p = [[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
         let calls = std::cell::Cell::new(0);
