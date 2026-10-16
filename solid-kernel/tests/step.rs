@@ -354,3 +354,45 @@ fn topology_expansion_budgets_are_cumulative_across_shared_shells() {
         );
     }
 }
+
+#[test]
+fn source_scoped_references_survive_reload_but_refuse_reused_ids() {
+    use solid_kernel::step::{DocumentFingerprint, EntityReference};
+    let text = file("#1=THING('original');");
+    let first = inventory(&text, Limits::default()).unwrap();
+    let reloaded = inventory(&text, Limits::default()).unwrap();
+    // Independently calculated SHA-256 of the exact fixture bytes.
+    assert_eq!(
+        first.document_fingerprint(),
+        DocumentFingerprint([
+            112, 230, 40, 32, 149, 49, 213, 65, 26, 24, 170, 253, 105, 14, 14, 57, 122, 202, 221,
+            210, 178, 16, 31, 2, 129, 245, 156, 237, 107, 116, 25, 222
+        ])
+    );
+    let reference = first.entity_reference(1).unwrap();
+    assert_eq!(reference, reloaded.entity_reference(1).unwrap());
+    assert_eq!(reloaded.resolve_reference(reference).unwrap().id, 1);
+    assert!(first.entity_reference(999).is_none());
+    let missing = EntityReference {
+        document: first.document_fingerprint(),
+        entity: 999,
+    };
+    assert_eq!(
+        first.resolve_reference(missing).unwrap_err().kind,
+        ErrorKind::DanglingReference
+    );
+    for changed in [file("#1=THING('different');"), format!("{text}\n")] {
+        let other = inventory(&changed, Limits::default()).unwrap();
+        assert_ne!(first.document_fingerprint(), other.document_fingerprint());
+        assert!(other.entity_reference(1).is_some());
+        assert_eq!(
+            other.resolve_reference(reference).unwrap_err().kind,
+            ErrorKind::DanglingReference
+        );
+    }
+    let forged = EntityReference {
+        document: DocumentFingerprint([0; 32]),
+        entity: 1,
+    };
+    assert!(first.resolve_reference(forged).is_err());
+}

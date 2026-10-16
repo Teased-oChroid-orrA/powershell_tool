@@ -11,7 +11,20 @@ pub use crate::step_topology::{
     EdgeUse, RawBody, RawBound, RawEdge, RawFace, RawVertex, TopologyLimits,
 };
 pub use crate::step_units::LengthContext;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+
+/// SHA-256 of exact accepted physical-file bytes, not geometry equivalence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DocumentFingerprint(pub [u8; 32]);
+
+/// Numeric entity identity scoped to exact source bytes. Not persistent naming
+/// across CAD edits/re-exports, and not a geometric validation certificate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EntityReference {
+    pub document: DocumentFingerprint,
+    pub entity: u64,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -38,11 +51,42 @@ pub struct Entity {
 }
 #[derive(Debug, Clone)]
 pub struct Inventory {
+    document: DocumentFingerprint,
     header: Vec<Call>,
     entities: BTreeMap<u64, Entity>,
     counts: BTreeMap<String, usize>,
 }
 impl Inventory {
+    pub fn document_fingerprint(&self) -> DocumentFingerprint {
+        self.document
+    }
+    pub fn entity_reference(&self, entity: u64) -> Option<EntityReference> {
+        self.entities
+            .contains_key(&entity)
+            .then_some(EntityReference {
+                document: self.document,
+                entity,
+            })
+    }
+    /// Refuse stale/cross-document IDs instead of silently rebinding them.
+    pub fn resolve_reference(&self, reference: EntityReference) -> Result<&Entity, Error> {
+        if reference.document != self.document {
+            return Err(Error {
+                offset: 0,
+                kind: ErrorKind::DanglingReference,
+                detail: "CAD association belongs to different STEP source bytes".into(),
+            });
+        }
+        self.entities.get(&reference.entity).ok_or_else(|| Error {
+            offset: 0,
+            kind: ErrorKind::DanglingReference,
+            detail: format!(
+                "CAD association references missing entity #{}",
+                reference.entity
+            ),
+        })
+    }
+
     /// Resolve only explicit assigned length units. Separate contexts are not
     /// silently unified; geometry must bind to its own representation context.
     pub fn length_contexts(&self) -> Result<Vec<LengthContext>, Error> {
@@ -494,6 +538,7 @@ pub fn inventory(text: &str, limits: Limits) -> Result<Inventory, Error> {
         }
     }
     Ok(Inventory {
+        document: DocumentFingerprint(Sha256::digest(text.as_bytes()).into()),
         header,
         entities,
         counts,

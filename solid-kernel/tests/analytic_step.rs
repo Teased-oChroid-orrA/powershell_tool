@@ -840,3 +840,32 @@ fn explicit_orientation_repair_restores_corrupted_source_face_and_preserves_repo
         solid_kernel::step::ErrorKind::Cancelled
     );
 }
+
+#[test]
+fn native_face_associations_keep_exact_source_identity_through_geometry_checks() {
+    let text = include_str!("../../nema17-motor-bracket.step");
+    let data = inventory(text, Limits::default()).unwrap();
+    let model = AnalyticModel::read(&data, Options::default()).unwrap();
+    assert_eq!(model.document_fingerprint(), data.document_fingerprint());
+    let native = model
+        .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+        .unwrap()
+        .check_intersections(2_000_000, |_| true)
+        .unwrap()
+        .into_distance_solid();
+    let (_, metadata) = native.into_parts();
+    assert_eq!(metadata.source_document, Some(data.document_fingerprint()));
+    for (tag, id) in metadata.source_faces.iter().enumerate() {
+        let reference = metadata.face_reference(tag).unwrap();
+        assert_eq!(reference.entity, *id);
+        let entity = data.resolve_reference(reference).unwrap();
+        assert!(entity.components.iter().any(|c| c.name == "ADVANCED_FACE"));
+    }
+    assert!(metadata
+        .face_reference(metadata.source_faces.len())
+        .is_none());
+    let changed = inventory(&format!("{text}\n"), Limits::default()).unwrap();
+    assert!(changed
+        .resolve_reference(metadata.face_reference(0).unwrap())
+        .is_err());
+}

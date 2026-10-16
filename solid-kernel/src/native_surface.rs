@@ -45,6 +45,7 @@ pub struct Progress {
 }
 #[derive(Debug)]
 pub struct SampledSurface {
+    pub source_document: Option<crate::step::DocumentFingerprint>,
     pub face_orientation_adjustments: Vec<crate::orientation_repair::FaceOrientationChange>,
     pub chart_adjustments: Vec<crate::cylindrical_step::ChartAdjustment>,
     pub mesh: SurfaceMesh,
@@ -322,6 +323,7 @@ impl AnalyticModel {
             ));
         }
         Ok(SampledSurface {
+            source_document: Some(self.document_fingerprint()),
             face_orientation_adjustments,
             chart_adjustments,
             mesh,

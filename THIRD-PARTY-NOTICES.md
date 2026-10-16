@@ -34,3 +34,7 @@ The native diagnostic CAD path uses **spade 2.15.1**, licensed MIT OR Apache-2.0
 (<https://github.com/Stoeoef/spade>). This distribution elects its MIT license;
 `licenses/spade-LICENSE-MIT.txt` retains its copyright and permission notice.
 This 2D triangulation dependency does not replace OpenCASCADE's CAD functionality.
+
+The native diagnostic STEP association path uses **sha2 0.10.9**
+(<https://github.com/RustCrypto/hashes>), MIT OR Apache-2.0. This distribution
+elects MIT; `licenses/sha2-LICENSE-MIT.txt` retains the upstream notice.

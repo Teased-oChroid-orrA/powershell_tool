@@ -302,6 +302,7 @@ impl Default for Options {
 }
 #[derive(Debug)]
 pub struct AnalyticModel {
+    document: crate::step::DocumentFingerprint,
     body: RawBody,
     vertices: BTreeMap<u64, V3>,
     surfaces: BTreeMap<u64, Surface>,
@@ -501,6 +502,9 @@ impl AnalyticModel {
     pub fn chord_tolerance_mm(&self) -> f64 {
         self.chord_mm
     }
+    pub fn document_fingerprint(&self) -> crate::step::DocumentFingerprint {
+        self.document
+    }
     pub fn body(&self) -> &RawBody {
         &self.body
     }
@@ -659,6 +663,7 @@ impl AnalyticModel {
             surfaces.insert(face.id, s);
         }
         Ok(Self {
+            document: data.document_fingerprint(),
             body,
             vertices,
             surfaces,

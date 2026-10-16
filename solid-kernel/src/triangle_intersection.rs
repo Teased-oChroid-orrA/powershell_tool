@@ -129,9 +129,19 @@ pub struct CheckedSurface {
 /// Source association and every explicitly requested repair, retained together.
 #[derive(Debug)]
 pub struct NativeGeometryMetadata {
+    pub source_document: Option<crate::step::DocumentFingerprint>,
     pub source_faces: Vec<u64>,
     pub chart_adjustments: Vec<crate::cylindrical_step::ChartAdjustment>,
     pub face_orientation_adjustments: Vec<crate::orientation_repair::FaceOrientationChange>,
+}
+impl NativeGeometryMetadata {
+    /// Construct a document-scoped face reference; no positional/tag fallback.
+    pub fn face_reference(&self, tag: usize) -> Option<crate::step::EntityReference> {
+        Some(crate::step::EntityReference {
+            document: self.source_document?,
+            entity: *self.source_faces.get(tag)?,
+        })
+    }
 }
 /// Checked single-shell distance geometry. Assemblies and nested/cavity shells
 /// are not admitted by this native gate.
@@ -163,6 +173,7 @@ impl CheckedSurface {
         NativeDistanceSolid {
             solid: crate::SurfaceSolid::from_oriented_mesh(self.inner.mesh),
             metadata: NativeGeometryMetadata {
+                source_document: self.inner.source_document,
                 source_faces: self.inner.source_faces,
                 chart_adjustments: self.inner.chart_adjustments,
                 face_orientation_adjustments: self.inner.face_orientation_adjustments,
@@ -345,6 +356,7 @@ mod checked_surface_tests {
             }
         }
         SampledSurface {
+            source_document: None,
             face_orientation_adjustments: Vec::new(),
             chart_adjustments: Vec::new(),
             mesh,
@@ -383,6 +395,7 @@ mod checked_surface_tests {
         ];
         mesh.face = vec![0; 12];
         let folded = SampledSurface {
+            source_document: None,
             face_orientation_adjustments: Vec::new(),
             chart_adjustments: Vec::new(),
             mesh,
