@@ -1272,12 +1272,11 @@ impl SolidSession {
         let mut index = self.pick_index.borrow_mut();
         if index
             .as_ref()
-            .is_none_or(|i| i.version != self.version || i.camera != *cam || i.size != size)
+            .is_none_or(|i| !i.mesh.ptr_eq(&Arc::downgrade(mesh)) || i.camera != *cam || i.size != size)
         {
             *index = Some(picking::Index::new(mesh, &self.pick_positions,
                 *cam,
                 size,
-                self.version,
             ));
         }
         index

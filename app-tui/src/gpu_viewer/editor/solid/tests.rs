@@ -1347,3 +1347,30 @@ fn externally_changed_model_is_not_overwritten_and_edits_are_recoverable() {
     Authoring::restore_recovery(&mut s).unwrap();
     assert_eq!(s.problem.name,"my changes"); assert!(s.dirty);
 }
+
+#[test]
+fn picking_cache_survives_selection_and_rebuilds_for_camera_or_mesh_changes() {
+    let mut s=session("pick-cache-selection");
+    meshed(&mut s);
+    s.build_scene().unwrap();
+    let mut camera=Camera { yaw:0.0,pitch:0.0,zoom:1.0,aspect:1.5,pan:[0.0;2] };
+    let size=[600.0,400.0]; let pixel=[300.0,200.0];
+    let _=s.pick(&camera,pixel,size);
+    let allocation=s.pick_index.borrow().as_ref().unwrap().allocation_id();
+    s.do_action(SolidAction::SelectSurface(0));
+    s.build_scene().unwrap();
+    let _=s.pick(&camera,pixel,size);
+    assert_eq!(s.pick_index.borrow().as_ref().unwrap().allocation_id(),allocation,"selection does not change geometry");
+    camera.zoom=1.2;
+    let _=s.pick(&camera,pixel,size);
+    assert_ne!(s.pick_index.borrow().as_ref().unwrap().allocation_id(),allocation,"camera changes rebuild projected bounds");
+    let allocation=s.pick_index.borrow().as_ref().unwrap().allocation_id();
+    let previous=s.pick_index.borrow().as_ref().unwrap().mesh.clone();
+    let mut replacement=s.preview.as_ref().unwrap().mesh.as_ref().clone();
+    replacement.nodes[0][0]+=0.01;
+    s.preview.as_mut().unwrap().mesh=Arc::new(replacement);
+    assert!(previous.upgrade().is_none(),"the index does not retain an obsolete mesh's buffers");
+    s.build_scene().unwrap();
+    let _=s.pick(&camera,pixel,size);
+    assert_ne!(s.pick_index.borrow().as_ref().unwrap().allocation_id(),allocation,"a replacement mesh rebuilds the index");
+}

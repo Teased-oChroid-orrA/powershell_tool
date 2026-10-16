@@ -62,17 +62,16 @@ impl Node {
 pub(super) struct Index {
     pub camera: Camera,
     pub size: [f32; 2],
-    pub version: u64,
+    pub mesh: std::sync::Weak<Mesh>,
     faces: Vec<(String, Vec<usize>)>,
     tree: Node,
 }
 impl Index {
     pub fn new(
-        mesh: &Mesh,
+        mesh: &Arc<Mesh>,
         positions: &[[f32; 3]],
         camera: Camera,
         size: [f32; 2],
-        version: u64,
     ) -> Self {
         let faces: Vec<_> = mesh
             .surfaces
@@ -104,11 +103,13 @@ impl Index {
         Self {
             camera,
             size,
-            version,
+            mesh: Arc::downgrade(mesh),
             faces,
             tree,
         }
     }
+    #[cfg(test)]
+    pub fn allocation_id(&self) -> usize { self.faces.as_ptr() as usize }
     pub fn pick(
         &self,
         solid: bool,
@@ -142,7 +143,7 @@ mod tests {
             .map(|(_, p)| p)
             .find(|p| p.analysis == fea_problem::Analysis::Solid)
             .unwrap();
-        let mesh = fea_problem::solve::body_preview(&p).unwrap();
+        let mesh = Arc::new(fea_problem::solve::body_preview(&p).unwrap());
         let scene = Scene::from_frames(
             &mesh,
             &[vec![0.0; mesh.n_dofs()]],
@@ -159,7 +160,7 @@ mod tests {
             pan: [0.0; 2],
         };
         let size = [600.0, 400.0];
-        let index = Index::new(&mesh, &scene.positions, cam, size, 1);
+        let index = Index::new(&mesh, &scene.positions, cam, size);
         for x in (0..600).step_by(23) {
             for y in (0..400).step_by(19) {
                 let px = [x as f32, y as f32];
@@ -185,7 +186,7 @@ mod measurements {
         mesh.nodes=positions.iter().map(|p|p.map(f64::from)).collect();
         for y in 0..n { for x in 0..n { let a=y*(n+1)+x; mesh.surfaces.entry("front".into()).or_default().push(vec![a,a+1,a+n+2,a+n+1]); } }
         let cam=Camera{yaw:0.0,pitch:0.0,zoom:1.0,aspect:1.0,pan:[0.0;2]}; let size=[800.0;2];
-        let start=std::time::Instant::now(); let index=Index::new(&mesh,&positions,cam,size,1); let build=start.elapsed();
+        let start=std::time::Instant::now(); let mesh=Arc::new(mesh); let index=Index::new(&mesh,&positions,cam,size); let build=start.elapsed();
         let queries: Vec<_>=(0..100).map(|i|[200.0+(i*37%400) as f32,200.0+(i*71%400) as f32]).collect();
         let start=std::time::Instant::now(); let slow:Vec<_>=queries.iter().map(|&p|pick_surface(&mesh,&positions,&cam,p,size,8.0)).collect();let brute=start.elapsed();
         let start=std::time::Instant::now();let fast:Vec<_>=queries.iter().map(|&p|index.pick(true,&positions,p,8.0)).collect();let cached=start.elapsed();

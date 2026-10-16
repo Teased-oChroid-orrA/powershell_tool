@@ -1182,7 +1182,7 @@ mod performance_tests {
                 r.draw(&view, &scene, *t, scene.gain, [0.0, 0.0, 1.6, 2.0]);
             }
             r.device.poll(wgpu::PollType::wait_indefinitely()).expect("device poll");
-            eprintln!("GPU profile: adapter={:?}, vertices={n}, triangles={}, frames={}, sample_bytes={}, uniform_bytes_per_frame=64, upload_ms={:.3}, playback_ms={:.3}",adapter.get_info(),scene.triangles.len()/3,scene.times.len(),scene.samples.len()*16,upload.as_secs_f64()*1000.0,start.elapsed().as_secs_f64()*1000.0);
+            eprintln!("GPU profile: adapter={:?}, vertices={n}, triangles={}, frames={}, sample_bytes={}, uniform_bytes_per_frame={}, upload_ms={:.3}, playback_ms={:.3}",adapter.get_info(),scene.triangles.len()/3,scene.times.len(),scene.samples.len()*16,r.uniform.size(),upload.as_secs_f64()*1000.0,start.elapsed().as_secs_f64()*1000.0);
         });
     }
 }

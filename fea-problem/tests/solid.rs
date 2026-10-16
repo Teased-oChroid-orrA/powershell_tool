@@ -340,7 +340,6 @@ fn nema17_step_import_has_a_complete_preview_and_consistent_units() {
     let mut p=Problem::from_step("NEMA17 bracket",step).unwrap();
     assert_eq!(p.units,UnitSystem::MmMpa);
     assert!((p.material.e-UnitSystem::MmMpa.from_ksi(29_000.0)).abs()<1e-8);
-    if let Ok(path)=std::env::var("FEA_CAD_DIAG_JSON") { std::fs::write(path,p.to_json().unwrap()).unwrap(); }
     let surface=fea_problem::solid::solid_surface(&p).unwrap();
     let body=fea_problem::solve::body_preview(&p).unwrap();
     assert!(body.surfaces.len()>6 && !body.nodes.is_empty());
