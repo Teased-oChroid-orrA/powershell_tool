@@ -1,0 +1,11 @@
+# Issue 46 — Phase 4: native analytic geometry subset
+
+Source `6e354f8fb5cd66cdf849c4a68127e6220c22001a` adds `solid-kernel::analytic_step`: one directly represented body with LINE/CIRCLE edges and PLANE/CYLINDRICAL_SURFACE faces. Representation-associated declared units normalize geometry to millimetres; assemblies, unsupported curves/surfaces and ambiguous representation mappings fail explicitly. Nothing changes the production OCCT importer.
+
+The reader builds normalized placement frames, validates endpoints and curve senses, samples each shared edge once with sagitta and cumulative allocation limits, and checks the complete analytic curve locus against each incident untrimmed surface. Projection, evaluation and declared face normals support the next trimmed-face stage. Bounded coordinate arithmetic and stable direction normalization prevent nonfinite intermediate results. Source vertex identities remain authoritative at sampled endpoints.
+
+The bracket passes with 1 mm/source unit, all 114 edges / 38 surfaces retained and 470 edge samples. Independent OCCT cube and cylinder exports verify outward declared normals and circular chord error at the unchanged 0.05 mm bound. Negative cases cover contradictory surfaces, unsupported geometry, missing body-unit association, assemblies and hard sample budgets; declared unit changes produce the expected tenfold coordinate scaling. The subnormal direction test initially assumed the fixture's first plane used an exact coordinate axis; selecting an actual exact-axis plane corrected the fixture setup without changing production tolerances.
+
+All **33 CAD-enabled solid-kernel tests passed** at this source revision. The no-OCCT audit example also ran successfully with `--analytic` during development. No dependency or lockfile change, hosted CI dispatch, production importer switch or numerical tolerance relaxation was introduced. [Verification](issue-46-phase-4-verification.json).
+
+This is analytic feasibility, **not trimmed-face or solid certification**. Missing gates include trim roles and intersections, periodic chart/seam handling, shell orientability and vertex-manifoldness, general B-splines/assemblies/healing, native tessellation and constrained volume recovery. Whole-circle locus tests conservatively reject some valid partial-arc configurations. Keep OCCT as the production reference.

@@ -1,0 +1,32 @@
+{
+  "source_commit": "6e354f8fb5cd66cdf849c4a68127e6220c22001a",
+  "scope": "bounded native analytic geometry; not trimmed-face/solid acceptance",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked -j1",
+      "passed": 33,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo run -p solid-kernel --example step-inventory --locked -j1 -- nema17-motor-bracket.step --analytic",
+      "exit_code": 0,
+      "stage": "development source before scope-only formatting cleanup",
+      "mm_per_source_unit": 1,
+      "edges": 114,
+      "surfaces": 38,
+      "edge_samples": 470
+    }
+  ],
+  "independent_references": [
+    "OCCT-exported cube: declared normals outward",
+    "OCCT-exported cylinder: 2 circular edges within 0.05 mm chord bound"
+  ],
+  "not_verified": [
+    "trimmed domains and geometric intersections",
+    "global shell/vertex-manifold validity",
+    "native tessellation and constrained volume recovery",
+    "general assemblies/B-splines/healing",
+    "later source on hosted Windows/macOS"
+  ]
+}
