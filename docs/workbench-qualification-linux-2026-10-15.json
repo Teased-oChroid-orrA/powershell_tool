@@ -1,0 +1,61 @@
+{
+  "commit": "99d33aff2b85a835618e6bbd03502fa8e03e4064",
+  "platform": "linux",
+  "dirty": false,
+  "checks": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--locked",
+        "-j",
+        "1",
+        "--no-fail-fast",
+        "--features",
+        "app-tui/occt"
+      ],
+      "exit_code": 0,
+      "seconds": 843.8870691109914
+    },
+    {
+      "command": [
+        "cargo",
+        "check",
+        "-p",
+        "app-tui",
+        "--no-default-features",
+        "--bins",
+        "--lib",
+        "--tests",
+        "--locked",
+        "-j",
+        "1"
+      ],
+      "exit_code": 0,
+      "seconds": 0.1882604060083395
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "app-tui",
+        "--lib",
+        "--locked",
+        "-j",
+        "1",
+        "--features",
+        "app-tui/occt",
+        "--",
+        "--ignored",
+        "gpu_viewer",
+        "--skip",
+        "snapshot"
+      ],
+      "exit_code": 0,
+      "seconds": 1.3341508879966568
+    }
+  ],
+  "passed": true
+}

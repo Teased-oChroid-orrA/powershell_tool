@@ -13,6 +13,9 @@ pub const MAX_TETS: f64 = 400_000.0;
 /// The tessellation of a STEP solid at a chord deflection, tied to the text it came from by `hash`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SolidCache {
+    /// Model length units per STEP kernel millimetre (kept through unit conversions).
+    #[serde(default = "unit_scale")]
+    pub coordinate_scale: f64,
     /// [`text_hash`] of the STEP text the mesh was made from.
     pub hash: String,
     pub deflection: f64,
@@ -33,13 +36,30 @@ pub fn text_hash(text: &str) -> String {
     format!("{h:016x}")
 }
 
+fn unit_scale() -> f64 {
+    1.0
+}
+
 impl SolidCache {
     pub fn new(step: &str, mesh: SurfaceMesh, deflection: f64) -> Self {
-        Self { hash: text_hash(step), deflection, vertices: mesh.vertices, triangles: mesh.triangles, face: mesh.face }
+        Self {
+            coordinate_scale: 1.0,
+            hash: text_hash(step), deflection, vertices: mesh.vertices, triangles: mesh.triangles, face: mesh.face,
+        }
     }
     /// Whether the cache was made from exactly this STEP text.
     pub fn is_current(&self, step: &str) -> bool {
         self.hash == text_hash(step)
+    }
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.coordinate_scale.is_finite() || self.coordinate_scale <= 0.0 || !self.deflection.is_finite() || self.deflection <= 0.0
+            || self.vertices.len() < 4 || self.triangles.len() < 4 || self.face.len() != self.triangles.len()
+            || self.vertices.iter().flatten().any(|v| !v.is_finite())
+            || self.triangles.iter().flatten().any(|i| *i >= self.vertices.len())
+            || self.face.iter().any(|f| *f >= self.triangles.len()) {
+            return Err("invalid STEP surface cache: check finite coordinates, triangles, face tags and scale".into());
+        }
+        Ok(())
     }
     pub fn surface(&self) -> SurfaceMesh {
         SurfaceMesh { vertices: self.vertices.clone(), triangles: self.triangles.clone(), face: self.face.clone() }
@@ -73,8 +93,37 @@ pub fn solid_mesh(p: &Problem) -> Result<(Mesh, MeshReport), String> {
     if est > MAX_TETS {
         return Err(format!("about {est:.0} elements: that is too fine (limit {MAX_TETS:.0}); increase the mesh size"));
     }
-    let params = VolumeParams { base: 2.0 * h, boundary_size: h, quadratic: p.mesh.element.is_quadratic() };
-    mesh_volume(&solid, p.material.elastic(), params, &|_| h)
+    let params = VolumeParams { base: 2.0 * h, boundary_size: h, quadratic: p.mesh.element.is_quadratic(),
+    };
+    let (mesh, report) = mesh_volume(&solid, p.material.elastic(), params, &|_| h)?;
+    let volume_error = (report.volume / solid.volume() - 1.0).abs();
+    if volume_error > 0.05 {
+        return Err(format!("the mesh does not resolve the STEP body: volume differs by {:.1}% (limit 5%); reduce element size from {h:.4e}", volume_error * 100.0));
+    }
+    let unresolved = unresolved_faces(p, &mesh);
+    let missing: Vec<_> = p.supports.iter().filter_map(Support::edge).chain(p.loads.iter().filter_map(Load::edge))
+        .chain(p.thermal.supports.iter().filter_map(crate::thermal::HeatSupport::edge))
+        .chain(p.thermal.loads.iter().filter_map(crate::thermal::HeatLoad::edge))
+        .filter(|name| unresolved.iter().any(|f| f == name)).collect();
+    if !missing.is_empty() {
+        return Err(format!("the mesh does not resolve STEP surfaces {}: reduce element size from {h:.4e}", missing.join(", ")));
+    }
+    Ok((mesh, report))
+}
+
+/// CAD faces smaller than the volume mesh can remain visible in the body preview
+/// without owning a boundary element. Never silently apply a condition to such a face.
+pub fn unresolved_faces(p: &Problem, mesh: &Mesh) -> Vec<String> {
+    match &p.geometry {
+        Geometry::Solid { cache: Some(c), .. } => c.face_names().into_iter()
+            .filter(|name| mesh.surfaces.get(name).is_none_or(Vec::is_empty)).collect(),
+        _ => Vec::new(),
+    }
+}
+
+pub fn resolution_note(p: &Problem, mesh: &Mesh) -> Option<String> {
+    let names = unresolved_faces(p, mesh);
+    (!names.is_empty()).then(|| format!("CAD surfaces {} have no boundary elements at this size; refine before applying conditions there and check mesh convergence.", names.join(", ")))
 }
 
 /// Tessellate STEP text into a cache (chord deflection `deflection`). Needs the OpenCascade kernel.
@@ -115,8 +164,10 @@ fn face_stats(c: &SolidCache) -> Vec<(f64, [f64; 3], [f64; 3])> {
     let mut out = vec![(0.0, [0.0; 3], [0.0; 3]); n];
     for (t, f) in c.triangles.iter().zip(&c.face) {
         let [a, b, d] = t.map(|i| c.vertices[i]);
-        let (u, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [d[0] - a[0], d[1] - a[1], d[2] - a[2]]);
-        let nv = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+        let (u, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [d[0] - a[0], d[1] - a[1], d[2] - a[2]],
+        );
+        let nv = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0],
+        ];
         let ar = 0.5 * (nv[0] * nv[0] + nv[1] * nv[1] + nv[2] * nv[2]).sqrt();
         let e = &mut out[*f];
         e.0 += ar;
@@ -211,7 +262,7 @@ pub enum SolidOp {
     Boss { face: usize, diameter: f64, height: f64 },
 }
 
-/// A solid read from STEP: its cache and a sensible element size (a twelfth of the bounding-box diagonal).
+/// A solid read from STEP: its cache and a sensible element size (an eighteenth of the bounding-box diagonal, capped by wall thickness).
 #[derive(Clone, Debug)]
 pub struct StepImport {
     pub cache: SolidCache,
@@ -228,8 +279,10 @@ pub fn flat_face(c: &SolidCache, face: usize) -> Result<([f64; 3], [f64; 3]), St
             continue;
         }
         let [a, b, d] = t.map(|i| c.vertices[i]);
-        let (u, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [d[0] - a[0], d[1] - a[1], d[2] - a[2]]);
-        let n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+        let (u, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [d[0] - a[0], d[1] - a[1], d[2] - a[2]],
+        );
+        let n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0],
+        ];
         let ar = 0.5 * (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
         if ar <= 0.0 {
             continue;
@@ -256,7 +309,8 @@ pub fn flat_face(c: &SolidCache, face: usize) -> Result<([f64; 3], [f64; 3]), St
         vol += a[0] * (b[1] * d[2] - b[2] * d[1]) + a[1] * (b[2] * d[0] - b[0] * d[2]) + a[2] * (b[0] * d[1] - b[1] * d[0]);
     }
     let s = if vol < 0.0 { -1.0 } else { 1.0 };
-    Ok(([sum[0] / area, sum[1] / area, sum[2] / area], [s * n[0], s * n[1], s * n[2]]))
+    Ok(([sum[0] / area, sum[1] / area, sum[2] / area], [s * n[0], s * n[1], s * n[2]],
+    ))
 }
 
 #[cfg(feature = "occt")]
@@ -268,7 +322,17 @@ pub fn import_step(step: &str) -> Result<StepImport, String> {
         return Err("the STEP solid has no extent".into());
     }
     let cache = SolidCache::new(step, brep.tessellate(diag * 1e-3)?, diag * 1e-3);
-    Ok(StepImport { cache, size: diag / 12.0 })
+    let planes: Vec<_> = (0..cache.face_names().len()).filter_map(|f| flat_face(&cache, f + 1).ok()).collect();
+    let mut wall = f64::INFINITY;
+    for (i, (a, n)) in planes.iter().enumerate() {
+        for (b, m) in planes.iter().skip(i + 1) {
+            let dot = n.iter().zip(m).map(|(a,b)| a*b).sum::<f64>();
+            let distance = (0..3).map(|d| (b[d]-a[d])*n[d]).sum::<f64>().abs();
+            if dot < -0.999 && distance > diag * 1e-4 { wall = wall.min(distance); }
+        }
+    }
+    Ok(StepImport { cache, size: (diag / 18.0).min(wall / 3.0).min((0..3).map(|a| hi[a]-lo[a]).fold(f64::INFINITY, f64::min) / 3.0),
+    })
 }
 
 #[cfg(not(feature = "occt"))]
@@ -279,36 +343,58 @@ pub fn import_step(step: &str) -> Result<StepImport, String> {
 /// Apply `op` to the solid (`step`, `cache`); returns the new STEP text and its tessellation. Face numbers change with the
 /// shape: supports and loads that name faces must be checked afterwards (`diagnose` finds the ones left dangling).
 #[cfg(feature = "occt")]
-pub fn apply_op(step: &str, cache: &SolidCache, op: &SolidOp) -> Result<(String, SolidCache), String> {
+pub fn apply_op(step: &str, cache: &SolidCache, op: &SolidOp,
+) -> Result<(String, SolidCache), String> {
     use solid_kernel::occt::{Bool, Brep};
     let brep = Brep::from_step_text(step)?;
     let (lo, hi) = brep.bounds();
     let diag = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
-    let positive = |v: f64, what: &str| if v.is_finite() && v > 0.0 { Ok(()) } else { Err(format!("the {what} must be a positive number")) };
+    let positive = |v: f64, what: &str| {
+        if v.is_finite() && v > 0.0 { Ok(()) } else { Err(format!("the {what} must be a positive number")) }
+    };
     let result = match *op {
         SolidOp::Fillet { radius } => {
             positive(radius, "fillet radius")?;
-            brep.fillet_all(radius)?
+            brep.fillet_all(radius / cache.coordinate_scale)?
         }
         SolidOp::Hole { face, diameter } => {
             positive(diameter, "hole diameter")?;
-            let (c, n) = flat_face(cache, face)?;
+            let (mut c, n) = flat_face(cache, face)?;
+            for x in &mut c {
+                *x /= cache.coordinate_scale;
+            }
             // A cutter that passes through the whole part along the inward normal.
             let base = [c[0] + n[0] * diag, c[1] + n[1] * diag, c[2] + n[2] * diag];
-            brep.boolean(Bool::Cut, &Brep::cylinder(base, 0.5 * diameter, [-n[0], -n[1], -n[2]], 3.0 * diag))?
+            brep.boolean(Bool::Cut, &Brep::cylinder(base, 0.5 * diameter / cache.coordinate_scale, [-n[0], -n[1], -n[2]], 3.0 * diag,
+                ),
+            )?
         }
-        SolidOp::Boss { face, diameter, height } => {
+        SolidOp::Boss { face, diameter, height,
+        } => {
             positive(diameter, "boss diameter")?;
             positive(height, "boss height")?;
-            let (c, n) = flat_face(cache, face)?;
+            let (mut c, n) = flat_face(cache, face)?;
+            for x in &mut c {
+                *x /= cache.coordinate_scale;
+            }
             // Start slightly inside the part so the union fuses instead of touching.
-            let base = [c[0] - n[0] * 1e-3 * diag, c[1] - n[1] * 1e-3 * diag, c[2] - n[2] * 1e-3 * diag];
-            brep.boolean(Bool::Union, &Brep::cylinder(base, 0.5 * diameter, n, height + 1e-3 * diag))?
+            let base = [c[0] - n[0] * 1e-3 * diag, c[1] - n[1] * 1e-3 * diag, c[2] - n[2] * 1e-3 * diag,
+            ];
+            brep.boolean(Bool::Union, &Brep::cylinder(base, 0.5 * diameter / cache.coordinate_scale, n, height / cache.coordinate_scale + 1e-3 * diag,
+                ),
+            )?
         }
     };
     let new_step = result.to_step_text()?;
     let deflection = cache.deflection;
-    let new_cache = SolidCache::new(&new_step, result.tessellate(deflection)?, deflection);
+    let mut new_cache = SolidCache::new(&new_step, result.tessellate(deflection / cache.coordinate_scale)?, deflection,
+    );
+    new_cache.coordinate_scale = cache.coordinate_scale;
+    for v in &mut new_cache.vertices {
+        for x in v {
+            *x *= cache.coordinate_scale;
+        }
+    }
     Ok((new_step, new_cache))
 }
 
@@ -322,6 +408,7 @@ impl Problem {
     pub fn from_step(name: &str, step: &str) -> Result<Problem, String> {
         let import = import_step(step)?;
         let mut p = crate::templates::blank();
+        p.convert_units(crate::UnitSystem::MmMpa)?;
         p.name = name.to_string();
         p.mesh.size = import.size;
         p.set_solid(step, import.cache);

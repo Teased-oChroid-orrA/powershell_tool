@@ -163,6 +163,8 @@ mod tests {
 /// One row of a value card.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CardRow {
+    /// A dropdown that dispatches the selected typed command.
+    Select { label: String, selected: String, options: Vec<(String, super::controller::UiAction)> },
     /// A switch (a held direction, a support kept in a case).
     Toggle { label: String, on: bool, action: super::controller::UiAction },
     /// A text field; edits are reported with `index` (`Authoring::card_field`).

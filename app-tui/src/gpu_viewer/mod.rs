@@ -94,8 +94,8 @@ pub fn run_native_editor(kind: EditorKind, path: &std::path::Path) -> Result<(),
                 window::run_editor(problem, path.to_path_buf())
             }
             EditorKind::Solid => {
-                let problem = if path.exists() { editor::solid::read_problem(path)? } else { fea_problem::templates::templates().remove(0).1 };
-                window::run_solid(problem, path.to_path_buf())
+                let (problem, destination) = editor::solid::open_path(path)?;
+                window::run_solid(problem, destination)
             }
             EditorKind::Bushing => window::run_bushing(editor::bushing::BushingSession::open(path)?),
             EditorKind::Eccentric => window::run_eccentric(editor::eccentric::EccentricSession::open(path)?),

@@ -168,15 +168,34 @@ impl SurfaceSolid {
         if mesh.triangles.is_empty() || mesh.face.len() != mesh.triangles.len() {
             return Err("the surface mesh has no triangles (or a face tag is missing)".into());
         }
-        let mut index: HashMap<[i64; 3], usize> = HashMap::new();
+        if !weld.is_finite() || weld <= 0.0 || mesh.vertices.is_empty()
+            || mesh.vertices.iter().flatten().any(|x| !x.is_finite())
+            || mesh.triangles.iter().flatten().any(|i| *i >= mesh.vertices.len()) {
+            return Err("invalid surface coordinates, indices or weld distance".into());
+        }
+        let origin = mesh.vertices[0];
+        let mut index: HashMap<[i64; 3], Vec<usize>> = HashMap::new();
         let mut vertices: Vec<V3> = Vec::new();
         let mut remap = vec![0usize; mesh.vertices.len()];
-        let q = |v: V3| [(v[0] / weld).round() as i64, (v[1] / weld).round() as i64, (v[2] / weld).round() as i64];
         for (i, v) in mesh.vertices.iter().enumerate() {
-            remap[i] = *index.entry(q(*v)).or_insert_with(|| {
-                vertices.push(*v);
-                vertices.len() - 1
-            });
+            let relative = sub(*v, origin).map(|x| (x / weld).floor());
+            if relative.iter().any(|x| x.abs() >= (i64::MAX / 2) as f64) {
+                return Err("surface extent exceeds the weld grid range".into());
+            }
+            let q = relative.map(|x| x as i64);
+            let mut nearest: Option<(f64, usize)> = None;
+            for x in -1..=1 { for y in -1..=1 { for z in -1..=1 {
+                if let Some(ids) = index.get(&[q[0]+x,q[1]+y,q[2]+z]) {
+                    for &j in ids {
+                        let d = norm(sub(*v, vertices[j]));
+                        if d <= weld && nearest.is_none_or(|best| (d,j) < best) { nearest=Some((d,j)); }
+                    }
+                }
+            } } }
+            remap[i] = match nearest {
+                Some((_, j)) => j,
+                None => { let j=vertices.len(); vertices.push(*v); index.entry(q).or_default().push(j); j }
+            };
         }
         let mut triangles = Vec::with_capacity(mesh.triangles.len());
         let mut face = Vec::with_capacity(mesh.triangles.len());
@@ -213,7 +232,7 @@ impl SurfaceSolid {
             ));
         }
         // Orient outward: the signed volume must be positive.
-        let volume: f64 = triangles.iter().map(|t| dot(vertices[t[0]], cross(vertices[t[1]], vertices[t[2]])) / 6.0).sum();
+        let volume: f64 = triangles.iter().map(|t| dot(sub(vertices[t[0]], origin), cross(sub(vertices[t[1]], origin), sub(vertices[t[2]], origin))) / 6.0).sum();
         if volume < 0.0 {
             for t in &mut triangles {
                 t.swap(1, 2);
@@ -262,7 +281,7 @@ impl SurfaceSolid {
     }
     /// Enclosed volume of the tessellation.
     pub fn volume(&self) -> f64 {
-        self.triangles.iter().map(|t| dot(self.vertices[t[0]], cross(self.vertices[t[1]], self.vertices[t[2]])) / 6.0).sum()
+        self.triangles.iter().map(|t| dot(sub(self.vertices[t[0]], self.vertices[0]), cross(sub(self.vertices[t[1]], self.vertices[0]), sub(self.vertices[t[2]], self.vertices[0]))) / 6.0).sum()
     }
     /// Area of each model face.
     pub fn face_areas(&self) -> Vec<f64> {

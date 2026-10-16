@@ -39,7 +39,7 @@ const INP: &str = "*NODE\n1,0,0\n2,1,0\n3,2,0\n4,0,1\n5,1,1\n6,2,1\n*ELEMENT, TY
 
 fn imported() -> Problem {
     let mut p = templates::templates().into_iter().find(|(n, _)| *n == "Cantilever beam").unwrap().1;
-    p.geometry = Geometry::Imported { path: "bar.inp".into() };
+    p.geometry = Geometry::Imported { path: "bar.inp".into(), scale: Default::default() };
     p.thickness = 1.0;
     p.supports = vec![Support::fixed("LEFT")];
     p.loads = vec![Load::Force { edge: "RIGHT".into(), fx: 100.0, fy: 0.0, fz: 0.0 }];

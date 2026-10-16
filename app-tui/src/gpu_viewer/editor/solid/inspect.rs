@@ -89,6 +89,15 @@ impl SolidSession {
                 Some(p) => format!("[{}_]", p.text),
                 None => row_value(&self.problem, &names, self.import_len(), row),
             };
+            let value = if editing.is_none() {
+                let unit = match row {
+                    FieldRow::Young | FieldRow::Yield | FieldRow::HardeningRow => self.problem.units.stress(),
+                    FieldRow::Density => self.problem.units.density(),
+                    FieldRow::Alpha => if self.problem.units == fea_problem::UnitSystem::InchPsi { "1/deg F" } else { "1/deg C" },
+                    _ => "",
+                };
+                if unit.is_empty() { value } else { format!("{value} {unit}") }
+            } else { value };
             let tone = if editing.is_some() { Tone::Warn } else if focused { Tone::On } else { Tone::Normal };
             out.push(DockItem::field(row_label(&self.problem, row), value, tone, Some(ui(SolidAction::Focus(i))), focused));
         }
@@ -108,6 +117,9 @@ impl SolidSession {
         let feature = focused.map(feature_of);
         if let Some(f) = feature {
             let mut items = self.value_fields(f);
+            if f == Feature::Material && matches!(self.problem.geometry, Geometry::Imported { .. }) {
+                items.push(DockItem::text("Default material: file-defined section materials override these values and convert with the selected unit system.".to_string(), Tone::Dim));
+            }
             if !items.is_empty() {
                 if let Some(row) = focused.filter(|r| edit_kind(*r) != EditKind::Action) {
                     items.push(DockItem::text(if self.prompting() { "type a value, Enter applies, Esc cancels".to_string() } else { field_hint(row).to_string() }, Tone::Dim));

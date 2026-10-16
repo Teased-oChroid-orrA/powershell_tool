@@ -30,7 +30,7 @@ pub fn blank() -> Problem {
 /// A problem whose geometry is the mesh file at `path` (read separately; no boundary conditions yet).
 pub fn imported(path: &str) -> Problem {
     let name = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("Imported mesh");
-    base(name, Analysis::PlaneStress, Geometry::Imported { path: path.into() })
+    base(name, Analysis::PlaneStress, Geometry::Imported { path: path.into(), scale: Default::default() })
 }
 
 /// `(title, problem)` pairs; the first is the default.

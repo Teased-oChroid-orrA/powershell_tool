@@ -170,13 +170,28 @@ pub fn ribbon(c: &MenuContext) -> Vec<RibbonTab> {
     tabs
 }
 
-const ORDER: [&str; 9] = ["File", "Edit", "View", "Insert", "Tools", "Simulation", "Advisor", "Window", "Help"];
+const ORDER: [&str; 9] = ["File", "Edit", "View", "Insert", "Tools", "Simulation", "Advisor", "Window", "Help",
+];
 
 /// The menu bar in CAD order. Unknown authoring titles sort with Tools/Simulation, keeping their order.
 pub fn bar(c: &MenuContext) -> Vec<Menu> {
     let mut menus = c.editor.map(|e| e.menus()).unwrap_or_default();
     if menus.is_empty() {
-        menus.push(Menu { title: "File".into(), items: vec![Item::Entry(Entry::new("Quit", "Esc", UiAction::Quit))] });
+        menus.push(Menu { title: "File".into(), items: vec![Item::Entry(Entry::new("Quit", "Esc", UiAction::Quit))],
+        });
+    }
+    if let Some(ed) = c.editor {
+        if let Some(file) = menus.iter_mut().find(|m| m.title == "File") {
+            file.items.push(Item::Entry(
+                Entry::new("Restore recovery snapshot", "", UiAction::RestoreRecovery).when(
+                    if !ed.solving() {
+                        Ok(())
+                    } else {
+                        Err("no recovery snapshot, or a computation is running".into())
+                    },
+                ),
+            ));
+        }
     }
     menus.push(view_menu(c));
     menus.push(window_menu(c));

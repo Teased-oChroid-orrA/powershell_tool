@@ -84,11 +84,14 @@ fn a_solid_with_a_history_a_body_force_and_a_prescribed_displacement_converts_wh
 }
 
 #[test]
-fn an_imported_mesh_and_a_step_solid_can_only_be_declared_not_converted() {
+fn imported_coordinates_convert_without_rewriting_the_source_file() {
     let mut p = templates::imported("x.msh");
     let before = p.clone();
-    assert!(p.convert_units(UnitSystem::MmMpa).is_err());
-    assert_eq!(p, before, "a refused conversion changes nothing");
+    p.convert_units(UnitSystem::MmMpa).unwrap();
+    assert!(
+        matches!(p.geometry, fea_problem::Geometry::Imported { scale, .. } if (scale.length-25.4).abs()<1e-12));
+    p.convert_units(UnitSystem::InchPsi).unwrap();
+    assert!((p.material.e / before.material.e - 1.0).abs() < 1e-12);
     p.declare_units(UnitSystem::MmMpa);
     assert_eq!(p.units, UnitSystem::MmMpa);
     assert_eq!(p.material, before.material, "declaring rescales nothing");
@@ -129,4 +132,86 @@ fn a_modulus_no_structural_material_has_is_caught_and_the_right_system_is_offere
     mm.declare_units(UnitSystem::MmMpa);
     mm.material.e = 210_000.0;
     assert!(!diagnose(&mm, None).iter().any(|d| d.questions.iter().any(|q| q.id == "units")));
+}
+
+#[test]
+fn thermal_units_convert_absolute_temperatures_and_heat_dimensions() {
+    use fea_problem::thermal::{HeatLoad, HeatSupport};
+    let mut p = plate();
+    p.thermal.reference = 32.0;
+    p.thermal.conductivity = 1.0;
+    p.thermal.source = 2.0;
+    p.thermal.supports = vec![HeatSupport::Temperature {
+        edge: "left".into(),
+        t: 212.0,
+    }];
+    p.thermal.loads = vec![HeatLoad::Convection {
+        edge: "right".into(),
+        h: 3.0,
+        ambient: 68.0,
+    }];
+    let original = p.clone();
+    p.convert_units(UnitSystem::MmMpa).unwrap();
+    assert!(p.thermal.reference.abs() < 1e-12);
+    assert!(
+        matches!(p.thermal.supports[0],HeatSupport::Temperature{t,..} if (t-100.0).abs()<1e-12)
+    );
+    assert!(
+        matches!(p.thermal.loads[0],HeatLoad::Convection{ambient,..} if (ambient-20.0).abs()<1e-12)
+    );
+    assert!((p.thermal.conductivity - 4.4482216152605 * 1.8).abs() < 1e-10);
+    p.convert_units(UnitSystem::InchPsi).unwrap();
+    assert!((p.thermal.conductivity - original.thermal.conductivity).abs() < 1e-12);
+    assert!((p.thermal.reference - original.thermal.reference).abs() < 1e-12);
+}
+
+#[test]
+fn external_mesh_coordinates_and_boundary_conditions_convert_together() {
+    let text="*NODE\n1,0,0\n2,1,0\n3,1,1\n4,0,1\n*ELEMENT,TYPE=CPS4\n1,1,2,3,4\n*NSET,NSET=left\n1,4\n*NSET,NSET=right\n2,3\n";
+    let mut p=templates::imported("bar.inp"); p.history=None;
+    p.supports=vec![Support::fixed("left")];
+    p.loads=vec![Load::Force{edge:"right".into(),fx:100.0,fy:0.0,fz:0.0}];
+    let a=solve(&p,Some(text)).unwrap();
+    let original=p.units;
+    p.convert_units(UnitSystem::MmMpa).unwrap();
+    let b=solve(&p,Some(text)).unwrap();
+    let ua=a.summary.max_displacement.value*original.length_m();
+    let ub=b.summary.max_displacement.value*p.units.length_m();
+    assert!((ua/ub-1.0).abs()<1e-10,"{ua} vs {ub}");
+}
+
+#[test]
+fn solve_stage_observer_can_stop_before_meshing_without_publishing_a_result() {
+    let p=plate();
+    let seen=std::cell::RefCell::new(Vec::new());
+    let result=fea_problem::solve::solve_observed(&p,None,&|stage| {
+        seen.borrow_mut().push(stage);
+        if stage=="Generating analysis mesh" { Err("cancelled by caller".into()) } else { Ok(()) }
+    });
+    assert!(matches!(result,Err(ref e) if e=="cancelled by caller"));
+    assert_eq!(*seen.borrow(),["Validating analysis inputs","Generating analysis mesh"]);
+}
+
+#[test]
+fn embedded_isotropic_and_orthotropic_mesh_materials_convert_with_sections() {
+    let nodes="*NODE\n1,0,0\n2,1,0\n3,1,1\n4,0,1\n*ELEMENT,TYPE=CPS4,ELSET=bar\n1,1,2,3,4\n*NSET,NSET=left\n1,4\n*NSET,NSET=right\n2,3\n";
+    for elastic in ["*ELASTIC\n10000000,0\n", "*ELASTIC,TYPE=ENGINEERING CONSTANTS\n10000000,8000000,6000000,0,0,0,3000000,3000000,3000000\n"] {
+        let text=format!("{nodes}*MATERIAL,NAME=alloy\n{elastic}*EXPANSION\n0.000006\n*SOLID SECTION,ELSET=bar,MATERIAL=alloy\n0.25\n");
+        let mut p=templates::imported("bar.inp");
+        p.supports=vec![Support::fixed("left")];
+        p.loads=vec![Load::Force{edge:"right".into(),fx:100.0,fy:0.0,fz:0.0}];
+        let initial=solve(&p,Some(&text)).unwrap();
+        let expected=100.0/(10.0e6*0.25);
+        assert!((initial.summary.max_displacement.value/expected-1.0).abs()<1e-10);
+        let physical=initial.summary.max_displacement.value*p.units.length_m();
+        let source_alpha=initial.model.mesh.blocks[0].material.alpha/p.units.kelvin_per_degree();
+        for target in [UnitSystem::MmMpa,UnitSystem::MeterPa,UnitSystem::InchPsi] {
+            p.convert_units(target).unwrap();
+            p=Problem::from_json(&p.to_json().unwrap()).unwrap();
+            let solved=solve(&p,Some(&text)).unwrap();
+            let displacement=solved.summary.max_displacement.value*target.length_m();
+            assert!((displacement/physical-1.0).abs()<1e-10,"{target:?}: {displacement} vs {physical}");
+            assert!((solved.model.mesh.blocks[0].material.alpha/target.kelvin_per_degree()/source_alpha-1.0).abs()<1e-12);
+        }
+    }
 }

@@ -13,8 +13,8 @@ mod picker;
 
 use super::{
     authoring::{Authoring, Card, Overlay},
-    handoff,
     camera::Camera,
+    handoff,
     session::{EditorAction, Key, KeyResult, Mods},
     solid::{SolidAction, SolidSession},
 };
@@ -100,6 +100,7 @@ pub struct BushingSession {
     fix_kind: Option<CheckKind>,
     /// The case file's modification time when this window last read or wrote it: another time means another window changed it.
     stamp: Option<std::time::SystemTime>,
+    saved_revision: Option<String>,
     beat_at: std::time::Instant,
     watch_at: std::time::Instant,
 }
@@ -140,10 +141,12 @@ impl BushingSession {
             step: "Inputs",
             fix_kind: None,
             stamp: None,
+            saved_revision: None,
             beat_at: std::time::Instant::now(),
             watch_at: std::time::Instant::now(),
         };
         s.stamp = handoff::stamp(&s.path);
+        s.saved_revision = crate::persistence::revision(&s.path);
         s.refresh_fea();
         s
     }
@@ -216,10 +219,15 @@ impl BushingSession {
         }
     }
     fn save(&mut self) {
-        match std::fs::write(&self.path, self.snapshot().to_json()) {
+        if crate::persistence::revision(&self.path) != self.saved_revision {
+            self.status = "Save conflict: file changed externally; reopen before saving.".into();
+            return;
+        }
+        match crate::persistence::write(&self.path, self.snapshot().to_json()) {
             Ok(()) => {
                 self.dirty = false;
                 self.stamp = handoff::stamp(&self.path);
+                self.saved_revision = crate::persistence::revision(&self.path);
                 self.status = format!("Saved {}.", self.path.display());
             }
             Err(e) => self.status = format!("Could not save {}: {e}", self.path.display()),
@@ -259,7 +267,8 @@ impl BushingSession {
             return false;
         }
         self.stamp = now;
-        let Some(text) = now.and_then(|_| std::fs::read_to_string(&self.path).ok()) else { return false };
+        let Some(text) = now.and_then(|_| std::fs::read_to_string(&self.path).ok()) else { return false;
+        };
         if self.dirty {
             self.status = "The case file changed on disk (the FEA workbench sent a model); this window has unsaved edits: save to keep them, or reopen the file for the new inputs.".into();
             return true;
@@ -271,16 +280,19 @@ impl BushingSession {
                 let skipped = f.apply(&mut self.st.model);
                 self.changed();
                 self.dirty = false;
+                self.saved_revision = crate::persistence::revision(&self.path);
                 self.status = if skipped.is_empty() { "Updated from the FEA workbench.".into() } else { format!("Updated from the FEA workbench; not applied: {}.", skipped.join("; ")) };
             }
-            Err(why) => self.status = format!("The case file changed on disk but cannot be read: {why}"),
+            Err(why) => {
+                self.status = format!("The case file changed on disk but cannot be read: {why}")
+            }
         }
         true
     }
     /// The report text beside the file (`name.report.txt`).
     fn export(&mut self) {
         let target = self.path.with_extension("report.txt");
-        match std::fs::write(&target, self.st.report_text()) {
+        match crate::persistence::write(&target, self.st.report_text()) {
             Ok(()) => self.status = format!("Report written to {}.", target.display()),
             Err(e) => self.status = format!("Could not write {}: {e}", target.display()),
         }
@@ -617,6 +629,18 @@ impl Authoring for BushingSession {
     }
     fn title(&self) -> String {
         format!("Bushing | {}{}", self.name, if self.dirty { " *" } else { "" })
+    }
+    fn restore_recovery(&mut self) -> Result<(), String> {
+        let text = std::fs::read_to_string(self.path.with_extension("recovery.json"))
+            .map_err(|e| e.to_string())?;
+        let f = BushingFile::from_json(&text)?;
+        self.undo.push(self.snapshot());
+        self.set_from(&f);
+        self.dirty = true;
+        Ok(())
+    }
+    fn recovery_json(&self) -> Result<String, String> {
+        Ok(self.snapshot().to_json())
     }
     fn dirty(&self) -> bool {
         self.dirty

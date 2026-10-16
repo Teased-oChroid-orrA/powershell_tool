@@ -148,3 +148,19 @@ fn a_t_junction_between_faces_is_repaired_so_the_surface_closes() {
     assert!((s.volume() - 8.0).abs() < 1e-12);
     assert!(s.signed_distance([1.0, 1.0, 1.0]) < 0.0);
 }
+
+#[test]
+fn welding_uses_distance_across_grid_boundaries_and_volume_is_translation_invariant() {
+    let weld=1e-5;
+    let mut mesh=box_mesh(1.0,1.0,1.0);
+    for (i,p) in mesh.vertices.iter_mut().enumerate() {
+        for x in p { *x += if i%2==0 { 0.49*weld } else { 0.51*weld }; }
+    }
+    let solid=SurfaceSolid::new(mesh,weld).unwrap();
+    assert!((solid.volume()-1.0).abs()<1e-6);
+    let mut shifted=box_mesh(1.0,1.0,1.0);
+    for p in &mut shifted.vertices { for x in p { *x+=1.0e9; } }
+    let solid=SurfaceSolid::new(shifted,1e-6).unwrap();
+    assert!((solid.volume()-1.0).abs()<1e-12);
+    assert!(solid.signed_distance([1e9+0.5;3])<0.0);
+}

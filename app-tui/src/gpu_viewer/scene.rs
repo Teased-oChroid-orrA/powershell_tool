@@ -220,6 +220,8 @@ impl Scene {
                 .iter()
                 .flat_map(|b| b.conn.chunks_exact(b.kind.n_nodes()).map(|c| c.to_vec()))
                 .collect()
+        } else if mesh.blocks.is_empty() {
+            mesh.surfaces.values().flatten().cloned().collect()
         } else {
             mesh.boundary_faces().into_iter().map(|f| f.nodes).collect()
         };

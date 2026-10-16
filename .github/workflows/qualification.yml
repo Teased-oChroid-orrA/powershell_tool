@@ -1,0 +1,45 @@
+name: Workbench qualification
+on:
+  workflow_dispatch:
+  pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - '.gitignore'
+concurrency:
+  group: qualification-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+jobs:
+  qualify:
+    name: qualify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            cad_flags: --cad
+          - os: macos-latest
+            cad_flags: --cad
+          - os: windows-latest
+            cad_flags: ''
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: qualification-${{ runner.os }}-${{ hashFiles('Cargo.lock', '.github/workflows/qualification.yml', 'scripts/qualify.py') }}
+          restore-keys: qualification-${{ runner.os }}-
+      - run: python scripts/qualify.py --jobs 2 ${{ matrix.cad_flags }}
+        env:
+          CARGO_INCREMENTAL: '0'
+          CARGO_PROFILE_TEST_DEBUG: '0'
+          CARGO_PROFILE_DEV_DEBUG: '0'
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: qualification-${{ runner.os }}
+          path: qualification.json

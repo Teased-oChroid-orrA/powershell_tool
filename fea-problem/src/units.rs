@@ -9,8 +9,7 @@
 //! | `MmMpa` | mm | N | MPa | N s^2/mm^4 (tonne/mm^3) | deg C |
 //! | `MeterPa` | m | N | Pa | kg/m^3 | deg C |
 //!
-//! Thermal values (conductivity, heat flux, film coefficient, surface temperatures) are not converted: they follow the
-//! thermal convention of the study and are never rescaled by a unit change.
+//! Thermal power uses force * length / second; absolute temperatures include the Fahrenheit/Celsius offset.
 use crate::{
     history::{FeatureKind, Plane},
     problem::{Geometry, Load, MaterialSpec, Problem, Seg, Shape, Support},
@@ -188,19 +187,16 @@ fn scale_material(m: &mut MaterialSpec, k: Factors) {
 }
 
 impl Problem {
-    /// Whether the problem's geometry can be rescaled: an imported mesh and a STEP solid carry their own coordinates, so
-    /// they can only be *declared* in another system.
+    /// Whether geometry can be rescaled; external sources retain a cumulative coordinate scale.
     pub fn can_convert_units(&self) -> Result<(), String> {
         match self.geometry {
-            Geometry::Sketch { .. } => Ok(()),
-            Geometry::Imported { .. } => Err("an imported mesh keeps the coordinates of its file: declare its units instead of converting".into()),
-            Geometry::Solid { .. } => Err("a STEP solid keeps the coordinates of its file: declare its units instead of converting".into()),
+            Geometry::Sketch { .. } | Geometry::Imported { .. } | Geometry::Solid { cache: Some(_), .. } => Ok(()),
+            Geometry::Solid { .. } => Err("a STEP solid needs a current cached surface before conversion: re-import it with the OpenCascade build".into()),
         }
     }
 
     /// Rescale every length, force, stress, density and expansion so the same physical problem is written in `to`.
-    /// Thermal values are left as they are (see the module note). Fails, changing nothing, when the geometry cannot be
-    /// rescaled.
+    /// Thermal quantities follow the same consistent force/length/time system. Fails before mutation when geometry cannot be rescaled.
     pub fn convert_units(&mut self, to: UnitSystem) -> Result<(), String> {
         if to == self.units {
             return Ok(());
@@ -208,6 +204,56 @@ impl Problem {
         self.can_convert_units()?;
         let k = self.units.factors(to);
         let f = k.length;
+        if let Geometry::Imported { scale, .. } = &mut self.geometry {
+            scale.length *= f;
+            scale.stress *= k.stress;
+            scale.expansion /= k.temperature;
+        }
+        if let Geometry::Solid { cache: Some(c), .. } = &mut self.geometry {
+            c.coordinate_scale *= f;
+            c.deflection *= f;
+            for v in &mut c.vertices {
+                for x in v {
+                    *x *= f;
+                }
+            }
+        }
+        // Energy = force * length; temperatures are absolute, expansion uses differences.
+        let offset = match (self.units, to) {
+            (UnitSystem::InchPsi, _) => -32.0 * k.temperature,
+            (_, UnitSystem::InchPsi) => 32.0,
+            _ => 0.0,
+        };
+        let absolute = |t: &mut f64| *t = *t * k.temperature + offset;
+        self.thermal.conductivity *= k.force / k.temperature;
+        self.thermal.source *= k.force / f.powi(2);
+        absolute(&mut self.thermal.reference);
+        for support in &mut self.thermal.supports {
+            match support {
+                crate::thermal::HeatSupport::Temperature { t, .. } => absolute(t),
+                crate::thermal::HeatSupport::Point { x, y, z, t } => {
+                    *x *= f;
+                    *y *= f;
+                    *z *= f;
+                    absolute(t);
+                }
+            }
+        }
+        for load in &mut self.thermal.loads {
+            match load {
+                crate::thermal::HeatLoad::Flux { q, .. } => *q *= k.force / f,
+                crate::thermal::HeatLoad::Convection { h, ambient, .. } => {
+                    *h *= k.force / (f * k.temperature);
+                    absolute(ambient);
+                }
+                crate::thermal::HeatLoad::Point { x, y, z, q } => {
+                    *x *= f;
+                    *y *= f;
+                    *z *= f;
+                    *q *= k.force * f;
+                }
+            }
+        }
         self.thickness *= f;
         scale_material(&mut self.material, k);
         self.region_materials.iter_mut().flatten().for_each(|m| scale_material(m, k));
@@ -230,8 +276,11 @@ impl Problem {
         }
         for s in &mut self.supports {
             match s {
-                Support::Edge { ux, uy, uz, .. } => [ux, uy, uz].into_iter().for_each(|u| *u = u.map(|v| v * f)),
-                Support::Point { x, y, z, ux, uy, uz } => {
+                Support::Edge { ux, uy, uz, .. } => {
+                    [ux, uy, uz].into_iter().for_each(|u| *u = u.map(|v| v * f))
+                }
+                Support::Point { x, y, z, ux, uy, uz,
+                } => {
                     (*x, *y, *z) = (*x * f, *y * f, *z * f);
                     [ux, uy, uz].into_iter().for_each(|u| *u = u.map(|v| v * f));
                 }
@@ -240,10 +289,15 @@ impl Problem {
         for l in &mut self.loads {
             match l {
                 Load::Pressure { p, .. } => *p *= k.stress,
-                Load::Traction { tx, ty, tz, .. } => (*tx, *ty, *tz) = (*tx * k.stress, *ty * k.stress, *tz * k.stress),
-                Load::Force { fx, fy, fz, .. } => (*fx, *fy, *fz) = (*fx * k.force, *fy * k.force, *fz * k.force),
+                Load::Traction { tx, ty, tz, .. } => {
+                    (*tx, *ty, *tz) = (*tx * k.stress, *ty * k.stress, *tz * k.stress)
+                }
+                Load::Force { fx, fy, fz, .. } => {
+                    (*fx, *fy, *fz) = (*fx * k.force, *fy * k.force, *fz * k.force)
+                }
                 Load::Bearing { fx, fy, .. } => (*fx, *fy) = (*fx * k.force, *fy * k.force),
-                Load::Point { x, y, z, fx, fy, fz } => {
+                Load::Point { x, y, z, fx, fy, fz,
+                } => {
                     (*x, *y, *z) = (*x * f, *y * f, *z * f);
                     (*fx, *fy, *fz) = (*fx * k.force, *fy * k.force, *fz * k.force);
                 }
@@ -267,7 +321,9 @@ impl Problem {
                         scale_sketch(sketch, f);
                         match plane {
                             Plane::Front { offset } | Plane::Top { offset } | Plane::Right { offset } => *offset *= f,
-                            Plane::Datum { origin, .. } => *origin = [origin[0] * f, origin[1] * f, origin[2] * f],
+                            Plane::Datum { origin, .. } => {
+                                *origin = [origin[0] * f, origin[1] * f, origin[2] * f]
+                            }
                         }
                     }
                     FeatureKind::Extrude { depth, .. } => *depth *= f,

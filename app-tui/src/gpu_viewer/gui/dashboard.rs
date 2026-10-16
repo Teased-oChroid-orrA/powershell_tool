@@ -135,9 +135,12 @@ mod tests {
         egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1100.0, 760.0))), events, ..Default::default() }
     }
     fn frames(gui: &mut Gui, dash: &mut Dashboard, events: Vec<egui::Event>) -> Vec<DashEvent> {
-        let mut all = gui.run_dashboard(raw(Vec::new()), dash).1;
-        all.extend(gui.run_dashboard(raw(events), dash).1);
-        all.extend(gui.run_dashboard(raw(Vec::new()), dash).1);
+        let mut all = Vec::new();
+        for events in [Vec::new(), events, Vec::new()] {
+            let (mut full, output) = gui.run_dashboard(raw(events), dash);
+            full.textures_delta.clear(); // no renderer in this input-level test
+            all.extend(output);
+        }
         all
     }
     fn centre(gui: &Gui, label: &str) -> egui::Pos2 {

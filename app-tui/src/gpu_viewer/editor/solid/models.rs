@@ -36,6 +36,7 @@ impl SolidSession {
         self.show_study = false;
         self.study = None;
         self.pick_positions.clear();
+        self.want_view = Some(if self.problem.analysis == fea_problem::Analysis::Solid { crate::gpu_viewer::controller::StandardView::Isometric } else { crate::gpu_viewer::controller::StandardView::Front });
         self.touch();
     }
 
@@ -115,9 +116,12 @@ impl SolidSession {
                     let history_error = p.apply_history().err();
                     self.start_model(p);
                     self.path = PathBuf::from(path);
+                    self.saved_revision = crate::persistence::revision(&self.path);
                     self.dirty = false;
                     self.status = match history_error {
-                        Some(e) => format!("Opened {path}, but its feature history cannot be rebuilt: {e}"),
+                        Some(e) => {
+                            format!("Opened {path}, but its feature history cannot be rebuilt: {e}")
+                        }
                         None => format!("Opened {path}"),
                     };
                 }

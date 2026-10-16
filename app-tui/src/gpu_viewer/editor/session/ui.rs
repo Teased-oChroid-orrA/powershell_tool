@@ -1,13 +1,18 @@
 //! The member editor's contribution to the CAD-style chrome: feature tree, property manager, ribbon,
 //! menus and context menu, plus the `Authoring` impl the window drives. Availability and reasons
 //! always come from `caps::availability`.
+use super::super::{
+    authoring::{Authoring, Card, Relevance},
+    caps,
+    learning::AdvisorAction,
+    state::SupportPreset,
+};
 use super::*;
 use crate::gpu_viewer::{
     controller::UiAction,
     menu::{Entry, Item, Menu},
     ui::{DockItem, RibbonTab, TreeNode},
 };
-use super::super::{authoring::{Authoring, Card, Relevance}, caps, learning::AdvisorAction, state::SupportPreset};
 
 /// `"Undo (Ctrl/Cmd+Z)"` -> `("Undo", "Ctrl/Cmd+Z")`.
 pub fn split_label(label: &str) -> (&str, &str) {
@@ -123,13 +128,26 @@ impl Authoring for Session {
         Session::solving(self)
     }
     fn status(&self) -> String {
-        self.state.status.clone()
+        if let Some(elapsed) = self.runner.elapsed() {
+            let stage = if self.runner.is_running() { "Solving member model" } else { "Cancelling; waiting for solver to finish" };
+            format!("{stage} ({:.1} s)", elapsed.as_secs_f32())
+        } else {
+            self.state.status.clone()
+        }
     }
     fn set_status(&mut self, text: String) {
         self.state.status = text;
     }
     fn title(&self) -> String {
         format!("FEA member editor | {}{}", self.state.problem.name, if self.state.dirty { " *" } else { "" })
+    }
+    fn restore_recovery(&mut self) -> Result<(), String> {
+        let p = super::super::state::read_problem(&self.path.with_extension("recovery.json"))?;
+        self.state.replace(p, false);
+        Ok(())
+    }
+    fn recovery_json(&self) -> Result<String, String> {
+        serde_json::to_string_pretty(&self.state.problem).map_err(|e| e.to_string())
     }
     fn dirty(&self) -> bool {
         self.state.dirty
@@ -310,7 +328,8 @@ impl Authoring for Session {
             Session::click(self, px, size, cam)
         }
     }
-    fn box_select(&mut self, a: [f32; 2], b: [f32; 2], size: [f32; 2], cam: &Camera, additive: bool) {
+    fn box_select(&mut self, a: [f32; 2], b: [f32; 2], size: [f32; 2], cam: &Camera, additive: bool,
+    ) {
         Session::box_select(self, a, b, size, cam, additive)
     }
     fn take_popup(&mut self) -> Option<Vec<Item>> {

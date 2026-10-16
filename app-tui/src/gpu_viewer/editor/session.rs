@@ -117,6 +117,7 @@ pub struct Session {
     advice_locked: bool,
     /// Opt-in recording / training / model gate (`None` without an app-data folder or when locked off).
     learning: Option<super::learning::Learning>,
+    trainer: super::worker::Worker<super::learning::Bundle>,
 }
 
 mod ui;
@@ -130,7 +131,7 @@ impl Session {
         if let Some(i) = GRIDS.iter().position(|g| *g >= state.frame.span / 40.0) {
             state.grid = GRIDS[i];
         }
-        Self { state, runner: Runner::default(), path, show_results: false, prompt: None, version: 1, built: None, advisor: None, advice: true, advice_locked: false, learning: None }
+        Self { state, runner: Runner::default(), path, show_results: false, prompt: None, version: 1, built: None, advisor: None, advice: true, advice_locked: false, learning: None, trainer: super::worker::Worker::new("member-advisor-training") }
     }
     /// Apply the start-up advisory configuration (environment); a model that cannot be used is reported.
     pub fn configure_advice(&mut self, advisor: Option<Box<dyn super::advisory::Advisor>>, enabled: bool, note: Option<String>) {
@@ -202,7 +203,26 @@ impl Session {
 
     /// Collect a finished background solve. Returns true when something changed on screen.
     pub fn poll(&mut self) -> bool {
-        let Some(outcome) = self.runner.poll() else { return false };
+        let mut trained = false;
+        if let Some((_, answer)) = self.trainer.poll() {
+            match answer {
+                Ok(bundle) => if let Some(l) = &mut self.learning {
+                    self.state.status = bundle.report.summary();
+                    if let Err(e)=l.store.save_bundle(&bundle) { self.state.status = format!("Advisor save failed: {e}"); }
+                    l.bundle=Some(bundle);
+                    if l.learned_available().is_err() {
+                        self.advisor=None;
+                        l.settings.use_learned=false;
+                        if let Err(e)=l.store.save_settings(&l.settings) { self.state.status=format!("Advisor settings save failed: {e}"); }
+                    } else if l.settings.use_learned {
+                        self.advisor=l.bundle.as_ref().map(|b|Box::new(b.model.clone()) as Box<dyn super::advisory::Advisor>);
+                    }
+                },
+                Err(e) => self.state.status=format!("Advisor training failed: {e}"),
+            }
+            trained=true;
+        }
+        let Some(outcome) = self.runner.poll() else { return trained };
         match outcome {
             Outcome::Finished { problem, solved } => {
                 let (u, name) = (solved.max_displacement(), problem.name.clone());
@@ -384,26 +404,17 @@ impl Session {
                     }
                 }
             }
-            A::Train => match l.store.read().and_then(|r| super::learning::train(&r)) {
-                Ok(bundle) => {
-                    let summary = bundle.report.summary();
-                    let saved = l.store.save_bundle(&bundle);
-                    l.bundle = Some(bundle);
-                    if l.learned_available().is_err() && self.advisor.is_some() {
-                        self.advisor = None;
-                        l.settings.use_learned = false;
-                    }
-                    match saved {
-                        Ok(()) => summary,
-                        Err(e) => format!("{summary} (model not saved: {e})"),
-                    }
+            A::Train => {
+                let store=l.store.clone();
+                match self.trainer.start(0, move || super::learning::train(&store.read()?)) {
+                    Ok(()) => "Advisor training in background; current ranking remains active.".into(),
+                    Err(e) => e,
                 }
-                Err(e) => e,
             },
-            A::DeleteRecordings => match l.store.delete_recordings() {
+            A::DeleteRecordings => { self.trainer.cancel(); match l.store.delete_recordings() {
                 Ok(()) => "Recordings deleted (a trained model, if any, is kept).".into(),
                 Err(e) => format!("Could not delete recordings: {e}"),
-            },
+            } },
         };
         if let Err(e) = l.store.save_settings(&l.settings) {
             self.state.status = format!("{status} (settings not saved: {e})");
@@ -707,6 +718,31 @@ mod tests {
         s.key(Key::Escape, Mods::default());
     }
     #[test]
+    fn a_finished_background_refit_replaces_an_enabled_member_advisor() {
+        use super::super::{advisory::{Context,Selected,Stage,Suggestion},learning::{self,Recorded,Store}};
+        let dir=tempfile::tempdir().unwrap();
+        let context=Context { stage: Stage::Empty, selected: Selected::Nothing, solving: false };
+        let allowed=vec![Suggestion::Tool(Tool::Node),Suggestion::Tool(Tool::Truss),Suggestion::Tool(Tool::Frame)];
+        let fit=|taken| {
+            let events: Vec<_>=(0..60).flat_map(|id| (0..12).map({let allowed=allowed.clone(); move |_| Recorded {session:id,context,allowed:allowed.clone(),taken}})).collect();
+            let bundle=learning::train(&events).unwrap();
+            bundle.usable().unwrap();
+            bundle
+        };
+        let old=fit(Suggestion::Tool(Tool::Truss));
+        let new=fit(Suggestion::Tool(Tool::Frame));
+        let mut s=session(fea_problem::members::blank_planar());
+        s.attach_learning(Store::new(dir.path().to_path_buf()),1);
+        s.advisor=Some(Box::new(old.model.clone()));
+        let l=s.learning.as_mut().unwrap(); l.settings.use_learned=true; l.bundle=Some(old);
+        s.trainer.start(0,move ||Ok(new)).unwrap();
+        let until=std::time::Instant::now()+std::time::Duration::from_secs(10);
+        while s.trainer.is_busy() { s.poll(); assert!(std::time::Instant::now()<until); std::thread::sleep(std::time::Duration::from_millis(2)); }
+        assert_eq!(s.advisor.as_ref().unwrap().rank(&context,&allowed).unwrap()[0],Suggestion::Tool(Tool::Frame));
+        assert!(s.learning.as_ref().unwrap().settings.use_learned);
+    }
+
+    #[test]
     fn advisor_loop_is_opt_in_records_trains_and_gates_the_learned_ranking() {
         use super::super::{advisory::Suggestion, learning::{AdvisorAction as A, Store}};
         let dir = std::env::temp_dir().join(format!("session-advisor-{}", std::process::id()));
@@ -731,6 +767,8 @@ mod tests {
         s.act(EditorAction::Advisor(A::ToggleLearned));
         assert!(s.state.status.contains("no trained model"), "{}", s.state.status);
         s.act(EditorAction::Advisor(A::Train));
+        let until = std::time::Instant::now()+std::time::Duration::from_secs(10);
+        while s.trainer.is_busy() { s.poll(); assert!(std::time::Instant::now()<until); std::thread::sleep(std::time::Duration::from_millis(2)); }
         assert!(s.state.status.contains("not used: needs 20 recorded sessions"), "{}", s.state.status);
         s.act(EditorAction::Advisor(A::ToggleLearned));
         assert!(s.state.status.starts_with("not enabled"), "{}", s.state.status);

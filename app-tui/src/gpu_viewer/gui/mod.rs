@@ -14,9 +14,9 @@ use super::{
     controller::{Command, Panel, UiAction, Visible},
     display::Background,
     editor::{adapt::Adapt, authoring::StepState},
-    results::GuiInput,
     menu::{palette_entries, Entry, Item, Outcome},
     menus::{self, MenuContext},
+    results::GuiInput,
     ui::RibbonTab,
 };
 use egui::{Align, Align2, Color32, Id, Layout, Order, Pos2, Rect, Vec2};
@@ -54,6 +54,7 @@ struct Floating {
 pub struct Gui {
     ctx: egui::Context,
     pub visible: Visible,
+    pub confirm_close: bool,
     tab: usize,
     collapsed: HashSet<u32>,
     palette: Option<PaletteState>,
@@ -72,8 +73,10 @@ pub struct Gui {
     /// Interactive controls of the last frame by label, in points (tests click them).
     targets: Vec<(String, Rect)>,
     /// The row under the pointer that previews its effect this frame, and the one that did last frame.
-    hover_now: Option<(crate::gpu_viewer::controller::UiAction, crate::gpu_viewer::controller::UiAction)>,
-    hover_prev: Option<(crate::gpu_viewer::controller::UiAction, crate::gpu_viewer::controller::UiAction)>,
+    hover_now: Option<(crate::gpu_viewer::controller::UiAction, crate::gpu_viewer::controller::UiAction,
+    )>,
+    hover_prev: Option<(crate::gpu_viewer::controller::UiAction, crate::gpu_viewer::controller::UiAction,
+    )>,
     /// What the layout has learned from use (ADR-018); decides orders, collapsed cards and the tree's default.
     adapt: Adapt,
     /// Cards the person opened or folded this session (overrides what was learned).
@@ -110,6 +113,7 @@ impl Gui {
         Self {
             ctx,
             visible: Visible::default(),
+            confirm_close: false,
             tab: 0,
             collapsed: HashSet::new(),
             palette: None,
@@ -312,12 +316,14 @@ impl Gui {
         (full, out)
     }
 
-    fn build(&mut self, ui: &mut egui::Ui, input: &GuiInput, out: &mut Vec<Outcome>, hint: &mut Option<String>) {
+    fn build(&mut self, ui: &mut egui::Ui, input: &GuiInput, out: &mut Vec<Outcome>, hint: &mut Option<String>,
+    ) {
         let p = theme::current(ui.ctx());
         self.now = ui.ctx().input(|i| i.time);
         self.pill_rect = None;
         self.chip_rect = None;
-        let mctx = MenuContext { view: input.view, scene: input.scene(), results: if input.editor.is_some() { 1 } else { input.scenes.len() }, editor: input.editor, visible: self.visible, adaptive: self.adapt.enabled };
+        let mctx = MenuContext { view: input.view, scene: input.scene(), results: if input.editor.is_some() { 1 } else { input.scenes.len() }, editor: input.editor, visible: self.visible, adaptive: self.adapt.enabled,
+        };
         let menus = menus::bar(&mctx);
         let tabs = menus::ribbon(&mctx);
         self.tab = self.tab.min(tabs.len().saturating_sub(1));
@@ -374,6 +380,25 @@ impl Gui {
         self.value_card(ui.ctx(), input, &p, out, hint);
         self.background_picker(ui.ctx(), input.view.background, &p, out);
         self.palette_window(ui.ctx(), &menus, &p, out);
+        if self.confirm_close {
+            egui::Modal::new(Id::new("confirm-close")).show(ui.ctx(), |ui| {
+                ui.heading("Save changes before closing?");
+                ui.label("Your model has unsaved changes.");
+                ui.horizontal(|ui| {
+                    for (label, action) in [
+                        ("Save and close", UiAction::SaveAndClose),
+                        ("Discard changes", UiAction::DiscardAndClose),
+                        ("Keep editing", UiAction::CancelClose),
+                    ] {
+                        let r = ui.button(label);
+                        self.targets.push((label.into(), r.rect));
+                        if r.clicked() {
+                            out.push(Outcome::Action(action));
+                        }
+                    }
+                });
+            });
+        }
         self.adapt.frame_end();
     }
 
@@ -605,7 +630,8 @@ impl Gui {
     }
 
     /// The value card an editor has open (a constraint's directions, a load's numbers, a load case), beside the face's menu.
-    fn value_card(&mut self, ctx: &egui::Context, input: &GuiInput, p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>) {
+    fn value_card(&mut self, ctx: &egui::Context, input: &GuiInput, p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>,
+    ) {
         use crate::gpu_viewer::ui::CardRow;
         let Some(card) = input.editor.and_then(|e| e.value_card()) else {
             if self.card_key.take().is_some() {
@@ -615,8 +641,11 @@ impl Gui {
         };
         let fresh = self.card_key.as_deref() != Some(card.title.as_str());
         self.card_key = Some(card.title.clone());
-        let vp = self.viewport.unwrap_or(Rect::from_min_size(Pos2::new(240.0, 60.0), Vec2::new(600.0, 500.0)));
-        let at = self.menu_at.map_or(vp.left_top() + Vec2::new(24.0, 90.0), |m| m + Vec2::new(10.0, 0.0));
+        let vp = self.viewport.unwrap_or(Rect::from_min_size(Pos2::new(240.0, 60.0), Vec2::new(600.0, 500.0),
+        ));
+        let at = self.menu_at.map_or(vp.left_top() + Vec2::new(24.0, 90.0), |m| {
+                m + Vec2::new(10.0, 0.0)
+            });
         let mut first = true;
         let mut applied = false;
         egui::Area::new(Id::new("value-card")).fade_in(false).order(Order::Foreground).fixed_pos(at).constrain(true).show(ctx, |ui| {
@@ -625,41 +654,50 @@ impl Gui {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(&card.title).strong());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(egui::RichText::new(&card.tag).small().monospace().color(p.dim));
+                        ui.label(egui::RichText::new(&card.tag).small().monospace().color(p.dim),
+                            );
                     });
                 });
                 ui.add_space(4.0);
                 for row in &card.rows {
                     match row {
                         CardRow::Toggle { label, on, action } => {
-                            let r = ui.add(egui::Button::new(label).selected(*on).min_size(Vec2::new(ui.available_width(), 0.0)));
+                            let r = ui.add(egui::Button::new(label).selected(*on).min_size(Vec2::new(ui.available_width(), 0.0)),
+                                );
                             self.targets.push((label.clone(), r.rect));
                             if r.clicked() {
                                 out.push(Outcome::Action(*action));
                             }
                         }
-                        CardRow::Field { label, text, index, unit } => {
+                        CardRow::Field { label, text, index, unit,
+                            } => {
                             ui.horizontal(|ui| {
                                 ui.label(label);
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                     if !unit.is_empty() {
-                                        ui.label(egui::RichText::new(unit).small().color(p.dim));
+                                        ui.label(egui::RichText::new(unit).small().color(p.dim),
+                                            );
                                     }
                                     let mut edited = text.clone();
-                                    let r = ui.add(egui::TextEdit::singleline(&mut edited).id(Id::new(("card-field", *index))).desired_width(110.0).horizontal_align(Align::RIGHT));
+                                    let r = ui.add(egui::TextEdit::singleline(&mut edited).id(Id::new(("card-field", *index))).desired_width(110.0).horizontal_align(Align::RIGHT),
+                                        );
                                     self.targets.push((format!("{label} field"), r.rect));
                                     if fresh && first {
                                         // The first field takes the keyboard with its text selected: typing replaces the suggestion.
                                         r.request_focus();
                                         let id = Id::new(("card-field", *index));
                                         if let Some(mut st) = egui::TextEdit::load_state(ctx, id) {
-                                            st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(text.chars().count()))));
+                                            st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(text.chars().count(),
+                                                        ),
+                                                    ),
+                                                ));
                                             st.store(ctx, id);
                                         }
                                     }
                                     first = false;
                                     if edited != *text {
-                                        out.push(Outcome::CardField { index: *index, text: edited });
+                                        out.push(Outcome::CardField { index: *index, text: edited,
+                                            });
                                     }
                                     if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                                         applied = true;
@@ -670,9 +708,34 @@ impl Gui {
                         CardRow::Text(t) => {
                             ui.label(egui::RichText::new(t).small().color(p.dim));
                         }
-                        CardRow::Choice { label, detail, action, current } => {
+                        CardRow::Select {
+                                label,
+                                selected,
+                                options,
+                            } => {
+                                let parent_layer = ui.layer_id();
+                                let response = egui::ComboBox::from_id_salt(label)
+                                    .selected_text(selected)
+                                    .show_ui(ui, |ui| {
+                                        // Value cards also use Foreground; keep their dropdown
+                                        // above the card so rows below cannot paint over it.
+                                        ui.ctx().set_sublayer(parent_layer, ui.layer_id());
+                                        for (name, action) in options {
+                                            let r = ui.selectable_label(name == selected, name);
+                                            self.targets.push((name.clone(), r.rect));
+                                            if r.clicked() {
+                                                out.push(Outcome::Action(*action));
+                                            }
+                                        }
+                                    });
+                                self.targets.push((format!("{label} dropdown"), response.response.rect));
+                            }
+                            CardRow::Choice { label, detail, action, current,
+                            } => {
                             let text = egui::RichText::new(label);
-                            let r = ui.add(egui::Button::new(text).selected(*current).min_size(Vec2::new(ui.available_width(), 0.0)).shortcut_text(egui::RichText::new(detail).small().color(p.dim)));
+                            let r = ui.add(egui::Button::new(text).selected(*current).min_size(Vec2::new(ui.available_width(), 0.0)).shortcut_text(egui::RichText::new(detail).small().color(p.dim),
+                                        ),
+                                );
                             self.targets.push((label.clone(), r.rect));
                             if r.clicked() {
                                 out.push(Outcome::Action(*action));
@@ -682,7 +745,9 @@ impl Gui {
                 }
                 ui.add_space(6.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let go = ui.add(egui::Button::new(egui::RichText::new(&card.apply_label).color(p.on_accent)).fill(p.accent));
+                    let go = ui.add(egui::Button::new(egui::RichText::new(&card.apply_label).color(p.on_accent),
+                            ).fill(p.accent),
+                        );
                     self.targets.push((card.apply_label.clone(), go.rect));
                     if go.clicked() {
                         applied = true;

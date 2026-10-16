@@ -502,10 +502,15 @@ pub fn read_abaqus(text: &str, opt: &ImportOptions) -> Result<Mesh, String> {
         if elems.iter().any(|e| e.physics.as_ref().map(std::mem::discriminant) != elems[0].physics.as_ref().map(std::mem::discriminant)) {
             return Err("mixed plane stress / plane strain / axisymmetric element types".into());
         }
-        // The section thickness applies to the whole (plane) model.
+        // A section overrides the caller's default thickness; an omitted section
+        // must preserve it (in particular after physical unit conversion).
+        let fallback = match opt.physics {
+            Physics::PlaneStress { thickness } | Physics::PlaneStrain { thickness } => thickness,
+            _ => 1.0,
+        };
         match p {
-            Physics::PlaneStress { .. } => Physics::PlaneStress { thickness: sections.first().map_or(1.0, |s| s.2) },
-            Physics::PlaneStrain { .. } => Physics::PlaneStrain { thickness: sections.first().map_or(1.0, |s| s.2) },
+            Physics::PlaneStress { .. } => Physics::PlaneStress { thickness: sections.first().map_or(fallback, |s| s.2) },
+            Physics::PlaneStrain { .. } => Physics::PlaneStrain { thickness: sections.first().map_or(fallback, |s| s.2) },
             other => other,
         }
     };

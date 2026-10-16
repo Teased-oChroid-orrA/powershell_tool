@@ -278,6 +278,11 @@ impl Brep {
         if let Some(k) = seen.iter().position(|s| !s) {
             return Err(format!("face {} of {} has no triangle in the tessellation", k + 1, faces.len()));
         }
+        // A chord across a very small curved feature can coincide with a neighbouring
+        // face's edge. Refine only those interior chords against the exact trimmed
+        // kernel face; global angular refinement can produce millions of facets.
+        let kernel_faces: Vec<_> = self.solids.iter().flat_map(|s| s.iter_face()).collect();
+        refine_coincident_chords(&mut out, &kernel_faces);
         Ok(out)
     }
 
@@ -285,5 +290,75 @@ impl Brep {
     /// size you will mesh with).
     pub fn solid(&self, deflection: f64) -> Result<SurfaceSolid, String> {
         SurfaceSolid::new(self.tessellate(deflection)?, deflection * 1e-3)
+    }
+}
+
+/// Separate coincident interior chords without deleting facets or changing face tags.
+/// The closed-manifold check still decides whether the resulting surface is usable.
+fn refine_coincident_chords(mesh: &mut SurfaceMesh, faces: &[&cadrum::Face]) {
+    use std::collections::{BTreeMap, HashMap};
+    let origin = mesh.vertices[0];
+    let extent = mesh
+        .vertices
+        .iter()
+        .flat_map(|p| (0..3).map(move |d| (p[d] - origin[d]).abs()))
+        .fold(0.0_f64, f64::max);
+    let tolerance = (extent * 1e-10).max(1e-10);
+    let key =
+        |p: V3| std::array::from_fn::<_, 3, _>(|d| ((p[d] - origin[d]) / tolerance).round() as i64);
+    for _ in 0..4 {
+        let mut edges: BTreeMap<([i64; 3], [i64; 3]), Vec<(usize, usize)>> = BTreeMap::new();
+        for (i, t) in mesh.triangles.iter().enumerate() {
+            for k in 0..3 {
+                let (mut a, mut b) = (key(mesh.vertices[t[k]]), key(mesh.vertices[t[(k + 1) % 3]]));
+                if b < a {
+                    std::mem::swap(&mut a, &mut b);
+                }
+                edges.entry((a, b)).or_default().push((i, k));
+            }
+        }
+        let mut split: HashMap<usize, (usize, usize)> = HashMap::new();
+        for members in edges.values().filter(|m| m.len() > 2) {
+            let mut by_face: BTreeMap<usize, Vec<(usize, usize)>> = BTreeMap::new();
+            for &(i, k) in members {
+                by_face.entry(mesh.face[i]).or_default().push((i, k));
+            }
+            for (face, pair) in by_face {
+                if pair.len() != 2 || pair.iter().any(|(i, _)| split.contains_key(i)) {
+                    continue;
+                }
+                let (i, k) = pair[0];
+                let t = mesh.triangles[i];
+                let (a, b) = (mesh.vertices[t[k]], mesh.vertices[t[(k + 1) % 3]]);
+                let mid = DVec3::from_array(std::array::from_fn(|d| (a[d] + b[d]) * 0.5));
+                let (projected, _) = faces[face].project(mid);
+                if !projected.is_finite() || projected.distance(mid) <= 10.0 * tolerance {
+                    continue;
+                }
+                let vertex = mesh.vertices.len();
+                mesh.vertices.push(projected.to_array());
+                for (i, k) in pair {
+                    split.insert(i, (k, vertex));
+                }
+            }
+        }
+        if split.is_empty() {
+            break;
+        }
+        let (mut triangles, mut tags) = (Vec::new(), Vec::new());
+        for (i, &t) in mesh.triangles.iter().enumerate() {
+            if let Some(&(k, m)) = split.get(&i) {
+                triangles.extend([
+                    [t[k], m, t[(k + 2) % 3]],
+                    [m, t[(k + 1) % 3], t[(k + 2) % 3]],
+                ]);
+                tags.extend([mesh.face[i]; 2]);
+            } else {
+                triangles.push(t);
+                tags.push(mesh.face[i]);
+            }
+        }
+        mesh.triangles = triangles;
+        mesh.face = tags;
     }
 }

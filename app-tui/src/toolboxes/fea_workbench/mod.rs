@@ -218,7 +218,7 @@ impl FeaWorkbenchState {
     }
 
     fn import_text(&self) -> Option<String> {
-        let Geometry::Imported { path } = &self.problem.geometry else { return None };
+        let Geometry::Imported { path, .. } = &self.problem.geometry else { return None };
         self.import.as_ref().filter(|(p, _)| p == path).map(|(_, t)| t.clone())
     }
 

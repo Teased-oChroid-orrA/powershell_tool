@@ -143,3 +143,11 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 | Area | Node | What's There |
 |---|---|---|
 | ADRs | `docs/adr/README.md` | Ordered index of ADR-001..011 with a status column (Accepted/Rejected/Superseded) |
+
+## Current reliability work
+
+[Workbench reliability, STEP and units](workbench-reliability-2026-10-15.md) records the new branch, scope and verification evidence.
+
+- [Workbench breadth roadmap (2026-10-15)](workbench-breadth-2026-10-15.md): proposed follow-on capabilities, ordered increments and release evidence; not implementation status.
+
+- [Clean Linux workbench qualification report](workbench-qualification-linux-2026-10-15.json): exact tested commit and exits for workspace/CAD, terminal-only and explicit software-GPU phases.

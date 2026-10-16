@@ -136,7 +136,11 @@ mod editing {
     }
     fn face_with_normal(p: &Problem, n: [f64; 3]) -> usize {
         let c = cache_of(p);
-        (1..=c.face_names().len()).find(|f| flat_face(c, *f).map(|(_, m)| (m[0] - n[0]).abs() + (m[1] - n[1]).abs() + (m[2] - n[2]).abs() < 1e-6).unwrap_or(false)).expect("a face with that normal")
+        (1..=c.face_names().len()).find(|f| {
+                flat_face(c, *f).map(|(_, m)| {
+                        (m[0] - n[0]).abs() + (m[1] - n[1]).abs() + (m[2] - n[2]).abs() < 1e-6
+                    }).unwrap_or(false)
+            }).expect("a face with that normal")
     }
 
     #[test]
@@ -218,7 +222,9 @@ mod naming {
     }
     fn name_of(p: &Problem, n: [f64; 3]) -> String {
         let c = cache(p);
-        let f = (1..=c.face_names().len()).find(|f| flat_face(c, *f).map(|(_, m)| (0..3).all(|k| (m[k] - n[k]).abs() < 1e-6)).unwrap_or(false)).unwrap();
+        let f = (1..=c.face_names().len()).find(|f| {
+                flat_face(c, *f).map(|(_, m)| (0..3).all(|k| (m[k] - n[k]).abs() < 1e-6)).unwrap_or(false)
+            }).unwrap();
         format!("face{f}")
     }
     fn centre(p: &Problem, name: &str) -> [f64; 3] {
@@ -271,7 +277,7 @@ mod naming {
         q.apply_solid_op(&SolidOp::Fillet { radius: 0.5 }).unwrap();
         assert_eq!(support_face(&q), name_of(&q, [0.0, 0.0, -1.0]));
         assert_eq!(load_face(&q), name_of(&q, [0.0, 0.0, 1.0]));
-        assert!(solve(&q, None).is_ok(), "and the model still solves");
+        solve(&q, None).expect("and the model still solves");
     }
 
     #[test]
@@ -282,5 +288,79 @@ mod naming {
         let l = load_face(&p).to_string();
         assert_eq!(l, name_of(&p, [0.0, 0.0, 1.0]), "the ring left of the face is still that face (flat, same plane, same centroid)");
         assert!(diagnose(&p, None).iter().all(|d| d.class != FailureClass::UnknownSurface));
+    }
+}
+
+#[test]
+fn step_surface_preview_exists_before_volume_meshing_and_preserves_every_face() {
+    let p = bar();
+    let mesh = fea_problem::solve::body_preview(&p).unwrap();
+    assert!(
+        mesh.blocks.is_empty(),
+        "preview must not run the volume mesher"
+    );
+    assert_eq!(mesh.dim(), 3);
+    assert_eq!(mesh.surfaces.len(), 6);
+    assert_eq!(mesh.surfaces.values().map(Vec::len).sum::<usize>(), 12);
+    assert!(mesh.nodes.iter().all(|p| p.iter().all(|x| x.is_finite())));
+}
+
+#[test]
+fn converted_step_cache_keeps_physical_geometry_material_and_loads() {
+    use fea_problem::UnitSystem;
+    let p = bar();
+    for target in [UnitSystem::MmMpa, UnitSystem::MeterPa] {
+        let mut q = p.clone();
+        q.convert_units(target).unwrap();
+        let before = fea_problem::solve::body_preview(&p).unwrap();
+        let after = fea_problem::solve::body_preview(&q).unwrap();
+        for (a, b) in before.nodes.iter().zip(&after.nodes) {
+            for d in 0..3 {
+                assert!((a[d] * p.units.length_m() - b[d] * target.length_m()).abs() < 1e-12);
+            }
+        }
+        assert!((q.modulus_pa() / p.modulus_pa() - 1.0).abs() < 1e-12);
+        let solved = solve(&q, None).unwrap();
+        let expected = 50.0 * 3.0 / p.material.e * p.units.length_m();
+        let actual = solved.summary.max_displacement.value * target.length_m();
+        assert!(
+            (actual / expected - 1.0).abs() < 0.12,
+            "{target:?}: {actual} vs {expected}"
+        );
+        q.convert_units(UnitSystem::InchPsi).unwrap();
+        assert!((q.mesh.size - p.mesh.size).abs() < 1e-12);
+    }
+}
+
+#[cfg(feature = "occt")]
+#[test]
+fn nema17_step_import_has_a_complete_preview_and_consistent_units() {
+    use fea_problem::UnitSystem;
+    let step=include_str!("../../nema17-motor-bracket.step");
+    let mut p=Problem::from_step("NEMA17 bracket",step).unwrap();
+    assert_eq!(p.units,UnitSystem::MmMpa);
+    assert!((p.material.e-UnitSystem::MmMpa.from_ksi(29_000.0)).abs()<1e-8);
+    let surface=fea_problem::solid::solid_surface(&p).unwrap();
+    let body=fea_problem::solve::body_preview(&p).unwrap();
+    assert!(body.surfaces.len()>6 && !body.nodes.is_empty());
+    assert_eq!(body.surfaces.len(),p.edge_names().len());
+    let volume=surface.volume()*p.units.length_m().powi(3);
+    // Independent OCCT BRepGProp integration of the supplied STEP, in mm^3.
+    assert!((surface.volume()/34_631.087_277_812_58-1.0).abs()<0.001);
+    p.convert_units(UnitSystem::InchPsi).unwrap();
+    assert!((p.material.e/29.0e6-1.0).abs()<1e-12);
+    let converted=fea_problem::solid::solid_surface(&p).unwrap();
+    assert!((converted.volume()*p.units.length_m().powi(3)/volume-1.0).abs()<1e-8);
+    eprintln!("NEMA17: {} faces, {} triangles, suggested h={}; volume={} m^3",converted.face_count(),converted.triangle_count(),p.mesh.size,volume);
+    match fea_problem::solid::solid_mesh(&p) {
+        Ok((mesh,report)) => {
+            assert!(mesh.surfaces.len() >= 30, "the bracket's major surfaces must be represented");
+            let unresolved=fea_problem::solid::unresolved_faces(&p,&mesh);
+            assert!(unresolved.iter().all(|name| ["face31","face32","face35","face37"].contains(&name.as_str())), "{unresolved:?}");
+            assert!(fea_problem::solid::resolution_note(&p,&mesh).is_some());
+            assert!((report.volume/converted.volume()-1.0).abs()<=0.05);
+            eprintln!("NEMA17 mesh: {} nodes, {} tets, volume error {:.3}%",report.nodes,report.tets,100.0*(report.volume/converted.volume()-1.0).abs());
+        }
+        Err(e) => panic!("NEMA17 default mesh must resolve the actual bracket: {e}"),
     }
 }

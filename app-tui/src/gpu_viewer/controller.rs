@@ -119,6 +119,10 @@ pub enum UiAction {
     BackgroundPicker,
     /// Close the window.
     Quit,
+    SaveAndClose,
+    DiscardAndClose,
+    CancelClose,
+    RestoreRecovery,
 }
 
 /// What the Window menu can ask of the adaptive layout (ADR-018).

@@ -20,9 +20,10 @@
 //! every time the recordings have grown by a tenth (at least `AUTO_TRAIN_EVERY` offers).
 use super::learning::{is_held_out, Verdict, MIN_HELD_OUT_EVENTS, MIN_SESSIONS, MIN_Z};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+#[cfg(test)]
+use std::io::Write;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -37,8 +38,9 @@ pub const CORPUS_BIT: u64 = 1 << 62;
 pub const AUTO_TRAIN_EVERY: usize = 50;
 
 /// What a situation or candidate type must be to be learned from.
-pub trait Label: Copy + Ord + Serialize + DeserializeOwned + std::fmt::Debug {}
-impl<T: Copy + Ord + Serialize + DeserializeOwned + std::fmt::Debug> Label for T {}
+pub trait Label: Copy + Ord + Serialize + DeserializeOwned + std::fmt::Debug + Send + 'static
+{}
+impl<T: Copy + Ord + Serialize + DeserializeOwned + std::fmt::Debug + Send + 'static> Label for T {}
 
 /// One offer: the candidates the rules proposed (best first) and the one taken, if any.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -331,34 +333,25 @@ impl Store {
         self.dir.join(format!("{}{suffix}", self.name))
     }
     pub fn append<S: Label, C: Label>(&self, r: &Recorded<S, C>) -> Result<(), String> {
-        std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(self.file(".jsonl")).map_err(|e| e.to_string())?;
-        writeln!(f, "{}", serde_json::to_string(r).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+        crate::persistence::append_json(&self.file(".jsonl"), r).map_err(|e| e.to_string())
     }
     pub fn read<S: Label, C: Label>(&self) -> Result<Vec<Recorded<S, C>>, String> {
-        let text = match std::fs::read_to_string(self.file(".jsonl")) {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(e.to_string()),
-        };
-        let mut all: Vec<Recorded<S, C>> = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
-        if all.len() > MAX_EVENTS {
-            all.drain(..all.len() - MAX_EVENTS);
-        }
-        Ok(all)
+        crate::persistence::read_recent(&self.file(".jsonl"), MAX_EVENTS).map_err(|e| e.to_string())
     }
     /// Replace the simulated corpus file.
-    pub fn write_corpus<S: Label, C: Label>(&self, events: &[Recorded<S, C>]) -> Result<(), String> {
+    pub fn write_corpus<S: Label, C: Label>(&self, events: &[Recorded<S, C>],
+    ) -> Result<(), String> {
         std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
         let mut text = String::new();
         for e in events {
             text.push_str(&serde_json::to_string(e).map_err(|e| e.to_string())?);
             text.push('\n');
         }
-        std::fs::write(self.file("-corpus.jsonl"), text).map_err(|e| e.to_string())
+        crate::persistence::write(self.file("-corpus.jsonl"), text).map_err(|e| e.to_string())
     }
     pub fn read_corpus<S: Label, C: Label>(&self) -> Vec<Recorded<S, C>> {
-        std::fs::read_to_string(self.file("-corpus.jsonl")).map(|t| t.lines().filter_map(|l| serde_json::from_str(l).ok()).filter(|r: &Recorded<S, C>| r.session & CORPUS_BIT != 0).collect()).unwrap_or_default()
+        crate::persistence::read_recent::<Recorded<S, C>>(&self.file("-corpus.jsonl"), MAX_EVENTS)
+            .unwrap_or_default().into_iter().filter(|r| r.session & CORPUS_BIT != 0).collect()
     }
     pub fn has_corpus(&self) -> bool {
         std::fs::metadata(self.file("-corpus.jsonl")).is_ok_and(|m| m.len() > 0)
@@ -377,14 +370,16 @@ impl Store {
     }
     pub fn save_settings(&self, s: &Settings) -> Result<(), String> {
         std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
-        std::fs::write(self.file("-settings.json"), serde_json::to_string_pretty(s).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+        crate::persistence::write(self.file("-settings.json"), serde_json::to_string_pretty(s).map_err(|e| e.to_string())?,
+        ).map_err(|e| e.to_string())
     }
     pub fn load_bundle<S: Label, C: Label>(&self) -> Option<Bundle<S, C>> {
         std::fs::read_to_string(self.file("-model.json")).ok().and_then(|t| serde_json::from_str(&t).ok())
     }
     pub fn save_bundle<S: Label, C: Label>(&self, b: &Bundle<S, C>) -> Result<(), String> {
         std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
-        std::fs::write(self.file("-model.json"), serde_json::to_string_pretty(b).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+        crate::persistence::write(self.file("-model.json"), serde_json::to_string_pretty(b).map_err(|e| e.to_string())?,
+        ).map_err(|e| e.to_string())
     }
 }
 
@@ -398,12 +393,40 @@ pub struct Ranker<S, C> {
     /// Offers recorded since the last fit and the number of recorded offers it used.
     pending: usize,
     fitted_on: usize,
+    fitting: super::worker::Worker<(Bundle<S, C>, usize)>,
 }
 
 impl<S: Label, C: Label> Ranker<S, C> {
     pub fn new(store: Option<Store>, session: u64, what: &'static str) -> Self {
-        let (settings, bundle) = store.as_ref().map_or((Settings::default(), None), |s| (s.load_settings(), s.load_bundle()));
-        Self { store, settings, bundle, session, what, pending: 0, fitted_on: 0 }
+        let (settings, bundle) = store.as_ref().map_or((Settings::default(), None), |s| {
+            (s.load_settings(), s.load_bundle())
+        });
+        Self { store, settings, bundle, session, what, pending: 0, fitted_on: 0,
+            fitting: super::worker::Worker::new("advisor-training"),
+        }
+    }
+    pub fn poll(&mut self) -> Option<String> {
+        let (_, result) = self.fitting.poll()?;
+        match result {
+            Ok((bundle, n)) => {
+            if let Some(store) = &self.store {
+                    if let Err(e) = store.save_bundle(&bundle) {
+                        return Some(format!("Advisor save failed: {e}"));
+                    }
+                }
+                let report = bundle.report.summary(self.what);
+                self.bundle = Some(bundle);
+                self.fitted_on = n;
+                if self.settings.use_learned && self.learned_available().is_err() {
+                    self.settings.use_learned = false;
+                    if let Err(e) = self.persist() {
+                        return Some(format!("{report}; advisor settings save failed: {e}"));
+                    }
+                }
+                Some(report)
+            }
+            Err(e) => Some(format!("Advisor training failed: {e}")),
+        }
     }
     pub fn learned_available(&self) -> Result<(), String> {
         match &self.bundle {
@@ -424,17 +447,42 @@ impl<S: Label, C: Label> Ranker<S, C> {
     }
     /// Record one offer when recording is on (errors are returned, never fatal). Returns the new report's summary when
     /// this offer made the recordings grow enough for the model to be refitted.
-    pub fn record(&mut self, situation: S, offered: Vec<C>, taken: Option<C>) -> Result<Option<String>, String> {
+    pub fn record(&mut self, situation: S, offered: Vec<C>, taken: Option<C>,
+    ) -> Result<Option<String>, String> {
         if !self.settings.record || offered.is_empty() {
             return Ok(None);
         }
-        let Some(store) = &self.store else { return Ok(None) };
-        store.append(&Recorded { session: self.session, situation, offered, taken })?;
+        let Some(store) = &self.store else { return Ok(None);
+        };
+        store.append(&Recorded { session: self.session, situation, offered, taken,
+        })?;
         self.pending += 1;
         if self.settings.auto_train && self.pending >= AUTO_TRAIN_EVERY.max(self.fitted_on / 10) {
-            return self.train().map(Some);
+            let report = self.train_background()?;
+            return Ok(Some(report));
         }
         Ok(None)
+    }
+    pub fn delete_recordings(&mut self) -> Result<(), String> {
+        self.fitting.cancel();
+        self.pending = 0;
+        self.store
+            .as_ref()
+            .ok_or("no application data folder")?
+            .delete_recordings()
+    }
+    pub fn train_background(&mut self) -> Result<String, String> {
+        if self.fitting.is_busy() {
+            return Ok("Advisor training already in background".into());
+        }
+        let store = self.store.clone().ok_or("no application data folder")?;
+        self.fitting.start(0, move || {
+            let events = store.read::<S, C>()?;
+            let bundle = train(&events, &store.read_corpus::<S, C>())?;
+            Ok((bundle, events.len()))
+        })?;
+        self.pending = 0;
+        Ok("Advisor training in background; current ranking remains active.".into())
     }
     fn persist(&self) -> Result<(), String> {
         match &self.store {
@@ -459,6 +507,7 @@ impl<S: Label, C: Label> Ranker<S, C> {
     }
     /// Train from the recordings and the simulated corpus and keep the bundle (switching the learned ranking off if it
     /// is no longer usable).
+    #[cfg(test)]
     pub fn train(&mut self) -> Result<String, String> {
         let store = self.store.as_ref().ok_or("no application data folder on this platform")?;
         let recorded = store.read::<S, C>()?;
@@ -477,9 +526,6 @@ impl<S: Label, C: Label> Ranker<S, C> {
     /// Install the simulated corpus (replacing any earlier one).
     pub fn install_corpus(&self, events: &[Recorded<S, C>]) -> Result<(), String> {
         self.store.as_ref().ok_or("no application data folder on this platform")?.write_corpus(events)
-    }
-    pub fn delete_recordings(&mut self) -> Result<(), String> {
-        self.store.as_ref().ok_or("no application data folder on this platform")?.delete_recordings()
     }
 }
 

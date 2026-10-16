@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 pub const UNDO_LIMIT: usize = 200;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum Tool {
     Select,
     Node,
@@ -16,7 +17,8 @@ pub enum Tool {
     Load,
 }
 impl Tool {
-    pub const ALL: [Tool; 6] = [Tool::Select, Tool::Node, Tool::Truss, Tool::Frame, Tool::Support, Tool::Load];
+    pub const ALL: [Tool; 6] = [Tool::Select, Tool::Node, Tool::Truss, Tool::Frame, Tool::Support, Tool::Load,
+    ];
     pub fn label(self) -> &'static str {
         match self {
             Tool::Select => "Select",
@@ -51,7 +53,8 @@ pub enum SupportPreset {
     Remove,
 }
 impl SupportPreset {
-    pub const ALL: [SupportPreset; 6] = [Self::Fixed, Self::Pinned, Self::Roller(0), Self::Roller(1), Self::Roller(2), Self::Remove];
+    pub const ALL: [SupportPreset; 6] = [Self::Fixed, Self::Pinned, Self::Roller(0), Self::Roller(1), Self::Roller(2), Self::Remove,
+    ];
     pub fn label(self) -> String {
         match self {
             Self::Fixed => "Fixed (all motion held)".into(),
@@ -63,7 +66,9 @@ impl SupportPreset {
     /// Held degrees of freedom for a node (`frame`: it has rotations).
     pub fn fixed(self, frame: bool) -> [bool; 6] {
         match self {
-            Self::Fixed => if frame { [true; 6] } else { [true, true, true, false, false, false] },
+            Self::Fixed => {
+                if frame { [true; 6] } else { [true, true, true, false, false, false] }
+            }
             Self::Pinned => [true, true, true, false, false, false],
             Self::Roller(a) => std::array::from_fn(|k| k < 3 && k != a),
             Self::Remove => [false; 6],
@@ -462,10 +467,12 @@ impl EditorState {
 
     /// A frame member's reference axis: the default direction unless it is parallel to the member.
     fn default_reference(&self, a: u32, b: u32) -> [f64; 3] {
-        let (pa, pb) = (self.problem.node(a).map_or([0.0; 3], |n| n.pos), self.problem.node(b).map_or([0.0; 3], |n| n.pos));
+        let (pa, pb) = (self.problem.node(a).map_or([0.0; 3], |n| n.pos), self.problem.node(b).map_or([0.0; 3], |n| n.pos),
+        );
         let d: [f64; 3] = std::array::from_fn(|k| pb[k] - pa[k]);
         let r = self.defaults.reference;
-        let cross = [d[1] * r[2] - d[2] * r[1], d[2] * r[0] - d[0] * r[2], d[0] * r[1] - d[1] * r[0]];
+        let cross = [d[1] * r[2] - d[2] * r[1], d[2] * r[0] - d[0] * r[2], d[0] * r[1] - d[1] * r[0],
+        ];
         let parallel = cross.iter().all(|c| c.abs() <= 1e-9 * d.iter().fold(0.0_f64, |m, v| m.max(v.abs())).max(1e-300));
         if parallel {
             [0.0, 1.0, 0.0]
@@ -629,10 +636,14 @@ impl EditorState {
     pub fn save(&mut self, path: &std::path::Path) -> Result<(), String> {
         self.problem.validate()?;
         let text = serde_json::to_string_pretty(&self.problem).map_err(|e| e.to_string())?;
-        let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
-        let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(|e| format!("cannot write next to {}: {e}", path.display()))?;
-        std::io::Write::write_all(&mut tmp, text.as_bytes()).map_err(|e| e.to_string())?;
-        tmp.persist(path).map_err(|e| e.error.to_string())?;
+        if path.exists()
+            && self
+                .saved
+                .as_ref().is_some_and(|saved| read_problem(path).map_or(true, |disk| &disk != saved))
+        {
+            return Err("Save conflict: model changed externally; reopen before saving".into());
+        }
+        crate::persistence::write(path, text).map_err(|e| e.to_string())?;
         self.saved = Some(self.problem.clone());
         self.dirty = false;
         Ok(())
@@ -881,17 +892,18 @@ mod tests {
         t.undo();
         assert!(t.problem.nodes.is_empty());
         // Corrupt, invalid and oversized inputs are refused with messages.
-        std::fs::write(&path, "{ nope").unwrap();
+        crate::persistence::write(&path, "{ nope").unwrap();
         assert!(t.load(&path).unwrap_err().contains("not a member project"));
         let mut bad = s.problem.clone();
         bad.members[0].nodes[1] = 777;
-        std::fs::write(&path, serde_json::to_string(&bad).unwrap()).unwrap();
+        crate::persistence::write(&path, serde_json::to_string(&bad).unwrap()).unwrap();
         assert!(t.load(&path).is_err());
         assert!(t.load(&dir.path().join("missing.json")).is_err());
         // A failed save keeps the previous file intact.
         let good = serde_json::to_string(&s.problem).unwrap();
-        std::fs::write(&path, &good).unwrap();
-        assert!(s.save(&dir.path().join("no/such/dir/p.json")).is_err());
+        crate::persistence::write(&path, &good).unwrap();
+        std::fs::write(dir.path().join("not-a-directory"), "file").unwrap();
+        assert!(s.save(&dir.path().join("not-a-directory/p.json")).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), good);
     }
 
