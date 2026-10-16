@@ -95,6 +95,7 @@ pub enum ErrorKind {
     UnsupportedSection,
     Units,
     Topology,
+    Geometry,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {

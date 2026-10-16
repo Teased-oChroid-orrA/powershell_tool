@@ -12,6 +12,7 @@
 //! The OpenCascade side (`occt` feature) only has to produce the tessellation, the faces and the STEP files; nothing
 //! here depends on it, which is also what makes this part testable on analytic shapes.
 
+pub mod analytic_step;
 mod bvh;
 pub mod cad;
 pub mod step;
