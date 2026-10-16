@@ -1,0 +1,36 @@
+{
+  "source_commit": "6cf9dfeba1f05384357b37be0b995c7f235c4572",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 75,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 58,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "numerical_cases": [
+    "Rational quadratic analytic quarter-circle",
+    "Polynomial Bezier/piecewise-linear spans",
+    "Affine knot/common-weight scaling invariance",
+    "Cubic rational degree elevation/repeated knots",
+    "Invalid, unsupported and budget/domain refusal"
+  ],
+  "analytic_error_limit": 1e-12,
+  "default_limits": {
+    "degree": 16,
+    "control_points": 4096
+  },
+  "scope": "Numerical clamped continuous positive-weight rational curve evaluation, no STEP/body integration",
+  "prior_app_compile": "93f0fb6; new optional API has no production caller",
+  "not_verified": [
+    "STEP declaration mapping",
+    "Projection/sampling/surfaces/trims/B-Rep validity",
+    "General CAD/PLC and remaining epic gates"
+  ]
+}

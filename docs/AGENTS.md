@@ -190,3 +190,5 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Issue 46 Phase 17: bounded reported kernel-quality trial](issue-46-phase-17.md).
 
 - [Issue 46 Phase 18: runnable PLC/seed CLI diagnostics](issue-46-phase-18.md), [verification](issue-46-phase-18-verification.json).
+
+- [Issue 46 Phase 19: bounded rational B-spline curve evaluation](issue-46-phase-19.md).
