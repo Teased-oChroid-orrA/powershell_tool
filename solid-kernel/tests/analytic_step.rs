@@ -692,7 +692,23 @@ fn explicit_tilted_cylinder_chart_canonicalization_reports_every_bounded_adjustm
         .canonicalized_cylindrical_trims(face.id, 100000)
         .unwrap();
     assert!(!canonical.adjustments.is_empty());
+    let mut reported = std::collections::BTreeSet::new();
     for adjustment in canonical.adjustments {
+        assert!(reported.insert((
+            adjustment.face,
+            adjustment.bound,
+            adjustment.edge_use,
+            adjustment.sample
+        )));
+        let bound = model.body().faces[&adjustment.face]
+            .bounds
+            .iter()
+            .find(|b| b.id == adjustment.bound)
+            .unwrap();
+        assert!(bound
+            .edges
+            .iter()
+            .any(|u| u.id == adjustment.edge_use && u.edge == adjustment.edge));
         assert_ne!(adjustment.before, adjustment.after);
         assert!(adjustment.world_deviation_mm <= model.geometry_tolerance_mm());
         assert!(

@@ -28,6 +28,8 @@ pub struct CylindricalTrims {
 pub struct ChartAdjustment {
     pub face: u64,
     pub edge: u64,
+    pub edge_use: u64,
+    pub bound: u64,
     pub sample: usize,
     pub before: [f64; 2],
     pub after: [f64; 2],
@@ -204,6 +206,8 @@ impl AnalyticModel {
                         adjustments.push(ChartAdjustment {
                             face: face_id,
                             edge: usage.edge,
+                            edge_use: usage.id,
+                            bound: bound.id,
                             sample,
                             before,
                             after: chart,
