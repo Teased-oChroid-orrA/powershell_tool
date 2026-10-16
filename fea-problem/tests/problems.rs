@@ -201,7 +201,7 @@ fn raster_fills_the_body_and_leaves_the_hole_empty() {
 fn imported_abaqus_mesh_solves() {
     let inp = "*NODE\n1,0,0\n2,1,0\n3,2,0\n4,0,1\n5,1,1\n6,2,1\n*ELEMENT, TYPE=CPS4\n1,1,2,5,4\n2,2,3,6,5\n*NSET, NSET=LEFT\n1,4\n*NSET, NSET=RIGHT\n3,6\n";
     let mut p = template("Cantilever beam");
-    p.geometry = Geometry::Imported { path: "bar.inp".into() };
+    p.geometry = Geometry::Imported { path: "bar.inp".into(), scale: Default::default() };
     p.thickness = 1.0;
     p.supports = vec![Support::fixed("LEFT")];
     p.loads = vec![Load::Force { edge: "RIGHT".into(), fx: 100.0, fy: 0.0, fz: 0.0 }];

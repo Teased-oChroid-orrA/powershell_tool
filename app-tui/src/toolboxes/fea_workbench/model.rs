@@ -543,8 +543,8 @@ pub fn row_value(p: &Problem, names: &[String], import_len: Option<usize>, row: 
         }
         .to_string(),
         ImportPath => match (&p.geometry, import_len) {
-            (Geometry::Imported { path }, Some(_)) if !path.is_empty() => path.clone(),
-            (Geometry::Imported { path }, None) if !path.is_empty() => format!("{path}  (not read yet)"),
+            (Geometry::Imported { path, .. }, Some(_)) if !path.is_empty() => path.clone(),
+            (Geometry::Imported { path, .. }, None) if !path.is_empty() => format!("{path}  (not read yet)"),
             _ => "(Enter to type a .msh or .inp path)".to_string(),
         },
         OuterKind => match &p.geometry {
@@ -962,7 +962,7 @@ pub fn edit_start_text(p: &Problem, row: FieldRow, kind: EditKind, first: Option
     match (kind, first) {
         (_, Some(c)) => c.to_string(),
         (EditKind::Text, None) => match &p.geometry {
-            Geometry::Imported { path } => path.clone(),
+            Geometry::Imported { path, .. } => path.clone(),
             _ => String::new(),
         },
         (EditKind::Component, None) => number_value(p, row).map_or("free".to_string(), format_number),
@@ -994,7 +994,7 @@ pub fn commit_edit(p: &mut Problem, row: FieldRow, kind: EditKind, text: &str) -
         EditKind::Text => {
             let path = text.trim().trim_matches('"').to_string();
             if !path.is_empty() {
-                p.geometry = Geometry::Imported { path: path.clone() };
+                p.geometry = Geometry::Imported { path: path.clone(), scale: Default::default() };
                 return EditCommit::ReadMesh(path);
             }
         }
@@ -1079,7 +1079,7 @@ pub fn move_selection(rows: &[FieldRow], selected: usize, delta: i32) -> usize {
 pub fn toggle_source(p: &mut Problem, saved: &mut Option<Geometry>, import_path: Option<String>) {
     match (&p.geometry, saved.take()) {
         (Geometry::Sketch { .. } | Geometry::Solid { .. }, _) => {
-            let sketch = std::mem::replace(&mut p.geometry, Geometry::Imported { path: import_path.unwrap_or_default() });
+            let sketch = std::mem::replace(&mut p.geometry, Geometry::Imported { path: import_path.unwrap_or_default(), scale: Default::default() });
             *saved = Some(sketch);
         }
         (Geometry::Imported { .. }, Some(sketch)) => p.geometry = sketch,

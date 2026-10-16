@@ -429,10 +429,26 @@ pub fn sketch_mesh_noted(p: &Problem, field: Option<&dyn Fn([f64; 2]) -> f64>, n
     Ok(mesh)
 }
 
+fn rescale_import_material(material: &mut fea_core::Elastic, stress: f64, expansion: f64) {
+    material.e *= stress;
+    material.alpha *= expansion;
+    if let Some(aniso) = &mut material.aniso {
+        for row in &mut aniso.d { for value in row { *value *= stress; } }
+        for row in &mut aniso.c { for value in row { *value /= stress; } }
+        if let Some(alpha) = &mut aniso.alpha { for value in alpha { *value *= expansion; } }
+    }
+}
+
 /// Read an imported mesh from its text; `path` (the extension) selects Gmsh or Abaqus.
 pub fn imported_mesh(p: &Problem, text: &str) -> Result<Mesh, String> {
-    let Geometry::Imported { path } = &p.geometry else { return Err("not an imported problem".into()) };
-    let opt = ImportOptions::new(physics_of(p), p.material.elastic());
+    let Geometry::Imported { path, scale } = &p.geometry else { return Err("not an imported problem".into()) };
+    let mut source_material = p.material.elastic();
+    rescale_import_material(&mut source_material, 1.0 / scale.stress, 1.0 / scale.expansion);
+    let mut source_physics = physics_of(p);
+    if let Physics::PlaneStress { thickness } | Physics::PlaneStrain { thickness } = &mut source_physics {
+        *thickness /= scale.length;
+    }
+    let opt = ImportOptions::new(source_physics, source_material);
     let lower = path.to_ascii_lowercase();
     let mesh = if lower.ends_with(".msh") {
         read_gmsh(text, &opt)?
@@ -442,6 +458,13 @@ pub fn imported_mesh(p: &Problem, text: &str) -> Result<Mesh, String> {
         return Err("mesh files are Gmsh (.msh) or Abaqus (.inp)".into());
     };
     let mut mesh = mesh;
+    for point in &mut mesh.nodes { for x in point { *x *= scale.length; } }
+    if let Physics::PlaneStress { thickness } | Physics::PlaneStrain { thickness } = &mut mesh.physics {
+        *thickness *= scale.length;
+    }
+    for block in &mut mesh.blocks {
+        rescale_import_material(&mut block.material, scale.stress, scale.expansion);
+    }
     if p.mesh.reorient {
         let r = fea_core::import::reorient_inverted(&mut mesh);
         if r.remaining > 0 {

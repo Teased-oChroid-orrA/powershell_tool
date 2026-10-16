@@ -1074,8 +1074,8 @@ fn summarize(p: &Problem, pass: &Pass) -> Summary {
 }
 
 /// Caveats the kernel documents for the elements in use.
-fn notes(_p: &Problem, mesh: &Mesh) -> Vec<String> {
-    let mut out = Vec::new();
+fn notes(p: &Problem, mesh: &Mesh) -> Vec<String> {
+    let mut out: Vec<_> = crate::solid::resolution_note(p, mesh).into_iter().collect();
     if mesh.blocks.iter().any(|b| matches!(b.kind, ElementKind::Tri3 | ElementKind::Tet4)) {
         out.push("Linear triangles / tetrahedra (constant strain) are poor on pressure and bending problems (the Lame cylinder at 16 x 16 is 2 % off in displacement, and stresses are discontinuous between elements): use a quadratic element for results.".to_string());
     }
@@ -1085,23 +1085,31 @@ fn notes(_p: &Problem, mesh: &Mesh) -> Vec<String> {
 /// Build, solve and (for 2D sketches with `adapt_passes > 0`) refine until the passes run out or the
 /// ZZ estimate meets `target_error` with the fewest unknowns the passes find. `import_text` is the file content for an imported mesh.
 pub fn solve(p: &Problem, import_text: Option<&str>) -> Result<Solved, String> {
+    solve_observed(p, import_text, &|_| Ok(()))
+}
+
+/// Observe actual solve stages and allow cancellation between non-interruptible numerical phases.
+pub fn solve_observed(p: &Problem, import_text: Option<&str>, observe: &dyn Fn(&'static str) -> Result<(), String>) -> Result<Solved, String> {
     if p.cases.is_empty() {
-        return solve_resolved(p, import_text);
+        return solve_resolved(p, import_text, observe);
     }
     // A load case solves its own supports and loads; the result stays tied to the full problem (stale checks, saved files).
-    let mut solved = solve_resolved(&p.resolved(), import_text)?;
+    let mut solved = solve_resolved(&p.resolved(), import_text, observe)?;
     solved.problem = p.clone();
     Ok(solved)
 }
 
-fn solve_resolved(p: &Problem, import_text: Option<&str>) -> Result<Solved, String> {
+fn solve_resolved(p: &Problem, import_text: Option<&str>, observe: &dyn Fn(&'static str) -> Result<(), String>) -> Result<Solved, String> {
+    observe("Validating analysis inputs")?;
     p.validate()?;
+    observe("Generating analysis mesh")?;
     let mut mesh_notes = Vec::new();
     let first = match &p.geometry {
         Geometry::Sketch { .. } => sketch_mesh_noted(p, None, &mut mesh_notes)?,
         Geometry::Imported { .. } => imported_mesh(p, import_text.ok_or("the mesh file has not been read")?)?,
         Geometry::Solid { .. } => crate::solid::solid_mesh(p)?.0,
     };
+    observe("Assembling and solving equilibrium")?;
     let adaptive = matches!(p.geometry, Geometry::Sketch { .. }) && p.analysis != Analysis::Solid && p.mesh.adapt_passes > 0 && p.study.is_structural();
     let goal_oriented = adaptive && p.mesh.adapt_mode == AdaptMode::GoalOriented;
     if goal_oriented && !p.bushings.is_empty() {
@@ -1324,6 +1332,15 @@ pub fn preview(p: &Problem, import_text: Option<&str>) -> Result<Mesh, String> {
 /// passes, refinement zones and the extrusion's layers are dropped); the size follows the part, fine enough that a
 /// circle is a smooth polygon. Needs a 3D model built from a sketch.
 pub fn body_preview(p: &Problem) -> Result<Mesh, String> {
+    if let Geometry::Solid { cache: Some(c), .. } = &p.geometry {
+        p.validate_geometry()?;
+        let mut mesh = Mesh::new(fea_core::Physics::Solid);
+        mesh.nodes = c.vertices.clone();
+        for (tri, face) in c.triangles.iter().zip(&c.face) {
+            mesh.surfaces.entry(format!("face{}", face + 1)).or_default().push(tri.to_vec());
+        }
+        return Ok(mesh);
+    }
     use crate::history::Body;
     let Geometry::Sketch { outer, depth, regions, holes, layers } = &p.geometry else { return Err("only a model built from a sketch has a body to show".into()) };
     if p.analysis != Analysis::Solid {

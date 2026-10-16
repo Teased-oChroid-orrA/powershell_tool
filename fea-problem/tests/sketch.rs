@@ -400,7 +400,7 @@ mod convert {
     #[test]
     fn imported_mesh_has_no_history() {
         let mut p = templates::templates()[0].1.clone();
-        p.geometry = Geometry::Imported { path: "x.msh".into() };
+        p.geometry = Geometry::Imported { path: "x.msh".into(), scale: Default::default() };
         assert!(History::from_problem(&p).is_err());
         p.analysis = Analysis::PlaneStress;
     }

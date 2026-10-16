@@ -48,13 +48,14 @@ pub fn report(s: &Solved) -> String {
     let mut o = String::new();
     let _ = writeln!(o, "FEA Workbench: {}", p.name);
     let _ = writeln!(o, "Study: {}", p.study.label());
+    let _ = writeln!(o, "Units: {} (density {})", p.units.label(), p.units.density());
     let _ = writeln!(o, "Analysis: {}{}", p.analysis.label(), if matches!(p.analysis, crate::Analysis::PlaneStress | crate::Analysis::PlaneStrain) { format!(", thickness {}", p.thickness) } else { String::new() });
     let _ = writeln!(o, "Material: {}  E = {}  nu = {}  alpha = {}{}", p.material.name, p.material.e, p.material.nu, p.material.alpha, p.material.yield_stress.map(|y| format!("  yield = {y}")).unwrap_or_default());
     match &p.geometry {
         Geometry::Sketch { outer, holes, depth, layers, .. } => {
             let _ = writeln!(o, "Geometry: {} with {} hole(s){}", outer.label().to_lowercase(), holes.len(), if p.analysis == crate::Analysis::Solid { format!(", extruded {depth} in {layers} layer(s)") } else { String::new() });
         }
-        Geometry::Imported { path } => {
+        Geometry::Imported { path, .. } => {
             let _ = writeln!(o, "Geometry: imported mesh {path}");
         }
         Geometry::Solid { cache, .. } => {

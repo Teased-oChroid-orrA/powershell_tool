@@ -474,6 +474,21 @@ pub struct SketchRegion {
     pub holes: Vec<Shape>,
 }
 
+/// Cumulative conversion of unchanged external mesh data into the model's units.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ImportScale {
+    pub length: f64,
+    pub stress: f64,
+    pub expansion: f64,
+}
+impl Default for ImportScale {
+    fn default() -> Self { Self { length: 1.0, stress: 1.0, expansion: 1.0 } }
+}
+impl ImportScale {
+    fn is_identity(&self) -> bool { *self == Self::default() }
+    fn valid(&self) -> bool { [self.length, self.stress, self.expansion].iter().all(|v| v.is_finite() && *v > 0.0) }
+}
+
 /// Where the geometry comes from.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -490,7 +505,11 @@ pub enum Geometry {
         regions: Vec<SketchRegion>,
     },
     /// A mesh read from a Gmsh `.msh` or Abaqus `.inp` file (the app supplies its text).
-    Imported { path: String },
+    Imported {
+        path: String,
+        #[serde(default, skip_serializing_if = "ImportScale::is_identity")]
+        scale: ImportScale,
+    },
     /// A B-rep solid: its STEP text (the source of truth, edited with the OpenCascade kernel) and the cached face-tagged
     /// surface mesh of it (all a solve needs, so a build without the kernel still solves). The cache is valid only while
     /// its hash matches `step`; faces are named `face1`.. in the cache's face order, like sketch edges.
@@ -812,7 +831,10 @@ impl Problem {
                     return Err("a bushing is placed in a hole of the first region; a sketch with several regions cannot have bushings".into());
                 }
             }
-            Geometry::Imported { path } => {
+            Geometry::Imported { path, scale } => {
+                if !scale.valid() {
+                    return Err("invalid imported coordinate scale".into());
+                }
                 if path.trim().is_empty() {
                     return Err("no mesh file chosen".into());
                 }
@@ -827,7 +849,7 @@ impl Problem {
                 match cache {
                     None => return Err("the solid has not been tessellated yet: open it with the OpenCascade build to cache its surface mesh".into()),
                     Some(c) if !c.is_current(step) => return Err("the solid's cached surface mesh is out of date (the STEP text changed): re-tessellate it with the OpenCascade build".into()),
-                    Some(_) => {}
+                    Some(c) => c.validate()?,
                 }
             }
         }

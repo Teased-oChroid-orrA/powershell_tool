@@ -335,3 +335,11 @@ fn inverted_elements_of_every_kind_are_turned_right_side_out() {
     flat.add_block(fea_core::ElementKind::Tri3, vec![0, 1, 2], Elastic::new(1.0, 0.3), "flat").unwrap();
     assert_eq!(reorient_inverted(&mut flat), fea_core::import::Reorientation { repaired: 0, remaining: 1 });
 }
+
+#[test]
+fn abaqus_without_a_section_keeps_the_callers_plane_thickness() {
+    let text="*NODE\n1,0,0\n2,1,0\n3,1,1\n4,0,1\n*ELEMENT,TYPE=CPS4\n1,1,2,3,4\n";
+    let options=ImportOptions::new(Physics::PlaneStress { thickness: 2.5 },Elastic::new(E,0.3));
+    let mesh=read_abaqus(text,&options).unwrap();
+    assert_eq!(mesh.physics,Physics::PlaneStress { thickness: 2.5 });
+}
