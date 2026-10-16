@@ -393,3 +393,184 @@ fn uncertain_tilted_cylinder_chart_is_refused_without_relaxing_turn_bound() {
         "{error}"
     );
 }
+
+#[test]
+fn all_bracket_charts_triangulate_with_shared_boundary_identity() {
+    use solid_kernel::chart_mesh::SampleKey;
+    use std::collections::BTreeMap;
+    let model = AnalyticModel::read(
+        &inventory(SOURCE, Limits::default()).unwrap(),
+        Options::default(),
+    )
+    .unwrap();
+    let mut shared = BTreeMap::new();
+    for face in model.body().faces.values() {
+        let mesh = model.triangulate_sampled_chart(face.id, 2_000_000).unwrap();
+        assert!(!mesh.triangles.is_empty());
+        if let Some(Surface::Cylinder { radius, .. }) = model.surface(face.id) {
+            for t in &mesh.triangles {
+                for i in 0..3 {
+                    let span = (mesh.vertices[t[i]].chart[0]
+                        - mesh.vertices[t[(i + 1) % 3]].chart[0])
+                        .abs();
+                    assert!(span / radius <= std::f64::consts::FRAC_PI_2);
+                    let sagitta = radius * (1. - (span / (2. * radius)).cos());
+                    assert!(sagitta <= model.chord_tolerance_mm(), "{sagitta}");
+                }
+            }
+        }
+        assert!(model.triangulate_sampled_chart(face.id, 0).is_err());
+        for v in mesh.vertices {
+            if let Some(p) = shared.insert(v.source, v.world) {
+                assert_eq!(p, v.world);
+            }
+            if let SampleKey::Vertex(id) = v.source {
+                assert_eq!(v.world, model.vertex(id).unwrap());
+            }
+        }
+    }
+    assert_eq!(
+        shared
+            .keys()
+            .filter(|k| !matches!(k, SampleKey::FacePoint { .. }))
+            .count(),
+        model.body().vertices.len()
+            + model
+                .body()
+                .edges
+                .keys()
+                .map(|id| model.edge_points(*id).unwrap().len() - 2)
+                .sum::<usize>()
+    );
+}
+
+#[test]
+fn bracket_native_sampled_surface_is_closed_without_coordinate_welding() {
+    use solid_kernel::native_surface::Limits as SurfaceLimits;
+    let model = AnalyticModel::read(
+        &inventory(SOURCE, Limits::default()).unwrap(),
+        Options::default(),
+    )
+    .unwrap();
+    let mut completed = Vec::new();
+    let surface = model
+        .sampled_surface(SurfaceLimits::default(), |p| {
+            completed.push(p.completed_faces);
+            true
+        })
+        .unwrap();
+    assert_eq!(surface.source_faces.len(), 38);
+    assert_eq!(completed, (0..=38).collect::<Vec<_>>());
+    assert!(surface.signed_volume_mm3 > 0.);
+    assert!(matches!(
+        model
+            .sampled_surface(SurfaceLimits::default(), |_| false)
+            .unwrap_err()
+            .kind,
+        solid_kernel::step::ErrorKind::Cancelled
+    ));
+    assert!(matches!(
+        model
+            .sampled_surface(
+                SurfaceLimits {
+                    vertices: 1,
+                    ..SurfaceLimits::default()
+                },
+                |_| true
+            )
+            .unwrap_err()
+            .kind,
+        solid_kernel::step::ErrorKind::Limit
+    ));
+}
+
+#[cfg(feature = "occt")]
+#[test]
+fn independent_cube_native_surface_retains_exact_volume_and_all_faces() {
+    let text = solid_kernel::cad::Brep::box_from_corners([0., 0., 0.], [2., 3., 4.])
+        .to_step_text()
+        .unwrap();
+    let model = AnalyticModel::read(
+        &inventory(&text, Limits::default()).unwrap(),
+        Options::default(),
+    )
+    .unwrap();
+    let surface = model
+        .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+        .unwrap();
+    assert_eq!(surface.source_faces.len(), 6);
+    assert_eq!(surface.mesh.vertices.len(), 8);
+    assert_eq!(surface.mesh.triangles.len(), 12);
+    assert!((surface.signed_volume_mm3 - 24.).abs() < 1e-12);
+}
+
+#[test]
+fn short_curved_edges_cannot_collapse_to_the_straight_endpoint_chord() {
+    use solid_kernel::step::Value;
+    let data = inventory(SOURCE, Limits::default()).unwrap();
+    let model = AnalyticModel::read(&data, Options::default()).unwrap();
+    let mut circles = 0;
+    for edge in model.body().edges.values() {
+        let mut curve = edge.curve;
+        loop {
+            let call = &data.entities()[&curve].components[0];
+            if matches!(call.name.as_str(), "SURFACE_CURVE" | "SEAM_CURVE") {
+                let Value::Ref(base) = call.args[1] else {
+                    panic!("base curve")
+                };
+                curve = base;
+                continue;
+            }
+            if call.name == "CIRCLE" {
+                assert!(model.edge_points(edge.id).unwrap().len() >= 3);
+                circles += 1;
+            }
+            break;
+        }
+    }
+    assert_eq!(circles, 26);
+    let small = AnalyticModel::read(
+        &data,
+        Options {
+            max_edge_points: 2,
+            ..Options::default()
+        },
+    );
+    assert!(matches!(
+        small.unwrap_err().kind,
+        solid_kernel::step::ErrorKind::Limit
+    ));
+}
+
+#[cfg(feature = "occt")]
+#[test]
+fn native_bracket_volume_converges_toward_independent_occt_reference() {
+    let data = inventory(SOURCE, Limits::default()).unwrap();
+    let reference = solid_kernel::cad::Brep::from_step_text(SOURCE)
+        .unwrap()
+        .solid(0.005)
+        .unwrap()
+        .volume();
+    let mut observations = Vec::new();
+    for chord_mm in [0.05, 0.005] {
+        let start = std::time::Instant::now();
+        let model = AnalyticModel::read(
+            &data,
+            Options {
+                chord_mm,
+                ..Options::default()
+            },
+        )
+        .unwrap();
+        let surface = model
+            .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+            .unwrap();
+        observations.push((
+            surface.signed_volume_mm3,
+            (surface.signed_volume_mm3 - reference).abs(),
+        ));
+        eprintln!("native bracket chord={chord_mm} mm: V={} mm3, reference={reference}, vertices={}, triangles={}, seconds={:.6}",surface.signed_volume_mm3,surface.mesh.vertices.len(),surface.mesh.triangles.len(),start.elapsed().as_secs_f64());
+    }
+    assert!(observations[1].1 < observations[0].1, "{observations:?}");
+    assert!(observations[1].1 / reference < 1e-3, "{observations:?}");
+}

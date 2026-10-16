@@ -20,3 +20,6 @@ occt-source = ["occt", "cadrum/source"]
 [dependencies]
 fea-core = { path = "../fea-core" }
 cadrum = { version = "0.9", default-features = false, optional = true }
+
+# Audited MIT OR Apache-2.0; bounded 2D chart CDT, not a CAD/3D kernel.
+spade = "=2.15.1"

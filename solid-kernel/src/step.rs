@@ -87,6 +87,7 @@ impl Default for Limits {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
+    Cancelled,
     Syntax,
     Limit,
     InvalidNumber,

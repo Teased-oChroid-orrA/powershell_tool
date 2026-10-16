@@ -307,6 +307,10 @@ pub struct AnalyticModel {
     surfaces: BTreeMap<u64, Surface>,
     edges: BTreeMap<u64, Vec<V3>>,
     scale_mm: f64,
+    chord_mm: f64,
+}
+pub(crate) fn chord_angle(radius: f64, chord_mm: f64) -> f64 {
+    (4. * (chord_mm / (2. * radius)).min(0.5).sqrt().asin()).min(FRAC_PI_2)
 }
 fn samples(
     e: &Entity,
@@ -375,9 +379,11 @@ fn samples(
                     "distinct vertices have indistinguishable circle parameters",
                 ));
             }
-            let max_angle =
-                (4. * (opt.chord_mm / (2. * radius)).min(0.5).sqrt().asin()).min(FRAC_PI_2);
-            let count = (span.abs() / max_angle).ceil();
+            let max_angle = chord_angle(*radius, opt.chord_mm);
+            // Retain at least one interior sample on every curved edge. A short
+            // arc and a straight edge can share both endpoint IDs; representing
+            // both by one chord collapses distinct B-Rep edges into one mesh edge.
+            let count = (span.abs() / max_angle).ceil().max(2.);
             if !count.is_finite()
                 || count < 1.
                 || count > opt.max_edge_points.saturating_sub(1) as f64
@@ -462,6 +468,9 @@ fn on_surface(e: &Entity, s: &Surface, c: &Curve, a: V3, b: V3, tol: f64) -> Res
     }
 }
 impl AnalyticModel {
+    pub fn chord_tolerance_mm(&self) -> f64 {
+        self.chord_mm
+    }
     pub fn body(&self) -> &RawBody {
         &self.body
     }
@@ -625,6 +634,7 @@ impl AnalyticModel {
             surfaces,
             edges,
             scale_mm: scale,
+            chord_mm: opt.chord_mm,
         })
     }
 }

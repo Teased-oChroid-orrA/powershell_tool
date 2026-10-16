@@ -11,14 +11,15 @@ fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let path = args
         .next()
-        .ok_or("usage: step-inventory FILE.step [--analytic]")?;
-    let analytic = match args.next() {
-        None => false,
-        Some(flag) if flag == "--analytic" => true,
-        _ => return Err("usage: step-inventory FILE.step [--analytic]".into()),
+        .ok_or("usage: step-inventory FILE.step [--analytic|--surface]")?;
+    let mode = match args.next() {
+        None => 0,
+        Some(flag) if flag == "--analytic" => 1,
+        Some(flag) if flag == "--surface" => 2,
+        _ => return Err("usage: step-inventory FILE.step [--analytic|--surface]".into()),
     };
     if args.next().is_some() {
-        return Err("usage: step-inventory FILE.step [--analytic]".into());
+        return Err("usage: step-inventory FILE.step [--analytic|--surface]".into());
     }
     let limits = Limits::default();
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -82,7 +83,7 @@ fn run() -> Result<(), String> {
         }
         Err(e) => println!("Raw topology extraction unavailable: {e}"),
     }
-    if analytic {
+    if mode > 0 {
         use solid_kernel::analytic_step::{AnalyticModel, Options};
         let model = AnalyticModel::read(&result, Options::default()).map_err(|e| e.to_string())?;
         let samples: usize = model
@@ -94,6 +95,21 @@ fn run() -> Result<(), String> {
         println!("Native analytic subset: {} mm/source unit; {} shared-edge samples; {} untrimmed surfaces",
             model.millimetres_per_source_unit(), samples, model.body().faces.len());
         println!("Trimmed domains, shell orientation, self-intersections and solid validity remain uncertified.");
+        if mode == 2 {
+            let started = std::time::Instant::now();
+            let surface = model
+                .sampled_surface(solid_kernel::native_surface::Limits::default(), |p| {
+                    eprintln!(
+                        "Native surface generation: {}/{} faces",
+                        p.completed_faces, p.total_faces
+                    );
+                    true
+                })
+                .map_err(|e| e.to_string())?;
+            println!("Closed sampled surface: {} vertices, {} triangles, {} source faces, signed volume {} mm³ ({:.3} s)",
+                surface.mesh.vertices.len(),surface.mesh.triangles.len(),surface.source_faces.len(),surface.signed_volume_mm3,started.elapsed().as_secs_f64());
+            println!("Global geometric intersections and exact CAD validity are not certified.");
+        }
     }
     for (name, count) in result.counts() {
         println!("{name}: {count}");

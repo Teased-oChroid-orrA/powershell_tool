@@ -13,6 +13,8 @@
 //! here depends on it, which is also what makes this part testable on analytic shapes.
 
 pub mod analytic_step;
+pub mod chart_mesh;
+pub mod native_surface;
 pub mod planar_step;
 pub mod cylindrical_step;
 mod bvh;
