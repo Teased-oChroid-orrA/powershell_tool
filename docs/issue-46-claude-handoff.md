@@ -132,3 +132,11 @@ Phase 12 final verification at `98cd85a8720c7a70f8eb3fce7030e55beb59ac10`: **62 
 Next: a strictly certified star-kernel conforming seed could preserve every boundary constraint for a limited shape class before general PLC recovery. It must refuse nonvisible facets/zero-volume cells and keep the bracket/holes limitation explicit; do not advertise a general constrained Delaunay mesher. Broader CAD/exact trims/assemblies and later epic gates remain open; retain OCCT and separate merge/retirement approval. Final check results follow.
 
 Phase 13 final checks at `2367cf573c438a018f25072c0095592c7426c2ed`: **63 CAD-enabled / 51 feature-off tests pass**, no failures/ignored checks. The application compilation evidence remains Phase 12; this additive diagnostic PLC API has no app caller. [Verification](issue-46-phase-13-verification.json).
+
+## Phase 14 strict star-kernel seed — 2026-10-16
+
+[Phase 14](issue-46-phase-14.md) records `f1937f1`: exact orientation certifies a supplied point strictly inside every outward PLC facet's halfspace before coning facets to it. Existing TetTopology validates cells; final boundary must exactly match all PLC facets. Bar regression: nine points / 12 cells / 12 preserved facets, volume 3 mm³ within 1e-12, existing solver-mesh quality/conformity conversion passes. Original checked PLC/source metadata stays with seed. Outside/on-boundary/nonfinite centres, budgets/cancellation refuse. Real bracket hole-bearing domain explicitly refuses; do not fill holes with a hull or advertise general constrained Delaunay.
+
+This is a limited diagnostic conforming seed only. General constrained recovery/refinement, cavities/regions, automatic kernel search, source-boundary solver tagging and sliver optimization remain open, as do broader native CAD and all later epic gates. No new dependency, hosted CI, tolerance relaxation or production/main change. Final qualified checks follow below.
+
+Phase 14 final checks at `f1937f1b6c03237a2317e9f0d0a8f8f2a7f9831c`: **65 CAD-enabled / 52 feature-off tests and CAD-enabled app lib/tests compilation pass**, no failures/ignored checks. Hole-bearing bracket refusal passes. [Verification](issue-46-phase-14-verification.json).

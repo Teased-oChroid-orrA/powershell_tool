@@ -62,3 +62,5 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - `native_volume`: immutable diagnostic mesh/report/source metadata bridge using the existing lattice mesher. Resolve stored selections by document + source face ID; absent/empty generated boundary regions remain explicit unresolved references. Nonempty region is not complete CAD coverage. No PLC/new production capability. See `docs/issue-46-phase-12.md`.
 
 - `plc::ValidatedPlc` accepts only an immutable globally checked single-shell sampled surface; retains all triangular facets/undirected edge constraints/source-face reports with explicit budgets and cancellation. Input admission only, not recovered volume meshing or exact CAD certification. See `docs/issue-46-phase-13.md`.
+
+- `plc_star::StarSeed` requires exact strict interior-side visibility from a supplied kernel point to every validated PLC facet; preserves the boundary exactly. It is a limited conforming fan seed, not Delaunay/general PLC recovery or production strategy. Holes/nonvisible facets refuse, solver quality gates remain. See `docs/issue-46-phase-14.md`.
