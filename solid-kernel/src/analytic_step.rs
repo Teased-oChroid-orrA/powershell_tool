@@ -77,20 +77,36 @@ fn vector3(e: &Entity, v: &Value) -> Result<V3, Error> {
         _ => Err(error(e, "expected three geometric components")),
     }
 }
+fn scale_coordinates(e: &Entity, source: V3, scale: f64) -> Result<V3, Error> {
+    if !scale.is_finite() || scale <= 0. || !finite(source) {
+        return Err(error(e, "invalid coordinate length normalization"));
+    }
+    let result = mul(source, scale);
+    if source
+        .iter()
+        .zip(result)
+        .any(|(before, after)| *before != 0. && after == 0.)
+    {
+        return Err(error(
+            e,
+            "coordinate length normalization underflows a nonzero source component",
+        ));
+    }
+    if !coordinate_domain(result) {
+        return Err(error(
+            e,
+            "coordinate is outside the supported arithmetic range",
+        ));
+    }
+    Ok(result)
+}
 fn point(data: &Inventory, id: u64, scale: f64) -> Result<V3, Error> {
     let e = &data.entities()[&id];
-    let p = match call(e, "CARTESIAN_POINT")? {
-        [Value::String(_), v] => mul(vector3(e, v)?, scale),
+    let source = match call(e, "CARTESIAN_POINT")? {
+        [Value::String(_), v] => vector3(e, v)?,
         _ => return Err(error(e, "unsupported 3D point")),
     };
-    if coordinate_domain(p) {
-        Ok(p)
-    } else {
-        Err(error(
-            e,
-            "point is outside the supported coordinate arithmetic range",
-        ))
-    }
+    scale_coordinates(e, source, scale)
 }
 fn direction(data: &Inventory, id: u64) -> Result<V3, Error> {
     let e = &data.entities()[&id];
@@ -616,12 +632,7 @@ impl AnalyticModel {
         }
         let mut vertices = BTreeMap::new();
         for v in body.vertices.values() {
-            let p = mul(v.coordinates, scale);
-            if !coordinate_domain(p) {
-                return Err(fail(
-                    "vertex is outside the supported coordinate arithmetic range",
-                ));
-            }
+            let p = scale_coordinates(&data.entities()[&v.point], v.coordinates, scale)?;
             vertices.insert(v.id, p);
         }
         let mut curves = BTreeMap::new();
@@ -673,5 +684,39 @@ impl AnalyticModel {
             geometry_tolerance_mm: opt.geometry_tolerance_mm,
             curves,
         })
+    }
+}
+
+#[cfg(test)]
+mod conversion_tests {
+    use super::*;
+    #[test]
+    fn coordinate_length_conversion_preserves_units_zeros_and_rejects_invalid_scales() {
+        let e = Entity {
+            id: 1,
+            offset: 17,
+            components: vec![],
+        };
+        assert_eq!(
+            scale_coordinates(&e, [1., -2., 0.], 25.4).unwrap(),
+            [25.4, -50.8, 0.]
+        );
+        assert_eq!(scale_coordinates(&e, [0.; 3], 1e-21).unwrap(), [0.; 3]);
+        for scale in [0., -1., f64::NAN, f64::INFINITY] {
+            assert!(scale_coordinates(&e, [0.; 3], scale).is_err());
+        }
+        assert!(scale_coordinates(&e, [1e30, 0., 0.], 1e30).is_err());
+        let error = scale_coordinates(&e, [1e-310, 1e21, 0.], 1e-21).unwrap_err();
+        assert_eq!(error.offset, 17);
+        assert!(error.detail.contains("underflow"));
+    }
+    #[test]
+    fn coordinate_scaling_underflow_is_not_silently_converted_to_zero() {
+        let source = "ISO-10303-21; HEADER; FILE_DESCRIPTION(('unit-test'),'2;1'); FILE_NAME('fixture','',(''),(''),'','',''); FILE_SCHEMA(('TEST')); ENDSEC; DATA; #1=CARTESIAN_POINT('',(1.E-310,0.,0.)); ENDSEC; END-ISO-10303-21;";
+        let data = crate::step::inventory(source, crate::step::Limits::default()).unwrap();
+        assert_eq!(1e-310 * 1e-21, 0.);
+        let error = point(&data, 1, 1e-21).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Geometry);
+        assert!(error.detail.contains("underflow"));
     }
 }

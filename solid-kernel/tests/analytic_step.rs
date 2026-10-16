@@ -1364,3 +1364,22 @@ fn kernel_trial_refuses_a_vertex_mean_outside_a_concave_domains_kernel() {
     assert_eq!(seed.topology().points(), before_points);
     assert_eq!(seed.topology().cells(), before_cells);
 }
+
+#[test]
+fn source_vertex_unit_underflow_refuses_at_its_original_point_record() {
+    let data = inventory(SOURCE, Limits::default()).unwrap();
+    let body = data.raw_bodies().unwrap().remove(0);
+    let vertex = body.vertices.values().next().unwrap();
+    let point = &data.entities()[&vertex.point];
+    let changed = replace_record(
+        SOURCE,
+        point.offset,
+        &format!("#{}=CARTESIAN_POINT('',(1.E-310,0.,0.));", point.id),
+    )
+    .replace(".MILLI.", ".YOCTO.");
+    let data = inventory(&changed, Limits::default()).unwrap();
+    let error = AnalyticModel::read(&data, Options::default()).unwrap_err();
+    assert_eq!(error.kind, solid_kernel::step::ErrorKind::Geometry);
+    assert_eq!(error.offset, data.entities()[&point.id].offset);
+    assert!(error.detail.contains("underflow"));
+}
