@@ -432,6 +432,27 @@ fn samples(
     Ok(points)
 }
 fn on_surface(e: &Entity, s: &Surface, c: &Curve, a: V3, b: V3, tol: f64) -> Result<(), Error> {
+    for point in [a, b] {
+        let projection = s
+            .project(point)
+            .ok_or_else(|| error(e, "unresolved edge endpoint/surface projection"))?;
+        if projection.residual_mm > tol {
+            return Err(error(e, "edge endpoint is not on its declared surface"));
+        }
+    }
+    // Topological vertices may be within tolerance of both entities without
+    // the declared curve itself satisfying the surface tolerance. Evaluate its
+    // actual finite locus between projected endpoint parameters as well.
+    let (a, b) = if let Curve::Line { origin, direction } = c {
+        let project = |p| add(*origin, mul(*direction, dot(sub(p, *origin), *direction)));
+        let points = (project(a), project(b));
+        if !finite(points.0) || !finite(points.1) {
+            return Err(error(e, "nonfinite declared line locus"));
+        }
+        points
+    } else {
+        (a, b)
+    };
     let deviation = match (s, c) {
         (Surface::Plane(f), Curve::Line { .. }) => dot(sub(a, f.origin), f.z)
             .abs()
@@ -710,5 +731,54 @@ mod conversion_tests {
         let error = point(&data, 1, 1e-21).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Geometry);
         assert!(error.detail.contains("underflow"));
+    }
+    #[test]
+    fn surface_locus_uses_declared_line_not_only_nearby_topological_vertices() {
+        let e = Entity {
+            id: 1,
+            offset: 17,
+            components: vec![],
+        };
+        let surface = Surface::Plane(Frame {
+            origin: [0.; 3],
+            x: [1., 0., 0.],
+            y: [0., 1., 0.],
+            z: [0., 0., 1.],
+        });
+        let line = Curve::Line {
+            origin: [0., 0., 1.5e-7],
+            direction: [1., 0., 0.],
+        };
+        let a = [0., 0., 0.75e-7];
+        let b = [1., 0., 0.75e-7];
+        let opt = Options::default();
+        assert!(samples(&e, &line, a, b, false, true, opt, 10).is_ok());
+        assert!(on_surface(&e, &surface, &line, a, b, opt.geometry_tolerance_mm).is_err());
+        let near = Curve::Line {
+            origin: [0., 0., 0.5e-7],
+            direction: [1., 0., 0.],
+        };
+        let a = [0., 0., 1.25e-7];
+        let b = [1., 0., 1.25e-7];
+        assert!(samples(&e, &near, a, b, false, true, opt, 10).is_ok());
+        assert!(on_surface(&e, &surface, &near, a, b, opt.geometry_tolerance_mm).is_err());
+
+        let cylinder = Surface::Cylinder {
+            frame: Frame {
+                origin: [0.; 3],
+                x: [1., 0., 0.],
+                y: [0., 1., 0.],
+                z: [0., 0., 1.],
+            },
+            radius: 1.,
+        };
+        let generator = Curve::Line {
+            origin: [1. + 1.5e-7, 0., 0.],
+            direction: [0., 0., 1.],
+        };
+        let a = [1. + 0.75e-7, 0., 0.];
+        let b = [1. + 0.75e-7, 0., 1.];
+        assert!(samples(&e, &generator, a, b, false, true, opt, 10).is_ok());
+        assert!(on_surface(&e, &cylinder, &generator, a, b, opt.geometry_tolerance_mm).is_err());
     }
 }
