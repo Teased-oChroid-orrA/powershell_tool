@@ -178,3 +178,5 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Issue 46 Phase 11: exact-document source associations](issue-46-phase-11.md), [dependency audit](issue-46-phase-11-dependency-audit.md).
 
 - [Issue 46 Phase 12: regenerated source face selections and native volume bridge](issue-46-phase-12.md).
+
+- [Issue 46 Phase 13: immutable validated triangulated PLC admission](issue-46-phase-13.md).

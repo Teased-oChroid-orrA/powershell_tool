@@ -60,3 +60,5 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - Native `Inventory` fingerprints exact accepted source bytes with locked SHA-256; `EntityReference` binds numeric entity IDs to that document and rejects mismatched/missing references. Fingerprints survive analytic/sampled/checked-distance metadata. Whitespace changes invalidate references; this is not cross-edit persistent naming or a geometric certificate. See `docs/issue-46-phase-11.md`.
 
 - `native_volume`: immutable diagnostic mesh/report/source metadata bridge using the existing lattice mesher. Resolve stored selections by document + source face ID; absent/empty generated boundary regions remain explicit unresolved references. Nonempty region is not complete CAD coverage. No PLC/new production capability. See `docs/issue-46-phase-12.md`.
+
+- `plc::ValidatedPlc` accepts only an immutable globally checked single-shell sampled surface; retains all triangular facets/undirected edge constraints/source-face reports with explicit budgets and cancellation. Input admission only, not recovered volume meshing or exact CAD certification. See `docs/issue-46-phase-13.md`.

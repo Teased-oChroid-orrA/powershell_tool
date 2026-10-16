@@ -124,3 +124,11 @@ Phase 11 final verification at `d5c73a95e2779fdd56289a050ddb3f0bc1b8814d`: **60 
 Next P1: validated immutable PLC boundary admission from checked sampled geometry, then bounded constrained recovery; maintain clear distinction from existing convex-hull Delaunay. Broader native exchange/assembly/exact trims and later epic gates remain open. No new dependency, hosted CI, production/main change or OCCT retirement. Final check results are appended below.
 
 Phase 12 final verification at `98cd85a8720c7a70f8eb3fce7030e55beb59ac10`: **62 CAD-enabled / 50 feature-off tests and CAD-enabled app lib/tests compilation pass**, no failures/ignored checks. [Evidence](issue-46-phase-12-verification.json).
+
+## Phase 13 triangulated PLC admission — 2026-10-16
+
+[Phase 13](issue-46-phase-13.md) records `2367cf5`: immutable `ValidatedPlc` consumes a globally checked sampled single shell and retains every original point/facet/source face/report; all undirected triangular edges become explicit constraints. Bracket regression: 469 vertices, 978 facets, 1,467 segments preserved; source references resolve, limits/cancellation refuse. No repeated geometric check, repair or changed production capability. This is input admission only: no constrained tetrahedral recovery, cavity/multi-region support or exact CAD boundary claim.
+
+Next: a strictly certified star-kernel conforming seed could preserve every boundary constraint for a limited shape class before general PLC recovery. It must refuse nonvisible facets/zero-volume cells and keep the bracket/holes limitation explicit; do not advertise a general constrained Delaunay mesher. Broader CAD/exact trims/assemblies and later epic gates remain open; retain OCCT and separate merge/retirement approval. Final check results follow.
+
+Phase 13 final checks at `2367cf573c438a018f25072c0095592c7426c2ed`: **63 CAD-enabled / 51 feature-off tests pass**, no failures/ignored checks. The application compilation evidence remains Phase 12; this additive diagnostic PLC API has no app caller. [Verification](issue-46-phase-13-verification.json).
