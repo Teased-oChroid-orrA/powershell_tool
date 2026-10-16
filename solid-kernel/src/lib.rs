@@ -16,6 +16,7 @@ pub mod analytic_step;
 pub mod chart_mesh;
 pub mod native_surface;
 pub mod nurbs;
+pub mod nurbs_surface;
 pub mod native_volume;
 pub mod orientation_repair;
 pub mod triangle_intersection;

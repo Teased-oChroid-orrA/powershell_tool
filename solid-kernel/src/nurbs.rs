@@ -1,6 +1,5 @@
-//! Bounded numerical evaluation of clamped, continuous rational B-spline curves.
-//! Geometry foundation only: no STEP integration, trim/solid certificate or new
-//! production CAD capability. Periodic/unclamped/discontinuous curves refuse.
+//! Bounded clamped continuous positive-weight rational B-spline evaluation.
+//! Numerical geometry foundation, not a trim/solid or production CAD certificate.
 use crate::{
     step::{Error, ErrorKind},
     V3,
@@ -18,14 +17,7 @@ impl Default for Limits {
         }
     }
 }
-#[derive(Debug, Clone)]
-pub struct NurbsCurve {
-    degree: usize,
-    knots: Vec<f64>,
-    control_points: Vec<V3>,
-    weights: Vec<f64>,
-}
-fn fail(kind: ErrorKind, detail: &str) -> Error {
+pub(crate) fn fail(kind: ErrorKind, detail: &str) -> Error {
     Error {
         offset: 0,
         kind,
@@ -35,17 +27,47 @@ fn fail(kind: ErrorKind, detail: &str) -> Error {
 fn supported(x: f64) -> bool {
     x.is_finite() && (x == 0. || (1e-30..=1e30).contains(&x.abs()))
 }
-impl NurbsCurve {
-    /// Full expanded knot vector, positive finite weights. Arithmetic input
-    /// envelope matches the native geometry domain; budgets are admission caps.
-    pub fn new_clamped(
+pub(crate) fn validate_controls(
+    points: &[V3],
+    weights: &[f64],
+    limits: Limits,
+) -> Result<(), Error> {
+    if points.len() > limits.control_points {
+        return Err(fail(
+            ErrorKind::Limit,
+            "B-spline control-point budget exceeded",
+        ));
+    }
+    if weights.len() != points.len() {
+        return Err(fail(
+            ErrorKind::Geometry,
+            "B-spline control/weight counts differ",
+        ));
+    }
+    if points.iter().flatten().copied().any(|x| !supported(x))
+        || weights.iter().any(|w| !supported(*w) || *w <= 0.)
+    {
+        return Err(fail(
+            ErrorKind::Geometry,
+            "unsupported B-spline arithmetic domain or nonpositive rational weight",
+        ));
+    }
+    Ok(())
+}
+/// Shared validated basis and homogeneous recurrence for curves and surfaces.
+#[derive(Debug, Clone)]
+pub(crate) struct Basis {
+    degree: usize,
+    knots: Vec<f64>,
+    controls: usize,
+}
+impl Basis {
+    pub(crate) fn new(
         degree: usize,
         knots: Vec<f64>,
-        control_points: Vec<V3>,
-        weights: Vec<f64>,
+        n: usize,
         limits: Limits,
     ) -> Result<Self, Error> {
-        let n = control_points.len();
         if n > limits.control_points || degree > limits.degree {
             return Err(fail(
                 ErrorKind::Limit,
@@ -56,23 +78,16 @@ impl NurbsCurve {
             .checked_add(degree)
             .and_then(|n| n.checked_add(1))
             .ok_or_else(|| fail(ErrorKind::Limit, "B-spline knot count overflow"))?;
-        if degree == 0 || n <= degree || knots.len() != count || weights.len() != n {
+        if degree == 0 || n <= degree || knots.len() != count {
             return Err(fail(
                 ErrorKind::Geometry,
-                "invalid B-spline degree/control/weight/knot counts",
+                "invalid B-spline degree/control/knot counts",
             ));
         }
-        if knots.iter().copied().any(|x| !supported(x))
-            || control_points
-                .iter()
-                .flatten()
-                .copied()
-                .any(|x| !supported(x))
-            || weights.iter().any(|w| !supported(*w) || *w <= 0.)
-        {
+        if knots.iter().copied().any(|x| !supported(x)) {
             return Err(fail(
                 ErrorKind::Geometry,
-                "unsupported B-spline arithmetic domain or nonpositive rational weight",
+                "unsupported B-spline knot arithmetic domain",
             ));
         }
         if knots.windows(2).any(|k| k[0] > k[1]) {
@@ -109,32 +124,19 @@ impl NurbsCurve {
         Ok(Self {
             degree,
             knots,
-            control_points,
-            weights,
+            controls: n,
         })
     }
-    pub fn degree(&self) -> usize {
+    pub(crate) fn degree(&self) -> usize {
         self.degree
     }
-    pub fn domain(&self) -> [f64; 2] {
-        [
-            self.knots[self.degree],
-            self.knots[self.control_points.len()],
-        ]
-    }
-    pub fn control_points(&self) -> &[V3] {
-        &self.control_points
-    }
-    pub fn weights(&self) -> &[f64] {
-        &self.weights
-    }
-    pub fn knots(&self) -> &[f64] {
+    pub(crate) fn knots(&self) -> &[f64] {
         &self.knots
     }
-    /// Homogeneous de Boor evaluation, O(degree²) work/O(degree) scratch.
-    /// Exact endpoint requests retain authoritative source control coordinates;
-    /// out-of-domain parameters are errors, never silently clamped.
-    pub fn evaluate(&self, t: f64) -> Result<V3, Error> {
+    pub(crate) fn domain(&self) -> [f64; 2] {
+        [self.knots[self.degree], self.knots[self.controls]]
+    }
+    pub(crate) fn span(&self, t: f64) -> Result<usize, Error> {
         let [lo, hi] = self.domain();
         if !t.is_finite() || t < lo || t > hi {
             return Err(fail(
@@ -142,22 +144,22 @@ impl NurbsCurve {
                 "B-spline parameter outside its finite active domain",
             ));
         }
-        if t == lo {
-            return Ok(self.control_points[0]);
-        }
-        if t == hi {
-            return Ok(*self.control_points.last().unwrap());
-        }
-        let span = self.knots.partition_point(|k| *k <= t) - 1;
+        Ok(if t == hi {
+            self.controls - 1
+        } else {
+            self.knots.partition_point(|k| *k <= t) - 1
+        })
+    }
+    pub(crate) fn homogeneous(
+        &self,
+        span: usize,
+        t: f64,
+        mut control: impl FnMut(usize) -> Result<[f64; 4], Error>,
+    ) -> Result<[f64; 4], Error> {
         let p = self.degree;
-        let mut d: Vec<[f64; 4]> = (0..=p)
-            .map(|j| {
-                let i = span - p + j;
-                let w = self.weights[i];
-                let c = self.control_points[i];
-                [c[0] * w, c[1] * w, c[2] * w, w]
-            })
-            .collect();
+        let mut d = (0..=p)
+            .map(|j| control(span - p + j))
+            .collect::<Result<Vec<_>, _>>()?;
         for r in 1..=p {
             for j in (r..=p).rev() {
                 let i = span - p + j;
@@ -180,21 +182,80 @@ impl NurbsCurve {
                 }
             }
         }
-        let h = d[p];
-        if !h[3].is_finite() || h[3] <= 0. {
-            return Err(fail(
-                ErrorKind::Geometry,
-                "invalid evaluated rational denominator",
-            ));
+        Ok(d[p])
+    }
+}
+pub(crate) fn homogeneous_control(p: V3, w: f64) -> [f64; 4] {
+    [p[0] * w, p[1] * w, p[2] * w, w]
+}
+pub(crate) fn project(h: [f64; 4]) -> Result<V3, Error> {
+    if !h[3].is_finite() || h[3] <= 0. {
+        return Err(fail(
+            ErrorKind::Geometry,
+            "invalid evaluated rational denominator",
+        ));
+    }
+    let point = [h[0] / h[3], h[1] / h[3], h[2] / h[3]];
+    if point.iter().any(|x| !x.is_finite() || x.abs() > 1e30) {
+        return Err(fail(
+            ErrorKind::Geometry,
+            "evaluated B-spline exceeds geometry arithmetic domain",
+        ));
+    }
+    Ok(point)
+}
+#[derive(Debug, Clone)]
+pub struct NurbsCurve {
+    basis: Basis,
+    control_points: Vec<V3>,
+    weights: Vec<f64>,
+}
+impl NurbsCurve {
+    /// Full expanded clamped knot vector, finite positive weights, explicit caps.
+    pub fn new_clamped(
+        degree: usize,
+        knots: Vec<f64>,
+        control_points: Vec<V3>,
+        weights: Vec<f64>,
+        limits: Limits,
+    ) -> Result<Self, Error> {
+        let basis = Basis::new(degree, knots, control_points.len(), limits)?;
+        validate_controls(&control_points, &weights, limits)?;
+        Ok(Self {
+            basis,
+            control_points,
+            weights,
+        })
+    }
+    pub fn degree(&self) -> usize {
+        self.basis.degree()
+    }
+    pub fn domain(&self) -> [f64; 2] {
+        self.basis.domain()
+    }
+    pub fn control_points(&self) -> &[V3] {
+        &self.control_points
+    }
+    pub fn weights(&self) -> &[f64] {
+        &self.weights
+    }
+    pub fn knots(&self) -> &[f64] {
+        self.basis.knots()
+    }
+    /// O(degree²) homogeneous de Boor evaluation. Authoritative endpoints remain
+    /// exact; invalid/outside parameters refuse rather than clamping.
+    pub fn evaluate(&self, t: f64) -> Result<V3, Error> {
+        let span = self.basis.span(t)?;
+        let [lo, hi] = self.domain();
+        if t == lo {
+            return Ok(self.control_points[0]);
         }
-        let point = [h[0] / h[3], h[1] / h[3], h[2] / h[3]];
-        if point.iter().any(|x| !x.is_finite() || x.abs() > 1e30) {
-            return Err(fail(
-                ErrorKind::Geometry,
-                "evaluated B-spline exceeds geometry arithmetic domain",
-            ));
+        if t == hi {
+            return Ok(*self.control_points.last().unwrap());
         }
-        Ok(point)
+        project(self.basis.homogeneous(span, t, |i| {
+            Ok(homogeneous_control(self.control_points[i], self.weights[i]))
+        })?)
     }
 }
 #[cfg(test)]
