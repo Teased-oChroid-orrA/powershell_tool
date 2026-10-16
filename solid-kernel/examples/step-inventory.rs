@@ -9,24 +9,23 @@ fn main() {
 }
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
-    let path = args
-        .next()
-        .ok_or("usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface]")?;
-    let mode = match args.next() {
-        None => 0,
-        Some(flag) if flag == "--analytic" => 1,
-        Some(flag) if flag == "--surface" => 2,
-        Some(flag) if flag == "--canonical-surface" => 3,
-        _ => {
-            return Err(
-                "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface]".into(),
-            )
+    let usage = "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface] [--repair-orientation]";
+    let path = args.next().ok_or(usage)?;
+    let mut mode = 0;
+    let mut repair_orientation = false;
+    for flag in args {
+        if flag == "--analytic" {
+            mode = mode.max(1);
+        } else if flag == "--surface" {
+            mode = mode.max(2);
+        } else if flag == "--canonical-surface" {
+            mode = 3;
+        } else if flag == "--repair-orientation" {
+            repair_orientation = true;
+            mode = mode.max(2);
+        } else {
+            return Err(usage.into());
         }
-    };
-    if args.next().is_some() {
-        return Err(
-            "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface]".into(),
-        );
     }
     let limits = Limits::default();
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -105,6 +104,11 @@ fn run() -> Result<(), String> {
         if mode >= 2 {
             let started = std::time::Instant::now();
             let surface_limits = solid_kernel::native_surface::Limits {
+                orientation_policy: if repair_orientation {
+                    solid_kernel::orientation_repair::OrientationPolicy::RepairWithReport
+                } else {
+                    solid_kernel::orientation_repair::OrientationPolicy::Strict
+                },
                 chart_policy: if mode == 3 {
                     solid_kernel::cylindrical_step::ChartPolicy::CanonicalizeWithinTolerance
                 } else {
@@ -114,10 +118,20 @@ fn run() -> Result<(), String> {
             };
             let surface = model
                 .sampled_surface(surface_limits, |p| {
-                    eprintln!(
-                        "Native surface generation: {}/{} faces",
-                        p.completed_faces, p.total_faces
-                    );
+                    use solid_kernel::native_surface::GenerationPhase;
+                    if p.phase == GenerationPhase::RepairingOrientation {
+                        if p.completed_work % 8192 == 0 || p.completed_work == p.total_work {
+                            eprintln!(
+                                "Native orientation repair: {}/{} work units",
+                                p.completed_work, p.total_work
+                            );
+                        }
+                    } else {
+                        eprintln!(
+                            "Native surface generation: {}/{} faces",
+                            p.completed_faces, p.total_faces
+                        );
+                    }
                     true
                 })
                 .map_err(|e| e.to_string())?;
@@ -130,6 +144,18 @@ fn run() -> Result<(), String> {
                     .map(|a| a.world_deviation_mm)
                     .fold(0., f64::max);
                 println!("Explicit chart canonicalization: {} changed samples; max surface projection deviation {} mm (geometry tolerance {} mm); world boundary coordinates unchanged",surface.chart_adjustments.len(),largest,model.geometry_tolerance_mm());
+            }
+            if repair_orientation {
+                println!(
+                    "Explicit orientation repair: {} source faces changed",
+                    surface.face_orientation_adjustments.len()
+                );
+                for change in &surface.face_orientation_adjustments {
+                    println!(
+                        "Face #{}: same_sense {} -> {}",
+                        change.source_face, change.before_same_sense, change.after_same_sense
+                    );
+                }
             }
             let checked = surface
                 .check_intersections(2_000_000, |pairs| {

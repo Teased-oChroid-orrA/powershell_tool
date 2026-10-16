@@ -776,3 +776,67 @@ fn explicit_canonicalized_tilted_cylinder_passes_facet_checks_and_keeps_reports(
         assert!(adjustment.world_deviation_mm <= model.geometry_tolerance_mm());
     }
 }
+
+#[test]
+fn explicit_orientation_repair_restores_corrupted_source_face_and_preserves_reports() {
+    use solid_kernel::{
+        native_surface::{GenerationPhase, Limits as SurfaceLimits},
+        orientation_repair::OrientationPolicy,
+    };
+    let original_data = inventory(SOURCE, Limits::default()).unwrap();
+    let body = original_data.raw_bodies().unwrap().remove(0);
+    let face = body.faces.values().next().unwrap();
+    let id = face.id;
+    let original_sense = face.same_sense;
+    let entity = &original_data.entities()[&id];
+    let end = entity.offset + SOURCE[entity.offset..].find(';').unwrap() + 1;
+    let mut record = SOURCE[entity.offset..end].to_string();
+    let flag = if original_sense { ".T." } else { ".F." };
+    let pos = record.rfind(flag).unwrap();
+    record.replace_range(pos..pos + 3, if original_sense { ".F." } else { ".T." });
+    let changed = replace_record(SOURCE, entity.offset, &record);
+    let model = AnalyticModel::read(
+        &inventory(&changed, Limits::default()).unwrap(),
+        Options::default(),
+    )
+    .unwrap();
+    assert!(model
+        .sampled_surface(SurfaceLimits::default(), |_| true)
+        .is_err());
+    let limits = SurfaceLimits {
+        orientation_policy: OrientationPolicy::RepairWithReport,
+        ..SurfaceLimits::default()
+    };
+    let mut phases = Vec::new();
+    let surface = model
+        .sampled_surface(limits, |p| {
+            phases.push(p.phase);
+            true
+        })
+        .unwrap();
+    assert!(phases.contains(&GenerationPhase::RepairingOrientation));
+    let original = AnalyticModel::read(&original_data, Options::default())
+        .unwrap()
+        .sampled_surface(SurfaceLimits::default(), |_| true)
+        .unwrap();
+    assert_eq!(surface.mesh, original.mesh);
+    assert_eq!(surface.face_orientation_adjustments.len(), 1);
+    let adjustment = &surface.face_orientation_adjustments[0];
+    assert_eq!(adjustment.source_face, id);
+    assert_eq!(adjustment.before_same_sense, !original_sense);
+    assert_eq!(adjustment.after_same_sense, original_sense);
+    assert_eq!(model.body().faces[&id].same_sense, !original_sense);
+    let native = surface
+        .check_intersections(2_000_000, |_| true)
+        .unwrap()
+        .into_distance_solid();
+    assert_eq!(native.face_orientation_adjustments().len(), 1);
+    assert_eq!(native.face_orientation_adjustments()[0].source_face, id);
+    assert_eq!(
+        model
+            .sampled_surface(limits, |p| p.phase != GenerationPhase::RepairingOrientation)
+            .unwrap_err()
+            .kind,
+        solid_kernel::step::ErrorKind::Cancelled
+    );
+}

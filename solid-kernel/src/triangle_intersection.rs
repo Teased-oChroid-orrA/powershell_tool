@@ -126,39 +126,47 @@ pub struct CheckedSurface {
     inner: SampledSurface,
     pairs_checked: usize,
 }
-/// Checked single-shell distance geometry with its original source-face mapping.
-/// Assemblies and nested/cavity shells are not admitted by this native gate.
+/// Source association and every explicitly requested repair, retained together.
+#[derive(Debug)]
+pub struct NativeGeometryMetadata {
+    pub source_faces: Vec<u64>,
+    pub chart_adjustments: Vec<crate::cylindrical_step::ChartAdjustment>,
+    pub face_orientation_adjustments: Vec<crate::orientation_repair::FaceOrientationChange>,
+}
+/// Checked single-shell distance geometry. Assemblies and nested/cavity shells
+/// are not admitted by this native gate.
 pub struct NativeDistanceSolid {
-    chart_adjustments: Vec<crate::cylindrical_step::ChartAdjustment>,
     solid: crate::SurfaceSolid,
-    source_faces: Vec<u64>,
+    metadata: NativeGeometryMetadata,
 }
 impl NativeDistanceSolid {
     pub fn solid(&self) -> &crate::SurfaceSolid {
         &self.solid
     }
     pub fn source_faces(&self) -> &[u64] {
-        &self.source_faces
+        &self.metadata.source_faces
     }
     pub fn chart_adjustments(&self) -> &[crate::cylindrical_step::ChartAdjustment] {
-        &self.chart_adjustments
+        &self.metadata.chart_adjustments
     }
-    pub fn into_parts(
-        self,
-    ) -> (
-        crate::SurfaceSolid,
-        Vec<u64>,
-        Vec<crate::cylindrical_step::ChartAdjustment>,
-    ) {
-        (self.solid, self.source_faces, self.chart_adjustments)
+    pub fn face_orientation_adjustments(
+        &self,
+    ) -> &[crate::orientation_repair::FaceOrientationChange] {
+        &self.metadata.face_orientation_adjustments
+    }
+    pub fn into_parts(self) -> (crate::SurfaceSolid, NativeGeometryMetadata) {
+        (self.solid, self.metadata)
     }
 }
 impl CheckedSurface {
     pub fn into_distance_solid(self) -> NativeDistanceSolid {
         NativeDistanceSolid {
-            chart_adjustments: self.inner.chart_adjustments,
             solid: crate::SurfaceSolid::from_oriented_mesh(self.inner.mesh),
-            source_faces: self.inner.source_faces,
+            metadata: NativeGeometryMetadata {
+                source_faces: self.inner.source_faces,
+                chart_adjustments: self.inner.chart_adjustments,
+                face_orientation_adjustments: self.inner.face_orientation_adjustments,
+            },
         }
     }
     pub fn surface(&self) -> &SampledSurface {
@@ -337,6 +345,7 @@ mod checked_surface_tests {
             }
         }
         SampledSurface {
+            face_orientation_adjustments: Vec::new(),
             chart_adjustments: Vec::new(),
             mesh,
             source_faces: vec![42],
@@ -374,6 +383,7 @@ mod checked_surface_tests {
         ];
         mesh.face = vec![0; 12];
         let folded = SampledSurface {
+            face_orientation_adjustments: Vec::new(),
             chart_adjustments: Vec::new(),
             mesh,
             source_faces: vec![42],

@@ -10,6 +10,7 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
+    pub orientation_policy: crate::orientation_repair::OrientationPolicy,
     pub chart_policy: crate::cylindrical_step::ChartPolicy,
     pub vertices: usize,
     pub triangles: usize,
@@ -19,6 +20,7 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
+            orientation_policy: crate::orientation_repair::OrientationPolicy::Strict,
             chart_policy: crate::cylindrical_step::ChartPolicy::Strict,
             vertices: 1_000_000,
             triangles: 2_000_000,
@@ -27,13 +29,23 @@ impl Default for Limits {
         }
     }
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenerationPhase {
+    Triangulating,
+    RepairingOrientation,
+    Complete,
+}
 #[derive(Debug, Clone, Copy)]
 pub struct Progress {
+    pub phase: GenerationPhase,
+    pub completed_work: usize,
+    pub total_work: usize,
     pub completed_faces: usize,
     pub total_faces: usize,
 }
 #[derive(Debug)]
 pub struct SampledSurface {
+    pub face_orientation_adjustments: Vec<crate::orientation_repair::FaceOrientationChange>,
     pub chart_adjustments: Vec<crate::cylindrical_step::ChartAdjustment>,
     pub mesh: SurfaceMesh,
     /// Face tags map to source IDs only within this physical file. No persistent
@@ -129,15 +141,20 @@ pub(crate) fn validate_connectivity(mesh: &SurfaceMesh) -> Result<(), Error> {
     Ok(())
 }
 pub(crate) fn signed_volume(mesh: &SurfaceMesh) -> Result<f64, Error> {
-    let origin = mesh
-        .vertices
+    signed_volume_of(&mesh.vertices, mesh.triangles.iter().copied())
+}
+pub(crate) fn signed_volume_of(
+    vertices: &[crate::V3],
+    triangles: impl Iterator<Item = [usize; 3]>,
+) -> Result<f64, Error> {
+    let origin = vertices
         .first()
         .copied()
         .ok_or_else(|| fail(ErrorKind::Geometry, "empty sampled surface"))?;
     let mut volume = 0.;
     let mut correction = 0.;
-    for t in &mesh.triangles {
-        let [a, b, c] = t.map(|i| sub(mesh.vertices[i], origin));
+    for t in triangles {
+        let [a, b, c] = t.map(|i| sub(vertices[i], origin));
         let term = dot(a, cross(b, c)) / 6. - correction;
         let sum = volume + term;
         correction = (sum - volume) - term;
@@ -181,6 +198,9 @@ impl AnalyticModel {
         let mut chart_adjustments = Vec::new();
         for (tag, face) in self.body().faces.values().enumerate() {
             if !progress(Progress {
+                phase: GenerationPhase::Triangulating,
+                completed_work: tag,
+                total_work: total,
                 completed_faces: tag,
                 total_faces: total,
             }) {
@@ -256,6 +276,31 @@ impl AnalyticModel {
             chart_adjustments.extend(chart.chart_adjustments);
             source_faces.push(face.id);
         }
+        let face_orientation_adjustments = match limits.orientation_policy {
+            crate::orientation_repair::OrientationPolicy::Strict => Vec::new(),
+            crate::orientation_repair::OrientationPolicy::RepairWithReport => {
+                let senses = self
+                    .body()
+                    .faces
+                    .values()
+                    .map(|f| f.same_sense)
+                    .collect::<Vec<_>>();
+                crate::orientation_repair::repair(
+                    &mut mesh,
+                    &source_faces,
+                    &senses,
+                    |done, work| {
+                        progress(Progress {
+                            phase: GenerationPhase::RepairingOrientation,
+                            completed_work: done,
+                            total_work: work,
+                            completed_faces: total,
+                            total_faces: total,
+                        })
+                    },
+                )?
+            }
+        };
         validate_connectivity(&mesh)?;
         let volume = signed_volume(&mesh)?;
         if !volume.is_finite() || volume <= 0. {
@@ -265,6 +310,9 @@ impl AnalyticModel {
             ));
         }
         if !progress(Progress {
+            phase: GenerationPhase::Complete,
+            completed_work: total,
+            total_work: total,
             completed_faces: total,
             total_faces: total,
         }) {
@@ -274,6 +322,7 @@ impl AnalyticModel {
             ));
         }
         Ok(SampledSurface {
+            face_orientation_adjustments,
             chart_adjustments,
             mesh,
             source_faces,

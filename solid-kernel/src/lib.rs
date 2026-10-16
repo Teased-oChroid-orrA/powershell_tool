@@ -15,6 +15,7 @@
 pub mod analytic_step;
 pub mod chart_mesh;
 pub mod native_surface;
+pub mod orientation_repair;
 pub mod triangle_intersection;
 pub mod planar_step;
 pub mod cylindrical_step;
