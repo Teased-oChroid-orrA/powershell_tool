@@ -1,6 +1,12 @@
 //! Read-only native syntax/reference audit. No CAD kernel and no geometry-success claim.
 use solid_kernel::step::{inventory, Limits};
 use std::io::Read;
+fn report_work(stage: &str, done: usize, total: usize, last: &mut Option<(usize, usize)>) {
+    if *last != Some((done, total)) && (done % 8192 == 0 || done == total) {
+        eprintln!("{stage}: {done}/{total}");
+        *last = Some((done, total));
+    }
+}
 fn main() {
     if let Err(e) = run() {
         eprintln!("STEP inventory: {e}");
@@ -205,10 +211,9 @@ fn run() -> Result<(), String> {
                     plc::{Limits as PlcLimits, ValidatedPlc},
                     plc_star::StarSeed,
                 };
+                let mut last_plc = None;
                 let plc = ValidatedPlc::new(checked, PlcLimits::default(), |done, total| {
-                    if done % 8192 == 0 || done == total {
-                        eprintln!("Native PLC admission: {done}/{total} facets");
-                    }
+                    report_work("Native PLC admission (facets)", done, total, &mut last_plc);
                     true
                 })
                 .map_err(|e| e.to_string())?;
@@ -219,33 +224,40 @@ fn run() -> Result<(), String> {
                     plc.segments().len()
                 );
                 if let Some(point) = kernel {
+                    let mut last_seed = None;
                     let mut seed = StarSeed::new(plc, point, 100_000, |done, total| {
-                        if done % 8192 == 0 || done == total {
-                            eprintln!("Native star seed: {done}/{total} boundary facets");
-                        }
+                        report_work(
+                            "Native star seed (boundary facets)",
+                            done,
+                            total,
+                            &mut last_seed,
+                        );
                         true
                     })
                     .map_err(|e| e.to_string())?;
                     println!("Strict star-kernel seed: {} points, {} tetrahedra, {} preserved boundary facets; supplied kernel {:?} mm",seed.topology().points().len(),seed.topology().cells().len(),seed.topology().boundary().len(),point);
                     if trial_kernel {
-                        let mut last_phase = None;
+                        let mut last_progress = None;
                         let (updated, report) = seed
                             .try_vertex_mean_kernel(|p| {
-                                if last_phase != Some(p.phase)
-                                    || p.completed % 8192 == 0
-                                    || p.completed == p.total
+                                let key = (p.phase, p.completed, p.total);
+                                if last_progress != Some(key)
+                                    && (p.completed % 8192 == 0 || p.completed == p.total)
                                 {
                                     eprintln!(
                                         "Native kernel trial {:?}: {}/{}",
                                         p.phase, p.completed, p.total
                                     );
-                                    last_phase = Some(p.phase);
+                                    last_progress = Some(key);
                                 }
                                 true
                             })
                             .map_err(|e| e.to_string())?;
                         seed = updated;
                         println!("Kernel trial: accepted={}; before {:?} mm; candidate {:?} mm; minimum scaled Jacobian {} -> {}; worst edge ratio {} -> {}; refusal {:?}",report.accepted,report.before_point,report.candidate_point,report.before_quality.min_scaled_jacobian,report.after_quality.min_scaled_jacobian,report.before_quality.max_edge_ratio,report.after_quality.max_edge_ratio,report.refusal);
+                        if let Some(quality) = report.candidate_quality {
+                            println!("Candidate quality: minimum scaled Jacobian {}; worst edge ratio {}",quality.min_scaled_jacobian,quality.max_edge_ratio);
+                        }
                     }
                     println!("Diagnostic seed complete: {} cells. General PLC recovery and solver analysis are not performed.",seed.topology().cells().len());
                 }
