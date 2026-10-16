@@ -44,3 +44,5 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - `src/step.rs` / `step_units.rs`: bounded native physical-file inventory and assigned length-unit metadata. These do not construct/validate geometric B-Rep or certify CAD import. `examples/step-inventory.rs` runs without OCCT; unsupported input/unit semantics are explicit. Evidence: `docs/issue-46-phase-2.md`.
 
 - `step_topology`: raw local body connectivity with cumulative expansion limits. Edge-use counts/closed loops are not geometric validity or a manifold certificate; explicit/unset outer-loop roles and unplaced source coordinates remain distinct. See `docs/issue-46-phase-3.md`.
+
+- `analytic_step` normalizes one directly represented analytic body to millimetres and validates/samples LINE/CIRCLE and PLANE/CYLINDRICAL_SURFACE geometry. It is not a trimmed-solid importer. `planar_step` classifies bounded sampled planar trim polygons, not exact curve intersections. No production switch; keep OCCT. Evidence: `docs/issue-46-phase-4.md` and `phase-5.md`.

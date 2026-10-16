@@ -161,3 +161,6 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Issue 46 Phase 2](issue-46-phase-2.md): native STEP inventory, declared-unit resolution and remaining geometric B-Rep gates.
 
 - [Issue 46 Phase 3](issue-46-phase-3.md): bounded raw body connectivity, source identity and the next native analytic-geometry gate.
+
+- [Issue 46 Phase 4](issue-46-phase-4.md): bounded native analytic STEP geometry, declared unit normalization and independent reference checks.
+- [Issue 46 Phase 5](issue-46-phase-5.md): sampled planar trim validation/classification and remaining periodic/solid gates.

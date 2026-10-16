@@ -66,3 +66,9 @@ The audit distinguishes referenced 3D curves (88 LINE / 26 CIRCLE) from auxiliar
 [Phase 4](issue-46-phase-4.md) and [verification](issue-46-phase-4-verification.json) record source `6e354f8`: 33 CAD-enabled solid-kernel tests pass. Native `analytic_step` supports directly represented single bodies, explicit length context normalization, line/circle edges and plane/cylinder surfaces with bounded shared-edge sampling and analytic consistency checks. The actual bracket produces 470 samples across 114 edges and 38 untrimmed surfaces. Independent OCCT cube/cylinder exports verify normals/chord bounds. Run the no-OCCT diagnostic with `step-inventory FILE.step --analytic`.
 
 Next: classify and validate sampled planar trim loops without guessing bound order, then address periodic cylinder charts, shared-boundary-preserving tessellation and solid validation. Polygonal approximation checks must not be advertised as exact trim-intersection proofs. Production still uses OCCT; no additional CI was dispatched. Unsupported geometry/assemblies fail explicitly. The full epic remains open.
+
+## Phase 5 sampled planar trims — 2026-10-16
+
+[Phase 5](issue-46-phase-5.md) / [verification](issue-46-phase-5-verification.json) record `7a40278`: all 36 CAD-enabled solid-kernel tests pass. `planar_step` validates sampled polygon crossings/touches/overlaps and classifies outer/hole roles by containment, preserving source order. All 28 bracket planar faces pass; an independent OCCT cube gives the exact 52 mm² total planar area within 1e-12. Projection expansion and pair/containment work are bounded. No production CAD switch, new dependencies or additional CI.
+
+Next: cylinder periodic charts/seams, shared-boundary triangulation, global solid checks, then PLC recovery. Do not call polygonal approximations exact curved-trim certificates. Nonplanar faces explicitly fail this API. Keep OCCT and the other P1/P2/P3 gates open.
