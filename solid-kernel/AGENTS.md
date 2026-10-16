@@ -94,3 +94,5 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - [Phase 28 rational curve enclosures and sampling](../docs/issue-46-phase-28.md): shared outward-rounded recurrence, whole-interval Hausdorff bounds, progress/cancellation and resource limits.
 
 - [Phase 29 global curve distance brackets](../docs/issue-46-phase-29.md): deterministic bounded search and positive-weight Cartesian hull conditioning.
+
+- [Phase 30 surface patch enclosures](../docs/issue-46-phase-30.md): shared Bounds3, outward tensor recurrence, bounded patch work and indexed span queries.

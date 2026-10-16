@@ -1,0 +1,32 @@
+{
+  "source_commit": "d3e81dcda5ab418753a4e1779980294a9c00ac2f",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 121,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 104,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "development_failures": [
+    "Initial exact-real enclosure test incorrectly used rounded evaluator as exact reference: 48 passed/1 failed, exit 101",
+    "Focused run reproduced same reference error: 12 passed/1 failed, exit 101"
+  ],
+  "correction": "Independent analytic test reference; no enclosure/tolerance expansion",
+  "evidence_logs_prefix": "native-surface-enclosure-",
+  "not_verified": [
+    "Surface projection/regularity/injectivity, p-curves/trims and spline B-Rep import",
+    "Representative performance/memory, Windows/macOS execution",
+    "Remaining general CAD/PLC/quality/P2/P3/final gates"
+  ]
+}
