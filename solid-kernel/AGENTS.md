@@ -74,3 +74,5 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - Feature-off developer CLI adds `--plc`, `--star-seed X,Y,Z` (mm), `--trial-kernel`; explicit chart/orientation flags combine, strict defaults remain. Staged progress and candidate/retained quality are reported; no material or solver analysis inferred. Seven standalone cases verified. See `docs/issue-46-phase-18.md`.
 
 - `nurbs::NurbsCurve` is bounded clamped/continuous positive-weight curve evaluation, not STEP/B-Rep import. Authoritative endpoints, no parameter clamping; degree/control/arithmetic limits and analytical rational-circle/degree-elevation tests. Native analytic body support remains unchanged until source/sampling/surface/trim gates pass. See `docs/issue-46-phase-19.md`.
+
+- Native coordinate unit conversion now uses one helper for point declarations and raw body vertices: reject nonzero-to-zero underflow before allowing true zeros, retain source offsets and existing arithmetic envelope. Radius/unit-factor paths already reject zero underflow. Reproduced/fixed in `docs/issue-46-phase-20.md`.

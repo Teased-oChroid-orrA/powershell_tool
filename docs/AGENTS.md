@@ -192,3 +192,5 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Issue 46 Phase 18: runnable PLC/seed CLI diagnostics](issue-46-phase-18.md), [verification](issue-46-phase-18-verification.json).
 
 - [Issue 46 Phase 19: bounded rational B-spline curve evaluation](issue-46-phase-19.md).
+
+- [Issue 46 Phase 20: native coordinate unit-underflow refusal](issue-46-phase-20.md).

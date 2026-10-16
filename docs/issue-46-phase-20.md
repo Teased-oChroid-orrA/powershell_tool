@@ -1,0 +1,11 @@
+# Issue 46 — Phase 20: reject silent coordinate unit underflow
+
+Source `0f9301c` fixes a reproduced native coordinate-conversion defect. A finite nonzero source component such as 1e-310 multiplied by a valid small scale such as 1e-21 rounds to zero. The previous post-conversion arithmetic-range check allowed zero, so a point decoder could silently accept `[0,0,0]` instead of refusing unsupported nonzero geometry. The new regression failed against the old implementation with `unwrap_err()` on that accepted zero point; this development failure is retained in the evidence log.
+
+One authoritative coordinate-normalization helper now checks finite positive scaling, detects nonzero-to-zero underflow and enforces the existing normalized arithmetic envelope. Both CARTESIAN_POINT decoding (placement/curve origins) and raw body vertex conversion use it; no second path bypasses the guard. Radius conversion already rejects zero/nonpositive/out-of-domain values, and unit-factor multiplication already rejects underflow; neither required a tolerance change. Errors retain the original source point offset.
+
+Regressions verify direct point underflow refusal; ordinary inch-to-mm conversion, true zeros, invalid scales and arithmetic overflow refusal; mixed visible/underflowing components; and a real bracket source-vertex record under a valid YOCTO length assignment refusing at that original point. The latter guards the separate raw-vertex path. Normal supported geometry and conversion behavior remain unchanged. This concerns the native diagnostic path; no production OCCT/material conversion behavior is claimed changed.
+
+No new dependency, tolerance relaxation, hosted CI, production/main change or OCCT retirement. STEP spline declaration mapping will reuse this corrected point/scalar path next. General CAD/PLC and later epic gates remain open. Complete test evidence is recorded separately by exact source revision; app compilation reuses Phase 16 because source inspection finds no production caller of `AnalyticModel`.
+
+Phase 20 final checks at `0f9301c583612f1ac977bc919b499e9c8859f49e`: **78 CAD-enabled / 61 feature-off tests pass**, no final failures/ignored checks. The pre-fix underflow reproduction failed as intended and is recorded separately. [Verification](issue-46-phase-20-verification.json).
