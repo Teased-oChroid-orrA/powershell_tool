@@ -155,3 +155,5 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 ## Native CAD and advanced meshing tracking
 
 - [Issue 46 execution index](issue-46-execution-plan.md), [Claude Code handoff](issue-46-claude-handoff.md), and [tracking manifest](issue-46-tracking.json): prioritized native CAD/meshing and Pillar 7 autotuning work after reliability PR #45.
+
+- [Issue 46 Phase 0 audit](issue-46-phase-0-audit.md), [Phase 1 implementation](issue-46-phase-1.md), and [verification](issue-46-phase-1-verification.json): current foundation milestone and native-CAD gates still open.

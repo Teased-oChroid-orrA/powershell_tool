@@ -161,3 +161,5 @@ refuse or flag nonsmooth points instead of returning a classical derivative; any
 
 ## Navigation
 Plan and measured numbers: `docs/fea-core.md`. Sibling solvers: `lug-solver/AGENTS.md`, `edge-check/AGENTS.md`.
+
+- Native-meshing foundations: `meshing::{tet_topology,tet_delaunay,compatibility}`. The bounded reference Delaunay core meshes a point-set convex hull only; it is not PLC/CAD recovery and is unavailable in production strategy selection. Exact-sign degeneracies and quality gates must remain intact. Evidence: `docs/issue-46-phase-1.md`.

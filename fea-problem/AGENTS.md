@@ -99,3 +99,5 @@ Parent concepts: `fea-core/AGENTS.md`. Consumer: `app-tui/src/toolboxes/fea_work
   The supplied NEMA17 file declares mm; its authoring tool is unknown. Local kernel projection separates coincident curved
   tessellation chords. Volume meshes must satisfy the 5% volume guard; unresolved tiny CAD faces are reported, and conditions
   on those faces are refused. Details/evidence: `docs/workbench-reliability-2026-10-15.md`.
+
+- `mesh_telemetry` and `examples/mesh-benchmark.rs` collect opt-in independently verified template performance evidence. Only the solve/reference pipeline mints verification proof; imported JSONL remains quarantined. No automatic collection or ML is enabled. See `docs/issue-46-phase-1.md`.

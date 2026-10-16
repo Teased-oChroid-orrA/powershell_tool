@@ -1,0 +1,256 @@
+{
+  "source_commit": "26775143208bde11518e6234757a7f4b62721d5b",
+  "scope": "Phase 1 foundations, not full epic completion",
+  "linux_foundations": {
+    "commit": "26775143208bde11518e6234757a7f4b62721d5b",
+    "platform": "linux",
+    "dirty": false,
+    "scope": "foundations",
+    "checks": [
+      {
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "fea-core",
+          "--lib",
+          "--locked",
+          "-j",
+          "1",
+          "meshing::"
+        ],
+        "exit_code": 0,
+        "seconds": 85.91059553998639
+      },
+      {
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "fea-core",
+          "--test",
+          "derivative_bench",
+          "--locked",
+          "-j",
+          "1"
+        ],
+        "exit_code": 0,
+        "seconds": 0.8950454290024936
+      }
+    ],
+    "ending_commit": "26775143208bde11518e6234757a7f4b62721d5b",
+    "ending_dirty": false,
+    "source_changed": false,
+    "passed": true
+  },
+  "linux_integration": {
+    "commit": "26775143208bde11518e6234757a7f4b62721d5b",
+    "dirty": false,
+    "checks": [
+      {
+        "name": "core-meshing",
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "fea-core",
+          "--lib",
+          "--locked",
+          "-j1",
+          "meshing::"
+        ],
+        "exit_code": 0,
+        "seconds": 1.196185771987075
+      },
+      {
+        "name": "cad",
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "solid-kernel",
+          "--features",
+          "occt",
+          "--locked",
+          "-j1"
+        ],
+        "exit_code": 0,
+        "seconds": 19.201615102007054
+      },
+      {
+        "name": "problem",
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "fea-problem",
+          "--features",
+          "occt",
+          "--lib",
+          "--test",
+          "solid",
+          "--test",
+          "problems",
+          "--test",
+          "units",
+          "--locked",
+          "-j1"
+        ],
+        "exit_code": 0,
+        "seconds": 190.6439898480021
+      },
+      {
+        "name": "consumer",
+        "command": [
+          "cargo",
+          "check",
+          "-p",
+          "app-tui",
+          "--features",
+          "occt",
+          "--lib",
+          "--tests",
+          "--locked",
+          "-j1"
+        ],
+        "exit_code": 0,
+        "seconds": 0.28091516697895713
+      },
+      {
+        "name": "collect",
+        "command": [
+          "cargo",
+          "run",
+          "-p",
+          "fea-problem",
+          "--features",
+          "occt",
+          "--example",
+          "mesh-benchmark",
+          "--locked",
+          "-j1",
+          "--",
+          "--template",
+          "Cantilever beam",
+          "--revision",
+          "26775143208bde11518e6234757a7f4b62721d5b"
+        ],
+        "exit_code": 0,
+        "seconds": 0.16549988600309007
+      }
+    ],
+    "passed": true,
+    "ending_commit": "26775143208bde11518e6234757a7f4b62721d5b",
+    "ending_dirty": false,
+    "source_changed": false
+  },
+  "explicit_reference_scaling": {
+    "command": "cargo test -p fea-core --lib --locked -j1 -- --ignored --nocapture reference_delaunay_scaling",
+    "exit_code": 0,
+    "points_cells_seconds": [
+      [
+        20,
+        74,
+        0.001095
+      ],
+      [
+        100,
+        566,
+        0.048986
+      ],
+      [
+        256,
+        1564,
+        0.310213
+      ]
+    ]
+  },
+  "default_cad_feature_off_check": {
+    "command": "cargo check -p solid-kernel --no-default-features --locked -j1",
+    "exit_code": 0
+  },
+  "reporting_harness_simulation": [
+    {
+      "simulation": true,
+      "mutated_source": false,
+      "exit_code": 0,
+      "source_changed": false
+    },
+    {
+      "simulation": true,
+      "mutated_source": true,
+      "exit_code": 1,
+      "source_changed": true
+    }
+  ],
+  "pilot_benchmarks": {
+    "commit": "26775143208bde11518e6234757a7f4b62721d5b",
+    "results": [
+      {
+        "template": "Cantilever beam",
+        "exit_code": 0
+      },
+      {
+        "template": "Thick cylinder (axisymmetric)",
+        "exit_code": 0
+      },
+      {
+        "template": "Plate with a hole",
+        "exit_code": 0
+      }
+    ],
+    "representative_for_learning": false
+  },
+  "truck_candidate_probes": [
+    {
+      "outcome": "budget_exhausted",
+      "wall_limit_seconds": 300,
+      "rss_limit_kib": 4194304,
+      "observed_peak_kib": 4256820,
+      "approx_elapsed_seconds": 185.00461289500527
+    },
+    {
+      "candidate_commit": "88ed005249e5e3a6b07f62425399435905cd3ab6",
+      "experiment": "single-pass 0.1 mm chord tolerance, fixture face-coverage assertions",
+      "wall_limit_seconds": 300,
+      "rss_limit_kib": 4194304,
+      "observed_peak_kib": 4221236,
+      "wall_seconds": 106.78497882801457,
+      "outcome": "budget_exhausted",
+      "exit_code": -15
+    },
+    {
+      "candidate_commit": "88ed005249e5e3a6b07f62425399435905cd3ab6",
+      "experiment": "single-pass 0.1 mm chord tolerance, one Rayon thread, fixture face-coverage assertions",
+      "wall_limit_seconds": 300,
+      "rss_limit_kib": 4194304,
+      "observed_peak_kib": 3956068,
+      "wall_seconds": 300.25327035898226,
+      "outcome": "budget_exhausted",
+      "exit_code": -15
+    }
+  ],
+  "hosted_foundations": {
+    "run_id": 38896885191,
+    "source_commit": "26775143208bde11518e6234757a7f4b62721d5b",
+    "platform": "windows-latest",
+    "conclusion": "success",
+    "scope": "foundations only; Linux/macOS matrix skipped",
+    "url": "https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/38896885191",
+    "artifact_note": "Job completion verified through GitHub API; artifact download is blocked by storage-host policy and its JSON was not read."
+  },
+  "prior_reliability_run": {
+    "run_id": 38850003423,
+    "linux": "success",
+    "macos": "success",
+    "windows": "failure: nonportable derivative timing-order assertion; corrected on this feature branch and targeted Windows check passed"
+  },
+  "unimplemented_gates": [
+    "qualified native B-Rep backend and entity/assembly/healing validation",
+    "constrained PLC/segment/facet recovery",
+    "production sliver elimination",
+    "high-order CAD mapping, general hybrid, metric adaptation, ALE/history transfer",
+    "representative verified performance corpus and optional learning",
+    "explicitly approved native parity and OCCT retirement"
+  ]
+}
