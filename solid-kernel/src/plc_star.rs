@@ -18,6 +18,63 @@ pub struct StarSeed {
     plc: ValidatedPlc,
     topology: TetTopology,
 }
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KernelQuality {
+    pub min_scaled_jacobian: f64,
+    pub max_edge_ratio: f64,
+}
+#[derive(Debug, Clone)]
+pub struct KernelTrial {
+    pub before_point: V3,
+    pub candidate_point: V3,
+    pub accepted: bool,
+    pub before_quality: KernelQuality,
+    pub candidate_quality: Option<KernelQuality>,
+    pub after_quality: KernelQuality,
+    pub refusal: Option<String>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrialPhase {
+    OriginalQuality,
+    CandidatePosition,
+    CandidateGeometry,
+    CandidateQuality,
+    Complete,
+}
+#[derive(Debug, Clone, Copy)]
+pub struct TrialProgress {
+    pub phase: TrialPhase,
+    pub completed: usize,
+    pub total: usize,
+}
+fn kernel_quality(
+    topology: &TetTopology,
+    progress: &mut dyn FnMut(usize, usize) -> bool,
+) -> Result<KernelQuality, Error> {
+    let n = topology.cells().len();
+    let mut result = KernelQuality {
+        min_scaled_jacobian: f64::INFINITY,
+        max_edge_ratio: 0.,
+    };
+    for (i, t) in topology.cells().iter().enumerate() {
+        if i % 256 == 0 && !progress(i, n) {
+            return Err(fail(ErrorKind::Cancelled, "kernel quality trial cancelled"));
+        }
+        let q = fea_core::meshing::quality::element_quality(
+            fea_core::ElementKind::Tet4,
+            &t.map(|v| topology.points()[v]),
+        );
+        if !q.scaled_jacobian.is_finite() || !q.edge_ratio.is_finite() {
+            return Err(fail(ErrorKind::Geometry, "nonfinite kernel quality metric"));
+        }
+        result.min_scaled_jacobian = result.min_scaled_jacobian.min(q.scaled_jacobian);
+        result.max_edge_ratio = result.max_edge_ratio.max(q.edge_ratio);
+    }
+    if !progress(n, n) {
+        return Err(fail(ErrorKind::Cancelled, "kernel quality trial cancelled"));
+    }
+    Ok(result)
+}
 impl StarSeed {
     /// The caller supplies a kernel point. Every outward boundary facet must
     /// see it strictly on its interior side, certified by exact orientation.
@@ -28,6 +85,15 @@ impl StarSeed {
         max_cells: usize,
         mut progress: impl FnMut(usize, usize) -> bool,
     ) -> Result<Self, Error> {
+        let topology = Self::topology_for(&plc, center, max_cells, &mut progress)?;
+        Ok(Self { plc, topology })
+    }
+    fn topology_for(
+        plc: &ValidatedPlc,
+        center: V3,
+        max_cells: usize,
+        progress: &mut dyn FnMut(usize, usize) -> bool,
+    ) -> Result<TetTopology, Error> {
         let n = plc.facets().len();
         if n > max_cells {
             return Err(fail(
@@ -75,7 +141,110 @@ impl StarSeed {
         if !progress(n, n) {
             return Err(fail(ErrorKind::Cancelled, "star seed cancelled"));
         }
-        Ok(Self { plc, topology })
+        Ok(topology)
+    }
+    /// Try one deterministic interior-point relocation, retaining every boundary
+    /// point/facet. Accept only a strict minimum-Jacobian improvement with no
+    /// increase in worst edge ratio. This is not general sliver elimination.
+    pub fn try_vertex_mean_kernel(
+        mut self,
+        mut progress: impl FnMut(TrialProgress) -> bool,
+    ) -> Result<(Self, KernelTrial), Error> {
+        let before_point = self.topology.points()[self.plc.vertices().len()];
+        let before_quality = kernel_quality(&self.topology, &mut |completed, total| {
+            progress(TrialProgress {
+                phase: TrialPhase::OriginalQuality,
+                completed,
+                total,
+            })
+        })?;
+        let origin = self.plc.vertices()[0];
+        let mut sum = [0.; 3];
+        let mut correction = [0.; 3];
+        let n = self.plc.vertices().len() as f64;
+        for (i, p) in self.plc.vertices().iter().enumerate() {
+            if i % 256 == 0
+                && !progress(TrialProgress {
+                    phase: TrialPhase::CandidatePosition,
+                    completed: i,
+                    total: self.plc.vertices().len(),
+                })
+            {
+                return Err(fail(
+                    ErrorKind::Cancelled,
+                    "kernel position trial cancelled",
+                ));
+            }
+            for axis in 0..3 {
+                let term = (p[axis] - origin[axis]) / n - correction[axis];
+                let next = sum[axis] + term;
+                correction[axis] = (next - sum[axis]) - term;
+                sum[axis] = next;
+            }
+        }
+        let candidate_point = std::array::from_fn(|axis| origin[axis] + sum[axis]);
+        let mut report = KernelTrial {
+            before_point,
+            candidate_point,
+            accepted: false,
+            before_quality,
+            candidate_quality: None,
+            after_quality: before_quality,
+            refusal: None,
+        };
+        let mut candidate = None;
+        if candidate_point == before_point {
+            report.refusal = Some("candidate equals current kernel point".into());
+        } else {
+            match Self::topology_for(
+                &self.plc,
+                candidate_point,
+                self.topology.cells().len(),
+                &mut |completed, total| {
+                    progress(TrialProgress {
+                        phase: TrialPhase::CandidateGeometry,
+                        completed,
+                        total,
+                    })
+                },
+            ) {
+                Ok(topology) => {
+                    let quality = kernel_quality(&topology, &mut |completed, total| {
+                        progress(TrialProgress {
+                            phase: TrialPhase::CandidateQuality,
+                            completed,
+                            total,
+                        })
+                    })?;
+                    report.candidate_quality = Some(quality);
+                    if quality.min_scaled_jacobian > before_quality.min_scaled_jacobian
+                        && quality.max_edge_ratio <= before_quality.max_edge_ratio
+                    {
+                        report.accepted = true;
+                        report.after_quality = quality;
+                        candidate = Some(topology);
+                    } else {
+                        report.refusal =
+                            Some("candidate does not improve minimum Jacobian without worsening edge ratio".into());
+                    }
+                }
+                Err(e) if e.kind == ErrorKind::Geometry => {
+                    report.refusal = Some(e.detail);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        if !progress(TrialProgress {
+            phase: TrialPhase::Complete,
+            completed: 1,
+            total: 1,
+        }) {
+            return Err(fail(ErrorKind::Cancelled, "kernel quality trial cancelled"));
+        }
+        if let Some(topology) = candidate {
+            self.topology = topology;
+        }
+        Ok((self, report))
     }
     /// Convert only through existing quality/conformity gates, then restore
     /// source-tagged boundary regions from the exactly preserved PLC facets.

@@ -1224,3 +1224,143 @@ fn valid_thin_wall_and_near_boundary_seeds_cannot_bypass_solver_quality_limits()
         );
     }
 }
+
+#[cfg(feature = "occt")]
+#[test]
+fn bounded_kernel_trial_improves_interior_quality_without_moving_cad_constraints() {
+    use solid_kernel::{
+        plc::{Limits as PlcLimits, ValidatedPlc},
+        plc_star::{StarSeed, TrialPhase},
+    };
+    let text = solid_kernel::cad::Brep::box_from_corners([0., 0., 0.], [1., 1., 3.])
+        .to_step_text()
+        .unwrap();
+    let data = inventory(&text, Limits::default()).unwrap();
+    let model = AnalyticModel::read(&data, Options::default()).unwrap();
+    let seed = |point| {
+        let surface = model
+            .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+            .unwrap();
+        let plc = ValidatedPlc::new(
+            surface.check_intersections(10000, |_| true).unwrap(),
+            PlcLimits::default(),
+            |_, _| true,
+        )
+        .unwrap();
+        StarSeed::new(plc, point, 100, |_, _| true).unwrap()
+    };
+    let original = seed([1e-12, 0.5, 1.5]);
+    let boundary_points = original.plc().vertices().to_vec();
+    let boundary_facets = original.plc().facets().to_vec();
+    let mut phases = Vec::new();
+    let (improved, report) = original
+        .try_vertex_mean_kernel(|p| {
+            phases.push(p.phase);
+            true
+        })
+        .unwrap();
+    assert!(report.accepted);
+    assert_eq!(report.before_point, [1e-12, 0.5, 1.5]);
+    assert_eq!(report.candidate_point, [0.5, 0.5, 1.5]);
+    assert!(report.after_quality.min_scaled_jacobian > report.before_quality.min_scaled_jacobian);
+    assert!(report.after_quality.max_edge_ratio <= report.before_quality.max_edge_ratio);
+    assert_eq!(report.candidate_quality, Some(report.after_quality));
+    assert_eq!(improved.plc().vertices(), boundary_points);
+    assert_eq!(
+        &improved.topology().points()[..boundary_points.len()],
+        boundary_points
+    );
+    assert_eq!(improved.plc().facets(), boundary_facets);
+    assert!(phases.contains(&TrialPhase::CandidateGeometry));
+    assert_eq!(phases.last(), Some(&TrialPhase::Complete));
+    eprintln!("kernel quality trial: {report:?}");
+    let reference_at = |z| {
+        let i = improved
+            .plc()
+            .facets()
+            .iter()
+            .position(|f| f.iter().all(|v| improved.plc().vertices()[*v][2] == z))
+            .unwrap();
+        improved.plc().facet_source_reference(i).unwrap()
+    };
+    let (top, bottom) = (reference_at(3.), reference_at(0.));
+    let mesh = improved
+        .into_solver_mesh(fea_core::Elastic::new(200e3, 0.3))
+        .unwrap();
+    let top_faces = mesh.boundary(top).unwrap().to_vec();
+    let bottom_nodes = mesh
+        .boundary(bottom)
+        .unwrap()
+        .iter()
+        .flatten()
+        .copied()
+        .collect();
+    assert_axial_bar_patch(mesh.into_parts().0, top_faces, bottom_nodes);
+    let (unchanged, report) = seed([0.5, 0.5, 1.5])
+        .try_vertex_mean_kernel(|_| true)
+        .unwrap();
+    assert!(!report.accepted);
+    assert_eq!(report.before_quality, report.after_quality);
+    assert_eq!(unchanged.topology().points().last(), Some(&[0.5, 0.5, 1.5]));
+    let cancelled =
+        seed([1e-12, 0.5, 1.5]).try_vertex_mean_kernel(|p| p.phase != TrialPhase::Complete);
+    assert_eq!(
+        cancelled.err().unwrap().kind,
+        solid_kernel::step::ErrorKind::Cancelled
+    );
+}
+
+#[cfg(feature = "occt")]
+#[test]
+fn kernel_trial_refuses_a_vertex_mean_outside_a_concave_domains_kernel() {
+    use solid_kernel::{
+        cad::{Brep, Loop, Profile},
+        plc::{Limits as PlcLimits, ValidatedPlc},
+        plc_star::StarSeed,
+    };
+    let text = Brep::extrude(
+        &Profile {
+            outer: Loop::Polygon(vec![
+                [0., 0.],
+                [3., 0.],
+                [3., 1.],
+                [1., 1.],
+                [1., 3.],
+                [0., 3.],
+            ]),
+            holes: vec![],
+        },
+        0.,
+        1.,
+    )
+    .unwrap()
+    .to_step_text()
+    .unwrap();
+    let model = AnalyticModel::read(
+        &inventory(&text, Limits::default()).unwrap(),
+        Options::default(),
+    )
+    .unwrap();
+    let checked = model
+        .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+        .unwrap()
+        .check_intersections(10000, |_| true)
+        .unwrap();
+    let plc = ValidatedPlc::new(checked, PlcLimits::default(), |_, _| true).unwrap();
+    assert!((plc.checked_surface().surface().signed_volume_mm3 - 5.).abs() < 1e-12);
+    let seed = StarSeed::new(plc, [0.5; 3], 100, |_, _| true).unwrap();
+    let before_points = seed.topology().points().to_vec();
+    let before_cells = seed.topology().cells().to_vec();
+    let (seed, report) = seed.try_vertex_mean_kernel(|_| true).unwrap();
+    assert!(!report.accepted);
+    assert!(report.candidate_point[0] > 1. && report.candidate_point[1] > 1.);
+    assert!(report
+        .refusal
+        .as_ref()
+        .unwrap()
+        .contains("not strictly inside boundary facet"));
+    assert!(report.candidate_quality.is_none());
+    assert_eq!(report.before_quality, report.after_quality);
+    assert_eq!(seed.topology().points(), before_points);
+    assert_eq!(seed.topology().cells(), before_cells);
+}
