@@ -66,68 +66,12 @@ pub fn tetrahedralize_observed(
     let d = fourth.ok_or_else(|| MeshError::Unsupported("point set is coplanar".into()))?;
     let seed = [0, 1, c, d];
     let mut topology = TetTopology::new(input.to_vec(), vec![seed], limits.max_cells)?;
-    for (index, &point) in input.iter().enumerate() {
+    for index in 0..input.len() {
         observe(index, input.len())?;
         if seed.contains(&index) {
             continue;
         }
-        let mut cavity = BTreeSet::new();
-        for (i, t) in topology.cells().iter().enumerate() {
-            if sphere_side(t.map(|v| input[v]), point)? != SphereSide::Outside {
-                cavity.insert(i);
-            }
-        }
-        let mut owners = BTreeMap::<[usize; 3], Vec<(usize, [usize; 3])>>::new();
-        for (i, t) in topology.cells().iter().enumerate() {
-            for f in faces(*t) {
-                let mut k = f;
-                k.sort_unstable();
-                owners.entry(k).or_default().push((i, f));
-            }
-        }
-        let mut cells: Vec<_> = topology
-            .cells()
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !cavity.contains(i))
-            .map(|(_, t)| *t)
-            .collect();
-        for entries in owners.values() {
-            let (owner, face) = entries[0];
-            let cone = match entries.as_slice() {
-                [(_, _)] => {
-                    let visible =
-                        orientation(input[face[0]], input[face[1]], input[face[2]], point)?
-                            == Ordering::Greater;
-                    cavity.contains(&owner) != visible
-                }
-                [(a, _), (b, _)] => cavity.contains(a) != cavity.contains(b),
-                _ => {
-                    return Err(MeshError::NonConforming(
-                        "non-manifold insertion cavity".into(),
-                    ))
-                }
-            };
-            if cone {
-                let [a, b, c] = face;
-                if orientation(input[a], input[b], input[c], point)? == Ordering::Equal {
-                    continue;
-                }
-                if cells.len() >= limits.max_cells {
-                    return Err(MeshError::LimitExceeded(
-                        "insertion cell budget exceeded".into(),
-                    ));
-                }
-                cells.push([a, b, c, index]);
-            }
-        }
-        let next = TetTopology::new(input.to_vec(), cells, limits.max_cells)?;
-        if !next.cells().iter().any(|t| t.contains(&index)) {
-            return Err(MeshError::Failed(
-                "insertion did not retain its point".into(),
-            ));
-        }
-        topology = next;
+        topology = insert_index(input, &topology, index, limits.max_cells)?;
     }
     let used: BTreeSet<_> = topology.cells().iter().flatten().copied().collect();
     if used.len() != input.len() {
@@ -135,7 +79,13 @@ pub fn tetrahedralize_observed(
             "not every input point belongs to a tetrahedron".into(),
         ));
     }
-    // A topologically closed boundary alone does not establish the convex hull.
+    check_hull(&topology)?;
+    observe(input.len(), input.len())?;
+    Ok(topology)
+}
+/// A topologically closed boundary alone does not establish the convex hull.
+fn check_hull(topology: &TetTopology) -> Result<(), MeshError> {
+    let input = topology.points();
     for face in topology.boundary() {
         for &p in input {
             if orientation(input[face[0]], input[face[1]], input[face[2]], p)? == Ordering::Greater
@@ -146,8 +96,108 @@ pub fn tetrahedralize_observed(
             }
         }
     }
-    observe(input.len(), input.len())?;
-    Ok(topology)
+    Ok(())
+}
+/// Insert `points[index]` into `topology` (whose point list is `points`) by
+/// Bowyer–Watson cavity replacement. Points outside the current hull grow it
+/// through the visible boundary faces.
+fn insert_index(
+    points: &[Point],
+    topology: &TetTopology,
+    index: usize,
+    max_cells: usize,
+) -> Result<TetTopology, MeshError> {
+    let point = points[index];
+    let mut cavity = BTreeSet::new();
+    for (i, t) in topology.cells().iter().enumerate() {
+        if sphere_side(t.map(|v| points[v]), point)? != SphereSide::Outside {
+            cavity.insert(i);
+        }
+    }
+    let mut owners = BTreeMap::<[usize; 3], Vec<(usize, [usize; 3])>>::new();
+    for (i, t) in topology.cells().iter().enumerate() {
+        for f in faces(*t) {
+            let mut k = f;
+            k.sort_unstable();
+            owners.entry(k).or_default().push((i, f));
+        }
+    }
+    let mut cells: Vec<_> = topology
+        .cells()
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !cavity.contains(i))
+        .map(|(_, t)| *t)
+        .collect();
+    for entries in owners.values() {
+        let (owner, face) = entries[0];
+        let cone = match entries.as_slice() {
+            [(_, _)] => {
+                let visible =
+                    orientation(points[face[0]], points[face[1]], points[face[2]], point)?
+                        == Ordering::Greater;
+                cavity.contains(&owner) != visible
+            }
+            [(a, _), (b, _)] => cavity.contains(a) != cavity.contains(b),
+            _ => {
+                return Err(MeshError::NonConforming(
+                    "non-manifold insertion cavity".into(),
+                ))
+            }
+        };
+        if cone {
+            let [a, b, c] = face;
+            if orientation(points[a], points[b], points[c], point)? == Ordering::Equal {
+                continue;
+            }
+            if cells.len() >= max_cells {
+                return Err(MeshError::LimitExceeded(
+                    "insertion cell budget exceeded".into(),
+                ));
+            }
+            cells.push([a, b, c, index]);
+        }
+    }
+    let next = TetTopology::new(points.to_vec(), cells, max_cells)?;
+    if !next.cells().iter().any(|t| t.contains(&index)) {
+        return Err(MeshError::Failed(
+            "insertion did not retain its point".into(),
+        ));
+    }
+    Ok(next)
+}
+/// Incrementally maintained Delaunay tetrahedralization of a growing point set,
+/// for Steiner-point recovery. Same predicates and tie policy as
+/// [`tetrahedralize`]; each insertion is one checked topology transaction, so a
+/// failure leaves the previous triangulation intact.
+#[derive(Debug, Clone)]
+pub struct Delaunay {
+    topology: TetTopology,
+    limits: Limits,
+}
+impl Delaunay {
+    pub fn new(input: &[Point], limits: Limits) -> Result<Self, MeshError> {
+        Ok(Self {
+            topology: tetrahedralize(input, limits)?,
+            limits,
+        })
+    }
+    pub fn topology(&self) -> &TetTopology {
+        &self.topology
+    }
+    /// Insert a point, returning its index (always the previous point count).
+    pub fn insert(&mut self, point: Point) -> Result<usize, MeshError> {
+        let mut points = self.topology.points().to_vec();
+        if points.len() >= self.limits.max_points {
+            return Err(MeshError::LimitExceeded("point budget exceeded".into()));
+        }
+        let index = points.len();
+        points.push(point);
+        let next = insert_index(&points, &self.topology, index, self.limits.max_cells)?;
+        check_hull(&next)?;
+        self.topology = next;
+        Ok(index)
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -353,5 +403,46 @@ mod tests {
             1
         );
         assert!((volume(&tetrahedralize(&p, Limits::default()).unwrap()) - 1. / 6.).abs() < 1e-15);
+    }
+
+    #[test]
+    fn incremental_steiner_insertion_keeps_the_delaunay_property_and_volume() {
+        let mut p = Vec::new();
+        for x in [0., 1.] {
+            for y in [0., 1.] {
+                for z in [0., 1.] {
+                    p.push([x, y, z]);
+                }
+            }
+        }
+        let mut d = Delaunay::new(&p, Limits::default()).unwrap();
+        for q in [[0.5, 0.5, 0.5], [0.25, 0.3, 0.7], [0.5, 0.5, 0.]] {
+            let before = d.topology().clone();
+            let i = d.insert(q).unwrap();
+            assert_eq!(i, p.len());
+            p.push(q);
+            assert!((volume(d.topology()) - 1.).abs() < 1e-14);
+            assert_ne!(before, *d.topology());
+        }
+        for t in d.topology().cells() {
+            for (i, &q) in p.iter().enumerate() {
+                if !t.contains(&i) {
+                    assert_ne!(sphere_side(t.map(|j| p[j]), q).unwrap(), SphereSide::Inside);
+                }
+            }
+        }
+        // A duplicate or over-budget insertion leaves the triangulation untouched.
+        let before = d.topology().clone();
+        assert!(d.insert([0.5, 0.5, 0.5]).is_err());
+        assert_eq!(before, *d.topology());
+        let mut tiny = Delaunay::new(
+            &p[..8],
+            Limits {
+                max_points: 8,
+                ..Limits::default()
+            },
+        )
+        .unwrap();
+        assert!(tiny.insert([0.5, 0.5, 0.5]).is_err());
     }
 }

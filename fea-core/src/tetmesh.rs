@@ -576,7 +576,10 @@ fn tet10_ok(mesh: &Mesh, nodes: &[usize]) -> bool {
             return false;
         }
     }
-    true
+    // The samples alone miss folds between them (about 0.5 % of randomly bent elements pass them yet invert somewhere):
+    // the Bernstein bound proves the Jacobian positive over the whole element.
+    let xyz: Vec<V3> = nodes.iter().map(|&n| mesh.nodes[n]).collect();
+    matches!(crate::meshing::curved::simplex_validity(ElementKind::Tet10, &xyz, 5), Ok(v) if v.verdict == crate::meshing::curved::Verdict::Valid)
 }
 
 /// Move the midside node of every boundary edge onto the surface (curved elements), as far as keeps every tetrahedron
@@ -660,4 +663,60 @@ fn face_of_triangle(s: &Solid, v: [V3; 3], centre: V3, size: f64) -> usize {
         }
     }
     (s.face_of)(centre)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::meshing::curved::{simplex_validity, Verdict};
+
+    /// A bent Tet10 that the eleven-point Jacobian test accepts although its mapping folds between the samples is
+    /// refused by `tet10_ok` (found by random search; about one in two hundred heavily bent elements is such a case).
+    #[test]
+    fn a_fold_between_the_jacobian_samples_is_still_refused() {
+        let corners: [V3; 4] = [[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
+        let mut s = 99u64;
+        let mut next = || {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((s >> 33) as f64) / (1u64 << 30) as f64 - 1.
+        };
+        let mut checked = 0;
+        for _ in 0..5000 {
+            let mut nodes: Vec<V3> = corners.to_vec();
+            for (a, b) in [(0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3)] {
+                nodes.push(mid(corners[a], corners[b]));
+            }
+            for node in nodes.iter_mut().skip(4) {
+                for x in node.iter_mut() {
+                    *x += 0.7 * next();
+                }
+            }
+            let mut mesh = Mesh::new(Physics::Solid);
+            mesh.nodes = nodes.clone();
+            let ids: Vec<usize> = (0..10).collect();
+            // Replay the sampled part of `tet10_ok` on its own.
+            let sampled = SAMPLES.iter().all(|xi| {
+                let (_, dn) = ElementKind::Tet10.shape(*xi);
+                let mut j = [[0.0; 3]; 3];
+                for (i, &n) in ids.iter().enumerate() {
+                    for a in 0..3 {
+                        for b in 0..3 {
+                            j[a][b] += mesh.nodes[n][a] * dn[i][b];
+                        }
+                    }
+                }
+                let det = j[0][0] * (j[1][1] * j[2][2] - j[1][2] * j[2][1]) - j[0][1] * (j[1][0] * j[2][2] - j[1][2] * j[2][0]) + j[0][2] * (j[1][0] * j[2][1] - j[1][1] * j[2][0]);
+                det >= 0.1
+            });
+            let proved = simplex_validity(ElementKind::Tet10, &nodes, 6).unwrap().verdict;
+            if sampled && proved == Verdict::Invalid {
+                assert!(!tet10_ok(&mesh, &ids), "the rigorous check must refuse a folded element");
+                checked += 1;
+            }
+            if proved == Verdict::Valid && sampled {
+                assert!(tet10_ok(&mesh, &ids) || simplex_validity(ElementKind::Tet10, &nodes, 5).unwrap().verdict != Verdict::Valid);
+            }
+        }
+        assert!(checked >= 3, "the search must find sample-blind elements: {checked}");
+    }
 }

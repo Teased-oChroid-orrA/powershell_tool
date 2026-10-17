@@ -574,3 +574,23 @@ Phase 53 full qualification now passes at `de5ceed`: 185 CAD-enabled / 168 featu
 ## 2026-10-17 — Phase 54 candidate discovery (in review)
 
 PR #81 merged at `58c054c`. Branch `feature/native-cad-pcurve-candidates` adds `step_pcurve_candidates::discover` ([Phase 54](issue-46-phase-54.md)): bounded per-vertex parameter search plus endpoint recheck; closed edges refuse to form an arc. Feature-off 170/0/0 and app compile pass on macOS; CAD-enabled run also passes: 187/0/0. Next: oriented finite arc/sense/wrap selection, then master/trim/body.
+
+## 2026-10-17 — Phase 55 oriented arc selection
+
+Branch `feature/native-cad-pcurve-arc` (stacked on PR #82) adds `step_pcurve_arc::select` ([Phase 55](issue-46-phase-55.md)): certified witness tests choose the interior or wrapping arc from `same_sense`, independently checked on all 10 open bracket spline edges and their sense-flipped variants. 190 CAD-enabled / 173 feature-off pass. The auto-mode classifier denied `gh pr merge` for #82; merging is left to the user. Next: master/trim-loop/body validation using the selected arcs.
+
+## 2026-10-17 — Phase 56 circle and cylinder arcs
+
+Branch `feature/native-cad-circle-arcs` (stacked on #82 -> #83) extends arc selection to plane CIRCLE and cylinder constant-V LINE p-curves ([Phase 56](issue-46-phase-56.md)). Body audit `finite_arcs`: 32 oriented arcs + 20 closed edges, all independently checked. 192 CAD-enabled / 175 feature-off pass. PRs #82/#83 remain unmerged (auto-mode classifier denies `gh pr merge`; user must merge). Next: loop-level master/trim agreement and remaining P1 gates.
+
+## 2026-10-17 — Phase 57 finite trims for every edge
+
+Branch `feature/native-cad-line-trims` (stacked #82 -> #83 -> #84) resolves plane LINE and cylinder generator edges to certified finite segments ([Phase 57](issue-46-phase-57.md)); body audit `finite_arcs` now covers all 228 associations (176 segments, 32 arcs, 20 closed). Next: face-level loop/orientation agreement.
+
+## 2026-10-17 — Phase 58 conforming Delaunay
+
+Branch `feature/native-cad-conforming-delaunay` (stacked #82 -> #83 -> #84 -> #85) adds `delaunay3` and `plc_conform` ([Phase 58](issue-46-phase-58.md)). Works on well-conditioned PLCs; the NEMA17 sampled shell diverges (documented, refuses in ~2 s). Next: boundary recovery by reconnection or surface remesh. #82-#85 remain unmerged (auto-mode classifier denies `gh pr merge`; user merges).
+
+## 2026-10-17 — Phase 59 radius-edge refinement
+
+Branch `feature/native-cad-quality-refinement` (stacked on #86) adds facet tie alignment, a leak-proof extraction and `max_radius_edge` ([Phase 59](issue-46-phase-59.md)). Known limits pinned by tests: 7-degree corner diagonals and the NEMA17 sampled shell still refuse with `Limit`. PRs #82-#86 unmerged (user merges). Next: boundary recovery by local reconnection / surface remesh, sliver removal.

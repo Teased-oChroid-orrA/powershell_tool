@@ -266,3 +266,25 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Phase 53 finite p-curve endpoint checks](issue-46-phase-53.md): explicit parameters/order, source association and outward physical endpoint agreement.
 
 - [Repository native CAD/meshing completion checklist](issue-46-completion-checklist.md): checked delivered increments and open priority exit gates.
+
+- [Phase 54 p-curve endpoint candidate discovery](issue-46-phase-54.md): bounded per-vertex parameter search plus endpoint recheck; closed edges refuse to form an arc.
+
+- [Phase 55 oriented finite arc selection](issue-46-phase-55.md): certified witness half-plane tests choose the interior or wrapping arc of a closed spline p-curve.
+
+- [Phase 56 circle and cylinder arcs](issue-46-phase-56.md): periodic plane-circle and cylinder constant-V carriers; 32 oriented arcs on the bracket.
+
+- [Phase 57 finite trims for every bracket edge](issue-46-phase-57.md): straight segments join the arcs; 228 associations resolved.
+
+- [Phase 58 incremental Delaunay and conforming PLC recovery](issue-46-phase-58.md): Steiner recovery of well-conditioned closed shells; the NEMA17 shell is a documented non-convergent case.
+
+- [Phase 59 tie alignment, extraction and radius-edge refinement](issue-46-phase-59.md): facet-diagonal flips, leak-proof inside/outside, quality refinement.
+
+- [Phase 60 sliver reconnection](issue-46-phase-60.md): exact 2-3 flips and edge removal; solver-gate evidence on a refined slab.
+
+- [Phase 61 registry v2 and input-angle gate](issue-46-phase-61.md): native constrained strategy gated on the shell's smallest angle; measured reasons for the bracket.
+
+- [Phase 62 metric tensor fields](issue-46-phase-62.md): validated SPD metrics, gradation, curvature/error-driven sizes, complexity budgets (#57).
+
+- [Phase 63 metric-driven refinement](issue-46-phase-63.md): terminal-edge splitting and metric-quality flips (first step of #58).
+
+- [Phase 64 curved-element validity](issue-46-phase-64.md): Bernstein-bound Jacobian positivity for Tet10/Tri6 and the closed hole in the mesher's sampled guard (#55).

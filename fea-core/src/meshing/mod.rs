@@ -6,12 +6,16 @@
 pub mod adjacency;
 pub mod cost;
 pub mod compatibility;
+pub mod curved;
 pub mod hybrid;
+pub mod metric;
+pub mod metric_refine;
 pub mod multimaterial;
 pub mod partition;
 pub mod predictor;
 pub mod quality;
 pub mod smooth;
+pub mod tet_flip;
 pub mod tet_topology;
 pub mod tet_delaunay;
 pub mod weld;

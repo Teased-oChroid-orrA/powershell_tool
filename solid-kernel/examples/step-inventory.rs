@@ -15,7 +15,7 @@ fn main() {
 }
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
-    let usage = "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface] [--pcurve-audit] [--repair-orientation] [--plc] [--star-seed X,Y,Z] [--trial-kernel] (kernel coordinates in mm)";
+    let usage = "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface] [--pcurve-audit] [--finite-arcs] [--repair-orientation] [--plc] [--conform [--conform-max-steiner N] [--conform-missing-only] [--conform-radius-edge B] [--conform-reconnect]] [--star-seed X,Y,Z] [--trial-kernel] (kernel coordinates in mm)";
     let path = args.next().ok_or(usage)?;
     if path == "--help" {
         println!("{usage}");
@@ -23,13 +23,22 @@ fn run() -> Result<(), String> {
     }
     let mut pcurve_audit = false;
     let mut plc_requested = false;
+    let mut conform_requested = false;
+    let mut conform_max_steiner = 4000;
+    let mut conform_missing_only = false;
+    let mut conform_radius_edge = None;
+    let mut conform_reconnect = false;
     let mut kernel = None;
     let mut trial_kernel = false;
     let mut mode = 0;
     let mut repair_orientation = false;
+    let mut finite_arcs = false;
     while let Some(flag) = args.next() {
         if flag == "--pcurve-audit" {
             pcurve_audit = true;
+        } else if flag == "--finite-arcs" {
+            pcurve_audit = true;
+            finite_arcs = true;
         } else if flag == "--analytic" {
             mode = mode.max(1);
         } else if flag == "--surface" {
@@ -39,6 +48,24 @@ fn run() -> Result<(), String> {
         } else if flag == "--repair-orientation" {
             repair_orientation = true;
             mode = mode.max(2);
+        } else if flag == "--conform-missing-only" {
+            conform_missing_only = true;
+        } else if flag == "--conform-reconnect" {
+            conform_reconnect = true;
+        } else if flag == "--conform-radius-edge" {
+            conform_radius_edge = Some(
+                args.next()
+                    .and_then(|v| v.to_str().and_then(|v| v.parse::<f64>().ok()))
+                    .ok_or("--conform-radius-edge needs a ratio")?,
+            );
+        } else if flag == "--conform-max-steiner" {
+            conform_max_steiner = args
+                .next()
+                .and_then(|v| v.to_str().and_then(|v| v.parse().ok()))
+                .ok_or("--conform-max-steiner needs a count")?;
+        } else if flag == "--conform" {
+            plc_requested = true;
+            conform_requested = true;
         } else if flag == "--plc" {
             plc_requested = true;
             mode = mode.max(2);
@@ -82,8 +109,14 @@ fn run() -> Result<(), String> {
         let context =
             solid_kernel::step_body::BodyContext::read(&result).map_err(|e| e.to_string())?;
         let mut last = None;
-        let report =
-            solid_kernel::step_curve_audit::audit(&context, &result, Default::default(), |p| {
+        let report = solid_kernel::step_curve_audit::audit(
+            &context,
+            &result,
+            solid_kernel::step_curve_audit::Options {
+                finite_arcs,
+                ..Default::default()
+            },
+            |p| {
                 let status = (p.edge_uses_seen, p.associations_done, p.spline_spans_done);
                 if last != Some(status)
                     && (if p.total_associations.is_none() {
@@ -104,9 +137,22 @@ fn run() -> Result<(), String> {
                     last = Some(status);
                 }
                 true
-            })
-            .map_err(|e| e.to_string())?;
-        println!("Scoped p-curve locus audit: {} associations; {} spline spans. Finite arcs, master semantics, trims and body validity are not certified.",report.checks.len(),report.spline_spans);
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        println!("Scoped p-curve locus audit: {} associations; {} spline spans. Master semantics, trims and body validity are not certified.",report.checks.len(),report.spline_spans);
+        if finite_arcs {
+            use solid_kernel::step_pcurve_arc::Resolved;
+            let count = |f: fn(&Resolved) -> bool| {
+                report.finite_arcs.iter().filter(|a| f(&a.resolved)).count()
+            };
+            println!(
+                "Finite trims: {} segments, {} oriented arcs, {} closed edges without an arc.",
+                count(|r| matches!(r, Resolved::Segment(_))),
+                count(|r| matches!(r, Resolved::Arc(_))),
+                count(|r| matches!(r, Resolved::Closed))
+            );
+        }
     }
     match result.length_contexts() {
         Ok(contexts) => {
@@ -256,6 +302,56 @@ fn run() -> Result<(), String> {
                     plc.facets().len(),
                     plc.segments().len()
                 );
+                if conform_requested {
+                    use fea_core::meshing::compatibility as registry;
+                    let angle = solid_kernel::plc_conform::min_shell_angle_deg(
+                        plc.vertices(),
+                        plc.facets(),
+                    );
+                    let verdict = registry::check(
+                        &registry::Request {
+                            strategy: registry::Strategy::NativeConstrained,
+                            geometry: registry::GeometryClass::GeneralSolid,
+                            element: fea_core::ElementKind::Tet4,
+                            formulation: registry::Formulation::LinearElastic3d,
+                            element_upper_bound: Some(10_000_000),
+                            dof_upper_bound: Some(30_000_000),
+                            require_exact_curved_cad: false,
+                            shell_min_angle_deg: Some(angle),
+                        },
+                        registry::Budget {
+                            max_elements: usize::MAX,
+                            max_dofs: usize::MAX,
+                        },
+                    );
+                    println!("Registry v{} verdict for the native constrained strategy: {verdict:?}; smallest shell angle {angle:.3} degrees (audited bound {} degrees). Attempting anyway because --conform was requested.",registry::REGISTRY_VERSION,registry::NATIVE_MIN_SHELL_ANGLE_DEG);
+                    let started = std::time::Instant::now();
+                    let mut last = (usize::MAX, 0);
+                    let mesh = solid_kernel::plc_conform::conform(
+                        plc.vertices(),
+                        plc.facets(),
+                        solid_kernel::plc_conform::Options {
+                            max_steiner: conform_max_steiner,
+                            protect_encroached: !conform_missing_only,
+                            max_radius_edge: conform_radius_edge,
+                            reconnect: conform_reconnect.then(Default::default),
+                            ..Default::default()
+                        },
+                        |p| {
+                            if (p.phase as usize, p.steiner / 25) != last {
+                                last = (p.phase as usize, p.steiner / 25);
+                                eprintln!(
+                                    "Conforming recovery {:?}: {} Steiner points, {} segments / {} sub-facets pending",
+                                    p.phase, p.steiner, p.missing_segments, p.missing_facets
+                                );
+                            }
+                            true
+                        },
+                    )
+                    .map_err(|e| e.to_string())?;
+                    let r = &mesh.report;
+                    println!("Conforming Delaunay recovery: {} input vertices + {} segment and {} facet Steiner points; {} interior cells (of {} hull cells); volume error {:e}; max radius-edge ratio {:.3} ({} quality Steiner, {} unresolved); max Steiner offset {:e} (relative); {} rounds ({:.1} s). Cell quality and slivers are not bounded.",r.input_vertices,r.segment_steiner,r.facet_steiner,r.interior_cells,r.hull_cells,r.volume_error_relative,r.max_radius_edge_ratio,r.quality_steiner,r.unresolved_bad_cells,r.max_steiner_offset_relative,r.rounds,started.elapsed().as_secs_f64());
+                }
                 if let Some(point) = kernel {
                     let mut last_seed = None;
                     let mut seed = StarSeed::new(plc, point, 100_000, |done, total| {

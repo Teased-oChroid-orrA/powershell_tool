@@ -20,20 +20,27 @@ Checked lines are delivered scoped increments, with evidence committed in this r
 - [x] #51: Bounded quadratic sampler work reduction at unchanged tolerance: 4094 → 32 quarter-circle segments ([Phase 50](issue-46-phase-50.md), PR #78).
 - [x] #51: Explicit finite spline interval sampling and checked source vertex endpoints/sense, with raw parameter/unit preservation ([Phase 51](issue-46-phase-51.md), PR #79).
 - [x] #51: Shared plane/cylinder/spline world-query dispatch; all 228 bracket p-curves and independent physical-distance tests ([Phase 52](issue-46-phase-52.md), PR #80).
+- [x] #51: Discovery of finite p-curve endpoint parameters, oriented arc selection (interior/wrapping) and finite segments/arcs for all 228 bracket edge associations ([Phases 54–57](issue-46-phase-57.md), PRs #82–#85).
 - [x] #51: Explicit finite p-curve endpoint correspondence with outward source conversion and hard work/cancellation gates ([Phase 53](issue-46-phase-53.md)); source `de5ceed` qualified at 185 CAD-enabled / 168 feature-off tests and app compile. Integration status is in the live pointer.
 - [x] #52: Immutable validated single-shell sampled PLC input, preserved constraints/source metadata and limited strictly star-shaped conforming seed ([Phases 13–14](issue-46-native-support-matrix-2026-10-16.md)).
 - [x] #53: Existing solver quality/conformity gates reused; thin/near-boundary refusal regressions and explicit quality-safe star-kernel trial ([Phases 15–18](issue-46-native-support-matrix-2026-10-16.md)).
 - [ ] #51: General spline B-Rep, finite/master/oriented trim and exact body agreement, production healing/assemblies/metadata and persistent associations.
+- [x] #52: Incremental exact-predicate Delaunay engine and conforming Steiner recovery for well-conditioned closed PLCs; the NEMA17 sampled shell is a documented non-convergent case ([Phase 58](issue-46-phase-58.md)).
 - [ ] #52: General constrained segment/facet recovery, cavities/regions/components and constrained refinement with boundary conformity.
+- [x] #53: Radius-edge Delaunay refinement of recovered cells for well-conditioned PLCs, with exact volume/boundary checks ([Phase 59](issue-46-phase-59.md)); slivers and sampled surface shells remain open.
 - [ ] #53: General sliver handling/flips/smoothing/remeshing and representative solver-conditioning/accuracy/cost acceptance.
+- [x] #54/#64: Registry v2 covers the native constrained strategy with an input-angle gate and stable rejection codes ([Phase 61](issue-46-phase-61.md)).
 - [ ] #54: Full deterministic strategy generation/selection and end-to-end qualification beyond the early registry pilot.
 
 ## P2, P3 and final gates
 
-- [ ] #55: High-order curved CAD-conforming elements.
+- [x] #55: Rigorous Bernstein-bound validity of Tet10/Tri6 maps, mesh-level check, and the mesher's sampled guard hardened ([Phase 64](issue-46-phase-64.md)); exact CAD projection and convergence evidence remain open.
+- [ ] #55: High-order curved CAD-conforming elements (exact projection, convergence, cost).
 - [ ] #56: Verified structured–unstructured integration and transitions.
-- [ ] #57: Validated metric tensors and size/complexity budgets.
-- [ ] #58: Metric-driven anisotropic adaptation.
+- [x] #57: Validated SPD metric tensors, metric-space lengths, log-Euclidean interpolation, intersection, gradation, curvature- and error-field-driven sizes and complexity/budget control, all with analytic tests ([Phase 62](issue-46-phase-62.md)). No mesher consumes the field yet, so the gate stays open until #58 integrates it.
+- [ ] #57: Verified spatial metric fields consumed by a mesher.
+- [x] #58: Metric-driven refinement by terminal-edge splitting and metric-quality flips, conforming and geometry-preserving, converging for isotropic and mild anisotropic fields ([Phase 63](issue-46-phase-63.md)); strong anisotropy, coarsening and curved-boundary projection remain open.
+- [ ] #58: Metric-driven anisotropic adaptation (unit-metric meshes at strong anisotropy).
 - [ ] #59: Mesh motion/ALE and consistent state/history transfer.
 - [ ] #60: Solver-aware cost models and advanced optimization.
 - [ ] #61: Optional learning with representative verified training data, held-out/OOD checks and deterministic fallback.
