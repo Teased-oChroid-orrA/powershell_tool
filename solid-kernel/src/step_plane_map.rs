@@ -189,27 +189,23 @@ fn projection(p: V, origin: V, direction: V) -> V {
     std::array::from_fn(|i| origin[i] + direction[i] * t)
 }
 impl PlaneParameterMap {
-    /// Certify unsigned finite line-locus agreement at the actual source edge.
-    /// The target must be an associated p-curve on this actual PLANE. Other
-    /// p-curves/master representations, rates/offsets and general trims remain
-    /// unverified; the report explicitly identifies which master was declared.
-    pub fn verify_line_locus(
+    fn associated_pcurve<'a>(
         &self,
-        context: &BodyContext,
+        context: &'a BodyContext,
         data: &Inventory,
         edge: EntityReference,
         pcurve: EntityReference,
-        tolerance_mm: f64,
-    ) -> Result<PlaneLineLocus, Error> {
+    ) -> Result<
+        (
+            &'a crate::step_topology::RawEdge,
+            crate::step_pcurve::PcurveDeclaration,
+            crate::step_pcurve::SurfaceCurveDeclaration,
+        ),
+        Error,
+    > {
         let face = data.resolve_reference(self.face)?;
         data.resolve_reference(context.length_context())?;
         let entity = data.resolve_reference(edge)?;
-        if !tolerance_mm.is_finite() || tolerance_mm <= 0. {
-            return Err(fail(
-                entity,
-                "line agreement tolerance must be finite and positive",
-            ));
-        }
         let f = context
             .body()
             .faces
@@ -236,10 +232,6 @@ impl PlaneParameterMap {
                 "p-curve basis surface does not match the mapped face",
             ));
         }
-        let crate::step_pcurve::ParametricCurve::Line { origin: uv, .. } = declaration.geometry
-        else {
-            return Err(fail(entity, "only plane LINE p-curve loci are certified"));
-        };
         let mut current = topology.curve;
         let mut found = None;
         let mut seen = std::collections::BTreeSet::new();
@@ -268,6 +260,33 @@ impl PlaneParameterMap {
                 "p-curve is not associated with this source edge wrapper",
             )
         })?;
+        Ok((topology, declaration, wrapper))
+    }
+    /// Certify unsigned finite line-locus agreement at the actual source edge.
+    /// The target must be an associated p-curve on this actual PLANE. Other
+    /// p-curves/master representations, rates/offsets and general trims remain
+    /// unverified; the report explicitly identifies which master was declared.
+    pub fn verify_line_locus(
+        &self,
+        context: &BodyContext,
+        data: &Inventory,
+        edge: EntityReference,
+        pcurve: EntityReference,
+        tolerance_mm: f64,
+    ) -> Result<PlaneLineLocus, Error> {
+        let entity = data.resolve_reference(edge)?;
+        if !tolerance_mm.is_finite() || tolerance_mm <= 0. {
+            return Err(fail(
+                entity,
+                "line agreement tolerance must be finite and positive",
+            ));
+        }
+        let (topology, declaration, wrapper) =
+            self.associated_pcurve(context, data, edge, pcurve)?;
+        let crate::step_pcurve::ParametricCurve::Line { origin: uv, .. } = declaration.geometry
+        else {
+            return Err(fail(entity, "only plane LINE p-curve loci are certified"));
+        };
         let geometry = crate::analytic_step::curve_geometry(data, topology.curve)?;
         let (origin, vector) = match call(geometry, "LINE")? {
             [Value::String(_), Value::Ref(p), Value::Ref(v)] => (*p, &data.entities()[v]),
@@ -365,6 +384,122 @@ impl PlaneParameterMap {
             source_to_pcurve_error_mm: source_to_pc,
             curve_to_pcurve_error_mm: curve_to_pc,
             natural_direction_dot: [orientation.lo, orientation.hi],
+        })
+    }
+}
+
+/// Unsigned whole-circle carrier comparison. It does not select an arc,
+/// establish edge sense, or certify complete master/trim/body agreement.
+#[derive(Debug)]
+pub struct PlaneCircleCarrier {
+    pub face: EntityReference,
+    pub edge: EntityReference,
+    pub pcurve: EntityReference,
+    pub wrapper: EntityReference,
+    pub declared_master: crate::step_pcurve::CurveMaster,
+    pub master_reference: EntityReference,
+    pub centre_error_mm: f64,
+    pub radius_error_mm: f64,
+    pub normal_error: f64,
+    pub hausdorff_upper_mm: f64,
+    pub natural_normal_dot: [f64; 2],
+}
+impl PlaneParameterMap {
+    /// Bound Hausdorff distance between the entire source 3D CIRCLE and the
+    /// entire plane-mapped parameter CIRCLE, retaining declared master identity.
+    pub fn verify_circle_carrier(
+        &self,
+        context: &BodyContext,
+        data: &Inventory,
+        edge: EntityReference,
+        pcurve: EntityReference,
+        tolerance_mm: f64,
+    ) -> Result<PlaneCircleCarrier, Error> {
+        use crate::step_frame::{cross, SourceFrame};
+        let entity = data.resolve_reference(edge)?;
+        if !tolerance_mm.is_finite() || tolerance_mm <= 0. {
+            return Err(fail(
+                entity,
+                "circle carrier tolerance must be finite and positive",
+            ));
+        }
+        let (topology, declaration, wrapper) =
+            self.associated_pcurve(context, data, edge, pcurve)?;
+        let crate::step_pcurve::ParametricCurve::Circle { origin, radius, .. } =
+            declaration.geometry
+        else {
+            return Err(fail(
+                entity,
+                "requires a parameter CIRCLE on the source plane",
+            ));
+        };
+        let geometry = crate::analytic_step::curve_geometry(data, topology.curve)?;
+        let (placement, source_radius) = match call(geometry, "CIRCLE")? {
+            [Value::String(_), Value::Ref(frame), r] => (
+                &data.entities()[frame],
+                crate::analytic_step::scalar(geometry, r)?,
+            ),
+            _ => return Err(fail(geometry, "requires a source 3D CIRCLE carrier")),
+        };
+        let source_radius = Interval::point(source_radius) * Interval::point(self.scale_mm);
+        let radius = Interval::point(radius) * Interval::point(self.scale_mm);
+        if !source_radius.finite()
+            || source_radius.lo <= 0.
+            || source_radius.hi > 1e30
+            || !radius.finite()
+            || radius.lo <= 0.
+            || radius.hi > 1e30
+        {
+            return Err(fail(geometry, "circle radii must be positively bounded"));
+        }
+        let frame = SourceFrame::read(data, placement, self.scale_mm)?;
+        let bounds = self.point_bounds(origin)?;
+        let mapped: V = std::array::from_fn(|i| Interval::new(bounds.min[i], bounds.max[i]));
+        let centre_error = distance_upper(frame.origin, mapped, entity)?;
+        let plane_normal = cross(self.x, self.y);
+        let natural = dot(frame.z, plane_normal);
+        // Carrier orientation is unsigned; choose a normal sign only when its
+        // alignment is certified. Arc direction and parameter offset stay open.
+        let aligned = if natural.lo > 0. {
+            plane_normal
+        } else if natural.hi < 0. {
+            plane_normal.map(|x| Interval::point(0.) - x)
+        } else {
+            return Err(fail(
+                entity,
+                "circle carrier normal alignment not certified",
+            ));
+        };
+        let normal_error = distance_upper(frame.z, aligned, entity)?;
+        let difference = source_radius - radius;
+        let radius_error = difference.lo.abs().max(difference.hi.abs());
+        let largest = source_radius.hi.max(radius.hi);
+        // For aligned unit normals, the minimal plane rotation has operator
+        // norm ||n-m|| = 2 sin(theta/2). Pairing equally rotated points bounds
+        // both directed distances by centre + radius + Rmax*normal error.
+        let total = Interval::point(centre_error)
+            + Interval::point(radius_error)
+            + Interval::point(largest) * Interval::point(normal_error);
+        if !total.finite() || total.hi > tolerance_mm {
+            return Err(fail(entity, "whole-circle carrier agreement not certified"));
+        }
+        let master_reference = match wrapper.declared_master {
+            crate::step_pcurve::CurveMaster::Curve3d => wrapper.geometry_3d,
+            crate::step_pcurve::CurveMaster::Pcurve1 => wrapper.pcurves[0],
+            crate::step_pcurve::CurveMaster::Pcurve2 => wrapper.pcurves[1],
+        };
+        Ok(PlaneCircleCarrier {
+            face: self.face,
+            edge,
+            pcurve,
+            wrapper: wrapper.source,
+            declared_master: wrapper.declared_master,
+            master_reference,
+            centre_error_mm: centre_error,
+            radius_error_mm: radius_error,
+            normal_error,
+            hausdorff_upper_mm: total.hi,
+            natural_normal_dot: [natural.lo, natural.hi],
         })
     }
 }

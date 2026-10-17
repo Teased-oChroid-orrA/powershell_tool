@@ -147,6 +147,13 @@ fn nonplane_stale_parallel_and_unbounded_queries_do_not_infer_parameter_semantic
     assert!(PlaneParameterMap::read(&pc, &p, p.entity_reference(face).unwrap()).is_err());
 }
 fn line_cases(d: &solid_kernel::step::Inventory, c: &BodyContext) -> Vec<(u64, u64, u64)> {
+    primitive_cases(d, c, "LINE")
+}
+fn primitive_cases(
+    d: &solid_kernel::step::Inventory,
+    c: &BodyContext,
+    kind: &str,
+) -> Vec<(u64, u64, u64)> {
     use solid_kernel::step_pcurve::{self, ParametricCurve};
     let mut cases = std::collections::BTreeSet::new();
     for face in c.body().faces.values() {
@@ -158,14 +165,18 @@ fn line_cases(d: &solid_kernel::step::Inventory, c: &BodyContext) -> Vec<(u64, u
             let wrapper =
                 step_pcurve::read_surface_curve(d, d.entity_reference(edge.curve).unwrap())
                     .unwrap();
-            if d.entities()[&wrapper.geometry_3d.entity].components[0].name != "LINE" {
+            if d.entities()[&wrapper.geometry_3d.entity].components[0].name != kind {
                 continue;
             }
             for r in wrapper.pcurves {
                 let p =
                     step_pcurve::read_pcurve(d, r, solid_kernel::nurbs::Limits::default()).unwrap();
                 if p.basis_surface.entity == face.surface
-                    && matches!(p.geometry, ParametricCurve::Line { .. })
+                    && matches!(
+                        (&p.geometry, kind),
+                        (ParametricCurve::Line { .. }, "LINE")
+                            | (ParametricCurve::Circle { .. }, "CIRCLE")
+                    )
                 {
                     cases.insert((face.id, edge.id, r.entity));
                 }
@@ -508,4 +519,231 @@ fn spline_pcurve_world_bounds_scale_lengths_once_and_leave_knots_raw() {
     assert!(scaled
         .spline_pcurve_bounds(&metric, pc, domain, nurbs::Limits::default(), 100)
         .is_err());
+}
+
+#[test]
+fn actual_plane_circle_carriers_have_bounded_whole_locus_agreement() {
+    let data = inventory(SOURCE, Limits::default()).unwrap();
+    let context = BodyContext::read(&data).unwrap();
+    let cases = primitive_cases(&data, &context, "CIRCLE");
+    assert_eq!(cases.len(), 13);
+    for (face, edge, pcurve) in cases {
+        let map =
+            PlaneParameterMap::read(&context, &data, data.entity_reference(face).unwrap()).unwrap();
+        let report = map
+            .verify_circle_carrier(
+                &context,
+                &data,
+                data.entity_reference(edge).unwrap(),
+                data.entity_reference(pcurve).unwrap(),
+                1e-7,
+            )
+            .unwrap();
+        assert_eq!(report.face.entity, face);
+        assert_eq!(report.edge.entity, edge);
+        assert_eq!(report.pcurve.entity, pcurve);
+        assert!(report.hausdorff_upper_mm <= 1e-7);
+        assert!(
+            report.centre_error_mm >= 0.
+                && report.radius_error_mm >= 0.
+                && report.normal_error >= 0.
+        );
+    }
+}
+#[test]
+fn incorrect_circle_radii_centres_and_3d_plane_normals_are_refused() {
+    use solid_kernel::{
+        nurbs,
+        step_pcurve::{self, ParametricCurve},
+    };
+    let data = inventory(SOURCE, Limits::default()).unwrap();
+    let c = BodyContext::read(&data).unwrap();
+    let (face, edge, pcurve) = primitive_cases(&data, &c, "CIRCLE")[0];
+    let pc = step_pcurve::read_pcurve(
+        &data,
+        data.entity_reference(pcurve).unwrap(),
+        nurbs::Limits::default(),
+    )
+    .unwrap();
+    let ParametricCurve::Circle { radius, .. } = pc.geometry else {
+        panic!("fixture")
+    };
+    let circle = data.resolve_reference(pc.geometry_source).unwrap();
+    let Value::Ref(placement) = circle.components[0].args[1] else {
+        panic!("fixture")
+    };
+    let place = &data.entities()[&placement];
+    let Value::Ref(point) = place.components[0].args[1] else {
+        panic!("fixture")
+    };
+    let mut fixtures = vec![
+        replace(
+            SOURCE,
+            circle.offset,
+            &format!("#{}=CIRCLE('',#{placement},{});", circle.id, radius + 1.),
+        ),
+        replace(
+            SOURCE,
+            data.entities()[&point].offset,
+            &format!("#{point}=CARTESIAN_POINT('',(12345.,23456.));"),
+        ),
+    ];
+    let wrapper = step_pcurve::read_surface_curve(
+        &data,
+        data.entity_reference(c.body().edges[&edge].curve).unwrap(),
+    )
+    .unwrap();
+    let source = data.resolve_reference(wrapper.geometry_3d).unwrap();
+    let Value::Ref(frame) = source.components[0].args[1] else {
+        panic!("fixture")
+    };
+    let Value::Ref(origin) = data.entities()[&frame].components[0].args[1] else {
+        panic!("fixture")
+    };
+    let next = data.entities().keys().last().unwrap() + 1;
+    let mut tilted = replace(
+        SOURCE,
+        data.entities()[&frame].offset,
+        &format!(
+            "#{frame}=AXIS2_PLACEMENT_3D('',#{origin},#{next},#{});",
+            next + 1
+        ),
+    );
+    let end = tilted.rfind("ENDSEC;").unwrap();
+    // The source plane is Z-normal in this selected fixture; a genuinely
+    // different normal must refuse even when centre and radius agree.
+    tilted.insert_str(
+        end,
+        &format!(
+            "#{next}=DIRECTION('',(1.,1.,1.));#{}=DIRECTION('',(1.,0.,0.));",
+            next + 1
+        ),
+    );
+    fixtures.push(tilted);
+    for fixture in fixtures {
+        let changed = inventory(&fixture, Limits::default()).unwrap();
+        let context = BodyContext::read(&changed).unwrap();
+        let map =
+            PlaneParameterMap::read(&context, &changed, changed.entity_reference(face).unwrap())
+                .unwrap();
+        assert!(map
+            .verify_circle_carrier(
+                &context,
+                &changed,
+                changed.entity_reference(edge).unwrap(),
+                changed.entity_reference(pcurve).unwrap(),
+                1e-7
+            )
+            .is_err());
+    }
+    let map = PlaneParameterMap::read(&c, &data, data.entity_reference(face).unwrap()).unwrap();
+    for tolerance in [0., -1., f64::NAN] {
+        assert!(map
+            .verify_circle_carrier(
+                &c,
+                &data,
+                data.entity_reference(edge).unwrap(),
+                data.entity_reference(pcurve).unwrap(),
+                tolerance
+            )
+            .is_err());
+    }
+    let stale = inventory(&format!("{SOURCE}\n"), Limits::default()).unwrap();
+    let sc = BodyContext::read(&stale).unwrap();
+    assert!(map
+        .verify_circle_carrier(
+            &sc,
+            &stale,
+            stale.entity_reference(edge).unwrap(),
+            stale.entity_reference(pcurve).unwrap(),
+            1e-7
+        )
+        .is_err());
+}
+
+#[test]
+fn reversed_circle_normal_preserves_unsigned_carrier_but_reports_orientation() {
+    use solid_kernel::step_pcurve;
+    let d = inventory(SOURCE, Limits::default()).unwrap();
+    let c = BodyContext::read(&d).unwrap();
+    let (face, edge, pcurve) = primitive_cases(&d, &c, "CIRCLE")[0];
+    let wrapper = step_pcurve::read_surface_curve(
+        &d,
+        d.entity_reference(c.body().edges[&edge].curve).unwrap(),
+    )
+    .unwrap();
+    let source = d.resolve_reference(wrapper.geometry_3d).unwrap();
+    let Value::Ref(frame) = source.components[0].args[1] else {
+        panic!("fixture")
+    };
+    let placement = &d.entities()[&frame];
+    let Value::Ref(origin) = placement.components[0].args[1] else {
+        panic!("fixture")
+    };
+    let z = match &placement.components[0].args[2] {
+        Value::Omitted => [0., 0., 1.],
+        Value::Ref(id) => {
+            let Value::List(raw) = &d.entities()[id].components[0].args[1] else {
+                panic!("fixture")
+            };
+            std::array::from_fn(|i| match raw[i] {
+                Value::Real(x) => x,
+                Value::Integer(x) => x as f64,
+                _ => panic!("fixture"),
+            })
+        }
+        _ => panic!("fixture"),
+    };
+    let x = if z[0].abs() < z[1].abs().max(z[2].abs()) {
+        [1., 0., 0.]
+    } else {
+        [0., 1., 0.]
+    };
+    let next = d.entities().keys().last().unwrap() + 1;
+    let mut changed = replace(
+        SOURCE,
+        placement.offset,
+        &format!(
+            "#{frame}=AXIS2_PLACEMENT_3D('',#{origin},#{next},#{});",
+            next + 1
+        ),
+    );
+    let end = changed.rfind("ENDSEC;").unwrap();
+    changed.insert_str(
+        end,
+        &format!(
+            "#{next}=DIRECTION('',({:.17e},{:.17e},{:.17e}));#{}=DIRECTION('',({},{},{}));",
+            -z[0],
+            -z[1],
+            -z[2],
+            next + 1,
+            x[0],
+            x[1],
+            x[2]
+        ),
+    );
+    let m = inventory(&changed, Limits::default()).unwrap();
+    let mc = BodyContext::read(&m).unwrap();
+    let original = PlaneParameterMap::read(&c, &d, d.entity_reference(face).unwrap())
+        .unwrap()
+        .verify_circle_carrier(
+            &c,
+            &d,
+            d.entity_reference(edge).unwrap(),
+            d.entity_reference(pcurve).unwrap(),
+            1e-7,
+        )
+        .unwrap();
+    let reversed = PlaneParameterMap::read(&mc, &m, m.entity_reference(face).unwrap())
+        .unwrap()
+        .verify_circle_carrier(
+            &mc,
+            &m,
+            m.entity_reference(edge).unwrap(),
+            m.entity_reference(pcurve).unwrap(),
+            1e-7,
+        )
+        .unwrap();
+    assert!(original.hausdorff_upper_mm <= 1e-7 && reversed.hausdorff_upper_mm <= 1e-7);
+    assert!(original.natural_normal_dot[0] * reversed.natural_normal_dot[0] < 0.);
 }

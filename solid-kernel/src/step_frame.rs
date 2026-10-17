@@ -66,7 +66,7 @@ impl SourceFrame {
     pub fn read(data: &Inventory, frame: &Entity, scale_mm: f64) -> Result<Self, Error> {
         let (origin, z, x) = match call(frame, "AXIS2_PLACEMENT_3D")? {
             [Value::String(_), Value::Ref(p), z, x] => (*p, z, x),
-            _ => return Err(fail(frame, "invalid source placement placement")),
+            _ => return Err(fail(frame, "invalid source placement")),
         };
         let z = direction(data, z, [0., 0., 1.], frame)?;
         let reference = direction(data, x, [1., 0., 0.], frame)?;
