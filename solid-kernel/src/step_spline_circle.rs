@@ -1,6 +1,6 @@
 //! Complete-span deviation of piecewise rational quadratic planar p-curves
 //! from source circles, with optional closed monotone angular coverage proof.
-//! No single-winding, finite arc, simple trim or complete master certificate.
+//! Optional single-winding proof; no finite arc, trim/body or complete master certificate.
 use crate::{
     analytic_step::{call, scalar},
     native_interval::Interval as I,
@@ -17,6 +17,9 @@ pub struct Options {
     /// Also require exact closure and a consistently nonzero angular derivative.
     /// This proves full circle coverage, not a single winding or simple trim.
     pub require_circle_coverage: bool,
+    /// Require coverage plus <=4 half-plane-contained spans, proving one turn.
+    /// A longer supported spline can still have coverage without this proof.
+    pub require_single_winding: bool,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -24,6 +27,7 @@ impl Default for Options {
             tolerance_mm: 1e-7,
             max_spans: 1024,
             require_circle_coverage: false,
+            require_single_winding: false,
         }
     }
 }
@@ -43,6 +47,7 @@ pub struct SplineCircleDeviation {
     pub curve_to_circle_upper_mm: f64,
     /// When true, the same error bound is symmetric (whole-circle Hausdorff).
     pub full_circle_coverage: bool,
+    pub single_winding: bool,
     /// Sign relative to the source circle frame, when coverage was required.
     /// No winding count, finite arc selection or full master proof is implied.
     pub angular_orientation: Option<i8>,
@@ -64,7 +69,9 @@ impl PlaneParameterMap {
     /// prove full circle coverage: the positive angular change of a closed,
     /// nonzero projected curve is an integer multiple of a full turn. Every
     /// circle angle then has a curve point within the same deviation bound.
-    /// Multiple windings, finite trims and full master semantics remain open.
+    /// Coverage alone permits multiple windings. The optional <=4-span
+    /// half-plane proof bounds the total change below two turns, establishing
+    /// one winding. Finite trims and full master semantics remain open.
     pub fn verify_spline_circle_deviation(
         &self,
         context: &BodyContext,
@@ -80,6 +87,13 @@ impl PlaneParameterMap {
                 entity,
                 ErrorKind::Geometry,
                 "spline-circle tolerance must be finite and positive",
+            ));
+        }
+        if options.require_single_winding && !options.require_circle_coverage {
+            return Err(fail(
+                entity,
+                ErrorKind::Geometry,
+                "single winding requires full circle coverage",
             ));
         }
         if !progress(Progress {
@@ -172,6 +186,13 @@ impl PlaneParameterMap {
         let mut upper: f64 = 0.;
         let mut angular_orientation = None;
         let total = spans.len();
+        if options.require_single_winding && total > 4 {
+            return Err(fail(
+                entity,
+                ErrorKind::Geometry,
+                "single-winding certificate supports at most four Bezier spans",
+            ));
+        }
         if !progress(Progress {
             spans: 0,
             total_spans: total,
@@ -257,6 +278,24 @@ impl PlaneParameterMap {
                         "circle coverage requires nonzero projected radius",
                     ));
                 }
+                if options.require_single_winding {
+                    // An open half-plane bounds the angular change of this
+                    // monotone span strictly below pi. At most four such
+                    // spans give a total strictly below 4pi; closed, nonzero
+                    // monotone coverage then has exactly one full turn.
+                    let bx = x[0] / w[0] + x[2] / w[2];
+                    let by = y[0] / w[0] + y[2] / w[2];
+                    for j in 0..3 {
+                        let side = x[j] * bx + y[j] * by;
+                        if !side.finite() || side.lo <= 0. {
+                            return Err(fail(
+                                entity,
+                                ErrorKind::Geometry,
+                                "single-winding span half-plane not certified",
+                            ));
+                        }
+                    }
+                }
                 // X Y' - Y X' has degree 3 in Bernstein form. Rational W
                 // cancels from angular speed; local-to-knot scaling is positive.
                 let dx = [(x[1] - x[0]) * I::point(2.), (x[2] - x[1]) * I::point(2.)];
@@ -324,6 +363,7 @@ impl PlaneParameterMap {
             spans: total,
             curve_to_circle_upper_mm: upper,
             full_circle_coverage: options.require_circle_coverage,
+            single_winding: options.require_single_winding,
             angular_orientation,
         })
     }

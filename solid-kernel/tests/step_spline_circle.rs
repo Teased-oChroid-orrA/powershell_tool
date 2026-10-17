@@ -49,6 +49,7 @@ fn all_bracket_quadratic_spline_pcurves_bound_complete_span_circle_deviation() {
                 d.entity_reference(pcurve).unwrap(),
                 Options {
                     require_circle_coverage: true,
+                    require_single_winding: true,
                     ..Options::default()
                 },
                 |p| {
@@ -58,7 +59,7 @@ fn all_bracket_quadratic_spline_pcurves_bound_complete_span_circle_deviation() {
             )
             .unwrap();
         assert_eq!(report.spans, 3);
-        assert!(report.full_circle_coverage);
+        assert!(report.full_circle_coverage && report.single_winding);
         assert!(matches!(report.angular_orientation, Some(-1) | Some(1)));
         assert_eq!(report.face.entity, face);
         assert_eq!(report.edge.entity, edge);
@@ -271,4 +272,95 @@ fn valid_unsegmented_quadratic_knots_do_not_get_a_bezier_certificate() {
         )
         .unwrap_err();
     assert!(error.detail.contains("Bezier-separated"));
+}
+
+#[test]
+fn a_twice_traced_circle_has_coverage_without_a_single_winding_certificate() {
+    let d = inventory(SOURCE, Limits::default()).unwrap();
+    let c = BodyContext::read(&d).unwrap();
+    let (face, edge, pcurve) = cases(&d, &c)[0];
+    let pc = step_pcurve::read_pcurve(
+        &d,
+        d.entity_reference(pcurve).unwrap(),
+        nurbs::Limits::default(),
+    )
+    .unwrap();
+    let ParametricCurve::Spline(spline) = pc.geometry else {
+        panic!("fixture")
+    };
+    let controls = spline.control_point_sources();
+    assert_eq!(controls.len(), 7);
+    let refs = controls
+        .iter()
+        .chain(&controls[1..])
+        .map(|r| format!("#{}", r.entity))
+        .collect::<Vec<_>>()
+        .join(",");
+    let weights = spline.curve().weights();
+    let weights = weights
+        .iter()
+        .chain(&weights[1..])
+        .map(|w| w.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let record = d.resolve_reference(pc.geometry_source).unwrap();
+    let end = record.offset + SOURCE[record.offset..].find(';').unwrap() + 1;
+    let replacement=format!("#{}=(BOUNDED_CURVE() B_SPLINE_CURVE(2,({refs}),.UNSPECIFIED.,.T.,.U.) B_SPLINE_CURVE_WITH_KNOTS((1,2,2,2,2,2,2,2,1),(-1.,0.,1.,2.,3.,4.,5.,6.,7.),.UNSPECIFIED.) CURVE() GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_CURVE(({weights})) REPRESENTATION_ITEM(''));",record.id);
+    let source = format!(
+        "{}{}{}",
+        &SOURCE[..record.offset],
+        replacement,
+        &SOURCE[end..]
+    );
+    let changed = inventory(&source, Limits::default()).unwrap();
+    let cc = BodyContext::read(&changed).unwrap();
+    let map =
+        PlaneParameterMap::read(&cc, &changed, changed.entity_reference(face).unwrap()).unwrap();
+    let report = map
+        .verify_spline_circle_deviation(
+            &cc,
+            &changed,
+            changed.entity_reference(edge).unwrap(),
+            changed.entity_reference(pcurve).unwrap(),
+            Options {
+                require_circle_coverage: true,
+                ..Options::default()
+            },
+            |_| true,
+        )
+        .unwrap();
+    assert_eq!(report.spans, 6);
+    assert!(report.full_circle_coverage && !report.single_winding);
+    let error = map
+        .verify_spline_circle_deviation(
+            &cc,
+            &changed,
+            changed.entity_reference(edge).unwrap(),
+            changed.entity_reference(pcurve).unwrap(),
+            Options {
+                require_circle_coverage: true,
+                require_single_winding: true,
+                ..Options::default()
+            },
+            |_| true,
+        )
+        .unwrap_err();
+    assert!(error.detail.contains("at most four"));
+    assert!(map
+        .verify_spline_circle_deviation(
+            &cc,
+            &changed,
+            changed.entity_reference(edge).unwrap(),
+            changed.entity_reference(pcurve).unwrap(),
+            Options {
+                require_single_winding: true,
+                ..Options::default()
+            },
+            |_| true
+        )
+        .is_err());
+    // The whole-body diagnostic requests the stronger certificate as well.
+    assert!(
+        solid_kernel::step_curve_audit::audit(&cc, &changed, Default::default(), |_| true).is_err()
+    );
 }

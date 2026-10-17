@@ -31,7 +31,11 @@ fn complete_fixture_locus_audit_has_bounded_totals_and_monotonic_progress() {
             }
             LocusCheck::ClosedQuadraticCircle(r) => {
                 kinds[2] += 1;
-                assert!(r.full_circle_coverage && r.curve_to_circle_upper_mm <= 1e-7);
+                assert!(
+                    r.full_circle_coverage
+                        && r.single_winding
+                        && r.curve_to_circle_upper_mm <= 1e-7
+                );
             }
         }
     }

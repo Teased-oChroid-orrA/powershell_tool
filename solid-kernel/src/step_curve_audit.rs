@@ -215,6 +215,7 @@ pub fn audit(
                         tolerance_mm: options.tolerance_mm,
                         max_spans: remaining,
                         require_circle_coverage: true,
+                        require_single_winding: true,
                     },
                     |p| {
                         let mut nested = state;
