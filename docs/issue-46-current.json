@@ -1,27 +1,28 @@
 {
   "epic": 46,
   "epic_complete": false,
-  "branch": "feature/native-cad-cylinder-parameter-bounds",
-  "pull_request": 70,
-  "pull_request_state": "draft",
-  "main": "f0a72c979aeb440f23388ddd2c045c674c6e6c95",
+  "branch": "feature/native-cad-circular-carrier-validation",
+  "pull_request": null,
+  "pull_request_state": "pending creation",
+  "main": "8e7e4e5a9b1ea7e604e970878e5e26e938a67f72",
   "merged_prs": [
     65,
     66,
     67,
     68,
-    69
+    69,
+    70
   ],
-  "latest_qualified_source": "7df769830f7c8f69f7517fddb83d5ad76059a804",
-  "latest_phase": 42,
-  "progress_snapshot": "issue-46-phase-42-verification.json",
+  "latest_qualified_source": "11131f79ffd1ed1234747bd45aab85b4ab6aac9c",
+  "latest_phase": 43,
+  "progress_snapshot": "issue-46-phase-43-verification.json",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
   "remaining": "Other p-curve mappings/master/trim/body gates, general constrained meshing/quality and P2/P3/final roadmap",
   "tests": {
-    "cad_enabled": 151,
-    "feature_off": 134,
+    "cad_enabled": 154,
+    "feature_off": 137,
     "failed": 0,
     "ignored": 0,
     "app_cad_lib_tests_compile": "passed at same source"

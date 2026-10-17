@@ -498,3 +498,7 @@ PR #68 merged at `43d8da9`, old branch deleted. Source `0f94c206d4f21cc0be4863eb
 ## Phase 42 continuation — 2026-10-17
 
 PR #69 merged at `f0a72c9`, branch deleted. Source `7df769830f7c8f69f7517fddb83d5ad76059a804` qualifies source cylinder maps on `feature/native-cad-cylinder-parameter-bounds`: 151 CAD-enabled / 134 feature-off tests and app compile pass. See [Phase 42](issue-46-phase-42.md) for bounded angular domain, unit refusals, source-frame reuse and corrected test-fixture failure. No current Windows/macOS run. Epic #46 was found incorrectly closed and reopened; all child gates remain open. Continue curved p-curve/carrier/master/trim, full spline body and general meshing gates. No hosted CI dispatched.
+
+## Phase 43 continuation — 2026-10-17
+
+PR #70 merged at `8e7e4e5`, branch deleted. Source `11131f79ffd1ed1234747bd45aab85b4ab6aac9c` qualifies 13 unsigned plane/CIRCLE carrier associations at unchanged 1e-7 mm and retains natural normal orientation. [Phase 43](issue-46-phase-43.md) records the rotation bound and refusals. 154 CAD-enabled / 137 feature-off tests and app compile pass. No final failures/ignored or hosted CI. Reuses bounded association lookup for existing line checks. Continue cylinder primitive/carrier, spline/master/finite trim/body gates and general PLC/later roadmap. Epic #46 and all child gates remain open.
