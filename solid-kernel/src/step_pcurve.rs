@@ -339,6 +339,32 @@ pub(crate) fn associated_edge_pcurve<'a>(
     ),
     Error,
 > {
+    associated_edge_pcurve_with_limits(
+        context,
+        data,
+        face_reference,
+        surface,
+        edge,
+        pcurve,
+        Limits::default(),
+    )
+}
+pub(crate) fn associated_edge_pcurve_with_limits<'a>(
+    context: &'a crate::step_body::BodyContext,
+    data: &Inventory,
+    face_reference: EntityReference,
+    surface: EntityReference,
+    edge: EntityReference,
+    pcurve: EntityReference,
+    limits: Limits,
+) -> Result<
+    (
+        &'a crate::step_topology::RawEdge,
+        crate::step_pcurve::PcurveDeclaration,
+        crate::step_pcurve::SurfaceCurveDeclaration,
+    ),
+    Error,
+> {
     let face = data.resolve_reference(face_reference)?;
     data.resolve_reference(context.length_context())?;
     let entity = data.resolve_reference(edge)?;
@@ -360,8 +386,7 @@ pub(crate) fn associated_edge_pcurve<'a>(
         .edges
         .get(&edge.entity)
         .ok_or_else(|| fail(entity, "source is not a body edge"))?;
-    let declaration =
-        crate::step_pcurve::read_pcurve(data, pcurve, crate::nurbs::Limits::default())?;
+    let declaration = crate::step_pcurve::read_pcurve(data, pcurve, limits)?;
     if declaration.basis_surface != surface {
         return Err(fail(
             entity,
