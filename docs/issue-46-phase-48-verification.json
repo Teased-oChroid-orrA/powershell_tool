@@ -1,0 +1,56 @@
+{
+  "feature_source": "b6093e4",
+  "qualified_source_commit": "677cbd919ede44dd4d611ca56d603f48b0884aaa",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 171,
+      "failed": 0,
+      "ignored": 0,
+      "warnings": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 154,
+      "failed": 0,
+      "ignored": 0,
+      "warnings": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "development_failures": [
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1 --test step_spline_map exact_domain_boundary",
+      "exit_code": 101,
+      "result": "0 passed / 1 failed, 3 filtered",
+      "cause": "Outward padding of exact zero/unit operations moved an exactly valid UV boundary outside the spline domain.",
+      "correction": "Preserve provably exact finite zero/unit/cancellation/doubling operations and sign bounds; retain general outward rounding, no UV clamp/domain or tolerance change.",
+      "corrected_targeted_result": "61 library + 4 spline-map tests passed"
+    }
+  ],
+  "development_notes": [
+    "Initial b6093e4 full 170 CAD-enabled / 153 feature-off and app compile passed before new boundary regression exposed the gap.",
+    "Removed one unused test import; final test logs have no warnings."
+  ],
+  "dataset_evidence": {
+    "curved_surface_fixture": "generated rational quadratic quarter-cylinder declaration attached to raw body for source binding, not coherent edited solid",
+    "pcurve_classes": [
+      "LINE",
+      "CIRCLE",
+      "rational spline"
+    ],
+    "units": "metre conversion applies to Cartesian output once; raw controls/UV/knots retained",
+    "boundary_cases": [
+      "forward line",
+      "reversed line",
+      "touching circle"
+    ]
+  },
+  "not_verified": [
+    "General source curve/surface locus, projection uniqueness, regularity, trimmed/full spline B-Rep, complete master/body validation",
+    "General PLC/quality/later gates; current Windows/macOS runtime"
+  ]
+}

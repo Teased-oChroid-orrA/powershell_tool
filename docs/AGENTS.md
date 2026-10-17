@@ -250,3 +250,5 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Phase 46 bounded body p-curve diagnostics](issue-46-phase-46.md): 228 scoped checks, aggregate budgets, progress, cancellation and runnable CLI.
 
 - [Phase 47 bounded single-winding circle traces](issue-46-phase-47.md): stronger quadratic coverage and double-traversal refusal; general/finite trim gates remain open.
+
+- [Phase 48 source spline parameter maps](issue-46-phase-48.md): composed p-curve bounds, single physical scaling and reproduced exact-boundary interval correction.

@@ -1,10 +1,10 @@
 {
   "epic": 46,
   "epic_complete": false,
-  "branch": "feature/native-cad-single-winding-curves",
-  "pull_request": 75,
-  "pull_request_state": "draft",
-  "main": "a7c035c39b45b6812568bba4cc57c87658529565",
+  "branch": "feature/native-cad-spline-parameter-bounds",
+  "pull_request": null,
+  "pull_request_state": "pending creation",
+  "main": "8459f024838ae62921fd38695f31deb67d96318f",
   "merged_prs": [
     65,
     66,
@@ -15,18 +15,19 @@
     71,
     72,
     73,
-    74
+    74,
+    75
   ],
-  "latest_qualified_source": "cdcbdfa19e11a691f7e8b84e5a93898c66173885",
-  "latest_phase": 47,
-  "progress_snapshot": "issue-46-phase-47-verification.json",
+  "latest_qualified_source": "677cbd919ede44dd4d611ca56d603f48b0884aaa",
+  "latest_phase": 48,
+  "progress_snapshot": "issue-46-phase-48-verification.json",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
   "remaining": "Other p-curve mappings/master/trim/body gates, general constrained meshing/quality and P2/P3/final roadmap",
   "tests": {
-    "cad_enabled": 167,
-    "feature_off": 150,
+    "cad_enabled": 171,
+    "feature_off": 154,
     "failed": 0,
     "ignored": 0,
     "app_cad_lib_tests_compile": "passed at same source"
