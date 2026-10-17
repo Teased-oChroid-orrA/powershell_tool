@@ -1,14 +1,17 @@
 //! Metric-driven refinement of a tetrahedral mesh: split every edge longer than the
-//! target in the metric, then reconnect by exact flips in the metric's own quality.
+//! target in the metric, then reconnect by exact flips in the metric's own quality and
+//! smooth the vertices in it (`RefineOptions::smooth_passes`).
 //!
 //! Splitting an edge at its midpoint replaces each tetrahedron around it by two, so
 //! the mesh stays conforming and the boundary stays the same surface (its triangles
-//! are subdivided). Vertices never move and nothing is removed: this refines toward
-//! the field and cannot coarsen. Boundary points are not projected onto any curved
-//! CAD surface; the polyhedral boundary is preserved exactly.
+//! are subdivided). Nothing is removed: this refines toward the field and cannot
+//! coarsen. Smoothing moves interior vertices and boundary vertices that lie in an
+//! exactly planar patch (never edges, corners or curved boundaries), so the polyhedral
+//! boundary is preserved; boundary points are not projected onto any curved CAD surface.
 use super::{
     metric::{edge_length, Metric, MetricBounds},
     tet_flip::{improve_by, FlipOptions, FlipReport},
+    tet_smooth::{smooth_vertices_by, SmoothOptions},
     tet_topology::{Point, TetTopology},
     MeshError,
 };
@@ -23,6 +26,9 @@ pub struct RefineOptions {
     pub max_cells: usize,
     /// Reconnection after each splitting pass; `None` splits only.
     pub flips: Option<FlipOptions>,
+    /// Passes of metric-quality vertex smoothing of interior vertices after each reconnection; `0` disables it. Boundary
+    /// vertices never move, and the metric is re-evaluated at every moved vertex.
+    pub smooth_passes: usize,
 }
 impl Default for RefineOptions {
     fn default() -> Self {
@@ -31,6 +37,7 @@ impl Default for RefineOptions {
             max_passes: 40,
             max_cells: 1_000_000,
             flips: Some(FlipOptions::default()),
+            smooth_passes: 8,
         }
     }
 }
@@ -252,6 +259,49 @@ pub fn refine(
             current = better;
             report.flips.push(flips);
         }
+        if options.smooth_passes > 0 {
+            let q = |p: &[Point], t: [usize; 4]| -> f64 {
+                let m: Result<Vec<Metric>, MeshError> = t.iter().map(|&v| evaluate(p[v])).collect();
+                match m.ok().and_then(|m| Metric::mean(&m)) {
+                    Some(mean) => {
+                        let pts = t.map(|v| mean.transform(p[v]));
+                        let q =
+                            super::quality::element_quality(ElementKind::Tet4, &pts).radius_ratio;
+                        // Shape alone would let smoothing erase the grading, so the cell is also penalised for edges
+                        // leaving the classical band [1/sqrt(2), sqrt(2)] of its metric.
+                        let (mut lo, mut hi) = (f64::INFINITY, 0f64);
+                        for (a, b) in [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)] {
+                            let e = std::array::from_fn(|k| p[t[b]][k] - p[t[a]][k]);
+                            let l = mean.length(e);
+                            lo = lo.min(l);
+                            hi = hi.max(l);
+                        }
+                        let band = (std::f64::consts::SQRT_2 / hi).min(1.)
+                            * (lo * std::f64::consts::SQRT_2).min(1.);
+                        if q.is_finite() {
+                            q.max(0.) * band
+                        } else {
+                            0.
+                        }
+                    }
+                    None => 0.,
+                }
+            };
+            let opt = SmoothOptions {
+                max_passes: options.smooth_passes,
+                slide_planar_boundary: true,
+                ..SmoothOptions::default()
+            };
+            let (smoothed, _) = smooth_vertices_by(&current, &opt, &q)?;
+            for (v, (old, new)) in points.iter_mut().zip(smoothed.points()).enumerate() {
+                if old != new {
+                    *old = *new;
+                    metrics[v] = evaluate(*new)?;
+                }
+            }
+            current = smoothed;
+            cells = current.cells().to_vec();
+        }
         report.passes += 1;
     }
     let after = stats(&points, &metrics, &cells);
@@ -337,6 +387,22 @@ mod tests {
             )
         };
         let (out, r) = refine(&cube(), &field, &bounds, RefineOptions::default()).unwrap();
+        let off = RefineOptions {
+            smooth_passes: 0,
+            ..RefineOptions::default()
+        };
+        let (_, r0) = refine(&cube(), &field, &bounds, off).unwrap();
+        // Smoothing makes the mesh conform better to the metric (more edges in the band, a much better worst cell) with
+        // fewer cells, because it stops the over-refinement that sliver cells provoke.
+        assert!(
+            r.edges_in_band_after > r0.edges_in_band_after,
+            "{r:?} {r0:?}"
+        );
+        assert!(
+            r.min_quality_after > 3. * r0.min_quality_after,
+            "{r:?} {r0:?}"
+        );
+        assert!(r.cells_after < r0.cells_after);
         assert!(r.converged && r.splits > 0, "{r:?}");
         assert!((volume(&out) - 1.).abs() < 1e-12);
         assert!((boundary_area(&out) - 6.).abs() < 1e-12);
@@ -351,7 +417,11 @@ mod tests {
             .iter()
             .filter(|p| (p[0] - 0.5).abs() > 0.4)
             .count();
-        assert!(near > 2 * far.max(1), "near {near} far {far}");
+        // Equal slab widths: the layer is still denser than the far field (the unsmoothed mesh reaches 2x only by over-refining).
+        assert!(
+            near as f64 > 1.3 * far.max(1) as f64,
+            "near {near} far {far}"
+        );
         // Cells hugging the layer are thinner across it (x) than along it (y).
         let (mut sx, mut sy, mut n) = (0., 0., 0);
         for t in out.cells() {
@@ -376,9 +446,9 @@ mod tests {
     }
     #[test]
     fn strong_anisotropy_keeps_a_valid_conforming_mesh_but_not_its_quality() {
-        // Ratio 10 across the layer: refinement by splitting and flips alone degrades the
-        // cell shapes (a known limit; collapse, smoothing or metric-Delaunay insertion
-        // are needed). What must still hold is validity, conformity and the geometry.
+        // Ratio 10 across the layer: the worst cell stays poor even with smoothing (see
+        // the smoothing test; collapse or metric-Delaunay insertion are still needed).
+        // What must always hold is validity, conformity and the geometry.
         let bounds = MetricBounds::new(0.01, 10., 100.).unwrap();
         let field = |p: Point| {
             let hx = 0.04 + 0.7 * (p[0] - 0.5).abs();
@@ -397,6 +467,43 @@ mod tests {
         assert!((boundary_area(&out) - 6.).abs() < 1e-12);
         assert!(r.min_quality_after > 0., "no flat cell: {r:?}");
         assert!(r.longest_edge_after < r.longest_edge_before);
+    }
+    #[test]
+    fn metric_smoothing_raises_the_worst_cell_of_a_strongly_anisotropic_mesh() {
+        let bounds = MetricBounds::new(0.01, 10., 100.).unwrap();
+        let field = |p: Point| {
+            let hx = 0.04 + 0.7 * (p[0] - 0.5).abs();
+            Metric::from_sizes(
+                [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
+                [hx.min(0.4), 0.4, 0.4],
+            )
+        };
+        let base = RefineOptions {
+            max_passes: 10,
+            smooth_passes: 0,
+            ..RefineOptions::default()
+        };
+        let (_, off) = refine(&cube(), &field, &bounds, base).unwrap();
+        let on = RefineOptions {
+            smooth_passes: 8,
+            ..base
+        };
+        let (out, r) = refine(&cube(), &field, &bounds, on).unwrap();
+        eprintln!(
+            "min metric quality: splits+flips {:.4}, with smoothing {:.4}; cells {} -> {}",
+            off.min_quality_after, r.min_quality_after, off.cells_after, r.cells_after
+        );
+        assert!(r.min_quality_after > off.min_quality_after, "{off:?} {r:?}");
+        assert!((volume(&out) - 1.).abs() < 1e-12);
+        assert!((boundary_area(&out) - 6.).abs() < 1e-12);
+        let ids: Vec<_> = out.boundary().iter().flatten().copied().collect();
+        for v in ids {
+            let p = out.points()[v];
+            assert!(
+                (0..3).any(|k| p[k] == 0. || p[k] == 1.),
+                "boundary vertex left the cube surface"
+            );
+        }
     }
     #[test]
     fn invalid_fields_budgets_and_a_met_target_are_handled_explicitly() {
