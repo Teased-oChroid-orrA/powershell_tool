@@ -6,6 +6,7 @@
 pub mod adjacency;
 pub mod cost;
 pub mod compatibility;
+pub mod curved;
 pub mod hybrid;
 pub mod metric;
 pub mod metric_refine;

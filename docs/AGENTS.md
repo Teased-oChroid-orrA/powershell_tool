@@ -286,3 +286,5 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Phase 62 metric tensor fields](issue-46-phase-62.md): validated SPD metrics, gradation, curvature/error-driven sizes, complexity budgets (#57).
 
 - [Phase 63 metric-driven refinement](issue-46-phase-63.md): terminal-edge splitting and metric-quality flips (first step of #58).
+
+- [Phase 64 curved-element validity](issue-46-phase-64.md): Bernstein-bound Jacobian positivity for Tet10/Tri6 and the closed hole in the mesher's sampled guard (#55).
