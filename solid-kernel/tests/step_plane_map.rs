@@ -336,3 +336,176 @@ fn line_locus_agreement_uses_source_length_scale_and_rejects_stale_contexts() {
         )
         .is_err());
 }
+
+#[test]
+fn whole_spline_pcurve_intervals_map_with_budget_and_source_guards() {
+    use solid_kernel::{
+        nurbs,
+        step::ErrorKind,
+        step_pcurve::{self, ParametricCurve},
+    };
+    let data = inventory(SOURCE, Limits::default()).unwrap();
+    let context = BodyContext::read(&data).unwrap();
+    let mut checked = 0;
+    for entity in data
+        .entities()
+        .values()
+        .filter(|e| e.components[0].name == "PCURVE")
+    {
+        let reference = data.entity_reference(entity.id).unwrap();
+        let declaration =
+            step_pcurve::read_pcurve(&data, reference, nurbs::Limits::default()).unwrap();
+        let ParametricCurve::Spline(spline) = &declaration.geometry else {
+            continue;
+        };
+        let face = context
+            .body()
+            .faces
+            .values()
+            .find(|f| f.surface == declaration.basis_surface.entity)
+            .unwrap();
+        let map = PlaneParameterMap::read(&context, &data, data.entity_reference(face.id).unwrap())
+            .unwrap();
+        let domain = spline.curve().domain();
+        // Independent point evaluation probes validate enclosure containment;
+        // the certificate itself comes from whole-interval de Boor bounds.
+        for part in 0..8 {
+            let a = domain[0] + (domain[1] - domain[0]) * part as f64 / 8.;
+            let b = domain[0] + (domain[1] - domain[0]) * (part + 1) as f64 / 8.;
+            let bounds = map
+                .spline_pcurve_bounds(&data, reference, [a, b], nurbs::Limits::default(), 100)
+                .unwrap();
+            for i in 0..17 {
+                let t = a + (b - a) * i as f64 / 16.;
+                let uv = spline.curve().evaluate(t).unwrap();
+                let point = map.point_bounds([uv[0], uv[1]]).unwrap();
+                // A separately rounded evaluation can protrude by a few ulps;
+                // require overlap with its outward-rounded mapped enclosure.
+                for axis in 0..3 {
+                    assert!(
+                        bounds.min[axis] <= point.max[axis] && point.min[axis] <= bounds.max[axis]
+                    );
+                }
+            }
+        }
+        let error = map
+            .spline_pcurve_bounds(&data, reference, domain, nurbs::Limits::default(), 0)
+            .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Limit);
+        assert_eq!(error.offset, entity.offset);
+        assert!(map
+            .spline_pcurve_bounds(
+                &data,
+                reference,
+                [domain[0] - 1., domain[1]],
+                nurbs::Limits::default(),
+                100
+            )
+            .is_err());
+        let changed = inventory(&format!("{SOURCE}\n"), Limits::default()).unwrap();
+        assert!(map
+            .spline_pcurve_bounds(
+                &changed,
+                changed.entity_reference(entity.id).unwrap(),
+                domain,
+                nurbs::Limits::default(),
+                100
+            )
+            .is_err());
+        let other = context
+            .body()
+            .faces
+            .values()
+            .find(|f| {
+                f.surface != face.surface
+                    && data.entities()[&f.surface].components[0].name == "PLANE"
+            })
+            .unwrap();
+        let wrong =
+            PlaneParameterMap::read(&context, &data, data.entity_reference(other.id).unwrap())
+                .unwrap();
+        assert!(wrong
+            .spline_pcurve_bounds(&data, reference, domain, nurbs::Limits::default(), 100)
+            .is_err());
+        checked += 1;
+    }
+    assert_eq!(checked, 15);
+}
+
+#[test]
+fn spline_pcurve_world_bounds_scale_lengths_once_and_leave_knots_raw() {
+    use solid_kernel::{
+        nurbs,
+        step_pcurve::{self, ParametricCurve},
+    };
+    let data = inventory(SOURCE, Limits::default()).unwrap();
+    let context = BodyContext::read(&data).unwrap();
+    let length = data
+        .length_contexts()
+        .unwrap()
+        .into_iter()
+        .find(|c| c.context == context.length_context().entity)
+        .unwrap();
+    let unit = &data.entities()[&length.unit];
+    let source = replace(
+        SOURCE,
+        unit.offset,
+        &format!(
+            "#{}=(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT($,.METRE.));",
+            unit.id
+        ),
+    );
+    let metric = inventory(&source, Limits::default()).unwrap();
+    let mc = BodyContext::read(&metric).unwrap();
+    let pc = data.entity_reference(235).unwrap();
+    let original = step_pcurve::read_pcurve(&data, pc, nurbs::Limits::default()).unwrap();
+    let converted = step_pcurve::read_pcurve(
+        &metric,
+        metric.entity_reference(235).unwrap(),
+        nurbs::Limits::default(),
+    )
+    .unwrap();
+    let (ParametricCurve::Spline(a), ParametricCurve::Spline(b)) =
+        (&original.geometry, &converted.geometry)
+    else {
+        panic!("fixture")
+    };
+    assert_eq!(a.curve().knots(), b.curve().knots());
+    assert_eq!(a.curve().control_points(), b.curve().control_points());
+    let face = context
+        .body()
+        .faces
+        .values()
+        .find(|f| f.surface == original.basis_surface.entity)
+        .unwrap();
+    let map =
+        PlaneParameterMap::read(&context, &data, data.entity_reference(face.id).unwrap()).unwrap();
+    let scaled =
+        PlaneParameterMap::read(&mc, &metric, metric.entity_reference(face.id).unwrap()).unwrap();
+    let domain = a.curve().domain();
+    let bounds = scaled
+        .spline_pcurve_bounds(
+            &metric,
+            metric.entity_reference(235).unwrap(),
+            domain,
+            nurbs::Limits::default(),
+            100,
+        )
+        .unwrap();
+    for i in 0..33 {
+        let p = a
+            .curve()
+            .evaluate(domain[0] + (domain[1] - domain[0]) * i as f64 / 32.)
+            .unwrap();
+        let world = map.point_bounds([p[0], p[1]]).unwrap();
+        for axis in 0..3 {
+            assert!(
+                bounds.min[axis] <= world.max[axis] * 1000.
+                    && world.min[axis] * 1000. <= bounds.max[axis]
+            );
+        }
+    }
+    assert!(scaled
+        .spline_pcurve_bounds(&metric, pc, domain, nurbs::Limits::default(), 100)
+        .is_err());
+}

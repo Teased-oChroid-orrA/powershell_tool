@@ -490,3 +490,7 @@ Actual-bracket tests certify **148 finite plane/line associations at unchanged 1
 [Combined source verification](issue-46-phase-40-verification.json) covers Phases 39–40 and existing curve/surface/STEP/solver bridges. No new dependency, hosted workflow dispatch, production native strategy or OCCT retirement. Next: source cylindrical parameter semantics and remaining primitive/curved p-curve loci, then whole-model/master integration with aggregate budgets, general trim/body gates and the remaining meshing roadmap.
 
 Final combined source checks: **145 CAD-enabled / 128 feature-off tests and application lib/tests compilation pass**, zero failures/ignored tests.
+
+## Phase 41 continuation — 2026-10-17
+
+PR #68 merged at `43d8da9`, old branch deleted. Source `0f94c206d4f21cc0be4863eb2e937275cab283cb` on `feature/native-cad-spline-pcurve-bounds` encloses all 15 source-plane spline p-curves over intervals; [Phase 41](issue-46-phase-41.md) and its verification record exact scope. 147 CAD-enabled / 130 feature-off pass; app compile passes. No CI dispatch. Full curved/master/trim/body, general PLC and later roadmap remain open; OCCT remains production. Changed-file formatting passed; pre-existing workspace formatting differences were not rewritten.
