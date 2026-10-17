@@ -1,0 +1,30 @@
+{
+  "qualified_source_commit": "11131f79ffd1ed1234747bd45aab85b4ab6aac9c",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 154,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 137,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "development_failures": [],
+  "dataset_evidence": {
+    "whole_plane_circle_carrier_associations": 13,
+    "tolerance_mm": 1e-07
+  },
+  "not_verified": [
+    "Finite arc trim and edge sense, complete master/body validation, full spline import, general constrained meshing and later gates",
+    "Current Windows/macOS runtime"
+  ]
+}

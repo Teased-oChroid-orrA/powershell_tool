@@ -93,3 +93,5 @@ Current execution pointer: [issue-46-current.json](issue-46-current.json). Phase
 - [Phase 41: whole-interval planar spline p-curve bounds](issue-46-phase-41.md): source/budget guards and explicit unit qualification.
 
 - [Phase 42: bounded source cylindrical parameters](issue-46-phase-42.md): explicit radian/length semantics and shared source placement; trim/master gates remain open.
+
+- [Phase 43: unsigned planar circle carrier agreement](issue-46-phase-43.md): 13 whole-carrier checks; finite arc/master/body gates remain separate.
