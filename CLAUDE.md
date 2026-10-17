@@ -187,6 +187,13 @@ Binding rules:
 
 Work happens on `main`. Use a short-lived sub-branch only for genuinely risky or long-running work, and delete it once merged. Do not leave stale branches on the remote.
 
+**Automated-agent safety boundaries (owner decision, 2026-10-17).** These apply to all automated agent workflows in this repository:
+- **No history rewrites.** The agent never performs interactive rebases, commit amendments, or other history alterations on public or shared branches.
+- **No force pushing.** Standard `git push` is permitted. Any destructive update (`git push --force`, `git push --force-with-lease`) is forbidden.
+- **Additive, linear, forward-only changes.** All automated integrations add commits on top of existing history.
+
+**Pull requests and merges.** The owner has approved the agent opening pull requests for work on any current or future issue or epic in this repository (#46, #12, and later ones) and merging them into `main` with `gh pr merge`, provided the increment's own tests pass locally (`cargo test` for the touched crates), its phase or issue doc records evidence and limits, and the owner has not said otherwise in the current session. Merge by merge commit or squash, never by rewriting history. This does not extend to any other repository. If the permission system blocks a push or merge, stop and report it.
+
 ## Diagnosing Windows-only failures
 
 The app writes `toolbench-debug.log` into the folder it was launched from (`app-tui/src/debug_log.rs`). Ask for it first for any index/search report that does not reproduce on macOS.
@@ -206,6 +213,8 @@ The app writes `toolbench-debug.log` into the folder it was launched from (`app-
 ### Ask First
 - Deleting anything under `docs/` — it's an append-only historical record
   (see `docs/AGENTS.md`).
+- Setting `occt_retirement_approved` to true (OCCT retirement needs a
+  separate explicit approval from the owner).
 
 ### Never
 - Add a PowerShell or C#/.NET dependency or shell-out.
