@@ -61,3 +61,5 @@ Phase 38 (`02d7cd3`): bounded p-curve/context/master declaration decoding covers
 Phases 39–40 (`b35c27c`): source-bound actual-plane UV→mm interval maps and unsigned finite plane/line locus reports. 148 bracket associations certify at unchanged 1e-7 mm; declared master identity/natural-direction dot are reported without promoting full master validity. 145 CAD-enabled / 128 feature-off tests plus app compilation pass. [Live pointer](issue-46-current.json) / [snapshot](issue-46-progress-phase-40.json).
 
 - [Phase 41: whole-interval planar spline p-curve bounds](issue-46-phase-41.md): source/budget guards and explicit unit qualification.
+
+- [Phase 42: bounded source cylindrical parameters](issue-46-phase-42.md): explicit radian/length semantics and shared source placement; trim/master gates remain open.

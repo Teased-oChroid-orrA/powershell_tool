@@ -1,0 +1,34 @@
+{
+  "qualified_source_commit": "7df769830f7c8f69f7517fddb83d5ad76059a804",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 151,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 134,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "development_failures": [
+    {
+      "command": "targeted library/plane/cylinder tests",
+      "exit_code": 101,
+      "cause": "Test fixture moved one cylinder placement but asked full body validator to accept unchanged edges. Validator correctly refused endpoint/surface disagreement. Read unchanged radius from original coherent body instead; assertions and tolerances unchanged.",
+      "initial_results": "61 unit tests passed, 2 cylinder tests passed / 1 failed; plane integration runner not reached",
+      "corrected_results": "61 unit + 3 cylinder + 8 plane tests passed"
+    }
+  ],
+  "not_verified": [
+    "Curved p-curve/carrier and master agreement, complete trims/spline B-Rep, general constrained meshing and later roadmap gates",
+    "Current Windows/macOS runtime"
+  ]
+}
