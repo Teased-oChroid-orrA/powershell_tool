@@ -303,6 +303,28 @@ fn run() -> Result<(), String> {
                     plc.segments().len()
                 );
                 if conform_requested {
+                    use fea_core::meshing::compatibility as registry;
+                    let angle = solid_kernel::plc_conform::min_shell_angle_deg(
+                        plc.vertices(),
+                        plc.facets(),
+                    );
+                    let verdict = registry::check(
+                        &registry::Request {
+                            strategy: registry::Strategy::NativeConstrained,
+                            geometry: registry::GeometryClass::GeneralSolid,
+                            element: fea_core::ElementKind::Tet4,
+                            formulation: registry::Formulation::LinearElastic3d,
+                            element_upper_bound: Some(10_000_000),
+                            dof_upper_bound: Some(30_000_000),
+                            require_exact_curved_cad: false,
+                            shell_min_angle_deg: Some(angle),
+                        },
+                        registry::Budget {
+                            max_elements: usize::MAX,
+                            max_dofs: usize::MAX,
+                        },
+                    );
+                    println!("Registry v{} verdict for the native constrained strategy: {verdict:?}; smallest shell angle {angle:.3} degrees (audited bound {} degrees). Attempting anyway because --conform was requested.",registry::REGISTRY_VERSION,registry::NATIVE_MIN_SHELL_ANGLE_DEG);
                     let started = std::time::Instant::now();
                     let mut last = (usize::MAX, 0);
                     let mesh = solid_kernel::plc_conform::conform(

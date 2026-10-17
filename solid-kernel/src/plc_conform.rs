@@ -101,6 +101,47 @@ pub struct Conforming {
     pub segments: Vec<[usize; 2]>,
     pub report: Report,
 }
+/// Smallest angle, in degrees, between any two segments (triangle corners) or
+/// facets (dihedral angles measured on either side) of a closed outward-oriented
+/// triangulated shell. This is the input-angle measure Delaunay refinement
+/// depends on; `fea_core::meshing::compatibility` gates the native strategy on it.
+pub fn min_shell_angle_deg(vertices: &[V3], facets: &[[usize; 3]]) -> f64 {
+    let unit = |v: V3| {
+        let n = norm2(v).sqrt();
+        v.map(|x| x / n)
+    };
+    let mut smallest = std::f64::consts::PI;
+    let mut normals = Vec::with_capacity(facets.len());
+    for f in facets {
+        let [a, b, c] = f.map(|v| vertices[v]);
+        for (p, q, r) in [(a, b, c), (b, c, a), (c, a, b)] {
+            let (u, w) = (unit(sub(q, p)), unit(sub(r, p)));
+            smallest = smallest.min(dot(u, w).clamp(-1., 1.).acos());
+        }
+        normals.push(unit(cross(sub(b, a), sub(c, a))));
+    }
+    let mut by_edge = BTreeMap::<[usize; 2], Vec<(usize, bool)>>::new();
+    for (i, f) in facets.iter().enumerate() {
+        for k in 0..3 {
+            let (a, b) = (f[k], f[(k + 1) % 3]);
+            by_edge.entry(edge(a, b)).or_default().push((i, a < b));
+        }
+    }
+    for (e, owners) in by_edge {
+        if let [(i, forward), (j, _)] = owners.as_slice() {
+            let dir = unit(sub(vertices[e[1]], vertices[e[0]]));
+            let (n1, n2) = (normals[*i], normals[*j]);
+            // Signed angle from n1 to n2 about the edge as seen along facet i's direction.
+            let along = if *forward { dir } else { dir.map(|x| -x) };
+            let phi = dot(cross(n1, n2), along).atan2(dot(n1, n2));
+            let interior = std::f64::consts::PI - phi;
+            let tau = 2. * std::f64::consts::PI;
+            let hazard = interior.rem_euclid(tau).min(tau - interior.rem_euclid(tau));
+            smallest = smallest.min(hazard);
+        }
+    }
+    smallest.to_degrees()
+}
 impl Conforming {
     /// Tet4 solver mesh of the extracted cells, through the existing conformity
     /// and quality gates (a sliver beyond them is refused, not repaired). The

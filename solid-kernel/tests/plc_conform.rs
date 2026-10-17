@@ -322,3 +322,27 @@ fn reconnection_lets_the_recovered_slab_pass_the_solver_gate_and_a_tension_patch
         );
     }
 }
+
+#[test]
+fn the_shell_angle_measure_matches_the_known_inputs() {
+    use solid_kernel::plc_conform::min_shell_angle_deg;
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    let (v, t) = plate(2., None, 2.);
+    assert!(near(min_shell_angle_deg(&v, &t), 45.), "cube");
+    // 3 x 3 x 1: side-wall diagonals sit at atan(1/3) to the box edges.
+    let (v, t) = plate(3., None, 1.);
+    assert!(near(
+        min_shell_angle_deg(&v, &t),
+        (1f64 / 3.).atan().to_degrees()
+    ));
+    // 4 x 4 x 0.5: atan(0.5/4) = 7.1 degrees.
+    let (v, t) = plate(4., None, 0.5);
+    assert!(near(
+        min_shell_angle_deg(&v, &t),
+        (0.5f64 / 4.).atan().to_degrees()
+    ));
+    // The ring plate: 18.4 degree trapezoid corners, but its 4 x 1 outer walls
+    // put diagonals at atan(1/4); the hole walls are 90 degree dihedrals.
+    let (v, t) = plate(4., Some(2.), 1.);
+    assert!(near(min_shell_angle_deg(&v, &t), 0.25f64.atan().to_degrees()));
+}
