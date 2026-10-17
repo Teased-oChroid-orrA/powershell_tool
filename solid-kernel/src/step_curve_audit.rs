@@ -19,8 +19,8 @@ pub struct Options {
     pub max_associations: usize,
     pub max_spline_spans: usize,
     pub max_curve_controls: usize,
-    /// Also discover endpoint parameters and select the oriented finite arc of
-    /// every planar spline p-curve (`step_pcurve_arc::resolve`). Off by default.
+    /// Also resolve every supported association to finite endpoints/oriented arc
+    /// (`step_pcurve_arc::resolve`). Off by default.
     pub finite_arcs: bool,
 }
 impl Default for Options {
@@ -57,7 +57,7 @@ pub struct Report {
     pub spline_spans: usize,
     pub curve_controls: usize,
     pub checks: Vec<LocusCheck>,
-    /// One entry per planar spline association when `Options::finite_arcs`.
+    /// One entry per supported association when `Options::finite_arcs`.
     pub finite_arcs: Vec<FiniteArc>,
 }
 #[derive(Debug)]
@@ -236,9 +236,29 @@ pub fn audit(
         }
 
         let check = match (&maps[&face], declaration.geometry) {
-            (Map::Plane(map), ParametricCurve::Line { .. }) => LocusCheck::FiniteLine(
-                map.verify_line_locus(context, data, edge, pc, options.tolerance_mm)?,
-            ),
+            (Map::Plane(map), ParametricCurve::Line { .. }) => {
+                let check = LocusCheck::FiniteLine(map.verify_line_locus(
+                    context,
+                    data,
+                    edge,
+                    pc,
+                    options.tolerance_mm,
+                )?);
+                if options.finite_arcs {
+                    finite_arcs.push(resolve_arc(
+                        map,
+                        context,
+                        data,
+                        options.tolerance_mm,
+                        face,
+                        edge,
+                        pc,
+                        &mut progress,
+                        state,
+                    )?);
+                }
+                check
+            }
             (Map::Plane(map), ParametricCurve::Circle { .. }) => {
                 let check = LocusCheck::UnsignedCircle(map.verify_circle_carrier(
                     context,
@@ -301,13 +321,27 @@ pub fn audit(
             (Map::Cylinder(map), ParametricCurve::Line { .. }) => {
                 let raw = step_pcurve::line_direction_ratios(data, declaration.geometry_source)?;
                 if raw[0] == 0. {
-                    LocusCheck::FiniteLine(map.verify_generator_locus(
+                    let check = LocusCheck::FiniteLine(map.verify_generator_locus(
                         context,
                         data,
                         edge,
                         pc,
                         options.tolerance_mm,
-                    )?)
+                    )?);
+                    if options.finite_arcs {
+                        finite_arcs.push(resolve_arc(
+                            map,
+                            context,
+                            data,
+                            options.tolerance_mm,
+                            face,
+                            edge,
+                            pc,
+                            &mut progress,
+                            state,
+                        )?);
+                    }
+                    check
                 } else if raw[1] == 0. {
                     let check = LocusCheck::UnsignedCircle(map.verify_circle_carrier(
                         context,

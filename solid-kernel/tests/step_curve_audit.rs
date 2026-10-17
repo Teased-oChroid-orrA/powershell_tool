@@ -140,17 +140,25 @@ fn finite_arc_audit_resolves_every_circle_edge_and_stays_opt_in() {
     })
     .unwrap();
     assert_eq!(report.checks.len(), 228);
-    let closed = report
-        .finite_arcs
-        .iter()
-        .filter(|a| matches!(a.resolved, Resolved::Closed))
-        .count();
-    let interior = report
-        .finite_arcs
-        .iter()
-        .filter(|a| matches!(&a.resolved, Resolved::Arc(r) if r.arc == Arc::Interior))
-        .count();
-    assert_eq!((report.finite_arcs.len(), closed, interior), (52, 20, 20));
+    let count = |f: &dyn Fn(&Resolved) -> bool| {
+        report.finite_arcs.iter().filter(|a| f(&a.resolved)).count()
+    };
+    let closed = count(&|r| matches!(r, Resolved::Closed));
+    let interior = count(&|r| matches!(r, Resolved::Arc(a) if a.arc == Arc::Interior));
+    let wrapping = count(&|r| matches!(r, Resolved::Arc(a) if a.arc == Arc::Wrapping));
+    let segments = count(
+        &|r| matches!(r, Resolved::Segment(s) if s.endpoint_error_upper_mm.iter().all(|e| *e <= 1e-7)),
+    );
+    assert_eq!(
+        (
+            report.finite_arcs.len(),
+            segments,
+            interior,
+            wrapping,
+            closed
+        ),
+        (228, 176, 20, 12, 20)
+    );
     assert_eq!(
         audit(&c, &d, options, |_| false).unwrap_err().kind,
         ErrorKind::Cancelled

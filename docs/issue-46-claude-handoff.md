@@ -582,3 +582,7 @@ Branch `feature/native-cad-pcurve-arc` (stacked on PR #82) adds `step_pcurve_arc
 ## 2026-10-17 — Phase 56 circle and cylinder arcs
 
 Branch `feature/native-cad-circle-arcs` (stacked on #82 -> #83) extends arc selection to plane CIRCLE and cylinder constant-V LINE p-curves ([Phase 56](issue-46-phase-56.md)). Body audit `finite_arcs`: 32 oriented arcs + 20 closed edges, all independently checked. 192 CAD-enabled / 175 feature-off pass. PRs #82/#83 remain unmerged (auto-mode classifier denies `gh pr merge`; user must merge). Next: loop-level master/trim agreement and remaining P1 gates.
+
+## 2026-10-17 — Phase 57 finite trims for every edge
+
+Branch `feature/native-cad-line-trims` (stacked #82 -> #83 -> #84) resolves plane LINE and cylinder generator edges to certified finite segments ([Phase 57](issue-46-phase-57.md)); body audit `finite_arcs` now covers all 228 associations (176 segments, 32 arcs, 20 closed). Next: face-level loop/orientation agreement.

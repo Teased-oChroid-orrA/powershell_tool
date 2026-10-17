@@ -351,6 +351,9 @@ pub enum Resolved {
     /// One topological vertex: the p-curve is the whole closed trace.
     Closed,
     Arc(Report),
+    /// Straight p-curve image (plane LINE or cylinder generator): finite
+    /// interval and order whose endpoints agree with both source vertices.
+    Segment(Box<step_pcurve_endpoints::Report>),
 }
 /// Discover the endpoint parameters of `pcurve` over its whole active domain,
 /// recheck them against both source vertices and select the oriented arc.
@@ -367,6 +370,19 @@ pub fn resolve<'a>(
     use crate::step_pcurve_candidates::{discover, Options as Discover, Proposal, Search};
     let map = map.into();
     let declaration = step_pcurve::read_pcurve(data, pcurve, Default::default())?;
+    // Plane LINEs and cylinder generators (constant raw U) image to straight
+    // world segments; the constant-V cylinder LINE is a circle (periodic arc).
+    let straight = match (&declaration.geometry, map) {
+        (ParametricCurve::Line { .. }, ParameterMapRef::Cylinder(_)) => {
+            step_pcurve::line_direction_ratios(data, declaration.geometry_source)?[0] == 0.
+        }
+        (ParametricCurve::Line { .. }, _) => true,
+        _ => false,
+    };
+    if straight {
+        return segment(map, context, data, edge, pcurve, &declaration, tolerance_mm)
+            .map(|r| Resolved::Segment(Box::new(r)));
+    }
     let window = Carrier::of(map, data, &declaration)?.window;
     let mut options = Discover::default();
     options.endpoints.tolerance_mm = tolerance_mm;
@@ -445,4 +461,81 @@ impl Carrier {
             )),
         }
     }
+}
+
+/// World-straight p-curve image: solve each vertex's line parameter by
+/// projecting its source point onto the mapped line (binary64), then let the
+/// endpoint verifier certify the proposal with outward rounding. The projection
+/// is only a proposal; the certificate is the verifier's.
+fn segment(
+    map: ParameterMapRef,
+    context: &BodyContext,
+    data: &Inventory,
+    edge: EntityReference,
+    pcurve: EntityReference,
+    declaration: &step_pcurve::PcurveDeclaration,
+    tolerance_mm: f64,
+) -> Result<step_pcurve_endpoints::Report, Error> {
+    let entity = data.resolve_reference(pcurve)?;
+    let (raw, _, _) = step_pcurve::associated_edge_pcurve_with_limits(
+        context,
+        data,
+        map.face_reference(),
+        map.surface_reference(),
+        edge,
+        pcurve,
+        Default::default(),
+    )?;
+    let mid = |t: f64| -> Result<[f64; 3], Error> {
+        let b = map.bounds_for_declaration(data, declaration, [t; 2], 3, 64)?;
+        Ok(std::array::from_fn(|i| {
+            b.min[i] + (b.max[i] - b.min[i]) * 0.5
+        }))
+    };
+    let (a, b) = (mid(0.)?, mid(1.)?);
+    let delta: [f64; 3] = std::array::from_fn(|i| b[i] - a[i]);
+    let len2: f64 = delta.iter().map(|x| x * x).sum();
+    if !(len2.is_finite() && len2 > 0.) {
+        return Err(fail(
+            entity,
+            ErrorKind::Geometry,
+            "line p-curve has a degenerate world image",
+        ));
+    }
+    let scale = context.millimetres_per_source_unit();
+    let parameter = |id: u64| {
+        let p = context.body().vertices[&id].coordinates;
+        (0..3)
+            .map(|i| (p[i] * scale - a[i]) * delta[i])
+            .sum::<f64>()
+            / len2
+    };
+    let (s, e) = (parameter(raw.start), parameter(raw.end));
+    if !(s.is_finite() && e.is_finite()) || s == e {
+        return Err(fail(
+            entity,
+            ErrorKind::Geometry,
+            "line endpoint parameters are not distinct",
+        ));
+    }
+    step_pcurve_endpoints::verify(
+        map,
+        context,
+        data,
+        Request {
+            edge,
+            pcurve,
+            interval: [s.min(e), s.max(e)],
+            order: if s < e {
+                ParameterOrder::Forward
+            } else {
+                ParameterOrder::Reversed
+            },
+        },
+        step_pcurve_endpoints::Options {
+            tolerance_mm,
+            ..Default::default()
+        },
+        |_| true,
+    )
 }

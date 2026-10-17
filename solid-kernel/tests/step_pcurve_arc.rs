@@ -397,11 +397,19 @@ fn body_audit_arcs_on_circle_and_cylinder_edges_match_the_independent_oracle() {
         |_| true,
     )
     .unwrap();
-    let (mut arcs, mut closed, mut wrapping, mut cylinder) = (0, 0, 0, 0);
+    let (mut arcs, mut closed, mut wrapping, mut cylinder, mut segments) = (0, 0, 0, 0, 0);
     for f in &report.finite_arcs {
-        let Resolved::Arc(r) = &f.resolved else {
-            closed += 1;
-            continue;
+        let r = match &f.resolved {
+            Resolved::Arc(r) => r,
+            Resolved::Closed => {
+                closed += 1;
+                continue;
+            }
+            Resolved::Segment(s) => {
+                assert!(s.endpoint_error_upper_mm.iter().all(|e| *e <= 1e-7));
+                segments += 1;
+                continue;
+            }
         };
         let plane;
         let cyl;
@@ -428,5 +436,8 @@ fn body_audit_arcs_on_circle_and_cylinder_edges_match_the_independent_oracle() {
         arcs += 1;
         wrapping += (r.arc == Arc::Wrapping) as usize;
     }
-    assert_eq!((arcs, closed, wrapping, cylinder), (32, 20, 12, 14));
+    assert_eq!(
+        (arcs, closed, wrapping, cylinder, segments),
+        (32, 20, 12, 14, 176)
+    );
 }

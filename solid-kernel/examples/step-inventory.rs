@@ -119,15 +119,15 @@ fn run() -> Result<(), String> {
         .map_err(|e| e.to_string())?;
         println!("Scoped p-curve locus audit: {} associations; {} spline spans. Master semantics, trims and body validity are not certified.",report.checks.len(),report.spline_spans);
         if finite_arcs {
-            let closed = report
-                .finite_arcs
-                .iter()
-                .filter(|a| matches!(a.resolved, solid_kernel::step_pcurve_arc::Resolved::Closed))
-                .count();
+            use solid_kernel::step_pcurve_arc::Resolved;
+            let count = |f: fn(&Resolved) -> bool| {
+                report.finite_arcs.iter().filter(|a| f(&a.resolved)).count()
+            };
             println!(
-                "Finite arcs: {} oriented arcs selected, {} closed edges without an arc.",
-                report.finite_arcs.len() - closed,
-                closed
+                "Finite trims: {} segments, {} oriented arcs, {} closed edges without an arc.",
+                count(|r| matches!(r, Resolved::Segment(_))),
+                count(|r| matches!(r, Resolved::Arc(_))),
+                count(|r| matches!(r, Resolved::Closed))
             );
         }
     }
