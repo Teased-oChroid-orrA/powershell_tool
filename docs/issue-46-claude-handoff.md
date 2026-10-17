@@ -534,3 +534,7 @@ PR #76 merged at `6420adc`, branch deleted; docs-only main pointer refresh `7f9b
 ## Phase 49 integration — 2026-10-16 (client date)
 
 PR #77 confirmed merged at `d7f3268034cb63d328f92cfeea073c95f579054a`; source branch deleted. Tracking-only refresh records merged state. Qualified source `347d03e`, 175 CAD-enabled / 158 feature-off plus app compile, remains the source evidence. Next branch `feature/native-cad-bezier-sampling` targets the measured tight-curve sampling bottleneck without changing error guarantees. Broader CAD/meshing/final gates remain open.
+
+## 2026-10-16 — Phase 50 sampler qualification
+
+Source `1306f23` on `feature/native-cad-bezier-sampling`: 177 CAD-enabled / 160 feature-off tests, zero failures/ignored/warnings, app CAD lib/tests compile passes. [Evidence](issue-46-phase-50-verification.json). Pre-fix 64-segment regression fails; fixed curve uses 32 segments/189 work units at unchanged 0.001 tolerance. Actual representable split factor (including asymmetric three-ULP domains) is bounded. Other degrees/layouts retain fallback. Epic/child live checklists were updated through Phase 49 in response to the user's tracking question; broad acceptance gates remain open. Next: finite caller-selected spline interval sampling, then source trim/master/body and general meshing gates. No new external blocker, dependency or hosted CI.

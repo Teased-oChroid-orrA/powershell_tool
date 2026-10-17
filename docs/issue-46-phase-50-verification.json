@@ -1,0 +1,50 @@
+{
+  "qualified_source_commit": "1306f235aa42839c046985391d26dcecfff9449b",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 177,
+      "failed": 0,
+      "ignored": 0,
+      "warnings": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 160,
+      "failed": 0,
+      "ignored": 0,
+      "warnings": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "app_compile": "passed",
+  "development_failures": [
+    {
+      "test": "quadratic_curve_meets_existing_tolerance_with_bounded_segment_work",
+      "before_exit": 101,
+      "reason": "64-segment budget exhausted by old sampler; unchanged tolerance 0.001",
+      "after": "passed"
+    }
+  ],
+  "before": {
+    "segments": 4094,
+    "enclosure_work_units": 24561,
+    "sample_wall_seconds": 0.046489935,
+    "largest_error_bound": 0.000977059475006202
+  },
+  "after": {
+    "segments": 32,
+    "enclosure_work_units": 189,
+    "sample_wall_seconds": 0.000465503,
+    "largest_error_bound": 0.0006699820683854008
+  },
+  "limitations": [
+    "Single unoptimized pilot, cache uncontrolled; not representative throughput or memory evidence",
+    "General knot layouts/degrees use unchanged fallback",
+    "No native spline trim/master/body or general PLC qualification",
+    "Windows/macOS runtime unverified"
+  ]
+}
