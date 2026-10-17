@@ -8,6 +8,7 @@ pub mod cost;
 pub mod compatibility;
 pub mod hybrid;
 pub mod metric;
+pub mod metric_refine;
 pub mod multimaterial;
 pub mod partition;
 pub mod predictor;

@@ -38,7 +38,8 @@ Checked lines are delivered scoped increments, with evidence committed in this r
 - [ ] #56: Verified structured–unstructured integration and transitions.
 - [x] #57: Validated SPD metric tensors, metric-space lengths, log-Euclidean interpolation, intersection, gradation, curvature- and error-field-driven sizes and complexity/budget control, all with analytic tests ([Phase 62](issue-46-phase-62.md)). No mesher consumes the field yet, so the gate stays open until #58 integrates it.
 - [ ] #57: Verified spatial metric fields consumed by a mesher.
-- [ ] #58: Metric-driven anisotropic adaptation.
+- [x] #58: Metric-driven refinement by terminal-edge splitting and metric-quality flips, conforming and geometry-preserving, converging for isotropic and mild anisotropic fields ([Phase 63](issue-46-phase-63.md)); strong anisotropy, coarsening and curved-boundary projection remain open.
+- [ ] #58: Metric-driven anisotropic adaptation (unit-metric meshes at strong anisotropy).
 - [ ] #59: Mesh motion/ALE and consistent state/history transfer.
 - [ ] #60: Solver-aware cost models and advanced optimization.
 - [ ] #61: Optional learning with representative verified training data, held-out/OOD checks and deterministic fallback.

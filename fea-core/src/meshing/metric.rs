@@ -230,6 +230,28 @@ impl Metric {
         }
         Ok(())
     }
+    /// `M^{1/2} v`: maps a vector into the space where the metric is the identity,
+    /// so an element of unit metric edges becomes a unit-edge element.
+    pub fn transform(&self, v: V3) -> V3 {
+        let r = self.power(0.5);
+        std::array::from_fn(|i| (0..3).map(|j| r[i][j] * v[j]).sum())
+    }
+    /// Arithmetic mean of metrics (SPD, cheap); `None` for an empty slice.
+    pub fn mean(metrics: &[Metric]) -> Option<Metric> {
+        if metrics.is_empty() {
+            return None;
+        }
+        let n = metrics.len() as f64;
+        let mut m = [[0.; 3]; 3];
+        for x in metrics {
+            for i in 0..3 {
+                for j in 0..3 {
+                    m[i][j] += x.0[i][j] / n;
+                }
+            }
+        }
+        Some(Metric::raw(m))
+    }
     /// `sqrt(e^T M e)`.
     pub fn length(&self, e: V3) -> f64 {
         let mut s = 0.;

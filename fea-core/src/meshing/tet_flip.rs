@@ -88,8 +88,11 @@ struct Candidate {
     new: Vec<[usize; 4]>,
     link: Option<usize>,
 }
+/// Cell quality in `[0, 1]`-like units, larger is better.
+pub type QualityFn<'a> = &'a dyn Fn(&[Point], [usize; 4]) -> f64;
 struct Pass<'a> {
     points: &'a [Point],
+    quality: QualityFn<'a>,
     cells: Vec<[usize; 4]>,
     alive: Vec<bool>,
     touched: Vec<bool>,
@@ -100,6 +103,9 @@ struct Pass<'a> {
     options: FlipOptions,
 }
 impl Pass<'_> {
+    fn q(&self, t: [usize; 4]) -> f64 {
+        (self.quality)(self.points, t)
+    }
     fn face_flip(&self, t: usize, k: usize) -> Result<Option<Candidate>, MeshError> {
         let face = faces_of(self.cells[t])[k];
         let key = key3(face);
@@ -136,11 +142,8 @@ impl Pass<'_> {
         if signs.iter().any(|s| *s != signs[0]) {
             return Ok(None);
         }
-        let old_min = quality(self.points, self.cells[t]).min(quality(self.points, self.cells[u]));
-        let new_min = new
-            .iter()
-            .map(|c| quality(self.points, *c))
-            .fold(f64::INFINITY, f64::min);
+        let old_min = self.q(self.cells[t]).min(self.q(self.cells[u]));
+        let new_min = new.iter().map(|c| self.q(*c)).fold(f64::INFINITY, f64::min);
         Ok(Some(Candidate {
             gain: new_min - old_min,
             old: vec![t, u],
@@ -236,10 +239,7 @@ impl Pass<'_> {
             }
             let tp = positive(self.points, [a, b, c, p])?.unwrap();
             let tq = positive(self.points, [a, b, c, q])?.unwrap();
-            Ok(Some((
-                quality(self.points, tp).min(quality(self.points, tq)),
-                [tp, tq],
-            )))
+            Ok(Some((self.q(tp).min(self.q(tq)), [tp, tq])))
         };
         let mut best = vec![vec![f64::NEG_INFINITY; n]; n];
         let mut pick = vec![vec![0usize; n]; n];
@@ -283,7 +283,7 @@ impl Pass<'_> {
         }
         let old_min = ring_cells
             .iter()
-            .map(|&c| quality(self.points, self.cells[c]))
+            .map(|&c| self.q(self.cells[c]))
             .fold(f64::INFINITY, f64::min);
         Ok(Some(Candidate {
             gain: new_min - old_min,
@@ -299,6 +299,17 @@ pub fn improve(
     top: &TetTopology,
     protected: &BTreeSet<[usize; 3]>,
     options: FlipOptions,
+) -> Result<(TetTopology, FlipReport), MeshError> {
+    improve_by(top, protected, options, &quality)
+}
+/// [`improve`] with a caller-supplied cell quality (for example the radius ratio in
+/// a metric). The quality must be positive for valid cells and is only compared,
+/// so any monotone scale works; `options.target` is in the same units.
+pub fn improve_by(
+    top: &TetTopology,
+    protected: &BTreeSet<[usize; 3]>,
+    options: FlipOptions,
+    quality: QualityFn<'_>,
 ) -> Result<(TetTopology, FlipReport), MeshError> {
     let points = top.points();
     let mut cells: Vec<[usize; 4]> = top.cells().to_vec();
@@ -348,6 +359,7 @@ pub fn improve(
         let n = cells.len();
         let mut pass = Pass {
             points,
+            quality,
             cells: cells.clone(),
             alive: vec![true; n],
             touched: vec![false; n],
