@@ -37,7 +37,7 @@ impl Geometry<1> for NurbsCurve {
     fn enclose(&self, domain: [[f64; 2]; 1]) -> Result<CurveBounds, Error> {
         self.enclose(domain[0], 3)
     }
-    fn evaluate(&self, t: [f64; 1]) -> Result<V3, Error> {
+    fn representative(&self, t: [f64; 1], _enclosure: CurveBounds) -> Result<V3, Error> {
         self.evaluate(t[0])
     }
 }

@@ -33,7 +33,10 @@ pub(crate) trait Geometry<const D: usize> {
     fn domain(&self) -> [[f64; 2]; D];
     fn cells(&self, maximum: usize) -> Result<Vec<[[f64; 2]; D]>, Error>;
     fn enclose(&self, domain: [[f64; 2]; D]) -> Result<Bounds3, Error>;
-    fn evaluate(&self, parameter: [f64; D]) -> Result<V3, Error>;
+    /// Diagnostic binary64 representative at the parameter. Bounds depend on
+    /// `enclose`, never this point. Wrappers document whether it is an evaluated
+    /// point or an enclosure midpoint; it does not prove projection uniqueness.
+    fn representative(&self, parameter: [f64; D], enclosure: Bounds3) -> Result<V3, Error>;
 }
 pub(crate) struct Bracket<const D: usize> {
     pub bounds: [f64; 2],
@@ -197,7 +200,7 @@ pub(crate) fn distance<G: Geometry<D>, const D: usize>(
             let result = Bracket {
                 bounds: [lower, upper],
                 parameter,
-                point: geometry.evaluate(parameter)?,
+                point: geometry.representative(parameter, enclosure)?,
                 enclosure,
                 calls: search.calls,
             };
