@@ -9,3 +9,5 @@ Child nets use an enclosure of the actual representable split factor, rather tha
 [Full qualification](issue-46-phase-50-verification.json): 177 CAD-enabled / 160 feature-off tests, zero failures/ignored/warnings; app CAD library/tests compilation passes at source `1306f235aa42839c046985391d26dcecfff9449b`. No new dependencies or hosted CI. OCCT remains production; no full spline trim/master/body or general constrained-meshing claim.
 
 External unoptimized pilot (same program, one call each; cache uncontrolled): before 0.046489935 s, after 0.000465503 s; observed error bound after 0.0006699820683854008, below unchanged 0.001. These isolated timings do not establish representative production speedup.
+
+Review/integration: PR #78; all required local qualification is complete.
