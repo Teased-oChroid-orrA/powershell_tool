@@ -2,8 +2,8 @@
   "epic": 46,
   "epic_complete": false,
   "branch": "feature/native-cad-circular-carrier-validation",
-  "pull_request": null,
-  "pull_request_state": "pending creation",
+  "pull_request": 71,
+  "pull_request_state": "draft",
   "main": "8e7e4e5a9b1ea7e604e970878e5e26e938a67f72",
   "merged_prs": [
     65,
