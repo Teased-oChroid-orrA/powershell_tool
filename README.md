@@ -33,6 +33,19 @@ STEP kernel tests. The JSON report records the tested commit, commands and exits
 Native desktop interaction and clean-machine packaged startup still require a
 platform smoke check; a successful compile alone does not establish those.
 
+## Native CAD and meshing development
+
+The native Rust CAD/advanced meshing epic is **in progress**; OpenCASCADE remains
+the production CAD backend. Diagnostic spline/STEP and bounded meshing foundations
+do not yet establish general native CAD or constrained tetrahedralization parity.
+
+To resume this statement of work with Claude Code, start with the
+[resume instructions](docs/issue-46-resume.md), then the
+[live qualified state](docs/issue-46-current.json) and
+[dated handoff](docs/issue-46-claude-handoff.md). The
+[epic checklist](https://github.com/Teased-oChroid-orrA/powershell_tool/issues/46)
+tracks completed substeps separately from unfinished priority acceptance gates.
+
 ## Project status: Rust only
 
 This project was migrated from **C#/WinUI 3** to **Rust**.

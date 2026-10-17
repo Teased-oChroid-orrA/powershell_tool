@@ -293,3 +293,7 @@ simulated training corpus + weighted prior + continual refits with an honest evi
 `docs/adr/ADR-016-manual-mesh-model-lifecycle-and-learning-prior.md`. NOT started: the item-4 feature list (table with
 proposed approaches and the product decisions needed is in the phase-25 doc). Still uncommitted on top of `ae05501`; commit/push only when asked.
 
+
+## 2026-10-16 — Current statement-of-work continuation entry
+
+Resume the ongoing native CAD/advanced meshing epic #46 from [issue-46-resume.md](issue-46-resume.md) and [issue-46-current.json](issue-46-current.json). These identify current qualification/integration/next work; earlier dated branch/no-merge instructions above are historical. The user subsequently authorized merging qualified increments and continuing on new branches. Preserve OCCT and all unfulfilled priority gates. Phase 51 source `273e722` passes 180 CAD-enabled / 163 feature-off tests and app CAD lib/tests compilation, zero failures/ignored/warnings; [verification](issue-46-phase-51-verification.json). No development failure or external blocker. Shared analytic/spline source p-curve queries are next, followed by source finite/master/trim/body and the remaining roadmap.

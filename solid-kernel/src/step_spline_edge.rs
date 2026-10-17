@@ -1,5 +1,6 @@
-//! Source-bound full-domain spline edges: endpoint agreement and bounded samples.
-//! No trimmed-curve, simplicity, surface-locus or complete B-Rep certificate.
+//! Source-bound spline edges: endpoint agreement and bounded samples.
+//! Explicit caller trims are checked at endpoints; no inferred trim, simplicity,
+//! surface-locus or complete B-Rep certificate.
 use crate::{
     analytic_step::point,
     geometry_distance, nurbs, nurbs_sample,
@@ -56,6 +57,8 @@ impl SampledSplineEdge {
     pub fn same_sense(&self) -> bool {
         self.same_sense
     }
+    /// Complete underlying curve declaration, including portions outside a
+    /// selected interval. Sample parameters identify the actual checked portion.
     pub fn declaration(&self) -> &StepSplineDeclaration {
         &self.declaration
     }
@@ -76,12 +79,36 @@ impl SampledSplineEdge {
     }
 }
 /// Supports only edges covering the complete clamped spline domain. Source
-/// vertices at interior parameters refuse until explicit trim semantics exist.
+/// vertices at interior parameters refuse here; use `sample_interval` with
+/// independently supplied parameters to check a finite portion.
 /// Source offsets and identities survive errors; no partial samples escape.
 pub fn sample(
     context: &BodyContext,
     data: &Inventory,
     edge: EntityReference,
+    opt: Options,
+    progress: impl FnMut(nurbs_sample::Progress) -> bool,
+) -> Result<SampledSplineEdge, Error> {
+    read_and_sample(context, data, edge, None, opt, progress)
+}
+/// Check a caller-selected increasing natural spline interval against both
+/// source vertices, then sample it. Source edge same_sense determines vertex
+/// order. This does not discover trims or establish the edge's surface locus.
+pub fn sample_interval(
+    context: &BodyContext,
+    data: &Inventory,
+    edge: EntityReference,
+    interval: [f64; 2],
+    opt: Options,
+    progress: impl FnMut(nurbs_sample::Progress) -> bool,
+) -> Result<SampledSplineEdge, Error> {
+    read_and_sample(context, data, edge, Some(interval), opt, progress)
+}
+fn read_and_sample(
+    context: &BodyContext,
+    data: &Inventory,
+    edge: EntityReference,
+    interval: Option<[f64; 2]>,
     opt: Options,
     mut progress: impl FnMut(nurbs_sample::Progress) -> bool,
 ) -> Result<SampledSplineEdge, Error> {
@@ -98,7 +125,8 @@ pub fn sample(
         });
     }
     let declaration = context.read_spline_curve(data, edge, opt.curve_limits)?;
-    sample_declaration(context, data, edge, opt, declaration, progress)
+    let interval = interval.unwrap_or_else(|| declaration.curve.domain());
+    sample_declaration_interval(context, data, edge, interval, opt, declaration, progress)
 }
 /// Internal reuse of the source-bound declaration; callers must preserve the
 /// same context/edge. Numeric source identity is checked before endpoint work.
@@ -106,6 +134,18 @@ pub(crate) fn sample_declaration(
     context: &BodyContext,
     data: &Inventory,
     edge: EntityReference,
+    opt: Options,
+    declaration: StepSplineDeclaration,
+    progress: impl FnMut(nurbs_sample::Progress) -> bool,
+) -> Result<SampledSplineEdge, Error> {
+    let interval = declaration.curve.domain();
+    sample_declaration_interval(context, data, edge, interval, opt, declaration, progress)
+}
+fn sample_declaration_interval(
+    context: &BodyContext,
+    data: &Inventory,
+    edge: EntityReference,
+    interval: [f64; 2],
     opt: Options,
     declaration: StepSplineDeclaration,
     mut progress: impl FnMut(nurbs_sample::Progress) -> bool,
@@ -137,6 +177,13 @@ pub(crate) fn sample_declaration(
     }) {
         return Err(cancelled());
     }
+    if interval.iter().any(|x| !x.is_finite())
+        || interval[0] >= interval[1]
+        || interval[0] < declaration.curve.domain()[0]
+        || interval[1] > declaration.curve.domain()[1]
+    {
+        return Err(fail("invalid finite spline edge interval"));
+    }
     data.resolve_reference(context.length_context())?;
     let topology = context
         .body()
@@ -154,15 +201,15 @@ pub(crate) fn sample_declaration(
     for i in 0..2 {
         let vertex = &context.body().vertices[&vertex_ids[i]];
         endpoints[i] = point(data, vertex.point, context.millimetres_per_source_unit())?;
-        let parameter = declaration.curve.domain()[if topology.same_sense { i } else { 1 - i }];
+        let parameter = interval[if topology.same_sense { i } else { 1 - i }];
         let enclosure = declaration.curve.enclose([parameter; 2], 2)?;
         errors[i] = geometry_distance::distance_bounds(enclosure, endpoints[i])?[1];
         if errors[i] > opt.geometry_tolerance_mm {
-            return Err(fail("full-domain endpoint agreement not certified; unsupported trim or inconsistent orientation/geometry"));
+            return Err(fail("selected-interval endpoint agreement not certified; unsupported trim or inconsistent orientation/geometry"));
         }
     }
     let mut last = None;
-    let samples = nurbs_sample::sample(&declaration.curve, opt.sampling, |p| {
+    let samples = nurbs_sample::sample_interval(&declaration.curve, interval, opt.sampling, |p| {
         last = Some(p);
         progress(p)
     })

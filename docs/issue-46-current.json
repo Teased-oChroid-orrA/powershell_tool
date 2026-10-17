@@ -1,9 +1,9 @@
 {
   "epic": 46,
   "epic_complete": false,
-  "branch": "main",
-  "pull_request": 78,
-  "pull_request_state": "merged",
+  "branch": "feature/native-cad-finite-spline-sampling",
+  "pull_request": 79,
+  "pull_request_state": "draft",
   "merged_prs": [
     65,
     66,
@@ -20,16 +20,16 @@
     77,
     78
   ],
-  "latest_qualified_source": "1306f235aa42839c046985391d26dcecfff9449b",
-  "latest_phase": 50,
-  "progress_snapshot": "issue-46-phase-50-verification.json",
+  "latest_qualified_source": "273e7220ab52ed887521ebd1725ccdb763505566",
+  "latest_phase": 51,
+  "progress_snapshot": "issue-46-phase-51-verification.json",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
   "remaining": "Other p-curve mappings/master/trim/body gates, general constrained meshing/quality and P2/P3/final roadmap",
   "tests": {
-    "cad_enabled": 177,
-    "feature_off": 160,
+    "cad_enabled": 180,
+    "feature_off": 163,
     "failed": 0,
     "ignored": 0,
     "app_cad_lib_tests_compile": "passed at same source"
@@ -37,9 +37,8 @@
   "last_confirmed_main_merge": "001b7e8d8b7a376481153dc902c06b95622169e3",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Explicit finite-interval spline sampling, then source trim/master/body and remaining roadmap",
-    "status": "planned",
-    "branch": "feature/native-cad-finite-spline-sampling"
+    "scope": "Unify source plane/cylinder/spline p-curve world queries, then finite master/trim/body and general meshing gates",
+    "status": "planned"
   },
-  "base_main_head": "caa0178"
+  "base_main_head": "a30f454d10fe9c2b447ba528942b2d49cb81788a"
 }

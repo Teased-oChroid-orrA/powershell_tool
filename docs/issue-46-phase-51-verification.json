@@ -1,0 +1,36 @@
+{
+  "qualified_source_commit": "273e7220ab52ed887521ebd1725ccdb763505566",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 180,
+      "failed": 0,
+      "ignored": 0,
+      "warnings": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 163,
+      "failed": 0,
+      "ignored": 0,
+      "warnings": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "app_compile": "passed",
+  "development_failures": [],
+  "evidence": [
+    "Finite rational-arc clipping with whole-curve error bounds and unchanged full-domain output",
+    "Crossed C0 knots, general cubic fallback, invalid interval/budget/cancellation refusals",
+    "Extended source edge: default full-domain refusal, explicit source endpoint/sense agreement, incorrect trim refusal",
+    "Metre-to-mm endpoint conversion preserves raw interval; stale source context refuses"
+  ],
+  "not_verified": [
+    "Trim parameter discovery/uniqueness, p-curve/master/surface-locus/body validity",
+    "General spline import and PLC/quality/later gates",
+    "Current Windows/macOS runtime"
+  ]
+}

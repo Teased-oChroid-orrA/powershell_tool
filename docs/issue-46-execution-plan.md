@@ -109,3 +109,5 @@ Current execution pointer: [issue-46-current.json](issue-46-current.json). Phase
 - [Phase 49 world-space p-curve distance brackets](issue-46-phase-49.md): shared bounded search, source units/cells/work caps and explicit candidate/projection limits.
 
 - [Phase 50 bounded quadratic sampler acceleration](issue-46-phase-50.md): unchanged error tolerance, actual split-factor enclosures, work reduction and qualification.
+
+- [Phase 51 explicit finite spline intervals](issue-46-phase-51.md): clipped bounded sampling, checked source endpoints/sense and unchanged raw parameters.
