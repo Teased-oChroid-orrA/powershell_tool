@@ -682,6 +682,7 @@ impl AnalyticModel {
                 let x = unit(source_surface, sub(p[1], p[0]))?;
                 let z = unit(source_surface, cross(x, sub(p[2], p[0])))?;
                 let y = unit(source_surface, cross(z, x))?;
+                patch.verify_chart_normal(z, source_surface)?;
                 (
                     Surface::Plane(Frame {
                         origin: p[0],
@@ -700,6 +701,11 @@ impl AnalyticModel {
                     let edge = &body.edges[&u.edge];
                     if let Some(patch) = &patch {
                         for vertex in [edge.start, edge.end] {
+                            patch.verify_point_plane(
+                                vertices[&vertex],
+                                opt.geometry_tolerance_mm,
+                                source_surface,
+                            )?;
                             patch.contains_point(vertices[&vertex], source_surface)?;
                         }
                         match &curves[&edge.id] {
@@ -717,15 +723,29 @@ impl AnalyticModel {
                                         })
                                     });
                                 for p in points {
+                                    patch.verify_point_plane(
+                                        p,
+                                        opt.geometry_tolerance_mm,
+                                        source_surface,
+                                    )?;
                                     patch.contains_point(p, source_surface)?;
                                 }
                             }
-                            Curve::Circle { frame, radius } => patch.contains_circle(
-                                frame.origin,
-                                [frame.x, frame.y],
-                                *radius,
-                                source_surface,
-                            )?,
+                            Curve::Circle { frame, radius } => {
+                                patch.verify_circle_plane(
+                                    frame.origin,
+                                    [frame.x, frame.y],
+                                    *radius,
+                                    opt.geometry_tolerance_mm,
+                                    source_surface,
+                                )?;
+                                patch.contains_circle(
+                                    frame.origin,
+                                    [frame.x, frame.y],
+                                    *radius,
+                                    source_surface,
+                                )?;
+                            }
                         }
                     }
 

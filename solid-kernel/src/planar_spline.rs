@@ -29,6 +29,8 @@ pub(crate) struct PlanarPatch {
     controls: [V3; 4],
     axes: [usize; 2],
     polygon: [[f64; 2]; 4],
+    normal: [Interval; 3],
+    normal_length: Interval,
 }
 impl PlanarPatch {
     pub fn new(surface: &NurbsSurface, e: &Entity) -> Result<Self, Error> {
@@ -50,6 +52,19 @@ impl PlanarPatch {
         }
         let a: V3 = std::array::from_fn(|i| p[1][i] - p[0][i]);
         let b: V3 = std::array::from_fn(|i| p[2][i] - p[0][i]);
+        let du: [Interval; 3] =
+            std::array::from_fn(|i| Interval::point(p[1][i]) - Interval::point(p[0][i]));
+        let dv: [Interval; 3] =
+            std::array::from_fn(|i| Interval::point(p[2][i]) - Interval::point(p[0][i]));
+        let exact_normal: [Interval; 3] = std::array::from_fn(|i| {
+            du[(i + 1) % 3] * dv[(i + 2) % 3] - du[(i + 2) % 3] * dv[(i + 1) % 3]
+        });
+        let normal_length =
+            (exact_normal[0].square() + exact_normal[1].square() + exact_normal[2].square())
+                .sqrt_nonnegative();
+        if !normal_length.finite() || normal_length.lo <= 0. {
+            return Err(fail(e, "planar spline normal interval is unresolved"));
+        }
         let normal = crate::cross(a, b);
         let drop = (0..3)
             .max_by(|&i, &j| normal[i].abs().total_cmp(&normal[j].abs()))
@@ -84,7 +99,54 @@ impl PlanarPatch {
             controls: p,
             axes,
             polygon,
+            normal: exact_normal,
+            normal_length,
         })
+    }
+    fn dot_normal(&self, point: [Interval; 3]) -> Interval {
+        self.normal[0] * point[0] + self.normal[1] * point[1] + self.normal[2] * point[2]
+    }
+    pub fn verify_chart_normal(&self, normal: V3, e: &Entity) -> Result<(), Error> {
+        if self.dot_normal(normal.map(Interval::point)).lo <= 0. {
+            return Err(fail(e, "planar spline chart orientation not certified"));
+        }
+        Ok(())
+    }
+    pub fn verify_point_plane(&self, point: V3, tolerance: f64, e: &Entity) -> Result<(), Error> {
+        let delta = std::array::from_fn(|i| {
+            Interval::point(point[i]) - Interval::point(self.controls[0][i])
+        });
+        self.verify_distance(self.dot_normal(delta) / self.normal_length, tolerance, e)
+    }
+    fn verify_distance(&self, distance: Interval, tolerance: f64, e: &Entity) -> Result<(), Error> {
+        if !distance.finite() || distance.lo < -tolerance || distance.hi > tolerance {
+            return Err(fail(
+                e,
+                "spline edge/actual control-plane locus agreement not certified",
+            ));
+        }
+        Ok(())
+    }
+    pub fn verify_circle_plane(
+        &self,
+        center: V3,
+        basis: [V3; 2],
+        radius: f64,
+        tolerance: f64,
+        e: &Entity,
+    ) -> Result<(), Error> {
+        let delta = std::array::from_fn(|i| {
+            Interval::point(center[i]) - Interval::point(self.controls[0][i])
+        });
+        let center = self.dot_normal(delta);
+        let coefficients = basis.map(|v| self.dot_normal(v.map(Interval::point)));
+        let amplitude = Interval::point(radius)
+            * (coefficients[0].square() + coefficients[1].square()).sqrt_nonnegative();
+        self.verify_distance(
+            (center + Interval::new(-amplitude.hi, amplitude.hi)) / self.normal_length,
+            tolerance,
+            e,
+        )
     }
     pub fn controls(&self) -> [V3; 4] {
         self.controls
@@ -162,6 +224,16 @@ mod tests {
             [2., 2., 0.],
         ]);
         let p = PlanarPatch::new(&s, &e).unwrap();
+        p.verify_chart_normal([0., 0., 1.], &e).unwrap();
+        assert!(p.verify_chart_normal([0., 0., -1.], &e).is_err());
+        p.verify_point_plane([0.; 3], 1e-7, &e).unwrap();
+        assert!(p.verify_point_plane([0., 0., 1e-3], 1e-7, &e).is_err());
+        p.verify_circle_plane([0.; 3], [[1., 0., 0.], [0., 1., 0.]], 1., 1e-7, &e)
+            .unwrap();
+        assert!(p
+            .verify_circle_plane([0.; 3], [[1., 0., 0.], [0., 0., 1.]], 1., 1e-7, &e)
+            .is_err());
+
         for point in [[0., 0., 0.], [-2., 0., 0.], [2., 2., 0.]] {
             p.contains_point(point, &e).unwrap();
         }
