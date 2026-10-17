@@ -10,6 +10,7 @@ pub mod curved;
 pub mod hybrid;
 pub mod metric;
 pub mod metric_refine;
+pub mod motion;
 pub mod multimaterial;
 pub mod partition;
 pub mod predictor;
