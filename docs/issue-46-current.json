@@ -1,9 +1,9 @@
 {
   "epic": 46,
   "epic_complete": false,
-  "branch": "feature/native-cad-pcurve-distance",
+  "branch": "main",
   "pull_request": 77,
-  "pull_request_state": "draft",
+  "pull_request_state": "merged",
   "merged_prs": [
     65,
     66,
@@ -16,7 +16,8 @@
     73,
     74,
     75,
-    76
+    76,
+    77
   ],
   "latest_qualified_source": "347d03e9180193194817ab504235695c6d17a515",
   "latest_phase": 49,
@@ -32,7 +33,7 @@
     "ignored": 0,
     "app_cad_lib_tests_compile": "passed at same source"
   },
-  "last_confirmed_main_merge": "6420adc354cda07fa4525cb2a32afefb59c405d7",
+  "last_confirmed_main_merge": "d7f3268034cb63d328f92cfeea073c95f579054a",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
     "branch": "feature/native-cad-bezier-sampling",
