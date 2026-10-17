@@ -40,10 +40,11 @@
     98,
     99,
     100,
-    101
+    101,
+    102
   ],
   "latest_qualified_source": "de5ceed56c5f146cf55a275ce1b10959836df53a",
-  "latest_phase": 75,
+  "latest_phase": 76,
   "progress_snapshot": "issue-46-phase-53-verification.json",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
@@ -59,9 +60,9 @@
   "last_confirmed_main_merge": "4b19daa",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Phase 75 AMR feedback; next: sliver-face defeaturing (#52/#53), 3D structured-unstructured transitions (#56), representative benchmarks for #60-#62",
+    "scope": "Phase 76 sliver-face defeaturing; next: surface Steiner refinement of flat faces under their boundary polygon (remaining bracket needles), 3D structured-unstructured transitions (#56)",
     "status": "ready_for_pr",
-    "branch": "feature/native-cad-amr-feedback"
+    "branch": "feature/native-cad-defeaturing"
   },
   "base_main_head": "9cdefdcbb254328489de752295d8bd4454e5f2b4",
   "completion_checklist": "issue-46-completion-checklist.md",

@@ -314,7 +314,7 @@ fn run() -> Result<(), String> {
                             Default::default(),
                             Default::default(),
                         );
-                        println!("Shell preparation: smallest shell angle {:.4} -> {:.4} degrees; weld {:?}; cleanup {:?}; notes {:?}", p.angle_before_deg, p.angle_after_deg, p.weld, p.cleanup, p.notes);
+                        println!("Shell preparation: smallest shell angle {:.4} -> {:.4} degrees; weld {:?}; defeature {:?}; cleanup {:?}; notes {:?}", p.angle_before_deg, p.angle_after_deg, p.weld, p.defeature, p.cleanup, p.notes);
                         for (a, f, pts) in
                             solid_kernel::shell_patch::worst_triangles(&p.vertices, &p.facets, 4)
                         {

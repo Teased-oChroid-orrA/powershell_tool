@@ -5,6 +5,7 @@
 
 use crate::{
     plc_conform::min_shell_angle_deg,
+    shell_defeature::{self, defeature_slivers},
     shell_patch::{self, dissolve_flat},
     shell_weld::{self, weld_short_edges},
     V3,
@@ -18,6 +19,7 @@ pub struct Prepared {
     pub angle_before_deg: f64,
     pub angle_after_deg: f64,
     pub weld: Option<shell_weld::Report>,
+    pub defeature: Option<shell_defeature::Report>,
     pub cleanup: Option<shell_patch::Report>,
     /// Why a stage did not run, in order.
     pub notes: Vec<String>,
@@ -45,10 +47,28 @@ pub fn prepare_shell(
             None
         }
     };
-    // The weld may have moved geometry by up to its longest collapsed edge, so planes and straight lines are only that
+    // Sliver faces: clusters of needle-edge vertices welded together (the collapse above cannot, by its link condition).
+    let defeature = match defeature_slivers(&v, &f, Default::default()) {
+        Ok(d) => {
+            let report = d.report.clone();
+            v = d.vertices;
+            f = d.facets;
+            Some(report)
+        }
+        Err(e) => {
+            notes.push(format!("defeaturing skipped: {e}"));
+            None
+        }
+    };
+    // The weld and the defeaturing may have moved geometry by up to its longest collapsed edge, so planes and straight lines are only that
     // exact afterwards: the cleanup must accept deviations of that size, or it would not recognise what the weld left flat.
     let mut cleanup_options = cleanup_options;
-    if let Some(w) = &weld {
+    let moved = weld
+        .iter()
+        .map(|w| w.longest_collapsed_edge)
+        .chain(defeature.iter().map(|d| d.longest_weld))
+        .fold(0., f64::max);
+    if moved > 0. {
         let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
         for p in &v {
             for k in 0..3 {
@@ -57,8 +77,8 @@ pub fn prepare_shell(
             }
         }
         let diag = (0..3).map(|k| (hi[k] - lo[k]).powi(2)).sum::<f64>().sqrt();
-        if diag > 0. && w.collapses > 0 {
-            let scaled = 2. * w.longest_collapsed_edge / diag;
+        if diag > 0. {
+            let scaled = 2. * moved / diag;
             cleanup_options.relative_tolerance = cleanup_options.relative_tolerance.max(scaled);
             cleanup_options.collinear_distance = cleanup_options.collinear_distance.max(scaled);
         }
@@ -87,6 +107,7 @@ pub fn prepare_shell(
             angle_before_deg: angle_before,
             angle_after_deg: angle_before,
             weld,
+            defeature,
             cleanup,
             notes,
         };
@@ -97,6 +118,7 @@ pub fn prepare_shell(
         angle_before_deg: angle_before,
         angle_after_deg: angle_after,
         weld,
+        defeature,
         cleanup,
         notes,
     }
@@ -127,7 +149,7 @@ mod tests {
         let p = prepare_shell(&v, &f, Default::default(), Default::default());
         assert_eq!(p.facets, f);
         assert_eq!(p.vertices, v);
-        assert_eq!(p.notes.len(), 2, "{:?}", p.notes);
+        assert_eq!(p.notes.len(), 3, "{:?}", p.notes);
     }
 
     #[test]
