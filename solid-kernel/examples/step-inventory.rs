@@ -308,47 +308,19 @@ fn run() -> Result<(), String> {
                 if conform_requested {
                     use fea_core::meshing::compatibility as registry;
                     let (shell_vertices, shell_facets) = if clean_shell {
-                        let welded = match solid_kernel::shell_weld::weld_short_edges(
+                        let p = solid_kernel::shell_prepare::prepare_shell(
                             plc.vertices(),
                             plc.facets(),
                             Default::default(),
-                        ) {
-                            Ok(w) => {
-                                println!("Shell weld: {:?}", w.report);
-                                Some((w.vertices, w.facets))
-                            }
-                            Err(e) => {
-                                println!("Shell weld refused ({e}).");
-                                None
-                            }
-                        };
-                        let (wv, wf) = welded
-                            .unwrap_or_else(|| (plc.vertices().to_vec(), plc.facets().to_vec()));
-                        match solid_kernel::shell_patch::dissolve_flat(&wv, &wf, Default::default())
+                            Default::default(),
+                        );
+                        println!("Shell preparation: smallest shell angle {:.4} -> {:.4} degrees; weld {:?}; cleanup {:?}; notes {:?}", p.angle_before_deg, p.angle_after_deg, p.weld, p.cleanup, p.notes);
+                        for (a, f, pts) in
+                            solid_kernel::shell_patch::worst_triangles(&p.vertices, &p.facets, 4)
                         {
-                            Ok(c) => {
-                                println!("Flat-patch cleanup: {:?}", c.report);
-                                for (a, f, p) in solid_kernel::shell_patch::worst_triangles(
-                                    &c.vertices,
-                                    &c.facets,
-                                    4,
-                                ) {
-                                    println!("  worst after cleanup: {a:.3e} deg, facet {f:?}, points {p:?}");
-                                }
-                                for (a, f, p) in solid_kernel::shell_patch::worst_triangles(
-                                    plc.vertices(),
-                                    plc.facets(),
-                                    4,
-                                ) {
-                                    println!("  worst before cleanup: {a:.3e} deg, facet {f:?}, points {p:?}");
-                                }
-                                (c.vertices, c.facets)
-                            }
-                            Err(e) => {
-                                println!("Flat-patch cleanup refused ({e}); using the welded shell as is.");
-                                (wv, wf)
-                            }
+                            println!("  worst after preparation: {a:.3e} deg, facet {f:?}, points {pts:?}");
                         }
+                        (p.vertices, p.facets)
                     } else {
                         (plc.vertices().to_vec(), plc.facets().to_vec())
                     };

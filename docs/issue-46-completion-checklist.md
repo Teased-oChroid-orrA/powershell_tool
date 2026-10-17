@@ -34,6 +34,7 @@ Checked lines are delivered scoped increments, with evidence committed in this r
 - [x] #53: Planar boundary-vertex sliding extends the smoothing to boundary-adjacent slivers on flat faces ([Phase 66](issue-46-phase-66.md)); curved shells, edge sliding and Steiner exudation remain open.
 - [ ] #53: General sliver handling/flips/smoothing/remeshing and representative solver-conditioning/accuracy/cost acceptance.
 - [x] #54/#64: Registry v2 covers the native constrained strategy with an input-angle gate and stable rejection codes ([Phase 61](issue-46-phase-61.md)).
+- [x] #54/#64: Registry v3: strategy generation, full verdict table and evidence matrix with a document-existence test ([Phase 71](issue-46-phase-71.md)); end-to-end qualification on representative models still open.
 - [ ] #54: Full deterministic strategy generation/selection and end-to-end qualification beyond the early registry pilot.
 
 ## P2, P3 and final gates

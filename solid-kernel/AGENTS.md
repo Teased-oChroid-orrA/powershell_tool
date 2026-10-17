@@ -19,6 +19,7 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 | Finite p-curve trims and oriented arcs (`step_pcurve_candidates`, `step_pcurve_arc`, `step_curve_audit` `finite_arcs`) | `src/step_pcurve_{candidates,arc}.rs`, `docs/issue-46-phase-54.md`..`57` |
 | Incremental 3D Delaunay engine (walk location, cavity BFS, exact predicates) | `src/delaunay3.rs` (crate-private) |
 | Conforming Delaunay recovery of a closed triangulated PLC by Steiner points (`plc_conform::conform`) | `src/plc_conform.rs`, `docs/issue-46-phase-58.md` |
+| One-call shell preparation (weld then flat-patch cleanup, tolerances tied together, never worse) | `src/shell_prepare.rs`, `docs/issue-46-phase-71.md` |
 | Weld of near-degenerate short shell edges (link condition, orientation, angle floor) | `src/shell_weld.rs`, `docs/issue-46-phase-70.md` |
 | Flat-patch cleanup of a sampled shell (dissolve collinear/flat vertices, constrained Delaunay re-triangulation, no new points; never worsens a thin patch) | `src/shell_patch.rs`, `docs/issue-46-phase-69.md` |
 | Analytic tests (box, tube) | `tests/surface.rs` |
