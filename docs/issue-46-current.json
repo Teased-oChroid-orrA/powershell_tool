@@ -1,9 +1,9 @@
 {
   "epic": 46,
   "epic_complete": false,
-  "branch": "feature/native-cad-finite-spline-sampling",
+  "branch": "main",
   "pull_request": 79,
-  "pull_request_state": "draft",
+  "pull_request_state": "merged",
   "merged_prs": [
     65,
     66,
@@ -18,7 +18,8 @@
     75,
     76,
     77,
-    78
+    78,
+    79
   ],
   "latest_qualified_source": "273e7220ab52ed887521ebd1725ccdb763505566",
   "latest_phase": 51,
@@ -34,11 +35,12 @@
     "ignored": 0,
     "app_cad_lib_tests_compile": "passed at same source"
   },
-  "last_confirmed_main_merge": "001b7e8d8b7a376481153dc902c06b95622169e3",
+  "last_confirmed_main_merge": "c3adcedba2d5d991772361b070cc49cc83755f27",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
     "scope": "Unify source plane/cylinder/spline p-curve world queries, then finite master/trim/body and general meshing gates",
-    "status": "planned"
+    "status": "planned",
+    "branch": "feature/native-cad-shared-parameter-queries"
   },
   "base_main_head": "a30f454d10fe9c2b447ba528942b2d49cb81788a"
 }
