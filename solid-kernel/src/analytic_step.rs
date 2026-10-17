@@ -54,7 +54,7 @@ pub(crate) fn scalar(e: &Entity, v: &Value) -> Result<f64, Error> {
         _ => Err(error(e, "unsupported or non-exact geometric scalar")),
     }
 }
-fn call<'a>(e: &'a Entity, name: &str) -> Result<&'a [Value], Error> {
+pub(crate) fn call<'a>(e: &'a Entity, name: &str) -> Result<&'a [Value], Error> {
     match e.components.as_slice() {
         [c] if c.name == name => Ok(&c.args),
         _ => Err(error(e, format!("unsupported {name} declaration"))),
@@ -63,7 +63,7 @@ fn call<'a>(e: &'a Entity, name: &str) -> Result<&'a [Value], Error> {
 fn unit(e: &Entity, v: V3) -> Result<V3, Error> {
     crate::native_math::normalize_direction(v).map_err(|detail| error(e, detail))
 }
-fn vector3(e: &Entity, v: &Value) -> Result<V3, Error> {
+pub(crate) fn vector3(e: &Entity, v: &Value) -> Result<V3, Error> {
     match v {
         Value::List(v) if v.len() == 3 => {
             Ok([scalar(e, &v[0])?, scalar(e, &v[1])?, scalar(e, &v[2])?])
