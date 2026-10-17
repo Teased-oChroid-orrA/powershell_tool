@@ -122,3 +122,5 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - [Phase 42 source cylinder parameter bounds](../docs/issue-46-phase-42.md): explicit radians/lengths, bounded Taylor arithmetic and shared source-frame enclosure.
 
 - [Phase 43 planar circle carrier comparison](../docs/issue-46-phase-43.md): unsigned whole-locus bounds, shared source association checks and explicit finite-arc/master limits.
+
+- [Phase 44 shared curve agreement](../docs/issue-46-phase-44.md): finite line/circle carrier checks for planes and cylinders; raw direction ratios retain exact constant-coordinate admission.

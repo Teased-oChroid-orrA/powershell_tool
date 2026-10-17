@@ -1,0 +1,35 @@
+{
+  "qualified_source_commit": "ea428073524ba181d835aa11f8182b3de4228f2b",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 158,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 141,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "development_failures": [
+    "Initial shared-circle extraction removed the plane placement call import: E0425 and cascading E0308, exit 101; restored import before all subsequent tests."
+  ],
+  "dataset_evidence": {
+    "cylinder_generators": 28,
+    "cylinder_circle_carriers": 24,
+    "existing_plane_lines": 148,
+    "existing_plane_circle_carriers": 13,
+    "tolerance_mm": 1e-07
+  },
+  "not_verified": [
+    "Spline/circle agreement, complete finite arcs/master/trims/body, general PLC and later roadmap gates",
+    "Current Windows/macOS runtime"
+  ]
+}

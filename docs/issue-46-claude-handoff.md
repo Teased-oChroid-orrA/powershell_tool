@@ -502,3 +502,7 @@ PR #69 merged at `f0a72c9`, branch deleted. Source `7df769830f7c8f69f7517fddb83d
 ## Phase 43 continuation — 2026-10-17
 
 PR #70 merged at `8e7e4e5`, branch deleted. Source `11131f79ffd1ed1234747bd45aab85b4ab6aac9c` qualifies 13 unsigned plane/CIRCLE carrier associations at unchanged 1e-7 mm and retains natural normal orientation. [Phase 43](issue-46-phase-43.md) records the rotation bound and refusals. 154 CAD-enabled / 137 feature-off tests and app compile pass. No final failures/ignored or hosted CI. Reuses bounded association lookup for existing line checks. Continue cylinder primitive/carrier, spline/master/finite trim/body gates and general PLC/later roadmap. Epic #46 and all child gates remain open.
+
+## Phase 44 continuation — 2026-10-16 (client date)
+
+PR #71 merged at `3e06cf1`, branch deleted. Source `ea428073524ba181d835aa11f8182b3de4228f2b`: 158 CAD-enabled / 141 feature-off and app compile pass. [Phase 44](issue-46-phase-44.md) records 28 cylinder generator and 24 circle carrier checks at unchanged 1e-7 mm, shared line/circle proofs, source association reuse and corrected missing-import development failure. All 213 analytic primitive associations now have scoped results; 15 spline associations and finite/master/trim/body/general meshing/later gates remain. No CI or production switch; epic and children open.
