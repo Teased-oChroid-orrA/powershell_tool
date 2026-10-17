@@ -1,5 +1,6 @@
-//! Oriented finite arc selection for a closed single-winding planar spline
-//! p-curve on a source circle edge. Decides which of the two arcs between the
+//! Oriented finite arc selection for a source circle edge whose p-curve is a
+//! closed single-winding planar spline, a plane parameter CIRCLE or a cylinder
+//! constant-V parameter LINE (one period per turn, exact by construction). Decides which of the two arcs between the
 //! endpoint parameters is the edge's arc, using certified half-plane sign tests
 //! at one interior witness per arc. No master, trim-loop or body certificate.
 use crate::{
@@ -12,8 +13,7 @@ use crate::{
     step_frame::{dot, SourceFrame, V},
     step_parameter_map::ParameterMapRef,
     step_pcurve::{self, ParametricCurve},
-    step_pcurve_endpoints::{ParameterOrder, Request},
-    step_plane_map::PlaneParameterMap,
+    step_pcurve_endpoints::{self, ParameterOrder, Request},
     step_spline_circle,
 };
 #[derive(Debug, Clone, Copy)]
@@ -124,14 +124,15 @@ fn interval_point(b: Bounds3) -> V {
 /// discovery. Requires a planar closed spline p-curve proven single-winding
 /// against the edge's source CIRCLE; both witnesses must be certified or the
 /// selection is refused.
-pub fn select(
-    map: &PlaneParameterMap,
+pub fn select<'a>(
+    map: impl Into<ParameterMapRef<'a>>,
     context: &BodyContext,
     data: &Inventory,
     request: Request,
     options: Options,
     mut progress: impl FnMut(Progress) -> bool,
 ) -> Result<Report, Error> {
+    let map = map.into();
     let entity = data.resolve_reference(request.pcurve)?;
     let cancelled = || fail(entity, ErrorKind::Cancelled, "arc selection cancelled");
     let mut enclosures = 0;
@@ -162,19 +163,13 @@ pub fn select(
         request.pcurve,
         Default::default(),
     )?;
-    let ParametricCurve::Spline(spline) = &declaration.geometry else {
+    let curve = Carrier::of(map, data, &declaration)?;
+    let [w0, w1] = curve.window;
+    if request.interval[0] < w0 || request.interval[1] > w1 {
         return Err(fail(
             entity,
             ErrorKind::Geometry,
-            "arc selection requires a planar spline p-curve",
-        ));
-    };
-    let domain = spline.curve().domain();
-    if request.interval[0] < domain[0] || request.interval[1] > domain[1] {
-        return Err(fail(
-            entity,
-            ErrorKind::Geometry,
-            "arc interval outside the active spline domain",
+            "arc interval outside the carrier's single-turn parameter window",
         ));
     }
     if edge.start == edge.end {
@@ -184,20 +179,24 @@ pub fn select(
             "closed edges have no endpoint-delimited arc",
         ));
     }
-    let proof = map.verify_spline_circle_deviation(
-        context,
-        data,
-        request.edge,
-        request.pcurve,
-        options.circle,
-        |_| true,
-    )?;
-    if !proof.single_winding {
-        return Err(fail(
-            entity,
-            ErrorKind::Geometry,
-            "single winding not certified",
-        ));
+    if let ParameterMapRef::Plane(plane) = map {
+        if curve.spline {
+            let proof = plane.verify_spline_circle_deviation(
+                context,
+                data,
+                request.edge,
+                request.pcurve,
+                options.circle,
+                |_| true,
+            )?;
+            if !proof.single_winding {
+                return Err(fail(
+                    entity,
+                    ErrorKind::Geometry,
+                    "single winding not certified",
+                ));
+            }
+        }
     }
     let scale = context.millimetres_per_source_unit();
     let geometry = curve_geometry(data, edge.curve)?;
@@ -227,7 +226,7 @@ pub fn select(
                 "arc witness budget exceeded",
             ));
         }
-        let b = ParameterMapRef::from(map).bounds_for_declaration(
+        let b = map.bounds_for_declaration(
             data,
             &declaration,
             [t; 2],
@@ -244,20 +243,36 @@ pub fn select(
     };
     let [lo, hi] = request.interval;
     let inner_t = lo + (hi - lo) * 0.5;
-    let outer_t = if hi < domain[1] {
-        hi + (domain[1] - hi) * 0.5
-    } else if domain[0] < lo {
-        domain[0] + (lo - domain[0]) * 0.5
-    } else {
-        return Err(fail(
-            entity,
-            ErrorKind::Geometry,
-            "interval covers the whole domain; no complementary arc",
-        ));
+    let (outer_t, outer) = match curve.period {
+        None => {
+            let t = if hi < w1 {
+                hi + (w1 - hi) * 0.5
+            } else if w0 < lo {
+                w0 + (lo - w0) * 0.5
+            } else {
+                return Err(fail(
+                    entity,
+                    ErrorKind::Geometry,
+                    "interval covers the whole domain; no complementary arc",
+                ));
+            };
+            (t, None)
+        }
+        Some(period) => {
+            let t = hi + (lo + period - hi) * 0.5;
+            (t, Some(period))
+        }
     };
     let inner = witness(inner_t, &mut enclosures)?;
-    let outer = witness(outer_t, &mut enclosures)?;
-    let arc = match (inner, outer) {
+    let outer_side = match witness(outer_t, &mut enclosures) {
+        // The unwrapped complement can leave the map's raw angular range; the
+        // same arc is then witnessed one period lower.
+        Err(e) if outer.is_some() && e.kind == ErrorKind::Geometry => {
+            witness(outer_t - outer.unwrap(), &mut enclosures)?
+        }
+        other => other?,
+    };
+    let arc = match (inner, outer_side) {
         (Some(true), Some(false)) => Arc::Interior,
         (Some(false), Some(true)) => Arc::Wrapping,
         _ => {
@@ -268,12 +283,58 @@ pub fn select(
             ))
         }
     };
-    let (start_parameter, end_parameter) = if request.order == ParameterOrder::Forward {
-        (lo, hi)
-    } else {
-        (hi, lo)
+    let forward = request.order == ParameterOrder::Forward;
+    let start = if forward { lo } else { hi };
+    let (end, increasing) = match (outer, arc) {
+        (_, Arc::Interior) => (if forward { hi } else { lo }, forward),
+        // Spline: the arc runs through the domain end; report the vertex parameter.
+        (None, Arc::Wrapping) => (if forward { hi } else { lo }, !forward),
+        // Periodic carrier: the unwrapped end lies one period away.
+        (Some(period), Arc::Wrapping) => {
+            (if forward { hi - period } else { lo + period }, !forward)
+        }
     };
-    let increasing = (request.order == ParameterOrder::Forward) == (arc == Arc::Interior);
+    let (mut start_parameter, mut end_parameter) = (start, end);
+    if let (Some(period), Arc::Wrapping) = (outer, arc) {
+        // The unwrapped complement is a different parameter interval: check its
+        // endpoints against both source vertices too. It may leave the map's raw
+        // angular range, in which case the same arc one period over is used.
+        let mut last = None;
+        for shift in [0., period, -period] {
+            let (a, b) = (start + shift, end + shift);
+            let endpoints = Request {
+                interval: [a.min(b), a.max(b)],
+                order: if b > a {
+                    ParameterOrder::Forward
+                } else {
+                    ParameterOrder::Reversed
+                },
+                ..request
+            };
+            match step_pcurve_endpoints::verify(
+                map,
+                context,
+                data,
+                endpoints,
+                step_pcurve_endpoints::Options {
+                    tolerance_mm: options.circle.tolerance_mm,
+                    ..Default::default()
+                },
+                |_| true,
+            ) {
+                Ok(_) => {
+                    (start_parameter, end_parameter) = (a, b);
+                    last = None;
+                    break;
+                }
+                Err(e) if e.kind == ErrorKind::Geometry => last = Some(e),
+                Err(e) => return Err(e),
+            }
+        }
+        if let Some(e) = last {
+            return Err(e);
+        }
+    }
     Ok(Report {
         edge: request.edge,
         pcurve: request.pcurve,
@@ -294,8 +355,8 @@ pub enum Resolved {
 /// Discover the endpoint parameters of `pcurve` over its whole active domain,
 /// recheck them against both source vertices and select the oriented arc.
 /// Any uncertified step is an error; nothing partial is returned.
-pub fn resolve(
-    map: &PlaneParameterMap,
+pub fn resolve<'a>(
+    map: impl Into<ParameterMapRef<'a>>,
     context: &BodyContext,
     data: &Inventory,
     edge: EntityReference,
@@ -304,15 +365,9 @@ pub fn resolve(
     mut progress: impl FnMut() -> bool,
 ) -> Result<Resolved, Error> {
     use crate::step_pcurve_candidates::{discover, Options as Discover, Proposal, Search};
-    let entity = data.resolve_reference(pcurve)?;
+    let map = map.into();
     let declaration = step_pcurve::read_pcurve(data, pcurve, Default::default())?;
-    let ParametricCurve::Spline(spline) = &declaration.geometry else {
-        return Err(fail(
-            entity,
-            ErrorKind::Geometry,
-            "arc resolution requires a planar spline p-curve",
-        ));
-    };
+    let window = Carrier::of(map, data, &declaration)?.window;
     let mut options = Discover::default();
     options.endpoints.tolerance_mm = tolerance_mm;
     let found = discover(
@@ -322,7 +377,7 @@ pub fn resolve(
         Search {
             edge,
             pcurve,
-            domain: spline.curve().domain(),
+            domain: window,
         },
         options,
         |_| progress(),
@@ -334,6 +389,60 @@ pub fn resolve(
             let mut arc = Options::default();
             arc.circle.tolerance_mm = tolerance_mm;
             select(map, context, data, request, arc, |_| progress()).map(Resolved::Arc)
+        }
+    }
+}
+
+/// How a p-curve maps one turn of the source circle.
+struct Carrier {
+    /// Parameter window covering exactly one turn.
+    window: [f64; 2],
+    /// Parameter period of an exactly periodic carrier; `None` for splines.
+    period: Option<f64>,
+    spline: bool,
+}
+impl Carrier {
+    fn of(
+        map: ParameterMapRef,
+        data: &Inventory,
+        declaration: &step_pcurve::PcurveDeclaration,
+    ) -> Result<Self, Error> {
+        let entity = data.resolve_reference(declaration.source)?;
+        let turn = std::f64::consts::TAU;
+        match (&declaration.geometry, map) {
+            (ParametricCurve::Spline(spline), ParameterMapRef::Plane(_)) => Ok(Self {
+                window: spline.curve().domain(),
+                period: None,
+                spline: true,
+            }),
+            (ParametricCurve::Circle { .. }, ParameterMapRef::Plane(_)) => Ok(Self {
+                window: [-turn / 2., turn / 2.],
+                period: Some(turn),
+                spline: false,
+            }),
+            (ParametricCurve::Line { magnitude, .. }, ParameterMapRef::Cylinder(_)) => {
+                let ratios = step_pcurve::line_direction_ratios(data, declaration.geometry_source)?;
+                if ratios[1] != 0. || ratios[0] == 0. || !magnitude.is_finite() || *magnitude == 0.
+                {
+                    return Err(fail(
+                        entity,
+                        ErrorKind::Geometry,
+                        "cylinder arc requires a constant-V parameter LINE",
+                    ));
+                }
+                // Raw U is the angle in radians; one turn spans 2π/|magnitude| in t.
+                let period = turn / magnitude.abs();
+                Ok(Self {
+                    window: [-period / 2., period / 2.],
+                    period: Some(period),
+                    spline: false,
+                })
+            }
+            _ => Err(fail(
+                entity,
+                ErrorKind::Geometry,
+                "arc selection supports plane spline/circle and cylinder circle p-curves",
+            )),
         }
     }
 }

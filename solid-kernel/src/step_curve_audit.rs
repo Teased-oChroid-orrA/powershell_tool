@@ -5,6 +5,7 @@ use crate::{
     step_body::BodyContext,
     step_curve_agreement::{CircleCarrier, LineLocus},
     step_cylinder_map::CylinderParameterMap,
+    step_parameter_map::ParameterMapRef,
     step_pcurve::{self, ParametricCurve},
     step_pcurve_arc::{self, Resolved},
     step_plane_map::PlaneParameterMap,
@@ -65,6 +66,29 @@ pub struct FiniteArc {
     pub edge: EntityReference,
     pub pcurve: EntityReference,
     pub resolved: Resolved,
+}
+#[allow(clippy::too_many_arguments)]
+fn resolve_arc<'a>(
+    map: impl Into<ParameterMapRef<'a>>,
+    context: &BodyContext,
+    data: &Inventory,
+    tolerance_mm: f64,
+    face: u64,
+    edge: EntityReference,
+    pcurve: EntityReference,
+    progress: &mut impl FnMut(Progress) -> bool,
+    state: Progress,
+) -> Result<FiniteArc, Error> {
+    let resolved =
+        step_pcurve_arc::resolve(map, context, data, edge, pcurve, tolerance_mm, || {
+            progress(state)
+        })?;
+    Ok(FiniteArc {
+        face: data.entity_reference(face).unwrap(),
+        edge,
+        pcurve,
+        resolved,
+    })
 }
 enum Map {
     Plane(PlaneParameterMap),
@@ -215,9 +239,29 @@ pub fn audit(
             (Map::Plane(map), ParametricCurve::Line { .. }) => LocusCheck::FiniteLine(
                 map.verify_line_locus(context, data, edge, pc, options.tolerance_mm)?,
             ),
-            (Map::Plane(map), ParametricCurve::Circle { .. }) => LocusCheck::UnsignedCircle(
-                map.verify_circle_carrier(context, data, edge, pc, options.tolerance_mm)?,
-            ),
+            (Map::Plane(map), ParametricCurve::Circle { .. }) => {
+                let check = LocusCheck::UnsignedCircle(map.verify_circle_carrier(
+                    context,
+                    data,
+                    edge,
+                    pc,
+                    options.tolerance_mm,
+                )?);
+                if options.finite_arcs {
+                    finite_arcs.push(resolve_arc(
+                        map,
+                        context,
+                        data,
+                        options.tolerance_mm,
+                        face,
+                        edge,
+                        pc,
+                        &mut progress,
+                        state,
+                    )?);
+                }
+                check
+            }
             (Map::Plane(map), ParametricCurve::Spline(_)) => {
                 let base = state.spline_spans_done;
                 let remaining = options.max_spline_spans - base;
@@ -240,21 +284,17 @@ pub fn audit(
                 )?;
                 state.spline_spans_done += report.spans;
                 if options.finite_arcs {
-                    let resolved = step_pcurve_arc::resolve(
+                    finite_arcs.push(resolve_arc(
                         map,
                         context,
                         data,
+                        options.tolerance_mm,
+                        face,
                         edge,
                         pc,
-                        options.tolerance_mm,
-                        || progress(state),
-                    )?;
-                    finite_arcs.push(FiniteArc {
-                        face: data.entity_reference(face).unwrap(),
-                        edge,
-                        pcurve: pc,
-                        resolved,
-                    });
+                        &mut progress,
+                        state,
+                    )?);
                 }
                 LocusCheck::ClosedQuadraticCircle(report)
             }
@@ -269,13 +309,27 @@ pub fn audit(
                         options.tolerance_mm,
                     )?)
                 } else if raw[1] == 0. {
-                    LocusCheck::UnsignedCircle(map.verify_circle_carrier(
+                    let check = LocusCheck::UnsignedCircle(map.verify_circle_carrier(
                         context,
                         data,
                         edge,
                         pc,
                         options.tolerance_mm,
-                    )?)
+                    )?);
+                    if options.finite_arcs {
+                        finite_arcs.push(resolve_arc(
+                            map,
+                            context,
+                            data,
+                            options.tolerance_mm,
+                            face,
+                            edge,
+                            pc,
+                            &mut progress,
+                            state,
+                        )?);
+                    }
+                    check
                 } else {
                     return Err(error(
                         data.resolve_reference(pc)?.offset,

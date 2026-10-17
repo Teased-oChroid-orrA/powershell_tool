@@ -4,6 +4,7 @@ use solid_kernel::{
     nurbs,
     step::{inventory, ErrorKind, Limits, Value},
     step_body::BodyContext,
+    step_parameter_map::ParameterMapRef,
     step_pcurve::{self, ParametricCurve},
     step_pcurve_arc::{select, Arc, Options},
     step_pcurve_candidates::{discover, Proposal, Search},
@@ -69,7 +70,7 @@ fn frame(data: &solid_kernel::step::Inventory, curve: u64) -> [V3; 3] {
 fn oracle(
     data: &solid_kernel::step::Inventory,
     context: &BodyContext,
-    map: &solid_kernel::step_plane_map::PlaneParameterMap,
+    map: ParameterMapRef,
     edge: solid_kernel::step::EntityReference,
     pcurve: solid_kernel::step::EntityReference,
     domain: [f64; 2],
@@ -82,16 +83,41 @@ fn oracle(
         let d = sub(p, o.map(|c| c * scale));
         dot(d, y).atan2(dot(d, x))
     };
-    let pc = match step_pcurve::read_pcurve(data, pcurve, nurbs::Limits::default())
+    let geometry = step_pcurve::read_pcurve(data, pcurve, nurbs::Limits::default())
         .unwrap()
-        .geometry
-    {
-        ParametricCurve::Spline(s) => s,
-        _ => unreachable!(),
+        .geometry;
+    let periodic = !matches!(geometry, ParametricCurve::Spline(_));
+    let uv_at = |t: f64| -> [f64; 2] {
+        match &geometry {
+            ParametricCurve::Spline(s) => {
+                let p = s.curve().evaluate(t).unwrap();
+                [p[0], p[1]]
+            }
+            ParametricCurve::Line {
+                origin,
+                direction,
+                magnitude,
+            } => {
+                let n = (direction[0] * direction[0] + direction[1] * direction[1]).sqrt();
+                std::array::from_fn(|i| origin[i] + t * magnitude * direction[i] / n)
+            }
+            ParametricCurve::Circle {
+                origin,
+                x_direction,
+                radius,
+            } => {
+                let n = (x_direction[0].powi(2) + x_direction[1].powi(2)).sqrt();
+                let d = [x_direction[0] / n, x_direction[1] / n];
+                [
+                    origin[0] + radius * (d[0] * t.cos() - d[1] * t.sin()),
+                    origin[1] + radius * (d[1] * t.cos() + d[0] * t.sin()),
+                ]
+            }
+        }
     };
     let at = |t: f64| {
-        let uv = pc.curve().evaluate(t).unwrap();
-        let b = map.bounds([[uv[0]; 2], [uv[1]; 2]]).unwrap();
+        let uv = uv_at(t);
+        let b = map.bounds([[uv[0]; 2], [uv[1]; 2]], 64).unwrap();
         let m: V3 = std::array::from_fn(|i| b.min[i] + (b.max[i] - b.min[i]) * 0.5);
         angle(m)
     };
@@ -111,6 +137,7 @@ fn oracle(
     let path = |k: usize| {
         let f = k as f64 / n as f64;
         match (report.increasing, a <= b) {
+            _ if periodic => a + (b - a) * f,
             (true, true) | (false, false) => a + (b - a) * f,
             (true, false) => {
                 let t = a + (hi - a + b - lo) * f;
@@ -175,7 +202,15 @@ fn bracket_open_spline_edges_select_the_arc_found_by_independent_dense_sampling(
         })
         .unwrap();
         assert_eq!(seen, 2);
-        oracle(&data, &context, &map, edge, pcurve, domain, &report);
+        oracle(
+            &data,
+            &context,
+            (&map).into(),
+            edge,
+            pcurve,
+            domain,
+            &report,
+        );
         match report.arc {
             Arc::Interior => interior += 1,
             Arc::Wrapping => wrapping += 1,
@@ -328,8 +363,70 @@ fn reversing_an_edge_sense_selects_the_wrapping_complement() {
         )
         .unwrap();
         assert_eq!(report.arc, Arc::Wrapping);
-        oracle(&data2, &context2, &map2, edge2, pcurve2, domain, &report);
+        oracle(
+            &data2,
+            &context2,
+            (&map2).into(),
+            edge2,
+            pcurve2,
+            domain,
+            &report,
+        );
         flipped += 1;
     }
     assert_eq!(flipped, 10);
+}
+
+#[test]
+fn body_audit_arcs_on_circle_and_cylinder_edges_match_the_independent_oracle() {
+    use solid_kernel::{
+        step_curve_audit::{audit, Options as Audit},
+        step_cylinder_map::CylinderParameterMap,
+        step_pcurve_arc::Resolved,
+        step_plane_map::PlaneParameterMap,
+    };
+    let data = inventory(SOURCE, Limits::default()).unwrap();
+    let context = BodyContext::read(&data).unwrap();
+    let report = audit(
+        &context,
+        &data,
+        Audit {
+            finite_arcs: true,
+            ..Audit::default()
+        },
+        |_| true,
+    )
+    .unwrap();
+    let (mut arcs, mut closed, mut wrapping, mut cylinder) = (0, 0, 0, 0);
+    for f in &report.finite_arcs {
+        let Resolved::Arc(r) = &f.resolved else {
+            closed += 1;
+            continue;
+        };
+        let plane;
+        let cyl;
+        let is_plane = data.entities()[&context.body().faces[&f.face.entity].surface].components[0]
+            .name
+            == "PLANE";
+        let map = if is_plane {
+            plane = PlaneParameterMap::read(&context, &data, f.face).unwrap();
+            ParameterMapRef::from(&plane)
+        } else {
+            cyl = CylinderParameterMap::read(&context, &data, f.face).unwrap();
+            cylinder += 1;
+            ParameterMapRef::from(&cyl)
+        };
+        // Domain only matters for splines, whose wrap logic needs the active domain.
+        let domain = match step_pcurve::read_pcurve(&data, f.pcurve, nurbs::Limits::default())
+            .unwrap()
+            .geometry
+        {
+            ParametricCurve::Spline(s) => s.curve().domain(),
+            _ => [0., 0.],
+        };
+        oracle(&data, &context, map, f.edge, f.pcurve, domain, r);
+        arcs += 1;
+        wrapping += (r.arc == Arc::Wrapping) as usize;
+    }
+    assert_eq!((arcs, closed, wrapping, cylinder), (32, 20, 12, 14));
 }

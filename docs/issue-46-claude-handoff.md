@@ -578,3 +578,7 @@ PR #81 merged at `58c054c`. Branch `feature/native-cad-pcurve-candidates` adds `
 ## 2026-10-17 — Phase 55 oriented arc selection
 
 Branch `feature/native-cad-pcurve-arc` (stacked on PR #82) adds `step_pcurve_arc::select` ([Phase 55](issue-46-phase-55.md)): certified witness tests choose the interior or wrapping arc from `same_sense`, independently checked on all 10 open bracket spline edges and their sense-flipped variants. 190 CAD-enabled / 173 feature-off pass. The auto-mode classifier denied `gh pr merge` for #82; merging is left to the user. Next: master/trim-loop/body validation using the selected arcs.
+
+## 2026-10-17 — Phase 56 circle and cylinder arcs
+
+Branch `feature/native-cad-circle-arcs` (stacked on #82 -> #83) extends arc selection to plane CIRCLE and cylinder constant-V LINE p-curves ([Phase 56](issue-46-phase-56.md)). Body audit `finite_arcs`: 32 oriented arcs + 20 closed edges, all independently checked. 192 CAD-enabled / 175 feature-off pass. PRs #82/#83 remain unmerged (auto-mode classifier denies `gh pr merge`; user must merge). Next: loop-level master/trim agreement and remaining P1 gates.
