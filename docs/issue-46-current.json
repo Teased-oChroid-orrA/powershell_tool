@@ -2,8 +2,8 @@
   "epic": 46,
   "epic_complete": false,
   "branch": "feature/native-cad-pcurve-distance",
-  "pull_request": null,
-  "pull_request_state": "pending creation",
+  "pull_request": 77,
+  "pull_request_state": "draft",
   "merged_prs": [
     65,
     66,
