@@ -506,3 +506,7 @@ PR #70 merged at `8e7e4e5`, branch deleted. Source `11131f79ffd1ed1234747bd45aab
 ## Phase 44 continuation — 2026-10-16 (client date)
 
 PR #71 merged at `3e06cf1`, branch deleted. Source `ea428073524ba181d835aa11f8182b3de4228f2b`: 158 CAD-enabled / 141 feature-off and app compile pass. [Phase 44](issue-46-phase-44.md) records 28 cylinder generator and 24 circle carrier checks at unchanged 1e-7 mm, shared line/circle proofs, source association reuse and corrected missing-import development failure. All 213 analytic primitive associations now have scoped results; 15 spline associations and finite/master/trim/body/general meshing/later gates remain. No CI or production switch; epic and children open.
+
+## Phase 45 continuation — 2026-10-16 (client date)
+
+PR #72 merged at `9977032`, branch deleted. Source `8f71e448591c18d755e701c47ea99109facad9e8`: 162 CAD-enabled / 145 feature-off and app compile pass. [Phase 45](issue-46-phase-45.md) records Bernstein residual deviation and optional exact-closure/strict-angular-derivative full coverage for all 15 bracket quadratic spline p-curves (3 spans each) at unchanged 1e-7 mm. No single-winding/simple-trim/finite-arc/master/body certificate. Near-closure one-sided-vs-coverage and non-Bezier refusal regressions pass; cancellation is atomic through final progress. All 228 associations have scoped checks, not aggregate body promotion. Next bounded body/CLI diagnostic integration, then finite/master/trim/general spline and meshing/later gates. No CI or production switch; epic/children stay open.

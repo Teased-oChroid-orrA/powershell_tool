@@ -1,10 +1,10 @@
 {
   "epic": 46,
   "epic_complete": false,
-  "branch": "feature/native-cad-cylinder-line-agreement",
-  "pull_request": 72,
+  "branch": "feature/native-cad-spline-circle-deviation",
+  "pull_request": 73,
   "pull_request_state": "draft",
-  "main": "3e06cf1ca0237fb13845c09b4934edc916b71c39",
+  "main": "9977032f6d2caba5aa55c26c4a4546c288958106",
   "merged_prs": [
     65,
     66,
@@ -12,18 +12,19 @@
     68,
     69,
     70,
-    71
+    71,
+    72
   ],
-  "latest_qualified_source": "ea428073524ba181d835aa11f8182b3de4228f2b",
-  "latest_phase": 44,
-  "progress_snapshot": "issue-46-phase-44-verification.json",
+  "latest_qualified_source": "8f71e448591c18d755e701c47ea99109facad9e8",
+  "latest_phase": 45,
+  "progress_snapshot": "issue-46-phase-45-verification.json",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
   "remaining": "Other p-curve mappings/master/trim/body gates, general constrained meshing/quality and P2/P3/final roadmap",
   "tests": {
-    "cad_enabled": 158,
-    "feature_off": 141,
+    "cad_enabled": 162,
+    "feature_off": 145,
     "failed": 0,
     "ignored": 0,
     "app_cad_lib_tests_compile": "passed at same source"

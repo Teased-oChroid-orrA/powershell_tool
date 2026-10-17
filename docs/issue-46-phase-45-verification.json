@@ -1,0 +1,32 @@
+{
+  "qualified_source_commit": "8f71e448591c18d755e701c47ea99109facad9e8",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 162,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 145,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "development_failures": [],
+  "dataset_evidence": {
+    "quadratic_spline_circle_associations": 15,
+    "spans_per_association": 3,
+    "tolerance_mm": 1e-07,
+    "full_circle_coverage": "exact closed controls and consistent strict angular derivative"
+  },
+  "not_verified": [
+    "Single winding/simple trims, finite arcs/master/body validity, general full spline import",
+    "General constrained meshing, quality, later roadmap gates, current Windows/macOS runtime"
+  ]
+}

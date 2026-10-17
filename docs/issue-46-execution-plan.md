@@ -97,3 +97,5 @@ Current execution pointer: [issue-46-current.json](issue-46-current.json). Phase
 - [Phase 43: unsigned planar circle carrier agreement](issue-46-phase-43.md): 13 whole-carrier checks; finite arc/master/body gates remain separate.
 
 - [Phase 44 cylinder line/circle agreement](issue-46-phase-44.md): 28 generator and 24 circle carrier checks with shared numerical proofs.
+
+- [Phase 45 spline/circle bounds and optional coverage](issue-46-phase-45.md): 15 complete-span quadratic checks with explicit closure/winding limits.
