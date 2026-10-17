@@ -27,6 +27,7 @@ Checked lines are delivered scoped increments, with evidence committed in this r
 - [ ] #51: General spline B-Rep, finite/master/oriented trim and exact body agreement, production healing/assemblies/metadata and persistent associations.
 - [x] #52: Incremental exact-predicate Delaunay engine and conforming Steiner recovery for well-conditioned closed PLCs; the NEMA17 sampled shell is a documented non-convergent case ([Phase 58](issue-46-phase-58.md)).
 - [x] #52/#53: Generic flat-patch cleanup (`shell_patch`) dissolves redundant collinear/flat vertices of a closed shell with exact-area, angle-floor and manifold guards ([Phase 69](issue-46-phase-69.md)); tangent-seam needles (flat/curved) remain open.
+- [x] #52/#53: Manifold-safe weld of near-degenerate short shell edges with link-condition, orientation and angle-floor guards ([Phase 70](issue-46-phase-70.md)); sliver faces (separating 3-cycles) need defeaturing and still block the sampled bracket.
 - [ ] #52: General constrained segment/facet recovery, cavities/regions/components and constrained refinement with boundary conformity.
 - [x] #53: Radius-edge Delaunay refinement of recovered cells for well-conditioned PLCs, with exact volume/boundary checks ([Phase 59](issue-46-phase-59.md)); slivers and sampled surface shells remain open.
 - [x] #53: Interior vertex smoothing alternated with flips raises the worst radius ratio of random clouds ~20-30x over flips alone ([Phase 65](issue-46-phase-65.md)); boundary slivers, Steiner exudation and sampled shells remain open.

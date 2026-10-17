@@ -65,20 +65,20 @@ pub struct Cleaned {
     pub report: Report,
 }
 
-fn sub(a: V3, b: V3) -> V3 {
+pub(crate) fn sub(a: V3, b: V3) -> V3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
-fn dot(a: V3, b: V3) -> f64 {
+pub(crate) fn dot(a: V3, b: V3) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
-fn cross(a: V3, b: V3) -> V3 {
+pub(crate) fn cross(a: V3, b: V3) -> V3 {
     [
         a[1] * b[2] - a[2] * b[1],
         a[2] * b[0] - a[0] * b[2],
         a[0] * b[1] - a[1] * b[0],
     ]
 }
-fn norm(a: V3) -> f64 {
+pub(crate) fn norm(a: V3) -> f64 {
     dot(a, a).sqrt()
 }
 
@@ -122,7 +122,7 @@ pub fn worst_triangles(
     all
 }
 
-fn signed_volume(vertices: &[V3], facets: &[[usize; 3]]) -> f64 {
+pub(crate) fn signed_volume(vertices: &[V3], facets: &[[usize; 3]]) -> f64 {
     facets
         .iter()
         .map(|f| {
@@ -132,12 +132,12 @@ fn signed_volume(vertices: &[V3], facets: &[[usize; 3]]) -> f64 {
         .sum()
 }
 
-fn area(vertices: &[V3], f: [usize; 3]) -> f64 {
+pub(crate) fn area(vertices: &[V3], f: [usize; 3]) -> f64 {
     let [a, b, c] = f.map(|v| vertices[v]);
     0.5 * norm(cross(sub(b, a), sub(c, a)))
 }
 
-fn check_closed(facets: &[[usize; 3]]) -> Result<(), String> {
+pub(crate) fn check_closed(facets: &[[usize; 3]]) -> Result<(), String> {
     let mut directed = BTreeMap::<[usize; 2], usize>::new();
     for f in facets {
         if f[0] == f[1] || f[1] == f[2] || f[0] == f[2] {
@@ -815,11 +815,11 @@ fn lawson(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Outward-oriented box `[0,nx] x [0,ny] x [0,nz]` whose faces are unit-cell grids (every grid point is a vertex).
-    fn grid_box(nx: usize, ny: usize, nz: usize) -> (Vec<V3>, Vec<[usize; 3]>) {
+    pub(crate) fn grid_box(nx: usize, ny: usize, nz: usize) -> (Vec<V3>, Vec<[usize; 3]>) {
         let mut verts = Vec::new();
         let mut index = BTreeMap::<[i64; 3], usize>::new();
         let mut id = |p: [i64; 3], verts: &mut Vec<V3>| {
