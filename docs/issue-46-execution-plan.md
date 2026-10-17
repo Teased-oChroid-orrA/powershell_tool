@@ -111,3 +111,5 @@ Current execution pointer: [issue-46-current.json](issue-46-current.json). Phase
 - [Phase 50 bounded quadratic sampler acceleration](issue-46-phase-50.md): unchanged error tolerance, actual split-factor enclosures, work reduction and qualification.
 
 - [Phase 51 explicit finite spline intervals](issue-46-phase-51.md): clipped bounded sampling, checked source endpoints/sense and unchanged raw parameters.
+
+- [Phase 52 shared source parameter queries](issue-46-phase-52.md): actual plane/cylinder/spline map dispatch and bounded world-space search.
