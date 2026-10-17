@@ -11,3 +11,7 @@ Not claimed: master semantics, loop closure, trim or body validity, non-circle e
 Evidence (macOS arm64, unchanged tolerances): all 10 open bracket spline edges select `Interior`, checked by an independent f64 oracle (dense 400-sample atan2 monotone traversal from start to end vertex inside the edge arc, circle frame parsed separately from the STEP text; one edge is an exact semicircle). Flipping `EDGE_CURVE.same_sense` in the source text for each of those edges selects `Wrapping` and the same oracle passes. Closed edges, reversed/outside/full-domain intervals, witness budgets (0 and 1), initial/mid cancellation, a weakened circle proof and a stale source refuse. `solid-kernel`: 190 passed with `--features occt`, 173 passed with `--no-default-features`, 0 failed/ignored; clippy clean for the new files.
 
 Test fixtures shared by the p-curve integration tests now live in `solid-kernel/tests/common/mod.rs`.
+
+## Body audit integration
+
+`step_pcurve_arc::resolve` (discover over the whole active domain, endpoint recheck, arc selection; any uncertified step is an error) is exposed through `step_curve_audit::Options::finite_arcs` (off by default, baseline audit unchanged) and `step-inventory --finite-arcs`. On the bracket the audit reports 15 planar spline associations: 10 oriented interior arcs and 5 closed edges without an arc (`Report.finite_arcs`). Rerun: 191 passed CAD-enabled / 174 feature-off, 0 failed/ignored.

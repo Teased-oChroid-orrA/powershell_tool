@@ -43,7 +43,7 @@
     "scope": "Phase 55 oriented finite arc selection (stacked on PR #82); then master/trim-loop/body gates and remaining roadmap",
     "status": "in_progress",
     "branch": "feature/native-cad-pcurve-arc",
-    "qualification": "CAD-enabled 190 passed, feature-off 173 passed, 0 failed/ignored (macOS)"
+    "qualification": "CAD-enabled 191 passed, feature-off 174 passed, 0 failed/ignored (macOS)"
   },
   "base_main_head": "9cdefdcbb254328489de752295d8bd4454e5f2b4",
   "completion_checklist": "issue-46-completion-checklist.md",

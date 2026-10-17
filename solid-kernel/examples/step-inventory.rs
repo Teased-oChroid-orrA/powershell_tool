@@ -15,7 +15,7 @@ fn main() {
 }
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
-    let usage = "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface] [--pcurve-audit] [--repair-orientation] [--plc] [--star-seed X,Y,Z] [--trial-kernel] (kernel coordinates in mm)";
+    let usage = "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface] [--pcurve-audit] [--finite-arcs] [--repair-orientation] [--plc] [--star-seed X,Y,Z] [--trial-kernel] (kernel coordinates in mm)";
     let path = args.next().ok_or(usage)?;
     if path == "--help" {
         println!("{usage}");
@@ -27,9 +27,13 @@ fn run() -> Result<(), String> {
     let mut trial_kernel = false;
     let mut mode = 0;
     let mut repair_orientation = false;
+    let mut finite_arcs = false;
     while let Some(flag) = args.next() {
         if flag == "--pcurve-audit" {
             pcurve_audit = true;
+        } else if flag == "--finite-arcs" {
+            pcurve_audit = true;
+            finite_arcs = true;
         } else if flag == "--analytic" {
             mode = mode.max(1);
         } else if flag == "--surface" {
@@ -82,8 +86,14 @@ fn run() -> Result<(), String> {
         let context =
             solid_kernel::step_body::BodyContext::read(&result).map_err(|e| e.to_string())?;
         let mut last = None;
-        let report =
-            solid_kernel::step_curve_audit::audit(&context, &result, Default::default(), |p| {
+        let report = solid_kernel::step_curve_audit::audit(
+            &context,
+            &result,
+            solid_kernel::step_curve_audit::Options {
+                finite_arcs,
+                ..Default::default()
+            },
+            |p| {
                 let status = (p.edge_uses_seen, p.associations_done, p.spline_spans_done);
                 if last != Some(status)
                     && (if p.total_associations.is_none() {
@@ -104,9 +114,22 @@ fn run() -> Result<(), String> {
                     last = Some(status);
                 }
                 true
-            })
-            .map_err(|e| e.to_string())?;
-        println!("Scoped p-curve locus audit: {} associations; {} spline spans. Finite arcs, master semantics, trims and body validity are not certified.",report.checks.len(),report.spline_spans);
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        println!("Scoped p-curve locus audit: {} associations; {} spline spans. Master semantics, trims and body validity are not certified.",report.checks.len(),report.spline_spans);
+        if finite_arcs {
+            let closed = report
+                .finite_arcs
+                .iter()
+                .filter(|a| matches!(a.resolved, solid_kernel::step_pcurve_arc::Resolved::Closed))
+                .count();
+            println!(
+                "Finite arcs: {} oriented arcs selected, {} closed edges without an arc.",
+                report.finite_arcs.len() - closed,
+                closed
+            );
+        }
     }
     match result.length_contexts() {
         Ok(contexts) => {

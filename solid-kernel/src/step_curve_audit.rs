@@ -6,6 +6,7 @@ use crate::{
     step_curve_agreement::{CircleCarrier, LineLocus},
     step_cylinder_map::CylinderParameterMap,
     step_pcurve::{self, ParametricCurve},
+    step_pcurve_arc::{self, Resolved},
     step_plane_map::PlaneParameterMap,
     step_spline_circle::{self, SplineCircleDeviation},
 };
@@ -17,6 +18,9 @@ pub struct Options {
     pub max_associations: usize,
     pub max_spline_spans: usize,
     pub max_curve_controls: usize,
+    /// Also discover endpoint parameters and select the oriented finite arc of
+    /// every planar spline p-curve (`step_pcurve_arc::resolve`). Off by default.
+    pub finite_arcs: bool,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -26,6 +30,7 @@ impl Default for Options {
             max_associations: 4096,
             max_spline_spans: 4096,
             max_curve_controls: 32768,
+            finite_arcs: false,
         }
     }
 }
@@ -51,6 +56,15 @@ pub struct Report {
     pub spline_spans: usize,
     pub curve_controls: usize,
     pub checks: Vec<LocusCheck>,
+    /// One entry per planar spline association when `Options::finite_arcs`.
+    pub finite_arcs: Vec<FiniteArc>,
+}
+#[derive(Debug)]
+pub struct FiniteArc {
+    pub face: EntityReference,
+    pub edge: EntityReference,
+    pub pcurve: EntityReference,
+    pub resolved: Resolved,
 }
 enum Map {
     Plane(PlaneParameterMap),
@@ -184,6 +198,7 @@ pub fn audit(
     state.total_associations = Some(associations.len());
     publish(&mut progress, state)?;
     let mut checks = Vec::with_capacity(associations.len());
+    let mut finite_arcs = Vec::new();
     for (face, edge, pc) in associations {
         let edge = data.entity_reference(edge).unwrap();
         let pc = data.entity_reference(pc).unwrap();
@@ -224,6 +239,23 @@ pub fn audit(
                     },
                 )?;
                 state.spline_spans_done += report.spans;
+                if options.finite_arcs {
+                    let resolved = step_pcurve_arc::resolve(
+                        map,
+                        context,
+                        data,
+                        edge,
+                        pc,
+                        options.tolerance_mm,
+                        || progress(state),
+                    )?;
+                    finite_arcs.push(FiniteArc {
+                        face: data.entity_reference(face).unwrap(),
+                        edge,
+                        pcurve: pc,
+                        resolved,
+                    });
+                }
                 LocusCheck::ClosedQuadraticCircle(report)
             }
             (Map::Cylinder(map), ParametricCurve::Line { .. }) => {
@@ -270,5 +302,6 @@ pub fn audit(
         spline_spans: state.spline_spans_done,
         curve_controls: state.curve_controls_done,
         checks,
+        finite_arcs,
     })
 }

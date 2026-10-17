@@ -284,3 +284,56 @@ pub fn select(
         witness_parameters: [inner_t, outer_t],
     })
 }
+
+#[derive(Debug)]
+pub enum Resolved {
+    /// One topological vertex: the p-curve is the whole closed trace.
+    Closed,
+    Arc(Report),
+}
+/// Discover the endpoint parameters of `pcurve` over its whole active domain,
+/// recheck them against both source vertices and select the oriented arc.
+/// Any uncertified step is an error; nothing partial is returned.
+pub fn resolve(
+    map: &PlaneParameterMap,
+    context: &BodyContext,
+    data: &Inventory,
+    edge: EntityReference,
+    pcurve: EntityReference,
+    tolerance_mm: f64,
+    mut progress: impl FnMut() -> bool,
+) -> Result<Resolved, Error> {
+    use crate::step_pcurve_candidates::{discover, Options as Discover, Proposal, Search};
+    let entity = data.resolve_reference(pcurve)?;
+    let declaration = step_pcurve::read_pcurve(data, pcurve, Default::default())?;
+    let ParametricCurve::Spline(spline) = &declaration.geometry else {
+        return Err(fail(
+            entity,
+            ErrorKind::Geometry,
+            "arc resolution requires a planar spline p-curve",
+        ));
+    };
+    let mut options = Discover::default();
+    options.endpoints.tolerance_mm = tolerance_mm;
+    let found = discover(
+        map,
+        context,
+        data,
+        Search {
+            edge,
+            pcurve,
+            domain: spline.curve().domain(),
+        },
+        options,
+        |_| progress(),
+    )?;
+    match found.proposal {
+        Proposal::Coincident => Ok(Resolved::Closed),
+        Proposal::Interval { request, recheck } => {
+            (*recheck)?;
+            let mut arc = Options::default();
+            arc.circle.tolerance_mm = tolerance_mm;
+            select(map, context, data, request, arc, |_| progress()).map(Resolved::Arc)
+        }
+    }
+}

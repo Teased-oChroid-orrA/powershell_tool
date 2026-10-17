@@ -119,3 +119,40 @@ fn stale_context_and_absent_surface_association_do_not_produce_partial_success()
     let cc = BodyContext::read(&changed).unwrap();
     assert!(audit(&cc, &changed, Options::default(), |_| true).is_err());
 }
+#[test]
+fn finite_arc_audit_resolves_all_planar_spline_edges_and_stays_opt_in() {
+    use solid_kernel::step_pcurve_arc::{Arc, Resolved};
+    let d = inventory(SOURCE, Limits::default()).unwrap();
+    let c = BodyContext::read(&d).unwrap();
+    assert!(audit(&c, &d, Options::default(), |_| true)
+        .unwrap()
+        .finite_arcs
+        .is_empty());
+    let options = Options {
+        finite_arcs: true,
+        ..Options::default()
+    };
+    let mut last = None;
+    let report = audit(&c, &d, options, |p| {
+        assert!(last.is_none_or(|n| p.associations_done >= n));
+        last = Some(p.associations_done);
+        true
+    })
+    .unwrap();
+    assert_eq!(report.checks.len(), 228);
+    let closed = report
+        .finite_arcs
+        .iter()
+        .filter(|a| matches!(a.resolved, Resolved::Closed))
+        .count();
+    let interior = report
+        .finite_arcs
+        .iter()
+        .filter(|a| matches!(&a.resolved, Resolved::Arc(r) if r.arc == Arc::Interior))
+        .count();
+    assert_eq!((report.finite_arcs.len(), closed, interior), (15, 5, 10));
+    assert_eq!(
+        audit(&c, &d, options, |_| false).unwrap_err().kind,
+        ErrorKind::Cancelled
+    );
+}
