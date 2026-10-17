@@ -146,3 +146,193 @@ fn nonplane_stale_parallel_and_unbounded_queries_do_not_infer_parameter_semantic
     let pc = BodyContext::read(&p).unwrap();
     assert!(PlaneParameterMap::read(&pc, &p, p.entity_reference(face).unwrap()).is_err());
 }
+fn line_cases(d: &solid_kernel::step::Inventory, c: &BodyContext) -> Vec<(u64, u64, u64)> {
+    use solid_kernel::step_pcurve::{self, ParametricCurve};
+    let mut cases = std::collections::BTreeSet::new();
+    for face in c.body().faces.values() {
+        if d.entities()[&face.surface].components[0].name != "PLANE" {
+            continue;
+        }
+        for usage in face.bounds.iter().flat_map(|b| &b.edges) {
+            let edge = &c.body().edges[&usage.edge];
+            let wrapper =
+                step_pcurve::read_surface_curve(d, d.entity_reference(edge.curve).unwrap())
+                    .unwrap();
+            if d.entities()[&wrapper.geometry_3d.entity].components[0].name != "LINE" {
+                continue;
+            }
+            for r in wrapper.pcurves {
+                let p =
+                    step_pcurve::read_pcurve(d, r, solid_kernel::nurbs::Limits::default()).unwrap();
+                if p.basis_surface.entity == face.surface
+                    && matches!(p.geometry, ParametricCurve::Line { .. })
+                {
+                    cases.insert((face.id, edge.id, r.entity));
+                }
+            }
+        }
+    }
+    cases.into_iter().collect()
+}
+#[test]
+fn actual_bracket_plane_line_pcurves_have_bounded_finite_3d_locus_agreement() {
+    let d = inventory(SOURCE, Limits::default()).unwrap();
+    let c = BodyContext::read(&d).unwrap();
+    let cases = line_cases(&d, &c);
+    assert!(!cases.is_empty());
+    for (face, edge, pcurve) in &cases {
+        let map = PlaneParameterMap::read(&c, &d, d.entity_reference(*face).unwrap()).unwrap();
+        let report = map
+            .verify_line_locus(
+                &c,
+                &d,
+                d.entity_reference(*edge).unwrap(),
+                d.entity_reference(*pcurve).unwrap(),
+                1e-7,
+            )
+            .unwrap();
+        assert_eq!(report.face.entity, *face);
+        assert_eq!(report.edge.entity, *edge);
+        assert_eq!(report.pcurve.entity, *pcurve);
+        assert_eq!(
+            report.checked_pcurve_is_master,
+            report.master_reference == report.pcurve
+        );
+        for error in report
+            .source_to_3d_error_mm
+            .iter()
+            .chain(&report.source_to_pcurve_error_mm)
+            .chain(&report.curve_to_pcurve_error_mm)
+        {
+            assert!(*error <= 1e-7);
+        }
+        assert!(report.natural_direction_dot.iter().all(|x| x.is_finite()));
+    }
+    eprintln!("verified {} finite plane/line p-curve loci", cases.len());
+}
+#[test]
+fn corrupted_parameter_line_and_contradictory_source_sense_refuse_without_changing_tolerance() {
+    use solid_kernel::step_pcurve::{self, ParametricCurve};
+    let d = inventory(SOURCE, Limits::default()).unwrap();
+    let c = BodyContext::read(&d).unwrap();
+    let (face, edge, pcurve) = line_cases(&d, &c)[0];
+    let p = step_pcurve::read_pcurve(
+        &d,
+        d.entity_reference(pcurve).unwrap(),
+        solid_kernel::nurbs::Limits::default(),
+    )
+    .unwrap();
+    let ParametricCurve::Line {
+        origin, direction, ..
+    } = p.geometry
+    else {
+        panic!("fixture");
+    };
+    let Value::Ref(point) = d.entities()[&p.geometry_source.entity].components[0].args[1] else {
+        panic!("fixture");
+    };
+    let e = &d.entities()[&point];
+    let bad = replace(
+        SOURCE,
+        e.offset,
+        &format!(
+            "#{}=CARTESIAN_POINT('',({:.17e},{:.17e}));",
+            e.id,
+            origin[0] - direction[1],
+            origin[1] + direction[0]
+        ),
+    );
+    let bad = inventory(&bad, Limits::default()).unwrap();
+    let bc = BodyContext::read(&bad).unwrap();
+    let map = PlaneParameterMap::read(&bc, &bad, bad.entity_reference(face).unwrap()).unwrap();
+    assert!(map
+        .verify_line_locus(
+            &bc,
+            &bad,
+            bad.entity_reference(edge).unwrap(),
+            bad.entity_reference(pcurve).unwrap(),
+            1e-7
+        )
+        .unwrap_err()
+        .detail
+        .contains("locus agreement"));
+    let edge_data = &c.body().edges[&edge];
+    let e = &d.entities()[&edge];
+    let sense = replace(
+        SOURCE,
+        e.offset,
+        &format!(
+            "#{}=EDGE_CURVE('',#{},#{},#{},.{}.);",
+            edge,
+            edge_data.start,
+            edge_data.end,
+            edge_data.curve,
+            if edge_data.same_sense { "F" } else { "T" }
+        ),
+    );
+    let sd = inventory(&sense, Limits::default()).unwrap();
+    let sc = BodyContext::read(&sd).unwrap();
+    let sm = PlaneParameterMap::read(&sc, &sd, sd.entity_reference(face).unwrap()).unwrap();
+    assert!(sm
+        .verify_line_locus(
+            &sc,
+            &sd,
+            sd.entity_reference(edge).unwrap(),
+            sd.entity_reference(pcurve).unwrap(),
+            1e-7
+        )
+        .unwrap_err()
+        .detail
+        .contains("extent/sense"));
+}
+#[test]
+fn line_locus_agreement_uses_source_length_scale_and_rejects_stale_contexts() {
+    let d = inventory(SOURCE, Limits::default()).unwrap();
+    let c = BodyContext::read(&d).unwrap();
+    let (face, edge, pcurve) = line_cases(&d, &c)[0];
+    let contexts = d.length_contexts().unwrap();
+    let length = contexts
+        .iter()
+        .find(|x| x.context == c.length_context().entity)
+        .unwrap();
+    let unit = &d.entities()[&length.unit];
+    let text = replace(
+        SOURCE,
+        unit.offset,
+        &format!(
+            "#{}=(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT($,.METRE.));",
+            unit.id
+        ),
+    );
+    let m = inventory(&text, Limits::default()).unwrap();
+    let mc = BodyContext::read(&m).unwrap();
+    let map = PlaneParameterMap::read(&mc, &m, m.entity_reference(face).unwrap()).unwrap();
+    let r = map
+        .verify_line_locus(
+            &mc,
+            &m,
+            m.entity_reference(edge).unwrap(),
+            m.entity_reference(pcurve).unwrap(),
+            1e-7,
+        )
+        .unwrap();
+    assert!(r.curve_to_pcurve_error_mm.iter().all(|e| *e <= 1e-7));
+    assert!(map
+        .verify_line_locus(
+            &c,
+            &m,
+            m.entity_reference(edge).unwrap(),
+            m.entity_reference(pcurve).unwrap(),
+            1e-7
+        )
+        .is_err());
+    assert!(map
+        .verify_line_locus(
+            &mc,
+            &m,
+            d.entity_reference(edge).unwrap(),
+            m.entity_reference(pcurve).unwrap(),
+            1e-7
+        )
+        .is_err());
+}
