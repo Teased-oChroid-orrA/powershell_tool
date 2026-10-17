@@ -230,3 +230,9 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Phase 37 finite active spline domains](issue-46-phase-37.md): explicit extended knots, evaluated endpoints and active-span sampling/distance; no inferred periodic wrapping.
 
 - [Phase 38 source p-curve declarations](issue-46-phase-38.md): shared spline decoding, explicit raw parameter space/master choices and all-bracket declaration coverage; 3D agreement remains open.
+
+- [Phase 39 source-plane interval maps](issue-46-phase-39.md): exact-source units/bounds and scoped agreement evidence.
+
+- [Phase 40 finite plane/line locus agreement](issue-46-phase-40.md): exact-source units/bounds and scoped agreement evidence.
+
+- [Issue 46 current execution pointer](issue-46-current.json): live branch/PR/main/qualification and remaining-gate navigation; dated progress snapshots remain historical.

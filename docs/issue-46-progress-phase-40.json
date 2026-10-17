@@ -1,0 +1,30 @@
+{
+  "epic": 46,
+  "draft_pr": 68,
+  "branch": "feature/native-cad-pcurve-validation",
+  "snapshot_date": "2026-10-16",
+  "latest_qualified_source": "b35c27c4ef65fc4b5778d1627663ef8defc9a808",
+  "epic_complete": false,
+  "previous_progress_snapshot": "issue-46-progress-phase-38.json",
+  "tests": {
+    "cad_enabled": 145,
+    "feature_off": 128,
+    "failed": 0,
+    "ignored": 0,
+    "app_cad_lib_tests_compile": "passed at same source"
+  },
+  "later_increments": [
+    "39 exact-source plane interval maps and stable direct interval division",
+    "40 finite plane/line p-curve locus certificates (148 root-bracket associations at 1e-7 mm)"
+  ],
+  "native_body_spline_support": "Full-domain two-control degree-one curves; exactly coplanar convex positive-weight bilinear faces with finite 3D trim containment. P-curve/master agreement, general curved/piecewise/higher-order bodies remain unverified/refused.",
+  "production_backend": "OCCT retained",
+  "remaining_gates": "P-curve source-frame/parameter mapping and master agreement, general CAD/assembly/curved/periodic trims, general PLC recovery/refinement/cavities/regions, sliver/conditioning and P2/P3/final gates remain open.",
+  "handoff": "issue-46-claude-handoff.md",
+  "hosted_ci": "No additional dispatch; latest native source lacks new Windows/macOS execution qualification.",
+  "foundation_pr_65_merged": "37cf93220fee91cc1ced09f4acb2a7b2b6e26303",
+  "completed_foundation_merge_approved": true,
+  "occt_retirement_approved": false,
+  "continuation_pr_66_merged": "3aebf992ea1861bcc0a349d09af59315fe019a18",
+  "planar_active_pr_67_merged": "75e4faa30e51d98af351f057ce8ad7af6e7a0b07"
+}

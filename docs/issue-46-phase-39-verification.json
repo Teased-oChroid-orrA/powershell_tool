@@ -1,0 +1,37 @@
+{
+  "feature_source": "fba2f89",
+  "qualified_source_commit": "b35c27c4ef65fc4b5778d1627663ef8defc9a808",
+  "qualification_scope": "Combined Phases 39\u201340",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 145,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 128,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "development_failures": [],
+  "development_notes": [
+    "Initial filtered invocation selected interval unit only and zero plane integration tests; corrected invocation ran all 60 library plus 3 plane-map tests",
+    "Restart lost initial build process ID; source tree retained and required checks rerun"
+  ],
+  "dataset_evidence": {
+    "verified_finite_plane_line_associations": 148,
+    "tolerance_mm": 1e-07,
+    "standalone_performance_benchmark": false
+  },
+  "not_verified": [
+    "Other p-curve classes/master representations, parameter speed/offsets and general trims",
+    "Full general CAD/PLC/quality/P2/P3/final gates; latest Windows/macOS execution"
+  ]
+}
