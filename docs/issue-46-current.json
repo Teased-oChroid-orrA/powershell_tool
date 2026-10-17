@@ -2,7 +2,7 @@
   "epic": 46,
   "epic_complete": false,
   "branch": "main",
-  "pull_request": null,
+  "pull_request": 95,
   "pull_request_state": "open_pending_user_review",
   "merged_prs": [
     65,
@@ -58,5 +58,14 @@
   },
   "base_main_head": "9cdefdcbb254328489de752295d8bd4454e5f2b4",
   "completion_checklist": "issue-46-completion-checklist.md",
-  "resume": "issue-46-resume.md"
+  "resume": "issue-46-resume.md",
+  "pending_prs": [
+    {
+      "number": 95,
+      "branch": "feature/native-cad-edge-collapse",
+      "base": "main",
+      "phase": 68,
+      "state": "open, awaiting owner review"
+    }
+  ]
 }
