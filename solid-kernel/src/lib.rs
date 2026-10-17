@@ -36,6 +36,7 @@ mod bvh;
 pub mod cad;
 pub mod step;
 pub mod step_body;
+pub mod step_pcurve;
 pub mod step_spline_edge;
 pub mod step_nurbs;
 pub mod step_nurbs_surface;

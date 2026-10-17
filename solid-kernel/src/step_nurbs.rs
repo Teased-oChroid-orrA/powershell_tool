@@ -206,6 +206,44 @@ pub fn read_curve(
     if !scale_mm.is_finite() || scale_mm <= 0. {
         return Err(fail(e, "spline source scale must be finite and positive"));
     }
+    let d = read_definition(data, id, limits, false, |id| point(data, id, scale_mm))?;
+    Ok(StepSplineDeclaration {
+        curve: d.curve,
+        source: d.source,
+        control_point_sources: d.control_point_sources,
+        declared_name: d.declared_name,
+        declared_form: d.declared_form,
+        declared_closed: d.declared_closed,
+        declared_self_intersection: d.declared_self_intersection,
+        declared_knot_spec: d.declared_knot_spec,
+        millimetres_per_source_unit: scale_mm,
+    })
+}
+/// Coordinate/units decoding is deliberately supplied separately. Metadata is
+/// shared without attaching a false physical length scale to parameter curves.
+#[derive(Debug)]
+pub(crate) struct DecodedCurve {
+    pub curve: NurbsCurve,
+    pub source: EntityReference,
+    pub control_point_sources: Vec<EntityReference>,
+    pub declared_name: String,
+    pub declared_form: String,
+    pub declared_closed: Logical,
+    pub declared_self_intersection: Logical,
+    pub declared_knot_spec: String,
+}
+pub(crate) fn read_definition(
+    data: &Inventory,
+    id: u64,
+    limits: Limits,
+    active_domain: bool,
+    mut read_point: impl FnMut(u64) -> Result<crate::V3, Error>,
+) -> Result<DecodedCurve, Error> {
+    let e = data.entities().get(&id).ok_or_else(|| Error {
+        offset: 0,
+        kind: ErrorKind::DanglingReference,
+        detail: format!("missing spline entity #{id}"),
+    })?;
     let parts = match e.components.as_slice() {
         [call] if call.name == "B_SPLINE_CURVE_WITH_KNOTS" && call.args.len() == 9 => {
             let Value::String(name) = &call.args[0] else {
@@ -255,15 +293,19 @@ pub fn read_curve(
         let Value::Ref(id) = control else {
             return Err(fail(e, "spline control point must be an entity reference"));
         };
-        points.push(point(data, *id, scale_mm)?);
+        points.push(read_point(*id)?);
         control_point_sources.push(data.entity_reference(*id).unwrap());
     }
-    let curve =
-        NurbsCurve::new_clamped(degree, knots, points, weights, limits).map_err(|mut error| {
-            error.offset = e.offset;
-            error
-        })?;
-    Ok(StepSplineDeclaration {
+    let construct = if active_domain {
+        NurbsCurve::new_active_domain
+    } else {
+        NurbsCurve::new_clamped
+    };
+    let curve = construct(degree, knots, points, weights, limits).map_err(|mut error| {
+        error.offset = e.offset;
+        error
+    })?;
+    Ok(DecodedCurve {
         curve,
         source: data.entity_reference(id).unwrap(),
         control_point_sources,
@@ -283,6 +325,5 @@ pub fn read_curve(
         declared_closed: logical(e, closed)?,
         declared_self_intersection: logical(e, self_intersection)?,
         declared_knot_spec: enumeration(e, spec, KNOT_SPECS)?,
-        millimetres_per_source_unit: scale_mm,
     })
 }
