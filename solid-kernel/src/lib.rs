@@ -40,6 +40,7 @@ pub mod step_pcurve;
 pub mod step_plane_map;
 mod step_frame;
 pub mod step_cylinder_map;
+pub mod step_curve_agreement;
 pub mod step_spline_edge;
 pub mod step_nurbs;
 pub mod step_nurbs_surface;

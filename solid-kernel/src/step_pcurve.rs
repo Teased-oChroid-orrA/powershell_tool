@@ -308,3 +308,98 @@ pub fn read_surface_curve(
         seam: c.name == "SEAM_CURVE",
     })
 }
+
+pub(crate) fn associated_edge_pcurve<'a>(
+    context: &'a crate::step_body::BodyContext,
+    data: &Inventory,
+    face_reference: EntityReference,
+    surface: EntityReference,
+    edge: EntityReference,
+    pcurve: EntityReference,
+) -> Result<
+    (
+        &'a crate::step_topology::RawEdge,
+        crate::step_pcurve::PcurveDeclaration,
+        crate::step_pcurve::SurfaceCurveDeclaration,
+    ),
+    Error,
+> {
+    let face = data.resolve_reference(face_reference)?;
+    data.resolve_reference(context.length_context())?;
+    let entity = data.resolve_reference(edge)?;
+    let f = context
+        .body()
+        .faces
+        .get(&face_reference.entity)
+        .ok_or_else(|| fail(face, "map face not in this source body"))?;
+    if !f
+        .bounds
+        .iter()
+        .flat_map(|b| &b.edges)
+        .any(|u| u.edge == edge.entity)
+    {
+        return Err(fail(entity, "edge is not a bound of the mapped face"));
+    }
+    let topology = context
+        .body()
+        .edges
+        .get(&edge.entity)
+        .ok_or_else(|| fail(entity, "source is not a body edge"))?;
+    let declaration =
+        crate::step_pcurve::read_pcurve(data, pcurve, crate::nurbs::Limits::default())?;
+    if declaration.basis_surface != surface {
+        return Err(fail(
+            entity,
+            "p-curve basis surface does not match the mapped face",
+        ));
+    }
+    let mut current = topology.curve;
+    let mut found = None;
+    let mut seen = std::collections::BTreeSet::new();
+    while seen.len() < 32 && seen.insert(current) {
+        let record = &data.entities()[&current];
+        if !record
+            .components
+            .iter()
+            .any(|c| matches!(c.name.as_str(), "SURFACE_CURVE" | "SEAM_CURVE"))
+        {
+            break;
+        }
+        let wrapper =
+            crate::step_pcurve::read_surface_curve(data, data.entity_reference(current).unwrap())?;
+        current = wrapper.geometry_3d.entity;
+        if wrapper.pcurves.contains(&pcurve) {
+            found = Some(wrapper);
+            break;
+        }
+    }
+    let wrapper = found.ok_or_else(|| {
+        fail(
+            entity,
+            "p-curve is not associated with this source edge wrapper",
+        )
+    })?;
+    Ok((topology, declaration, wrapper))
+}
+
+/// Original source direction ratios, before rounded display normalization.
+pub(crate) fn line_direction_ratios(
+    data: &Inventory,
+    source: EntityReference,
+) -> Result<[f64; 2], Error> {
+    let line = data.resolve_reference(source)?;
+    let vector = match args(line, "LINE")? {
+        [Value::String(_), Value::Ref(_), Value::Ref(v)] => &data.entities()[v],
+        _ => return Err(fail(line, "invalid parameter LINE")),
+    };
+    let d = match args(vector, "VECTOR")? {
+        [Value::String(_), Value::Ref(d), m] if scalar(vector, m)? > 0. => &data.entities()[d],
+        _ => return Err(fail(vector, "invalid parameter vector")),
+    };
+    let raw = match args(d, "DIRECTION")? {
+        [Value::String(_), v] => pair(d, v)?,
+        _ => return Err(fail(d, "invalid parameter direction")),
+    };
+    crate::native_math::normalize_direction([raw[0], raw[1], 0.]).map_err(|s| fail(d, s))?;
+    Ok(raw)
+}
