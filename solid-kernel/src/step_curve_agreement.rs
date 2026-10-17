@@ -29,7 +29,7 @@ pub struct LineLocus {
     /// Geometric direction agreement only; not parameter speed/offset agreement.
     pub natural_direction_dot: [f64; 2],
 }
-fn world_point(data: &Inventory, id: u64, scale: f64) -> Result<V, Error> {
+pub(crate) fn world_point(data: &Inventory, id: u64, scale: f64) -> Result<V, Error> {
     let e = &data.entities()[&id];
     let p = match call(e, "CARTESIAN_POINT")? {
         [Value::String(_), v] => vector3(e, v)?,

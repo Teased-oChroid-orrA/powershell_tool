@@ -831,3 +831,131 @@ fn trace_distance_covers_curved_surfaces_and_all_clipped_c0_knot_cells() {
     // Clipping to the first cell fits the one-cell admission budget.
     assert!(distance(&map, &d, p, [0.75, 0.5, 2.], [0., 0.5], limited, |_| true).is_ok());
 }
+#[test]
+fn finite_pcurve_endpoint_checks_bind_all_curve_classes_on_spline_surfaces() {
+    use solid_kernel::step_pcurve_endpoints::{verify, Options, ParameterOrder, Request};
+    for kind in 0..3 {
+        for reversed in [false, true] {
+            let (source, face_id, pc) = planar_fixture();
+            let data = inventory(&source, Limits::default()).unwrap();
+            let context = BodyContext::read(&data).unwrap();
+            let edge_id = context.body().faces[&face_id].bounds[0].edges[0].edge;
+            let edge = &context.body().edges[&edge_id];
+            let wrapper = solid_kernel::step_pcurve::read_surface_curve(
+                &data,
+                data.entity_reference(edge.curve).unwrap(),
+            )
+            .unwrap();
+            let (interval, mut positions) = match kind {
+                0 => ([0., 1.], [[0.25, 0.25, 0.], [0.5, 0.25, 0.]]),
+                1 => (
+                    [0., std::f64::consts::FRAC_PI_2],
+                    [[0.625, 0.5, 0.], [0.5, 0.625, 0.]],
+                ),
+                _ => ([0., 1.], [[0.75, 0.25, 0.], [0.25, 0.75, 0.]]),
+            };
+            if reversed {
+                positions.reverse();
+            }
+            let mut edits = vec![(
+                edge.curve,
+                format!(
+                    "#{}=SURFACE_CURVE('',#{},(#{}),.PCURVE_S1.);",
+                    edge.curve, wrapper.geometry_3d.entity, pc[kind]
+                ),
+            )];
+            for (vertex, p) in [edge.start, edge.end].into_iter().zip(positions) {
+                let point = context.body().vertices[&vertex].point;
+                edits.push((
+                    point,
+                    format!("#{point}=CARTESIAN_POINT('',({},{},{}));", p[0], p[1], p[2]),
+                ));
+            }
+            edits.sort_by_key(|(id, _)| std::cmp::Reverse(data.entities()[id].offset));
+            let mut bound = source;
+            for (id, record) in edits {
+                bound = replace(&bound, data.entities()[&id].offset, &record);
+            }
+            for metres in [false, true] {
+                let source = if metres {
+                    let d = inventory(&bound, Limits::default()).unwrap();
+                    let c = BodyContext::read(&d).unwrap();
+                    let u = d
+                        .length_contexts()
+                        .unwrap()
+                        .into_iter()
+                        .find(|u| u.context == c.length_context().entity)
+                        .unwrap();
+                    replace(
+                        &bound,
+                        d.entities()[&u.unit].offset,
+                        &format!(
+                            "#{}=(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT($,.METRE.));",
+                            u.unit
+                        ),
+                    )
+                } else {
+                    bound.clone()
+                };
+                let d = inventory(&source, Limits::default()).unwrap();
+                let c = BodyContext::read(&d).unwrap();
+                let map = SplineParameterMap::read(
+                    &c,
+                    &d,
+                    d.entity_reference(face_id).unwrap(),
+                    nurbs_surface::Limits::default(),
+                )
+                .unwrap();
+                let request = Request {
+                    edge: d.entity_reference(edge_id).unwrap(),
+                    pcurve: d.entity_reference(pc[kind]).unwrap(),
+                    interval,
+                    order: if reversed {
+                        ParameterOrder::Reversed
+                    } else {
+                        ParameterOrder::Forward
+                    },
+                };
+                let r = verify(&map, &c, &d, request, Options::default(), |_| true).unwrap();
+                assert_eq!(r.request.interval, interval);
+                assert_eq!(r.enclosures, 3);
+                assert!(r.endpoint_error_upper_mm.iter().all(|e| *e <= 1e-7));
+                assert_eq!(
+                    r.wrapper.declared_master,
+                    solid_kernel::step_pcurve::CurveMaster::Pcurve1
+                );
+                let o = Options {
+                    max_surface_patches_per_enclosure: 0,
+                    ..Options::default()
+                };
+                assert_eq!(
+                    verify(&map, &c, &d, request, o, |_| true).unwrap_err().kind,
+                    ErrorKind::Limit
+                );
+                if kind == 2 {
+                    let o = Options {
+                        curve_limits: nurbs::Limits {
+                            control_points: 0,
+                            ..nurbs::Limits::default()
+                        },
+                        ..Options::default()
+                    };
+                    assert_eq!(
+                        verify(&map, &c, &d, request, o, |_| true).unwrap_err().kind,
+                        ErrorKind::Limit
+                    );
+                    let o = Options {
+                        max_curve_spans_per_enclosure: 0,
+                        ..Options::default()
+                    };
+                    assert_eq!(
+                        verify(&map, &c, &d, request, o, |_| true).unwrap_err().kind,
+                        ErrorKind::Limit
+                    );
+                }
+            }
+            // This deliberately edits only the endpoint/association contract;
+            // unchanged 3D master geometry is not certified by endpoint success.
+        }
+    }
+}

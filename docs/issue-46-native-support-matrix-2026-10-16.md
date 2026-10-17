@@ -83,3 +83,5 @@ Phases 39–40 (`b35c27c`): source-bound actual-plane UV→mm interval maps and 
 - [Phase 51 explicit finite spline intervals](issue-46-phase-51.md): clipped bounded sampling, checked source endpoints/sense and unchanged raw parameters.
 
 - [Phase 52 shared source parameter queries](issue-46-phase-52.md): actual plane/cylinder/spline map dispatch and bounded world-space search.
+
+- [Phase 53 finite p-curve endpoint checks](issue-46-phase-53.md): explicit parameters/order, source association and outward physical endpoint agreement.
