@@ -1,10 +1,10 @@
 {
   "epic": 46,
   "epic_complete": false,
-  "branch": "feature/native-cad-spline-circle-deviation",
-  "pull_request": 73,
-  "pull_request_state": "draft",
-  "main": "9977032f6d2caba5aa55c26c4a4546c288958106",
+  "branch": "feature/native-cad-body-pcurve-audit",
+  "pull_request": null,
+  "pull_request_state": "pending creation",
+  "main": "f637443d27dc96fd20e21c3a988850f027ae762a",
   "merged_prs": [
     65,
     66,
@@ -13,18 +13,19 @@
     69,
     70,
     71,
-    72
+    72,
+    73
   ],
-  "latest_qualified_source": "8f71e448591c18d755e701c47ea99109facad9e8",
-  "latest_phase": 45,
-  "progress_snapshot": "issue-46-phase-45-verification.json",
+  "latest_qualified_source": "8ba34de2123bbffeeed8cdcaa8da3b1619a08ca9",
+  "latest_phase": 46,
+  "progress_snapshot": "issue-46-phase-46-verification.json",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
   "remaining": "Other p-curve mappings/master/trim/body gates, general constrained meshing/quality and P2/P3/final roadmap",
   "tests": {
-    "cad_enabled": 162,
-    "feature_off": 145,
+    "cad_enabled": 166,
+    "feature_off": 149,
     "failed": 0,
     "ignored": 0,
     "app_cad_lib_tests_compile": "passed at same source"
