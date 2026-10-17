@@ -92,6 +92,7 @@ nodes.
 | Pressure vessel solver | `pressure-vessel-solver/` | *(no node)* | Sibling pattern to `bushing-solver`. |
 | Shared math (Lamé, materials) | `engineering-math/`, `mechanics-core/` | *(no node)* | No re-export shim; import directly. |
 | CLI | `cli/` | *(no node)* | Second `search-core` consumer. |
+| Current native CAD/meshing statement of work | `docs/issue-46-resume.md` | Live pointer and Claude continuation workflow | Active epic #46; scoped milestones and broad exit gates remain distinct. |
 | Design/history docs + ADRs | `docs/` | `docs/AGENTS.md` | Append-only record + index. |
 
 ## Why the migration happened

@@ -2,8 +2,8 @@
   "epic": 46,
   "epic_complete": false,
   "branch": "feature/native-cad-finite-spline-sampling",
-  "pull_request": null,
-  "pull_request_state": "pending",
+  "pull_request": 79,
+  "pull_request_state": "draft",
   "merged_prs": [
     65,
     66,
