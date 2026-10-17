@@ -83,3 +83,5 @@ Phase 30 snapshot: [current progress](issue-46-progress-phase-30.json) and [hand
 User-approved transition (2026-10-16): PR #65 merged at 37cf932, old branch deleted; continuation on `feature/native-cad-spline-import`. [Phase 31](issue-46-phase-31.md) / [snapshot](issue-46-progress-phase-31.json). Foundation merge is authorized/completed; OCCT retirement remains unapproved and unimplemented. Prior no-merge statements above are historical.
 
 Phases 32–35: [snapshot](issue-46-progress-phase-35.json), source 2042c2d, 130 CAD-enabled / 113 feature-off tests plus app compilation. Only the verified full-domain linear spline class expands native body support; all general CAD/trim/PLC/quality/later gates stay open. User authorization includes merging completed increments and continuing; OCCT is retained.
+
+Completed increment PR #66 merged at 3aebf99 under the user authorization; old branch deleted. Continue on `feature/native-cad-planar-spline-trims`. [Phase 36](issue-46-phase-36.md) / [current snapshot](issue-46-progress-phase-36.json): finite exact planar bilinear faces qualified, p-curve/master agreement and remaining epic gates open. OCCT remains production.
