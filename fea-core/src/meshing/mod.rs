@@ -16,6 +16,7 @@ pub mod predictor;
 pub mod quality;
 pub mod smooth;
 pub mod tet_flip;
+pub mod tet_smooth;
 pub mod tet_topology;
 pub mod tet_delaunay;
 pub mod weld;
