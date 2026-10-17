@@ -43,7 +43,8 @@
     101,
     102,
     103,
-    104
+    104,
+    105
   ],
   "latest_qualified_source": "de5ceed56c5f146cf55a275ce1b10959836df53a",
   "latest_phase": 78,
@@ -53,18 +54,17 @@
   "occt_retirement_approved": false,
   "remaining": "Other p-curve mappings/master/trim/body gates, general constrained meshing/quality and P2/P3/final roadmap",
   "tests": {
-    "cad_enabled": 185,
-    "feature_off": 168,
-    "failed": 0,
-    "ignored": 0,
-    "app_cad_lib_tests_compile": "passed at same source"
+    "workspace_passed": 2831,
+    "workspace_failed": 0,
+    "workspace_ignored": 87,
+    "platform": "macOS arm64 (no Windows or hosted CI evidence)",
+    "at": "ddba394"
   },
   "last_confirmed_main_merge": "4b19daa",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Phase 78 prism-tet transition; remaining open: hex/pyramid transitions, exact CAD projection (#55), B-Rep loop/assembly work (#51), representative benchmarks and learning (#60-#62), native production parity (#63)",
-    "status": "ready_for_pr",
-    "branch": "feature/native-cad-prism-tet"
+    "scope": "All scoped increments through Phase 78 are merged; open items are listed in issue-46-resume.md (sampled bracket gate, exact CAD projection, B-Rep loops/assemblies, hex/pyramid transitions, benchmarks for #60-#62, parity #63)",
+    "status": "see_resume_guide_open_list"
   },
   "base_main_head": "9cdefdcbb254328489de752295d8bd4454e5f2b4",
   "completion_checklist": "issue-46-completion-checklist.md",
