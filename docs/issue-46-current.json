@@ -40,7 +40,7 @@
     98
   ],
   "latest_qualified_source": "de5ceed56c5f146cf55a275ce1b10959836df53a",
-  "latest_phase": 72,
+  "latest_phase": 73,
   "progress_snapshot": "issue-46-phase-53-verification.json",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
@@ -56,9 +56,9 @@
   "last_confirmed_main_merge": "4b19daa",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Phase 72 mesh motion; next: sliver-face defeaturing (#52/#53), validity-guarded boundary-layer snapping (#55), structured-unstructured transitions (#56)",
+    "scope": "Phase 73 boundary-layer snapping; next: sliver-face defeaturing (#52/#53), 3D structured-unstructured transitions (#56), cost terms (#60)",
     "status": "ready_for_pr",
-    "branch": "feature/native-cad-mesh-motion"
+    "branch": "feature/native-cad-boundary-snapping"
   },
   "base_main_head": "9cdefdcbb254328489de752295d8bd4454e5f2b4",
   "completion_checklist": "issue-46-completion-checklist.md",
