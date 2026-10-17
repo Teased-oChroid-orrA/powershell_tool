@@ -16,6 +16,9 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 | `SurfaceMesh`, `SurfaceSolid` (weld, closed-manifold check, outward orientation, `signed_distance`, `faces_near`, `nearest_face`, `face_areas`), `mesh_volume` | `src/lib.rs` |
 | Triangle BVH, closest point on a triangle with its region (face / edge / vertex) | `src/bvh.rs` |
 | OpenCascade: `Brep::extrude/boolean/fillet_all/faces/tessellate/solid/write_step/read_step` | `src/occt.rs` (feature `occt`) |
+| Finite p-curve trims and oriented arcs (`step_pcurve_candidates`, `step_pcurve_arc`, `step_curve_audit` `finite_arcs`) | `src/step_pcurve_{candidates,arc}.rs`, `docs/issue-46-phase-54.md`..`57` |
+| Incremental 3D Delaunay engine (walk location, cavity BFS, exact predicates) | `src/delaunay3.rs` (crate-private) |
+| Conforming Delaunay recovery of a closed triangulated PLC by Steiner points (`plc_conform::conform`) | `src/plc_conform.rs`, `docs/issue-46-phase-58.md` |
 | Analytic tests (box, tube) | `tests/surface.rs` |
 | OpenCascade tests | `tests/occt.rs` (`cargo test -p solid-kernel --features occt`) |
 
@@ -27,6 +30,7 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - The tessellation deflection bounds the geometric error: use a small fraction of the boundary element size.
 
 ## Pitfalls
+- `plc_conform` converges for well-conditioned PLCs (boxes, plates with holes) but NOT for sampled surface meshes with skinny triangles such as the NEMA17 bracket: every triangle edge is a protected segment and Delaunay refinement cascades past any budget (it refuses with a `Limit` error in ~2 s). Do not raise `max_steiner` to compensate; the fix is TetGen-style boundary recovery by local reconnection, or an isotropic surface remesh first.
 - `cadrum`'s `Face::id` is not unique (an extrusion's two caps share one) and is session-local (not kept by STEP). `tessellate`
   splits a shared id into connected pieces and matches them to faces by centre; a face without triangles makes it fail
   instead of guessing. Never use the kernel id as a persistent face name.

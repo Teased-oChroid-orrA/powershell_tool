@@ -15,7 +15,7 @@ fn main() {
 }
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
-    let usage = "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface] [--pcurve-audit] [--finite-arcs] [--repair-orientation] [--plc] [--star-seed X,Y,Z] [--trial-kernel] (kernel coordinates in mm)";
+    let usage = "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface] [--pcurve-audit] [--finite-arcs] [--repair-orientation] [--plc] [--conform [--conform-max-steiner N] [--conform-missing-only]] [--star-seed X,Y,Z] [--trial-kernel] (kernel coordinates in mm)";
     let path = args.next().ok_or(usage)?;
     if path == "--help" {
         println!("{usage}");
@@ -23,6 +23,9 @@ fn run() -> Result<(), String> {
     }
     let mut pcurve_audit = false;
     let mut plc_requested = false;
+    let mut conform_requested = false;
+    let mut conform_max_steiner = 4000;
+    let mut conform_missing_only = false;
     let mut kernel = None;
     let mut trial_kernel = false;
     let mut mode = 0;
@@ -43,6 +46,16 @@ fn run() -> Result<(), String> {
         } else if flag == "--repair-orientation" {
             repair_orientation = true;
             mode = mode.max(2);
+        } else if flag == "--conform-missing-only" {
+            conform_missing_only = true;
+        } else if flag == "--conform-max-steiner" {
+            conform_max_steiner = args
+                .next()
+                .and_then(|v| v.to_str().and_then(|v| v.parse().ok()))
+                .ok_or("--conform-max-steiner needs a count")?;
+        } else if flag == "--conform" {
+            plc_requested = true;
+            conform_requested = true;
         } else if flag == "--plc" {
             plc_requested = true;
             mode = mode.max(2);
@@ -279,6 +292,32 @@ fn run() -> Result<(), String> {
                     plc.facets().len(),
                     plc.segments().len()
                 );
+                if conform_requested {
+                    let started = std::time::Instant::now();
+                    let mut last = (usize::MAX, 0);
+                    let mesh = solid_kernel::plc_conform::conform(
+                        plc.vertices(),
+                        &plc.facets().to_vec(),
+                        solid_kernel::plc_conform::Options {
+                            max_steiner: conform_max_steiner,
+                            protect_encroached: !conform_missing_only,
+                            ..Default::default()
+                        },
+                        |p| {
+                            if (p.phase as usize, p.steiner / 25) != last {
+                                last = (p.phase as usize, p.steiner / 25);
+                                eprintln!(
+                                    "Conforming recovery {:?}: {} Steiner points, {} segments / {} sub-facets pending",
+                                    p.phase, p.steiner, p.missing_segments, p.missing_facets
+                                );
+                            }
+                            true
+                        },
+                    )
+                    .map_err(|e| e.to_string())?;
+                    let r = &mesh.report;
+                    println!("Conforming Delaunay recovery: {} input vertices + {} segment and {} facet Steiner points; {} interior cells (of {} hull cells); volume error {:e}; max Steiner offset {:e} (relative); {} rounds ({:.1} s). Cell quality and slivers are not bounded.",r.input_vertices,r.segment_steiner,r.facet_steiner,r.interior_cells,r.hull_cells,r.volume_error_relative,r.max_steiner_offset_relative,r.rounds,started.elapsed().as_secs_f64());
+                }
                 if let Some(point) = kernel {
                     let mut last_seed = None;
                     let mut seed = StarSeed::new(plc, point, 100_000, |done, total| {

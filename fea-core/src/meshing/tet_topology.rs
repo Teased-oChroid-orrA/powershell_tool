@@ -34,6 +34,21 @@ pub fn orientation(a: Point, b: Point, c: Point, d: Point) -> Result<Ordering, M
         .partial_cmp(&0.)
         .ok_or_else(|| MeshError::Failed("non-finite orientation predicate".into()))
 }
+/// Exact sign of the planar orientation of `a, b, c` (Greater = counter-clockwise).
+pub fn orientation_2d(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> Ordering {
+    let p = |q: [f64; 2]| robust::Coord { x: q[0], y: q[1] };
+    robust::orient2d(p(a), p(b), p(c))
+        .partial_cmp(&0.)
+        .unwrap_or(Ordering::Equal)
+}
+/// Exact circle test for a counter-clockwise triangle `a, b, c`: Greater when `d`
+/// lies strictly inside its circumcircle, Equal on it.
+pub fn in_circle_2d(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> Ordering {
+    let p = |q: [f64; 2]| robust::Coord { x: q[0], y: q[1] };
+    robust::incircle(p(a), p(b), p(c), p(d))
+        .partial_cmp(&0.)
+        .unwrap_or(Ordering::Equal)
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SphereSide {
     Inside,

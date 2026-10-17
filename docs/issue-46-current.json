@@ -24,7 +24,7 @@
     81
   ],
   "latest_qualified_source": "de5ceed56c5f146cf55a275ce1b10959836df53a",
-  "latest_phase": 57,
+  "latest_phase": 58,
   "progress_snapshot": "issue-46-phase-53-verification.json",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
@@ -40,10 +40,10 @@
   "last_confirmed_main_merge": "58c054c",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Phase 57 finite trims for all 228 bracket associations (stacked on #84); then loop/face-level trim agreement and remaining roadmap",
+    "scope": "Phase 58 incremental Delaunay + conforming PLC recovery (stacked on #85); next: TetGen-style boundary recovery or surface remeshing so the bracket PLC converges, then quality/sliver work",
     "status": "in_progress",
-    "branch": "feature/native-cad-line-trims",
-    "qualification": "CAD-enabled 192 passed, feature-off 175 passed, 0 failed/ignored (macOS)"
+    "branch": "feature/native-cad-conforming-delaunay",
+    "qualification": "CAD-enabled 200 passed, feature-off 183 passed, fea-core meshing 54 passed, 0 failed/ignored (macOS)"
   },
   "base_main_head": "9cdefdcbb254328489de752295d8bd4454e5f2b4",
   "completion_checklist": "issue-46-completion-checklist.md",
