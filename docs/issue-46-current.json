@@ -24,7 +24,7 @@
     81
   ],
   "latest_qualified_source": "de5ceed56c5f146cf55a275ce1b10959836df53a",
-  "latest_phase": 59,
+  "latest_phase": 60,
   "progress_snapshot": "issue-46-phase-53-verification.json",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
@@ -40,10 +40,9 @@
   "last_confirmed_main_merge": "58c054c",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Phase 59 radius-edge refinement and tie/extraction fixes (stacked on #86); next: boundary recovery by reconnection / surface remesh for the bracket, sliver removal",
+    "scope": "Phase 60 sliver reconnection (stacked on #87); next: vertex smoothing / Steiner sliver exudation, bracket boundary recovery",
     "status": "in_progress",
-    "branch": "feature/native-cad-quality-refinement",
-    "qualification": "CAD-enabled 202 passed, feature-off 185 passed, 0 failed/ignored (macOS)"
+    "branch": "feature/native-cad-sliver-flips"
   },
   "base_main_head": "9cdefdcbb254328489de752295d8bd4454e5f2b4",
   "completion_checklist": "issue-46-completion-checklist.md",

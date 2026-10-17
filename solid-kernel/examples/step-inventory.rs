@@ -15,7 +15,7 @@ fn main() {
 }
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
-    let usage = "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface] [--pcurve-audit] [--finite-arcs] [--repair-orientation] [--plc] [--conform [--conform-max-steiner N] [--conform-missing-only] [--conform-radius-edge B]] [--star-seed X,Y,Z] [--trial-kernel] (kernel coordinates in mm)";
+    let usage = "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface] [--pcurve-audit] [--finite-arcs] [--repair-orientation] [--plc] [--conform [--conform-max-steiner N] [--conform-missing-only] [--conform-radius-edge B] [--conform-reconnect]] [--star-seed X,Y,Z] [--trial-kernel] (kernel coordinates in mm)";
     let path = args.next().ok_or(usage)?;
     if path == "--help" {
         println!("{usage}");
@@ -27,6 +27,7 @@ fn run() -> Result<(), String> {
     let mut conform_max_steiner = 4000;
     let mut conform_missing_only = false;
     let mut conform_radius_edge = None;
+    let mut conform_reconnect = false;
     let mut kernel = None;
     let mut trial_kernel = false;
     let mut mode = 0;
@@ -49,6 +50,8 @@ fn run() -> Result<(), String> {
             mode = mode.max(2);
         } else if flag == "--conform-missing-only" {
             conform_missing_only = true;
+        } else if flag == "--conform-reconnect" {
+            conform_reconnect = true;
         } else if flag == "--conform-radius-edge" {
             conform_radius_edge = Some(
                 args.next()
@@ -309,6 +312,7 @@ fn run() -> Result<(), String> {
                             max_steiner: conform_max_steiner,
                             protect_encroached: !conform_missing_only,
                             max_radius_edge: conform_radius_edge,
+                            reconnect: conform_reconnect.then(Default::default),
                             ..Default::default()
                         },
                         |p| {

@@ -251,3 +251,30 @@ fn a_thin_slab_with_seven_degree_face_diagonals_refuses_instead_of_descending_fo
         ErrorKind::Limit
     );
 }
+
+#[test]
+fn reconnection_keeps_the_boundary_and_volume_and_never_worsens_quality() {
+    use fea_core::meshing::tet_flip::FlipOptions;
+    let (v, t) = plate(4., Some(2.), 1.);
+    let plain = conform(&v, &t, Options::default(), |_| true).unwrap();
+    let options = Options {
+        reconnect: Some(FlipOptions::default()),
+        ..Options::default()
+    };
+    let m = conform(&v, &t, options, |_| true).unwrap();
+    let report = m.report.reconnection.as_ref().expect("reconnection ran");
+    assert!(report.min_radius_ratio_after >= report.min_radius_ratio_before);
+    assert!(report.cells_below_target_after <= report.cells_below_target_before);
+    assert_eq!(m.points, plain.points);
+    assert!((volume_of(&m.points, &m.cells) - 12.).abs() < 1e-10);
+    assert_eq!(m.facets, plain.facets);
+    let faces: Vec<[usize; 3]> = m
+        .cells
+        .iter()
+        .flat_map(|&[a, b, c, d]| [[a, b, c], [a, b, d], [a, c, d], [b, c, d]])
+        .map(face_key)
+        .collect();
+    for (f, _) in &m.facets {
+        assert_eq!(faces.iter().filter(|k| **k == face_key(*f)).count(), 1);
+    }
+}

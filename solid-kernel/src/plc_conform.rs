@@ -18,7 +18,8 @@ use crate::{
 };
 use fea_core::meshing::{
     tet_delaunay::{tetrahedralize, Limits as DelaunayLimits},
-    tet_topology::{in_circle_2d, orientation, orientation_2d},
+    tet_flip::{improve, FlipOptions, FlipReport},
+    tet_topology::{in_circle_2d, orientation, orientation_2d, TetTopology},
     MeshError,
 };
 use std::cmp::Ordering;
@@ -38,6 +39,9 @@ pub struct Options {
     /// would encroach a sub-segment or sub-facet split those instead). `None`
     /// leaves the recovered cells as they are. Slivers are not addressed.
     pub max_radius_edge: Option<f64>,
+    /// Reconnect low-quality interior cells by 2-3 flips and edge removals after
+    /// extraction (boundary, sub-facets and vertices are preserved exactly).
+    pub reconnect: Option<FlipOptions>,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -46,6 +50,7 @@ impl Default for Options {
             max_cells: 400_000,
             protect_encroached: true,
             max_radius_edge: None,
+            reconnect: None,
         }
     }
 }
@@ -78,6 +83,8 @@ pub struct Report {
     pub max_radius_edge_ratio: f64,
     /// Interior cells above `max_radius_edge` whose centre could not be inserted.
     pub unresolved_bad_cells: usize,
+    /// Result of the optional reconnection pass over the interior cells.
+    pub reconnection: Option<FlipReport>,
     pub hull_cells: usize,
     pub interior_cells: usize,
     /// |sum of cell volumes - PLC enclosed volume| / PLC enclosed volume.
@@ -888,6 +895,8 @@ pub fn conform(
     extract(state, vertices.len(), rounds)
 }
 fn extract(state: State, input_vertices: usize, rounds: usize) -> Result<Conforming, Error> {
+    let reconnect = state.options.reconnect;
+    let max_cells = state.options.max_cells;
     let facets = state.facets();
     let stats = (
         state.segment_steiner,
@@ -915,6 +924,14 @@ fn extract(state: State, input_vertices: usize, rounds: usize) -> Result<Conform
         .filter(|(_, o)| !**o)
         .map(|(t, _)| *t)
         .collect();
+    let (interior, reconnection) = match reconnect {
+        None => (interior, None),
+        Some(flip) => {
+            let seed = TetTopology::new(points.clone(), interior, max_cells).map_err(mesh_error)?;
+            let (better, report) = improve(&seed, &BTreeSet::new(), flip).map_err(mesh_error)?;
+            (better.cells().to_vec(), Some(report))
+        }
+    };
     // Each sub-facet must separate one inside cell from one outside cell (or the void).
     let mut uses = BTreeMap::<[usize; 3], usize>::new();
     for t in &interior {
@@ -978,6 +995,7 @@ fn extract(state: State, input_vertices: usize, rounds: usize) -> Result<Conform
             quality_steiner: stats.4,
             max_radius_edge_ratio,
             unresolved_bad_cells: stats.5,
+            reconnection,
             hull_cells: cells.len(),
             interior_cells: interior.len(),
             volume_error_relative,
