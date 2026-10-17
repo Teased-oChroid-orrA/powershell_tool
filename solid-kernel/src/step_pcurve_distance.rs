@@ -1,13 +1,13 @@
 //! Globally bounded world-space point-to-p-curve-trace distance on source spline
-//! surfaces. Not a unique surface projection, finite trim or body certificate.
+//! surfaces and analytic planes/cylinders. Not a unique projection, trim or body certificate.
 pub use crate::nurbs_distance::{Options as SearchOptions, Progress};
 use crate::{
     geometry_bounds::Bounds3,
     geometry_distance::{self, Geometry},
     nurbs,
     step::{EntityReference, Error, ErrorKind, Inventory},
+    step_parameter_map::ParameterMapRef,
     step_pcurve::{self, ParametricCurve, PcurveDeclaration},
-    step_spline_map::SplineParameterMap,
     V3,
 };
 #[derive(Debug, Clone, Copy)]
@@ -44,7 +44,7 @@ pub struct DistanceResult {
     pub enclosures: usize,
 }
 struct Trace<'a> {
-    map: &'a SplineParameterMap,
+    map: ParameterMapRef<'a>,
     data: &'a Inventory,
     declaration: PcurveDeclaration,
     interval: [f64; 2],
@@ -93,8 +93,8 @@ impl Geometry<1> for Trace<'_> {
 /// minimum; parameter/position uniqueness, regularity and master semantics are
 /// unverified. Query/world bounds are mm; raw LINE/CIRCLE/spline parameters and
 /// the source UV/knots never receive the body length conversion.
-pub fn distance(
-    map: &SplineParameterMap,
+pub fn distance<'a>(
+    map: impl Into<ParameterMapRef<'a>>,
     data: &Inventory,
     pcurve: EntityReference,
     query_mm: V3,
@@ -102,6 +102,7 @@ pub fn distance(
     options: Options,
     mut progress: impl FnMut(Progress) -> bool,
 ) -> Result<DistanceResult, Error> {
+    let map = map.into();
     data.resolve_reference(map.face_reference())?;
     data.resolve_reference(map.length_context())?;
     let entity = data.resolve_reference(pcurve)?;
@@ -132,7 +133,7 @@ pub fn distance(
     if declaration.basis_surface != map.surface_reference() {
         return Err(fail(
             ErrorKind::Geometry,
-            "distance p-curve basis does not match source spline surface",
+            "distance p-curve basis does not match source surface",
         ));
     }
     if let ParametricCurve::Spline(spline) = &declaration.geometry {
