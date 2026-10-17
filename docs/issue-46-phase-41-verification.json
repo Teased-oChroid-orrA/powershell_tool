@@ -1,0 +1,27 @@
+{
+  "qualified_source_commit": "0f94c206d4f21cc0be4863eb2e937275cab283cb",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 147,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 130,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "development_notes": [
+    "Workspace formatting check reports existing unrelated formatting differences; formatted and checked changed Rust files directly."
+  ],
+  "not_verified": [
+    "Complete spline B-Rep, master/trim agreement, general PLC, later roadmap gates, current Windows/macOS execution"
+  ]
+}

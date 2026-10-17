@@ -89,3 +89,5 @@ Completed increment PR #66 merged at 3aebf99 under the user authorization; old b
 PR #67 merged at 75e4faa; old branch deleted. Current execution: `feature/native-cad-pcurve-validation`, [Phase 38](issue-46-phase-38.md), [snapshot](issue-46-progress-phase-38.json), 139 CAD-enabled / 122 feature-off tests and app compilation. P-curve declarations now decode; their mapping/master semantics and all broader roadmap gates remain open.
 
 Current execution pointer: [issue-46-current.json](issue-46-current.json). Phases 39–40 qualify source-plane transforms and 148 finite plane/line p-curve loci at 1e-7 mm; 145 CAD-enabled / 128 feature-off tests plus app compilation pass. Other p-curve/master/general CAD/PLC/later gates remain open. PR #68 stays draft on `feature/native-cad-pcurve-validation`; completed PRs #65/#66/#67 are merged.
+
+- [Phase 41: whole-interval planar spline p-curve bounds](issue-46-phase-41.md): source/budget guards and explicit unit qualification.

@@ -236,3 +236,5 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Phase 40 finite plane/line locus agreement](issue-46-phase-40.md): exact-source units/bounds and scoped agreement evidence.
 
 - [Issue 46 current execution pointer](issue-46-current.json): live branch/PR/main/qualification and remaining-gate navigation; dated progress snapshots remain historical.
+
+- [Phase 41: whole-interval planar spline p-curve bounds](issue-46-phase-41.md): source/budget guards and explicit unit qualification.
