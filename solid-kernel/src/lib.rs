@@ -37,6 +37,7 @@ pub mod cad;
 pub mod step;
 pub mod step_body;
 pub mod step_pcurve;
+pub mod step_pcurve_candidates;
 pub mod step_plane_map;
 mod step_frame;
 pub mod step_cylinder_map;

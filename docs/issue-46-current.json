@@ -2,7 +2,7 @@
   "epic": 46,
   "epic_complete": false,
   "branch": "feature/native-cad-pcurve-endpoints",
-  "pull_request": null,
+  "pull_request": 81,
   "pull_request_state": "pending",
   "merged_prs": [
     65,
@@ -20,7 +20,8 @@
     77,
     78,
     79,
-    80
+    80,
+    81
   ],
   "latest_qualified_source": "de5ceed56c5f146cf55a275ce1b10959836df53a",
   "latest_phase": 53,
@@ -36,11 +37,13 @@
     "ignored": 0,
     "app_cad_lib_tests_compile": "passed at same source"
   },
-  "last_confirmed_main_merge": "72a021e97d8376f3a7d84ede4552ea27753c51fc",
+  "last_confirmed_main_merge": "58c054c",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Bounded source p-curve endpoint candidate discovery; then correct finite arc/sense/wrap/master/trim/body and remaining roadmap",
-    "status": "planned"
+    "scope": "Phase 54 bounded p-curve endpoint candidate discovery (in review as a draft PR); then oriented finite arc/sense/wrap/master/trim/body and remaining roadmap",
+    "status": "in_progress",
+    "branch": "feature/native-cad-pcurve-candidates",
+    "qualification": "CAD-enabled 187 passed, feature-off 170 passed, 0 failed/ignored; app-tui compile verified (macOS)"
   },
   "base_main_head": "9cdefdcbb254328489de752295d8bd4454e5f2b4",
   "completion_checklist": "issue-46-completion-checklist.md",
