@@ -71,16 +71,33 @@ fn signs(
         .collect()
 }
 
-fn worst(points: &[Point], cells: &[[usize; 4]], ids: &[usize]) -> f64 {
+/// Cell quality for smoothing: larger is better, `0` is unusable; only compared, never interpreted.
+pub type QualityFn<'a> = &'a dyn Fn(&[Point], [usize; 4]) -> f64;
+
+fn worst_by(points: &[Point], cells: &[[usize; 4]], ids: &[usize], q: QualityFn<'_>) -> f64 {
     ids.iter()
-        .map(|&c| quality(points, cells[c]))
+        .map(|&c| q(points, cells[c]))
         .fold(f64::INFINITY, f64::min)
+}
+
+fn worst(points: &[Point], cells: &[[usize; 4]], ids: &[usize]) -> f64 {
+    worst_by(points, cells, ids, &quality)
 }
 
 /// Move interior vertices of `top` to improve the worst incident radius ratio. See the module documentation.
 pub fn smooth_vertices(
     top: &TetTopology,
     options: &SmoothOptions,
+) -> Result<(TetTopology, SmoothReport), MeshError> {
+    smooth_vertices_by(top, options, &quality)
+}
+
+/// [`smooth_vertices`] with a caller-supplied cell quality (for example the radius ratio in a metric). The report's
+/// `min_radius_ratio_*` fields then hold that quality's global minimum.
+pub fn smooth_vertices_by(
+    top: &TetTopology,
+    options: &SmoothOptions,
+    quality: QualityFn<'_>,
 ) -> Result<(TetTopology, SmoothReport), MeshError> {
     let cells = top.cells();
     let mut points: Vec<Point> = top.points().to_vec();
@@ -118,7 +135,7 @@ pub fn smooth_vertices(
         passes: 0,
         movable_vertices: movable.len(),
         moves: 0,
-        min_radius_ratio_before: worst(&points, cells, &all),
+        min_radius_ratio_before: worst_by(&points, cells, &all, quality),
         min_radius_ratio_after: 0.,
     };
     let volume_before = volume(&points, cells);
@@ -127,7 +144,7 @@ pub fn smooth_vertices(
         for &v in &movable {
             let ids = &incident[&v];
             let ring = &neighbours[&v];
-            let before = worst(&points, cells, ids);
+            let before = worst_by(&points, cells, ids, quality);
             let sign_before = signs(&points, cells, ids)?;
             let old = points[v];
             let mut mean: Point = std::array::from_fn(|k| {
@@ -146,7 +163,7 @@ pub fn smooth_vertices(
                 let gain_ok = |q: f64, b: Option<(f64, Point)>| {
                     q > before + options.min_gain && b.is_none_or(|(bq, _)| q > bq)
                 };
-                let q = worst(&points, cells, ids);
+                let q = worst_by(&points, cells, ids, quality);
                 if gain_ok(q, best)
                     && signs(&points, cells, ids)
                         .map(|s| s == sign_before && !s.contains(&std::cmp::Ordering::Equal))
@@ -188,7 +205,7 @@ pub fn smooth_vertices(
             "smoothing changed the total volume".into(),
         ));
     }
-    report.min_radius_ratio_after = worst(result.points(), result.cells(), &all);
+    report.min_radius_ratio_after = worst_by(result.points(), result.cells(), &all, quality);
     Ok((result, report))
 }
 
