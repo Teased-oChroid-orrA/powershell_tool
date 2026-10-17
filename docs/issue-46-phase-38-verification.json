@@ -1,0 +1,36 @@
+{
+  "source_commit": "02d7cd3e1e4835ca12e87e6994220629a0808cfb",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 139,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 122,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "development_failures": [],
+  "actual_bracket_pcurves": {
+    "line": 200,
+    "circle": 13,
+    "complex_spline": 15,
+    "total": 228
+  },
+  "parameter_semantics": "Raw UV, radius, vector magnitude and knots preserved; no inferred mm/angle conversion; context dimension=2",
+  "previous_pr_67_merge": "75e4faa30e51d98af351f057ce8ad7af6e7a0b07",
+  "environment_interruption": "409 environment_offline before merge read-back; recovered and SHA verified without configuration changes",
+  "not_verified": [
+    "P-curve mappings, source-master agreement and full general trim/body validation",
+    "General constrained meshing/quality, P2/P3/final gates",
+    "Representative cross-platform execution/performance"
+  ]
+}

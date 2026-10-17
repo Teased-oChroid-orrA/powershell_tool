@@ -442,3 +442,51 @@ The actual-file test decodes fixture controls using existing scalar/knot helpers
 No dependency, tolerance/resource-budget relaxation, production backend switch, hosted workflow dispatch or OCCT retirement. [Verification](issue-46-phase-37-verification.json) records full source-specific tests/application compilation. Next: share bounded spline declaration decoding with a parameter-space point decoder; parse p-curve contexts and preserve source/geometry/representation identities, then verify mappings against 3D loci rather than treating declaration extraction as CAD success.
 
 Final source checks: **135 CAD-enabled / 118 feature-off tests and application lib/tests compilation pass**, zero failures/ignored tests.
+
+## Phase 38 p-curve declarations — 2026-10-16
+
+PR #67 merged at `75e4faa30e51d98af351f057ce8ad7af6e7a0b07` under the continuing authorization; its completed branch was deleted. Work continues on `feature/native-cad-pcurve-validation` from that merge. A temporary 409 `environment_offline` interruption prevented initial merge read-back; execution returned, the SHA was verified and work resumed without configuration/security changes.
+
+Source `02d7cd3` adds source-bound PCURVE and SURFACE_CURVE/SEAM_CURVE declaration readers. P-curve identity, basis-surface/definitional-representation/parameter-context/geometry references, raw 2D geometry and names remain explicit. Contexts require exactly the supported two-dimensional parametric inheritance components and one curve item. Missing/duplicate/wrong-dimensional/unsupported records, invalid master indices/association counts, stale references and spline resource violations refuse with source offsets.
+
+Line directions and original magnitudes remain separate; circle placement/radius and optional reference direction are decoded in parameter space. Complex/simple polynomial/rational spline parsing, exact multiplicities, knot expansion, metadata and budgets reuse the 3D declaration parser through a private coordinate decoder. Parameter splines explicitly use the finite active-domain constructor and embed [u,v] as [u,v,0]. Their metadata carries no false mm factor; the public 3D reader retains its original fields, explicit mm scaling and clamped defaults.
+
+**No length or angle conversion is inferred.** A plane parameter, cylinder angle/height and spline knot parameter require different mapping semantics; raw coordinates/knots stay unchanged. Tiny representable primitive parameter values such as 1e-310 remain nonzero. Spline numerical arithmetic limits remain enforced by the existing evaluator; preserving primitive declarations is not a certificate of arbitrarily conditioned numerical evaluation.
+
+The declared `CURVE_3D` / `PCURVE_S1` / `PCURVE_S2` choice is retained, not silently replaced by a 3D-authoritative assumption. Reading these declarations does not prove the referenced 3D geometry agrees with either p-curve, validate trimmed parameter ranges or certify a complete STEP schema/B-Rep. The native analytic facade's previous 3D-locus reconstruction remains explicitly unqualified for master/p-curve agreement.
+
+Four regressions decode **all 228 p-curves in the actual bracket** (200 line / 13 circle / 15 complex spline), their wrapper/master associations and the extended #237 case; verify source identities, raw values/directions/magnitudes and stale-reference refusal; reject wrong dimensions, context components, item counts, zero directions and invalid/unavailable/duplicate master associations; and enforce spline caps. Existing six physical 3D spline-reader regressions remain passing. [Full source-specific verification](issue-46-phase-38-verification.json).
+
+Next: map parameter curves through their actual source surfaces with explicit length/angular/knot semantics, certify finite 3D locus agreement and source-master handling, then complete general curve/surface trims and body admission. General constrained PLC recovery/quality, P2/P3/final gates and OCCT parity/retirement remain open. No dependency, tolerance/resource-limit relaxation, production switch or hosted workflow dispatch.
+
+Final source checks: **139 CAD-enabled / 122 feature-off tests and application lib/tests compilation pass**, zero failures/ignored tests.
+
+Resume with actual mapping/agreement, not another declaration parser: `step_pcurve` now covers all root-bracket p-curves and master metadata. Share interval source-frame transforms; apply mm only to length parameters, radians/declared angular context to cylinder U, and no physical conversion to spline UV knots. Add aggregate body work/memory budgets when collecting p-curves; standalone readers bound each definition only. Do not classify p-curve declarations as successful CAD validation or turn native backend capabilities on. Current branch is `feature/native-cad-pcurve-validation`; PRs #65/#66/#67 are merged, latest main 75e4faa, their branches deleted.
+
+## Phase 39 — 2026-10-16
+
+Source `fba2f89` adds `PlaneParameterMap` for actual STEP PLANE entities selected through the exact source body/face context. It never treats a cylinder or geometrically reduced spline face as an affine source-UV plane. Both plane parameters are source lengths and scale once by the bound body mm factor; origin placement, raw direction ratios, orthogonalization and frame orientation use outward interval arithmetic.
+
+The immutable map retains face, basis-surface and length-context references and reports world-coordinate boxes rather than pretending rounded points are exact. Stale contexts/identities, parallel or unresolved axes, invalid rectangles and geometry-range/overflow uncertainty refuse. This is a forward source-plane transform, not inverse UV or trim/master validation.
+
+Interval division now divides interval endpoints directly. Reciprocal-first evaluation overflowed for a nonzero denominator such as 1e-310 even when the quotient 1e-310/1e-310 is representable. Direct outward-rounded quotients keep that ratio bounded without weakening zero-denominator/overflow handling. This supports actual tiny direction ratios without an unbounded intermediate reciprocal. Existing interval and native geometry tests remain required.
+
+Three integration groups cover all original bracket plane frames, independent axis-aligned map coordinates and rectangles, mm/metre conversion, 1e-310 direction ratios, stale identities, non-plane rejection, parallel axes and unbounded/invalid queries. An initial filtered command ran one interval unit and zero integration tests; it was corrected to run all 60 library tests plus all three integration tests. The zero-test run is not counted as validation. Environment restart lost the initial build process ID; the restored working tree retained all source changes and checks were rerun.
+
+The combined Phases 39–40 gate is recorded in [verification](issue-46-phase-39-verification.json), avoiding duplicate whole-suite qualification between the transform and its immediate locus-check consumer. No dependency, tolerance relaxation, production switch, hosted workflow dispatch or OCCT retirement.
+
+Final combined source checks: **145 CAD-enabled / 128 feature-off tests and application lib/tests compilation pass**, zero failures/ignored tests.
+
+## Phase 40 — 2026-10-16
+
+Source `b35c27c` adds `PlaneParameterMap::verify_line_locus`. Exact-document body face/edge/p-curve references must agree; the edge must bound the face and the p-curve must be associated through its source surface-curve wrapper on that source PLANE. Both primitive 3D LINE and parameter LINE representations are required; other geometry classes refuse explicitly.
+
+Original source direction ratios, placement/length intervals and source vertex coordinates define the proof. Source vertices are projected onto each exact line carrier. Upper bounds independently cover source-to-3D, source-to-p-curve and 3D-line-to-p-curve distances at the finite edge endpoints. Distance to a line is convex along a segment, so the endpoint maxima bound the complete finite 3D segment. This does not claim agreement between two entire infinite lines. Source 3D extent/sense must also be certified.
+
+The report retains face/edge/p-curve/wrapper identities, three pairs of physical-mm error bounds, the natural-direction dot interval and declared master/reference. `checked_pcurve_is_master` is an identity comparison only; it is **not** complete master validation. Other associations, natural parameter rates/offsets, curved/periodic loci and general trims remain unqualified. The report is a standalone scoped result, not an automatic promotion of the native body's full STEP-validation status or a solver verification token.
+
+Actual-bracket tests certify **148 finite plane/line associations at unchanged 1e-7 mm tolerance**. Fresh metre-normalized context data also passes without changing physical tolerance. A displaced p-curve, contradictory source edge sense and stale contexts/references refuse. The three earlier plane-map groups remain passing; no assertion or resource limit was relaxed. Targeted six-test runner time was 0.03 s, not a standalone performance/peak-memory benchmark.
+
+[Combined source verification](issue-46-phase-40-verification.json) covers Phases 39–40 and existing curve/surface/STEP/solver bridges. No new dependency, hosted workflow dispatch, production native strategy or OCCT retirement. Next: source cylindrical parameter semantics and remaining primitive/curved p-curve loci, then whole-model/master integration with aggregate budgets, general trim/body gates and the remaining meshing roadmap.
+
+Final combined source checks: **145 CAD-enabled / 128 feature-off tests and application lib/tests compilation pass**, zero failures/ignored tests.

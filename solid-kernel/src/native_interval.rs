@@ -89,8 +89,21 @@ impl Div for Interval {
         if b.lo <= 0. && b.hi >= 0. {
             return Self::whole();
         }
-        let reciprocal = Self::rounded(1. / b.hi, 1. / b.lo);
-        self * reciprocal
+        // Divide endpoints directly: reciprocal-first overflows for a tiny
+        // nonzero denominator even when every quotient is representable.
+        let q = [
+            self.lo / b.lo,
+            self.lo / b.hi,
+            self.hi / b.lo,
+            self.hi / b.hi,
+        ];
+        if q.iter().any(|x| x.is_nan()) {
+            return Self::whole();
+        }
+        Self::rounded(
+            q.into_iter().fold(f64::INFINITY, f64::min),
+            q.into_iter().fold(f64::NEG_INFINITY, f64::max),
+        )
     }
 }
 #[cfg(test)]
@@ -99,6 +112,9 @@ mod tests {
     #[test]
     fn bounds_keep_roundoff_underflow_and_zero_denominators_explicit() {
         let one = Interval::point(1.);
+        let tiny_ratio = Interval::point(1e-310) / Interval::point(1e-310);
+        assert!(tiny_ratio.finite() && tiny_ratio.lo <= 1. && tiny_ratio.hi >= 1.);
+
         let tiny = Interval::point(f64::from_bits(1));
         let sum = one + tiny;
         assert!(sum.lo <= 1. && sum.hi > 1.);

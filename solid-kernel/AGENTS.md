@@ -110,3 +110,9 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - [Phase 36 finite planar bilinear spline faces](../docs/issue-46-phase-36.md): exact convex/coplanar reduction and conservative 3D trim containment; p-curve agreement remains open.
 
 - [Phase 37 finite active spline domains](../docs/issue-46-phase-37.md): explicit extended knots, evaluated endpoints and active-span sampling/distance; no inferred periodic wrapping.
+
+- [Phase 38 source p-curve declarations](../docs/issue-46-phase-38.md): shared spline decoding, explicit raw parameter space/master choices and all-bracket declaration coverage; 3D agreement remains open.
+
+- [Phase 39 source-plane interval maps](../docs/issue-46-phase-39.md): exact-source units/bounds and scoped agreement evidence.
+
+- [Phase 40 finite plane/line locus agreement](../docs/issue-46-phase-40.md): exact-source units/bounds and scoped agreement evidence.
