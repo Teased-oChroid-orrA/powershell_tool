@@ -15,7 +15,7 @@ fn main() {
 }
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
-    let usage = "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface] [--pcurve-audit] [--finite-arcs] [--repair-orientation] [--plc] [--conform [--conform-max-steiner N] [--conform-missing-only] [--conform-radius-edge B] [--conform-reconnect]] [--star-seed X,Y,Z] [--trial-kernel] (kernel coordinates in mm)";
+    let usage = "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface] [--pcurve-audit] [--finite-arcs] [--repair-orientation] [--plc] [--clean-shell] [--conform [--conform-max-steiner N] [--conform-missing-only] [--conform-radius-edge B] [--conform-reconnect]] [--star-seed X,Y,Z] [--trial-kernel] (kernel coordinates in mm)";
     let path = args.next().ok_or(usage)?;
     if path == "--help" {
         println!("{usage}");
@@ -28,6 +28,7 @@ fn run() -> Result<(), String> {
     let mut conform_missing_only = false;
     let mut conform_radius_edge = None;
     let mut conform_reconnect = false;
+    let mut clean_shell = false;
     let mut kernel = None;
     let mut trial_kernel = false;
     let mut mode = 0;
@@ -50,6 +51,8 @@ fn run() -> Result<(), String> {
             mode = mode.max(2);
         } else if flag == "--conform-missing-only" {
             conform_missing_only = true;
+        } else if flag == "--clean-shell" {
+            clean_shell = true;
         } else if flag == "--conform-reconnect" {
             conform_reconnect = true;
         } else if flag == "--conform-radius-edge" {
@@ -304,9 +307,33 @@ fn run() -> Result<(), String> {
                 );
                 if conform_requested {
                     use fea_core::meshing::compatibility as registry;
+                    let (shell_vertices, shell_facets) = if clean_shell {
+                        match solid_kernel::shell_patch::dissolve_flat(
+                            plc.vertices(),
+                            plc.facets(),
+                            Default::default(),
+                        ) {
+                            Ok(c) => {
+                                println!("Flat-patch cleanup: {:?}", c.report);
+                                for (a, f, p) in solid_kernel::shell_patch::worst_triangles(&c.vertices, &c.facets, 4) {
+                                    println!("  worst after cleanup: {a:.3e} deg, facet {f:?}, points {p:?}");
+                                }
+                                for (a, f, p) in solid_kernel::shell_patch::worst_triangles(plc.vertices(), plc.facets(), 4) {
+                                    println!("  worst before cleanup: {a:.3e} deg, facet {f:?}, points {p:?}");
+                                }
+                                (c.vertices, c.facets)
+                            }
+                            Err(e) => {
+                                println!("Flat-patch cleanup refused ({e}); using the sampled shell as is.");
+                                (plc.vertices().to_vec(), plc.facets().to_vec())
+                            }
+                        }
+                    } else {
+                        (plc.vertices().to_vec(), plc.facets().to_vec())
+                    };
                     let angle = solid_kernel::plc_conform::min_shell_angle_deg(
-                        plc.vertices(),
-                        plc.facets(),
+                        &shell_vertices,
+                        &shell_facets,
                     );
                     let verdict = registry::check(
                         &registry::Request {
@@ -328,8 +355,8 @@ fn run() -> Result<(), String> {
                     let started = std::time::Instant::now();
                     let mut last = (usize::MAX, 0);
                     let mesh = solid_kernel::plc_conform::conform(
-                        plc.vertices(),
-                        plc.facets(),
+                        &shell_vertices,
+                        &shell_facets,
                         solid_kernel::plc_conform::Options {
                             max_steiner: conform_max_steiner,
                             protect_encroached: !conform_missing_only,
