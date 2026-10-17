@@ -2,8 +2,8 @@
   "epic": 46,
   "epic_complete": false,
   "branch": "feature/native-cad-spline-pcurve-bounds",
-  "pull_request": null,
-  "pull_request_state": "pending creation",
+  "pull_request": 69,
+  "pull_request_state": "draft",
   "main": "43d8da95d12046c783ee5e29dad8ea25c82f9d37",
   "merged_prs": [
     65,
