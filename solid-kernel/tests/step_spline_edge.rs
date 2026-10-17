@@ -205,7 +205,8 @@ fn reversed_curve_orientation_is_explicit_and_wrong_endpoint_or_interior_trims_r
         .collect::<String>();
     let end = interior.rfind("ENDSEC;").unwrap();
     interior.insert_str(end, &records);
-    let interior = inventory(&interior, Limits::default()).unwrap();
+    let interior_text = interior;
+    let interior = inventory(&interior_text, Limits::default()).unwrap();
     let interior_context = BodyContext::read(&interior).unwrap();
     assert!(step_spline_edge::sample(
         &interior_context,
@@ -217,6 +218,111 @@ fn reversed_curve_orientation_is_explicit_and_wrong_endpoint_or_interior_trims_r
     .unwrap_err()
     .detail
     .contains("endpoint agreement"));
+    // Explicit finite parameters now admit precisely the source-vertex portion,
+    // while the unchanged full-domain path above still refuses it.
+    let interval = [10. + 20. / 3., 10. + 40. / 3.];
+    let trimmed = step_spline_edge::sample_interval(
+        &interior_context,
+        &interior,
+        interior.entity_reference(edge_id).unwrap(),
+        interval,
+        Options::default(),
+        |_| true,
+    )
+    .unwrap();
+    assert_eq!(trimmed.samples().parameters(), &interval);
+    assert_eq!(trimmed.same_sense(), edge.same_sense);
+    assert!(trimmed
+        .endpoint_error_bounds_mm()
+        .iter()
+        .all(|e| *e <= 1e-7));
+    for (p, v) in trimmed
+        .points_in_edge_order()
+        .zip(trimmed.source_endpoints_mm())
+    {
+        assert!(p.iter().zip(v).all(|(a, b)| (a - b).abs() <= 1e-7));
+    }
+    let assigned = interior
+        .length_contexts()
+        .unwrap()
+        .into_iter()
+        .find(|c| c.context == interior_context.length_context().entity)
+        .unwrap();
+    let unit = &interior.entities()[&assigned.unit];
+    let metres_text = replace(
+        &interior_text,
+        unit.offset,
+        &format!(
+            "#{}=(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT($,.METRE.));",
+            unit.id
+        ),
+    );
+    let metres = inventory(&metres_text, Limits::default()).unwrap();
+    let metres_context = BodyContext::read(&metres).unwrap();
+    let converted = step_spline_edge::sample_interval(
+        &metres_context,
+        &metres,
+        metres.entity_reference(edge_id).unwrap(),
+        interval,
+        Options::default(),
+        |_| true,
+    )
+    .unwrap();
+    assert_eq!(
+        converted.samples().parameters(),
+        trimmed.samples().parameters()
+    );
+    for (a, b) in converted
+        .source_endpoints_mm()
+        .into_iter()
+        .zip(trimmed.source_endpoints_mm())
+    {
+        assert_eq!(a, b.map(|x| x * 1000.));
+    }
+    assert!(step_spline_edge::sample_interval(
+        &interior_context,
+        &metres,
+        metres.entity_reference(edge_id).unwrap(),
+        interval,
+        Options::default(),
+        |_| true
+    )
+    .is_err());
+    assert!(step_spline_edge::sample_interval(
+        &interior_context,
+        &interior,
+        interior.entity_reference(edge_id).unwrap(),
+        [interval[0] + 0.1, interval[1]],
+        Options::default(),
+        |_| true,
+    )
+    .unwrap_err()
+    .detail
+    .contains("endpoint agreement"));
+    for invalid in [[10., 31.], [20., 20.], [30., 10.], [f64::NAN, 20.]] {
+        assert!(step_spline_edge::sample_interval(
+            &interior_context,
+            &interior,
+            interior.entity_reference(edge_id).unwrap(),
+            invalid,
+            Options::default(),
+            |_| true,
+        )
+        .is_err());
+    }
+    assert_eq!(
+        step_spline_edge::sample_interval(
+            &interior_context,
+            &interior,
+            interior.entity_reference(edge_id).unwrap(),
+            interval,
+            Options::default(),
+            |_| false,
+        )
+        .unwrap_err()
+        .kind,
+        solid_kernel::step::ErrorKind::Cancelled
+    );
     // Reusing the start control twice cannot agree with the distinct end vertex.
     let c = &data.entities()[&curve_id];
     let cp = context.body().vertices[&edge.start].point;

@@ -184,6 +184,18 @@ impl Quadratic {
         ])
     }
 }
+fn split_factor(domain: [f64; 2], parameter: f64) -> Result<Interval, Error> {
+    let factor = ((Interval::point(parameter) - Interval::point(domain[0]))
+        / (Interval::point(domain[1]) - Interval::point(domain[0])))
+    .intersect(Interval::new(0., 1.));
+    if !factor.finite() {
+        return Err(fail(
+            ErrorKind::Geometry,
+            "unresolved Bezier parameter split",
+        ));
+    }
+    Ok(factor)
+}
 #[derive(Clone, Copy)]
 struct Task {
     domain: [f64; 2],
@@ -197,6 +209,18 @@ struct Task {
 /// not a predetermined percentage. Returning false cancels, including at commit.
 pub fn sample(
     curve: &NurbsCurve,
+    opt: Options,
+    progress: impl FnMut(Progress) -> bool,
+) -> Result<SampledCurve, Error> {
+    sample_interval(curve, curve.domain(), opt, progress)
+}
+/// Sample an explicit nonempty increasing subinterval of the active domain.
+/// Endpoints and crossed knots are retained without snapping, extrapolation or
+/// periodic wrapping. This does not infer STEP edge trims or their orientation.
+/// Work budgets and error bounds have the same semantics as `sample`.
+pub fn sample_interval(
+    curve: &NurbsCurve,
+    interval: [f64; 2],
     opt: Options,
     mut progress: impl FnMut(Progress) -> bool,
 ) -> Result<SampledCurve, Error> {
@@ -214,9 +238,23 @@ pub fn sample(
     }) {
         return Err(cancelled());
     }
+    if interval.iter().any(|x| !x.is_finite())
+        || interval[0] >= interval[1]
+        || interval[0] < curve.domain()[0]
+        || interval[1] > curve.domain()[1]
+    {
+        return Err(fail(
+            ErrorKind::Geometry,
+            "require nonempty finite sampling interval inside active domain",
+        ));
+    }
     let mut spans = Vec::new();
     for (i, k) in curve.knots().windows(2).enumerate() {
         if k[0] == k[1] || k[0] < curve.domain()[0] || k[1] > curve.domain()[1] {
+            continue;
+        }
+        let domain = [k[0].max(interval[0]), k[1].min(interval[1])];
+        if domain[0] >= domain[1] {
             continue;
         }
         if spans.len() >= opt.max_segments {
@@ -225,7 +263,17 @@ pub fn sample(
                 "spline sampling segment budget exceeded",
             ));
         }
-        spans.push(([k[0], k[1]], Quadratic::span(curve, i)));
+        let mut quadratic = Quadratic::span(curve, i);
+        if let Some(mut q) = quadratic {
+            if domain[0] != k[0] {
+                q = q.split(split_factor([k[0], k[1]], domain[0])?)?[1];
+            }
+            if domain[1] != k[1] {
+                q = q.split(split_factor([domain[0], k[1]], domain[1])?)?[0];
+            }
+            quadratic = Some(q);
+        }
+        spans.push((domain, quadratic));
     }
     let mut stack = Vec::new();
     for (domain, quadratic) in spans.into_iter().rev() {
@@ -237,8 +285,8 @@ pub fn sample(
         });
     }
     let mut result = SampledCurve {
-        parameters: vec![curve.domain()[0]],
-        points: vec![curve.evaluate(curve.domain()[0])?],
+        parameters: vec![interval[0]],
+        points: vec![curve.evaluate(interval[0])?],
         error_bounds: Vec::new(),
     };
     let mut enclosures = 0;
@@ -309,16 +357,7 @@ pub fn sample(
                 // The representable midpoint need not be the exact real 1/2
                 // split (notably on tightly spaced knots). Enclose its actual
                 // affine factor so both child nets match their stored domains.
-                let factor = ((Interval::point(middle) - Interval::point(task.domain[0]))
-                    / (Interval::point(task.domain[1]) - Interval::point(task.domain[0])))
-                .intersect(Interval::new(0., 1.));
-                if !factor.finite() {
-                    return Err(fail(
-                        ErrorKind::Geometry,
-                        "unresolved Bezier parameter split",
-                    ));
-                }
-                q.split(factor)?.map(Some)
+                q.split(split_factor(task.domain, middle)?)?.map(Some)
             } else {
                 [None, None]
             };
@@ -457,6 +496,161 @@ mod tests {
                 }
             }
         }
+    }
+    #[test]
+    fn finite_quadratic_interval_retains_exact_endpoints_and_bounds() {
+        let c = quarter();
+        for interval in [[0.1, 0.9], [0., 0.35], [0.7, 1.]] {
+            let s = sample_interval(
+                &c,
+                interval,
+                Options {
+                    max_segments: 64,
+                    ..Options::default()
+                },
+                |_| true,
+            )
+            .unwrap();
+            assert_eq!(s.parameters()[0], interval[0]);
+            assert_eq!(*s.parameters().last().unwrap(), interval[1]);
+            assert_eq!(s.points()[0], c.evaluate(interval[0]).unwrap());
+            assert_eq!(
+                *s.points().last().unwrap(),
+                c.evaluate(interval[1]).unwrap()
+            );
+            for i in 0..s.error_bounds().len() {
+                assert!(s.error_bounds()[i] <= 0.001);
+                for j in 0..=32 {
+                    let t = s.parameters()[i]
+                        + (s.parameters()[i + 1] - s.parameters()[i]) * j as f64 / 32.;
+                    assert!(
+                        point_segment(c.evaluate(t).unwrap(), s.points()[i], s.points()[i + 1])
+                            <= s.error_bounds()[i]
+                    );
+                    let f = j as f64 / 32.;
+                    let q: V3 = std::array::from_fn(|a| {
+                        s.points()[i][a] * (1. - f) + s.points()[i + 1][a] * f
+                    });
+                    assert!((1. - q[0].hypot(q[1])).abs() <= s.error_bounds()[i]);
+                }
+            }
+        }
+        let a = sample(&c, Options::default(), |_| true).unwrap();
+        let b = sample_interval(&c, c.domain(), Options::default(), |_| true).unwrap();
+        assert_eq!(a.parameters(), b.parameters());
+        assert_eq!(a.points(), b.points());
+        assert_eq!(a.error_bounds(), b.error_bounds());
+    }
+    #[test]
+    fn finite_interval_preserves_crossed_c0_knots_and_general_curve_fallback() {
+        let c = NurbsCurve::new_clamped(
+            1,
+            vec![0., 0., 0.5, 1., 1.],
+            vec![[0., 0., 0.], [2., 3., 1.], [2., 4., 5.]],
+            vec![1.; 3],
+            Limits::default(),
+        )
+        .unwrap();
+        let s = sample_interval(&c, [0.25, 0.75], Options::default(), |_| true).unwrap();
+        assert_eq!(s.parameters(), &[0.25, 0.5, 0.75]);
+        assert_eq!(s.points(), &[[1., 1.5, 0.5], [2., 3., 1.], [2., 3.5, 3.]]);
+        assert_eq!(
+            sample_interval(
+                &c,
+                [0.25, 0.75],
+                Options {
+                    max_segments: 1,
+                    ..Options::default()
+                },
+                |_| true
+            )
+            .unwrap_err()
+            .kind,
+            ErrorKind::Limit
+        );
+        let c = NurbsCurve::new_clamped(
+            3,
+            vec![0., 0., 0., 0., 1., 1., 1., 1.],
+            vec![[0., 0., 0.], [0., 10., 0.], [1., -10., 0.], [1., 0., 0.]],
+            vec![1.; 4],
+            Limits::default(),
+        )
+        .unwrap();
+        let s = sample_interval(
+            &c,
+            [0.2, 0.8],
+            Options {
+                tolerance: 0.01,
+                ..Options::default()
+            },
+            |_| true,
+        )
+        .unwrap();
+        for i in 0..s.error_bounds().len() {
+            for j in 0..=8 {
+                let t =
+                    s.parameters()[i] + (s.parameters()[i + 1] - s.parameters()[i]) * j as f64 / 8.;
+                let p = [
+                    3. * t * t - 2. * t * t * t,
+                    30. * t * (1. - t) * (1. - 2. * t),
+                    0.,
+                ];
+                assert!(point_segment(p, s.points()[i], s.points()[i + 1]) <= s.error_bounds()[i]);
+            }
+        }
+    }
+    #[test]
+    fn finite_intervals_reject_invalid_ranges_and_cancel_atomically() {
+        let c = quarter();
+        for interval in [
+            [0.5, 0.5],
+            [0.8, 0.2],
+            [-0.1, 0.5],
+            [0.5, 1.1],
+            [f64::NAN, 0.5],
+            [0., f64::INFINITY],
+        ] {
+            assert_eq!(
+                sample_interval(&c, interval, Options::default(), |_| true)
+                    .unwrap_err()
+                    .kind,
+                ErrorKind::Geometry
+            );
+        }
+        for opt in [
+            Options {
+                max_segments: 0,
+                ..Options::default()
+            },
+            Options {
+                max_depth: 0,
+                ..Options::default()
+            },
+            Options {
+                max_enclosures: 2,
+                ..Options::default()
+            },
+        ] {
+            assert_eq!(
+                sample_interval(&c, [0.1, 0.9], opt, |_| true)
+                    .unwrap_err()
+                    .kind,
+                ErrorKind::Limit
+            );
+        }
+        assert_eq!(
+            sample_interval(&c, [0.1, 0.9], Options::default(), |_| false)
+                .unwrap_err()
+                .kind,
+            ErrorKind::Cancelled
+        );
+        assert_eq!(
+            sample_interval(&c, [0.1, 0.9], Options::default(), |p| p.enclosures == 0
+                || p.pending_intervals != 0)
+            .unwrap_err()
+            .kind,
+            ErrorKind::Cancelled
+        );
     }
     #[test]
     fn straight_span_and_c0_knot_are_retained_without_uniform_oversampling() {
