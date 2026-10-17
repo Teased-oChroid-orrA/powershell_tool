@@ -8,6 +8,6 @@ Closed edges (one topological vertex, or identical candidates) report `Proposal:
 
 Not claimed: parameter uniqueness, correct oriented arc among the two arcs of a closed circle trace, winding/wrap, master semantics, trim or body validity.
 
-Evidence (macOS, feature-off, unchanged tolerances): all 15 planar spline p-curves of the bracket — 10 open edges give a proposal whose recheck passes, 5 closed edges are `Coincident` (matches the Phase 53 probe); cumulative-limit, recheck-limit, cancellation (start/mid/final), invalid/out-of-domain interval and stale-source refusals pass. `solid-kernel --no-default-features`: 170 passed, 0 failed, 0 ignored; `cargo check -p app-tui --lib --tests` passes. CAD-enabled (OCCT) qualification was not run on this host and is still required before calling the increment fully qualified.
+Evidence (macOS, feature-off, unchanged tolerances): all 15 planar spline p-curves of the bracket — 10 open edges give a proposal whose recheck passes, 5 closed edges are `Coincident` (matches the Phase 53 probe); cumulative-limit, recheck-limit, cancellation (start/mid/final), invalid/out-of-domain interval and stale-source refusals pass. `solid-kernel --no-default-features`: 170 passed, 0 failed, 0 ignored; `cargo check -p app-tui --lib --tests` passes. CAD-enabled (`--features occt`, macOS arm64): 187 passed, 0 failed, 0 ignored.
 
 Next: choose and prove the oriented finite arc (sense/wrap) from candidates, then master/trim/body gates, constrained tetrahedralization and the remaining roadmap.

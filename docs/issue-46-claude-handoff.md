@@ -573,4 +573,4 @@ Phase 53 full qualification now passes at `de5ceed`: 185 CAD-enabled / 168 featu
 
 ## 2026-10-17 — Phase 54 candidate discovery (in review)
 
-PR #81 merged at `58c054c`. Branch `feature/native-cad-pcurve-candidates` adds `step_pcurve_candidates::discover` ([Phase 54](issue-46-phase-54.md)): bounded per-vertex parameter search plus endpoint recheck; closed edges refuse to form an arc. Feature-off 170/0/0 and app compile pass on macOS; CAD-enabled OCCT run still outstanding (no OCCT on this host). Next: oriented finite arc/sense/wrap selection, then master/trim/body.
+PR #81 merged at `58c054c`. Branch `feature/native-cad-pcurve-candidates` adds `step_pcurve_candidates::discover` ([Phase 54](issue-46-phase-54.md)): bounded per-vertex parameter search plus endpoint recheck; closed edges refuse to form an arc. Feature-off 170/0/0 and app compile pass on macOS; CAD-enabled run also passes: 187/0/0. Next: oriented finite arc/sense/wrap selection, then master/trim/body.

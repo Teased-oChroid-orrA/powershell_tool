@@ -43,7 +43,7 @@
     "scope": "Phase 54 bounded p-curve endpoint candidate discovery (in review as a draft PR); then oriented finite arc/sense/wrap/master/trim/body and remaining roadmap",
     "status": "in_progress",
     "branch": "feature/native-cad-pcurve-candidates",
-    "qualification": "feature-off 170 passed/0 failed/0 ignored and app-tui compile verified on macOS; CAD-enabled (OCCT) run not yet performed"
+    "qualification": "CAD-enabled 187 passed, feature-off 170 passed, 0 failed/ignored; app-tui compile verified (macOS)"
   },
   "base_main_head": "9cdefdcbb254328489de752295d8bd4454e5f2b4",
   "completion_checklist": "issue-46-completion-checklist.md",
