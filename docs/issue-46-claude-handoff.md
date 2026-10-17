@@ -574,3 +574,7 @@ Phase 53 full qualification now passes at `de5ceed`: 185 CAD-enabled / 168 featu
 ## 2026-10-17 — Phase 54 candidate discovery (in review)
 
 PR #81 merged at `58c054c`. Branch `feature/native-cad-pcurve-candidates` adds `step_pcurve_candidates::discover` ([Phase 54](issue-46-phase-54.md)): bounded per-vertex parameter search plus endpoint recheck; closed edges refuse to form an arc. Feature-off 170/0/0 and app compile pass on macOS; CAD-enabled run also passes: 187/0/0. Next: oriented finite arc/sense/wrap selection, then master/trim/body.
+
+## 2026-10-17 — Phase 55 oriented arc selection
+
+Branch `feature/native-cad-pcurve-arc` (stacked on PR #82) adds `step_pcurve_arc::select` ([Phase 55](issue-46-phase-55.md)): certified witness tests choose the interior or wrapping arc from `same_sense`, independently checked on all 10 open bracket spline edges and their sense-flipped variants. 190 CAD-enabled / 173 feature-off pass. The auto-mode classifier denied `gh pr merge` for #82; merging is left to the user. Next: master/trim-loop/body validation using the selected arcs.
