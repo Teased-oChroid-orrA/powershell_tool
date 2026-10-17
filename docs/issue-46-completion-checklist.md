@@ -29,6 +29,7 @@ Checked lines are delivered scoped increments, with evidence committed in this r
 - [ ] #52: General constrained segment/facet recovery, cavities/regions/components and constrained refinement with boundary conformity.
 - [x] #53: Radius-edge Delaunay refinement of recovered cells for well-conditioned PLCs, with exact volume/boundary checks ([Phase 59](issue-46-phase-59.md)); slivers and sampled surface shells remain open.
 - [x] #53: Interior vertex smoothing alternated with flips raises the worst radius ratio of random clouds ~20-30x over flips alone ([Phase 65](issue-46-phase-65.md)); boundary slivers, Steiner exudation and sampled shells remain open.
+- [x] #53: Planar boundary-vertex sliding extends the smoothing to boundary-adjacent slivers on flat faces ([Phase 66](issue-46-phase-66.md)); curved shells, edge sliding and Steiner exudation remain open.
 - [ ] #53: General sliver handling/flips/smoothing/remeshing and representative solver-conditioning/accuracy/cost acceptance.
 - [x] #54/#64: Registry v2 covers the native constrained strategy with an input-angle gate and stable rejection codes ([Phase 61](issue-46-phase-61.md)).
 - [ ] #54: Full deterministic strategy generation/selection and end-to-end qualification beyond the early registry pilot.
