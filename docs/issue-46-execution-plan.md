@@ -91,3 +91,5 @@ PR #67 merged at 75e4faa; old branch deleted. Current execution: `feature/native
 Current execution pointer: [issue-46-current.json](issue-46-current.json). Phases 39–40 qualify source-plane transforms and 148 finite plane/line p-curve loci at 1e-7 mm; 145 CAD-enabled / 128 feature-off tests plus app compilation pass. Other p-curve/master/general CAD/PLC/later gates remain open. PR #68 stays draft on `feature/native-cad-pcurve-validation`; completed PRs #65/#66/#67 are merged.
 
 - [Phase 41: whole-interval planar spline p-curve bounds](issue-46-phase-41.md): source/budget guards and explicit unit qualification.
+
+- [Phase 42: bounded source cylindrical parameters](issue-46-phase-42.md): explicit radian/length semantics and shared source placement; trim/master gates remain open.

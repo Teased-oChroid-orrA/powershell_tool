@@ -494,3 +494,7 @@ Final combined source checks: **145 CAD-enabled / 128 feature-off tests and appl
 ## Phase 41 continuation — 2026-10-17
 
 PR #68 merged at `43d8da9`, old branch deleted. Source `0f94c206d4f21cc0be4863eb2e937275cab283cb` on `feature/native-cad-spline-pcurve-bounds` encloses all 15 source-plane spline p-curves over intervals; [Phase 41](issue-46-phase-41.md) and its verification record exact scope. 147 CAD-enabled / 130 feature-off pass; app compile passes. No CI dispatch. Full curved/master/trim/body, general PLC and later roadmap remain open; OCCT remains production. Changed-file formatting passed; pre-existing workspace formatting differences were not rewritten.
+
+## Phase 42 continuation — 2026-10-17
+
+PR #69 merged at `f0a72c9`, branch deleted. Source `7df769830f7c8f69f7517fddb83d5ad76059a804` qualifies source cylinder maps on `feature/native-cad-cylinder-parameter-bounds`: 151 CAD-enabled / 134 feature-off tests and app compile pass. See [Phase 42](issue-46-phase-42.md) for bounded angular domain, unit refusals, source-frame reuse and corrected test-fixture failure. No current Windows/macOS run. Epic #46 was found incorrectly closed and reopened; all child gates remain open. Continue curved p-curve/carrier/master/trim, full spline body and general meshing gates. No hosted CI dispatched.

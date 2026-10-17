@@ -118,3 +118,5 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - [Phase 40 finite plane/line locus agreement](../docs/issue-46-phase-40.md): exact-source units/bounds and scoped agreement evidence.
 
 - [Phase 41 whole-interval planar spline p-curve bounds](../docs/issue-46-phase-41.md): exact-source and budget guards; no master/trim certificate.
+
+- [Phase 42 source cylinder parameter bounds](../docs/issue-46-phase-42.md): explicit radians/lengths, bounded Taylor arithmetic and shared source-frame enclosure.
