@@ -23,6 +23,10 @@ pub struct SmoothOptions {
     pub min_gain: f64,
     /// Vertices that must not move (for example sampled-surface or recovered-PLC vertices).
     pub protect: BTreeSet<usize>,
+    /// Also slide a boundary vertex whose boundary faces are all coplanar within its plane (the geometry is kept to
+    /// round-off). Vertices on an edge or corner of the surface never move. Off by default: boundary vertices stay
+    /// bit-identical.
+    pub slide_planar_boundary: bool,
 }
 
 impl Default for SmoothOptions {
@@ -31,6 +35,7 @@ impl Default for SmoothOptions {
             max_passes: 20,
             min_gain: 1e-6,
             protect: BTreeSet::new(),
+            slide_planar_boundary: false,
         }
     }
 }
@@ -80,7 +85,18 @@ pub fn smooth_vertices(
     let cells = top.cells();
     let mut points: Vec<Point> = top.points().to_vec();
     let mut fixed: BTreeSet<usize> = options.protect.clone();
-    fixed.extend(top.boundary().iter().flatten().copied());
+    let planes = if options.slide_planar_boundary {
+        planar_boundary_normals(top)
+    } else {
+        BTreeMap::new()
+    };
+    fixed.extend(
+        top.boundary()
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|v| !planes.contains_key(v)),
+    );
     let mut incident: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     let mut neighbours: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
     for (i, c) in cells.iter().enumerate() {
@@ -114,9 +130,15 @@ pub fn smooth_vertices(
             let before = worst(&points, cells, ids);
             let sign_before = signs(&points, cells, ids)?;
             let old = points[v];
-            let mean: Point = std::array::from_fn(|k| {
+            let mut mean: Point = std::array::from_fn(|k| {
                 ring.iter().map(|&w| points[w][k]).sum::<f64>() / ring.len() as f64
             });
+            if let Some(n) = planes.get(&v) {
+                let d: f64 = (0..3).map(|k| (mean[k] - old[k]) * n[k]).sum();
+                for k in 0..3 {
+                    mean[k] -= d * n[k];
+                }
+            }
             let mut best: Option<(f64, Point)> = None;
             for step in [1.0, 0.5, 0.25] {
                 let cand: Point = std::array::from_fn(|k| old[k] + step * (mean[k] - old[k]));
@@ -168,6 +190,44 @@ pub fn smooth_vertices(
     }
     report.min_radius_ratio_after = worst(result.points(), result.cells(), &all);
     Ok((result, report))
+}
+
+/// Unit normal of every boundary vertex all of whose boundary faces lie in one plane (relative tolerance 1e-9).
+fn planar_boundary_normals(top: &TetTopology) -> BTreeMap<usize, Point> {
+    let pts = top.points();
+    let mut by_vertex: BTreeMap<usize, Vec<Point>> = BTreeMap::new();
+    for f in top.boundary() {
+        let [a, b, c] = f.map(|i| pts[i]);
+        let u: Point = std::array::from_fn(|k| b[k] - a[k]);
+        let w: Point = std::array::from_fn(|k| c[k] - a[k]);
+        let n = [
+            u[1] * w[2] - u[2] * w[1],
+            u[2] * w[0] - u[0] * w[2],
+            u[0] * w[1] - u[1] * w[0],
+        ];
+        let len = n.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if len > 0. {
+            let n = n.map(|x| x / len);
+            for &v in f {
+                by_vertex.entry(v).or_default().push(n);
+            }
+        } else {
+            for &v in f {
+                by_vertex.entry(v).or_default().push([f64::NAN; 3]);
+            }
+        }
+    }
+    by_vertex
+        .into_iter()
+        .filter_map(|(v, ns)| {
+            let n0 = ns[0];
+            let ok = ns.iter().all(|n| {
+                let dot: f64 = (0..3).map(|k| n[k] * n0[k]).sum();
+                dot.is_finite() && (1. - dot.abs()) < 1e-9
+            });
+            ok.then_some((v, n0))
+        })
+        .collect()
 }
 
 fn sorted3(mut f: [usize; 3]) -> [usize; 3] {
@@ -290,6 +350,28 @@ mod tests {
         p
     }
 
+    /// [`cloud`] plus `per_face` random points on each of the six faces of the unit cube (exactly 0 or 1 in one coordinate).
+    fn cloud_with_faces(n: usize, per_face: usize, seed: u64) -> Vec<Point> {
+        let mut p = cloud(n, seed);
+        let mut s = seed ^ 0x9e3779b97f4a7c15;
+        let mut next = || {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            0.05 + 0.9 * (((s >> 33) as f64) / (1u64 << 31) as f64)
+        };
+        for axis in 0..3 {
+            for side in [0., 1.] {
+                for _ in 0..per_face {
+                    let mut q = [next(), next(), next()];
+                    q[axis] = side;
+                    p.push(q);
+                }
+            }
+        }
+        p
+    }
+
     fn boundary_set(t: &TetTopology) -> BTreeSet<[usize; 3]> {
         t.boundary().iter().map(|f| sorted3(*f)).collect()
     }
@@ -318,6 +400,48 @@ mod tests {
             improved > 0,
             "random clouds have interior slivers that moving a vertex fixes"
         );
+    }
+
+    #[test]
+    fn planar_boundary_sliding_improves_further_and_keeps_the_surface() {
+        let mut better = 0;
+        for seed in 1..=6 {
+            let top = tetrahedralize(&cloud_with_faces(60, 6, seed), Limits::default()).unwrap();
+            let (inner, ri) = smooth_vertices(&top, &SmoothOptions::default()).unwrap();
+            let opt = SmoothOptions {
+                slide_planar_boundary: true,
+                ..SmoothOptions::default()
+            };
+            let (out, r) = smooth_vertices(&top, &opt).unwrap();
+            assert!(r.min_radius_ratio_after >= r.min_radius_ratio_before);
+            assert_eq!(boundary_set(&out), boundary_set(&top));
+            assert_eq!(out.cells(), top.cells());
+            let mut slid = 0;
+            for v in top.boundary().iter().flatten() {
+                let (a, b) = (top.points()[*v], out.points()[*v]);
+                if a != b {
+                    slid += 1;
+                    // stays on its cube face: at least one coordinate is exactly 0 or 1 and unchanged
+                    assert!((0..3).any(|k| (a[k] == 0. || a[k] == 1.) && a[k] == b[k]));
+                }
+                // cube corners and edges never move
+                let on = (0..3).filter(|&k| a[k] == 0. || a[k] == 1.).count();
+                if on >= 2 {
+                    assert_eq!(a, b, "edge or corner vertex moved");
+                }
+            }
+            assert!(slid > 0, "seed {seed}: some face vertices slide");
+            assert!((volume(out.points(), out.cells()) - 1.).abs() < 1e-12);
+            if r.min_radius_ratio_after > ri.min_radius_ratio_after {
+                better += 1;
+            }
+            eprintln!(
+                "seed {seed}: interior-only {:.4}, with planar sliding {:.4} ({} boundary vertices slid)",
+                ri.min_radius_ratio_after, r.min_radius_ratio_after, slid
+            );
+            let _ = inner;
+        }
+        assert!(better > 0, "sliding frees boundary-adjacent slivers");
     }
 
     #[test]
