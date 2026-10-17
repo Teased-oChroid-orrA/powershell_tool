@@ -1,0 +1,63 @@
+{
+  "qualified_source_commit": "8ba34de2123bbffeeed8cdcaa8da3b1619a08ca9",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 166,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 149,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "cli_command": "cargo run -p solid-kernel --example step-inventory --no-default-features --locked --offline -j1 -- nema17-motor-bracket.step --pcurve-audit",
+  "cli_exit_code": 0,
+  "development_failures": [],
+  "environment_notes": [
+    "GNU /usr/bin/time unavailable (127); isolated Python resource child measurement used instead."
+  ],
+  "dataset_evidence": {
+    "associations": 228,
+    "finite_lines": 176,
+    "unsigned_primitive_circles": 37,
+    "closed_quadratic_circles": 15,
+    "spline_spans": 45,
+    "curve_controls": 105,
+    "tolerance_mm": 1e-07
+  },
+  "one_process_measurement": {
+    "command": [
+      "target/debug/examples/step-inventory",
+      "nema17-motor-bracket.step",
+      "--pcurve-audit"
+    ],
+    "exit_code": 0,
+    "wall_seconds": 0.009437718999834033,
+    "child_user_seconds": 0.006202,
+    "child_system_seconds": 0.003101,
+    "child_peak_rss_kib_linux": 9344,
+    "measurement": "isolated Python parent, only the CLI child; subprocess wall includes launch overhead",
+    "profile": "Cargo dev/unoptimized",
+    "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+    "scope": "one fixture/process; cache uncontrolled, not representative corpus or performance guarantee"
+  },
+  "read_only_orientation_probe": {
+    "natural_positive": 228,
+    "natural_negative": 0,
+    "natural_unresolved": 0,
+    "checked_pcurve_is_declared_master": 114,
+    "full_master_validation": false
+  },
+  "not_verified": [
+    "Finite arc/master/trim/body validation, single spline winding, general full spline import",
+    "General constrained meshing/quality/later gates; current Windows/macOS runtime"
+  ]
+}

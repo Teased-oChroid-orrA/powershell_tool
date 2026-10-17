@@ -15,19 +15,22 @@ fn main() {
 }
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
-    let usage = "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface] [--repair-orientation] [--plc] [--star-seed X,Y,Z] [--trial-kernel] (kernel coordinates in mm)";
+    let usage = "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface] [--pcurve-audit] [--repair-orientation] [--plc] [--star-seed X,Y,Z] [--trial-kernel] (kernel coordinates in mm)";
     let path = args.next().ok_or(usage)?;
     if path == "--help" {
         println!("{usage}");
         return Ok(());
     }
+    let mut pcurve_audit = false;
     let mut plc_requested = false;
     let mut kernel = None;
     let mut trial_kernel = false;
     let mut mode = 0;
     let mut repair_orientation = false;
     while let Some(flag) = args.next() {
-        if flag == "--analytic" {
+        if flag == "--pcurve-audit" {
+            pcurve_audit = true;
+        } else if flag == "--analytic" {
             mode = mode.max(1);
         } else if flag == "--surface" {
             mode = mode.max(2);
@@ -75,6 +78,36 @@ fn run() -> Result<(), String> {
         result.entities().len()
     );
     println!("Geometry, topology, units, healing and CAD import validity are not certified.");
+    if pcurve_audit {
+        let context =
+            solid_kernel::step_body::BodyContext::read(&result).map_err(|e| e.to_string())?;
+        let mut last = None;
+        let report =
+            solid_kernel::step_curve_audit::audit(&context, &result, Default::default(), |p| {
+                let status = (p.edge_uses_seen, p.associations_done, p.spline_spans_done);
+                if last != Some(status)
+                    && (if p.total_associations.is_none() {
+                        p.edge_uses_seen % 32 == 0
+                    } else {
+                        p.associations_done % 32 == 0
+                            || p.total_associations == Some(p.associations_done)
+                    })
+                {
+                    let total = p
+                        .total_associations
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| "?".into());
+                    eprintln!(
+                        "P-curve audit: {} edge uses seen, {} / {} associations, {} spline spans",
+                        p.edge_uses_seen, p.associations_done, total, p.spline_spans_done
+                    );
+                    last = Some(status);
+                }
+                true
+            })
+            .map_err(|e| e.to_string())?;
+        println!("Scoped p-curve locus audit: {} associations; {} spline spans. Finite arcs, master semantics, trims and body validity are not certified.",report.checks.len(),report.spline_spans);
+    }
     match result.length_contexts() {
         Ok(contexts) => {
             for c in contexts {

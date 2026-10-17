@@ -196,6 +196,20 @@ fn geometry(data: &Inventory, id: u64, limits: Limits) -> Result<ParametricCurve
         _ => Err(fail(e, "unsupported parameter curve geometry")),
     }
 }
+fn pcurve_header(e: &Entity) -> Result<(&str, u64, u64), Error> {
+    match args(e, "PCURVE")? {
+        [Value::String(name), Value::Ref(s), Value::Ref(r)] => Ok((name.as_str(), *s, *r)),
+        _ => Err(fail(e, "invalid PCURVE fields")),
+    }
+}
+pub(crate) fn basis_surface(
+    data: &Inventory,
+    reference: EntityReference,
+) -> Result<EntityReference, Error> {
+    let e = data.resolve_reference(reference)?;
+    let (_, surface, _) = pcurve_header(e)?;
+    Ok(data.entity_reference(surface).unwrap())
+}
 /// Preserve raw UV and knot values. Mapping to a plane/cylinder/spline surface
 /// must apply that surface's parameter semantics separately, never mm-scale UV.
 pub fn read_pcurve(
@@ -204,10 +218,7 @@ pub fn read_pcurve(
     limits: Limits,
 ) -> Result<PcurveDeclaration, Error> {
     let e = data.resolve_reference(reference)?;
-    let (name, surface, rep) = match args(e, "PCURVE")? {
-        [Value::String(name), Value::Ref(s), Value::Ref(r)] => (name, *s, *r),
-        _ => return Err(fail(e, "invalid PCURVE fields")),
-    };
+    let (name, surface, rep) = pcurve_header(e)?;
     let surface_entity = &data.entities()[&surface];
     if !surface_entity.components.iter().any(|c| {
         matches!(
@@ -250,7 +261,7 @@ pub fn read_pcurve(
         representation: data.entity_reference(rep).unwrap(),
         parameter_context: data.entity_reference(ctx).unwrap(),
         geometry_source: data.entity_reference(curve).unwrap(),
-        declared_name: name.clone(),
+        declared_name: name.to_owned(),
         geometry: geometry(data, curve, limits)?,
     })
 }

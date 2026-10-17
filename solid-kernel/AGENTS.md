@@ -126,3 +126,5 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - [Phase 44 shared curve agreement](../docs/issue-46-phase-44.md): finite line/circle carrier checks for planes and cylinders; raw direction ratios retain exact constant-coordinate admission.
 
 - [Phase 45 quadratic spline/circle bounds](../docs/issue-46-phase-45.md): Bernstein residual and optional closed monotone angular coverage; no single winding/simple trim/master/body certificate.
+
+- [Phase 46 bounded p-curve body diagnostics and CLI](../docs/issue-46-phase-46.md): cumulative work budgets and atomic progress/cancellation; no master/trim/body certificate.

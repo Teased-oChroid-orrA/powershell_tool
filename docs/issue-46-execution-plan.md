@@ -99,3 +99,5 @@ Current execution pointer: [issue-46-current.json](issue-46-current.json). Phase
 - [Phase 44 cylinder line/circle agreement](issue-46-phase-44.md): 28 generator and 24 circle carrier checks with shared numerical proofs.
 
 - [Phase 45 spline/circle bounds and optional coverage](issue-46-phase-45.md): 15 complete-span quadratic checks with explicit closure/winding limits.
+
+- [Phase 46 bounded body p-curve diagnostics](issue-46-phase-46.md): 228 scoped checks, aggregate budgets, progress, cancellation and runnable CLI.
