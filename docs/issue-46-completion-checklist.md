@@ -43,6 +43,7 @@ Checked lines are delivered scoped increments, with evidence committed in this r
 - [ ] #57: Verified spatial metric fields consumed by a mesher.
 - [x] #58: Metric-driven refinement by terminal-edge splitting and metric-quality flips, conforming and geometry-preserving, converging for isotropic and mild anisotropic fields ([Phase 63](issue-46-phase-63.md)); strong anisotropy, coarsening and curved-boundary projection remain open.
 - [x] #58: Metric-aware, size-preserving smoothing inside `metric_refine` lifts the worst cell ~28x at 10:1 anisotropy and improves metric-band conformity ([Phase 67](issue-46-phase-67.md)); coarsening/collapse, curved boundaries and AMR integration remain open.
+- [x] #58: Edge collapse (`tet_collapse`) coarsens interior vertices with exact orientation, quality-floor and length guards, wired into `metric_refine` ([Phase 68](issue-46-phase-68.md)); surface coarsening, curved boundaries and AMR integration remain open.
 - [ ] #58: Metric-driven anisotropic adaptation (unit-metric meshes at strong anisotropy).
 - [ ] #59: Mesh motion/ALE and consistent state/history transfer.
 - [ ] #60: Solver-aware cost models and advanced optimization.

@@ -15,6 +15,7 @@ pub mod partition;
 pub mod predictor;
 pub mod quality;
 pub mod smooth;
+pub mod tet_collapse;
 pub mod tet_flip;
 pub mod tet_smooth;
 pub mod tet_topology;
