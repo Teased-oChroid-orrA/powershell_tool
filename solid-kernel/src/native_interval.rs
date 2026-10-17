@@ -49,6 +49,39 @@ impl Interval {
             self.hi.sqrt().next_up(),
         )
     }
+    /// Taylor enclosures on a bounded raw radian domain. No libm rounding or
+    /// approximate pi/range-reduction assumption enters the certificate.
+    pub fn sin_cos_bounded(self) -> Option<(Self, Self)> {
+        if !self.finite() || self.lo < -8. || self.hi > 8. {
+            return None;
+        }
+        let negative_square = Self::point(0.) - self.square();
+        let mut sine_term = self;
+        let mut cosine_term = Self::point(1.);
+        let mut sine = sine_term;
+        let mut cosine = cosine_term;
+        for n in 1..32 {
+            let k = (2 * n) as f64;
+            sine_term = sine_term * negative_square / Self::point(k * (k + 1.));
+            cosine_term = cosine_term * negative_square / Self::point((k - 1.) * k);
+            sine = sine + sine_term;
+            cosine = cosine + cosine_term;
+        }
+        // Cosine polynomial degree 62 is also Taylor degree 63 (odd term
+        // zero); sine degree 63 is also degree 64. All real sin/cos derivatives
+        // have magnitude <= 1, so Lagrange remainders are |x|^64/64! and
+        // |x|^65/65!, respectively. Compute those bounds outward as well.
+        let magnitude = Self::point(self.lo.abs().max(self.hi.abs()));
+        let mut remainder = Self::point(1.);
+        for n in 1..=64 {
+            remainder = remainder * magnitude / Self::point(n as f64);
+        }
+        cosine = cosine + Self::new(-remainder.hi, remainder.hi);
+        remainder = remainder * magnitude / Self::point(65.);
+        sine = sine + Self::new(-remainder.hi, remainder.hi);
+        let range = Self::new(-1., 1.);
+        Some((sine.intersect(range), cosine.intersect(range)))
+    }
     pub fn finite(self) -> bool {
         self.lo.is_finite() && self.hi.is_finite() && self.lo <= self.hi
     }
@@ -109,6 +142,34 @@ impl Div for Interval {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bounded_trig_encloses_identities_intervals_and_small_arguments() {
+        for x in [
+            0.,
+            1e-310,
+            -1e-310,
+            0.5,
+            -0.5,
+            1.,
+            -1.,
+            6.28318530718,
+            -8.,
+            8.,
+        ] {
+            let (s, c) = Interval::point(x).sin_cos_bounded().unwrap();
+            assert!(s.finite() && c.finite());
+            // libm is a regression oracle only, not the enclosure algorithm.
+            assert!(s.lo <= x.sin() && x.sin() <= s.hi);
+            assert!(c.lo <= x.cos() && x.cos() <= c.hi);
+            assert!(s.hi - s.lo < 1e-10 && c.hi - c.lo < 1e-10);
+        }
+        let (s, c) = Interval::point(0.).sin_cos_bounded().unwrap();
+        assert!(s.lo <= 0. && s.hi >= 0. && c.lo <= 1. && c.hi >= 1.);
+        let (s, c) = Interval::new(-8., 8.).sin_cos_bounded().unwrap();
+        assert!(s.lo <= -1. && s.hi >= 1. && c.lo <= -1. && c.hi >= 1.);
+        assert!(Interval::new(-9., 0.).sin_cos_bounded().is_none());
+        assert!(Interval::new(1., 0.).sin_cos_bounded().is_none());
+    }
     #[test]
     fn bounds_keep_roundoff_underflow_and_zero_denominators_explicit() {
         let one = Interval::point(1.);
