@@ -1,7 +1,7 @@
 use solid_kernel::{
     geometry_bounds::Bounds3,
     nurbs, nurbs_surface,
-    step::{inventory, ErrorKind, Inventory, Limits, Value},
+    step::{inventory, ErrorKind, Limits, Value},
     step_body::BodyContext,
     step_spline_map::SplineParameterMap,
 };
@@ -307,4 +307,106 @@ fn domains_source_bindings_and_both_curve_surface_work_budgets_refuse() {
         nurbs_surface::Limits::default()
     )
     .is_err());
+}
+
+#[test]
+fn exact_domain_boundary_parameter_curves_do_not_spill_outside_uv_domain() {
+    let (source, face, pc) = fixture();
+    let data = inventory(&source, Limits::default()).unwrap();
+    let declaration = solid_kernel::step_pcurve::read_pcurve(
+        &data,
+        data.entity_reference(pc[0]).unwrap(),
+        nurbs::Limits::default(),
+    )
+    .unwrap();
+    let line = data.resolve_reference(declaration.geometry_source).unwrap();
+    let Value::Ref(point) = line.components[0].args[1] else {
+        panic!("fixture")
+    };
+    let Value::Ref(vector) = line.components[0].args[2] else {
+        panic!("fixture")
+    };
+    let Value::Ref(direction) = data.entities()[&vector].components[0].args[1] else {
+        panic!("fixture")
+    };
+    for reversed in [false, true] {
+        let mut edits = vec![
+            (
+                point,
+                format!(
+                    "#{point}=CARTESIAN_POINT('',({},0.));",
+                    if reversed { 1. } else { 0. }
+                ),
+            ),
+            (vector, format!("#{vector}=VECTOR('',#{direction},1.);")),
+            (
+                direction,
+                format!(
+                    "#{direction}=DIRECTION('',({},0.));",
+                    if reversed { "-1.E-310" } else { "1.E-310" }
+                ),
+            ),
+        ];
+        edits.sort_by_key(|(id, _)| std::cmp::Reverse(data.entities()[id].offset));
+        let mut changed = source.clone();
+        for (id, record) in edits {
+            changed = replace(&changed, data.entities()[&id].offset, &record);
+        }
+        let d = inventory(&changed, Limits::default()).unwrap();
+        let c = BodyContext::read(&d).unwrap();
+        let map = SplineParameterMap::read(
+            &c,
+            &d,
+            d.entity_reference(face).unwrap(),
+            nurbs_surface::Limits::default(),
+        )
+        .unwrap();
+        let bounds = map
+            .pcurve_bounds(
+                &d,
+                d.entity_reference(pc[0]).unwrap(),
+                [0., 1.],
+                nurbs::Limits::default(),
+                10,
+                10,
+            )
+            .unwrap();
+        for uv in [[0., 0.], [0.5, 0.], [1., 0.]] {
+            contains(bounds, surface_point(uv));
+        }
+    }
+    let declaration = solid_kernel::step_pcurve::read_pcurve(
+        &data,
+        data.entity_reference(pc[1]).unwrap(),
+        nurbs::Limits::default(),
+    )
+    .unwrap();
+    let circle = data.resolve_reference(declaration.geometry_source).unwrap();
+    let Value::Ref(frame) = circle.components[0].args[1] else {
+        panic!("fixture")
+    };
+    let changed = replace(
+        &source,
+        circle.offset,
+        &format!("#{}=CIRCLE('',#{frame},0.5);", circle.id),
+    );
+    let d = inventory(&changed, Limits::default()).unwrap();
+    let c = BodyContext::read(&d).unwrap();
+    let map = SplineParameterMap::read(
+        &c,
+        &d,
+        d.entity_reference(face).unwrap(),
+        nurbs_surface::Limits::default(),
+    )
+    .unwrap();
+    assert!(map
+        .pcurve_bounds(
+            &d,
+            d.entity_reference(pc[1]).unwrap(),
+            [0., 6.28318530718],
+            nurbs::Limits::default(),
+            10,
+            10
+        )
+        .is_ok());
 }
