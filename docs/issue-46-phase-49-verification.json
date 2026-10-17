@@ -1,0 +1,42 @@
+{
+  "qualified_source_commit": "347d03e9180193194817ab504235695c6d17a515",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 175,
+      "failed": 0,
+      "ignored": 0,
+      "warnings": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 158,
+      "failed": 0,
+      "ignored": 0,
+      "warnings": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "development_failures": [],
+  "dataset_evidence": [
+    "All three parameter curve classes on an exact degree-elevated planar source surface: global physical minimum 2 mm",
+    "Full/partial interval minima 0 and 0.125 mm",
+    "Metre conversion physical minimum 2000 mm",
+    "Curved rational source surface endpoint minimum 2 mm",
+    "Singular/nonunique trace minimum 1 mm without projection uniqueness claim",
+    "C0 knot cell admission/clipping; curve/surface/search budgets; initial/final cancellation; stale source refusals"
+  ],
+  "next_sampler_baseline": {
+    "segments": 4094,
+    "enclosure_work_units": 24561,
+    "sample_wall_seconds": 0.046489935,
+    "largest_error_bound": 0.000977059475006202
+  },
+  "not_verified": [
+    "Unique closest parameter/position, surface regularity, finite trim/master/body validity",
+    "Full spline import, general PLC/quality/later gates; current Windows/macOS runtime"
+  ]
+}

@@ -1,9 +1,9 @@
 {
   "epic": 46,
   "epic_complete": false,
-  "branch": "main",
-  "pull_request": 76,
-  "pull_request_state": "merged",
+  "branch": "feature/native-cad-pcurve-distance",
+  "pull_request": null,
+  "pull_request_state": "pending creation",
   "merged_prs": [
     65,
     66,
@@ -18,25 +18,26 @@
     75,
     76
   ],
-  "latest_qualified_source": "677cbd919ede44dd4d611ca56d603f48b0884aaa",
-  "latest_phase": 48,
-  "progress_snapshot": "issue-46-phase-48-verification.json",
+  "latest_qualified_source": "347d03e9180193194817ab504235695c6d17a515",
+  "latest_phase": 49,
+  "progress_snapshot": "issue-46-phase-49-verification.json",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
   "remaining": "Other p-curve mappings/master/trim/body gates, general constrained meshing/quality and P2/P3/final roadmap",
   "tests": {
-    "cad_enabled": 171,
-    "feature_off": 154,
+    "cad_enabled": 175,
+    "feature_off": 158,
     "failed": 0,
     "ignored": 0,
     "app_cad_lib_tests_compile": "passed at same source"
   },
   "last_confirmed_main_merge": "6420adc354cda07fa4525cb2a32afefb59c405d7",
-  "pointer_scope": "Last qualified delivered increment and planned follow-on; origin/main resolves the live head, which may include tracking-only commits.",
+  "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "branch": "feature/native-cad-pcurve-distance",
+    "branch": "feature/native-cad-bezier-sampling",
     "status": "planned",
-    "scope": "Bounded world-space distance queries for composed p-curves, then finite/master/trim/body gates and remaining roadmap"
-  }
+    "scope": "Measured bounded quadratic curve sampler acceleration, then finite/master/trim/body and remaining roadmap"
+  },
+  "base_main_head": "7f9b3364dc78b05cd5d40d2317de685505fe3924"
 }
