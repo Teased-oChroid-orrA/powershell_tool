@@ -163,6 +163,47 @@ impl PlaneParameterMap {
             max: result.map(|x| x.hi),
         })
     }
+    /// Enclose the whole supported spline p-curve interval in world millimetres.
+    /// This checks exact-document identity and the basis surface, but does not
+    /// certify edge association, master agreement, trim validity or injectivity.
+    /// `max_spans` is a hard enclosure budget; no partial result is returned.
+    pub fn spline_pcurve_bounds(
+        &self,
+        data: &Inventory,
+        pcurve: EntityReference,
+        parameters: [f64; 2],
+        limits: crate::nurbs::Limits,
+        max_spans: usize,
+    ) -> Result<Bounds3, Error> {
+        data.resolve_reference(self.face)?;
+        let entity = data.resolve_reference(pcurve)?;
+        let declaration = crate::step_pcurve::read_pcurve(data, pcurve, limits)?;
+        if declaration.basis_surface != self.surface {
+            return Err(fail(
+                entity,
+                "spline p-curve basis does not match source plane",
+            ));
+        }
+        let crate::step_pcurve::ParametricCurve::Spline(spline) = declaration.geometry else {
+            return Err(fail(
+                entity,
+                "source-plane spline enclosure requires a spline p-curve",
+            ));
+        };
+        let bounds = spline
+            .curve()
+            .enclose(parameters, max_spans)
+            .map_err(|mut error| {
+                error.offset = entity.offset;
+                error
+            })?;
+        // UV is raw source length; only the affine plane map applies the bound
+        // body unit conversion. Spline parameters/knots are never rescaled.
+        self.bounds([
+            [bounds.min[0], bounds.max[0]],
+            [bounds.min[1], bounds.max[1]],
+        ])
+    }
     pub fn point_bounds(&self, parameters: [f64; 2]) -> Result<Bounds3, Error> {
         self.bounds(parameters.map(|x| [x, x]))
     }
