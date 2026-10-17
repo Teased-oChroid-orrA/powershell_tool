@@ -1,5 +1,5 @@
-//! Bounded tensor-product rational surface evaluation. Not STEP surface import,
-//! normals/projection, exact trims or a B-Rep/solid validity certificate.
+//! Bounded tensor-product rational surface values, differentials and enclosures.
+//! Standalone numerical geometry, not unique projection, exact trims or B-Rep validity.
 use crate::{
     nurbs::{self, Basis, Limits as CurveLimits},
     step::{Error, ErrorKind},

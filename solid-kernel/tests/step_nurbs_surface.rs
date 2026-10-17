@@ -145,7 +145,7 @@ fn source_control_underflow_and_invalid_scale_refuse_at_the_original_record() {
     }
 }
 #[test]
-fn matching_planar_spline_declaration_does_not_enable_partial_native_body_import() {
+fn convex_coplanar_bilinear_spline_face_has_verified_trim_domain_and_native_surface() {
     use solid_kernel::analytic_step::{AnalyticModel, Options};
     let source = include_str!("../../nema17-motor-bracket.step");
     let data = inventory(source, Limits::default()).unwrap();
@@ -245,9 +245,69 @@ fn matching_planar_spline_declaration_does_not_enable_partial_native_body_import
             assert!((expected[axis] - actual[axis]).abs() < 1e-12);
         }
     }
-    let error = AnalyticModel::read(&data, Options::default()).unwrap_err();
-    assert_eq!(error.detail, "unsupported native analytic surface");
-    assert_eq!(error.offset, data.entities()[&entity.id].offset);
+    let imported = AnalyticModel::read(&data, Options::default()).unwrap();
+    let sampled = imported
+        .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+        .unwrap();
+    let original = model
+        .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+        .unwrap();
+    assert_eq!(sampled.source_faces, original.source_faces);
+    assert!(
+        (sampled.signed_volume_mm3 - original.signed_volume_mm3).abs()
+            <= original.signed_volume_mm3.abs() * 1e-12
+    );
+    sampled.check_intersections(1_000_000, |_| true).unwrap();
+    // The same plane with a tiny finite patch cannot contain the real face trims.
+    let mut tiny = changed.clone();
+    for (i, uv) in [
+        [-0.001, -0.001],
+        [-0.001, 0.001],
+        [0.001, -0.001],
+        [0.001, 0.001],
+    ]
+    .iter()
+    .enumerate()
+    {
+        let current = inventory(&tiny, Limits::default()).unwrap();
+        let cp = &current.entities()[&(first + i as u64)];
+        let point = plane.point(*uv).unwrap();
+        let end = cp.offset + tiny[cp.offset..].find(';').unwrap() + 1;
+        tiny.replace_range(
+            cp.offset..end,
+            &format!(
+                "#{}=CARTESIAN_POINT('',({:.17e},{:.17e},{:.17e}));",
+                cp.id, point[0], point[1], point[2]
+            ),
+        );
+    }
+    let tiny = inventory(&tiny, Limits::default()).unwrap();
+    assert!(AnalyticModel::read(&tiny, Options::default())
+        .unwrap_err()
+        .detail
+        .contains("finite spline patch"));
+    // A small but nonzero out-of-plane corner is not silently flattened, even
+    // if it would be below a caller's geometry tolerance.
+    let cp = &data.entities()[&(first + 3)];
+    let mut warped = changed.clone();
+    let normal = plane.normal([0., 0.]).unwrap();
+    let mut p = plane.point([1000., 1000.]).unwrap();
+    for axis in 0..3 {
+        p[axis] += normal[axis] * 1e-10;
+    }
+    let end = cp.offset + warped[cp.offset..].find(';').unwrap() + 1;
+    warped.replace_range(
+        cp.offset..end,
+        &format!(
+            "#{}=CARTESIAN_POINT('',({:.17e},{:.17e},{:.17e}));",
+            cp.id, p[0], p[1], p[2]
+        ),
+    );
+    let warped = inventory(&warped, Limits::default()).unwrap();
+    assert!(AnalyticModel::read(&warped, Options::default())
+        .unwrap_err()
+        .detail
+        .contains("not exactly coplanar"));
 }
 
 #[test]

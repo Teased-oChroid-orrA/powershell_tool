@@ -224,3 +224,7 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Phase 34 declared line/surface validation](issue-46-phase-34.md): source scope and verification.
 
 - [Phase 35 structured spline cancellation](issue-46-phase-35.md): source scope and verification.
+
+- [Phase 36 finite planar bilinear spline faces](issue-46-phase-36.md): exact convex/coplanar reduction and conservative 3D trim containment; p-curve agreement remains open.
+
+- [Phase 37 finite active spline domains](issue-46-phase-37.md): explicit extended knots, evaluated endpoints and active-span sampling/distance; no inferred periodic wrapping.

@@ -30,6 +30,25 @@ impl Interval {
     pub fn intersect(self, other: Self) -> Self {
         Self::new(self.lo.max(other.lo), self.hi.min(other.hi))
     }
+    pub fn square(self) -> Self {
+        let low = if self.lo <= 0. && self.hi >= 0. {
+            0.
+        } else {
+            self.lo.abs().min(self.hi.abs())
+        };
+        let high = self.lo.abs().max(self.hi.abs());
+        let rounded = Self::rounded(low * low, high * high);
+        Self::new(rounded.lo.max(0.), rounded.hi)
+    }
+    pub fn sqrt_nonnegative(self) -> Self {
+        if self.hi < 0. {
+            return Self::whole();
+        }
+        Self::new(
+            self.lo.max(0.).sqrt().next_down().max(0.),
+            self.hi.sqrt().next_up(),
+        )
+    }
     pub fn finite(self) -> bool {
         self.lo.is_finite() && self.hi.is_finite() && self.lo <= self.hi
     }
@@ -88,6 +107,14 @@ mod tests {
         assert!(!(one / Interval::new(-1., 1.)).finite());
         let d = Interval::point(1.) / Interval::point(10.);
         assert!(d.lo < 0.1 && d.hi > 0.1);
+        let square = Interval::new(-2., 3.).square();
+        assert_eq!(square.lo, 0.);
+        assert!(square.hi >= 9.);
+        let root = square.sqrt_nonnegative();
+        assert_eq!(root.lo, 0.);
+        assert!(root.hi >= 3.);
+        let positive = Interval::new(2., 3.).square();
+        assert!(positive.lo <= 4. && positive.hi >= 9.);
         let signed = Interval::new(-2., 3.) * Interval::new(-4., 5.);
         assert!(signed.lo <= -12. && signed.hi >= 15.);
     }

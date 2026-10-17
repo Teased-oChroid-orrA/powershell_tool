@@ -1,0 +1,39 @@
+{
+  "feature_source": "1ad84b7",
+  "qualified_source_commit": "25f6c25ece1ef3b7cad04354cdcd709de15bea6b",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 132,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 115,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "previous_pr_66_merge": "3aebf992ea1861bcc0a349d09af59315fe019a18",
+  "development_failures": [],
+  "development_notes": [
+    "Filtered development run included 2 patch units but zero integration tests; zero-test target not counted as validation; final suites include all integration cases"
+  ],
+  "proof_scope": [
+    "Exactly coplanar strictly convex positive-weight bilinear image",
+    "Actual source-control plane interval distances and certified chart orientation",
+    "Finite trim containment; whole-circle test is conservative"
+  ],
+  "geometry_evidence": "Actual bracket equivalent spline plane retains source-face coverage, 1e-12 relative volume and global sampled facet acceptance; tiny patch and 1e-10 warp refuse",
+  "evidence_logs_prefix": "native-planar-spline-final-",
+  "not_verified": [
+    "STEP p-curve and master-representation agreement",
+    "General curved/higher-order/periodic spline-body and inverse UV support",
+    "Representative performance/Windows/macOS execution and remaining epic gates"
+  ]
+}

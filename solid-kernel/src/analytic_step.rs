@@ -1,7 +1,9 @@
 //! Native analytic geometry feasibility checks, not trimmed B-Rep/solid validity.
 //! Supported subset: one directly represented, unplaced body; line/circle edges
 //! and verified full-domain two-control degree-one splines;
-//! plane/cylinder surfaces. All coordinates are normalized to millimetres.
+//! plane/cylinder surfaces and exactly coplanar convex bilinear spline patches.
+//! Trim containment uses 3D loci; associated p-curves/master-representation
+//! agreement remain unverified. All coordinates normalize to millimetres.
 use crate::{
     step::{Entity, Error, ErrorKind, Inventory, RawBody, Value},
     V3,
@@ -663,10 +665,90 @@ impl AnalyticModel {
         }
         let mut surfaces = BTreeMap::new();
         for face in body.faces.values() {
-            let s = surface(data, face.surface, scale)?;
+            let source_surface = &data.entities()[&face.surface];
+            let (s, patch) = if source_surface
+                .components
+                .iter()
+                .any(|c| c.name == "B_SPLINE_SURFACE_WITH_KNOTS")
+            {
+                let declaration = context.read_spline_surface(
+                    data,
+                    data.entity_reference(face.id).unwrap(),
+                    crate::nurbs_surface::Limits::default(),
+                )?;
+                let patch =
+                    crate::planar_spline::PlanarPatch::new(&declaration.surface, source_surface)?;
+                let p = patch.controls();
+                let x = unit(source_surface, sub(p[1], p[0]))?;
+                let z = unit(source_surface, cross(x, sub(p[2], p[0])))?;
+                let y = unit(source_surface, cross(z, x))?;
+                patch.verify_chart_normal(z, source_surface)?;
+                (
+                    Surface::Plane(Frame {
+                        origin: p[0],
+                        x,
+                        y,
+                        z,
+                    }),
+                    Some(patch),
+                )
+            } else {
+                (surface(data, face.surface, scale)?, None)
+            };
+
             for bound in &face.bounds {
                 for u in &bound.edges {
                     let edge = &body.edges[&u.edge];
+                    if let Some(patch) = &patch {
+                        for vertex in [edge.start, edge.end] {
+                            patch.verify_point_plane(
+                                vertices[&vertex],
+                                opt.geometry_tolerance_mm,
+                                source_surface,
+                            )?;
+                            patch.contains_point(vertices[&vertex], source_surface)?;
+                        }
+                        match &curves[&edge.id] {
+                            Curve::Line { origin, direction } => {
+                                let points =
+                                    spline_segments.get(&edge.id).copied().unwrap_or_else(|| {
+                                        [edge.start, edge.end].map(|id| {
+                                            add(
+                                                *origin,
+                                                mul(
+                                                    *direction,
+                                                    dot(sub(vertices[&id], *origin), *direction),
+                                                ),
+                                            )
+                                        })
+                                    });
+                                for p in points {
+                                    patch.verify_point_plane(
+                                        p,
+                                        opt.geometry_tolerance_mm,
+                                        source_surface,
+                                    )?;
+                                    patch.contains_point(p, source_surface)?;
+                                }
+                            }
+                            Curve::Circle { frame, radius } => {
+                                patch.verify_circle_plane(
+                                    frame.origin,
+                                    [frame.x, frame.y],
+                                    *radius,
+                                    opt.geometry_tolerance_mm,
+                                    source_surface,
+                                )?;
+                                patch.contains_circle(
+                                    frame.origin,
+                                    [frame.x, frame.y],
+                                    *radius,
+                                    source_surface,
+                                )?;
+                            }
+                        }
+                    }
+
                     if let Some(points) = spline_segments.get(&edge.id) {
                         // Validate the actual spline locus as well as authoritative
                         // source-vertex chords; endpoint agreement alone is not
