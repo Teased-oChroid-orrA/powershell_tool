@@ -51,6 +51,7 @@ Checked lines are delivered scoped increments, with evidence committed in this r
 - [ ] #58: Metric-driven anisotropic adaptation (unit-metric meshes at strong anisotropy).
 - [x] #59: Mesh motion subsystem: pseudo-elastic size-stiffened interior displacement with sub-stepping, inversion/quality gates, rollback and hand-over to remeshing ([Phase 72](issue-46-phase-72.md)); not an ALE formulation.
 - [ ] #59: Mesh motion/ALE and consistent state/history transfer.
+- [x] #60: Full total-cost objective (CAD, generation, estimation, adaptation, transfer once per mesh; solver terms per analysis), memory/time limits with explicit rejection reasons and the break-even number of analyses ([Phase 74](issue-46-phase-74.md)); representative verified benchmarks and iterative-solver costs remain open.
 - [ ] #60: Solver-aware cost models and advanced optimization.
 - [ ] #61: Optional learning with representative verified training data, held-out/OOD checks and deterministic fallback.
 - [ ] #62: AMR feedback and production autotuner/time-to-accuracy qualification.

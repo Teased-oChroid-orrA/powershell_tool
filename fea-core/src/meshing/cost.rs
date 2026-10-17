@@ -2,8 +2,11 @@
 //! analysis, no numeric factorisation) and turned into seconds by rates measured on the machine at hand. The prediction
 //! compares candidate meshes of the *same nominal accuracy*; it does not decide accuracy (an estimator does).
 //!
-//! Total cost of a workload, as in the epic: `generation + n_assemble * assembly + n_factor * factor + n_solve * back-solve
-//! + estimation + adaptation`; the weights are the workload's counts, not tuned constants.
+//! Total cost of a workload, as in the epic: `CAD + generation + estimation + adaptation + transfer + analyses * (n_assemble *
+//! assembly + n_factor * factor + n_solve * back-solve)`; the weights are the workload's counts, not tuned constants. The
+//! one-time terms (CAD, generation, estimation, adaptation, transfer) are paid once per mesh, the solver terms once per
+//! analysis, so a mesh that is expensive to make pays off only after `break_even_analyses` analyses. A candidate can also be
+//! bounded by a memory estimate and a time limit (`choose_within`).
 
 use super::MeshError;
 use crate::analysis::Model;
@@ -26,6 +29,12 @@ pub struct MeshCost {
 }
 
 impl MeshCost {
+    /// Rough peak memory of a direct solve in bytes: the factor and the stiffness (8-byte scalars) plus a few vectors per
+    /// dof. An estimate for comparing candidates against a budget, not an allocation guarantee.
+    pub fn memory_bytes(&self) -> u64 {
+        8 * (self.factor_nnz as u64 + self.matrix_nnz as u64 + 8 * self.dofs as u64)
+    }
+
     /// Cost of `mesh` (one node fixed so the system is not empty).
     pub fn of(mesh: &Mesh) -> Result<Self, MeshError> {
         let model = Model::new(mesh.clone()).map_err(MeshError::Failed)?;
@@ -51,17 +60,29 @@ pub struct Workload {
     /// Extra seconds per mesh for error estimation and adaptation (measured by the caller, `0` when not applicable).
     pub estimation_seconds: f64,
     pub adaptation_seconds: f64,
+    /// Seconds per mesh for CAD import, healing and association (measured by the caller, `0` when the geometry is given).
+    pub cad_seconds: f64,
+    /// Seconds per mesh to transfer fields and history from the previous mesh (adaptive loops, remeshing during a run).
+    pub transfer_seconds: f64,
+    /// Analyses run on the same mesh (design sweeps, load cases solved separately): the solver terms are paid this many
+    /// times, the one-time terms once.
+    pub analyses: f64,
 }
 
 impl Workload {
     /// One linear static solve.
     pub fn linear_static() -> Self {
-        Self { assemblies: 1.0, factorisations: 1.0, solves: 1.0, estimation_seconds: 0.0, adaptation_seconds: 0.0 }
+        Self { assemblies: 1.0, factorisations: 1.0, solves: 1.0, estimation_seconds: 0.0, adaptation_seconds: 0.0, cad_seconds: 0.0, transfer_seconds: 0.0, analyses: 1.0 }
     }
 
     /// A nonlinear analysis re-assembling and re-factoring `iterations` times.
     pub fn nonlinear(iterations: f64) -> Self {
-        Self { assemblies: iterations, factorisations: iterations, solves: iterations, estimation_seconds: 0.0, adaptation_seconds: 0.0 }
+        Self { assemblies: iterations, factorisations: iterations, solves: iterations, ..Self::linear_static() }
+    }
+
+    /// The same work repeated `analyses` times on one mesh.
+    pub fn repeated(self, analyses: f64) -> Self {
+        Self { analyses, ..self }
     }
 }
 
@@ -104,12 +125,19 @@ impl CostModel {
 
     /// Predicted seconds for `workload` on a mesh of cost `cost`, plus the measured mesh generation time.
     pub fn predict(&self, cost: &MeshCost, workload: &Workload, generation_seconds: f64) -> f64 {
-        generation_seconds
-            + workload.assemblies * self.assembly_s_per_unit * cost.assembly_units
+        self.one_time_seconds(workload, generation_seconds) + self.per_analysis_seconds(cost, workload) * workload.analyses
+    }
+
+    /// Terms paid once per mesh.
+    pub fn one_time_seconds(&self, workload: &Workload, generation_seconds: f64) -> f64 {
+        workload.cad_seconds + generation_seconds + workload.estimation_seconds + workload.adaptation_seconds + workload.transfer_seconds
+    }
+
+    /// Solver terms of one analysis.
+    pub fn per_analysis_seconds(&self, cost: &MeshCost, workload: &Workload) -> f64 {
+        workload.assemblies * self.assembly_s_per_unit * cost.assembly_units
             + workload.factorisations * self.factor_s_per_unit * cost.factor_units
             + workload.solves * self.solve_s_per_factor_nnz * cost.factor_nnz as f64
-            + workload.estimation_seconds
-            + workload.adaptation_seconds
     }
 }
 
@@ -138,26 +166,72 @@ pub struct Choice {
     pub index: usize,
     /// Predicted seconds and cost of every candidate, in order.
     pub predictions: Vec<(String, MeshCost, f64)>,
+    /// Candidates excluded, with the reason (unvalidated, over the memory or time limit).
+    pub rejected: Vec<(usize, String)>,
+}
+
+/// Limits a candidate must respect to be chosen.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Limits {
+    pub max_memory_bytes: Option<u64>,
+    pub max_seconds: Option<f64>,
 }
 
 /// The cheapest candidate by predicted total time. Candidates that `NeedsValidation` take part only when
 /// `allow_unvalidated`; ties and non-finite predictions go to the first candidate (put the verified baseline first).
 pub fn choose(candidates: &[Candidate], model: &CostModel, workload: &Workload, allow_unvalidated: bool) -> Result<Choice, MeshError> {
+    choose_within(candidates, model, workload, allow_unvalidated, Limits::default())
+}
+
+/// [`choose`] under limits: a candidate whose memory estimate or predicted time exceeds a limit is excluded (and listed in
+/// `Choice::rejected`), the baseline included. When no candidate is feasible the answer is an error naming the limits, never
+/// a silently infeasible pick.
+pub fn choose_within(candidates: &[Candidate], model: &CostModel, workload: &Workload, allow_unvalidated: bool, limits: Limits) -> Result<Choice, MeshError> {
     if candidates.is_empty() {
         return Err(MeshError::Failed("no candidate meshes".into()));
     }
     let mut predictions = Vec::new();
+    let mut rejected = Vec::new();
     let mut best: Option<(usize, f64)> = None;
     for (i, c) in candidates.iter().enumerate() {
         let cost = MeshCost::of(&c.mesh)?;
         let t = model.predict(&cost, workload, c.generation_seconds);
         predictions.push((c.name.clone(), cost, t));
-        let eligible = i == 0 || allow_unvalidated || c.equivalence == Equivalence::Nominal;
-        if eligible && t.is_finite() && best.is_none_or(|(_, bt)| t < bt) {
+        if !(i == 0 || allow_unvalidated || c.equivalence == Equivalence::Nominal) {
+            rejected.push((i, "needs validation".to_string()));
+            continue;
+        }
+        if limits.max_memory_bytes.is_some_and(|m| cost.memory_bytes() > m) {
+            rejected.push((i, format!("memory estimate {} bytes exceeds the limit", cost.memory_bytes())));
+            continue;
+        }
+        if limits.max_seconds.is_some_and(|m| t > m) {
+            rejected.push((i, format!("predicted {t:.3} s exceeds the limit")));
+            continue;
+        }
+        if t.is_finite() && best.is_none_or(|(_, bt)| t < bt) {
             best = Some((i, t));
         }
     }
-    Ok(Choice { index: best.map_or(0, |b| b.0), predictions })
+    match best {
+        Some((index, _)) => Ok(Choice { index, predictions, rejected }),
+        None if limits == Limits::default() => Ok(Choice { index: 0, predictions, rejected }),
+        None => Err(MeshError::Failed(format!("no candidate satisfies the limits {limits:?}: {rejected:?}"))),
+    }
+}
+
+/// Number of analyses on one mesh after which candidate `b` (dearer to make, cheaper to solve) overtakes `a`; `None` when
+/// `b` never pays off (it is not cheaper per analysis) or is already cheaper in total for one analysis.
+pub fn break_even_analyses(a: &Candidate, b: &Candidate, model: &CostModel, workload: &Workload) -> Result<Option<f64>, MeshError> {
+    let (ca, cb) = (MeshCost::of(&a.mesh)?, MeshCost::of(&b.mesh)?);
+    let (per_a, per_b) = (model.per_analysis_seconds(&ca, workload), model.per_analysis_seconds(&cb, workload));
+    let (once_a, once_b) = (model.one_time_seconds(workload, a.generation_seconds), model.one_time_seconds(workload, b.generation_seconds));
+    // once_a + n per_a = once_b + n per_b  =>  n = (once_b - once_a) / (per_a - per_b)
+    if per_a <= per_b || !(per_a - per_b).is_finite() {
+        return Ok(None);
+    }
+    let n = (once_b - once_a) / (per_a - per_b);
+    Ok((n > 1.0).then_some(n))
 }
 
 #[cfg(test)]
@@ -202,6 +276,64 @@ mod tests {
         // `fine` is bigger but cheaper to generate; with 100 s against microseconds of solving it wins
         assert_eq!(choose(&slow, &model, &work, false).unwrap().index, 2);
         assert!(choose(&[], &model, &work, false).is_err());
+    }
+
+    #[test]
+    fn one_time_terms_are_paid_once_and_solver_terms_once_per_analysis() {
+        let model = CostModel { assembly_s_per_unit: 1e-6, factor_s_per_unit: 1e-6, solve_s_per_factor_nnz: 1e-6 };
+        let cost = MeshCost::of(&mesh(ElementKind::Quad4, 8)).unwrap();
+        let base = Workload::linear_static();
+        let work = Workload { cad_seconds: 10.0, transfer_seconds: 3.0, estimation_seconds: 2.0, adaptation_seconds: 5.0, ..base };
+        let one = model.predict(&cost, &work, 7.0);
+        assert!((model.one_time_seconds(&work, 7.0) - 27.0).abs() < 1e-12);
+        assert!((one - 27.0 - model.per_analysis_seconds(&cost, &work)).abs() < 1e-9);
+        let ten = model.predict(&cost, &work.repeated(10.0), 7.0);
+        assert!((ten - 27.0 - 10.0 * model.per_analysis_seconds(&cost, &work)).abs() < 1e-9);
+        // the old counts are unchanged: a linear static solve predicts exactly the three solver terms plus generation
+        let plain = model.predict(&cost, &base, 0.0);
+        assert!((plain - model.per_analysis_seconds(&cost, &base)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_dearer_mesh_pays_off_exactly_at_the_break_even_number_of_analyses() {
+        let model = CostModel { assembly_s_per_unit: 1e-5, factor_s_per_unit: 1e-5, solve_s_per_factor_nnz: 1e-5 };
+        let work = Workload::linear_static();
+        let big = Candidate { name: "big".into(), mesh: mesh(ElementKind::Quad4, 20), generation_seconds: 0.0, equivalence: Equivalence::Nominal };
+        let small = Candidate { name: "small".into(), mesh: mesh(ElementKind::Quad4, 8), generation_seconds: 0.0, equivalence: Equivalence::Nominal };
+        // `small` is cheaper to solve and costs 50 s more to make (an expensive optimiser).
+        let mut small_dear = small.clone();
+        small_dear.generation_seconds = 50.0;
+        let n = break_even_analyses(&big, &small_dear, &model, &work).unwrap().expect("small pays off eventually");
+        assert!(n > 1.0);
+        let pick = |analyses: f64| choose(&[big.clone(), small_dear.clone()], &model, &work.repeated(analyses), false).unwrap().index;
+        assert_eq!(pick(n * 0.9), 0, "before the break-even the cheap-to-make mesh wins");
+        assert_eq!(pick(n * 1.1), 1, "after it the cheap-to-solve mesh wins");
+        // a mesh that is no cheaper per analysis never pays off
+        assert_eq!(break_even_analyses(&small, &big, &model, &work).unwrap(), None);
+    }
+
+    #[test]
+    fn limits_exclude_candidates_and_an_infeasible_set_is_an_error() {
+        let model = CostModel { assembly_s_per_unit: 1e-9, factor_s_per_unit: 1e-9, solve_s_per_factor_nnz: 1e-9 };
+        let work = Workload::linear_static();
+        let cands = vec![
+            Candidate { name: "fine".into(), mesh: mesh(ElementKind::Quad4, 24), generation_seconds: 0.0, equivalence: Equivalence::Nominal },
+            Candidate { name: "coarse".into(), mesh: mesh(ElementKind::Quad4, 8), generation_seconds: 0.0, equivalence: Equivalence::Nominal },
+        ];
+        let (fine_mem, coarse_mem) = (MeshCost::of(&cands[0].mesh).unwrap().memory_bytes(), MeshCost::of(&cands[1].mesh).unwrap().memory_bytes());
+        assert!(fine_mem > coarse_mem);
+        // Unconstrained, the coarse mesh is cheaper; a limit between the two memories excludes the fine one anyway and says why.
+        let mid = (fine_mem + coarse_mem) / 2;
+        let c = choose_within(&cands, &model, &work, false, Limits { max_memory_bytes: Some(mid), max_seconds: None }).unwrap();
+        assert_eq!(c.index, 1);
+        assert!(c.rejected.iter().any(|(i, why)| *i == 0 && why.contains("memory")), "{:?}", c.rejected);
+        // Nothing fits under a limit below both: an error, not an infeasible pick, including for the baseline.
+        let err = choose_within(&cands, &model, &work, false, Limits { max_memory_bytes: Some(coarse_mem - 1), max_seconds: None }).unwrap_err();
+        assert!(format!("{err:?}").contains("no candidate satisfies"));
+        // A time limit works the same way.
+        assert!(choose_within(&cands, &model, &work, false, Limits { max_memory_bytes: None, max_seconds: Some(0.0) }).is_err());
+        // No limits behaves exactly like `choose`.
+        assert_eq!(choose_within(&cands, &model, &work, false, Limits::default()).unwrap().index, choose(&cands, &model, &work, false).unwrap().index);
     }
 
     #[test]
