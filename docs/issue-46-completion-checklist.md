@@ -54,6 +54,7 @@ Checked lines are delivered scoped increments, with evidence committed in this r
 - [x] #60: Full total-cost objective (CAD, generation, estimation, adaptation, transfer once per mesh; solver terms per analysis), memory/time limits with explicit rejection reasons and the break-even number of analyses ([Phase 74](issue-46-phase-74.md)); representative verified benchmarks and iterative-solver costs remain open.
 - [ ] #60: Solver-aware cost models and advanced optimization.
 - [ ] #61: Optional learning with representative verified training data, held-out/OOD checks and deterministic fallback.
+- [x] #62: AMR feedback consumer: run summaries with regional refinement demand, exact-key validated-only advice of initial size multipliers that can only refine, expected adaptation cost ([Phase 75](issue-46-phase-75.md)); the time-to-accuracy gain is NOT shown (identical result on the L-plate benchmark).
 - [ ] #62: AMR feedback and production autotuner/time-to-accuracy qualification.
 - [ ] #63: Verified native production parity and separately approved OCCT retirement. OCCT remains the production backend.
 
