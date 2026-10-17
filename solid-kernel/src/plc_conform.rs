@@ -18,7 +18,7 @@ use crate::{
 };
 use fea_core::meshing::{
     tet_delaunay::{tetrahedralize, Limits as DelaunayLimits},
-    tet_topology::{in_circle_2d, orientation_2d},
+    tet_topology::{in_circle_2d, orientation, orientation_2d},
     MeshError,
 };
 use std::cmp::Ordering;
@@ -33,6 +33,11 @@ pub struct Options {
     /// this needs far fewer Steiner points on surface-mesh inputs but is only a
     /// heuristic, ended by the exact final presence check either way.
     pub protect_encroached: bool,
+    /// Also insert circumcentres of interior tetrahedra whose circumradius to
+    /// shortest-edge ratio exceeds this bound (Delaunay refinement; centres that
+    /// would encroach a sub-segment or sub-facet split those instead). `None`
+    /// leaves the recovered cells as they are. Slivers are not addressed.
+    pub max_radius_edge: Option<f64>,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -40,6 +45,7 @@ impl Default for Options {
             max_steiner: 4000,
             max_cells: 400_000,
             protect_encroached: true,
+            max_radius_edge: None,
         }
     }
 }
@@ -66,6 +72,12 @@ pub struct Report {
     /// Largest Steiner offset from its parent segment line / facet plane,
     /// relative to the parent's longest edge.
     pub max_steiner_offset_relative: f64,
+    /// Steiner points added by quality refinement (included in neither count above).
+    pub quality_steiner: usize,
+    /// Largest circumradius / shortest-edge ratio over the interior cells.
+    pub max_radius_edge_ratio: f64,
+    /// Interior cells above `max_radius_edge` whose centre could not be inserted.
+    pub unresolved_bad_cells: usize,
     pub hull_cells: usize,
     pub interior_cells: usize,
     /// |sum of cell volumes - PLC enclosed volume| / PLC enclosed volume.
@@ -134,6 +146,72 @@ fn circumcentre(a: V3, b: V3, c: V3) -> Option<V3> {
     let w = cross(v, n);
     Some(std::array::from_fn(|i| a[i] + (vv * t[i] + uu * w[i]) / d))
 }
+/// Circumcentre and circumradius / shortest-edge ratio of a tetrahedron.
+fn tet_circumsphere(p: [V3; 4]) -> Option<(V3, f64)> {
+    let (a, b, c) = (sub(p[1], p[0]), sub(p[2], p[0]), sub(p[3], p[0]));
+    let det = 2. * dot(a, cross(b, c));
+    if !(det.is_finite() && det != 0.) {
+        return None;
+    }
+    let (ab, ca, bc) = (cross(b, c), cross(c, a), cross(a, b));
+    let off: V3 =
+        std::array::from_fn(|i| (norm2(a) * ab[i] + norm2(b) * ca[i] + norm2(c) * bc[i]) / det);
+    let shortest = (0..4)
+        .flat_map(|i| ((i + 1)..4).map(move |j| (i, j)))
+        .map(|(i, j)| norm2(sub(p[i], p[j])))
+        .fold(f64::MAX, f64::min)
+        .sqrt();
+    let centre = std::array::from_fn(|i| p[0][i] + off[i]);
+    Some((centre, norm2(off).sqrt() / shortest))
+}
+/// Which tetrahedra lie outside the shell. The cells on the inner side of each
+/// (outward-oriented) sub-facet are inside, and inside spreads across every face
+/// that is not a sub-facet; a sliver hull face created by rounding cannot leak.
+fn outside_cells(
+    cells: &[[usize; 4]],
+    neighbors: &[[Option<usize>; 4]],
+    facets: &[[usize; 3]],
+    points: &[V3],
+) -> Vec<bool> {
+    let faces_of = |t: [usize; 4]| {
+        let [a, b, c, d] = t;
+        [[b, c, d], [a, d, c], [a, b, d], [a, c, b]]
+    };
+    let facet_keys: BTreeSet<[usize; 3]> = facets.iter().map(|f| face_key(*f)).collect();
+    let mut owners = BTreeMap::<[usize; 3], Vec<(usize, usize)>>::new();
+    for (i, t) in cells.iter().enumerate() {
+        for (k, f) in faces_of(*t).into_iter().enumerate() {
+            let key = face_key(f);
+            if facet_keys.contains(&key) {
+                owners.entry(key).or_default().push((i, k));
+            }
+        }
+    }
+    let mut inside = vec![false; cells.len()];
+    let mut stack = Vec::new();
+    for f in facets {
+        for &(i, k) in owners.get(&face_key(*f)).map_or(&[][..], |v| v) {
+            let apex = points[cells[i][k]];
+            let [a, b, c] = f.map(|v| points[v]);
+            // The interior side of an outward face is the Less side.
+            if orientation(a, b, c, apex) == Ok(Ordering::Less) && !inside[i] {
+                inside[i] = true;
+                stack.push(i);
+            }
+        }
+    }
+    while let Some(i) = stack.pop() {
+        for (k, f) in faces_of(cells[i]).into_iter().enumerate() {
+            if let Some(j) = neighbors[i][k] {
+                if !inside[j] && !facet_keys.contains(&face_key(f)) {
+                    inside[j] = true;
+                    stack.push(j);
+                }
+            }
+        }
+    }
+    inside.into_iter().map(|x| !x).collect()
+}
 /// Planar Delaunay triangulation of one input facet and the Steiner points on it.
 struct FacetMesh {
     parent: usize,
@@ -179,16 +257,57 @@ impl FacetMesh {
     fn insert(&mut self, id: usize, p: V3, on_edge: Option<[usize; 2]>) -> Result<(), Error> {
         let q = self.project(p);
         let uv = |v: usize| self.uv[&v];
-        let cavity: Vec<usize> = (0..self.tris.len())
-            .filter(|&i| {
-                let [a, b, c] = self.tris[i].map(uv);
-                in_circle_2d(a, b, c, q) == Ordering::Greater
+        // Seed: the triangle on the split edge (even when rounding puts the point a
+        // hair outside its circle) or the triangle containing the point. The
+        // cavity is the connected set of triangles whose circle strictly holds it.
+        let seed = on_edge
+            .and_then(|e| {
+                (0..self.tris.len()).find(|&i| {
+                    let t = self.tris[i];
+                    (0..3).any(|k| edge(t[k], t[(k + 1) % 3]) == e)
+                })
             })
-            .collect();
+            .or_else(|| {
+                (0..self.tris.len()).find(|&i| {
+                    let t = self.tris[i];
+                    (0..3)
+                        .all(|k| orientation_2d(uv(t[k]), uv(t[(k + 1) % 3]), q) != Ordering::Less)
+                })
+            });
+        let mut across = BTreeMap::<[usize; 2], usize>::new();
+        for (i, t) in self.tris.iter().enumerate() {
+            for k in 0..3 {
+                across.insert([t[k], t[(k + 1) % 3]], i);
+            }
+        }
+        let mut cavity: Vec<usize> = seed.into_iter().collect();
+        let mut next_to_visit = 0;
+        while next_to_visit < cavity.len() {
+            let t = self.tris[cavity[next_to_visit]];
+            next_to_visit += 1;
+            for k in 0..3 {
+                let Some(&j) = across.get(&[t[(k + 1) % 3], t[k]]) else {
+                    continue;
+                };
+                if cavity.contains(&j) {
+                    continue;
+                }
+                let [a, b, c] = self.tris[j].map(uv);
+                if in_circle_2d(a, b, c, q) == Ordering::Greater {
+                    cavity.push(j);
+                }
+            }
+        }
         if cavity.is_empty() {
             return Err(fail(
                 ErrorKind::Geometry,
-                "Steiner point lies outside its facet",
+                format!(
+                    "Steiner point lies outside its facet (facet {}, uv {:?}, on edge {:?}, {} sub-facets)",
+                    self.parent,
+                    q,
+                    on_edge,
+                    self.tris.len()
+                ),
             ));
         }
         let mut boundary = BTreeMap::<[usize; 2], [usize; 2]>::new();
@@ -225,6 +344,67 @@ impl FacetMesh {
         self.uv.insert(id, q);
         self.tris = next;
         Ok(())
+    }
+    /// Flip interior edges so absent sub-facets are replaced by pairs that are
+    /// faces of the tetrahedralization. This resolves cospherical ties (grids,
+    /// right angles) that a refinement would otherwise chase to zero size.
+    /// Returns the number of flips.
+    fn flip_toward(&mut self, faces: &BTreeSet<[usize; 3]>) -> usize {
+        let mut flips = 0;
+        'again: loop {
+            let mut across = BTreeMap::<[usize; 2], usize>::new();
+            for (i, t) in self.tris.iter().enumerate() {
+                for k in 0..3 {
+                    across.insert([t[k], t[(k + 1) % 3]], i);
+                }
+            }
+            for i in 0..self.tris.len() {
+                if faces.contains(&face_key(self.tris[i])) {
+                    continue;
+                }
+                let t = self.tris[i];
+                for k in 0..3 {
+                    let (x, y, p) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
+                    let Some(&j) = across.get(&[y, x]) else {
+                        continue;
+                    };
+                    let q = *self.tris[j].iter().find(|v| **v != x && **v != y).unwrap();
+                    let (a, b) = ([x, q, p], [q, y, p]);
+                    let uv = |v: usize| self.uv[&v];
+                    let convex = orientation_2d(uv(a[0]), uv(a[1]), uv(a[2])) == Ordering::Greater
+                        && orientation_2d(uv(b[0]), uv(b[1]), uv(b[2])) == Ordering::Greater;
+                    if convex && faces.contains(&face_key(a)) && faces.contains(&face_key(b)) {
+                        let (lo, hi) = (i.min(j), i.max(j));
+                        self.tris[hi] = b;
+                        self.tris[lo] = a;
+                        flips += 1;
+                        continue 'again;
+                    }
+                }
+            }
+            return flips;
+        }
+    }
+    /// The facet boundary sub-segment nearest to `p`.
+    fn nearest_boundary_edge(&self, p: V3, points: &[V3]) -> Option<[usize; 2]> {
+        let mut count = BTreeMap::<[usize; 2], usize>::new();
+        for t in &self.tris {
+            for k in 0..3 {
+                *count.entry(edge(t[k], t[(k + 1) % 3])).or_default() += 1;
+            }
+        }
+        count
+            .into_iter()
+            .filter(|(_, n)| *n == 1)
+            .map(|(e, _)| {
+                let (a, b) = (points[e[0]], points[e[1]]);
+                let ab = sub(b, a);
+                let t = (dot(sub(p, a), ab) / norm2(ab)).clamp(0., 1.);
+                let q: V3 = std::array::from_fn(|i| a[i] + ab[i] * t);
+                (norm2(sub(p, q)), e)
+            })
+            .min_by(|x, y| x.0.total_cmp(&y.0))
+            .map(|x| x.1)
     }
     fn has_boundary_edge(&self, s: [usize; 2]) -> bool {
         let mut seen = 0;
@@ -264,6 +444,8 @@ struct State {
     steiner: usize,
     segment_steiner: usize,
     facet_steiner: usize,
+    quality_steiner: usize,
+    unresolved_bad: usize,
     max_offset: f64,
     options: Options,
     /// Vertices below this index are input vertices (segment apices).
@@ -350,6 +532,87 @@ impl State {
         }
         self.enc_tris.extend(hit_tris);
         Ok(())
+    }
+    /// One batch of quality refinement. Returns whether anything was queued or
+    /// inserted (false: nothing left to do or nothing more can be done).
+    fn refine_quality(&mut self, bound: f64) -> Result<bool, Error> {
+        let (cells, neighbors) = self.delaunay.snapshot();
+        let pts = self.points().to_vec();
+        let facet_list: Vec<[usize; 3]> = self
+            .meshes
+            .iter()
+            .flat_map(|m| m.tris.iter().copied())
+            .collect();
+        let outside = outside_cells(&cells, &neighbors, &facet_list, &pts);
+        let mut bad: Vec<(f64, [usize; 4])> = Vec::new();
+        for (t, out) in cells.iter().zip(&outside) {
+            if *out {
+                continue;
+            }
+            match tet_circumsphere(t.map(|v| pts[v])) {
+                Some((_, ratio)) if ratio <= bound => {}
+                _ => bad.push((
+                    tet_circumsphere(t.map(|v| pts[v])).map_or(f64::MAX, |x| x.1),
+                    *t,
+                )),
+            }
+        }
+        bad.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let batch = (bad.len() / 8).clamp(1, 256);
+        let mut killed = BTreeSet::new();
+        let mut progressed = false;
+        let mut unresolved = 0;
+        for (_, t) in bad.into_iter().take(batch) {
+            let mut key = t;
+            key.sort_unstable();
+            if killed.contains(&key) {
+                continue;
+            }
+            let Some((cc, _)) = tet_circumsphere(t.map(|v| pts[v])) else {
+                unresolved += 1;
+                continue;
+            };
+            let current = self.points().to_vec();
+            let hit: Vec<[usize; 2]> = self
+                .segments
+                .iter()
+                .copied()
+                .filter(|&[x, y]| encroaches(current[x], current[y], cc))
+                .collect();
+            let mut hit_tris = Vec::new();
+            for (k, m) in self.meshes.iter().enumerate() {
+                for &f in &m.tris {
+                    let [a, b, c] = f.map(|v| current[v]);
+                    if let Some(fc) = circumcentre(a, b, c) {
+                        if norm2(sub(cc, fc)) < norm2(sub(a, fc)) * (1. - 1e-9) {
+                            hit_tris.push((k, f));
+                        }
+                    }
+                }
+            }
+            if !hit.is_empty() || !hit_tris.is_empty() {
+                self.enc_segments.extend(hit);
+                self.enc_tris.extend(hit_tris);
+                progressed = true;
+                continue;
+            }
+            match self.insert(cc) {
+                Ok(_) => {
+                    self.quality_steiner += 1;
+                    progressed = true;
+                    for r in self.delaunay.last_removed() {
+                        let mut k = *r;
+                        k.sort_unstable();
+                        killed.insert(k);
+                    }
+                }
+                // A centre outside the hull or a degenerate cavity: leave this cell.
+                Err(e) if e.kind == ErrorKind::Geometry => unresolved += 1,
+                Err(e) => return Err(e),
+            }
+        }
+        self.unresolved_bad = unresolved;
+        Ok(progressed)
     }
     fn insert(&mut self, p: V3) -> Result<usize, Error> {
         if self.steiner >= self.options.max_steiner {
@@ -473,6 +736,8 @@ pub fn conform(
         steiner: 0,
         segment_steiner: 0,
         facet_steiner: 0,
+        quality_steiner: 0,
+        unresolved_bad: 0,
         max_offset: 0.,
         options,
         input_vertices: vertices.len(),
@@ -542,10 +807,29 @@ pub fn conform(
                     .fold(0., f64::max);
                 (dot(sub(cc, m.origin), n).abs(), longest)
             };
-            let id = state.insert(cc)?;
+            // The facet mesh is updated first: it changes nothing when it refuses.
+            let id = pts.len();
+            if let Err(refusal) = state.meshes[k].insert(id, cc, None) {
+                // The centre sits on the facet boundary within rounding: split the
+                // closest boundary sub-segment instead and revisit the sub-facet.
+                let nearest = state.meshes[k].nearest_boundary_edge(cc, &pts);
+                if let Some(s) = nearest.filter(|s| state.segments.contains(s)) {
+                    state.enc_segments.insert(s);
+                    state.enc_tris.insert((k, t));
+                    continue;
+                }
+                return Err(fail(
+                    ErrorKind::Geometry,
+                    format!(
+                        "sub-facet circumcentre could not be inserted into its facet: {}",
+                        refusal.detail
+                    ),
+                ));
+            }
+            let inserted = state.insert(cc)?;
+            debug_assert_eq!(inserted, id);
             state.facet_steiner += 1;
             state.max_offset = state.max_offset.max(off / longest.sqrt());
-            state.meshes[k].insert(id, cc, None)?;
             state.note_vertex(id)?;
             state.refresh_mesh(k)?;
             continue;
@@ -567,8 +851,26 @@ pub fn conform(
             .flat_map(|(k, m)| m.tris.iter().map(move |t| (k, *t)))
             .filter(|(_, t)| !faces.contains(&face_key(*t)))
             .collect();
+        // A cospherical tie can make the facet's planar triangulation pick the other
+        // diagonal than the tetrahedralization: align it before refining anything.
+        let mut flipped = 0;
+        if missing_segments.is_empty() && !missing_tris.is_empty() {
+            for mesh in &mut state.meshes {
+                flipped += mesh.flip_toward(&faces);
+            }
+        }
+        if flipped > 0 {
+            for k in 0..state.meshes.len() {
+                state.refresh_mesh(k)?;
+            }
+            continue;
+        }
         if missing_segments.is_empty() && missing_tris.is_empty() {
-            break;
+            let bound = state.options.max_radius_edge;
+            match bound {
+                Some(bound) if state.refine_quality(bound)? => continue,
+                _ => break,
+            }
         }
         publish(
             &state,
@@ -592,6 +894,8 @@ fn extract(state: State, input_vertices: usize, rounds: usize) -> Result<Conform
         state.facet_steiner,
         state.max_offset,
         state.segments.clone(),
+        state.quality_steiner,
+        state.unresolved_bad,
     );
     let topology = state.delaunay.into_topology().map_err(mesh_error)?;
     let points = topology.points().to_vec();
@@ -603,26 +907,8 @@ fn extract(state: State, input_vertices: usize, rounds: usize) -> Result<Conform
         let [a, b, c, d] = t;
         [[b, c, d], [a, d, c], [a, b, d], [a, c, b]]
     };
-    let mut outside = vec![false; cells.len()];
-    let mut stack = Vec::new();
-    for (i, t) in cells.iter().enumerate() {
-        for (k, f) in faces_of(*t).into_iter().enumerate() {
-            if neighbors[i][k].is_none() && !facet_keys.contains(&face_key(f)) && !outside[i] {
-                outside[i] = true;
-                stack.push(i);
-            }
-        }
-    }
-    while let Some(i) = stack.pop() {
-        for (k, f) in faces_of(cells[i]).into_iter().enumerate() {
-            if let Some(j) = neighbors[i][k] {
-                if !outside[j] && !facet_keys.contains(&face_key(f)) {
-                    outside[j] = true;
-                    stack.push(j);
-                }
-            }
-        }
-    }
+    let facet_list: Vec<[usize; 3]> = facets.iter().map(|(f, _)| *f).collect();
+    let outside = outside_cells(cells, neighbors, &facet_list, &points);
     let interior: Vec<[usize; 4]> = cells
         .iter()
         .zip(&outside)
@@ -640,9 +926,16 @@ fn extract(state: State, input_vertices: usize, rounds: usize) -> Result<Conform
         }
     }
     if facet_keys.iter().any(|k| uses.get(k) != Some(&1)) {
+        let bad = facet_keys
+            .iter()
+            .filter(|k| uses.get(*k) != Some(&1))
+            .count();
         return Err(fail(
             ErrorKind::Topology,
-            "recovered sub-facets do not bound the extracted cells exactly once",
+            format!(
+                "{bad} of {} recovered sub-facets do not bound the extracted cells exactly once",
+                facet_keys.len()
+            ),
         ));
     }
     let tet_volume = |t: &[usize; 4]| {
@@ -664,6 +957,10 @@ fn extract(state: State, input_vertices: usize, rounds: usize) -> Result<Conform
             "PLC shell is not outward oriented with positive enclosed volume",
         ));
     }
+    let max_radius_edge_ratio = interior
+        .iter()
+        .map(|t| tet_circumsphere(t.map(|v| points[v])).map_or(f64::INFINITY, |x| x.1))
+        .fold(0., f64::max);
     let volume_error_relative = (cell_volume - enclosed).abs() / enclosed;
     if volume_error_relative > 1e-9 {
         return Err(fail(
@@ -678,6 +975,9 @@ fn extract(state: State, input_vertices: usize, rounds: usize) -> Result<Conform
             facet_steiner: stats.1,
             rounds,
             max_steiner_offset_relative: stats.2,
+            quality_steiner: stats.4,
+            max_radius_edge_ratio,
+            unresolved_bad_cells: stats.5,
             hull_cells: cells.len(),
             interior_cells: interior.len(),
             volume_error_relative,

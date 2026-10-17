@@ -203,3 +203,51 @@ fn a_strongly_graded_input_exceeds_a_small_steiner_budget_instead_of_looping() {
         ErrorKind::Limit
     );
 }
+
+#[test]
+fn radius_edge_refinement_bounds_the_slab_cells_and_keeps_the_volume() {
+    let (v, t) = plate(3., None, 1.);
+    let base = conform(&v, &t, Options::default(), |_| true).unwrap();
+    let options = Options {
+        max_radius_edge: Some(2.),
+        ..Options::default()
+    };
+    let m = conform(&v, &t, options, |_| true).unwrap();
+    assert!((volume_of(&m.points, &m.cells) - 9.).abs() < 1e-10);
+    assert!(m.report.interior_cells > base.report.interior_cells);
+    assert_eq!(m.report.unresolved_bad_cells, 0);
+    assert!(
+        m.report.max_radius_edge_ratio <= 2. + 1e-9,
+        "ratio {}",
+        m.report.max_radius_edge_ratio
+    );
+    assert!(m.report.max_radius_edge_ratio < base.report.max_radius_edge_ratio);
+    // the boundary is unchanged: every sub-facet still bounds the cells once
+    let faces: Vec<[usize; 3]> = m
+        .cells
+        .iter()
+        .flat_map(|&[a, b, c, d]| [[a, b, c], [a, b, d], [a, c, d], [b, c, d]])
+        .map(face_key)
+        .collect();
+    for (f, _) in &m.facets {
+        assert_eq!(faces.iter().filter(|k| **k == face_key(*f)).count(), 1);
+    }
+}
+
+#[test]
+fn a_thin_slab_with_seven_degree_face_diagonals_refuses_instead_of_descending_forever() {
+    // The 4:0.5 side walls are triangulated with diagonals at 7 degrees to the
+    // box edges. Plain recovery succeeds, but quality refinement toward those
+    // corners does not terminate (known limit): it must hit the budget.
+    let (v, t) = plate(4., None, 0.5);
+    assert!(conform(&v, &t, Options::default(), |_| true).is_ok());
+    let options = Options {
+        max_steiner: 300,
+        max_radius_edge: Some(2.),
+        ..Options::default()
+    };
+    assert_eq!(
+        conform(&v, &t, options, |_| true).unwrap_err().kind,
+        ErrorKind::Limit
+    );
+}

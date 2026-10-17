@@ -590,3 +590,7 @@ Branch `feature/native-cad-line-trims` (stacked #82 -> #83 -> #84) resolves plan
 ## 2026-10-17 — Phase 58 conforming Delaunay
 
 Branch `feature/native-cad-conforming-delaunay` (stacked #82 -> #83 -> #84 -> #85) adds `delaunay3` and `plc_conform` ([Phase 58](issue-46-phase-58.md)). Works on well-conditioned PLCs; the NEMA17 sampled shell diverges (documented, refuses in ~2 s). Next: boundary recovery by reconnection or surface remesh. #82-#85 remain unmerged (auto-mode classifier denies `gh pr merge`; user merges).
+
+## 2026-10-17 — Phase 59 radius-edge refinement
+
+Branch `feature/native-cad-quality-refinement` (stacked on #86) adds facet tie alignment, a leak-proof extraction and `max_radius_edge` ([Phase 59](issue-46-phase-59.md)). Known limits pinned by tests: 7-degree corner diagonals and the NEMA17 sampled shell still refuse with `Limit`. PRs #82-#86 unmerged (user merges). Next: boundary recovery by local reconnection / surface remesh, sliver removal.

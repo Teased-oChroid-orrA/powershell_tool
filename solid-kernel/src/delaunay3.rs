@@ -34,6 +34,7 @@ pub(crate) struct Delaunay3 {
     max_cells: usize,
     marks: Vec<u32>,
     epoch: u32,
+    removed: Vec<[usize; 4]>,
 }
 impl Delaunay3 {
     pub fn new(seed: &TetTopology, max_cells: usize) -> Self {
@@ -57,7 +58,31 @@ impl Delaunay3 {
             last: 0,
             max_cells,
             epoch: 0,
+            removed: Vec::new(),
         }
+    }
+    /// Vertex sets of the tetrahedra destroyed by the most recent insertion.
+    pub fn last_removed(&self) -> &[[usize; 4]] {
+        &self.removed
+    }
+    /// Dense copy of the live tetrahedra with their face neighbours (same face
+    /// order as `TetTopology::neighbors`).
+    pub fn snapshot(&self) -> (Vec<[usize; 4]>, Vec<[Option<usize>; 4]>) {
+        let mut dense = vec![NONE; self.tets.len()];
+        let mut cells = Vec::with_capacity(self.live);
+        for (i, t) in self.tets.iter().enumerate() {
+            if t.alive {
+                dense[i] = cells.len();
+                cells.push(t.v);
+            }
+        }
+        let neighbors = self
+            .tets
+            .iter()
+            .filter(|t| t.alive)
+            .map(|t| t.n.map(|n| (n != NONE).then(|| dense[n])))
+            .collect();
+        (cells, neighbors)
     }
     pub fn points(&self) -> &[Point] {
         &self.points
@@ -174,6 +199,8 @@ impl Delaunay3 {
             ));
         }
         // Commit: allocate the cone tetrahedra, link them, retire the cavity.
+        let removed_vertices: BTreeMap<usize, [usize; 4]> =
+            cavity.iter().map(|&c| (c, self.tets[c].v)).collect();
         let mut created = Vec::with_capacity(cones.len());
         let mut edges: BTreeMap<[usize; 2], (usize, usize)> = BTreeMap::new();
         let mut dead = cavity.clone();
@@ -224,6 +251,7 @@ impl Delaunay3 {
                 }
             }
         }
+        self.removed = cavity.iter().map(|&c| removed_vertices[&c]).collect();
         for c in dead {
             self.tets[c].alive = false;
             self.free.push(c);
