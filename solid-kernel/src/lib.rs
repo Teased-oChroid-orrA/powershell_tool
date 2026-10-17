@@ -44,6 +44,7 @@ pub mod step_curve_agreement;
 pub mod step_curve_audit;
 pub mod step_spline_circle;
 pub mod step_spline_map;
+pub mod step_parameter_map;
 pub mod step_pcurve_distance;
 pub mod step_spline_edge;
 pub mod step_nurbs;

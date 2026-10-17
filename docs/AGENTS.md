@@ -260,3 +260,5 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Phase 51 explicit finite spline intervals](issue-46-phase-51.md): clipped bounded sampling, checked source endpoints/sense and unchanged raw parameters.
 
 - [Current native CAD/meshing resume instructions](issue-46-resume.md): Claude Code continuation entry and evidence workflow.
+
+- [Phase 52 shared source parameter queries](issue-46-phase-52.md): actual plane/cylinder/spline map dispatch and bounded world-space search.

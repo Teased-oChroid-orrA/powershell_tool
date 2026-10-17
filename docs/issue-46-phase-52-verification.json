@@ -1,0 +1,36 @@
+{
+  "qualified_source_commit": "b3f2fcc40b76196e9880f346b044de912cbba1dc",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 183,
+      "failed": 0,
+      "ignored": 0,
+      "warnings": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 166,
+      "failed": 0,
+      "ignored": 0,
+      "warnings": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "app_compile": "passed",
+  "development_failures": [],
+  "evidence": [
+    "All 228 actual bracket p-curve declarations queried through source plane/cylinder maps: 200 lines, 13 circles, 15 splines",
+    "Independent translated-plane global distance 2 mm and 2000 mm with unchanged raw interval",
+    "Basis/source mismatch, budgets and initial/final cancellation refusals",
+    "Existing eight spline-map tests unchanged and passed"
+  ],
+  "not_verified": [
+    "Unique projection, finite trim/master/body validity",
+    "General native spline B-Rep/PLC/quality and later gates",
+    "Current Windows/macOS runtime"
+  ]
+}
