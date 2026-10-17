@@ -2,8 +2,8 @@
   "epic": 46,
   "epic_complete": false,
   "branch": "feature/native-cad-spline-circle-deviation",
-  "pull_request": null,
-  "pull_request_state": "pending creation",
+  "pull_request": 73,
+  "pull_request_state": "draft",
   "main": "9977032f6d2caba5aa55c26c4a4546c288958106",
   "merged_prs": [
     65,
