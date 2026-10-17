@@ -77,3 +77,5 @@ Phases 39–40 (`b35c27c`): source-bound actual-plane UV→mm interval maps and 
 - [Phase 48 source spline parameter maps](issue-46-phase-48.md): composed p-curve bounds, single physical scaling and reproduced exact-boundary interval correction.
 
 - [Phase 49 world-space p-curve distance brackets](issue-46-phase-49.md): shared bounded search, source units/cells/work caps and explicit candidate/projection limits.
+
+- [Phase 50 bounded quadratic sampler acceleration](issue-46-phase-50.md): unchanged error tolerance, actual split-factor enclosures, work reduction and qualification.
