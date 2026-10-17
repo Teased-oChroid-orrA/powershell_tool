@@ -2,8 +2,8 @@
   "epic": 46,
   "epic_complete": false,
   "branch": "main",
-  "pull_request": null,
-  "pull_request_state": "merged",
+  "pull_request": 95,
+  "pull_request_state": "open_pending_user_review",
   "merged_prs": [
     65,
     66,
@@ -32,10 +32,11 @@
     90,
     91,
     92,
-    93
+    93,
+    94
   ],
   "latest_qualified_source": "de5ceed56c5f146cf55a275ce1b10959836df53a",
-  "latest_phase": 67,
+  "latest_phase": 68,
   "progress_snapshot": "issue-46-phase-53-verification.json",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
@@ -51,11 +52,20 @@
   "last_confirmed_main_merge": "4b19daa",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Phase 67 metric-aware smoothing in metric_refine; next: edge collapse/coarsening, curved-boundary projection (#58/#55), constrained PLC insertion (#52/#53)",
+    "scope": "Phase 68 edge collapse; PRs now stay open and stacked for owner review (see pending_prs); next: constrained PLC insertion (#52/#53), curved-boundary projection (#55)",
     "status": "ready_for_pr",
-    "branch": "feature/native-cad-metric-smoothing"
+    "branch": "feature/native-cad-edge-collapse"
   },
   "base_main_head": "9cdefdcbb254328489de752295d8bd4454e5f2b4",
   "completion_checklist": "issue-46-completion-checklist.md",
-  "resume": "issue-46-resume.md"
+  "resume": "issue-46-resume.md",
+  "pending_prs": [
+    {
+      "number": 95,
+      "branch": "feature/native-cad-edge-collapse",
+      "base": "main",
+      "phase": 68,
+      "state": "open, awaiting owner review"
+    }
+  ]
 }

@@ -1,0 +1,14 @@
+# Issue 46 — Phase 68: edge collapse and coarsening for `metric_refine` (#58)
+
+New `meshing::tet_collapse::coarsen(top, options, quality, length)`: collapse the short edge `u-v` by deleting the cells that hold both and replacing `u` with `v` in the rest of `u`'s star. Only interior, unprotected vertices are removed (the boundary surface and protected vertices survive exactly); they may collapse onto any vertex. A collapse is accepted only when every changed tetrahedron keeps its exact orientation (`tet_topology::orientation`, never `Equal`; this makes the star of `v` a valid refill of the star of `u`), no changed cell coincides with an existing one, every new edge at `v` is at most `max_length`, and every new cell has quality at least `min_quality`. Collapses of one pass touch disjoint neighbourhoods; the result is compacted and returns the old-to-new vertex map; boundary face set and total volume are re-checked.
+
+`metric_refine::refine` now ends with up to `RefineOptions::coarsen_passes` (default 10, `0` disables) passes of collapse on edges shorter than `1/sqrt(2)` in the metric, with `max_length` the refinement target and `min_quality` the mesh's current worst cell, so coarsening never worsens the worst cell and never breaks `converged`. Metrics follow the vertex map.
+
+**Finding while integrating.** Smoothing after the collapse stretched one edge to 1.431 (> sqrt(2)), turning `converged` false; and a collapse floor of 0.05 let the worst cell fall from 0.205 to 0.120. So the post-collapse smoothing pass was dropped, and the quality floor is the current worst cell.
+
+Evidence (macOS arm64, debug):
+- Random clouds (8 corners + 150 interior, edges < 0.25 collapsed, max 0.6): 158 to 79-84 vertices, 904-945 to 423-462 cells; boundary vertices bit-identical; volume 1 to 1e-12; worst cell never below `min(before, 0.05)`; deterministic; protected vertices never removed; no candidates changes nothing and the map is the identity.
+- Layer field (4:1) through `refine`: cells 477 to 437 (-8 %), edges in the metric band 71.3 % to 73.8 %, worst quality unchanged (0.2054), longest edge 1.414, `converged` true; volume and boundary area unchanged to 1e-12.
+- Full `fea-core` suite 487 passed, 0 failed; clippy clean for the touched files.
+
+Limits (not fixed): the coarsening gain on a refine-only mesh is modest (-8 %) because splitting rarely makes interior edges much shorter than the band; coarsening to a field coarser than the input mesh (the case collapse is really for) is exercised only on random clouds, not through `refine`; boundary vertices are never collapsed (no surface coarsening, so a too-fine boundary stays); curved boundaries, AMR-controller integration and a mesher driven by the field remain open; no Windows or hosted-CI evidence; not wired into production (OCCT stays production).

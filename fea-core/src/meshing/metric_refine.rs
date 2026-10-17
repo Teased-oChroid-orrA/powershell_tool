@@ -4,12 +4,13 @@
 //!
 //! Splitting an edge at its midpoint replaces each tetrahedron around it by two, so
 //! the mesh stays conforming and the boundary stays the same surface (its triangles
-//! are subdivided). Nothing is removed: this refines toward the field and cannot
-//! coarsen. Smoothing moves interior vertices and boundary vertices that lie in an
+//! are subdivided). Collapse (`coarsen_passes`) removes interior vertices of edges shorter
+//! than the band. Smoothing moves interior vertices and boundary vertices that lie in an
 //! exactly planar patch (never edges, corners or curved boundaries), so the polyhedral
 //! boundary is preserved; boundary points are not projected onto any curved CAD surface.
 use super::{
     metric::{edge_length, Metric, MetricBounds},
+    tet_collapse::{coarsen, CollapseOptions},
     tet_flip::{improve_by, FlipOptions, FlipReport},
     tet_smooth::{smooth_vertices_by, SmoothOptions},
     tet_topology::{Point, TetTopology},
@@ -29,6 +30,9 @@ pub struct RefineOptions {
     /// Passes of metric-quality vertex smoothing of interior vertices after each reconnection; `0` disables it. Boundary
     /// vertices never move, and the metric is re-evaluated at every moved vertex.
     pub smooth_passes: usize,
+    /// Passes of edge collapse after the splitting loop (interior vertices only; new edges stay within `max_length`);
+    /// `0` disables it. The refinement alone never coarsens.
+    pub coarsen_passes: usize,
 }
 impl Default for RefineOptions {
     fn default() -> Self {
@@ -38,6 +42,7 @@ impl Default for RefineOptions {
             max_cells: 1_000_000,
             flips: Some(FlipOptions::default()),
             smooth_passes: 8,
+            coarsen_passes: 10,
         }
     }
 }
@@ -135,6 +140,32 @@ pub fn refine(
         min_quality_after: before.min_quality,
         flips: Vec::new(),
         converged: false,
+    };
+    let smooth_quality = |p: &[Point], t: [usize; 4]| -> f64 {
+        let m: Result<Vec<Metric>, MeshError> = t.iter().map(|&v| evaluate(p[v])).collect();
+        match m.ok().and_then(|m| Metric::mean(&m)) {
+            Some(mean) => {
+                let pts = t.map(|v| mean.transform(p[v]));
+                let q = super::quality::element_quality(ElementKind::Tet4, &pts).radius_ratio;
+                // Shape alone would let smoothing erase the grading, so the cell is also penalised for edges
+                // leaving the classical band [1/sqrt(2), sqrt(2)] of its metric.
+                let (mut lo, mut hi) = (f64::INFINITY, 0f64);
+                for (a, b) in [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)] {
+                    let e = std::array::from_fn(|k| p[t[b]][k] - p[t[a]][k]);
+                    let l = mean.length(e);
+                    lo = lo.min(l);
+                    hi = hi.max(l);
+                }
+                let band = (std::f64::consts::SQRT_2 / hi).min(1.)
+                    * (lo * std::f64::consts::SQRT_2).min(1.);
+                if q.is_finite() {
+                    q.max(0.) * band
+                } else {
+                    0.
+                }
+            }
+            None => 0.,
+        }
     };
     let mut current = top.clone();
     for _ in 0..options.max_passes {
@@ -260,39 +291,12 @@ pub fn refine(
             report.flips.push(flips);
         }
         if options.smooth_passes > 0 {
-            let q = |p: &[Point], t: [usize; 4]| -> f64 {
-                let m: Result<Vec<Metric>, MeshError> = t.iter().map(|&v| evaluate(p[v])).collect();
-                match m.ok().and_then(|m| Metric::mean(&m)) {
-                    Some(mean) => {
-                        let pts = t.map(|v| mean.transform(p[v]));
-                        let q =
-                            super::quality::element_quality(ElementKind::Tet4, &pts).radius_ratio;
-                        // Shape alone would let smoothing erase the grading, so the cell is also penalised for edges
-                        // leaving the classical band [1/sqrt(2), sqrt(2)] of its metric.
-                        let (mut lo, mut hi) = (f64::INFINITY, 0f64);
-                        for (a, b) in [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)] {
-                            let e = std::array::from_fn(|k| p[t[b]][k] - p[t[a]][k]);
-                            let l = mean.length(e);
-                            lo = lo.min(l);
-                            hi = hi.max(l);
-                        }
-                        let band = (std::f64::consts::SQRT_2 / hi).min(1.)
-                            * (lo * std::f64::consts::SQRT_2).min(1.);
-                        if q.is_finite() {
-                            q.max(0.) * band
-                        } else {
-                            0.
-                        }
-                    }
-                    None => 0.,
-                }
-            };
             let opt = SmoothOptions {
                 max_passes: options.smooth_passes,
                 slide_planar_boundary: true,
                 ..SmoothOptions::default()
             };
-            let (smoothed, _) = smooth_vertices_by(&current, &opt, &q)?;
+            let (smoothed, _) = smooth_vertices_by(&current, &opt, &smooth_quality)?;
             for (v, (old, new)) in points.iter_mut().zip(smoothed.points()).enumerate() {
                 if old != new {
                     *old = *new;
@@ -303,6 +307,30 @@ pub fn refine(
             cells = current.cells().to_vec();
         }
         report.passes += 1;
+    }
+    if options.coarsen_passes > 0 {
+        let lo = std::f64::consts::FRAC_1_SQRT_2;
+        let len =
+            |p: &[Point], a: usize, b: usize| edge_length(p[a], p[b], &metrics[a], &metrics[b]);
+        let opt = CollapseOptions {
+            min_length: lo,
+            max_length: options.max_length,
+            max_passes: options.coarsen_passes,
+            // Never make the worst cell worse than it already is.
+            min_quality: stats(&points, &metrics, &cells).min_quality,
+            ..CollapseOptions::default()
+        };
+        let (coarse, _, map) = coarsen(&current, &opt, &smooth_quality, &len)?;
+        let mut new_metrics = vec![metrics[0]; coarse.points().len()];
+        for (old, new) in map.iter().enumerate() {
+            if let Some(n) = new {
+                new_metrics[*n] = metrics[old];
+            }
+        }
+        points = coarse.points().to_vec();
+        metrics = new_metrics;
+        cells = coarse.cells().to_vec();
+        current = coarse;
     }
     let after = stats(&points, &metrics, &cells);
     report.cells_after = cells.len();
@@ -504,6 +532,44 @@ mod tests {
                 "boundary vertex left the cube surface"
             );
         }
+    }
+    #[test]
+    fn coarsening_removes_over_refinement_without_losing_the_metric_band() {
+        let bounds = MetricBounds::new(0.01, 10., 100.).unwrap();
+        let field = |p: Point| {
+            let hx = 0.1 + 0.7 * (p[0] - 0.5).abs();
+            Metric::from_sizes(
+                [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
+                [hx.min(0.4), 0.4, 0.4],
+            )
+        };
+        let off = RefineOptions {
+            coarsen_passes: 0,
+            ..RefineOptions::default()
+        };
+        let (_, r0) = refine(&cube(), &field, &bounds, off).unwrap();
+        let on = RefineOptions {
+            coarsen_passes: 10,
+            ..off
+        };
+        let (out, r) = refine(&cube(), &field, &bounds, on).unwrap();
+        eprintln!(
+            "COARSEN cells {} -> {}, band {:.3} -> {:.3}, minq {:.4} -> {:.4}, longest {:.3} -> {:.3}, converged {}",
+            r0.cells_after, r.cells_after, r0.edges_in_band_after, r.edges_in_band_after,
+            r0.min_quality_after, r.min_quality_after, r0.longest_edge_after, r.longest_edge_after, r.converged
+        );
+        assert!(r.cells_after < r0.cells_after);
+        assert!(r.converged, "{r:?}");
+        assert!(
+            r.edges_in_band_after >= r0.edges_in_band_after - 1e-12,
+            "{r:?} {r0:?}"
+        );
+        assert!(
+            r.min_quality_after >= r0.min_quality_after - 1e-12,
+            "{r:?} {r0:?}"
+        );
+        assert!((volume(&out) - 1.).abs() < 1e-12);
+        assert!((boundary_area(&out) - 6.).abs() < 1e-12);
     }
     #[test]
     fn invalid_fields_budgets_and_a_met_target_are_handled_explicitly() {
