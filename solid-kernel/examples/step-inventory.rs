@@ -15,7 +15,7 @@ fn main() {
 }
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
-    let usage = "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface] [--pcurve-audit] [--finite-arcs] [--repair-orientation] [--plc] [--clean-shell] [--conform [--conform-max-steiner N] [--conform-missing-only] [--conform-radius-edge B] [--conform-reconnect]] [--star-seed X,Y,Z] [--trial-kernel] (kernel coordinates in mm)";
+    let usage = "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface] [--pcurve-audit] [--finite-arcs] [--repair-orientation] [--plc] [--clean-shell] [--refine-shell] [--conform [--conform-max-steiner N] [--conform-missing-only] [--conform-radius-edge B] [--conform-reconnect]] [--star-seed X,Y,Z] [--trial-kernel] (kernel coordinates in mm)";
     let path = args.next().ok_or(usage)?;
     if path == "--help" {
         println!("{usage}");
@@ -29,6 +29,7 @@ fn run() -> Result<(), String> {
     let mut conform_radius_edge = None;
     let mut conform_reconnect = false;
     let mut clean_shell = false;
+    let mut refine_shell = false;
     let mut kernel = None;
     let mut trial_kernel = false;
     let mut mode = 0;
@@ -51,6 +52,9 @@ fn run() -> Result<(), String> {
             mode = mode.max(2);
         } else if flag == "--conform-missing-only" {
             conform_missing_only = true;
+        } else if flag == "--refine-shell" {
+            refine_shell = true;
+            clean_shell = true;
         } else if flag == "--clean-shell" {
             clean_shell = true;
         } else if flag == "--conform-reconnect" {
@@ -308,13 +312,14 @@ fn run() -> Result<(), String> {
                 if conform_requested {
                     use fea_core::meshing::compatibility as registry;
                     let (shell_vertices, shell_facets) = if clean_shell {
-                        let p = solid_kernel::shell_prepare::prepare_shell(
+                        let p = solid_kernel::shell_prepare::prepare_shell_with(
                             plc.vertices(),
                             plc.facets(),
                             Default::default(),
                             Default::default(),
+                            refine_shell.then(Default::default),
                         );
-                        println!("Shell preparation: smallest shell angle {:.4} -> {:.4} degrees; weld {:?}; defeature {:?}; cleanup {:?}; notes {:?}", p.angle_before_deg, p.angle_after_deg, p.weld, p.defeature, p.cleanup, p.notes);
+                        println!("Shell preparation: smallest shell angle {:.4} -> {:.4} degrees; weld {:?}; defeature {:?}; cleanup {:?}; refine {:?}; notes {:?}", p.angle_before_deg, p.angle_after_deg, p.weld, p.defeature, p.cleanup, p.refine, p.notes);
                         for (a, f, pts) in
                             solid_kernel::shell_patch::worst_triangles(&p.vertices, &p.facets, 4)
                         {

@@ -34,6 +34,7 @@ pub mod plc;
 pub mod plc_conform;
 pub mod shell_defeature;
 pub mod shell_patch;
+pub mod shell_refine;
 pub mod shell_prepare;
 pub mod shell_weld;
 pub mod plc_star;

@@ -7,6 +7,7 @@ use crate::{
     plc_conform::min_shell_angle_deg,
     shell_defeature::{self, defeature_slivers},
     shell_patch::{self, dissolve_flat},
+    shell_refine::{self, refine_surface},
     shell_weld::{self, weld_short_edges},
     V3,
 };
@@ -21,6 +22,7 @@ pub struct Prepared {
     pub weld: Option<shell_weld::Report>,
     pub defeature: Option<shell_defeature::Report>,
     pub cleanup: Option<shell_patch::Report>,
+    pub refine: Option<shell_refine::Report>,
     /// Why a stage did not run, in order.
     pub notes: Vec<String>,
 }
@@ -31,6 +33,19 @@ pub fn prepare_shell(
     facets: &[[usize; 3]],
     weld_options: shell_weld::Options,
     cleanup_options: shell_patch::Options,
+) -> Prepared {
+    prepare_shell_with(vertices, facets, weld_options, cleanup_options, None)
+}
+
+/// [`prepare_shell`] with the optional last stage: shape-preserving surface Steiner refinement (`shell_refine`). It is opt-in
+/// because it adds vertices (a budget of `max_new_vertex_factor` times the shell's) and cannot raise the smallest input angle
+/// above what the faces' own corners allow.
+pub fn prepare_shell_with(
+    vertices: &[V3],
+    facets: &[[usize; 3]],
+    weld_options: shell_weld::Options,
+    cleanup_options: shell_patch::Options,
+    refine_options: Option<shell_refine::Options>,
 ) -> Prepared {
     let angle_before = min_shell_angle_deg(vertices, facets);
     let mut notes = Vec::new();
@@ -95,6 +110,22 @@ pub fn prepare_shell(
             None
         }
     };
+    // Surface Steiner points (opt-in): chords across coarsely sampled arcs cannot be fixed with the existing vertices.
+    let refine = match refine_options {
+        None => None,
+        Some(options) => match refine_surface(&v, &f, options) {
+            Ok(r) => {
+                let report = r.report.clone();
+                v = r.vertices;
+                f = r.facets;
+                Some(report)
+            }
+            Err(e) => {
+                notes.push(format!("surface refinement skipped: {e}"));
+                None
+            }
+        },
+    };
     // Never hand back a shell with a worse input angle than the one supplied.
     let angle_after = min_shell_angle_deg(&v, &f);
     if angle_after < angle_before * (1. - 1e-9) {
@@ -109,6 +140,7 @@ pub fn prepare_shell(
             weld,
             defeature,
             cleanup,
+            refine,
             notes,
         };
     }
@@ -120,6 +152,7 @@ pub fn prepare_shell(
         weld,
         defeature,
         cleanup,
+        refine,
         notes,
     }
 }
