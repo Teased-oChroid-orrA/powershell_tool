@@ -85,7 +85,7 @@ fn key(mut f: [usize; 3]) -> [usize; 3] {
     f
 }
 fn parity(f: [usize; 3]) -> bool {
-    ((f[0] > f[1]) as u8 + (f[0] > f[2]) as u8 + (f[1] > f[2]) as u8) % 2 == 0
+    ((f[0] > f[1]) as u8 + (f[0] > f[2]) as u8 + (f[1] > f[2]) as u8).is_multiple_of(2)
 }
 
 /// Validated local topology. Coordinates/connectivity are immutable outside checked transactions.

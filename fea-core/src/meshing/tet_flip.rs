@@ -80,6 +80,8 @@ fn faces_of(t: [usize; 4]) -> [[usize; 3]; 4] {
     let [a, b, c, d] = t;
     [[b, c, d], [a, d, c], [a, b, d], [a, c, b]]
 }
+/// Quality of a link triangle's tetrahedron pair, with the pair itself.
+type LinkTriangle = Option<(f64, [[usize; 4]; 2])>;
 struct Candidate {
     gain: f64,
     old: Vec<usize>,
@@ -215,31 +217,30 @@ impl Pass<'_> {
         } else {
             (Ordering::Greater, Ordering::Less)
         };
-        let tri =
-            |i: usize, k: usize, j: usize| -> Result<Option<(f64, [[usize; 4]; 2])>, MeshError> {
-                let (a, b, c) = (link[i], link[k], link[j]);
-                let sp = orientation(
-                    self.points[a],
-                    self.points[b],
-                    self.points[c],
-                    self.points[p],
-                )?;
-                let sq = orientation(
-                    self.points[a],
-                    self.points[b],
-                    self.points[c],
-                    self.points[q],
-                )?;
-                if sp != side_p || sq != side_q {
-                    return Ok(None);
-                }
-                let tp = positive(self.points, [a, b, c, p])?.unwrap();
-                let tq = positive(self.points, [a, b, c, q])?.unwrap();
-                Ok(Some((
-                    quality(self.points, tp).min(quality(self.points, tq)),
-                    [tp, tq],
-                )))
-            };
+        let tri = |i: usize, k: usize, j: usize| -> Result<LinkTriangle, MeshError> {
+            let (a, b, c) = (link[i], link[k], link[j]);
+            let sp = orientation(
+                self.points[a],
+                self.points[b],
+                self.points[c],
+                self.points[p],
+            )?;
+            let sq = orientation(
+                self.points[a],
+                self.points[b],
+                self.points[c],
+                self.points[q],
+            )?;
+            if sp != side_p || sq != side_q {
+                return Ok(None);
+            }
+            let tp = positive(self.points, [a, b, c, p])?.unwrap();
+            let tq = positive(self.points, [a, b, c, q])?.unwrap();
+            Ok(Some((
+                quality(self.points, tp).min(quality(self.points, tq)),
+                [tp, tq],
+            )))
+        };
         let mut best = vec![vec![f64::NEG_INFINITY; n]; n];
         let mut pick = vec![vec![0usize; n]; n];
         for i in 0..n - 1 {
