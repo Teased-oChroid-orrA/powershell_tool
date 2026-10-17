@@ -495,7 +495,7 @@ mod tests {
                     // a regular cell is a full pad (one local size) inside the circle
                     CellState::Structured => assert!(far <= 5.0 - 0.25 + 1e-9, "structured cell reaching radius {far}"),
                     // a void cell has no part of the disc
-                    CellState::Void => assert!(near >= 5.0 - 1e-9 || (a[0] * b[0] > 0.0 && a[1] * b[1] > 0.0 && near >= 5.0 - 1e-9), "void cell at radius {near}"),
+                    CellState::Void => assert!(near >= 5.0 - 1e-9, "void cell at radius {near}"),
                     CellState::Unstructured => {}
                 }
             }
