@@ -1,0 +1,29 @@
+{
+  "source_commit": "6c96b318cae9845c4efc65c1b0a463bc6afb02fa",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 135,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 118,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "development_failures": [],
+  "real_source_case": "nema17-motor-bracket.step PCURVE #235 / extended rational quadratic #237; fixture parameter controls embedded with z=0 without length conversion",
+  "supported": "Explicit complete finite active knot/control representation; no wrapping; STEP/body defaults remain clamped",
+  "not_verified": [
+    "Production p-curve decoding/context/unit/master agreement",
+    "General periodic/curved/higher-order spline-body import and remaining epic gates",
+    "Latest Windows/macOS execution"
+  ]
+}
