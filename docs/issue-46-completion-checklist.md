@@ -44,6 +44,7 @@ Checked lines are delivered scoped increments, with evidence committed in this r
 - [x] #55: Rigorous Bernstein-bound validity of Tet10/Tri6 maps, mesh-level check, and the mesher's sampled guard hardened ([Phase 64](issue-46-phase-64.md)); exact CAD projection and convergence evidence remain open.
 - [x] #55: Reconnect-and-snap-again boundary layer in the SDF mesher: boundary vertices left off the surface of the unit sphere fall from 33 % / 19 % / 10 % to 0 % / 4.6 % / 0 % ([Phase 73](issue-46-phase-73.md)); exact CAD projection and convergence evidence remain open.
 - [ ] #55: High-order curved CAD-conforming elements (exact projection, convergence, cost).
+- [x] #56: Verified prism-to-tetrahedron transition: wedges cut into tetrahedra by a global-node diagonal rule, exhaustive over all 720 numberings, conformity and linear patch test on a mixed Wedge6/Tet4 mesh, refusal of quad-separating selections ([Phase 78](issue-46-phase-78.md)); hex-wedge, hex-pyramid-tet and quad-tet transitions remain open.
 - [ ] #56: Verified structured–unstructured integration and transitions.
 - [x] #57: Validated SPD metric tensors, metric-space lengths, log-Euclidean interpolation, intersection, gradation, curvature- and error-field-driven sizes and complexity/budget control, all with analytic tests ([Phase 62](issue-46-phase-62.md)). No mesher consumes the field yet, so the gate stays open until #58 integrates it.
 - [ ] #57: Verified spatial metric fields consumed by a mesher.
