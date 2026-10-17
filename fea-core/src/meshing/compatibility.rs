@@ -63,7 +63,9 @@ pub struct Budget {
 /// Registry version changes whenever supported combinations/semantics change.
 /// 2: `NativeConstrained` became available for closed triangulated shells (Tet4,
 /// linear elastic 3D) whose smallest angle is at least [`NATIVE_MIN_SHELL_ANGLE_DEG`].
-pub const REGISTRY_VERSION: u32 = 2;
+/// 3: strategy generation ([`candidates`]), the full verdict table ([`explain`]) and the
+/// evidence matrix ([`EVIDENCE`]) were added; the verdicts of [`check`] did not change.
+pub const REGISTRY_VERSION: u32 = 3;
 /// Smallest shell angle with measured evidence (`docs/issue-46-phase-58.md`, `-59`):
 /// 18-degree wedge/diagonal inputs recover and refine; 7-degree diagonals and the
 /// sampled NEMA17 shell do not terminate. An evidence bound, not a theorem.
@@ -159,6 +161,83 @@ pub fn select(
         })
         .ok_or(Reason::StrategyUnavailable)
 }
+/// Every strategy the registry knows, in the audited preference order used by [`candidates`].
+pub const STRATEGIES: [Strategy; 6] = [
+    Strategy::Structured2d,
+    Strategy::Unstructured2d,
+    Strategy::SweptHybrid,
+    Strategy::LatticeTet,
+    Strategy::NativeConstrained,
+    Strategy::GeneralHybrid3d,
+];
+/// Strategy generation: one request per known strategy for the same problem, in the audited order, so that [`select`] and
+/// [`explain`] see every option. The problem is described by `template` (its `strategy` field is replaced); nothing here
+/// judges compatibility, [`check`] does.
+pub fn candidates(template: &Request) -> Vec<Request> {
+    STRATEGIES
+        .iter()
+        .map(|&strategy| Request {
+            strategy,
+            ..*template
+        })
+        .collect()
+}
+/// The verdict of every candidate, in order: the full table behind a [`select`] answer, including why each rejected one
+/// was rejected.
+pub fn explain(candidates: &[Request], budget: Budget) -> Vec<(Strategy, Reason)> {
+    candidates
+        .iter()
+        .map(|r| (r.strategy, check(r, budget)))
+        .collect()
+}
+/// One audited claim about a strategy and the committed document holding its measurements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Evidence {
+    pub strategy: Strategy,
+    pub claim: &'static str,
+    /// Path relative to the repository root.
+    pub doc: &'static str,
+    /// First registry version in which the claim holds.
+    pub since: u32,
+}
+/// The evidence matrix: what each available strategy is certified for, and where the numbers are. A strategy without an
+/// entry here must not be available (`tests::every_available_strategy_has_evidence_in_a_committed_document`).
+pub const EVIDENCE: &[Evidence] = &[
+    Evidence {
+        strategy: Strategy::Structured2d,
+        claim: "structured quadrilateral meshes of planar regions, linear elastic 2D",
+        doc: "docs/fea-core.md",
+        since: 1,
+    },
+    Evidence {
+        strategy: Strategy::Unstructured2d,
+        claim: "constrained Delaunay triangles and quads of planar regions, linear elastic 2D",
+        doc: "docs/fea-core.md",
+        since: 1,
+    },
+    Evidence {
+        strategy: Strategy::SweptHybrid,
+        claim: "hex/wedge sweeps of sweepable sections, linear elastic 3D",
+        doc: "docs/fea-core.md",
+        since: 1,
+    },
+    Evidence {
+        strategy: Strategy::LatticeTet,
+        claim: "signed-distance lattice tetrahedra (Tet4/Tet10), linear elastic 3D",
+        doc: "docs/issue-46-phase-64.md",
+        since: 1,
+    },
+    Evidence {
+        strategy: Strategy::NativeConstrained,
+        claim: "conforming Delaunay recovery of closed shells whose smallest angle is at least the audited bound",
+        doc: "docs/issue-46-phase-61.md",
+        since: 2,
+    },
+];
+/// Whether any request could ever be compatible with `strategy` (the registry does not offer it otherwise).
+pub fn is_available(strategy: Strategy) -> bool {
+    strategy != Strategy::GeneralHybrid3d
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,7 +319,7 @@ mod tests {
         let mut exact = native(ElementKind::Tet4, Some(45.));
         exact.require_exact_curved_cad = true;
         assert_eq!(check(&exact, B), Reason::CurvedCadNotCertified);
-        assert_eq!(REGISTRY_VERSION, 2);
+        assert_eq!(REGISTRY_VERSION, 3);
     }
     #[test]
     fn budgets_and_invalid_fixed_choices_never_fall_back_silently() {
@@ -257,5 +336,68 @@ mod tests {
             Err(Reason::StrategyUnavailable)
         );
         assert_eq!(select(&[], B, None), Err(Reason::StrategyUnavailable));
+    }
+    #[test]
+    fn candidates_cover_every_strategy_and_explain_gives_the_whole_verdict_table() {
+        let all = candidates(&r());
+        assert_eq!(all.len(), STRATEGIES.len());
+        assert!(all.iter().zip(STRATEGIES).all(|(c, s)| c.strategy == s));
+        let table = explain(&all, B);
+        let verdict = |s| table.iter().find(|(t, _)| *t == s).unwrap().1;
+        // A Tet10 general solid: only the lattice mesher qualifies; the 2D and sweep strategies mismatch on geometry.
+        assert_eq!(verdict(Strategy::LatticeTet), Reason::Compatible);
+        assert_eq!(verdict(Strategy::Structured2d), Reason::GeometryMismatch);
+        assert_eq!(verdict(Strategy::SweptHybrid), Reason::GeometryMismatch);
+        assert_eq!(
+            verdict(Strategy::NativeConstrained),
+            Reason::ElementMismatch
+        );
+        assert_eq!(
+            verdict(Strategy::GeneralHybrid3d),
+            Reason::StrategyUnavailable
+        );
+        // `select` over generated candidates agrees with the table.
+        assert_eq!(select(&all, B, None).unwrap().index, 3);
+        // With Tet4 and a healthy shell the native strategy also qualifies, after the lattice in the audited order.
+        let mut tet4 = r();
+        tet4.element = ElementKind::Tet4;
+        tet4.shell_min_angle_deg = Some(30.);
+        let table = explain(&candidates(&tet4), B);
+        let ok: Vec<Strategy> = table
+            .iter()
+            .filter(|(_, v)| *v == Reason::Compatible)
+            .map(|(s, _)| *s)
+            .collect();
+        assert_eq!(ok, [Strategy::LatticeTet, Strategy::NativeConstrained]);
+    }
+    #[test]
+    fn every_available_strategy_has_evidence_in_a_committed_document() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        for s in STRATEGIES {
+            let entries: Vec<&Evidence> = EVIDENCE.iter().filter(|e| e.strategy == s).collect();
+            if is_available(s) {
+                assert!(!entries.is_empty(), "{s:?} is available without evidence");
+            } else {
+                assert!(entries.is_empty(), "{s:?} is unavailable but has evidence");
+            }
+            for e in entries {
+                assert!(
+                    root.join(e.doc).is_file(),
+                    "{:?}: evidence document {} is missing",
+                    e.strategy,
+                    e.doc
+                );
+                assert!(e.since >= 1 && e.since <= REGISTRY_VERSION);
+                assert!(!e.claim.is_empty());
+            }
+        }
+        // `is_available` agrees with `check`: no request for an unavailable strategy is ever compatible.
+        for s in STRATEGIES {
+            if !is_available(s) {
+                let mut q = r();
+                q.strategy = s;
+                assert_eq!(check(&q, B), Reason::StrategyUnavailable);
+            }
+        }
     }
 }

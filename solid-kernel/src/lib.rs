@@ -33,6 +33,8 @@ mod delaunay3;
 pub mod plc;
 pub mod plc_conform;
 pub mod shell_patch;
+pub mod shell_prepare;
+pub mod shell_weld;
 pub mod plc_star;
 pub mod cylindrical_step;
 mod bvh;
