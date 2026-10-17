@@ -1,9 +1,9 @@
 {
   "epic": 46,
   "epic_complete": false,
-  "branch": "feature/native-cad-shared-parameter-queries",
+  "branch": "main",
   "pull_request": 80,
-  "pull_request_state": "draft",
+  "pull_request_state": "merged",
   "merged_prs": [
     65,
     66,
@@ -19,7 +19,8 @@
     76,
     77,
     78,
-    79
+    79,
+    80
   ],
   "latest_qualified_source": "b3f2fcc40b76196e9880f346b044de912cbba1dc",
   "latest_phase": 52,
@@ -35,11 +36,12 @@
     "ignored": 0,
     "app_cad_lib_tests_compile": "passed at same source"
   },
-  "last_confirmed_main_merge": "c3adcedba2d5d991772361b070cc49cc83755f27",
+  "last_confirmed_main_merge": "72a021e97d8376f3a7d84ede4552ea27753c51fc",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
     "scope": "Finite source p-curve endpoint agreement, then master/trim/body and remaining roadmap",
-    "status": "planned"
+    "status": "planned",
+    "branch": "feature/native-cad-pcurve-endpoints"
   },
   "base_main_head": "43d506d7cb408ff3ecd70c7ffffeb06f993a9e15"
 }
