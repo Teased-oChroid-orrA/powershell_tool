@@ -262,3 +262,7 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Current native CAD/meshing resume instructions](issue-46-resume.md): Claude Code continuation entry and evidence workflow.
 
 - [Phase 52 shared source parameter queries](issue-46-phase-52.md): actual plane/cylinder/spline map dispatch and bounded world-space search.
+
+- [Phase 53 finite p-curve endpoint checks](issue-46-phase-53.md): explicit parameters/order, source association and outward physical endpoint agreement.
+
+- [Repository native CAD/meshing completion checklist](issue-46-completion-checklist.md): checked delivered increments and open priority exit gates.

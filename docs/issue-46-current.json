@@ -1,9 +1,9 @@
 {
   "epic": 46,
   "epic_complete": false,
-  "branch": "main",
-  "pull_request": 80,
-  "pull_request_state": "merged",
+  "branch": "feature/native-cad-pcurve-endpoints",
+  "pull_request": null,
+  "pull_request_state": "pending",
   "merged_prs": [
     65,
     66,
@@ -22,16 +22,16 @@
     79,
     80
   ],
-  "latest_qualified_source": "b3f2fcc40b76196e9880f346b044de912cbba1dc",
-  "latest_phase": 52,
-  "progress_snapshot": "issue-46-phase-52-verification.json",
+  "latest_qualified_source": "de5ceed56c5f146cf55a275ce1b10959836df53a",
+  "latest_phase": 53,
+  "progress_snapshot": "issue-46-phase-53-verification.json",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
   "remaining": "Other p-curve mappings/master/trim/body gates, general constrained meshing/quality and P2/P3/final roadmap",
   "tests": {
-    "cad_enabled": 183,
-    "feature_off": 166,
+    "cad_enabled": 185,
+    "feature_off": 168,
     "failed": 0,
     "ignored": 0,
     "app_cad_lib_tests_compile": "passed at same source"
@@ -39,9 +39,10 @@
   "last_confirmed_main_merge": "72a021e97d8376f3a7d84ede4552ea27753c51fc",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Finite source p-curve endpoint agreement, then master/trim/body and remaining roadmap",
-    "status": "planned",
-    "branch": "feature/native-cad-pcurve-endpoints"
+    "scope": "Bounded source p-curve endpoint candidate discovery; then correct finite arc/sense/wrap/master/trim/body and remaining roadmap",
+    "status": "planned"
   },
-  "base_main_head": "43d506d7cb408ff3ecd70c7ffffeb06f993a9e15"
+  "base_main_head": "9cdefdcbb254328489de752295d8bd4454e5f2b4",
+  "completion_checklist": "issue-46-completion-checklist.md",
+  "resume": "issue-46-resume.md"
 }

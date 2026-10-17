@@ -41,6 +41,7 @@ do not yet establish general native CAD or constrained tetrahedralization parity
 
 To resume this statement of work with Claude Code, start with the
 [resume instructions](docs/issue-46-resume.md), then the
+[repository completion checklist](docs/issue-46-completion-checklist.md),
 [live qualified state](docs/issue-46-current.json) and
 [dated handoff](docs/issue-46-claude-handoff.md). The
 [epic checklist](https://github.com/Teased-oChroid-orrA/powershell_tool/issues/46)

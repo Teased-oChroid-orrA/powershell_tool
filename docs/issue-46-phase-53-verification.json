@@ -1,0 +1,37 @@
+{
+  "qualified_source_commit": "de5ceed56c5f146cf55a275ce1b10959836df53a",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 185,
+      "failed": 0,
+      "ignored": 0,
+      "warnings": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 168,
+      "failed": 0,
+      "ignored": 0,
+      "warnings": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "app_compile": "passed",
+  "development_failures": [],
+  "evidence": [
+    "176 actual bracket finite source line/generator endpoint checks: 148 plane and 28 cylinder",
+    "Line/circle/spline local spline-surface traces: both proposed orders, mm/metre scaling, source control/span/patch caps",
+    "Invalid intervals/parameters/order, stale references and enclosure/cancellation refusals",
+    "Read-only planar spline full-domain proposal: five accept, ten distinct-vertex edges conservatively refuse",
+    "Read-only follow-on endpoint search: ten open finite proposals recheck successfully; five coincident candidates; 9752 search enclosures"
+  ],
+  "not_verified": [
+    "Endpoint parameter uniqueness, finite arc orientation/wrapping, whole locus/master/body validity",
+    "General native spline B-Rep/PLC/quality and later gates",
+    "Current Windows/macOS runtime"
+  ]
+}
