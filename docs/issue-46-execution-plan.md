@@ -85,3 +85,5 @@ User-approved transition (2026-10-16): PR #65 merged at 37cf932, old branch dele
 Phases 32–35: [snapshot](issue-46-progress-phase-35.json), source 2042c2d, 130 CAD-enabled / 113 feature-off tests plus app compilation. Only the verified full-domain linear spline class expands native body support; all general CAD/trim/PLC/quality/later gates stay open. User authorization includes merging completed increments and continuing; OCCT is retained.
 
 Completed increment PR #66 merged at 3aebf99 under the user authorization; old branch deleted. Continue on `feature/native-cad-planar-spline-trims`. [Phase 36](issue-46-phase-36.md) / [current snapshot](issue-46-progress-phase-36.json): finite exact planar bilinear faces qualified, p-curve/master agreement and remaining epic gates open. OCCT remains production.
+
+PR #67 merged at 75e4faa; old branch deleted. Current execution: `feature/native-cad-pcurve-validation`, [Phase 38](issue-46-phase-38.md), [snapshot](issue-46-progress-phase-38.json), 139 CAD-enabled / 122 feature-off tests and app compilation. P-curve declarations now decode; their mapping/master semantics and all broader roadmap gates remain open.

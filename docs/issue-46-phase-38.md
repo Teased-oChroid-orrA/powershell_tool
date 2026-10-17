@@ -1,0 +1,17 @@
+# Issue 46 — Phase 38: source p-curve declarations and parameter semantics
+
+PR #67 merged at `75e4faa30e51d98af351f057ce8ad7af6e7a0b07` under the continuing authorization; its completed branch was deleted. Work continues on `feature/native-cad-pcurve-validation` from that merge. A temporary 409 `environment_offline` interruption prevented initial merge read-back; execution returned, the SHA was verified and work resumed without configuration/security changes.
+
+Source `02d7cd3` adds source-bound PCURVE and SURFACE_CURVE/SEAM_CURVE declaration readers. P-curve identity, basis-surface/definitional-representation/parameter-context/geometry references, raw 2D geometry and names remain explicit. Contexts require exactly the supported two-dimensional parametric inheritance components and one curve item. Missing/duplicate/wrong-dimensional/unsupported records, invalid master indices/association counts, stale references and spline resource violations refuse with source offsets.
+
+Line directions and original magnitudes remain separate; circle placement/radius and optional reference direction are decoded in parameter space. Complex/simple polynomial/rational spline parsing, exact multiplicities, knot expansion, metadata and budgets reuse the 3D declaration parser through a private coordinate decoder. Parameter splines explicitly use the finite active-domain constructor and embed [u,v] as [u,v,0]. Their metadata carries no false mm factor; the public 3D reader retains its original fields, explicit mm scaling and clamped defaults.
+
+**No length or angle conversion is inferred.** A plane parameter, cylinder angle/height and spline knot parameter require different mapping semantics; raw coordinates/knots stay unchanged. Tiny representable primitive parameter values such as 1e-310 remain nonzero. Spline numerical arithmetic limits remain enforced by the existing evaluator; preserving primitive declarations is not a certificate of arbitrarily conditioned numerical evaluation.
+
+The declared `CURVE_3D` / `PCURVE_S1` / `PCURVE_S2` choice is retained, not silently replaced by a 3D-authoritative assumption. Reading these declarations does not prove the referenced 3D geometry agrees with either p-curve, validate trimmed parameter ranges or certify a complete STEP schema/B-Rep. The native analytic facade's previous 3D-locus reconstruction remains explicitly unqualified for master/p-curve agreement.
+
+Four regressions decode **all 228 p-curves in the actual bracket** (200 line / 13 circle / 15 complex spline), their wrapper/master associations and the extended #237 case; verify source identities, raw values/directions/magnitudes and stale-reference refusal; reject wrong dimensions, context components, item counts, zero directions and invalid/unavailable/duplicate master associations; and enforce spline caps. Existing six physical 3D spline-reader regressions remain passing. [Full source-specific verification](issue-46-phase-38-verification.json).
+
+Next: map parameter curves through their actual source surfaces with explicit length/angular/knot semantics, certify finite 3D locus agreement and source-master handling, then complete general curve/surface trims and body admission. General constrained PLC recovery/quality, P2/P3/final gates and OCCT parity/retirement remain open. No dependency, tolerance/resource-limit relaxation, production switch or hosted workflow dispatch.
+
+Final source checks: **139 CAD-enabled / 122 feature-off tests and application lib/tests compilation pass**, zero failures/ignored tests.
