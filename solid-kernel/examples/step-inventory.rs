@@ -329,7 +329,7 @@ fn run() -> Result<(), String> {
                     let mut last = (usize::MAX, 0);
                     let mesh = solid_kernel::plc_conform::conform(
                         plc.vertices(),
-                        &plc.facets().to_vec(),
+                        plc.facets(),
                         solid_kernel::plc_conform::Options {
                             max_steiner: conform_max_steiner,
                             protect_encroached: !conform_missing_only,
