@@ -2,8 +2,8 @@
   "epic": 46,
   "epic_complete": false,
   "branch": "feature/native-cad-body-pcurve-audit",
-  "pull_request": null,
-  "pull_request_state": "pending creation",
+  "pull_request": 74,
+  "pull_request_state": "draft",
   "main": "f637443d27dc96fd20e21c3a988850f027ae762a",
   "merged_prs": [
     65,
