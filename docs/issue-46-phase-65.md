@@ -1,0 +1,9 @@
+# Issue 46 — Phase 65: tetrahedral vertex smoothing and flip/smooth alternation (#53)
+
+`fea-core::meshing::tet_smooth` adds quality-guarded vertex smoothing for a validated `TetTopology`, plus `optimize`, which alternates `tet_flip::improve` and smoothing until neither changes anything.
+
+`smooth_vertices` tries every interior vertex (on no boundary face, not caller-protected) at the average of its edge neighbours with steps 1, 1/2 and 1/4, and keeps a move only if every incident tetrahedron keeps its exact orientation (`tet_topology::orientation`, never `Equal`) and the worst incident radius ratio rises by at least `min_gain`. Connectivity, boundary faces and boundary vertices never change; the boundary face set and total volume are re-checked on exit. Each accepted move strictly raises a local minimum, so a pass terminates and the global worst radius ratio never decreases.
+
+Evidence (macOS arm64, debug): on six random unit-cube clouds (8 corners + 60 interior points, seeds 1-6) the worst radius ratio is 0.0015-0.0039 before; reconnection alone reaches 0.0028-0.0054; reconnection + smoothing reaches 0.077-0.110 (about 20-30x better than reconnection alone), with 809-1015 accepted moves per cloud. Results are deterministic (identical topology on repeat), boundary vertices are bit-identical, the boundary face set is unchanged, and the volume equals 1 to 1e-12. Protected vertices never move. Full `fea-core` suite passes (167 lib tests, 0 failed); `clippy` and `rustfmt` clean for the new file.
+
+Limits (not fixed): boundary and protected vertices are fixed, so boundary-adjacent slivers still depend on the surface sampling; there is no Steiner insertion or sliver exudation; smoothing is Laplacian with a monotone guard (no optimization-based smoothing, no metric quality); not wired into any production strategy (OCCT stays production); no Windows or hosted-CI evidence. Only random clouds were exercised, not the NEMA17 shell (#52 is untouched).

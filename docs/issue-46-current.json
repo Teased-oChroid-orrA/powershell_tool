@@ -1,9 +1,9 @@
 {
   "epic": 46,
   "epic_complete": false,
-  "branch": "feature/native-cad-pcurve-endpoints",
-  "pull_request": 81,
-  "pull_request_state": "pending",
+  "branch": "main",
+  "pull_request": null,
+  "pull_request_state": "merged",
   "merged_prs": [
     65,
     66,
@@ -21,10 +21,19 @@
     78,
     79,
     80,
-    81
+    81,
+    82,
+    84,
+    85,
+    86,
+    87,
+    88,
+    89,
+    90,
+    91
   ],
   "latest_qualified_source": "de5ceed56c5f146cf55a275ce1b10959836df53a",
-  "latest_phase": 64,
+  "latest_phase": 65,
   "progress_snapshot": "issue-46-phase-53-verification.json",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
@@ -37,12 +46,12 @@
     "ignored": 0,
     "app_cad_lib_tests_compile": "passed at same source"
   },
-  "last_confirmed_main_merge": "58c054c",
+  "last_confirmed_main_merge": "4b19daa",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Phase 64 curved validity (stacked on #90); next: validity-guarded exact projection, constrained PLC insertion",
-    "status": "in_progress",
-    "branch": "feature/native-cad-curved-validity"
+    "scope": "Phase 65 vertex smoothing committed locally on main-based branch; next: boundary-sliver handling / constrained PLC insertion (#52/#53)",
+    "status": "ready_for_pr",
+    "branch": "feature/native-cad-tet-smoothing"
   },
   "base_main_head": "9cdefdcbb254328489de752295d8bd4454e5f2b4",
   "completion_checklist": "issue-46-completion-checklist.md",
