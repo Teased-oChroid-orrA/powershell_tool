@@ -1,10 +1,9 @@
 {
   "epic": 46,
   "epic_complete": false,
-  "branch": "feature/native-cad-spline-parameter-bounds",
+  "branch": "main",
   "pull_request": 76,
-  "pull_request_state": "draft",
-  "main": "8459f024838ae62921fd38695f31deb67d96318f",
+  "pull_request_state": "merged",
   "merged_prs": [
     65,
     66,
@@ -16,7 +15,8 @@
     72,
     73,
     74,
-    75
+    75,
+    76
   ],
   "latest_qualified_source": "677cbd919ede44dd4d611ca56d603f48b0884aaa",
   "latest_phase": 48,
@@ -31,5 +31,12 @@
     "failed": 0,
     "ignored": 0,
     "app_cad_lib_tests_compile": "passed at same source"
+  },
+  "last_confirmed_main_merge": "6420adc354cda07fa4525cb2a32afefb59c405d7",
+  "pointer_scope": "Last qualified delivered increment and planned follow-on; origin/main resolves the live head, which may include tracking-only commits.",
+  "next_work": {
+    "branch": "feature/native-cad-pcurve-distance",
+    "status": "planned",
+    "scope": "Bounded world-space distance queries for composed p-curves, then finite/master/trim/body gates and remaining roadmap"
   }
 }
