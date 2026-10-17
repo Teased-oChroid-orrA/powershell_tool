@@ -24,6 +24,45 @@ impl Interval {
             Self::new(lo.next_down(), hi.next_up())
         }
     }
+    // Preserve only algebraically exact binary operations. General operations
+    // still round outward; these identities prevent artificial domain spill at
+    // exact zero/unit knots without clipping a geometric parameter interval.
+    fn sum(a: f64, b: f64) -> Self {
+        let value = a + b;
+        if value.is_finite() && (a == 0. || b == 0. || a == -b || a == b) {
+            Self::point(value)
+        } else {
+            Self::rounded(value, value)
+        }
+    }
+    fn product(a: f64, b: f64) -> Self {
+        let value = a * b;
+        if a.is_finite() && b.is_finite() && (a == 0. || b == 0. || a.abs() == 1. || b.abs() == 1.)
+        {
+            return Self::point(value);
+        }
+        let mut result = Self::rounded(value, value);
+        if a.is_finite() && b.is_finite() {
+            if (a >= 0. && b >= 0.) || (a <= 0. && b <= 0.) {
+                result.lo = result.lo.max(0.);
+            } else {
+                result.hi = result.hi.min(0.);
+            }
+        }
+        result
+    }
+    fn quotient(a: f64, b: f64) -> Self {
+        let value = a / b;
+        if a.is_finite()
+            && b.is_finite()
+            && b != 0.
+            && (a == 0. || b.abs() == 1. || a == b || a == -b)
+        {
+            Self::point(value)
+        } else {
+            Self::rounded(value, value)
+        }
+    }
     pub fn hull(self, other: Self) -> Self {
         Self::new(self.lo.min(other.lo), self.hi.max(other.hi))
     }
@@ -37,12 +76,17 @@ impl Interval {
             self.lo.abs().min(self.hi.abs())
         };
         let high = self.lo.abs().max(self.hi.abs());
-        let rounded = Self::rounded(low * low, high * high);
-        Self::new(rounded.lo.max(0.), rounded.hi)
+        Self::new(
+            Self::product(low, low).lo.max(0.),
+            Self::product(high, high).hi,
+        )
     }
     pub fn sqrt_nonnegative(self) -> Self {
         if self.hi < 0. {
             return Self::whole();
+        }
+        if self.lo == self.hi && (self.lo == 0. || self.lo == 1.) {
+            return self;
         }
         Self::new(
             self.lo.max(0.).sqrt().next_down().max(0.),
@@ -89,30 +133,27 @@ impl Interval {
 impl Add for Interval {
     type Output = Self;
     fn add(self, b: Self) -> Self {
-        Self::rounded(self.lo + b.lo, self.hi + b.hi)
+        Self::new(Self::sum(self.lo, b.lo).lo, Self::sum(self.hi, b.hi).hi)
     }
 }
 impl Sub for Interval {
     type Output = Self;
     fn sub(self, b: Self) -> Self {
-        Self::rounded(self.lo - b.hi, self.hi - b.lo)
+        Self::new(Self::sum(self.lo, -b.hi).lo, Self::sum(self.hi, -b.lo).hi)
     }
 }
 impl Mul for Interval {
     type Output = Self;
     fn mul(self, b: Self) -> Self {
         let p = [
-            self.lo * b.lo,
-            self.lo * b.hi,
-            self.hi * b.lo,
-            self.hi * b.hi,
+            Self::product(self.lo, b.lo),
+            Self::product(self.lo, b.hi),
+            Self::product(self.hi, b.lo),
+            Self::product(self.hi, b.hi),
         ];
-        if p.iter().any(|x| x.is_nan()) {
-            return Self::whole();
-        }
-        Self::rounded(
-            p.into_iter().fold(f64::INFINITY, f64::min),
-            p.into_iter().fold(f64::NEG_INFINITY, f64::max),
+        Self::new(
+            p.iter().map(|x| x.lo).fold(f64::INFINITY, f64::min),
+            p.iter().map(|x| x.hi).fold(f64::NEG_INFINITY, f64::max),
         )
     }
 }
@@ -125,17 +166,14 @@ impl Div for Interval {
         // Divide endpoints directly: reciprocal-first overflows for a tiny
         // nonzero denominator even when every quotient is representable.
         let q = [
-            self.lo / b.lo,
-            self.lo / b.hi,
-            self.hi / b.lo,
-            self.hi / b.hi,
+            Self::quotient(self.lo, b.lo),
+            Self::quotient(self.lo, b.hi),
+            Self::quotient(self.hi, b.lo),
+            Self::quotient(self.hi, b.hi),
         ];
-        if q.iter().any(|x| x.is_nan()) {
-            return Self::whole();
-        }
-        Self::rounded(
-            q.into_iter().fold(f64::INFINITY, f64::min),
-            q.into_iter().fold(f64::NEG_INFINITY, f64::max),
+        Self::new(
+            q.iter().map(|x| x.lo).fold(f64::INFINITY, f64::min),
+            q.iter().map(|x| x.hi).fold(f64::NEG_INFINITY, f64::max),
         )
     }
 }
@@ -172,6 +210,19 @@ mod tests {
     }
     #[test]
     fn bounds_keep_roundoff_underflow_and_zero_denominators_explicit() {
+        let zero = Interval::point(0.);
+        let unit = Interval::point(1.);
+        for exact in [zero * unit, zero / unit, unit - unit] {
+            assert_eq!([exact.lo, exact.hi], [0., 0.]);
+        }
+        for exact in [
+            unit / unit,
+            unit.square(),
+            unit.sqrt_nonnegative(),
+            Interval::point(0.5) + Interval::point(0.5),
+        ] {
+            assert_eq!([exact.lo, exact.hi], [1., 1.]);
+        }
         let one = Interval::point(1.);
         let tiny_ratio = Interval::point(1e-310) / Interval::point(1e-310);
         assert!(tiny_ratio.finite() && tiny_ratio.lo <= 1. && tiny_ratio.hi >= 1.);

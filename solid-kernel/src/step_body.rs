@@ -113,6 +113,14 @@ impl BodyContext {
         face: EntityReference,
         limits: crate::nurbs_surface::Limits,
     ) -> Result<crate::step_nurbs_surface::StepSurfaceDeclaration, Error> {
+        let source = self.spline_surface_source(data, face)?;
+        crate::step_nurbs_surface::read_surface(data, source.entity, self.scale_mm, limits)
+    }
+    pub(crate) fn spline_surface_source(
+        &self,
+        data: &Inventory,
+        face: EntityReference,
+    ) -> Result<EntityReference, Error> {
         // Resolve both references before looking up numeric topology identifiers.
         data.resolve_reference(self.context)?;
         let entity = data.resolve_reference(face)?;
@@ -127,7 +135,7 @@ impl BodyContext {
             .faces
             .get(&face.entity)
             .ok_or_else(|| error(entity, "source reference is not a face of this body"))?;
-        crate::step_nurbs_surface::read_surface(data, face.surface, self.scale_mm, limits)
+        Ok(data.entity_reference(face.surface).unwrap())
     }
     /// Read an edge's terminal spline declaration using this body's source
     /// units. Wrapper traversal is bounded; p-curves, trims and edge agreement

@@ -130,3 +130,5 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - [Phase 46 bounded p-curve body diagnostics and CLI](../docs/issue-46-phase-46.md): cumulative work budgets and atomic progress/cancellation; no master/trim/body certificate.
 
 - [Phase 47 single-winding quadratic trace certificate](../docs/issue-46-phase-47.md): <=4 certified half-plane spans; body audit requests it, while coverage-only remains explicit.
+
+- [Phase 48 source spline parameter/composition bounds](../docs/issue-46-phase-48.md): raw UV/knots, outward physical scaling and exact-boundary arithmetic; no regularity/trim/body certificate.
