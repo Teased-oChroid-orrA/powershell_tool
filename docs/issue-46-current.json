@@ -2,8 +2,8 @@
   "epic": 46,
   "epic_complete": false,
   "branch": "feature/native-cad-shared-parameter-queries",
-  "pull_request": null,
-  "pull_request_state": "pending",
+  "pull_request": 80,
+  "pull_request_state": "draft",
   "merged_prs": [
     65,
     66,
@@ -21,7 +21,7 @@
     78,
     79
   ],
-  "latest_qualified_source": "b3f2fcc",
+  "latest_qualified_source": "b3f2fcc40b76196e9880f346b044de912cbba1dc",
   "latest_phase": 52,
   "progress_snapshot": "issue-46-phase-52-verification.json",
   "handoff": "issue-46-claude-handoff.md",
@@ -41,5 +41,5 @@
     "scope": "Finite source p-curve endpoint agreement, then master/trim/body and remaining roadmap",
     "status": "planned"
   },
-  "base_main_head": "43d506d"
+  "base_main_head": "43d506d7cb408ff3ecd70c7ffffeb06f993a9e15"
 }

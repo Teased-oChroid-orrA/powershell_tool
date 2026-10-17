@@ -9,3 +9,5 @@ PR #79 merged at `c3adced`; tracking-only main `43d506d` is the base of `feature
 Targeted tests pass for all 228 actual bracket p-curves (200 LINE / 13 CIRCLE / 15 spline) on their actual planes/cylinders, including explicit finite caller intervals, endpoint-near query bounds and monotonic work. An independent translated, axis-aligned plane query brackets exactly 2 mm and 2000 mm after source unit conversion with unchanged parameters. Basis/source mismatch, zero work/pending budgets and initial/final cancellation refuse. All eight prior spline-map tests pass. No development failure or tolerance relaxation; the known-distance fixture changes only its local map declaration and does not claim validity of the edited solid.
 
 [Frozen-source qualification](issue-46-phase-52-verification.json) at `b3f2fcc`: 183 CAD-enabled / 166 feature-off tests, zero failures/ignored/warnings; app CAD library/tests compilation passes. OCCT remains production; no dependency or hosted CI. Next: shared finite source p-curve endpoint agreement, then complete master/trim/body and general meshing/quality/later gates.
+
+Review/integration: PR #80; all required local checks are complete.
