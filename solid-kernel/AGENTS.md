@@ -128,3 +128,5 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - [Phase 45 quadratic spline/circle bounds](../docs/issue-46-phase-45.md): Bernstein residual and optional closed monotone angular coverage; no single winding/simple trim/master/body certificate.
 
 - [Phase 46 bounded p-curve body diagnostics and CLI](../docs/issue-46-phase-46.md): cumulative work budgets and atomic progress/cancellation; no master/trim/body certificate.
+
+- [Phase 47 single-winding quadratic trace certificate](../docs/issue-46-phase-47.md): <=4 certified half-plane spans; body audit requests it, while coverage-only remains explicit.
