@@ -20,6 +20,7 @@ pub mod tet_collapse;
 pub mod tet_flip;
 pub mod tet_smooth;
 pub mod tet_topology;
+pub mod transition;
 pub mod tet_delaunay;
 pub mod weld;
 
