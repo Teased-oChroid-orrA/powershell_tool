@@ -40,6 +40,7 @@ Checked lines are delivered scoped increments, with evidence committed in this r
 ## P2, P3 and final gates
 
 - [x] #55: Rigorous Bernstein-bound validity of Tet10/Tri6 maps, mesh-level check, and the mesher's sampled guard hardened ([Phase 64](issue-46-phase-64.md)); exact CAD projection and convergence evidence remain open.
+- [x] #55: Reconnect-and-snap-again boundary layer in the SDF mesher: boundary vertices left off the surface of the unit sphere fall from 33 % / 19 % / 10 % to 0 % / 4.6 % / 0 % ([Phase 73](issue-46-phase-73.md)); exact CAD projection and convergence evidence remain open.
 - [ ] #55: High-order curved CAD-conforming elements (exact projection, convergence, cost).
 - [ ] #56: Verified structured–unstructured integration and transitions.
 - [x] #57: Validated SPD metric tensors, metric-space lengths, log-Euclidean interpolation, intersection, gradation, curvature- and error-field-driven sizes and complexity/budget control, all with analytic tests ([Phase 62](issue-46-phase-62.md)). No mesher consumes the field yet, so the gate stays open until #58 integrates it.

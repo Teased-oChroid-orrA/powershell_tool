@@ -95,6 +95,8 @@ const MIN_QUALITY: f64 = 0.05;
 const MAX_QUALITY_LOSS: f64 = 0.3;
 /// Snap-and-smooth rounds.
 const SNAP_PASSES: usize = 6;
+/// Reconnect-and-snap-again rounds after the first snap.
+const RECONNECT_ROUNDS: usize = 4;
 
 type V3 = [f64; 3];
 fn sub(a: V3, b: V3) -> V3 {
@@ -331,6 +333,31 @@ fn project(sdf: &dyn Fn(V3) -> f64, mut x: V3, eps: f64) -> V3 {
     x
 }
 
+/// Flips and interior smoothing of the tetrahedra (surface faces and boundary vertices never change), re-oriented positively.
+/// `None` when the mesh is not a valid topology for the exact machinery; the caller then keeps what it has.
+fn reconnect(p: &[V3], tet: &[[usize; 4]]) -> Option<(Vec<[usize; 4]>, Vec<V3>)> {
+    use crate::meshing::{
+        tet_flip::FlipOptions,
+        tet_smooth::{optimize, SmoothOptions},
+        tet_topology::TetTopology,
+    };
+    let top = TetTopology::new(p.to_vec(), tet.to_vec(), tet.len() * 4 + 16).ok()?;
+    let (out, _) = optimize(&top, &std::collections::BTreeSet::new(), FlipOptions { max_passes: 3, ..FlipOptions::default() }, &SmoothOptions { max_passes: 2, ..SmoothOptions::default() }, 1).ok()?;
+    let points = out.points().to_vec();
+    let cells = out
+        .cells()
+        .iter()
+        .map(|&c| {
+            let mut v = c;
+            if volume(&points, v) < 0.0 {
+                v.swap(1, 2);
+            }
+            v
+        })
+        .collect();
+    Some((cells, points))
+}
+
 /// Mesh `s` into tetrahedra with material `mat`.
 pub fn mesh_solid(s: &Solid, mat: Elastic, opts: TetOptions) -> Result<(Mesh, MeshReport), String> {
     let finite_box = (0..3).all(|k| s.hi[k].is_finite() && s.lo[k].is_finite() && s.hi[k] > s.lo[k]);
@@ -380,19 +407,23 @@ pub fn mesh_solid(s: &Solid, mat: Elastic, opts: TetOptions) -> Result<(Mesh, Me
         tet.push(v);
     }
 
-    // Boundary faces: faces of exactly one tetrahedron.
-    let faces_of = |v: [usize; 4]| -> [([usize; 3], usize); 4] { [([v[1], v[2], v[3]], v[0]), ([v[0], v[3], v[2]], v[1]), ([v[0], v[1], v[3]], v[2]), ([v[0], v[2], v[1]], v[3])] };
-    let mut count: HashMap<[usize; 3], (usize, [usize; 3], usize)> = HashMap::new();
-    for v in &tet {
-        for (f, opposite) in faces_of(*v) {
-            let mut k = f;
-            k.sort_unstable();
-            let e = count.entry(k).or_insert((0, f, opposite));
-            e.0 += 1;
+    // Boundary faces: faces of exactly one tetrahedron, each with the fourth vertex of that tetrahedron (the interior side).
+    let boundary_of = |tet: &[[usize; 4]]| -> Vec<([usize; 3], usize)> {
+        let faces_of = |v: [usize; 4]| -> [([usize; 3], usize); 4] { [([v[1], v[2], v[3]], v[0]), ([v[0], v[3], v[2]], v[1]), ([v[0], v[1], v[3]], v[2]), ([v[0], v[2], v[1]], v[3])] };
+        let mut count: HashMap<[usize; 3], (usize, [usize; 3], usize)> = HashMap::new();
+        for v in tet {
+            for (f, opposite) in faces_of(*v) {
+                let mut k = f;
+                k.sort_unstable();
+                let e = count.entry(k).or_insert((0, f, opposite));
+                e.0 += 1;
+            }
         }
-    }
-    let mut boundary: Vec<([usize; 3], usize)> = count.values().filter(|c| c.0 == 1).map(|c| (c.1, c.2)).collect();
-    boundary.sort();
+        let mut boundary: Vec<([usize; 3], usize)> = count.values().filter(|c| c.0 == 1).map(|c| (c.1, c.2)).collect();
+        boundary.sort();
+        boundary
+    };
+    let mut boundary = boundary_of(&tet);
     let mut on_boundary = vec![false; p.len()];
     for (f, _) in &boundary {
         for &v in f {
@@ -405,75 +436,99 @@ pub fn mesh_solid(s: &Solid, mat: Elastic, opts: TetOptions) -> Result<(Mesh, Me
     // almost there moves with little disturbance and gives its neighbours room; the far ones follow in later passes.
     let (mut snapped, mut refused) = (0, 0);
     if opts.snap {
-        let mut incident: Vec<Vec<usize>> = vec![Vec::new(); p.len()];
-        let mut neighbours: Vec<Vec<usize>> = vec![Vec::new(); p.len()];
-        for (t, v) in tet.iter().enumerate() {
-            for i in 0..4 {
-                incident[v[i]].push(t);
-                for j in 0..4 {
-                    if i != j && !neighbours[v[i]].contains(&v[j]) {
-                        neighbours[v[i]].push(v[j]);
+        // Round 0 snaps and smooths; the boundary layer is then reconnected (interior flips and smoothing only, so the surface
+        // faces are untouched) and round 1 snaps again: boundary-layer slivers were what kept vertices from the surface.
+        let mut order: Vec<usize> = Vec::new();
+        let mut local: Vec<f64> = Vec::new();
+        for round in 0..RECONNECT_ROUNDS + 1 {
+            let mut incident: Vec<Vec<usize>> = vec![Vec::new(); p.len()];
+            let mut neighbours: Vec<Vec<usize>> = vec![Vec::new(); p.len()];
+            for (t, v) in tet.iter().enumerate() {
+                for i in 0..4 {
+                    incident[v[i]].push(t);
+                    for j in 0..4 {
+                        if i != j && !neighbours[v[i]].contains(&v[j]) {
+                            neighbours[v[i]].push(v[j]);
+                        }
                     }
                 }
             }
-        }
-        // Reach is local: the longest edge at the vertex, not the global boundary size. Where the size field asks for
-        // elements far smaller than `boundary_size`, a global reach would pull several vertices onto one feature point.
-        let local: Vec<f64> = (0..p.len()).map(|v| neighbours[v].iter().map(|&u| norm(sub(p[u], p[v]))).fold(0.0, f64::max).min(opts.boundary_size)).collect();
-        let mut order: Vec<usize> = (0..p.len()).filter(|&v| on_boundary[v]).collect();
-        order.sort_by(|&a, &b| (s.sdf)(p[a]).abs().total_cmp(&(s.sdf)(p[b]).abs()));
-        for _pass in 0..SNAP_PASSES {
-            let mut moved_any = false;
-            for &v in &order {
-                let (reach, eps) = (1.1 * local[v], local[v] * 1e-3);
-                if (s.sdf)(p[v]).abs() > reach {
-                    continue;
-                }
-                let target = match s.face_dists {
-                    Some(fd) => snap_to_features(fd, p[v], 0.5 * local[v], reach).unwrap_or_else(|| project(s.sdf, p[v], eps)),
-                    None => project(s.sdf, p[v], eps),
-                };
-                if norm(sub(target, p[v])) < 1e-9 * local[v] {
-                    continue;
-                }
-                let old = p[v];
-                let before = incident[v].iter().map(|&t| quality(&p, tet[t])).fold(f64::INFINITY, f64::min);
-                for fraction in [1.0, 0.5, 0.25] {
-                    p[v] = [old[0] + fraction * (target[0] - old[0]), old[1] + fraction * (target[1] - old[1]), old[2] + fraction * (target[2] - old[2])];
-                    let after = incident[v].iter().map(|&t| quality(&p, tet[t])).fold(f64::INFINITY, f64::min);
-                    if after >= MIN_QUALITY.min(before) && after >= MAX_QUALITY_LOSS * before {
-                        moved_any = true;
-                        break;
+            // Reach is local: the longest edge at the vertex, not the global boundary size. Where the size field asks for
+            // elements far smaller than `boundary_size`, a global reach would pull several vertices onto one feature point.
+            local = (0..p.len()).map(|v| neighbours[v].iter().map(|&u| norm(sub(p[u], p[v]))).fold(0.0, f64::max).min(opts.boundary_size)).collect();
+            order = (0..p.len()).filter(|&v| on_boundary[v]).collect();
+            order.sort_by(|&a, &b| (s.sdf)(p[a]).abs().total_cmp(&(s.sdf)(p[b]).abs()));
+            for _pass in 0..SNAP_PASSES {
+                let mut moved_any = false;
+                for &v in &order {
+                    let (reach, eps) = (1.1 * local[v], local[v] * 1e-3);
+                    if (s.sdf)(p[v]).abs() > reach {
+                        continue;
                     }
-                    p[v] = old;
-                }
-            }
-            // Laplacian smoothing of the interior, kept only when the worst neighbouring tetrahedron improves.
-            for _ in 0..2 {
-                for v in 0..p.len() {
-                    if on_boundary[v] || neighbours[v].is_empty() {
+                    let target = match s.face_dists {
+                        Some(fd) => snap_to_features(fd, p[v], 0.5 * local[v], reach).unwrap_or_else(|| project(s.sdf, p[v], eps)),
+                        None => project(s.sdf, p[v], eps),
+                    };
+                    if norm(sub(target, p[v])) < 1e-9 * local[v] {
                         continue;
                     }
                     let old = p[v];
-                    let worst = |p: &[V3]| incident[v].iter().map(|&t| quality(p, tet[t])).fold(f64::INFINITY, f64::min);
-                    let before = worst(&p);
-                    let n = neighbours[v].len() as f64;
-                    let mut c = [0.0; 3];
-                    for &u in &neighbours[v] {
-                        for k in 0..3 {
-                            c[k] += p[u][k] / n;
+                    let before = incident[v].iter().map(|&t| quality(&p, tet[t])).fold(f64::INFINITY, f64::min);
+                    for fraction in [1.0, 0.5, 0.25] {
+                        p[v] = [old[0] + fraction * (target[0] - old[0]), old[1] + fraction * (target[1] - old[1]), old[2] + fraction * (target[2] - old[2])];
+                        let after = incident[v].iter().map(|&t| quality(&p, tet[t])).fold(f64::INFINITY, f64::min);
+                        if after >= MIN_QUALITY.min(before) && after >= MAX_QUALITY_LOSS * before {
+                            moved_any = true;
+                            break;
                         }
-                    }
-                    p[v] = c;
-                    if worst(&p) <= before {
                         p[v] = old;
                     }
                 }
+                // Laplacian smoothing of the interior, kept only when the worst neighbouring tetrahedron improves.
+                for _ in 0..2 {
+                    for v in 0..p.len() {
+                        if on_boundary[v] || neighbours[v].is_empty() {
+                            continue;
+                        }
+                        let old = p[v];
+                        let worst = |p: &[V3]| incident[v].iter().map(|&t| quality(p, tet[t])).fold(f64::INFINITY, f64::min);
+                        let before = worst(&p);
+                        let n = neighbours[v].len() as f64;
+                        let mut c = [0.0; 3];
+                        for &u in &neighbours[v] {
+                            for k in 0..3 {
+                                c[k] += p[u][k] / n;
+                            }
+                        }
+                        p[v] = c;
+                        if worst(&p) <= before {
+                            p[v] = old;
+                        }
+                    }
+                }
+                if !moved_any {
+                    break;
+                }
             }
-            if !moved_any {
+            // Nothing left to gain once every boundary vertex that could be snapped sits on the surface.
+            if order.iter().all(|&v| (s.sdf)(p[v]).abs() <= 0.02 * local[v]) {
                 break;
             }
+            if round < RECONNECT_ROUNDS {
+                // Accept the reconnection only if the mesher's own worst quality does not fall below the floor it keeps.
+                let worst = |p: &[V3], tet: &[[usize; 4]]| tet.iter().map(|&t| quality(p, t)).fold(f64::INFINITY, f64::min);
+                let before = worst(&p, &tet);
+                if let Some((cells, points)) = reconnect(&p, &tet) {
+                    if worst(&points, &cells) >= before.min(MIN_QUALITY) {
+                        tet = cells;
+                        p = points;
+                    }
+                }
+            }
         }
+        // Reconnection may have replaced the tetrahedron behind a boundary face: refresh each face's interior-side vertex (the
+        // faces themselves are unchanged), which the outward orientation of the named faces is taken from.
+        boundary = boundary_of(&tet);
         // What ended on the surface and what did not.
         for &v in &order {
             if (s.sdf)(p[v]).abs() <= 0.02 * local[v] {
@@ -539,11 +594,11 @@ pub fn mesh_solid(s: &Solid, mat: Elastic, opts: TetOptions) -> Result<(Mesh, Me
 
 fn faces_of_named(boundary: &[([usize; 3], usize)], p: &[V3], s: &Solid, mids: Option<&HashMap<(usize, usize), usize>>, size: f64) -> Vec<(String, Vec<Vec<usize>>)> {
     let mut by_face: std::collections::BTreeMap<usize, Vec<Vec<usize>>> = std::collections::BTreeMap::new();
-    for &(f, opposite) in boundary {
+    for &(f, _) in boundary {
+        // Outward by construction: the face is taken from a positively oriented tetrahedron, whose face opposite vertex k
+        // is ordered so that its normal points away from that vertex. (Deciding it by a dot product with the fourth
+        // vertex is ill-conditioned for the sliver triangles that lie on the surface itself.)
         let [a, b, c] = f;
-        // Outward: the normal must point away from the tetrahedron's fourth vertex.
-        let n = cross(sub(p[b], p[a]), sub(p[c], p[a]));
-        let (b, c) = if dot(n, sub(p[opposite], p[a])) > 0.0 { (c, b) } else { (b, c) };
         let centre = [(p[a][0] + p[b][0] + p[c][0]) / 3.0, (p[a][1] + p[b][1] + p[c][1]) / 3.0, (p[a][2] + p[b][2] + p[c][2]) / 3.0];
         let mut nodes = vec![a, b, c];
         if let Some(m) = mids {
