@@ -102,12 +102,16 @@ fn point(data: &Inventory, id: u64) -> Result<[f64; 2], Error> {
         _ => Err(fail(e, "invalid parameter point")),
     }
 }
+fn direction_ratios(data: &Inventory, id: u64) -> Result<[f64; 2], Error> {
+    let e = &data.entities()[&id];
+    match args(e, "DIRECTION")? {
+        [Value::String(_), v] => pair(e, v),
+        _ => Err(fail(e, "invalid parameter direction")),
+    }
+}
 fn direction(data: &Inventory, id: u64) -> Result<[f64; 2], Error> {
     let e = &data.entities()[&id];
-    let p = match args(e, "DIRECTION")? {
-        [Value::String(_), v] => pair(e, v)?,
-        _ => return Err(fail(e, "invalid parameter direction")),
-    };
+    let p = direction_ratios(data, id)?;
     let n = crate::native_math::normalize_direction([p[0], p[1], 0.]).map_err(|s| fail(e, s))?;
     Ok([n[0], n[1]])
 }
@@ -407,10 +411,69 @@ pub(crate) fn line_direction_ratios(
         [Value::String(_), Value::Ref(d), m] if scalar(vector, m)? > 0. => &data.entities()[d],
         _ => return Err(fail(vector, "invalid parameter vector")),
     };
-    let raw = match args(d, "DIRECTION")? {
-        [Value::String(_), v] => pair(d, v)?,
-        _ => return Err(fail(d, "invalid parameter direction")),
-    };
+    let raw = direction_ratios(data, d.id)?;
     crate::native_math::normalize_direction([raw[0], raw[1], 0.]).map_err(|s| fail(d, s))?;
     Ok(raw)
+}
+
+/// Bound raw surface UV over a finite parameter-curve interval. Surface-specific
+/// physical length/angle semantics belong to the consuming map, never here.
+pub(crate) fn parameter_bounds(
+    data: &Inventory,
+    declaration: &PcurveDeclaration,
+    parameters: [f64; 2],
+    max_spans: usize,
+) -> Result<[[f64; 2]; 2], Error> {
+    use crate::{native_interval::Interval as I, step_frame::unit};
+    let e = data.resolve_reference(declaration.source)?;
+    if parameters.iter().any(|x| !x.is_finite()) || parameters[0] > parameters[1] {
+        return Err(fail(e, "invalid p-curve parameter interval"));
+    }
+    let normalize = |raw: [f64; 2]| unit([I::point(raw[0]), I::point(raw[1]), I::point(0.)], e);
+    let uv = match &declaration.geometry {
+        ParametricCurve::Spline(spline) => {
+            let b = spline
+                .curve()
+                .enclose(parameters, max_spans)
+                .map_err(|mut err| {
+                    err.offset = e.offset;
+                    err
+                })?;
+            [I::new(b.min[0], b.max[0]), I::new(b.min[1], b.max[1])]
+        }
+        ParametricCurve::Line {
+            origin, magnitude, ..
+        } => {
+            let d = normalize(line_direction_ratios(data, declaration.geometry_source)?)?;
+            let t = I::new(parameters[0], parameters[1]) * I::point(*magnitude);
+            std::array::from_fn(|i| I::point(origin[i]) + d[i] * t)
+        }
+        ParametricCurve::Circle { origin, radius, .. } => {
+            let geometry = data.resolve_reference(declaration.geometry_source)?;
+            let frame = match args(geometry, "CIRCLE")? {
+                [Value::String(_), Value::Ref(frame), _] => &data.entities()[frame],
+                _ => return Err(fail(geometry, "invalid parameter CIRCLE")),
+            };
+            let ratios = match args(frame, "AXIS2_PLACEMENT_2D")? {
+                [Value::String(_), Value::Ref(_), Value::Omitted] => [1., 0.],
+                [Value::String(_), Value::Ref(_), Value::Ref(d)] => direction_ratios(data, *d)?,
+                _ => return Err(fail(frame, "invalid parameter circle placement")),
+            };
+            let d = normalize(ratios)?;
+            let (sin, cos) = I::new(parameters[0], parameters[1])
+                .sin_cos_bounded()
+                .ok_or_else(|| {
+                    fail(e, "parameter CIRCLE angle outside certified [-8,8] radians")
+                })?;
+            let r = I::point(*radius);
+            [
+                I::point(origin[0]) + r * (d[0] * cos - d[1] * sin),
+                I::point(origin[1]) + r * (d[1] * cos + d[0] * sin),
+            ]
+        }
+    };
+    if uv.iter().any(|x| !x.finite()) {
+        return Err(fail(e, "p-curve parameter bounds not finite"));
+    }
+    Ok(uv.map(|x| [x.lo, x.hi]))
 }
