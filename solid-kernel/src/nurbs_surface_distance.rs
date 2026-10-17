@@ -41,7 +41,7 @@ impl Geometry<2> for NurbsSurface {
     fn enclose(&self, domain: [[f64; 2]; 2]) -> Result<Bounds3, Error> {
         self.enclose(domain, 9)
     }
-    fn evaluate(&self, uv: [f64; 2]) -> Result<V3, Error> {
+    fn representative(&self, uv: [f64; 2], _enclosure: Bounds3) -> Result<V3, Error> {
         self.evaluate(uv)
     }
 }

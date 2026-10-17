@@ -101,6 +101,23 @@ impl SplineParameterMap {
         data.resolve_reference(self.face)?;
         data.resolve_reference(self.context)?;
         let declaration = step_pcurve::read_pcurve(data, pcurve, curve_limits)?;
+        self.bounds_for_declaration(
+            data,
+            &declaration,
+            parameters,
+            max_curve_spans,
+            max_surface_patches,
+        )
+    }
+    pub(crate) fn bounds_for_declaration(
+        &self,
+        data: &Inventory,
+        declaration: &step_pcurve::PcurveDeclaration,
+        parameters: [f64; 2],
+        max_curve_spans: usize,
+        max_surface_patches: usize,
+    ) -> Result<Bounds3, Error> {
+        let pcurve = declaration.source;
         if declaration.basis_surface != self.source {
             return Err(Error {
                 offset: data.resolve_reference(pcurve)?.offset,
@@ -108,7 +125,7 @@ impl SplineParameterMap {
                 detail: "p-curve basis does not match the source spline surface".into(),
             });
         }
-        let uv = step_pcurve::parameter_bounds(data, &declaration, parameters, max_curve_spans)?;
+        let uv = step_pcurve::parameter_bounds(data, declaration, parameters, max_curve_spans)?;
         self.bounds(uv, max_surface_patches).map_err(|mut e| {
             e.offset = data.entities()[&pcurve.entity].offset;
             e

@@ -1,0 +1,13 @@
+# Issue 46 — Phase 49: bounded world-space p-curve trace distance
+
+PR #76 merged at `6420adc`; tracking-only main refresh `7f9b336` records its confirmed state and deleted source branch. Continuation: `feature/native-cad-pcurve-distance`.
+
+`step_pcurve_distance::distance` queries a source spline-surface p-curve over an explicit finite caller interval. It reuses the shared curve/surface branch-and-bound objective search, with whole world-space enclosures from the source map. The declaration is decoded once per query; interval work reuses it. Spline cells are clipped against every intersecting active knot span; primitive line/circle traces use one initial cell. No trim endpoints or periodic wrapping are inferred.
+
+Query/objective values are physical millimetres, while raw curve parameters/UV/knots remain unchanged. Curve declaration limits, per-enclosure curve-span/surface-patch caps, global enclosure and pending-interval budgets remain independent hard constraints. Progress and cancellation cover admission, adaptive work and final commit. Source/basis/domain mismatches refuse atomically.
+
+The result bounds the complete finite trace's global distance and identifies a candidate parameter with an enclosing world box. Its displayed point is explicitly the box midpoint, not an asserted exact surface point. The private shared geometry trait now supplies the already-counted candidate enclosure to its representative method, avoiding an uncounted extra enclosure query. Existing standalone curve/surface wrappers retain their evaluated representatives and numerical behavior. No unique closest parameter/position, regular projection, surface regularity, trim/master/body certificate or general spline import is inferred.
+
+Tests cover exact planar minima for LINE/CIRCLE/spline traces (2 mm), full-vs-partial interval minima (0 vs 0.125 mm), physical metre conversion (2000 mm), a curved rational surface endpoint minimum (2 mm), a singular/nonunique trace (1 mm), clipped C0 cells and seed-cell budgets, all work caps, initial/final cancellation and stale sources. Declared fixtures remain raw binding/evaluation fixtures, not valid edited solids.
+
+[Verification](issue-46-phase-49-verification.json): 175 CAD-enabled / 158 feature-off tests, zero failures/ignored/warnings; app CAD lib/tests compilation passes. No development failures, dependency or hosted CI. OCCT remains production. Next: improve tight curve sampling before source locus/finite/master/trim/body integration and remaining general CAD/meshing gates. A read-only unoptimized quarter-circle sampler baseline at tolerance 0.001 used 4094 segments / 24561 work units and one ~46.5 ms sample call; this is a single pilot, not representative throughput.

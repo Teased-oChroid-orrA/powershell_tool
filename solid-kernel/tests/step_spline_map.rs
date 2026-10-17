@@ -410,3 +410,424 @@ fn exact_domain_boundary_parameter_curves_do_not_spill_outside_uv_domain() {
         )
         .is_ok());
 }
+
+fn planar_fixture() -> (String, u64, [u64; 3]) {
+    let (source, face, pc) = fixture();
+    let d = inventory(&source, Limits::default()).unwrap();
+    let c = BodyContext::read(&d).unwrap();
+    let declaration = c
+        .read_spline_surface(
+            &d,
+            d.entity_reference(face).unwrap(),
+            nurbs_surface::Limits::default(),
+        )
+        .unwrap();
+    let positions = [
+        [0., 0., 0.],
+        [0.5, 0., 0.],
+        [1., 0., 0.],
+        [0., 1., 0.],
+        [0.5, 1., 0.],
+        [1., 1., 0.],
+    ];
+    let mut edits = declaration
+        .control_point_sources
+        .iter()
+        .zip(positions)
+        .map(|(r, p)| {
+            (
+                r.entity,
+                format!(
+                    "#{}=CARTESIAN_POINT('',({},{},{}));",
+                    r.entity, p[0], p[1], p[2]
+                ),
+            )
+        })
+        .collect::<Vec<_>>();
+    let entity = d.resolve_reference(declaration.source).unwrap();
+    let end = entity.offset + source[entity.offset..].find(';').unwrap() + 1;
+    let record = source[entity.offset..end]
+        .replace(".CYLINDRICAL_SURF.", ".PLANE_SURF.")
+        .replace("(0.7071067811865476,0.7071067811865476)", "(1.,1.)");
+    edits.push((entity.id, record));
+    edits.sort_by_key(|(id, _)| std::cmp::Reverse(d.entities()[id].offset));
+    let mut result = source;
+    for (id, record) in edits {
+        result = replace(&result, d.entities()[&id].offset, &record);
+    }
+    (result, face, pc)
+}
+#[test]
+fn world_trace_distances_bound_global_objectives_for_all_parameter_curve_classes() {
+    use solid_kernel::step_pcurve_distance::{distance, Options, SearchOptions};
+    let (source, face, pc) = planar_fixture();
+    let d = inventory(&source, Limits::default()).unwrap();
+    let c = BodyContext::read(&d).unwrap();
+    let map = SplineParameterMap::read(
+        &c,
+        &d,
+        d.entity_reference(face).unwrap(),
+        nurbs_surface::Limits::default(),
+    )
+    .unwrap();
+    let options = Options {
+        search: SearchOptions {
+            distance_tolerance: 1e-6,
+            ..SearchOptions::default()
+        },
+        ..Options::default()
+    };
+    for (i, query) in [[0.4, 0.25, 2.], [0.5, 0.625, 2.], [0.75, 0.25, 2.]]
+        .into_iter()
+        .enumerate()
+    {
+        let range = if i == 1 {
+            [0., 6.28318530718]
+        } else {
+            [0., 1.]
+        };
+        let mut previous = 0;
+        let r = distance(
+            &map,
+            &d,
+            d.entity_reference(pc[i]).unwrap(),
+            query,
+            range,
+            options,
+            |p| {
+                assert!(p.enclosures >= previous);
+                previous = p.enclosures;
+                true
+            },
+        )
+        .unwrap();
+        // The planar surface is the exact degree-elevated identity map. Each
+        // query projects to its trace; the exact physical minimum is 2 mm.
+        assert!(
+            r.distance_bounds_mm[0] <= 2. && 2. <= r.distance_bounds_mm[1],
+            "{r:?}"
+        );
+        assert!(r.distance_bounds_mm[1] - r.distance_bounds_mm[0] <= 1e-6);
+        assert!(range[0] <= r.candidate_parameter && r.candidate_parameter <= range[1]);
+        contains(r.candidate_enclosure_mm, r.enclosure_midpoint_mm);
+        assert_eq!(r.face.entity, face);
+        assert_eq!(r.pcurve.entity, pc[i]);
+    }
+    let full = distance(
+        &map,
+        &d,
+        d.entity_reference(pc[0]).unwrap(),
+        [0.5, 0.25, 0.],
+        [0., 1.],
+        options,
+        |_| true,
+    )
+    .unwrap();
+    assert_eq!(full.distance_bounds_mm[0], 0.);
+    assert!(full.distance_bounds_mm[1] <= 1e-6);
+    let partial = distance(
+        &map,
+        &d,
+        d.entity_reference(pc[0]).unwrap(),
+        [0.5, 0.25, 0.],
+        [0., 0.5],
+        options,
+        |_| true,
+    )
+    .unwrap();
+    assert!(partial.distance_bounds_mm[0] <= 0.125 && 0.125 <= partial.distance_bounds_mm[1]);
+    assert!(partial.distance_bounds_mm[1] - partial.distance_bounds_mm[0] <= 1e-6);
+}
+#[test]
+fn trace_distance_respects_physical_units_and_handles_nonunique_singular_maps() {
+    use solid_kernel::step_pcurve_distance::{distance, Options};
+    let (source, face, pc) = planar_fixture();
+    let d = inventory(&source, Limits::default()).unwrap();
+    let c = BodyContext::read(&d).unwrap();
+    let unit = d
+        .length_contexts()
+        .unwrap()
+        .into_iter()
+        .find(|u| u.context == c.length_context().entity)
+        .unwrap()
+        .unit;
+    let metres = replace(
+        &source,
+        d.entities()[&unit].offset,
+        &format!("#{unit}=(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT($,.METRE.));"),
+    );
+    let m = inventory(&metres, Limits::default()).unwrap();
+    let mc = BodyContext::read(&m).unwrap();
+    let map = SplineParameterMap::read(
+        &mc,
+        &m,
+        m.entity_reference(face).unwrap(),
+        nurbs_surface::Limits::default(),
+    )
+    .unwrap();
+    let r = distance(
+        &map,
+        &m,
+        m.entity_reference(pc[0]).unwrap(),
+        [400., 250., 2000.],
+        [0., 1.],
+        Options::default(),
+        |_| true,
+    )
+    .unwrap();
+    assert!(r.distance_bounds_mm[0] <= 2000. && 2000. <= r.distance_bounds_mm[1]);
+    assert!(r.distance_bounds_mm[1] - r.distance_bounds_mm[0] <= 0.001);
+    let declaration = c
+        .read_spline_surface(
+            &d,
+            d.entity_reference(face).unwrap(),
+            nurbs_surface::Limits::default(),
+        )
+        .unwrap();
+    let mut edits = declaration
+        .control_point_sources
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            (
+                r.entity,
+                format!(
+                    "#{}=CARTESIAN_POINT('',(0.,{},0.));",
+                    r.entity,
+                    if i < 3 { 0. } else { 1. }
+                ),
+            )
+        })
+        .collect::<Vec<_>>();
+    edits.sort_by_key(|(id, _)| std::cmp::Reverse(d.entities()[id].offset));
+    let mut singular = source;
+    for (id, record) in edits {
+        singular = replace(&singular, d.entities()[&id].offset, &record);
+    }
+    let s = inventory(&singular, Limits::default()).unwrap();
+    let sc = BodyContext::read(&s).unwrap();
+    let sm = SplineParameterMap::read(
+        &sc,
+        &s,
+        s.entity_reference(face).unwrap(),
+        nurbs_surface::Limits::default(),
+    )
+    .unwrap();
+    let r = distance(
+        &sm,
+        &s,
+        s.entity_reference(pc[0]).unwrap(),
+        [1., 0.25, 0.],
+        [0., 1.],
+        Options::default(),
+        |_| true,
+    )
+    .unwrap();
+    // Every parameter on this degenerate trace is equally close. A valid
+    // distance bracket must not be mistaken for unique regular projection.
+    assert!(r.distance_bounds_mm[0] <= 1. && 1. <= r.distance_bounds_mm[1]);
+}
+#[test]
+fn trace_distance_work_budgets_cancellation_domains_and_stale_sources_refuse() {
+    use solid_kernel::step_pcurve_distance::{distance, Options, SearchOptions};
+    let (source, face, pc) = planar_fixture();
+    let d = inventory(&source, Limits::default()).unwrap();
+    let c = BodyContext::read(&d).unwrap();
+    let map = SplineParameterMap::read(
+        &c,
+        &d,
+        d.entity_reference(face).unwrap(),
+        nurbs_surface::Limits::default(),
+    )
+    .unwrap();
+    let p = d.entity_reference(pc[2]).unwrap();
+    for options in [
+        Options {
+            search: SearchOptions {
+                max_enclosures: 1,
+                ..SearchOptions::default()
+            },
+            ..Options::default()
+        },
+        Options {
+            search: SearchOptions {
+                max_pending: 0,
+                ..SearchOptions::default()
+            },
+            ..Options::default()
+        },
+        Options {
+            max_curve_spans_per_enclosure: 0,
+            ..Options::default()
+        },
+        Options {
+            max_surface_patches_per_enclosure: 0,
+            ..Options::default()
+        },
+        Options {
+            curve_limits: nurbs::Limits {
+                control_points: 2,
+                ..nurbs::Limits::default()
+            },
+            ..Options::default()
+        },
+    ] {
+        assert_eq!(
+            distance(&map, &d, p, [0., 0., 1.], [0., 1.], options, |_| true)
+                .unwrap_err()
+                .kind,
+            ErrorKind::Limit
+        );
+    }
+    assert_eq!(
+        distance(
+            &map,
+            &d,
+            p,
+            [0., 0., 1.],
+            [0., 1.],
+            Options::default(),
+            |_| false
+        )
+        .unwrap_err()
+        .kind,
+        ErrorKind::Cancelled
+    );
+    assert_eq!(
+        distance(
+            &map,
+            &d,
+            p,
+            [0.75, 0.25, 2.],
+            [0., 1.],
+            Options::default(),
+            |s| s.enclosures == 0 || s.pending_intervals != 0
+        )
+        .unwrap_err()
+        .kind,
+        ErrorKind::Cancelled
+    );
+    for range in [[-1., 1.], [1., 0.], [0., f64::NAN]] {
+        assert!(
+            distance(&map, &d, p, [0., 0., 1.], range, Options::default(), |_| {
+                true
+            })
+            .is_err()
+        );
+    }
+    let changed = inventory(&format!("{source}\n"), Limits::default()).unwrap();
+    assert!(distance(
+        &map,
+        &changed,
+        changed.entity_reference(pc[0]).unwrap(),
+        [0., 0., 1.],
+        [0., 1.],
+        Options::default(),
+        |_| true
+    )
+    .is_err());
+}
+
+#[test]
+fn trace_distance_covers_curved_surfaces_and_all_clipped_c0_knot_cells() {
+    use solid_kernel::step_pcurve_distance::{distance, Options, SearchOptions};
+    let (source, face, pc) = fixture();
+    let data = inventory(&source, Limits::default()).unwrap();
+    let declaration = solid_kernel::step_pcurve::read_pcurve(
+        &data,
+        data.entity_reference(pc[0]).unwrap(),
+        nurbs::Limits::default(),
+    )
+    .unwrap();
+    let line = data.resolve_reference(declaration.geometry_source).unwrap();
+    let Value::Ref(point) = line.components[0].args[1] else {
+        panic!("fixture")
+    };
+    let Value::Ref(vector) = line.components[0].args[2] else {
+        panic!("fixture")
+    };
+    let Value::Ref(direction) = data.entities()[&vector].components[0].args[1] else {
+        panic!("fixture")
+    };
+    let mut edits = vec![
+        (point, format!("#{point}=CARTESIAN_POINT('',(0.,0.));")),
+        (vector, format!("#{vector}=VECTOR('',#{direction},1.);")),
+    ];
+    edits.sort_by_key(|(id, _)| std::cmp::Reverse(data.entities()[id].offset));
+    let mut curved = source;
+    for (id, record) in edits {
+        curved = replace(&curved, data.entities()[&id].offset, &record);
+    }
+    let d = inventory(&curved, Limits::default()).unwrap();
+    let c = BodyContext::read(&d).unwrap();
+    let map = SplineParameterMap::read(
+        &c,
+        &d,
+        d.entity_reference(face).unwrap(),
+        nurbs_surface::Limits::default(),
+    )
+    .unwrap();
+    let r = distance(
+        &map,
+        &d,
+        d.entity_reference(pc[0]).unwrap(),
+        [1., 0., 2.],
+        [0., 1.],
+        Options::default(),
+        |_| true,
+    )
+    .unwrap();
+    assert!(r.distance_bounds_mm[0] <= 2. && 2. <= r.distance_bounds_mm[1]);
+    let (source, face, pc) = planar_fixture();
+    let d = inventory(&source, Limits::default()).unwrap();
+    let declaration = solid_kernel::step_pcurve::read_pcurve(
+        &d,
+        d.entity_reference(pc[2]).unwrap(),
+        nurbs::Limits::default(),
+    )
+    .unwrap();
+    let solid_kernel::step_pcurve::ParametricCurve::Spline(spline) = declaration.geometry else {
+        panic!("fixture")
+    };
+    let refs = spline.control_point_sources();
+    let entity = d.resolve_reference(declaration.geometry_source).unwrap();
+    let source=replace(&source,entity.offset,&format!("#{}=B_SPLINE_CURVE_WITH_KNOTS('C0',1,(#{},#{},#{}),.UNSPECIFIED.,.F.,.F.,(2,1,2),(0.,0.5,1.),.UNSPECIFIED.);",entity.id,refs[0].entity,refs[1].entity,refs[2].entity));
+    let d = inventory(&source, Limits::default()).unwrap();
+    let c = BodyContext::read(&d).unwrap();
+    let map = SplineParameterMap::read(
+        &c,
+        &d,
+        d.entity_reference(face).unwrap(),
+        nurbs_surface::Limits::default(),
+    )
+    .unwrap();
+    let p = d.entity_reference(pc[2]).unwrap();
+    let limited = Options {
+        search: SearchOptions {
+            max_pending: 1,
+            ..SearchOptions::default()
+        },
+        ..Options::default()
+    };
+    assert_eq!(
+        distance(&map, &d, p, [0.75, 0.5, 2.], [0., 1.], limited, |_| true)
+            .unwrap_err()
+            .kind,
+        ErrorKind::Limit
+    );
+    for range in [[0., 1.], [0., 0.5]] {
+        let r = distance(
+            &map,
+            &d,
+            p,
+            [0.75, 0.5, 2.],
+            range,
+            Options::default(),
+            |_| true,
+        )
+        .unwrap();
+        assert!(r.distance_bounds_mm[0] <= 2. && 2. <= r.distance_bounds_mm[1]);
+    }
+    // Clipping to the first cell fits the one-cell admission budget.
+    assert!(distance(&map, &d, p, [0.75, 0.5, 2.], [0., 0.5], limited, |_| true).is_ok());
+}
