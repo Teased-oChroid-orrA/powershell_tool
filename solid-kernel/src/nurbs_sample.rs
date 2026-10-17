@@ -121,7 +121,7 @@ pub fn sample(
     }
     let mut spans = Vec::new();
     for k in curve.knots().windows(2) {
-        if k[0] == k[1] {
+        if k[0] == k[1] || k[0] < curve.domain()[0] || k[1] > curve.domain()[1] {
             continue;
         }
         if spans.len() >= opt.max_segments {

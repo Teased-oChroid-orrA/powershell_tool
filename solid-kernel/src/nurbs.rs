@@ -1,4 +1,5 @@
-//! Bounded clamped continuous positive-weight rational B-spline evaluation.
+//! Bounded continuous positive-weight rational B-spline evaluation.
+//! Clamped defaults; explicit finite active-domain construction for extended knots.
 //! Numerical geometry foundation, not a trim/solid or production CAD certificate.
 use crate::{
     step::{Error, ErrorKind},
@@ -121,6 +122,7 @@ pub(crate) struct Basis {
     degree: usize,
     knots: Vec<f64>,
     controls: usize,
+    clamped: bool,
 }
 impl Basis {
     pub(crate) fn new(
@@ -128,6 +130,15 @@ impl Basis {
         knots: Vec<f64>,
         n: usize,
         limits: Limits,
+    ) -> Result<Self, Error> {
+        Self::build(degree, knots, n, limits, true)
+    }
+    fn build(
+        degree: usize,
+        knots: Vec<f64>,
+        n: usize,
+        limits: Limits,
+        require_clamped: bool,
     ) -> Result<Self, Error> {
         if n > limits.control_points || degree > limits.degree {
             return Err(fail(
@@ -160,13 +171,16 @@ impl Basis {
         }
         let lo = knots[degree];
         let hi = knots[n];
-        if lo >= hi
-            || knots[..=degree].iter().any(|k| *k != lo)
-            || knots[n..].iter().any(|k| *k != hi)
-        {
+        let clamped =
+            knots[..=degree].iter().all(|k| *k == lo) && knots[n..].iter().all(|k| *k == hi);
+        if lo >= hi || (require_clamped && !clamped) {
             return Err(fail(
                 ErrorKind::Geometry,
-                "only nonempty clamped B-spline domains are supported",
+                if require_clamped {
+                    "only nonempty clamped B-spline domains are supported"
+                } else {
+                    "nonempty active B-spline domain required"
+                },
             ));
         }
         let mut i = degree + 1;
@@ -187,6 +201,7 @@ impl Basis {
             degree,
             knots,
             controls: n,
+            clamped,
         })
     }
     pub(crate) fn degree(&self) -> usize {
@@ -342,6 +357,24 @@ impl NurbsCurve {
             weights,
         })
     }
+    /// Explicitly supplied extended knot vector, evaluated only on
+    /// [knots[degree], knots[control_count]]. No periodic wrapping or implicit
+    /// control extension is inferred. Default STEP/body readers stay clamped.
+    pub fn new_active_domain(
+        degree: usize,
+        knots: Vec<f64>,
+        control_points: Vec<V3>,
+        weights: Vec<f64>,
+        limits: Limits,
+    ) -> Result<Self, Error> {
+        let basis = Basis::build(degree, knots, control_points.len(), limits, false)?;
+        validate_controls(&control_points, &weights, limits)?;
+        Ok(Self {
+            basis,
+            control_points,
+            weights,
+        })
+    }
     pub fn degree(&self) -> usize {
         self.basis.degree()
     }
@@ -435,9 +468,9 @@ impl NurbsCurve {
                 "nonfinite spline parameter tangent",
             ));
         }
-        if side == ParameterSide::LowerEndpoint {
+        if self.basis.clamped && side == ParameterSide::LowerEndpoint {
             point = self.control_points[0];
-        } else if side == ParameterSide::UpperEndpoint {
+        } else if self.basis.clamped && side == ParameterSide::UpperEndpoint {
             point = *self.control_points.last().unwrap();
         }
         Ok(CurveDifferential {
@@ -451,10 +484,10 @@ impl NurbsCurve {
     pub fn evaluate(&self, t: f64) -> Result<V3, Error> {
         let span = self.basis.span(t)?;
         let [lo, hi] = self.domain();
-        if t == lo {
+        if self.basis.clamped && t == lo {
             return Ok(self.control_points[0]);
         }
-        if t == hi {
+        if self.basis.clamped && t == hi {
             return Ok(*self.control_points.last().unwrap());
         }
         project(self.basis.homogeneous(span, t, |i| {
@@ -839,5 +872,163 @@ mod tests {
             assert!(c.enclose(d, 100).is_err());
         }
         assert_eq!(c.enclose([0.1, 0.2], 0).unwrap_err().kind, ErrorKind::Limit);
+    }
+    fn active_quadratic() -> NurbsCurve {
+        NurbsCurve::new_active_domain(
+            2,
+            vec![0., 1., 2., 3., 4., 5.],
+            vec![[0., 0., 0.], [2., 4., 0.], [4., 0., 0.]],
+            vec![1.; 3],
+            Limits::default(),
+        )
+        .unwrap()
+    }
+    #[test]
+    fn extended_knots_use_actual_basis_endpoints_and_independent_polynomial_differentials() {
+        let c = active_quadratic();
+        assert_eq!(c.domain(), [2., 3.]);
+        assert_eq!(c.evaluate(2.).unwrap(), [1., 2., 0.]);
+        assert_eq!(c.evaluate(3.).unwrap(), [3., 2., 0.]);
+        assert_ne!(c.evaluate(2.).unwrap(), c.control_points()[0]);
+        for s in [0., 0.125, 0.25, 0.5, 0.75, 1.] {
+            let t = 2. + s;
+            let p = c.evaluate(t).unwrap();
+            let d = c.differential(t).unwrap();
+            let exact = [1. + 2. * s, 2. + 4. * s - 4. * s * s, 0.];
+            let tangent = [2., 4. - 8. * s, 0.];
+            for i in 0..3 {
+                assert!((p[i] - exact[i]).abs() < 1e-12);
+                assert!((d.tangent[i] - tangent[i]).abs() < 1e-12);
+            }
+            assert_eq!(d.point, p);
+        }
+        for t in [0., 1., 4., 5., f64::NAN] {
+            assert!(c.evaluate(t).is_err());
+        }
+        assert!(NurbsCurve::new_clamped(
+            2,
+            c.knots().to_vec(),
+            c.control_points().to_vec(),
+            c.weights().to_vec(),
+            Limits::default()
+        )
+        .is_err());
+    }
+    #[test]
+    fn active_domain_sampling_distance_and_enclosures_ignore_extended_knot_tails() {
+        let c = active_quadratic();
+        let b = c.enclose([2., 3.], 1).unwrap();
+        assert!(b.min[0] <= 1. && b.max[0] >= 3. && b.max[1] >= 3.);
+        let samples = crate::nurbs_sample::sample(
+            &c,
+            crate::nurbs_sample::Options {
+                tolerance: 0.01,
+                ..Default::default()
+            },
+            |_| true,
+        )
+        .unwrap();
+        assert_eq!(samples.parameters()[0], 2.);
+        assert_eq!(*samples.parameters().last().unwrap(), 3.);
+        assert_eq!(samples.points()[0], [1., 2., 0.]);
+        assert_eq!(*samples.points().last().unwrap(), [3., 2., 0.]);
+        assert!(samples.parameters().iter().all(|t| *t >= 2. && *t <= 3.));
+        let result = crate::nurbs_distance::distance(
+            &c,
+            [2., 3., 1.],
+            crate::nurbs_distance::Options::default(),
+            |_| true,
+        )
+        .unwrap();
+        assert!(result.distance_bounds[0] <= 1. && result.distance_bounds[1] >= 1.);
+        assert!(result.distance_bounds[1] - result.distance_bounds[0] <= 0.001);
+        assert!(NurbsCurve::new_active_domain(
+            1,
+            vec![0., 0., 0.5, 0.5, 1., 1.],
+            vec![[0.; 3]; 4],
+            vec![1.; 4],
+            Limits::default()
+        )
+        .is_err());
+    }
+    #[test]
+    fn actual_bracket_extended_closed_parameter_curve_evaluates_without_inferring_periodic_wrap() {
+        use crate::step::Value;
+        let data = crate::step::inventory(
+            include_str!("../../nema17-motor-bracket.step"),
+            crate::step::Limits::default(),
+        )
+        .unwrap();
+        let e = &data.entities()[&237];
+        let base = e
+            .components
+            .iter()
+            .find(|c| c.name == "B_SPLINE_CURVE")
+            .unwrap();
+        let degree = crate::step_nurbs::integer(e, &base.args[0]).unwrap();
+        let Value::List(refs) = &base.args[1] else {
+            panic!("fixture");
+        };
+        let points = refs
+            .iter()
+            .map(|r| {
+                let Value::Ref(id) = r else {
+                    panic!("fixture");
+                };
+                let point = &data.entities()[id];
+                let Value::List(v) = &point.components[0].args[1] else {
+                    panic!("fixture");
+                };
+                assert_eq!(v.len(), 2);
+                [
+                    crate::analytic_step::scalar(point, &v[0]).unwrap(),
+                    crate::analytic_step::scalar(point, &v[1]).unwrap(),
+                    0.,
+                ]
+            })
+            .collect::<Vec<_>>();
+        let weights = e
+            .components
+            .iter()
+            .find(|c| c.name == "RATIONAL_B_SPLINE_CURVE")
+            .unwrap();
+        let Value::List(weights) = &weights.args[0] else {
+            panic!("fixture");
+        };
+        let weights = weights
+            .iter()
+            .map(|v| crate::analytic_step::scalar(e, v).unwrap())
+            .collect::<Vec<_>>();
+        let knots = e
+            .components
+            .iter()
+            .find(|c| c.name == "B_SPLINE_CURVE_WITH_KNOTS")
+            .unwrap();
+        let (Value::List(m), Value::List(k)) = (&knots.args[0], &knots.args[1]) else {
+            panic!("fixture");
+        };
+        let knots = crate::step_nurbs::expanded_knots(e, m, k, points.len(), degree).unwrap();
+        assert!(NurbsCurve::new_clamped(
+            degree,
+            knots.clone(),
+            points.clone(),
+            weights.clone(),
+            Limits::default()
+        )
+        .is_err());
+        let c = NurbsCurve::new_active_domain(degree, knots, points, weights, Limits::default())
+            .unwrap();
+        let [lo, hi] = c.domain();
+        assert!(c.knots()[0] < lo && *c.knots().last().unwrap() > hi);
+        let a = c.evaluate(lo).unwrap();
+        let b = c.evaluate(hi).unwrap();
+        for i in 0..3 {
+            assert!((a[i] - b[i]).abs() < 1e-9);
+        }
+        for t in [lo, (lo + hi) * 0.5, hi] {
+            assert!(c.evaluate(t).unwrap().iter().all(|x| x.is_finite()));
+        }
+        assert!(c.evaluate(lo - 1.).is_err());
+        assert!(c.evaluate(hi + 1.).is_err());
     }
 }

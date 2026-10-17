@@ -28,7 +28,7 @@ impl Geometry<1> for NurbsCurve {
     fn cells(&self, maximum: usize) -> Result<Vec<[[f64; 2]; 1]>, Error> {
         let mut cells = Vec::new();
         for k in self.knots().windows(2) {
-            if k[0] != k[1] {
+            if k[0] != k[1] && k[0] >= self.domain()[0] && k[1] <= self.domain()[1] {
                 geometry_distance::push_cell(&mut cells, [[k[0], k[1]]], maximum)?;
             }
         }
