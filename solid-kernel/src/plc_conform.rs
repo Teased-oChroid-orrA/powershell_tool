@@ -101,6 +101,19 @@ pub struct Conforming {
     pub segments: Vec<[usize; 2]>,
     pub report: Report,
 }
+impl Conforming {
+    /// Tet4 solver mesh of the extracted cells, through the existing conformity
+    /// and quality gates (a sliver beyond them is refused, not repaired). The
+    /// whole boundary is the surface set `boundary`.
+    pub fn to_solver_mesh(&self, material: fea_core::Elastic) -> Result<fea_core::Mesh, MeshError> {
+        TetTopology::new(
+            self.points.clone(),
+            self.cells.clone(),
+            self.cells.len() + 1,
+        )?
+        .to_mesh(material)
+    }
+}
 fn fail(kind: ErrorKind, detail: impl Into<String>) -> Error {
     Error {
         offset: 0,

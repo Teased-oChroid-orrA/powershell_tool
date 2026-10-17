@@ -278,3 +278,47 @@ fn reconnection_keeps_the_boundary_and_volume_and_never_worsens_quality() {
         assert_eq!(faces.iter().filter(|k| **k == face_key(*f)).count(), 1);
     }
 }
+
+#[test]
+fn reconnection_lets_the_recovered_slab_pass_the_solver_gate_and_a_tension_patch() {
+    use fea_core::{meshing::tet_flip::FlipOptions, Elastic, Loads, Model, SurfaceLoad};
+    let (v, t) = plate(3., None, 1.);
+    let base = Options {
+        max_radius_edge: Some(2.),
+        ..Options::default()
+    };
+    // Without reconnection a sliver (scaled Jacobian 0.049) fails the solver gate.
+    let raw = conform(&v, &t, base, |_| true).unwrap();
+    assert!(raw.to_solver_mesh(Elastic::new(1000., 0.)).is_err());
+    let options = Options {
+        reconnect: Some(FlipOptions::default()),
+        ..base
+    };
+    let m = conform(&v, &t, options, |_| true).unwrap();
+    // E = 1000, nu = 0, uniform traction 10 on the top: u_z = 0.01 z everywhere.
+    let mesh = m.to_solver_mesh(Elastic::new(1000., 0.)).unwrap();
+    let model = Model::new(mesh).unwrap();
+    let mut bc = model.dirichlet();
+    for (i, p) in model.mesh.nodes.iter().enumerate() {
+        if p[2] == 0. {
+            bc.fix_node(i);
+        }
+    }
+    let mut loads = Loads::default();
+    for face in &model.mesh.surfaces["boundary"] {
+        if face.iter().all(|&i| model.mesh.nodes[i][2] == 1.) {
+            loads
+                .faces
+                .push((face.clone(), SurfaceLoad::Traction([0., 0., 10.])));
+        }
+    }
+    assert!(!loads.faces.is_empty());
+    let solved = model.solve_static(&loads, &bc).unwrap();
+    for (i, p) in model.mesh.nodes.iter().enumerate() {
+        assert!(
+            (solved.u[3 * i + 2] - 0.01 * p[2]).abs() < 1e-9,
+            "node {i} at {p:?}: {}",
+            solved.u[3 * i + 2]
+        );
+    }
+}
