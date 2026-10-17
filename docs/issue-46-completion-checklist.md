@@ -36,7 +36,8 @@ Checked lines are delivered scoped increments, with evidence committed in this r
 
 - [ ] #55: High-order curved CAD-conforming elements.
 - [ ] #56: Verified structured–unstructured integration and transitions.
-- [ ] #57: Validated metric tensors and size/complexity budgets.
+- [x] #57: Validated SPD metric tensors, metric-space lengths, log-Euclidean interpolation, intersection, gradation, curvature- and error-field-driven sizes and complexity/budget control, all with analytic tests ([Phase 62](issue-46-phase-62.md)). No mesher consumes the field yet, so the gate stays open until #58 integrates it.
+- [ ] #57: Verified spatial metric fields consumed by a mesher.
 - [ ] #58: Metric-driven anisotropic adaptation.
 - [ ] #59: Mesh motion/ALE and consistent state/history transfer.
 - [ ] #60: Solver-aware cost models and advanced optimization.
