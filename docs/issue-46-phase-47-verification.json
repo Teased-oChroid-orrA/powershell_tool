@@ -1,0 +1,33 @@
+{
+  "qualified_source_commit": "cdcbdfa19e11a691f7e8b84e5a93898c66173885",
+  "checks": [
+    {
+      "command": "cargo test -p solid-kernel --features occt --locked --offline -j1",
+      "passed": 167,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo test -p solid-kernel --no-default-features --locked --offline -j1",
+      "passed": 150,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "command": "cargo check -p app-tui --features occt --lib --tests --locked --offline -j1",
+      "exit_code": 0
+    }
+  ],
+  "cli_pcurve_audit_exit_code": 0,
+  "development_failures": [],
+  "dataset_evidence": {
+    "single_winding_spline_associations": 15,
+    "body_locus_associations": 228,
+    "tolerance_mm": 1e-07,
+    "double_traversal_fixture": "coverage passes; single-winding and whole-body diagnostic refuse"
+  },
+  "not_verified": [
+    "General single-winding certificate for more than four spans",
+    "Finite arc/master/trim/body, general spline import, general PLC/quality/later gates, current Windows/macOS runtime"
+  ]
+}
