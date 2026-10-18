@@ -152,3 +152,48 @@ fn the_plate_with_a_hole_is_measured_with_and_without_advice() {
 fn the_plain_plate_control_gets_no_advice_for_the_hole_zone() {
     experiment(false, 2e-3);
 }
+
+/// Size field of a finished mesh: the mean edge length of the element whose centroid is nearest to the point.
+fn size_field_of(mesh: &Mesh) -> impl Fn([f64; 2]) -> f64 {
+    let mut cells: Vec<([f64; 2], f64)> = Vec::new();
+    for b in &mesh.blocks {
+        for e in 0..b.n_elems() {
+            let el = b.elem(e);
+            let p: Vec<[f64; 3]> = el[..3].iter().map(|&n| mesh.nodes[n]).collect();
+            let d = |a: usize, c: usize| ((p[a][0] - p[c][0]).powi(2) + (p[a][1] - p[c][1]).powi(2)).sqrt();
+            let h = (d(0, 1) + d(1, 2) + d(2, 0)) / 3.0;
+            cells.push((
+                [(p[0][0] + p[1][0] + p[2][0]) / 3.0, (p[0][1] + p[1][1] + p[2][1]) / 3.0],
+                h,
+            ));
+        }
+    }
+    move |q: [f64; 2]| {
+        cells
+            .iter()
+            .min_by(|a, b| {
+                let da = (a.0[0] - q[0]).powi(2) + (a.0[1] - q[1]).powi(2);
+                let db = (b.0[0] - q[0]).powi(2) + (b.0[1] - q[1]).powi(2);
+                da.total_cmp(&db)
+            })
+            .map_or(START, |c| c.1)
+    }
+}
+
+/// An upper bound on what any starting-mesh advice can gain: start AMR from the mesh the default run ended on (a perfect
+/// oracle). AMR must still solve and estimate on it at least once, so the saving is bounded by the cheap early cycles.
+#[test]
+fn an_oracle_start_bounds_what_any_advice_could_gain() {
+    let j_ref = reference(true);
+    for rel_tol in [5e-4, 1e-4] {
+        let tol = rel_tol * j_ref.abs();
+        let default = converge(true, &|_| START, j_ref, tol);
+        let oracle_size = size_field_of(&default.result.problem.model.mesh);
+        let oracle = converge(true, &oracle_size, j_ref, tol);
+        eprintln!(
+            "[oracle tol {rel_tol:e}] default {} cycles {} dofs {:.2} s; oracle start {} cycles {} dofs {:.2} s (time ratio {:.2})",
+            default.cycles, default.dofs, default.seconds, oracle.cycles, oracle.dofs, oracle.seconds, oracle.seconds / default.seconds
+        );
+        assert!(matches!(oracle.stop, Stop::Converged), "{:?}", oracle.stop);
+    }
+}
