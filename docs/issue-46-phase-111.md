@@ -22,6 +22,6 @@ Phase 102 built the hexahedron | pyramid | tetrahedron join (`hybrid::hex_pyrami
 
 - The core is **interior** (never touches the shell): a core that reaches the surface (a hexahedral end of a part) needs the shell and the hexahedra to share their boundary ring, which is `hex_pyramid_tet`'s own contract and is not built here.
 - Axis-aligned cubic cells only; no grading, no body-fitted hexahedra; the core's size is whatever fits.
-- The tetrahedral recovery's own limits apply: the **cylinder with a cross bore** (spline-edged saddle intersection) fails after 127 s with "sub-facet circumcentre leaves its facet without encroaching a segment" (the documented weakness of `plc_conform` on curved sampled shells); the shell must be graded with chart quality first (plain sampling leaves needles).
+- The tetrahedral recovery's own limits apply: the **cylinder with a cross bore** (spline-edged saddle intersection) failed after 127 s with "sub-facet circumcentre leaves its facet without encroaching a segment" (fixed in Phase 112, which also records the remaining limit: the saddle's small input angles need a looser radius-edge target); the shell must be graded with chart quality first (plain sampling leaves needles).
 - Pinch removal handles edge and vertex pinches of the boundary but does not look for thin cavities inside the core.
 - No Windows or hosted-CI evidence of its own.
