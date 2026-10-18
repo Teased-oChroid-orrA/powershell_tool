@@ -17,6 +17,7 @@ pub mod chart_grade;
 pub(crate) mod curved_surface;
 pub mod face_identity;
 pub mod hybrid;
+pub mod hybrid_region;
 pub mod chart_mesh;
 mod native_math;
 mod native_interval;
@@ -333,6 +334,14 @@ impl SurfaceSolid {
     }
 
     /// Number of model faces (one more than the largest face tag).
+    /// The welded vertices of the surface.
+    pub fn vertices(&self) -> &[V3] {
+        &self.vertices
+    }
+    /// The triangles over [`Self::vertices`], outward oriented.
+    pub fn triangles(&self) -> &[[usize; 3]] {
+        &self.triangles
+    }
     pub fn face_count(&self) -> usize {
         self.faces
     }

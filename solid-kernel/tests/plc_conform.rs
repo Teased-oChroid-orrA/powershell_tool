@@ -398,3 +398,66 @@ fn a_prism_over_a_regular_polygon_recovers_although_every_point_is_on_the_hull()
         );
     }
 }
+
+/// A cube [lo, hi]^3 as twelve triangles, outward (`outward = true`) or turned inside out (a cavity wall).
+fn cube_shell(lo: f64, hi: f64, outward: bool, v: &mut Vec<V3>, f: &mut Vec<[usize; 3]>) {
+    let base = v.len();
+    for k in 0..8 {
+        v.push([
+            if k & 1 == 0 { lo } else { hi },
+            if k & 2 == 0 { lo } else { hi },
+            if k & 4 == 0 { lo } else { hi },
+        ]);
+    }
+    for q in [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]] {
+        let [a, b, c, d] = q.map(|i| base + i);
+        if outward {
+            f.extend([[a, b, c], [a, c, d]]);
+        } else {
+            f.extend([[a, c, b], [a, d, c]]);
+        }
+    }
+}
+
+#[test]
+fn a_closed_cavity_inside_the_shell_is_not_filled() {
+    // the region between an outer cube and an inner cubic cavity (the cavity wall oriented into the cavity): the cells between
+    // the two shells only, so the volume is 4^3 - 2^3 = 56 exactly and no cell lies in the cavity
+    let (mut v, mut f) = (Vec::new(), Vec::new());
+    cube_shell(0., 4., true, &mut v, &mut f);
+    cube_shell(1., 3., false, &mut v, &mut f);
+    let c = conform(&v, &f, Options::default(), |_| true).unwrap();
+    let volume: f64 = c
+        .cells
+        .iter()
+        .map(|t| {
+            let p = t.map(|i| c.points[i]);
+            let d = |a: V3, b: V3| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+            let (a, b, e) = (d(p[1], p[0]), d(p[2], p[0]), d(p[3], p[0]));
+            (a[0] * (b[1] * e[2] - b[2] * e[1]) - a[1] * (b[0] * e[2] - b[2] * e[0]) + a[2] * (b[0] * e[1] - b[1] * e[0])) / 6.
+        })
+        .sum();
+    assert!((volume - 56.).abs() < 1e-9, "{volume}");
+    assert!(c.cells.iter().all(|t| {
+        // no cell centroid inside the cavity
+        let m: V3 = std::array::from_fn(|k| t.iter().map(|&i| c.points[i][k]).sum::<f64>() / 4.);
+        !(m.iter().all(|x| *x > 1. && *x < 3.))
+    }));
+}
+
+#[test]
+fn every_returned_point_belongs_to_a_cell_a_facet_or_a_segment() {
+    // an input vertex keeps its index; a Steiner point that nothing uses is not returned (it would be a node of no element)
+    let (mut v, mut f) = (Vec::new(), Vec::new());
+    cube_shell(0., 4., true, &mut v, &mut f);
+    cube_shell(1., 3., false, &mut v, &mut f);
+    let options = Options { max_radius_edge: Some(2.0), protect_encroached: false, ..Options::default() };
+    let c = conform(&v, &f, options, |_| true).unwrap();
+    assert_eq!(&c.points[..v.len()], &v[..], "input vertices keep their numbers");
+    let mut used = vec![false; c.points.len()];
+    c.cells.iter().flatten().for_each(|&i| used[i] = true);
+    c.facets.iter().flat_map(|(f, _)| f).for_each(|&i| used[i] = true);
+    c.segments.iter().flatten().for_each(|&i| used[i] = true);
+    let unused: Vec<usize> = (v.len()..c.points.len()).filter(|&i| !used[i]).collect();
+    assert!(unused.is_empty(), "unused Steiner points {unused:?}");
+}
