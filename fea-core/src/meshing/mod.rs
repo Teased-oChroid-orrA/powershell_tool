@@ -8,6 +8,7 @@ pub mod cost;
 pub mod compatibility;
 pub mod curved;
 pub mod hybrid;
+pub mod learned_cost;
 pub mod metric;
 pub mod metric_refine;
 pub mod motion;
