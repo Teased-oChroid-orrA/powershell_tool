@@ -496,6 +496,125 @@ mod tests {
         assert!(r.min_quality_after > 0., "no flat cell: {r:?}");
         assert!(r.longest_edge_after < r.longest_edge_before);
     }
+    fn q_unsorted(out: &TetTopology, field: &dyn Fn(Point) -> Result<Metric, super::super::metric::MetricError>) -> Vec<f64> {
+        let metrics: Vec<Metric> = out.points().iter().map(|p| field(*p).unwrap()).collect();
+        out.cells().iter().map(|&t| metric_quality(out.points(), &metrics, t)).collect()
+    }
+    #[test]
+    fn flat_boundary_flips_raise_the_worst_cell_of_a_converging_four_to_one_layer() {
+        let bounds = MetricBounds::new(0.01, 10., 100.).unwrap();
+        let field = |p: Point| {
+            let hx = 0.1 + 0.7 * (p[0] - 0.5).abs();
+            Metric::from_sizes([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]], [hx.min(0.4), 0.4, 0.4])
+        };
+        let worst = |planar: bool| {
+            let options = RefineOptions { max_passes: 40, flips: Some(FlipOptions { planar_boundary: planar, ..FlipOptions::default() }), ..RefineOptions::default() };
+            let (out, r) = refine(&cube(), &field, &bounds, options).unwrap();
+            assert!(r.converged, "planar {planar}: {r:?}");
+            assert!((volume(&out) - 1.).abs() < 1e-12 && (boundary_area(&out) - 6.).abs() < 1e-12);
+            r.min_quality_after
+        };
+        let (off, on) = (worst(false), worst(true));
+        eprintln!("4:1 worst cell {off:.3} -> {on:.3}");
+        assert!(on > 1.4 * off, "{off} -> {on}");
+    }
+
+    #[test]
+    #[ignore = "release: 23 s; run with --release --ignored"]
+    fn flat_boundary_flips_stop_the_slivers_that_bisection_leaves_on_the_cube_faces() {
+        // 10:1 across a layer, 40 passes: bisection leaves boundary slivers whose triangulation the locked boundary cannot
+        // change (worst cell 1e-15 and over a third of the cells below 0.1 without the flips).
+        let bounds = MetricBounds::new(0.01, 10., 100.).unwrap();
+        let field = |p: Point| {
+            let hx = 0.04 + 0.7 * (p[0] - 0.5).abs();
+            Metric::from_sizes([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]], [hx.min(0.4), 0.4, 0.4])
+        };
+        let run = |planar: bool| {
+            let options = RefineOptions { max_passes: 40, flips: Some(FlipOptions { planar_boundary: planar, ..FlipOptions::default() }), ..RefineOptions::default() };
+            let (out, r) = refine(&cube(), &field, &bounds, options).unwrap();
+            let mut q = q_unsorted(&out, &field);
+            q.sort_by(f64::total_cmp);
+            (out, r, q)
+        };
+        let (_, _, off) = run(false);
+        let (out, _, on) = run(true);
+        let bad = |q: &[f64]| q.iter().filter(|x| **x < 0.1).count();
+        eprintln!("flat boundary flips: min {:.1e} -> {:.1e}, median {:.3} -> {:.3}, below 0.1: {} of {} -> {} of {}", off[0], on[0], off[off.len() / 2], on[on.len() / 2], bad(&off), off.len(), bad(&on), on.len());
+        assert!(on[0] > 1e-6 && on[0] > 1e6 * off[0].max(1e-300), "worst {:e} vs {:e}", on[0], off[0]);
+        assert!(on[on.len() / 2] > 1.5 * off[off.len() / 2], "median");
+        assert!(bad(&on) * 3 < bad(&off), "{} vs {}", bad(&on), bad(&off));
+        // Same domain: volume, surface area and the cube surface itself.
+        assert!((volume(&out) - 1.).abs() < 1e-12);
+        assert!((boundary_area(&out) - 6.).abs() < 1e-12);
+        for v in out.boundary().iter().flatten() {
+            let p = out.points()[*v];
+            assert!((0..3).any(|k| p[k] == 0. || p[k] == 1.), "boundary vertex left the cube surface");
+        }
+    }
+    #[test]
+    #[ignore = "study: which stage creates the slivers at 10:1"]
+    fn which_stage_creates_the_slivers_at_strong_anisotropy() {
+        let bounds = MetricBounds::new(0.01, 10., 100.).unwrap();
+        let field = |p: Point| {
+            let hx = 0.04 + 0.7 * (p[0] - 0.5).abs();
+            Metric::from_sizes([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]], [hx.min(0.4), 0.4, 0.4])
+        };
+        let variants: Vec<(&str, RefineOptions)> = vec![
+            ("default", RefineOptions { max_passes: 40, ..RefineOptions::default() }),
+            ("no smoothing", RefineOptions { max_passes: 40, smooth_passes: 0, ..RefineOptions::default() }),
+            ("no coarsening", RefineOptions { max_passes: 40, coarsen_passes: 0, ..RefineOptions::default() }),
+            ("no smoothing, no coarsening", RefineOptions { max_passes: 40, smooth_passes: 0, coarsen_passes: 0, ..RefineOptions::default() }),
+            ("planar boundary flips", RefineOptions { max_passes: 40, flips: Some(FlipOptions { planar_boundary: true, ..FlipOptions::default() }), ..RefineOptions::default() }),
+            ("splits only", RefineOptions { max_passes: 40, smooth_passes: 0, coarsen_passes: 0, flips: None, ..RefineOptions::default() }),
+        ];
+        for (name, options) in variants {
+            let (out, r) = refine(&cube(), &field, &bounds, options).unwrap();
+            let mut q = q_unsorted(&out, &field);
+            q.sort_by(f64::total_cmp);
+            eprintln!("{name:<28}: {:>5} cells, passes {}, converged {}, min {:.2e}, p1 {:.3}, median {:.3}, below 0.1: {}", q.len(), r.passes, r.converged, q[0], q[q.len() / 100], q[q.len() / 2], q.iter().filter(|x| **x < 0.1).count());
+        }
+    }
+    #[test]
+    #[ignore = "study: quality distribution at strong anisotropy"]
+    fn quality_distribution_at_strong_anisotropy() {
+        let bounds = MetricBounds::new(0.01, 10., 100.).unwrap();
+        for ratio in [4.0f64, 10.0] {
+            let field = |p: Point| {
+                let hx = 0.4 / ratio + 0.7 * (p[0] - 0.5).abs();
+                Metric::from_sizes([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]], [hx.min(0.4), 0.4, 0.4])
+            };
+            for passes in [10usize, 40] {
+                let options = RefineOptions { max_passes: passes, flips: Some(FlipOptions { planar_boundary: true, ..FlipOptions::default() }), ..RefineOptions::default() };
+                let (out, r) = refine(&cube(), &field, &bounds, options).unwrap();
+                let metrics: Vec<Metric> = out.points().iter().map(|p| field(*p).unwrap()).collect();
+                let mut q: Vec<f64> = out.cells().iter().map(|&t| metric_quality(out.points(), &metrics, t)).collect();
+                q.sort_by(f64::total_cmp);
+                let pct = |f: f64| q[((q.len() - 1) as f64 * f) as usize];
+                let signed: Vec<f64> = out.cells().iter().map(|t| { let p = t.map(|v| out.points()[v]); let d = |a: usize| [p[a][0] - p[0][0], p[a][1] - p[0][1], p[a][2] - p[0][2]]; let (a, b, c) = (d(1), d(2), d(3)); (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6.0 }).collect();
+                eprintln!("  min quality {:e}, min signed volume {:e}, max {:e}, volume sum {:.12}", q[0], signed.iter().cloned().fold(f64::INFINITY, f64::min), signed.iter().cloned().fold(f64::NEG_INFINITY, f64::max), signed.iter().sum::<f64>());
+                if passes == 40 {
+                    let on_b = |v: usize| (0..3).any(|k| out.points()[v][k] == 0.0 || out.points()[v][k] == 1.0);
+                    let mut by_nb = [0usize; 5];
+                    let mut interior_bad = 0;
+                    let (mut xs, mut ys, mut zs) = ([0usize; 5], [0usize; 5], [0usize; 5]);
+                    for (t, &qq) in out.cells().iter().zip(&q_unsorted(&out, &field)) {
+                        if qq < 0.1 {
+                            let nb = t.iter().filter(|&&v| on_b(v)).count();
+                            by_nb[nb] += 1;
+                            if nb == 0 { interior_bad += 1; }
+                            let c: Vec<f64> = (0..3).map(|k| t.iter().map(|&v| out.points()[v][k]).sum::<f64>() / 4.0).collect();
+                            xs[((c[0] * 5.0) as usize).min(4)] += 1; ys[((c[1] * 5.0) as usize).min(4)] += 1; zs[((c[2] * 5.0) as usize).min(4)] += 1;
+                        }
+                    }
+                    eprintln!("  bad cells (<0.1) by number of boundary vertices {by_nb:?}, interior-only {interior_bad}; centroid histogram x {xs:?} y {ys:?} z {zs:?}");
+                }
+                eprintln!(
+                    "ratio {ratio} passes {passes}: {} cells, converged {}, band {:.2}; quality min {:.4} p1 {:.3} p10 {:.3} median {:.3}; cells below 0.1: {}",
+                    q.len(), r.converged, r.edges_in_band_after, q[0], pct(0.01), pct(0.1), pct(0.5), q.iter().filter(|x| **x < 0.1).count()
+                );
+            }
+        }
+    }
     #[test]
     fn metric_smoothing_raises_the_worst_cell_of_a_strongly_anisotropic_mesh() {
         let bounds = MetricBounds::new(0.01, 10., 100.).unwrap();
