@@ -10,6 +10,7 @@ pub mod dynamics;
 pub mod history;
 pub mod joint;
 pub mod members;
+pub mod mesh_store;
 pub mod mesh_telemetry;
 pub mod path;
 pub mod problem;
