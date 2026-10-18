@@ -4,6 +4,7 @@
 //! do not depend on each other.
 
 pub mod adjacency;
+pub mod ale;
 pub mod cost;
 pub mod compatibility;
 pub mod curved;
