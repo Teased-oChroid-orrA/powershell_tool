@@ -1247,7 +1247,7 @@ impl AnalyticModel {
                 .iter()
                 .any(|c| c.name == "B_SPLINE_SURFACE_WITH_KNOTS")
             {
-                let declaration = context.read_spline_surface(
+                let declaration = context.read_spline_surface_active_domain(
                     data,
                     data.entity_reference(face.id).unwrap(),
                     crate::nurbs_surface::Limits::default(),

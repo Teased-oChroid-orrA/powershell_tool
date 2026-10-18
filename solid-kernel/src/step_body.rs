@@ -116,6 +116,16 @@ impl BodyContext {
         let source = self.spline_surface_source(data, face)?;
         crate::step_nurbs_surface::read_surface(data, source.entity, self.scale_mm, limits)
     }
+    /// [`Self::read_spline_surface`] for a face whose surface may be unclamped (periodic): evaluated on its active domain.
+    pub fn read_spline_surface_active_domain(
+        &self,
+        data: &Inventory,
+        face: EntityReference,
+        limits: crate::nurbs_surface::Limits,
+    ) -> Result<crate::step_nurbs_surface::StepSurfaceDeclaration, Error> {
+        let source = self.spline_surface_source(data, face)?;
+        crate::step_nurbs_surface::read_surface_active_domain(data, source.entity, self.scale_mm, limits)
+    }
     pub(crate) fn spline_surface_source(
         &self,
         data: &Inventory,
