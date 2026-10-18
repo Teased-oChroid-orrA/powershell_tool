@@ -154,3 +154,4 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - [Phase 48 source spline parameter/composition bounds](../docs/issue-46-phase-48.md): raw UV/knots, outward physical scaling and exact-boundary arithmetic; no regularity/trim/body certificate.
 
 - [Phase 49 source p-curve world-distance brackets](../docs/issue-46-phase-49.md): shared bounded search, decoded-declaration reuse and explicit candidate-enclosure/uniqueness limits.
+- Face bound labels are not roles: Onshape (the ABC dataset) writes the hole loops of a face as `FACE_OUTER_BOUND` too, so a face may declare several outer bounds. Roles come from the loop geometry only (`planar_step::classify`, `cylindrical_step`); the declared-outer consistency check applies only to a single declared outer. `examples/abc-corpus.rs` surveys a directory of STEP files (models stay outside the repo, licence stays with their creators); results in `docs/issue-46-abc-corpus-2026-10-18.md`.

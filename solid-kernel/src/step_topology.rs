@@ -327,9 +327,9 @@ pub fn bodies(data: &Inventory, limits: TopologyLimits) -> Result<Vec<RawBody>, 
                 }
                 parsed.push(b);
             }
-            if parsed.iter().filter(|b| b.explicitly_outer).count() > 1 {
-                return Err(error(fe, "multiple explicit outer bounds"));
-            }
+            // Onshape (the ABC dataset) writes hole loops as FACE_OUTER_BOUND too, so several declared outers are data, not an
+            // error: the roles are decided geometrically (`planar_step::classify`, `cylindrical_step`), which rejects a face
+            // that still has no single enclosing loop.
             body.faces.insert(
                 id,
                 RawFace {

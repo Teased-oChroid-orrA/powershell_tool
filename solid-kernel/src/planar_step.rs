@@ -255,8 +255,11 @@ impl AnalyticModel {
             });
         }
         classify(&mut loops, remaining)?;
+        // A single declared outer bound must be the geometric one; several declared outers (Onshape labels holes that way)
+        // carry no usable role information.
+        let single_declared_outer = face.bounds.iter().filter(|b| b.explicitly_outer).count() == 1;
         for (l, b) in loops.iter().zip(&face.bounds) {
-            if b.explicitly_outer && !l.is_outer {
+            if single_declared_outer && b.explicitly_outer && !l.is_outer {
                 return Err(fail(
                     ErrorKind::Geometry,
                     "declared outer bound is geometrically nested",
