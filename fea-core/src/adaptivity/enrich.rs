@@ -155,6 +155,9 @@ pub fn refine_uniform_2d(mesh: &Mesh) -> Result<Refined, MeshError> {
     let mut fine = Mesh::new(mesh.physics);
     fine.nodes = all;
     fine.blocks = blocks;
+    // The coarse nodes keep their indices on the fine mesh, so a node-set goal (`GoalSpec::mean_displacement`, `reaction`) means the
+    // same nodes on both meshes; without the sets such a goal could not be built on the enriched dual ("no node set").
+    fine.node_sets = mesh.node_sets.clone();
     Ok(Refined { mesh: fine, parent_of_elem, origin, parents_of_node, n_coarse_nodes: n_coarse })
 }
 
