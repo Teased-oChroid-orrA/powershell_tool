@@ -85,10 +85,11 @@ Checked lines are delivered scoped increments, with evidence committed in this r
 - [ ] #59: Mesh motion/ALE and consistent state/history transfer.
 - [x] #60: Full total-cost objective (CAD, generation, estimation, adaptation, transfer once per mesh; solver terms per analysis), memory/time limits with explicit rejection reasons and the break-even number of analyses ([Phase 74](issue-46-phase-74.md)); representative verified benchmarks and iterative-solver costs remain open.
 - [ ] #60: Solver-aware cost models and advanced optimization.
+- [x] #61 (scoped): corpus widened by solver-generated unstructured / graded tetrahedra and NAFEMS LE1/LE10 meshes (16 families, 112 meshes, Apple M1): leave-one-family-out median x1.12 vs x1.88, structured-to-unstructured split x1.14 vs x1.92; learned predictions stay off ([Phase 113](issue-46-phase-113.md)).
 - [ ] #61: Optional learning with representative verified training data, held-out/OOD checks and deterministic fallback.
 - [x] #62: AMR feedback consumer: run summaries with regional refinement demand, exact-key validated-only advice of initial size multipliers that can only refine, expected adaptation cost ([Phase 75](issue-46-phase-75.md)); the time-to-accuracy gain is NOT shown (identical result on the L-plate benchmark).
 - [ ] #62: AMR feedback and production autotuner/time-to-accuracy qualification.
-- [ ] #63: Verified native production parity and separately approved OCCT retirement. OCCT remains the production backend.
+- [ ] #63: Verified native production parity and separately approved OCCT retirement. OCCT remains the production backend. Readiness assessment 2026-10-18: not ready ([assessment](issue-46-occt-retirement-readiness.md)).
 
 Detailed phase reports/manifests preserve exact commands, commits, failures and limitations. Tracking-only updates reuse valid source qualification and trigger no hosted CI. The root NEMA17 fixture has unknown provenance and declares millimetres. Sampled geometry, parsing, endpoint checks and distance bounds are never promoted to unproved production CAD or mesh capabilities.
 - [x] #51 (scoped): STEP assemblies and placements: product-structure reader with the transformation convention fixed against OpenCASCADE (built and running here; 226 OCCT-enabled solid-kernel tests pass), order-independent, seven explicit refusals, native placements equal OpenCASCADE's ([Phase 95](issue-46-phase-95.md)); mapped items, other CAD systems' files, exact trims, healing and persistent association remain open.

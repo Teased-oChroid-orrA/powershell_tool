@@ -5,6 +5,7 @@
 use fea_core::delaunay::MeshOptions;
 use fea_core::generate::grid;
 use fea_core::geometry::{Loop, Region};
+use fea_core::tetmesh::{mesh_solid, Solid, TetOptions};
 use fea_core::meshing::cost::{CostModel, MeshCost, Workload};
 use fea_core::mesh2d::mesh_region;
 use fea_core::*;
@@ -178,6 +179,12 @@ use fea_core::meshing::learned_cost::{LearnedCost, Sample, Source};
 type Measured<'a> = (&'a str, usize, Mesh, MeshCost, (f64, f64, f64));
 
 fn stage_times(mesh: &Mesh) -> Option<(f64, f64, f64)> {
+    stage_times_fixed(mesh, 0.0)
+}
+
+/// As [`stage_times`], fixing the nodes within `fraction` of the x extent of the minimum (a mesh with no flat face needs a patch,
+/// not one node, to be supported).
+fn stage_times_fixed(mesh: &Mesh, fraction: f64) -> Option<(f64, f64, f64)> {
     let cost = MeshCost::of(mesh).unwrap();
     if cost.iterative {
         return None;
@@ -185,8 +192,9 @@ fn stage_times(mesh: &Mesh) -> Option<(f64, f64, f64)> {
     let model = Model::new(mesh.clone()).unwrap();
     let mut bc = model.dirichlet();
     let xmin = mesh.nodes.iter().map(|x| x[0]).fold(f64::INFINITY, f64::min);
+    let xmax = mesh.nodes.iter().map(|x| x[0]).fold(f64::NEG_INFINITY, f64::max);
     for (n, x) in mesh.nodes.iter().enumerate() {
-        if x[0] <= xmin + 1e-9 {
+        if x[0] <= xmin + 1e-9 + fraction * (xmax - xmin) {
             for c in 0..mesh.dim() {
                 bc.fix(n, c, 0.0);
             }
@@ -195,7 +203,14 @@ fn stage_times(mesh: &Mesh) -> Option<(f64, f64, f64)> {
     let loads = Loads { nodal: vec![(mesh.nodes.len() - 1, [1.0, 0.0, 0.0])], ..Loads::default() };
     let (mut a, mut f, mut s) = (f64::INFINITY, f64::INFINITY, f64::INFINITY);
     for _ in 0..3 {
-        let t = model.solve_static(&loads, &bc).unwrap().timings;
+        let sol = model.solve_static(&loads, &bc).unwrap();
+        // `MeshCost` estimates the factor with one node fixed; the solver decides on the supported system. Within ~15 % of the
+        // iterative threshold the two disagree (LE10 Hex20 10^3: estimate 59.0 M, solver factor over 60 M): not a direct solve.
+        if sol.factor_nnz == 0 {
+            eprintln!("  (excluded: the solver went iterative where MeshCost predicted direct, {} dofs)", cost.dofs);
+            return None;
+        }
+        let t = sol.timings;
         a = a.min(t.assemble_ms);
         f = f.min(t.factor_ms);
         s = s.min(t.solve_ms);
@@ -223,6 +238,23 @@ fn tri3_strip(n: usize) -> Mesh {
     grid(Physics::PlaneStress { thickness: 1.0 }, ElementKind::Tri3, Elastic::new(1.0e7, 0.3), [2 * n, n, 1], &|p| p).unwrap()
 }
 
+/// An unstructured tetrahedral ball (radius 1) meshed by `tetmesh`; `graded` refines the interior towards (0.7, 0, 0).
+fn ball(h: f64, quadratic: bool, graded: bool) -> Mesh {
+    let sdf = |x: [f64; 3]| (x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).sqrt() - 1.0;
+    let size = move |x: [f64; 3]| if graded { 0.12 + 0.5 * ((x[0] - 0.7).powi(2) + x[1] * x[1] + x[2] * x[2]).sqrt() } else { 10.0 };
+    let face = |_: [f64; 3]| 0usize;
+    let solid = Solid { lo: [-1.2; 3], hi: [1.2; 3], sdf: &sdf, size: &size, face_of: &face, face_dists: None };
+    mesh_solid(&solid, Elastic::new(1.0e7, 0.3), TetOptions { base: 0.6, boundary_size: h, quadratic, ..Default::default() }).unwrap().0
+}
+
+#[test]
+fn calibration_supports_a_mesh_without_a_flat_face() {
+    // A ball has no x-minimum face, so one fixed node (or a point) leaves rigid-body motions free; calibrate must widen the patch.
+    let m = ball(0.5, false, false);
+    let model = CostModel::calibrate(&m, 1).expect("calibrate on an unstructured ball");
+    assert!([model.assembly_s_per_unit, model.factor_s_per_unit, model.solve_s_per_factor_nnz].iter().all(|r| r.is_finite() && *r > 0.0));
+}
+
 #[test]
 #[ignore = "timing: run with --release --ignored --nocapture"]
 fn learned_cost_against_the_deterministic_model_on_held_out_families() {
@@ -239,11 +271,17 @@ fn learned_cost_against_the_deterministic_model_on_held_out_families() {
         ("hex27", 3, [2, 3, 4, 5, 6, 8, 10].iter().map(|&n| grid3(ElementKind::Hex27, n)).collect()),
         ("wedge6", 3, [5, 7, 9, 12, 15, 19, 24].iter().map(|&n| grid3(ElementKind::Wedge6, n)).collect()),
         ("wedge15", 3, [3, 4, 5, 7, 9, 11, 13].iter().map(|&n| grid3(ElementKind::Wedge15, n)).collect()),
+        // Not structured grids: unstructured tetrahedra, a size-graded tetrahedral mesh, and the NAFEMS LE1 / LE10 geometries.
+        ("tet4 ball", 3, [0.5, 0.38, 0.3, 0.24, 0.2, 0.17, 0.15].iter().map(|&h| ball(h, false, false)).collect()),
+        ("tet10 ball", 3, [0.7, 0.55, 0.45, 0.37, 0.3, 0.25, 0.22].iter().map(|&h| ball(h, true, false)).collect()),
+        ("tet4 graded", 3, [0.6, 0.45, 0.35, 0.28, 0.23, 0.2, 0.17].iter().map(|&h| ball(h, false, true)).collect()),
+        ("LE1 quad8", 2, [6, 10, 16, 24, 34, 48, 64].iter().map(|&n| elliptic(ElementKind::Quad8, n, 1)).collect()),
+        ("LE10 hex20", 3, [2, 3, 4, 5, 6, 8, 10].iter().map(|&n| elliptic(ElementKind::Hex20, n, n)).collect()),
     ];
     let mut data: Vec<Measured> = Vec::new();
     for (name, dim, meshes) in &families {
         for m in meshes {
-            if let Some(t) = stage_times(m) {
+            if let Some(t) = stage_times_fixed(m, if name.starts_with("tet") { 0.15 } else { 0.0 }) {
                 data.push((name, *dim, m.clone(), MeshCost::of(m).unwrap(), t));
             }
         }
@@ -290,6 +328,26 @@ fn learned_cost_against_the_deterministic_model_on_held_out_families() {
     let (xl, xc) = (quantile(&mut learned_err, 1.0), quantile(&mut det_cross_err, 1.0));
     eprintln!("median |ln(pred/truth)|: learned {ml:.3} (x{:.2}), deterministic cross-family {mc:.3} (x{:.2}), deterministic own-family {mo:.3} (x{:.2})", ml.exp(), mc.exp(), mo.exp());
     eprintln!("90th percentile: learned x{:.2}, deterministic x{:.2}; worst: learned x{:.2}, deterministic x{:.2}; interval coverage {covered}/{total}; fallbacks {fallbacks} of {}", pl.exp(), pc.exp(), xl.exp(), xc.exp(), total + fallbacks);
+    // A disjoint split: train on the structured grids only, test on the unstructured / graded tetrahedral meshes and the NAFEMS
+    // geometries, and (2D) on the plate with a hole.
+    let is_test = |n: &str| n.starts_with("tet") || n.starts_with("LE") || n == "hole tri6";
+    let train: Vec<Sample> = data.iter().filter(|d| !is_test(d.0)).map(sample).collect();
+    let model = LearnedCost::fit(&train, 1e-3).expect("fit on the structured families");
+    let (mut split_learned, mut split_det, mut split_answered, mut split_total) = (Vec::new(), Vec::new(), 0usize, 0usize);
+    for d in data.iter().filter(|d| is_test(d.0)) {
+        let truth = d.4 .0 + d.4 .1 + d.4 .2;
+        let cross = CostModel::calibrate(&data.iter().filter(|e| !is_test(e.0) && e.1 == d.1).nth(3).unwrap().2, 3).unwrap();
+        let p = model.predict(&d.3, d.1, &w, 0.0, &cross);
+        split_total += 1;
+        split_det.push((cross.predict(&d.3, &w, 0.0) / truth).ln().abs());
+        if p.source == Source::Learned {
+            split_answered += 1;
+            split_learned.push((p.seconds / truth).ln().abs());
+        }
+    }
+    let (sl, sd) = (quantile(&mut split_learned, 0.5), quantile(&mut split_det, 0.5));
+    eprintln!("structured -> unstructured split: learned median x{:.2} ({split_answered} of {split_total} answered), deterministic x{:.2}", sl.exp(), sd.exp());
+    assert!(sl < 0.5 * sd, "split median {sl} vs {sd}");
     // The qualification gate: held out by family, the learned model that answers is clearly better than the deterministic one,
     // its interval covers about as often as nominal, and the fallback is not the common case.
     assert!(ml < 0.5 * mc, "median error {ml} vs {mc}");
