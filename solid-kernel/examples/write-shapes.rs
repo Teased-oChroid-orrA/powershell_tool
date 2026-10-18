@@ -41,6 +41,8 @@ fn main() {
     // Surfaces of revolution and of linear extrusion: a spline profile turned about an axis, a spline outline pushed along one.
     for (name, made) in [
         ("vase", Brep::lathe_spline(&[[4., 0.], [6., 5.], [3., 10.], [5., 15.], [4.5, 20.]])),
+        ("blob-prism", Brep::prism_closed_spline(&[[5., 0.], [3., 4.], [-1., 5.], [-5., 1.], [-3., -4.], [2., -5.]], 6.)),
+        ("spline-ring", Brep::lathe_closed_spline(&[[8., 0.], [10., 2.], [8.5, 4.], [6., 3.], [6.5, 1.]])),
         ("wavy-prism", Brep::prism_spline(&[[0., 0.], [4., 3.], [9., 2.], [14., 4.], [20., 0.]], 8.)),
     ] {
         match made {
