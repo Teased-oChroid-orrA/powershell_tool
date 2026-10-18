@@ -110,16 +110,29 @@ impl CostModel {
     pub fn calibrate(sample: &Mesh, repeats: usize) -> Result<Self, MeshError> {
         let cost = MeshCost::of(sample)?;
         let model = Model::new(sample.clone()).map_err(MeshError::Failed)?;
-        let mut bc = model.dirichlet();
-        for (n, x) in sample.nodes.iter().enumerate() {
-            if x[0] <= sample.nodes.iter().map(|y| y[0]).fold(f64::INFINITY, f64::min) + 1e-12 {
-                for c in 0..sample.dim() {
-                    bc.fix(n, c, 0.0);
+        let xmin = sample.nodes.iter().map(|y| y[0]).fold(f64::INFINITY, f64::min);
+        let xmax = sample.nodes.iter().map(|y| y[0]).fold(f64::NEG_INFINITY, f64::max);
+        // Support the nodes on the x-minimum face. A mesh with no flat face there (a ball) holds fewer than all rigid-body
+        // motions, so widen the supported patch until the model is fully constrained.
+        let supported = |width: f64| {
+            let mut bc = model.dirichlet();
+            for (n, x) in sample.nodes.iter().enumerate() {
+                if x[0] <= xmin + 1e-12 + width * (xmax - xmin) {
+                    for c in 0..sample.dim() {
+                        bc.fix(n, c, 0.0);
+                    }
                 }
             }
-        }
-        let xmax = sample.nodes.iter().map(|y| y[0]).fold(f64::NEG_INFINITY, f64::max);
+            bc
+        };
         let loads = crate::Loads { nodal: sample.nodes.iter().enumerate().filter(|(_, x)| x[0] >= xmax - 1e-12).map(|(n, _)| (n, [1.0, 0.0, 0.0])).collect(), ..Default::default() };
+        let mut bc = supported(0.0);
+        for width in [0.05, 0.1, 0.2] {
+            if model.solve_static(&loads, &bc).is_ok() {
+                break;
+            }
+            bc = supported(width);
+        }
         let (mut asm, mut fac, mut slv) = (f64::INFINITY, f64::INFINITY, f64::INFINITY);
         for _ in 0..repeats.max(1) {
             let sol = model.solve_static(&loads, &bc).map_err(MeshError::Failed)?;
