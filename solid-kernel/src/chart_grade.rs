@@ -29,7 +29,7 @@ impl Default for GradeOptions {
         Self {
             min_angle_deg: 25.,
             floor_mm: 0.1,
-            max_rounds: 12,
+            max_rounds: 40,
             max_points_per_face: 4000,
             policy: ChartPolicy::Strict,
             max_added_samples: 200_000,

@@ -10,6 +10,7 @@ fn main() {
         .expect("usage: shell-sampling-probe FILE.step [--line MM] [--quality DEG] [--points N]");
     let (mut line, mut quality, mut points, mut grade, mut floor, mut canonical) =
         (None, None, 5000usize, None, 0.1, false);
+    let mut rounds = 12usize;
     while let Some(a) = args.next() {
         let v: f64 = args.next().expect("value").parse().unwrap();
         match a.as_str() {
@@ -19,6 +20,7 @@ fn main() {
             "--grade" => grade = Some(v),
             "--floor" => floor = v,
             "--canonical" => canonical = v != 0.,
+            "--rounds" => rounds = v as usize,
             _ => panic!("unknown flag"),
         }
     }
@@ -39,6 +41,7 @@ fn main() {
                     solid_kernel::chart_grade::GradeOptions {
                         min_angle_deg: g,
                         floor_mm: floor,
+                        max_rounds: rounds,
                         ..Default::default()
                     },
                     50_000_000,

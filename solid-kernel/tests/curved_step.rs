@@ -122,7 +122,10 @@ fn graded_sampling_lifts_curved_shells_over_the_registry_gate() {
             .sampled_surface(SurfaceLimits::default(), |_| true)
             .unwrap();
         let before = min_shell_angle_deg(&plain.mesh.vertices, &plain.mesh.triangles);
-        let (graded, _) = model.graded(GradeOptions::default(), 50_000_000).unwrap();
+        let (graded, report) = model.graded(GradeOptions::default(), 50_000_000).unwrap();
+        // a grading that stops at its round limit has a platform-sensitive result (the torus used to: 24.2 against 19.1 degrees
+        // on the hosted Windows runner at 12 rounds)
+        assert!(report.converged, "{}: {report:?}", c.name);
         let limits = SurfaceLimits {
             chart_quality: Some(ChartQuality {
                 min_angle_deg: 25.,
