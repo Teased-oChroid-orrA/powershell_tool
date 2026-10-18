@@ -306,6 +306,9 @@ pub struct Options {
     pub geometry_tolerance_mm: f64,
     pub max_edge_points: usize,
     pub max_total_points: usize,
+    /// Opt-in: split every straight edge into equal pieces no longer than this (mm), so long edges do not force needle
+    /// triangles on the faces they bound.
+    pub max_line_mm: Option<f64>,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -314,10 +317,11 @@ impl Default for Options {
             geometry_tolerance_mm: 1e-7,
             max_edge_points: 100_000,
             max_total_points: 1_000_000,
+            max_line_mm: None,
         }
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AnalyticModel {
     document: crate::step::DocumentFingerprint,
     body: RawBody,
@@ -366,7 +370,33 @@ fn samples(
                     detail: "edge sample budget exceeded".into(),
                 });
             }
-            vec![a, b]
+            let pieces = match opt.max_line_mm {
+                Some(m) if m > 0. => (norm(sub(b, a)) / m).ceil().max(1.),
+                _ => 1.,
+            };
+            if pieces > opt.max_edge_points.saturating_sub(1) as f64
+                || pieces > remaining.saturating_sub(1) as f64
+            {
+                return Err(Error {
+                    offset: e.offset,
+                    kind: ErrorKind::Limit,
+                    detail: "line sample budget exceeded".into(),
+                });
+            }
+            let n = pieces as usize;
+            let mut p: Vec<V3> = (0..=n)
+                .map(|i| {
+                    let t = i as f64 / n as f64;
+                    [
+                        a[0] + (b[0] - a[0]) * t,
+                        a[1] + (b[1] - a[1]) * t,
+                        a[2] + (b[2] - a[2]) * t,
+                    ]
+                })
+                .collect();
+            *p.first_mut().unwrap() = a;
+            *p.last_mut().unwrap() = b;
+            p
         }
         Curve::Circle { frame, radius } => {
             let mut angle = Vec::new();
@@ -515,6 +545,67 @@ fn on_surface(e: &Entity, s: &Surface, c: &Curve, a: V3, b: V3, tol: f64) -> Res
     }
 }
 impl AnalyticModel {
+    /// Insert extra samples into one edge: `(segment, t)` puts a point at fraction `t` of segment `segment` (between samples
+    /// `segment` and `segment + 1`), on the edge's own curve (a line is interpolated, a circle by angle).
+    pub(crate) fn insert_edge_splits(
+        &mut self,
+        edge: u64,
+        splits: &[(usize, f64)],
+    ) -> Result<(), Error> {
+        let fail = |s: &str| Error {
+            offset: 0,
+            kind: ErrorKind::Geometry,
+            detail: s.into(),
+        };
+        let old = self.edges.get(&edge).ok_or_else(|| fail("unknown edge"))?;
+        let curve = self
+            .curves
+            .get(&edge)
+            .ok_or_else(|| fail("unknown edge curve"))?;
+        let mut sorted = splits.to_vec();
+        sorted.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        sorted.dedup_by(|a, b| a.0 == b.0 && (a.1 - b.1).abs() < 1e-9);
+        let mut out = Vec::with_capacity(old.len() + sorted.len());
+        let mut k = 0;
+        for (seg, w) in old.windows(2).enumerate() {
+            out.push(w[0]);
+            while k < sorted.len() && sorted[k].0 == seg {
+                let t = sorted[k].1;
+                k += 1;
+                if !(t > 0. && t < 1.) {
+                    continue;
+                }
+                let p = match curve {
+                    Curve::Line { .. } => add(mul(w[0], 1. - t), mul(w[1], t)),
+                    Curve::Circle { frame, radius } => {
+                        let angle = |p: V3| {
+                            let d = sub(p, frame.origin);
+                            dot(d, frame.y).atan2(dot(d, frame.x))
+                        };
+                        let (a0, a1) = (angle(w[0]), angle(w[1]));
+                        let mut delta = a1 - a0;
+                        if delta > std::f64::consts::PI {
+                            delta -= TAU;
+                        } else if delta < -std::f64::consts::PI {
+                            delta += TAU;
+                        }
+                        let a = a0 + delta * t;
+                        frame.point([radius * a.cos(), radius * a.sin(), 0.])
+                    }
+                };
+                // Rounding noise around an exact zero would sit below the exact predicates' arithmetic envelope.
+                let scale = w[0].iter().chain(&w[1]).fold(0f64, |m, x| m.max(x.abs()));
+                let p = p.map(|x| if x.abs() < 1e-13 * scale { 0. } else { x });
+                if !coordinate_domain(p) || p == *out.last().unwrap() || p == w[1] {
+                    continue;
+                }
+                out.push(p);
+            }
+        }
+        out.push(*old.last().unwrap());
+        self.edges.insert(edge, out);
+        Ok(())
+    }
     pub fn geometry_tolerance_mm(&self) -> f64 {
         self.geometry_tolerance_mm
     }

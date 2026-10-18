@@ -30,3 +30,11 @@ sha2 = { version = "=0.10.9", default-features = false }
 [[example]]
 name = "assembly-probe"
 required-features = ["occt"]
+
+[[example]]
+name = "shell-angle-probe"
+required-features = ["occt"]
+
+[[example]]
+name = "write-shapes"
+required-features = ["occt"]

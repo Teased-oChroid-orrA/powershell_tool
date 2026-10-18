@@ -7,7 +7,10 @@ use crate::{
     step::{Error, ErrorKind},
     V3,
 };
-use spade::{ConstrainedDelaunayTriangulation, HasPosition, Point2, Triangulation};
+use spade::{
+    handles::FixedVertexHandle, AngleLimit, ConstrainedDelaunayTriangulation, HasPosition, Point2,
+    RefinementParameters, Triangulation,
+};
 use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SampleKey {
@@ -29,6 +32,19 @@ impl HasPosition for ChartVertex {
         Point2::new(self.chart[0], self.chart[1])
     }
 }
+/// Placeholder for a vertex spade creates during refinement; [`triangulate`] replaces its world coordinates and key.
+impl From<Point2<f64>> for ChartVertex {
+    fn from(p: Point2<f64>) -> Self {
+        Self {
+            chart: [p.x, p.y],
+            world: [f64::NAN; 3],
+            source: SampleKey::FacePoint {
+                face: u64::MAX,
+                index: usize::MAX,
+            },
+        }
+    }
+}
 #[derive(Debug, Clone)]
 pub struct ChartMesh {
     pub chart_adjustments: Vec<crate::cylindrical_step::ChartAdjustment>,
@@ -36,6 +52,13 @@ pub struct ChartMesh {
     pub vertices: Vec<ChartVertex>,
     /// Counterclockwise in the analytic chart, before source face sense.
     pub triangles: Vec<[usize; 3]>,
+}
+/// Delaunay refinement of a face chart's interior (boundary samples untouched).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChartQuality {
+    pub min_angle_deg: f64,
+    /// Interior points allowed per face.
+    pub max_points: usize,
 }
 fn fail(kind: ErrorKind, s: impl Into<String>) -> Error {
     Error {
@@ -101,20 +124,17 @@ fn regions(
     }
     Ok(parity)
 }
-fn triangulate(
-    face_id: u64,
+fn build_cdt(
     loops: &[TrimLoop],
-    mut vertices: Vec<ChartVertex>,
+    vertices: &[ChartVertex],
     max_work: usize,
-    surface: Option<&Surface>,
-    chord_mm: f64,
-) -> Result<ChartMesh, Error> {
+) -> Result<BuiltChart, Error> {
     // Revalidate inputs even when this internal routine is reused by new callers.
     let mut checked = loops.to_vec();
     classify(&mut checked, max_work)?;
     let mut cdt = ConstrainedDelaunayTriangulation::<ChartVertex>::new();
     let mut handles = Vec::new();
-    for vertex in &vertices {
+    for vertex in vertices {
         let before = cdt.num_vertices();
         let h = cdt
             .insert(vertex.clone())
@@ -144,97 +164,205 @@ fn triangulate(
         }
         offset += l.points.len();
     }
-    // A shallow cylindrical strip can have all four boundary corners on the
-    // neighbouring plane. Its unsplit internal chord would then overlap that
-    // face despite correct topological boundary recovery. Split curved interior
-    // boundary-to-boundary chords on the evaluated surface, preserving every
-    // constrained boundary segment and sharing the new point across both sides.
-    if let Some(surface @ Surface::Cylinder { radius, .. }) = surface {
-        let boundary_count = vertices.len();
-        let mut work = 0usize;
-        loop {
-            let parity = regions(&cdt, max_work.saturating_sub(work))?;
-            work = work
-                .checked_add(cdt.num_undirected_edges().saturating_mul(2))
-                .ok_or_else(|| fail(ErrorKind::Limit, "curved chart work overflow"))?;
-            let mut candidates = Vec::new();
-            for edge in cdt.undirected_edges() {
-                work = work
-                    .checked_add(1)
-                    .filter(|n| *n <= max_work)
-                    .ok_or_else(|| {
-                        fail(ErrorKind::Limit, "curved chart refinement budget exceeded")
-                    })?;
-                let directed = edge.as_directed();
-                if edge.is_constraint_edge()
-                    || parity[directed.face().index()] != Some(true)
-                    || parity[directed.rev().face().index()] != Some(true)
-                {
-                    continue;
-                }
-                let [a, b] = edge.vertices();
-                let boundary_diagonal = a.index() < boundary_count && b.index() < boundary_count;
-                let a = a.data();
-                let b = b.data();
-                let span = (a.chart[0] - b.chart[0]).abs();
-                if !boundary_diagonal
-                    && span <= radius * crate::analytic_step::chord_angle(*radius, chord_mm)
-                {
-                    continue;
-                }
-                if a.chart[0] == b.chart[0] {
-                    continue;
-                }
-                let chart = std::array::from_fn(|i| a.chart[i] / 2. + b.chart[i] / 2.);
+    Ok((cdt, handles, constraints))
+}
+#[derive(Clone, Copy)]
+struct Shaping {
+    quality: Option<ChartQuality>,
+    split_boundary: bool,
+}
+type BuiltChart = (
+    ConstrainedDelaunayTriangulation<ChartVertex>,
+    Vec<FixedVertexHandle>,
+    BTreeSet<(usize, usize)>,
+);
+struct ShapedChart {
+    cdt: ConstrainedDelaunayTriangulation<ChartVertex>,
+    vertices: Vec<ChartVertex>,
+    handles: Vec<FixedVertexHandle>,
+    constraints: BTreeSet<(usize, usize)>,
+}
+/// The face chart's constrained triangulation with its interior points: the chord rule on cylinders and, when asked for,
+/// Delaunay quality refinement. `split_boundary` lets the refinement split boundary segments (the new points are then on the
+/// boundary and the result is only good for reading off [`BoundarySplit`]s); otherwise the boundary is kept exactly.
+fn shape_chart(
+    face_id: u64,
+    loops: &[TrimLoop],
+    mut vertices: Vec<ChartVertex>,
+    max_work: usize,
+    surface: Option<&Surface>,
+    chord_mm: f64,
+    shaping: Shaping,
+) -> Result<ShapedChart, Error> {
+    let Shaping {
+        quality,
+        split_boundary,
+    } = shaping;
+    let (mut cdt, mut handles, constraints) = build_cdt(loops, &vertices, max_work)?;
+    // Interior quality points: the boundary polygon is kept exactly, so neighbouring faces still agree on every shared sample,
+    // and the points are evaluated on the exact surface.
+    let boundary_count = vertices.len();
+    // On a cylinder the chord rule below adds midpoints that the Delaunay flips then reshape, so the two alternate until
+    // neither adds anything.
+    for _pass in 0..8 {
+        let start = vertices.len();
+        if let (Some(q), Some(surface)) = (quality, surface) {
+            let mut parameters = RefinementParameters::<f64>::new()
+                .with_angle_limit(AngleLimit::from_deg(q.min_angle_deg))
+                .exclude_outer_faces(true)
+                .with_max_additional_vertices(q.max_points);
+            if !split_boundary {
+                parameters = parameters.keep_constraint_edges();
+            }
+            let result = cdt.refine(parameters);
+            let _ = result.refinement_complete;
+            for i in vertices.len()..cdt.num_vertices() {
+                let handle = FixedVertexHandle::from_index(i);
+                let chart = cdt.vertex(handle).data().chart;
                 let world = surface
                     .point(chart)
-                    .ok_or_else(|| fail(ErrorKind::Geometry, "unresolved curved interior point"))?;
-                let chord = std::array::from_fn(|i| a.world[i] / 2. + b.world[i] / 2.);
-                if world != chord {
-                    candidates.push(ChartVertex {
-                        chart,
-                        world,
-                        source: SampleKey::FacePoint {
-                            face: face_id,
-                            index: vertices.len() - boundary_count,
-                        },
-                    });
-                } else if span > radius * crate::analytic_step::chord_angle(*radius, chord_mm) {
-                    return Err(fail(
-                        ErrorKind::Geometry,
-                        "curved error bound is below coordinate precision",
-                    ));
-                }
-            }
-            if candidates.is_empty() {
-                break;
-            }
-            // Reclassify once per batch, not once per inserted vertex. Constraint
-            // boundaries stay fixed, so all admitted interior points remain in
-            // the same polygonal domain after local Delaunay edge flips.
-            for mut vertex in candidates {
-                vertex.source = SampleKey::FacePoint {
-                    face: face_id,
-                    index: vertices.len() - boundary_count,
+                    .ok_or_else(|| fail(ErrorKind::Geometry, "unresolved quality point"))?;
+                let vertex = ChartVertex {
+                    chart,
+                    world,
+                    source: SampleKey::FacePoint {
+                        face: face_id,
+                        index: vertices.len() - boundary_count,
+                    },
                 };
-                let before = cdt.num_vertices();
-                let handle = cdt.insert(vertex.clone()).map_err(|e| {
-                    fail(
-                        ErrorKind::Geometry,
-                        format!("curved interior insertion: {e:?}"),
-                    )
-                })?;
-                if cdt.num_vertices() != before + 1 {
-                    return Err(fail(
-                        ErrorKind::Geometry,
-                        "curved chord midpoint is unresolved",
-                    ));
-                }
+                *cdt.vertex_data_mut(handle) = vertex.clone();
                 vertices.push(vertex);
                 handles.push(handle);
             }
         }
+        // A shallow cylindrical strip can have all four boundary corners on the
+        // neighbouring plane. Its unsplit internal chord would then overlap that
+        // face despite correct topological boundary recovery. Split curved interior
+        // boundary-to-boundary chords on the evaluated surface, preserving every
+        // constrained boundary segment and sharing the new point across both sides.
+        if let Some(surface @ Surface::Cylinder { radius, .. }) = surface {
+            let mut work = 0usize;
+            loop {
+                let parity = regions(&cdt, max_work.saturating_sub(work))?;
+                work = work
+                    .checked_add(cdt.num_undirected_edges().saturating_mul(2))
+                    .ok_or_else(|| fail(ErrorKind::Limit, "curved chart work overflow"))?;
+                let mut candidates = Vec::new();
+                for edge in cdt.undirected_edges() {
+                    work = work
+                        .checked_add(1)
+                        .filter(|n| *n <= max_work)
+                        .ok_or_else(|| {
+                            fail(ErrorKind::Limit, "curved chart refinement budget exceeded")
+                        })?;
+                    let directed = edge.as_directed();
+                    if edge.is_constraint_edge()
+                        || parity[directed.face().index()] != Some(true)
+                        || parity[directed.rev().face().index()] != Some(true)
+                    {
+                        continue;
+                    }
+                    let [a, b] = edge.vertices();
+                    let boundary_diagonal =
+                        a.index() < boundary_count && b.index() < boundary_count;
+                    let a = a.data();
+                    let b = b.data();
+                    let span = (a.chart[0] - b.chart[0]).abs();
+                    if !boundary_diagonal
+                        && span <= radius * crate::analytic_step::chord_angle(*radius, chord_mm)
+                    {
+                        continue;
+                    }
+                    if a.chart[0] == b.chart[0] {
+                        continue;
+                    }
+                    let chart = std::array::from_fn(|i| a.chart[i] / 2. + b.chart[i] / 2.);
+                    let world = surface.point(chart).ok_or_else(|| {
+                        fail(ErrorKind::Geometry, "unresolved curved interior point")
+                    })?;
+                    let chord = std::array::from_fn(|i| a.world[i] / 2. + b.world[i] / 2.);
+                    if world != chord {
+                        candidates.push(ChartVertex {
+                            chart,
+                            world,
+                            source: SampleKey::FacePoint {
+                                face: face_id,
+                                index: vertices.len() - boundary_count,
+                            },
+                        });
+                    } else if span > radius * crate::analytic_step::chord_angle(*radius, chord_mm) {
+                        return Err(fail(
+                            ErrorKind::Geometry,
+                            "curved error bound is below coordinate precision",
+                        ));
+                    }
+                }
+                if candidates.is_empty() {
+                    break;
+                }
+                // Reclassify once per batch, not once per inserted vertex. Constraint
+                // boundaries stay fixed, so all admitted interior points remain in
+                // the same polygonal domain after local Delaunay edge flips.
+                for mut vertex in candidates {
+                    vertex.source = SampleKey::FacePoint {
+                        face: face_id,
+                        index: vertices.len() - boundary_count,
+                    };
+                    let before = cdt.num_vertices();
+                    let handle = cdt.insert(vertex.clone()).map_err(|e| {
+                        fail(
+                            ErrorKind::Geometry,
+                            format!("curved interior insertion: {e:?}"),
+                        )
+                    })?;
+                    if cdt.num_vertices() != before + 1 {
+                        return Err(fail(
+                            ErrorKind::Geometry,
+                            "curved chord midpoint is unresolved",
+                        ));
+                    }
+                    vertices.push(vertex);
+                    handles.push(handle);
+                }
+            }
+        }
+        if vertices.len() == start {
+            break;
+        }
     }
+    Ok(ShapedChart {
+        cdt,
+        vertices,
+        handles,
+        constraints,
+    })
+}
+fn triangulate(
+    face_id: u64,
+    loops: &[TrimLoop],
+    vertices: Vec<ChartVertex>,
+    max_work: usize,
+    surface: Option<&Surface>,
+    chord_mm: f64,
+    quality: Option<ChartQuality>,
+) -> Result<ChartMesh, Error> {
+    let ShapedChart {
+        cdt,
+        vertices,
+        handles,
+        constraints,
+    } = shape_chart(
+        face_id,
+        loops,
+        vertices,
+        max_work,
+        surface,
+        chord_mm,
+        Shaping {
+            quality,
+            split_boundary: false,
+        },
+    )?;
     let parity = regions(&cdt, max_work)?;
     let mut triangles = Vec::new();
     for f in cdt.inner_faces() {
@@ -305,7 +433,36 @@ impl AnalyticModel {
         max_work: usize,
         policy: crate::cylindrical_step::ChartPolicy,
     ) -> Result<ChartMesh, Error> {
-        let (loops, adjustments) = match self.surface(face_id) {
+        self.triangulate_sampled_chart_with_quality(face_id, max_work, policy, None)
+    }
+    /// [`Self::triangulate_sampled_chart_with_policy`] plus optional interior quality refinement ([`ChartQuality`]).
+    pub fn triangulate_sampled_chart_with_quality(
+        &self,
+        face_id: u64,
+        max_work: usize,
+        policy: crate::cylindrical_step::ChartPolicy,
+        quality: Option<ChartQuality>,
+    ) -> Result<ChartMesh, Error> {
+        let inputs = self.chart_inputs(face_id, max_work, policy)?;
+        let mut mesh = triangulate(
+            face_id,
+            &inputs.loops,
+            inputs.vertices,
+            max_work,
+            self.surface(face_id),
+            self.chord_tolerance_mm(),
+            quality,
+        )?;
+        mesh.chart_adjustments = inputs.adjustments;
+        Ok(mesh)
+    }
+    fn chart_inputs(
+        &self,
+        face_id: u64,
+        max_work: usize,
+        policy: crate::cylindrical_step::ChartPolicy,
+    ) -> Result<ChartInputs, Error> {
+        let (mut loops, adjustments) = match self.surface(face_id) {
             Some(Surface::Plane(_)) => (
                 self.sampled_planar_trims(face_id, max_work)?.loops,
                 Vec::new(),
@@ -323,10 +480,24 @@ impl AnalyticModel {
             }
             None => return Err(fail(ErrorKind::Geometry, "unknown face")),
         };
+        // A chart value below the exact predicates' envelope (1e-30) is rounding noise around zero, not a coordinate: the
+        // sampling of an edge point can leave one (observed 8.7e-32 on a cylinder seam).
+        for l in &mut loops {
+            for p in &mut l.points {
+                for x in p {
+                    if x.abs() < 1e-25 {
+                        *x = 0.;
+                    }
+                }
+            }
+        }
         let face = &self.body().faces[&face_id];
         let mut vertices = Vec::new();
+        let mut segments = Vec::new();
         for (bound, l) in face.bounds.iter().zip(&loops) {
             let mut samples = Vec::new();
+            // The edge segment from each sample to the next one of the bound, in traversal order.
+            let mut outgoing = Vec::new();
             for usage in &bound.edges {
                 let p = self.edge_points(usage.edge).unwrap();
                 if samples.len().saturating_add(p.len() - 1) > max_work {
@@ -338,10 +509,22 @@ impl AnalyticModel {
                 for j in 0..p.len() - 1 {
                     let i = if usage.forward { j } else { p.len() - 1 - j };
                     samples.push((p[i], edge_key(self, usage.edge, i)));
+                    outgoing.push(SegmentRef {
+                        edge: usage.edge,
+                        lower: if usage.forward { j } else { p.len() - 2 - j },
+                        ascending: usage.forward,
+                    });
                 }
             }
             if !bound.forward {
                 samples.reverse();
+                // Reversed, the sample k leaves along the segment that used to arrive at it.
+                outgoing.reverse();
+                let n = outgoing.len();
+                outgoing.rotate_left(1 % n.max(1));
+                for o in &mut outgoing {
+                    o.ascending = !o.ascending;
+                }
             }
             if samples.len() != l.points.len() {
                 return Err(fail(
@@ -356,18 +539,135 @@ impl AnalyticModel {
                     chart: *chart,
                 });
             }
+            segments.extend(outgoing);
         }
-        let mut mesh = triangulate(
-            face_id,
-            &loops,
+        Ok(ChartInputs {
+            loops,
+            adjustments,
             vertices,
+            segments,
+        })
+    }
+    /// Where a Delaunay refinement of the face chart (with its boundary segments allowed to split) would put new samples on the
+    /// face's boundary edges. The shared edges are not changed here: grading them for every face is [`Self::graded`].
+    pub(crate) fn boundary_splits(
+        &self,
+        face_id: u64,
+        max_work: usize,
+        policy: crate::cylindrical_step::ChartPolicy,
+        min_angle_deg: f64,
+        floor_mm: f64,
+        max_points: usize,
+    ) -> Result<Vec<BoundarySplit>, Error> {
+        let inputs = self.chart_inputs(face_id, max_work, policy)?;
+        let boundary_count = inputs.vertices.len();
+        let ShapedChart { cdt, .. } = shape_chart(
+            face_id,
+            &inputs.loops,
+            inputs.vertices.clone(),
             max_work,
             self.surface(face_id),
             self.chord_tolerance_mm(),
+            Shaping {
+                quality: Some(ChartQuality {
+                    min_angle_deg,
+                    max_points,
+                }),
+                split_boundary: true,
+            },
         )?;
-        mesh.chart_adjustments = adjustments;
-        Ok(mesh)
+        // Loop membership of every original sample.
+        let mut loop_of = Vec::with_capacity(boundary_count);
+        let mut first_of_loop = Vec::new();
+        for (k, l) in inputs.loops.iter().enumerate() {
+            first_of_loop.push(loop_of.len());
+            loop_of.extend(std::iter::repeat_n(k, l.points.len()));
+        }
+        let next = |i: usize| {
+            let k = loop_of[i];
+            let (start, len) = (first_of_loop[k], inputs.loops[k].points.len());
+            start + (i - start + 1) % len
+        };
+        let mut out = Vec::new();
+        for i in boundary_count..cdt.num_vertices() {
+            let h = FixedVertexHandle::from_index(i);
+            let v = cdt.vertex(h);
+            let constrained: Vec<_> = v
+                .out_edges()
+                .filter(|e| e.is_constraint_edge())
+                .map(|e| e.to().fix())
+                .collect();
+            if constrained.len() != 2 {
+                continue;
+            }
+            // Walk along the constrained chain to the original samples on both sides.
+            let mut ends = [0usize; 2];
+            for (side, first) in constrained.iter().enumerate() {
+                let (mut prev, mut cur) = (h, *first);
+                while cur.index() >= boundary_count {
+                    let nxt = cdt
+                        .vertex(cur)
+                        .out_edges()
+                        .filter(|e| e.is_constraint_edge())
+                        .map(|e| e.to().fix())
+                        .find(|n| *n != prev);
+                    let Some(nxt) = nxt else { break };
+                    prev = cur;
+                    cur = nxt;
+                }
+                ends[side] = cur.index();
+            }
+            let [mut a, mut b] = ends;
+            if a >= boundary_count || b >= boundary_count {
+                continue;
+            }
+            if next(a) != b {
+                std::mem::swap(&mut a, &mut b);
+            }
+            if next(a) != b {
+                continue;
+            }
+            let (pa, pb, p) = (
+                inputs.vertices[a].chart,
+                inputs.vertices[b].chart,
+                v.data().chart,
+            );
+            let length = ((pb[0] - pa[0]).powi(2) + (pb[1] - pa[1]).powi(2)).sqrt();
+            if length < 2. * floor_mm || length == 0. {
+                continue;
+            }
+            let t = ((p[0] - pa[0]).powi(2) + (p[1] - pa[1]).powi(2)).sqrt() / length;
+            let seg = inputs.segments[a];
+            out.push(BoundarySplit {
+                edge: seg.edge,
+                segment: seg.lower,
+                t: if seg.ascending { t } else { 1. - t },
+            });
+        }
+        Ok(out)
     }
+}
+/// A refinement point on segment `segment` (between edge samples `segment` and `segment + 1`) of `edge`, at fraction `t` of
+/// the way from the lower-index sample to the upper one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct BoundarySplit {
+    pub edge: u64,
+    pub segment: usize,
+    pub t: f64,
+}
+#[derive(Debug, Clone, Copy)]
+struct SegmentRef {
+    edge: u64,
+    lower: usize,
+    /// Whether the traversal runs from the lower-index sample to the upper one.
+    ascending: bool,
+}
+struct ChartInputs {
+    loops: Vec<TrimLoop>,
+    adjustments: Vec<crate::cylindrical_step::ChartAdjustment>,
+    vertices: Vec<ChartVertex>,
+    /// Outgoing edge segment of every boundary sample, parallel to `vertices`.
+    segments: Vec<SegmentRef>,
 }
 #[cfg(test)]
 mod tests {
@@ -396,7 +696,7 @@ mod tests {
                 source: SampleKey::Vertex(i as u64),
             })
             .collect();
-        let mesh = triangulate(0, &loops, v, 10000, None, 0.05).unwrap();
+        let mesh = triangulate(0, &loops, v, 10000, None, 0.05, None).unwrap();
         let area: f64 = mesh
             .triangles
             .iter()

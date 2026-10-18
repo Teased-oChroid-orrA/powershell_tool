@@ -5,7 +5,8 @@
 //! outside it (rounding of a Steiner point on a hull plane): such a point replaces
 //! the hull faces of its conflict cavity that it sees, which can leave the hull
 //! slightly non-convex. A point whose walk exits the hull outside every
-//! conflicting tetrahedron is refused.
+//! conflicting tetrahedron is refused. `plc_conform` therefore surrounds its input with far points so that no insertion
+//! is ever outside the hull.
 use fea_core::meshing::{
     tet_topology::{orientation, sphere_side, Point, SphereSide, TetTopology},
     MeshError,

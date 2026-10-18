@@ -68,7 +68,9 @@ pub struct Budget {
 pub const REGISTRY_VERSION: u32 = 3;
 /// Smallest shell angle with measured evidence (`docs/issue-46-phase-58.md`, `-59`):
 /// 18-degree wedge/diagonal inputs recover and refine; 7-degree diagonals and the
-/// sampled NEMA17 shell do not terminate. An evidence bound, not a theorem.
+/// sampled NEMA17 shell do not terminate. An evidence bound, not a theorem. Plain per-face sampling of a CAD body usually
+/// falls below it (needles from sparse boundaries); graded sampling (`solid_kernel::chart_grade`, `docs/issue-46-phase-100.md`)
+/// lifts generic parts to about 25 degrees, and only those recover and reach a radius-edge ratio of 2.
 pub const NATIVE_MIN_SHELL_ANGLE_DEG: f64 = 18.0;
 pub fn check(r: &Request, b: Budget) -> Reason {
     use ElementKind::*;

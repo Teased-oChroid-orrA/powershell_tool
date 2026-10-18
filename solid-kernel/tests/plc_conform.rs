@@ -344,5 +344,55 @@ fn the_shell_angle_measure_matches_the_known_inputs() {
     // The ring plate: 18.4 degree trapezoid corners, but its 4 x 1 outer walls
     // put diagonals at atan(1/4); the hole walls are 90 degree dihedrals.
     let (v, t) = plate(4., Some(2.), 1.);
-    assert!(near(min_shell_angle_deg(&v, &t), 0.25f64.atan().to_degrees()));
+    assert!(near(
+        min_shell_angle_deg(&v, &t),
+        0.25f64.atan().to_degrees()
+    ));
+}
+
+/// Outward-oriented triangulated prism over a regular `n`-gon (circumradius `r`, height `h`): all its points are cospherical
+/// pairs on the hull of its vertices, the case a cylinder is made of.
+fn n_gon_prism(n: usize, r: f64, h: f64) -> (Vec<V3>, Vec<[usize; 3]>) {
+    let mut v = Vec::new();
+    for z in [0., h] {
+        for i in 0..n {
+            let a = std::f64::consts::TAU * i as f64 / n as f64;
+            v.push([r * a.cos(), r * a.sin(), z]);
+        }
+    }
+    let mut t = Vec::new();
+    for i in 0..n {
+        let j = (i + 1) % n;
+        t.push([i, j, n + j]);
+        t.push([i, n + j, n + i]);
+    }
+    for i in 1..n - 1 {
+        t.push([n, n + i, n + i + 1]); // top, +z
+        t.push([0, i + 1, i]); // bottom, -z
+    }
+    (v, t)
+}
+
+#[test]
+fn a_prism_over_a_regular_polygon_recovers_although_every_point_is_on_the_hull() {
+    // Segment splits of rim chords and lateral facets are rounded a few ulps outside the hull of the vertices; the engine used
+    // to dent its hull on each and refuse a later point that was a whole millimetre outside the dented hull.
+    for (n, r, h) in [(22, 2., 60.), (24, 2., 60.), (40, 5., 12.)] {
+        let (v, t) = n_gon_prism(n, r, h);
+        let options = Options {
+            max_steiner: 20_000,
+            ..Options::default()
+        };
+        let m = conform(&v, &t, options, |_| true)
+            .unwrap_or_else(|e| panic!("{n}-gon prism of height {h}: {e}"));
+        let exact = 0.5 * n as f64 * r * r * (std::f64::consts::TAU / n as f64).sin() * h;
+        let got = volume_of(&m.points, &m.cells);
+        assert!((got / exact - 1.).abs() < 1e-9, "{got} vs {exact}");
+        // The far points that make every shell point interior are not part of the result.
+        assert!(m.cells.iter().flatten().all(|&i| i < m.points.len()));
+        assert_eq!(
+            m.points.len(),
+            v.len() + m.report.segment_steiner + m.report.facet_steiner
+        );
+    }
 }
