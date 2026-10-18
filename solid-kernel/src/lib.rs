@@ -42,6 +42,7 @@ pub mod cylindrical_step;
 mod bvh;
 pub mod cad;
 pub mod step;
+pub mod step_assembly;
 pub mod step_body;
 pub mod step_pcurve;
 pub mod step_pcurve_arc;
