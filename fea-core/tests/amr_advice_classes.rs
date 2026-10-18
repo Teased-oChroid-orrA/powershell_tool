@@ -197,3 +197,33 @@ fn an_oracle_start_bounds_what_any_advice_could_gain() {
         assert!(matches!(oracle.stop, Stop::Converged), "{:?}", oracle.stop);
     }
 }
+
+/// The sharpest possible oracle: start AMR from the finished mesh itself (no re-meshing from a size field). One solve and
+/// estimate on the final mesh is the least any starting-mesh advice could cost; the saving is the cheaper earlier cycles.
+fn finished_mesh_oracle(tolerances: &[f64]) {
+    let j_ref = reference(true);
+    for &rel_tol in tolerances {
+        let tol = rel_tol * j_ref.abs();
+        let default = converge(true, &|_| START, j_ref, tol);
+        let p = &default.result.problem;
+        let same = MeshedProblem { model: p.model.clone(), loads: p.loads.clone(), bc: p.bc.clone(), labels: None, quad_scale: 1.0 };
+        let mut mesher = |s: &AdaptSize| build(true, &|q| s.at([q[0], q[1], 0.0]));
+        let t = std::time::Instant::now();
+        let r = run_amr(same, &[goal(Some(tol))], &mut mesher, &AmrConfig { max_cycles: 10, ..AmrConfig::default() }).unwrap();
+        let seconds = t.elapsed().as_secs_f64();
+        let last = r.history.last().unwrap();
+        eprintln!("[finished-mesh oracle tol {rel_tol:e}] default {} cycles {} dofs {:.2} s; from the finished mesh {} cycles {} dofs {:.2} s (time ratio {:.2}), stop {:?}", default.cycles, default.dofs, default.seconds, r.history.len(), last.dofs, seconds, seconds / default.seconds, r.stop);
+        assert!(matches!(r.stop, Stop::Converged));
+    }
+}
+
+#[test]
+fn starting_from_the_finished_mesh_itself_is_the_best_any_advice_could_do() {
+    finished_mesh_oracle(&[1e-4]);
+}
+
+#[test]
+#[ignore = "study: six adaptation cycles, 32.8k dofs; run with --release --ignored --nocapture"]
+fn the_same_bound_at_a_tolerance_that_needs_six_cycles() {
+    finished_mesh_oracle(&[5e-6]);
+}
