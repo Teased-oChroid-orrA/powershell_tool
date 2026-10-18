@@ -153,6 +153,9 @@ fn the_plain_plate_control_gets_no_advice_for_the_hole_zone() {
     experiment(false, 2e-3);
 }
 
+/// A simplex edge is about 0.87 of the size it was asked for (the controller's own `element_sizes` convention).
+const SIMPLEX_EDGE_PER_SIZE: f64 = 0.87;
+
 /// Size field of a finished mesh: the mean edge length of the element whose centroid is nearest to the point.
 fn size_field_of(mesh: &Mesh) -> impl Fn([f64; 2]) -> f64 {
     let mut cells: Vec<([f64; 2], f64)> = Vec::new();
@@ -161,7 +164,7 @@ fn size_field_of(mesh: &Mesh) -> impl Fn([f64; 2]) -> f64 {
             let el = b.elem(e);
             let p: Vec<[f64; 3]> = el[..3].iter().map(|&n| mesh.nodes[n]).collect();
             let d = |a: usize, c: usize| ((p[a][0] - p[c][0]).powi(2) + (p[a][1] - p[c][1]).powi(2)).sqrt();
-            let h = (d(0, 1) + d(1, 2) + d(2, 0)) / 3.0;
+            let h = (d(0, 1) + d(1, 2) + d(2, 0)) / 3.0 / SIMPLEX_EDGE_PER_SIZE;
             cells.push((
                 [(p[0][0] + p[1][0] + p[2][0]) / 3.0, (p[0][1] + p[1][1] + p[2][1]) / 3.0],
                 h,
