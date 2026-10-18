@@ -181,6 +181,8 @@ pub enum Surface {
         major: f64,
         minor: f64,
     },
+    /// A (rational) B-spline surface, charted by its parameter rectangle (see `curved_surface::SplineSurface`).
+    Nurbs(std::sync::Arc<crate::curved_surface::SplineSurface>),
 }
 #[derive(Debug, Clone, Copy)]
 pub struct Projection {
@@ -249,6 +251,7 @@ impl Surface {
                 let u = chart[0] / radius;
                 add(mul(frame.x, u.cos()), mul(frame.y, u.sin()))
             }
+            Self::Nurbs(_) => return self.spline_normal(chart),
             _ => return self.normal_at_world(self.point_curved(chart)?),
         };
         finite(p).then_some(p)
@@ -1196,22 +1199,42 @@ impl AnalyticModel {
                     data.entity_reference(face.id).unwrap(),
                     crate::nurbs_surface::Limits::default(),
                 )?;
-                let patch =
-                    crate::planar_spline::PlanarPatch::new(&declaration.surface, source_surface)?;
-                let p = patch.controls();
-                let x = unit(source_surface, sub(p[1], p[0]))?;
-                let z = unit(source_surface, cross(x, sub(p[2], p[0])))?;
-                let y = unit(source_surface, cross(z, x))?;
-                patch.verify_chart_normal(z, source_surface)?;
-                (
-                    Surface::Plane(Frame {
-                        origin: p[0],
-                        x,
-                        y,
-                        z,
-                    }),
-                    Some(patch),
-                )
+                match crate::planar_spline::PlanarPatch::new(&declaration.surface, source_surface) {
+                    Ok(patch) => {
+                        let p = patch.controls();
+                        let x = unit(source_surface, sub(p[1], p[0]))?;
+                        let z = unit(source_surface, cross(x, sub(p[2], p[0])))?;
+                        let y = unit(source_surface, cross(z, x))?;
+                        patch.verify_chart_normal(z, source_surface)?;
+                        (
+                            Surface::Plane(Frame {
+                                origin: p[0],
+                                x,
+                                y,
+                                z,
+                            }),
+                            Some(patch),
+                        )
+                    }
+                    // a bilinear 2 x 2 patch is a planar-face candidate only: a warped one keeps its refusal
+                    Err(e)
+                        if declaration.surface.degrees() == [1, 1]
+                            && declaration.surface.dimensions() == [2, 2] =>
+                    {
+                        return Err(e)
+                    }
+                    // any other net is a general (rational) B-spline surface
+                    Err(_) => (
+                        Surface::Nurbs(std::sync::Arc::new(
+                            crate::curved_surface::SplineSurface::new(declaration.surface)
+                                .map_err(|mut e| {
+                                    e.offset = source_surface.offset;
+                                    e
+                                })?,
+                        )),
+                        None,
+                    ),
+                }
             } else {
                 let source = surface(data, face.surface, scale)?;
                 // A sphere is charted around each face's own centre, from the face's boundary loops in traversal order.
@@ -1303,6 +1326,20 @@ impl AnalyticModel {
                         }
                     }
 
+                    if let Surface::Nurbs(_) = &s {
+                        // An edge of a spline-surface face lies on the surface along its samples (an arc of a circle need not
+                        // lie on it elsewhere).
+                        for p in &edges[&edge.id] {
+                            let d = s.distance(*p).unwrap_or(f64::INFINITY);
+                            if !(d <= opt.geometry_tolerance_mm) {
+                                return Err(error(
+                                    &data.entities()[&face.id],
+                                    format!("an edge sample is {d:e} mm off the face's spline surface (edge #{}, {} samples, face #{})", edge.id, edges[&edge.id].len(), face.id),
+                                ));
+                            }
+                        }
+                        continue;
+                    }
                     if let Some(points) = spline_segments.get(&edge.id) {
                         // Validate the actual spline locus as well as authoritative
                         // source-vertex chords; endpoint agreement alone is not

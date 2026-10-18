@@ -11,6 +11,7 @@ fn main() {
     let (mut line, mut quality, mut points, mut grade, mut floor, mut canonical) =
         (None, None, 5000usize, None, 0.1, false);
     let mut rounds = 12usize;
+    let mut tolerance = None;
     while let Some(a) = args.next() {
         let v: f64 = args.next().expect("value").parse().unwrap();
         match a.as_str() {
@@ -21,15 +22,22 @@ fn main() {
             "--floor" => floor = v,
             "--canonical" => canonical = v != 0.,
             "--rounds" => rounds = v as usize,
+            "--tol" => tolerance = Some(v),
             _ => panic!("unknown flag"),
         }
     }
+    let policy = if canonical {
+        solid_kernel::cylindrical_step::ChartPolicy::CanonicalizeWithinTolerance
+    } else {
+        solid_kernel::cylindrical_step::ChartPolicy::Strict
+    };
     let text = std::fs::read_to_string(path).unwrap();
     let data = inventory(&text, Limits::default()).unwrap();
     let model = AnalyticModel::read(
         &data,
         Options {
             max_line_mm: line,
+            geometry_tolerance_mm: tolerance.unwrap_or(Options::default().geometry_tolerance_mm),
             ..Options::default()
         },
     )
@@ -42,6 +50,7 @@ fn main() {
                         min_angle_deg: g,
                         floor_mm: floor,
                         max_rounds: rounds,
+                        policy,
                         ..Default::default()
                     },
                     50_000_000,
@@ -55,6 +64,7 @@ fn main() {
     let s = model
         .sampled_surface(
             solid_kernel::native_surface::Limits {
+                chart_policy: policy,
                 face_work: 20_000_000,
                 total_work: 800_000_000,
                 chart_quality: quality.map(|q| solid_kernel::chart_mesh::ChartQuality {

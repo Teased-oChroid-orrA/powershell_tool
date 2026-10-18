@@ -32,7 +32,7 @@ fn region_shell(x0: f64, x1: f64, nx: usize, n: usize) -> (Vec<V3>, Vec<[usize; 
     };
     let centre = [(x0 + x1) / 2., 0.5, 0.5];
     let mut facets = Vec::new();
-    let mut tri = |v: &Vec<V3>, t: [usize; 3], facets: &mut Vec<[usize; 3]>| {
+    let tri = |v: &Vec<V3>, t: [usize; 3], facets: &mut Vec<[usize; 3]>| {
         let (a, b, c) = (v[t[0]], v[t[1]], v[t[2]]);
         let nrm = [
             (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]),
