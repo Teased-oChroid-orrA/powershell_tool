@@ -1384,3 +1384,23 @@ fn source_vertex_unit_underflow_refuses_at_its_original_point_record() {
     assert_eq!(error.offset, data.entities()[&point.id].offset);
     assert!(error.detail.contains("underflow"));
 }
+
+/// Onshape (the ABC dataset) writes the hole loops of a face as `FACE_OUTER_BOUND` too. The roles are decided by the loop
+/// geometry, so relabelling every hole loop of a plate with a hole must not change the sampled shell or its volume.
+#[test]
+fn hole_loops_declared_as_outer_bounds_read_like_face_bounds() {
+    let plain = include_str!("data/edit-plate-centre-hole.step");
+    assert!(plain.contains("FACE_BOUND("), "the fixture has hole loops");
+    let relabelled = plain.replace("FACE_BOUND(", "FACE_OUTER_BOUND(");
+    let sample = |text: &str| {
+        let data = inventory(text, Limits::default()).unwrap();
+        AnalyticModel::read(&data, Options::default())
+            .unwrap()
+            .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+            .unwrap()
+    };
+    let (a, b) = (sample(plain), sample(&relabelled));
+    assert_eq!(a.mesh.triangles.len(), b.mesh.triangles.len());
+    assert_eq!(a.signed_volume_mm3, b.signed_volume_mm3);
+    assert!(a.signed_volume_mm3 > 0.);
+}
