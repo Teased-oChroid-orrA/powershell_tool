@@ -147,6 +147,7 @@ pub fn hex_pyramid_tet(
     let mean_edge = edge_sum / (4 * interface.len()) as f64;
     let mut pyramids: Vec<[usize; 5]> = Vec::with_capacity(interface.len());
     let mut apex_of_pyramid: Vec<usize> = Vec::new(); // PLC vertex of each apex
+    let mut apex_at: BTreeMap<[i64; 3], usize> = BTreeMap::new();
     for q in interface {
         let p: Vec<V3> = q.iter().map(|&n| hex.nodes[n]).collect();
         // Newell normal (counter-clockwise from outside: points to the tetrahedral side)
@@ -168,8 +169,13 @@ pub fn hex_pyramid_tet(
                 mean_edge
             };
         let apex = add(centre, mul(normal, height / nl));
-        let a = vertices.len();
-        vertices.push(apex);
+        // At a concave step of the interface the apexes of the two pyramids over it coincide (their sides meet at a right angle
+        // when the apex height is 0.5): they share one vertex.
+        let key = apex.map(|x| (x / (1e-6 * shortest)).round() as i64);
+        let a = *apex_at.entry(key).or_insert_with(|| {
+            vertices.push(apex);
+            vertices.len() - 1
+        });
         apex_of_pyramid.push(a);
         let s: Vec<usize> = q.iter().map(|n| matched[n]).collect();
         for k in 0..4 {
@@ -178,6 +184,26 @@ pub fn hex_pyramid_tet(
             frozen.push(true);
         }
         pyramids.push([q[0], q[1], q[2], q[3], 0]);
+    }
+    // Two pyramids that share an apex also share the side over their common concave edge: the same triangle seen from both, an
+    // interior face of the pyramid layer, not a facet of the tetrahedral region.
+    {
+        let key = |f: &[usize; 3]| {
+            let mut k = *f;
+            k.sort_unstable();
+            k
+        };
+        let mut count: BTreeMap<[usize; 3], usize> = BTreeMap::new();
+        for (f, &fr) in facets.iter().zip(&frozen) {
+            if fr {
+                *count.entry(key(f)).or_default() += 1;
+            }
+        }
+        let keep: Vec<bool> = facets.iter().zip(&frozen).map(|(f, &fr)| !(fr && count[&key(f)] == 2)).collect();
+        let mut it = keep.iter();
+        facets.retain(|_| *it.next().unwrap());
+        let mut it = keep.iter();
+        frozen.retain(|_| *it.next().unwrap());
     }
     let tets = conform_preserving(&vertices, &facets, &frozen, options.conform, |_| true)
         .map_err(|e| format!("tetrahedral region: {e}"))?;
@@ -217,7 +243,7 @@ pub fn hex_pyramid_tet(
         u
     };
     if let Some(n) = used.iter().position(|u| !*u) {
-        return Err(format!("node {n} belongs to no element"));
+        return Err(format!("node {n} at {:?} belongs to no element ({} hexahedral nodes)", out.nodes[n], hex.nodes.len()));
     }
     let report = HybridReport {
         hexahedra: hex.blocks.iter().map(|b| b.n_elems()).sum(),

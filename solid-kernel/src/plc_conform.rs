@@ -1195,14 +1195,7 @@ fn extract(state: State, input_vertices: usize, rounds: usize) -> Result<Conform
         .iter()
         .map(|t| tet_circumsphere(t.map(|v| points[v])).map_or(f64::INFINITY, |x| x.1))
         .fold(0., f64::max);
-    // The far points are in no inside cell, no facet and no segment; drop them and close the gap in the numbering.
-    let unshift = |i: usize| {
-        if i >= input_vertices + ENCLOSING {
-            i - ENCLOSING
-        } else {
-            i
-        }
-    };
+    // The far points are in no inside cell, no facet and no segment; they are dropped below with any unused Steiner point.
     debug_assert!(interior
         .iter()
         .flatten()
@@ -1214,6 +1207,36 @@ fn extract(state: State, input_vertices: usize, rounds: usize) -> Result<Conform
             format!("extracted cells do not fill the PLC volume (relative error {volume_error_relative:e})"),
         ));
     }
+    // Steiner points that no cell, facet or segment uses (a quality point whose cell was then dropped, or one that fell outside
+    // the body) are not part of the result: they would be nodes of no element. The input vertices keep their numbers.
+    let kept = |i: usize| i < input_vertices + ENCLOSING;
+    let mut used = vec![false; points.len()];
+    for t in &interior {
+        t.iter().for_each(|&v| used[v] = true);
+    }
+    for (f, _) in &facets {
+        f.iter().for_each(|&v| used[v] = true);
+    }
+    for e in &stats.3 {
+        e.iter().for_each(|&v| used[v] = true);
+    }
+    let mut renumber = vec![usize::MAX; points.len()];
+    let mut next = 0;
+    for (i, slot) in renumber.iter_mut().enumerate() {
+        if i < input_vertices {
+            *slot = next;
+            next += 1;
+        } else if !kept(i) && used[i] {
+            *slot = next;
+            next += 1;
+        }
+    }
+    let points: Vec<V3> = points
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| renumber[*i] != usize::MAX)
+        .map(|(_, p)| *p)
+        .collect();
     Ok(Conforming {
         report: Report {
             input_vertices,
@@ -1229,16 +1252,9 @@ fn extract(state: State, input_vertices: usize, rounds: usize) -> Result<Conform
             interior_cells: interior.len(),
             volume_error_relative,
         },
-        points: {
-            let mut p = points;
-            p.drain(input_vertices..input_vertices + ENCLOSING);
-            p
-        },
-        cells: interior.into_iter().map(|t| t.map(unshift)).collect(),
-        facets: facets
-            .into_iter()
-            .map(|(f, k)| (f.map(unshift), k))
-            .collect(),
-        segments: stats.3.into_iter().map(|e| e.map(unshift)).collect(),
+        points,
+        cells: interior.into_iter().map(|t| t.map(|v| renumber[v])).collect(),
+        facets: facets.into_iter().map(|(f, k)| (f.map(|v| renumber[v]), k)).collect(),
+        segments: stats.3.into_iter().map(|e| e.map(|v| renumber[v])).collect(),
     })
 }
