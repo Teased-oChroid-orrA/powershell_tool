@@ -987,6 +987,15 @@ fn conform_impl(
                 continue;
             }
             if !state.meshes[k].contains(cc, &pts) {
+                // In exact arithmetic a centre outside the facet encroaches a segment; here it did not (rounding on a skinny
+                // sub-facet), so the boundary sub-segment the centre is nearest to, the one it lies beyond, is split instead and
+                // the sub-facet revisited, as when the centre sits on the boundary.
+                let nearest = state.meshes[k].nearest_boundary_edge(cc, &pts);
+                if let Some(s) = nearest.filter(|s| state.segments.contains(s) && !state.frozen_segments.contains(s)) {
+                    state.enc_segments.insert(s);
+                    state.enc_tris.insert((k, t));
+                    continue;
+                }
                 return Err(fail(
                     ErrorKind::Geometry,
                     "sub-facet circumcentre leaves its facet without encroaching a segment",

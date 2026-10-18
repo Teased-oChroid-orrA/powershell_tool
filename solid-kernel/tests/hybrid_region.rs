@@ -217,3 +217,21 @@ fn a_filleted_cylinder_gets_a_core_too() {
     assert_eq!(mesh.quality().inverted, 0);
     assert!((mesh_volume(&mesh) / solid.volume() - 1.0).abs() < 1e-9);
 }
+
+#[test]
+#[ignore = "study: the cross bore's recovery takes minutes; run with --release --ignored --nocapture"]
+fn a_cylinder_with_a_cross_bore_gets_a_core_too() {
+    // the spline-edged intersection of the bore and the cylinder is part of the shell; the core stays clear of it
+    let sampled = shell(include_str!("data/cross-bore.step"), 0.2);
+    let solid = SurfaceSolid::new(sampled.mesh.clone(), 1e-9).unwrap();
+    let mut options = RegionOptions { cell: 1.5, margin_cells: 2.0, ..RegionOptions::default() };
+    // the saddle's input angles are too small for radius-edge 2: ask for 5
+    options.hybrid.conform.max_radius_edge = Some(5.0);
+    let t = std::time::Instant::now();
+    let (mesh, report) = hex_core_hybrid(&sampled.mesh, Elastic::new(1000.0, 0.3), options).unwrap();
+    eprintln!("cross-bore core: {report:?} in {:.1} s", t.elapsed().as_secs_f64());
+    let c = check_conformity(&mesh, &Adjacency::new(&mesh));
+    assert_eq!((c.non_manifold_faces, c.mismatched_faces, c.n_hanging, c.coincident_pairs, c.unused_nodes, c.components), (0, 0, 0, 0, 0, 1), "{c:?}");
+    assert_eq!(mesh.quality().inverted, 0);
+    assert!((mesh_volume(&mesh) / solid.volume() - 1.0).abs() < 1e-9);
+}
