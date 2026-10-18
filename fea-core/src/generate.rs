@@ -26,6 +26,9 @@ pub fn grid(physics: Physics, kind: ElementKind, mat: Elastic, div: [usize; 3], 
     if div[..d].contains(&0) {
         return Err("every division count must be at least 1".into());
     }
+    if kind == ElementKind::Pyramid5 {
+        return Err("a pyramid has no grid: it joins a hexahedral region to a tetrahedral one (meshing::pyramid)".into());
+    }
     if matches!(kind, ElementKind::Wedge6 | ElementKind::Wedge15) {
         // triangles in the plane, swept along z in `div[2]` layers
         let tri = if kind == ElementKind::Wedge6 { ElementKind::Tri3 } else { ElementKind::Tri6 };

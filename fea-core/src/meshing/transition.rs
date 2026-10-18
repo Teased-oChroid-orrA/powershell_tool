@@ -1,7 +1,9 @@
 //! Verified prism-to-tetrahedron and hexahedron-to-tetrahedron transitions: convert selected `Wedge6` / `Hex8` elements into
-//! `Tet4` elements so that a swept or structured region meets a tetrahedral one with a conforming interface. No pyramid element
-//! is needed (`docs/issue-46-phase-79.md`): a pyramid over a quad is two tetrahedra, so the whole question is which diagonal
-//! the quad takes, and the rule below answers it from the global node numbers.
+//! `Tet4` elements so that a swept or structured region meets a tetrahedral one with a conforming interface. When the
+//! hexahedra next to the tetrahedra are converted too, no pyramid element is needed (`docs/issue-46-phase-79.md`): a pyramid over
+//! a quad is two tetrahedra, so the whole question is which diagonal the quad takes, and the rule below answers it from the
+//! global node numbers. A hexahedron that is *kept* next to tetrahedra needs the `Pyramid5` element and a tetrahedral mesher
+//! that preserves the pyramids' sides (`solid_kernel::hybrid`, `docs/issue-46-phase-102.md`; erratum in Phase 94).
 //!
 //! Each selected wedge is cut into three tetrahedra. The three vertical quad faces of a wedge are each split by a diagonal
 //! chosen from the global node numbers alone: the diagonal that contains the smallest node number of the four. Both elements

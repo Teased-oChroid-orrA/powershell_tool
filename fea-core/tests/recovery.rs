@@ -39,7 +39,8 @@ fn spr_is_exact_for_a_linear_stress_field_on_every_element_type() {
     // node, including boundary and domain corners.
     let q = [[1e-3, 2e-4, -1e-4], [3e-4, -2e-3, 5e-4], [-2e-4, 1e-4, 4e-4]];
     let c = [[4e-4, -1e-4, 2e-4], [1e-4, 3e-4, -2e-4], [-3e-4, 2e-4, 1e-4]];
-    for kind in ALL_KINDS {
+    // a pyramid has no grid of its own (tests/pyramid.rs covers it in a hybrid mesh)
+    for kind in ALL_KINDS.into_iter().filter(|k| *k != fea_core::ElementKind::Pyramid5) {
         let d = kind.dim();
         let quadratic = kind.n_nodes() > kind.n_corners();
         let div = if d == 2 { [3, 3, 1] } else { [2, 2, 2] };

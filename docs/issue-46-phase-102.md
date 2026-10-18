@@ -1,0 +1,33 @@
+# Issue 46 — Phase 102: `Pyramid5` and a facet-preserving tetrahedral mesher; hexahedra kept next to tetrahedra (#56)
+
+Phase 94 left two pieces open for a *kept* hexahedron meeting tetrahedra face-conforming: an element whose base is the hexahedron's quadrilateral face and whose sides are triangles, and a tetrahedral mesher that accepts those sides as given boundary facets instead of splitting them. Both are built and joined.
+
+## `ElementKind::Pyramid5` (fea-core)
+
+VTK type 14, node order of VTK and Gmsh (base corners counter-clockwise so that the base normal points at the apex, then the apex; Gmsh type 7, Abaqus `C3D5` import). Reference element: the base is `[-1, 1]^2` at `zeta = 0`, the apex `(0, 0, 1)`, volume 4/3. Shape functions are Bedrosian's rational ones: `N_i = 1/4 [(1 + s_i xi)(1 + t_i eta) - zeta + s_i t_i xi eta zeta / (1 - zeta)]`, `N_5 = zeta`. They reproduce linear fields, are **bilinear on the base** (a hexahedron's face) and **linear on each side** (a tetrahedron's face), which a unit test checks node by node. The map is singular at the apex, so the rule is the collapsed Gauss rule (3 x 3 x 3, weights summing to 4/3, no point at the apex); in collapsed coordinates every term of an *affine* pyramid is a polynomial, so the stiffness of the pyramids that occur (a square or parallelogram base, any apex) is integrated exactly. A non-affine base (a general bilinear quadrilateral) is integrated to the quality of the rule, not exactly; the patch test is then not an identity (stated, not measured here).
+
+Wired through: `n_nodes`, `n_corners`, reference measure, VTK type, node coordinates, shape table and mass table, outward face list (a quadrilateral base, four triangles; `topology::local_faces`, so boundary faces, loads, conformity checks and the viewer see it), quality (8 edges, scaled Jacobian at the five corners; 1 for a right pyramid), the recovery error rule, Gmsh/Abaqus import. `generate::grid` refuses it (a pyramid has no grid); the tests that loop over every kind skip it.
+
+Evidence: element unit tests (Kronecker at the nodes including the apex, partition of unity, linear completeness, finite-difference derivatives, weight sum), `tests/pyramid.rs` (traces equal the hexahedron/tetrahedron traces; a block of one hexahedron, two pyramids and eight tetrahedra, on a cube, with an off-axis apex and on an affine image, is face-conforming (`check_conformity` all zero), has no inverted element, reproduces a linear displacement field at the interior node to 4e-19 and sums to the exact volume to 1e-12), the existing kernel tests (rigid-body modes, symmetry, constant strain, fast kernel) now include the pyramid. fea-core: 544 tests pass.
+
+## Facet-preserving tetrahedral recovery (`plc_conform::conform_preserving`)
+
+`conform_preserving(vertices, facets, frozen, options, progress)`: a facet with `frozen[i]` and every segment of it are never split and never counted as encroached. The recovery is the same Delaunay recovery; Steiner points go to the unfrozen facets, their segments and the interior; a quality centre that would encroach a frozen item leaves its cell (counted unresolved); and when a frozen segment or facet is **not** in the Delaunay triangulation of the vertices plus the points added elsewhere, it fails with an error naming it (`a frozen facet ... is missing from the Delaunay triangulation and may not be split`). It does not split silently and it does not claim a constrained tetrahedralization exists for every input: Schonhardt's twisted prism with its reflex diagonals cannot be tetrahedralized without a new vertex, and with every facet frozen the call reports exactly that (`tests/plc_preserving.rs`), while the same prism with the other diagonals is kept as given and the free recovery handles both.
+
+`tests/plc_preserving.rs`: one pyramid over a whole cross-section, and `n x n` interfaces (`n` = 2, 3) with one pyramid per quad and gridded outer faces: every pyramid side comes out exactly once with its own three vertices, the volume is the block minus the pyramids to 1e-12, Steiner points appear only on unfrozen segments, and radius-edge refinement to 2 leaves the sides intact (worst ratio 1.12 and 1.56 here).
+
+## The hybrid: hexahedra | pyramids | tetrahedra (`solid_kernel::hybrid::hex_pyramid_tet`)
+
+Input: a `Hex8` mesh, its interface quadrilaterals (`Mesh::boundary_faces` order), the outer surface of the tetrahedral region (outward). Each interface quad gets a pyramid (apex a mean-edge fraction `apex_height`, default 0.5, along the Newell normal), the four sides become frozen facets next to the outer surface, `conform_preserving` fills the region (defaults: recover only what is missing, radius-edge 2), and the three families are assembled with the hexahedral nodes kept. Interface nodes the surface does not contain (the interior ones) join the PLC from the hexahedral mesh.
+
+`tests/hybrid_hex_tet.rs` (cantilever 4 x 1 x 1, left half hexahedra, right half tetrahedra):
+- face-conforming (`check_conformity`: no non-manifold, mismatched or hanging face, one component), no inverted element;
+- linear patch test over the interior nodes (the apexes, interface and tetrahedron nodes): worst error **8.7e-19**;
+- tip deflection, same cross-section resolution: 2 x 2 cells: all-hex -0.22826, **hex|pyramid|tet -0.22098 (-3.19 %)**, hex|tet node tie -0.21707 (-4.90 %), all-tet -0.14547 (-36.27 %); 4 x 4 cells: all-hex -0.25313, **hex|pyramid|tet -0.24660 (-2.58 %)**, node tie -0.24792 (-2.06 %), all-tet -0.21325 (-15.75 %). The conforming interface is in the same band as the tie (it is the more principled one: no constraint, face-exact), and both are far closer to the hexahedral answer than the all-tetrahedron mesh. The loss is the linear tetrahedra, as Phase 94 measured. Worst radius-edge 1.66 (24 and 79 Steiner points).
+
+## Limits (recorded)
+
+- The pyramid layer over a coarse interface leaves acute wedges between the lateral walls and the pyramid sides (63 degrees at 0.25 height over a half-width 0.5); the protect-everything rule cascades there (Phase 101), so the hybrid defaults to the missing-only recipe. A frozen side can still make the recovery refuse (reported with the facet's coordinates); the remedy is a different `apex_height`.
+- The tetrahedral surface is the caller's: this phase does not generate it from the native shell. Joining it to the native CAD route (sampling a body, choosing the kept hexahedral region) is not built.
+- Pyramids are first order; no `Pyramid13`. Stress recovery and error estimation integrate it with the collapsed rule; no timing or accuracy study beyond the cantilever above.
+- No Windows or hosted-CI evidence.

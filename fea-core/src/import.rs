@@ -2,7 +2,7 @@
 //! from text to [`Mesh`]; callers do the file I/O.
 //!
 //! Supported element types: Tri3/6, Quad4/8/9, Tet4/10, Hex8/20/27 (Gmsh types 2, 9, 3, 16, 10, 4,
-//! 11, 5, 17, 12; Abaqus `CPS/CPE/CAX` 3/4/6/8-node and `C3D4/10/8/20`). Quadratic node orders are
+//! 11, 5, 17, 12; Abaqus `CPS/CPE/CAX` 3/4/6/8-node and `C3D4/10/8/20`), and the five-node pyramid (Gmsh type 7, Abaqus `C3D5`, whose node order is the VTK one). Quadratic node orders are
 //! permuted to the library's VTK order and **checked geometrically**: every midside / face-centre
 //! node must lie near the position its corner nodes imply, so a node-ordering mismatch is an error
 //! instead of a silently distorted mesh.
@@ -53,6 +53,7 @@ fn gmsh_kind(t: u32) -> Option<ElementKind> {
         4 => ElementKind::Tet4,
         11 => ElementKind::Tet10,
         5 => ElementKind::Hex8,
+        7 => ElementKind::Pyramid5,
         17 => ElementKind::Hex20,
         12 => ElementKind::Hex27,
         _ => return None,
@@ -355,6 +356,7 @@ fn abaqus_kind(ty: &str) -> Option<(ElementKind, Option<Physics>)> {
         "C3D4" => (ElementKind::Tet4, None),
         "C3D10" => (ElementKind::Tet10, None),
         "C3D8" => (ElementKind::Hex8, None),
+        "C3D5" => (ElementKind::Pyramid5, None),
         "C3D20" => (ElementKind::Hex20, None),
         _ => return None,
     })

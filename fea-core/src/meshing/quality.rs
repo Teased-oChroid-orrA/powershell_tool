@@ -104,6 +104,7 @@ const TRI_EDGES: [(usize, usize); 3] = [(0, 1), (1, 2), (2, 0)];
 const QUAD_EDGES: [(usize, usize); 4] = [(0, 1), (1, 2), (2, 3), (3, 0)];
 const TET_EDGES: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
 const HEX_EDGES: [(usize, usize); 12] = [(0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4), (0, 4), (1, 5), (2, 6), (3, 7)];
+const PYRAMID_EDGES: [(usize, usize); 8] = [(0, 1), (1, 2), (2, 3), (3, 0), (0, 4), (1, 4), (2, 4), (3, 4)];
 const WEDGE_EDGES: [(usize, usize); 9] = [(0, 1), (1, 2), (2, 0), (3, 4), (4, 5), (5, 3), (0, 3), (1, 4), (2, 5)];
 
 fn edges(kind: ElementKind) -> &'static [(usize, usize)] {
@@ -112,6 +113,7 @@ fn edges(kind: ElementKind) -> &'static [(usize, usize)] {
         ElementKind::Quad4 | ElementKind::Quad8 | ElementKind::Quad9 => &QUAD_EDGES,
         ElementKind::Tet4 | ElementKind::Tet10 => &TET_EDGES,
         ElementKind::Wedge6 | ElementKind::Wedge15 => &WEDGE_EDGES,
+        ElementKind::Pyramid5 => &PYRAMID_EDGES,
         _ => &HEX_EDGES,
     }
 }

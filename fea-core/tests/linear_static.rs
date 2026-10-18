@@ -33,7 +33,8 @@ fn skew(p: [f64; 3]) -> [f64; 3] {
 fn patch_test_every_element_reproduces_a_linear_displacement_field() {
     // Prescribe u = H x + c on the whole boundary; the interior must follow exactly.
     let h = [[1.0e-3, 4.0e-4, -2.0e-4], [-3.0e-4, 2.0e-3, 5.0e-4], [2.0e-4, -1.0e-4, 8.0e-4]];
-    for kind in ALL_KINDS {
+    // a pyramid has no grid of its own (tests/pyramid.rs covers it in a hybrid mesh)
+    for kind in ALL_KINDS.into_iter().filter(|k| *k != fea_core::ElementKind::Pyramid5) {
         let d = kind.dim();
         let div = if d == 2 { [3, 3, 1] } else { [2, 2, 2] };
         let mesh = grid(physics_for(kind), kind, mat(), div, &skew).unwrap();

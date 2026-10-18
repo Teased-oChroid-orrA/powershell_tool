@@ -31,6 +31,8 @@ pub(crate) fn corner_faces(kind: ElementKind) -> Vec<Vec<usize>> {
         Tet4 | Tet10 => TET_FACES.iter().map(|f| f.to_vec()).collect(),
         Hex8 | Hex20 | Hex27 => HEX_FACES.iter().map(|f| f.to_vec()).collect(),
         Wedge6 | Wedge15 => vec![vec![0, 2, 1], vec![3, 4, 5], vec![0, 1, 4, 3], vec![1, 2, 5, 4], vec![2, 0, 3, 5]],
+        // base (outward: away from the apex) and four sides
+        Pyramid5 => vec![vec![0, 3, 2, 1], vec![0, 1, 4], vec![1, 2, 4], vec![2, 3, 4], vec![3, 0, 4]],
     }
 }
 
@@ -197,7 +199,7 @@ mod tests {
 
     #[test]
     fn the_sorted_face_search_equals_counting_every_face() {
-        for kind in ALL_KINDS {
+        for kind in ALL_KINDS.into_iter().filter(|k| *k != ElementKind::Pyramid5) {
             let m = unit(kind, 3);
             assert_eq!(m.boundary_faces(), boundary_faces_by_counting(&m), "{kind:?}");
         }
@@ -224,7 +226,7 @@ mod tests {
 
     #[test]
     fn boundary_of_a_unit_block_has_the_right_count_area_and_outward_normals() {
-        for kind in ALL_KINDS {
+        for kind in ALL_KINDS.into_iter().filter(|k| *k != ElementKind::Pyramid5) {
             let m = unit(kind, 2);
             let faces = m.boundary_faces();
             let d = kind.dim();
@@ -252,6 +254,29 @@ mod tests {
             assert!((total - want).abs() < 1e-12, "{kind:?}: boundary measure {total}");
             assert!(sum.iter().all(|x| x.abs() < 1e-12), "{kind:?}: faces do not close {sum:?}");
         }
+    }
+
+    #[test]
+    fn a_pyramid_has_a_quadrilateral_base_and_four_outward_triangles() {
+        let mut m = Mesh::new(Physics::Solid);
+        for x in ElementKind::Pyramid5.node_coords() {
+            m.add_node(*x);
+        }
+        m.add_block(ElementKind::Pyramid5, (0..5).collect(), Elastic::new(1.0, 0.3), "p").unwrap();
+        let faces = m.boundary_faces();
+        assert_eq!(faces.iter().map(|f| f.nodes.len()).collect::<Vec<_>>(), vec![4, 3, 3, 3, 3]);
+        let mut sum = [0.0; 3];
+        for f in &faces {
+            let an = area_normal(&m, &f.nodes);
+            for i in 0..3 {
+                sum[i] += an[i];
+            }
+            // outward from the centroid of the pyramid (0, 0, 1/4)
+            let c: [f64; 3] = std::array::from_fn(|i| f.nodes.iter().map(|&n| m.nodes[n][i]).sum::<f64>() / f.nodes.len() as f64);
+            let out = an[0] * c[0] + an[1] * c[1] + an[2] * (c[2] - 0.25);
+            assert!(out > 0.0, "face {:?} points inward", f.nodes);
+        }
+        assert!(sum.iter().all(|x| x.abs() < 1e-12), "{sum:?}");
     }
 
     #[test]
