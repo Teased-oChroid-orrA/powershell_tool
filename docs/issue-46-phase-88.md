@@ -1,0 +1,17 @@
+# Issue 46 — Phase 88: optional learned solve-time prediction with a deterministic fallback (#61)
+
+`meshing::learned_cost` (fea-core): a log-linear model of each solver stage (assembly, Cholesky factorisation, back-substitution seconds) on `[1, ln dofs, ln factor_nnz, ln assembly_units]`, fitted by ridge regression per mesh dimension on **caller-supplied measured samples**. It answers with a prediction, a 90 % interval (the 90th percentile of leave-one-out absolute log residuals) and the **source**: `Learned`, or `Fallback(reason)` to the deterministic `CostModel` (which stays the authority) when the training set is smaller than 8 usable samples per dimension, a feature lies outside the training range by more than 0.5 in log space, the leverage exceeds twice the training maximum, the dimension was never seen, the solve would be iterative (`MeshCost::iterative`, not modelled) or the value is not finite and positive. Non-finite, non-positive and iterative samples are excluded from training. Nothing reads telemetry or trains on its own output; one-time workload terms and the analysis count pass through exactly as in `CostModel::predict`. Not wired into any production selection.
+
+**Held-out evaluation (the #61 entry condition: representative verified data, held-out evidence, deterministic fallback).** `tests/cost_validation.rs::learned_cost_against_the_deterministic_model_on_held_out_families` (`--ignored`, release): 11 element families (Quad4/8/9, Tri3, Tri6 on a grid and on a plate with a hole, Hex8/20/27, Wedge6/15), 7 sizes each, 77 meshes, measured stage times (best of three), **leave-one-family-out**: for each family the model is fitted on all the others and predicts the held-out one. Baselines: the deterministic model calibrated on a mid-size mesh of a different family of the same dimension, and calibrated on a mid-size mesh of the held-out family itself.
+
+| | median error | 90th percentile | worst |
+|---|---|---|---|
+| learned (68 of 77 answered) | **x1.14** | x1.39 | x1.85 |
+| deterministic, cross-family calibration | x1.93 | x5.44 | x9.13 |
+| deterministic, own-family calibration | x2.03 | | |
+
+The 90 % interval covered the measured time in 60 of 68 learned answers (88 %); the model fell back on 9 of 77 meshes (the smallest meshes of a family outside the training range and a few high-leverage Quad4/Hex8 points), each time with the deterministic answer and the reason. The gate is asserted in the test: median error under half the deterministic one, coverage at least 80 %, fewer than 25 % fallbacks. Unit tests: exact power laws are recovered (error under 0.1 %, interval within 5 %), the fallback reasons, exclusion of bad samples, pass-through of one-time terms and analyses.
+
+What this does and does not establish: within the training domain (direct linear static solves on this machine, macOS arm64, the families above) a data-driven stage model beats the single-mesh deterministic calibration by a clear margin and knows when not to answer. It does **not** establish transfer across machines (times are hardware-specific: retrain per machine), contact, plasticity or iterative solves, adaptive-loop cost, mesh generation time, or accuracy prediction; the corpus is generated structured meshes, not production geometry; the timings come from the in-tree benchmark, not from the verified telemetry store (`fea-problem::mesh_telemetry`), whose records would be the production input; nothing learned is used for strategy selection. #61 stays open for those.
+
+Evidence: `cargo test -p fea-core`: 531 passed, 0 failed.
