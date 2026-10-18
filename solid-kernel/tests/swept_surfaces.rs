@@ -101,6 +101,8 @@ fn the_revolved_face_follows_its_seam_and_the_shell_is_sampled_finer_on_request(
 
 #[cfg(feature = "occt")]
 #[test]
+// OpenCASCADE's tessellation volume depends on the platform's floating point at about 5e-6 (the revolved vase: 1503.0205 on macOS arm64,
+// 1503.0272 on the hosted Linux runner), so the recorded value is checked to 1e-4, far below the 3e-3 the native import is held to.
 fn the_recorded_reference_volumes_are_opencascade_s() {
     for c in cases() {
         let live = solid_kernel::occt::Brep::from_step_text(c.source)
@@ -113,7 +115,7 @@ fn the_recorded_reference_volumes_are_opencascade_s() {
             c.name, c.reference
         );
         assert!(
-            (live / c.reference - 1.).abs() < 1e-6,
+            (live / c.reference - 1.).abs() < 1e-4,
             "{}: recorded {} but OpenCASCADE says {live}",
             c.name,
             c.reference
