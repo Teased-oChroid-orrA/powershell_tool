@@ -1,0 +1,9 @@
+# Issue 46 — Phase 91: where the refinement loop spends its time, and an opt-in smoothing skip (#58)
+
+Phase 90 measured a slow refinement loop (two AMR adaptations to 10k elements took about six minutes in release). Profiling the stages of `metric_refine::refine` on a 2.4k-cell sphere (temporary instrumentation, not committed): the long-edge scan, the splits and the topology rebuild are each under 0.02 s per run; the metric flips 0.07 s; **smoothing 0.66-0.88 s of about 0.75-1.0 s**. Smoothing tries three step lengths per interior vertex per sweep (up to eight sweeps per refinement pass), each evaluating the band-penalised metric quality of every incident cell. Memoising the field evaluations by (vertex, exact position) was added (results bit-identical, about 6 % faster: the field is cheap, the quality arithmetic is the cost).
+
+`RefineOptions::smooth_skip_above` (default 0 = unchanged behaviour): vertices all of whose cells already have quality at or above the value are protected from smoothing. On a 10.8k-cell sphere (isotropic target 0.16, 30 passes allowed; release): 0 gives 12.2 s, 0.4 gives **5.4 s** (2.2x faster) with the same result (11284 against 10807 cells, converged, band fraction 0.89, worst cell 0.322 against 0.317, median 0.731); 0.5 gives 7.3 s, 0.6 gives 12.8 s (nothing is skipped when the median cell is below the threshold).
+
+It is **not** the default: with 0.4 the strongly anisotropic regression of Phase 89 shifts (6:1 with boundary-first passes and flat flips stops converging within 60 passes: worst cell 2.3e-3 against 0.14; 10:1, 15:1, 20:1 and 40:1 are unaffected). So it is an opt-in speed-up for large near-isotropic meshes, measured, not a global default.
+
+Limits: single machine; the remaining cost is the quality arithmetic itself (metric mean and transform per cell evaluation), which a cached per-cell quality would remove at the price of invalidating on every vertex move; no Windows or hosted-CI evidence.

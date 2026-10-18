@@ -36,6 +36,9 @@ pub struct RefineOptions {
     /// Passes at the start in which only boundary edges that are too long are split (each one directly, not through its
     /// terminal edge), so the boundary already follows the metric before the volume is refined; `0` disables it.
     pub boundary_first_passes: usize,
+    /// Smoothing skips vertices all of whose cells already have a (band-penalised) metric quality at or above this; `0`
+    /// smooths every vertex. A large mesh is mostly good after the first passes and the work of smoothing it again is wasted.
+    pub smooth_skip_above: f64,
 }
 impl Default for RefineOptions {
     fn default() -> Self {
@@ -47,6 +50,7 @@ impl Default for RefineOptions {
             smooth_passes: 8,
             coarsen_passes: 10,
             boundary_first_passes: 0,
+            smooth_skip_above: 0.0,
         }
     }
 }
@@ -170,8 +174,24 @@ fn refine_impl(
         flips: Vec::new(),
         converged: false,
     };
+    // The field is evaluated at the current position of every vertex of a cell, again and again while smoothing tries moves of
+    // one vertex at a time: memoise by (vertex, exact position) so only the moved vertex is evaluated afresh.
+    let memo: std::cell::RefCell<std::collections::HashMap<(usize, [u64; 3]), Metric>> = Default::default();
+    let metric_at = |v: usize, x: Point| -> Result<Metric, MeshError> {
+        let key = (v, x.map(f64::to_bits));
+        if let Some(m) = memo.borrow().get(&key) {
+            return Ok(*m);
+        }
+        let m = evaluate(x)?;
+        let mut cache = memo.borrow_mut();
+        if cache.len() > 4_000_000 {
+            cache.clear();
+        }
+        cache.insert(key, m);
+        Ok(m)
+    };
     let smooth_quality = |p: &[Point], t: [usize; 4]| -> f64 {
-        let m: Result<Vec<Metric>, MeshError> = t.iter().map(|&v| evaluate(p[v])).collect();
+        let m: Result<Vec<Metric>, MeshError> = t.iter().map(|&v| metric_at(v, p[v])).collect();
         match m.ok().and_then(|m| Metric::mean(&m)) {
             Some(mean) => {
                 let pts = t.map(|v| mean.transform(p[v]));
@@ -369,11 +389,20 @@ fn refine_impl(
             report.flips.push(flips);
         }
         if options.smooth_passes > 0 {
-            let opt = SmoothOptions {
+            let mut opt = SmoothOptions {
                 max_passes: options.smooth_passes,
                 slide_planar_boundary: true,
                 ..SmoothOptions::default()
             };
+            if options.smooth_skip_above > 0.0 {
+                let mut poor = BTreeSet::new();
+                for t in current.cells() {
+                    if smooth_quality(&points, *t) < options.smooth_skip_above {
+                        poor.extend(t.iter().copied());
+                    }
+                }
+                opt.protect = (0..points.len()).filter(|v| !poor.contains(v)).collect();
+            }
             let (smoothed, _) = smooth_vertices_by(&current, &opt, &smooth_quality)?;
             for (v, (old, new)) in points.iter_mut().zip(smoothed.points()).enumerate() {
                 if old != new {
@@ -679,6 +708,22 @@ mod tests {
         assert!(total > 100 && on as f64 >= 0.9 * total as f64, "{on} of {total} inserted boundary vertices on the sphere");
         let (min_q, _) = q(&curved, &field);
         assert!(min_q > 1e-3, "projected mesh worst cell {min_q}");
+    }
+
+    #[test]
+    #[ignore = "study: refinement time against the smoothing skip threshold"]
+    fn refinement_time_against_the_smoothing_skip_threshold() {
+        let start = sphere_topology(0.6);
+        let field = |_p: Point| Metric::from_sizes([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]], [0.16; 3]);
+        let bounds = MetricBounds::new(0.01, 10., 100.).unwrap();
+        for skip in [0.0, 0.4, 0.5, 0.6] {
+            let options = RefineOptions { max_passes: 30, smooth_skip_above: skip, ..RefineOptions::default() };
+            let t = std::time::Instant::now();
+            let (out, r) = refine(&start, &field, &bounds, options).unwrap();
+            let mut q = q_unsorted(&out, &field);
+            q.sort_by(f64::total_cmp);
+            eprintln!("skip {skip}: {:.2} s, {} cells, converged {}, band {:.2}, min {:.3}, median {:.3}", t.elapsed().as_secs_f64(), q.len(), r.converged, r.edges_in_band_after, q[0], q[q.len() / 2]);
+        }
     }
 
     #[test]
