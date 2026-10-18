@@ -19,7 +19,32 @@ fn assembly() -> String {
     format!("{}{}{}", &base[..at], extra, &base[at..])
 }
 
+/// The same box instanced twice through `MAPPED_ITEM` / `REPRESENTATION_MAP` (no product structure): the part's representation
+/// `#10` with its origin placement `#11`, an assembly representation holding two mapped items with their target placements.
+fn mapped_assembly() -> String {
+    let base = Brep::box_from_corners([0., 0., 0.], [2., 1., 3.]).to_step_text().unwrap();
+    let mut extra = String::new();
+    extra.push_str("#950 = PRODUCT('ASSY','ASSY','',(#8));\n#951 = PRODUCT_DEFINITION_FORMATION('','',#950);\n#952 = PRODUCT_DEFINITION('design','',#951,#9);\n#953 = PRODUCT_DEFINITION_SHAPE('','',#952);\n#954 = SHAPE_DEFINITION_REPRESENTATION(#953,#901);\n");
+    extra.push_str("#900 = REPRESENTATION_MAP(#11,#10);\n#901 = SHAPE_REPRESENTATION('',(#902,#910,#920),#345);\n#902 = AXIS2_PLACEMENT_3D('',#903,#904,#905);\n#903 = CARTESIAN_POINT('',(0.,0.,0.));\n#904 = DIRECTION('',(0.,0.,1.));\n#905 = DIRECTION('',(1.,0.,0.));\n");
+    // Instance A: x' = +y, z' = +z at (10, 5, 0). Instance B: z' = +y, x' = +x at (-6, 3, 4).
+    for (mapped, target, loc, axis, refd, first) in [(910, 911, "(10.,5.,0.)", "(0.,0.,1.)", "(0.,1.,0.)", 912), (920, 921, "(-6.,3.,4.)", "(0.,1.,0.)", "(1.,0.,0.)", 960)] {
+        extra.push_str(&format!("#{mapped} = MAPPED_ITEM('',#900,#{target});\n#{target} = AXIS2_PLACEMENT_3D('',#{first},#{a},#{r});\n#{first} = CARTESIAN_POINT('',{loc});\n#{a} = DIRECTION('',{axis});\n#{r} = DIRECTION('',{refd});\n", a = first + 10, r = first + 20));
+    }
+    let at = base.rfind("ENDSEC;").expect("end of data");
+    format!("{}{}{}", &base[..at], extra, &base[at..])
+}
+
 fn main() {
+    if std::env::args().any(|a| a == "mapped") {
+        let text = mapped_assembly();
+        if std::env::args().any(|a| a == "write") {
+            std::fs::write("solid-kernel/tests/data/assembly-mapped-items.step", &text).unwrap();
+        }
+        let b = Brep::from_step_text(&text).unwrap();
+        let (lo, hi) = b.bounds();
+        println!("OpenCASCADE bounds of the mapped-item assembly: {lo:?} .. {hi:?}");
+        return;
+    }
     let text = assembly();
     if std::env::args().any(|a| a == "write") {
         std::fs::write("solid-kernel/tests/data/assembly-two-instances.step", &text).unwrap();
