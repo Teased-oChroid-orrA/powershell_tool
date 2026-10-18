@@ -15,7 +15,7 @@ fn main() {
 }
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
-    let usage = "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface] [--pcurve-audit] [--finite-arcs] [--repair-orientation] [--plc] [--clean-shell] [--refine-shell] [--conform [--conform-max-steiner N] [--conform-missing-only] [--conform-radius-edge B] [--conform-reconnect]] [--star-seed X,Y,Z] [--trial-kernel] (kernel coordinates in mm)";
+    let usage = "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface] [--pcurve-audit] [--finite-arcs] [--repair-orientation] [--plc] [--clean-shell] [--refine-shell] [--conform [--conform-max-steiner N] [--conform-missing-only] [--conform-radius-edge B] [--conform-reconnect]] [--max-line-mm MM] [--chart-quality DEG] [--grade DEG[,FLOOR_MM]] [--star-seed X,Y,Z] [--trial-kernel] (kernel coordinates in mm)";
     let path = args.next().ok_or(usage)?;
     if path == "--help" {
         println!("{usage}");
@@ -35,12 +35,25 @@ fn run() -> Result<(), String> {
     let mut mode = 0;
     let mut repair_orientation = false;
     let mut finite_arcs = false;
+    let mut max_line_mm = None;
+    let mut chart_quality = None;
+    let mut grade: Option<(f64, f64)> = None;
     while let Some(flag) = args.next() {
         if flag == "--pcurve-audit" {
             pcurve_audit = true;
         } else if flag == "--finite-arcs" {
             pcurve_audit = true;
             finite_arcs = true;
+        } else if flag == "--max-line-mm" {
+            max_line_mm = Some(args.next().ok_or(usage)?.to_string_lossy().parse::<f64>().map_err(|e| e.to_string())?);
+        } else if flag == "--chart-quality" {
+            chart_quality = Some(args.next().ok_or(usage)?.to_string_lossy().parse::<f64>().map_err(|e| e.to_string())?);
+        } else if flag == "--grade" {
+            let v = args.next().ok_or(usage)?.to_string_lossy().to_string();
+            let mut parts = v.split(',');
+            let angle = parts.next().unwrap().parse::<f64>().map_err(|e| e.to_string())?;
+            let floor = parts.next().map(|x| x.parse::<f64>()).transpose().map_err(|e| e.to_string())?.unwrap_or(0.1);
+            grade = Some((angle, floor));
         } else if flag == "--analytic" {
             mode = mode.max(1);
         } else if flag == "--surface" {
@@ -213,7 +226,16 @@ fn run() -> Result<(), String> {
     }
     if mode > 0 {
         use solid_kernel::analytic_step::{AnalyticModel, Options};
-        let model = AnalyticModel::read(&result, Options::default()).map_err(|e| e.to_string())?;
+        let model = AnalyticModel::read(&result, Options { max_line_mm, ..Options::default() }).map_err(|e| e.to_string())?;
+        let model = if let Some((angle, floor)) = grade {
+            let (g, r) = model
+                .graded(solid_kernel::chart_grade::GradeOptions { min_angle_deg: angle, floor_mm: floor, ..Default::default() }, 50_000_000)
+                .map_err(|e| e.to_string())?;
+            println!("Graded boundary sampling: {r:?}");
+            g
+        } else {
+            model
+        };
         let samples: usize = model
             .body()
             .edges
@@ -236,6 +258,9 @@ fn run() -> Result<(), String> {
                 } else {
                     solid_kernel::cylindrical_step::ChartPolicy::Strict
                 },
+                chart_quality: chart_quality.map(|q| solid_kernel::chart_mesh::ChartQuality { min_angle_deg: q, max_points: 20_000 }),
+                face_work: if grade.is_some() { 20_000_000 } else { 2_000_000 },
+                total_work: if grade.is_some() { 800_000_000 } else { 80_000_000 },
                 ..solid_kernel::native_surface::Limits::default()
             };
             let surface = model
@@ -280,7 +305,7 @@ fn run() -> Result<(), String> {
                 }
             }
             let checked = surface
-                .check_intersections(2_000_000, |pairs| {
+                .check_intersections(if grade.is_some() { 50_000_000 } else { 2_000_000 }, |pairs| {
                     if pairs % 8192 == 0 {
                         eprintln!("Native facet intersection check: {pairs} candidate pairs");
                     }

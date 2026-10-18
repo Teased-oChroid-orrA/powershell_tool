@@ -12,6 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct Limits {
     pub orientation_policy: crate::orientation_repair::OrientationPolicy,
     pub chart_policy: crate::cylindrical_step::ChartPolicy,
+    /// Opt-in interior Delaunay refinement of every face chart (default off: it adds vertices).
+    pub chart_quality: Option<crate::chart_mesh::ChartQuality>,
     pub vertices: usize,
     pub triangles: usize,
     pub face_work: usize,
@@ -22,6 +24,7 @@ impl Default for Limits {
         Self {
             orientation_policy: crate::orientation_repair::OrientationPolicy::Strict,
             chart_policy: crate::cylindrical_step::ChartPolicy::Strict,
+            chart_quality: None,
             vertices: 1_000_000,
             triangles: 2_000_000,
             face_work: 2_000_000,
@@ -210,10 +213,11 @@ impl AnalyticModel {
                     "native surface generation cancelled",
                 ));
             }
-            let chart = self.triangulate_sampled_chart_with_policy(
+            let chart = self.triangulate_sampled_chart_with_quality(
                 face.id,
                 limits.face_work,
                 limits.chart_policy,
+                limits.chart_quality,
             )?;
             if chart.triangles.len() > limits.triangles.saturating_sub(mesh.triangles.len()) {
                 return Err(fail(ErrorKind::Limit, "surface triangle budget exceeded"));

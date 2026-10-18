@@ -13,6 +13,7 @@
 //! here depends on it, which is also what makes this part testable on analytic shapes.
 
 pub mod analytic_step;
+pub mod chart_grade;
 pub mod chart_mesh;
 mod native_math;
 mod native_interval;

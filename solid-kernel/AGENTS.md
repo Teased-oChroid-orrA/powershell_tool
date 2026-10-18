@@ -18,12 +18,13 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 | OpenCascade: `Brep::extrude/boolean/fillet_all/faces/tessellate/solid/write_step/read_step` | `src/occt.rs` (feature `occt`) |
 | Finite p-curve trims and oriented arcs (`step_pcurve_candidates`, `step_pcurve_arc`, `step_curve_audit` `finite_arcs`) | `src/step_pcurve_{candidates,arc}.rs`, `docs/issue-46-phase-54.md`..`57` |
 | Incremental 3D Delaunay engine (walk location, cavity BFS, exact predicates) | `src/delaunay3.rs` (crate-private) |
-| Conforming Delaunay recovery of a closed triangulated PLC by Steiner points (`plc_conform::conform`) | `src/plc_conform.rs`, `docs/issue-46-phase-58.md` |
+| Conforming Delaunay recovery of a closed triangulated PLC by Steiner points (`plc_conform::conform`; surrounds the shell with 8 far points so no insertion is on the hull) | `src/plc_conform.rs`, `docs/issue-46-phase-58.md` |
 | Cluster-weld defeaturing of sliver faces (group transactions, cap repair, manifold/volume/angle guards) | `src/shell_defeature.rs`, `docs/issue-46-phase-76.md` |
 | Shape-preserving surface Steiner refinement (terminal-edge bisection, coplanar Delaunay flips; opt-in) | `src/shell_refine.rs`, `docs/issue-46-phase-77.md` |
 | One-call shell preparation (weld, defeature, then flat-patch cleanup, tolerances tied together, never worse) | `src/shell_prepare.rs`, `docs/issue-46-phase-71.md` |
 | Weld of near-degenerate short shell edges (link condition, orientation, angle floor) | `src/shell_weld.rs`, `docs/issue-46-phase-70.md` |
 | Flat-patch cleanup of a sampled shell (dissolve collinear/flat vertices, constrained Delaunay re-triangulation, no new points; never worsens a thin patch) | `src/shell_patch.rs`, `docs/issue-46-phase-69.md` |
+| Graded boundary sampling (`AnalyticModel::graded`: per-face chart refinement splits shared edges on their own curves until no face asks for more), chart quality (`Limits::chart_quality`), `Options::max_line_mm` | `src/chart_grade.rs`, `src/chart_mesh.rs` (`shape_chart`, `boundary_splits`), `docs/issue-46-phase-100.md` |
 | Analytic tests (box, tube) | `tests/surface.rs` |
 | OpenCascade tests | `tests/occt.rs` (`cargo test -p solid-kernel --features occt`) |
 
@@ -35,6 +36,7 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 - The tessellation deflection bounds the geometric error: use a small fraction of the boundary element size.
 
 ## Pitfalls
+- Plain per-face native sampling leaves needles on most faces (sparse boundaries, no interior points): use `AnalyticModel::graded` + `Limits::chart_quality` before `plc_conform` (graded generic parts reach ~25 degrees and a radius-edge ratio of 2; plain ones are refused). What grading cannot fix is near-degenerate CAD (the bracket's 5 micrometre sliver faces): that needs B-rep healing, and shell-level `shell_defeature` rejects the clusters of a graded shell.
 - `plc_conform` converges for well-conditioned PLCs (boxes, plates with holes) but NOT for sampled surface meshes with skinny triangles such as the NEMA17 bracket: every triangle edge is a protected segment and Delaunay refinement cascades past any budget (it refuses with a `Limit` error in ~2 s). Do not raise `max_steiner` to compensate; the fix is TetGen-style boundary recovery by local reconnection, or an isotropic surface remesh first. `shell_patch::dissolve_flat` (also `step-inventory --clean-shell`) removes redundant flat/collinear vertices but cannot dissolve a vertex shared with curved triangles at a tangent seam, which is where the remaining bracket needles are. `shell_weld::weld_short_edges` collapses short needle edges safely; what was left there, sliver faces, `shell_defeature` now removes by welding whole cross-section groups; the remaining bracket needles lie along a thin curved band; opt-in `shell_refine` fixes chords on flat faces but cannot raise a face's own input angle. Measured boundary (Phase 83, `tests/plc_angle_sweep.rs`): plain recovery terminates on simple/surface-mesh-like slabs down to <1 degree, but `max_radius_edge = 2` refinement fails at 18 degrees and below and succeeds at 22+; the smallest input angle is not a predictor for recovery alone.
 - `cadrum`'s `Face::id` is not unique (an extrusion's two caps share one) and is session-local (not kept by STEP). `tessellate`
   splits a shared id into connected pieces and matches them to faces by centre; a face without triangles makes it fail

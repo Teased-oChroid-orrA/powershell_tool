@@ -4,7 +4,6 @@ use crate::{
     analytic_step::{AnalyticModel, Surface},
     step::{Error, ErrorKind},
 };
-use fea_core::meshing::tet_topology::orientation;
 use std::cmp::Ordering;
 type P = [f64; 2];
 #[derive(Debug, Clone)]
@@ -28,18 +27,19 @@ fn fail(kind: ErrorKind, message: &str) -> Error {
     }
 }
 pub(crate) fn sign(a: P, b: P, c: P) -> Result<Ordering, Error> {
-    orientation(
-        [a[0], a[1], 0.],
-        [b[0], b[1], 0.],
-        [c[0], c[1], 0.],
-        [0., 0., 1.],
-    )
-    .map_err(|_| {
-        fail(
+    // Exact planar orientation. Its adaptive expansions are safe far beyond the 3D envelope of `orientation` (a chart value
+    // such as 9e-32 is rounding noise around zero, not out of range), so only non-finite or absurdly scaled values refuse.
+    if [a, b, c]
+        .iter()
+        .flatten()
+        .any(|x| !x.is_finite() || (*x != 0. && !(1e-100..=1e100).contains(&x.abs())))
+    {
+        return Err(fail(
             ErrorKind::Geometry,
             "planar predicate arithmetic range exceeded",
-        )
-    })
+        ));
+    }
+    Ok(fea_core::meshing::tet_topology::orientation_2d(a, b, c))
 }
 fn between(a: P, b: P, p: P) -> bool {
     (0..2).all(|i| a[i].min(b[i]) <= p[i] && p[i] <= a[i].max(b[i]))

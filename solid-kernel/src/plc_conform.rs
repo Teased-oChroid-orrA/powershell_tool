@@ -787,7 +787,16 @@ pub fn conform(
         .enumerate()
         .map(|(i, f)| FacetMesh::new(i, *f, vertices))
         .collect::<Result<Vec<_>, _>>()?;
-    let seed = tetrahedralize(vertices, limits).map_err(mesh_error)?;
+    // Eight far points make every shell point (and every Steiner point on the shell) an interior point of the triangulation. The
+    // incremental engine does not extend a hull exactly, and a convex shell (a cylinder, a block) has all its points on the hull
+    // of its vertices: a Steiner point rounded a few ulps outside it used to dent the hull until a later point fell far outside.
+    let enclosing = enclosing_points(vertices);
+    let with_box: Vec<V3> = vertices.iter().copied().chain(enclosing).collect();
+    let limits = DelaunayLimits {
+        max_points: limits.max_points + ENCLOSING,
+        ..limits
+    };
+    let seed = tetrahedralize(&with_box, limits).map_err(mesh_error)?;
     let mut state = State {
         delaunay: Delaunay3::new(&seed, options.max_cells),
         segments,
@@ -948,6 +957,26 @@ pub fn conform(
     publish(&state, Phase::Extraction, (0, 0), &mut progress)?;
     extract(state, vertices.len(), rounds)
 }
+/// Number of far points added around the input (a box).
+const ENCLOSING: usize = 8;
+fn enclosing_points(vertices: &[V3]) -> [V3; ENCLOSING] {
+    let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    for v in vertices {
+        for k in 0..3 {
+            lo[k] = lo[k].min(v[k]);
+            hi[k] = hi[k].max(v[k]);
+        }
+    }
+    let centre: V3 = std::array::from_fn(|k| 0.5 * (lo[k] + hi[k]));
+    let half = (0..3)
+        .map(|k| 0.5 * (hi[k] - lo[k]))
+        .fold(0., f64::max)
+        .max(f64::MIN_POSITIVE);
+    let reach = 64. * half;
+    std::array::from_fn(|i| {
+        std::array::from_fn(|k| centre[k] + if (i >> k) & 1 == 1 { reach } else { -reach })
+    })
+}
 fn extract(state: State, input_vertices: usize, rounds: usize) -> Result<Conforming, Error> {
     let reconnect = state.options.reconnect;
     let max_cells = state.options.max_cells;
@@ -1032,6 +1061,18 @@ fn extract(state: State, input_vertices: usize, rounds: usize) -> Result<Conform
         .iter()
         .map(|t| tet_circumsphere(t.map(|v| points[v])).map_or(f64::INFINITY, |x| x.1))
         .fold(0., f64::max);
+    // The far points are in no inside cell, no facet and no segment; drop them and close the gap in the numbering.
+    let unshift = |i: usize| {
+        if i >= input_vertices + ENCLOSING {
+            i - ENCLOSING
+        } else {
+            i
+        }
+    };
+    debug_assert!(interior
+        .iter()
+        .flatten()
+        .all(|&v| !(input_vertices..input_vertices + ENCLOSING).contains(&v)));
     let volume_error_relative = (cell_volume - enclosed).abs() / enclosed;
     if volume_error_relative > 1e-9 {
         return Err(fail(
@@ -1054,9 +1095,16 @@ fn extract(state: State, input_vertices: usize, rounds: usize) -> Result<Conform
             interior_cells: interior.len(),
             volume_error_relative,
         },
-        points,
-        cells: interior,
-        facets,
-        segments: stats.3.into_iter().collect(),
+        points: {
+            let mut p = points;
+            p.drain(input_vertices..input_vertices + ENCLOSING);
+            p
+        },
+        cells: interior.into_iter().map(|t| t.map(unshift)).collect(),
+        facets: facets
+            .into_iter()
+            .map(|(f, k)| (f.map(unshift), k))
+            .collect(),
+        segments: stats.3.into_iter().map(|e| e.map(unshift)).collect(),
     })
 }
