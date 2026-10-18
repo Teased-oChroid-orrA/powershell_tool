@@ -182,6 +182,17 @@ impl Surface {
         };
         r.is_finite().then_some(r)
     }
+    /// Distance of a world point from the surface, for every kind.
+    pub(crate) fn distance(&self, p: V3) -> Option<f64> {
+        match self {
+            Self::Plane(f) => Some(dot(sub(p, f.origin), f.z).abs()),
+            Self::Cylinder { frame, radius } => {
+                let d = sub(p, frame.origin);
+                Some((dot(d, frame.x).hypot(dot(d, frame.y)) - radius).abs())
+            }
+            _ => self.residual_curved(p),
+        }
+    }
     pub(crate) fn project_curved(&self, p: V3) -> Option<Projection> {
         let residual_mm = self.residual_curved(p)?;
         let chart = match self {

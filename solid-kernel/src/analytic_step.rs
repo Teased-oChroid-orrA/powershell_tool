@@ -256,8 +256,25 @@ impl Surface {
 }
 #[derive(Debug, Clone)]
 enum Curve {
-    Line { origin: V3, direction: V3 },
-    Circle { frame: Frame, radius: f64 },
+    Line {
+        origin: V3,
+        direction: V3,
+    },
+    Circle {
+        frame: Frame,
+        radius: f64,
+    },
+    /// `P(t) = origin + major cos(t) x + minor sin(t) y`.
+    Ellipse {
+        frame: Frame,
+        major: f64,
+        minor: f64,
+    },
+    /// A B-spline (rational or not) edge curve covering its whole domain, with the parameter of every sample in edge order.
+    Spline {
+        curve: std::sync::Arc<crate::nurbs::NurbsCurve>,
+        params: Vec<f64>,
+    },
 }
 fn radius(e: &Entity, v: &Value, scale: f64) -> Result<f64, Error> {
     let r = scalar(e, v)? * scale;
@@ -309,6 +326,14 @@ fn curve(data: &Inventory, e: &Entity, scale: f64) -> Result<Curve, Error> {
             frame: frame(data, *f, scale)?,
             radius: radius(e, r, scale)?,
         }),
+        ("ELLIPSE", [Value::String(_), Value::Ref(f), a, b]) => {
+            let (major, minor) = (radius(e, a, scale)?, radius(e, b, scale)?);
+            Ok(Curve::Ellipse {
+                frame: frame(data, *f, scale)?,
+                major,
+                minor,
+            })
+        }
         _ => Err(error(e, "unsupported referenced 3D curve geometry")),
     }
 }
@@ -545,6 +570,97 @@ fn samples(
             *p.last_mut().unwrap() = b;
             p
         }
+        Curve::Ellipse {
+            frame,
+            major,
+            minor,
+        } => {
+            // Parameter t is the eccentric anomaly: P(t) = a cos t x + b sin t y. The ends are located from their coordinates.
+            let mut angle = Vec::new();
+            for p in [a, b] {
+                let d = sub(p, frame.origin);
+                let (x, y, z) = (
+                    dot(d, frame.x) / major,
+                    dot(d, frame.y) / minor,
+                    dot(d, frame.z),
+                );
+                if (x.hypot(y) - 1.).abs() * major.min(*minor)
+                    > opt.geometry_tolerance_mm.max(1e-9) * 10.
+                    || z.abs() > opt.geometry_tolerance_mm
+                {
+                    return Err(error(e, "edge endpoint is not on its declared ellipse"));
+                }
+                angle.push(y.atan2(x));
+            }
+            let span = if closed {
+                if forward {
+                    TAU
+                } else {
+                    -TAU
+                }
+            } else if forward {
+                (angle[1] - angle[0]).rem_euclid(TAU)
+            } else {
+                -((angle[0] - angle[1]).rem_euclid(TAU))
+            };
+            if span == 0. {
+                return Err(error(
+                    e,
+                    "distinct vertices have indistinguishable ellipse parameters",
+                ));
+            }
+            let at = |t: f64| {
+                frame
+                    .point([major * t.cos(), minor * t.sin(), 0.])
+                    .map(|x| if x.abs() < 1e-25 { 0. } else { x })
+            };
+            // Bisect every parameter interval whose midpoint is further from its chord than the chord tolerance.
+            let start = ((span.abs() / (std::f64::consts::PI / 8.)).ceil().max(2.)) as usize;
+            let mut ts: Vec<f64> = (0..=start)
+                .map(|i| angle[0] + span * (i as f64 / start as f64))
+                .collect();
+            let mut pts: Vec<V3> = ts.iter().map(|t| at(*t)).collect();
+            *pts.first_mut().unwrap() = a;
+            *pts.last_mut().unwrap() = b;
+            let limit = opt
+                .max_edge_points
+                .saturating_sub(1)
+                .min(remaining.saturating_sub(1));
+            loop {
+                let mut next_t = Vec::with_capacity(ts.len());
+                let mut next_p = Vec::with_capacity(pts.len());
+                let mut split = false;
+                for i in 0..ts.len() - 1 {
+                    next_t.push(ts[i]);
+                    next_p.push(pts[i]);
+                    let tm = 0.5 * (ts[i] + ts[i + 1]);
+                    let (mid, chord) = (at(tm), mul(add(pts[i], pts[i + 1]), 0.5));
+                    if norm(sub(mid, chord)) > opt.chord_mm {
+                        next_t.push(tm);
+                        next_p.push(mid);
+                        split = true;
+                    }
+                }
+                next_t.push(*ts.last().unwrap());
+                next_p.push(*pts.last().unwrap());
+                if next_t.len() > limit + 1 {
+                    return Err(Error {
+                        offset: e.offset,
+                        kind: ErrorKind::Limit,
+                        detail: "ellipse sample budget/resolution exceeded".into(),
+                    });
+                }
+                ts = next_t;
+                pts = next_p;
+                if !split {
+                    break;
+                }
+            }
+            pts
+        }
+        Curve::Spline { .. } => {
+            return Err(error(e, "a spline edge is sampled by its own reader"));
+        }
     };
     if points.iter().any(|p| !coordinate_domain(*p)) || points.windows(2).any(|p| p[0] == p[1]) {
         return Err(error(
@@ -553,6 +669,76 @@ fn samples(
         ));
     }
     Ok(points)
+}
+/// Sample a B-spline edge curve over its whole domain: every distinct knot is a sample, and a parameter interval is bisected
+/// until the curve at its quarter points and midpoint lies within the chord tolerance of the chord. Unlike `nurbs_sample` it
+/// certifies nothing (the interval bounds of that sampler need 40 000 points for a 10 mm cross-bore intersection curve at
+/// 0.05 mm); the endpoints are checked against the vertices by the caller.
+fn sample_spline_adaptive(
+    curve: &crate::nurbs::NurbsCurve,
+    chord_mm: f64,
+    max_points: usize,
+) -> Result<(Vec<f64>, Vec<V3>), String> {
+    let domain = curve.domain();
+    let mut breaks: Vec<f64> = curve
+        .knots()
+        .iter()
+        .copied()
+        .filter(|k| *k >= domain[0] && *k <= domain[1])
+        .collect();
+    breaks.dedup();
+    if breaks.first().copied() != Some(domain[0]) {
+        breaks.insert(0, domain[0]);
+    }
+    if breaks.last().copied() != Some(domain[1]) {
+        breaks.push(domain[1]);
+    }
+    let eval = |t: f64| curve.evaluate(t).map_err(|e| e.detail);
+    let mut params: Vec<f64> = Vec::new();
+    for w in breaks.windows(2) {
+        let n = 2 * curve.degree().max(1);
+        for i in 0..n {
+            params.push(w[0] + (w[1] - w[0]) * (i as f64 / n as f64));
+        }
+    }
+    params.push(domain[1]);
+    let mut points: Vec<V3> = params.iter().map(|t| eval(*t)).collect::<Result<_, _>>()?;
+    loop {
+        let mut next_t = Vec::with_capacity(params.len());
+        let mut next_p = Vec::with_capacity(points.len());
+        let mut split = false;
+        for i in 0..params.len() - 1 {
+            next_t.push(params[i]);
+            next_p.push(points[i]);
+            let (t0, t1) = (params[i], params[i + 1]);
+            let mut worst = false;
+            for f in [0.25, 0.5, 0.75] {
+                let on_curve = eval(t0 + (t1 - t0) * f)?;
+                let chord = add(mul(points[i], 1. - f), mul(points[i + 1], f));
+                if norm(sub(on_curve, chord)) > chord_mm {
+                    worst = true;
+                    break;
+                }
+            }
+            if worst {
+                let tm = 0.5 * (t0 + t1);
+                next_t.push(tm);
+                next_p.push(eval(tm)?);
+                split = true;
+            }
+        }
+        next_t.push(*params.last().unwrap());
+        next_p.push(*points.last().unwrap());
+        if next_t.len() > max_points {
+            return Err("spline edge sample budget exceeded".into());
+        }
+        params = next_t;
+        points = next_p;
+        if !split {
+            break;
+        }
+    }
+    Ok((params, points))
 }
 fn on_surface(e: &Entity, s: &Surface, c: &Curve, a: V3, b: V3, tol: f64) -> Result<(), Error> {
     for point in [a, b] {
@@ -637,10 +823,37 @@ fn on_surface(e: &Entity, s: &Surface, c: &Curve, a: V3, b: V3, tol: f64) -> Res
                         frame.point([radius * t.cos(), radius * t.sin(), 0.])
                     })
                     .collect(),
+                Curve::Ellipse {
+                    frame,
+                    major,
+                    minor,
+                } => (0..128)
+                    .map(|i| {
+                        let t = TAU * i as f64 / 128.;
+                        frame.point([major * t.cos(), minor * t.sin(), 0.])
+                    })
+                    .collect(),
+                Curve::Spline { curve, params } => {
+                    // the samples themselves and the curve at every parameter midpoint
+                    let mut v = Vec::with_capacity(2 * params.len());
+                    for w in params.windows(2) {
+                        for t in [w[0], 0.5 * (w[0] + w[1])] {
+                            if let Ok(p) = curve.evaluate(t) {
+                                v.push(p);
+                            }
+                        }
+                    }
+                    if let Some(t) = params.last() {
+                        if let Ok(p) = curve.evaluate(*t) {
+                            v.push(p);
+                        }
+                    }
+                    v
+                }
             };
             let mut worst = 0f64;
             for p in points {
-                worst = worst.max(surface.residual_curved(p).unwrap_or(f64::INFINITY));
+                worst = worst.max(surface.distance(p).unwrap_or(f64::INFINITY));
             }
             worst
         }
@@ -676,15 +889,24 @@ impl AnalyticModel {
         sorted.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
         sorted.dedup_by(|a, b| a.0 == b.0 && (a.1 - b.1).abs() < 1e-9);
         let mut out = Vec::with_capacity(old.len() + sorted.len());
+        let spline_params = match curve {
+            Curve::Spline { params, .. } => Some(params),
+            _ => None,
+        };
+        let mut out_params: Vec<f64> = Vec::new();
         let mut k = 0;
         for (seg, w) in old.windows(2).enumerate() {
             out.push(w[0]);
+            if let Some(params) = spline_params {
+                out_params.push(params[seg]);
+            }
             while k < sorted.len() && sorted[k].0 == seg {
                 let t = sorted[k].1;
                 k += 1;
                 if !(t > 0. && t < 1.) {
                     continue;
                 }
+                let mut new_param = None;
                 let p = match curve {
                     Curve::Line { .. } => add(mul(w[0], 1. - t), mul(w[1], t)),
                     Curve::Circle { frame, radius } => {
@@ -702,6 +924,31 @@ impl AnalyticModel {
                         let a = a0 + delta * t;
                         frame.point([radius * a.cos(), radius * a.sin(), 0.])
                     }
+                    Curve::Ellipse {
+                        frame,
+                        major,
+                        minor,
+                    } => {
+                        let angle = |p: V3| {
+                            let d = sub(p, frame.origin);
+                            (dot(d, frame.y) / minor).atan2(dot(d, frame.x) / major)
+                        };
+                        let (a0, a1) = (angle(w[0]), angle(w[1]));
+                        let mut delta = a1 - a0;
+                        if delta > std::f64::consts::PI {
+                            delta -= TAU;
+                        } else if delta < -std::f64::consts::PI {
+                            delta += TAU;
+                        }
+                        let a = a0 + delta * t;
+                        frame.point([major * a.cos(), minor * a.sin(), 0.])
+                    }
+                    Curve::Spline { curve, params } => {
+                        let u = params[seg] * (1. - t) + params[seg + 1] * t;
+                        let Ok(p) = curve.evaluate(u) else { continue };
+                        new_param = Some(u);
+                        p
+                    }
                 };
                 // Rounding noise around an exact zero would sit below the exact predicates' arithmetic envelope.
                 let scale = w[0].iter().chain(&w[1]).fold(0f64, |m, x| m.max(x.abs()));
@@ -710,10 +957,21 @@ impl AnalyticModel {
                     continue;
                 }
                 out.push(p);
+                if let Some(u) = new_param {
+                    out_params.push(u);
+                }
             }
         }
         out.push(*old.last().unwrap());
+        if let Some(params) = spline_params {
+            out_params.push(*params.last().unwrap());
+        }
         self.edges.insert(edge, out);
+        if spline_params.is_some() {
+            if let Some(Curve::Spline { params, .. }) = self.curves.get_mut(&edge) {
+                *params = out_params;
+            }
+        }
         Ok(())
     }
     pub fn geometry_tolerance_mm(&self) -> f64 {
@@ -742,6 +1000,8 @@ impl AnalyticModel {
                 ),
                 None,
             ]),
+            // an ellipse or a spline fixes no chart coordinate
+            Curve::Ellipse { .. } | Curve::Spline { .. } => Some([None, None]),
         }
     }
     pub fn chord_tolerance_mm(&self) -> f64 {
@@ -806,6 +1066,7 @@ impl AnalyticModel {
         for edge in body.edges.values() {
             let e = &data.entities()[&edge.id];
             let geometry = curve_geometry(data, edge.curve)?;
+            let mut precomputed: Option<Vec<V3>> = None;
             let c = if geometry
                 .components
                 .iter()
@@ -816,50 +1077,108 @@ impl AnalyticModel {
                     context.read_spline_curve(data, reference, crate::nurbs::Limits::default())?;
                 if declaration.curve.degree() != 1 || declaration.curve.control_points().len() != 2
                 {
-                    return Err(error(geometry,"native body supports only full-domain two-control degree-one splines; curved/piecewise spline loci remain unsupported"));
-                }
-                // Geometric reduction only: a positive-weight degree-one span
-                // traces its control segment. Source declarations/IDs stay intact.
-                // Full-domain endpoint agreement is mandatory; no inferred trims.
-                let accepted = crate::step_spline_edge::sample_declaration(
-                    &context,
-                    data,
-                    reference,
-                    crate::step_spline_edge::Options {
-                        geometry_tolerance_mm: opt.geometry_tolerance_mm,
-                        curve_limits: crate::nurbs::Limits::default(),
-                        sampling: crate::nurbs_sample::Options {
-                            tolerance: opt.chord_mm,
-                            max_segments: opt
-                                .max_edge_points
-                                .min(opt.max_total_points.saturating_sub(total))
-                                .saturating_sub(1),
-                            ..crate::nurbs_sample::Options::default()
+                    // A general B-spline edge over its whole domain: endpoints must be the vertices (in the edge's sense), the
+                    // interior is sampled to the chord tolerance.
+                    let curve_domain = declaration.curve.domain();
+                    let (first, last) = (
+                        declaration
+                            .curve
+                            .evaluate(curve_domain[0])
+                            .map_err(|e| error(geometry, e.detail))?,
+                        declaration
+                            .curve
+                            .evaluate(curve_domain[1])
+                            .map_err(|e| error(geometry, e.detail))?,
+                    );
+                    let (start, end) = if edge.same_sense {
+                        (first, last)
+                    } else {
+                        (last, first)
+                    };
+                    for (curve_end, vertex) in
+                        [(start, vertices[&edge.start]), (end, vertices[&edge.end])]
+                    {
+                        if norm(sub(curve_end, vertex)) > opt.geometry_tolerance_mm {
+                            return Err(error(
+                                geometry,
+                                "a spline edge must cover its whole curve: an end of the curve is not the vertex",
+                            ));
+                        }
+                    }
+                    let (mut params, mut pts) = sample_spline_adaptive(
+                        &declaration.curve,
+                        opt.chord_mm,
+                        opt.max_edge_points
+                            .min(opt.max_total_points.saturating_sub(total)),
+                    )
+                    .map_err(|detail| error(geometry, detail))?;
+                    if !edge.same_sense {
+                        params.reverse();
+                        pts.reverse();
+                    }
+                    // the vertices are the authoritative end points
+                    *pts.first_mut().unwrap() = vertices[&edge.start];
+                    *pts.last_mut().unwrap() = vertices[&edge.end];
+                    if pts.iter().any(|p| !coordinate_domain(*p))
+                        || pts.windows(2).any(|w| w[0] == w[1])
+                    {
+                        return Err(error(
+                            geometry,
+                            "sampled spline edge is unresolved in current coordinate precision",
+                        ));
+                    }
+                    precomputed = Some(pts);
+                    Curve::Spline {
+                        curve: std::sync::Arc::new(declaration.curve.clone()),
+                        params,
+                    }
+                } else {
+                    // Geometric reduction only: a positive-weight degree-one span
+                    // traces its control segment. Source declarations/IDs stay intact.
+                    // Full-domain endpoint agreement is mandatory; no inferred trims.
+                    let accepted = crate::step_spline_edge::sample_declaration(
+                        &context,
+                        data,
+                        reference,
+                        crate::step_spline_edge::Options {
+                            geometry_tolerance_mm: opt.geometry_tolerance_mm,
+                            curve_limits: crate::nurbs::Limits::default(),
+                            sampling: crate::nurbs_sample::Options {
+                                tolerance: opt.chord_mm,
+                                max_segments: opt
+                                    .max_edge_points
+                                    .min(opt.max_total_points.saturating_sub(total))
+                                    .saturating_sub(1),
+                                ..crate::nurbs_sample::Options::default()
+                            },
                         },
-                    },
-                    declaration,
-                    |_| true,
-                )?;
-                let points = accepted.declaration().curve.control_points();
-                spline_segments.insert(edge.id, [points[0], points[1]]);
-                Curve::Line {
-                    origin: points[0],
-                    direction: unit(geometry, sub(points[1], points[0]))?,
+                        declaration,
+                        |_| true,
+                    )?;
+                    let points = accepted.declaration().curve.control_points();
+                    spline_segments.insert(edge.id, [points[0], points[1]]);
+                    Curve::Line {
+                        origin: points[0],
+                        direction: unit(geometry, sub(points[1], points[0]))?,
+                    }
                 }
             } else {
                 curve(data, geometry, scale)?
             };
 
-            let p = samples(
-                e,
-                &c,
-                vertices[&edge.start],
-                vertices[&edge.end],
-                edge.start == edge.end,
-                edge.same_sense,
-                opt,
-                opt.max_total_points.saturating_sub(total),
-            )?;
+            let p = match precomputed {
+                Some(p) => p,
+                None => samples(
+                    e,
+                    &c,
+                    vertices[&edge.start],
+                    vertices[&edge.end],
+                    edge.start == edge.end,
+                    edge.same_sense,
+                    opt,
+                    opt.max_total_points.saturating_sub(total),
+                )?,
+            };
             total += p.len();
             edges.insert(edge.id, p);
             curves.insert(edge.id, c);
@@ -974,6 +1293,12 @@ impl AnalyticModel {
                                     *radius,
                                     source_surface,
                                 )?;
+                            }
+                            Curve::Ellipse { .. } | Curve::Spline { .. } => {
+                                return Err(error(
+                                    source_surface,
+                                    "an ellipse or spline edge on a spline-patch face is not supported",
+                                ));
                             }
                         }
                     }

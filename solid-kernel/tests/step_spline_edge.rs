@@ -390,7 +390,7 @@ fn source_edge_sampling_cancellation_work_limits_and_invalid_tolerances_are_atom
 }
 
 #[test]
-fn rational_single_span_body_import_is_geometric_and_curved_or_piecewise_loci_stay_gated() {
+fn rational_single_span_body_import_is_geometric_and_other_splines_are_general_edges() {
     use solid_kernel::analytic_step::{AnalyticModel, Options as BodyOptions};
     let (source, edge_id, curve_id) = fixture();
     let data = inventory(&source, Limits::default()).unwrap();
@@ -409,15 +409,23 @@ fn rational_single_span_body_import_is_geometric_and_curved_or_piecewise_loci_st
         imported.edge_points(edge_id),
         reference.edge_points(edge_id)
     );
-    // Even a collinear quadratic with a line-like form declaration is not the
-    // verified degree-one path: no inference or accidental broad capability.
+    // A collinear quadratic with a line-like form declaration is not the verified degree-one path (a Line), but a general
+    // spline edge now: it is sampled over its whole domain and its samples stay on the segment between its end points.
     let quadratic=replace(&source,curve.offset,&format!("#{}=B_SPLINE_CURVE_WITH_KNOTS('unsupported',2,(#{a},#{a},#{b}),.POLYLINE_FORM.,.F.,.U.,(3,3),(10.,30.),.UNSPECIFIED.);",curve_id));
     let quadratic = inventory(&quadratic, Limits::default()).unwrap();
-    let error = AnalyticModel::read(&quadratic, BodyOptions::default()).unwrap_err();
-    assert!(error
-        .detail
-        .contains("only full-domain two-control degree-one"));
-    assert_eq!(error.offset, quadratic.entities()[&curve_id].offset);
+    let general = AnalyticModel::read(&quadratic, BodyOptions::default()).unwrap();
+    let samples = general.edge_points(edge_id).unwrap();
+    let ends = reference.edge_points(edge_id).unwrap();
+    assert!(samples.len() > 2, "a curved-capable spline is sampled in its interior");
+    assert_eq!((samples.first(), samples.last()), (ends.first(), ends.last()));
+    let (p, q) = (ends[0], ends[ends.len() - 1]);
+    let d: [f64; 3] = std::array::from_fn(|k| q[k] - p[k]);
+    let len2: f64 = d.iter().map(|x| x * x).sum();
+    for x in samples {
+        let t = (0..3).map(|k| (x[k] - p[k]) * d[k]).sum::<f64>() / len2;
+        let off = (0..3).map(|k| (x[k] - p[k] - t * d[k]).powi(2)).sum::<f64>().sqrt();
+        assert!(off < 1e-9 && (-1e-12..=1. + 1e-12).contains(&t), "{x:?}: off {off}, t {t}");
+    }
     let context = BodyContext::read(&data).unwrap();
     let edge = &context.body().edges[&edge_id];
     let edge_entity = &data.entities()[&edge_id];
