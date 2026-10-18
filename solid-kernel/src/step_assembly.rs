@@ -9,8 +9,16 @@
 //! independent reference, OpenCASCADE reading the same files (`tests/step_assembly.rs`, feature `occt`): the placement
 //! that is an item of the child's representation is the *source* frame, the one that is an item of the parent's representation
 //! the *target* frame, whatever order they are written in, and `T = Target * Source^-1`. A placement that belongs to neither or
-//! to both representations, differing length units between parent and child, non-rigid (non-orthonormal) frames, mapped items,
-//! cycles, a part without exactly one solid, and more than one root are refused, never guessed.
+//! to both representations, differing length units between parent and child, non-rigid (non-orthonormal) frames, cycles, a part
+//! without exactly one solid, and more than one root are refused, never guessed.
+//!
+//! **Mapped items** (`MAPPED_ITEM` of a `REPRESENTATION_MAP`, the other way STEP instances a part: a representation holds items
+//! that place another representation) are read from the representation structure alone when the file has no
+//! `NEXT_ASSEMBLY_USAGE_OCCURRENCE`: the root is the representation that holds mapped items and is mapped by none; each mapped item
+//! places its map's representation by `T = Target * Origin^-1` (origin: the `AXIS2_PLACEMENT_3D` of the map, target: the one of the
+//! item), recursively; solids found directly in a representation sit at its own placement. A file that has both a product
+//! structure and mapped items is refused as ambiguous (which one carries the placements is a writer decision this module does not
+//! guess).
 
 use crate::step::{Call, Entity, Error, ErrorKind, Inventory, RawBody, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -23,23 +31,43 @@ pub struct Placement {
 }
 
 impl Placement {
-    pub const IDENTITY: Placement = Placement { rotation: [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]], translation: [0.; 3] };
+    pub const IDENTITY: Placement = Placement {
+        rotation: [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
+        translation: [0.; 3],
+    };
 
     pub fn apply(&self, p: [f64; 3]) -> [f64; 3] {
-        std::array::from_fn(|i| (0..3).map(|j| self.rotation[i][j] * p[j]).sum::<f64>() + self.translation[i])
+        std::array::from_fn(|i| {
+            (0..3).map(|j| self.rotation[i][j] * p[j]).sum::<f64>() + self.translation[i]
+        })
     }
 
     /// `self` after `inner`: `x -> self(inner(x))`.
     pub fn after(&self, inner: &Placement) -> Placement {
-        let rotation = std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| self.rotation[i][k] * inner.rotation[k][j]).sum()));
-        Placement { rotation, translation: self.apply(inner.translation) }
+        let rotation = std::array::from_fn(|i| {
+            std::array::from_fn(|j| {
+                (0..3)
+                    .map(|k| self.rotation[i][k] * inner.rotation[k][j])
+                    .sum()
+            })
+        });
+        Placement {
+            rotation,
+            translation: self.apply(inner.translation),
+        }
     }
 
     pub fn inverse(&self) -> Placement {
         let rotation = std::array::from_fn(|i| std::array::from_fn(|j| self.rotation[j][i]));
-        let inv = Placement { rotation, translation: [0.; 3] };
+        let inv = Placement {
+            rotation,
+            translation: [0.; 3],
+        };
         let t = inv.apply(self.translation);
-        Placement { rotation, translation: [-t[0], -t[1], -t[2]] }
+        Placement {
+            rotation,
+            translation: [-t[0], -t[1], -t[2]],
+        }
     }
 }
 
@@ -48,9 +76,9 @@ impl Placement {
 pub struct PlacedPart {
     /// The part's `MANIFOLD_SOLID_BREP`.
     pub solid: u64,
-    /// The part's `PRODUCT_DEFINITION`.
+    /// The part's `PRODUCT_DEFINITION` (for mapped items: the shape representation that holds the solid).
     pub definition: u64,
-    /// The `NEXT_ASSEMBLY_USAGE_OCCURRENCE` ids from the root down to this instance.
+    /// The `NEXT_ASSEMBLY_USAGE_OCCURRENCE` ids from the root down to this instance (for mapped items: the `MAPPED_ITEM` ids).
     pub path: Vec<u64>,
     /// Carries the part's coordinates into the root's frame.
     pub placement: Placement,
@@ -64,7 +92,11 @@ pub struct Assembly {
 }
 
 fn fail(detail: impl Into<String>) -> Error {
-    Error { offset: 0, kind: ErrorKind::Geometry, detail: detail.into() }
+    Error {
+        offset: 0,
+        kind: ErrorKind::Geometry,
+        detail: detail.into(),
+    }
 }
 
 fn call<'a>(e: &'a Entity, name: &str) -> Option<&'a Call> {
@@ -88,7 +120,10 @@ fn number(v: &Value) -> Option<f64> {
 }
 
 fn vector(data: &Inventory, id: u64, name: &str) -> Result<[f64; 3], Error> {
-    let e = data.entities().get(&id).ok_or_else(|| fail(format!("missing #{id}")))?;
+    let e = data
+        .entities()
+        .get(&id)
+        .ok_or_else(|| fail(format!("missing #{id}")))?;
     let c = call(e, name).ok_or_else(|| fail(format!("#{id} is not a {name}")))?;
     match c.args.as_slice() {
         [_, Value::List(v)] if v.len() == 3 => {
@@ -105,16 +140,33 @@ fn vector(data: &Inventory, id: u64, name: &str) -> Result<[f64; 3], Error> {
 
 /// The frame of an `AXIS2_PLACEMENT_3D` as a placement (local axes as the columns of the rotation); orthonormal or refused.
 fn frame(data: &Inventory, id: u64) -> Result<Placement, Error> {
-    let e = data.entities().get(&id).ok_or_else(|| fail(format!("missing placement #{id}")))?;
-    let c = call(e, "AXIS2_PLACEMENT_3D").ok_or_else(|| fail(format!("#{id} is not an AXIS2_PLACEMENT_3D")))?;
+    let e = data
+        .entities()
+        .get(&id)
+        .ok_or_else(|| fail(format!("missing placement #{id}")))?;
+    let c = call(e, "AXIS2_PLACEMENT_3D")
+        .ok_or_else(|| fail(format!("#{id} is not an AXIS2_PLACEMENT_3D")))?;
     let [_, loc, axis, refd] = c.args.as_slice() else {
-        return Err(fail(format!("#{id}: an AXIS2_PLACEMENT_3D needs four arguments")));
+        return Err(fail(format!(
+            "#{id}: an AXIS2_PLACEMENT_3D needs four arguments"
+        )));
     };
-    let origin = vector(data, reference(loc).ok_or_else(|| fail(format!("#{id}: no location")))?, "CARTESIAN_POINT")?;
+    let origin = vector(
+        data,
+        reference(loc).ok_or_else(|| fail(format!("#{id}: no location")))?,
+        "CARTESIAN_POINT",
+    )?;
     let (axis, refd) = match (axis, refd) {
-        (Value::Ref(a), Value::Ref(r)) => (vector(data, *a, "DIRECTION")?, vector(data, *r, "DIRECTION")?),
+        (Value::Ref(a), Value::Ref(r)) => (
+            vector(data, *a, "DIRECTION")?,
+            vector(data, *r, "DIRECTION")?,
+        ),
         (Value::Omitted, Value::Omitted) => ([0., 0., 1.], [1., 0., 0.]),
-        _ => return Err(fail(format!("#{id}: axis and reference direction must both be given or both omitted"))),
+        _ => {
+            return Err(fail(format!(
+                "#{id}: axis and reference direction must both be given or both omitted"
+            )))
+        }
     };
     let norm = |v: [f64; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     let n = norm(axis);
@@ -123,15 +175,28 @@ fn frame(data: &Inventory, id: u64) -> Result<Placement, Error> {
     }
     let z = [axis[0] / n, axis[1] / n, axis[2] / n];
     let along = refd[0] * z[0] + refd[1] * z[1] + refd[2] * z[2];
-    let x0 = [refd[0] - along * z[0], refd[1] - along * z[1], refd[2] - along * z[2]];
+    let x0 = [
+        refd[0] - along * z[0],
+        refd[1] - along * z[1],
+        refd[2] - along * z[2],
+    ];
     let nx = norm(x0);
     if nx < 1e-9 * norm(refd) {
-        return Err(fail(format!("#{id}: the reference direction is parallel to the axis")));
+        return Err(fail(format!(
+            "#{id}: the reference direction is parallel to the axis"
+        )));
     }
     let x = [x0[0] / nx, x0[1] / nx, x0[2] / nx];
-    let y = [z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]];
+    let y = [
+        z[1] * x[2] - z[2] * x[1],
+        z[2] * x[0] - z[0] * x[2],
+        z[0] * x[1] - z[1] * x[0],
+    ];
     // The STEP definition is a right-handed frame from (axis, reference): the columns are the local x, y, z axes.
-    Ok(Placement { rotation: [[x[0], y[0], z[0]], [x[1], y[1], z[1]], [x[2], y[2], z[2]]], translation: origin })
+    Ok(Placement {
+        rotation: [[x[0], y[0], z[0]], [x[1], y[1], z[1]], [x[2], y[2], z[2]]],
+        translation: origin,
+    })
 }
 
 struct Product<'a> {
@@ -147,15 +212,24 @@ struct Product<'a> {
 
 impl Product<'_> {
     fn items(&self, rep: u64) -> Result<Vec<u64>, Error> {
-        let e = self.data.entities().get(&rep).ok_or_else(|| fail(format!("missing representation #{rep}")))?;
+        let e = self
+            .data
+            .entities()
+            .get(&rep)
+            .ok_or_else(|| fail(format!("missing representation #{rep}")))?;
         for c in &e.components {
-            if matches!(c.name.as_str(), "SHAPE_REPRESENTATION" | "ADVANCED_BREP_SHAPE_REPRESENTATION") {
+            if matches!(
+                c.name.as_str(),
+                "SHAPE_REPRESENTATION" | "ADVANCED_BREP_SHAPE_REPRESENTATION"
+            ) {
                 if let [_, Value::List(items), _] = c.args.as_slice() {
                     return Ok(items.iter().filter_map(reference).collect());
                 }
             }
         }
-        Err(fail(format!("#{rep} is not a supported shape representation")))
+        Err(fail(format!(
+            "#{rep} is not a supported shape representation"
+        )))
     }
 
     fn context(&self, rep: u64) -> Result<u64, Error> {
@@ -170,42 +244,98 @@ impl Product<'_> {
 
     fn metres(&self, rep: u64) -> Result<f64, Error> {
         let ctx = self.context(rep)?;
-        self.data.length_contexts()?.iter().find(|c| c.context == ctx).map(|c| c.metres).ok_or_else(|| fail(format!("representation #{rep} has no assigned length unit")))
+        self.data
+            .length_contexts()?
+            .iter()
+            .find(|c| c.context == ctx)
+            .map(|c| c.metres)
+            .ok_or_else(|| fail(format!("representation #{rep} has no assigned length unit")))
     }
 
-    fn walk(&self, definition: u64, world: Placement, path: &mut Vec<u64>, out: &mut Vec<PlacedPart>, active: &mut BTreeSet<u64>) -> Result<(), Error> {
+    fn walk(
+        &self,
+        definition: u64,
+        world: Placement,
+        path: &mut Vec<u64>,
+        out: &mut Vec<PlacedPart>,
+        active: &mut BTreeSet<u64>,
+    ) -> Result<(), Error> {
         if !active.insert(definition) {
-            return Err(fail(format!("product definition #{definition} contains itself")));
+            return Err(fail(format!(
+                "product definition #{definition} contains itself"
+            )));
         }
         match self.children.get(&definition) {
             None => {
-                let rep = *self.rep_of.get(&definition).ok_or_else(|| fail(format!("leaf definition #{definition} has no shape representation")))?;
-                let solids: Vec<u64> = self.items(rep)?.into_iter().filter(|i| self.bodies.contains_key(i)).collect();
+                let rep = *self.rep_of.get(&definition).ok_or_else(|| {
+                    fail(format!(
+                        "leaf definition #{definition} has no shape representation"
+                    ))
+                })?;
+                let solids: Vec<u64> = self
+                    .items(rep)?
+                    .into_iter()
+                    .filter(|i| self.bodies.contains_key(i))
+                    .collect();
                 match solids.as_slice() {
-                    [solid] => out.push(PlacedPart { solid: *solid, definition, path: path.clone(), placement: world }),
-                    other => return Err(fail(format!("part #{definition} has {} solids; exactly one is supported", other.len()))),
+                    [solid] => out.push(PlacedPart {
+                        solid: *solid,
+                        definition,
+                        path: path.clone(),
+                        placement: world,
+                    }),
+                    other => {
+                        return Err(fail(format!(
+                            "part #{definition} has {} solids; exactly one is supported",
+                            other.len()
+                        )))
+                    }
                 }
             }
             Some(children) => {
-                let parent_rep = *self.rep_of.get(&definition).ok_or_else(|| fail(format!("assembly #{definition} has no shape representation")))?;
+                let parent_rep = *self.rep_of.get(&definition).ok_or_else(|| {
+                    fail(format!(
+                        "assembly #{definition} has no shape representation"
+                    ))
+                })?;
                 for &(nauo, child) in children {
-                    let child_rep = *self.rep_of.get(&child).ok_or_else(|| fail(format!("component #{child} has no shape representation")))?;
-                    let (rep1, rep2, item1, item2) = *self.transform_of.get(&nauo).ok_or_else(|| fail(format!("usage #{nauo} has no placement transformation")))?;
-                    if !((rep1 == child_rep && rep2 == parent_rep) || (rep1 == parent_rep && rep2 == child_rep)) {
+                    let child_rep = *self.rep_of.get(&child).ok_or_else(|| {
+                        fail(format!("component #{child} has no shape representation"))
+                    })?;
+                    let (rep1, rep2, item1, item2) =
+                        *self.transform_of.get(&nauo).ok_or_else(|| {
+                            fail(format!("usage #{nauo} has no placement transformation"))
+                        })?;
+                    if !((rep1 == child_rep && rep2 == parent_rep)
+                        || (rep1 == parent_rep && rep2 == child_rep))
+                    {
                         return Err(fail(format!("usage #{nauo}: the relationship does not join the component's and the assembly's representations")));
                     }
-                    let (child_items, parent_items) = (self.items(child_rep)?, self.items(parent_rep)?);
+                    let (child_items, parent_items) =
+                        (self.items(child_rep)?, self.items(parent_rep)?);
                     let in_child = |i: u64| child_items.contains(&i);
                     let in_parent = |i: u64| parent_items.contains(&i);
-                    let (source, target) = if in_child(item1) && in_parent(item2) && !in_child(item2) && !in_parent(item1) {
+                    let (source, target) = if in_child(item1)
+                        && in_parent(item2)
+                        && !in_child(item2)
+                        && !in_parent(item1)
+                    {
                         (item1, item2)
-                    } else if in_child(item2) && in_parent(item1) && !in_child(item1) && !in_parent(item2) {
+                    } else if in_child(item2)
+                        && in_parent(item1)
+                        && !in_child(item1)
+                        && !in_parent(item2)
+                    {
                         (item2, item1)
                     } else {
                         return Err(fail(format!("usage #{nauo}: cannot tell which placement belongs to the component and which to the assembly")));
                     };
-                    if (self.metres(child_rep)? - self.metres(parent_rep)?).abs() > 1e-12 * self.metres(parent_rep)?.abs() {
-                        return Err(fail(format!("usage #{nauo}: component and assembly use different length units")));
+                    if (self.metres(child_rep)? - self.metres(parent_rep)?).abs()
+                        > 1e-12 * self.metres(parent_rep)?.abs()
+                    {
+                        return Err(fail(format!(
+                            "usage #{nauo}: component and assembly use different length units"
+                        )));
                     }
                     let t = frame(self.data, target)?.after(&frame(self.data, source)?.inverse());
                     path.push(nauo);
@@ -223,8 +353,19 @@ impl Product<'_> {
 /// body); so is anything the module header lists.
 pub fn read(data: &Inventory) -> Result<Assembly, Error> {
     let ents = data.entities();
-    if ents.values().any(|e| e.components.iter().any(|c| c.name == "MAPPED_ITEM")) {
-        return Err(fail("mapped items (representation maps) are not implemented"));
+    let has_mapped = ents
+        .values()
+        .any(|e| e.components.iter().any(|c| c.name == "MAPPED_ITEM"));
+    let has_usage = ents.values().any(|e| {
+        e.components
+            .iter()
+            .any(|c| c.name == "NEXT_ASSEMBLY_USAGE_OCCURRENCE")
+    });
+    if has_mapped && has_usage {
+        return Err(fail("the file has both assembly usages and mapped items: which carries the placements is not guessed"));
+    }
+    if has_mapped {
+        return read_mapped(data);
     }
     let mut pds_definition: BTreeMap<u64, u64> = BTreeMap::new();
     let mut nauo_ids: BTreeSet<u64> = BTreeSet::new();
@@ -238,7 +379,9 @@ pub fn read(data: &Inventory) -> Result<Assembly, Error> {
         }
         if let Some(c) = call(e, "NEXT_ASSEMBLY_USAGE_OCCURRENCE") {
             let [_, _, _, Value::Ref(parent), Value::Ref(child), ..] = c.args.as_slice() else {
-                return Err(fail(format!("#{id}: malformed NEXT_ASSEMBLY_USAGE_OCCURRENCE")));
+                return Err(fail(format!(
+                    "#{id}: malformed NEXT_ASSEMBLY_USAGE_OCCURRENCE"
+                )));
             };
             nauo_ids.insert(*id);
             children.entry(*parent).or_default().push((*id, *child));
@@ -254,7 +397,9 @@ pub fn read(data: &Inventory) -> Result<Assembly, Error> {
             if let [Value::Ref(pds), Value::Ref(rep)] = c.args.as_slice() {
                 if let Some(def) = pds_definition.get(pds) {
                     if rep_of.insert(*def, *rep).is_some() {
-                        return Err(fail(format!("definition #{def} has several shape representations")));
+                        return Err(fail(format!(
+                            "definition #{def} has several shape representations"
+                        )));
                     }
                 }
             }
@@ -262,27 +407,234 @@ pub fn read(data: &Inventory) -> Result<Assembly, Error> {
     }
     let mut transform_of: BTreeMap<u64, (u64, u64, u64, u64)> = BTreeMap::new();
     for e in ents.values() {
-        let Some(c) = call(e, "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION") else { continue };
-        let [Value::Ref(relationship), Value::Ref(pds)] = c.args.as_slice() else { continue };
-        let Some(nauo) = pds_definition.get(pds).filter(|d| nauo_ids.contains(d)) else { continue };
-        let rel = ents.get(relationship).ok_or_else(|| fail(format!("missing relationship #{relationship}")))?;
-        let reps = call(rel, "REPRESENTATION_RELATIONSHIP").ok_or_else(|| fail(format!("#{relationship} is not a REPRESENTATION_RELATIONSHIP")))?;
-        let [_, _, Value::Ref(r1), Value::Ref(r2)] = reps.args.as_slice() else { return Err(fail(format!("#{relationship}: malformed REPRESENTATION_RELATIONSHIP"))) };
+        let Some(c) = call(e, "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION") else {
+            continue;
+        };
+        let [Value::Ref(relationship), Value::Ref(pds)] = c.args.as_slice() else {
+            continue;
+        };
+        let Some(nauo) = pds_definition.get(pds).filter(|d| nauo_ids.contains(d)) else {
+            continue;
+        };
+        let rel = ents
+            .get(relationship)
+            .ok_or_else(|| fail(format!("missing relationship #{relationship}")))?;
+        let reps = call(rel, "REPRESENTATION_RELATIONSHIP").ok_or_else(|| {
+            fail(format!(
+                "#{relationship} is not a REPRESENTATION_RELATIONSHIP"
+            ))
+        })?;
+        let [_, _, Value::Ref(r1), Value::Ref(r2)] = reps.args.as_slice() else {
+            return Err(fail(format!(
+                "#{relationship}: malformed REPRESENTATION_RELATIONSHIP"
+            )));
+        };
         let with = call(rel, "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION").ok_or_else(|| fail(format!("#{relationship}: no transformation (REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION)")))?;
-        let Some(Value::Ref(op)) = with.args.first() else { return Err(fail(format!("#{relationship}: the transformation operator must be an ITEM_DEFINED_TRANSFORMATION reference"))) };
-        let itd = ents.get(op).and_then(|e| call(e, "ITEM_DEFINED_TRANSFORMATION")).ok_or_else(|| fail(format!("#{op} is not an ITEM_DEFINED_TRANSFORMATION")))?;
-        let [_, _, Value::Ref(i1), Value::Ref(i2)] = itd.args.as_slice() else { return Err(fail(format!("#{op}: malformed ITEM_DEFINED_TRANSFORMATION"))) };
+        let Some(Value::Ref(op)) = with.args.first() else {
+            return Err(fail(format!("#{relationship}: the transformation operator must be an ITEM_DEFINED_TRANSFORMATION reference")));
+        };
+        let itd = ents
+            .get(op)
+            .and_then(|e| call(e, "ITEM_DEFINED_TRANSFORMATION"))
+            .ok_or_else(|| fail(format!("#{op} is not an ITEM_DEFINED_TRANSFORMATION")))?;
+        let [_, _, Value::Ref(i1), Value::Ref(i2)] = itd.args.as_slice() else {
+            return Err(fail(format!(
+                "#{op}: malformed ITEM_DEFINED_TRANSFORMATION"
+            )));
+        };
         if transform_of.insert(*nauo, (*r1, *r2, *i1, *i2)).is_some() {
             return Err(fail(format!("usage #{nauo} has several transformations")));
         }
     }
-    let roots: Vec<u64> = children.keys().copied().filter(|d| !related.contains(d)).collect();
+    let roots: Vec<u64> = children
+        .keys()
+        .copied()
+        .filter(|d| !related.contains(d))
+        .collect();
     let [root] = roots.as_slice() else {
-        return Err(fail(format!("{} root product definitions; exactly one is supported", roots.len())));
+        return Err(fail(format!(
+            "{} root product definitions; exactly one is supported",
+            roots.len()
+        )));
     };
     let bodies = data.raw_bodies()?.into_iter().map(|b| (b.id, b)).collect();
-    let product = Product { data, rep_of, children, transform_of, bodies };
+    let product = Product {
+        data,
+        rep_of,
+        children,
+        transform_of,
+        bodies,
+    };
     let mut parts = Vec::new();
-    product.walk(*root, Placement::IDENTITY, &mut Vec::new(), &mut parts, &mut BTreeSet::new())?;
+    product.walk(
+        *root,
+        Placement::IDENTITY,
+        &mut Vec::new(),
+        &mut parts,
+        &mut BTreeSet::new(),
+    )?;
+    Ok(Assembly { root: *root, parts })
+}
+
+/// The items of a shape representation.
+fn rep_items(data: &Inventory, rep: u64) -> Result<Vec<u64>, Error> {
+    let e = data
+        .entities()
+        .get(&rep)
+        .ok_or_else(|| fail(format!("missing representation #{rep}")))?;
+    for c in &e.components {
+        if matches!(
+            c.name.as_str(),
+            "SHAPE_REPRESENTATION" | "ADVANCED_BREP_SHAPE_REPRESENTATION"
+        ) {
+            if let [_, Value::List(items), _] = c.args.as_slice() {
+                return Ok(items.iter().filter_map(reference).collect());
+            }
+        }
+    }
+    Err(fail(format!(
+        "#{rep} is not a supported shape representation"
+    )))
+}
+
+fn rep_metres(data: &Inventory, rep: u64) -> Result<f64, Error> {
+    let e = &data.entities()[&rep];
+    let ctx = e
+        .components
+        .iter()
+        .find_map(|c| {
+            if let [_, Value::List(_), Value::Ref(ctx)] = c.args.as_slice() {
+                Some(*ctx)
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| fail(format!("#{rep} has no representation context")))?;
+    data.length_contexts()?
+        .iter()
+        .find(|c| c.context == ctx)
+        .map(|c| c.metres)
+        .ok_or_else(|| fail(format!("representation #{rep} has no assigned length unit")))
+}
+
+fn read_mapped(data: &Inventory) -> Result<Assembly, Error> {
+    let ents = data.entities();
+    // MAPPED_ITEM id -> (REPRESENTATION_MAP id, target placement)
+    let mut mapped: BTreeMap<u64, (u64, u64)> = BTreeMap::new();
+    // REPRESENTATION_MAP id -> (origin placement, mapped representation)
+    let mut maps: BTreeMap<u64, (u64, u64)> = BTreeMap::new();
+    for (id, e) in ents {
+        if let Some(c) = call(e, "MAPPED_ITEM") {
+            let [_, Value::Ref(map), Value::Ref(target)] = c.args.as_slice() else {
+                return Err(fail(format!("#{id}: malformed MAPPED_ITEM")));
+            };
+            mapped.insert(*id, (*map, *target));
+        }
+        if let Some(c) = call(e, "REPRESENTATION_MAP") {
+            let [Value::Ref(origin), Value::Ref(rep)] = c.args.as_slice() else {
+                return Err(fail(format!("#{id}: malformed REPRESENTATION_MAP")));
+            };
+            maps.insert(*id, (*origin, *rep));
+        }
+    }
+    let mapped_reps: BTreeSet<u64> = maps.values().map(|m| m.1).collect();
+    // the representations that hold mapped items
+    let mut holders: Vec<u64> = Vec::new();
+    for (id, e) in ents {
+        if e.components.iter().any(|c| {
+            matches!(
+                c.name.as_str(),
+                "SHAPE_REPRESENTATION" | "ADVANCED_BREP_SHAPE_REPRESENTATION"
+            )
+        }) && rep_items(data, *id)?.iter().any(|i| mapped.contains_key(i))
+        {
+            holders.push(*id);
+        }
+    }
+    let roots: Vec<u64> = holders
+        .iter()
+        .copied()
+        .filter(|h| !mapped_reps.contains(h))
+        .collect();
+    let [root] = roots.as_slice() else {
+        return Err(fail(format!(
+            "{} root representations hold mapped items; exactly one is supported",
+            roots.len()
+        )));
+    };
+    let bodies: BTreeMap<u64, RawBody> =
+        data.raw_bodies()?.into_iter().map(|b| (b.id, b)).collect();
+    struct Mapped<'a> {
+        data: &'a Inventory,
+        mapped: BTreeMap<u64, (u64, u64)>,
+        maps: BTreeMap<u64, (u64, u64)>,
+        bodies: BTreeMap<u64, RawBody>,
+    }
+    impl Mapped<'_> {
+        fn walk(
+            &self,
+            rep: u64,
+            world: Placement,
+            path: &mut Vec<u64>,
+            out: &mut Vec<PlacedPart>,
+            active: &mut BTreeSet<u64>,
+        ) -> Result<(), Error> {
+            if !active.insert(rep) {
+                return Err(fail(format!("representation #{rep} contains itself")));
+            }
+            for item in rep_items(self.data, rep)? {
+                if self.bodies.contains_key(&item) {
+                    out.push(PlacedPart {
+                        solid: item,
+                        definition: rep,
+                        path: path.clone(),
+                        placement: world,
+                    });
+                } else if let Some(&(map, target)) = self.mapped.get(&item) {
+                    let &(origin, child) = self.maps.get(&map).ok_or_else(|| {
+                        fail(format!("#{item}: #{map} is not a REPRESENTATION_MAP"))
+                    })?;
+                    let (m_parent, m_child) =
+                        (rep_metres(self.data, rep)?, rep_metres(self.data, child)?);
+                    if (m_parent - m_child).abs() > 1e-12 * m_parent.abs() {
+                        return Err(fail(format!("mapped item #{item}: the mapped representation and its holder use different length units")));
+                    }
+                    let t = frame(self.data, target)?.after(&frame(self.data, origin)?.inverse());
+                    path.push(item);
+                    self.walk(child, world.after(&t), path, out, active)?;
+                    path.pop();
+                }
+            }
+            active.remove(&rep);
+            Ok(())
+        }
+    }
+    let ctx = Mapped {
+        data,
+        mapped,
+        maps,
+        bodies,
+    };
+    let mut parts = Vec::new();
+    ctx.walk(
+        *root,
+        Placement::IDENTITY,
+        &mut Vec::new(),
+        &mut parts,
+        &mut BTreeSet::new(),
+    )?;
+    if parts.is_empty() {
+        return Err(fail("the mapped items place no solid"));
+    }
+    // a mapped representation that holds nothing but more mapped items is fine; one that holds several solids is refused like a part
+    let mut per_rep: BTreeMap<(u64, Vec<u64>), usize> = BTreeMap::new();
+    for p in &parts {
+        *per_rep.entry((p.definition, p.path.clone())).or_default() += 1;
+    }
+    if let Some(((rep, _), n)) = per_rep.iter().find(|(_, n)| **n > 1) {
+        return Err(fail(format!(
+            "representation #{rep} places {n} solids at one instance; exactly one is supported"
+        )));
+    }
     Ok(Assembly { root: *root, parts })
 }

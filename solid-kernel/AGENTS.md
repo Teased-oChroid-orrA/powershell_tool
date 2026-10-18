@@ -25,6 +25,7 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 | Weld of near-degenerate short shell edges (link condition, orientation, angle floor) | `src/shell_weld.rs`, `docs/issue-46-phase-70.md` |
 | Flat-patch cleanup of a sampled shell (dissolve collinear/flat vertices, constrained Delaunay re-triangulation, no new points; never worsens a thin patch) | `src/shell_patch.rs`, `docs/issue-46-phase-69.md` |
 | Graded boundary sampling (`AnalyticModel::graded`: per-face chart refinement splits shared edges on their own curves until no face asks for more), chart quality (`Limits::chart_quality`), `Options::max_line_mm` | `src/chart_grade.rs`, `src/chart_mesh.rs` (`shape_chart`, `boundary_splits`), `docs/issue-46-phase-100.md` |
+| Persistent face identity across files (signatures, exact / modified / moved / lost / added / ambiguous association, text form); mapped-item assemblies in `step_assembly` | `src/face_identity.rs`, `src/step_assembly.rs`, `tests/face_identity.rs`, `docs/issue-46-phase-103.md` |
 | Hexahedra kept next to tetrahedra: `Pyramid5` layer on the interface quads + tetrahedra from `plc_conform::conform_preserving` (frozen facets) | `src/hybrid.rs`, `tests/hybrid_hex_tet.rs`, `tests/plc_preserving.rs`, `docs/issue-46-phase-102.md` |
 | Sphere / cone / torus faces (stereographic, developed, conformal charts; face-local sphere frame; apex; periodic trims) | `src/curved_surface.rs`, `docs/issue-46-phase-101.md`, `tests/curved_step.rs`, `tests/data/*.step` |
 | Analytic tests (box, tube) | `tests/surface.rs` |
