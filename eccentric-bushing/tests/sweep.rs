@@ -77,7 +77,7 @@ fn sweep(seed: u64, n: usize, coarse: bool, tolerated_degraded: usize) {
                         .map(|c| {
                             let no_torque = c.offset == 0.0 || c.load_angle_deg == 0.0;
                             match c.validate().and_then(|()| analyze(c)) {
-                                Ok(a) if a.margin.is_finite() == !no_torque && a.margin > -1.0 => (format!("ok margin {:.3}", a.margin), a.loaded_failure.is_some()),
+                                Ok(a) if a.margin.is_finite() != no_torque && a.margin > -1.0 => (format!("ok margin {:.3}", a.margin), a.loaded_failure.is_some()),
                                 Ok(a) => (format!("FAIL margin {} (no spin torque: {no_torque}) for {c:?}", a.margin), true),
                                 Err(e) => (format!("FAIL {e} for {c:?}"), true),
                             }

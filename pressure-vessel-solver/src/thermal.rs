@@ -108,8 +108,9 @@ fn temperature_at(r: f64, geometry: &CylinderGeometry, delta_t: f64) -> f64 {
 
 /// `J(r) = integral from a to r of T(rho) * rho d(rho)`, by composite
 /// Simpson's rule over [`QUADRATURE_PANELS`] panels.
+const _: () = assert!(QUADRATURE_PANELS % 2 == 0, "Simpson's rule requires an even panel count");
+
 fn radial_temperature_moment(r: f64, geometry: &CylinderGeometry, delta_t: f64) -> f64 {
-    debug_assert!(QUADRATURE_PANELS % 2 == 0, "Simpson's rule requires an even panel count");
     let a = geometry.inner_radius;
     if (r - a).abs() < 1e-15 {
         return 0.0;

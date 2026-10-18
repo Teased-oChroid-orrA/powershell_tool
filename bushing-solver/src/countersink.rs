@@ -8,17 +8,12 @@ use crate::tolerance::{make_range, ToleranceMode, ToleranceRange, EPS};
 /// Which countersink dimension is the direct user input vs. derived from
 /// the other two + the base diameter (`solveMath.ts`'s `CSMode`). Default
 /// `DepthAngle`, matching `normalize.ts`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum CsMode {
     DiaAngle,
+    #[default]
     DepthAngle,
     DiaDepth,
-}
-
-impl Default for CsMode {
-    fn default() -> Self {
-        CsMode::DepthAngle
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
