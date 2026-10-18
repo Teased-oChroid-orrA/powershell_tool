@@ -230,3 +230,61 @@ fn starting_from_the_finished_mesh_itself_is_the_best_any_advice_could_do() {
 fn the_same_bound_at_a_tolerance_that_needs_six_cycles() {
     finished_mesh_oracle(&[5e-6]);
 }
+
+/// The same plate on a given mesh with the traction scaled: the meshing-free part of `build`.
+fn problem_on(mesh: Mesh, traction: f64) -> MeshedProblem {
+    let model = Model::new(mesh).unwrap();
+    let mut bc = model.dirichlet();
+    for &n in model.mesh.node_set("left").unwrap() {
+        bc.fix(n, 0, 0.0);
+    }
+    let anchor = *model.mesh.node_set("left").unwrap().iter().min_by(|&&a, &&b| (model.mesh.nodes[a][1] - 2.0).abs().total_cmp(&(model.mesh.nodes[b][1] - 2.0).abs())).unwrap();
+    bc.fix(anchor, 1, 0.0);
+    let loads = Loads { faces: model.mesh.surfaces["right"].iter().map(|f| (f.clone(), SurfaceLoad::Traction([traction, 0.0, 0.0]))).collect(), ..Loads::default() };
+    MeshedProblem { model, loads, bc, labels: None, quad_scale: 1.0 }
+}
+
+/// The API route: a finished run is remembered under its workload key; a later run of the same class (here a different load)
+/// starts from the stored mesh and the controller accepts it after one cycle. This is the start that beats the default.
+#[test]
+fn a_stored_adapted_mesh_starts_the_next_run_of_the_same_class_at_about_half_the_time() {
+    let j_ref = reference(true);
+    let tol_rel = 1e-4;
+    let first = converge(true, &|_| START, j_ref, tol_rel * j_ref.abs());
+    let mut store = MeshStore::new();
+    assert!(store.remember(&key(true), &first.result));
+    assert_eq!(store.len(), 1);
+    // Another class finds nothing; the same class finds the mesh.
+    assert!(store.recall(&key(false)).is_none());
+    let stored = store.recall(&key(true)).expect("same class").clone();
+    // A different load on the same plate: the linear goal scales with it, so the tolerance scales too.
+    let scale = 1.5;
+    let tol = tol_rel * (j_ref * scale).abs();
+    let goal_scaled = || GoalSpec::new("sigma_xx at the hole top", Some(tol), {
+        let (c, r) = ([HOLE[0], HOLE[1] + 0.6], 0.35);
+        move |m, _| LinearFunctional::weighted_stress(m, 0, &|x: &[f64; 3]| {
+            let q = ((x[0] - c[0]).powi(2) + (x[1] - c[1]).powi(2)) / (r * r);
+            if q >= 1.0 { 0.0 } else { (1.0 - q).powi(2) }
+        })
+    });
+    let run = |start: MeshedProblem| {
+        let mut mesher = |s: &AdaptSize| build(true, &|p| s.at([p[0], p[1], 0.0])).map(|mut p| {
+            // The mesher builds the unit traction; the load of this run is the scaled one.
+            p.loads = problem_on(p.model.mesh.clone(), 1000.0 * scale).loads;
+            p
+        });
+        let t = std::time::Instant::now();
+        let r = run_amr(start, &[goal_scaled()], &mut mesher, &AmrConfig { max_cycles: 10, ..AmrConfig::default() }).unwrap();
+        (r, t.elapsed().as_secs_f64())
+    };
+    let (cold, t_cold) = run(problem_on(build(true, &|_| START).unwrap().model.mesh.clone(), 1000.0 * scale));
+    let (warm, t_warm) = run(problem_on(stored, 1000.0 * scale));
+    eprintln!("[stored mesh] cold start {} cycles {} dofs {:.2} s; from the stored mesh {} cycles {} dofs {:.2} s (time ratio {:.2})", cold.history.len(), cold.history.last().unwrap().dofs, t_cold, warm.history.len(), warm.history.last().unwrap().dofs, t_warm, t_warm / t_cold);
+    assert!(matches!(cold.stop, Stop::Converged) && matches!(warm.stop, Stop::Converged));
+    assert!(warm.history.len() < cold.history.len(), "the stored mesh saves cycles");
+    // Only a converged run is remembered.
+    let mut store2 = MeshStore::new();
+    let budget = run_amr(problem_on(build(true, &|_| START).unwrap().model.mesh.clone(), 1000.0), &[goal(Some(1e-12 * j_ref.abs()))], &mut |s: &AdaptSize| build(true, &|p| s.at([p[0], p[1], 0.0])), &AmrConfig { max_cycles: 1, ..AmrConfig::default() }).unwrap();
+    assert!(!matches!(budget.stop, Stop::Converged));
+    assert!(!store2.remember(&key(true), &budget) && store2.is_empty());
+}

@@ -183,6 +183,48 @@ impl Default for AdviceOptions {
     }
 }
 
+/// Adapted meshes of finished runs, by workload key (in memory; persistence is the caller's). The one start that beats the
+/// default in the measurements of Phases 80-97 is the converged mesh of the same class itself: re-meshing from sizes costs what
+/// the early cycles save, a stored mesh skips both. Only a run that ended `Converged` is remembered, a later run of the same
+/// key replaces the earlier one, and a recalled mesh is only ever a *starting* mesh: the controller still solves, estimates and
+/// accepts or continues, so a mesh that no longer fits (different loads, tighter goal) is refined further, never trusted.
+#[derive(Debug, Clone, Default)]
+pub struct MeshStore {
+    entries: Vec<(WorkloadKey, crate::Mesh)>,
+}
+
+impl MeshStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Remember the final mesh of `result` under `key`; returns whether it was kept (only converged runs are).
+    pub fn remember(&mut self, key: &WorkloadKey, result: &AmrResult) -> bool {
+        if !matches!(result.stop, Stop::Converged) {
+            return false;
+        }
+        let mesh = result.problem.model.mesh.clone();
+        match self.entries.iter_mut().find(|(k, _)| k == key) {
+            Some(slot) => slot.1 = mesh,
+            None => self.entries.push((key.clone(), mesh)),
+        }
+        true
+    }
+
+    /// The stored mesh of exactly this class, if any (never a similar class).
+    pub fn recall(&self, key: &WorkloadKey) -> Option<&crate::Mesh> {
+        self.entries.iter().find(|(k, _)| k == key).map(|(_, m)| m)
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 /// Advice for the initial mesh of one class of analyses.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Advice {
