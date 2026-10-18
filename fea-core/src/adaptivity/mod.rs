@@ -29,7 +29,7 @@ pub use enrich::EnrichedDwrEstimator;
 pub use estimator::{AdjacencyCache, ErrorEstimator, ErrorField, EstimatorContext, Indicator, Reliability, ZzEstimator};
 pub use dwr::{DwrEstimator, DwrGoalEstimator, DwrResult};
 pub use fusion::{fuse, normalise, FusionConfig, FusionInput, FusionStrategy, Fused, GoalCombine, Normalization};
-pub use feedback::{advise, summarize, Advice, AdviceOptions, EndKind, RunSummary, WorkloadKey};
+pub use feedback::{advise, summarize, Advice, AdviceOptions, EndKind, MeshStore, RunSummary, WorkloadKey};
 pub use goal::LinearFunctional;
 pub use patch::PatchTopology;
 pub use snapshot::SolverSnapshot;
