@@ -94,6 +94,25 @@ impl Brep {
         ];
         Ok(Self::one(Solid::extrude(&profile, DVec3::new(0.0, 0.0, depth)).map_err(err)?))
     }
+    /// A prism over a closed periodic B-spline outline through `points` (x, y): a tube whose wall is one
+    /// `SURFACE_OF_LINEAR_EXTRUSION` closed in its curve parameter.
+    pub fn prism_closed_spline(points: &[[f64; 2]], depth: f64) -> Result<Self, String> {
+        if points.len() < 3 || !(depth > 0.0 && depth.is_finite()) {
+            return Err("a closed spline prism needs at least three points and a positive depth".into());
+        }
+        let pts: Vec<DVec3> = points.iter().map(|p| DVec3::new(p[0], p[1], 0.0)).collect();
+        let profile = [Edge::bspline(&pts, BSplineEnd::Periodic).map_err(err)?];
+        Ok(Self::one(Solid::extrude(&profile, DVec3::new(0.0, 0.0, depth)).map_err(err)?))
+    }
+    /// A ring: a closed periodic B-spline section through `points` (radius, z; all radii positive) turned about the z axis.
+    pub fn lathe_closed_spline(points: &[[f64; 2]]) -> Result<Self, String> {
+        if points.len() < 3 || points.iter().any(|p| p[0] <= 0.0) {
+            return Err("a spline ring needs at least three section points with a positive radius".into());
+        }
+        let pts: Vec<DVec3> = points.iter().map(|p| DVec3::new(p[0], 0.0, p[1])).collect();
+        let profile = [Edge::bspline(&pts, BSplineEnd::Periodic).map_err(err)?];
+        Ok(Self::one(Solid::revolve(&profile, DVec3::ZERO, DVec3::Z, std::f64::consts::TAU).map_err(err)?))
+    }
     pub fn box_from_corners(lo: V3, hi: V3) -> Self {
         Self::one(Solid::cube(v(lo), v(hi)))
     }

@@ -427,7 +427,7 @@ fn swept_surface(
     let [Value::String(_), Value::Ref(curve), Value::Ref(second)] = c.args.as_slice() else {
         return Err(error(e, "unsupported swept surface declaration"));
     };
-    let curve = crate::step_nurbs::read_curve(data, *curve, scale, crate::nurbs::Limits::default())
+    let curve = crate::step_nurbs::read_curve_active_domain(data, *curve, scale, crate::nurbs::Limits::default())
         .map_err(|mut err| {
             err.detail = format!("swept surface curve: {} (only B-spline curves are supported)", err.detail);
             err
@@ -1130,7 +1130,7 @@ impl AnalyticModel {
             {
                 let reference = data.entity_reference(edge.id).unwrap();
                 let declaration =
-                    context.read_spline_curve(data, reference, crate::nurbs::Limits::default())?;
+                    context.read_spline_curve_active_domain(data, reference, crate::nurbs::Limits::default())?;
                 if declaration.curve.degree() != 1 || declaration.curve.control_points().len() != 2
                 {
                     // A general B-spline edge over its whole domain: endpoints must be the vertices (in the edge's sense), the

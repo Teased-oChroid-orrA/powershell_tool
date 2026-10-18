@@ -156,6 +156,24 @@ impl BodyContext {
         let geometry = crate::analytic_step::curve_geometry(data, edge.curve)?;
         crate::step_nurbs::read_curve(data, geometry.id, self.scale_mm, limits)
     }
+    /// [`Self::read_spline_curve`] for an edge whose curve may be unclamped (a periodic spline): evaluated on its active
+    /// domain, see `step_nurbs::read_curve_active_domain`.
+    pub fn read_spline_curve_active_domain(
+        &self,
+        data: &Inventory,
+        edge: EntityReference,
+        limits: crate::nurbs::Limits,
+    ) -> Result<crate::step_nurbs::StepSplineDeclaration, Error> {
+        data.resolve_reference(self.context)?;
+        let entity = data.resolve_reference(edge)?;
+        let edge = self
+            .body
+            .edges
+            .get(&edge.entity)
+            .ok_or_else(|| error(entity, "source reference is not an edge of this body"))?;
+        let geometry = crate::analytic_step::curve_geometry(data, edge.curve)?;
+        crate::step_nurbs::read_curve_active_domain(data, geometry.id, self.scale_mm, limits)
+    }
     pub(crate) fn into_parts(self) -> (RawBody, f64) {
         (self.body, self.scale_mm)
     }

@@ -523,10 +523,15 @@ impl SplineSurface {
         let mut grid = Vec::with_capacity((grid_n[0] + 1) * (grid_n[1] + 1));
         for j in 0..=grid_n[1] {
             for i in 0..=grid_n[0] {
-                let uv = [
-                    domain[0][0] + (domain[0][1] - domain[0][0]) * i as f64 / grid_n[0] as f64,
-                    domain[1][0] + (domain[1][1] - domain[1][0]) * j as f64 / grid_n[1] as f64,
-                ];
+                // the last node is the domain's end exactly: `lo + (hi - lo)` can round a ulp above `hi`
+                let node = |k: usize, at: usize| {
+                    if at == grid_n[k] {
+                        domain[k][1]
+                    } else {
+                        domain[k][0] + (domain[k][1] - domain[k][0]) * at as f64 / grid_n[k] as f64
+                    }
+                };
+                let uv = [node(0, i), node(1, j)];
                 let p = surface.evaluate(uv).map_err(|e| fail(ErrorKind::Geometry, &e.detail))?;
                 grid.push((uv, p));
             }

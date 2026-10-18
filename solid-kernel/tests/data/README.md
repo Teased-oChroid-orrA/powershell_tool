@@ -42,6 +42,8 @@ holes (`examples/write-shapes.rs`, tested by `tests/curved_edges.rs`).
 
 `vase` (a B-spline profile through (4,0), (6,5), (3,10), (5,15), (4.5,20) turned about z: `SURFACE_OF_REVOLUTION`) and `wavy-prism` (an outline through (0,0), (4,3), (9,2), (14,4), (20,0) closed by its chord and extruded 8 mm: `SURFACE_OF_LINEAR_EXTRUSION`) come from `examples/write-shapes.rs` (`Brep::lathe_spline`, `Brep::prism_spline`); tested by `tests/swept_surfaces.rs` with `geometry_tolerance_mm: 1e-4`.
 
+`blob-prism` (a closed periodic spline outline through (5,0), (3,4), (-1,5), (-5,1), (-3,-4), (2,-5), extruded 6 mm) and `spline-ring` (a closed periodic spline section through (8,0), (10,2), (8.5,4), (6,3), (6.5,1) turned about z, one face closed in both parameters) have unclamped knot vectors with extended control points (`docs/issue-46-phase-107.md`).
+
 ## Corpus scope and continuation
 
 The root [`nema17-motor-bracket.step`](../../../nema17-motor-bracket.step) has unknown exporter/provenance and explicitly declares millimetres; it is not established as NX/inches. Generated spline declaration/edge fixtures in Rust tests check their documented local contracts and do not automatically represent valid edited solids. Supported native diagnostic cases and refusals are indexed in the [support matrix](../../../docs/issue-46-native-support-matrix-2026-10-16.md). For current development/qualification and Claude Code continuation, use the [resume instructions](../../../docs/issue-46-resume.md) and [live pointer](../../../docs/issue-46-current.json).

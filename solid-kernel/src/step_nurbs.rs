@@ -198,6 +198,26 @@ pub fn read_curve(
     scale_mm: f64,
     limits: Limits,
 ) -> Result<StepSplineDeclaration, Error> {
+    read_curve_with(data, id, scale_mm, limits, false)
+}
+/// Like [`read_curve`], but an unclamped knot vector is accepted and the curve is evaluated on its active domain
+/// `[knots[degree], knots[controls]]` only: how OpenCASCADE writes a periodic spline (the control points are already
+/// extended; no wrapping is inferred).
+pub fn read_curve_active_domain(
+    data: &Inventory,
+    id: u64,
+    scale_mm: f64,
+    limits: Limits,
+) -> Result<StepSplineDeclaration, Error> {
+    read_curve_with(data, id, scale_mm, limits, true)
+}
+fn read_curve_with(
+    data: &Inventory,
+    id: u64,
+    scale_mm: f64,
+    limits: Limits,
+    active_domain: bool,
+) -> Result<StepSplineDeclaration, Error> {
     let e = data.entities().get(&id).ok_or_else(|| Error {
         offset: 0,
         kind: ErrorKind::DanglingReference,
@@ -206,7 +226,7 @@ pub fn read_curve(
     if !scale_mm.is_finite() || scale_mm <= 0. {
         return Err(fail(e, "spline source scale must be finite and positive"));
     }
-    let d = read_definition(data, id, limits, false, |id| point(data, id, scale_mm))?;
+    let d = read_definition(data, id, limits, active_domain, |id| point(data, id, scale_mm))?;
     Ok(StepSplineDeclaration {
         curve: d.curve,
         source: d.source,

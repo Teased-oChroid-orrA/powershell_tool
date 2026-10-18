@@ -30,8 +30,22 @@ fn cases() -> Vec<Case> {
             reference: REF_PRISM,
             faces: 4,
         },
+        Case {
+            name: "blob: a closed periodic spline outline extruded 6 mm",
+            source: include_str!("data/blob-prism.step"),
+            reference: REF_BLOB,
+            faces: 3,
+        },
+        Case {
+            name: "ring: a closed periodic spline section turned about z",
+            source: include_str!("data/spline-ring.step"),
+            reference: REF_RING,
+            faces: 1,
+        },
     ]
 }
+const REF_BLOB: f64 = 487.980501;
+const REF_RING: f64 = 650.297534;
 const REF_VASE: f64 = 1503.020472;
 const REF_PRISM: f64 = 440.809884;
 
