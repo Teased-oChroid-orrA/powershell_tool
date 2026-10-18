@@ -113,6 +113,19 @@ impl Brep {
         let profile = [Edge::bspline(&pts, BSplineEnd::Periodic).map_err(err)?];
         Ok(Self::one(Solid::revolve(&profile, DVec3::ZERO, DVec3::Z, std::f64::consts::TAU).map_err(err)?))
     }
+    /// A solid bounded by one interpolated B-spline surface through a grid of `around` x `rows` points and periodic around
+    /// (`radius(row)` at height `z(row)`): OpenCASCADE writes the wall with unclamped (periodic) surface knots.
+    pub fn bspline_shell(around: usize, rows: usize, radius: impl Fn(usize) -> f64, height: impl Fn(usize) -> f64) -> Result<Self, String> {
+        if around < 3 || rows < 2 {
+            return Err("a periodic spline shell needs at least three points around and two rows".into());
+        }
+        let solid = Solid::bspline(around, rows, true, |i, j| {
+            let a = std::f64::consts::TAU * i as f64 / around as f64;
+            DVec3::new(radius(j) * a.cos(), radius(j) * a.sin(), height(j))
+        })
+        .map_err(err)?;
+        Ok(Self::one(solid))
+    }
     pub fn box_from_corners(lo: V3, hi: V3) -> Self {
         Self::one(Solid::cube(v(lo), v(hi)))
     }

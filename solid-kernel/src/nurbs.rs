@@ -133,6 +133,19 @@ impl Basis {
     ) -> Result<Self, Error> {
         Self::build(degree, knots, n, limits, true)
     }
+    /// A basis evaluated on its active domain `[knots[degree], knots[n]]` only: an unclamped (extended, periodic-style)
+    /// knot vector is accepted and nothing is wrapped.
+    pub(crate) fn new_active(
+        degree: usize,
+        knots: Vec<f64>,
+        n: usize,
+        limits: Limits,
+    ) -> Result<Self, Error> {
+        Self::build(degree, knots, n, limits, false)
+    }
+    pub(crate) fn is_clamped(&self) -> bool {
+        self.clamped
+    }
     fn build(
         degree: usize,
         knots: Vec<f64>,

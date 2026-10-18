@@ -44,6 +44,8 @@ holes (`examples/write-shapes.rs`, tested by `tests/curved_edges.rs`).
 
 `blob-prism` (a closed periodic spline outline through (5,0), (3,4), (-1,5), (-5,1), (-3,-4), (2,-5), extruded 6 mm) and `spline-ring` (a closed periodic spline section through (8,0), (10,2), (8.5,4), (6,3), (6.5,1) turned about z, one face closed in both parameters) have unclamped knot vectors with extended control points (`docs/issue-46-phase-107.md`).
 
+`periodic-shell` (an 8 x 5 grid of points, radii 5 / 6.5 / 5.5 / 6 / 4.5 at heights 0, 4, .. 16, interpolated by one periodic B-spline surface: unclamped surface knots, `Brep::bspline_shell`) is read on its active domain (`docs/issue-46-phase-110.md`).
+
 ## Corpus scope and continuation
 
 The root [`nema17-motor-bracket.step`](../../../nema17-motor-bracket.step) has unknown exporter/provenance and explicitly declares millimetres; it is not established as NX/inches. Generated spline declaration/edge fixtures in Rust tests check their documented local contracts and do not automatically represent valid edited solids. Supported native diagnostic cases and refusals are indexed in the [support matrix](../../../docs/issue-46-native-support-matrix-2026-10-16.md). For current development/qualification and Claude Code continuation, use the [resume instructions](../../../docs/issue-46-resume.md) and [live pointer](../../../docs/issue-46-current.json).

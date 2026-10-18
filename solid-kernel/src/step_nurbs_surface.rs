@@ -82,6 +82,25 @@ pub fn read_surface(
     scale_mm: f64,
     limits: Limits,
 ) -> Result<StepSurfaceDeclaration, Error> {
+    read_surface_with(data, id, scale_mm, limits, false)
+}
+/// Like [`read_surface`], accepting unclamped knot vectors (a periodic surface as OpenCASCADE writes it) evaluated on their
+/// active domain: see `NurbsSurface::new_active_domain`.
+pub fn read_surface_active_domain(
+    data: &Inventory,
+    id: u64,
+    scale_mm: f64,
+    limits: Limits,
+) -> Result<StepSurfaceDeclaration, Error> {
+    read_surface_with(data, id, scale_mm, limits, true)
+}
+fn read_surface_with(
+    data: &Inventory,
+    id: u64,
+    scale_mm: f64,
+    limits: Limits,
+    active_domain: bool,
+) -> Result<StepSurfaceDeclaration, Error> {
     let e = data.entities().get(&id).ok_or_else(|| Error {
         offset: 0,
         kind: ErrorKind::DanglingReference,
@@ -155,7 +174,8 @@ pub fn read_surface(
             control_point_sources.push(data.entity_reference(*id).unwrap());
         }
     }
-    let surface = NurbsSurface::new_clamped(degrees, knots, dimensions, points, weights, limits)
+    let construct = if active_domain { NurbsSurface::new_active_domain } else { NurbsSurface::new_clamped };
+    let surface = construct(degrees, knots, dimensions, points, weights, limits)
         .map_err(|mut error| {
             error.offset = e.offset;
             error

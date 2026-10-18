@@ -72,6 +72,41 @@ impl NurbsSurface {
         weights: Vec<f64>,
         limits: Limits,
     ) -> Result<Self, Error> {
+        Self::build(degrees, knots, dimensions, control_points, weights, limits, true)
+    }
+    /// Like [`Self::new_clamped`], but unclamped knot vectors are accepted and the surface is evaluated on the active domain
+    /// `[knots[degree], knots[count]]` of each parameter only (how OpenCASCADE writes a periodic surface: the control net is
+    /// already extended and nothing is wrapped). Only point evaluation and the domain are meant to be used on such a surface.
+    pub fn new_active_domain(
+        degrees: [usize; 2],
+        knots: [Vec<f64>; 2],
+        dimensions: [usize; 2],
+        control_points: Vec<V3>,
+        weights: Vec<f64>,
+        limits: Limits,
+    ) -> Result<Self, Error> {
+        Self::build(degrees, knots, dimensions, control_points, weights, limits, false)
+    }
+    fn build(
+        degrees: [usize; 2],
+        knots: [Vec<f64>; 2],
+        dimensions: [usize; 2],
+        control_points: Vec<V3>,
+        weights: Vec<f64>,
+        limits: Limits,
+        clamped: bool,
+    ) -> Result<Self, Error> {
+        let basis = |degree, knots, n, axis: &str| {
+            let b = if clamped {
+                Basis::new(degree, knots, n, CurveLimits { control_points: limits.control_points, degree: limits.degree })
+            } else {
+                Basis::new_active(degree, knots, n, CurveLimits { control_points: limits.control_points, degree: limits.degree })
+            };
+            b.map_err(|mut e| {
+                e.detail = format!("surface {axis} basis: {}", e.detail);
+                e
+            })
+        };
         let count = dimensions[0]
             .checked_mul(dimensions[1])
             .ok_or_else(|| nurbs::fail(ErrorKind::Limit, "surface control-net count overflow"))?;
@@ -87,14 +122,8 @@ impl NurbsSurface {
         };
         nurbs::validate_controls(&control_points, &weights, curve_limits)?;
         let [uk, vk] = knots;
-        let u = Basis::new(degrees[0], uk, dimensions[0], curve_limits).map_err(|mut e| {
-            e.detail = format!("surface u basis: {}", e.detail);
-            e
-        })?;
-        let v = Basis::new(degrees[1], vk, dimensions[1], curve_limits).map_err(|mut e| {
-            e.detail = format!("surface v basis: {}", e.detail);
-            e
-        })?;
+        let u = basis(degrees[0], uk, dimensions[0], "u")?;
+        let v = basis(degrees[1], vk, dimensions[1], "v")?;
         let blend = |p: usize| {
             p.checked_add(1)
                 .and_then(|n| p.checked_mul(n))
@@ -299,8 +328,11 @@ impl NurbsSurface {
         let [u, v] = parameters;
         let us = self.u.span(u)?;
         let vs = self.v.span(v)?;
-        let endpoint = |t: f64, domain: [f64; 2], n: usize| {
-            if t == domain[0] {
+        // a corner of a clamped surface is its corner control point; an unclamped one has none
+        let endpoint = |t: f64, domain: [f64; 2], n: usize, clamped: bool| {
+            if !clamped {
+                None
+            } else if t == domain[0] {
                 Some(0)
             } else if t == domain[1] {
                 Some(n - 1)
@@ -309,8 +341,8 @@ impl NurbsSurface {
             }
         };
         if let (Some(i), Some(j)) = (
-            endpoint(u, self.u.domain(), self.dimensions[0]),
-            endpoint(v, self.v.domain(), self.dimensions[1]),
+            endpoint(u, self.u.domain(), self.dimensions[0], self.u.is_clamped()),
+            endpoint(v, self.v.domain(), self.dimensions[1], self.v.is_clamped()),
         ) {
             return Ok(self.control_points[j * self.dimensions[0] + i]);
         }
