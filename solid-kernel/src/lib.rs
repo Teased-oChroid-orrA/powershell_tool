@@ -14,6 +14,7 @@
 
 pub mod analytic_step;
 pub mod chart_grade;
+mod curved_surface;
 pub mod chart_mesh;
 mod native_math;
 mod native_interval;

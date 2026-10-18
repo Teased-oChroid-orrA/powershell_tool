@@ -7,7 +7,7 @@ Diagnostic branch `feature/native-cad-advanced-meshing`, draft PR #65, epic #46.
 | STEP physical file | Bounded headers/data/entities/reference graph; unknown declarations retained | General physical-file variants, IGES, encoded-string interpretation |
 | Units | Explicit SI/conversion-based assigned length contexts, mm normalization, ambiguity/cycle refusal | Guessing units/provenance/material from labels |
 | Body/topology | One directly represented unplaced body; source vertices/edge uses/loops/faces, geometric locus checks | Assemblies, mapped placements, multiple/nested shells and material regions |
-| Analytic geometry | LINE/CIRCLE, PLANE/CYLINDRICAL_SURFACE; evaluation/normals/shared boundary samples | Spline/NURBS/cone/sphere/torus and general projection |
+| Analytic geometry | LINE/CIRCLE, PLANE/CYLINDRICAL_SURFACE, and (Phase 101) SPHERICAL/CONICAL/TOROIDAL_SURFACE faces within the limits of `docs/issue-46-phase-101.md`; evaluation/normals/shared boundary samples | Spline/NURBS surfaces, full spheres (vertex-loop faces), faces holding a pole/apex ring, horn and spindle tori, and general projection |
 | Trim domains | Sampled planar polygons with holes; single-bound contractible seamed cylindrical charts | Exact curved trim intersection certificates; cylindrical holes/unseamed winding bands/multiple turns |
 | Native sampled surface | Fixed-boundary chart CDT, bounded curved interior refinement, source identity; closed opposite edges/cyclic links/one shell | Exact CAD-solid certificate, arbitrary curved-face tessellation |
 | Global sampled geometry | Exact-sign facet intersection checks, immutable checked ownership, unchanged distance/normal/BVH path | Exact original B-Rep self-intersection and multi-shell/cavity qualification |

@@ -240,7 +240,7 @@ fn shape_chart(
         // face despite correct topological boundary recovery. Split curved interior
         // boundary-to-boundary chords on the evaluated surface, preserving every
         // constrained boundary segment and sharing the new point across both sides.
-        if let Some(surface @ Surface::Cylinder { radius, .. }) = surface {
+        if let Some(surface) = surface.filter(|s| !matches!(s, Surface::Plane(_))) {
             let mut work = 0usize;
             loop {
                 let parity = regions(&cdt, max_work.saturating_sub(work))?;
@@ -267,20 +267,37 @@ fn shape_chart(
                         a.index() < boundary_count && b.index() < boundary_count;
                     let a = a.data();
                     let b = b.data();
+                    // The cylinder keeps its closed-form bound on the circumferential span; the other curved surfaces
+                    // use the sagitta itself: the chart midpoint's surface point against the chord midpoint.
                     let span = (a.chart[0] - b.chart[0]).abs();
-                    if !boundary_diagonal
-                        && span <= radius * crate::analytic_step::chord_angle(*radius, chord_mm)
-                    {
-                        continue;
-                    }
-                    if a.chart[0] == b.chart[0] {
-                        continue;
+                    let cylinder = match surface {
+                        Surface::Cylinder { radius, .. } => Some(*radius),
+                        _ => None,
+                    };
+                    let bound =
+                        cylinder.map(|r| r * crate::analytic_step::chord_angle(r, chord_mm));
+                    if let Some(bound) = bound {
+                        if !boundary_diagonal && span <= bound {
+                            continue;
+                        }
+                        if a.chart[0] == b.chart[0] {
+                            continue;
+                        }
                     }
                     let chart = std::array::from_fn(|i| a.chart[i] / 2. + b.chart[i] / 2.);
                     let world = surface.point(chart).ok_or_else(|| {
                         fail(ErrorKind::Geometry, "unresolved curved interior point")
                     })?;
-                    let chord = std::array::from_fn(|i| a.world[i] / 2. + b.world[i] / 2.);
+                    let chord: V3 = std::array::from_fn(|i| a.world[i] / 2. + b.world[i] / 2.);
+                    if bound.is_none() {
+                        let sag = ((world[0] - chord[0]).powi(2)
+                            + (world[1] - chord[1]).powi(2)
+                            + (world[2] - chord[2]).powi(2))
+                        .sqrt();
+                        if !boundary_diagonal && sag <= chord_mm {
+                            continue;
+                        }
+                    }
                     if world != chord {
                         candidates.push(ChartVertex {
                             chart,
@@ -290,7 +307,7 @@ fn shape_chart(
                                 index: vertices.len() - boundary_count,
                             },
                         });
-                    } else if span > radius * crate::analytic_step::chord_angle(*radius, chord_mm) {
+                    } else if bound.is_some_and(|bound| span > bound) {
                         return Err(fail(
                             ErrorKind::Geometry,
                             "curved error bound is below coordinate precision",
@@ -449,7 +466,7 @@ impl AnalyticModel {
             &inputs.loops,
             inputs.vertices,
             max_work,
-            self.surface(face_id),
+            inputs.surface.as_ref(),
             self.chord_tolerance_mm(),
             quality,
         )?;
@@ -462,6 +479,7 @@ impl AnalyticModel {
         max_work: usize,
         policy: crate::cylindrical_step::ChartPolicy,
     ) -> Result<ChartInputs, Error> {
+        let mut centre = None;
         let (mut loops, adjustments) = match self.surface(face_id) {
             Some(Surface::Plane(_)) => (
                 self.sampled_planar_trims(face_id, max_work)?.loops,
@@ -477,6 +495,15 @@ impl AnalyticModel {
                     }
                 };
                 (vec![trims.boundary], trims.adjustments)
+            }
+            Some(Surface::Sphere { .. }) => (
+                self.sampled_planar_trims(face_id, max_work)?.loops,
+                Vec::new(),
+            ),
+            Some(Surface::Cone { .. } | Surface::Torus { .. }) => {
+                let trims = self.sampled_periodic_trims(face_id, max_work)?;
+                centre = Some(trims.centre);
+                (vec![trims.boundary], Vec::new())
             }
             None => return Err(fail(ErrorKind::Geometry, "unknown face")),
         };
@@ -498,7 +525,8 @@ impl AnalyticModel {
             let mut samples = Vec::new();
             // The edge segment from each sample to the next one of the bound, in traversal order.
             let mut outgoing = Vec::new();
-            for usage in &bound.edges {
+            let surface = self.surface(face_id).unwrap();
+            for usage in crate::planar_step::chart_usages(surface, bound) {
                 let p = self.edge_points(usage.edge).unwrap();
                 if samples.len().saturating_add(p.len() - 1) > max_work {
                     return Err(fail(
@@ -541,11 +569,16 @@ impl AnalyticModel {
             }
             segments.extend(outgoing);
         }
+        let surface = self.surface(face_id).map(|s| match centre {
+            Some(c) => s.with_centre(c),
+            None => s.clone(),
+        });
         Ok(ChartInputs {
             loops,
             adjustments,
             vertices,
             segments,
+            surface,
         })
     }
     /// Where a Delaunay refinement of the face chart (with its boundary segments allowed to split) would put new samples on the
@@ -566,7 +599,7 @@ impl AnalyticModel {
             &inputs.loops,
             inputs.vertices.clone(),
             max_work,
-            self.surface(face_id),
+            inputs.surface.as_ref(),
             self.chord_tolerance_mm(),
             Shaping {
                 quality: Some(ChartQuality {
@@ -668,6 +701,8 @@ struct ChartInputs {
     vertices: Vec<ChartVertex>,
     /// Outgoing edge segment of every boundary sample, parallel to `vertices`.
     segments: Vec<SegmentRef>,
+    /// The face's surface with its chart branch fixed (a cone's centre angle).
+    surface: Option<Surface>,
 }
 #[cfg(test)]
 mod tests {

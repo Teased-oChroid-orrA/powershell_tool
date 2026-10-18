@@ -8,7 +8,7 @@ use solid_kernel::native_surface::Limits as SurfaceLimits;
 use solid_kernel::occt::{Bool, Brep, Loop, Profile};
 use solid_kernel::step::{inventory, Limits};
 use solid_kernel::analytic_step::{AnalyticModel, Options};
-use std::f64::consts::PI;
+use std::f64::consts::{PI, TAU};
 
 struct Case {
     name: &'static str,
@@ -37,7 +37,11 @@ fn cases() -> Vec<Case> {
         Case { name: "plate with a boss", shape: plate.boolean(Bool::Union, &Brep::cylinder([3., 2., 0.25], 0.8, [0., 0., 1.], 1.75)).unwrap(), exact: 12. * 4. * 0.25 + PI * 0.64 * 1.75, native: true },
         Case { name: "plate with a pocket", shape: plate.boolean(Bool::Cut, &Brep::box_from_corners([4., 1., 0.1], [6., 3., 1.])).unwrap(), exact: 12. * 4. * 0.25 - 2. * 2. * 0.15, native: true },
         Case { name: "union of two boxes (L)", shape: Brep::box_from_corners([0., 0., 0.], [4., 1., 1.]).boolean(Bool::Union, &Brep::box_from_corners([0., 0., 0.], [1., 3., 1.])).unwrap(), exact: 4. + 3. - 1., native: true },
-        Case { name: "box with every edge filleted", shape: Brep::box_from_corners([0., 0., 0.], [2., 3., 4.]).fillet_all(0.2).unwrap(), exact: rounded_box(2., 3., 4., 0.2), native: false },
+        Case { name: "box with every edge filleted", shape: Brep::box_from_corners([0., 0., 0.], [2., 3., 4.]).fillet_all(0.2).unwrap(), exact: rounded_box(2., 3., 4., 0.2), native: true },
+        Case { name: "cylinder with a filleted end", shape: Brep::cylinder([0., 0., 0.], 5., [0., 0., 1.], 10.).round_edges_at_height(10., 1.5, false).unwrap(), exact: PI * 25. * 10. - TAU * (1.5 * 1.5 * (5. - 0.75) - PI * 1.5 * 1.5 / 4. * (5. - 1.5 + 4. * 1.5 / (3. * PI))), native: true },
+        Case { name: "cylinder with a chamfered end", shape: Brep::cylinder([0., 0., 0.], 5., [0., 0., 1.], 10.).round_edges_at_height(10., 1.5, true).unwrap(), exact: PI * 25. * 10. - TAU * (1.5 * 1.5 / 2.) * (5. - 0.5), native: true },
+        Case { name: "frustum", shape: Brep::cone([0., 0., 0.], 6., 3., [0., 0., 1.], 8.), exact: PI * 8. * (36. + 18. + 9.) / 3., native: true },
+        Case { name: "torus", shape: Brep::torus([0., 0., 0.], 6., 2., [0., 0., 1.]), exact: 2. * PI * PI * 6. * 4., native: true },
     ]
 }
 
@@ -65,7 +69,7 @@ fn the_native_pipeline_against_opencascade_on_opencascade_built_shapes() {
         assert_eq!(native.is_ok(), c.native, "{}: {:?}", c.name, native.as_ref().err());
         if let Ok(s) = native {
             // Planar shapes are exact; curved ones agree to the chord tolerance (a sampled circle is inscribed: volume low).
-            let curved = c.name.contains("cylinder") || c.name.contains("hole") || c.name.contains("boss");
+            let curved = ["cylinder", "hole", "boss", "filleted", "frustum", "torus"].iter().any(|k| c.name.contains(k));
             let tol = if curved { 5e-3 } else { 1e-9 };
             assert!((s.signed_volume_mm3 / c.exact - 1.).abs() < tol, "{}: native {} vs exact {}", c.name, s.signed_volume_mm3, c.exact);
             // An inscribed sampling of a solid cylinder or boss is a little small, of a hole a little too large.
@@ -74,6 +78,6 @@ fn the_native_pipeline_against_opencascade_on_opencascade_built_shapes() {
                 assert!(if hole { s.signed_volume_mm3 >= c.exact * (1. - 1e-9) } else { s.signed_volume_mm3 <= c.exact * (1. + 1e-9) }, "{}: {} against {}", c.name, s.signed_volume_mm3, c.exact);
             }
         }
-        assert!((occt.volume() / c.exact - 1.).abs() < if c.name.contains("filleted") { 2e-3 } else { 2e-3 }, "{}: OpenCASCADE tessellation {} vs exact {}", c.name, occt.volume(), c.exact);
+        assert!((occt.volume() / c.exact - 1.).abs() < if c.name == "torus" { 3e-3 } else { 2e-3 }, "{}: OpenCASCADE tessellation {} vs exact {}", c.name, occt.volume(), c.exact);
     }
 }

@@ -19,7 +19,9 @@ use crate::{
 use fea_core::meshing::{
     tet_delaunay::{tetrahedralize, Limits as DelaunayLimits},
     tet_flip::{improve, FlipOptions, FlipReport},
-    tet_topology::{in_circle_2d, orientation, orientation_2d, TetTopology},
+    tet_topology::{
+        in_circle_2d, orientation, orientation_2d, sphere_side, SphereSide, TetTopology,
+    },
     MeshError,
 };
 use std::cmp::Ordering;
@@ -42,6 +44,10 @@ pub struct Options {
     /// Reconnect low-quality interior cells by 2-3 flips and edge removals after
     /// extraction (boundary, sub-facets and vertices are preserved exactly).
     pub reconnect: Option<FlipOptions>,
+    /// A sub-segment shorter than this fraction of the input's bounding-box diagonal is never split: refinement that has
+    /// descended that far (a cascade of concentric shells around a vertex) produces elements no solver can use, and the
+    /// recovery stops with an error instead.
+    pub min_segment_relative: f64,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -51,6 +57,7 @@ impl Default for Options {
             protect_encroached: true,
             max_radius_edge: None,
             reconnect: None,
+            min_segment_relative: 1e-6,
         }
     }
 }
@@ -511,6 +518,8 @@ struct State {
     options: Options,
     /// Vertices below this index are input vertices (segment apices).
     input_vertices: usize,
+    /// Shortest sub-segment that may still be split (millimetres).
+    min_segment: f64,
 }
 impl State {
     fn points(&self) -> &[V3] {
@@ -633,6 +642,13 @@ impl State {
                 unresolved += 1;
                 continue;
             };
+            // The circumcentre of a near-flat cell is ill-conditioned: rounded, it can lie outside the exact circumsphere, so
+            // inserting it destroys nothing and the same cell (and the same centre, now a duplicate vertex) comes back every
+            // round. Only a centre strictly inside the cell's own circumsphere can remove it.
+            if sphere_side(t.map(|v| pts[v]), cc) != Ok(SphereSide::Inside) {
+                unresolved += 1;
+                continue;
+            }
             let current = self.points().to_vec();
             let hit: Vec<[usize; 2]> = self
                 .segments
@@ -690,6 +706,12 @@ impl State {
         let [a, b] = s;
         let (pa, pb) = (self.points()[a], self.points()[b]);
         let len2 = norm2(sub(pa, pb));
+        if len2.sqrt() < self.min_segment {
+            return Err(fail(
+                ErrorKind::Geometry,
+                "refinement descends below the feature-size floor around a vertex (input angles too small for the requested quality)",
+            ));
+        }
         // Concentric shells (Ruppert/Shewchuk): when exactly one end is an input
         // vertex its incident segments all split at powers-of-two distances from
         // it, so segments meeting at a small angle stop encroaching on each other.
@@ -811,6 +833,16 @@ pub fn conform(
         max_offset: 0.,
         options,
         input_vertices: vertices.len(),
+        min_segment: {
+            let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+            for v in vertices {
+                for k in 0..3 {
+                    lo[k] = lo[k].min(v[k]);
+                    hi[k] = hi[k].max(v[k]);
+                }
+            }
+            options.min_segment_relative * norm2(sub(hi, lo)).sqrt()
+        },
     };
     publish(&state, Phase::Delaunay, (0, 0), &mut progress)?;
     let all: Vec<[usize; 2]> = state.segments.iter().copied().collect();
