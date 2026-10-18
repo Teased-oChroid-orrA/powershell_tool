@@ -1,7 +1,7 @@
 //! OpenCascade-backed modelling (feature `occt`, ADR-019): extrude a sketch profile, boolean union / cut / intersect,
 //! fillet, STEP in and out, and the face-tagged tessellation that feeds `SurfaceSolid`.
 use crate::{SurfaceMesh, SurfaceSolid, V3};
-use cadrum::{DVec3, Edge, Solid, Tessellation};
+use cadrum::{BSplineEnd, DVec3, Edge, Solid, Tessellation};
 use std::path::Path;
 
 // Compatibility exports; neutral contracts live outside the OCCT adapter.
@@ -62,6 +62,37 @@ impl Brep {
         }
         let solid = Solid::extrude(&loops, DVec3::new(0.0, 0.0, depth)).map_err(err)?;
         Ok(Self::one(solid))
+    }
+    /// A solid of revolution about the z axis whose profile (in the half plane x >= 0) runs along a B-spline through
+    /// `points` (radius, z) and closes with straight lines down to the axis: OpenCASCADE writes the spline's face as a
+    /// `SURFACE_OF_REVOLUTION`.
+    pub fn lathe_spline(points: &[[f64; 2]]) -> Result<Self, String> {
+        if points.len() < 3 || points.iter().any(|p| p[0] <= 0.0) {
+            return Err("a spline lathe needs at least three profile points with a positive radius".into());
+        }
+        let pts: Vec<DVec3> = points.iter().map(|p| DVec3::new(p[0], 0.0, p[1])).collect();
+        let (first, last) = (pts[0], *pts.last().unwrap());
+        let profile = [
+            Edge::bspline(&pts, BSplineEnd::NotAKnot).map_err(err)?,
+            Edge::line(last, DVec3::new(0.0, 0.0, last.z)).map_err(err)?,
+            Edge::line(DVec3::new(0.0, 0.0, last.z), DVec3::new(0.0, 0.0, first.z)).map_err(err)?,
+            Edge::line(DVec3::new(0.0, 0.0, first.z), first).map_err(err)?,
+        ];
+        let solid = Solid::revolve(&profile, DVec3::ZERO, DVec3::Z, std::f64::consts::TAU).map_err(err)?;
+        Ok(Self::one(solid))
+    }
+    /// A prism: the plane figure bounded by a B-spline through `points` (x, y) and the chord back to its start, extruded
+    /// by `depth` along +z. OpenCASCADE writes the spline's wall as a `SURFACE_OF_LINEAR_EXTRUSION`.
+    pub fn prism_spline(points: &[[f64; 2]], depth: f64) -> Result<Self, String> {
+        if points.len() < 3 || !(depth > 0.0 && depth.is_finite()) {
+            return Err("a spline prism needs at least three points and a positive depth".into());
+        }
+        let pts: Vec<DVec3> = points.iter().map(|p| DVec3::new(p[0], p[1], 0.0)).collect();
+        let profile = [
+            Edge::bspline(&pts, BSplineEnd::NotAKnot).map_err(err)?,
+            Edge::line(*pts.last().unwrap(), pts[0]).map_err(err)?,
+        ];
+        Ok(Self::one(Solid::extrude(&profile, DVec3::new(0.0, 0.0, depth)).map_err(err)?))
     }
     pub fn box_from_corners(lo: V3, hi: V3) -> Self {
         Self::one(Solid::cube(v(lo), v(hi)))

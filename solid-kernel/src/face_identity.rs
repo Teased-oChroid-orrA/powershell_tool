@@ -200,7 +200,7 @@ impl AnalyticModel {
                     Surface::Sphere { .. } => Kind::Sphere,
                     Surface::Cone { .. } => Kind::Cone,
                     Surface::Torus { .. } => Kind::Torus,
-                Surface::Nurbs(_) => Kind::Spline,
+                Surface::Param(_) => Kind::Spline,
                 },
             )
         };
@@ -235,7 +235,7 @@ impl AnalyticModel {
                 .find_map(|u| self.edge_points(u.edge).and_then(|p| p.first().copied()))
                 .ok_or_else(|| fail("a face without edges"))?;
             let (kind, direction, anchor, size, size2, convex) = match surface {
-                Surface::Nurbs(_) => (Kind::Spline, [0.; 3], [0.; 3], 0., 0., true),
+                Surface::Param(_) => (Kind::Spline, [0.; 3], [0.; 3], 0., 0., true),
                 Surface::Plane(fr) => {
                     let n = mul(fr.z, sense);
                     (Kind::Plane, n, mul(n, dot(n, fr.origin)), 0., 0., true)

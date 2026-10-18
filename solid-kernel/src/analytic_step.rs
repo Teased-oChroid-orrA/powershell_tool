@@ -181,8 +181,9 @@ pub enum Surface {
         major: f64,
         minor: f64,
     },
-    /// A (rational) B-spline surface, charted by its parameter rectangle (see `curved_surface::SplineSurface`).
-    Nurbs(std::sync::Arc<crate::curved_surface::SplineSurface>),
+    /// A parametric surface (a rational B-spline surface, or a B-spline curve revolved or extruded), charted by its parameter
+    /// rectangle (see `curved_surface::SplineSurface`).
+    Param(std::sync::Arc<crate::curved_surface::SplineSurface>),
 }
 #[derive(Debug, Clone, Copy)]
 pub struct Projection {
@@ -251,7 +252,7 @@ impl Surface {
                 let u = chart[0] / radius;
                 add(mul(frame.x, u.cos()), mul(frame.y, u.sin()))
             }
-            Self::Nurbs(_) => return self.spline_normal(chart),
+            Self::Param(_) => return self.spline_normal(chart),
             _ => return self.normal_at_world(self.point_curved(chart)?),
         };
         finite(p).then_some(p)
@@ -411,6 +412,58 @@ fn surface(data: &Inventory, id: u64, scale: f64) -> Result<Surface, Error> {
         },
         _ => Err(error(e, "unsupported complex surface")),
     }
+}
+/// A `SURFACE_OF_REVOLUTION` or `SURFACE_OF_LINEAR_EXTRUSION` over a B-spline curve. An extrusion is unbounded along its
+/// direction, so its height range is taken from `samples` (the face's boundary points) with a margin.
+fn swept_surface(
+    data: &Inventory,
+    e: &Entity,
+    scale: f64,
+    samples: &[V3],
+) -> Result<crate::curved_surface::SplineSurface, Error> {
+    let [c] = e.components.as_slice() else {
+        return Err(error(e, "unsupported complex surface"));
+    };
+    let [Value::String(_), Value::Ref(curve), Value::Ref(second)] = c.args.as_slice() else {
+        return Err(error(e, "unsupported swept surface declaration"));
+    };
+    let curve = crate::step_nurbs::read_curve(data, *curve, scale, crate::nurbs::Limits::default())
+        .map_err(|mut err| {
+            err.detail = format!("swept surface curve: {} (only B-spline curves are supported)", err.detail);
+            err
+        })?
+        .curve;
+    let second = &data.entities()[second];
+    let surface = match c.name.as_str() {
+        "SURFACE_OF_REVOLUTION" => match call(second, "AXIS1_PLACEMENT")? {
+            [Value::String(_), Value::Ref(origin), Value::Ref(axis)] => {
+                crate::curved_surface::SplineSurface::revolution(
+                    curve,
+                    point(data, *origin, scale)?,
+                    direction(data, *axis)?,
+                )
+            }
+            _ => return Err(error(second, "unsupported revolution axis")),
+        },
+        _ => match call(second, "VECTOR")? {
+            [Value::String(_), Value::Ref(d), _] => {
+                let d = direction(data, *d)?;
+                let heights = samples.iter().map(|p| dot(*p, d));
+                let lo = heights.clone().fold(f64::INFINITY, f64::min);
+                let hi = heights.fold(f64::NEG_INFINITY, f64::max);
+                let margin = 0.05 * (hi - lo);
+                if !(margin.is_finite() && margin > 0.) {
+                    return Err(error(e, "an extrusion face without an extent along its direction"));
+                }
+                crate::curved_surface::SplineSurface::extrusion(curve, d, [lo - margin, hi + margin])
+            }
+            _ => return Err(error(second, "unsupported extrusion direction")),
+        },
+    };
+    surface.map_err(|mut err| {
+        err.offset = e.offset;
+        err
+    })
 }
 #[derive(Debug, Clone, Copy)]
 pub struct Options {
@@ -1225,7 +1278,7 @@ impl AnalyticModel {
                     }
                     // any other net is a general (rational) B-spline surface
                     Err(_) => (
-                        Surface::Nurbs(std::sync::Arc::new(
+                        Surface::Param(std::sync::Arc::new(
                             crate::curved_surface::SplineSurface::new(declaration.surface)
                                 .map_err(|mut e| {
                                     e.offset = source_surface.offset;
@@ -1235,6 +1288,17 @@ impl AnalyticModel {
                         None,
                     ),
                 }
+            } else if source_surface.components.iter().any(|c| {
+                matches!(c.name.as_str(), "SURFACE_OF_REVOLUTION" | "SURFACE_OF_LINEAR_EXTRUSION")
+            }) {
+                let samples: Vec<V3> = face
+                    .bounds
+                    .iter()
+                    .flat_map(|b| &b.edges)
+                    .flat_map(|u| edges[&u.edge].iter().copied())
+                    .collect();
+                let swept = swept_surface(data, source_surface, scale, &samples)?;
+                (Surface::Param(std::sync::Arc::new(swept)), None)
             } else {
                 let source = surface(data, face.surface, scale)?;
                 // A sphere is charted around each face's own centre, from the face's boundary loops in traversal order.
@@ -1326,7 +1390,7 @@ impl AnalyticModel {
                         }
                     }
 
-                    if let Surface::Nurbs(_) = &s {
+                    if let Surface::Param(_) = &s {
                         // An edge of a spline-surface face lies on the surface along its samples (an arc of a circle need not
                         // lie on it elsewhere).
                         for p in &edges[&edge.id] {
