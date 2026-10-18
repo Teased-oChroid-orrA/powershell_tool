@@ -1,0 +1,15 @@
+# Issue 46 — Phase 92: ALE transport on a moving mesh, with the geometric conservation law (#59)
+
+`meshing::ale` closes the "ALE (mesh velocity, transport)" item of #59 at the level of a verified frame. `mesh_velocity(old, new, dt)` gives the nodal mesh velocity. `transport_step(old, new, c, u, dt, inflow)` advances a cell-average field `c` (one value per element) from the mesh `old` to `new` (same connectivity, nodes moved linearly in time) with the material velocity `u`:
+
+`c_new V_new = c V_old - sum over faces of c_face Q_face`, `Q_face = dt u . nA - S_face`,
+
+with `S_face` the volume swept by the face during the step (the mesh velocity's flux, integrated in time by Simpson's rule: the area vector of a triangle is quadratic in time, so this is exact), the upwind face value `c_face`, and `inflow` the value entering through a boundary face. Element measures are those of the polygon/polyhedron the corner nodes span, a quadrilateral face split by the diagonal through its smallest global node number so both neighbours use the same triangles. Any element mix with corner faces works (Tri3/Quad4/Tet4/Hex8/Wedge6 tested; higher-order elements use their corner nodes); the report gives the GCL defect, the net boundary outflow and the largest flux ratio.
+
+Evidence (macOS arm64, debug, 4 tests):
+- **Geometric conservation law.** On meshes whose interior nodes are displaced randomly by up to 30 % of the cell size, five steps in a row, the swept volumes of an element's faces reproduce its change of measure to **1e-13** (relative to the mean measure) for Quad4, Hex8, Wedge6 and Tet4 (the Tet4 mesh is the Phase 79 conversion of a hex grid), and a uniform field stays uniform to **1e-12** with a constant material velocity that carries content through the boundary (and to 1e-13 with no velocity).
+- **Conservation.** Moving a Gaussian by a through-flow of 0.5 with the mesh jiggling every step, `content_start - content_end` equals the accumulated boundary outflow to 1e-13 relative; with closed boundaries and no velocity the content is conserved to 1e-13.
+- **Convergence (first order, as designed).** A static Gaussian seen on a mesh that oscillates for one period (displacement field amplitude 0.02, bilinear cell averages by 3x3 Gauss) returns to its start with a maximum cell-average error of 7.8e-2, 4.7e-2, 2.5e-2 on 12x12, 24x24, 48x48 cells.
+- Mismatched connectivity, wrong lengths, non-finite values, a non-positive time step and a folded cell are refused.
+
+Limits (not fixed): first-order upwind (diffusive: an earlier, more violent test with a narrow Gaussian smeared to a 20-30 % error, which is what first order does); the frame is a scalar cell-average transport, not the coupling of mesh velocity to governing equations (momentum, energy) of an ALE flow or solid solver; corner-node geometry; the time dependence of the nodes is linear over a step; the conservative transfer of fields between *different* meshes (remesh) remains the nodal interpolation of Phase 87, not this flux form. #59 stays open for those.
