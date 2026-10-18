@@ -8,8 +8,8 @@ fn main() {
     let path = args
         .next()
         .expect("usage: shell-sampling-probe FILE.step [--line MM] [--quality DEG] [--points N]");
-    let (mut line, mut quality, mut points, mut grade, mut floor) =
-        (None, None, 5000usize, None, 0.1);
+    let (mut line, mut quality, mut points, mut grade, mut floor, mut canonical) =
+        (None, None, 5000usize, None, 0.1, false);
     while let Some(a) = args.next() {
         let v: f64 = args.next().expect("value").parse().unwrap();
         match a.as_str() {
@@ -18,6 +18,7 @@ fn main() {
             "--points" => points = v as usize,
             "--grade" => grade = Some(v),
             "--floor" => floor = v,
+            "--canonical" => canonical = v != 0.,
             _ => panic!("unknown flag"),
         }
     }

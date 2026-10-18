@@ -24,6 +24,15 @@ fn main() {
     .into_iter()
     .collect::<Vec<_>>();
     let mut shapes = shapes;
+    // Intersections that are not circles or lines (tests/curved_edges.rs).
+    let rot = |b: Brep| b; // placeholder to keep the list readable
+    let _ = rot;
+    shapes.extend([
+        ("tilted-hole", block.boolean(Bool::Cut, &Brep::cylinder([20., 15., -4.], 4., [0.5, 0.2, 1.], 40.)).unwrap()),
+        ("t-junction", Brep::cylinder([0., 0., 0.], 6., [0., 0., 1.], 30.).boolean(Bool::Union, &Brep::cylinder([-10., 0., 15.], 4., [1., 0., 0.], 20.)).unwrap()),
+        ("cross-bore", Brep::cylinder([0., 0., 0.], 8., [0., 0., 1.], 30.).boolean(Bool::Cut, &Brep::cylinder([-10., 0., 15.], 3., [1., 0., 0.], 20.)).unwrap()),
+        ("slot", block.boolean(Bool::Cut, &Brep::box_from_corners([10., -1., 12.], [30., 31., 16.])).unwrap()),
+    ]);
     shapes.extend([
         ("block-with-hole", block.boolean(Bool::Cut, &hole).unwrap()),
         (
