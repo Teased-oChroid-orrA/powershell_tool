@@ -2,7 +2,7 @@
 
 Purpose: the cost model (#60), the learned predictions (#61, which need held-out and out-of-distribution data) and the AMR-feedback time-to-accuracy gate (#62) can only be qualified against problems whose answer is known independently of this code. Phase 75 measured no gain on the only benchmark so far (the L-plate of `fea-core/tests/amr.rs`), so at least one class is needed where the starting-mesh advice demonstrably matters, and at least one control where it must not.
 
-Status: **research only, nothing below has been run as a qualification yet.** Values marked *secondary* come from published verification reports that quote the NAFEMS originals; confirm them against the original before they become an assertion in a test. The built app stays offline: these are build/research-time inputs, never runtime dependencies.
+Status: **LE1 and LE10 have been run (Phase 108, `fea-core/tests/nafems.rs`: 92.7 MPa reached within 0.33 %, -5.38 MPa within 1.3 %) and added to the cost-model calibration; everything else below is research only and has not been run as a qualification.** Values marked *secondary* come from published verification reports that quote the NAFEMS originals; confirm them against the original before they become an assertion in a test. The built app stays offline: these are build/research-time inputs, never runtime dependencies.
 
 ## A. Closed-form classes (reference value exact; no licence issue; commit as tests)
 
