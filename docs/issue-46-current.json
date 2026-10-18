@@ -70,11 +70,11 @@
   "occt_retirement_approved": false,
   "remaining": "Other p-curve mappings/master/trim/body gates, general constrained meshing/quality and P2/P3/final roadmap",
   "tests": {
-    "workspace_passed": 2831,
+    "workspace_passed": 2862,
     "workspace_failed": 0,
-    "workspace_ignored": 87,
+    "workspace_ignored": 103,
     "platform": "macOS arm64 (no Windows or hosted CI evidence)",
-    "at": "ddba394"
+    "at": "20a3f24"
   },
   "last_confirmed_main_merge": "4b19daa",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
