@@ -293,6 +293,17 @@ fn error_rule(kind: ElementKind) -> Vec<([f64; 3], f64)> {
                 }
             }
         }
+        ElementKind::Pyramid5 => {
+            // collapsed hexahedron: zeta = c, xi = (2a - 1)(1 - zeta), eta = (2b - 1)(1 - zeta); weights sum to 4/3
+            let gl = gauss_legendre_unit(n - 1);
+            for &(a, wa) in &gl {
+                for &(b, wb) in &gl {
+                    for &(c, wc) in &gl {
+                        out.push(([(2.0 * a - 1.0) * (1.0 - c), (2.0 * b - 1.0) * (1.0 - c), c], 4.0 * wa * wb * wc * (1.0 - c) * (1.0 - c)));
+                    }
+                }
+            }
+        }
     }
     out
 }

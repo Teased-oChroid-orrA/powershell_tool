@@ -520,6 +520,12 @@ struct State {
     input_vertices: usize,
     /// Shortest sub-segment that may still be split (millimetres).
     min_segment: f64,
+    /// Segments of frozen facets: never split, never counted as encroached.
+    frozen_segments: BTreeSet<[usize; 2]>,
+    /// Frozen facets (indices into `meshes`): their triangle is never subdivided.
+    frozen_facets: BTreeSet<usize>,
+    /// Sub-facets whose circumcentre could only be placed by splitting a frozen segment: left as they are.
+    unrefinable: BTreeSet<(usize, [usize; 3])>,
 }
 impl State {
     fn points(&self) -> &[V3] {
@@ -564,6 +570,9 @@ impl State {
             return Ok(());
         }
         self.enc_tris.retain(|(m, _)| *m != k);
+        if self.frozen_facets.contains(&k) {
+            return Ok(());
+        }
         for i in 0..self.meshes[k].tris.len() {
             let t = self.meshes[k].tris[i];
             if self.tri_encroached(t)? {
@@ -583,11 +592,14 @@ impl State {
             .segments
             .iter()
             .copied()
-            .filter(|s| s[0] != v && s[1] != v && encroaches(pts[s[0]], pts[s[1]], p))
+            .filter(|s| s[0] != v && s[1] != v && !self.frozen_segments.contains(s) && encroaches(pts[s[0]], pts[s[1]], p))
             .collect();
         self.enc_segments.extend(hit);
         let mut hit_tris = Vec::new();
         for (k, m) in self.meshes.iter().enumerate() {
+            if self.frozen_facets.contains(&k) {
+                continue;
+            }
             for &t in &m.tris {
                 if t.contains(&v) {
                     continue;
@@ -656,16 +668,29 @@ impl State {
                 .copied()
                 .filter(|&[x, y]| encroaches(current[x], current[y], cc))
                 .collect();
+            // A centre that encroaches a frozen segment or facet cannot be placed (the item may not be split): the cell stays.
+            if hit.iter().any(|s| self.frozen_segments.contains(s)) {
+                unresolved += 1;
+                continue;
+            }
             let mut hit_tris = Vec::new();
+            let mut hits_frozen = false;
             for (k, m) in self.meshes.iter().enumerate() {
                 for &f in &m.tris {
                     let [a, b, c] = f.map(|v| current[v]);
                     if let Some(fc) = circumcentre(a, b, c) {
                         if norm2(sub(cc, fc)) < norm2(sub(a, fc)) * (1. - 1e-9) {
+                            if self.frozen_facets.contains(&k) {
+                                hits_frozen = true;
+                            }
                             hit_tris.push((k, f));
                         }
                     }
                 }
+            }
+            if hits_frozen {
+                unresolved += 1;
+                continue;
             }
             if !hit.is_empty() || !hit_tris.is_empty() {
                 self.enc_segments.extend(hit);
@@ -706,6 +731,14 @@ impl State {
         let [a, b] = s;
         let (pa, pb) = (self.points()[a], self.points()[b]);
         let len2 = norm2(sub(pa, pb));
+        if self.frozen_segments.contains(&s) {
+            return Err(fail(
+                ErrorKind::Geometry,
+                format!(
+                    "a frozen segment {pa:?} - {pb:?} is missing from the Delaunay triangulation and may not be split"
+                ),
+            ));
+        }
         if len2.sqrt() < self.min_segment {
             return Err(fail(
                 ErrorKind::Geometry,
@@ -764,6 +797,36 @@ impl State {
 pub fn conform(
     vertices: &[V3],
     facets: &[[usize; 3]],
+    options: Options,
+    progress: impl FnMut(Progress) -> bool,
+) -> Result<Conforming, Error> {
+    conform_impl(vertices, facets, None, options, progress)
+}
+/// [`conform`] with a set of **frozen** facets: `frozen[i]` freezes `facets[i]`. A frozen facet and every segment of it are
+/// never split, so the result contains each frozen facet exactly as given (a triangle of the output with that parent and the
+/// same three vertices); Steiner points go to the unfrozen facets, their segments and the interior. When a frozen facet or
+/// segment is not in the Delaunay triangulation of the vertices and the points added elsewhere, the recovery fails with an
+/// error naming it instead of splitting it. This is the tetrahedral mesher for the region behind a layer of pyramids (their
+/// triangular sides are the frozen facets): `docs/issue-46-phase-102.md`.
+pub fn conform_preserving(
+    vertices: &[V3],
+    facets: &[[usize; 3]],
+    frozen: &[bool],
+    options: Options,
+    progress: impl FnMut(Progress) -> bool,
+) -> Result<Conforming, Error> {
+    if frozen.len() != facets.len() {
+        return Err(fail(
+            ErrorKind::Topology,
+            "one frozen flag per facet is required",
+        ));
+    }
+    conform_impl(vertices, facets, Some(frozen), options, progress)
+}
+fn conform_impl(
+    vertices: &[V3],
+    facets: &[[usize; 3]],
+    frozen: Option<&[bool]>,
     options: Options,
     mut progress: impl FnMut(Progress) -> bool,
 ) -> Result<Conforming, Error> {
@@ -833,6 +896,19 @@ pub fn conform(
         max_offset: 0.,
         options,
         input_vertices: vertices.len(),
+        frozen_segments: frozen
+            .into_iter()
+            .flat_map(|fr| facets.iter().zip(fr))
+            .filter(|(_, f)| **f)
+            .flat_map(|(t, _)| (0..3).map(move |k| edge(t[k], t[(k + 1) % 3])))
+            .collect(),
+        frozen_facets: frozen
+            .into_iter()
+            .flat_map(|fr| fr.iter().enumerate())
+            .filter(|(_, f)| **f)
+            .map(|(i, _)| i)
+            .collect(),
+        unrefinable: BTreeSet::new(),
         min_segment: {
             let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
             for v in vertices {
@@ -847,7 +923,7 @@ pub fn conform(
     publish(&state, Phase::Delaunay, (0, 0), &mut progress)?;
     let all: Vec<[usize; 2]> = state.segments.iter().copied().collect();
     for s in all {
-        if options.protect_encroached && state.segment_encroached(s) {
+        if options.protect_encroached && !state.frozen_segments.contains(&s) && state.segment_encroached(s) {
             state.enc_segments.insert(s);
         }
     }
@@ -879,6 +955,18 @@ pub fn conform(
                 (0, state.enc_tris.len() + 1),
                 &mut progress,
             )?;
+            if state.frozen_facets.contains(&k) {
+                let [a, b, c] = t.map(|v| state.points()[v]);
+                return Err(fail(
+                    ErrorKind::Geometry,
+                    format!(
+                        "a frozen facet {a:?} {b:?} {c:?} is missing from the Delaunay triangulation and may not be split"
+                    ),
+                ));
+            }
+            if state.unrefinable.contains(&(k, t)) {
+                continue;
+            }
             let (cc, _) = state.tri_circumsphere(t)?;
             let pts = state.points().to_vec();
             let hit: Vec<[usize; 2]> = state
@@ -887,6 +975,11 @@ pub fn conform(
                 .copied()
                 .filter(|&[x, y]| encroaches(pts[x], pts[y], cc))
                 .collect();
+            // The centre of a sub-facet that encroaches a frozen segment cannot be placed; a present sub-facet is left as it is.
+            if hit.iter().any(|s| state.frozen_segments.contains(s)) {
+                state.unrefinable.insert((k, t));
+                continue;
+            }
             if !hit.is_empty() {
                 // The centre is rejected; its encroached segments are split first.
                 state.enc_segments.extend(hit);
@@ -966,6 +1059,15 @@ pub fn conform(
                 state.refresh_mesh(k)?;
             }
             continue;
+        }
+        if let Some((k, t)) = missing_tris.iter().find(|(k, t)| state.unrefinable.contains(&(*k, *t))) {
+            let [a, b, c] = t.map(|v| state.points()[v]);
+            return Err(fail(
+                ErrorKind::Geometry,
+                format!(
+                    "facet {k} ({a:?} {b:?} {c:?}) is missing and refining it would split a frozen segment"
+                ),
+            ));
         }
         if missing_segments.is_empty() && missing_tris.is_empty() {
             let bound = state.options.max_radius_edge;

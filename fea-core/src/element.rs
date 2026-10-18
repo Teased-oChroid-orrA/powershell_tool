@@ -27,9 +27,13 @@ pub enum ElementKind {
     /// Triangular prism (VTK wedge): the transition between hexahedra and the triangles of an extruded unstructured region.
     Wedge6,
     Wedge15,
+    /// Five-node pyramid (VTK type 14): a quadrilateral base (bilinear, like a hexahedron's face) and four triangular sides
+    /// (linear, like a tetrahedron's face), so it joins a kept hexahedron to tetrahedra face-conforming. Rational shape functions
+    /// (Bedrosian); the apex is a singular point of the map and is never a quadrature point.
+    Pyramid5,
 }
 
-pub const ALL_KINDS: [ElementKind; 12] = [
+pub const ALL_KINDS: [ElementKind; 13] = [
     ElementKind::Tri3,
     ElementKind::Tri6,
     ElementKind::Quad4,
@@ -42,6 +46,7 @@ pub const ALL_KINDS: [ElementKind; 12] = [
     ElementKind::Hex27,
     ElementKind::Wedge6,
     ElementKind::Wedge15,
+    ElementKind::Pyramid5,
 ];
 
 impl ElementKind {
@@ -66,6 +71,7 @@ impl ElementKind {
             Self::Hex27 => 27,
             Self::Wedge6 => 6,
             Self::Wedge15 => 15,
+            Self::Pyramid5 => 5,
         }
     }
 
@@ -76,6 +82,7 @@ impl ElementKind {
             Self::Tri3 | Self::Tri6 => 0.5,
             Self::Tet4 | Self::Tet10 => 1.0 / 6.0,
             Self::Wedge6 | Self::Wedge15 => 1.0,
+            Self::Pyramid5 => 4.0 / 3.0,
             Self::Quad4 | Self::Quad8 | Self::Quad9 => 4.0,
             Self::Hex8 | Self::Hex20 | Self::Hex27 => 8.0,
         }
@@ -90,6 +97,7 @@ impl ElementKind {
         match self {
             Self::Tri3 | Self::Tri6 => 3,
             Self::Quad4 | Self::Quad8 | Self::Quad9 | Self::Tet4 | Self::Tet10 => 4,
+            Self::Pyramid5 => 5,
             Self::Wedge6 | Self::Wedge15 => 6,
             _ => 8,
         }
@@ -110,6 +118,7 @@ impl ElementKind {
             Self::Hex27 => 29,
             Self::Wedge6 => 13,
             Self::Wedge15 => 26,
+            Self::Pyramid5 => 14,
         }
     }
 
@@ -128,12 +137,13 @@ impl ElementKind {
             Self::Hex27 => &HEX27,
             Self::Wedge6 => &WEDGE15[..6],
             Self::Wedge15 => &WEDGE15,
+            Self::Pyramid5 => &PYRAMID5,
         }
     }
 
     /// Tabulated shape functions and quadrature (computed on first use).
     pub fn table(self) -> &'static ShapeTable {
-        static TABLES: [OnceLock<ShapeTable>; 12] = [const { OnceLock::new() }; 12];
+        static TABLES: [OnceLock<ShapeTable>; 13] = [const { OnceLock::new() }; 13];
         let idx = ALL_KINDS.iter().position(|k| *k == self).unwrap();
         TABLES[idx].get_or_init(|| ShapeTable::build(self))
     }
@@ -145,7 +155,7 @@ impl ElementKind {
         if !self.is_simplex() {
             return self.table();
         }
-        static MASS: [OnceLock<ShapeTable>; 12] = [const { OnceLock::new() }; 12];
+        static MASS: [OnceLock<ShapeTable>; 13] = [const { OnceLock::new() }; 13];
         let idx = ALL_KINDS.iter().position(|k| *k == self).unwrap();
         MASS[idx].get_or_init(|| ShapeTable::build_with(self, mass_quadrature(self)))
     }
@@ -161,6 +171,7 @@ impl ElementKind {
             Self::Quad9 | Self::Hex27 => lagrange_shape(self, xi, &mut n, &mut dn),
             Self::Quad8 | Self::Hex20 => serendipity_shape(self, xi, &mut n, &mut dn),
             Self::Wedge6 | Self::Wedge15 => wedge_shape(self, xi, &mut n, &mut dn),
+            Self::Pyramid5 => pyramid_shape(xi, &mut n, &mut dn),
         }
         (n, dn)
     }
@@ -242,6 +253,28 @@ const WEDGE15: [[f64; 3]; 15] = [
     [1., 0., 0.],
     [0., 1., 0.],
 ];
+
+/// Pyramid nodes (VTK order): the base corners counter-clockwise seen from the apex side (so the base normal points at the apex),
+/// then the apex. The base is the square `[-1, 1]^2` at `zeta = 0`, the apex is `(0, 0, 1)`; the section at height `zeta` is
+/// `|xi|, |eta| <= 1 - zeta`.
+const PYRAMID5: [[f64; 3]; 5] = [[-1., -1., 0.], [1., -1., 0.], [1., 1., 0.], [-1., 1., 0.], [0., 0., 1.]];
+
+/// Rational pyramid functions (Bedrosian, 1992): `N_i = 1/4 [(1 + s_i xi)(1 + t_i eta) - zeta + s_i t_i xi eta zeta / (1 - zeta)]`
+/// for the base corners `(s_i, t_i)`, `N_5 = zeta`. They reproduce linear fields, are bilinear on the base (a hexahedron's face)
+/// and linear on each triangular side (a tetrahedron's face). At the apex the quotient is the limit along the axis.
+fn pyramid_shape(xi: [f64; 3], n: &mut [f64; MAX_NODES], dn: &mut [[f64; 3]; MAX_NODES]) {
+    let [x, y, z] = xi;
+    let r = 1.0 - z;
+    // g = x y z / (1 - z) and its derivatives; on the axis (x = y = 0) and at the apex they are the limits.
+    let (g, gx, gy, gz) = if r.abs() < 1e-14 { (0.0, 0.0, 0.0, 0.0) } else { (x * y * z / r, y * z / r, x * z / r, x * y / (r * r)) };
+    for (a, &(s, t)) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].iter().enumerate() {
+        let st = s * t;
+        n[a] = 0.25 * ((1.0 + s * x) * (1.0 + t * y) - z + st * g);
+        dn[a] = [0.25 * (s * (1.0 + t * y) + st * gx), 0.25 * (t * (1.0 + s * x) + st * gy), 0.25 * (-1.0 + st * gz)];
+    }
+    n[4] = z;
+    dn[4] = [0.0, 0.0, 1.0];
+}
 
 /// Triangular prism: barycentric coordinates `L` of the unit triangle times the axial coordinate `zeta` in `[-1, 1]`.
 /// Wedge6 `N = L_i (1 + s zeta) / 2`; Wedge15 corners `N = 1/2 L_i (2 L_i - 1)(1 + s zeta) - 1/2 L_i (1 - zeta^2)`, in-plane
@@ -587,7 +620,26 @@ fn quadrature(kind: ElementKind) -> (Vec<[f64; 3]>, Vec<f64>) {
         // triangle (collapsed Gauss, degree 2 / 4) times Gauss-Legendre along the axis: exact for the mass products
         ElementKind::Wedge6 => wedge_rule(2, &GL2),
         ElementKind::Wedge15 => wedge_rule(3, &GL3),
+        // collapsed hexahedron, 3 x 3 x 3: the shape functions are rational, so no rule is exact; this one is converged to
+        // far below the discretization error on the elements that occur (checked against 8 x 8 x 8 in the tests)
+        ElementKind::Pyramid5 => pyramid_rule(&GL3),
     }
+}
+
+/// Collapsed Gauss rule of the pyramid: `zeta = (1 + c) / 2`, `xi = a (1 - zeta)`, `eta = b (1 - zeta)`, weight
+/// `w_a w_b w_c (1 - zeta)^2 / 2`; the weights sum to the volume 4/3.
+fn pyramid_rule(rule: &[(f64, f64)]) -> (Vec<[f64; 3]>, Vec<f64>) {
+    let (mut xi, mut w) = (Vec::new(), Vec::new());
+    for &(c, wc) in rule {
+        let z = 0.5 * (1.0 + c);
+        for &(b, wb) in rule {
+            for &(a, wa) in rule {
+                xi.push([a * (1.0 - z), b * (1.0 - z), z]);
+                w.push(wa * wb * wc * (1.0 - z) * (1.0 - z) * 0.5);
+            }
+        }
+    }
+    (xi, w)
 }
 
 #[cfg(test)]

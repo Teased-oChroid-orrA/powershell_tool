@@ -12,7 +12,8 @@ fn skew(p: [f64; 3]) -> [f64; 3] {
 #[test]
 fn a_linear_field_has_the_same_stress_at_every_located_point_for_every_element_type() {
     let h = [[1.0e-3, 4.0e-4, -2.0e-4], [-3.0e-4, 2.0e-3, 5.0e-4], [2.0e-4, -1.0e-4, 8.0e-4]];
-    for kind in ALL_KINDS {
+    // a pyramid has no grid of its own (tests/pyramid.rs covers it in a hybrid mesh)
+    for kind in ALL_KINDS.into_iter().filter(|k| *k != fea_core::ElementKind::Pyramid5) {
         let d = kind.dim();
         let physics = if d == 3 { Physics::Solid } else { Physics::PlaneStress { thickness: 0.5 } };
         let div = if d == 2 { [3, 3, 1] } else { [2, 2, 2] };
