@@ -33,6 +33,9 @@ pub struct RefineOptions {
     /// Passes of edge collapse after the splitting loop (interior vertices only; new edges stay within `max_length`);
     /// `0` disables it. The refinement alone never coarsens.
     pub coarsen_passes: usize,
+    /// Passes at the start in which only boundary edges that are too long are split (each one directly, not through its
+    /// terminal edge), so the boundary already follows the metric before the volume is refined; `0` disables it.
+    pub boundary_first_passes: usize,
 }
 impl Default for RefineOptions {
     fn default() -> Self {
@@ -43,6 +46,7 @@ impl Default for RefineOptions {
             flips: Some(FlipOptions::default()),
             smooth_passes: 8,
             coarsen_passes: 10,
+            boundary_first_passes: 0,
         }
     }
 }
@@ -168,7 +172,8 @@ pub fn refine(
         }
     };
     let mut current = top.clone();
-    for _ in 0..options.max_passes {
+    for pass_index in 0..options.max_passes {
+        let boundary_only = pass_index < options.boundary_first_passes;
         // Long edges, longest first, each with the cells around it.
         let mut ring = BTreeMap::<[usize; 2], Vec<usize>>::new();
         for (i, t) in cells.iter().enumerate() {
@@ -186,6 +191,29 @@ pub fn refine(
             })
             .filter(|(l, _)| *l > options.max_length)
             .collect();
+        if boundary_only {
+            // Boundary edges: those of a face used by exactly one cell.
+            let mut face_use = BTreeMap::<[usize; 3], usize>::new();
+            for t in &cells {
+                for f in [[t[0], t[1], t[2]], [t[0], t[1], t[3]], [t[0], t[2], t[3]], [t[1], t[2], t[3]]] {
+                    let mut k = f;
+                    k.sort_unstable();
+                    *face_use.entry(k).or_default() += 1;
+                }
+            }
+            let mut on_boundary = BTreeSet::<[usize; 2]>::new();
+            for (f, n) in &face_use {
+                if *n == 1 {
+                    on_boundary.insert(edge_key(f[0], f[1]));
+                    on_boundary.insert(edge_key(f[0], f[2]));
+                    on_boundary.insert(edge_key(f[1], f[2]));
+                }
+            }
+            long.retain(|(_, e)| on_boundary.contains(e));
+            if long.is_empty() {
+                continue;
+            }
+        }
         if long.is_empty() {
             report.converged = true;
             break;
@@ -224,6 +252,9 @@ pub fn refine(
             let mut edge = start;
             let mut guard = 0;
             let [a, b] = loop {
+                if boundary_only {
+                    break edge;
+                }
                 let here = measure(edge);
                 let longer = ring[&edge]
                     .iter()
@@ -552,6 +583,60 @@ mod tests {
         }
     }
     #[test]
+    fn boundary_first_refinement_with_flat_flips_converges_with_good_cells_at_ten_to_one() {
+        // The combination that fixes strong anisotropy: boundary edges follow the metric first, flat-boundary flips repair the
+        // boundary triangulation. Default options leave the same field unconverged with a worst cell near 1e-27 (Phase 86/89).
+        let bounds = MetricBounds::new(0.001, 10., 1000.).unwrap();
+        let field = |p: Point| {
+            let hx = 0.04 + 0.7 * (p[0] - 0.5).abs();
+            Metric::from_sizes([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]], [hx.min(0.4), 0.4, 0.4])
+        };
+        let options = RefineOptions { max_passes: 60, boundary_first_passes: 6, flips: Some(FlipOptions { planar_boundary: true, ..FlipOptions::default() }), ..RefineOptions::default() };
+        let (out, r) = refine(&cube(), &field, &bounds, options).unwrap();
+        let mut q = q_unsorted(&out, &field);
+        q.sort_by(f64::total_cmp);
+        eprintln!("10:1 boundary-first + flat flips: {} cells, {} passes, min {:.3}, median {:.3}", q.len(), r.passes, q[0], q[q.len() / 2]);
+        assert!(r.converged, "{r:?}");
+        assert!(q[0] > 0.2, "worst cell {}", q[0]);
+        assert!(q.iter().all(|x| *x >= 0.1));
+        assert!(r.edges_in_band_after > 0.7, "band {}", r.edges_in_band_after);
+        assert!((volume(&out) - 1.).abs() < 1e-12 && (boundary_area(&out) - 6.).abs() < 1e-12);
+        for v in out.boundary().iter().flatten() {
+            let p = out.points()[*v];
+            assert!((0..3).any(|k| p[k] == 0. || p[k] == 1.), "boundary vertex left the cube surface");
+        }
+        // Without the boundary-first passes the same flips alone do not converge on this field.
+        let flips_only = RefineOptions { boundary_first_passes: 0, max_passes: 20, ..options };
+        let (_, r0) = refine(&cube(), &field, &bounds, flips_only).unwrap();
+        assert!(!r0.converged || r0.min_quality_after < q[0] / 10.0, "{r0:?}");
+    }
+
+    #[test]
+    #[ignore = "study: quality against the anisotropy ratio, default vs boundary-first + flat-boundary flips"]
+    fn quality_against_the_anisotropy_ratio() {
+        let bounds = MetricBounds::new(0.001, 10., 1000.).unwrap();
+        for ratio in [2.0f64, 4.0, 6.0, 10.0, 15.0, 20.0, 40.0] {
+            let field = |p: Point| {
+                let hx = 0.4 / ratio + 0.7 * (p[0] - 0.5).abs();
+                Metric::from_sizes([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]], [hx.min(0.4), 0.4, 0.4])
+            };
+            for (name, options) in [
+                ("default", RefineOptions { max_passes: 60, ..RefineOptions::default() }),
+                ("boundary-first 6 + flat flips", RefineOptions { max_passes: 60, boundary_first_passes: 6, flips: Some(FlipOptions { planar_boundary: true, ..FlipOptions::default() }), ..RefineOptions::default() }),
+            ] {
+                match refine(&cube(), &field, &bounds, options) {
+                    Ok((out, r)) => {
+                        let mut q = q_unsorted(&out, &field);
+                        q.sort_by(f64::total_cmp);
+                        eprintln!("ratio {ratio:>4} {name:<30}: {:>5} cells, passes {:>2}, converged {:<5}, band {:.2}, min {:.2e}, p1 {:.3}, median {:.3}, below 0.1: {}", q.len(), r.passes, r.converged, r.edges_in_band_after, q[0], q[q.len() / 100], q[q.len() / 2], q.iter().filter(|x| **x < 0.1).count());
+                    }
+                    Err(e) => eprintln!("ratio {ratio:>4} {name:<30}: {e:?}"),
+                }
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "study: which stage creates the slivers at 10:1"]
     fn which_stage_creates_the_slivers_at_strong_anisotropy() {
         let bounds = MetricBounds::new(0.01, 10., 100.).unwrap();
@@ -565,6 +650,8 @@ mod tests {
             ("no coarsening", RefineOptions { max_passes: 40, coarsen_passes: 0, ..RefineOptions::default() }),
             ("no smoothing, no coarsening", RefineOptions { max_passes: 40, smooth_passes: 0, coarsen_passes: 0, ..RefineOptions::default() }),
             ("planar boundary flips", RefineOptions { max_passes: 40, flips: Some(FlipOptions { planar_boundary: true, ..FlipOptions::default() }), ..RefineOptions::default() }),
+            ("boundary first 6 + planar", RefineOptions { max_passes: 40, boundary_first_passes: 6, flips: Some(FlipOptions { planar_boundary: true, ..FlipOptions::default() }), ..RefineOptions::default() }),
+            ("boundary first 12 + planar", RefineOptions { max_passes: 40, boundary_first_passes: 12, flips: Some(FlipOptions { planar_boundary: true, ..FlipOptions::default() }), ..RefineOptions::default() }),
             ("splits only", RefineOptions { max_passes: 40, smooth_passes: 0, coarsen_passes: 0, flips: None, ..RefineOptions::default() }),
         ];
         for (name, options) in variants {
