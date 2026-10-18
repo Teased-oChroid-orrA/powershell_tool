@@ -15,7 +15,7 @@ fn main() {
 }
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
-    let usage = "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface] [--pcurve-audit] [--finite-arcs] [--repair-orientation] [--plc] [--clean-shell] [--refine-shell] [--conform [--conform-max-steiner N] [--conform-missing-only] [--conform-radius-edge B] [--conform-reconnect]] [--max-line-mm MM] [--chart-quality DEG] [--grade DEG[,FLOOR_MM]] [--star-seed X,Y,Z] [--trial-kernel] (kernel coordinates in mm)";
+    let usage = "usage: step-inventory FILE.step [--analytic|--surface|--canonical-surface] [--pcurve-audit] [--finite-arcs] [--repair-orientation] [--plc] [--clean-shell] [--refine-shell] [--conform [--conform-max-steiner N] [--conform-missing-only] [--conform-radius-edge B] [--conform-reconnect]] [--geometry-tolerance MM] [--max-line-mm MM] [--chart-quality DEG] [--grade DEG[,FLOOR_MM]] [--star-seed X,Y,Z] [--trial-kernel] (kernel coordinates in mm)";
     let path = args.next().ok_or(usage)?;
     if path == "--help" {
         println!("{usage}");
@@ -36,6 +36,7 @@ fn run() -> Result<(), String> {
     let mut repair_orientation = false;
     let mut finite_arcs = false;
     let mut max_line_mm = None;
+    let mut geometry_tolerance_mm = 1e-7;
     let mut chart_quality = None;
     let mut grade: Option<(f64, f64)> = None;
     while let Some(flag) = args.next() {
@@ -44,6 +45,8 @@ fn run() -> Result<(), String> {
         } else if flag == "--finite-arcs" {
             pcurve_audit = true;
             finite_arcs = true;
+        } else if flag == "--geometry-tolerance" {
+            geometry_tolerance_mm = args.next().ok_or(usage)?.to_string_lossy().parse::<f64>().map_err(|e| e.to_string())?;
         } else if flag == "--max-line-mm" {
             max_line_mm = Some(args.next().ok_or(usage)?.to_string_lossy().parse::<f64>().map_err(|e| e.to_string())?);
         } else if flag == "--chart-quality" {
@@ -226,7 +229,7 @@ fn run() -> Result<(), String> {
     }
     if mode > 0 {
         use solid_kernel::analytic_step::{AnalyticModel, Options};
-        let model = AnalyticModel::read(&result, Options { max_line_mm, ..Options::default() }).map_err(|e| e.to_string())?;
+        let model = AnalyticModel::read(&result, Options { max_line_mm, geometry_tolerance_mm, ..Options::default() }).map_err(|e| e.to_string())?;
         let model = if let Some((angle, floor)) = grade {
             let (g, r) = model
                 .graded(solid_kernel::chart_grade::GradeOptions { min_angle_deg: angle, floor_mm: floor, ..Default::default() }, 50_000_000)

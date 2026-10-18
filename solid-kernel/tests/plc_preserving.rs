@@ -204,7 +204,7 @@ fn grid_region(n: usize, height: f64) -> (Vec<V3>, Vec<[usize; 3]>, Vec<bool>, f
     let block_centre = [0.75, 0.5, 0.5];
     let mut facets = Vec::new();
     let mut frozen = Vec::new();
-    let mut add = |v: &Vec<V3>,
+    let add = |v: &Vec<V3>,
                    t: [usize; 3],
                    toward: V3,
                    pyramid: bool,

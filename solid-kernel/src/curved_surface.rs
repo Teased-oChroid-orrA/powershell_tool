@@ -72,7 +72,7 @@ impl Surface {
     /// The periods of the two raw coordinates (`None`: not periodic).
     pub(crate) fn periods(&self) -> [Option<f64>; 2] {
         match self {
-            Self::Plane(_) | Self::Sphere { .. } => [None, None],
+            Self::Plane(_) | Self::Sphere { .. } | Self::Nurbs(_) => [None, None],
             Self::Cylinder { radius, .. } => [Some(radius * TAU), None],
             Self::Cone { semi_angle, .. } => [Some(TAU * semi_angle.sin()), None],
             Self::Torus { major, minor, .. } => [
@@ -88,7 +88,7 @@ impl Surface {
             return None;
         }
         let r = match self {
-            Self::Plane(_) | Self::Cylinder { .. } | Self::Sphere { .. } => {
+            Self::Plane(_) | Self::Cylinder { .. } | Self::Sphere { .. } | Self::Nurbs(_) => {
                 return self.project(p).map(|q| q.chart)
             }
             Self::Cone {
@@ -157,6 +157,7 @@ impl Surface {
     /// Distance of a world point from the surface.
     pub(crate) fn residual_curved(&self, p: V3) -> Option<f64> {
         let r = match self {
+            Self::Nurbs(n) => n.closest(p)?.1,
             Self::Sphere { frame, radius } => (norm(sub(p, frame.origin)) - radius).abs(),
             Self::Cone {
                 frame,
@@ -182,7 +183,25 @@ impl Surface {
         };
         r.is_finite().then_some(r)
     }
+    /// Distance of a world point from the surface, for every kind.
+    pub(crate) fn distance(&self, p: V3) -> Option<f64> {
+        match self {
+            Self::Plane(f) => Some(dot(sub(p, f.origin), f.z).abs()),
+            Self::Cylinder { frame, radius } => {
+                let d = sub(p, frame.origin);
+                Some((dot(d, frame.x).hypot(dot(d, frame.y)) - radius).abs())
+            }
+            _ => self.residual_curved(p),
+        }
+    }
     pub(crate) fn project_curved(&self, p: V3) -> Option<Projection> {
+        if let Self::Nurbs(n) = self {
+            let (uv, residual_mm) = n.closest(p)?;
+            return Some(Projection {
+                chart: n.chart_of_param(uv),
+                residual_mm,
+            });
+        }
         let residual_mm = self.residual_curved(p)?;
         let chart = match self {
             Self::Sphere { frame, radius } => {
@@ -212,6 +231,15 @@ impl Surface {
     }
     pub(crate) fn point_curved(&self, chart: [f64; 2]) -> Option<V3> {
         let p = match self {
+            Self::Nurbs(n) => {
+                let uv = n.param_of_chart(chart);
+                // a point on the boundary of the parameter rectangle may round a few ulp outside it
+                let slack = |k: usize| 1e-9 * (n.domain[k][1] - n.domain[k][0]);
+                if (0..2).any(|k| uv[k] < n.domain[k][0] - slack(k) || uv[k] > n.domain[k][1] + slack(k)) {
+                    return None;
+                }
+                n.surface.evaluate(n.clamp(uv)).ok()?
+            }
             Self::Sphere { frame, radius } => {
                 let rho2 = chart[0] * chart[0] + chart[1] * chart[1];
                 let uz = (4. * radius * radius - rho2) / (4. * radius * radius + rho2);
@@ -258,9 +286,28 @@ impl Surface {
         };
         finite(p).then_some(p)
     }
+    /// The unit normal `S_u x S_v` at a chart point of a spline surface (the chart's counter-clockwise side).
+    pub(crate) fn spline_normal(&self, chart: [f64; 2]) -> Option<V3> {
+        let Self::Nurbs(n) = self else { return None };
+        let uv = n.clamp(n.param_of_chart(chart));
+        let (_, du, dv) = n.partials(uv)?;
+        let c = cross(du, dv);
+        let l = norm(c);
+        (l > 0.).then(|| mul(c, 1. / l))
+    }
     /// Geometric (not sense-adjusted) unit normal at a world point on the surface, pointing away from the axis or centre.
     pub fn normal_at_world(&self, p: V3) -> Option<V3> {
         let n = match self {
+            Self::Nurbs(n) => {
+                let (uv, _) = n.closest(p)?;
+                let (_, du, dv) = n.partials(uv)?;
+                let c = cross(du, dv);
+                let l = norm(c);
+                if l == 0. {
+                    return None;
+                }
+                mul(c, 1. / l)
+            }
             Self::Plane(f) => f.z,
             Self::Cylinder { frame, .. } => {
                 let d = sub(p, frame.origin);
@@ -399,6 +446,188 @@ impl Surface {
             },
             radius: *radius,
         })
+    }
+}
+
+/// A face on a (rational) B-spline surface. The chart is the parameter rectangle scaled by the surface's mean metric
+/// (`X = su (u - u0)`, `Y = sv (v - v0)`), so chart lengths are roughly millimetres; it is not conformal. World points are
+/// located on the surface by a damped Gauss-Newton search started from the nearest node of a parameter grid.
+#[derive(Debug)]
+pub struct SplineSurface {
+    surface: crate::nurbs_surface::NurbsSurface,
+    domain: [[f64; 2]; 2],
+    scale: [f64; 2],
+    grid: Vec<([f64; 2], V3)>,
+}
+
+impl SplineSurface {
+    pub(crate) fn new(surface: crate::nurbs_surface::NurbsSurface) -> Result<Self, Error> {
+        let domain = surface.domain();
+        let grid_n = [24usize, 24];
+        let mut grid = Vec::with_capacity((grid_n[0] + 1) * (grid_n[1] + 1));
+        for j in 0..=grid_n[1] {
+            for i in 0..=grid_n[0] {
+                let uv = [
+                    domain[0][0] + (domain[0][1] - domain[0][0]) * i as f64 / grid_n[0] as f64,
+                    domain[1][0] + (domain[1][1] - domain[1][0]) * j as f64 / grid_n[1] as f64,
+                ];
+                let p = surface.evaluate(uv).map_err(|e| fail(ErrorKind::Geometry, &e.detail))?;
+                grid.push((uv, p));
+            }
+        }
+        // mean metric along each parameter: the mean length of the grid's parameter-line segments per unit parameter
+        let mut scale = [0.0; 2];
+        let mut count = [0usize; 2];
+        for j in 0..=grid_n[1] {
+            for i in 0..=grid_n[0] {
+                let here = grid[j * (grid_n[0] + 1) + i];
+                if i < grid_n[0] {
+                    let next = grid[j * (grid_n[0] + 1) + i + 1];
+                    scale[0] += norm(sub(next.1, here.1)) / (next.0[0] - here.0[0]);
+                    count[0] += 1;
+                }
+                if j < grid_n[1] {
+                    let next = grid[(j + 1) * (grid_n[0] + 1) + i];
+                    scale[1] += norm(sub(next.1, here.1)) / (next.0[1] - here.0[1]);
+                    count[1] += 1;
+                }
+            }
+        }
+        let scale = [scale[0] / count[0] as f64, scale[1] / count[1] as f64];
+        if !(scale[0].is_finite() && scale[1].is_finite() && scale[0] > 0. && scale[1] > 0.) {
+            return Err(fail(ErrorKind::Geometry, "a degenerate spline surface (zero metric)"));
+        }
+        Ok(Self { surface, domain, scale, grid })
+    }
+    fn param_of_chart(&self, c: [f64; 2]) -> [f64; 2] {
+        [self.domain[0][0] + c[0] / self.scale[0], self.domain[1][0] + c[1] / self.scale[1]]
+    }
+    fn chart_of_param(&self, uv: [f64; 2]) -> [f64; 2] {
+        [self.scale[0] * (uv[0] - self.domain[0][0]), self.scale[1] * (uv[1] - self.domain[1][0])]
+    }
+    fn clamp(&self, uv: [f64; 2]) -> [f64; 2] {
+        [uv[0].clamp(self.domain[0][0], self.domain[0][1]), uv[1].clamp(self.domain[1][0], self.domain[1][1])]
+    }
+    /// Point and first partials by central differences (one-sided at the domain's edge): derivatives of the exact evaluator
+    /// refuse at C0 knots, and the search must run across them.
+    fn partials(&self, uv: [f64; 2]) -> Option<(V3, V3, V3)> {
+        let p = self.surface.evaluate(uv).ok()?;
+        let mut d = [[0.0; 3]; 2];
+        for k in 0..2 {
+            let span = self.domain[k][1] - self.domain[k][0];
+            let h = 1e-6 * span;
+            let (lo, hi) = ((uv[k] - h).max(self.domain[k][0]), (uv[k] + h).min(self.domain[k][1]));
+            let (mut a, mut b) = (uv, uv);
+            a[k] = lo;
+            b[k] = hi;
+            let (pa, pb) = (self.surface.evaluate(a).ok()?, self.surface.evaluate(b).ok()?);
+            d[k] = mul(sub(pb, pa), 1. / (hi - lo));
+        }
+        Some((p, d[0], d[1]))
+    }
+    /// The parameter of the surface point nearest `p` and the distance.
+    fn closest(&self, p: V3) -> Option<([f64; 2], f64)> {
+        self.candidates(p)?.into_iter().next()
+    }
+    /// The distinct nearest points of the surface to `p` (parameter and distance), nearest first, within a micron of the best.
+    /// The search refines from several of the nearest grid nodes: a surface closed in a parameter has coincident points on
+    /// both sides of its seam, and the clamped search from one side cannot cross it.
+    fn candidates(&self, p: V3) -> Option<Vec<([f64; 2], f64)>> {
+        const STARTS: usize = 6;
+        let mut nodes: Vec<(f64, [f64; 2])> = self.grid.iter().map(|g| (norm(sub(g.1, p)), g.0)).collect();
+        let k = STARTS.min(nodes.len());
+        nodes.select_nth_unstable_by(k - 1, |a, b| a.0.total_cmp(&b.0));
+        let mut found = Vec::with_capacity(k);
+        for &(d, uv) in &nodes[..k] {
+            found.push(self.refine(p, uv, d)?);
+        }
+        found.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let best = found[0].1;
+        let span = [self.domain[0][1] - self.domain[0][0], self.domain[1][1] - self.domain[1][0]];
+        let mut out: Vec<([f64; 2], f64)> = Vec::new();
+        for f in found {
+            let distinct = out.iter().all(|o| (o.0[0] - f.0[0]).abs() > 1e-7 * span[0] || (o.0[1] - f.0[1]).abs() > 1e-7 * span[1]);
+            if f.1 <= best + 1e-3 && distinct {
+                out.push(f);
+            }
+        }
+        Some(out)
+    }
+    /// The chart points of a closed sequence of world points on the surface (a face boundary loop), continuing each one from
+    /// the previous: a point on a seam has one chart image per side of it, and the loop follows the image nearest the sample
+    /// before it. The first point has no predecessor, so each of its images is tried and the loop of least chart length kept.
+    pub(crate) fn chart_loop(&self, points: &[V3]) -> Option<Vec<[f64; 2]>> {
+        let first = self.candidates(*points.first()?)?;
+        let mut best: Option<(f64, Vec<[f64; 2]>)> = None;
+        for (uv0, _) in first {
+            let mut chart = vec![self.chart_of_param(uv0)];
+            for p in &points[1..] {
+                let hint = *chart.last().unwrap();
+                let mut found = self.candidates(*p)?;
+                // the continuation of the previous sample's own parameter is a candidate too
+                let hint_uv = self.param_of_chart(hint);
+                let hd = norm(sub(self.surface.evaluate(self.clamp(hint_uv)).ok()?, *p));
+                found.push(self.refine(*p, self.clamp(hint_uv), hd)?);
+                let nearest = found[0].1;
+                let pick = found
+                    .iter()
+                    .filter(|f| f.1 <= nearest + 1e-3)
+                    .map(|f| self.chart_of_param(f.0))
+                    .min_by(|a, b| {
+                        (a[0] - hint[0]).hypot(a[1] - hint[1]).total_cmp(&(b[0] - hint[0]).hypot(b[1] - hint[1]))
+                    })?;
+                chart.push(pick);
+            }
+            let n = chart.len();
+            let length: f64 = (0..n)
+                .map(|i| {
+                    let (a, b) = (chart[i], chart[(i + 1) % n]);
+                    (a[0] - b[0]).hypot(a[1] - b[1])
+                })
+                .sum();
+            if best.as_ref().map_or(true, |b| length < b.0) {
+                best = Some((length, chart));
+            }
+        }
+        best.map(|b| b.1)
+    }
+    /// Damped Gauss-Newton descent of the squared distance to `p` from `start` (at distance `start_d`).
+    fn refine(&self, p: V3, start: [f64; 2], start_d: f64) -> Option<([f64; 2], f64)> {
+        let mut uv = start;
+        let mut f = start_d * start_d;
+        for _ in 0..80 {
+            let (q, du, dv) = self.partials(uv)?;
+            let r = sub(q, p);
+            let (a, b, c) = (dot(du, du), dot(du, dv), dot(dv, dv));
+            let (g0, g1) = (dot(du, r), dot(dv, r));
+            let mu = 1e-9 * (a + c).max(1e-300);
+            let det = (a + mu) * (c + mu) - b * b;
+            if det.abs() < 1e-300 {
+                break;
+            }
+            let step = [-((c + mu) * g0 - b * g1) / det, -((a + mu) * g1 - b * g0) / det];
+            let mut t = 1.0;
+            let mut moved = false;
+            while t > 1e-6 {
+                let trial = self.clamp([uv[0] + t * step[0], uv[1] + t * step[1]]);
+                if let Ok(q2) = self.surface.evaluate(trial) {
+                    let f2 = norm(sub(q2, p)).powi(2);
+                    if f2 < f {
+                        let dx = (trial[0] - uv[0]).abs() / (self.domain[0][1] - self.domain[0][0]) + (trial[1] - uv[1]).abs() / (self.domain[1][1] - self.domain[1][0]);
+                        uv = trial;
+                        let improvement = f - f2;
+                        f = f2;
+                        moved = dx > 1e-15 && improvement > 1e-30 * (1. + f);
+                        break;
+                    }
+                }
+                t *= 0.5;
+            }
+            if !moved {
+                break;
+            }
+        }
+        Some((uv, f.sqrt()))
     }
 }
 

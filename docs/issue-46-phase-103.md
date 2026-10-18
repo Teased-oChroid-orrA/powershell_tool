@@ -1,0 +1,26 @@
+# Issue 46 — Phase 103: mapped-item assemblies and persistent face identity across files (#51)
+
+STEP is a standard, not a vendor format: two things a file from any CAD system can do that the native reader refused or could not follow.
+
+## Mapped items (`solid-kernel/src/step_assembly.rs`)
+
+STEP has two ways to place a part twice: a product structure (`NEXT_ASSEMBLY_USAGE_OCCURRENCE` with an item-defined transformation, Phase 95) and **representation maps**: a representation holds `MAPPED_ITEM`s, each naming a `REPRESENTATION_MAP(mapping_origin, mapped_representation)` and a target placement. `step_assembly::read` now reads the second form when the file has no assembly usage: the root is the representation that holds mapped items and is mapped by none; a mapped item places its map's representation by `T = Target * Origin^-1` (origin: the axis placement of the map, target: that of the item), recursively; a solid found in a representation sits at that representation's own placement. Refused, never guessed: a file with **both** a product structure and mapped items (which one carries the placements is the writer's decision), no or several root holders, a map that is not an `AXIS2_PLACEMENT_3D` origin, a degenerate frame, a cycle, different length units between holder and mapped representation, several solids at one instance, and nothing placed at all.
+
+Evidence (`tests/step_assembly.rs`, fixture `tests/data/assembly-mapped-items.step`, the OpenCASCADE box of Phase 95 with the instancing written as two mapped items of one map): the two instances get **exactly** the rotations, translations and extents that the NAUO fixture's two instances get; five structural refusals; and with `--features occt` the union of the placed extents and the unplaced part's own (OpenCASCADE returns the part as a root product of the file too) equals OpenCASCADE's bounding box to 1e-6. (A first draft of the fixture reused an entity id; OpenCASCADE 8.0.1 then crashed with SIGSEGV on the file. The shipped fixture has distinct ids.)
+
+## Persistent face identity (`solid-kernel/src/face_identity.rs`)
+
+A STEP entity id names a face only inside one physical file; a re-export or an edit renumbers everything (`EntityReference` carries the document fingerprint exactly for that reason). `AnalyticModel::face_signatures()` gives every face an id-independent **signature**: surface kind and its defining invariants oriented like the face (plane: outward normal and nearest point; cylinder/cone/torus: sign-normalised axis, the axis point nearest the origin, radius / half angle / radii; sphere: centre and radius), whether its outward normal points away from the axis (boss) or toward it (hole), the extent of its boundary samples, loops, edges, and the kinds of the faces around it. `associate(old, new, Tolerances)` matches in passes and never matches a face twice:
+
+1. **exact**: same invariants, extent and topology within `position_tol` (1e-5 mm default), same neighbour kinds (a re-export, or an edit that left the face alone);
+2. **modified**: the same underlying surface with another topology or extent (a hole added to a plate, a neighbour grown), the clearest overlap winning;
+3. **moved**: same kind, size and topology, displaced up to `search_radius` (5 mm default), reported with the displacement (a hole moved);
+4. otherwise **lost** / **added**; and a face equally well matched by several (a hole between two identical holes) is **ambiguous** with its candidates, not guessed.
+
+Signatures have a one-line text form (`encode` / `decode`, version 1) so a selection persists in a project file; `associate` takes any map from ids to signatures, so a stored selection is matched against a new model by decoding it into one.
+
+Evidence (`tests/face_identity.rs`, OpenCASCADE exports of a 40 x 30 x 10 plate with a 4 mm hole and edits of it): a text-renumbered re-export (every `#n` rewritten) associates all 7 faces exactly with the id mapping of the renumbering; the hole moved by 2 mm: the six plates exact, the cylinder `moved` by 2.000000 mm; the hole resized to 5 mm: the six plates kept, the cylinder `lost` and the new one `added` (a different size is a different feature); a second hole: the first hole exact, the new one added, top and bottom plates `modified` (one more loop); 2 mm thicker: bottom plate exact, top plate `moved` 2 mm, the four sides and the hole `modified`; a hole in the middle against two holes 5 mm to either side: `ambiguous` with both candidates (and lost + two added within a 4 mm search); every signature round-trips through its text.
+
+## Limits (recorded)
+
+Signatures cover the analytic faces the native reader imports (plane, cylinder, sphere, cone, torus); a spline-surface face has none. Identity is geometric: two faces that coincide in every invariant are indistinguishable (reported ambiguous); a face whose surface changed (a plane tilted) is `lost` and `added`, not followed; a topology edit that changes the neighbours of a face and its extent at once may not be followed. The tolerances are defaults, not derived from the model. Mapped-item nesting is read; mapped items inside a file that also has a product structure are refused. No Windows or hosted-CI evidence beyond the workflow runs listed in the Phase 100 follow-up.
