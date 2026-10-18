@@ -38,6 +38,16 @@ fn main() {
             Err(e) => eprintln!("{name}: fillet failed: {e}"),
         }
     }
+    // Surfaces of revolution and of linear extrusion: a spline profile turned about an axis, a spline outline pushed along one.
+    for (name, made) in [
+        ("vase", Brep::lathe_spline(&[[4., 0.], [6., 5.], [3., 10.], [5., 15.], [4.5, 20.]])),
+        ("wavy-prism", Brep::prism_spline(&[[0., 0.], [4., 3.], [9., 2.], [14., 4.], [20., 0.]], 8.)),
+    ] {
+        match made {
+            Ok(b) => shapes.push((name, b)),
+            Err(e) => eprintln!("{name}: {e}"),
+        }
+    }
     shapes.extend([
         ("tilted-hole", block.boolean(Bool::Cut, &Brep::cylinder([20., 15., -4.], 4., [0.5, 0.2, 1.], 40.)).unwrap()),
         ("t-junction", Brep::cylinder([0., 0., 0.], 6., [0., 0., 1.], 30.).boolean(Bool::Union, &Brep::cylinder([-10., 0., 15.], 4., [1., 0., 0.], 20.)).unwrap()),

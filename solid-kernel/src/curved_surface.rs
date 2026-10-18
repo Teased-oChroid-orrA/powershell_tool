@@ -72,7 +72,7 @@ impl Surface {
     /// The periods of the two raw coordinates (`None`: not periodic).
     pub(crate) fn periods(&self) -> [Option<f64>; 2] {
         match self {
-            Self::Plane(_) | Self::Sphere { .. } | Self::Nurbs(_) => [None, None],
+            Self::Plane(_) | Self::Sphere { .. } | Self::Param(_) => [None, None],
             Self::Cylinder { radius, .. } => [Some(radius * TAU), None],
             Self::Cone { semi_angle, .. } => [Some(TAU * semi_angle.sin()), None],
             Self::Torus { major, minor, .. } => [
@@ -88,7 +88,7 @@ impl Surface {
             return None;
         }
         let r = match self {
-            Self::Plane(_) | Self::Cylinder { .. } | Self::Sphere { .. } | Self::Nurbs(_) => {
+            Self::Plane(_) | Self::Cylinder { .. } | Self::Sphere { .. } | Self::Param(_) => {
                 return self.project(p).map(|q| q.chart)
             }
             Self::Cone {
@@ -157,7 +157,7 @@ impl Surface {
     /// Distance of a world point from the surface.
     pub(crate) fn residual_curved(&self, p: V3) -> Option<f64> {
         let r = match self {
-            Self::Nurbs(n) => n.closest(p)?.1,
+            Self::Param(n) => n.closest(p)?.1,
             Self::Sphere { frame, radius } => (norm(sub(p, frame.origin)) - radius).abs(),
             Self::Cone {
                 frame,
@@ -195,7 +195,7 @@ impl Surface {
         }
     }
     pub(crate) fn project_curved(&self, p: V3) -> Option<Projection> {
-        if let Self::Nurbs(n) = self {
+        if let Self::Param(n) = self {
             let (uv, residual_mm) = n.closest(p)?;
             return Some(Projection {
                 chart: n.chart_of_param(uv),
@@ -231,7 +231,7 @@ impl Surface {
     }
     pub(crate) fn point_curved(&self, chart: [f64; 2]) -> Option<V3> {
         let p = match self {
-            Self::Nurbs(n) => {
+            Self::Param(n) => {
                 let uv = n.param_of_chart(chart);
                 // a point on the boundary of the parameter rectangle may round a few ulp outside it
                 let slack = |k: usize| 1e-9 * (n.domain[k][1] - n.domain[k][0]);
@@ -288,7 +288,7 @@ impl Surface {
     }
     /// The unit normal `S_u x S_v` at a chart point of a spline surface (the chart's counter-clockwise side).
     pub(crate) fn spline_normal(&self, chart: [f64; 2]) -> Option<V3> {
-        let Self::Nurbs(n) = self else { return None };
+        let Self::Param(n) = self else { return None };
         let uv = n.clamp(n.param_of_chart(chart));
         let (_, du, dv) = n.partials(uv)?;
         let c = cross(du, dv);
@@ -298,7 +298,7 @@ impl Surface {
     /// Geometric (not sense-adjusted) unit normal at a world point on the surface, pointing away from the axis or centre.
     pub fn normal_at_world(&self, p: V3) -> Option<V3> {
         let n = match self {
-            Self::Nurbs(n) => {
+            Self::Param(n) => {
                 let (uv, _) = n.closest(p)?;
                 let (_, du, dv) = n.partials(uv)?;
                 let c = cross(du, dv);
@@ -449,12 +449,49 @@ impl Surface {
     }
 }
 
-/// A face on a (rational) B-spline surface. The chart is the parameter rectangle scaled by the surface's mean metric
-/// (`X = su (u - u0)`, `Y = sv (v - v0)`), so chart lengths are roughly millimetres; it is not conformal. World points are
-/// located on the surface by a damped Gauss-Newton search started from the nearest node of a parameter grid.
+/// How a parametric surface is evaluated.
+#[derive(Debug)]
+enum Geometry {
+    Nurbs(crate::nurbs_surface::NurbsSurface),
+    /// `S(a, t)` (STEP's order, which fixes the normal): the curve point at `t` turned by the angle `a` about the axis through
+    /// `origin` along the unit `axis`.
+    Revolution { curve: crate::nurbs::NurbsCurve, origin: V3, axis: V3 },
+    /// `S(t, h)`: the curve point at `t` moved by `h` along the unit `direction`, for `h` in `range`.
+    Extrusion { curve: crate::nurbs::NurbsCurve, direction: V3, range: [f64; 2] },
+}
+impl Geometry {
+    fn domain(&self) -> [[f64; 2]; 2] {
+        match self {
+            Self::Nurbs(s) => s.domain(),
+            Self::Revolution { curve, .. } => [[0., TAU], curve.domain()],
+            Self::Extrusion { curve, range, .. } => [curve.domain(), *range],
+        }
+    }
+    fn evaluate(&self, uv: [f64; 2]) -> Result<V3, Error> {
+        match self {
+            Self::Nurbs(s) => s.evaluate(uv),
+            Self::Revolution { curve, origin, axis } => {
+                let d = sub(curve.evaluate(uv[1])?, *origin);
+                // Rodrigues' rotation of `d` about `axis` by the angle `uv[1]`
+                let (s, c) = uv[0].sin_cos();
+                let turned = add(
+                    add(mul(d, c), mul(cross(*axis, d), s)),
+                    mul(*axis, dot(*axis, d) * (1. - c)),
+                );
+                Ok(add(*origin, turned))
+            }
+            Self::Extrusion { curve, direction, .. } => Ok(add(curve.evaluate(uv[0])?, mul(*direction, uv[1]))),
+        }
+    }
+}
+
+/// A face on a parametric surface: a (rational) B-spline surface, a B-spline curve revolved about an axis, or one moved along
+/// a direction. The chart is the parameter rectangle scaled by the surface's mean metric (`X = su (u - u0)`,
+/// `Y = sv (v - v0)`), so chart lengths are roughly millimetres; it is not conformal. World points are located on the surface
+/// by a damped Gauss-Newton search started from the nearest node of a parameter grid.
 #[derive(Debug)]
 pub struct SplineSurface {
-    surface: crate::nurbs_surface::NurbsSurface,
+    surface: Geometry,
     domain: [[f64; 2]; 2],
     scale: [f64; 2],
     grid: Vec<([f64; 2], V3)>,
@@ -462,6 +499,25 @@ pub struct SplineSurface {
 
 impl SplineSurface {
     pub(crate) fn new(surface: crate::nurbs_surface::NurbsSurface) -> Result<Self, Error> {
+        Self::from_geometry(Geometry::Nurbs(surface))
+    }
+    /// The surface swept by turning `curve` about the axis through `origin` along `axis` (any length).
+    pub(crate) fn revolution(curve: crate::nurbs::NurbsCurve, origin: V3, axis: V3) -> Result<Self, Error> {
+        let n = norm(axis);
+        if !(n.is_finite() && n > 0.) {
+            return Err(fail(ErrorKind::Geometry, "a revolution axis needs a direction"));
+        }
+        Self::from_geometry(Geometry::Revolution { curve, origin, axis: mul(axis, 1. / n) })
+    }
+    /// The surface swept by moving `curve` along `direction` (any length) over the heights `range` along it.
+    pub(crate) fn extrusion(curve: crate::nurbs::NurbsCurve, direction: V3, range: [f64; 2]) -> Result<Self, Error> {
+        let n = norm(direction);
+        if !(n.is_finite() && n > 0. && range[0].is_finite() && range[1].is_finite() && range[1] > range[0]) {
+            return Err(fail(ErrorKind::Geometry, "an extrusion needs a direction and a height range"));
+        }
+        Self::from_geometry(Geometry::Extrusion { curve, direction: mul(direction, 1. / n), range })
+    }
+    fn from_geometry(surface: Geometry) -> Result<Self, Error> {
         let domain = surface.domain();
         let grid_n = [24usize, 24];
         let mut grid = Vec::with_capacity((grid_n[0] + 1) * (grid_n[1] + 1));

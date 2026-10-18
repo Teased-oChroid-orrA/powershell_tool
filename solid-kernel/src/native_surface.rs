@@ -264,7 +264,7 @@ impl AnalyticModel {
                             surface,
                             crate::analytic_step::Surface::Plane(_)
                                 | crate::analytic_step::Surface::Cylinder { .. }
-                                | crate::analytic_step::Surface::Nurbs(_)
+                                | crate::analytic_step::Surface::Param(_)
                         ) =>
                     {
                         // The chart of a sphere, cone or torus is not the surface parameterization: take the normal at the

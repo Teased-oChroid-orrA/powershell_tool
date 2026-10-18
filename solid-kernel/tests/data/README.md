@@ -38,6 +38,10 @@ holes (`examples/write-shapes.rs`, tested by `tests/curved_edges.rs`).
 
 `cross-bore-filleted` (R8 x 30 cylinder, R3 cross bore, 0.5 fillets), `t-junction-filleted` (R6 cylinder, R4 branch, 1.0) and `tilted-hole-filleted` (the tilted-hole block, 0.5) come from `examples/write-shapes.rs`: the fillet along each intersection curve is a rational B-spline surface (degrees 2 x 13, C0 at every interior knot, closed in the second parameter). They need `geometry_tolerance_mm: 1e-4` (tested by `tests/spline_surfaces.rs`, `tests/face_identity.rs`).
 
+## Revolved and extruded splines
+
+`vase` (a B-spline profile through (4,0), (6,5), (3,10), (5,15), (4.5,20) turned about z: `SURFACE_OF_REVOLUTION`) and `wavy-prism` (an outline through (0,0), (4,3), (9,2), (14,4), (20,0) closed by its chord and extruded 8 mm: `SURFACE_OF_LINEAR_EXTRUSION`) come from `examples/write-shapes.rs` (`Brep::lathe_spline`, `Brep::prism_spline`); tested by `tests/swept_surfaces.rs` with `geometry_tolerance_mm: 1e-4`.
+
 ## Corpus scope and continuation
 
 The root [`nema17-motor-bracket.step`](../../../nema17-motor-bracket.step) has unknown exporter/provenance and explicitly declares millimetres; it is not established as NX/inches. Generated spline declaration/edge fixtures in Rust tests check their documented local contracts and do not automatically represent valid edited solids. Supported native diagnostic cases and refusals are indexed in the [support matrix](../../../docs/issue-46-native-support-matrix-2026-10-16.md). For current development/qualification and Claude Code continuation, use the [resume instructions](../../../docs/issue-46-resume.md) and [live pointer](../../../docs/issue-46-current.json).
