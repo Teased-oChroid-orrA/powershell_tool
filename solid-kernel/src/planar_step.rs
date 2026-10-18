@@ -201,7 +201,7 @@ impl AnalyticModel {
             .get(&face_id)
             .ok_or_else(|| fail(ErrorKind::Geometry, "unknown face"))?;
         let surface = self.surface(face_id).unwrap();
-        if !matches!(surface, Surface::Plane(_) | Surface::Sphere { .. }) {
+        if !matches!(surface, Surface::Plane(_) | Surface::Sphere { .. } | Surface::Nurbs(_)) {
             return Err(fail(
                 ErrorKind::Geometry,
                 "periodic/nonplanar trim charts are not implemented",
@@ -211,6 +211,7 @@ impl AnalyticModel {
         let mut remaining = max_checks;
         for bound in &face.bounds {
             let mut points = Vec::new();
+            let mut world = Vec::new();
             for usage in chart_usages(surface, bound) {
                 let samples = self.edge_points(usage.edge).unwrap();
                 remaining = remaining.checked_sub(samples.len() - 1).ok_or_else(|| {
@@ -224,6 +225,10 @@ impl AnalyticModel {
                     } else {
                         samples.len() - 1 - i
                     }];
+                    if matches!(surface, Surface::Nurbs(_)) {
+                        world.push(*p);
+                        continue;
+                    }
                     points.push(
                         surface
                             .project(*p)
@@ -233,6 +238,12 @@ impl AnalyticModel {
                             .chart,
                     );
                 }
+            }
+            if let Surface::Nurbs(n) = surface {
+                // a spline surface may be closed: follow each sample across its seam by continuity
+                points = n.chart_loop(&world).ok_or_else(|| {
+                    fail(ErrorKind::Geometry, "unresolved spline-surface projection")
+                })?;
             }
             if !bound.forward {
                 points.reverse();

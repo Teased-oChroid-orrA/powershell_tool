@@ -50,6 +50,8 @@ pub enum Kind {
     Sphere,
     Cone,
     Torus,
+    /// A B-spline surface: identified by its extent, loops and neighbours only.
+    Spline,
 }
 
 /// The id-independent description of one face.
@@ -115,6 +117,7 @@ impl FaceSignature {
                 "Sphere" => Kind::Sphere,
                 "Cone" => Kind::Cone,
                 "Torus" => Kind::Torus,
+                "Spline" => Kind::Spline,
                 other => return Err(fail(format!("unknown surface kind {other:?}"))),
             })
         };
@@ -197,6 +200,7 @@ impl AnalyticModel {
                     Surface::Sphere { .. } => Kind::Sphere,
                     Surface::Cone { .. } => Kind::Cone,
                     Surface::Torus { .. } => Kind::Torus,
+                Surface::Nurbs(_) => Kind::Spline,
                 },
             )
         };
@@ -231,6 +235,7 @@ impl AnalyticModel {
                 .find_map(|u| self.edge_points(u.edge).and_then(|p| p.first().copied()))
                 .ok_or_else(|| fail("a face without edges"))?;
             let (kind, direction, anchor, size, size2, convex) = match surface {
+                Surface::Nurbs(_) => (Kind::Spline, [0.; 3], [0.; 3], 0., 0., true),
                 Surface::Plane(fr) => {
                     let n = mul(fr.z, sense);
                     (Kind::Plane, n, mul(n, dot(n, fr.origin)), 0., 0., true)

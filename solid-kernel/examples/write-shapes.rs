@@ -27,6 +27,17 @@ fn main() {
     // Intersections that are not circles or lines (tests/curved_edges.rs).
     let rot = |b: Brep| b; // placeholder to keep the list readable
     let _ = rot;
+    // Faces on spline surfaces: the rolling-ball fillets of edges that are not lines or circles.
+    for (name, brep, r) in [
+        ("t-junction-filleted", Brep::cylinder([0., 0., 0.], 6., [0., 0., 1.], 30.).boolean(Bool::Union, &Brep::cylinder([-10., 0., 15.], 4., [1., 0., 0.], 20.)).unwrap(), 1.0),
+        ("tilted-hole-filleted", block.boolean(Bool::Cut, &Brep::cylinder([20., 15., -4.], 4., [0.5, 0.2, 1.], 40.)).unwrap(), 0.5),
+        ("cross-bore-filleted", Brep::cylinder([0., 0., 0.], 8., [0., 0., 1.], 30.).boolean(Bool::Cut, &Brep::cylinder([-10., 0., 15.], 3., [1., 0., 0.], 20.)).unwrap(), 0.5),
+    ] {
+        match brep.fillet_all(r) {
+            Ok(b) => shapes.push((name, b)),
+            Err(e) => eprintln!("{name}: fillet failed: {e}"),
+        }
+    }
     shapes.extend([
         ("tilted-hole", block.boolean(Bool::Cut, &Brep::cylinder([20., 15., -4.], 4., [0.5, 0.2, 1.], 40.)).unwrap()),
         ("t-junction", Brep::cylinder([0., 0., 0.], 6., [0., 0., 1.], 30.).boolean(Bool::Union, &Brep::cylinder([-10., 0., 15.], 4., [1., 0., 0.], 20.)).unwrap()),

@@ -3,7 +3,7 @@
 //! `docs/issue-46-phase-103.md`.
 
 use solid_kernel::analytic_step::{AnalyticModel, Options};
-use solid_kernel::face_identity::{associate, Association, FaceSignature, Kind, Tolerances};
+use solid_kernel::face_identity::{associate, FaceSignature, Kind, Tolerances};
 use solid_kernel::step::{inventory, Limits};
 use std::collections::BTreeMap;
 
@@ -177,4 +177,44 @@ fn signatures_survive_their_text_form() {
     }
     assert!(FaceSignature::decode("face-signature v2;Plane").is_err());
     assert!(FaceSignature::decode("garbage").is_err());
+}
+
+#[test]
+fn spline_surface_faces_of_a_renumbered_re_export_associate_by_position_and_neighbours() {
+    // the fillet faces of a rounded cross bore are rational B-spline surfaces (`Kind::Spline`)
+    let source = include_str!("data/cross-bore-filleted.step");
+    let (text, map) = renumbered(source);
+    // OpenCASCADE's intersection-curve approximations deviate by about 1e-5 mm from the surface
+    let read = |source: &str| {
+        let data = inventory(source, Limits::default()).unwrap();
+        AnalyticModel::read(
+            &data,
+            Options {
+                geometry_tolerance_mm: 1e-4,
+                ..Options::default()
+            },
+        )
+        .unwrap()
+        .face_signatures()
+        .unwrap()
+    };
+    let (old, new) = (read(source), read(&text));
+    let splines = by_kind(&old, Kind::Spline);
+    assert!(!splines.is_empty(), "the fixture has no spline-surface face");
+    let a = associate(&old, &new, Tolerances::default());
+    assert_eq!(
+        (
+            a.modified.len(),
+            a.moved.len(),
+            a.lost.len(),
+            a.added.len(),
+            a.ambiguous.len()
+        ),
+        (0, 0, 0, 0, 0),
+        "{a:?}"
+    );
+    assert_eq!(a.exact.len(), old.len());
+    for (o, n) in &a.exact {
+        assert_eq!(map(*o), *n, "face #{o} found at #{n}");
+    }
 }

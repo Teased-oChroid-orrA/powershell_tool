@@ -496,7 +496,7 @@ impl AnalyticModel {
                 };
                 (trims.loops, trims.adjustments)
             }
-            Some(Surface::Sphere { .. }) => (
+            Some(Surface::Sphere { .. } | Surface::Nurbs(_)) => (
                 self.sampled_planar_trims(face_id, max_work)?.loops,
                 Vec::new(),
             ),
