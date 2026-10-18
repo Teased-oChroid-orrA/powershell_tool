@@ -28,6 +28,12 @@ pub struct FlipOptions {
     /// Longest edge link (number of tetrahedra around an edge) that is removed.
     pub max_link: usize,
     pub max_cells: usize,
+    /// Also reconnect edges that lie in a flat boundary patch (both boundary faces on the edge exactly coplanar and forming a
+    /// convex quadrilateral): the edge is replaced by the quadrilateral's other diagonal and the tetrahedra behind it are
+    /// reconnected with it (a 2-2 flip for two tetrahedra, the boundary form of edge removal beyond). The boundary surface
+    /// stays the same set of points but its triangulation changes, so enable it only when coplanar boundary faces belong to
+    /// one patch (face names are not tracked here). Protected faces are never touched. Default off.
+    pub planar_boundary: bool,
 }
 impl Default for FlipOptions {
     fn default() -> Self {
@@ -37,6 +43,7 @@ impl Default for FlipOptions {
             min_gain: 1e-6,
             max_link: 8,
             max_cells: 5_000_000,
+            planar_boundary: false,
         }
     }
 }
@@ -82,6 +89,8 @@ fn faces_of(t: [usize; 4]) -> [[usize; 3]; 4] {
 }
 /// Quality of a link triangle's tetrahedron pair, with the pair itself.
 type LinkTriangle = Option<(f64, [[usize; 4]; 2])>;
+/// The best reconnection of an edge's link: worst new quality and the new tetrahedra.
+type Reconnection = Option<(f64, Vec<[usize; 4]>)>;
 struct Candidate {
     gain: f64,
     old: Vec<usize>,
@@ -100,6 +109,7 @@ struct Pass<'a> {
     edge_cells: BTreeMap<[usize; 2], Vec<usize>>,
     locked_faces: BTreeSet<[usize; 3]>,
     locked_edges: BTreeSet<[usize; 2]>,
+    protected: &'a BTreeSet<[usize; 3]>,
     options: FlipOptions,
 }
 impl Pass<'_> {
@@ -151,70 +161,18 @@ impl Pass<'_> {
             link: None,
         }))
     }
-    fn edge_removal(&self, edge: [usize; 2]) -> Result<Option<Candidate>, MeshError> {
-        if self.locked_edges.contains(&edge) {
-            return Ok(None);
-        }
-        let ring_cells = &self.edge_cells[&edge];
-        let n = ring_cells.len();
-        if !(3..=self.options.max_link).contains(&n) || ring_cells.iter().any(|&c| self.touched[c])
-        {
-            return Ok(None);
-        }
-        let [p, q] = edge;
-        // Walk the ring of tetrahedra around the edge to order its link vertices.
-        let others = |c: usize| -> [usize; 2] {
-            let v: Vec<usize> = self.cells[c]
-                .iter()
-                .copied()
-                .filter(|x| *x != p && *x != q)
-                .collect();
-            [v[0], v[1]]
-        };
-        let mut link = Vec::with_capacity(n);
-        let first = others(ring_cells[0]);
-        link.push(first[0]);
-        let (mut at, mut prev) = (first[1], ring_cells[0]);
-        while at != first[0] {
-            link.push(at);
-            let Some(&next) = ring_cells
-                .iter()
-                .find(|&&c| c != prev && others(c).contains(&at))
-            else {
-                return Ok(None); // open ring: the edge touches the boundary
-            };
-            let [x, y] = others(next);
-            at = if x == at { y } else { x };
-            prev = next;
-            if link.len() > n {
-                return Ok(None);
-            }
-        }
-        if link.len() != n {
-            return Ok(None);
-        }
-        // Every ring tetrahedron (p, q, link[i], link[i + 1]) must turn the same way.
-        let turn = |i: usize| {
-            orientation(
-                self.points[p],
-                self.points[q],
-                self.points[link[i]],
-                self.points[link[(i + 1) % n]],
-            )
-        };
-        let sigma = turn(0)?;
-        if sigma == Ordering::Equal {
-            return Ok(None);
-        }
-        for i in 1..n {
-            if turn(i)? != sigma {
-                return Ok(None);
-            }
-        }
-        // Best triangulation of the link polygon (maximise the worst quality). For
-        // the polygon winding the old ring fixes, a link triangle (i < k < j) must
-        // see p on the side opposite to sigma and q on sigma's side; this also
-        // guarantees the new tetrahedra tile the old star without overlap.
+    /// Best triangulation of the link polygon `link` (maximise the worst quality) coned from `p` and `q`, for the polygon
+    /// winding `sigma` the old ring fixes: a link triangle (i < k < j) must see `p` on the side opposite to `sigma` and `q`
+    /// on `sigma`'s side, which also guarantees the new tetrahedra tile the old star without overlap. Returns the worst
+    /// quality and the `2 (n - 2)` tetrahedra.
+    fn triangulate_link(
+        &self,
+        link: &[usize],
+        p: usize,
+        q: usize,
+        sigma: Ordering,
+    ) -> Result<Reconnection, MeshError> {
+        let n = link.len();
         let (side_p, side_q) = if sigma == Ordering::Greater {
             (Ordering::Less, Ordering::Greater)
         } else {
@@ -281,6 +239,150 @@ impl Pass<'_> {
             stack.push((i, k));
             stack.push((k, j));
         }
+        Ok(Some((new_min, new)))
+    }
+
+    /// Edge removal for an edge lying in a flat boundary patch: its two boundary faces are exactly coplanar and form a
+    /// convex quadrilateral `p u0 q uk`; the edge is replaced by the diagonal `u0 uk` and the tetrahedra behind it are
+    /// reconnected as for an interior edge whose link polygon `u0 .. uk` is closed by that diagonal.
+    fn boundary_edge_removal(&self, edge: [usize; 2]) -> Result<Option<Candidate>, MeshError> {
+        let ring_cells = &self.edge_cells[&edge];
+        let n_cells = ring_cells.len();
+        if n_cells < 2 || n_cells + 1 > self.options.max_link || ring_cells.iter().any(|&c| self.touched[c]) {
+            return Ok(None);
+        }
+        let [p, q] = edge;
+        let others = |c: usize| -> [usize; 2] {
+            let v: Vec<usize> = self.cells[c].iter().copied().filter(|x| *x != p && *x != q).collect();
+            [v[0], v[1]]
+        };
+        // The two boundary faces on the edge, and the path of link vertices between them.
+        let boundary_apex: Vec<(usize, usize)> = ring_cells
+            .iter()
+            .flat_map(|&c| others(c).into_iter().map(move |u| (c, u)))
+            .filter(|&(_, u)| self.face_cells[&key3([p, q, u])].len() == 1)
+            .collect();
+        if boundary_apex.len() != 2 || boundary_apex.iter().any(|&(_, u)| self.protected.contains(&key3([p, q, u]))) {
+            return Ok(None);
+        }
+        let (start_cell, u0) = boundary_apex[0];
+        let uk = boundary_apex[1].1;
+        let mut link = vec![u0];
+        let mut at = u0;
+        let mut cell = start_cell;
+        let mut prev;
+        loop {
+            let [x, y] = others(cell);
+            let next_vertex = if x == at { y } else { x };
+            link.push(next_vertex);
+            prev = cell;
+            at = next_vertex;
+            if at == uk && link.len() == n_cells + 1 {
+                break;
+            }
+            let Some(&next) = ring_cells.iter().find(|&&c| c != prev && others(c).contains(&at)) else {
+                return Ok(None);
+            };
+            cell = next;
+            if link.len() > n_cells {
+                return Ok(None);
+            }
+        }
+        let n = link.len();
+        if n != n_cells + 1 || link[n - 1] != uk {
+            return Ok(None);
+        }
+        // Flat patch: p, q, u0, uk exactly coplanar; the quadrilateral p u0 q uk convex (strictly).
+        if orientation(self.points[p], self.points[q], self.points[u0], self.points[uk])? != Ordering::Equal {
+            return Ok(None);
+        }
+        let reference = link[1];
+        let side = |a: usize, b: usize, c: usize| orientation(self.points[a], self.points[b], self.points[c], self.points[reference]);
+        let (s0, sk) = (side(p, q, u0)?, side(p, q, uk)?);
+        let (sp, sq) = (side(u0, uk, p)?, side(u0, uk, q)?);
+        if [s0, sk, sp, sq].contains(&Ordering::Equal) || s0 == sk || sp == sq {
+            return Ok(None);
+        }
+        // The old fan must wind one way.
+        let turn = |i: usize| orientation(self.points[p], self.points[q], self.points[link[i]], self.points[link[i + 1]]);
+        let sigma = turn(0)?;
+        if sigma == Ordering::Equal {
+            return Ok(None);
+        }
+        for i in 1..n - 1 {
+            if turn(i)? != sigma {
+                return Ok(None);
+            }
+        }
+        let Some((new_min, new)) = self.triangulate_link(&link, p, q, sigma)? else {
+            return Ok(None);
+        };
+        let old_min = ring_cells.iter().map(|&c| self.q(self.cells[c])).fold(f64::INFINITY, f64::min);
+        Ok(Some(Candidate { gain: new_min - old_min, old: ring_cells.clone(), new, link: Some(n) }))
+    }
+    fn edge_removal(&self, edge: [usize; 2]) -> Result<Option<Candidate>, MeshError> {
+        if self.locked_edges.contains(&edge) {
+            return Ok(None);
+        }
+        let ring_cells = &self.edge_cells[&edge];
+        let n = ring_cells.len();
+        if !(3..=self.options.max_link).contains(&n) || ring_cells.iter().any(|&c| self.touched[c])
+        {
+            return Ok(None);
+        }
+        let [p, q] = edge;
+        // Walk the ring of tetrahedra around the edge to order its link vertices.
+        let others = |c: usize| -> [usize; 2] {
+            let v: Vec<usize> = self.cells[c]
+                .iter()
+                .copied()
+                .filter(|x| *x != p && *x != q)
+                .collect();
+            [v[0], v[1]]
+        };
+        let mut link = Vec::with_capacity(n);
+        let first = others(ring_cells[0]);
+        link.push(first[0]);
+        let (mut at, mut prev) = (first[1], ring_cells[0]);
+        while at != first[0] {
+            link.push(at);
+            let Some(&next) = ring_cells
+                .iter()
+                .find(|&&c| c != prev && others(c).contains(&at))
+            else {
+                return Ok(None); // open ring: the edge touches the boundary
+            };
+            let [x, y] = others(next);
+            at = if x == at { y } else { x };
+            prev = next;
+            if link.len() > n {
+                return Ok(None);
+            }
+        }
+        if link.len() != n {
+            return Ok(None);
+        }
+        // Every ring tetrahedron (p, q, link[i], link[i + 1]) must turn the same way.
+        let turn = |i: usize| {
+            orientation(
+                self.points[p],
+                self.points[q],
+                self.points[link[i]],
+                self.points[link[(i + 1) % n]],
+            )
+        };
+        let sigma = turn(0)?;
+        if sigma == Ordering::Equal {
+            return Ok(None);
+        }
+        for i in 1..n {
+            if turn(i)? != sigma {
+                return Ok(None);
+            }
+        }
+        let Some((new_min, new)) = self.triangulate_link(&link, p, q, sigma)? else {
+            return Ok(None);
+        };
         let old_min = ring_cells
             .iter()
             .map(|&c| self.q(self.cells[c]))
@@ -367,6 +469,7 @@ pub fn improve_by(
             edge_cells,
             locked_faces,
             locked_edges,
+            protected,
             options,
         };
         let mut order: Vec<(f64, usize)> = (0..n)
@@ -392,7 +495,12 @@ pub fn improve_by(
             }
             let ce = pass.cells[t];
             for (a, b) in [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)] {
-                consider(pass.edge_removal(key2(ce[a], ce[b]))?);
+                let edge = key2(ce[a], ce[b]);
+                if options.planar_boundary && pass.locked_edges.contains(&edge) {
+                    consider(pass.boundary_edge_removal(edge)?);
+                } else {
+                    consider(pass.edge_removal(edge)?);
+                }
             }
             let Some(chosen) = best else { continue };
             if pass.cells.len() + chosen.new.len() > options.max_cells {
@@ -427,7 +535,28 @@ pub fn improve_by(
     }
     let result = TetTopology::new(points.to_vec(), cells.clone(), options.max_cells)?;
     let boundary_after: BTreeSet<[usize; 3]> = result.boundary().iter().map(|f| key3(*f)).collect();
-    if boundary_after != boundary_before {
+    if options.planar_boundary {
+        // Only coplanar quadrilaterals were retriangulated: the boundary vertices and the enclosed surface are unchanged.
+        let area = |faces: &[[usize; 3]]| -> f64 {
+            faces
+                .iter()
+                .map(|f| {
+                    let [a, b, c] = f.map(|i| points[i]);
+                    let u: Point = std::array::from_fn(|i| b[i] - a[i]);
+                    let v: Point = std::array::from_fn(|i| c[i] - a[i]);
+                    0.5 * ((u[1] * v[2] - u[2] * v[1]).powi(2) + (u[2] * v[0] - u[0] * v[2]).powi(2) + (u[0] * v[1] - u[1] * v[0]).powi(2)).sqrt()
+                })
+                .sum()
+        };
+        let (a0, a1) = (area(top.boundary()), area(result.boundary()));
+        let vertices = |faces: &[[usize; 3]]| -> BTreeSet<usize> { faces.iter().flatten().copied().collect() };
+        if (a0 - a1).abs() > 1e-9 * a0.max(f64::MIN_POSITIVE) || vertices(top.boundary()) != vertices(result.boundary()) {
+            return Err(MeshError::NonConforming("planar boundary reconnection changed the boundary surface".into()));
+        }
+        if protected.iter().any(|f| !boundary_after.contains(f) && boundary_before.contains(f)) {
+            return Err(MeshError::NonConforming("a protected boundary face was changed".into()));
+        }
+    } else if boundary_after != boundary_before {
         return Err(MeshError::NonConforming(
             "reconnection changed the boundary".into(),
         ));
@@ -522,7 +651,7 @@ mod tests {
         let (c, rc) = improve(&a, &BTreeSet::new(), FlipOptions::default()).unwrap();
         // A second run never makes the worst cell worse.
         assert!(rc.min_radius_ratio_after >= ra.min_radius_ratio_after);
-        assert!(c.cells().len() > 0);
+        assert!(!c.cells().is_empty());
     }
     #[test]
     fn protected_faces_are_never_flipped_away() {
@@ -555,5 +684,93 @@ mod tests {
         let (out, report) = improve(&top, &BTreeSet::new(), options).unwrap();
         assert_eq!(out.cells(), top.cells());
         assert_eq!(report.passes, 1);
+    }
+
+    #[test]
+    fn a_boundary_edge_in_a_flat_patch_is_flipped_to_the_better_diagonal_only_when_asked() {
+        // A pyramid over the planar quad p u0 q uk (the z = 0 face) with apex a, cut by the long diagonal p-q into two
+        // slivers; the short diagonal u0-uk gives two good tetrahedra. All four quad vertices are on the boundary.
+        let points: Vec<Point> = vec![
+            [-1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, -0.1, 0.0],
+            [0.0, 0.1, 0.0],
+            [0.0, 0.0, 0.3],
+        ];
+        let (p, q, u0, uk, a) = (0, 1, 2, 3, 4);
+        let cells: Vec<[usize; 4]> = [[p, q, u0, a], [p, q, uk, a]]
+            .into_iter()
+            .map(|c| positive(&points, c).unwrap().unwrap())
+            .collect();
+        let top = TetTopology::new(points.clone(), cells, 100).unwrap();
+        let area = |t: &TetTopology| {
+            t.boundary()
+                .iter()
+                .map(|f| {
+                    let [x, y, z] = f.map(|i| points[i]);
+                    let u: Point = std::array::from_fn(|i| y[i] - x[i]);
+                    let v: Point = std::array::from_fn(|i| z[i] - x[i]);
+                    0.5 * ((u[1] * v[2] - u[2] * v[1]).powi(2) + (u[2] * v[0] - u[0] * v[2]).powi(2) + (u[0] * v[1] - u[1] * v[0]).powi(2)).sqrt()
+                })
+                .sum::<f64>()
+        };
+        let locked = FlipOptions { target: 1.0, ..FlipOptions::default() };
+        let (same, r) = improve(&top, &BTreeSet::new(), locked).unwrap();
+        assert_eq!(same.cells(), top.cells(), "boundary edges are locked by default: {r:?}");
+        let flat = FlipOptions { planar_boundary: true, ..locked };
+        let (out, r) = improve(&top, &BTreeSet::new(), flat).unwrap();
+        assert_eq!(r.edge_removals.get(&3), Some(&1), "{r:?}");
+        assert!(r.min_radius_ratio_after > 5.0 * r.min_radius_ratio_before, "{r:?}");
+        // The short diagonal replaced the long one; the volume and the boundary surface are unchanged.
+        let has_edge = |t: &TetTopology, e: [usize; 2]| t.cells().iter().any(|c| c.contains(&e[0]) && c.contains(&e[1]));
+        assert!(has_edge(&out, [u0, uk]) && !has_edge(&out, [p, q]));
+        assert!((volume(out.points(), out.cells()) - volume(top.points(), top.cells())).abs() < 1e-14);
+        assert!((area(&out) - area(&top)).abs() < 1e-14);
+        // Protecting one of the faces keeps the edge.
+        let mut protected = BTreeSet::new();
+        protected.insert(key3([p, q, u0]));
+        let (kept, _) = improve(&top, &protected, flat).unwrap();
+        assert_eq!(kept.cells(), top.cells());
+        // A concave quadrilateral (u0 pulled out of line) is refused: the diagonal would leave the quadrilateral.
+        let mut bent = points.clone();
+        bent[u0] = [-1.5, -0.1, 0.0];
+        let cells: Vec<[usize; 4]> = [[p, q, u0, a], [p, q, uk, a]]
+            .into_iter()
+            .filter_map(|c| positive(&bent, c).ok().flatten())
+            .collect();
+        if let Ok(top) = TetTopology::new(bent, cells, 100) {
+            let (out, _) = improve(&top, &BTreeSet::new(), flat).unwrap();
+            assert_eq!(out.cells(), top.cells());
+        }
+    }
+
+    #[test]
+    fn planar_boundary_reconnection_keeps_volume_surface_and_orientation_on_random_clouds() {
+        let mut total_boundary_changes = 0;
+        for seed in 1..=10 {
+            let points = cloud(80, seed);
+            let top = tetrahedralize(&points, Limits::default()).unwrap();
+            let options = FlipOptions { planar_boundary: true, ..FlipOptions::default() };
+            let (out, report) = improve(&top, &BTreeSet::new(), options).unwrap();
+            let (plain, _) = improve(&top, &BTreeSet::new(), FlipOptions::default()).unwrap();
+            // Never worse than the interior-only reconnection.
+            assert!(report.min_radius_ratio_after >= report.min_radius_ratio_before);
+            assert!((volume(out.points(), out.cells()) - 1.).abs() < 1e-12, "seed {seed}");
+            // `TetTopology::new` rejected any negatively oriented or flat cell; the boundary stays the surface of the unit cube.
+            for f in out.boundary() {
+                let pts = f.map(|i| out.points()[i]);
+                assert!((0..3).any(|k| pts.iter().all(|p| p[k] == 0.0) || pts.iter().all(|p| p[k] == 1.0)), "seed {seed}: boundary face off the cube surface");
+            }
+            let mut b0: Vec<_> = top.boundary().iter().map(|f| key3(*f)).collect();
+            let mut b1: Vec<_> = out.boundary().iter().map(|f| key3(*f)).collect();
+            b0.sort();
+            b1.sort();
+            if b0 != b1 {
+                total_boundary_changes += 1;
+            }
+            assert!(!out.cells().is_empty() && !plain.cells().is_empty());
+        }
+        // Not asserted to be positive: whether a random cloud has a flippable cube-face diagonal depends on the seed.
+        eprintln!("seeds whose cube-face diagonals were flipped: {total_boundary_changes} of 10");
     }
 }
