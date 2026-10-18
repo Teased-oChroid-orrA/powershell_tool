@@ -17,6 +17,7 @@ fn bracket_analytic_edges_and_surfaces_are_consistent_without_occt() {
         match surface {
             Surface::Plane(_) => planes += 1,
             Surface::Cylinder { .. } => cylinders += 1,
+            other => panic!("the bracket has only planes and cylinders: {other:?}"),
         };
         for bound in &face.bounds {
             for e in &bound.edges {

@@ -87,6 +87,33 @@ impl Brep {
         Ok(Self { solids: pieces })
     }
 
+    /// A cone or frustum with base radius `r1` at `base`, top radius `r2` after `height` along `axis`.
+    pub fn cone(base: V3, r1: f64, r2: f64, axis: V3, height: f64) -> Self {
+        let dir = v(axis).normalize_or_zero() * height;
+        Self::one(Solid::cone(r1, r2, dir).translate(v(base)))
+    }
+    pub fn sphere(centre: V3, radius: f64) -> Self {
+        Self::one(Solid::sphere(radius).translate(v(centre)))
+    }
+    /// A torus around `axis` through the origin-translated `centre`: ring radius `major`, tube radius `minor`.
+    pub fn torus(centre: V3, major: f64, minor: f64, axis: V3) -> Self {
+        Self::one(Solid::torus(major, minor, v(axis)).translate(v(centre)))
+    }
+    /// Round (`chamfer = false`) or chamfer (`true`) the edges whose end points both lie in the plane `z = height`.
+    pub fn round_edges_at_height(&self, height: f64, size: f64, chamfer: bool) -> Result<Self, String> {
+        if size.is_nan() || size <= 0.0 {
+            return Err("the size must be positive".into());
+        }
+        let s = self.single()?;
+        let at = |p: DVec3| (p.z - height).abs() < 1e-9;
+        let picked: Vec<_> = s.iter_edge().filter(|e| at(e.start_point()) && at(e.end_point())).collect();
+        if picked.is_empty() {
+            return Err(format!("no edge lies in the plane z = {height}"));
+        }
+        let out = if chamfer { s.chamfer_edges(size, picked) } else { s.fillet_edges(size, picked) };
+        Ok(Self::one(out.map_err(err)?))
+    }
+
     /// Round every edge with `radius`.
     pub fn fillet_all(&self, radius: f64) -> Result<Self, String> {
         if radius.is_nan() || radius <= 0.0 {

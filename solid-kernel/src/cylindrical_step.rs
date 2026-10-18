@@ -42,7 +42,7 @@ fn fail(kind: ErrorKind, text: &str) -> Error {
         detail: text.into(),
     }
 }
-fn unwrap_u(raw: f64, previous: f64, period: f64) -> Result<f64, Error> {
+pub(crate) fn unwrap_period(raw: f64, previous: f64, period: f64) -> Result<f64, Error> {
     // Reconstruct from the raw parameter plus an integer period. Adding
     // incremental remainders would accumulate drift around a long boundary.
     let u = raw + ((previous - raw) / period).round() * period;
@@ -124,7 +124,7 @@ impl AnalyticModel {
                         if let Some(mut value) = fixed[axis] {
                             if let Some(old) = anchor[axis] {
                                 if axis == 0 {
-                                    value = unwrap_u(value, old, period)?;
+                                    value = unwrap_period(value, old, period)?;
                                 }
                                 if (value - old).abs() > self.geometry_tolerance_mm() {
                                     return Err(fail(
@@ -187,7 +187,7 @@ impl AnalyticModel {
                             }
                         }
                     }
-                    chart[0] = unwrap_u(chart[0], before[0], period)?;
+                    chart[0] = unwrap_period(chart[0], before[0], period)?;
                     let projected = surface.point(chart).ok_or_else(|| {
                         fail(ErrorKind::Geometry, "unresolved canonical chart projection")
                     })?;
@@ -216,7 +216,7 @@ impl AnalyticModel {
                     }
                 }
                 if let Some(last) = points.last() {
-                    chart[0] = unwrap_u(chart[0], last[0], period)?;
+                    chart[0] = unwrap_period(chart[0], last[0], period)?;
                 }
                 points.push(chart);
             }
@@ -228,7 +228,7 @@ impl AnalyticModel {
             ));
         }
         let first = points[0][0];
-        let closing = unwrap_u(first, points.last().unwrap()[0], period)?;
+        let closing = unwrap_period(first, points.last().unwrap()[0], period)?;
         // Arithmetic-only closure bound, independent of the geometry chord
         // tolerance. No multi-turn or noncontractible loop is closed by fiat.
         let roundoff = 64. * f64::EPSILON * period;
@@ -271,8 +271,8 @@ mod tests {
     use super::*;
     #[test]
     fn periodic_unwrap_is_continuous_and_refuses_ambiguous_half_turns() {
-        assert!((unwrap_u(-3., 3., TAU).unwrap() - (TAU - 3.)).abs() < 1e-14);
-        assert!((unwrap_u(3., -3., TAU).unwrap() - (3. - TAU)).abs() < 1e-14);
-        assert!(unwrap_u(std::f64::consts::PI, 0., TAU).is_err());
+        assert!((unwrap_period(-3., 3., TAU).unwrap() - (TAU - 3.)).abs() < 1e-14);
+        assert!((unwrap_period(3., -3., TAU).unwrap() - (3. - TAU)).abs() < 1e-14);
+        assert!(unwrap_period(std::f64::consts::PI, 0., TAU).is_err());
     }
 }

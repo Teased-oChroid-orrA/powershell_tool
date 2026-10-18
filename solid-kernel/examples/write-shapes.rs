@@ -37,6 +37,16 @@ fn main() {
                 .unwrap(),
         ),
         ("rod", Brep::cylinder([0., 0., 0.], 2., [0., 0., 1.], 60.)),
+        ("cylinder-filleted-top", Brep::cylinder([0., 0., 0.], 5., [0., 0., 1.], 10.).round_edges_at_height(10., 1.5, false).unwrap()),
+        ("cylinder-chamfered-top", Brep::cylinder([0., 0., 0.], 5., [0., 0., 1.], 10.).round_edges_at_height(10., 1.5, true).unwrap()),
+        ("cylinder-both-ends-filleted", Brep::cylinder([0., 0., 0.], 5., [0., 0., 1.], 10.).round_edges_at_height(10., 1.5, false).unwrap().round_edges_at_height(0., 1.0, false).unwrap()),
+        ("frustum", Brep::cone([0., 0., 0.], 6., 3., [0., 0., 1.], 8.)),
+        ("cone", Brep::cone([0., 0., 0.], 5., 0., [0., 0., 1.], 8.)),
+        ("hemisphere", Brep::sphere([0., 0., 0.], 4.).boolean(Bool::Intersect, &Brep::box_from_corners([-5., -5., 0.], [5., 5., 5.])).unwrap()),
+        ("capsule", Brep::cylinder([0., 0., 0.], 3., [0., 0., 1.], 8.).boolean(Bool::Union, &Brep::sphere([0., 0., 0.], 3.)).unwrap().boolean(Bool::Union, &Brep::sphere([0., 0., 8.], 3.)).unwrap()),
+        ("ball", Brep::sphere([0., 0., 0.], 4.)),
+        ("torus", Brep::torus([0., 0., 0.], 6., 2., [0., 0., 1.])),
+        ("filleted-box", Brep::box_from_corners([0., 0., 0.], [2., 3., 4.]).fillet_all(0.2).unwrap()),
     ];
     for (name, shape) in shapes {
         shape.write_step(&dir.join(format!("{name}.step"))).unwrap();

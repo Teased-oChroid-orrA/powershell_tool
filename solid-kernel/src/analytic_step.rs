@@ -1,7 +1,8 @@
 //! Native analytic geometry feasibility checks, not trimmed B-Rep/solid validity.
 //! Supported subset: one directly represented, unplaced body; line/circle edges
 //! and verified full-domain two-control degree-one splines;
-//! plane/cylinder surfaces and exactly coplanar convex bilinear spline patches.
+//! plane/cylinder/sphere/cone/torus surfaces (the last three charted in `curved_surface`) and exactly coplanar convex
+//! bilinear spline patches.
 //! Trim containment uses 3D loci; associated p-curves/master-representation
 //! agreement remain unverified. All coordinates normalize to millimetres.
 use crate::{
@@ -86,6 +87,10 @@ fn scale_coordinates(e: &Entity, source: V3, scale: f64) -> Result<V3, Error> {
             "coordinate length normalization underflows a nonzero source component",
         ));
     }
+    // CAD exporters leave rounding noise around exact zeros (a cone's apex at 3.5e-32 mm, a meridian through a pole): a
+    // magnitude below 1e-25 mm is 1e-19 of an atom and is read as an exact zero. Everything else outside the exact
+    // predicates' envelope is still refused.
+    let result = result.map(|x| if x.abs() < 1e-25 { 0. } else { x });
     if !coordinate_domain(result) {
         return Err(error(
             e,
@@ -111,13 +116,13 @@ fn direction(data: &Inventory, id: u64) -> Result<V3, Error> {
 }
 #[derive(Debug, Clone)]
 pub struct Frame {
-    origin: V3,
-    x: V3,
-    y: V3,
-    z: V3,
+    pub(crate) origin: V3,
+    pub(crate) x: V3,
+    pub(crate) y: V3,
+    pub(crate) z: V3,
 }
 impl Frame {
-    fn point(&self, p: V3) -> V3 {
+    pub(crate) fn point(&self, p: V3) -> V3 {
         add(
             self.origin,
             add(mul(self.x, p[0]), add(mul(self.y, p[1]), mul(self.z, p[2]))),
@@ -153,7 +158,29 @@ fn frame(data: &Inventory, id: u64, scale: f64) -> Result<Frame, Error> {
 #[derive(Debug, Clone)]
 pub enum Surface {
     Plane(Frame),
-    Cylinder { frame: Frame, radius: f64 },
+    Cylinder {
+        frame: Frame,
+        radius: f64,
+    },
+    /// `frame` is the *chart* frame of one face: origin at the centre, `z` toward the face's mean direction, which is the
+    /// centre of the stereographic chart (see `curved_surface`). The poles of the source parameterization play no role.
+    Sphere {
+        frame: Frame,
+        radius: f64,
+    },
+    /// Radius `radius` at the frame's origin plane, opening toward +z with half-angle `semi_angle` (radians). `centre` is the
+    /// chart angle in the middle of the face, which resolves the branch of the polar chart (set per face).
+    Cone {
+        frame: Frame,
+        radius: f64,
+        semi_angle: f64,
+        centre: f64,
+    },
+    Torus {
+        frame: Frame,
+        major: f64,
+        minor: f64,
+    },
 }
 #[derive(Debug, Clone, Copy)]
 pub struct Projection {
@@ -170,6 +197,7 @@ impl Surface {
         let (frame, radius) = match self {
             Self::Plane(f) => (f, None),
             Self::Cylinder { frame, radius } => (frame, Some(*radius)),
+            _ => return self.project_curved(p),
         };
         let p = sub(p, frame.origin);
         let x = dot(p, frame.x);
@@ -206,6 +234,7 @@ impl Surface {
                 let u = chart[0] / radius;
                 frame.point([radius * u.cos(), radius * u.sin(), chart[1]])
             }
+            _ => return self.point_curved(chart),
         };
         finite(p).then_some(p)
     }
@@ -220,6 +249,7 @@ impl Surface {
                 let u = chart[0] / radius;
                 add(mul(frame.x, u.cos()), mul(frame.y, u.sin()))
             }
+            _ => return self.normal_at_world(self.point_curved(chart)?),
         };
         finite(p).then_some(p)
     }
@@ -282,6 +312,30 @@ fn curve(data: &Inventory, e: &Entity, scale: f64) -> Result<Curve, Error> {
         _ => Err(error(e, "unsupported referenced 3D curve geometry")),
     }
 }
+/// Radians per plane-angle unit of the file: only the explicit SI radian is accepted (a degree-based file is refused rather
+/// than guessed), and there must be exactly one plane-angle unit.
+fn plane_angle_factor(data: &Inventory, e: &Entity) -> Result<f64, Error> {
+    let mut found = None;
+    for unit in data.entities().values() {
+        if !unit.components.iter().any(|c| c.name == "PLANE_ANGLE_UNIT") {
+            continue;
+        }
+        let radian = unit.components.iter().any(|c| {
+            c.name == "SI_UNIT"
+                && matches!(c.args.as_slice(), [Value::Omitted, Value::Enum(n)] if n == "RADIAN")
+        });
+        if found.replace(radian).is_some() {
+            return Err(error(e, "ambiguous plane-angle units"));
+        }
+    }
+    match found {
+        Some(true) => Ok(1.),
+        _ => Err(error(
+            e,
+            "a cone's semi-angle needs one explicit SI radian plane-angle unit",
+        )),
+    }
+}
 fn surface(data: &Inventory, id: u64, scale: f64) -> Result<Surface, Error> {
     let e = &data.entities()[&id];
     match e.components.as_slice() {
@@ -293,6 +347,36 @@ fn surface(data: &Inventory, id: u64, scale: f64) -> Result<Surface, Error> {
                 Ok(Surface::Cylinder {
                     frame: frame(data, *f, scale)?,
                     radius: radius(e, r, scale)?,
+                })
+            }
+            ("SPHERICAL_SURFACE", [Value::String(_), Value::Ref(f), r]) => Ok(Surface::Sphere {
+                frame: frame(data, *f, scale)?,
+                radius: radius(e, r, scale)?,
+            }),
+            ("CONICAL_SURFACE", [Value::String(_), Value::Ref(f), r, a]) => {
+                let semi_angle = scalar(e, a)? * plane_angle_factor(data, e)?;
+                if !(semi_angle > 1e-6 && semi_angle < FRAC_PI_2 - 1e-6) {
+                    return Err(error(e, "cone semi-angle outside (0, 90) degrees"));
+                }
+                Ok(Surface::Cone {
+                    frame: frame(data, *f, scale)?,
+                    radius: radius(e, r, scale)?,
+                    semi_angle,
+                    centre: 0.,
+                })
+            }
+            ("TOROIDAL_SURFACE", [Value::String(_), Value::Ref(f), major, minor]) => {
+                let (major, minor) = (radius(e, major, scale)?, radius(e, minor, scale)?);
+                if major <= minor {
+                    return Err(error(
+                        e,
+                        "horn and spindle tori (major radius not above minor radius) are not implemented",
+                    ));
+                }
+                Ok(Surface::Torus {
+                    frame: frame(data, *f, scale)?,
+                    major,
+                    minor,
                 })
             }
             _ => Err(error(e, "unsupported native analytic surface")),
@@ -449,7 +533,13 @@ fn samples(
             let mut p = Vec::with_capacity(n + 1);
             for i in 0..=n {
                 let t = angle[0] + span * (i as f64 / n as f64);
-                p.push(frame.point([radius * t.cos(), radius * t.sin(), 0.]));
+                // A coordinate below the exact predicates' envelope (1e-30) can only be rounding noise around an exact zero
+                // (a meridian through a pole, a ring through the origin plane); coordinates above it are left bit-identical.
+                p.push(
+                    frame
+                        .point([radius * t.cos(), radius * t.sin(), 0.])
+                        .map(|x| if x.abs() < 1e-25 { 0. } else { x }),
+                );
             }
             *p.first_mut().unwrap() = a;
             *p.last_mut().unwrap() = b;
@@ -533,6 +623,26 @@ fn on_surface(e: &Entity, s: &Surface, c: &Curve, a: V3, b: V3, tol: f64) -> Res
                 .abs()
                 .max((norm(y) - radius).abs())
                 .max((min - radius).abs())
+        }
+        // Sphere, cone and torus: the largest distance from the surface over the declared locus (the segment between the
+        // endpoints, or the whole circle, which lies on these surfaces entirely or not at all).
+        (surface, curve) => {
+            let points: Vec<V3> = match curve {
+                Curve::Line { .. } => (0..=16)
+                    .map(|i| add(mul(a, 1. - i as f64 / 16.), mul(b, i as f64 / 16.)))
+                    .collect(),
+                Curve::Circle { frame, radius } => (0..64)
+                    .map(|i| {
+                        let t = TAU * i as f64 / 64.;
+                        frame.point([radius * t.cos(), radius * t.sin(), 0.])
+                    })
+                    .collect(),
+            };
+            let mut worst = 0f64;
+            for p in points {
+                worst = worst.max(surface.residual_curved(p).unwrap_or(f64::INFINITY));
+            }
+            worst
         }
     };
     if !deviation.is_finite() || deviation > tol {
@@ -784,7 +894,35 @@ impl AnalyticModel {
                     Some(patch),
                 )
             } else {
-                (surface(data, face.surface, scale)?, None)
+                let source = surface(data, face.surface, scale)?;
+                // A sphere is charted around each face's own centre, from the face's boundary loops in traversal order.
+                let source = if let Surface::Sphere { .. } = source {
+                    let mut loops = Vec::new();
+                    for bound in &face.bounds {
+                        let mut points = Vec::new();
+                        for usage in &bound.edges {
+                            let samples = &edges[&usage.edge];
+                            if usage.forward {
+                                points.extend_from_slice(&samples[..samples.len() - 1]);
+                            } else {
+                                points.extend(samples[1..].iter().rev());
+                            }
+                        }
+                        if !bound.forward {
+                            points.reverse();
+                        }
+                        loops.push(points);
+                    }
+                    source
+                        .localized_sphere(&loops, face.same_sense)
+                        .map_err(|mut err| {
+                            err.offset = data.entities()[&face.surface].offset;
+                            err
+                        })?
+                } else {
+                    source
+                };
+                (source, None)
             };
 
             for bound in &face.bounds {

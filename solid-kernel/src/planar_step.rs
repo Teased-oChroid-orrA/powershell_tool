@@ -167,6 +167,24 @@ pub(crate) fn classify(loops: &mut [PlanarLoop], max_checks: usize) -> Result<()
     }
     Ok(())
 }
+/// The edge uses of a bound that make up its chart boundary. A sphere's source parameterization cuts the face along a seam (an
+/// edge used once each way in the same bound): in the face's own local chart that is a slit of zero width, not boundary.
+pub(crate) fn chart_usages<'a>(
+    surface: &Surface,
+    bound: &'a crate::step_topology::RawBound,
+) -> Vec<&'a crate::step_topology::EdgeUse> {
+    let seam = |edge: u64| {
+        matches!(surface, Surface::Sphere { .. })
+            && bound.edges.iter().filter(|u| u.edge == edge).count() == 2
+            && bound
+                .edges
+                .iter()
+                .filter(|u| u.edge == edge && u.forward)
+                .count()
+                == 1
+    };
+    bound.edges.iter().filter(|u| !seam(u.edge)).collect()
+}
 impl AnalyticModel {
     /// Classify polygons sampled from shared edges on one planar face. This
     /// preserves source ordering and rejects ambiguous/touching approximations;
@@ -183,7 +201,7 @@ impl AnalyticModel {
             .get(&face_id)
             .ok_or_else(|| fail(ErrorKind::Geometry, "unknown face"))?;
         let surface = self.surface(face_id).unwrap();
-        if !matches!(surface, Surface::Plane(_)) {
+        if !matches!(surface, Surface::Plane(_) | Surface::Sphere { .. }) {
             return Err(fail(
                 ErrorKind::Geometry,
                 "periodic/nonplanar trim charts are not implemented",
@@ -193,7 +211,7 @@ impl AnalyticModel {
         let mut remaining = max_checks;
         for bound in &face.bounds {
             let mut points = Vec::new();
-            for usage in &bound.edges {
+            for usage in chart_usages(surface, bound) {
                 let samples = self.edge_points(usage.edge).unwrap();
                 remaining = remaining.checked_sub(samples.len() - 1).ok_or_else(|| {
                     fail(ErrorKind::Limit, "planar trim expansion budget exceeded")

@@ -258,7 +258,26 @@ impl AnalyticModel {
                 let center = std::array::from_fn(|i| {
                     tri.iter().map(|v| chart.vertices[*v].chart[i] / 3.).sum()
                 });
-                let normal = self.declared_face_normal(face.id, center).unwrap();
+                let normal = match self.surface(face.id) {
+                    Some(surface)
+                        if !matches!(
+                            surface,
+                            crate::analytic_step::Surface::Plane(_)
+                                | crate::analytic_step::Surface::Cylinder { .. }
+                        ) =>
+                    {
+                        // The chart of a sphere, cone or torus is not the surface parameterization: take the normal at the
+                        // triangle's own location.
+                        let world = std::array::from_fn(|i| (a[i] + b[i] + c[i]) / 3.);
+                        let n = surface.normal_at_world(world).unwrap();
+                        if face.same_sense {
+                            n
+                        } else {
+                            n.map(|x| -x)
+                        }
+                    }
+                    _ => self.declared_face_normal(face.id, center).unwrap(),
+                };
                 let orientation = dot(cross(sub(b, a), sub(c, a)), normal);
                 if !orientation.is_finite()
                     || orientation == 0.
