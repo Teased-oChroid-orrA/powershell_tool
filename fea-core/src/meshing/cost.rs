@@ -10,6 +10,7 @@
 
 use super::MeshError;
 use crate::analysis::Model;
+use crate::analysis::{AUTO_ITERATIVE_DOFS, AUTO_ITERATIVE_FACTOR_NNZ};
 use crate::linear::{Ordering, Reduced};
 use crate::mesh::Mesh;
 
@@ -26,6 +27,16 @@ pub struct MeshCost {
     pub assembly_units: f64,
     /// `factor_nnz^1.5`: the factorisation work proxy (exact for 2D nested dissection up to a constant, a fair proxy in 3D).
     pub factor_units: f64,
+    /// `SolveMethod::Auto` would solve this system with PCG + AMG, not the Cholesky factor `factor_nnz` describes (3D and
+    /// either the factor reaches `AUTO_ITERATIVE_FACTOR_NNZ` or the dofs exceed `AUTO_ITERATIVE_DOFS`). The rates and the memory
+    /// estimate model the direct solve only: for such a mesh `memory_bytes` is a (large) upper bound and the predicted time is
+    /// not meaningful (measured: a 108k-dof Hex8 block predicted at 130M factor entries solves in 0.9 s, not the direct time).
+    pub iterative: bool,
+}
+
+/// Whether `Auto` solves a `dim`-dimensional system of `dofs` unknowns with factor size `factor_nnz` iteratively.
+pub fn solved_iteratively(dim: usize, dofs: usize, factor_nnz: usize) -> bool {
+    dim == 3 && (dofs > AUTO_ITERATIVE_DOFS || factor_nnz >= AUTO_ITERATIVE_FACTOR_NNZ)
 }
 
 impl MeshCost {
@@ -46,7 +57,7 @@ impl MeshCost {
         let d = mesh.dim();
         let assembly_units: f64 = mesh.blocks.iter().map(|b| b.n_elems() as f64 * ((b.kind.n_nodes() * d) as f64).powi(2)).sum();
         let factor_nnz = red.factor_nnz();
-        Ok(Self { dofs: mesh.n_dofs(), elements: mesh.n_elems(), matrix_nnz: model.pattern.col_ptr.last().map_or(0, |&n| n * d * d), factor_nnz, assembly_units, factor_units: (factor_nnz as f64).powf(1.5) })
+        Ok(Self { dofs: mesh.n_dofs(), elements: mesh.n_elems(), matrix_nnz: model.pattern.col_ptr.last().map_or(0, |&n| n * d * d), factor_nnz, assembly_units, factor_units: (factor_nnz as f64).powf(1.5), iterative: solved_iteratively(d, mesh.n_dofs(), factor_nnz) })
     }
 }
 
@@ -201,6 +212,11 @@ pub fn choose_within(candidates: &[Candidate], model: &CostModel, workload: &Wor
             rejected.push((i, "needs validation".to_string()));
             continue;
         }
+        if cost.iterative && (limits.max_memory_bytes.is_some() || limits.max_seconds.is_some()) {
+            // The direct-solve rates and memory model do not describe this solve: a limit cannot be checked honestly.
+            rejected.push((i, "would be solved iteratively (PCG + AMG): the direct-solve cost model cannot check a limit".to_string()));
+            continue;
+        }
         if limits.max_memory_bytes.is_some_and(|m| cost.memory_bytes() > m) {
             rejected.push((i, format!("memory estimate {} bytes exceeds the limit", cost.memory_bytes())));
             continue;
@@ -243,6 +259,15 @@ mod tests {
 
     fn mesh(kind: ElementKind, n: usize) -> Mesh {
         grid(Physics::PlaneStress { thickness: 1.0 }, kind, Elastic::new(1e7, 0.3), [n, n, 1], &|p| p).unwrap()
+    }
+
+    #[test]
+    fn the_iterative_regime_follows_the_solvers_auto_rule() {
+        assert!(!solved_iteratively(3, 100_000, 59_999_999));
+        assert!(solved_iteratively(3, 100_000, 60_000_000));
+        assert!(solved_iteratively(3, 150_001, 1));
+        assert!(!solved_iteratively(2, 10_000_000, 1_000_000_000), "2D is always direct");
+        assert!(!MeshCost::of(&mesh(ElementKind::Quad4, 4)).unwrap().iterative);
     }
 
     #[test]
