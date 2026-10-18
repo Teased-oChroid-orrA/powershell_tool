@@ -571,6 +571,23 @@ mod tests {
             let (out, r) = refine(&cube(), &field, &bounds, options).unwrap();
             let mut q = q_unsorted(&out, &field);
             q.sort_by(f64::total_cmp);
+            if name == "planar boundary flips" {
+                let metrics: Vec<Metric> = out.points().iter().map(|p| field(*p).unwrap()).collect();
+                let mut edges = BTreeSet::new();
+                for t in out.cells() {
+                    for (a, b) in [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)] {
+                        edges.insert(edge_key(t[a], t[b]));
+                    }
+                }
+                let mut lens: Vec<(f64, [usize; 2])> = edges.iter().map(|e| (edge_length(out.points()[e[0]], out.points()[e[1]], &metrics[e[0]], &metrics[e[1]]), *e)).collect();
+                lens.sort_by(|a, b| b.0.total_cmp(&a.0));
+                let long = lens.iter().filter(|l| l.0 > std::f64::consts::SQRT_2).count();
+                eprintln!("  {} edges, {} longer than sqrt2; longest report {:.3}; the 6 longest:", lens.len(), long, r.longest_edge_after);
+                for (l, e) in lens.iter().take(6) {
+                    let (a, b) = (out.points()[e[0]], out.points()[e[1]]);
+                    eprintln!("    metric length {l:.3}: ({:.3},{:.3},{:.3}) - ({:.3},{:.3},{:.3})", a[0], a[1], a[2], b[0], b[1], b[2]);
+                }
+            }
             eprintln!("{name:<28}: {:>5} cells, passes {}, converged {}, min {:.2e}, p1 {:.3}, median {:.3}, below 0.1: {}", q.len(), r.passes, r.converged, q[0], q[q.len() / 100], q[q.len() / 2], q.iter().filter(|x| **x < 0.1).count());
         }
     }

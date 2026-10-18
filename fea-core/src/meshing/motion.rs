@@ -87,6 +87,17 @@ pub struct Prescribed {
     pub displacement: [f64; 3],
 }
 
+/// A node that slides: one coordinate of its displacement is prescribed (the others are free), for example a node on a symmetry
+/// plane, a frictionless wall or a flat boundary that must stay flat while the body moves along it. Axis-aligned only: a
+/// general plane or curved geometry needs a projection the caller supplies as a full [`Prescribed`] target.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Slide {
+    pub node: usize,
+    pub axis: usize,
+    /// Total prescribed displacement of that coordinate.
+    pub displacement: f64,
+}
+
 fn pseudo_mesh(mesh: &Mesh, exponent: f64) -> Mesh {
     let quality = mesh.quality();
     let mean =
@@ -118,6 +129,28 @@ fn pseudo_mesh(mesh: &Mesh, exponent: f64) -> Mesh {
     out
 }
 
+/// The first element (block, index) whose Jacobian is not positive at every Gauss point: the check the stiffness assembly makes,
+/// finer than the corner and centroid measures of [`Mesh::quality`].
+fn gauss_inverted(mesh: &Mesh) -> Option<(usize, usize)> {
+    let mut work = crate::kernel::Work::new();
+    for (b, blk) in mesh.blocks.iter().enumerate() {
+        let nn = blk.kind.n_nodes();
+        for (e, conn) in blk.conn.chunks_exact(nn).enumerate() {
+            let xyz: Vec<[f64; 3]> = conn.iter().map(|&n| mesh.nodes[n]).collect();
+            if crate::kernel::geometry(blk.kind, mesh.physics, &xyz, &mut work).is_err() {
+                return Some((b, e));
+            }
+        }
+    }
+    None
+}
+
+/// Whether every element has a positive Jacobian at every Gauss point (the check the stiffness assembly makes).
+#[cfg(test)]
+pub(crate) fn mesh_is_gauss_valid(mesh: &Mesh) -> bool {
+    gauss_inverted(mesh).is_none()
+}
+
 fn judge(q: &QualityReport, t: &QualityThresholds) -> Result<(), String> {
     if q.inverted > 0 {
         return Err(format!("{} inverted element(s)", q.inverted));
@@ -144,6 +177,18 @@ pub fn move_mesh(
     prescribed: &[Prescribed],
     options: MotionOptions,
 ) -> Result<(Mesh, MotionReport), MeshError> {
+    move_mesh_sliding(mesh, prescribed, &[], options)
+}
+
+/// [`move_mesh`] with sliding nodes: each [`Slide`] fixes one coordinate of a node's displacement and leaves the others to the
+/// interior solve. At least one prescribed node or slide is needed, and enough of them to stop rigid motion (the caller's
+/// responsibility, as for any displacement-driven solve: the pseudo-elastic system must be anchored).
+pub fn move_mesh_sliding(
+    mesh: &Mesh,
+    prescribed: &[Prescribed],
+    slides: &[Slide],
+    options: MotionOptions,
+) -> Result<(Mesh, MotionReport), MeshError> {
     if options.steps == 0 || options.min_increment <= 0. {
         return Err(MeshError::Failed(
             "motion needs at least one step and a positive minimum increment".into(),
@@ -152,12 +197,13 @@ pub fn move_mesh(
     if prescribed
         .iter()
         .any(|p| p.node >= mesh.nodes.len() || p.displacement.iter().any(|v| !v.is_finite()))
+        || slides.iter().any(|s| s.node >= mesh.nodes.len() || s.axis >= mesh.dim() || !s.displacement.is_finite())
     {
         return Err(MeshError::Failed(
-            "prescribed node out of range or displacement not finite".into(),
+            "prescribed node or slide out of range or displacement not finite".into(),
         ));
     }
-    if prescribed.is_empty() {
+    if prescribed.is_empty() && slides.is_empty() {
         return Err(MeshError::Failed(
             "no prescribed node: the interior would move rigidly".into(),
         ));
@@ -198,6 +244,9 @@ pub fn move_mesh(
                 );
             }
         }
+        for sl in slides {
+            bc.fix(sl.node, sl.axis, sl.displacement * (1. - report.applied_fraction) * share);
+        }
         let solution = model
             .solve_static(&Loads::default(), &bc)
             .map_err(MeshError::Failed)?;
@@ -208,7 +257,13 @@ pub fn move_mesh(
             }
         }
         let q = trial.quality();
-        match judge(&q, &options.thresholds) {
+        // The quality measures are taken at corners and centroids; a warped Hex8 can have a negative Jacobian between them,
+        // which the solver then refuses. Treat that as a failed step (rollback, then hand-over), not as an error of the motion.
+        let verdict = judge(&q, &options.thresholds).and_then(|()| match gauss_inverted(&trial) {
+            None => Ok(()),
+            Some((b, e)) => Err(format!("element {e} of block {b} has a non-positive Jacobian at a Gauss point")),
+        });
+        match verdict {
             Ok(()) => {
                 report.max_node_displacement = trial
                     .nodes
@@ -432,5 +487,44 @@ mod tests {
         // Both complete the motion; the stiffened one keeps a clearly better worst element (0.48 against 0.23 measured).
         assert!(uniform.applied_fraction > 1. - 1e-9 && stiff.applied_fraction > 1. - 1e-9);
         assert!(stiff.min_scaled_jacobian_after > 1.5 * uniform.min_scaled_jacobian_after);
+    }
+
+    #[test]
+    fn sliding_walls_keep_a_heavily_compressed_box_regular_where_pinned_walls_shear_it() {
+        let mesh = column(4);
+        let slides = |top: f64| -> Vec<Slide> {
+            let mut s = Vec::new();
+            for (axis, value, d) in [(2usize, 0.0, 0.0), (2, 1.0, top), (0, 0.0, 0.0), (1, 0.0, 0.0)] {
+                s.extend(face_nodes(&mesh, axis, value).into_iter().map(|node| Slide { node, axis, displacement: d }));
+            }
+            s
+        };
+        let pinned = |top: f64| -> Vec<Prescribed> {
+            let mut p: Vec<Prescribed> = face_nodes(&mesh, 2, 0.).into_iter().map(|node| Prescribed { node, displacement: [0.; 3] }).collect();
+            p.extend(face_nodes(&mesh, 2, 1.).into_iter().map(|node| Prescribed { node, displacement: [0., 0., top] }));
+            p
+        };
+        let (slid, rs) = move_mesh_sliding(&mesh, &[], &slides(-0.6), MotionOptions::default()).unwrap();
+        assert_eq!(rs.outcome, Outcome::Complete, "{rs:?}");
+        for &n in &face_nodes(&mesh, 2, 1.) {
+            assert!((slid.nodes[n][2] - 0.4).abs() < 1e-9);
+        }
+        // Symmetry planes stay planes; the bottom stays at 0 while nodes slide laterally.
+        for &n in &face_nodes(&mesh, 0, 0.) {
+            assert!(slid.nodes[n][0].abs() < 1e-12);
+        }
+        for &n in &face_nodes(&mesh, 2, 0.) {
+            assert!(slid.nodes[n][2].abs() < 1e-12);
+        }
+        assert!(slid.quality().min_scaled_jacobian > 0.9, "{}", slid.quality().min_scaled_jacobian);
+        assert!(rs.worst_free_reaction_ratio < 1e-8);
+        // The same compression with the walls pinned laterally shears the layers next to them.
+        let (pin, rp) = move_mesh(&mesh, &pinned(-0.6), MotionOptions::default()).unwrap();
+        eprintln!("sliding: min scaled Jacobian {:.3}; pinned: {:.3} ({:?})", slid.quality().min_scaled_jacobian, pin.quality().min_scaled_jacobian, rp.outcome);
+        assert!(slid.quality().min_scaled_jacobian > pin.quality().min_scaled_jacobian + 0.05);
+        // Out-of-range input is refused.
+        assert!(move_mesh_sliding(&mesh, &[], &[Slide { node: 10_000, axis: 2, displacement: 0. }], MotionOptions::default()).is_err());
+        assert!(move_mesh_sliding(&mesh, &[], &[Slide { node: 0, axis: 3, displacement: 0. }], MotionOptions::default()).is_err());
+        assert!(move_mesh_sliding(&mesh, &[], &[], MotionOptions::default()).is_err());
     }
 }
