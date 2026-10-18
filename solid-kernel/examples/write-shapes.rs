@@ -9,7 +9,22 @@ fn main() {
     let boss = Brep::cylinder([8., 8., 20.], 4., [0., 0., 1.], 6.);
     let plate = Brep::box_from_corners([0., 0., 0.], [12., 4., 0.25]);
     let pin = |x: f64| Brep::cylinder([x, 2., -1.], 0.5, [0., 0., 1.], 2.);
+    // Faces that an edit moves, adds or resizes (tests/face_identity.rs).
+    let slab = |h: f64| Brep::box_from_corners([0., 0., 0.], [40., 30., h]);
+    let drill = |x: f64, y: f64, r: f64| Brep::cylinder([x, y, -1.], r, [0., 0., 1.], 20.);
     let shapes = [
+        ("edit-plate", slab(10.).boolean(Bool::Cut, &drill(12., 15., 4.)).unwrap()),
+        ("edit-plate-hole-moved", slab(10.).boolean(Bool::Cut, &drill(14., 15., 4.)).unwrap()),
+        ("edit-plate-second-hole", slab(10.).boolean(Bool::Cut, &drill(12., 15., 4.)).unwrap().boolean(Bool::Cut, &drill(30., 15., 3.)).unwrap()),
+        ("edit-plate-thicker", slab(12.).boolean(Bool::Cut, &drill(12., 15., 4.)).unwrap()),
+        ("edit-plate-centre-hole", slab(10.).boolean(Bool::Cut, &drill(20., 15., 4.)).unwrap()),
+        ("edit-plate-twin-holes", slab(10.).boolean(Bool::Cut, &drill(15., 15., 4.)).unwrap().boolean(Bool::Cut, &drill(25., 15., 4.)).unwrap()),
+        ("edit-plate-hole-resized", slab(10.).boolean(Bool::Cut, &drill(12., 15., 5.)).unwrap()),
+    ]
+    .into_iter()
+    .collect::<Vec<_>>();
+    let mut shapes = shapes;
+    shapes.extend([
         ("block-with-hole", block.boolean(Bool::Cut, &hole).unwrap()),
         (
             "block-hole-boss",
@@ -47,7 +62,7 @@ fn main() {
         ("ball", Brep::sphere([0., 0., 0.], 4.)),
         ("torus", Brep::torus([0., 0., 0.], 6., 2., [0., 0., 1.])),
         ("filleted-box", Brep::box_from_corners([0., 0., 0.], [2., 3., 4.]).fillet_all(0.2).unwrap()),
-    ];
+    ]);
     for (name, shape) in shapes {
         shape.write_step(&dir.join(format!("{name}.step"))).unwrap();
         println!("{name}: {} faces", shape.face_count());
