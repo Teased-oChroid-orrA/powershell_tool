@@ -223,6 +223,20 @@ impl MeshStore {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    /// Every stored class and its mesh, in insertion order.
+    pub fn iter(&self) -> impl Iterator<Item = (&WorkloadKey, &crate::Mesh)> {
+        self.entries.iter().map(|(k, m)| (k, m))
+    }
+
+    /// Put a mesh under `key` without evidence from a run: the way a decoded store is rebuilt. The caller has validated the
+    /// mesh structurally; it is still only ever a starting mesh.
+    pub fn insert(&mut self, key: WorkloadKey, mesh: crate::Mesh) {
+        match self.entries.iter_mut().find(|(k, _)| *k == key) {
+            Some(slot) => slot.1 = mesh,
+            None => self.entries.push((key, mesh)),
+        }
+    }
 }
 
 /// Advice for the initial mesh of one class of analyses.
