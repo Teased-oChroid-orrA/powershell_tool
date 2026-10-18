@@ -23,6 +23,8 @@ struct Row {
     factor_ms: f64,
     solve_ms: f64,
     factor_nnz: usize,
+    /// Largest distance of a node from the body (0 when all are inside).
+    deepest_outside: f64,
 }
 
 fn run(h: f64, quadratic: bool) -> Row {
@@ -105,6 +107,7 @@ fn run(h: f64, quadratic: bool) -> Row {
         factor_ms: sol.timings.factor_ms,
         solve_ms: sol.timings.solve_ms,
         factor_nnz: sol.factor_nnz,
+        deepest_outside: deepest,
     }
 }
 
@@ -141,6 +144,17 @@ fn compare(hs: &[f64]) {
 #[test]
 fn second_order_tetrahedra_have_the_lower_error_on_a_curved_body_at_two_sizes() {
     compare(&[0.4, 0.28]);
+}
+
+#[test]
+fn a_vertex_on_an_end_plane_is_snapped_to_the_bore_it_lies_just_inside_of() {
+    // Before the fix `snap_to_features` considered only faces within half the local edge length when any face was that close,
+    // so a vertex on the z = 0 plane and 5 % of the size inside the bore never moved toward the bore: at h = 0.28 vertices
+    // stayed 0.11 (11 % of the bore radius) off the body, and at h = 0.14 0.055.
+    for h in [0.28, 0.14] {
+        let row = run(h, false);
+        assert!(row.deepest_outside < 0.03, "h {h}: a node is {:.3e} outside the body", row.deepest_outside);
+    }
 }
 
 #[test]

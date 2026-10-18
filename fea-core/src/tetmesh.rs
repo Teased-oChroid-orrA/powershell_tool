@@ -676,7 +676,11 @@ fn curve_boundary_edges(mesh: &mut Mesh, s: &Solid, boundary: &[([usize; 3], usi
 /// the target), otherwise the nearest face within `reach`. `None` when no face is that close.
 fn snap_to_features(fd: &dyn Fn(V3) -> Vec<FaceHit>, x: V3, edge_reach: f64, reach: f64) -> Option<V3> {
     let hits = fd(x);
-    let mut active: Vec<usize> = hits.iter().filter(|h| h.dist.abs() < edge_reach).map(|h| h.face).collect();
+    // A face the point lies outside of (positive distance) and is within reach of is violated, whatever the edge reach: the
+    // point is then on the edge between that face and the ones it already touches, and must be brought onto it too. Without
+    // this a vertex on one face and 5 % of the size off a neighbouring one never moved toward the second (its nearest-face
+    // fallback only ran when no face was within the edge reach).
+    let mut active: Vec<usize> = hits.iter().filter(|h| h.dist.abs() < edge_reach || (h.dist > 0.0 && h.dist < reach)).map(|h| h.face).collect();
     if active.is_empty() {
         let nearest = hits.iter().filter(|h| h.dist.abs() < reach).min_by(|a, b| a.dist.abs().total_cmp(&b.dist.abs()))?;
         active.push(nearest.face);
