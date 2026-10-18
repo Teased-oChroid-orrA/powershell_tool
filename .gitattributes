@@ -1,0 +1,3 @@
+# STEP fixtures are compared and edited as text by the tests (for example "ENDSEC;\nEND-ISO"): a Windows checkout with autocrlf
+# would turn their line ends into CRLF and fail them (seen on the hosted windows runner).
+*.step text eol=lf
