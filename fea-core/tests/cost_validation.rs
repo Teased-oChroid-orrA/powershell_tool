@@ -22,6 +22,17 @@ fn hole(h: f64) -> Mesh {
     mesh_region(&region, Physics::PlaneStress { thickness: 1.0 }, ElementKind::Tri6, &|_| h, MeshOptions::default()).unwrap()
 }
 
+/// The NAFEMS LE1 / LE10 quarter geometry (`tests/nafems.rs`): an elliptic annulus, as a plane-stress membrane or a 0.6 thick solid.
+fn elliptic(kind: ElementKind, radial: usize, layers: usize) -> Mesh {
+    let (physics, div) = if kind.dim() == 2 { (Physics::PlaneStress { thickness: 0.1 }, [radial, 3 * radial, 1]) } else { (Physics::Solid, [radial, 3 * radial, layers]) };
+    grid(physics, kind, Elastic::new(210.0e3, 0.3), div, &|p| {
+        let t = 0.5 * std::f64::consts::PI * p[1];
+        let (c, s) = (t.cos(), t.sin());
+        [(1.0 - p[0]) * 2.0 * c + p[0] * 3.25 * c, (1.0 - p[0]) * s + p[0] * 2.75 * s, 0.6 * p[2]]
+    })
+    .unwrap()
+}
+
 /// Measured seconds of one assemble + factor + back-solve (best of three), and the factor size the solver reports.
 fn measure(mesh: &Mesh) -> (f64, usize) {
     let model = Model::new(mesh.clone()).unwrap();
@@ -48,7 +59,7 @@ fn measure(mesh: &Mesh) -> (f64, usize) {
 
 #[test]
 fn the_predicted_factor_size_matches_the_solver_on_every_family() {
-    for (name, mesh) in [("quad8 20", quad(20)), ("quad8 45", quad(45)), ("hex8 8", hex(8)), ("hex8 12", hex(12)), ("hole 0.5", hole(0.5)), ("hole 0.25", hole(0.25))] {
+    for (name, mesh) in [("quad8 20", quad(20)), ("quad8 45", quad(45)), ("hex8 8", hex(8)), ("hex8 12", hex(12)), ("hole 0.5", hole(0.5)), ("hole 0.25", hole(0.25)), ("LE1 quad9 8", elliptic(ElementKind::Quad9, 8, 1)), ("LE1 quad9 24", elliptic(ElementKind::Quad9, 24, 1)), ("LE10 hex27 3", elliptic(ElementKind::Hex27, 3, 2)), ("LE10 hex27 5", elliptic(ElementKind::Hex27, 5, 4))] {
         let predicted = MeshCost::of(&mesh).unwrap().factor_nnz;
         // `MeshCost::of` fixes one node, the measurement fixes a face: the factor sizes agree to a small fraction.
         let (_, actual) = measure(&mesh);
@@ -61,8 +72,10 @@ fn the_predicted_factor_size_matches_the_solver_on_every_family() {
 #[test]
 #[ignore = "timing: run with --release --ignored --nocapture"]
 fn predicted_solve_times_are_compared_with_measured_on_held_out_meshes() {
-    let families: [(&str, Vec<Mesh>); 3] = [
+    let families: [(&str, Vec<Mesh>); 5] = [
         ("quad8", vec![quad(30), quad(15), quad(45), quad(70)]),
+        ("LE1 quad9", vec![elliptic(ElementKind::Quad9, 20, 1), elliptic(ElementKind::Quad9, 10, 1), elliptic(ElementKind::Quad9, 30, 1), elliptic(ElementKind::Quad9, 45, 1)]),
+        ("LE10 hex27", vec![elliptic(ElementKind::Hex27, 6, 4), elliptic(ElementKind::Hex27, 4, 2), elliptic(ElementKind::Hex27, 8, 4), elliptic(ElementKind::Hex27, 10, 6)]),
         ("hex8", vec![hex(10), hex(6), hex(14), hex(18)]),
         ("hole tri6", vec![hole(0.3), hole(0.6), hole(0.2), hole(0.12)]),
     ];
