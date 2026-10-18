@@ -121,7 +121,7 @@ fn experiment(hole: bool, rel_tol: f64) {
     eprintln!("  default: {} cycles, {} dofs, goal error {:.3e}, {:.2} s, {:?}", default.cycles, default.dofs, default.goal_error, default.seconds, default.stop);
     if !hole {
         // Nothing to refine away from the loaded edge: no advice may be given for a zone that was never refined.
-        assert!(advice.map_or(true, |a| a.scale_for(Zone::GeometricDiscontinuity) == 1.0));
+        assert!(advice.is_none_or(|a| a.scale_for(Zone::GeometricDiscontinuity) == 1.0));
         return;
     }
     drop(advice);
