@@ -120,6 +120,31 @@ pub fn refine(
     bounds: &MetricBounds,
     options: RefineOptions,
 ) -> Result<(TetTopology, RefineReport), MeshError> {
+    refine_impl(top, field, bounds, options, None)
+}
+
+/// [`refine`] for a curved boundary: the vertex inserted on a boundary edge is moved by `project` (onto the true surface)
+/// when every tetrahedron around the edge stays positively oriented with it (exact test), and stays at the chord midpoint
+/// otherwise. The input vertices are not moved and the surface stays piecewise flat between vertices, so volume and area
+/// converge to the curved body's as the mesh is refined rather than being preserved. Flat-boundary flips and sliding apply
+/// only to exactly coplanar patches and do nothing on a curved one.
+pub fn refine_projected(
+    top: &TetTopology,
+    field: &dyn Fn(Point) -> Result<Metric, super::metric::MetricError>,
+    bounds: &MetricBounds,
+    options: RefineOptions,
+    project: &dyn Fn(Point) -> Point,
+) -> Result<(TetTopology, RefineReport), MeshError> {
+    refine_impl(top, field, bounds, options, Some(project))
+}
+
+fn refine_impl(
+    top: &TetTopology,
+    field: &dyn Fn(Point) -> Result<Metric, super::metric::MetricError>,
+    bounds: &MetricBounds,
+    options: RefineOptions,
+    project: Option<&dyn Fn(Point) -> Point>,
+) -> Result<(TetTopology, RefineReport), MeshError> {
     let evaluate = |p: Point| -> Result<Metric, MeshError> {
         let m = field(p).map_err(mesh_error)?;
         m.validate(bounds).map_err(mesh_error)?;
@@ -191,8 +216,9 @@ pub fn refine(
             })
             .filter(|(l, _)| *l > options.max_length)
             .collect();
-        if boundary_only {
-            // Boundary edges: those of a face used by exactly one cell.
+        // Boundary edges: those of a face used by exactly one cell.
+        let mut on_boundary = BTreeSet::<[usize; 2]>::new();
+        if boundary_only || project.is_some() {
             let mut face_use = BTreeMap::<[usize; 3], usize>::new();
             for t in &cells {
                 for f in [[t[0], t[1], t[2]], [t[0], t[1], t[3]], [t[0], t[2], t[3]], [t[1], t[2], t[3]]] {
@@ -201,7 +227,6 @@ pub fn refine(
                     *face_use.entry(k).or_default() += 1;
                 }
             }
-            let mut on_boundary = BTreeSet::<[usize; 2]>::new();
             for (f, n) in &face_use {
                 if *n == 1 {
                     on_boundary.insert(edge_key(f[0], f[1]));
@@ -209,6 +234,8 @@ pub fn refine(
                     on_boundary.insert(edge_key(f[1], f[2]));
                 }
             }
+        }
+        if boundary_only {
             long.retain(|(_, e)| on_boundary.contains(e));
             if long.is_empty() {
                 continue;
@@ -282,7 +309,27 @@ pub fn refine(
                     "refinement cell budget exceeded".into(),
                 ));
             }
-            let m: Point = std::array::from_fn(|i| 0.5 * (points[a][i] + points[b][i]));
+            let mut m: Point = std::array::from_fn(|i| 0.5 * (points[a][i] + points[b][i]));
+            if let (Some(project), true) = (project, on_boundary.contains(&edge_key(a, b))) {
+                let projected = project(m);
+                // Keep the projection only if every tetrahedron around the edge, both halves, stays positively oriented.
+                let mut ok = projected.iter().all(|v| v.is_finite()) && projected != points[a] && projected != points[b];
+                if ok {
+                    'cells: for &c in around {
+                        let t = cells[c];
+                        for half in [t.map(|v| if v == b { usize::MAX } else { v }), t.map(|v| if v == a { usize::MAX } else { v })] {
+                            let p = half.map(|v| if v == usize::MAX { projected } else { points[v] });
+                            if !matches!(super::tet_topology::orientation(p[0], p[1], p[2], p[3]), Ok(std::cmp::Ordering::Greater)) {
+                                ok = false;
+                                break 'cells;
+                            }
+                        }
+                    }
+                }
+                if ok {
+                    m = projected;
+                }
+            }
             let mid = points.len() + added_points.len();
             // Midpoints of distinct edges must stay distinct points.
             if points.iter().chain(&added_points).any(|p| *p == m) {
@@ -582,6 +629,58 @@ mod tests {
             assert!((0..3).any(|k| p[k] == 0. || p[k] == 1.), "boundary vertex left the cube surface");
         }
     }
+    fn sphere_topology(boundary_size: f64) -> TetTopology {
+        use crate::tetmesh::{mesh_solid, Solid, TetOptions};
+        let sdf = |x: [f64; 3]| (x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).sqrt() - 1.0;
+        let (size, face) = (|_: [f64; 3]| 10.0, |_: [f64; 3]| 0usize);
+        let solid = Solid { lo: [-1.2; 3], hi: [1.2; 3], sdf: &sdf, size: &size, face_of: &face, face_dists: None };
+        let (mesh, _) = mesh_solid(&solid, crate::Elastic::new(1.0, 0.3), TetOptions { base: 0.8, boundary_size, quadratic: false, ..Default::default() }).unwrap();
+        let cells: Vec<[usize; 4]> = mesh.blocks[0].conn.chunks_exact(4).map(|c| [c[0], c[1], c[2], c[3]]).collect();
+        TetTopology::new(mesh.nodes.clone(), cells, 1_000_000).expect("sphere topology")
+    }
+
+    #[test]
+    fn projecting_inserted_boundary_vertices_onto_a_sphere_converges_the_volume_where_chords_do_not() {
+        let start = sphere_topology(0.8);
+        let exact = 4.0 / 3.0 * std::f64::consts::PI;
+        let field = |_p: Point| Metric::from_sizes([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]], [0.3; 3]);
+        let bounds = MetricBounds::new(0.01, 10., 100.).unwrap();
+        let options = RefineOptions { max_passes: 30, ..RefineOptions::default() };
+        let radial = |p: Point| -> Point {
+            let r = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+            [p[0] / r, p[1] / r, p[2] / r]
+        };
+        let (flat, rf) = refine(&start, &field, &bounds, options).unwrap();
+        let (curved, rc) = refine_projected(&start, &field, &bounds, options, &radial).unwrap();
+        let vol = |t: &TetTopology| volume(t);
+        // Inserted boundary vertices (index at or beyond the start's) that are on the unit sphere to rounding, and the number
+        // that fell back to the chord midpoint because the projection would have inverted a cell.
+        let inserted = |t: &TetTopology| -> (usize, usize) {
+            let boundary: BTreeSet<usize> = t.boundary().iter().flatten().copied().filter(|&v| v >= start.points().len()).collect();
+            let on = boundary.iter().filter(|&&v| {
+                let p = t.points()[v];
+                ((p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt() - 1.0).abs() < 1e-9
+            }).count();
+            (on, boundary.len())
+        };
+        let q = |t: &TetTopology, field: &dyn Fn(Point) -> Result<Metric, super::super::metric::MetricError>| {
+            let mut v = q_unsorted(t, field);
+            v.sort_by(f64::total_cmp);
+            (v[0], v[v.len() / 2])
+        };
+        eprintln!("start volume {:.4} (exact {exact:.4}); chords: {:.4} ({} cells, converged {}, min/median quality {:?}); projected: {:.4} ({} cells, converged {}, {:?})", vol(&start), vol(&flat), rf.cells_after, rf.converged, q(&flat, &field), vol(&curved), rc.cells_after, rc.converged, q(&curved, &field));
+        assert!(rf.converged && rc.converged);
+        // The chord mesh keeps the start's volume (flat subdivision); the projected one moves toward the sphere's.
+        assert!((vol(&flat) - vol(&start)).abs() < 1e-9);
+        assert!((vol(&curved) - exact).abs() < 0.5 * (vol(&start) - exact).abs(), "{} {} {exact}", vol(&curved), vol(&start));
+        // Inserted boundary vertices lie on the sphere (to rounding); the start's own vertices were on it already.
+        let (on, total) = inserted(&curved);
+        eprintln!("inserted boundary vertices on the sphere: {on} of {total}");
+        assert!(total > 100 && on as f64 >= 0.9 * total as f64, "{on} of {total} inserted boundary vertices on the sphere");
+        let (min_q, _) = q(&curved, &field);
+        assert!(min_q > 1e-3, "projected mesh worst cell {min_q}");
+    }
+
     #[test]
     fn boundary_first_refinement_with_flat_flips_converges_with_good_cells_at_ten_to_one() {
         // The combination that fixes strong anisotropy: boundary edges follow the metric first, flat-boundary flips repair the
