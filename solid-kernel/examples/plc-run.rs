@@ -13,10 +13,16 @@ fn main() {
             _ => t.push([x[1].parse::<usize>().unwrap(), x[2].parse().unwrap(), x[3].parse().unwrap()]),
         }
     }
-    let o = Options { max_steiner: 200000, max_cells: 20_000_000, merge_coplanar: std::env::var_os("PLC_MERGE").is_some(), ..Default::default() };
+    let o = Options { max_steiner: 200000, max_cells: 20_000_000, merge_coplanar: std::env::var_os("PLC_MERGE").is_some(), protect_encroached: std::env::var_os("PLC_NOPROTECT").is_none(), unprotected_fallback: std::env::var_os("PLC_NOFALLBACK").is_none(), ..Default::default() };
     let start = std::time::Instant::now();
-    match conform(&v, &t, o, |_| start.elapsed().as_secs() < 100) {
-        Ok(c) => println!("ok {:?}", c.report),
-        Err(e) => println!("err {e}"),
+    let last = std::cell::Cell::new(0usize);
+    let result = conform(&v, &t, o, |p| {
+        last.set(p.steiner);
+        start.elapsed().as_secs() < std::env::var("PLC_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(100)
+    });
+    println!("last progress steiner {}", last.get());
+    match result {
+        Ok(c) => println!("ok {:?} secs {:.2}", c.report, start.elapsed().as_secs_f64()),
+        Err(e) => println!("err {e} secs {:.2}", start.elapsed().as_secs_f64()),
     }
 }

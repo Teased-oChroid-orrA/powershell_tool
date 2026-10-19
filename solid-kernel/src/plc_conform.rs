@@ -25,7 +25,35 @@ use fea_core::meshing::{
     MeshError,
 };
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::hash::{BuildHasherDefault, Hasher};
+/// Multiplicative hash for the small integer keys of the per-facet tables (vertex numbers, directed edges): the
+/// default SipHash dominated the insertion into large facet meshes. Iteration order is never observed.
+#[derive(Default)]
+struct FastHasher(u64);
+impl Hasher for FastHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u64(b as u64);
+        }
+    }
+    fn write_usize(&mut self, n: usize) {
+        self.write_u64(n as u64);
+    }
+    fn write_u8(&mut self, n: u8) {
+        self.write_u64(n as u64);
+    }
+    fn write_i64(&mut self, n: i64) {
+        self.write_u64(n as u64);
+    }
+    fn write_u64(&mut self, n: u64) {
+        self.0 = (self.0.rotate_left(26) ^ n).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+}
+type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<FastHasher>>;
 #[derive(Debug, Clone, Copy)]
 pub struct Options {
     pub max_steiner: usize,
@@ -55,6 +83,21 @@ pub struct Options {
     /// the input facet that contains their centroid (they may straddle a removed diagonal); a merged patch is not
     /// reproduced triangle by triangle. Off by default: the result is then triangle for triangle the input.
     pub merge_coplanar: bool,
+    /// When the recovery with `protect_encroached` fails because refinement does not terminate (the Steiner budget is
+    /// exhausted or a sub-segment reaches `min_segment_relative`), run it again once with `protect_encroached: false`.
+    /// The input angles of a sampled CAD surface are far below what Shewchuk's protect-everything rule terminates on
+    /// (needles of a curved face, dihedrals of a few degrees): there every encroached item is split and the splits
+    /// cascade. Splitting only what the exact presence check finds missing needs a fraction of the points and ends on
+    /// these shells; its result is verified exactly like the first. A recovery that succeeds at the first attempt is
+    /// unchanged. Has no effect when `protect_encroached` is already false.
+    pub unprotected_fallback: bool,
+    /// With the fallback enabled, the recovery that protects every encroached item gives up after this many Steiner
+    /// points (counted like `max_steiner`) and the unprotected recovery takes over with its own full budget. The protected
+    /// recovery either ends within a few thousand points or cascades without a scale to stop it (the ABC corpus, 377
+    /// shells that finished: at most 25 895 points, 3 above 20 000; 18 that did not were still adding points after 8 000
+    /// to 62 000 when they ran out of time), so waiting for it to reach `max_steiner` only spends the time the fallback
+    /// needs. Ignored when the fallback is off (then `max_steiner` alone limits the run).
+    pub protected_max_steiner: usize,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -66,6 +109,8 @@ impl Default for Options {
             reconnect: None,
             min_segment_relative: 1e-6,
             merge_coplanar: false,
+            unprotected_fallback: true,
+            protected_max_steiner: 30_000,
         }
     }
 }
@@ -296,7 +341,7 @@ struct FacetMesh {
     e2: V3,
     /// The input triangles of the facet (one, or a coplanar patch), counter-clockwise in the facet frame.
     region: Vec<[usize; 3]>,
-    uv: BTreeMap<usize, [f64; 2]>,
+    uv: FastMap<usize, [f64; 2]>,
     tris: Vec<[usize; 3]>,
     /// Circumcentre and squared circumradius of each sub-facet, parallel to `tris`; empty when stale (every change of
     /// `tris` clears it). Points are never moved, so a sub-facet's sphere never changes.
@@ -333,7 +378,7 @@ impl FacetMesh {
             e1,
             e2,
             region: members.to_vec(),
-            uv: BTreeMap::new(),
+            uv: FastMap::default(),
             tris: members.to_vec(),
             spheres: Vec::new(),
             ball_box: ([0.; 3], [0.; 3]),
@@ -416,13 +461,17 @@ impl FacetMesh {
                         .all(|k| orientation_2d(uv(t[k]), uv(t[(k + 1) % 3]), q) != Ordering::Less)
                 })
             });
-        let mut across = BTreeMap::<[usize; 2], usize>::new();
+        let mut across = FastMap::<[usize; 2], usize>::with_capacity_and_hasher(3 * self.tris.len(), Default::default());
         for (i, t) in self.tris.iter().enumerate() {
             for k in 0..3 {
                 across.insert([t[k], t[(k + 1) % 3]], i);
             }
         }
+        let mut in_cavity = vec![false; self.tris.len()];
         let mut cavity: Vec<usize> = seed.into_iter().collect();
+        for &i in &cavity {
+            in_cavity[i] = true;
+        }
         let mut next_to_visit = 0;
         while next_to_visit < cavity.len() {
             let t = self.tris[cavity[next_to_visit]];
@@ -431,11 +480,12 @@ impl FacetMesh {
                 let Some(&j) = across.get(&[t[(k + 1) % 3], t[k]]) else {
                     continue;
                 };
-                if cavity.contains(&j) {
+                if in_cavity[j] {
                     continue;
                 }
                 let [a, b, c] = self.tris[j].map(uv);
                 if in_circle_2d(a, b, c, q) == Ordering::Greater {
+                    in_cavity[j] = true;
                     cavity.push(j);
                 }
             }
@@ -463,7 +513,7 @@ impl FacetMesh {
             }
         }
         let mut next: Vec<[usize; 3]> = (0..self.tris.len())
-            .filter(|i| !cavity.contains(i))
+            .filter(|&i| !in_cavity[i])
             .map(|i| self.tris[i])
             .collect();
         for [x, y] in boundary.into_values() {
@@ -484,8 +534,20 @@ impl FacetMesh {
             }
         }
         self.uv.insert(id, q);
+        // The survivors keep their circumspheres (points never move) and keep their order; the new cone triangles are
+        // appended, so `spheres` stays a valid prefix that `ensure_spheres` completes.
+        if self.spheres.len() == self.tris.len() {
+            let mut kept = Vec::with_capacity(next.len());
+            for (i, sphere) in self.spheres.iter().enumerate() {
+                if !in_cavity[i] {
+                    kept.push(*sphere);
+                }
+            }
+            self.spheres = kept;
+        } else {
+            self.spheres.clear();
+        }
         self.tris = next;
-        self.spheres.clear();
         Ok(())
     }
     /// Flip interior edges so absent sub-facets are replaced by pairs that are
@@ -532,16 +594,20 @@ impl FacetMesh {
     /// Fill `spheres` (`None`: degenerate sub-facet) if stale.
     fn ensure_spheres(&mut self, points: &[V3]) {
         if self.spheres.len() != self.tris.len() {
-            self.spheres = self
-                .tris
+            // A prefix of `spheres` is valid for the first triangles (an insertion keeps its survivors' spheres); a
+            // shorter or empty list is completed. The box only grows: removed balls stay in it, which is merely coarser.
+            let done = self.spheres.len().min(self.tris.len());
+            self.spheres.truncate(done);
+            let (mut lo, mut hi) = if done == 0 { ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]) } else { self.ball_box };
+            let fresh: Vec<Option<(V3, f64)>> = self.tris[done..]
                 .iter()
                 .map(|t| {
                     let [a, b, c] = t.map(|x| points[x]);
                     circumcentre(a, b, c).map(|cc| (cc, norm2(sub(a, cc))))
                 })
                 .collect();
-            let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
-            for (cc, r2) in self.spheres.iter().flatten() {
+            self.spheres.extend(fresh.iter().copied());
+            for (cc, r2) in fresh.iter().flatten() {
                 // slack for the rounding of the radius and of the box test
                 let r = r2.sqrt() * (1. + 1e-6) + 1e-12 * (1. + norm2(*cc).sqrt());
                 for k in 0..3 {
@@ -695,10 +761,101 @@ impl PointGrid {
         Some(false)
     }
 }
+/// Multi-level grid over the diametral balls of the segments, answering "which segments does this point encroach" without
+/// scanning all of them. A segment of length `l` lives on the level whose cell size is at least `l` (cell = root / 2^level),
+/// in every cell its ball's bounding box touches (at most 3 per axis), so a point inside the ball is in one of those cells.
+/// It only prunes candidates: the caller applies the exact [`encroaches`] test, so the answers equal the full scan.
+struct SegmentGrid {
+    lo: V3,
+    root: f64,
+    buckets: FastMap<(u8, i64, i64, i64), Vec<[usize; 2]>>,
+    lowest: u8,
+    highest: u8,
+}
+impl SegmentGrid {
+    const MAX_LEVEL: u8 = 60;
+    fn new(vertices: &[V3]) -> Self {
+        let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+        for v in vertices {
+            for k in 0..3 {
+                lo[k] = lo[k].min(v[k]);
+                hi[k] = hi[k].max(v[k]);
+            }
+        }
+        let extent = (0..3).map(|k| hi[k] - lo[k]).fold(0., f64::max);
+        let root = if extent.is_finite() && extent > 0. { extent * 2. } else { 1. };
+        Self { lo, root, buckets: FastMap::default(), lowest: Self::MAX_LEVEL, highest: 0 }
+    }
+    fn level(&self, length: f64) -> u8 {
+        let l = (self.root / length).log2().floor();
+        if l.is_finite() { l.clamp(0., Self::MAX_LEVEL as f64) as u8 } else { Self::MAX_LEVEL }
+    }
+    fn cell(&self, level: u8, x: f64, k: usize) -> i64 {
+        ((x - self.lo[k]) * 2f64.powi(level as i32) / self.root).floor() as i64
+    }
+    /// The cell ranges of a ball, with slack for the rounding of the radius and of the cell index.
+    fn ranges(&self, level: u8, centre: V3, radius: f64) -> [(i64, i64); 3] {
+        let r = radius * (1. + 1e-6) + 1e-12 * (1. + norm2(centre).sqrt());
+        std::array::from_fn(|k| (self.cell(level, centre[k] - r, k), self.cell(level, centre[k] + r, k)))
+    }
+    fn place(&mut self, s: [usize; 2], pts: &[V3], add: bool) {
+        let (pa, pb) = (pts[s[0]], pts[s[1]]);
+        let length = norm2(sub(pa, pb)).sqrt();
+        let level = self.level(length);
+        let centre: V3 = std::array::from_fn(|i| (pa[i] + pb[i]) * 0.5);
+        let range = self.ranges(level, centre, length * 0.5);
+        for x in range[0].0..=range[0].1 {
+            for y in range[1].0..=range[1].1 {
+                for z in range[2].0..=range[2].1 {
+                    let key = (level, x, y, z);
+                    if add {
+                        self.buckets.entry(key).or_default().push(s);
+                    } else if let Some(b) = self.buckets.get_mut(&key) {
+                        if let Some(at) = b.iter().position(|e| *e == s) {
+                            b.swap_remove(at);
+                        }
+                        if b.is_empty() {
+                            self.buckets.remove(&key);
+                        }
+                    }
+                }
+            }
+        }
+        if add {
+            self.lowest = self.lowest.min(level);
+            self.highest = self.highest.max(level);
+        }
+    }
+    fn add(&mut self, s: [usize; 2], pts: &[V3]) {
+        self.place(s, pts, true);
+    }
+    fn remove(&mut self, s: [usize; 2], pts: &[V3]) {
+        self.place(s, pts, false);
+    }
+    /// The segments (other than those with an end in `skip`) whose diametral ball holds `p`, in no particular order.
+    fn encroached_by(&self, pts: &[V3], p: V3, skip: Option<usize>) -> Vec<[usize; 2]> {
+        let mut out = Vec::new();
+        let (mut lo, mut hi) = (self.lowest, self.highest);
+        if lo > hi {
+            (lo, hi) = (1, 0);
+        }
+        for level in lo..=hi {
+            let key = (level, self.cell(level, p[0], 0), self.cell(level, p[1], 1), self.cell(level, p[2], 2));
+            if let Some(b) = self.buckets.get(&key) {
+                out.extend(b.iter().copied().filter(|s| {
+                    skip.map_or(true, |v| s[0] != v && s[1] != v) && encroaches(pts[s[0]], pts[s[1]], p)
+                }));
+            }
+        }
+        // a segment can sit in several cells of its level, but a point lies in exactly one cell per level
+        out
+    }
+}
 struct State {
     delaunay: Delaunay3,
     grid: std::cell::RefCell<PointGrid>,
     segments: BTreeSet<[usize; 2]>,
+    seg_grid: SegmentGrid,
     meshes: Vec<FacetMesh>,
     /// Sub-segments / sub-facets known to be encroached (or forced) and not yet split.
     enc_segments: BTreeSet<[usize; 2]>,
@@ -707,6 +864,8 @@ struct State {
     /// encroaches it: a refresh of the facet mesh drops them unless they are encroached too.
     forced_tris: BTreeSet<(usize, [usize; 3])>,
     steiner: usize,
+    /// Steiner points this attempt may add.
+    steiner_cap: usize,
     segment_steiner: usize,
     facet_steiner: usize,
     quality_steiner: usize,
@@ -853,11 +1012,23 @@ impl State {
         let p = self.points()[v];
         let pts = self.delaunay.points();
         let hit: Vec<[usize; 2]> = self
-            .segments
-            .iter()
-            .copied()
-            .filter(|s| s[0] != v && s[1] != v && !self.frozen_segments.contains(s) && encroaches(pts[s[0]], pts[s[1]], p))
+            .seg_grid
+            .encroached_by(pts, p, Some(v))
+            .into_iter()
+            .filter(|s| !self.frozen_segments.contains(s))
             .collect();
+        #[cfg(debug_assertions)]
+        {
+            // the grid only prunes: it must return exactly what the full scan does
+            let full: BTreeSet<[usize; 2]> = self
+                .segments
+                .iter()
+                .copied()
+                .filter(|s| s[0] != v && s[1] != v && !self.frozen_segments.contains(s) && encroaches(pts[s[0]], pts[s[1]], p))
+                .collect();
+            let got: BTreeSet<[usize; 2]> = hit.iter().copied().collect();
+            debug_assert_eq!(got, full, "segment grid disagrees with the full scan");
+        }
         self.enc_segments.extend(hit);
         let mut hit_tris = Vec::new();
         for (k, m) in self.meshes.iter_mut().enumerate() {
@@ -929,12 +1100,7 @@ impl State {
                 continue;
             }
             let current = self.points().to_vec();
-            let hit: Vec<[usize; 2]> = self
-                .segments
-                .iter()
-                .copied()
-                .filter(|&[x, y]| encroaches(current[x], current[y], cc))
-                .collect();
+            let hit: Vec<[usize; 2]> = self.seg_grid.encroached_by(&current, cc, None);
             // A centre that encroaches a frozen segment or facet cannot be placed (the item may not be split): the cell stays.
             if hit.iter().any(|s| self.frozen_segments.contains(s)) {
                 unresolved += 1;
@@ -986,10 +1152,10 @@ impl State {
         Ok(progressed)
     }
     fn insert(&mut self, p: V3) -> Result<usize, Error> {
-        if self.steiner >= self.options.max_steiner {
+        if self.steiner >= self.steiner_cap {
             return Err(fail(
                 ErrorKind::Limit,
-                "Steiner point budget exceeded; the input may have acute segment or facet angles",
+                BUDGET_MESSAGE,
             ));
         }
         let i = self.delaunay.insert(p).map_err(mesh_error)?;
@@ -1011,7 +1177,7 @@ impl State {
         if len2.sqrt() < self.min_segment {
             return Err(fail(
                 ErrorKind::Geometry,
-                "refinement descends below the feature-size floor around a vertex (input angles too small for the requested quality)",
+                FLOOR_MESSAGE,
             ));
         }
         // Concentric shells (Ruppert/Shewchuk): when exactly one end is an input
@@ -1040,6 +1206,13 @@ impl State {
         self.enc_segments.remove(&s);
         let halves = [edge(a, mi), edge(mi, b)];
         self.segments.extend(halves);
+        {
+            let pts = self.delaunay.points();
+            self.seg_grid.remove(s, pts);
+            for h in halves {
+                self.seg_grid.add(h, pts);
+            }
+        }
         // Both facets bounded by the segment gain the new point on their edge.
         let mut touched = Vec::new();
         for k in 0..self.meshes.len() {
@@ -1176,12 +1349,52 @@ fn coplanar_groups(vertices: &[V3], facets: &[[usize; 3]], frozen: Option<&[bool
     out.sort_by_key(|m| m[0]);
     out
 }
+const FLOOR_MESSAGE: &str = "refinement descends below the feature-size floor around a vertex (input angles too small for the requested quality)";
+const BUDGET_MESSAGE: &str = "Steiner point budget exceeded; the input may have acute segment or facet angles";
 fn conform_impl(
     vertices: &[V3],
     facets: &[[usize; 3]],
     frozen: Option<&[bool]>,
     options: Options,
     mut progress: impl FnMut(Progress) -> bool,
+) -> Result<Conforming, Error> {
+    // The exact predicates refuse coordinates below 1e-30 in magnitude that are not zero. A coordinate that small is the
+    // residue of a rotation that should have produced 0 (a STEP placement: -5.9e-31 instead of 0), never a feature, so it
+    // is flushed to 0 here; the output points then differ from the input by less than 1e-30.
+    const TINY: f64 = 1e-30;
+    let flushed: Vec<V3>;
+    let vertices = if vertices.iter().flatten().any(|x| *x != 0. && x.abs() < TINY) {
+        flushed = vertices.iter().map(|v| v.map(|x| if x.abs() < TINY { 0. } else { x })).collect();
+        &flushed[..]
+    } else {
+        vertices
+    };
+    let first = conform_attempt(vertices, facets, frozen, options, &mut progress);
+    match first {
+        Err(e)
+            if options.protect_encroached
+                && options.unprotected_fallback
+                && (e.detail == FLOOR_MESSAGE || e.detail == BUDGET_MESSAGE) =>
+        {
+            let relaxed = Options { protect_encroached: false, ..options };
+            // a refusal of the second attempt is the more informative one only when it is not the same kind of cascade
+            conform_attempt(vertices, facets, frozen, relaxed, &mut progress).map_err(|second| {
+                if second.detail == FLOOR_MESSAGE || second.detail == BUDGET_MESSAGE {
+                    e
+                } else {
+                    second
+                }
+            })
+        }
+        other => other,
+    }
+}
+fn conform_attempt(
+    vertices: &[V3],
+    facets: &[[usize; 3]],
+    frozen: Option<&[bool]>,
+    options: Options,
+    progress: &mut dyn FnMut(Progress) -> bool,
 ) -> Result<Conforming, Error> {
     let publish = |state: &State,
                    phase,
@@ -1276,15 +1489,28 @@ fn conform_impl(
         ..limits
     };
     let seed = tetrahedralize(&with_box, limits).map_err(mesh_error)?;
+    let seg_grid = {
+        let mut grid = SegmentGrid::new(vertices);
+        for &e in &segments {
+            grid.add(e, vertices);
+        }
+        grid
+    };
     let mut state = State {
         delaunay: Delaunay3::new(&seed, options.max_cells),
         grid: std::cell::RefCell::new(PointGrid::new(vertices)),
         segments,
+        seg_grid,
         meshes,
         enc_segments: BTreeSet::new(),
         enc_tris: BTreeSet::new(),
         forced_tris: BTreeSet::new(),
         steiner: 0,
+        steiner_cap: if options.protect_encroached && options.unprotected_fallback {
+            options.max_steiner.min(options.protected_max_steiner)
+        } else {
+            options.max_steiner
+        },
         segment_steiner: 0,
         facet_steiner: 0,
         quality_steiner: 0,
@@ -1316,7 +1542,7 @@ fn conform_impl(
             options.min_segment_relative * norm2(sub(hi, lo)).sqrt()
         },
     };
-    publish(&state, Phase::Delaunay, (0, 0), &mut progress)?;
+    publish(&state, Phase::Delaunay, (0, 0), progress)?;
     let all: Vec<[usize; 2]> = state.segments.iter().copied().collect();
     for s in all {
         if options.protect_encroached && !state.frozen_segments.contains(&s) && state.segment_encroached(s) {
@@ -1337,7 +1563,7 @@ fn conform_impl(
                 &state,
                 Phase::Segments,
                 (state.enc_segments.len() + 1, state.enc_tris.len()),
-                &mut progress,
+                progress,
             )?;
             state.split_segment(s)?;
         }
@@ -1350,7 +1576,7 @@ fn conform_impl(
                 &state,
                 Phase::Facets,
                 (0, state.enc_tris.len() + 1),
-                &mut progress,
+                progress,
             )?;
             if state.frozen_facets.contains(&k) {
                 let [a, b, c] = t.map(|v| state.points()[v]);
@@ -1366,12 +1592,7 @@ fn conform_impl(
             }
             let (cc, _) = state.tri_circumsphere(t)?;
             let pts = state.points().to_vec();
-            let hit: Vec<[usize; 2]> = state
-                .segments
-                .iter()
-                .copied()
-                .filter(|&[x, y]| encroaches(pts[x], pts[y], cc))
-                .collect();
+            let hit: Vec<[usize; 2]> = state.seg_grid.encroached_by(&pts, cc, None);
             // The centre of a sub-facet that encroaches a frozen segment cannot be placed; a present sub-facet is left as it is.
             if hit.iter().any(|s| state.frozen_segments.contains(s)) {
                 state.unrefinable.insert((k, t));
@@ -1495,7 +1716,7 @@ fn conform_impl(
             &state,
             Phase::Facets,
             (missing_segments.len(), missing_tris.len()),
-            &mut progress,
+            progress,
         )?;
         if !missing_segments.is_empty() {
             state.enc_segments.extend(missing_segments);
@@ -1504,7 +1725,7 @@ fn conform_impl(
             state.enc_tris.extend(missing_tris);
         }
     }
-    publish(&state, Phase::Extraction, (0, 0), &mut progress)?;
+    publish(&state, Phase::Extraction, (0, 0), progress)?;
     let mut result = extract(state, vertices.len(), rounds)?;
     // facet numbers of the result are input facet numbers: a merged patch hands each sub-facet to the member it lies in
     for (f, parent) in &mut result.facets {
