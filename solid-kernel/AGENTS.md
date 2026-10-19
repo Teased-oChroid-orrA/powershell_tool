@@ -31,6 +31,7 @@ Does not own: the volume mesher (`fea-core/src/tetmesh.rs`), the problem schema 
 | Hexahedral core inside a native body (deep face-connected voxels, pinch removal, closed pyramid layer = cavity of the tetrahedral region) | `src/hybrid_region.rs`, `tests/hybrid_region.rs`, `docs/issue-46-phase-111.md` |
 | Hexahedra kept next to tetrahedra: `Pyramid5` layer on the interface quads + tetrahedra from `plc_conform::conform_preserving` (frozen facets) | `src/hybrid.rs`, `tests/hybrid_hex_tet.rs`, `tests/plc_preserving.rs`, `docs/issue-46-phase-102.md` |
 | Sphere / cone / torus faces (stereographic, developed, conformal charts; face-local sphere frame; apex; periodic trims) | `src/curved_surface.rs`, `docs/issue-46-phase-101.md`, `tests/curved_step.rs`, `tests/data/*.step` |
+| Native modelling without OCCT (#46/#63, owner: all editor operations native): owned analytic B-rep `NativeBrep` (`extrude`, polyline `lathe`, box / cylinder), AP214 STEP write; orientation = loops counter-clockwise seen from outside, each edge forward once and reversed once. Booleans / fillets still OCCT-only | `src/native_brep.rs`, `src/native_brep_step.rs`, `tests/native_brep.rs`, `tests/native_brep_occt.rs` (`--features occt`), `docs/issue-46-phase-120.md` |
 | Analytic tests (box, tube) | `tests/surface.rs` |
 | OpenCascade tests | `tests/occt.rs` (`cargo test -p solid-kernel --features occt`) |
 
