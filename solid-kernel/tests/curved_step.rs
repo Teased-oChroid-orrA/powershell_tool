@@ -189,6 +189,8 @@ fn graded_curved_shells_reach_radius_edge_two_and_the_steiner_points_stay_on_the
             max_steiner: 100_000,
             max_radius_edge: Some(2.),
             protect_encroached,
+            // the protected-only refusal below is the point of the second call: no unprotected retry
+            unprotected_fallback: false,
             ..Default::default()
         };
         let m = conform(&vertices, &facets, options(false), |_| true)
