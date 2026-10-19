@@ -22,6 +22,8 @@ pub mod chart_mesh;
 mod native_math;
 mod native_interval;
 pub mod native_surface;
+pub mod native_brep;
+pub mod native_brep_step;
 pub mod geometry_bounds;
 mod geometry_distance;
 pub mod nurbs_surface_distance;
