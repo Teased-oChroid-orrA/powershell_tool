@@ -39,7 +39,7 @@ fn perpendicular(a: V3) -> V3 {
 }
 
 /// The sampled boundary polyline (3D) of one edge use, in the direction of use.
-fn polyline(b: &NativeBrep, u: &Use) -> Vec<V3> {
+pub(crate) fn polyline(b: &NativeBrep, u: &Use) -> Vec<V3> {
     let e = &b.edges[u.edge];
     let (p0, p1) = (b.vertices[e.start], b.vertices[e.end]);
     let mut pts = match &e.curve {

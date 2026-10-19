@@ -26,6 +26,7 @@ pub mod native_brep;
 pub mod native_brep_step;
 pub mod native_brep_read;
 pub mod native_brep_drill;
+pub mod native_brep_fillet;
 pub mod geometry_bounds;
 mod geometry_distance;
 pub mod nurbs_surface_distance;
