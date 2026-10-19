@@ -48,6 +48,13 @@ pub struct Options {
     /// descended that far (a cascade of concentric shells around a vertex) produces elements no solver can use, and the
     /// recovery stops with an error instead.
     pub min_segment_relative: f64,
+    /// Merge adjacent unfrozen input facets that are coplanar (every vertex within 1e-9 of the other triangle's plane,
+    /// relative to its edge length, and the patch flat to 1e-8 of its size) into one polygonal facet. The edges between
+    /// merged facets stop being segments, so a diagonal of a planar face (a CAD face sampled into triangles) no longer
+    /// has to be recovered and cannot start a cascade of ever smaller splits. The output sub-facets then carry as parent
+    /// the input facet that contains their centroid (they may straddle a removed diagonal); a merged patch is not
+    /// reproduced triangle by triangle. Off by default: the result is then triangle for triangle the input.
+    pub merge_coplanar: bool,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -58,6 +65,7 @@ impl Default for Options {
             max_radius_edge: None,
             reconnect: None,
             min_segment_relative: 1e-6,
+            merge_coplanar: false,
         }
     }
 }
@@ -286,8 +294,8 @@ struct FacetMesh {
     origin: V3,
     e1: V3,
     e2: V3,
-    /// The three input corners, counter-clockwise in the facet frame.
-    corners: [usize; 3],
+    /// The input triangles of the facet (one, or a coplanar patch), counter-clockwise in the facet frame.
+    region: Vec<[usize; 3]>,
     uv: BTreeMap<usize, [f64; 2]>,
     tris: Vec<[usize; 3]>,
     /// Circumcentre and squared circumradius of each sub-facet, parallel to `tris`; empty when stale (every change of
@@ -298,6 +306,19 @@ struct FacetMesh {
 }
 impl FacetMesh {
     fn new(parent: usize, f: [usize; 3], points: &[V3]) -> Result<Self, Error> {
+        Self::patch(parent, &[f], points)
+    }
+    /// A facet made of coplanar triangles `members` (outward oriented, all counter-clockwise in the common frame). The
+    /// frame is that of the largest member. Interior edges are free: the planar triangulation is made Delaunay by flips.
+    fn patch(parent: usize, members: &[[usize; 3]], points: &[V3]) -> Result<Self, Error> {
+        let normal = |f: &[usize; 3]| {
+            let [a, b, c] = f.map(|v| points[v]);
+            cross(sub(b, a), sub(c, a))
+        };
+        let f = *members
+            .iter()
+            .max_by(|x, y| norm2(normal(x)).total_cmp(&norm2(normal(y))))
+            .ok_or_else(|| fail(ErrorKind::Geometry, "empty PLC facet"))?;
         let [a, b, c] = f.map(|v| points[v]);
         let n = cross(sub(b, a), sub(c, a));
         let (nn, ll) = (norm2(n).sqrt(), norm2(sub(b, a)).sqrt());
@@ -311,16 +332,62 @@ impl FacetMesh {
             origin: a,
             e1,
             e2,
-            corners: f,
+            region: members.to_vec(),
             uv: BTreeMap::new(),
-            tris: vec![f],
+            tris: members.to_vec(),
             spheres: Vec::new(),
             ball_box: ([0.; 3], [0.; 3]),
         };
-        for v in f {
-            mesh.uv.insert(v, mesh.project(points[v]));
+        for v in members.iter().flatten() {
+            let q = mesh.project(points[*v]);
+            mesh.uv.insert(*v, q);
+        }
+        if members.len() > 1 {
+            let uv = |v: usize| mesh.uv[&v];
+            if members.iter().any(|t| orientation_2d(uv(t[0]), uv(t[1]), uv(t[2])) != Ordering::Greater) {
+                return Err(fail(ErrorKind::Geometry, "coplanar PLC patch is not consistently oriented"));
+            }
+            mesh.make_delaunay();
         }
         Ok(mesh)
+    }
+    /// Lawson flips of interior edges until every one is locally Delaunay in the facet plane (boundary edges have one
+    /// triangle and never flip), so that Bowyer–Watson cavities of later insertions are star-shaped.
+    fn make_delaunay(&mut self) {
+        let mut budget = self.tris.len() * self.tris.len() + 64;
+        'again: while budget > 0 {
+            budget -= 1;
+            let mut across = BTreeMap::<[usize; 2], usize>::new();
+            for (i, t) in self.tris.iter().enumerate() {
+                for k in 0..3 {
+                    across.insert([t[k], t[(k + 1) % 3]], i);
+                }
+            }
+            for i in 0..self.tris.len() {
+                let t = self.tris[i];
+                for k in 0..3 {
+                    let (x, y, p) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
+                    let Some(&j) = across.get(&[y, x]) else {
+                        continue;
+                    };
+                    let q = *self.tris[j].iter().find(|v| **v != x && **v != y).unwrap();
+                    let uv = |v: usize| self.uv[&v];
+                    if in_circle_2d(uv(x), uv(y), uv(p), uv(q)) != Ordering::Greater {
+                        continue;
+                    }
+                    let (na, nb) = ([x, q, p], [q, y, p]);
+                    let convex = orientation_2d(uv(na[0]), uv(na[1]), uv(na[2])) == Ordering::Greater
+                        && orientation_2d(uv(nb[0]), uv(nb[1]), uv(nb[2])) == Ordering::Greater;
+                    if convex {
+                        self.tris[i] = na;
+                        self.tris[j] = nb;
+                        self.spheres.clear();
+                        continue 'again;
+                    }
+                }
+            }
+            return;
+        }
     }
     fn project(&self, p: V3) -> [f64; 2] {
         let d = sub(p, self.origin);
@@ -528,14 +595,15 @@ impl FacetMesh {
         }
         seen == 1
     }
-    /// Is `q` inside the original facet triangle (closed)?
+    /// Is `p` inside the original facet (closed): in one of its input triangles?
     fn contains(&self, p: V3, points: &[V3]) -> bool {
         let q = self.project(p);
-        (0..3).all(|k| {
-            let (a, b) = (self.corners[k], self.corners[(k + 1) % 3]);
-            let ua = self.uv_of(a, points);
-            let ub = self.uv_of(b, points);
-            orientation_2d(ua, ub, q) != Ordering::Less
+        self.region.iter().any(|t| {
+            (0..3).all(|k| {
+                let ua = self.uv_of(t[k], points);
+                let ub = self.uv_of(t[(k + 1) % 3], points);
+                orientation_2d(ua, ub, q) != Ordering::Less
+            })
         })
     }
     fn uv_of(&self, v: usize, points: &[V3]) -> [f64; 2] {
@@ -1024,6 +1092,90 @@ pub fn conform_preserving(
     }
     conform_impl(vertices, facets, Some(frozen), options, progress)
 }
+/// Groups of coplanar adjacent unfrozen input facets (see [`Options::merge_coplanar`]), ordered by their smallest facet.
+/// A group is kept only if it is flat as a whole, so a chain of facets that each bend a hair cannot add up to a curved patch.
+fn coplanar_groups(vertices: &[V3], facets: &[[usize; 3]], frozen: Option<&[bool]>) -> Vec<Vec<usize>> {
+    const PAIR: f64 = 1e-9;
+    const PATCH: f64 = 1e-8;
+    let normal = |f: &[usize; 3]| {
+        let [a, b, c] = f.map(|v| vertices[v]);
+        cross(sub(b, a), sub(c, a))
+    };
+    let is_frozen = |i: usize| frozen.is_some_and(|fr| fr[i]);
+    let mut by_edge = BTreeMap::<[usize; 2], Vec<usize>>::new();
+    for (i, f) in facets.iter().enumerate() {
+        for k in 0..3 {
+            by_edge.entry(edge(f[k], f[(k + 1) % 3])).or_default().push(i);
+        }
+    }
+    let mut parent: Vec<usize> = (0..facets.len()).collect();
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+    // the distance of `p` from the plane of facet `f`, relative to the facets' longest edge
+    let off_plane = |f: usize, p: usize, scale: f64| {
+        let n = normal(&facets[f]);
+        let a = vertices[facets[f][0]];
+        dot(n, sub(vertices[p], a)).abs() / (norm2(n).sqrt() * scale)
+    };
+    for pair in by_edge.values() {
+        let [f, g] = pair[..] else { continue };
+        if is_frozen(f) || is_frozen(g) {
+            continue;
+        }
+        let (nf, ng) = (normal(&facets[f]), normal(&facets[g]));
+        if !(dot(nf, ng) > 0. && norm2(nf) > 0. && norm2(ng) > 0.) {
+            continue;
+        }
+        let scale = facets[f]
+            .iter()
+            .chain(&facets[g])
+            .flat_map(|&u| facets[f].iter().chain(&facets[g]).map(move |&v| (u, v)))
+            .map(|(u, v)| norm2(sub(vertices[u], vertices[v])).sqrt())
+            .fold(0., f64::max);
+        let flat = facets[g].iter().all(|&v| off_plane(f, v, scale) <= PAIR)
+            && facets[f].iter().all(|&v| off_plane(g, v, scale) <= PAIR);
+        if flat {
+            let (a, b) = (find(&mut parent, f), find(&mut parent, g));
+            parent[a.max(b)] = a.min(b);
+        }
+    }
+    let mut groups = BTreeMap::<usize, Vec<usize>>::new();
+    for i in 0..facets.len() {
+        let root = find(&mut parent, i);
+        groups.entry(root).or_default().push(i);
+    }
+    let mut out = Vec::new();
+    for members in groups.into_values() {
+        let flat = members.len() == 1 || {
+            let big = *members
+                .iter()
+                .max_by(|&&x, &&y| norm2(normal(&facets[x])).total_cmp(&norm2(normal(&facets[y]))))
+                .unwrap();
+            let verts: BTreeSet<usize> = members.iter().flat_map(|&m| facets[m]).collect();
+            let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+            for &v in &verts {
+                for k in 0..3 {
+                    lo[k] = lo[k].min(vertices[v][k]);
+                    hi[k] = hi[k].max(vertices[v][k]);
+                }
+            }
+            let diagonal = norm2(sub(hi, lo)).sqrt();
+            diagonal > 0. && verts.iter().all(|&v| off_plane(big, v, diagonal) <= PATCH)
+        };
+        if flat {
+            out.push(members);
+        } else {
+            out.extend(members.into_iter().map(|m| vec![m]));
+        }
+    }
+    out.sort_by_key(|m| m[0]);
+    out
+}
 fn conform_impl(
     vertices: &[V3],
     facets: &[[usize; 3]],
@@ -1049,13 +1201,10 @@ fn conform_impl(
     if facets.is_empty() || facets.iter().flatten().any(|&v| v >= vertices.len()) {
         return Err(fail(ErrorKind::Topology, "invalid PLC facet list"));
     }
-    let mut segments = BTreeSet::new();
     let mut incidence = BTreeMap::<[usize; 2], usize>::new();
     for f in facets {
         for k in 0..3 {
-            let e = edge(f[k], f[(k + 1) % 3]);
-            segments.insert(e);
-            *incidence.entry(e).or_default() += 1;
+            *incidence.entry(edge(f[k], f[(k + 1) % 3])).or_default() += 1;
         }
     }
     if incidence.values().any(|&n| n != 2) {
@@ -1068,11 +1217,55 @@ fn conform_impl(
         max_points: vertices.len() + options.max_steiner,
         max_cells: options.max_cells,
     };
-    let meshes = facets
-        .iter()
-        .enumerate()
-        .map(|(i, f)| FacetMesh::new(i, *f, vertices))
-        .collect::<Result<Vec<_>, _>>()?;
+    // One facet mesh per group of input facets (a single triangle unless coplanar facets are merged).
+    let groups: Vec<Vec<usize>> = if options.merge_coplanar {
+        coplanar_groups(vertices, facets, frozen)
+    } else {
+        (0..facets.len()).map(|i| vec![i]).collect()
+    };
+    let mut meshes = Vec::with_capacity(groups.len());
+    let mut patches: Vec<Vec<usize>> = Vec::with_capacity(groups.len());
+    for members in groups {
+        let tris: Vec<[usize; 3]> = members.iter().map(|&m| facets[m]).collect();
+        match FacetMesh::patch(meshes.len(), &tris, vertices) {
+            Ok(mesh) => {
+                meshes.push(mesh);
+                patches.push(members);
+            }
+            // a patch that does not hold together as one planar facet is kept as its triangles
+            Err(_) if members.len() > 1 => {
+                for m in members {
+                    meshes.push(FacetMesh::new(meshes.len(), facets[m], vertices)?);
+                    patches.push(vec![m]);
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    let mut patch_of = vec![0; facets.len()];
+    for (k, members) in patches.iter().enumerate() {
+        for &m in members {
+            patch_of[m] = k;
+        }
+    }
+    // Segments are the edges between different facets: the edges inside a merged patch are free.
+    let mut segments = BTreeSet::new();
+    let mut edge_patch = BTreeMap::<[usize; 2], usize>::new();
+    for (i, f) in facets.iter().enumerate() {
+        for k in 0..3 {
+            let e = edge(f[k], f[(k + 1) % 3]);
+            match edge_patch.get(&e) {
+                Some(&other) if other == patch_of[i] => {
+                    segments.remove(&e);
+                }
+                Some(_) => {}
+                None => {
+                    edge_patch.insert(e, patch_of[i]);
+                    segments.insert(e);
+                }
+            }
+        }
+    }
     // Eight far points make every shell point (and every Steiner point on the shell) an interior point of the triangulation. The
     // incremental engine does not extend a hull exactly, and a convex shell (a cylinder, a block) has all its points on the hull
     // of its vertices: a Steiner point rounded a few ulps outside it used to dent the hull until a later point fell far outside.
@@ -1109,7 +1302,7 @@ fn conform_impl(
             .into_iter()
             .flat_map(|fr| fr.iter().enumerate())
             .filter(|(_, f)| **f)
-            .map(|(i, _)| i)
+            .map(|(i, _)| patch_of[i])
             .collect(),
         unrefinable: BTreeSet::new(),
         min_segment: {
@@ -1312,7 +1505,34 @@ fn conform_impl(
         }
     }
     publish(&state, Phase::Extraction, (0, 0), &mut progress)?;
-    extract(state, vertices.len(), rounds)
+    let mut result = extract(state, vertices.len(), rounds)?;
+    // facet numbers of the result are input facet numbers: a merged patch hands each sub-facet to the member it lies in
+    for (f, parent) in &mut result.facets {
+        *parent = match patches[*parent][..] {
+            [only] => only,
+            _ => containing_facet(&result.points, facets, &patches[*parent], *f),
+        };
+    }
+    Ok(result)
+}
+/// The member of `members` (input facets) that contains the centroid of the sub-facet `f` (the one it is deepest in).
+fn containing_facet(points: &[V3], facets: &[[usize; 3]], members: &[usize], f: [usize; 3]) -> usize {
+    let c: V3 = std::array::from_fn(|i| (points[f[0]][i] + points[f[1]][i] + points[f[2]][i]) / 3.);
+    let depth = |m: usize| {
+        let [a, b, d] = facets[m].map(|v| points[v]);
+        let n = cross(sub(b, a), sub(d, a));
+        let area2 = norm2(n);
+        let w = [
+            dot(cross(sub(b, c), sub(d, c)), n),
+            dot(cross(sub(d, c), sub(a, c)), n),
+            dot(cross(sub(a, c), sub(b, c)), n),
+        ];
+        w.iter().fold(f64::INFINITY, |x, y| x.min(*y)) / area2
+    };
+    *members
+        .iter()
+        .max_by(|&&x, &&y| depth(x).total_cmp(&depth(y)))
+        .expect("a patch has members")
 }
 /// Number of far points added around the input (a box).
 const ENCLOSING: usize = 8;
@@ -1513,5 +1733,260 @@ mod tests {
             }
         }
         assert!(grid_answers > 200, "the grid should answer most queries, answered {grid_answers}");
+    }
+
+    fn quad(v: &mut Vec<V3>, f: &mut Vec<[usize; 3]>, a: V3, b: V3, c: V3, d: V3) {
+        let n = v.len();
+        v.extend([a, b, c, d]);
+        f.push([n, n + 1, n + 2]);
+        f.push([n, n + 2, n + 3]);
+    }
+    /// A cube as 12 triangles: every face is one group of two, nothing merges across an edge of the cube.
+    #[test]
+    fn coplanar_groups_pair_the_triangles_of_each_cube_face_only() {
+        let (v, f) = {
+            let (mut v, mut f) = (Vec::new(), Vec::new());
+            for (a, b, c, d) in [
+                ([0., 0., 0.], [0., 1., 0.], [1., 1., 0.], [1., 0., 0.]),
+                ([0., 0., 1.], [1., 0., 1.], [1., 1., 1.], [0., 1., 1.]),
+                ([0., 0., 0.], [1., 0., 0.], [1., 0., 1.], [0., 0., 1.]),
+                ([0., 1., 0.], [0., 1., 1.], [1., 1., 1.], [1., 1., 0.]),
+                ([0., 0., 0.], [0., 0., 1.], [0., 1., 1.], [0., 1., 0.]),
+                ([1., 0., 0.], [1., 1., 0.], [1., 1., 1.], [1., 0., 1.]),
+            ] {
+                quad(&mut v, &mut f, a, b, c, d);
+            }
+            // weld the duplicated corners
+            let mut map = Vec::new();
+            let mut unique: Vec<V3> = Vec::new();
+            for p in &v {
+                let k = unique.iter().position(|q| q == p).unwrap_or_else(|| {
+                    unique.push(*p);
+                    unique.len() - 1
+                });
+                map.push(k);
+            }
+            (unique, f.iter().map(|t| t.map(|i| map[i])).collect::<Vec<_>>())
+        };
+        let groups = coplanar_groups(&v, &f, None);
+        assert_eq!(groups.len(), 6);
+        assert!(groups.iter().all(|g| g.len() == 2 && g[1] == g[0] + 1), "{groups:?}");
+        // a frozen triangle stays alone
+        let mut frozen = vec![false; f.len()];
+        frozen[0] = true;
+        let groups = coplanar_groups(&v, &f, Some(&frozen));
+        assert_eq!(groups.len(), 7);
+        assert!(groups.contains(&vec![0]) && groups.contains(&vec![1]));
+    }
+    /// A tilted plane whose vertices carry rounding noise merges; a bend of 1e-6 does not; a fin (opposite normal) does not;
+    /// a chain of facets each bent by less than the pair tolerance but flat to nothing as a whole is split back.
+    #[test]
+    fn coplanar_groups_tolerate_rounding_but_not_bends_fins_or_accumulation() {
+        let tilt = |x: f64, y: f64, noise: f64| -> V3 { [x, y, 0.3 * x + 0.7 * y + noise] };
+        let (mut v, mut f) = (Vec::new(), Vec::new());
+        quad(&mut v, &mut f, tilt(0., 0., 0.), tilt(2., 0., 3e-16), tilt(2., 1., -2e-16), tilt(0., 1., 1e-16));
+        assert_eq!(coplanar_groups(&v, &f, None), vec![vec![0, 1]], "rounding-level noise merges");
+        let (mut v, mut f) = (Vec::new(), Vec::new());
+        quad(&mut v, &mut f, tilt(0., 0., 0.), tilt(2., 0., 0.), tilt(2., 1., 0.), tilt(0., 1., 2e-6));
+        assert_eq!(coplanar_groups(&v, &f, None), vec![vec![0], vec![1]], "a 1e-6 bend does not merge");
+        // a fin: the second triangle folds back over the first (normals opposite)
+        let (v, f) = (vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [1., 1., 0.]], vec![[0, 1, 2], [1, 0, 3]]);
+        assert_eq!(coplanar_groups(&v, &f, None).len(), 2, "opposite normals never merge");
+        // accumulation: 100 quads, each bent 4e-10 rad against the previous (pair test passes), 2e-8 of the size in total
+        let (mut v, mut f) = (Vec::new(), Vec::new());
+        let (mut x, mut z, mut phi) = (0., 0., 0.);
+        for _ in 0..100 {
+            let (nx, nz) = (x + f64::cos(phi), z + f64::sin(phi));
+            quad(&mut v, &mut f, [x, 0., z], [nx, 0., nz], [nx, 1., nz], [x, 1., z]);
+            (x, z, phi) = (nx, nz, phi + 4e-10);
+        }
+        // weld consecutive quads along their shared edge
+        let mut weld = vec![0usize; v.len()];
+        let (mut next, mut ids) = (0, Vec::new());
+        for i in 0..v.len() {
+            let same = ids.iter().position(|&(j, _): &(usize, usize)| v[j] == v[i]);
+            weld[i] = match same {
+                Some(p) => ids[p].1,
+                None => {
+                    ids.push((i, next));
+                    next += 1;
+                    next - 1
+                }
+            };
+        }
+        let mut pts = vec![[0.; 3]; next];
+        for i in 0..v.len() {
+            pts[weld[i]] = v[i];
+        }
+        let tris: Vec<[usize; 3]> = f.iter().map(|t| t.map(|i| weld[i])).collect();
+        let groups = coplanar_groups(&pts, &tris, None);
+        let largest = groups.iter().map(Vec::len).max().unwrap();
+        assert!(largest <= 2, "a chain that is not flat as a whole must not merge: largest group {largest}");
+    }
+    /// A non-convex (L-shaped) merged patch keeps star-shaped insertion cavities around its reflex corner, and the
+    /// triangulation keeps its area and orientation after every insertion.
+    #[test]
+    fn an_l_shaped_patch_accepts_points_around_its_reflex_corner() {
+        let v: Vec<V3> = vec![[0., 0., 0.], [2., 0., 0.], [2., 1., 0.], [1., 1., 0.], [1., 2., 0.], [0., 2., 0.]];
+        // a deliberately non-Delaunay fan from the corner opposite the reflex vertex
+        let tris = vec![[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 5]];
+        let mut mesh = FacetMesh::patch(0, &tris, &v).unwrap();
+        let area = |m: &FacetMesh| -> f64 {
+            m.tris
+                .iter()
+                .map(|t| {
+                    let [a, b, c] = t.map(|x| m.uv[&x]);
+                    assert_eq!(orientation_2d(a, b, c), Ordering::Greater, "inverted sub-facet");
+                    ((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])) / 2.
+                })
+                .sum()
+        };
+        assert!((area(&mesh) - 3.).abs() < 1e-12);
+        let mut state = 5u64;
+        let mut next = move || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut points = v.clone();
+        let mut inserted = 0;
+        while inserted < 150 {
+            // concentrate on the reflex corner (1, 1)
+            let r = next().powi(3) * 1.2;
+            let a = next() * std::f64::consts::TAU;
+            let p: V3 = [1. + r * a.cos(), 1. + r * a.sin(), 0.];
+            if !mesh.contains(p, &points) {
+                continue;
+            }
+            let id = points.len();
+            points.push(p);
+            mesh.insert(id, p, None).unwrap_or_else(|e| panic!("insertion {inserted} at {p:?}: {e:?}"));
+            inserted += 1;
+            assert!((area(&mesh) - 3.).abs() < 1e-9, "area after insertion {inserted}");
+        }
+    }
+    /// A thin U-shaped patch given as a poor (long, non-Delaunay) triangulation: insertions near its two reflex corners
+    /// would build cavities that wrap around the notch unless the patch is made Delaunay and cavities stay visible.
+    #[test]
+    fn a_u_shaped_patch_with_a_poor_triangulation_takes_many_insertions() {
+        let v: Vec<V3> = [(0., 0.), (10., 0.), (10., 10.), (9., 10.), (9., 1.), (1., 1.), (1., 10.), (0., 10.)]
+            .iter()
+            .map(|&(x, y)| [x, y, 0.])
+            .collect();
+        let tris = vec![[0, 1, 4], [0, 4, 5], [0, 5, 6], [0, 6, 7], [1, 2, 4], [2, 3, 4]];
+        let mut mesh = FacetMesh::patch(0, &tris, &v).unwrap();
+        let area = |m: &FacetMesh| -> f64 {
+            m.tris
+                .iter()
+                .map(|t| {
+                    let [a, b, c] = t.map(|x| m.uv[&x]);
+                    assert_eq!(orientation_2d(a, b, c), Ordering::Greater, "inverted sub-facet");
+                    ((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])) / 2.
+                })
+                .sum()
+        };
+        let total = 10. + 9. + 9.;
+        assert!((area(&mesh) - total).abs() < 1e-12);
+        let mut state = 11u64;
+        let mut next = move || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut points = v.clone();
+        let mut inserted = 0;
+        while inserted < 400 {
+            let corner = [[9., 1.], [1., 1.], [5., 0.5]][inserted % 3];
+            let r = next().powi(2) * 3.;
+            let a = next() * std::f64::consts::TAU;
+            let p: V3 = [corner[0] + r * a.cos(), corner[1] + r * a.sin(), 0.];
+            if !mesh.contains(p, &points) {
+                continue;
+            }
+            let id = points.len();
+            points.push(p);
+            mesh.insert(id, p, None).unwrap_or_else(|e| panic!("insertion {inserted} at {p:?}: {e:?}"));
+            inserted += 1;
+        }
+        assert!((area(&mesh) - total).abs() < 1e-9);
+    }
+    /// Random valid flips of interior edges turn a patch into a poor, non-Delaunay triangulation of the same region.
+    fn scramble(mesh: &mut FacetMesh, next: &mut impl FnMut() -> f64, flips: usize) {
+        for _ in 0..flips {
+            let mut across = BTreeMap::<[usize; 2], usize>::new();
+            for (i, t) in mesh.tris.iter().enumerate() {
+                for k in 0..3 {
+                    across.insert([t[k], t[(k + 1) % 3]], i);
+                }
+            }
+            let i = (next() * mesh.tris.len() as f64) as usize % mesh.tris.len();
+            let t = mesh.tris[i];
+            let k = (next() * 3.) as usize % 3;
+            let (x, y, p) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
+            let Some(&j) = across.get(&[y, x]) else { continue };
+            let q = *mesh.tris[j].iter().find(|v| **v != x && **v != y).unwrap();
+            let uv = |v: usize| mesh.uv[&v];
+            let (a, b) = ([x, q, p], [q, y, p]);
+            if orientation_2d(uv(a[0]), uv(a[1]), uv(a[2])) == Ordering::Greater
+                && orientation_2d(uv(b[0]), uv(b[1]), uv(b[2])) == Ordering::Greater
+            {
+                mesh.tris[i] = a;
+                mesh.tris[j] = b;
+            }
+        }
+        mesh.spheres.clear();
+    }
+    fn locally_delaunay(mesh: &FacetMesh) -> bool {
+        let mut across = BTreeMap::<[usize; 2], usize>::new();
+        for (i, t) in mesh.tris.iter().enumerate() {
+            for k in 0..3 {
+                across.insert([t[k], t[(k + 1) % 3]], i);
+            }
+        }
+        mesh.tris.iter().all(|t| {
+            (0..3).all(|k| {
+                let (x, y, p) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
+                let Some(&j) = across.get(&[y, x]) else { return true };
+                let q = *mesh.tris[j].iter().find(|v| **v != x && **v != y).unwrap();
+                let uv = |v: usize| mesh.uv[&v];
+                in_circle_2d(uv(x), uv(y), uv(p), uv(q)) != Ordering::Greater
+            })
+        })
+    }
+    #[test]
+    fn a_merged_patch_starts_locally_delaunay_and_insertions_stay_valid_on_poor_triangulations() {
+        let v: Vec<V3> = [(0., 0.), (10., 0.), (10., 10.), (9., 10.), (9., 1.), (1., 1.), (1., 10.), (0., 10.)]
+            .iter()
+            .map(|&(x, y)| [x, y, 0.])
+            .collect();
+        let tris = vec![[0, 1, 4], [0, 4, 5], [0, 5, 6], [0, 6, 7], [1, 2, 4], [2, 3, 4]];
+        let patch = FacetMesh::patch(0, &tris, &v).unwrap();
+        assert!(locally_delaunay(&patch), "Lawson flips leave every interior edge locally Delaunay");
+        let mut raw = FacetMesh::patch(0, &tris[..1], &v).unwrap();
+        raw.tris = tris.clone();
+        raw.uv = patch.uv.clone();
+        assert!(!locally_delaunay(&raw), "the given triangulation is not Delaunay (the flips did something)");
+        let mut state = 3u64;
+        let mut next = move || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for round in 0..300 {
+            let mut mesh = FacetMesh::patch(0, &tris, &v).unwrap();
+            scramble(&mut mesh, &mut next, 40);
+            let mut points = v.clone();
+            for k in 0..25 {
+                let corner = [[9., 1.], [1., 1.], [5., 0.5]][k % 3];
+                let (r, a) = (next().powi(2) * 4., next() * std::f64::consts::TAU);
+                let p: V3 = [corner[0] + r * a.cos(), corner[1] + r * a.sin(), 0.];
+                if !mesh.contains(p, &points) {
+                    continue;
+                }
+                points.push(p);
+                mesh.insert(points.len() - 1, p, None).unwrap_or_else(|e| panic!("round {round}: {p:?}: {e:?}"));
+                for t in &mesh.tris {
+                    let [a, b, c] = t.map(|x| mesh.uv[&x]);
+                    assert_eq!(orientation_2d(a, b, c), Ordering::Greater, "round {round}: inverted sub-facet");
+                }
+            }
+        }
     }
 }

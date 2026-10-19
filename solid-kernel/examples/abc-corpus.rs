@@ -10,6 +10,7 @@
 //! fiftieth of the chord) instead of the strict default.
 //! `--graded` retries a failed body from the graded model (`AnalyticModel::graded`, 25 degree chart quality): slow, and on
 //! the first 300 files it rescued 2.
+//! `--merge` conforms with `Options::merge_coplanar` (coplanar input triangles become one facet).
 //! Child mode (internal): `abc-corpus --one FILE [--conform-timeout S]` prints one row to stdout.
 //! Models are never copied into the repository; commit aggregate statistics only (their licence stays with their creators).
 use solid_kernel::analytic_step::{AnalyticModel, Options};
@@ -27,7 +28,7 @@ fn clean(s: &str) -> String {
 }
 
 /// One file, all stages; returns `stage,detail,faces,vertices,triangles,volume,min_angle`.
-fn survey(path: &Path, conform_timeout: Duration, foreign: bool, graded_fallback: bool, steiner_budget: Option<usize>) -> String {
+fn survey(path: &Path, conform_timeout: Duration, foreign: bool, graded_fallback: bool, steiner_budget: Option<usize>, merge: bool) -> String {
     let row = |stage: &str, detail: &str, f: usize, v: usize, t: usize, vol: f64, ang: f64| {
         format!("{stage},{},{f},{v},{t},{vol},{ang}", clean(detail))
     };
@@ -66,6 +67,18 @@ fn survey(path: &Path, conform_timeout: Duration, foreign: bool, graded_fallback
                 .sampled_surface(limits, |_| true)
                 .map_err(|e| ("sample", e.to_string(), None))?;
             let m = &sampled.mesh;
+            // ABC_DUMP_DIR: write each sampled shell as `v x y z` / `t a b c` lines for offline debugging of the conform stage
+            if let Some(dir) = std::env::var_os("ABC_DUMP_DIR") {
+                let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("shell");
+                let mut text = String::new();
+                for v in &m.vertices {
+                    text += &format!("v {:e} {:e} {:e}\n", v[0], v[1], v[2]);
+                }
+                for t in &m.triangles {
+                    text += &format!("t {} {} {}\n", t[0], t[1], t[2]);
+                }
+                let _ = std::fs::write(Path::new(&dir).join(format!("{name}.body{k}.plc")), text);
+            }
             let a = solid_kernel::plc_conform::min_shell_angle_deg(&m.vertices, &m.triangles);
             let facts = (m.vertices.len(), m.triangles.len(), sampled.signed_volume_mm3, a);
             let start = Instant::now();
@@ -76,9 +89,10 @@ fn survey(path: &Path, conform_timeout: Duration, foreign: bool, graded_fallback
                     Some(n) => solid_kernel::plc_conform::Options {
                         max_steiner: n,
                         max_cells: n.saturating_mul(100),
+                        merge_coplanar: merge,
                         ..Default::default()
                     },
-                    None => solid_kernel::plc_conform::Options::default(),
+                    None => solid_kernel::plc_conform::Options { merge_coplanar: merge, ..Default::default() },
                 },
                 |_| start.elapsed() < conform_timeout,
             )
@@ -176,8 +190,9 @@ fn main() {
     let steiner: Option<usize> = flag(&mut args, "--steiner").map(|v| v.parse().unwrap());
     let graded_fallback = args.iter().position(|a| a == "--graded").map(|i| args.remove(i)).is_some();
     let foreign = args.iter().position(|a| a == "--foreign").map(|i| args.remove(i)).is_some();
+    let merge = args.iter().position(|a| a == "--merge").map(|i| args.remove(i)).is_some();
     if let Some(file) = flag(&mut args, "--one") {
-        println!("{}", survey(Path::new(&file), Duration::from_secs_f64(conform_s), foreign, graded_fallback, steiner));
+        println!("{}", survey(Path::new(&file), Duration::from_secs_f64(conform_s), foreign, graded_fallback, steiner, merge));
         return;
     }
     let jobs: usize = flag(&mut args, "--jobs").map_or(1, |v| v.parse().unwrap());
@@ -185,7 +200,7 @@ fn main() {
     let timeout: f64 = flag(&mut args, "--timeout").map_or(180., |v| v.parse().unwrap());
     let (dir, out) = match args.as_slice() {
         [d, o] => (PathBuf::from(d), PathBuf::from(o)),
-        _ => panic!("usage: abc-corpus DIR OUT.csv [--limit N] [--timeout S] [--conform-timeout S] [--jobs N] [--foreign] [--graded] [--steiner N]"),
+        _ => panic!("usage: abc-corpus DIR OUT.csv [--limit N] [--timeout S] [--conform-timeout S] [--jobs N] [--foreign] [--graded] [--steiner N] [--merge]"),
     };
     let mut files = Vec::new();
     collect(&dir, &mut files);
@@ -211,6 +226,9 @@ fn main() {
                     .args(["--conform-timeout", &conform_s.to_string()])
                     .stdout(Stdio::piped())
                     .stderr(Stdio::null());
+                if merge {
+                    command.arg("--merge");
+                }
                 if foreign {
                     command.arg("--foreign");
                 }
