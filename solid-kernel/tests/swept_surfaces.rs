@@ -86,6 +86,37 @@ fn revolved_and_extruded_spline_faces_import_with_the_reference_volume() {
     }
 }
 
+/// `source` with `dz` added to the z of every `CARTESIAN_POINT` (a pure translation: the placements and the spline controls
+/// all hang on those points).
+fn lifted(source: &str, dz: f64) -> String {
+    source
+        .lines()
+        .map(|line| {
+            let Some(at) = line.find("CARTESIAN_POINT('',(") else {
+                return line.to_string();
+            };
+            let head = at + "CARTESIAN_POINT('',(".len();
+            let close = head + line[head..].find(')').unwrap();
+            let c: Vec<f64> = line[head..close].split(',').map(|v| v.trim().parse().unwrap()).collect();
+            if c.len() != 3 {
+                return line.to_string();
+            }
+            format!("{}{:?},{:?},{:?}{}", &line[..head], c[0], c[1], c[2] + dz, &line[close..])
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn an_extruded_face_away_from_the_origin_reads_like_the_one_at_the_origin() {
+    // `S(t, h) = C(t) + h d`: the height range of the extrusion is relative to the curve, so a profile 25 mm off the origin
+    // along the extrusion direction used to put every edge sample 25 mm off the surface (ABC corpus: 20 files refused)
+    let c = &cases()[1];
+    let at_origin = sample(c.source, 0.01).unwrap().signed_volume_mm3;
+    let lifted = sample(&lifted(c.source, 25.), 0.01).unwrap_or_else(|e| panic!("{e}")).signed_volume_mm3;
+    assert!((lifted / at_origin - 1.).abs() < 1e-4, "{lifted} vs {at_origin}");
+}
+
 #[test]
 fn the_revolved_face_follows_its_seam_and_the_shell_is_sampled_finer_on_request() {
     // a finer chord shrinks the inscribed-volume deficit: the native volume converges to the reference from below

@@ -1504,10 +1504,90 @@ fn unseamed_cylinder_and_cone_bands_get_a_seam_and_sample_like_the_seamed_origin
     }
 }
 
-/// Onshape writes the pole of a spherical face as an extra bound made of a `VERTEX_LOOP`. The face's chart is local, so the
-/// bound carries nothing: adding one to the hemisphere fixture must not change its sampled shell. On a plane it stays refused.
+/// The wall of a tilted hole is a cylinder bounded by two ellipses. Without a seam the second ellipse has no vertex at the
+/// first one's angle, so the heal must split an ellipse edge (before, only circle and line edges could be split and the face
+/// stayed unseamed: ABC corpus, 12 files with ellipse or spline loops). The shell must equal the seamed original's.
 #[test]
-fn pole_vertex_loop_bounds_on_spheres_are_skipped_and_refused_elsewhere() {
+fn unseamed_cylinder_band_with_ellipse_loops_is_seamed_by_splitting_an_ellipse() {
+    let seamed = include_str!("data/tilted-hole.step");
+    let unseamed = seamed
+        .replace(
+            "#456 = ADVANCED_FACE('',(#457),#282,.F.);",
+            "#456 = ADVANCED_FACE('',(#457,#900),#282,.F.);",
+        )
+        .replace(
+            "#458 = EDGE_LOOP('',(#459,#460,#481,#482));",
+            "#458 = EDGE_LOOP('',(#459));\n#900 = FACE_BOUND('',#901,.F.);\n#901 = EDGE_LOOP('',(#481));",
+        );
+    assert_ne!(seamed, unseamed);
+    let sample = |text: &str| {
+        let data = inventory(text, Limits::default()).unwrap();
+        AnalyticModel::read(&data, Options::foreign_cad(0.05))
+            .unwrap()
+            .sampled_surface(
+                solid_kernel::native_surface::Limits {
+                    chart_policy: solid_kernel::cylindrical_step::ChartPolicy::CanonicalizeWithinTolerance,
+                    ..Default::default()
+                },
+                |_| true,
+            )
+            .unwrap()
+    };
+    let (a, b) = (sample(seamed), sample(&unseamed));
+    assert!(b.signed_volume_mm3 > 0.);
+    assert!((a.signed_volume_mm3 - b.signed_volume_mm3).abs() < 1e-3 * a.signed_volume_mm3, "{} {}", a.signed_volume_mm3, b.signed_volume_mm3);
+}
+
+/// Onshape also writes a fillet ring (a torus band between two circles) with no seam. The OpenCASCADE fillet of
+/// `cylinder-filleted-top.step` with the seam (a meridian quarter circle used twice) taken out of its loop and the two circles
+/// made two bounds must read to the same shell: the seam is a circle arc of the tube, chosen of the two arcs between the
+/// circles by the side the face lies on. With the bounds' senses both reversed the loops no longer agree with the faces they
+/// share edges with, and the shell is refused rather than closed over the wrong band.
+#[test]
+fn unseamed_torus_band_gets_a_meridian_seam_and_samples_like_the_seamed_original() {
+    let seamed = include_str!("data/cylinder-filleted-top.step");
+    let unseamed = seamed
+        .replace(
+            "#105 = ADVANCED_FACE('',(#106),#66,.T.);",
+            "#105 = ADVANCED_FACE('',(#106,#900),#66,.T.);",
+        )
+        .replace(
+            "#107 = EDGE_LOOP('',(#108,#130,#131,#132));",
+            "#107 = EDGE_LOOP('',(#130));\n#900 = FACE_BOUND('',#901,.T.);\n#901 = EDGE_LOOP('',(#132));",
+        );
+    assert_ne!(seamed, unseamed);
+    let sample = |text: &str| {
+        let data = inventory(text, Limits::default()).unwrap();
+        AnalyticModel::read(&data, Options::default()).and_then(|m| {
+            m.sampled_surface(
+                solid_kernel::native_surface::Limits {
+                    chart_policy: solid_kernel::cylindrical_step::ChartPolicy::CanonicalizeWithinTolerance,
+                    ..Default::default()
+                },
+                |_| true,
+            )
+        })
+    };
+    let a = sample(seamed).unwrap();
+    let b = sample(&unseamed).unwrap();
+    assert!(b.signed_volume_mm3 > 0.);
+    assert!((a.signed_volume_mm3 - b.signed_volume_mm3).abs() < 1e-3 * a.signed_volume_mm3, "{} {}", a.signed_volume_mm3, b.signed_volume_mm3);
+    assert_eq!(a.mesh.face.iter().collect::<std::collections::BTreeSet<_>>().len(), b.mesh.face.iter().collect::<std::collections::BTreeSet<_>>().len());
+    // both bounds reversed: the other band of the ring lies on the left, which no neighbouring face agrees with
+    let reversed = unseamed
+        .replace("#900 = FACE_BOUND('',#901,.T.);", "#900 = FACE_BOUND('',#901,.F.);")
+        .replace("#106 = FACE_BOUND('',#107,.T.);", "#106 = FACE_BOUND('',#107,.F.);");
+    assert_ne!(unseamed, reversed);
+    let refusal = sample(&reversed).err().expect("a wrongly oriented band must be refused");
+    assert!(refusal.to_string().contains("consistently oriented"), "{refusal}");
+}
+
+/// Onshape writes the pole of a spherical face as an extra bound made of a `VERTEX_LOOP`. The face's chart is local, so the
+/// bound carries nothing: adding one to the hemisphere fixture must not change its sampled shell, and neither may the same point bound on
+/// a face that keeps an edge loop (before, every non-sphere/cone surface refused with `unsupported EDGE_LOOP entity encoding`;
+/// 10 ABC files). A face with only a point is refused.
+#[test]
+fn point_vertex_loop_bounds_are_skipped_unless_they_are_all_a_face_has() {
     let plain = include_str!("data/hemisphere.step");
     let with_pole = plain.replace(
         "#17 = ADVANCED_FACE('',(#18),#33,.T.);",
@@ -1524,12 +1604,23 @@ fn pole_vertex_loop_bounds_on_spheres_are_skipped_and_refused_elsewhere() {
     let (a, b) = (sample(plain), sample(&with_pole));
     assert_eq!(a.mesh.triangles.len(), b.mesh.triangles.len());
     assert_eq!(a.signed_volume_mm3, b.signed_volume_mm3);
-    // the same extra bound on the plane face (#79) is not a pole: still refused
+    // a point bound on the plane face (#79) is no pole but also encloses nothing (a Parasolid acorn vertex): skipped while the
+    // face keeps its edge loop, so the shell is the same one
     let on_plane = plain.replace(
         "#79 = ADVANCED_FACE('',(#80),#68,.F.);",
         "#79 = ADVANCED_FACE('',(#80,#901),#68,.F.);\n#901 = FACE_BOUND('',#902,.T.);\n#902 = VERTEX_LOOP('',#22);",
     );
-    let data = inventory(&on_plane, Limits::default()).unwrap();
+    assert_ne!(plain, on_plane);
+    let c = sample(&on_plane);
+    assert_eq!(a.mesh.triangles.len(), c.mesh.triangles.len());
+    assert_eq!(a.signed_volume_mm3, c.signed_volume_mm3);
+    // a plane face bounded by nothing but a point is still refused
+    let only_point = plain.replace(
+        "#79 = ADVANCED_FACE('',(#80),#68,.F.);",
+        "#79 = ADVANCED_FACE('',(#901),#68,.F.);\n#901 = FACE_BOUND('',#902,.T.);\n#902 = VERTEX_LOOP('',#22);",
+    );
+    assert_ne!(plain, only_point);
+    let data = inventory(&only_point, Limits::default()).unwrap();
     assert!(AnalyticModel::read(&data, Options::default()).is_err());
 }
 

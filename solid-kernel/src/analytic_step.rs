@@ -449,9 +449,22 @@ fn swept_surface(
         _ => match call(second, "VECTOR")? {
             [Value::String(_), Value::Ref(d), _] => {
                 let d = direction(data, *d)?;
+                // The surface is `C(t) + h d`: `h` is the height above the curve point, not the absolute position along `d`
+                // (a curve in a plane away from the origin would otherwise put the whole range at the wrong place). A point
+                // `p` of the face has `h = (p - C(t)) . d`, so the range is the samples' spread widened by the curve's own.
                 let heights = samples.iter().map(|p| dot(*p, d));
-                let lo = heights.clone().fold(f64::INFINITY, f64::min);
-                let hi = heights.fold(f64::NEG_INFINITY, f64::max);
+                let [t0, t1] = curve.domain();
+                let mut base = (f64::INFINITY, f64::NEG_INFINITY);
+                for k in 0..=256 {
+                    let t = if k == 256 { t1 } else { t0 + (t1 - t0) * k as f64 / 256. };
+                    let h = dot(curve.evaluate(t).map_err(|mut err| {
+                        err.offset = e.offset;
+                        err
+                    })?, d);
+                    base = (base.0.min(h), base.1.max(h));
+                }
+                let lo = heights.clone().fold(f64::INFINITY, f64::min) - base.1;
+                let hi = heights.fold(f64::NEG_INFINITY, f64::max) - base.0;
                 let margin = 0.05 * (hi - lo);
                 if !(margin.is_finite() && margin > 0.) {
                     return Err(error(e, "an extrusion face without an extent along its direction"));
@@ -479,15 +492,19 @@ pub struct Options {
 impl Options {
     /// Options for a file written by another CAD kernel (Onshape/Parasolid, SolidWorks, ...). Those kernels model to
     /// their own tolerance and declare none usable (the ABC files state an uncertainty of 1e-17), and a measured
-    /// 1.8e-7 to 1.1e-3 mm of edge-to-surface disagreement occurs there (`docs/issue-46-abc-corpus-2026-10-18.md`): the
-    /// default 1e-7 mm refuses 54 of 300 files for it. The edge-to-surface agreement is therefore required to a
-    /// fiftieth of the sampling chord (1e-3 mm at the default 0.05 mm): a deviation below that is far under the
-    /// facetting error every sampled shell already carries, so it cannot change a result beyond the chord. Nothing
-    /// else is relaxed, and `Options::default()` stays strict.
+    /// 1.8e-7 mm up to several 1e-2 mm of edge-to-surface disagreement occurs there
+    /// (`docs/issue-46-abc-corpus-2026-10-18.md`): the default 1e-7 mm refuses 54 of 300 files for it. The edge-to-surface
+    /// agreement is therefore required to a tenth of the sampling chord (5e-3 mm at the default 0.05 mm). The policy: a
+    /// sampled shell already deviates from the true surface by up to the chord, and a boundary that disagrees with its
+    /// surface by `e` adds at most `e` to that (a gap of `e` between the face interior and its boundary), so `e` at a tenth of
+    /// the chord raises the worst geometric error by at most 10 %. Measured on the corpus (all other readers' limits aside):
+    /// of 59 files refused for it at chord / 50, 11 need up to 2.5e-3 mm, 18 up to 5e-3 mm (this setting), 22 up to 5e-2 mm
+    /// (a whole chord, not admitted), the rest are unrelated refusals. Nothing else is relaxed, and `Options::default()`
+    /// stays strict.
     pub fn foreign_cad(chord_mm: f64) -> Self {
         Self {
             chord_mm,
-            geometry_tolerance_mm: chord_mm / 50.,
+            geometry_tolerance_mm: chord_mm / 10.,
             ..Self::default()
         }
     }
@@ -514,6 +531,133 @@ pub struct AnalyticModel {
     chord_mm: f64,
     geometry_tolerance_mm: f64,
     curves: BTreeMap<u64, Curve>,
+}
+/// The two bounds of a face (by index) that each wind once around a periodic coordinate, in opposite senses, when every other
+/// bound does not wind at all (a hole): the loops of a band that a seam joins. `turns` are the signed turns of each bound.
+fn winding_pair(turns: &[(Vec<EdgeUse>, f64)]) -> Option<(usize, usize)> {
+    let once = |t: f64| (t.abs() - 1.).abs() < 1e-6;
+    let winding: Vec<usize> = (0..turns.len()).filter(|&k| turns[k].1.abs() > 1e-6).collect();
+    let [a, b] = winding.as_slice() else {
+        return None;
+    };
+    (once(turns[*a].1) && once(turns[*b].1) && turns[*a].1.signum() != turns[*b].1.signum()).then_some((*a, *b))
+}
+/// The seam joining the two loops of a torus band (`seam_unseamed_torus_bands`): the circle arc from `ends[0]` to `ends[1]`
+/// and its samples. `ring`: the ends share an angle about the torus axis (a meridian arc of the tube); otherwise they share
+/// an angle about the tube (an arc of the parallel). `tangents` are the directions the loops are traversed in at the two
+/// ends. Of the two arcs between the ends the face is on the left of its loops (seen from its normal), so the seam is the
+/// one that leaves the first loop towards that side and arrives at the second loop from it; `None` when the ends are not
+/// on one meridian / parallel, coincide, or the two loops disagree about the side.
+fn torus_seam(
+    frame: &Frame,
+    major: f64,
+    minor: f64,
+    ring: bool,
+    same_sense: bool,
+    ends: [V3; 2],
+    tangents: [V3; 2],
+    chord_mm: f64,
+    tolerance: f64,
+) -> Option<(Curve, Vec<V3>)> {
+    let axis = frame.z;
+    let about_axis = |p: V3| {
+        let d = sub(p, frame.origin);
+        dot(d, frame.y).atan2(dot(d, frame.x))
+    };
+    let radial = |u: f64| add(mul(frame.x, u.cos()), mul(frame.y, u.sin()));
+    let wrap = |a: f64| a - TAU * (a / TAU).round();
+    let unit = |v: V3| {
+        let n = norm(v);
+        (n > 0.).then(|| mul(v, 1. / n))
+    };
+    // per end: the outward normal of the torus, the direction the seam's angle increases in, and the face's left of the loop
+    // (the loop's traversal `tangents[k]`, the face's normal `n`: left = n x t)
+    let side = |k: usize, increasing: V3, outward: V3| {
+        let n = if same_sense { outward } else { mul(outward, -1.) };
+        // positive: the angle's increasing direction points to the face's left
+        dot(cross(n, tangents[k]), increasing)
+    };
+    let (ua, ub) = (about_axis(ends[0]), about_axis(ends[1]));
+    let centre: V3;
+    let radius: f64;
+    let e_a: V3;
+    let theta: [f64; 2];
+    let to_point: Box<dyn Fn(f64) -> V3>;
+    let increasing: [V3; 2];
+    let outward: [V3; 2];
+    if ring {
+        let rho = |p: V3| {
+            let d = sub(p, frame.origin);
+            dot(d, frame.x).hypot(dot(d, frame.y))
+        };
+        if rho(ends[0]).max(rho(ends[1])) * wrap(ua - ub).abs() > tolerance {
+            return None;
+        }
+        e_a = radial(ua);
+        centre = add(frame.origin, mul(e_a, major));
+        radius = minor;
+        let angle = |p: V3| {
+            let d = sub(p, centre);
+            dot(d, axis).atan2(dot(d, e_a))
+        };
+        theta = [angle(ends[0]), angle(ends[1])];
+        let (c, a) = (centre, e_a);
+        to_point = Box::new(move |t: f64| add(c, mul(add(mul(a, t.cos()), mul(axis, t.sin())), minor)));
+        let at = |k: usize| {
+            let (s, c) = theta[k].sin_cos();
+            (add(mul(e_a, -s), mul(axis, c)), add(mul(e_a, c), mul(axis, s)))
+        };
+        increasing = [at(0).0, at(1).0];
+        outward = [at(0).1, at(1).1];
+    } else {
+        let height = |p: V3| dot(sub(p, frame.origin), axis);
+        let rho = |p: V3| {
+            let d = sub(p, frame.origin);
+            dot(d, frame.x).hypot(dot(d, frame.y))
+        };
+        if (height(ends[0]) - height(ends[1])).abs().hypot(rho(ends[0]) - rho(ends[1])) > tolerance {
+            return None;
+        }
+        e_a = radial(ua);
+        centre = add(frame.origin, mul(axis, height(ends[0])));
+        radius = rho(ends[0]);
+        theta = [ua, ub];
+        let (c, x, y) = (centre, frame.x, frame.y);
+        to_point = Box::new(move |t: f64| add(c, mul(add(mul(x, t.cos()), mul(y, t.sin())), radius)));
+        let at = |k: usize| {
+            let e = radial(theta[k]);
+            let tube = add(frame.origin, mul(e, major));
+            (cross(axis, e), unit(sub(ends[k], tube)).unwrap_or(e))
+        };
+        increasing = [at(0).0, at(1).0];
+        outward = [at(0).1, at(1).1];
+    }
+    if !(radius > 0.) {
+        return None;
+    }
+    // the sign of the angle's travel along the seam: towards the face's left at the first end, away from it at the second
+    let (sa, sb) = (side(0, increasing[0], outward[0]), side(1, increasing[1], outward[1]));
+    if sa == 0. || sb == 0. || sa.signum() == sb.signum() {
+        return None;
+    }
+    let direction = sa.signum();
+    let delta = wrap(theta[1] - theta[0]);
+    if delta == 0. {
+        return None;
+    }
+    let delta = if delta.signum() == direction { delta } else { delta - delta.signum() * TAU };
+    let count = (delta.abs() / chord_angle(radius, chord_mm)).ceil().max(2.) as usize;
+    let mut samples: Vec<V3> = (0..=count).map(|i| to_point(theta[0] + delta * i as f64 / count as f64)).collect();
+    *samples.first_mut()? = ends[0];
+    *samples.last_mut()? = ends[1];
+    // circle frame: x = from the centre towards the start, y turns the way the angle runs
+    let (x, y) = if ring {
+        (e_a, mul(axis, direction))
+    } else {
+        (e_a, mul(cross(axis, e_a), direction))
+    };
+    let z = cross(x, y);
+    Some((Curve::Circle { frame: Frame { origin: centre, x, y, z }, radius }, samples))
 }
 pub(crate) fn chord_angle(radius: f64, chord_mm: f64) -> f64 {
     (4. * (chord_mm / (2. * radius)).min(0.5).sqrt().asin()).min(FRAC_PI_2)
@@ -1476,15 +1620,15 @@ impl AnalyticModel {
         model.seam_unseamed_cylinder_bands(first_synthetic_id);
         Ok(model)
     }
-    /// A cylinder or cone face bounded by two closed loops that wind once around the axis in opposite senses, with no seam
-    /// edge (Onshape writes every through-hole wall and chamfer this way; OpenCASCADE adds a seam), is cut along a
-    /// generator from the start vertex of the first loop to the second loop at the same angle. When the second loop has no
-    /// vertex there, one is inserted on its edge (an exact point of its circle) and the edge is split in every face that
-    /// uses it, which keeps the shell conforming. The cut is a new straight edge used once each way in a single merged
-    /// loop, exactly the shape of an OpenCASCADE cylinder, so sampling, grading and connectivity treat it like any seam.
-    /// Source edge and vertex identities are kept where they are not split; new ids follow the largest entity id of the
-    /// document, have no entity of their own (`RawEdge::curve` of the seam is 0) and exist only in this model. A face of
-    /// any other shape keeps its two bounds and is refused later by the chart code as before.
+    /// A cylinder or cone face with two closed loops that wind once around the axis in opposite senses and no seam edge
+    /// (Onshape writes every through-hole wall and chamfer this way; OpenCASCADE adds a seam) is cut along a generator from
+    /// the start vertex of the first loop to the second loop at the same angle. When the second loop has no vertex there,
+    /// one is inserted on its edge (an exact point of its curve) and the edge is split in every face that uses it, which keeps
+    /// the shell conforming. The cut is a new straight edge used once each way in a single merged loop, exactly the shape of
+    /// an OpenCASCADE cylinder, so sampling, grading and connectivity treat it like any seam. Further bounds that do not wind
+    /// (holes) stay as they are. Source edge and vertex identities are kept where they are not split; new ids follow the
+    /// largest entity id of the document, have no entity of their own (`RawEdge::curve` of the seam is 0) and exist only in
+    /// this model. A face of any other shape keeps its bounds and is refused later by the chart code as before.
     fn seam_unseamed_cylinder_bands(&mut self, first_synthetic_id: u64) {
         let mut next = first_synthetic_id;
         let tolerance = self.geometry_tolerance_mm;
@@ -1493,7 +1637,7 @@ impl AnalyticModel {
             .faces
             .values()
             .filter(|f| {
-                f.bounds.len() == 2
+                f.bounds.len() >= 2
                     && matches!(
                         self.surfaces.get(&f.id),
                         Some(Surface::Cylinder { .. } | Surface::Cone { .. })
@@ -1515,13 +1659,13 @@ impl AnalyticModel {
                 let d = sub(p, frame.origin);
                 (dot(d, frame.x).powi(2) + dot(d, frame.y).powi(2)).sqrt()
             };
-            let Some((la, lb, ta, tb)) = self.band_loops(face_id, &angle, &wrap) else {
+            let Some(turns) = self.bound_turns(face_id, &angle, &wrap) else {
                 continue;
             };
-            let once = |t: f64| (t.abs() - 1.).abs() < 1e-6;
-            if !once(ta) || !once(tb) || ta.signum() == tb.signum() {
+            let Some(pair) = winding_pair(&turns) else {
                 continue;
-            }
+            };
+            let (la, lb, tb) = (turns[pair.0].0.clone(), turns[pair.1].0.clone(), turns[pair.1].1);
             let Some(va) = la.first().and_then(|u| self.use_start(u)) else {
                 continue;
             };
@@ -1530,9 +1674,10 @@ impl AnalyticModel {
                 continue;
             };
             // the second loop may have been rewritten by an edge split: read it again, rotated to start at the vertex
-            let Some((la, mut lb, _, _)) = self.band_loops(face_id, &angle, &wrap) else {
+            let Some(turns) = self.bound_turns(face_id, &angle, &wrap) else {
                 continue;
             };
+            let (la, mut lb) = (turns[pair.0].0.clone(), turns[pair.1].0.clone());
             let Some(at) = lb.iter().position(|u| self.use_start(u) == Some(vb)) else {
                 continue;
             };
@@ -1543,47 +1688,155 @@ impl AnalyticModel {
                 continue;
             }
             let length = norm(sub(pb, pa));
-            let seam = next;
-            next += 3;
-            self.body.edges.insert(
-                seam,
-                RawEdge {
-                    id: seam,
-                    start: va,
-                    end: vb,
-                    curve: 0,
-                    same_sense: true,
-                },
-            );
-            self.curves.insert(
-                seam,
-                Curve::Line {
-                    origin: pa,
-                    direction: mul(sub(pb, pa), 1. / length),
-                },
-            );
-            self.edges.insert(seam, vec![pa, pb]);
-            let first = self.body.faces[&face_id].bounds[0].clone();
-            let mut merged = la;
-            merged.push(EdgeUse {
-                id: seam + 1,
-                edge: seam,
-                forward: true,
-            });
-            merged.extend(lb);
-            merged.push(EdgeUse {
-                id: seam + 2,
-                edge: seam,
-                forward: false,
-            });
-            let face = self.body.faces.get_mut(&face_id).unwrap();
-            face.bounds = vec![RawBound {
-                id: first.id,
-                loop_id: first.loop_id,
-                forward: true,
-                explicitly_outer: false,
-                edges: merged,
-            }];
+            let curve = Curve::Line {
+                origin: pa,
+                direction: mul(sub(pb, pa), 1. / length),
+            };
+            self.install_band_seam(face_id, pair, la, lb, (va, vb), curve, vec![pa, pb], &mut next);
+        }
+        self.seam_unseamed_torus_bands(&mut next);
+    }
+    /// Join the loops `la` and `lb` of the bounds `pair` of a band face into one through a new seam edge from `ends.0` (the
+    /// first vertex of `la`) to `ends.1` (the first vertex of `lb`), used once each way: the shape of an OpenCASCADE seam.
+    /// `samples` are the seam's points from start to end. The other bounds of the face stay.
+    fn install_band_seam(
+        &mut self,
+        face_id: u64,
+        pair: (usize, usize),
+        la: Vec<EdgeUse>,
+        lb: Vec<EdgeUse>,
+        ends: (u64, u64),
+        curve: Curve,
+        samples: Vec<V3>,
+        next: &mut u64,
+    ) {
+        let seam = *next;
+        *next += 3;
+        self.body.edges.insert(
+            seam,
+            RawEdge {
+                id: seam,
+                start: ends.0,
+                end: ends.1,
+                curve: 0,
+                same_sense: true,
+            },
+        );
+        self.curves.insert(seam, curve);
+        self.edges.insert(seam, samples);
+        let first = self.body.faces[&face_id].bounds[pair.0].clone();
+        let mut merged = la;
+        merged.push(EdgeUse {
+            id: seam + 1,
+            edge: seam,
+            forward: true,
+        });
+        merged.extend(lb);
+        merged.push(EdgeUse {
+            id: seam + 2,
+            edge: seam,
+            forward: false,
+        });
+        let face = self.body.faces.get_mut(&face_id).unwrap();
+        let mut bounds = vec![RawBound {
+            id: first.id,
+            loop_id: first.loop_id,
+            forward: true,
+            explicitly_outer: false,
+            edges: merged,
+        }];
+        bounds.extend(
+            face.bounds
+                .iter()
+                .enumerate()
+                .filter(|(k, _)| *k != pair.0 && *k != pair.1)
+                .map(|(_, b)| b.clone()),
+        );
+        face.bounds = bounds;
+    }
+    /// A torus face (major radius above minor) with two closed loops and no seam, as Onshape writes a fillet ring or a pipe
+    /// bend, is cut like a cylinder band, but along a circle arc: loops that each wind once around the torus axis are joined by
+    /// a meridian arc (constant angle about the axis), loops that each wind once around the tube by an arc of the parallel at
+    /// the first vertex (constant angle about the tube). Two such arcs join the same vertices, one each way round, and bound
+    /// two different faces (the band and the rest of the ring); the face is on the left of its loops seen from its normal (the
+    /// surface normal, reversed when the face senses against it), so the arc is the one that leaves the first loop towards its
+    /// left and arrives at the second loop from its left. Where the two loops disagree on that, or a loop is not a plain
+    /// winding, the face keeps its bounds and the chart code refuses it as before.
+    fn seam_unseamed_torus_bands(&mut self, next: &mut u64) {
+        let tolerance = self.geometry_tolerance_mm;
+        let faces: Vec<u64> = self
+            .body
+            .faces
+            .values()
+            .filter(|f| {
+                f.bounds.len() == 2
+                    && matches!(self.surfaces.get(&f.id), Some(Surface::Torus { major, minor, .. }) if major > minor)
+            })
+            .map(|f| f.id)
+            .collect();
+        for face_id in faces {
+            let Some(Surface::Torus { frame, major, minor }) = self.surfaces.get(&face_id).cloned() else {
+                continue;
+            };
+            let same_sense = self.body.faces[&face_id].same_sense;
+            let wrap = |a: f64| a - TAU * (a / TAU).round();
+            // angle about the torus axis, and angle about the tube from the outer equator
+            let about_axis = |p: V3| {
+                let d = sub(p, frame.origin);
+                dot(d, frame.y).atan2(dot(d, frame.x))
+            };
+            let about_tube = |p: V3| {
+                let d = sub(p, frame.origin);
+                dot(d, frame.z).atan2(dot(d, frame.x).hypot(dot(d, frame.y)) - major)
+            };
+            let (Some(round_axis), Some(round_tube)) = (
+                self.bound_turns(face_id, &about_axis, &wrap),
+                self.bound_turns(face_id, &about_tube, &wrap),
+            ) else {
+                continue;
+            };
+            let none = |t: f64| t.abs() < 1e-6;
+            // true: both loops circle the axis and not the tube (a ring); false: the other way round (a bend)
+            let (ring, pair) = match (winding_pair(&round_axis), winding_pair(&round_tube)) {
+                (Some(pair), None) if round_tube.iter().all(|t| none(t.1)) => (true, pair),
+                (None, Some(pair)) if round_axis.iter().all(|t| none(t.1)) => (false, pair),
+                _ => continue,
+            };
+            let turns = if ring { &round_axis } else { &round_tube };
+            let (la, lb, tb) = (turns[pair.0].0.clone(), turns[pair.1].0.clone(), turns[pair.1].1);
+            let key = |p: V3| if ring { about_axis(p) } else { about_tube(p) };
+            let Some(va) = la.first().and_then(|u| self.use_start(u)) else {
+                continue;
+            };
+            let pa = self.vertices[&va];
+            // the loop `la` leaves `va` along its first samples
+            let Some(points_a) = self.loop_points(&la) else {
+                continue;
+            };
+            let ahead = sub(points_a[1], points_a[0]);
+            let Some(vb) = self.vertex_of_loop_at_angle(&lb, tb.signum(), key(pa), &key, &wrap, next) else {
+                continue;
+            };
+            // the second loop may have been rewritten by an edge split: read it again, rotated to start at the vertex
+            let Some(turns) = self.bound_turns(face_id, &key, &wrap) else {
+                continue;
+            };
+            let mut lb = turns[pair.1].0.clone();
+            let la = turns[pair.0].0.clone();
+            let Some(at) = lb.iter().position(|u| self.use_start(u) == Some(vb)) else {
+                continue;
+            };
+            lb.rotate_left(at);
+            let pb = self.vertices[&vb];
+            let Some(points_b) = self.loop_points(&lb) else {
+                continue;
+            };
+            let behind = sub(points_b[1], points_b[0]);
+            let Some((curve, samples)) = torus_seam(&frame, major, minor, ring, same_sense, [pa, pb], [ahead, behind], self.chord_mm, tolerance)
+            else {
+                continue;
+            };
+            self.install_band_seam(face_id, pair, la, lb, (va, vb), curve, samples, next);
         }
     }
     fn use_start(&self, u: &EdgeUse) -> Option<u64> {
@@ -1603,18 +1856,15 @@ impl AnalyticModel {
         }
         Some(points)
     }
-    /// The two bounds of a two-bound face as directed edge-use lists (a reversed bound runs its uses backwards and
-    /// flipped), with the signed number of turns each makes around the axis.
-    fn band_loops(
+    /// Every bound of a face as a directed edge-use list (a reversed bound runs its uses backwards and flipped) with the
+    /// signed number of turns it makes in `angle` (a periodic coordinate: `wrap` brings an angle difference to (-pi, pi]).
+    fn bound_turns(
         &self,
         face_id: u64,
         angle: &impl Fn(V3) -> f64,
         wrap: &impl Fn(f64) -> f64,
-    ) -> Option<(Vec<EdgeUse>, Vec<EdgeUse>, f64, f64)> {
+    ) -> Option<Vec<(Vec<EdgeUse>, f64)>> {
         let face = self.body.faces.get(&face_id)?;
-        let [a, b] = face.bounds.as_slice() else {
-            return None;
-        };
         let directed = |b: &RawBound| -> Vec<EdgeUse> {
             if b.forward {
                 b.edges.clone()
@@ -1630,17 +1880,18 @@ impl AnalyticModel {
                     .collect()
             }
         };
-        let (la, lb) = (directed(a), directed(b));
-        let turns = |uses: &[EdgeUse]| -> Option<f64> {
-            let points = self.loop_points(uses)?;
-            let mut total = 0.;
-            for i in 0..points.len() {
-                total += wrap(angle(points[(i + 1) % points.len()]) - angle(points[i]));
-            }
-            Some(total / TAU)
-        };
-        let (ta, tb) = (turns(&la)?, turns(&lb)?);
-        Some((la, lb, ta, tb))
+        face.bounds
+            .iter()
+            .map(|b| {
+                let uses = directed(b);
+                let points = self.loop_points(&uses)?;
+                let mut total = 0.;
+                for i in 0..points.len() {
+                    total += wrap(angle(points[(i + 1) % points.len()]) - angle(points[i]));
+                }
+                Some((uses, total / TAU))
+            })
+            .collect()
     }
     /// A vertex of the loop at the angle `target` around the axis, inserting one on the loop's circle (and splitting its
     /// edge) when no sample is there. `direction` is the loop's turn sign. `None` leaves the model valid and unsplit
@@ -1710,8 +1961,19 @@ impl AnalyticModel {
             return None;
         }
         let curve = self.curves.get(&edge)?.clone();
-        if !matches!(curve, Curve::Circle { .. } | Curve::Line { .. }) {
-            return None;
+        // The pieces of a circle, ellipse or line keep the whole curve (each piece is located by its own end vertices); the
+        // pieces of a spline keep the whole curve and the parameters of their own samples.
+        let piece_curve = |upper: bool| match &curve {
+            Curve::Spline { curve, params } => Curve::Spline {
+                curve: curve.clone(),
+                params: if upper { params[index..].to_vec() } else { params[..=index].to_vec() },
+            },
+            other => other.clone(),
+        };
+        if let Curve::Spline { params, .. } = &curve {
+            if params.len() != samples.len() {
+                return None;
+            }
         }
         let raw = self.body.edges.get(&edge)?.clone();
         let (vertex, lower, upper) = (*next, *next + 1, *next + 2);
@@ -1736,7 +1998,7 @@ impl AnalyticModel {
                     same_sense: raw.same_sense,
                 },
             );
-            self.curves.insert(id, curve.clone());
+            self.curves.insert(id, piece_curve(id == upper));
         }
         self.edges.insert(lower, samples[..=index].to_vec());
         self.edges.insert(upper, samples[index..].to_vec());

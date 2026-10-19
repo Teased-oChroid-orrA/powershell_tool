@@ -337,18 +337,21 @@ pub fn bodies(data: &Inventory, limits: TopologyLimits) -> Result<Vec<RawBody>, 
             let mut unique = BTreeSet::new();
             // Parasolid/Onshape write the pole of a sphere or the apex of a cone as an extra bound made of one vertex. The
             // native chart of those surfaces is local to the face (the source parameterization's pole plays no role), so
-            // such a bound carries no boundary information and is skipped; on any other surface it stays unsupported.
-            let pole_surface = data.entities().get(&surface).is_some_and(|s| {
+            // such a bound carries no boundary information and is skipped. On any other surface a single-point bound is a
+            // point of no area (a Parasolid acorn vertex on a torus or revolved face, or the pole of a revolution) and is
+            // skipped the same way while the face keeps a bound made of edges; a face bounded by nothing but points stays
+            // unsupported.
+            let skip_point_bounds = data.entities().get(&surface).is_some_and(|s| {
                 matches!(
                     s.components.as_slice(),
                     [c] if c.name == "SPHERICAL_SURFACE" || c.name == "CONICAL_SURFACE"
                 )
-            });
+            }) || bounds.iter().any(|b| !is_vertex_loop_bound(data, *b));
             for id in bounds {
                 if !unique.insert(id) {
                     return Err(error(fe, "duplicate face bound"));
                 }
-                if pole_surface && is_vertex_loop_bound(data, id) {
+                if skip_point_bounds && is_vertex_loop_bound(data, id) {
                     continue;
                 }
                 let b = bound(data, id, &mut body, &mut used, limits)?;
