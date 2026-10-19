@@ -509,6 +509,9 @@ struct State {
     /// Sub-segments / sub-facets known to be encroached (or forced) and not yet split.
     enc_segments: BTreeSet<[usize; 2]>,
     enc_tris: BTreeSet<(usize, [usize; 3])>,
+    /// Entries of `enc_tris` queued because the exact presence check found the sub-facet missing, not because a vertex
+    /// encroaches it: a refresh of the facet mesh drops them unless they are encroached too.
+    forced_tris: BTreeSet<(usize, [usize; 3])>,
     steiner: usize,
     segment_steiner: usize,
     facet_steiner: usize,
@@ -570,6 +573,7 @@ impl State {
             return Ok(());
         }
         self.enc_tris.retain(|(m, _)| *m != k);
+        self.forced_tris.retain(|(m, _)| *m != k);
         if self.frozen_facets.contains(&k) {
             return Ok(());
         }
@@ -578,6 +582,60 @@ impl State {
             if self.tri_encroached(t)? {
                 self.enc_tris.insert((k, t));
             }
+        }
+        Ok(())
+    }
+    /// [`Self::refresh_mesh`] after the vertex `v` was inserted into facet mesh `k` and [`Self::note_vertex`] ran for it.
+    /// Vertices are only ever added, so an existing sub-facet stays encroached once it is, and a sub-facet that was not
+    /// encroached can only become so through the new vertex, which `note_vertex` has already tested against it. The only
+    /// sub-facets whose status is unknown are the new ones, which are exactly those with `v` as a corner (the insertion
+    /// replaces a cavity by a cone from `v`): they are checked against every vertex, and entries of sub-facets that left the
+    /// mesh are dropped. Same bookkeeping as the full refresh at O(new x V) instead of O(sub-facets x V).
+    fn refresh_mesh_around(&mut self, k: usize, v: usize) -> Result<(), Error> {
+        if !self.options.protect_encroached {
+            return Ok(());
+        }
+        if self.frozen_facets.contains(&k) {
+            self.enc_tris.retain(|(m, _)| *m != k);
+            self.forced_tris.retain(|(m, _)| *m != k);
+            return Ok(());
+        }
+        let live: BTreeSet<[usize; 3]> = self.meshes[k].tris.iter().copied().collect();
+        // forced entries survive a refresh only when a vertex encroaches them as well
+        let forced: Vec<(usize, [usize; 3])> =
+            self.forced_tris.range((k, [0; 3])..(k + 1, [0; 3])).copied().collect();
+        for entry in forced {
+            self.forced_tris.remove(&entry);
+            if !(live.contains(&entry.1) && self.tri_encroached(entry.1)?) {
+                self.enc_tris.remove(&entry);
+            }
+        }
+        let stale: Vec<(usize, [usize; 3])> = self
+            .enc_tris
+            .range((k, [0; 3])..(k + 1, [0; 3]))
+            .filter(|(_, t)| !live.contains(t))
+            .copied()
+            .collect();
+        for entry in stale {
+            self.enc_tris.remove(&entry);
+        }
+        for t in live {
+            if t.contains(&v) && self.tri_encroached(t)? {
+                self.enc_tris.insert((k, t));
+            }
+        }
+        // The incremental bookkeeping must equal the full recomputation (checked in debug builds, including every test).
+        #[cfg(debug_assertions)]
+        {
+            let mut full = BTreeSet::new();
+            for &t in &self.meshes[k].tris {
+                if self.tri_encroached(t)? {
+                    full.insert((k, t));
+                }
+            }
+            let kept: BTreeSet<(usize, [usize; 3])> =
+                self.enc_tris.range((k, [0; 3])..(k + 1, [0; 3])).copied().collect();
+            debug_assert_eq!(kept, full, "incremental sub-facet encroachment bookkeeping diverged");
         }
         Ok(())
     }
@@ -694,6 +752,8 @@ impl State {
             }
             if !hit.is_empty() || !hit_tris.is_empty() {
                 self.enc_segments.extend(hit);
+                // encroached by the rejected centre, not by a vertex
+                self.forced_tris.extend(hit_tris.iter().copied());
                 self.enc_tris.extend(hit_tris);
                 progressed = true;
                 continue;
@@ -786,7 +846,7 @@ impl State {
             }
         }
         for k in touched {
-            self.refresh_mesh(k)?;
+            self.refresh_mesh_around(k, mi)?;
         }
         Ok(())
     }
@@ -888,6 +948,7 @@ fn conform_impl(
         meshes,
         enc_segments: BTreeSet::new(),
         enc_tris: BTreeSet::new(),
+        forced_tris: BTreeSet::new(),
         steiner: 0,
         segment_steiner: 0,
         facet_steiner: 0,
@@ -946,6 +1007,7 @@ fn conform_impl(
             state.split_segment(s)?;
         }
         if let Some((k, t)) = state.enc_tris.pop_first() {
+            let was_forced = state.forced_tris.remove(&(k, t));
             if !state.meshes[k].tris.contains(&t) {
                 continue;
             }
@@ -984,6 +1046,9 @@ fn conform_impl(
                 // The centre is rejected; its encroached segments are split first.
                 state.enc_segments.extend(hit);
                 state.enc_tris.insert((k, t));
+                if was_forced {
+                    state.forced_tris.insert((k, t));
+                }
                 continue;
             }
             if !state.meshes[k].contains(cc, &pts) {
@@ -994,6 +1059,9 @@ fn conform_impl(
                 if let Some(s) = nearest.filter(|s| state.segments.contains(s) && !state.frozen_segments.contains(s)) {
                     state.enc_segments.insert(s);
                     state.enc_tris.insert((k, t));
+                    if was_forced {
+                        state.forced_tris.insert((k, t));
+                    }
                     continue;
                 }
                 return Err(fail(
@@ -1020,6 +1088,9 @@ fn conform_impl(
                 if let Some(s) = nearest.filter(|s| state.segments.contains(s)) {
                     state.enc_segments.insert(s);
                     state.enc_tris.insert((k, t));
+                    if was_forced {
+                        state.forced_tris.insert((k, t));
+                    }
                     continue;
                 }
                 return Err(fail(
@@ -1035,7 +1106,7 @@ fn conform_impl(
             state.facet_steiner += 1;
             state.max_offset = state.max_offset.max(off / longest.sqrt());
             state.note_vertex(id)?;
-            state.refresh_mesh(k)?;
+            state.refresh_mesh_around(k, id)?;
             continue;
         }
         // Encroachment is only a sufficient condition; verify presence exactly and
@@ -1094,6 +1165,7 @@ fn conform_impl(
         if !missing_segments.is_empty() {
             state.enc_segments.extend(missing_segments);
         } else {
+            state.forced_tris.extend(missing_tris.iter().copied());
             state.enc_tris.extend(missing_tris);
         }
     }
