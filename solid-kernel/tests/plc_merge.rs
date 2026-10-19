@@ -54,7 +54,7 @@ fn ramp() -> (Vec<V3>, Vec<[usize; 3]>, f64) {
 #[test]
 fn a_planar_face_diagonal_no_longer_starts_a_cascade_when_coplanar_facets_merge() {
     let (v, t, volume) = ramp();
-    let options = Options { max_steiner: 20_000, max_cells: 2_000_000, ..Options::default() };
+    let options = Options { max_steiner: 20_000, max_cells: 2_000_000, unprotected_fallback: false, ..Options::default() };
     let e = conform(&v, &t, options, |_| true).unwrap_err();
     assert!(e.detail.contains("feature-size floor"), "the unmerged recovery should hit the floor: {e:?}");
     let merged = Options { merge_coplanar: true, ..options };

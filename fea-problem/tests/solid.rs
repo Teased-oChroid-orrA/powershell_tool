@@ -71,8 +71,8 @@ fn a_solid_without_a_cache_or_in_a_plane_analysis_is_refused_with_the_reason() {
     let mut q = bar();
     q.analysis = Analysis::PlaneStress;
     assert!(q.validate_geometry().unwrap_err().contains("3D solid"));
-    #[cfg(not(feature = "occt"))]
-    assert!(Geometry::solid_from_step(STEP, 0.01).unwrap_err().contains("OpenCascade"));
+    // A STEP text without a solid is refused by whichever kernel reads it (the native one in the default build), with a reason.
+    assert!(!Geometry::solid_from_step(STEP, 0.01).unwrap_err().is_empty());
 }
 
 #[test]

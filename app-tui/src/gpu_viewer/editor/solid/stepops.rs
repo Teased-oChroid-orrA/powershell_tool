@@ -1,5 +1,7 @@
 //! STEP solids in the editor: opening a `.step` file and the hole / boss / fillet operations on a stored solid
-//! (`fea_problem::solid`). All of it needs the OpenCascade build (cargo feature `occt`); a build without it says so.
+//! (`fea_problem::solid`). The default build does them with the native pipeline (`fea_problem::native_solid`: round holes and
+//! bosses on flat faces, fillet of a convex polyhedron; anything else is refused with the reason); the `occt` feature uses
+//! OpenCascade, which handles more shapes.
 use super::*;
 use fea_problem::solid::SolidOp;
 
@@ -44,9 +46,6 @@ impl SolidSession {
     }
 
     pub(super) fn solid_op_availability(&self, op: PromptOp) -> Result<(), String> {
-        if !cfg!(feature = "occt") {
-            return Err("needs the OpenCascade build (cargo build --features occt)".into());
-        }
         self.replace_availability()?;
         match &self.problem.geometry {
             Geometry::Solid { step, cache: Some(c) } if c.is_current(step) => {}

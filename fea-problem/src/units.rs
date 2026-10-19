@@ -191,7 +191,7 @@ impl Problem {
     pub fn can_convert_units(&self) -> Result<(), String> {
         match self.geometry {
             Geometry::Sketch { .. } | Geometry::Imported { .. } | Geometry::Solid { cache: Some(_), .. } => Ok(()),
-            Geometry::Solid { .. } => Err("a STEP solid needs a current cached surface before conversion: re-import it with the OpenCascade build".into()),
+            Geometry::Solid { .. } => Err("a STEP solid needs a current cached surface before conversion: open the STEP file again".into()),
         }
     }
 

@@ -196,12 +196,64 @@ fn a_strongly_graded_input_exceeds_a_small_steiner_budget_instead_of_looping() {
     let (v, t) = plate(4., Some(2.), 0.01);
     let small = Options {
         max_steiner: 20,
+        unprotected_fallback: false,
         ..Options::default()
     };
     assert_eq!(
         conform(&v, &t, small, |_| true).unwrap_err().kind,
         ErrorKind::Limit
     );
+}
+
+/// The protect-everything recovery that runs out of budget is repeated once splitting only what is missing; on this input
+/// that needs 6 points, and the result is verified like any other (exact volume, every sub-facet bounds the cells once).
+#[test]
+fn the_unprotected_fallback_recovers_what_the_protected_recovery_gives_up_on() {
+    let (v, t) = plate(4., Some(2.), 0.01);
+    let small = Options { max_steiner: 20, ..Options::default() };
+    assert!(small.unprotected_fallback);
+    let m = conform(&v, &t, small, |_| true).expect("the fallback recovers the plate");
+    assert!((volume_of(&m.points, &m.cells) - (16. - 4.) * 0.01).abs() < 1e-12);
+    assert!(m.report.segment_steiner + m.report.facet_steiner <= 20);
+    // opting out restores the refusal; a recovery that succeeds first time is identical with and without the option
+    let off = Options { unprotected_fallback: false, ..small };
+    assert_eq!(conform(&v, &t, off, |_| true).unwrap_err().kind, ErrorKind::Limit);
+    let (v, t) = plate(3., None, 1.);
+    let a = conform(&v, &t, Options::default(), |_| true).unwrap();
+    let b = conform(&v, &t, Options { unprotected_fallback: false, ..Options::default() }, |_| true).unwrap();
+    assert_eq!((a.points, a.cells), (b.points, b.cells));
+}
+
+/// The protected recovery gives up at `protected_max_steiner` and the unprotected one takes over: the result is exactly the
+/// unprotected recovery of the same input.
+#[test]
+fn the_protected_step_limit_hands_over_to_the_unprotected_recovery() {
+    let (v, t) = plate(4., Some(2.), 0.01);
+    let protected = conform(&v, &t, Options { unprotected_fallback: false, ..Options::default() }, |_| true).unwrap();
+    let used = protected.report.segment_steiner + protected.report.facet_steiner;
+    assert!(used > 6, "the protected recovery of this plate needs more than the unprotected one: {used}");
+    let unprotected = conform(&v, &t, Options { protect_encroached: false, ..Options::default() }, |_| true).unwrap();
+    let limited = Options { protected_max_steiner: used - 1, ..Options::default() };
+    let handed_over = conform(&v, &t, limited, |_| true).unwrap();
+    assert_eq!((&handed_over.points, &handed_over.cells), (&unprotected.points, &unprotected.cells));
+    // at the exact count it is still the protected recovery
+    let exact = conform(&v, &t, Options { protected_max_steiner: used, ..Options::default() }, |_| true).unwrap();
+    assert_eq!((&exact.points, &exact.cells), (&protected.points, &protected.cells));
+    // the limit does not apply without the fallback
+    let off = Options { unprotected_fallback: false, protected_max_steiner: 1, ..Options::default() };
+    assert!(conform(&v, &t, off, |_| true).is_ok());
+}
+
+/// A coordinate that is the rounding residue of a placement (-6e-31 instead of 0) is below the exact predicates' range;
+/// it used to refuse the whole shell with "3D predicate coordinates must be zero or have magnitude in [1e-30, 1e30]".
+#[test]
+fn a_coordinate_below_the_predicate_range_is_flushed_to_zero() {
+    let (mut v, t) = plate(3., None, 1.);
+    v[0][2] = -5.9e-31;
+    v[1][2] = 3e-40;
+    let m = conform(&v, &t, Options::default(), |_| true).expect("a residue of 1e-31 must not refuse the shell");
+    assert!((volume_of(&m.points, &m.cells) - 9.).abs() < 1e-10);
+    assert!(m.points.iter().flatten().all(|x| *x == 0. || x.abs() >= 1e-30));
 }
 
 #[test]
