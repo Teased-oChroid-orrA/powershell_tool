@@ -56,6 +56,10 @@ Reader changes, in order, with the plain-sampling result after each (`--foreign`
 | 4 | pole `VERTEX_LOOP` bounds on spheres and cones skipped; cone bands; a vertex is inserted on the second circle when the two circles start at different angles (edge split in every face that uses it) | **47 (15.7 %)** | 139 | 22 | 85 (1 timeout) |
 | 5 | step 4 read with `Options::foreign_cad` (edge/surface agreement to chord / 50 = 1e-3 mm) | 47 | 83 | 53 | 103 (8 timeouts) |
 
+| 6 | step 5 with the conform budget raised from 4000 to 200 000 Steiner points (harness `--steiner`), 100 s per shell | **70 (23.3 %)** | 83 | 54 | 77 (56 cancelled at 100 s, 21 feature-size floor; 10 timeouts at 150 s) |
+
+Step 6 changes a resource limit, not a tolerance: `conform` still verifies every result by exact set membership and the divergence-theorem volume. The 70 meshes have a relative volume error of at most 1.7e-13 (median 5e-15); they took a median 3.0 s, 90th percentile 37.8 s, at most 97.4 s, with a median 3 169 Steiner points (90th percentile 9 884, most 25 598). The 23 files gained over step 5 were all refused only for the 4000-point budget. Mesh quality (radius-edge ratio, slivers) was not measured: only that the shell is conformed.
+
 Step 5 moves 56 files past the reader but none of them conforms: they stop at the conform stage (needle triangles of plain sampling). It is kept as an explicit option, not the default, and its value shows only once the conform stage improves.
 
 
@@ -71,7 +75,8 @@ Steps 1 to 4 keep the strict 1e-7 mm tolerance; step 5 is the only one that chan
 |---|---|---|
 | model | 83 | edge sample off a spline surface 32 (9 are 1.0 to 2.2e-3 mm, just above the new tolerance; 23 are 0.14 mm or more, up to 5e5 mm: suspect the closest-point search, not yet examined), unsupported `EDGE_LOOP` encoding 10 (other vertex loops), edge/surface disagreement above 1e-3 mm 10, spline edge not covering its curve 7, horn/spindle torus 6, unsupported body kind 4 |
 | sample | 53 | cone/torus bands 21 (torus needs a meridian-arc seam and a choice of which of the two arcs bounds the face), cylinder bands the heal cannot cut 14, trim polygon self-intersects 7, inverted triangle 4 |
-| shell (conform) | 103 | Steiner budget exceeded 82, feature-size floor 12, cancelled at 30 s 9; median shell minimum angle 0.3 degrees (conforming files: median 2.4, up to 45) |
+| shell (conform), default budget | 103 | Steiner budget exceeded 82, feature-size floor 12, cancelled at 30 s 9; median shell minimum angle 0.3 degrees (conforming files: median 2.4, up to 45) |
+| shell (conform), 200 000 budget | 77 | cancelled at 100 s 56 (speed of `plc_conform`), feature-size floor 21 |
 
 ## Limits
 

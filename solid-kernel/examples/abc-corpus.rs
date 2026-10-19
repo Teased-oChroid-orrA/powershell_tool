@@ -27,7 +27,7 @@ fn clean(s: &str) -> String {
 }
 
 /// One file, all stages; returns `stage,detail,faces,vertices,triangles,volume,min_angle`.
-fn survey(path: &Path, conform_timeout: Duration, foreign: bool, graded_fallback: bool) -> String {
+fn survey(path: &Path, conform_timeout: Duration, foreign: bool, graded_fallback: bool, steiner_budget: Option<usize>) -> String {
     let row = |stage: &str, detail: &str, f: usize, v: usize, t: usize, vol: f64, ang: f64| {
         format!("{stage},{},{f},{v},{t},{vol},{ang}", clean(detail))
     };
@@ -72,7 +72,14 @@ fn survey(path: &Path, conform_timeout: Duration, foreign: bool, graded_fallback
             solid_kernel::plc_conform::conform(
                 &m.vertices,
                 &m.triangles,
-                solid_kernel::plc_conform::Options::default(),
+                match steiner_budget {
+                    Some(n) => solid_kernel::plc_conform::Options {
+                        max_steiner: n,
+                        max_cells: n.saturating_mul(100),
+                        ..Default::default()
+                    },
+                    None => solid_kernel::plc_conform::Options::default(),
+                },
                 |_| start.elapsed() < conform_timeout,
             )
             .map(|c| (facts, c.report))
@@ -166,10 +173,11 @@ fn main() {
         Some(args.remove(i))
     };
     let conform_s: f64 = flag(&mut args, "--conform-timeout").map_or(60., |v| v.parse().unwrap());
+    let steiner: Option<usize> = flag(&mut args, "--steiner").map(|v| v.parse().unwrap());
     let graded_fallback = args.iter().position(|a| a == "--graded").map(|i| args.remove(i)).is_some();
     let foreign = args.iter().position(|a| a == "--foreign").map(|i| args.remove(i)).is_some();
     if let Some(file) = flag(&mut args, "--one") {
-        println!("{}", survey(Path::new(&file), Duration::from_secs_f64(conform_s), foreign, graded_fallback));
+        println!("{}", survey(Path::new(&file), Duration::from_secs_f64(conform_s), foreign, graded_fallback, steiner));
         return;
     }
     let jobs: usize = flag(&mut args, "--jobs").map_or(1, |v| v.parse().unwrap());
@@ -177,7 +185,7 @@ fn main() {
     let timeout: f64 = flag(&mut args, "--timeout").map_or(180., |v| v.parse().unwrap());
     let (dir, out) = match args.as_slice() {
         [d, o] => (PathBuf::from(d), PathBuf::from(o)),
-        _ => panic!("usage: abc-corpus DIR OUT.csv [--limit N] [--timeout S] [--conform-timeout S] [--jobs N] [--foreign] [--graded]"),
+        _ => panic!("usage: abc-corpus DIR OUT.csv [--limit N] [--timeout S] [--conform-timeout S] [--jobs N] [--foreign] [--graded] [--steiner N]"),
     };
     let mut files = Vec::new();
     collect(&dir, &mut files);
@@ -208,6 +216,9 @@ fn main() {
                 }
                 if graded_fallback {
                     command.arg("--graded");
+                }
+                if let Some(n) = steiner {
+                    command.args(["--steiner", &n.to_string()]);
                 }
                 let mut child = command.spawn().unwrap();
                 let mut stdout = child.stdout.take().unwrap();
