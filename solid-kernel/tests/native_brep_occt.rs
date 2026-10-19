@@ -54,3 +54,23 @@ fn native_hole_and_boss_against_opencascade_booleans() {
     let o2 = occt.boolean(Bool::Union, &boss).unwrap().boolean(Bool::Cut, &Brep::cylinder([5., 5., 27.], 0.5, [0., 0., -1.], 60.)).unwrap();
     check("hole through boss", &n2, &o2, 400. + pi * 12. - pi * 0.25 * 7.);
 }
+
+#[test]
+fn native_fillet_all_against_opencascade() {
+    let pi = std::f64::consts::PI;
+    let (lo, hi, r) = ([0.; 3], [2., 3., 4.], 0.2);
+    let n = NativeBrep::box_from_corners(lo, hi).unwrap().fillet_all_convex(r).unwrap();
+    let o = Brep::box_from_corners(lo, hi).fillet_all(r).unwrap();
+    let (x, y, z) = (1.6, 2.6, 3.6);
+    check("box fillet 0.2", &n, &o, x * y * z + 2. * r * (x * y + x * z + y * z) + pi * r * r * (x + y + z) + 4. / 3. * pi * r * r * r);
+    let hex: Vec<[f64; 2]> = (0..6).map(|i| [3. * (pi / 3. * i as f64).cos(), 3. * (pi / 3. * i as f64).sin()]).collect();
+    let p = Profile { outer: Loop::Polygon(hex), holes: vec![] };
+    let native = NativeBrep::extrude(&p, 0., 4.).unwrap().fillet_all_convex(0.5).unwrap();
+    let occt = Brep::extrude(&p, 0., 4.).unwrap().fillet_all(0.5).unwrap();
+    // The Steiner value is in tests/native_brep_fillet.rs; here the two kernels are compared with each other.
+    let v = |b: &Brep| b.solid(0.002).unwrap().volume();
+    let read = Brep::from_step_text(&native.to_step_text()).unwrap();
+    eprintln!("hexagon fillet 0.5: faces native/OCCT {}/{} | OCCT reads native {:.4} | OCCT built {:.4}", read.face_count(), occt.face_count(), v(&read), v(&occt));
+    assert_eq!(read.face_count(), occt.face_count());
+    assert!((v(&read) / v(&occt) - 1.).abs() < 1e-3);
+}
