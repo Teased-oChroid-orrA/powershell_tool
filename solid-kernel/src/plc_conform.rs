@@ -290,6 +290,11 @@ struct FacetMesh {
     corners: [usize; 3],
     uv: BTreeMap<usize, [f64; 2]>,
     tris: Vec<[usize; 3]>,
+    /// Circumcentre and squared circumradius of each sub-facet, parallel to `tris`; empty when stale (every change of
+    /// `tris` clears it). Points are never moved, so a sub-facet's sphere never changes.
+    spheres: Vec<Option<(V3, f64)>>,
+    /// Box around all the balls of `spheres` (valid with `spheres`): a vertex outside it encroaches no sub-facet.
+    ball_box: ([f64; 3], [f64; 3]),
 }
 impl FacetMesh {
     fn new(parent: usize, f: [usize; 3], points: &[V3]) -> Result<Self, Error> {
@@ -309,6 +314,8 @@ impl FacetMesh {
             corners: f,
             uv: BTreeMap::new(),
             tris: vec![f],
+            spheres: Vec::new(),
+            ball_box: ([0.; 3], [0.; 3]),
         };
         for v in f {
             mesh.uv.insert(v, mesh.project(points[v]));
@@ -411,6 +418,7 @@ impl FacetMesh {
         }
         self.uv.insert(id, q);
         self.tris = next;
+        self.spheres.clear();
         Ok(())
     }
     /// Flip interior edges so absent sub-facets are replaced by pairs that are
@@ -445,6 +453,7 @@ impl FacetMesh {
                         let (lo, hi) = (i.min(j), i.max(j));
                         self.tris[hi] = b;
                         self.tris[lo] = a;
+                        self.spheres.clear();
                         flips += 1;
                         continue 'again;
                     }
@@ -452,6 +461,36 @@ impl FacetMesh {
             }
             return flips;
         }
+    }
+    /// Fill `spheres` (`None`: degenerate sub-facet) if stale.
+    fn ensure_spheres(&mut self, points: &[V3]) {
+        if self.spheres.len() != self.tris.len() {
+            self.spheres = self
+                .tris
+                .iter()
+                .map(|t| {
+                    let [a, b, c] = t.map(|x| points[x]);
+                    circumcentre(a, b, c).map(|cc| (cc, norm2(sub(a, cc))))
+                })
+                .collect();
+            let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+            for (cc, r2) in self.spheres.iter().flatten() {
+                // slack for the rounding of the radius and of the box test
+                let r = r2.sqrt() * (1. + 1e-6) + 1e-12 * (1. + norm2(*cc).sqrt());
+                for k in 0..3 {
+                    lo[k] = lo[k].min(cc[k] - r);
+                    hi[k] = hi[k].max(cc[k] + r);
+                }
+            }
+            self.ball_box = (lo, hi);
+        }
+        debug_assert!(
+            self.tris.iter().zip(&self.spheres).all(|(t, s)| {
+                let [a, b, c] = t.map(|x| points[x]);
+                *s == circumcentre(a, b, c).map(|cc| (cc, norm2(sub(a, cc))))
+            }),
+            "stale sub-facet circumsphere cache"
+        );
     }
     /// The facet boundary sub-segment nearest to `p`.
     fn nearest_boundary_edge(&self, p: V3, points: &[V3]) -> Option<[usize; 2]> {
@@ -475,6 +514,10 @@ impl FacetMesh {
             .map(|x| x.1)
     }
     fn has_boundary_edge(&self, s: [usize; 2]) -> bool {
+        // an edge of the mesh has both ends among its vertices
+        if !self.uv.contains_key(&s[0]) || !self.uv.contains_key(&s[1]) {
+            return false;
+        }
         let mut seen = 0;
         for t in &self.tris {
             for k in 0..3 {
@@ -502,8 +545,91 @@ impl FacetMesh {
             .unwrap_or_else(|| self.project(points[v]))
     }
 }
+/// Uniform grid over the points for "is any point inside this ball" queries: the encroachment tests would otherwise scan
+/// every vertex. It only prunes candidates; the caller applies its own exact predicate, so answers equal the full scan.
+/// Points outside the grid box (the far enclosing points, a Steiner point rounded off the shell) are always candidates.
+struct PointGrid {
+    lo: V3,
+    cell: f64,
+    cells: Vec<Vec<u32>>,
+    outliers: Vec<u32>,
+    indexed: usize,
+}
+impl PointGrid {
+    const N: usize = 40;
+    /// Most cells a query may visit before the caller's linear scan is cheaper.
+    const MAX_CELLS: usize = 4096;
+    fn new(vertices: &[V3]) -> Self {
+        let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+        for v in vertices {
+            for k in 0..3 {
+                lo[k] = lo[k].min(v[k]);
+                hi[k] = hi[k].max(v[k]);
+            }
+        }
+        let extent = (0..3).map(|k| hi[k] - lo[k]).fold(0., f64::max);
+        let cell = if extent.is_finite() && extent > 0. { extent / Self::N as f64 * (1. + 1e-9) } else { 1. };
+        Self { lo, cell, cells: vec![Vec::new(); Self::N.pow(3)], outliers: Vec::new(), indexed: 0 }
+    }
+    fn coord(&self, x: f64, k: usize) -> Option<usize> {
+        let f = ((x - self.lo[k]) / self.cell).floor();
+        (f >= 0. && f < Self::N as f64).then_some(f as usize)
+    }
+    fn sync(&mut self, pts: &[V3]) {
+        for (i, p) in pts.iter().enumerate().skip(self.indexed) {
+            match (self.coord(p[0], 0), self.coord(p[1], 1), self.coord(p[2], 2)) {
+                (Some(x), Some(y), Some(z)) => self.cells[(x * Self::N + y) * Self::N + z].push(i as u32),
+                _ => self.outliers.push(i as u32),
+            }
+        }
+        self.indexed = pts.len();
+    }
+    /// Whether `hit` holds for some point within `radius` of `centre`; `None` when the ball is too large for the grid.
+    fn any_within(&mut self, pts: &[V3], centre: V3, radius: f64, hit: &dyn Fn(usize) -> bool) -> Option<bool> {
+        if !(radius.is_finite() && centre.iter().all(|x| x.is_finite())) {
+            return None;
+        }
+        self.sync(pts);
+        // slack for the rounding of the radius and of the cell index
+        let r = radius * (1. + 1e-6) + 1e-12 * (1. + norm2(centre).sqrt());
+        let mut range = [(0usize, 0usize); 3];
+        let mut count = 1usize;
+        for k in 0..3 {
+            let f = |x: f64| ((x - self.lo[k]) / self.cell).floor().clamp(-1., Self::N as f64);
+            let (a, b) = (f(centre[k] - r), f(centre[k] + r));
+            if b < 0. || a >= Self::N as f64 {
+                // the ball misses the grid box on this axis: only outliers can be inside
+                range[k] = (1, 0);
+                count = 0;
+            } else {
+                range[k] = (a.max(0.) as usize, b.min(Self::N as f64 - 1.) as usize);
+                count = count.saturating_mul(range[k].1 - range[k].0 + 1);
+            }
+        }
+        if count > Self::MAX_CELLS {
+            return None;
+        }
+        if self.outliers.iter().any(|&i| hit(i as usize)) {
+            return Some(true);
+        }
+        if count == 0 {
+            return Some(false);
+        }
+        for x in range[0].0..=range[0].1 {
+            for y in range[1].0..=range[1].1 {
+                for z in range[2].0..=range[2].1 {
+                    if self.cells[(x * Self::N + y) * Self::N + z].iter().any(|&i| hit(i as usize)) {
+                        return Some(true);
+                    }
+                }
+            }
+        }
+        Some(false)
+    }
+}
 struct State {
     delaunay: Delaunay3,
+    grid: std::cell::RefCell<PointGrid>,
     segments: BTreeSet<[usize; 2]>,
     meshes: Vec<FacetMesh>,
     /// Sub-segments / sub-facets known to be encroached (or forced) and not yet split.
@@ -554,7 +680,14 @@ impl State {
     }
     fn segment_encroached(&self, s: [usize; 2]) -> bool {
         let pts = self.points();
-        (0..pts.len()).any(|p| p != s[0] && p != s[1] && encroaches(pts[s[0]], pts[s[1]], pts[p]))
+        let (pa, pb) = (pts[s[0]], pts[s[1]]);
+        let hit = |p: usize| p != s[0] && p != s[1] && encroaches(pa, pb, pts[p]);
+        let centre: V3 = std::array::from_fn(|i| (pa[i] + pb[i]) * 0.5);
+        let radius = norm2(sub(pa, pb)).sqrt() * 0.5;
+        self.grid
+            .borrow_mut()
+            .any_within(pts, centre, radius, &hit)
+            .unwrap_or_else(|| (0..pts.len()).any(hit))
     }
     fn tri_circumsphere(&self, t: [usize; 3]) -> Result<(V3, f64), Error> {
         let [a, b, c] = t.map(|v| self.points()[v]);
@@ -565,7 +698,12 @@ impl State {
     fn tri_encroached(&self, t: [usize; 3]) -> Result<bool, Error> {
         let (cc, r2) = self.tri_circumsphere(t)?;
         let pts = self.points();
-        Ok((0..pts.len()).any(|p| !t.contains(&p) && norm2(sub(pts[p], cc)) < r2 * (1. - 1e-9)))
+        let hit = |p: usize| !t.contains(&p) && norm2(sub(pts[p], cc)) < r2 * (1. - 1e-9);
+        Ok(self
+            .grid
+            .borrow_mut()
+            .any_within(pts, cc, r2.sqrt(), &hit)
+            .unwrap_or_else(|| (0..pts.len()).any(hit)))
     }
     /// Re-derive the encroachment bookkeeping of one facet mesh against all vertices.
     fn refresh_mesh(&mut self, k: usize) -> Result<(), Error> {
@@ -654,18 +792,21 @@ impl State {
             .collect();
         self.enc_segments.extend(hit);
         let mut hit_tris = Vec::new();
-        for (k, m) in self.meshes.iter().enumerate() {
+        for (k, m) in self.meshes.iter_mut().enumerate() {
             if self.frozen_facets.contains(&k) {
                 continue;
             }
-            for &t in &m.tris {
+            m.ensure_spheres(pts);
+            if (0..3).any(|i| p[i] < m.ball_box.0[i] || p[i] > m.ball_box.1[i]) {
+                continue;
+            }
+            for (t, sphere) in m.tris.iter().zip(&m.spheres) {
                 if t.contains(&v) {
                     continue;
                 }
-                let [a, b, c] = t.map(|x| pts[x]);
-                if let Some(cc) = circumcentre(a, b, c) {
-                    if norm2(sub(p, cc)) < norm2(sub(a, cc)) * (1. - 1e-9) {
-                        hit_tris.push((k, t));
+                if let Some((cc, r2)) = sphere {
+                    if norm2(sub(p, *cc)) < r2 * (1. - 1e-9) {
+                        hit_tris.push((k, *t));
                     }
                 }
             }
@@ -944,6 +1085,7 @@ fn conform_impl(
     let seed = tetrahedralize(&with_box, limits).map_err(mesh_error)?;
     let mut state = State {
         delaunay: Delaunay3::new(&seed, options.max_cells),
+        grid: std::cell::RefCell::new(PointGrid::new(vertices)),
         segments,
         meshes,
         enc_segments: BTreeSet::new(),
@@ -1338,4 +1480,38 @@ fn extract(state: State, input_vertices: usize, rounds: usize) -> Result<Conform
         facets: facets.into_iter().map(|(f, k)| (f.map(|v| renumber[v]), k)).collect(),
         segments: stats.3.into_iter().map(|e| e.map(|v| renumber[v])).collect(),
     })
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    /// The grid only prunes: every ball query equals the linear scan, including balls that reach outside the grid box,
+    /// balls too large for the grid, points outside the box (outliers) and points added between queries.
+    #[test]
+    fn point_grid_ball_queries_equal_the_linear_scan() {
+        let mut state = 7u64;
+        let mut next = move || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let base: Vec<V3> = (0..64).map(|_| std::array::from_fn(|_| next() * 10.)).collect();
+        let mut grid = PointGrid::new(&base);
+        let mut pts = base.clone();
+        let mut grid_answers = 0;
+        for round in 0..400 {
+            if round % 5 == 0 {
+                // new points: inside the box, just outside it, far away
+                let scale = [10., 10.5, 1e3][round / 5 % 3];
+                pts.push(std::array::from_fn(|_| next() * scale - 0.2));
+            }
+            let centre: V3 = std::array::from_fn(|_| next() * 14. - 2.);
+            let radius = next().powi(3) * [0.5, 3., 40., 5e3][round % 4];
+            let hit = |i: usize| norm2(sub(pts[i], centre)) < radius * radius * (1. - 1e-9);
+            let expected = (0..pts.len()).any(hit);
+            if let Some(answer) = grid.any_within(&pts, centre, radius, &hit) {
+                grid_answers += 1;
+                assert_eq!(answer, expected, "round {round}: ball {centre:?} r {radius}");
+            }
+        }
+        assert!(grid_answers > 200, "the grid should answer most queries, answered {grid_answers}");
+    }
 }

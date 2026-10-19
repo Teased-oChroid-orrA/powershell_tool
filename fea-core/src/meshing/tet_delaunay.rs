@@ -65,14 +65,19 @@ pub fn tetrahedralize_observed(
     }
     let d = fourth.ok_or_else(|| MeshError::Unsupported("point set is coplanar".into()))?;
     let seed = [0, 1, c, d];
-    let mut topology = TetTopology::new(input.to_vec(), vec![seed], limits.max_cells)?;
+    let topology = TetTopology::new(input.to_vec(), vec![seed], limits.max_cells)?;
+    let mut bulk = Bulk::from_topology(input, &topology, limits.max_cells);
     for index in 0..input.len() {
         observe(index, input.len())?;
         if seed.contains(&index) {
             continue;
         }
-        topology = insert_index(input, &topology, index, limits.max_cells)?;
+        if !bulk.insert(index)? {
+            let next = insert_index(input, &bulk.to_topology()?, index, limits.max_cells)?;
+            bulk = Bulk::from_topology(input, &next, limits.max_cells);
+        }
     }
+    let topology = bulk.to_topology()?;
     let used: BTreeSet<_> = topology.cells().iter().flatten().copied().collect();
     if used.len() != input.len() {
         return Err(MeshError::Failed(
@@ -165,6 +170,281 @@ fn insert_index(
         ));
     }
     Ok(next)
+}
+const NONE: usize = usize::MAX;
+fn sorted(mut f: [usize; 3]) -> [usize; 3] {
+    f.sort_unstable();
+    f
+}
+fn parity(f: [usize; 3]) -> bool {
+    ((f[0] > f[1]) as u8 + (f[0] > f[2]) as u8 + (f[1] > f[2]) as u8).is_multiple_of(2)
+}
+#[derive(Clone, Copy)]
+struct Slot {
+    v: [usize; 4],
+    /// `n[k]` is the slot across the face opposite `v[k]` (`faces` order), `NONE` on the hull.
+    n: [usize; 4],
+    alive: bool,
+}
+/// Adjacency-linked working copy of a [`TetTopology`] for the bulk insertion loop: a located cavity is replaced locally
+/// instead of re-deriving the whole topology per point. Slots are append-only (a removed cell is only marked dead), so
+/// the alive slots in slot order are exactly the cell list the full rebuild of [`insert_index`] produces (retained cells
+/// in order, then the cone cells in sorted-face order), with the same vertex order per cell.
+struct Bulk<'a> {
+    points: &'a [Point],
+    slots: Vec<Slot>,
+    alive: usize,
+    /// Hull faces as (slot, local face): every `n[k] == NONE` of a live slot.
+    hull: Vec<(usize, usize)>,
+    last: usize,
+    in_cavity: Vec<u32>,
+    tested: Vec<u32>,
+    epoch: u32,
+    max_cells: usize,
+}
+struct Cone {
+    face: [usize; 3],
+    outside: Option<(usize, usize)>,
+}
+impl<'a> Bulk<'a> {
+    fn from_topology(points: &'a [Point], t: &TetTopology, max_cells: usize) -> Self {
+        let slots: Vec<Slot> = t
+            .cells()
+            .iter()
+            .zip(t.neighbors())
+            .map(|(v, n)| Slot {
+                v: *v,
+                n: n.map(|x| x.unwrap_or(NONE)),
+                alive: true,
+            })
+            .collect();
+        let hull = slots
+            .iter()
+            .enumerate()
+            .flat_map(|(i, s)| (0..4).filter(move |&k| s.n[k] == NONE).map(move |k| (i, k)))
+            .collect();
+        Self {
+            points,
+            alive: slots.len(),
+            last: slots.len().saturating_sub(1),
+            in_cavity: vec![0; slots.len()],
+            tested: vec![0; slots.len()],
+            slots,
+            hull,
+            epoch: 0,
+            max_cells,
+        }
+    }
+    fn to_topology(&self) -> Result<TetTopology, MeshError> {
+        let cells = self.slots.iter().filter(|s| s.alive).map(|s| s.v).collect();
+        TetTopology::new(self.points.to_vec(), cells, self.max_cells)
+    }
+    fn face_points(&self, slot: usize, k: usize) -> [Point; 3] {
+        faces(self.slots[slot].v)[k].map(|v| self.points[v])
+    }
+    /// Walk to the tetrahedron containing `p`; the flag is true when the walk left the hull. `None`: no verdict.
+    fn locate(&self, p: Point) -> Result<Option<(usize, bool)>, MeshError> {
+        let mut c = self.last;
+        if !self.slots[c].alive {
+            let Some(first) = self.slots.iter().position(|s| s.alive) else {
+                return Ok(None);
+            };
+            c = first;
+        }
+        for step in 0..self.slots.len() * 4 + 64 {
+            let t = &self.slots[c];
+            let mut next = None;
+            for j in 0..4 {
+                // Rotate the starting face so a degenerate walk cannot loop forever.
+                let k = (j + step) % 4;
+                let f = self.face_points(c, k);
+                if orientation(f[0], f[1], f[2], p)? == Ordering::Greater {
+                    next = Some(t.n[k]);
+                    break;
+                }
+            }
+            match next {
+                None => return Ok(Some((c, false))),
+                Some(NONE) => return Ok(Some((c, true))),
+                Some(n) => c = n,
+            }
+        }
+        Ok(None)
+    }
+    fn conflicts(&self, slot: usize, p: Point) -> Result<bool, MeshError> {
+        Ok(sphere_side(self.slots[slot].v.map(|v| self.points[v]), p)? != SphereSide::Outside)
+    }
+    /// Insert `points[index]` as [`insert_index`] would. `Ok(false)`: the local path cannot certify an identical result
+    /// (degenerate coplanar hull case, budget, unmatched cavity surface): nothing was changed, use the full rebuild.
+    fn insert(&mut self, index: usize) -> Result<bool, MeshError> {
+        let p = self.points[index];
+        let Some((start, outside)) = self.locate(p)? else {
+            return Ok(false);
+        };
+        self.epoch += 1;
+        let epoch = self.epoch;
+        let mut cavity: Vec<usize> = Vec::new();
+        let mut seeds: Vec<usize> = Vec::new();
+        if outside {
+            for &(c, k) in &self.hull {
+                if self.tested[c] == epoch || self.in_cavity[c] == epoch {
+                    continue;
+                }
+                let f = self.face_points(c, k);
+                if orientation(f[0], f[1], f[2], p)? == Ordering::Less {
+                    continue;
+                }
+                self.tested[c] = epoch;
+                if self.conflicts(c, p)? {
+                    seeds.push(c);
+                }
+            }
+        } else if self.conflicts(start, p)? {
+            seeds.push(start);
+        } else {
+            return Ok(false);
+        }
+        for &c in &seeds {
+            self.in_cavity[c] = epoch;
+        }
+        cavity.extend(&seeds);
+        let mut i = 0;
+        while i < cavity.len() {
+            let c = cavity[i];
+            i += 1;
+            for k in 0..4 {
+                let m = self.slots[c].n[k];
+                if m == NONE || self.in_cavity[m] == epoch || self.tested[m] == epoch {
+                    continue;
+                }
+                if self.conflicts(m, p)? {
+                    self.in_cavity[m] = epoch;
+                    cavity.push(m);
+                } else {
+                    self.tested[m] = epoch;
+                }
+            }
+        }
+        let mut cones: Vec<Cone> = Vec::new();
+        let mut detached: Vec<(usize, usize)> = Vec::new();
+        let mut degenerate = false;
+        for &c in &cavity {
+            for k in 0..4 {
+                let m = self.slots[c].n[k];
+                let f = faces(self.slots[c].v)[k];
+                if m != NONE && self.in_cavity[m] == epoch {
+                    continue;
+                }
+                let o = orientation(self.points[f[0]], self.points[f[1]], self.points[f[2]], p)?;
+                if o == Ordering::Equal {
+                    // coplanar with the face: no cone (the full rebuild skips the flat tetrahedron), so the face stays open
+                    // and the cell across it (if any) now has a hull face there
+                    degenerate = true;
+                    if m != NONE {
+                        let lk = self.slots[m].n.iter().position(|&x| x == c).ok_or_else(|| {
+                            MeshError::NonConforming("asymmetric tetrahedron adjacency".into())
+                        })?;
+                        detached.push((m, lk));
+                    }
+                    continue;
+                }
+                if m == NONE {
+                    // a hull face of a removed cell: the new hull keeps it unless the point sees it
+                    if o == Ordering::Less {
+                        cones.push(Cone { face: f, outside: None });
+                    }
+                    continue;
+                }
+                // the face as listed by its lower-numbered owner, as the full rebuild does
+                let lk = self.slots[m].n.iter().position(|&x| x == c).ok_or_else(|| {
+                    MeshError::NonConforming("asymmetric tetrahedron adjacency".into())
+                })?;
+                let face = if c < m { f } else { faces(self.slots[m].v)[lk] };
+                cones.push(Cone { face, outside: Some((m, lk)) });
+            }
+        }
+        if outside {
+            for &(c, k) in &self.hull {
+                if self.in_cavity[c] == epoch {
+                    continue;
+                }
+                let f = faces(self.slots[c].v)[k];
+                if orientation(self.points[f[0]], self.points[f[1]], self.points[f[2]], p)?
+                    == Ordering::Greater
+                {
+                    cones.push(Cone { face: f, outside: Some((c, k)) });
+                }
+            }
+        }
+        if cones.is_empty() || self.alive - cavity.len() + cones.len() > self.max_cells {
+            return Ok(false);
+        }
+        cones.sort_unstable_by_key(|c| sorted(c.face));
+        let base = self.slots.len();
+        let mut fresh: Vec<Slot> = Vec::with_capacity(cones.len());
+        let mut shared = BTreeMap::<[usize; 3], (usize, usize)>::new();
+        let mut links: Vec<(usize, usize, usize, usize)> = Vec::new();
+        for (i, cone) in cones.iter().enumerate() {
+            let [a, b, c] = cone.face;
+            let mut v = [a, b, c, index];
+            if orientation(self.points[a], self.points[b], self.points[c], p)? == Ordering::Less {
+                v.swap(0, 1);
+            }
+            let mut n = [NONE; 4];
+            if let Some((m, lk)) = cone.outside {
+                n[3] = m;
+                if parity(faces(v)[3]) == parity(faces(self.slots[m].v)[lk]) {
+                    return Ok(false);
+                }
+                links.push((m, lk, base + i, 3));
+            }
+            for (k, f) in faces(v).into_iter().enumerate().take(3) {
+                match shared.remove(&sorted(f)) {
+                    Some((j, kj)) => {
+                        if parity(faces(fresh[j].v)[kj]) == parity(f) {
+                            return Ok(false);
+                        }
+                        n[k] = base + j;
+                        fresh[j].n[kj] = base + i;
+                    }
+                    None => {
+                        shared.insert(sorted(f), (i, k));
+                    }
+                }
+            }
+            fresh.push(Slot { v, n, alive: true });
+        }
+        // Faces through the new point left unmatched are the new hull faces of a point outside the hull (or beside a
+        // coplanar one); on a closed cavity surface they cannot occur.
+        if !outside && !degenerate && !shared.is_empty() {
+            return Ok(false);
+        }
+        for &c in &cavity {
+            self.slots[c].alive = false;
+        }
+        for (m, lk, slot, _) in links {
+            self.slots[m].n[lk] = slot;
+        }
+        for &(m, lk) in &detached {
+            self.slots[m].n[lk] = NONE;
+        }
+        self.alive = self.alive - cavity.len() + fresh.len();
+        let slots = &self.slots;
+        self.hull.retain(|&(c, k)| slots[c].alive && slots[c].n[k] == NONE);
+        for (i, s) in fresh.iter().enumerate() {
+            for k in 0..4 {
+                if s.n[k] == NONE {
+                    self.hull.push((base + i, k));
+                }
+            }
+        }
+        self.hull.extend(detached);
+        self.slots.extend(fresh);
+        self.in_cavity.resize(self.slots.len(), 0);
+        self.tested.resize(self.slots.len(), 0);
+        self.last = base;
+        Ok(true)
+    }
 }
 /// Incrementally maintained Delaunay tetrahedralization of a growing point set,
 /// for Steiner-point recovery. Same predicates and tie policy as
@@ -347,6 +627,82 @@ mod tests {
                 t.cells().len()
             );
         }
+    }
+
+    /// The local-cavity bulk loop against the full-rebuild reference: same cells in the same order with the same vertex
+    /// order, on clouds that grow the hull, on cospherical lattices (every tie rule), and on coplanar-heavy sets.
+    fn seed_of(input: &[Point]) -> [usize; 4] {
+        let c = (2..input.len())
+            .find(|&i| {
+                [(0, 1), (0, 2), (1, 2)].iter().any(|&(x, y)| {
+                    let q = |p: Point| robust::Coord { x: p[x], y: p[y] };
+                    robust::orient2d(q(input[0]), q(input[1]), q(input[i])) != 0.
+                })
+            })
+            .unwrap();
+        let d = (2..input.len())
+            .find(|&i| orientation(input[0], input[1], input[c], input[i]).unwrap() != Ordering::Equal)
+            .unwrap();
+        [0, 1, c, d]
+    }
+    fn both(input: &[Point]) -> (TetTopology, TetTopology, usize) {
+        let limits = Limits { max_points: 100_000, max_cells: 1_000_000 };
+        let seed = seed_of(input);
+        let start = TetTopology::new(input.to_vec(), vec![seed], limits.max_cells).unwrap();
+        let mut reference = start.clone();
+        let mut bulk = Bulk::from_topology(input, &start, limits.max_cells);
+        let mut fallbacks = 0;
+        for index in 0..input.len() {
+            if seed.contains(&index) {
+                continue;
+            }
+            reference = insert_index(input, &reference, index, limits.max_cells).unwrap();
+            if !bulk.insert(index).unwrap() {
+                fallbacks += 1;
+                let next = insert_index(input, &bulk.to_topology().unwrap(), index, limits.max_cells).unwrap();
+                bulk = Bulk::from_topology(input, &next, limits.max_cells);
+            }
+            assert_eq!(bulk.to_topology().unwrap(), reference, "diverged after point {index}");
+        }
+        (bulk.to_topology().unwrap(), reference, fallbacks)
+    }
+    #[test]
+    fn bulk_insertion_equals_the_full_rebuild() {
+        let mut state = 99u64;
+        let mut next = move || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        // random cloud in arbitrary order: the hull grows on most insertions
+        let cloud: Vec<Point> = (0..120).map(|_| std::array::from_fn(|_| next() * 2. - 1.)).collect();
+        let (a, b, fallbacks) = both(&cloud);
+        assert_eq!(a, b);
+        assert!(fallbacks < 10, "the local path should handle generic clouds, fell back {fallbacks} times");
+        // cospherical lattice, scrambled: ties everywhere, coplanar hull faces
+        let mut lattice: Vec<Point> = Vec::new();
+        for x in 0..4 {
+            for y in 0..4 {
+                for z in 0..4 {
+                    lattice.push([x as f64, y as f64, z as f64]);
+                }
+            }
+        }
+        for i in (1..lattice.len()).rev() {
+            lattice.swap(i, (next() * (i + 1) as f64) as usize);
+        }
+        let (a, b, _) = both(&lattice);
+        assert_eq!(a, b);
+        // box corners last, as `plc_conform` appends its enclosing points
+        let mut boxed: Vec<Point> = (0..80).map(|_| std::array::from_fn(|_| next())).collect();
+        for x in [-9., 10.] {
+            for y in [-9., 10.] {
+                for z in [-9., 10.] {
+                    boxed.push([x, y, z]);
+                }
+            }
+        }
+        let (a, b, _) = both(&boxed);
+        assert_eq!(a, b);
     }
 
     #[test]
