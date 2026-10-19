@@ -38,3 +38,15 @@ Native import can replace OCCT *for reading* planar / cylindrical / conical / sp
 2. Each OCCT-only editor operation is either implemented natively or explicitly dropped by a product decision.
 3. `cargo test` of `solid-kernel` and `fea-problem` without `occt` is green on hosted ubuntu, macOS and Windows.
 4. Owner approval recorded, then `occt_retirement_approved` set by the owner.
+
+
+## Owner decision, 2026-10-19: the retirement criterion
+
+The owner wants OCCT retired, on this condition: **the mesh quality of the model at hand matches what the OCCT path gives, the solver can use the mesh, and it is efficient.** No percentage of a corpus is required; the test is per model, against the OCCT result. Operationalised (the agent's reading, to be confirmed by the owner when the evidence is in):
+
+1. *Usable*: the native mesh passes the solver's own gates (`QualityThresholds::default()`: scaled Jacobian >= 0.1, edge ratio <= 50, size jump <= 6, conformity) and a static solve converges.
+2. *Matches*: for the same model and element-size target, the native mesh's quality (minimum scaled Jacobian, worst radius ratio) is no worse than the OCCT path's within a stated margin, and a benchmark solve agrees with the OCCT-mesh solve to the discretisation error.
+3. *Efficient*: element and degree-of-freedom counts and solve time are within a stated factor of the OCCT mesh for the same accuracy.
+4. Each editor operation native or dropped; tests green without `occt` on ubuntu, macOS and Windows.
+
+A file the native path cannot mesh to this standard keeps OCCT as fallback until fixed; OCCT is removed when the measured evidence satisfies 1-4 on the agreed corpus. `occt_retirement_approved` is set only then, in its own PR with the evidence (the owner's conditional approval is recorded here; it does not by itself set the flag).
