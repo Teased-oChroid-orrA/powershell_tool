@@ -1404,3 +1404,192 @@ fn hole_loops_declared_as_outer_bounds_read_like_face_bounds() {
     assert_eq!(a.signed_volume_mm3, b.signed_volume_mm3);
     assert!(a.signed_volume_mm3 > 0.);
 }
+
+/// A committed fixture merged with a copy of itself (ids of the copy shifted): a multi-body part with two equal solids.
+fn two_body_document() -> String {
+    let a = include_str!("data/edit-plate.step").to_string();
+    let b = a.clone();
+    let data_of = |t: &str| {
+        let start = t.find("DATA;").unwrap() + "DATA;".len();
+        let end = t.rfind("ENDSEC;").unwrap();
+        (start, end)
+    };
+    let (_, a_end) = data_of(&a);
+    let (b_start, b_end) = data_of(&b);
+    let max_id = a
+        .split('#')
+        .skip(1)
+        .filter_map(|s| s.split(|c: char| !c.is_ascii_digit()).next()?.parse::<u64>().ok())
+        .max()
+        .unwrap();
+    let mut shifted = String::new();
+    let body = &b[b_start..b_end];
+    let mut rest = body;
+    while let Some(i) = rest.find('#') {
+        shifted.push_str(&rest[..i]);
+        let digits: String = rest[i + 1..].chars().take_while(char::is_ascii_digit).collect();
+        shifted.push_str(&format!("#{}", digits.parse::<u64>().unwrap() + max_id));
+        rest = &rest[i + 1 + digits.len()..];
+    }
+    shifted.push_str(rest);
+    format!("{}{}{}", &a[..a_end], shifted, &a[a_end..])
+}
+
+#[test]
+fn multi_body_document_reads_one_model_per_solid() {
+    let text = two_body_document();
+    let data = inventory(&text, Limits::default()).unwrap();
+    assert!(
+        AnalyticModel::read(&data, Options::default()).is_err(),
+        "the single-body reader still refuses a multi-body document"
+    );
+    let models = AnalyticModel::read_all(&data, Options::default()).unwrap();
+    assert_eq!(models.len(), 2);
+    let volumes: Vec<f64> = models
+        .iter()
+        .map(|m| {
+            m.sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+                .unwrap()
+                .signed_volume_mm3
+        })
+        .collect();
+    assert!(volumes[0] > 0. && volumes[0] == volumes[1], "{volumes:?}");
+    let single = inventory(include_str!("data/edit-plate.step"), Limits::default()).unwrap();
+    let one = AnalyticModel::read(&single, Options::default())
+        .unwrap()
+        .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+        .unwrap()
+        .signed_volume_mm3;
+    assert_eq!(volumes[0], one);
+}
+
+/// Onshape writes the wall of a cylinder (a through-hole) or the cone of a chamfer as one face bounded by its two circles and
+/// no seam edge. An OpenCASCADE fixture with the seam removed and the circles split into two bounds must sample to the same
+/// shell as the seamed original.
+#[test]
+fn unseamed_cylinder_and_cone_bands_get_a_seam_and_sample_like_the_seamed_original() {
+    for seamed in [
+        include_str!("data/tilted-cylinder.step"),
+        include_str!("data/frustum.step"),
+    ] {
+        let unseamed = seamed
+            .replace(
+                "#17 = ADVANCED_FACE('',(#18),#31,.T.);",
+                "#17 = ADVANCED_FACE('',(#18,#900),#31,.T.);",
+            )
+            .replace(
+                "#19 = EDGE_LOOP('',(#20,#54,#77,#104));",
+                "#19 = EDGE_LOOP('',(#20));\n#900 = FACE_BOUND('',#901,.T.);\n#901 = EDGE_LOOP('',(#77));",
+            );
+        assert_ne!(seamed, unseamed);
+        let sample = |text: &str| {
+            let data = inventory(text, Limits::default()).unwrap();
+            AnalyticModel::read(&data, Options::default())
+                .unwrap()
+                .sampled_surface(
+                    solid_kernel::native_surface::Limits {
+                        chart_policy:
+                            solid_kernel::cylindrical_step::ChartPolicy::CanonicalizeWithinTolerance,
+                        ..Default::default()
+                    },
+                    |_| true,
+                )
+                .unwrap()
+        };
+        let (a, b) = (sample(seamed), sample(&unseamed));
+        assert_eq!(a.mesh.triangles.len(), b.mesh.triangles.len());
+        assert_eq!(a.mesh.vertices.len(), b.mesh.vertices.len());
+        assert!((a.signed_volume_mm3 - b.signed_volume_mm3).abs() < 1e-9 * a.signed_volume_mm3);
+        assert!(b.signed_volume_mm3 > 0.);
+    }
+}
+
+/// Onshape writes the pole of a spherical face as an extra bound made of a `VERTEX_LOOP`. The face's chart is local, so the
+/// bound carries nothing: adding one to the hemisphere fixture must not change its sampled shell. On a plane it stays refused.
+#[test]
+fn pole_vertex_loop_bounds_on_spheres_are_skipped_and_refused_elsewhere() {
+    let plain = include_str!("data/hemisphere.step");
+    let with_pole = plain.replace(
+        "#17 = ADVANCED_FACE('',(#18),#33,.T.);",
+        "#17 = ADVANCED_FACE('',(#18,#901),#33,.T.);\n#901 = FACE_BOUND('',#902,.T.);\n#902 = VERTEX_LOOP('',#22);",
+    );
+    assert_ne!(plain, with_pole);
+    let sample = |text: &str| {
+        let data = inventory(text, Limits::default()).unwrap();
+        AnalyticModel::read(&data, Options::default())
+            .unwrap()
+            .sampled_surface(solid_kernel::native_surface::Limits::default(), |_| true)
+            .unwrap()
+    };
+    let (a, b) = (sample(plain), sample(&with_pole));
+    assert_eq!(a.mesh.triangles.len(), b.mesh.triangles.len());
+    assert_eq!(a.signed_volume_mm3, b.signed_volume_mm3);
+    // the same extra bound on the plane face (#79) is not a pole: still refused
+    let on_plane = plain.replace(
+        "#79 = ADVANCED_FACE('',(#80),#68,.F.);",
+        "#79 = ADVANCED_FACE('',(#80,#901),#68,.F.);\n#901 = FACE_BOUND('',#902,.T.);\n#902 = VERTEX_LOOP('',#22);",
+    );
+    let data = inventory(&on_plane, Limits::default()).unwrap();
+    assert!(AnalyticModel::read(&data, Options::default()).is_err());
+}
+
+/// The two circles of an unseamed band rarely start at the same angle. The tilted cylinder's lower circle is restarted 2 rad
+/// away from the upper one: a vertex is inserted on that circle at the upper circle's angle, its edge is split in the
+/// cylinder face and in the plane face that shares it, and the shell is the same solid (volume within the facet error).
+#[test]
+fn unseamed_band_with_misaligned_circle_starts_gets_a_split_vertex_and_a_generator_seam() {
+    let seamed = include_str!("data/tilted-cylinder.step");
+    let moved = seamed
+        .replace(
+            "#17 = ADVANCED_FACE('',(#18),#31,.T.);",
+            "#17 = ADVANCED_FACE('',(#18,#900),#31,.T.);",
+        )
+        .replace(
+            "#19 = EDGE_LOOP('',(#20,#54,#77,#104));",
+            "#19 = EDGE_LOOP('',(#20));\n#900 = FACE_BOUND('',#901,.T.);\n#901 = EDGE_LOOP('',(#77));",
+        )
+        .replace(
+            "#57 = CARTESIAN_POINT('',(7.,-2.335899411324,0.89059960755));",
+            "#57 = CARTESIAN_POINT('',(5.247558149682,-4.422903757164,2.866083121547));",
+        );
+    assert!(moved.contains("5.247558149682"));
+    let options = Options::foreign_cad(0.05);
+    let read = |text: &str| AnalyticModel::read(&inventory(text, Limits::default()).unwrap(), options).unwrap();
+    let model = read(&moved);
+    let cylinder = model
+        .body()
+        .faces
+        .values()
+        .find(|f| matches!(model.surface(f.id), Some(Surface::Cylinder { .. })))
+        .unwrap();
+    assert_eq!(cylinder.bounds.len(), 1, "one merged loop with a seam");
+    let uses = &cylinder.bounds[0].edges;
+    assert_eq!(uses.iter().filter(|u| u.edge == uses[0].edge).count(), 1);
+    let seam_uses: Vec<_> = uses
+        .iter()
+        .filter(|u| uses.iter().filter(|v| v.edge == u.edge).count() == 2)
+        .collect();
+    assert_eq!(seam_uses.len(), 2, "the new seam is used once each way");
+    // the plane face sharing the split circle now lists both of its pieces
+    let plane_pieces: usize = model
+        .body()
+        .faces
+        .values()
+        .filter(|f| matches!(model.surface(f.id), Some(Surface::Plane(_))))
+        .map(|f| f.bounds.iter().map(|b| b.edges.len()).sum::<usize>())
+        .sum();
+    assert_eq!(plane_pieces, 3, "one plane keeps its circle, the other has two pieces");
+    let sample = |m: &AnalyticModel| {
+        m.sampled_surface(
+            solid_kernel::native_surface::Limits {
+                chart_policy: solid_kernel::cylindrical_step::ChartPolicy::CanonicalizeWithinTolerance,
+                ..Default::default()
+            },
+            |_| true,
+        )
+        .unwrap()
+    };
+    let (a, b) = (sample(&read(seamed)), sample(&model));
+    let relative = (a.signed_volume_mm3 - b.signed_volume_mm3).abs() / a.signed_volume_mm3;
+    assert!(relative < 2e-3, "{} vs {}", a.signed_volume_mm3, b.signed_volume_mm3);
+}

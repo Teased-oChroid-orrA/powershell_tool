@@ -7,6 +7,7 @@
 //! agreement remain unverified. All coordinates normalize to millimetres.
 use crate::{
     step::{Entity, Error, ErrorKind, Inventory, RawBody, Value},
+    step_topology::{EdgeUse, RawBound, RawEdge},
     V3,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -474,6 +475,22 @@ pub struct Options {
     /// Opt-in: split every straight edge into equal pieces no longer than this (mm), so long edges do not force needle
     /// triangles on the faces they bound.
     pub max_line_mm: Option<f64>,
+}
+impl Options {
+    /// Options for a file written by another CAD kernel (Onshape/Parasolid, SolidWorks, ...). Those kernels model to
+    /// their own tolerance and declare none usable (the ABC files state an uncertainty of 1e-17), and a measured
+    /// 1.8e-7 to 1.1e-3 mm of edge-to-surface disagreement occurs there (`docs/issue-46-abc-corpus-2026-10-18.md`): the
+    /// default 1e-7 mm refuses 54 of 300 files for it. The edge-to-surface agreement is therefore required to a
+    /// fiftieth of the sampling chord (1e-3 mm at the default 0.05 mm): a deviation below that is far under the
+    /// facetting error every sampled shell already carries, so it cannot change a result beyond the chord. Nothing
+    /// else is relaxed, and `Options::default()` stays strict.
+    pub fn foreign_cad(chord_mm: f64) -> Self {
+        Self {
+            chord_mm,
+            geometry_tolerance_mm: chord_mm / 50.,
+            ..Self::default()
+        }
+    }
 }
 impl Default for Options {
     fn default() -> Self {
@@ -1092,6 +1109,21 @@ impl AnalyticModel {
         self.scale_mm
     }
     pub fn read(data: &Inventory, opt: Options) -> Result<Self, Error> {
+        Self::read_context(data, opt, crate::step_body::BodyContext::read(data)?)
+    }
+    /// One model per `MANIFOLD_SOLID_BREP` of a multi-body document (the single-body [`Self::read`] refuses those). The
+    /// models are independent: whether the solids touch or overlap is not examined.
+    pub fn read_all(data: &Inventory, opt: Options) -> Result<Vec<Self>, Error> {
+        crate::step_body::BodyContext::read_all(data)?
+            .into_iter()
+            .map(|context| Self::read_context(data, opt, context))
+            .collect()
+    }
+    fn read_context(
+        data: &Inventory,
+        opt: Options,
+        context: crate::step_body::BodyContext,
+    ) -> Result<Self, Error> {
         let fail = |s: &str| Error {
             offset: 0,
             kind: ErrorKind::Geometry,
@@ -1107,7 +1139,6 @@ impl AnalyticModel {
                 "require finite 0 < geometry tolerance <= chord tolerance",
             ));
         }
-        let context = crate::step_body::BodyContext::read(data)?;
         let body = context.body();
         let scale = context.millimetres_per_source_unit();
         let mut vertices = BTreeMap::new();
@@ -1430,7 +1461,7 @@ impl AnalyticModel {
             surfaces.insert(face.id, s);
         }
         let (body, scale) = context.into_parts();
-        Ok(Self {
+        let mut model = Self {
             document: data.document_fingerprint(),
             body,
             vertices,
@@ -1440,7 +1471,305 @@ impl AnalyticModel {
             chord_mm: opt.chord_mm,
             geometry_tolerance_mm: opt.geometry_tolerance_mm,
             curves,
-        })
+        };
+        let first_synthetic_id = data.entities().keys().next_back().map_or(1, |k| k + 1);
+        model.seam_unseamed_cylinder_bands(first_synthetic_id);
+        Ok(model)
+    }
+    /// A cylinder or cone face bounded by two closed loops that wind once around the axis in opposite senses, with no seam
+    /// edge (Onshape writes every through-hole wall and chamfer this way; OpenCASCADE adds a seam), is cut along a
+    /// generator from the start vertex of the first loop to the second loop at the same angle. When the second loop has no
+    /// vertex there, one is inserted on its edge (an exact point of its circle) and the edge is split in every face that
+    /// uses it, which keeps the shell conforming. The cut is a new straight edge used once each way in a single merged
+    /// loop, exactly the shape of an OpenCASCADE cylinder, so sampling, grading and connectivity treat it like any seam.
+    /// Source edge and vertex identities are kept where they are not split; new ids follow the largest entity id of the
+    /// document, have no entity of their own (`RawEdge::curve` of the seam is 0) and exist only in this model. A face of
+    /// any other shape keeps its two bounds and is refused later by the chart code as before.
+    fn seam_unseamed_cylinder_bands(&mut self, first_synthetic_id: u64) {
+        let mut next = first_synthetic_id;
+        let tolerance = self.geometry_tolerance_mm;
+        let faces: Vec<u64> = self
+            .body
+            .faces
+            .values()
+            .filter(|f| {
+                f.bounds.len() == 2
+                    && matches!(
+                        self.surfaces.get(&f.id),
+                        Some(Surface::Cylinder { .. } | Surface::Cone { .. })
+                    )
+            })
+            .map(|f| f.id)
+            .collect();
+        for face_id in faces {
+            let frame = match self.surfaces.get(&face_id) {
+                Some(Surface::Cylinder { frame, .. } | Surface::Cone { frame, .. }) => frame.clone(),
+                _ => continue,
+            };
+            let angle = |p: V3| {
+                let d = sub(p, frame.origin);
+                dot(d, frame.y).atan2(dot(d, frame.x))
+            };
+            let wrap = |a: f64| a - TAU * (a / TAU).round();
+            let rho = |p: V3| {
+                let d = sub(p, frame.origin);
+                (dot(d, frame.x).powi(2) + dot(d, frame.y).powi(2)).sqrt()
+            };
+            let Some((la, lb, ta, tb)) = self.band_loops(face_id, &angle, &wrap) else {
+                continue;
+            };
+            let once = |t: f64| (t.abs() - 1.).abs() < 1e-6;
+            if !once(ta) || !once(tb) || ta.signum() == tb.signum() {
+                continue;
+            }
+            let Some(va) = la.first().and_then(|u| self.use_start(u)) else {
+                continue;
+            };
+            let target = angle(self.vertices[&va]);
+            let Some(vb) = self.vertex_of_loop_at_angle(&lb, tb.signum(), target, &angle, &wrap, &mut next) else {
+                continue;
+            };
+            // the second loop may have been rewritten by an edge split: read it again, rotated to start at the vertex
+            let Some((la, mut lb, _, _)) = self.band_loops(face_id, &angle, &wrap) else {
+                continue;
+            };
+            let Some(at) = lb.iter().position(|u| self.use_start(u) == Some(vb)) else {
+                continue;
+            };
+            lb.rotate_left(at);
+            let (pa, pb) = (self.vertices[&va], self.vertices[&vb]);
+            let axial = dot(sub(pb, pa), frame.z);
+            if rho(pa).max(rho(pb)) * wrap(angle(pa) - angle(pb)).abs() > tolerance || axial.abs() <= tolerance {
+                continue;
+            }
+            let length = norm(sub(pb, pa));
+            let seam = next;
+            next += 3;
+            self.body.edges.insert(
+                seam,
+                RawEdge {
+                    id: seam,
+                    start: va,
+                    end: vb,
+                    curve: 0,
+                    same_sense: true,
+                },
+            );
+            self.curves.insert(
+                seam,
+                Curve::Line {
+                    origin: pa,
+                    direction: mul(sub(pb, pa), 1. / length),
+                },
+            );
+            self.edges.insert(seam, vec![pa, pb]);
+            let first = self.body.faces[&face_id].bounds[0].clone();
+            let mut merged = la;
+            merged.push(EdgeUse {
+                id: seam + 1,
+                edge: seam,
+                forward: true,
+            });
+            merged.extend(lb);
+            merged.push(EdgeUse {
+                id: seam + 2,
+                edge: seam,
+                forward: false,
+            });
+            let face = self.body.faces.get_mut(&face_id).unwrap();
+            face.bounds = vec![RawBound {
+                id: first.id,
+                loop_id: first.loop_id,
+                forward: true,
+                explicitly_outer: false,
+                edges: merged,
+            }];
+        }
+    }
+    fn use_start(&self, u: &EdgeUse) -> Option<u64> {
+        let e = self.body.edges.get(&u.edge)?;
+        Some(if u.forward { e.start } else { e.end })
+    }
+    /// The samples of a loop in traversal order, each edge's last sample left to the next edge.
+    fn loop_points(&self, uses: &[EdgeUse]) -> Option<Vec<V3>> {
+        let mut points = Vec::new();
+        for u in uses {
+            let samples = self.edges.get(&u.edge)?;
+            if u.forward {
+                points.extend_from_slice(&samples[..samples.len() - 1]);
+            } else {
+                points.extend(samples[1..].iter().rev());
+            }
+        }
+        Some(points)
+    }
+    /// The two bounds of a two-bound face as directed edge-use lists (a reversed bound runs its uses backwards and
+    /// flipped), with the signed number of turns each makes around the axis.
+    fn band_loops(
+        &self,
+        face_id: u64,
+        angle: &impl Fn(V3) -> f64,
+        wrap: &impl Fn(f64) -> f64,
+    ) -> Option<(Vec<EdgeUse>, Vec<EdgeUse>, f64, f64)> {
+        let face = self.body.faces.get(&face_id)?;
+        let [a, b] = face.bounds.as_slice() else {
+            return None;
+        };
+        let directed = |b: &RawBound| -> Vec<EdgeUse> {
+            if b.forward {
+                b.edges.clone()
+            } else {
+                b.edges
+                    .iter()
+                    .rev()
+                    .map(|u| EdgeUse {
+                        id: u.id,
+                        edge: u.edge,
+                        forward: !u.forward,
+                    })
+                    .collect()
+            }
+        };
+        let (la, lb) = (directed(a), directed(b));
+        let turns = |uses: &[EdgeUse]| -> Option<f64> {
+            let points = self.loop_points(uses)?;
+            let mut total = 0.;
+            for i in 0..points.len() {
+                total += wrap(angle(points[(i + 1) % points.len()]) - angle(points[i]));
+            }
+            Some(total / TAU)
+        };
+        let (ta, tb) = (turns(&la)?, turns(&lb)?);
+        Some((la, lb, ta, tb))
+    }
+    /// A vertex of the loop at the angle `target` around the axis, inserting one on the loop's circle (and splitting its
+    /// edge) when no sample is there. `direction` is the loop's turn sign. `None` leaves the model valid and unsplit
+    /// unless the failure came after the sample was added (an extra sample on a shared edge is harmless).
+    fn vertex_of_loop_at_angle(
+        &mut self,
+        uses: &[EdgeUse],
+        direction: f64,
+        target: f64,
+        angle: &impl Fn(V3) -> f64,
+        wrap: &impl Fn(f64) -> f64,
+        next: &mut u64,
+    ) -> Option<u64> {
+        for u in uses {
+            let samples = self.edges.get(&u.edge)?.clone();
+            let n = samples.len();
+            let order: Vec<usize> = if u.forward {
+                (0..n).collect()
+            } else {
+                (0..n).rev().collect()
+            };
+            for j in 0..n - 1 {
+                let (a0, a1) = (angle(samples[order[j]]), angle(samples[order[j + 1]]));
+                let (delta, d) = (wrap(a1 - a0), wrap(target - a0));
+                if delta == 0. || delta.signum() != direction.signum() || d * delta < 0. {
+                    continue;
+                }
+                let t = d / delta;
+                if t > 1. + 1e-12 {
+                    continue;
+                }
+                let raw = self.body.edges.get(&u.edge)?.clone();
+                // a sample already at the angle, or one to insert on this segment
+                let snap = if t < 1e-9 {
+                    Some(order[j])
+                } else if t > 1. - 1e-9 {
+                    Some(order[j + 1])
+                } else {
+                    None
+                };
+                let index = match snap {
+                    Some(i) => i,
+                    None => {
+                        let lower = order[j].min(order[j + 1]);
+                        let tt = if u.forward { t } else { 1. - t };
+                        self.insert_edge_splits(u.edge, &[(lower, tt)]).ok()?;
+                        lower + 1
+                    }
+                };
+                let len = self.edges.get(&u.edge)?.len();
+                return if index == 0 {
+                    Some(raw.start)
+                } else if index == len - 1 {
+                    Some(raw.end)
+                } else {
+                    self.split_edge_at_sample(u.edge, index, next)
+                };
+            }
+        }
+        None
+    }
+    /// Split `edge` at its interior sample `index` into two edges meeting at a new vertex, in every face that uses it. Only
+    /// circle and line edges (whose pieces keep the whole curve and their own sample slices) are split.
+    fn split_edge_at_sample(&mut self, edge: u64, index: usize, next: &mut u64) -> Option<u64> {
+        let samples = self.edges.get(&edge)?.clone();
+        if index == 0 || index + 1 >= samples.len() {
+            return None;
+        }
+        let curve = self.curves.get(&edge)?.clone();
+        if !matches!(curve, Curve::Circle { .. } | Curve::Line { .. }) {
+            return None;
+        }
+        let raw = self.body.edges.get(&edge)?.clone();
+        let (vertex, lower, upper) = (*next, *next + 1, *next + 2);
+        *next += 3;
+        self.vertices.insert(vertex, samples[index]);
+        self.body.vertices.insert(
+            vertex,
+            crate::step_topology::RawVertex {
+                id: vertex,
+                point: 0,
+                coordinates: samples[index].map(|x| x / self.scale_mm),
+            },
+        );
+        for (id, start, end) in [(lower, raw.start, vertex), (upper, vertex, raw.end)] {
+            self.body.edges.insert(
+                id,
+                RawEdge {
+                    id,
+                    start,
+                    end,
+                    curve: raw.curve,
+                    same_sense: raw.same_sense,
+                },
+            );
+            self.curves.insert(id, curve.clone());
+        }
+        self.edges.insert(lower, samples[..=index].to_vec());
+        self.edges.insert(upper, samples[index..].to_vec());
+        self.body.edges.remove(&edge);
+        self.edges.remove(&edge);
+        self.curves.remove(&edge);
+        let mut use_id = *next;
+        for face in self.body.faces.values_mut() {
+            for bound in &mut face.bounds {
+                if !bound.edges.iter().any(|u| u.edge == edge) {
+                    continue;
+                }
+                let mut rebuilt = Vec::with_capacity(bound.edges.len() + 1);
+                for u in &bound.edges {
+                    if u.edge != edge {
+                        rebuilt.push(u.clone());
+                        continue;
+                    }
+                    let pieces = if u.forward { [lower, upper] } else { [upper, lower] };
+                    for piece in pieces {
+                        rebuilt.push(EdgeUse {
+                            id: use_id,
+                            edge: piece,
+                            forward: u.forward,
+                        });
+                        use_id += 1;
+                    }
+                }
+                bound.edges = rebuilt;
+            }
+        }
+        *next = use_id;
+        Some(vertex)
     }
 }
 

@@ -12,6 +12,19 @@ pub struct BodyContext {
 }
 impl BodyContext {
     pub fn read(data: &Inventory) -> Result<Self, Error> {
+        if data.counts().get("MANIFOLD_SOLID_BREP") != Some(&1) {
+            return Err(Error {
+                offset: 0,
+                kind: ErrorKind::Geometry,
+                detail: "native context scope requires exactly one supported body".into(),
+            });
+        }
+        Ok(Self::read_all(data)?.remove(0))
+    }
+    /// Every `MANIFOLD_SOLID_BREP` of the document, each bound to its own representation and length context, in the order of
+    /// `Inventory::raw_bodies`. A file with several solids (a multi-body part) yields one context per solid; the bodies are
+    /// independent, and nothing here says whether they touch or overlap.
+    pub fn read_all(data: &Inventory) -> Result<Vec<Self>, Error> {
         let fail = |s: &str| Error {
             offset: 0,
             kind: ErrorKind::Geometry,
@@ -30,12 +43,26 @@ impl BodyContext {
                 return Err(error(e, "assembly/placement mapping is not implemented"));
             }
         }
-        if data.counts().get("MANIFOLD_SOLID_BREP") != Some(&1) {
-            return Err(fail(
-                "native context scope requires exactly one supported body",
-            ));
+        if data.counts().get("MANIFOLD_SOLID_BREP").is_none_or(|n| *n == 0) {
+            return Err(fail("native context scope requires a supported body"));
         }
-        let body = data.raw_bodies()?.remove(0);
+        let bodies = data.raw_bodies()?;
+        let contexts = data.length_contexts()?;
+        bodies
+            .into_iter()
+            .map(|body| Self::bind(data, body, &contexts))
+            .collect()
+    }
+    fn bind(
+        data: &Inventory,
+        body: RawBody,
+        contexts: &[crate::step::LengthContext],
+    ) -> Result<Self, Error> {
+        let fail = |s: &str| Error {
+            offset: 0,
+            kind: ErrorKind::Geometry,
+            detail: s.into(),
+        };
         let mut context = None;
         for e in data.entities().values() {
             for c in &e.components {
@@ -57,10 +84,12 @@ impl BodyContext {
                                 if let Value::Ref(id) = item {
                                     let ie = &data.entities()[id];
                                     if *id != body.id
-                                        && !ie
-                                            .components
-                                            .iter()
-                                            .all(|c| c.name == "AXIS2_PLACEMENT_3D")
+                                        && !ie.components.iter().all(|c| {
+                                            matches!(
+                                                c.name.as_str(),
+                                                "AXIS2_PLACEMENT_3D" | "MANIFOLD_SOLID_BREP"
+                                            )
+                                        })
                                     {
                                         return Err(error(ie, "unsupported representation item"));
                                     }
@@ -77,7 +106,6 @@ impl BodyContext {
             }
         }
         let context = context.ok_or_else(|| fail("no direct body/representation association"))?;
-        let contexts = data.length_contexts()?;
         let scale = contexts
             .iter()
             .find(|c| c.context == context)
