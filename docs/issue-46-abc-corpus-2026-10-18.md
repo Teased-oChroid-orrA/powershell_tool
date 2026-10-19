@@ -122,3 +122,7 @@ Gained conforming files: 13 (the 121 includes no file of run 14 lost). Timings v
 ### Classes remaining after Phase 120 (62 sampling, 41 reader refusals)
 
 Sampling: degenerate / locally inverted triangle 20 (not yet traced), trim polygon self-intersects 18, cylindrical single-turn certification 8, boundary winds without seam (cone/torus with more than two bounds or other shapes) 5, cone/torus single-turn 4, curved chord midpoint 4. Reader: horn / spindle tori 7 (needs a chart for major <= minor), swept curve complex spline 4, unsupported surface 4, unsupported body kind 4, spline-surface samples off by 0.4 to 2 mm 4 (not yet traced), edge/surface 3, sphere orientation 2, full sphere 2.
+
+## Combined result on merged `main` (survey run after #160, #161, #162; 2026-10-19)
+
+`--foreign --steiner 200000 --conform-timeout 100 --timeout 150 --merge`, 300 files, other jobs idle: **164 conform (54.7 %)**; 41 refused reading, 63 refused sampling, 21 shell failures, 5 timeouts, 6 STEP budget refusals. Steps 8-10 (speed, merged coplanar facets, unprotected fallback) plus the Phase 120 reader work (#161) took the corpus from 11 (Phase 114) to 164. Caveat for criterion 1 of the retirement assessment: files recovered by the unprotected fallback have worse radius-edge ratios (median 10.0 against 2.1 in the conform track's measurement); mesh quality of the 164 against a solver gate has not been measured. Funnel and root-cause analysis: `issue-46-why-not-closed-2026-10-19.md`.
