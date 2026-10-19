@@ -36,3 +36,21 @@ fn opencascade_reads_what_the_native_writer_writes() {
         pi * 8. * 63. / 3.,
     );
 }
+
+/// The solid editor's Hole / Boss, done by OpenCASCADE booleans (as `fea_problem::solid::apply_op` does) and natively.
+#[test]
+fn native_hole_and_boss_against_opencascade_booleans() {
+    use solid_kernel::occt::Bool;
+    let pi = std::f64::consts::PI;
+    let (native, occt) = (NativeBrep::box_from_corners([0.; 3], [10., 10., 4.]).unwrap(), Brep::box_from_corners([0.; 3], [10., 10., 4.]));
+    // Through hole r = 1 at (3, 6) from the top face.
+    let hole = Brep::cylinder([3., 6., 4. + 20.], 1., [0., 0., -1.], 60.);
+    check("through hole", &native.drill(5, [3., 6., 4.], 1., None).unwrap(), &occt.boolean(Bool::Cut, &hole).unwrap(), 400. - pi * 4.);
+    // Boss r = 2, h = 3 at (5, 5), starting slightly inside as the editor does.
+    let boss = Brep::cylinder([5., 5., 4. - 0.02], 2., [0., 0., 1.], 3. + 0.02);
+    check("boss", &native.boss(5, [5., 5., 4.], 2., 3.).unwrap(), &occt.boolean(Bool::Union, &boss).unwrap(), 400. + pi * 12.);
+    // Then a hole through the boss and block.
+    let n2 = native.boss(5, [5., 5., 4.], 2., 3.).unwrap().drill(7, [5., 5., 7.], 0.5, None).unwrap();
+    let o2 = occt.boolean(Bool::Union, &boss).unwrap().boolean(Bool::Cut, &Brep::cylinder([5., 5., 27.], 0.5, [0., 0., -1.], 60.)).unwrap();
+    check("hole through boss", &n2, &o2, 400. + pi * 12. - pi * 0.25 * 7.);
+}
