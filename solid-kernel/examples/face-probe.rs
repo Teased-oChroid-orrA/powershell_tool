@@ -15,7 +15,7 @@ fn main() {
     }
     let text = std::fs::read_to_string(path).unwrap();
     let data = inventory(&text, Limits::default()).unwrap();
-    let model = AnalyticModel::read(&data, Options::default()).unwrap();
+    let model = AnalyticModel::read_all(&data, Options::default()).unwrap().remove(0);
     let body = model.body();
     let mut owners: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
     for f in body.faces.values() {

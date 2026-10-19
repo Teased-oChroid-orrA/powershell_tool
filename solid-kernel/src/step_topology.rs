@@ -169,6 +169,24 @@ fn edge(data: &Inventory, id: u64) -> Result<RawEdge, Error> {
         _ => Err(error(e, "unsupported edge declaration")),
     }
 }
+/// Whether the face bound `id` is made of a `VERTEX_LOOP` (a single point, no edge).
+fn is_vertex_loop_bound(data: &Inventory, id: u64) -> bool {
+    let Some(e) = data.entities().get(&id) else {
+        return false;
+    };
+    let [c] = e.components.as_slice() else {
+        return false;
+    };
+    if c.name != "FACE_BOUND" && c.name != "FACE_OUTER_BOUND" {
+        return false;
+    }
+    let [Value::String(_), Value::Ref(loop_id), _] = c.args.as_slice() else {
+        return false;
+    };
+    data.entities()
+        .get(loop_id)
+        .is_some_and(|l| matches!(l.components.as_slice(), [c] if c.name == "VERTEX_LOOP"))
+}
 fn bound(
     data: &Inventory,
     id: u64,
@@ -317,9 +335,21 @@ pub fn bodies(data: &Inventory, limits: TopologyLimits) -> Result<Vec<RawBody>, 
             }
             let mut parsed = Vec::new();
             let mut unique = BTreeSet::new();
+            // Parasolid/Onshape write the pole of a sphere or the apex of a cone as an extra bound made of one vertex. The
+            // native chart of those surfaces is local to the face (the source parameterization's pole plays no role), so
+            // such a bound carries no boundary information and is skipped; on any other surface it stays unsupported.
+            let pole_surface = data.entities().get(&surface).is_some_and(|s| {
+                matches!(
+                    s.components.as_slice(),
+                    [c] if c.name == "SPHERICAL_SURFACE" || c.name == "CONICAL_SURFACE"
+                )
+            });
             for id in bounds {
                 if !unique.insert(id) {
                     return Err(error(fe, "duplicate face bound"));
+                }
+                if pole_surface && is_vertex_loop_bound(data, id) {
+                    continue;
                 }
                 let b = bound(data, id, &mut body, &mut used, limits)?;
                 for u in &b.edges {
