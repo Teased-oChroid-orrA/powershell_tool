@@ -40,13 +40,19 @@ fn survey(path: &Path, conform_timeout: Duration, foreign: bool, graded_fallback
         Ok(d) => d,
         Err(e) => return row("inventory", &e.to_string(), 0, 0, 0, f64::NAN, f64::NAN),
     };
-    let models = match AnalyticModel::read_all(
-        &data,
-        if foreign { Options::foreign_cad(0.05) } else { Options::default() },
-    ) {
+    let mut options = if foreign { Options::foreign_cad(0.05) } else { Options::default() };
+    // ABC_TOL_MM: edge/surface tolerance override (mm), for measuring how much deviation a file needs; ABC_MODEL_ONLY: stop
+    // after reading the model (stage `model-ok`)
+    if let Some(t) = std::env::var("ABC_TOL_MM").ok().and_then(|v| v.parse().ok()) {
+        options.geometry_tolerance_mm = t;
+    }
+    let models = match AnalyticModel::read_all(&data, options) {
         Ok(m) => m,
         Err(e) => return row("model", &e.to_string(), 0, 0, 0, f64::NAN, f64::NAN),
     };
+    if std::env::var_os("ABC_MODEL_ONLY").is_some() {
+        return row("model-ok", &format!("bodies {}", models.len()), 0, 0, 0, f64::NAN, f64::NAN);
+    }
     // A multi-body part succeeds only when every body does; a failure names its body. Each body is meshed from plain
     // per-face sampling first; when that stage fails, from the graded model (`AnalyticModel::graded`), the production path.
     let (mut faces, mut nv, mut nt, mut vol, mut angle) = (0, 0, 0, 0., f64::INFINITY);

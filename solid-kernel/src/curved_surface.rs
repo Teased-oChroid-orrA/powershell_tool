@@ -61,6 +61,56 @@ const MAX_SPHERE_REACH: f64 = 120. * PI / 180.;
 const APEX_SLANT: f64 = 1e-9;
 
 /// The torus' conformal tube coordinate scale `2 r / sqrt(R^2 - r^2)`, or `None` for a horn or spindle torus.
+/// The point of the bilinear patch through the corners `q` (order (0,0), (1,0), (0,1), (1,1)) nearest `p`: its coordinates in
+/// the unit square and its distance. Projected Gauss-Newton from the centre and the four corners.
+fn bilinear_foot(q: &[V3; 4], p: V3) -> ([f64; 2], f64) {
+    let at = |s: f64, t: f64| {
+        add(
+            add(mul(q[0], (1. - s) * (1. - t)), mul(q[1], s * (1. - t))),
+            add(mul(q[2], (1. - s) * t), mul(q[3], s * t)),
+        )
+    };
+    let mut best = ([0.5, 0.5], f64::INFINITY);
+    for start in [[0.5, 0.5], [0., 0.], [1., 0.], [0., 1.], [1., 1.]] {
+        let [mut s, mut t] = start;
+        for _ in 0..12 {
+            let r = sub(at(s, t), p);
+            // tangents of the patch
+            let ds = add(mul(sub(q[1], q[0]), 1. - t), mul(sub(q[3], q[2]), t));
+            let dt = add(mul(sub(q[2], q[0]), 1. - s), mul(sub(q[3], q[1]), s));
+            let (a, b, c) = (dot(ds, ds), dot(ds, dt), dot(dt, dt));
+            let (g0, g1) = (dot(ds, r), dot(dt, r));
+            let det = (a + 1e-12 * (a + c)) * (c + 1e-12 * (a + c)) - b * b;
+            if !(det.abs() > 1e-300) {
+                break;
+            }
+            let step = [-(c * g0 - b * g1) / det, -(a * g1 - b * g0) / det];
+            let (ns, nt) = ((s + step[0]).clamp(0., 1.), (t + step[1]).clamp(0., 1.));
+            if (ns - s).abs() + (nt - t).abs() < 1e-12 {
+                s = ns;
+                t = nt;
+                break;
+            }
+            s = ns;
+            t = nt;
+        }
+        let d = norm(sub(at(s, t), p));
+        if d < best.1 {
+            best = ([s, t], d);
+        }
+    }
+    best
+}
+/// Cells per parameter a surface's search grid is refined to, at most.
+const MAX_GRID: usize = 192;
+/// A nearest-point search that ends farther than this from the point (mm) is repeated from the grid's local minima of the
+/// distance (a point 1e-4 off its surface is on it for every purpose; the repeat costs about a dozen more descents).
+const MINIMA_MM: f64 = 1e-4;
+/// ... and from a subdivision of the grid when that still ends farther than this (2000 cell expansions, ~10 ms). Foreign CAD
+/// files put edge samples up to ~2e-3 mm off their surface legitimately, which must not trigger this dearest search.
+const CELLS_MM: f64 = 5e-3;
+/// Grid local minima of the distance a repeated search descends from.
+const MINIMA_STARTS: usize = 16;
 fn tube_scale(major: f64, minor: f64) -> Option<f64> {
     (major > minor && minor > 0.).then(|| 2. * minor / (major * major - minor * minor).sqrt())
 }
@@ -495,6 +545,8 @@ pub struct SplineSurface {
     domain: [[f64; 2]; 2],
     scale: [f64; 2],
     grid: Vec<([f64; 2], V3)>,
+    /// cells of `grid` along each parameter
+    grid_n: [usize; 2],
 }
 
 impl SplineSurface {
@@ -519,22 +571,78 @@ impl SplineSurface {
     }
     fn from_geometry(surface: Geometry) -> Result<Self, Error> {
         let domain = surface.domain();
-        let grid_n = [24usize, 24];
-        let mut grid = Vec::with_capacity((grid_n[0] + 1) * (grid_n[1] + 1));
-        for j in 0..=grid_n[1] {
-            for i in 0..=grid_n[0] {
-                // the last node is the domain's end exactly: `lo + (hi - lo)` can round a ulp above `hi`
-                let node = |k: usize, at: usize| {
-                    if at == grid_n[k] {
-                        domain[k][1]
-                    } else {
-                        domain[k][0] + (domain[k][1] - domain[k][0]) * at as f64 / grid_n[k] as f64
-                    }
-                };
-                let uv = [node(0, i), node(1, j)];
-                let p = surface.evaluate(uv).map_err(|e| fail(ErrorKind::Geometry, &e.detail))?;
-                grid.push((uv, p));
+        let grid_at = |grid_n: [usize; 2]| -> Result<Vec<([f64; 2], V3)>, Error> {
+            let mut grid = Vec::with_capacity((grid_n[0] + 1) * (grid_n[1] + 1));
+            for j in 0..=grid_n[1] {
+                for i in 0..=grid_n[0] {
+                    // the last node is the domain's end exactly: `lo + (hi - lo)` can round a ulp above `hi`
+                    let node = |k: usize, at: usize| {
+                        if at == grid_n[k] {
+                            domain[k][1]
+                        } else {
+                            domain[k][0] + (domain[k][1] - domain[k][0]) * at as f64 / grid_n[k] as f64
+                        }
+                    };
+                    let uv = [node(0, i), node(1, j)];
+                    let p = surface.evaluate(uv).map_err(|e| fail(ErrorKind::Geometry, &e.detail))?;
+                    grid.push((uv, p));
+                }
             }
+            Ok(grid)
+        };
+        // How aliased the grid is in each direction: the longest segment of its parameter lines and the most sharp turns
+        // (over 40 degrees between successive segments) on one line.
+        let aliasing = |grid: &[([f64; 2], V3)], grid_n: [usize; 2]| {
+            let mut longest = [0.0f64; 2];
+            let mut sharp = [0usize; 2];
+            for k in 0..2 {
+                let (along, across) = (grid_n[k] + 1, grid_n[1 - k] + 1);
+                for line in 0..across {
+                    let at = |s: usize| if k == 0 { grid[line * along + s].1 } else { grid[s * across + line].1 };
+                    let mut turns = 0;
+                    for s in 0..grid_n[k] {
+                        let a = sub(at(s + 1), at(s));
+                        longest[k] = longest[k].max(norm(a));
+                        if s > 0 {
+                            let b = sub(at(s), at(s - 1));
+                            let (na, nb) = (norm(a), norm(b));
+                            if na > 0. && nb > 0. && dot(a, b) < 0.766 * na * nb {
+                                turns += 1;
+                            }
+                        }
+                    }
+                    sharp[k] = sharp[k].max(turns);
+                }
+            }
+            (longest, sharp)
+        };
+        let mut grid_n = [24usize, 24];
+        let mut grid = grid_at(grid_n)?;
+        // A parameterization far from arc length (a screw thread wound six to twelve times over the parameter range) is
+        // aliased by a fixed grid: its nodes then say nothing about where a point of the surface is. A direction is doubled
+        // while some line of it turns sharply at four or more nodes (a corner or two is a kink, not aliasing) or a segment
+        // is longer than a twelfth of the surface's extent (about twice the segment of a uniform 24-cell grid).
+        loop {
+            let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+            for g in &grid {
+                for k in 0..3 {
+                    lo[k] = lo[k].min(g.1[k]);
+                    hi[k] = hi[k].max(g.1[k]);
+                }
+            }
+            let diagonal = norm(sub(hi, lo));
+            let (longest, sharp) = aliasing(&grid, grid_n);
+            let mut refined = false;
+            for k in 0..2 {
+                if (longest[k] > diagonal / 12. || sharp[k] >= 4) && grid_n[k] < MAX_GRID {
+                    grid_n[k] *= 2;
+                    refined = true;
+                }
+            }
+            if !refined || !diagonal.is_finite() {
+                break;
+            }
+            grid = grid_at(grid_n)?;
         }
         // mean metric along each parameter: the mean length of the grid's parameter-line segments per unit parameter
         let mut scale = [0.0; 2];
@@ -558,7 +666,7 @@ impl SplineSurface {
         if !(scale[0].is_finite() && scale[1].is_finite() && scale[0] > 0. && scale[1] > 0.) {
             return Err(fail(ErrorKind::Geometry, "a degenerate spline surface (zero metric)"));
         }
-        Ok(Self { surface, domain, scale, grid })
+        Ok(Self { surface, domain, scale, grid, grid_n })
     }
     fn param_of_chart(&self, c: [f64; 2]) -> [f64; 2] {
         [self.domain[0][0] + c[0] / self.scale[0], self.domain[1][0] + c[1] / self.scale[1]]
@@ -590,6 +698,125 @@ impl SplineSurface {
     fn closest(&self, p: V3) -> Option<([f64; 2], f64)> {
         self.candidates(p)?.into_iter().next()
     }
+    /// Start parameters (with their distance to `p`) for a descent, found by best-first subdivision of the parameter grid.
+    /// The nearest grid *nodes* alone miss the foot of `p` when the surface moves a long way inside one grid cell (a
+    /// parameterization far from arc length: a point exactly on its spline surface was found 0.4 to 6 mm off it in 26 of
+    /// 300 ABC files). Each cell is modelled by the bilinear patch through its corners; the cell whose patch is nearest `p`
+    /// is halved first, so the search dives to the foot, and a cell is dropped once its patch, less twice the patch's
+    /// deviation from the surface at the cell centre, cannot come within a micron of the best distance seen.
+    fn cell_starts(&self, p: V3) -> Vec<(f64, [f64; 2])> {
+        const MAX_DEPTH: u32 = 14;
+        const EXPANSIONS: usize = 2000;
+        const STARTS: usize = 8;
+        #[derive(Clone, Copy)]
+        struct Cell {
+            lo: [f64; 2],
+            hi: [f64; 2],
+            /// corners (lo,lo), (hi,lo), (lo,hi), (hi,hi)
+            q: [V3; 4],
+            depth: u32,
+            /// the patch's foot of `p` in the cell's own coordinates and its distance
+            foot: [f64; 2],
+            est: f64,
+            /// the least distance any point of the cell is assumed to have from `p`
+            lb: f64,
+            /// the cell's largest corner-to-corner span
+            span: f64,
+        }
+        impl PartialEq for Cell {
+            fn eq(&self, o: &Self) -> bool {
+                self.lb.total_cmp(&o.lb).is_eq()
+            }
+        }
+        impl Eq for Cell {}
+        impl PartialOrd for Cell {
+            fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> {
+                Some(self.cmp(o))
+            }
+        }
+        impl Ord for Cell {
+            // a max-heap pops the cell with the least lower bound first
+            fn cmp(&self, o: &Self) -> std::cmp::Ordering {
+                o.lb.total_cmp(&self.lb)
+            }
+        }
+        let cell = |lo: [f64; 2], hi: [f64; 2], q: [V3; 4], depth: u32| -> Option<Cell> {
+            let mid = [(lo[0] + hi[0]) / 2., (lo[1] + hi[1]) / 2.];
+            let centre = self.surface.evaluate(mid).ok()?;
+            let flat = mul(add(add(q[0], q[1]), add(q[2], q[3])), 0.25);
+            let sag = norm(sub(centre, flat));
+            let ([s, t], est) = bilinear_foot(&q, p);
+            let mut span: f64 = 0.;
+            for a in 0..4 {
+                for b in a + 1..4 {
+                    span = span.max(norm(sub(q[a], q[b])));
+                }
+            }
+            Some(Cell { lo, hi, q, depth, foot: [s, t], est, lb: est - 2. * sag, span })
+        };
+        let (nu, nv) = (self.grid_n[0], self.grid_n[1]);
+        let mut heap = std::collections::BinaryHeap::with_capacity(nu * nv);
+        let mut ub = f64::INFINITY;
+        for j in 0..nv {
+            for i in 0..nu {
+                let at = |a: usize, b: usize| self.grid[b * (nu + 1) + a];
+                let (c00, c10, c01, c11) = (at(i, j), at(i + 1, j), at(i, j + 1), at(i + 1, j + 1));
+                if let Some(c) = cell(c00.0, c11.0, [c00.1, c10.1, c01.1, c11.1], 0) {
+                    ub = ub.min(c.q.iter().map(|q| norm(sub(*q, p))).fold(f64::INFINITY, f64::min));
+                    heap.push(c);
+                }
+            }
+        }
+        let mut leaves: Vec<Cell> = Vec::new();
+        for _ in 0..EXPANSIONS {
+            let Some(c) = heap.pop() else { break };
+            if c.lb > ub + 1e-3 {
+                // every cell left has a larger bound: none comes within a micron of the best distance seen
+                break;
+            }
+            if c.depth >= MAX_DEPTH || c.span < 1e-7 {
+                leaves.push(c);
+                continue;
+            }
+            let mid = [(c.lo[0] + c.hi[0]) / 2., (c.lo[1] + c.hi[1]) / 2.];
+            let ev = |uv: [f64; 2]| self.surface.evaluate(uv).ok();
+            let (Some(bottom), Some(top), Some(left), Some(right), Some(centre)) = (
+                ev([mid[0], c.lo[1]]),
+                ev([mid[0], c.hi[1]]),
+                ev([c.lo[0], mid[1]]),
+                ev([c.hi[0], mid[1]]),
+                ev(mid),
+            ) else {
+                continue;
+            };
+            let d = c.depth + 1;
+            for child in [
+                cell(c.lo, mid, [c.q[0], bottom, left, centre], d),
+                cell([mid[0], c.lo[1]], [c.hi[0], mid[1]], [bottom, c.q[1], centre, right], d),
+                cell([c.lo[0], mid[1]], [mid[0], c.hi[1]], [left, centre, c.q[2], top], d),
+                cell(mid, c.hi, [centre, right, top, c.q[3]], d),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                // the patch is an estimate of the surface, not an upper bound: only evaluated points lower `ub`
+                ub = ub.min(child.q.iter().map(|q| norm(sub(*q, p))).fold(f64::INFINITY, f64::min));
+                heap.push(child);
+            }
+        }
+        // cells still open are as good a start as a leaf
+        leaves.extend(std::iter::from_fn(|| heap.pop()).take(STARTS));
+        leaves.sort_by(|a, b| a.est.total_cmp(&b.est));
+        leaves.truncate(STARTS);
+        leaves
+            .iter()
+            .filter_map(|c| {
+                let uv = self.clamp([c.lo[0] + c.foot[0] * (c.hi[0] - c.lo[0]), c.lo[1] + c.foot[1] * (c.hi[1] - c.lo[1])]);
+                let q = self.surface.evaluate(uv).ok()?;
+                Some((norm(sub(q, p)), uv))
+            })
+            .collect()
+    }
     /// The distinct nearest points of the surface to `p` (parameter and distance), nearest first, within a micron of the best.
     /// The search refines from several of the nearest grid nodes: a surface closed in a parameter has coincident points on
     /// both sides of its seam, and the clamped search from one side cannot cross it.
@@ -603,6 +830,41 @@ impl SplineSurface {
             found.push(self.refine(p, uv, d)?);
         }
         found.sort_by(|a, b| a.1.total_cmp(&b.1));
+        // The descents from the nearest nodes stall in a wrong basin when they all start in one valley of the distance (a
+        // parameterization far from arc length folds the surface over p many times): a point that is not (nearly) on the
+        // surface is searched again, first from the grid's local minima of the distance, one per valley, and then from the
+        // subdivided grid, before it counts as off the surface.
+        if found[0].1 > MINIMA_MM {
+            let (nu, nv) = (self.grid_n[0] + 1, self.grid_n[1] + 1);
+            let dist: Vec<f64> = self.grid.iter().map(|g| norm(sub(g.1, p))).collect();
+            let mut minima: Vec<(f64, [f64; 2])> = Vec::new();
+            for j in 0..nv {
+                for i in 0..nu {
+                    let d = dist[j * nu + i];
+                    let is_min = (j.saturating_sub(1)..=(j + 1).min(nv - 1)).all(|jj| {
+                        (i.saturating_sub(1)..=(i + 1).min(nu - 1)).all(|ii| {
+                            let other = dist[jj * nu + ii];
+                            // ties go to the lower index so that a flat valley floor yields one node
+                            other > d || (other == d && jj * nu + ii >= j * nu + i)
+                        })
+                    });
+                    if is_min {
+                        minima.push((d, self.grid[j * nu + i].0));
+                    }
+                }
+            }
+            minima.sort_by(|a, b| a.0.total_cmp(&b.0));
+            for &(d, uv) in minima.iter().take(MINIMA_STARTS) {
+                found.push(self.refine(p, uv, d)?);
+            }
+            found.sort_by(|a, b| a.1.total_cmp(&b.1));
+            if found[0].1 > CELLS_MM {
+                for (d, uv) in self.cell_starts(p) {
+                    found.push(self.refine(p, uv, d)?);
+                }
+                found.sort_by(|a, b| a.1.total_cmp(&b.1));
+            }
+        }
         let best = found[0].1;
         let span = [self.domain[0][1] - self.domain[0][0], self.domain[1][1] - self.domain[1][0]];
         let mut out: Vec<([f64; 2], f64)> = Vec::new();
@@ -849,6 +1111,39 @@ mod tests {
                 minor: 2.,
             },
         ]
+    }
+    /// A sawtooth extruded along z: a parameterization with 60 teeth over the parameter range, the shape of a screw thread's
+    /// flank. A fixed 24-cell grid aliases it (a node every five curve units), so the nearest nodes are on other teeth.
+    fn sawtooth(teeth: usize) -> SplineSurface {
+        let n = 2 * teeth + 1;
+        let controls: Vec<V3> = (0..n).map(|i| [i as f64, if i % 2 == 1 { 4. } else { 0. }, 0.]).collect();
+        let mut knots = vec![0.0];
+        knots.extend((0..n).map(|i| i as f64 / (n - 1) as f64));
+        knots.push(1.0);
+        let curve =
+            crate::nurbs::NurbsCurve::new_clamped(1, knots, controls, vec![1.; n], crate::nurbs::Limits::default()).unwrap();
+        SplineSurface::extrusion(curve, [0., 0., 1.], [0., 10.]).unwrap()
+    }
+    #[test]
+    fn a_point_on_a_many_toothed_surface_is_found_on_it() {
+        let s = sawtooth(60);
+        let mut worst: f64 = 0.;
+        // 997 and 389 are coprime to the 120 flanks and to 10: the samples fall on every flank at varied heights
+        for k in 0..997usize {
+            let (t, h) = ((k * 389 % 997) as f64 / 997., (k % 41) as f64 / 4.);
+            let p = s.surface.evaluate([t, h]).unwrap();
+            let (_, d) = s.closest(p).unwrap();
+            worst = worst.max(d);
+        }
+        assert!(worst < 1e-6, "a point on the surface was found {worst} mm off it");
+    }
+    #[test]
+    fn a_point_off_a_many_toothed_surface_is_still_off_it() {
+        // the repeated search must not invent a foot: a point 3 mm above the top edge (height 10) is 3 mm from the surface
+        let s = sawtooth(60);
+        let p = s.surface.evaluate([0.5, 10.]).unwrap();
+        let (_, d) = s.closest([p[0], p[1], p[2] + 3.]).unwrap();
+        assert!((d - 3.).abs() < 1e-6, "{d}");
     }
     #[test]
     fn point_and_raw_coordinates_are_inverse_on_each_surface() {
