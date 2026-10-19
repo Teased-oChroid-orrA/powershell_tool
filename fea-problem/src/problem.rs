@@ -847,8 +847,8 @@ impl Problem {
                     return Err("the solid has no STEP text".into());
                 }
                 match cache {
-                    None => return Err("the solid has not been tessellated yet: open it with the OpenCascade build to cache its surface mesh".into()),
-                    Some(c) if !c.is_current(step) => return Err("the solid's cached surface mesh is out of date (the STEP text changed): re-tessellate it with the OpenCascade build".into()),
+                    None => return Err("the solid has not been tessellated yet: open the STEP file again to cache its surface mesh".into()),
+                    Some(c) if !c.is_current(step) => return Err("the solid's cached surface mesh is out of date (the STEP text changed): open the STEP file again to re-tessellate it".into()),
                     Some(c) => c.validate()?,
                 }
             }
