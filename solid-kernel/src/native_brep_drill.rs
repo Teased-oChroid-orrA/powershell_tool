@@ -238,6 +238,17 @@ impl NativeBrep {
         }
     }
 
+    /// The planar faces that lie in the plane through `point` with outward direction `normal` (a unit vector, to 1e-6).
+    pub fn planar_faces_through(&self, point: V3, normal: V3) -> Vec<usize> {
+        let tol = self.scale_tol() * 1e3;
+        (0..self.faces.len()).filter(|&i| self.planar(i).is_ok_and(|(origin, n)| dot(n, normal) > 1.0 - 1e-6 && dot(sub(point, origin), n).abs() <= tol)).collect()
+    }
+
+    /// Whether `point` (in the plane of planar face `face`) lies in its material region, off its boundary.
+    pub fn face_holds(&self, face: usize, point: V3) -> bool {
+        self.faces.get(face).is_some_and(|f| fit(self, f, point, 0.0, self.scale_tol()) == Fit::Inside)
+    }
+
     fn scale_tol(&self) -> f64 {
         let (lo, hi) = self.bounds();
         1e-9 * norm(sub(hi, lo)).max(1e-9)

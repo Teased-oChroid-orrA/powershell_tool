@@ -101,11 +101,29 @@ fn a_step_solid_opens_gets_a_hole_and_a_dangling_support_is_diagnosed() {
     std::fs::create_dir_all(&dir).unwrap();
     #[cfg(not(feature = "occt"))]
     {
+        use super::stepops::PromptOp;
+        // A file that is no solid is refused with the reason, and no edit is offered on the unchanged model.
         let path = dir.join("part.step");
         std::fs::write(&path, "ISO-10303-21;").unwrap();
         s.open_path(path.to_str().unwrap());
-        assert!(s.status.contains("OpenCascade"), "{}", s.status);
-        assert!(s.solid_op_availability(super::stepops::PromptOp::Fillet).unwrap_err().contains("OpenCascade"));
+        assert!(s.status.contains("Could not open"), "{}", s.status);
+        assert!(s.solid_op_availability(PromptOp::Fillet).unwrap_err().contains("not a STEP solid"));
+        // The native pipeline opens a cube, cuts a hole in its top face, and undo restores it.
+        let step = solid_kernel::native_brep::NativeBrep::box_from_corners([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]).unwrap().to_step_text();
+        let path = dir.join("cube.step");
+        std::fs::write(&path, step).unwrap();
+        s.open_path(path.to_str().unwrap());
+        assert!(matches!(s.problem.geometry, Geometry::Solid { .. }) && s.status.contains("6 faces"), "{}", s.status);
+        let top = (1..=6).find(|f| fea_problem::solid::flat_face(match &s.problem.geometry { Geometry::Solid { cache: Some(c), .. } => c, _ => unreachable!() }, *f).is_ok_and(|(c, _)| (c[2] - 10.0).abs() < 1e-6)).unwrap();
+        assert!(s.solid_op_availability(PromptOp::Hole).is_err(), "no face picked yet");
+        s.selected = Some(format!("face{top}"));
+        s.begin_solid_op(PromptOp::Hole);
+        assert!(s.prompt.is_some(), "{}", s.status);
+        s.prompt.as_mut().unwrap().text = "2".into();
+        s.commit_prompt();
+        assert_eq!(s.problem.edge_names().len(), 7, "{}", s.status);
+        s.do_action(SolidAction::Undo);
+        assert_eq!(s.problem.edge_names().len(), 6);
     }
     #[cfg(feature = "occt")]
     {

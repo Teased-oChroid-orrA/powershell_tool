@@ -134,8 +134,8 @@ pub fn tessellate_step(step: &str, deflection: f64) -> Result<SolidCache, String
 }
 
 #[cfg(not(feature = "occt"))]
-pub fn tessellate_step(_step: &str, _deflection: f64) -> Result<SolidCache, String> {
-    Err("reading or editing a STEP solid needs the OpenCascade build (cargo feature `occt`); this build can only solve solids whose surface mesh is already stored".into())
+pub fn tessellate_step(step: &str, deflection: f64) -> Result<SolidCache, String> {
+    crate::native_solid::tessellate_step_native(step, deflection)
 }
 
 impl Geometry {
@@ -322,6 +322,12 @@ pub fn import_step(step: &str) -> Result<StepImport, String> {
         return Err("the STEP solid has no extent".into());
     }
     let cache = SolidCache::new(step, brep.tessellate(diag * 1e-3)?, diag * 1e-3);
+    Ok(finish_import(cache, lo, hi, diag))
+}
+
+/// The element size a freshly imported solid gets: an eighteenth of the bounding-box diagonal, capped by a third of the thinnest
+/// wall between opposite flat faces and of the smallest box side (shared by the OpenCascade and the native import).
+pub(crate) fn finish_import(cache: SolidCache, lo: [f64; 3], hi: [f64; 3], diag: f64) -> StepImport {
     let planes: Vec<_> = (0..cache.face_names().len()).filter_map(|f| flat_face(&cache, f + 1).ok()).collect();
     let mut wall = f64::INFINITY;
     for (i, (a, n)) in planes.iter().enumerate() {
@@ -331,13 +337,14 @@ pub fn import_step(step: &str) -> Result<StepImport, String> {
             if dot < -0.999 && distance > diag * 1e-4 { wall = wall.min(distance); }
         }
     }
-    Ok(StepImport { cache, size: (diag / 18.0).min(wall / 3.0).min((0..3).map(|a| hi[a]-lo[a]).fold(f64::INFINITY, f64::min) / 3.0),
-    })
+    StepImport { cache, size: (diag / 18.0).min(wall / 3.0).min((0..3).map(|a| hi[a]-lo[a]).fold(f64::INFINITY, f64::min) / 3.0),
+    }
 }
 
+/// Without OpenCascade the native pipeline reads the solid (`native_solid`).
 #[cfg(not(feature = "occt"))]
 pub fn import_step(step: &str) -> Result<StepImport, String> {
-    tessellate_step(step, 0.0).map(|cache| StepImport { cache, size: 1.0 })
+    crate::native_solid::import_step_native(step)
 }
 
 /// Apply `op` to the solid (`step`, `cache`); returns the new STEP text and its tessellation. Face numbers change with the
@@ -399,8 +406,8 @@ pub fn apply_op(step: &str, cache: &SolidCache, op: &SolidOp,
 }
 
 #[cfg(not(feature = "occt"))]
-pub fn apply_op(step: &str, _cache: &SolidCache, _op: &SolidOp) -> Result<(String, SolidCache), String> {
-    tessellate_step(step, 0.0).map(|c| (step.to_string(), c))
+pub fn apply_op(step: &str, cache: &SolidCache, op: &SolidOp) -> Result<(String, SolidCache), String> {
+    crate::native_solid::apply_op_native(step, cache, op)
 }
 
 impl Problem {

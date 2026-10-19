@@ -55,7 +55,7 @@ Does not own: any element, solver or mesher (`fea-core`), any UI or file access 
 - `solve_mesh` runs the kernel's `Model::validate`: errors stop the solve, warnings land in `Summary::notes`. Before 2026-10-11 it
   did not, and a NaN load solved to a silent zero. Bushing (contact) solves skip it on purpose (held only by contact).
 - `Geometry::Solid` is solved from its cached surface mesh only; a missing or stale cache (hash of the STEP text) is refused,
-  never re-tessellated silently (that needs the `occt` feature). Faces are `face1`.. in the kernel's order. Refinement zones
+  never re-tessellated silently (re-tessellating is `solid::tessellate_step`: OpenCascade with the `occt` feature, otherwise the native pipeline in `native_solid.rs`, whose face order is the STEP text's face-entity order; edits find their flat face by plane, never by number). Faces are `face1`.. in the kernel's order. Refinement zones
   and sketch history do not apply to it.
 - Face numbers of a stored solid change with every `apply_solid_op`; supports/loads are carried by `solid::remap_faces` (geometric match, not kernel ids) and a lost face becomes `removed:faceN` (reported by `diagnose`). Kernel ids do not survive a STEP round trip: never persist them.
 - A sketch outline is `Shape::Outline` as soon as it has an arc or spline (exact edges, one `edgeN` each); an all-line loop stays `Rect` / `Polygon`. `Geometry::Sketch::regions` holds the other disjoint regions (islands, separate outlines), meshed alone and appended with `r2/`, `r3/` names; bushings, advice and refinement zones only see the first region.
