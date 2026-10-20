@@ -891,10 +891,22 @@ fn samples(
 /// until the curve at its quarter points and midpoint lies within the chord tolerance of the chord. Unlike `nurbs_sample` it
 /// certifies nothing (the interval bounds of that sampler need 40 000 points for a 10 mm cross-bore intersection curve at
 /// 0.05 mm); the endpoints are checked against the vertices by the caller.
+/// Share of the chord tolerance spent by the bisection; the decimation gets the rest.
+const SPLIT_SHARE: f64 = 0.25;
+/// No decimated segment is longer than this many chords: the face mesher needs boundary spacing comparable to its own.
+const MAX_SEGMENT_CHORDS: f64 = 30.;
 fn sample_spline_adaptive(
     curve: &crate::nurbs::NurbsCurve,
     chord_mm: f64,
     max_points: usize,
+) -> Result<(Vec<f64>, Vec<V3>), String> {
+    sample_spline_with(curve, chord_mm, max_points, SPLIT_SHARE)
+}
+fn sample_spline_with(
+    curve: &crate::nurbs::NurbsCurve,
+    chord_mm: f64,
+    max_points: usize,
+    split_share: f64,
 ) -> Result<(Vec<f64>, Vec<V3>), String> {
     let domain = curve.domain();
     let mut breaks: Vec<f64> = curve
@@ -932,7 +944,7 @@ fn sample_spline_adaptive(
             for f in [0.25, 0.5, 0.75] {
                 let on_curve = eval(t0 + (t1 - t0) * f)?;
                 let chord = add(mul(points[i], 1. - f), mul(points[i + 1], f));
-                if norm(sub(on_curve, chord)) > chord_mm {
+                if norm(sub(on_curve, chord)) > split_share * chord_mm {
                     worst = true;
                     break;
                 }
@@ -955,7 +967,49 @@ fn sample_spline_adaptive(
             break;
         }
     }
-    Ok((params, points))
+    // The seed of 2 x degree samples per knot span (to catch wiggles) is far denser than the chord needs on a short
+    // span: drop every sample whose removal keeps the curve (the dense samples and the midpoints between them) within the
+    // other half of the chord tolerance of the remaining polyline. Total deviation stays within `chord_mm`.
+    let tol = (1. - split_share) * chord_mm;
+    let within = |a: usize, b: usize| -> Result<bool, String> {
+        let (pa, pb) = (points[a], points[b]);
+        let ab = sub(pb, pa);
+        let len2 = dot(ab, ab);
+        if len2.sqrt() > MAX_SEGMENT_CHORDS * chord_mm {
+            return Ok(false);
+        }
+        let dist = |q: V3| {
+            let t = if len2 > 0. { (dot(sub(q, pa), ab) / len2).clamp(0., 1.) } else { 0. };
+            norm(sub(q, add(pa, mul(ab, t))))
+        };
+        for k in a + 1..b {
+            if dist(points[k]) > tol {
+                return Ok(false);
+            }
+        }
+        for k in a..b {
+            if dist(eval(0.5 * (params[k] + params[k + 1]))?) > tol {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    };
+    let n = points.len();
+    let mut keep = vec![0usize];
+    let mut i = 0;
+    while i < n - 1 {
+        let mut j = i + 1;
+        while j + 1 < n && within(i, j + 1)? {
+            j += 1;
+        }
+        keep.push(j);
+        i = j;
+    }
+    // a spline edge keeps an interior sample even when it is straight (it is not the line path)
+    if keep.len() == 2 && n > 2 {
+        keep.insert(1, n / 2);
+    }
+    Ok((keep.iter().map(|&k| params[k]).collect(), keep.iter().map(|&k| points[k]).collect()))
 }
 fn on_surface(e: &Entity, s: &Surface, c: &Curve, a: V3, b: V3, tol: f64) -> Result<(), Error> {
     for point in [a, b] {
@@ -2038,6 +2092,47 @@ impl AnalyticModel {
 #[cfg(test)]
 mod conversion_tests {
     use super::*;
+    /// A wiggly degree-6 spline edge (a cross-bore intersection is one): bisecting to the whole chord tolerance and keeping
+    /// every sample is what made such edges 10x denser than the face mesher needs. The decimating sampler stays within the
+    /// chord of the curve with far fewer samples than the plain bisection (`split_share` 1 = no decimation budget).
+    #[test]
+    fn a_wiggly_spline_edge_is_decimated_and_stays_within_the_chord() {
+        // 14 knot spans (the cross-bore edge has about as many), smooth: the old seed alone was 14 x 12 samples
+        let spans = 14usize;
+        let n = spans + 6;
+        let controls: Vec<V3> = (0..n)
+            .map(|i| {
+                let x = i as f64 * 9.5 / (n - 1) as f64;
+                [x, 0.8 * (x * 0.5).sin(), 0.05 * x]
+            })
+            .collect();
+        let mut knots = vec![0.; 7];
+        knots.extend((1..spans).map(|k| k as f64 / spans as f64));
+        knots.extend([1.; 7]);
+        let curve = crate::nurbs::NurbsCurve::new_clamped(6, knots, controls, vec![1.; n], crate::nurbs::Limits::default()).unwrap();
+        let chord = 0.0376;
+        let (_, plain) = sample_spline_with(&curve, chord, 100_000, 1.).unwrap();
+        let (params, points) = sample_spline_adaptive(&curve, chord, 100_000).unwrap();
+        eprintln!("SAMPLES plain {} decimated {}", plain.len(), points.len());
+        assert!(points.len() * 2 <= plain.len(), "{} decimated samples against {} plain", points.len(), plain.len());
+        assert_eq!(params.len(), points.len());
+        let mut worst: f64 = 0.;
+        for k in 0..=4000 {
+            let q = curve.evaluate(k as f64 / 4000.).unwrap();
+            let d = points
+                .windows(2)
+                .map(|w| {
+                    let ab = sub(w[1], w[0]);
+                    let t = (dot(sub(q, w[0]), ab) / dot(ab, ab)).clamp(0., 1.);
+                    norm(sub(q, add(w[0], mul(ab, t))))
+                })
+                .fold(f64::INFINITY, f64::min);
+            worst = worst.max(d);
+        }
+        assert!(worst <= chord, "worst deviation {worst} exceeds the chord {chord}");
+        let longest = points.windows(2).map(|w| norm(sub(w[1], w[0]))).fold(0., f64::max);
+        assert!(longest <= MAX_SEGMENT_CHORDS * chord * (1. + 1e-9), "segment {longest} longer than the cap");
+    }
     #[test]
     fn coordinate_length_conversion_preserves_units_zeros_and_rejects_invalid_scales() {
         let e = Entity {

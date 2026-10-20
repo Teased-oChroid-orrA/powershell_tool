@@ -20,7 +20,7 @@ Does not own: any element, solver or mesher (`fea-core`), any UI or file access 
 | Parametric sketch (entities, constraints, LM solver with DOF / conflict report, drag, profile -> `Shape`s, surface names, rule-based constraint inference) | `src/sketch/{mod,solve,profile,infer}.rs`, `tests/sketch.rs` |
 | Feature history (Sketch / Extrude / Revolve, planes + frames, suppress, roll-back), `Problem::apply_history`, `History::from_problem` | `src/history.rs`, `src/problem.rs` |
 | Rule-based support / load / mesh recommendations (`recommend`, `boundary_options`, `Advice::apply`) | `src/advice.rs`, `tests/advice.rs` |
-| `Geometry::Solid` (STEP text + hash-tied cached surface mesh; `solid_mesh`, `Problem::set_solid`, `tessellate_step` needs feature `occt`) | `src/solid.rs`, `tests/solid.rs` |
+| `Geometry::Solid` (STEP text + hash-tied cached surface mesh; `solid_mesh`, `Problem::set_solid`, `tessellate_step` needs feature `occt`) | `src/solid.rs`, `tests/solid.rs`, `tests/occt_vs_native.rs` (feature `occt`, `--ignored`: OCCT against native tessellation, same mesher, same solve; `docs/issue-46-phase-124.md`) |
 | Failure diagnosis: `diagnose(&Problem, Option<&str>)` -> class, evidence, ranked `Remedy` (data `Edit`), `Question` (ADR-020) | `src/diagnose.rs`, `tests/failures.rs` |
 | Starting problems | `src/templates.rs` |
 | Member stack -> axisymmetric FE compliance (`C = 2U/F^2`) | `src/joint.rs` |
@@ -101,3 +101,4 @@ Parent concepts: `fea-core/AGENTS.md`. Consumer: `app-tui/src/toolboxes/fea_work
   on those faces are refused. Details/evidence: `docs/workbench-reliability-2026-10-15.md`.
 
 - `mesh_telemetry` and `examples/mesh-benchmark.rs` collect opt-in independently verified template performance evidence. Only the solve/reference pipeline mints verification proof; imported JSONL remains quarantined. No automatic collection or ML is enabled. See `docs/issue-46-phase-1.md`.
+- Fresh STEP import sizing (`solid::feature_size`) resolves the smallest measured curved-face radius at about two elements across, subject to a 25,000-element volume estimate; all-flat imports retain the bounding-box/wall rule. `tests/fillet_rim_tagging.rs` guards the 80 mm² top face and traction force of a fully filleted box. Evidence: `docs/issue-46-phase-125.md`.

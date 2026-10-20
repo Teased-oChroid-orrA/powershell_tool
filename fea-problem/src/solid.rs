@@ -337,8 +337,84 @@ pub(crate) fn finish_import(cache: SolidCache, lo: [f64; 3], hi: [f64; 3], diag:
             if dot < -0.999 && distance > diag * 1e-4 { wall = wall.min(distance); }
         }
     }
-    StepImport { cache, size: (diag / 18.0).min(wall / 3.0).min((0..3).map(|a| hi[a]-lo[a]).fold(f64::INFINITY, f64::min) / 3.0),
+    let base = (diag / 18.0).min(wall / 3.0).min((0..3).map(|a| hi[a]-lo[a]).fold(f64::INFINITY, f64::min) / 3.0);
+    let size = feature_size(&cache, base);
+    StepImport { cache, size }
+}
+
+/// Elements per radius of the smallest curved feature the default size resolves (two across a radius: about four around a
+/// quarter-turn fillet).
+const ELEMENTS_PER_RADIUS: f64 = 2.0;
+/// The most elements a default size may ask for (estimated by the same V / (0.1179 h^3) as `MAX_TETS`; the real count runs about 2.5 times higher, ~65k Tet4 elements, minutes to solve): a part with features too small to resolve within
+/// it keeps the coarser size, and `solid_mesh` then says which feature the mesh does not resolve.
+const DEFAULT_TETS: f64 = 25_000.0;
+
+/// The element size a fresh import gets: `base` (bounding box and wall rules), refined to resolve the smallest curved feature
+/// (`smallest_curvature_radius`) but never so fine that the estimated element count exceeds [`DEFAULT_TETS`].
+pub(crate) fn feature_size(c: &SolidCache, base: f64) -> f64 {
+    let Some(r) = smallest_curvature_radius(c) else { return base };
+    let volume: f64 = c.triangles.iter().map(|t| {
+        let [a, b, d] = t.map(|i| c.vertices[i]);
+        a[0] * (b[1] * d[2] - b[2] * d[1]) + a[1] * (b[2] * d[0] - b[0] * d[2]) + a[2] * (b[0] * d[1] - b[1] * d[0])
+    }).sum::<f64>().abs() / 6.0;
+    let floor = (volume / (0.1179 * DEFAULT_TETS)).cbrt();
+    base.min((r / ELEMENTS_PER_RADIUS).max(floor))
+}
+
+/// Smallest radius of curvature of any curved face of the tessellation, from the turn between neighbouring triangles of one face
+/// (`R = (distances of the two far vertices from the shared edge) / (2 x angle between the normals)`). Per face the smallest over its edges is taken (an edge oblique to the curvature direction reads R / sin^2 of its angle to it, too flat, so every error is
+/// one-sided and the axial edges give the true radius); flat faces (turn below 2 mrad everywhere) have no radius. `None` for an all-flat solid.
+pub fn smallest_curvature_radius(c: &SolidCache) -> Option<f64> {
+    use std::collections::HashMap;
+    let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    let cross = |a: [f64; 3], b: [f64; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    let norm = |a: [f64; 3]| (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+    let mut info: Vec<Option<([f64; 3], [f64; 3])>> = Vec::with_capacity(c.triangles.len());
+    for t in &c.triangles {
+        let [a, b, d] = t.map(|i| c.vertices[i]);
+        let n = cross(sub(b, a), sub(d, a));
+        let len = norm(n);
+        info.push((len > 0.0).then(|| ([n[0] / len, n[1] / len, n[2] / len], [(a[0] + b[0] + d[0]) / 3.0, (a[1] + b[1] + d[1]) / 3.0, (a[2] + b[2] + d[2]) / 3.0])));
     }
+    let mut edges: HashMap<(usize, usize), usize> = HashMap::new();
+    let mut per_face: HashMap<usize, Vec<f64>> = HashMap::new();
+    for (ti, t) in c.triangles.iter().enumerate() {
+        for k in 0..3 {
+            let (a, b) = (t[k], t[(k + 1) % 3]);
+            let key = (a.min(b), a.max(b));
+            match edges.remove(&key) {
+                None => {
+                    edges.insert(key, ti);
+                }
+                Some(tj) => {
+                    if c.face[tj] != c.face[ti] {
+                        continue;
+                    }
+                    let (Some((n1, _)), Some((n2, _))) = (info[ti], info[tj]) else { continue };
+                    let angle = norm(cross(n1, n2)).atan2(n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2]);
+                    if angle > 2e-3 {
+                        // Each triangle tilts by half the arc angle to its far vertex, so the dihedral angle is half the sum of the two arc
+                        // angles, and the arcs are the far vertices' distances from the shared edge: R = (p1 + p2) / (2 angle), exact on
+                        // a cylinder or sphere whatever the triangles' shapes.
+                        let (pa, pb) = (c.vertices[a], c.vertices[b]);
+                        let e = sub(pb, pa);
+                        let el = norm(e);
+                        let far = |tri: usize| {
+                            let w = c.triangles[tri].into_iter().find(|&w| w != a && w != b).map_or(pa, |w| c.vertices[w]);
+                            let v = sub(w, pa);
+                            let t = (v[0] * e[0] + v[1] * e[1] + v[2] * e[2]) / (el * el);
+                            norm([v[0] - t * e[0], v[1] - t * e[1], v[2] - t * e[2]])
+                        };
+                        per_face.entry(c.face[ti]).or_default().push((far(ti) + far(tj)) / (2.0 * angle));
+                    }
+                }
+            }
+        }
+    }
+    per_face.into_values().filter(|v| v.len() >= 3).map(|mut v| {
+        v.sort_by(f64::total_cmp);
+        v[0]
+    }).min_by(f64::total_cmp)
 }
 
 /// Without OpenCascade the native pipeline reads the solid (`native_solid`).

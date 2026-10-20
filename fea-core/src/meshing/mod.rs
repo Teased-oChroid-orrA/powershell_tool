@@ -5,6 +5,7 @@
 
 pub mod adjacency;
 pub mod ale;
+pub mod boundary_repair;
 pub mod cost;
 pub mod compatibility;
 pub mod curved;

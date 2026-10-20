@@ -400,10 +400,23 @@ impl SurfaceSolid {
         });
         let mut hits: Vec<FaceHit> = best
             .into_iter()
-            .map(|(face, (_, t))| {
+            .map(|(face, (d2, t))| {
                 let n = self.normal[t];
-                let a = self.vertices[self.triangles[t][0]];
-                FaceHit { face, dist: dot(sub(p, a), n), normal: n }
+                let [a, b, c] = self.triangles[t].map(|i| self.vertices[i]);
+                let plane = dot(sub(p, a), n);
+                // Snapping moves a point by `dist * normal`. Along the plane's normal it would reach the face's whole *plane*, which
+                // runs past the face where it meets a tangent fillet (a vertex 0.1 mm beyond the tangent line was put on the flat
+                // face's extension, 3 % of its area). So the pair is (distance to the face itself, direction to its nearest point);
+                // on the face or within round-off of it that is the plane distance and the triangle normal.
+                let (q, _) = bvh::closest_on_triangle(p, a, b, c);
+                let off = sub(p, q);
+                let d = d2.max(0.0).sqrt();
+                if d > 1e-9 * (1.0 + plane.abs()) && d > 1e-12 {
+                    let side = if plane < 0.0 { -1.0 } else { 1.0 };
+                    FaceHit { face, dist: side * d, normal: [side * off[0] / d, side * off[1] / d, side * off[2] / d] }
+                } else {
+                    FaceHit { face, dist: plane, normal: n }
+                }
             })
             .collect();
         hits.sort_by_key(|h| h.face);
@@ -456,5 +469,5 @@ pub fn mesh_volume(solid: &SurfaceSolid, mat: Elastic, params: VolumeParams, siz
     let radius = 1.2 * params.boundary_size;
     let face_dists = |x: V3| solid.faces_near(x, radius);
     let s = Solid { lo, hi, sdf: &sdf, size, face_of: &face_of, face_dists: Some(&face_dists) };
-    fea_core::tetmesh::mesh_solid(&s, mat, TetOptions { base: params.base, boundary_size: params.boundary_size, quadratic: params.quadratic, ..Default::default() })
+    fea_core::tetmesh::mesh_solid(&s, mat, TetOptions { base: params.base, boundary_size: params.boundary_size, quadratic: params.quadratic, repair: true, ..Default::default() })
 }
