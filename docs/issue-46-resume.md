@@ -2,6 +2,8 @@
 
 This is the current entry point for Claude Code or Codex. Historical phase reports and dated handoffs are append-only evidence; their old branch/approval statements do not override subsequent user instructions.
 
+**2026-10-20 live status:** `main` includes PR #167 (Phase 125 boundary repair and fillet-rim face ownership) and PR #168 (ABC solver-quality refinement), through `454b9c4`. No PR is open. The 300-file ABC survey has 30 solver-gate passes and solves with opt-in refinement versus 3 without; six additional files time out under the same 150-second process budget. See [Phase 125](issue-46-phase-125.md), [ABC corpus evidence](issue-46-abc-corpus-2026-10-18.md), and [the live pointer](issue-46-current.json). OCCT remains production; retirement approval is false.
+
 ## Establish current state
 
 1. Read root `CLAUDE.md`, then the relevant crate and `docs/AGENTS.md` instructions.
@@ -45,4 +47,4 @@ Open, in the order the evidence points to:
 
 Hosted Windows evidence (the `Workbench qualification` workflow runs `scripts/qualify.py` on ubuntu, macos and windows for every PR; `gh run list`): since Phase 95 the Windows job failed for two reasons found in its logs and fixed: STEP fixtures arriving with CRLF line ends (`.gitattributes` pins `*.step` to LF) and a graded torus that stopped at the 12-round limit, whose result then depended on last-bit differences of the platform's `sin`/`cos` (24.2 against 19.1 degrees; `GradeOptions::max_rounds` is now 40 and the test asserts convergence). Ubuntu and macOS passed throughout.
 
-PRs stay open for owner review unless the owner asks for a merge; the agent never rewrites history or force-pushes (root `CLAUDE.md`).
+The root `CLAUDE.md` now authorizes qualified PR creation, squash merge and short-lived branch cleanup without a per-action request. The agent never rewrites history or force-pushes.

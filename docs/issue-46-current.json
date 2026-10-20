@@ -3,7 +3,7 @@
   "epic_complete": false,
   "branch": "main",
   "pull_request": null,
-  "pull_request_state": "none_open_before_phase_69",
+  "pull_request_state": "none_open_after_pr_168",
   "merged_prs": [
     42,
     65,
@@ -68,15 +68,26 @@
     128,
     129,
     130,
-    131
+    131,
+    167,
+    168
   ],
-  "latest_qualified_source": "de5ceed56c5f146cf55a275ce1b10959836df53a",
-  "latest_phase": 112,
-  "progress_snapshot": "issue-46-phase-53-verification.json",
+  "latest_qualified_source": "454b9c430f90391cf0f9c11ac47237992208dd25",
+  "latest_phase": 125,
+  "progress_snapshot": "issue-46-phase-125.md",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
-  "remaining": "Other p-curve mappings/master/trim/body gates, general constrained meshing/quality and P2/P3/final roadmap",
+  "remaining": "ABC refinement passed the solver gate on 30/300 files with 14 timeouts; general CAD import, constrained mesh quality, OCCT parity, Windows and the broader P2/P3/final gates remain open",
+  "latest_increment_tests": {
+    "commands": [
+      "cargo test -p fea-core -p fea-problem -p solid-kernel --no-default-features --locked --offline -j1"
+    ],
+    "result": "passed",
+    "platform": "macOS arm64, isolated ABC worktree target after forward merge from main",
+    "at": "ce66a37",
+    "corpus": "issue-46-abc-corpus-2026-10-18.md"
+  },
   "tests": {
     "workspace_passed": 2862,
     "workspace_failed": 0,
@@ -84,13 +95,13 @@
     "platform": "macOS arm64 (no Windows or hosted CI evidence)",
     "at": "20a3f24"
   },
-  "last_confirmed_main_merge": "4b19daa",
+  "last_confirmed_main_merge": "454b9c430f90391cf0f9c11ac47237992208dd25",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "All scoped increments through Phase 112 are merged; open items are listed in issue-46-resume.md (exact trims, bracket sliver faces need B-rep healing, a hexahedral core that reaches the surface of a native body, benchmarks for #60-#62, parity #63)",
+    "scope": "Phase 125 boundary repair and fillet-rim tagging plus the ABC solver-quality survey are merged; open items are listed in issue-46-resume.md, including B-rep healing, broad solver-quality recovery, native production parity and the remaining priority gates",
     "status": "see_resume_guide_open_list"
   },
-  "base_main_head": "9cdefdcbb254328489de752295d8bd4454e5f2b4",
+  "base_main_head": "454b9c430f90391cf0f9c11ac47237992208dd25",
   "completion_checklist": "issue-46-completion-checklist.md",
   "resume": "issue-46-resume.md",
   "pending_prs": []
