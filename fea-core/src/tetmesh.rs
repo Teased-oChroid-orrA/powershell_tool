@@ -68,10 +68,13 @@ pub struct TetOptions {
     pub max_tets: usize,
     pub quadratic: bool,
     pub snap: bool,
+    /// After the snap, repair the boundary layer so every element passes the scaled-Jacobian gate
+    /// (`meshing::boundary_repair`). Needs `snap`.
+    pub repair: bool,
 }
 impl Default for TetOptions {
     fn default() -> Self {
-        Self { base: 1.0, boundary_size: 0.25, max_tets: 2_000_000, quadratic: false, snap: true }
+        Self { base: 1.0, boundary_size: 0.25, max_tets: 2_000_000, quadratic: false, snap: true, repair: false }
     }
 }
 
@@ -95,6 +98,11 @@ const MIN_QUALITY: f64 = 0.05;
 const MAX_QUALITY_LOSS: f64 = 0.3;
 /// Snap-and-smooth rounds.
 const SNAP_PASSES: usize = 6;
+/// A feature-snap target further than this fraction of the vertex's local size from the surface is rejected (ill-conditioned
+/// plane intersection at a tangent edge); the plain projection is used instead.
+const OFF_SURFACE: f64 = 0.05;
+/// A boundary vertex counts as lying on a model face when within this fraction of the boundary size of it.
+const FACE_TOL: f64 = 0.01;
 /// Reconnect-and-snap-again rounds after the first snap.
 const RECONNECT_ROUNDS: usize = 4;
 
@@ -360,6 +368,11 @@ fn reconnect(p: &[V3], tet: &[[usize; 4]]) -> Option<(Vec<[usize; 4]>, Vec<V3>)>
 
 /// Mesh `s` into tetrahedra with material `mat`.
 pub fn mesh_solid(s: &Solid, mat: Elastic, opts: TetOptions) -> Result<(Mesh, MeshReport), String> {
+    mesh_solid_reported(s, mat, opts).map(|(m, r, _)| (m, r))
+}
+
+/// [`mesh_solid`] that also returns what the boundary-layer repair did (`None` when it did not run).
+pub fn mesh_solid_reported(s: &Solid, mat: Elastic, opts: TetOptions) -> Result<(Mesh, MeshReport, Option<crate::meshing::boundary_repair::RepairReport>), String> {
     let finite_box = (0..3).all(|k| s.hi[k].is_finite() && s.lo[k].is_finite() && s.hi[k] > s.lo[k]);
     if !(opts.base.is_finite() && opts.base > 0.0 && opts.boundary_size.is_finite() && opts.boundary_size > 0.0 && finite_box) {
         return Err("the mesher needs a positive base size, a positive boundary size and a box with volume".into());
@@ -469,6 +482,11 @@ pub fn mesh_solid(s: &Solid, mat: Elastic, opts: TetOptions) -> Result<(Mesh, Me
                         Some(fd) => snap_to_features(fd, p[v], 0.5 * local[v], reach).unwrap_or_else(|| project(s.sdf, p[v], eps)),
                         None => project(s.sdf, p[v], eps),
                     };
+                    // The feature snap intersects the planes of the nearest triangle of each face; where those planes are nearly
+                    // parallel (a fillet meeting a flat face tangentially) the intersection is ill-conditioned and the alternating
+                    // projection can end more than an element away (a vertex 1.4 mm above a 16 mm face at a 1 mm size). A target
+                    // that is not on the surface is no feature point: take the plain projection instead.
+                    let target = if s.face_dists.is_some() && (s.sdf)(target).abs() > OFF_SURFACE * local[v] { project(s.sdf, p[v], eps) } else { target };
                     if norm(sub(target, p[v])) < 1e-9 * local[v] {
                         continue;
                     }
@@ -539,6 +557,46 @@ pub fn mesh_solid(s: &Solid, mat: Elastic, opts: TetOptions) -> Result<(Mesh, Me
         }
     }
 
+    // Boundary-layer repair: the snap leaves a few percent of the elements next to a curved surface flat.
+    let mut repair_report = None;
+    if opts.snap && opts.repair {
+        let ctx = crate::meshing::boundary_repair::RepairContext { sdf: s.sdf, face_dists: s.face_dists };
+        let (remap, rep) = crate::meshing::boundary_repair::repair(&mut p, &mut tet, &ctx, crate::meshing::boundary_repair::RepairOptions::default());
+        {
+            boundary = boundary_of(&tet);
+            on_boundary = vec![false; p.len()];
+            for (f, _) in &boundary {
+                for &v in f {
+                    on_boundary[v] = true;
+                }
+            }
+            let _ = remap;
+            // what ended on the surface, recounted (the repair slides and removes boundary vertices)
+            let mut longest = vec![0.0f64; p.len()];
+            for v in &tet {
+                for i in 0..4 {
+                    for j in i + 1..4 {
+                        let l = norm(sub(p[v[i]], p[v[j]]));
+                        longest[v[i]] = longest[v[i]].max(l);
+                        longest[v[j]] = longest[v[j]].max(l);
+                    }
+                }
+            }
+            snapped = 0;
+            refused = 0;
+            for v in 0..p.len() {
+                if on_boundary[v] {
+                    if (s.sdf)(p[v]).abs() <= 0.02 * longest[v].min(opts.boundary_size) {
+                        snapped += 1;
+                    } else {
+                        refused += 1;
+                    }
+                }
+            }
+        }
+        repair_report = Some(rep);
+    }
+
     // Report.
     let mut total = 0.0;
     let mut worst = f64::INFINITY;
@@ -589,7 +647,7 @@ pub fn mesh_solid(s: &Solid, mat: Elastic, opts: TetOptions) -> Result<(Mesh, Me
         mesh.surfaces.insert(name, list);
     }
     let report = MeshReport { tets: tet.len(), nodes: mesh.nodes.len(), volume: total, worst_quality: worst, snapped, refused };
-    Ok((mesh, report))
+    Ok((mesh, report, repair_report))
 }
 
 fn faces_of_named(boundary: &[([usize; 3], usize)], p: &[V3], s: &Solid, mids: Option<&HashMap<(usize, usize), usize>>, size: f64) -> Vec<(String, Vec<Vec<usize>>)> {
@@ -705,7 +763,10 @@ fn snap_to_features(fd: &dyn Fn(V3) -> Vec<FaceHit>, x: V3, edge_reach: f64, rea
 /// face of its centroid.
 fn face_of_triangle(s: &Solid, v: [V3; 3], centre: V3, size: f64) -> usize {
     if let Some(fd) = s.face_dists {
-        let tol = 0.1 * size;
+        // Boundary vertices are snapped onto the surface (to within 0.02 of their local size at worst), so "on a face" means
+        // a hundredth of the size, not a tenth: a tolerance of 0.1 h gave a tangent fillet's rim strip, sqrt(2 r 0.1 h) wide,
+        // to the flat face next to it.
+        let tol = FACE_TOL * size;
         let per: Vec<Vec<FaceHit>> = v.iter().map(|x| fd(*x)).collect();
         let mut best: Option<(f64, usize)> = None;
         for h in &per[0] {

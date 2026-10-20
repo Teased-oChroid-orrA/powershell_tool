@@ -140,6 +140,11 @@ history if a discrepancy is ever suspected.
   together filled a disk. Watch usage on this workspace, especially before
   long training/build runs, and don't assume `cargo clean` is unnecessary
   just because a build "worked last time."
+- **Do not share one Cargo target between worktrees with divergent source.**
+  A 2026-10-20 test of an uncommitted `fea-core` change resolved the library
+  artifact from another worktree and reported missing symbols that were present
+  in the source. Use each worktree's own target for qualification; a focused
+  pass from a shared target is not evidence for the intended checkout.
 
 - **Hosted Windows CI is the only Windows evidence.** The test workflows (`ci.yml`, `windows-tests.yml`, `solid-kernel-occt.yml`) were
   removed once the build workflows were the only gate wanted; run the workspace tests locally, and rerun the Windows exe builds

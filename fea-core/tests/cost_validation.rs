@@ -178,11 +178,7 @@ use fea_core::meshing::learned_cost::{LearnedCost, Sample, Source};
 /// Family name, dimension, mesh, its cost features and the measured (assemble, factor, solve) seconds.
 type Measured<'a> = (&'a str, usize, Mesh, MeshCost, (f64, f64, f64));
 
-fn stage_times(mesh: &Mesh) -> Option<(f64, f64, f64)> {
-    stage_times_fixed(mesh, 0.0)
-}
-
-/// As [`stage_times`], fixing the nodes within `fraction` of the x extent of the minimum (a mesh with no flat face needs a patch,
+/// Measure stage times with nodes within `fraction` of the minimum x extent fixed (a mesh with no flat face needs a patch,
 /// not one node, to be supported).
 fn stage_times_fixed(mesh: &Mesh, fraction: f64) -> Option<(f64, f64, f64)> {
     let cost = MeshCost::of(mesh).unwrap();

@@ -101,3 +101,4 @@ Parent concepts: `fea-core/AGENTS.md`. Consumer: `app-tui/src/toolboxes/fea_work
   on those faces are refused. Details/evidence: `docs/workbench-reliability-2026-10-15.md`.
 
 - `mesh_telemetry` and `examples/mesh-benchmark.rs` collect opt-in independently verified template performance evidence. Only the solve/reference pipeline mints verification proof; imported JSONL remains quarantined. No automatic collection or ML is enabled. See `docs/issue-46-phase-1.md`.
+- Fresh STEP import sizing (`solid::feature_size`) resolves the smallest measured curved-face radius at about two elements across, subject to a 25,000-element volume estimate; all-flat imports retain the bounding-box/wall rule. `tests/fillet_rim_tagging.rs` guards the 80 mm² top face and traction force of a fully filleted box. Evidence: `docs/issue-46-phase-125.md`.
