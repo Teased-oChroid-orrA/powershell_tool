@@ -26,6 +26,7 @@ fn face(v: [usize; 4], k: usize) -> [usize; 3] {
     let [a, b, c, d] = v;
     [[b, c, d], [a, d, c], [a, b, d], [a, c, b]][k]
 }
+#[derive(Clone)]
 pub(crate) struct Delaunay3 {
     points: Vec<Point>,
     tets: Vec<Tet>,

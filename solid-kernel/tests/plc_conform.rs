@@ -513,3 +513,39 @@ fn every_returned_point_belongs_to_a_cell_a_facet_or_a_segment() {
     let unused: Vec<usize> = (v.len()..c.points.len()).filter(|&i| !used[i]).collect();
     assert!(unused.is_empty(), "unused Steiner points {unused:?}");
 }
+
+fn solver_gate(c: &solid_kernel::plc_conform::Conforming) -> (f64, usize, Result<(), String>) {
+    use fea_core::{Elastic, ElementKind, Mesh, Physics};
+    let material = Elastic { e: 200e3, nu: 0.3, alpha: 0., aniso: None };
+    let mut mesh = Mesh::new(Physics::Solid);
+    mesh.nodes = c.points.clone();
+    mesh.add_block(ElementKind::Tet4, c.cells.iter().flatten().copied().collect(), material, "t").unwrap();
+    let q = mesh.quality();
+    let below = q.elements.iter().filter(|e| e.scaled_jacobian < 0.1).count();
+    (q.min_scaled_jacobian, below, c.to_solver_mesh(material).map(|_| ()).map_err(|e| e.to_string()))
+}
+
+#[test]
+fn sliver_refinement_removes_most_cells_under_the_solver_gate_and_terminates() {
+    // A square ring plate: the plain recovery leaves tetrahedra of four boundary vertices, flat to rounding, under the solver
+    // gate's scaled Jacobian (79 of 435 here, one of them inverted for the gate). The sliver stage removes all but a few
+    // (they sit at the floor of the input resolution), keeps the volume, and ends (a livelock between a refused segment
+    // split and the sub-facet that asked for it once made it run for ever).
+    let (v, t) = plate(4., Some(2.), 1.);
+    let plain = Options { max_steiner: 20_000, ..Options::default() };
+    let refined = Options { min_scaled_jacobian: Some(0.2), reconnect: Some(Default::default()), smooth_rounds: 5, ..plain };
+    let a = conform(&v, &t, plain, |_| true).unwrap();
+    let b = conform(&v, &t, refined, |_| true).unwrap();
+    let (_, below_plain, _) = solver_gate(&a);
+    let (_, below_refined, _) = solver_gate(&b);
+    assert!(below_plain >= 40, "{below_plain}");
+    assert!(below_refined * 8 <= below_plain, "{below_refined} of {} cells vs {below_plain}", b.cells.len());
+    assert!(b.cells.len() < 3 * a.cells.len(), "{} vs {}", b.cells.len(), a.cells.len());
+    let exact = 4. * 4. * 1. - 2. * 2. * 1.;
+    assert!((volume_of(&b.points, &b.cells) - exact).abs() < 1e-9);
+    // a box already passes and is not touched
+    let (v, t) = plate(4., None, 1.);
+    let c = conform(&v, &t, refined, |_| true).unwrap();
+    assert_eq!(c.cells.len(), 17);
+    assert!(solver_gate(&c).2.is_ok());
+}

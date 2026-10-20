@@ -11,6 +11,12 @@
 //! `--graded` retries a failed body from the graded model (`AnalyticModel::graded`, 25 degree chart quality): slow, and on
 //! the first 300 files it rescued 2.
 //! `--merge` conforms with `Options::merge_coplanar` (coplanar input triangles become one facet).
+//! `--quality` also hands every conforming body to the solver gate (`Conforming::to_solver_mesh`: fea-core's
+//! `QualityThresholds::default()` and conformity) and, for a passing body, runs a static solve (the end of the longest axis
+//! fixed, a unit force across the other end); the detail then carries `gate=pass|fail`, `path=protected|fallback`, the
+//! worst scaled Jacobian `sj`, the largest edge ratio `er`, `tets`, the gate refusal and the solve outcome.
+//! `--refine` (with `--quality`) conforms with the sliver recipe: `Options::min_scaled_jacobian` 0.2, six passes of the flip pass (`ABC_PASSES`, 0 for none). The experiments' variables `ABC_RADIUS_EDGE`, `ABC_MIN_SJ`, `ABC_SMOOTH`, `ABC_RECONNECT`, `ABC_PLANAR`
+//! override single options; `ABC_SHOW_BAD` lists the tetrahedra under the gate.
 //! Child mode (internal): `abc-corpus --one FILE [--conform-timeout S]` prints one row to stdout.
 //! Models are never copied into the repository; commit aggregate statistics only (their licence stays with their creators).
 use solid_kernel::analytic_step::{AnalyticModel, Options};
@@ -23,12 +29,111 @@ use std::time::{Duration, Instant};
 fn clean(s: &str) -> String {
     s.chars()
         .map(|c| if c == ',' || c == '\n' || c == '\r' { ' ' } else { c })
-        .take(160)
+        .take(400)
         .collect()
 }
 
 /// One file, all stages; returns `stage,detail,faces,vertices,triangles,volume,min_angle`.
-fn survey(path: &Path, conform_timeout: Duration, foreign: bool, graded_fallback: bool, steiner_budget: Option<usize>, merge: bool) -> String {
+/// Quality of one conforming body against the solver's gate; quality statistics are of the mesh even when the gate refuses it.
+struct BodyQuality {
+    pass: bool,
+    fallback: bool,
+    min_sj: f64,
+    max_er: f64,
+    tets: usize,
+    /// Tetrahedra under the gate's scaled Jacobian, and those among them with all four vertices on the boundary.
+    bad: usize,
+    bad_flat_boundary: usize,
+    refusal: String,
+    solve: String,
+}
+
+fn body_quality(c: &solid_kernel::plc_conform::Conforming) -> BodyQuality {
+    use fea_core::{Elastic, Mesh, Physics};
+    let material = Elastic { e: 200e3, nu: 0.3, alpha: 0., aniso: None };
+    let mut mesh = Mesh::new(Physics::Solid);
+    mesh.nodes = c.points.clone();
+    let mut on_boundary = vec![false; c.points.len()];
+    for (f, _) in &c.facets {
+        for &v in f {
+            on_boundary[v] = true;
+        }
+    }
+    let (mut bad, mut bad_flat_boundary) = (0usize, 0usize);
+    let stats = match mesh.add_block(fea_core::ElementKind::Tet4, c.cells.iter().flatten().copied().collect(), material, "t") {
+        Ok(()) => {
+            let q = mesh.quality();
+            for (t, e) in c.cells.iter().zip(&q.elements) {
+                if e.scaled_jacobian < 0.1 {
+                    bad += 1;
+                    if std::env::var_os("ABC_SHOW_BAD").is_some() {
+                        eprintln!("bad tet sj {:.2e} er {:.1}: {:?}", e.scaled_jacobian, e.edge_ratio, t.map(|v| (v, on_boundary[v], c.points[v])));
+                    }
+                    bad_flat_boundary += t.iter().all(|&v| on_boundary[v]) as usize;
+                }
+            }
+            (q.min_scaled_jacobian, q.max_edge_ratio)
+        }
+        Err(_) => (f64::NAN, f64::NAN),
+    };
+    let mut out = BodyQuality {
+        pass: false,
+        fallback: c.report.unprotected_fallback_used,
+        min_sj: stats.0,
+        max_er: stats.1,
+        tets: c.cells.len(),
+        bad,
+        bad_flat_boundary,
+        refusal: String::new(),
+        solve: "skip".into(),
+    };
+    let solver = match c.to_solver_mesh(material) {
+        Ok(m) => m,
+        Err(e) => {
+            out.refusal = e.to_string();
+            return out;
+        }
+    };
+    out.pass = true;
+    // static solve: fix the nodes within 2% of the extent of the minimum end of the longest axis, push the maximum end sideways
+    let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
+    for p in &solver.nodes {
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    let axis = (0..3).max_by(|&a, &b| (hi[a] - lo[a]).total_cmp(&(hi[b] - lo[b]))).unwrap();
+    let side = (axis + 1) % 3;
+    let ext = hi[axis] - lo[axis];
+    let mut bc = fea_core::Dirichlet::new(solver.nodes.len(), 3);
+    let mut loads = fea_core::Loads::default();
+    let tol = 0.02 * ext;
+    let mut free_end = Vec::new();
+    for (i, p) in solver.nodes.iter().enumerate() {
+        if p[axis] <= lo[axis] + tol {
+            bc.fix_node(i);
+        } else if p[axis] >= hi[axis] - tol {
+            free_end.push(i);
+        }
+    }
+    for &i in &free_end {
+        let mut f = [0.; 3];
+        f[side] = 1. / free_end.len() as f64;
+        loads.nodal.push((i, f));
+    }
+    let started = Instant::now();
+    out.solve = match fea_core::Model::new(solver).and_then(|m| m.solve_static(&loads, &bc)) {
+        Ok(s) if s.rel_residual <= 1e-6 && s.u.iter().all(|x| x.is_finite()) && s.u.iter().any(|x| *x != 0.) => {
+            format!("ok res {:.1e} {:.2}s", s.rel_residual, started.elapsed().as_secs_f64())
+        }
+        Ok(s) => format!("bad res {:.1e}", s.rel_residual),
+        Err(e) => format!("err {e}"),
+    };
+    out
+}
+
+fn survey(path: &Path, conform_timeout: Duration, foreign: bool, graded_fallback: bool, steiner_budget: Option<usize>, merge: bool, quality: bool, refine: bool) -> String {
     let row = |stage: &str, detail: &str, f: usize, v: usize, t: usize, vol: f64, ang: f64| {
         format!("{stage},{},{f},{v},{t},{vol},{ang}", clean(detail))
     };
@@ -57,6 +162,7 @@ fn survey(path: &Path, conform_timeout: Duration, foreign: bool, graded_fallback
     // per-face sampling first; when that stage fails, from the graded model (`AnalyticModel::graded`), the production path.
     let (mut faces, mut nv, mut nt, mut vol, mut angle) = (0, 0, 0, 0., f64::INFINITY);
     let (mut steiner, mut cells, mut worst_err, mut graded_bodies) = (0usize, 0usize, 0f64, 0usize);
+    let mut qualities = Vec::new();
     let limits = solid_kernel::native_surface::Limits {
         face_work: 20_000_000,
         // an admission bound (faces x face_work), not accounting: sized to the part
@@ -91,21 +197,59 @@ fn survey(path: &Path, conform_timeout: Duration, foreign: bool, graded_fallback
             solid_kernel::plc_conform::conform(
                 &m.vertices,
                 &m.triangles,
-                match steiner_budget {
-                    Some(n) => solid_kernel::plc_conform::Options {
-                        max_steiner: n,
-                        max_cells: n.saturating_mul(100),
-                        merge_coplanar: merge,
-                        ..Default::default()
-                    },
-                    None => solid_kernel::plc_conform::Options { merge_coplanar: merge, ..Default::default() },
+                {
+                    let mut o = match steiner_budget {
+                        Some(n) => solid_kernel::plc_conform::Options {
+                            max_steiner: n,
+                            max_cells: n.saturating_mul(100),
+                            merge_coplanar: merge,
+                            ..Default::default()
+                        },
+                        None => solid_kernel::plc_conform::Options { merge_coplanar: merge, ..Default::default() },
+                    };
+                    // --refine: the sliver recipe (scaled Jacobian 0.2 by refinement, then flips and smoothing)
+                    if refine {
+                        o.min_scaled_jacobian = Some(0.2);
+                        o.max_quality_seconds = std::env::var("ABC_QSEC").ok().and_then(|v| v.parse().ok()).unwrap_or(20.);
+                        let passes = std::env::var("ABC_PASSES").ok().and_then(|v| v.parse().ok()).unwrap_or(6);
+                        if passes > 0 {
+                            o.reconnect = Some(fea_core::meshing::tet_flip::FlipOptions { max_passes: passes, ..Default::default() });
+                        }
+                        o.smooth_rounds = 0;
+                    }
+                    // ABC_RADIUS_EDGE: Options::max_radius_edge; ABC_RECONNECT=1: flip/edge-removal pass; ABC_PLANAR=1: with it
+                    // also reconnect flat boundary patches (experiments on the quality gate)
+                    if let Some(r) = std::env::var("ABC_RADIUS_EDGE").ok().and_then(|v| v.parse().ok()) {
+                        o.max_radius_edge = Some(r);
+                    }
+                    if let Some(r) = std::env::var("ABC_MIN_SJ").ok().and_then(|v| v.parse().ok()) {
+                        o.min_scaled_jacobian = Some(r);
+                    }
+                    if let Some(r) = std::env::var("ABC_SMOOTH").ok().and_then(|v| v.parse().ok()) {
+                        o.smooth_rounds = r;
+                    }
+                    if std::env::var_os("ABC_RECONNECT").is_some() {
+                        o.reconnect = Some(fea_core::meshing::tet_flip::FlipOptions {
+                            planar_boundary: std::env::var_os("ABC_PLANAR").is_some(),
+                            ..Default::default()
+                        });
+                    }
+                    o
                 },
                 |_| start.elapsed() < conform_timeout,
             )
-            .map(|c| (facts, c.report))
+            .map(|c| {
+                let q = quality.then(|| body_quality(&c));
+                (facts, (c.report, q))
+            })
             .map_err(|e| ("shell", e.to_string(), Some(facts)))
         };
-        let plain = attempt(model, limits);
+        // ABC_GRADED_FIRST (with --graded): skip the plain per-face sampling and mesh from the graded model at once
+        let plain = if std::env::var_os("ABC_GRADED_FIRST").is_some() {
+            Err(("sample", "plain sampling skipped".to_string(), None))
+        } else {
+            attempt(model, limits)
+        };
         let (facts, report, was_graded) = match plain {
             Ok((f, r)) => (f, r, false),
             Err(first) if !graded_fallback => {
@@ -146,6 +290,8 @@ fn survey(path: &Path, conform_timeout: Duration, foreign: bool, graded_fallback
                 }
             }
         };
+        let (report, body_q) = report;
+        qualities.extend(body_q);
         graded_bodies += was_graded as usize;
         nv += facts.0;
         nt += facts.1;
@@ -155,12 +301,30 @@ fn survey(path: &Path, conform_timeout: Duration, foreign: bool, graded_fallback
         cells += report.interior_cells;
         worst_err = worst_err.max(report.volume_error_relative);
     }
+    let mut detail = format!(
+        "bodies {} graded {graded_bodies} steiner {steiner} cells {cells} volume_error {worst_err:.3e}",
+        models.len()
+    );
+    if quality {
+        let pass = qualities.iter().all(|q| q.pass);
+        let fallback = qualities.iter().any(|q| q.fallback);
+        let sj = qualities.iter().map(|q| q.min_sj).fold(f64::INFINITY, f64::min);
+        let er = qualities.iter().map(|q| q.max_er).fold(0., f64::max);
+        let tets: usize = qualities.iter().map(|q| q.tets).sum();
+        let refusal = qualities.iter().map(|q| q.refusal.as_str()).find(|r| !r.is_empty()).unwrap_or("");
+        let solve = qualities.iter().map(|q| q.solve.as_str()).find(|r| !r.starts_with("ok")).unwrap_or("ok");
+        let bad: usize = qualities.iter().map(|q| q.bad).sum();
+        let bad_b: usize = qualities.iter().map(|q| q.bad_flat_boundary).sum();
+        detail += &format!(" bad={bad} badb={bad_b}");
+        detail += &format!(
+            " gate={} path={} sj={sj:.4} er={er:.1} tets={tets} solve={solve} refusal={refusal}",
+            if pass { "pass" } else { "fail" },
+            if fallback { "fallback" } else { "protected" }
+        );
+    }
     row(
         "conform",
-        &format!(
-            "bodies {} graded {graded_bodies} steiner {steiner} cells {cells} volume_error {worst_err:.3e}",
-            models.len()
-        ),
+        &detail,
         faces,
         nv,
         nt,
@@ -197,8 +361,10 @@ fn main() {
     let graded_fallback = args.iter().position(|a| a == "--graded").map(|i| args.remove(i)).is_some();
     let foreign = args.iter().position(|a| a == "--foreign").map(|i| args.remove(i)).is_some();
     let merge = args.iter().position(|a| a == "--merge").map(|i| args.remove(i)).is_some();
+    let quality = args.iter().position(|a| a == "--quality").map(|i| args.remove(i)).is_some();
+    let refine = args.iter().position(|a| a == "--refine").map(|i| args.remove(i)).is_some();
     if let Some(file) = flag(&mut args, "--one") {
-        println!("{}", survey(Path::new(&file), Duration::from_secs_f64(conform_s), foreign, graded_fallback, steiner, merge));
+        println!("{}", survey(Path::new(&file), Duration::from_secs_f64(conform_s), foreign, graded_fallback, steiner, merge, quality, refine));
         return;
     }
     let jobs: usize = flag(&mut args, "--jobs").map_or(1, |v| v.parse().unwrap());
@@ -206,7 +372,7 @@ fn main() {
     let timeout: f64 = flag(&mut args, "--timeout").map_or(180., |v| v.parse().unwrap());
     let (dir, out) = match args.as_slice() {
         [d, o] => (PathBuf::from(d), PathBuf::from(o)),
-        _ => panic!("usage: abc-corpus DIR OUT.csv [--limit N] [--timeout S] [--conform-timeout S] [--jobs N] [--foreign] [--graded] [--steiner N] [--merge]"),
+        _ => panic!("usage: abc-corpus DIR OUT.csv [--limit N] [--timeout S] [--conform-timeout S] [--jobs N] [--foreign] [--graded] [--steiner N] [--merge] [--quality] [--refine]"),
     };
     let mut files = Vec::new();
     collect(&dir, &mut files);
@@ -234,6 +400,12 @@ fn main() {
                     .stderr(Stdio::null());
                 if merge {
                     command.arg("--merge");
+                }
+                if quality {
+                    command.arg("--quality");
+                }
+                if refine {
+                    command.arg("--refine");
                 }
                 if foreign {
                     command.arg("--foreign");
