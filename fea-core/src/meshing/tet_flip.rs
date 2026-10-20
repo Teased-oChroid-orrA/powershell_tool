@@ -76,6 +76,10 @@ fn positive(points: &[Point], t: [usize; 4]) -> Result<Option<[usize; 4]>, MeshE
         },
     )
 }
+/// A tetrahedron whose scaled Jacobian is below 1e-7 at every corner: flat to the rounding of its coordinates.
+fn nearly_flat(points: &[Point], t: [usize; 4]) -> bool {
+    element_quality(ElementKind::Tet4, &t.map(|v| points[v])).scaled_jacobian.abs() < 1e-7
+}
 fn key3(mut f: [usize; 3]) -> [usize; 3] {
     f.sort_unstable();
     f
@@ -371,14 +375,23 @@ impl Pass<'_> {
                 self.points[link[(i + 1) % n]],
             )
         };
-        let sigma = turn(0)?;
-        if sigma == Ordering::Equal {
-            return Ok(None);
-        }
-        for i in 1..n {
-            if turn(i)? != sigma {
+        // A ring tetrahedron of (numerically) zero volume, the 180 degree wedge a Delaunay recovery leaves between a boundary
+        // face and the coplanar interior ones (four co-circular or co-planar vertices), has no turning direction of its own
+        // and does not take part in the vote; the new tetrahedra are checked one by one against the polygon's winding anyway.
+        let flat = |i: usize| nearly_flat(self.points, [p, q, link[i], link[(i + 1) % n]]);
+        let mut sigma = Ordering::Equal;
+        for i in 0..n {
+            if flat(i) {
+                continue;
+            }
+            let s = turn(i)?;
+            if s == Ordering::Equal || (sigma != Ordering::Equal && s != sigma) {
                 return Ok(None);
             }
+            sigma = s;
+        }
+        if sigma == Ordering::Equal {
+            return Ok(None);
         }
         let Some((new_min, new)) = self.triangulate_link(&link, p, q, sigma)? else {
             return Ok(None);

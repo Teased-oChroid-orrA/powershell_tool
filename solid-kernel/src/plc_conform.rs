@@ -18,12 +18,15 @@ use crate::{
 };
 use fea_core::meshing::{
     tet_delaunay::{tetrahedralize, Limits as DelaunayLimits},
+    quality::element_quality,
     tet_flip::{improve, FlipOptions, FlipReport},
+    tet_smooth::{optimize, SmoothOptions},
     tet_topology::{
         in_circle_2d, orientation, orientation_2d, sphere_side, SphereSide, TetTopology,
     },
     MeshError,
 };
+use fea_core::ElementKind;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{BuildHasherDefault, Hasher};
@@ -54,6 +57,7 @@ impl Hasher for FastHasher {
     }
 }
 type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<FastHasher>>;
+type FastSet<K> = std::collections::HashSet<K, BuildHasherDefault<FastHasher>>;
 #[derive(Debug, Clone, Copy)]
 pub struct Options {
     pub max_steiner: usize,
@@ -72,6 +76,22 @@ pub struct Options {
     /// Reconnect low-quality interior cells by 2-3 flips and edge removals after
     /// extraction (boundary, sub-facets and vertices are preserved exactly).
     pub reconnect: Option<FlipOptions>,
+    /// With `reconnect`, alternate that pass with smoothing of the interior vertices (`fea_core::meshing::tet_smooth`) for up
+    /// to this many rounds (`0`: reconnection only). Boundary vertices and the boundary never move.
+    pub smooth_rounds: usize,
+    /// Also insert the circumcentre of every interior tetrahedron whose scaled Jacobian (the solver gate's measure,
+    /// `fea_core::meshing::quality`) is below this bound. A radius-edge bound does not see slivers, and a Delaunay
+    /// recovery of a sampled CAD shell is full of them: tetrahedra whose four vertices all lie on the boundary, flat to the
+    /// rounding of the coordinates where a planar or cylindrical face carries four co-circular samples. Their circumcentre
+    /// is an interior point (or, on the face, splits the sub-facets it encroaches), which removes the sliver; the budget
+    /// `max_steiner` bounds the effort and cells that stay below the bound are counted in `unresolved_bad_cells`.
+    pub min_scaled_jacobian: Option<f64>,
+    /// Most points the sliver refinement (`min_scaled_jacobian`) may add; it also stops at fifteen times the vertices it starts
+    /// with (at least 1500). It stops there, quietly: the cells still below the bound are counted in `unresolved_bad_cells`.
+    pub max_quality_steiner: usize,
+    /// Wall-clock seconds the sliver refinement may run (per recovery); it then returns to the last conforming state it kept,
+    /// exactly as when the point budget is spent. A recovery that cannot finish its cascades in time keeps the mesh it had.
+    pub max_quality_seconds: f64,
     /// A sub-segment shorter than this fraction of the input's bounding-box diagonal is never split: refinement that has
     /// descended that far (a cascade of concentric shells around a vertex) produces elements no solver can use, and the
     /// recovery stops with an error instead.
@@ -107,6 +127,10 @@ impl Default for Options {
             protect_encroached: true,
             max_radius_edge: None,
             reconnect: None,
+            smooth_rounds: 0,
+            min_scaled_jacobian: None,
+            max_quality_steiner: 50_000,
+            max_quality_seconds: 30.,
             min_segment_relative: 1e-6,
             merge_coplanar: false,
             unprotected_fallback: true,
@@ -149,6 +173,8 @@ pub struct Report {
     pub interior_cells: usize,
     /// |sum of cell volumes - PLC enclosed volume| / PLC enclosed volume.
     pub volume_error_relative: f64,
+    /// The recovery that protects every encroached item failed to terminate and this result is the unprotected fallback's.
+    pub unprotected_fallback_used: bool,
 }
 /// Conforming tetrahedralization of the solid enclosed by the input shell.
 #[derive(Debug)]
@@ -298,8 +324,8 @@ fn outside_cells(
         let [a, b, c, d] = t;
         [[b, c, d], [a, d, c], [a, b, d], [a, c, b]]
     };
-    let facet_keys: BTreeSet<[usize; 3]> = facets.iter().map(|f| face_key(*f)).collect();
-    let mut owners = BTreeMap::<[usize; 3], Vec<(usize, usize)>>::new();
+    let facet_keys: FastSet<[usize; 3]> = facets.iter().map(|f| face_key(*f)).collect();
+    let mut owners = FastMap::<[usize; 3], Vec<(usize, usize)>>::default();
     for (i, t) in cells.iter().enumerate() {
         for (k, f) in faces_of(*t).into_iter().enumerate() {
             let key = face_key(f);
@@ -334,6 +360,7 @@ fn outside_cells(
     inside.into_iter().map(|x| !x).collect()
 }
 /// Planar Delaunay triangulation of one input facet and the Steiner points on it.
+#[derive(Clone)]
 struct FacetMesh {
     parent: usize,
     origin: V3,
@@ -554,7 +581,7 @@ impl FacetMesh {
     /// faces of the tetrahedralization. This resolves cospherical ties (grids,
     /// right angles) that a refinement would otherwise chase to zero size.
     /// Returns the number of flips.
-    fn flip_toward(&mut self, faces: &BTreeSet<[usize; 3]>) -> usize {
+    fn flip_toward(&mut self, faces: &FastSet<[usize; 3]>) -> usize {
         let mut flips = 0;
         'again: loop {
             let mut across = BTreeMap::<[usize; 2], usize>::new();
@@ -682,6 +709,7 @@ impl FacetMesh {
 /// Uniform grid over the points for "is any point inside this ball" queries: the encroachment tests would otherwise scan
 /// every vertex. It only prunes candidates; the caller applies its own exact predicate, so answers equal the full scan.
 /// Points outside the grid box (the far enclosing points, a Steiner point rounded off the shell) are always candidates.
+#[derive(Clone)]
 struct PointGrid {
     lo: V3,
     cell: f64,
@@ -765,6 +793,7 @@ impl PointGrid {
 /// scanning all of them. A segment of length `l` lives on the level whose cell size is at least `l` (cell = root / 2^level),
 /// in every cell its ball's bounding box touches (at most 3 per axis), so a point inside the ball is in one of those cells.
 /// It only prunes candidates: the caller applies the exact [`encroaches`] test, so the answers equal the full scan.
+#[derive(Clone)]
 struct SegmentGrid {
     lo: V3,
     root: f64,
@@ -851,6 +880,7 @@ impl SegmentGrid {
         out
     }
 }
+#[derive(Clone)]
 struct State {
     delaunay: Delaunay3,
     grid: std::cell::RefCell<PointGrid>,
@@ -863,12 +893,30 @@ struct State {
     /// Entries of `enc_tris` queued because the exact presence check found the sub-facet missing, not because a vertex
     /// encroaches it: a refresh of the facet mesh drops them unless they are encroached too.
     forced_tris: BTreeSet<(usize, [usize; 3])>,
+    /// Sub-segments and sub-facets the Delaunay triangulation lacked (their recovery is required), as opposed to those split
+    /// only because a sliver's centre encroached them (optional).
+    required_segments: BTreeSet<[usize; 2]>,
+    required_tris: BTreeSet<(usize, [usize; 3])>,
+    /// Optional splits refused at the feature-size floor: no sliver centre that encroaches one is tried again.
+    refused_segments: BTreeSet<[usize; 2]>,
+    /// Sub-facets a sliver's centre would have split but could not: left as they are (they are present).
+    refused_tris: BTreeSet<(usize, [usize; 3])>,
+    /// Shortest sub-segment a sliver may ask to have split: the shortest input segment, so that the splits forced by slivers
+    /// stay a level or two below the input resolution instead of cascading around an acute vertex. `0` without slivers.
+    optional_floor: f64,
     steiner: usize,
     /// Steiner points this attempt may add.
     steiner_cap: usize,
     segment_steiner: usize,
     facet_steiner: usize,
     quality_steiner: usize,
+    /// Points (including the splits it forces) the sliver refinement may add; a quarter more ends it by a rollback.
+    quality_cap: usize,
+    /// Point count when the sliver refinement began.
+    quality_start: Option<usize>,
+    quality_clock: Option<std::time::Instant>,
+    /// Rounds of the sliver refinement so far (it ends at 5000).
+    quality_rounds: usize,
     unresolved_bad: usize,
     max_offset: f64,
     options: Options,
@@ -893,8 +941,8 @@ impl State {
             .flat_map(|m| m.tris.iter().map(|t| (*t, m.parent)))
             .collect()
     }
-    fn tet_edges_and_faces(&self) -> (BTreeSet<[usize; 2]>, BTreeSet<[usize; 3]>) {
-        let (mut edges, mut faces) = (BTreeSet::new(), BTreeSet::new());
+    fn tet_edges_and_faces(&self) -> (FastSet<[usize; 2]>, FastSet<[usize; 3]>) {
+        let (mut edges, mut faces) = (FastSet::default(), FastSet::default());
         for [a, b, c, d] in self.delaunay.cells() {
             for (x, y) in [(a, b), (a, c), (a, d), (b, c), (b, d), (c, d)] {
                 edges.insert(edge(x, y));
@@ -944,7 +992,10 @@ impl State {
         }
         for i in 0..self.meshes[k].tris.len() {
             let t = self.meshes[k].tris[i];
-            if self.tri_encroached(t)? {
+            if !self.refused_tris.contains(&(k, t))
+                && !self.unrefinable.contains(&(k, t))
+                && self.tri_encroached(t)?
+            {
                 self.enc_tris.insert((k, t));
             }
         }
@@ -985,16 +1036,26 @@ impl State {
             self.enc_tris.remove(&entry);
         }
         for t in live {
-            if t.contains(&v) && self.tri_encroached(t)? {
+            if t.contains(&v)
+                && !self.refused_tris.contains(&(k, t))
+                && !self.unrefinable.contains(&(k, t))
+                && self.tri_encroached(t)?
+            {
                 self.enc_tris.insert((k, t));
             }
         }
+        self.enc_tris.retain(|entry| !self.refused_tris.contains(entry) && !self.unrefinable.contains(entry));
         // The incremental bookkeeping must equal the full recomputation (checked in debug builds, including every test).
         #[cfg(debug_assertions)]
         {
             let mut full = BTreeSet::new();
             for &t in &self.meshes[k].tris {
-                if self.tri_encroached(t)? {
+                // Optional quality splits can be refused at the feature-size floor. They remain
+                // geometrically encroached, but are deliberately absent from the work queue.
+                if !self.refused_tris.contains(&(k, t))
+                    && !self.unrefinable.contains(&(k, t))
+                    && self.tri_encroached(t)?
+                {
                     full.insert((k, t));
                 }
             }
@@ -1045,7 +1106,9 @@ impl State {
                 }
                 if let Some((cc, r2)) = sphere {
                     if norm2(sub(p, *cc)) < r2 * (1. - 1e-9) {
-                        hit_tris.push((k, *t));
+                        if !self.refused_tris.contains(&(k, *t)) && !self.unrefinable.contains(&(k, *t)) {
+                            hit_tris.push((k, *t));
+                        }
                     }
                 }
             }
@@ -1055,7 +1118,7 @@ impl State {
     }
     /// One batch of quality refinement. Returns whether anything was queued or
     /// inserted (false: nothing left to do or nothing more can be done).
-    fn refine_quality(&mut self, bound: f64) -> Result<bool, Error> {
+    fn refine_quality(&mut self, bound: f64, min_sj: f64) -> Result<bool, Error> {
         let (cells, neighbors) = self.delaunay.snapshot();
         let pts = self.points().to_vec();
         let facet_list: Vec<[usize; 3]> = self
@@ -1069,16 +1132,39 @@ impl State {
             if *out {
                 continue;
             }
-            match tet_circumsphere(t.map(|v| pts[v])) {
-                Some((_, ratio)) if ratio <= bound => {}
-                _ => bad.push((
-                    tet_circumsphere(t.map(|v| pts[v])).map_or(f64::MAX, |x| x.1),
-                    *t,
-                )),
+            let corners = t.map(|v| pts[v]);
+            match tet_circumsphere(corners) {
+                Some((_, ratio)) if ratio <= bound => {
+                    if min_sj > 0. {
+                        let sj = element_quality(ElementKind::Tet4, &corners).scaled_jacobian;
+                        if sj < min_sj {
+                            // after every cell the radius-edge bound rejects, the worst sliver first
+                            bad.push((bound.min(1e6) * (1. - sj / min_sj).max(0.), *t));
+                        }
+                    }
+                }
+                found => bad.push((found.map_or(f64::MAX, |x| x.1), *t)),
             }
         }
         bad.sort_by(|a, b| b.0.total_cmp(&a.0));
-        let batch = (bad.len() / 8).clamp(1, 256);
+        self.quality_rounds += 1;
+        if min_sj > 0. && self.quality_rounds > 5000 {
+            self.unresolved_bad = bad.len();
+            return Ok(false);
+        }
+        // Sliver refinement is best effort: stop with headroom left rather than run the budget out in the middle of the
+        // splits a centre forces.
+        if min_sj > 0.
+            && (self.steiner.saturating_sub(self.quality_start.unwrap_or(0)) >= self.quality_cap || self.steiner + 64 + self.steiner_cap / 16 >= self.steiner_cap)
+        {
+            self.unresolved_bad = bad.len();
+            return Ok(false);
+        }
+        if std::env::var_os("STAGEDBG").is_some() {
+            eprintln!("refine round: bad {} steiner {} cap {} quality {}/{}", bad.len(), self.steiner, self.steiner_cap, self.quality_steiner, self.quality_cap);
+        }
+        let batch = if min_sj > 0. { (bad.len() / 4).clamp(1, 2048) } else { (bad.len() / 8).clamp(1, 256) };
+        let mut current = pts.clone();
         let mut killed = BTreeSet::new();
         let mut progressed = false;
         let mut unresolved = 0;
@@ -1088,31 +1174,51 @@ impl State {
             if killed.contains(&key) {
                 continue;
             }
-            let Some((cc, _)) = tet_circumsphere(t.map(|v| pts[v])) else {
-                unresolved += 1;
-                continue;
-            };
+            let corners = t.map(|v| pts[v]);
+            let centroid: V3 = std::array::from_fn(|k| corners.iter().map(|p| p[k]).sum::<f64>() / 4.);
+            let longest2 = (0..4)
+                .flat_map(|i| ((i + 1)..4).map(move |j| (i, j)))
+                .map(|(i, j)| norm2(sub(corners[i], corners[j])))
+                .fold(0., f64::max);
             // The circumcentre of a near-flat cell is ill-conditioned: rounded, it can lie outside the exact circumsphere, so
             // inserting it destroys nothing and the same cell (and the same centre, now a duplicate vertex) comes back every
-            // round. Only a centre strictly inside the cell's own circumsphere can remove it.
-            if sphere_side(t.map(|v| pts[v]), cc) != Ok(SphereSide::Inside) {
-                unresolved += 1;
-                continue;
-            }
-            let current = self.points().to_vec();
+            // round, or far away from the cell it should remove. Only a centre strictly inside the cell's own circumsphere
+            // and within a few edge lengths of it is used; a sliver whose centre is not takes its centroid (always inside
+            // the circumsphere), which a flat cell on a boundary face places in the face and so splits the face.
+            let centre = tet_circumsphere(corners)
+                .map(|(c, _)| c)
+                .filter(|c| (min_sj <= 0. || norm2(sub(*c, centroid)) <= 9. * longest2) && sphere_side(corners, *c) == Ok(SphereSide::Inside));
+            let cc = match centre {
+                Some(c) => c,
+                None if min_sj > 0. && element_quality(ElementKind::Tet4, &corners).scaled_jacobian < min_sj => centroid,
+                None => {
+                    unresolved += 1;
+                    continue;
+                }
+            };
             let hit: Vec<[usize; 2]> = self.seg_grid.encroached_by(&current, cc, None);
             // A centre that encroaches a frozen segment or facet cannot be placed (the item may not be split): the cell stays.
-            if hit.iter().any(|s| self.frozen_segments.contains(s)) {
+            // Neither can one that encroaches a sub-segment already at the floor when the cell is a sliver: a sliver is not
+            // worth a refusal of the whole recovery.
+            if hit.iter().any(|s| self.frozen_segments.contains(s) || self.refused_segments.contains(s))
+                || (min_sj > 0.
+                    && hit
+                        .iter()
+                        .any(|s| norm2(sub(current[s[0]], current[s[1]])).sqrt() < self.optional_floor))
+            {
                 unresolved += 1;
                 continue;
             }
             let mut hit_tris = Vec::new();
             let mut hits_frozen = false;
-            for (k, m) in self.meshes.iter().enumerate() {
-                for &f in &m.tris {
-                    let [a, b, c] = f.map(|v| current[v]);
-                    if let Some(fc) = circumcentre(a, b, c) {
-                        if norm2(sub(cc, fc)) < norm2(sub(a, fc)) * (1. - 1e-9) {
+            for (k, m) in self.meshes.iter_mut().enumerate() {
+                m.ensure_spheres(&current);
+                if (0..3).any(|i| cc[i] < m.ball_box.0[i] || cc[i] > m.ball_box.1[i]) {
+                    continue;
+                }
+                for (&f, sphere) in m.tris.iter().zip(&m.spheres) {
+                    if let Some((fc, r2)) = sphere {
+                        if norm2(sub(cc, *fc)) < *r2 * (1. - 1e-9) {
                             if self.frozen_facets.contains(&k) {
                                 hits_frozen = true;
                             }
@@ -1121,7 +1227,7 @@ impl State {
                     }
                 }
             }
-            if hits_frozen {
+            if hits_frozen || hit_tris.iter().any(|x| self.unrefinable.contains(x) || self.refused_tris.contains(x)) {
                 unresolved += 1;
                 continue;
             }
@@ -1134,7 +1240,9 @@ impl State {
                 continue;
             }
             match self.insert(cc) {
-                Ok(_) => {
+                Ok(i) => {
+                    debug_assert_eq!(i, current.len());
+                    current.push(cc);
                     self.quality_steiner += 1;
                     progressed = true;
                     for r in self.delaunay.last_removed() {
@@ -1378,15 +1486,272 @@ fn conform_impl(
         {
             let relaxed = Options { protect_encroached: false, ..options };
             // a refusal of the second attempt is the more informative one only when it is not the same kind of cascade
-            conform_attempt(vertices, facets, frozen, relaxed, &mut progress).map_err(|second| {
-                if second.detail == FLOOR_MESSAGE || second.detail == BUDGET_MESSAGE {
-                    e
-                } else {
-                    second
-                }
-            })
+            conform_attempt(vertices, facets, frozen, relaxed, &mut progress)
+                .map(|mut c| {
+                    c.report.unprotected_fallback_used = true;
+                    c
+                })
+                .map_err(|second| {
+                    if second.detail == FLOOR_MESSAGE || second.detail == BUDGET_MESSAGE {
+                        e
+                    } else {
+                        second
+                    }
+                })
         }
         other => other,
+    }
+}
+/// The sliver refinement ends (by a rollback of the caller) when it has spent its points or its time.
+fn quality_overdue(state: &State) -> Result<(), Error> {
+    if let Some(start) = state.quality_start {
+        let late = state.quality_clock.is_some_and(|c| c.elapsed().as_secs_f64() > state.options.max_quality_seconds);
+        if late || state.steiner > start + state.quality_cap + state.quality_cap / 4 {
+            return Err(fail(ErrorKind::Limit, BUDGET_MESSAGE));
+        }
+    }
+    Ok(())
+}
+/// The recovery loop: splits what is encroached or missing until the shell conforms, then refines quality.
+fn drive(
+    state: &mut State,
+    progress: &mut dyn FnMut(Progress) -> bool,
+    rounds: &mut usize,
+    snapshot: &mut Option<State>,
+    next_snapshot: &mut usize,
+) -> Result<(), Error> {
+    let mut pts_cache: Vec<V3> = Vec::new();
+    loop {
+        quality_overdue(state)?;
+        // Encroached segments before facets; each insertion updates both lists.
+        while let Some(s) = state.enc_segments.pop_first() {
+            if !state.segments.contains(&s) {
+                continue;
+            }
+            quality_overdue(state)?;
+            publish(
+                &*state,
+                Phase::Segments,
+                (state.enc_segments.len() + 1, state.enc_tris.len()),
+                progress,
+            )?;
+            // a split only a sliver asked for may descend no further than the input resolution: the sliver stays
+            if state.quality_start.is_some() && !state.required_segments.contains(&s) {
+                let [a, b] = s;
+                if norm2(sub(state.points()[a], state.points()[b])).sqrt() < state.optional_floor {
+                    state.refused_segments.insert(s);
+                    continue;
+                }
+            }
+            match state.split_segment(s) {
+                Err(e) if e.detail == FLOOR_MESSAGE && state.quality_start.is_some() && !state.required_segments.contains(&s) => {
+                    state.refused_segments.insert(s);
+                }
+                other => other?,
+            }
+        }
+        if let Some((k, t)) = state.enc_tris.pop_first() {
+            let was_forced = state.forced_tris.remove(&(k, t));
+            if !state.meshes[k].tris.contains(&t) {
+                continue;
+            }
+            publish(
+                &*state,
+                Phase::Facets,
+                (0, state.enc_tris.len() + 1),
+                progress,
+            )?;
+            if state.frozen_facets.contains(&k) {
+                let [a, b, c] = t.map(|v| state.points()[v]);
+                return Err(fail(
+                    ErrorKind::Geometry,
+                    format!(
+                        "a frozen facet {a:?} {b:?} {c:?} is missing from the Delaunay triangulation and may not be split"
+                    ),
+                ));
+            }
+            if state.unrefinable.contains(&(k, t)) || (state.refused_tris.contains(&(k, t)) && !state.required_tris.contains(&(k, t))) {
+                continue;
+            }
+            let (cc, _) = state.tri_circumsphere(t)?;
+            // points are only ever appended: the copy is extended, not rebuilt, for every sub-facet
+            let have = pts_cache.len();
+            pts_cache.extend_from_slice(&state.points()[have..]);
+            let pts = &pts_cache;
+            let hit: Vec<[usize; 2]> = state.seg_grid.encroached_by(&pts, cc, None);
+            // The centre of a sub-facet that encroaches a frozen segment cannot be placed; a present sub-facet is left as it is.
+            if hit.iter().any(|s| state.frozen_segments.contains(s)) {
+                state.unrefinable.insert((k, t));
+                continue;
+            }
+            if !hit.is_empty() {
+                if !state.required_tris.contains(&(k, t)) && hit.iter().any(|s| state.refused_segments.contains(s)) {
+                    state.refused_tris.insert((k, t));
+                    continue;
+                }
+                // The centre is rejected; its encroached segments are split first.
+                state.enc_segments.extend(hit);
+                state.enc_tris.insert((k, t));
+                if was_forced {
+                    state.forced_tris.insert((k, t));
+                }
+                continue;
+            }
+            if !state.meshes[k].contains(cc, &pts) {
+                // In exact arithmetic a centre outside the facet encroaches a segment; here it did not (rounding on a skinny
+                // sub-facet), so the boundary sub-segment the centre is nearest to, the one it lies beyond, is split instead and
+                // the sub-facet revisited, as when the centre sits on the boundary.
+                let nearest = state.meshes[k].nearest_boundary_edge(cc, &pts);
+                if let Some(s) = nearest.filter(|s| state.segments.contains(s) && !state.frozen_segments.contains(s)) {
+                    if !state.required_tris.contains(&(k, t)) && state.refused_segments.contains(&s) {
+                        state.refused_tris.insert((k, t));
+                        continue;
+                    }
+                    state.enc_segments.insert(s);
+                    state.enc_tris.insert((k, t));
+                    if was_forced {
+                        state.forced_tris.insert((k, t));
+                    }
+                    continue;
+                }
+                return Err(fail(
+                    ErrorKind::Geometry,
+                    "sub-facet circumcentre leaves its facet without encroaching a segment",
+                ));
+            }
+            let (off, longest) = {
+                let m = &state.meshes[k];
+                let n = cross(m.e1, m.e2);
+                let longest = m
+                    .tris
+                    .iter()
+                    .flat_map(|t| (0..3).map(|i| norm2(sub(pts[t[i]], pts[t[(i + 1) % 3]]))))
+                    .fold(0., f64::max);
+                (dot(sub(cc, m.origin), n).abs(), longest)
+            };
+            // The facet mesh is updated first: it changes nothing when it refuses.
+            let id = pts.len();
+            if let Err(refusal) = state.meshes[k].insert(id, cc, None) {
+                // The centre sits on the facet boundary within rounding: split the
+                // closest boundary sub-segment instead and revisit the sub-facet.
+                let nearest = state.meshes[k].nearest_boundary_edge(cc, &pts);
+                if let Some(s) = nearest.filter(|s| state.segments.contains(s)) {
+                    if !state.required_tris.contains(&(k, t)) && state.refused_segments.contains(&s) {
+                        state.refused_tris.insert((k, t));
+                        continue;
+                    }
+                    state.enc_segments.insert(s);
+                    state.enc_tris.insert((k, t));
+                    if was_forced {
+                        state.forced_tris.insert((k, t));
+                    }
+                    continue;
+                }
+                return Err(fail(
+                    ErrorKind::Geometry,
+                    format!(
+                        "sub-facet circumcentre could not be inserted into its facet: {}",
+                        refusal.detail
+                    ),
+                ));
+            }
+            let inserted = state.insert(cc)?;
+            debug_assert_eq!(inserted, id);
+            state.facet_steiner += 1;
+            state.max_offset = state.max_offset.max(off / longest.sqrt());
+            state.note_vertex(id)?;
+            state.refresh_mesh_around(k, id)?;
+            continue;
+        }
+        // Encroachment is only a sufficient condition; verify presence exactly and
+        // force whatever a cospherical tie left out.
+        *rounds += 1;
+        let (edges, faces) = state.tet_edges_and_faces();
+        let missing_segments: Vec<_> = state
+            .segments
+            .iter()
+            .copied()
+            .filter(|s| !edges.contains(s))
+            .collect();
+        let missing_tris: Vec<(usize, [usize; 3])> = state
+            .meshes
+            .iter()
+            .enumerate()
+            .flat_map(|(k, m)| m.tris.iter().map(move |t| (k, *t)))
+            .filter(|(_, t)| !faces.contains(&face_key(*t)))
+            .collect();
+        // A cospherical tie can make the facet's planar triangulation pick the other
+        // diagonal than the tetrahedralization: align it before refining anything.
+        let mut flipped = 0;
+        if missing_segments.is_empty() && !missing_tris.is_empty() {
+            for mesh in &mut state.meshes {
+                flipped += mesh.flip_toward(&faces);
+            }
+        }
+        if flipped > 0 {
+            for k in 0..state.meshes.len() {
+                state.refresh_mesh(k)?;
+            }
+            continue;
+        }
+        if let Some((k, t)) = missing_tris.iter().find(|(k, t)| state.unrefinable.contains(&(*k, *t))) {
+            let [a, b, c] = t.map(|v| state.points()[v]);
+            return Err(fail(
+                ErrorKind::Geometry,
+                format!(
+                    "facet {k} ({a:?} {b:?} {c:?}) is missing and refining it would split a frozen segment"
+                ),
+            ));
+        }
+        if missing_segments.is_empty() && missing_tris.is_empty() {
+            let (bound, min_sj) = (state.options.max_radius_edge, state.options.min_scaled_jacobian);
+            if bound.is_some() || min_sj.is_some() {
+                // Sliver refinement can run into an input angle and fail late; the state before it is conforming and
+                // good, so keep a copy, renewed whenever the point count has grown by a quarter, and return to it on a failure.
+                state.quality_start.get_or_insert(state.steiner);
+                state.quality_clock.get_or_insert_with(std::time::Instant::now);
+                if min_sj.is_some() && state.steiner >= *next_snapshot {
+                    *snapshot = Some(state.clone());
+                    *next_snapshot = state.steiner + state.steiner / 4 + 8;
+                }
+                publish(&*state, Phase::Facets, (0, 0), progress)?;
+                if state.refine_quality(bound.unwrap_or(f64::INFINITY), min_sj.unwrap_or(0.))? {
+                    continue;
+                }
+            }
+            return Ok(());
+        }
+        publish(
+            &*state,
+            Phase::Facets,
+            (missing_segments.len(), missing_tris.len()),
+            progress,
+        )?;
+        if !missing_segments.is_empty() {
+            state.required_segments.extend(missing_segments.iter().copied());
+            state.enc_segments.extend(missing_segments);
+        } else {
+            state.required_tris.extend(missing_tris.iter().copied());
+            state.forced_tris.extend(missing_tris.iter().copied());
+            state.enc_tris.extend(missing_tris);
+        }
+    }
+}
+fn publish(
+    state: &State,
+    phase: Phase,
+    missing: (usize, usize),
+    progress: &mut dyn FnMut(Progress) -> bool,
+) -> Result<(), Error> {
+    if progress(Progress {
+        phase,
+        steiner: state.steiner,
+        missing_segments: missing.0,
+        missing_facets: missing.1,
+    }) {
+        Ok(())
+    } else {
+        Err(fail(ErrorKind::Cancelled, "PLC recovery cancelled"))
     }
 }
 fn conform_attempt(
@@ -1396,21 +1761,6 @@ fn conform_attempt(
     options: Options,
     progress: &mut dyn FnMut(Progress) -> bool,
 ) -> Result<Conforming, Error> {
-    let publish = |state: &State,
-                   phase,
-                   missing: (usize, usize),
-                   progress: &mut dyn FnMut(Progress) -> bool| {
-        if progress(Progress {
-            phase,
-            steiner: state.steiner,
-            missing_segments: missing.0,
-            missing_facets: missing.1,
-        }) {
-            Ok(())
-        } else {
-            Err(fail(ErrorKind::Cancelled, "PLC recovery cancelled"))
-        }
-    };
     if facets.is_empty() || facets.iter().flatten().any(|&v| v >= vertices.len()) {
         return Err(fail(ErrorKind::Topology, "invalid PLC facet list"));
     }
@@ -1496,6 +1846,17 @@ fn conform_attempt(
         }
         grid
     };
+    let segments_input_shortest = {
+        let l = segments
+            .iter()
+            .map(|e| norm2(sub(vertices[e[0]], vertices[e[1]])).sqrt())
+            .fold(f64::INFINITY, f64::min);
+        if l.is_finite() {
+            l
+        } else {
+            0.
+        }
+    };
     let mut state = State {
         delaunay: Delaunay3::new(&seed, options.max_cells),
         grid: std::cell::RefCell::new(PointGrid::new(vertices)),
@@ -1505,6 +1866,15 @@ fn conform_attempt(
         enc_segments: BTreeSet::new(),
         enc_tris: BTreeSet::new(),
         forced_tris: BTreeSet::new(),
+        required_segments: BTreeSet::new(),
+        required_tris: BTreeSet::new(),
+        refused_segments: BTreeSet::new(),
+        refused_tris: BTreeSet::new(),
+        optional_floor: if options.min_scaled_jacobian.is_some() {
+            segments_input_shortest
+        } else {
+            0.
+        },
         steiner: 0,
         steiner_cap: if options.protect_encroached && options.unprotected_fallback {
             options.max_steiner.min(options.protected_max_steiner)
@@ -1514,6 +1884,10 @@ fn conform_attempt(
         segment_steiner: 0,
         facet_steiner: 0,
         quality_steiner: 0,
+        quality_start: None,
+        quality_clock: None,
+        quality_rounds: 0,
+        quality_cap: options.max_quality_steiner.min((15 * vertices.len()).max(1500)),
         unresolved_bad: 0,
         max_offset: 0.,
         options,
@@ -1553,179 +1927,24 @@ fn conform_attempt(
         state.refresh_mesh(k)?;
     }
     let mut rounds = 0;
-    loop {
-        // Encroached segments before facets; each insertion updates both lists.
-        while let Some(s) = state.enc_segments.pop_first() {
-            if !state.segments.contains(&s) {
-                continue;
+    let (mut snapshot, mut next_snapshot) = (None, 0);
+    let mut cancelled = false;
+    match drive(&mut state, progress, &mut rounds, &mut snapshot, &mut next_snapshot) {
+        Ok(()) => {}
+        // A refusal after the sliver stage began, or a cancellation during it, returns to the last conforming state it kept:
+        // the sliver stage is an improvement of a result that already conforms and ends early without losing it.
+        Err(e) if snapshot.is_some() => {
+            if std::env::var_os("STAGEDBG").is_some() {
+                eprintln!("rollback after {} quality points: {e}", state.quality_steiner);
             }
-            publish(
-                &state,
-                Phase::Segments,
-                (state.enc_segments.len() + 1, state.enc_tris.len()),
-                progress,
-            )?;
-            state.split_segment(s)?;
+            cancelled = e.kind == ErrorKind::Cancelled;
+            state = snapshot.take().unwrap();
         }
-        if let Some((k, t)) = state.enc_tris.pop_first() {
-            let was_forced = state.forced_tris.remove(&(k, t));
-            if !state.meshes[k].tris.contains(&t) {
-                continue;
-            }
-            publish(
-                &state,
-                Phase::Facets,
-                (0, state.enc_tris.len() + 1),
-                progress,
-            )?;
-            if state.frozen_facets.contains(&k) {
-                let [a, b, c] = t.map(|v| state.points()[v]);
-                return Err(fail(
-                    ErrorKind::Geometry,
-                    format!(
-                        "a frozen facet {a:?} {b:?} {c:?} is missing from the Delaunay triangulation and may not be split"
-                    ),
-                ));
-            }
-            if state.unrefinable.contains(&(k, t)) {
-                continue;
-            }
-            let (cc, _) = state.tri_circumsphere(t)?;
-            let pts = state.points().to_vec();
-            let hit: Vec<[usize; 2]> = state.seg_grid.encroached_by(&pts, cc, None);
-            // The centre of a sub-facet that encroaches a frozen segment cannot be placed; a present sub-facet is left as it is.
-            if hit.iter().any(|s| state.frozen_segments.contains(s)) {
-                state.unrefinable.insert((k, t));
-                continue;
-            }
-            if !hit.is_empty() {
-                // The centre is rejected; its encroached segments are split first.
-                state.enc_segments.extend(hit);
-                state.enc_tris.insert((k, t));
-                if was_forced {
-                    state.forced_tris.insert((k, t));
-                }
-                continue;
-            }
-            if !state.meshes[k].contains(cc, &pts) {
-                // In exact arithmetic a centre outside the facet encroaches a segment; here it did not (rounding on a skinny
-                // sub-facet), so the boundary sub-segment the centre is nearest to, the one it lies beyond, is split instead and
-                // the sub-facet revisited, as when the centre sits on the boundary.
-                let nearest = state.meshes[k].nearest_boundary_edge(cc, &pts);
-                if let Some(s) = nearest.filter(|s| state.segments.contains(s) && !state.frozen_segments.contains(s)) {
-                    state.enc_segments.insert(s);
-                    state.enc_tris.insert((k, t));
-                    if was_forced {
-                        state.forced_tris.insert((k, t));
-                    }
-                    continue;
-                }
-                return Err(fail(
-                    ErrorKind::Geometry,
-                    "sub-facet circumcentre leaves its facet without encroaching a segment",
-                ));
-            }
-            let (off, longest) = {
-                let m = &state.meshes[k];
-                let n = cross(m.e1, m.e2);
-                let longest = m
-                    .tris
-                    .iter()
-                    .flat_map(|t| (0..3).map(|i| norm2(sub(pts[t[i]], pts[t[(i + 1) % 3]]))))
-                    .fold(0., f64::max);
-                (dot(sub(cc, m.origin), n).abs(), longest)
-            };
-            // The facet mesh is updated first: it changes nothing when it refuses.
-            let id = pts.len();
-            if let Err(refusal) = state.meshes[k].insert(id, cc, None) {
-                // The centre sits on the facet boundary within rounding: split the
-                // closest boundary sub-segment instead and revisit the sub-facet.
-                let nearest = state.meshes[k].nearest_boundary_edge(cc, &pts);
-                if let Some(s) = nearest.filter(|s| state.segments.contains(s)) {
-                    state.enc_segments.insert(s);
-                    state.enc_tris.insert((k, t));
-                    if was_forced {
-                        state.forced_tris.insert((k, t));
-                    }
-                    continue;
-                }
-                return Err(fail(
-                    ErrorKind::Geometry,
-                    format!(
-                        "sub-facet circumcentre could not be inserted into its facet: {}",
-                        refusal.detail
-                    ),
-                ));
-            }
-            let inserted = state.insert(cc)?;
-            debug_assert_eq!(inserted, id);
-            state.facet_steiner += 1;
-            state.max_offset = state.max_offset.max(off / longest.sqrt());
-            state.note_vertex(id)?;
-            state.refresh_mesh_around(k, id)?;
-            continue;
-        }
-        // Encroachment is only a sufficient condition; verify presence exactly and
-        // force whatever a cospherical tie left out.
-        rounds += 1;
-        let (edges, faces) = state.tet_edges_and_faces();
-        let missing_segments: Vec<_> = state
-            .segments
-            .iter()
-            .copied()
-            .filter(|s| !edges.contains(s))
-            .collect();
-        let missing_tris: Vec<(usize, [usize; 3])> = state
-            .meshes
-            .iter()
-            .enumerate()
-            .flat_map(|(k, m)| m.tris.iter().map(move |t| (k, *t)))
-            .filter(|(_, t)| !faces.contains(&face_key(*t)))
-            .collect();
-        // A cospherical tie can make the facet's planar triangulation pick the other
-        // diagonal than the tetrahedralization: align it before refining anything.
-        let mut flipped = 0;
-        if missing_segments.is_empty() && !missing_tris.is_empty() {
-            for mesh in &mut state.meshes {
-                flipped += mesh.flip_toward(&faces);
-            }
-        }
-        if flipped > 0 {
-            for k in 0..state.meshes.len() {
-                state.refresh_mesh(k)?;
-            }
-            continue;
-        }
-        if let Some((k, t)) = missing_tris.iter().find(|(k, t)| state.unrefinable.contains(&(*k, *t))) {
-            let [a, b, c] = t.map(|v| state.points()[v]);
-            return Err(fail(
-                ErrorKind::Geometry,
-                format!(
-                    "facet {k} ({a:?} {b:?} {c:?}) is missing and refining it would split a frozen segment"
-                ),
-            ));
-        }
-        if missing_segments.is_empty() && missing_tris.is_empty() {
-            let bound = state.options.max_radius_edge;
-            match bound {
-                Some(bound) if state.refine_quality(bound)? => continue,
-                _ => break,
-            }
-        }
-        publish(
-            &state,
-            Phase::Facets,
-            (missing_segments.len(), missing_tris.len()),
-            progress,
-        )?;
-        if !missing_segments.is_empty() {
-            state.enc_segments.extend(missing_segments);
-        } else {
-            state.forced_tris.extend(missing_tris.iter().copied());
-            state.enc_tris.extend(missing_tris);
-        }
+        Err(e) => return Err(e),
     }
-    publish(&state, Phase::Extraction, (0, 0), progress)?;
+    if !cancelled {
+        publish(&state, Phase::Extraction, (0, 0), progress)?;
+    }
     let mut result = extract(state, vertices.len(), rounds)?;
     // facet numbers of the result are input facet numbers: a merged patch hands each sub-facet to the member it lies in
     for (f, parent) in &mut result.facets {
@@ -1777,6 +1996,7 @@ fn enclosing_points(vertices: &[V3]) -> [V3; ENCLOSING] {
 }
 fn extract(state: State, input_vertices: usize, rounds: usize) -> Result<Conforming, Error> {
     let reconnect = state.options.reconnect;
+    let smooth_rounds = state.options.smooth_rounds;
     let max_cells = state.options.max_cells;
     let facets = state.facets();
     let stats = (
@@ -1788,7 +2008,7 @@ fn extract(state: State, input_vertices: usize, rounds: usize) -> Result<Conform
         state.unresolved_bad,
     );
     let topology = state.delaunay.into_topology().map_err(mesh_error)?;
-    let points = topology.points().to_vec();
+    let mut points = topology.points().to_vec();
     let cells = topology.cells();
     let facet_keys: BTreeSet<[usize; 3]> = facets.iter().map(|(f, _)| face_key(*f)).collect();
     // Cells reachable from the hull boundary without crossing a PLC facet lie outside.
@@ -1809,8 +2029,16 @@ fn extract(state: State, input_vertices: usize, rounds: usize) -> Result<Conform
         None => (interior, None),
         Some(flip) => {
             let seed = TetTopology::new(points.clone(), interior, max_cells).map_err(mesh_error)?;
-            let (better, report) = improve(&seed, &BTreeSet::new(), flip).map_err(mesh_error)?;
-            (better.cells().to_vec(), Some(report))
+            if smooth_rounds > 0 {
+                let (better, report) =
+                    optimize(&seed, &BTreeSet::new(), flip, &SmoothOptions::default(), smooth_rounds).map_err(mesh_error)?;
+                // smoothing moves interior vertices: the points of the result are the improved ones
+                points = better.points().to_vec();
+                (better.cells().to_vec(), Some(report.flips))
+            } else {
+                let (better, report) = improve(&seed, &BTreeSet::new(), flip).map_err(mesh_error)?;
+                (better.cells().to_vec(), Some(report))
+            }
         }
     };
     // Each sub-facet must separate one inside cell from one outside cell (or the void).
@@ -1915,6 +2143,7 @@ fn extract(state: State, input_vertices: usize, rounds: usize) -> Result<Conform
             hull_cells: cells.len(),
             interior_cells: interior.len(),
             volume_error_relative,
+            unprotected_fallback_used: false,
         },
         points,
         cells: interior.into_iter().map(|t| t.map(|v| renumber[v])).collect(),
