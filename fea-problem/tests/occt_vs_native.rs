@@ -50,9 +50,6 @@ struct Case {
 fn from_occt(name: &str, b: &Brep) -> Case {
     Case { name: name.into(), text: b.to_step_text().unwrap(), h_scale: 1.0 }
 }
-fn from_occt_h(name: &str, b: &Brep, h_scale: f64) -> Case {
-    Case { h_scale, ..from_occt(name, b) }
-}
 fn from_native(name: &str, b: &NativeBrep) -> Case {
     Case { name: name.into(), text: b.to_step_text(), h_scale: 1.0 }
 }
@@ -69,13 +66,13 @@ fn cases() -> Vec<Case> {
         from_occt("cylinder (OCCT-built)", &Brep::cylinder([0., 0., 0.], 10., [0., 0., 1.], 30.)),
         from_occt("plate, two holes (OCCT)", &plate.boolean(Bool::Cut, &hole(3.)).unwrap().boolean(Bool::Cut, &hole(9.)).unwrap()),
         from_occt("plate with a boss (OCCT)", &plate.boolean(Bool::Union, &Brep::cylinder([6., 2., 1.], 1.2, [0., 0., 1.], 3.)).unwrap()),
-        from_occt_h("box, all edges filleted (OCCT)", &Brep::box_from_corners([0., 0., 0.], [12., 14., 16.]).fillet_all(2.).unwrap(), 0.5),
+        from_occt("box, all edges filleted (OCCT)", &Brep::box_from_corners([0., 0., 0.], [12., 14., 16.]).fillet_all(2.).unwrap()),
         from_native("box (native)", &NativeBrep::box_from_corners([0.; 3], [20., 30., 40.]).unwrap()),
         from_native("cylinder (native)", &NativeBrep::cylinder_z([0.; 3], 10., 30.).unwrap()),
         from_native("box + hole (native)", &nbox.drill(5, [3., 6., 4.], 1., None).unwrap()),
         from_native("box + boss (native)", &nbox.boss(5, [5., 5., 4.], 2., 3.).unwrap()),
         from_native("box + boss + hole (native)", &nbox.boss(5, [5., 5., 4.], 2., 3.).unwrap().drill(7, [5., 5., 7.], 0.5, None).unwrap()),
-        Case { h_scale: 0.5, ..from_native("box, all edges filleted (native)", &NativeBrep::box_from_corners([0.; 3], [12., 14., 16.]).unwrap().fillet_all_convex(2.).unwrap()) },
+        from_native("box, all edges filleted (native)", &NativeBrep::box_from_corners([0.; 3], [12., 14., 16.]).unwrap().fillet_all_convex(2.).unwrap()),
         from_file("cylinder, filleted top", include_str!("../../solid-kernel/tests/data/cylinder-filleted-top.step"), 1.0),
         from_file("edit plate (40x30x10, hole)", include_str!("../../solid-kernel/tests/data/edit-plate.step"), 1.0),
         from_file("cross-bore (R8, R3)", include_str!("../../solid-kernel/tests/data/cross-bore.step"), 1.0),
@@ -142,6 +139,10 @@ fn measure(base: &Problem, cache: SolidCache, step: &str, text_h: f64) -> Run {
             k += 1;
         }
     }
+    if std::env::var_os("NO_SOLVE").is_some() {
+        // meshing evidence only (the solve dominates the run time of the table)
+        return r;
+    }
     match solve(&p, None) {
         Ok(s) => {
             r.solved = true;
@@ -186,7 +187,10 @@ fn row(name: &str, which: &str, r: &Run) -> String {
 #[ignore = "meshes and solves 19 models twice; run in release with --nocapture"]
 fn table() {
     let only = std::env::var("CASE").unwrap_or_default();
+    // SCALE multiplies every element size (1.6 is the size of the assertion test); NO_SOLVE=1 skips the solve.
+    let scale: f64 = std::env::var("SCALE").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0);
     for c in cases().into_iter().filter(|c| c.name.contains(&only)) {
+        let c = Case { h_scale: c.h_scale * scale, ..c };
         let (o, n) = compare(&c);
         eprintln!("{}\n{}", row(&c.name, "OCCT", &o), row(&c.name, "native", &n));
     }
