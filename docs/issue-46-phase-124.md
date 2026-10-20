@@ -128,3 +128,7 @@ cargo test -p fea-problem --features occt --release --test occt_vs_native -- --i
 cargo test -p fea-problem --features occt --release --test occt_vs_native -- --ignored --nocapture table        # CASE=cross-bore to select
 cargo test -p fea-problem --features occt --release --test occt_vs_native -- --ignored --nocapture surface_triangulation_quality
 ```
+
+## Addendum: spline-edge over-sampling fixed (same day)
+
+`sample_spline_adaptive` seeded 2 x degree samples per knot span: a degree-6 cross-bore edge with 14 spans got 169 samples on 9.5 mm. It now bisects to a quarter of the chord tolerance, then decimates samples whose removal keeps the curve within the other three quarters (total within the chord), with no segment longer than 30 chords and an interior sample always kept. The cross-bore edge: 169 to 14 samples (`native_edge_sampling` diagnostic). Test `a_wiggly_spline_edge_is_decimated_and_stays_within_the_chord` reproduces the 169-sample case (11 after). Side effect: the plain sampled shell of the filleted cross bore improves (0.141 to 0.76-1.5 degrees minimum corner) and the spline_surfaces tests run in 5 s instead of 55 s; `spline_surfaces.rs` now compares the graded shell with `before.min(0.19)` because the graded corner (0.198) is intrinsic to the end fillets and the plain shell is no longer worse than it.
