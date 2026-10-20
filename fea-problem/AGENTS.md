@@ -20,7 +20,7 @@ Does not own: any element, solver or mesher (`fea-core`), any UI or file access 
 | Parametric sketch (entities, constraints, LM solver with DOF / conflict report, drag, profile -> `Shape`s, surface names, rule-based constraint inference) | `src/sketch/{mod,solve,profile,infer}.rs`, `tests/sketch.rs` |
 | Feature history (Sketch / Extrude / Revolve, planes + frames, suppress, roll-back), `Problem::apply_history`, `History::from_problem` | `src/history.rs`, `src/problem.rs` |
 | Rule-based support / load / mesh recommendations (`recommend`, `boundary_options`, `Advice::apply`) | `src/advice.rs`, `tests/advice.rs` |
-| `Geometry::Solid` (STEP text + hash-tied cached surface mesh; `solid_mesh`, `Problem::set_solid`, `tessellate_step` needs feature `occt`) | `src/solid.rs`, `tests/solid.rs` |
+| `Geometry::Solid` (STEP text + hash-tied cached surface mesh; `solid_mesh`, `Problem::set_solid`, `tessellate_step` needs feature `occt`) | `src/solid.rs`, `tests/solid.rs`, `tests/occt_vs_native.rs` (feature `occt`, `--ignored`: OCCT against native tessellation, same mesher, same solve; `docs/issue-46-phase-124.md`) |
 | Failure diagnosis: `diagnose(&Problem, Option<&str>)` -> class, evidence, ranked `Remedy` (data `Edit`), `Question` (ADR-020) | `src/diagnose.rs`, `tests/failures.rs` |
 | Starting problems | `src/templates.rs` |
 | Member stack -> axisymmetric FE compliance (`C = 2U/F^2`) | `src/joint.rs` |

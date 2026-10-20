@@ -50,3 +50,13 @@ The owner wants OCCT retired, on this condition: **the mesh quality of the model
 4. Each editor operation native or dropped; tests green without `occt` on ubuntu, macOS and Windows.
 
 A file the native path cannot mesh to this standard keeps OCCT as fallback until fixed; OCCT is removed when the measured evidence satisfies 1-4 on the agreed corpus. `occt_retirement_approved` is set only then, in its own PR with the evidence (the owner's conditional approval is recorded here; it does not by itself set the flag).
+
+### Evidence against the criterion, 2026-10-19 (`docs/issue-46-phase-124.md`, `fea-problem/tests/occt_vs_native.rs`)
+
+OCCT supplies only the surface triangulation here: both paths then use the same `mesh_volume` and the same solve, so the comparison isolates the native tessellation. 19 models (OCCT-built, native-built, the `solid-kernel` fixtures and the real NEMA17 bracket), same STEP text, same element size, linear static benchmark (fixed face, traction on the opposite face).
+
+1. *Usable*: all 19 mesh and solve (equilibrium <= 1e-12) through the native tessellation, including NEMA17 (204 686 tets against 204 552, strain energy 0.3 % apart). **Absolute gate not met by either path**: `QualityThresholds::default()` (sJ >= 0.1) fails on every curved model, 0.2-5 % of the elements, all in the boundary layer of `fea_core::tetmesh` (OCCT kept would fail identically). Met relative to OCCT.
+2. *Matches*: minimum sJ within x1.2, radius ratio within x1.8, compliance within 1.5-5 %, energy 0.1-6 %; asserted by `the_native_path_matches_the_opencascade_path_on_quality_size_and_the_benchmark_solve`. Weak spot: models with B-spline intersection edges (cross-bore, t-junction, tilted hole) get a native surface triangulation 5-45 x larger than OCCT's because `analytic_step::sample_spline_adaptive` seeds `2 * degree` samples per knot span (169 points on a 9.5 mm edge where about 20 suffice): up to 6.8 x more sub-gate elements on the plain cross-bore at the default size.
+3. *Efficient*: tets and DOFs within 5 %, solve time equal, meshing 0.9-1.2 x OCCT's on most models and 2.2-2.7 x on the spline-edge ones.
+
+Also found, shared by both paths: a load face meeting a tangent fillet gets +16 % (OCCT) / +26 % (native) of its area at element = fillet radius / 2 (`face_of_triangle` tolerance, hypothesis in the phase doc); the import's default element size ignores fillets and both paths refuse such a part until the size is reduced.
