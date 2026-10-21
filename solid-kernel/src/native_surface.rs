@@ -286,7 +286,10 @@ impl AnalyticModel {
                 {
                     return Err(fail(
                         ErrorKind::Geometry,
-                        "degenerate or locally inverted sampled surface triangle",
+                        format!(
+                            "face #{} has a degenerate or locally inverted sampled surface triangle (orientation={orientation:.17e}, same_sense={})",
+                            face.id, face.same_sense
+                        ),
                     ));
                 }
                 // CDT faces are counterclockwise in the chart. Both supported

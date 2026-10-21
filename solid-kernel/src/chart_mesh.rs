@@ -202,6 +202,105 @@ fn shape_chart(
     // Interior quality points: the boundary polygon is kept exactly, so neighbouring faces still agree on every shared sample,
     // and the points are evaluated on the exact surface.
     let boundary_count = vertices.len();
+    // Grading exports only new constraint-chain vertices. Repair a mapped
+    // inversion anchored to a coarse boundary chord before interior quality
+    // points can hide it in this temporary CDT.
+    if let Some(surface) = surface.filter(|s| split_boundary && matches!(s, Surface::Torus { .. })) {
+        let mut work = 0usize;
+        loop {
+            let parity = regions(&cdt, max_work.saturating_sub(work))?;
+            let candidate = cdt.inner_faces().find_map(|face| {
+                if parity[face.index()] != Some(true) {
+                    return None;
+                }
+                let face_vertices = face.vertices().map(|v| v.data().clone());
+                let center = std::array::from_fn(|axis| {
+                    face_vertices.iter().map(|v| v.chart[axis] / 3.).sum()
+                });
+                let normal = surface.normal(center)?;
+                let [a, b, c] = face_vertices.each_ref().map(|v| v.world);
+                let orientation =
+                    crate::dot(crate::cross(crate::sub(b, a), crate::sub(c, a)), normal);
+                let edge_scale = [
+                    crate::dot(crate::sub(b, a), crate::sub(b, a)),
+                    crate::dot(crate::sub(c, b), crate::sub(c, b)),
+                    crate::dot(crate::sub(a, c), crate::sub(a, c)),
+                ]
+                .into_iter()
+                .fold(0., f64::max);
+                // The repair is for a genuinely reversed coarse chord, not
+                // roundoff in nearly coincident chart samples. The final
+                // sampled-face gate still decides whether such a face is valid.
+                if orientation.is_finite() && orientation >= -1e-12 * edge_scale {
+                    return None;
+                }
+                let edge = face
+                    .adjacent_edges()
+                    .into_iter()
+                    .filter(|e| e.is_constraint_edge())
+                    .filter(|e| {
+                        let [a, b] = e.vertices();
+                        (0..2).any(|k| {
+                            let middle = a.data().chart[k] / 2. + b.data().chart[k] / 2.;
+                            middle != a.data().chart[k] && middle != b.data().chart[k]
+                        })
+                    })
+                    .max_by(|a, b| a.length_2().total_cmp(&b.length_2()))?;
+                let [a, b] = edge.vertices();
+                Some((
+                    edge.as_undirected().fix(),
+                    [a.fix(), b.fix()],
+                    a.data().chart,
+                    b.data().chart,
+                ))
+            });
+            let Some((edge, [a, b], ca, cb)) = candidate else {
+                break;
+            };
+            work = work
+                .checked_add(1)
+                .filter(|n| *n <= max_work)
+                .ok_or_else(|| {
+                    fail(
+                        ErrorKind::Limit,
+                        "curved boundary orientation budget exceeded",
+                    )
+                })?;
+            let chart = std::array::from_fn(|i| ca[i] / 2. + cb[i] / 2.);
+            let world = surface
+                .point(chart)
+                .ok_or_else(|| fail(ErrorKind::Geometry, "unresolved curved boundary point"))?;
+            let vertex = ChartVertex {
+                chart,
+                world,
+                source: SampleKey::FacePoint {
+                    face: face_id,
+                    index: vertices.len() - boundary_count,
+                },
+            };
+            cdt.remove_constraint_edge(edge);
+            let before = cdt.num_vertices();
+            let handle = cdt.insert(vertex.clone()).map_err(|e| {
+                fail(
+                    ErrorKind::Geometry,
+                    format!("curved boundary insertion: {e:?}"),
+                )
+            })?;
+            let inserted = cdt.num_vertices() == before + 1;
+            if !inserted && (handle == a || handle == b) {
+                return Err(fail(
+                    ErrorKind::Geometry,
+                    format!("face #{face_id} curved boundary midpoint is unresolved: {ca:?} to {cb:?}, midpoint {chart:?}"),
+                ));
+            }
+            cdt.add_constraint(a, handle);
+            cdt.add_constraint(handle, b);
+            if inserted {
+                vertices.push(vertex);
+                handles.push(handle);
+            }
+        }
+    }
     // On a cylinder the chord rule below adds midpoints that the Delaunay flips then reshape, so the two alternate until
     // neither adds anything.
     for _pass in 0..8 {
@@ -707,6 +806,7 @@ struct ChartInputs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analytic_step::Frame;
     #[test]
     fn square_with_hole_preserves_every_boundary_segment_and_area() {
         let loops = vec![
@@ -743,5 +843,79 @@ mod tests {
         assert_eq!(area, 12.);
         assert_eq!(mesh.vertices.len(), 8);
         assert_eq!(mesh.triangles.len(), 8);
+    }
+
+    #[test]
+    fn torus_boundary_triangle_is_refined_before_its_world_chords_invert() {
+        let surface = Surface::Torus {
+            frame: Frame {
+                origin: [0., 0., 0.],
+                x: [1., 0., 0.],
+                y: [0., 1., 0.],
+                z: [0., 0., 1.],
+            },
+            major: 0.5,
+            minor: 0.1,
+        };
+        // Reduced from ABC face #339: counterclockwise in the conformal chart,
+        // but its three coarse boundary chords form an inward-facing facet.
+        let points = vec![
+            [4.26359002987186, 0.5015071930442013],
+            [4.487989505128274, 0.45898794349181227],
+            [4.712388980384689, 0.5015071930442018],
+        ];
+        let loops = vec![TrimLoop {
+            bound_id: 1,
+            points: points.clone(),
+            is_outer: true,
+        }];
+        let vertices = points
+            .iter()
+            .enumerate()
+            .map(|(i, &chart)| ChartVertex {
+                chart,
+                world: surface.point(chart).unwrap(),
+                source: SampleKey::Vertex(i as u64),
+            })
+            .collect();
+
+        let shaped = shape_chart(
+            339,
+            &loops,
+            vertices,
+            10_000,
+            Some(&surface),
+            0.05,
+            Shaping {
+                quality: None,
+                split_boundary: true,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            shaped.vertices.len() > 3,
+            "the inverted boundary chord was not split"
+        );
+        let parity = regions(&shaped.cdt, 10_000).unwrap();
+        for face in shaped
+            .cdt
+            .inner_faces()
+            .filter(|f| parity[f.index()] == Some(true))
+        {
+            let triangle = face.vertices().map(|v| v.index());
+            let [a, b, c] = triangle.map(|i| shaped.vertices[i].world);
+            let center = std::array::from_fn(|axis| {
+                triangle
+                    .iter()
+                    .map(|&i| shaped.vertices[i].chart[axis] / 3.)
+                    .sum()
+            });
+            let normal = surface.normal(center).unwrap();
+            assert!(
+                crate::dot(crate::cross(crate::sub(b, a), crate::sub(c, a)), normal) > 0.,
+                "mapped triangle is locally inverted: {triangle:?}"
+            );
+        }
     }
 }

@@ -1,5 +1,7 @@
 # Issue 46 — #63: is OpenCASCADE ready to be retired? Readiness assessment (2026-10-18, `main` d0431e6 + Phase 113)
 
+> Historical assessment. See the 2026-10-20 addendum below for the current routing and measured retirement gaps. The original observations remain here as evidence of the earlier state.
+
 **Verdict: not ready.** Native STEP import is a credible replacement for *reading* simple analytic and spline parts, but OpenCASCADE (OCCT) is the only implementation of everything the application does with a STEP solid, and the native pipeline has not yet passed on a real third-party file. This document advises; `occt_retirement_approved` stays `false` and flipping it needs the owner's separate approval (root `CLAUDE.md`, "Ask First").
 
 ## What was checked (this session, macOS arm64)
@@ -60,3 +62,15 @@ OCCT supplies only the surface triangulation here: both paths then use the same 
 3. *Efficient*: tets and DOFs within 5 %, solve time equal, meshing 0.9-1.2 x OCCT's on most models and 2.2-2.7 x on the spline-edge ones.
 
 Also found, shared by both paths: a load face meeting a tangent fillet gets +16 % (OCCT) / +26 % (native) of its area at element = fillet radius / 2 (`face_of_triangle` tolerance, hypothesis in the phase doc); the import's default element size ignores fillets and both paths refuse such a part until the size is reduced.
+
+## Addendum, 2026-10-20: current implementation and retirement gate
+
+The 2026-10-18 claims that the application never calls the native pipeline, that STEP import/edit requires OCCT, and that native modelling has no replacement are superseded. Without the `occt` feature, `fea-problem::solid::{tessellate_step,import_step,apply_op}` delegates to `native_solid`. `Problem::from_step`, `Problem::apply_solid_op` and `solid_mesh` use that route, and the solid editor calls those APIs. Native edits cover a through-hole or boss on a flat face and filleting all convex edges of a supported solid. They do not establish parity with all of `solid-kernel::occt`'s general booleans, profile modelling, fillets/chamfers and export. With the `occt` feature, the application still selects OCCT directly; there is no per-model native-quality certification or automatic OCCT fallback.
+
+The Phase 124 19-model comparison predates Phase 125's opt-in CAD boundary repair and fillet-rim correction. Its absolute quality-gate and loaded-face failures must not be presented as current measurements. Phase 125's focused sphere/cylinder/torus repair and filleted-box tests passed locally without OCCT, but the 19-model OCCT-versus-native comparison has **not** been rerun after that change. No current per-model OCCT parity or Windows native-only qualification is established here.
+
+The ABC 300-file sample now provides broader, separate diagnostic evidence (`issue-46-abc-corpus-2026-10-18.md`). With PLC refinement, 149 files conformed, 30 passed the solver-quality gate and all 30 completed the static benchmark solve; 14 timed out. This is not the `fea-problem::solid_mesh` production path and does not meet the owner's per-model quality/efficiency criterion. The corpus models cannot be redistributed in the repository under the available licence information. The earlier proposed minimum of 20 licensed files was superseded by the owner's per-model criterion above; any eventual retirement decision still needs a defined, reviewable model set and measured outcomes.
+
+Remaining work for #63: run the post-Phase-125 same-STEP OCCT/native mesh-and-solve comparison on a machine with OCCT, including quality, face loads, element/DOF counts and time; fix confirmed failures without relaxing gates; qualify native-only builds and solves on target platforms; resolve unsupported editor operations explicitly; and obtain the separate owner approval before removing OCCT or setting `occt_retirement_approved`. The flag remains `false`.
+
+The [2026-10-21 chart diagnosis](issue-46-phase-126.md) narrows two ABC refusals to projected B-spline/revolution trim overlaps; it does not change this retirement verdict.

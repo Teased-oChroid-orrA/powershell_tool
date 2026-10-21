@@ -126,7 +126,8 @@ pub fn resolution_note(p: &Problem, mesh: &Mesh) -> Option<String> {
     (!names.is_empty()).then(|| format!("CAD surfaces {} have no boundary elements at this size; refine before applying conditions there and check mesh convergence.", names.join(", ")))
 }
 
-/// Tessellate STEP text into a cache (chord deflection `deflection`). Needs the OpenCascade kernel.
+/// Tessellate STEP text into a cache (chord deflection `deflection`). The optional `occt` feature selects OpenCascade;
+/// otherwise the native reader and sampler are used.
 #[cfg(feature = "occt")]
 pub fn tessellate_step(step: &str, deflection: f64) -> Result<SolidCache, String> {
     let brep = solid_kernel::cad::Brep::from_step_text(step)?;
@@ -139,7 +140,7 @@ pub fn tessellate_step(step: &str, deflection: f64) -> Result<SolidCache, String
 }
 
 impl Geometry {
-    /// A solid geometry from STEP text, tessellated now (needs the `occt` feature).
+    /// A solid geometry from STEP text, tessellated now by the selected CAD backend.
     pub fn solid_from_step(step: &str, deflection: f64) -> Result<Geometry, String> {
         let cache = tessellate_step(step, deflection)?;
         Ok(Geometry::Solid { step: step.to_string(), cache: Some(cache) })

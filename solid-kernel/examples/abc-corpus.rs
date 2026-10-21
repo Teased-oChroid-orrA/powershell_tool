@@ -28,7 +28,13 @@ use std::time::{Duration, Instant};
 
 fn clean(s: &str) -> String {
     s.chars()
-        .map(|c| if c == ',' || c == '\n' || c == '\r' { ' ' } else { c })
+        .map(|c| {
+            if c == ',' || c == '\n' || c == '\r' {
+                ' '
+            } else {
+                c
+            }
+        })
         .take(400)
         .collect()
 }
@@ -50,7 +56,12 @@ struct BodyQuality {
 
 fn body_quality(c: &solid_kernel::plc_conform::Conforming) -> BodyQuality {
     use fea_core::{Elastic, Mesh, Physics};
-    let material = Elastic { e: 200e3, nu: 0.3, alpha: 0., aniso: None };
+    let material = Elastic {
+        e: 200e3,
+        nu: 0.3,
+        alpha: 0.,
+        aniso: None,
+    };
     let mut mesh = Mesh::new(Physics::Solid);
     mesh.nodes = c.points.clone();
     let mut on_boundary = vec![false; c.points.len()];
@@ -60,14 +71,24 @@ fn body_quality(c: &solid_kernel::plc_conform::Conforming) -> BodyQuality {
         }
     }
     let (mut bad, mut bad_flat_boundary) = (0usize, 0usize);
-    let stats = match mesh.add_block(fea_core::ElementKind::Tet4, c.cells.iter().flatten().copied().collect(), material, "t") {
+    let stats = match mesh.add_block(
+        fea_core::ElementKind::Tet4,
+        c.cells.iter().flatten().copied().collect(),
+        material,
+        "t",
+    ) {
         Ok(()) => {
             let q = mesh.quality();
             for (t, e) in c.cells.iter().zip(&q.elements) {
                 if e.scaled_jacobian < 0.1 {
                     bad += 1;
                     if std::env::var_os("ABC_SHOW_BAD").is_some() {
-                        eprintln!("bad tet sj {:.2e} er {:.1}: {:?}", e.scaled_jacobian, e.edge_ratio, t.map(|v| (v, on_boundary[v], c.points[v])));
+                        eprintln!(
+                            "bad tet sj {:.2e} er {:.1}: {:?}",
+                            e.scaled_jacobian,
+                            e.edge_ratio,
+                            t.map(|v| (v, on_boundary[v], c.points[v]))
+                        );
                     }
                     bad_flat_boundary += t.iter().all(|&v| on_boundary[v]) as usize;
                 }
@@ -103,7 +124,9 @@ fn body_quality(c: &solid_kernel::plc_conform::Conforming) -> BodyQuality {
             hi[k] = hi[k].max(p[k]);
         }
     }
-    let axis = (0..3).max_by(|&a, &b| (hi[a] - lo[a]).total_cmp(&(hi[b] - lo[b]))).unwrap();
+    let axis = (0..3)
+        .max_by(|&a, &b| (hi[a] - lo[a]).total_cmp(&(hi[b] - lo[b])))
+        .unwrap();
     let side = (axis + 1) % 3;
     let ext = hi[axis] - lo[axis];
     let mut bc = fea_core::Dirichlet::new(solver.nodes.len(), 3);
@@ -124,8 +147,16 @@ fn body_quality(c: &solid_kernel::plc_conform::Conforming) -> BodyQuality {
     }
     let started = Instant::now();
     out.solve = match fea_core::Model::new(solver).and_then(|m| m.solve_static(&loads, &bc)) {
-        Ok(s) if s.rel_residual <= 1e-6 && s.u.iter().all(|x| x.is_finite()) && s.u.iter().any(|x| *x != 0.) => {
-            format!("ok res {:.1e} {:.2}s", s.rel_residual, started.elapsed().as_secs_f64())
+        Ok(s)
+            if s.rel_residual <= 1e-6
+                && s.u.iter().all(|x| x.is_finite())
+                && s.u.iter().any(|x| *x != 0.) =>
+        {
+            format!(
+                "ok res {:.1e} {:.2}s",
+                s.rel_residual,
+                started.elapsed().as_secs_f64()
+            )
         }
         Ok(s) => format!("bad res {:.1e}", s.rel_residual),
         Err(e) => format!("err {e}"),
@@ -133,7 +164,16 @@ fn body_quality(c: &solid_kernel::plc_conform::Conforming) -> BodyQuality {
     out
 }
 
-fn survey(path: &Path, conform_timeout: Duration, foreign: bool, graded_fallback: bool, steiner_budget: Option<usize>, merge: bool, quality: bool, refine: bool) -> String {
+fn survey(
+    path: &Path,
+    conform_timeout: Duration,
+    foreign: bool,
+    graded_fallback: bool,
+    steiner_budget: Option<usize>,
+    merge: bool,
+    quality: bool,
+    refine: bool,
+) -> String {
     let row = |stage: &str, detail: &str, f: usize, v: usize, t: usize, vol: f64, ang: f64| {
         format!("{stage},{},{f},{v},{t},{vol},{ang}", clean(detail))
     };
@@ -145,10 +185,17 @@ fn survey(path: &Path, conform_timeout: Duration, foreign: bool, graded_fallback
         Ok(d) => d,
         Err(e) => return row("inventory", &e.to_string(), 0, 0, 0, f64::NAN, f64::NAN),
     };
-    let mut options = if foreign { Options::foreign_cad(0.05) } else { Options::default() };
+    let mut options = if foreign {
+        Options::foreign_cad(0.05)
+    } else {
+        Options::default()
+    };
     // ABC_TOL_MM: edge/surface tolerance override (mm), for measuring how much deviation a file needs; ABC_MODEL_ONLY: stop
     // after reading the model (stage `model-ok`)
-    if let Some(t) = std::env::var("ABC_TOL_MM").ok().and_then(|v| v.parse().ok()) {
+    if let Some(t) = std::env::var("ABC_TOL_MM")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
         options.geometry_tolerance_mm = t;
     }
     let models = match AnalyticModel::read_all(&data, options) {
@@ -156,7 +203,15 @@ fn survey(path: &Path, conform_timeout: Duration, foreign: bool, graded_fallback
         Err(e) => return row("model", &e.to_string(), 0, 0, 0, f64::NAN, f64::NAN),
     };
     if std::env::var_os("ABC_MODEL_ONLY").is_some() {
-        return row("model-ok", &format!("bodies {}", models.len()), 0, 0, 0, f64::NAN, f64::NAN);
+        return row(
+            "model-ok",
+            &format!("bodies {}", models.len()),
+            0,
+            0,
+            0,
+            f64::NAN,
+            f64::NAN,
+        );
     }
     // A multi-body part succeeds only when every body does; a failure names its body. Each body is meshed from plain
     // per-face sampling first; when that stage fails, from the graded model (`AnalyticModel::graded`), the production path.
@@ -166,7 +221,12 @@ fn survey(path: &Path, conform_timeout: Duration, foreign: bool, graded_fallback
     let limits = solid_kernel::native_surface::Limits {
         face_work: 20_000_000,
         // an admission bound (faces x face_work), not accounting: sized to the part
-        total_work: models.iter().map(|m| m.body().faces.len()).max().unwrap_or(1).saturating_mul(20_000_000),
+        total_work: models
+            .iter()
+            .map(|m| m.body().faces.len())
+            .max()
+            .unwrap_or(1)
+            .saturating_mul(20_000_000),
         // real files carry rounded coordinates: the strict policy refuses every seam that closes to 1e-12 only
         chart_policy: solid_kernel::cylindrical_step::ChartPolicy::CanonicalizeWithinTolerance,
         ..Default::default()
@@ -192,7 +252,12 @@ fn survey(path: &Path, conform_timeout: Duration, foreign: bool, graded_fallback
                 let _ = std::fs::write(Path::new(&dir).join(format!("{name}.body{k}.plc")), text);
             }
             let a = solid_kernel::plc_conform::min_shell_angle_deg(&m.vertices, &m.triangles);
-            let facts = (m.vertices.len(), m.triangles.len(), sampled.signed_volume_mm3, a);
+            let facts = (
+                m.vertices.len(),
+                m.triangles.len(),
+                sampled.signed_volume_mm3,
+                a,
+            );
             let start = Instant::now();
             solid_kernel::plc_conform::conform(
                 &m.vertices,
@@ -205,27 +270,48 @@ fn survey(path: &Path, conform_timeout: Duration, foreign: bool, graded_fallback
                             merge_coplanar: merge,
                             ..Default::default()
                         },
-                        None => solid_kernel::plc_conform::Options { merge_coplanar: merge, ..Default::default() },
+                        None => solid_kernel::plc_conform::Options {
+                            merge_coplanar: merge,
+                            ..Default::default()
+                        },
                     };
                     // --refine: the sliver recipe (scaled Jacobian 0.2 by refinement, then flips and smoothing)
                     if refine {
                         o.min_scaled_jacobian = Some(0.2);
-                        o.max_quality_seconds = std::env::var("ABC_QSEC").ok().and_then(|v| v.parse().ok()).unwrap_or(20.);
-                        let passes = std::env::var("ABC_PASSES").ok().and_then(|v| v.parse().ok()).unwrap_or(6);
+                        o.max_quality_seconds = std::env::var("ABC_QSEC")
+                            .ok()
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(20.);
+                        let passes = std::env::var("ABC_PASSES")
+                            .ok()
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(6);
                         if passes > 0 {
-                            o.reconnect = Some(fea_core::meshing::tet_flip::FlipOptions { max_passes: passes, ..Default::default() });
+                            o.reconnect = Some(fea_core::meshing::tet_flip::FlipOptions {
+                                max_passes: passes,
+                                ..Default::default()
+                            });
                         }
                         o.smooth_rounds = 0;
                     }
                     // ABC_RADIUS_EDGE: Options::max_radius_edge; ABC_RECONNECT=1: flip/edge-removal pass; ABC_PLANAR=1: with it
                     // also reconnect flat boundary patches (experiments on the quality gate)
-                    if let Some(r) = std::env::var("ABC_RADIUS_EDGE").ok().and_then(|v| v.parse().ok()) {
+                    if let Some(r) = std::env::var("ABC_RADIUS_EDGE")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                    {
                         o.max_radius_edge = Some(r);
                     }
-                    if let Some(r) = std::env::var("ABC_MIN_SJ").ok().and_then(|v| v.parse().ok()) {
+                    if let Some(r) = std::env::var("ABC_MIN_SJ")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                    {
                         o.min_scaled_jacobian = Some(r);
                     }
-                    if let Some(r) = std::env::var("ABC_SMOOTH").ok().and_then(|v| v.parse().ok()) {
+                    if let Some(r) = std::env::var("ABC_SMOOTH")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                    {
                         o.smooth_rounds = r;
                     }
                     if std::env::var_os("ABC_RECONNECT").is_some() {
@@ -281,9 +367,13 @@ fn survey(path: &Path, conform_timeout: Duration, foreign: bool, graded_fallback
                     });
                 match graded {
                     Ok((f, r)) => (f, r, true),
-                    // report the plain failure: it is the baseline stage
-                    Err(_) => {
-                        let (stage, detail, f) = first;
+                    // In graded-first diagnostics there is no plain failure to report.
+                    Err(graded_failure) => {
+                        let (stage, detail, f) = if std::env::var_os("ABC_GRADED_FIRST").is_some() {
+                            graded_failure
+                        } else {
+                            first
+                        };
                         let f = f.unwrap_or((nv, nt, vol, angle));
                         return row(stage, &tag(&detail), faces, f.0, f.1, f.2, f.3);
                     }
@@ -308,11 +398,22 @@ fn survey(path: &Path, conform_timeout: Duration, foreign: bool, graded_fallback
     if quality {
         let pass = qualities.iter().all(|q| q.pass);
         let fallback = qualities.iter().any(|q| q.fallback);
-        let sj = qualities.iter().map(|q| q.min_sj).fold(f64::INFINITY, f64::min);
+        let sj = qualities
+            .iter()
+            .map(|q| q.min_sj)
+            .fold(f64::INFINITY, f64::min);
         let er = qualities.iter().map(|q| q.max_er).fold(0., f64::max);
         let tets: usize = qualities.iter().map(|q| q.tets).sum();
-        let refusal = qualities.iter().map(|q| q.refusal.as_str()).find(|r| !r.is_empty()).unwrap_or("");
-        let solve = qualities.iter().map(|q| q.solve.as_str()).find(|r| !r.starts_with("ok")).unwrap_or("ok");
+        let refusal = qualities
+            .iter()
+            .map(|q| q.refusal.as_str())
+            .find(|r| !r.is_empty())
+            .unwrap_or("");
+        let solve = qualities
+            .iter()
+            .map(|q| q.solve.as_str())
+            .find(|r| !r.starts_with("ok"))
+            .unwrap_or("ok");
         let bad: usize = qualities.iter().map(|q| q.bad).sum();
         let bad_b: usize = qualities.iter().map(|q| q.bad_flat_boundary).sum();
         detail += &format!(" bad={bad} badb={bad_b}");
@@ -322,26 +423,23 @@ fn survey(path: &Path, conform_timeout: Duration, foreign: bool, graded_fallback
             if fallback { "fallback" } else { "protected" }
         );
     }
-    row(
-        "conform",
-        &detail,
-        faces,
-        nv,
-        nt,
-        vol,
-        angle,
-    )
+    row("conform", &detail, faces, nv, nt, vol, angle)
 }
 
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
     let mut entries: Vec<_> = rd.flatten().map(|e| e.path()).collect();
     entries.sort();
     for p in entries {
         if p.is_dir() {
             collect(&p, out);
         } else if matches!(
-            p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(),
+            p.extension()
+                .and_then(|e| e.to_str())
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
             Some("step" | "stp")
         ) {
             out.push(p);
@@ -358,13 +456,45 @@ fn main() {
     };
     let conform_s: f64 = flag(&mut args, "--conform-timeout").map_or(60., |v| v.parse().unwrap());
     let steiner: Option<usize> = flag(&mut args, "--steiner").map(|v| v.parse().unwrap());
-    let graded_fallback = args.iter().position(|a| a == "--graded").map(|i| args.remove(i)).is_some();
-    let foreign = args.iter().position(|a| a == "--foreign").map(|i| args.remove(i)).is_some();
-    let merge = args.iter().position(|a| a == "--merge").map(|i| args.remove(i)).is_some();
-    let quality = args.iter().position(|a| a == "--quality").map(|i| args.remove(i)).is_some();
-    let refine = args.iter().position(|a| a == "--refine").map(|i| args.remove(i)).is_some();
+    let graded_fallback = args
+        .iter()
+        .position(|a| a == "--graded")
+        .map(|i| args.remove(i))
+        .is_some();
+    let foreign = args
+        .iter()
+        .position(|a| a == "--foreign")
+        .map(|i| args.remove(i))
+        .is_some();
+    let merge = args
+        .iter()
+        .position(|a| a == "--merge")
+        .map(|i| args.remove(i))
+        .is_some();
+    let quality = args
+        .iter()
+        .position(|a| a == "--quality")
+        .map(|i| args.remove(i))
+        .is_some();
+    let refine = args
+        .iter()
+        .position(|a| a == "--refine")
+        .map(|i| args.remove(i))
+        .is_some();
     if let Some(file) = flag(&mut args, "--one") {
-        println!("{}", survey(Path::new(&file), Duration::from_secs_f64(conform_s), foreign, graded_fallback, steiner, merge, quality, refine));
+        println!(
+            "{}",
+            survey(
+                Path::new(&file),
+                Duration::from_secs_f64(conform_s),
+                foreign,
+                graded_fallback,
+                steiner,
+                merge,
+                quality,
+                refine
+            )
+        );
         return;
     }
     let jobs: usize = flag(&mut args, "--jobs").map_or(1, |v| v.parse().unwrap());
@@ -443,9 +573,19 @@ fn main() {
                 let name = f.file_name().unwrap().to_string_lossy();
                 let bytes = std::fs::metadata(f).map(|m| m.len()).unwrap_or(0);
                 let mut out = csv.lock().unwrap();
-                writeln!(out, "{name},{bytes},{line},{:.2}", started.elapsed().as_secs_f64()).unwrap();
+                writeln!(
+                    out,
+                    "{name},{bytes},{line},{:.2}",
+                    started.elapsed().as_secs_f64()
+                )
+                .unwrap();
                 out.flush().unwrap();
-                eprintln!("[{}/{}] {name}: {}", i + 1, files.len(), line.split(',').next().unwrap());
+                eprintln!(
+                    "[{}/{}] {name}: {}",
+                    i + 1,
+                    files.len(),
+                    line.split(',').next().unwrap()
+                );
             });
         }
     });

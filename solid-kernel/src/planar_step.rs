@@ -105,10 +105,10 @@ pub(crate) fn classify(loops: &mut [PlanarLoop], max_checks: usize) -> Result<()
                 ));
             }
             if sign(a, b, c)? == Ordering::Equal && (between(a, b, c) || between(b, c, a)) {
-                return Err(fail(
-                    ErrorKind::Geometry,
-                    "adjacent sampled trim segments overlap",
-                ));
+                return Err(fail(ErrorKind::Geometry, &format!(
+                    "adjacent sampled trim segments overlap in bound #{} segment {i}: {a:?}, {b:?}, {c:?}",
+                    l.bound_id
+                )));
             }
             for j in i + 1..n {
                 if j == i + 1 || (i == 0 && j == n - 1) {
@@ -307,5 +307,14 @@ mod tests {
             classify(&mut [square], 0).unwrap_err().kind,
             ErrorKind::Limit
         ));
+    }
+
+    #[test]
+    fn overlapping_trim_error_identifies_the_offending_samples() {
+        let mut loop_ = polygon(&[[0., 0.], [2., 0.], [1., 0.], [0., 2.]]);
+        loop_.bound_id = 42;
+        let error = classify(&mut [loop_], 1000).unwrap_err();
+        assert!(error.detail.contains("bound #42 segment 0"), "{error}");
+        assert!(error.detail.contains("[0.0, 0.0]"), "{error}");
     }
 }
