@@ -19,3 +19,7 @@ A controlled temporary toggle disabled cylinder interior boundary-to-boundary ch
 ## Verification and remaining work
 
 On macOS arm64 with locked offline dependencies, `cargo test -p fea-core` passed 555 tests with 36 ignored, and `cargo test -p solid-kernel` passed 297 with 4 ignored. Focused regressions passed separately. The ABC files remain outside the repository because redistribution rights are unestablished. Full OCCT/native 19-model parity, Windows mesh/solve, ABC `00007062` PLC completion/solver quality, ABC `00006600` grading, and the remaining shared quality failures were not resolved here. `occt_retirement_approved` remains false.
+
+## Hosted Windows build addendum
+
+At Phase 130 code commit `dfdb309`, the hosted Windows [app-tui executable build](https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/39769932233) and [search-cli executable build](https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/39769951101) both completed successfully. These runs build and stage executables; they do not execute a Windows STEP mesh, PLC recovery, or solve.

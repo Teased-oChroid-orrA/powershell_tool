@@ -6,7 +6,7 @@ This is the current entry point for Claude Code or Codex. Historical phase repor
 
 **2026-10-21 update:** [Phase 128](issue-46-phase-128.md) reran all 19 OCCT/native model pairs: all meshed and solved, but 12 of 38 meshes failed the default quality gate. [Phase 129](issue-46-phase-129.md) fixed a shallow-cone seam in ABC `00007062`, which now reaches PLC recovery under a zero-second diagnostic timeout. Native-only tilted-hole quality, shared absolute quality failures, and ABC `00006600` grading remain open. A hosted Windows feature-off executable build passed at the Phase 128 code commit; no Windows mesh or solve has run. OCCT retirement remains unapproved.
 
-**2026-10-22 update:** [Phase 130](issue-46-phase-130.md) lets a small boundary-repair move cross the solver quality gate: native box with boss now has zero sub-gate tets, while its OCCT comparison still has three. An early PLC cancellation check prevents initialization of an already-cancelled Delaunay run. Tilted-hole native quality and ABC `00006600` remain open. Retirement remains unapproved.
+**2026-10-22 update:** [Phase 130](issue-46-phase-130.md) lets a small boundary-repair move cross the solver quality gate: native box with boss now has zero sub-gate tets, while its OCCT comparison still has three. An early PLC cancellation check prevents initialization of an already-cancelled Delaunay run. Hosted Windows app-tui and search-cli executable builds passed at `dfdb309`; no Windows mesh or solve ran. Tilted-hole native quality and ABC `00006600` remain open. Retirement remains unapproved.
 
 ## Establish current state
 
