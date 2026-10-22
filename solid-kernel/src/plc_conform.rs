@@ -1776,6 +1776,14 @@ fn conform_attempt(
             "PLC must be a closed manifold shell (every edge in exactly two facets)",
         ));
     }
+    if !progress(Progress {
+        phase: Phase::Delaunay,
+        steiner: 0,
+        missing_segments: 0,
+        missing_facets: 0,
+    }) {
+        return Err(fail(ErrorKind::Cancelled, "PLC recovery cancelled"));
+    }
     let limits = DelaunayLimits {
         max_points: vertices.len() + options.max_steiner,
         max_cells: options.max_cells,
@@ -1916,7 +1924,6 @@ fn conform_attempt(
             options.min_segment_relative * norm2(sub(hi, lo)).sqrt()
         },
     };
-    publish(&state, Phase::Delaunay, (0, 0), progress)?;
     let all: Vec<[usize; 2]> = state.segments.iter().copied().collect();
     for s in all {
         if options.protect_encroached && !state.frozen_segments.contains(&s) && state.segment_encroached(s) {
@@ -2154,6 +2161,21 @@ fn extract(state: State, input_vertices: usize, rounds: usize) -> Result<Conform
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cancellation_precedes_delaunay_initialization() {
+        let vertices = [[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
+        let facets = [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]];
+        let mut calls = 0;
+        let error = conform(&vertices, &facets, Options { max_cells: 0, ..Options::default() }, |p| {
+            calls += 1;
+            assert_eq!(p.phase, Phase::Delaunay);
+            assert_eq!(p.steiner, 0);
+            false
+        })
+        .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Cancelled);
+        assert_eq!(calls, 1);
+    }
     /// The grid only prunes: every ball query equals the linear scan, including balls that reach outside the grid box,
     /// balls too large for the grid, points outside the box (outliers) and points added between queries.
     #[test]

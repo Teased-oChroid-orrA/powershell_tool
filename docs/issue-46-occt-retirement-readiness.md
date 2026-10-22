@@ -86,3 +86,7 @@ The [2026-10-21 chart diagnosis](issue-46-phase-126.md) narrows two ABC refusals
 ## Addendum, 2026-10-21: shallow cone seam and focused quality diagnosis
 
 [Phase 129](issue-46-phase-129.md) repairs the next `00007062` cone-band seam refusal with a synthetic regression. The file now reaches sampled-shell/PLC recovery, where the diagnostic zero-second timeout cancels it. The tilted-hole native-only quality failure and the shared box-with-boss quality failure were reproduced; a proposed stagnation fix failed a controlled test and was reverted. `00006600` remains a projected-chart overlap. No new per-model solver-quality or Windows mesh/solve evidence is established; the retirement verdict and approval flag are unchanged.
+
+## Addendum, 2026-10-22: repair gain and cancellation
+
+[Phase 130](issue-46-phase-130.md) makes the native box-with-boss mesh cross the default scaled-Jacobian gate with a verified boundary-repair gain. Its OCCT path still fails that gate, and the native tilted-hole failure remains; a controlled chart toggle proved causality but was reverted to preserve an overlap guard. PLC now checks cancellation before initial Delaunay construction. These scoped changes do not qualify OCCT retirement or change its approval flag.

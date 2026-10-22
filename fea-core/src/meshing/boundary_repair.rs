@@ -210,7 +210,10 @@ const GHOST: usize = usize::MAX;
 impl<'a> Work<'a> {
     /// Is `new` a worthwhile improvement of `old` (a real step, or over the target)?
     fn gains(&self, old: f64, new: f64) -> bool {
-        new > old + MIN_GAIN || (old < self.target && new >= self.target && new > old + EPS)
+        let gate = QualityThresholds::default().min_scaled_jacobian;
+        new > old + MIN_GAIN
+            || (old < gate && new >= gate && new > old + EPS)
+            || (old < self.target && new >= self.target && new > old + EPS)
     }
     fn sj(&self, t: [usize; 4]) -> f64 {
         scaled_jacobian(&self.p, t)
@@ -1689,6 +1692,22 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crossing_solver_gate_counts_as_a_gain_below_minimum_step() {
+        let sdf = |_: V3| 0.0;
+        let ctx = RepairContext { sdf: &sdf, face_dists: None };
+        let w = Work {
+            p: vec![], tets: vec![], alive: vec![], vt: vec![], bnd: vec![], state: vec![], hv: vec![],
+            live: 0, max_live: 0, log: vec![], ver: vec![], clock: 0, failed: Default::default(),
+            depth: 0, trace: false, verbose: false, relax_enabled: false, reasons: Default::default(),
+            ctx: &ctx, rep: RepairReport::default(), target: 0.12,
+        };
+        let gate = QualityThresholds::default().min_scaled_jacobian;
+        assert!(w.gains(gate - 0.004, gate + 0.002));
+        assert!(!w.gains(gate + 0.001, gate + 0.003));
+        assert!(!w.gains(gate - 0.004, gate - 0.001));
+    }
 
     #[test]
     fn trace_retry_rolls_back_a_successful_repair() {
