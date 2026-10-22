@@ -69,7 +69,7 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 | Benchmarking methodology/results | `docs/benchmarking.md` |
 | Search matching semantics (Unicode, literal/regex) | `docs/search-semantics.md` |
 | .NET/WinUI (`src/`) deployment | `docs/deployment.md` |
-| Rust (`app/`/`cli/`) deployment | `docs/deployment-rust.md` |
+| Historical Rust (`app/`/`cli/`) deployment | `docs/deployment-rust.md` (obsolete `app/` head and separate CLI workflow) |
 | Offline build (`native-search/` crate) | `docs/offline-build.md` |
 | Pre-Rust native-search architecture recon | `docs/native-search-assessment.md` |
 

@@ -1,5 +1,7 @@
 # Deployment (Rust/Dioxus app and CLI)
 
+> Historical migration document. `app/` was removed; `app-tui` is the active head. The separate `search-cli` Windows build workflow was disabled and removed on 2026-10-22 by owner request; the CLI source remains. For current Windows executable builds, use `.github/workflows/app-tui-build.yml` and root `CLAUDE.md`.
+
 Scope: this document covers `app/` (the Dioxus desktop GUI) and `cli/`
 (the headless `search-cli` binary) - the actively-developed Rust stack.
 The existing .NET/WinUI deployment story is `docs/deployment.md` and is
