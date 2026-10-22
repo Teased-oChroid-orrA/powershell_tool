@@ -78,3 +78,7 @@ The [2026-10-21 chart diagnosis](issue-46-phase-126.md) narrows two ABC refusals
 ## Addendum, 2026-10-21: focused post-Phase-125 comparison
 
 [Phase 127](issue-46-phase-127.md) reran the same-STEP comparison on the planar box and filleted cylinder. Both OCCT and native paths passed the default mesh quality gate; the box matched exactly, and the filleted cylinder differed by about 0.3% in elements and strain energy. This supersedes the older absolute-gate result for that filleted-cylinder case only. The other 17 models, Windows native-only builds and solves, and the two ABC chart refusals remain open. The retirement verdict and approval flag are unchanged.
+
+## Addendum, 2026-10-21: full comparison and bounded repairs
+
+[Phase 128](issue-46-phase-128.md) records the full post-Phase-125 19-model comparison and three focused repairs. All OCCT/native paths meshed and solved, but 12 of 38 meshes failed the default quality gate. The tilted hole is a native-only gate failure; the plain cross-bore is an OCCT-only gate failure. Both paths fail on five other models. A hosted feature-off Windows executable build passed, but no Windows mesh or solve ran. Synthetic seams now chart three revolution faces of local ABC file `00007062`; the full file still stops on later cone/torus band topology, and `00006600` still refuses during grading. The retirement verdict and separate approval requirement are unchanged.

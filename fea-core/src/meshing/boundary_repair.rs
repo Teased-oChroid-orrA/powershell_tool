@@ -1446,6 +1446,18 @@ impl<'a> Work<'a> {
         }
         false
     }
+
+    /// Probe a failed element for trace reasons without committing the probe's mesh or counters.
+    fn trace_retry(&mut self, t: usize) -> bool {
+        let mark = self.mark();
+        let report = self.rep.clone();
+        self.depth += 1;
+        let result = self.cleanup_tet(t, true);
+        self.rollback(mark);
+        self.depth -= 1;
+        self.rep = report;
+        result
+    }
 }
 
 /// Repair the tetrahedra `tets` (positively oriented) over the points `p` in place; returns the compacted vertex map (old to
@@ -1635,7 +1647,7 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
                 shown += 1;
                 eprintln!("    coords {:?} sdf {:?}", c.map(|v| w.p[v]), c.map(|v| (w.ctx.sdf)(w.p[v])));
                 w.verbose = true;
-                let r = w.cleanup_tet(t, true);
+                let r = w.trace_retry(t);
                 w.verbose = false;
                 eprintln!("    retry result {r}");
             }
@@ -1672,4 +1684,34 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
     *p = np;
     *tets = nt;
     (remap, rep)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trace_retry_rolls_back_a_successful_repair() {
+        let p = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.25, 0.25, 0.01]];
+        let mut tets = vec![[4, 1, 2, 3], [0, 4, 2, 3], [0, 1, 4, 3], [0, 1, 2, 4]];
+        for t in &mut tets {
+            if vol6(&p, *t) < 0.0 { t.swap(1, 2); }
+        }
+        let mut vt = vec![Vec::new(); p.len()];
+        for (i, t) in tets.iter().enumerate() {
+            for &v in t { vt[v].push(i); }
+        }
+        let sdf = |_: V3| 0.0;
+        let ctx = RepairContext { sdf: &sdf, face_dists: None };
+        let mut w = Work {
+            p, tets, alive: vec![true; 4], vt, bnd: vec![true, true, true, true, false], state: vec![0; 5],
+            hv: vec![1.0; 5], live: 4, max_live: 8, log: Vec::new(), ver: vec![0; 5], clock: 0,
+            failed: Default::default(), depth: 0, trace: false, verbose: false, relax_enabled: false,
+            reasons: Default::default(), ctx: &ctx, rep: RepairReport::default(), target: 0.12,
+        };
+        let before = (w.p.clone(), w.tets.clone(), w.alive.clone(), w.vt.clone(), w.bnd.clone(), w.rep.clone());
+        assert!(w.trace_retry(1), "the diagnostic must exercise a successful repair");
+        assert_eq!((w.p, w.tets, w.alive, w.vt, w.bnd, w.rep), before);
+        assert_eq!((w.live, w.depth, w.clock, w.log.len()), (4, 0, 0, 0));
+    }
 }

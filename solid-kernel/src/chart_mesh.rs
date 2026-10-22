@@ -182,6 +182,13 @@ struct ShapedChart {
     handles: Vec<FixedVertexHandle>,
     constraints: BTreeSet<(usize, usize)>,
 }
+fn chart_midpoint(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
+    let p = spade::mitigate_underflow(Point2::new(
+        a[0] / 2. + b[0] / 2.,
+        a[1] / 2. + b[1] / 2.,
+    ));
+    [p.x, p.y]
+}
 /// The face chart's constrained triangulation with its interior points: the chord rule on cylinders and, when asked for,
 /// Delaunay quality refinement. `split_boundary` lets the refinement split boundary segments (the new points are then on the
 /// boundary and the result is only good for reading off [`BoundarySplit`]s); otherwise the boundary is kept exactly.
@@ -266,7 +273,7 @@ fn shape_chart(
                         "curved boundary orientation budget exceeded",
                     )
                 })?;
-            let chart = std::array::from_fn(|i| ca[i] / 2. + cb[i] / 2.);
+            let chart = chart_midpoint(ca, cb);
             let world = surface
                 .point(chart)
                 .ok_or_else(|| fail(ErrorKind::Geometry, "unresolved curved boundary point"))?;
@@ -383,7 +390,7 @@ fn shape_chart(
                             continue;
                         }
                     }
-                    let chart = std::array::from_fn(|i| a.chart[i] / 2. + b.chart[i] / 2.);
+                    let chart = chart_midpoint(a.chart, b.chart);
                     let world = surface.point(chart).ok_or_else(|| {
                         fail(ErrorKind::Geometry, "unresolved curved interior point")
                     })?;
@@ -807,6 +814,16 @@ struct ChartInputs {
 mod tests {
     use super::*;
     use crate::analytic_step::Frame;
+
+    #[test]
+    fn curved_midpoint_stays_in_spades_coordinate_range() {
+        let (a, b) = ([-1.0e-27, 0.], [1.0000000000000002e-27, 1.]);
+        assert!(spade::validate_coordinate(a[0] / 2. + b[0] / 2.).is_err());
+        let p = chart_midpoint(a, b);
+        assert_eq!(p[0], 0.);
+        assert!(spade::validate_coordinate(p[0]).is_ok());
+    }
+
     #[test]
     fn square_with_hole_preserves_every_boundary_segment_and_area() {
         let loops = vec![

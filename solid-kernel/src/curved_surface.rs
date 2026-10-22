@@ -550,6 +550,20 @@ pub struct SplineSurface {
 }
 
 impl SplineSurface {
+    pub(crate) fn revolution_profile(&self) -> Option<(&crate::nurbs::NurbsCurve, V3, V3)> {
+        match &self.surface {
+            Geometry::Revolution {
+                curve,
+                origin,
+                axis,
+            } => Some((curve, *origin, *axis)),
+            _ => None,
+        }
+    }
+    pub(crate) fn revolution_parameter(&self, p: V3, tolerance: f64) -> Option<f64> {
+        self.revolution_profile()?;
+        self.candidates(p)?.into_iter().find(|candidate| candidate.1 <= tolerance).map(|candidate| candidate.0[1])
+    }
     pub(crate) fn new(surface: crate::nurbs_surface::NurbsSurface) -> Result<Self, Error> {
         Self::from_geometry(Geometry::Nurbs(surface))
     }

@@ -908,7 +908,15 @@ fn sample_spline_with(
     max_points: usize,
     split_share: f64,
 ) -> Result<(Vec<f64>, Vec<V3>), String> {
-    let domain = curve.domain();
+    sample_spline_range(curve, curve.domain(), chord_mm, max_points, split_share)
+}
+fn sample_spline_range(
+    curve: &crate::nurbs::NurbsCurve,
+    domain: [f64; 2],
+    chord_mm: f64,
+    max_points: usize,
+    split_share: f64,
+) -> Result<(Vec<f64>, Vec<V3>), String> {
     let mut breaks: Vec<f64> = curve
         .knots()
         .iter()
@@ -1749,6 +1757,7 @@ impl AnalyticModel {
             self.install_band_seam(face_id, pair, la, lb, (va, vb), curve, vec![pa, pb], &mut next);
         }
         self.seam_unseamed_torus_bands(&mut next);
+        self.seam_unseamed_revolution_bands(&mut next);
     }
     /// Join the loops `la` and `lb` of the bounds `pair` of a band face into one through a new seam edge from `ends.0` (the
     /// first vertex of `la`) to `ends.1` (the first vertex of `lb`), used once each way: the shape of an OpenCASCADE seam.
@@ -1891,6 +1900,148 @@ impl AnalyticModel {
                 continue;
             };
             self.install_band_seam(face_id, pair, la, lb, (va, vb), curve, samples, next);
+        }
+    }
+    /// Cut a revolution band between two winding circles along its bounded profile interval.
+    fn seam_unseamed_revolution_bands(&mut self, next: &mut u64) {
+        let faces: Vec<u64> = self.body.faces.values()
+            .filter(|f| f.bounds.len() == 2 && matches!(self.surfaces.get(&f.id), Some(Surface::Param(s)) if s.revolution_profile().is_some()))
+            .map(|f| f.id).collect();
+        for face_id in faces {
+            let Some(Surface::Param(surface)) = self.surfaces.get(&face_id) else {
+                continue;
+            };
+            let Some((profile, origin, axis)) = surface.revolution_profile() else {
+                continue;
+            };
+            let Ok(reference) = profile.evaluate(profile.domain()[0]) else {
+                continue;
+            };
+            let reference = sub(reference, origin);
+            let x = sub(reference, mul(axis, dot(reference, axis)));
+            if norm(x) <= self.geometry_tolerance_mm {
+                continue;
+            }
+            let x = mul(x, 1. / norm(x));
+            let y = cross(axis, x);
+            let angle = |p: V3| {
+                let d = sub(p, origin);
+                dot(d, y).atan2(dot(d, x))
+            };
+            let wrap = |a: f64| a - TAU * (a / TAU).round();
+            let Some(turns) = self.bound_turns(face_id, &angle, &wrap) else {
+                continue;
+            };
+            let Some(pair) = winding_pair(&turns) else {
+                continue;
+            };
+            let (la, lb, tb) = (
+                turns[pair.0].0.clone(),
+                turns[pair.1].0.clone(),
+                turns[pair.1].1,
+            );
+            let Some(va) = la.first().and_then(|u| self.use_start(u)) else {
+                continue;
+            };
+            let pa = self.vertices[&va];
+            let Some(vb) =
+                self.vertex_of_loop_at_angle(&lb, tb.signum(), angle(pa), &angle, &wrap, next)
+            else {
+                continue;
+            };
+            let Some(turns) = self.bound_turns(face_id, &angle, &wrap) else {
+                continue;
+            };
+            let (la, mut lb) = (turns[pair.0].0.clone(), turns[pair.1].0.clone());
+            let Some(at) = lb.iter().position(|u| self.use_start(u) == Some(vb)) else {
+                continue;
+            };
+            lb.rotate_left(at);
+            let pb = self.vertices[&vb];
+            let Some(Surface::Param(surface)) = self.surfaces.get(&face_id) else {
+                continue;
+            };
+            let Some((profile, origin, axis)) = surface.revolution_profile() else {
+                continue;
+            };
+            let (Some(ta), Some(tb)) = (
+                surface.revolution_parameter(pa, self.geometry_tolerance_mm),
+                surface.revolution_parameter(pb, self.geometry_tolerance_mm),
+            ) else { continue };
+            if (ta - tb).abs() <= 1e-10 * (profile.domain()[1] - profile.domain()[0]) { continue }
+            let reverse = ta > tb;
+            let Ok((params, points)) = sample_spline_range(profile, [ta.min(tb), ta.max(tb)], self.chord_mm, 100_000, SPLIT_SHARE)
+            else {
+                continue;
+            };
+            let (first, last) = (points[0], *points.last().unwrap());
+            let radial = |p: V3| {
+                let d = sub(p, origin);
+                sub(d, mul(axis, dot(d, axis)))
+            };
+            let x = radial(if reverse { last } else { first });
+            let y = radial(pa);
+            if norm(x) <= self.geometry_tolerance_mm || norm(y) <= self.geometry_tolerance_mm {
+                continue;
+            }
+            let theta = dot(axis, cross(x, y)).atan2(dot(x, y));
+            let rotate = |p: V3| {
+                let d = sub(p, origin);
+                let (s, c) = theta.sin_cos();
+                add(
+                    origin,
+                    add(
+                        add(mul(d, c), mul(cross(axis, d), s)),
+                        mul(axis, dot(axis, d) * (1. - c)),
+                    ),
+                )
+            };
+            let matches = if reverse {
+                norm(sub(rotate(last), pa)) <= self.geometry_tolerance_mm
+                    && norm(sub(rotate(first), pb)) <= self.geometry_tolerance_mm
+            } else {
+                norm(sub(rotate(first), pa)) <= self.geometry_tolerance_mm
+                    && norm(sub(rotate(last), pb)) <= self.geometry_tolerance_mm
+            };
+            if !matches {
+                continue;
+            }
+            let controls = profile
+                .control_points()
+                .iter()
+                .copied()
+                .map(rotate)
+                .collect();
+            let Ok(rotated) = crate::nurbs::NurbsCurve::new_active_domain(
+                profile.degree(),
+                profile.knots().to_vec(),
+                controls,
+                profile.weights().to_vec(),
+                crate::nurbs::Limits::default(),
+            ) else {
+                continue;
+            };
+            let mut samples: Vec<V3> = points.into_iter().map(rotate).collect();
+            let mut params = params;
+            if reverse {
+                samples.reverse();
+                params.reverse();
+            }
+            samples[0] = pa;
+            *samples.last_mut().unwrap() = pb;
+            self.install_band_seam(
+                face_id,
+                pair,
+                la,
+                lb,
+                (va, vb),
+                Curve::Spline {
+                    curve: std::sync::Arc::new(rotated),
+                    params,
+                },
+                samples,
+                next,
+            );
         }
     }
     fn use_start(&self, u: &EdgeUse) -> Option<u64> {

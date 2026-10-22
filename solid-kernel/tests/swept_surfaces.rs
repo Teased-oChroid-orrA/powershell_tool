@@ -130,6 +130,34 @@ fn the_revolved_face_follows_its_seam_and_the_shell_is_sampled_finer_on_request(
     );
 }
 
+#[test]
+fn a_revolved_band_with_two_closed_circles_acquires_a_meridian_seam() {
+    // Re-author the repo's vase as the same closed solid with two one-edge bounds on its revolution face.
+    let source = include_str!("data/vase.step")
+        .replace("#17 = ADVANCED_FACE('',(#18),#31,.T.);", "#17 = ADVANCED_FACE('',(#18,#130),#31,.T.);")
+        .replace("#19 = EDGE_LOOP('',(#20,#61,#88,#115));", "#19 = EDGE_LOOP('',(#20));\n#130 = FACE_BOUND('',#131,.T.);\n#131 = EDGE_LOOP('',(#132));\n#132 = ORIENTED_EDGE('',*,*,#89,.F.);");
+    let s = sample(&source, 0.01).unwrap();
+    assert_eq!(s.source_faces.len(), 3);
+    assert!((s.signed_volume_mm3 / REF_VASE - 1.).abs() < 3e-3);
+    let reversed_bounds = source.replace("(#18,#130),#31", "(#130,#18),#31");
+    let reversed = sample(&reversed_bounds, 0.01).unwrap();
+    assert!((reversed.signed_volume_mm3 / REF_VASE - 1.).abs() < 3e-3);
+}
+
+#[test]
+fn an_interior_trim_of_a_revolution_profile_acquires_only_its_bounded_meridian() {
+    let mut source = include_str!("data/vase.step")
+        .replace("#17 = ADVANCED_FACE('',(#18),#31,.T.);", "#17 = ADVANCED_FACE('',(#18,#130),#31,.T.);")
+        .replace("#19 = EDGE_LOOP('',(#20,#61,#88,#115));", "#19 = EDGE_LOOP('',(#20));\n#130 = FACE_BOUND('',#131,.T.);\n#131 = EDGE_LOOP('',(#132));\n#132 = ORIENTED_EDGE('',*,*,#89,.F.);");
+    let start = source.find("#32 = B_SPLINE_CURVE_WITH_KNOTS(").unwrap();
+    let end = start + source[start..].find(';').unwrap() + 1;
+    source.replace_range(start..end, "#32 = B_SPLINE_CURVE_WITH_KNOTS('',3,(#133,#134,#135,#33,#34,#35,#36,#37,#38,#39,#136,#137,#138),.UNSPECIFIED.,.F.,.F.,(4,3,1,1,1,3,4),(-3.,0.,5.385164807135,11.21611670198,16.601281509114,21.626219319675,24.626219319675),.UNSPECIFIED.);");
+    source = source.replace("#129 = PRODUCT_RELATED_PRODUCT_CATEGORY", "#133 = CARTESIAN_POINT('',(4.,0.,-3.));\n#134 = CARTESIAN_POINT('',(4.,0.,-2.));\n#135 = CARTESIAN_POINT('',(4.,0.,-1.));\n#136 = CARTESIAN_POINT('',(4.5,0.,21.));\n#137 = CARTESIAN_POINT('',(4.5,0.,22.));\n#138 = CARTESIAN_POINT('',(4.5,0.,23.));\n#129 = PRODUCT_RELATED_PRODUCT_CATEGORY");
+    let s = sample(&source, 0.01).unwrap();
+    assert_eq!(s.source_faces.len(), 3);
+    assert!((s.signed_volume_mm3 / REF_VASE - 1.).abs() < 3e-3);
+}
+
 #[cfg(feature = "occt")]
 #[test]
 // OpenCASCADE's tessellation volume depends on the platform's floating point at about 5e-6 (the revolved vase: 1503.0205 on macOS arm64,
