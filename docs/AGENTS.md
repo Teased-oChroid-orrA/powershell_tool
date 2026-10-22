@@ -241,6 +241,8 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 
 - [Phase 128 full OCCT parity and bounded chart repairs](issue-46-phase-128.md), [raw comparison rows](issue-46-phase-128-parity.txt): 19-model quality/solve evidence, Windows build, and the remaining native gate failures.
 
+- [Phase 129 shallow cone seam and quality diagnoses](issue-46-phase-129.md): ABC `00007062` advances to PLC; focused tilted-hole, shared-quality, and `00006600` limits remain open.
+
 - [Phase 41: whole-interval planar spline p-curve bounds](issue-46-phase-41.md): source/budget guards and explicit unit qualification.
 
 - [Phase 42: bounded source cylindrical parameters](issue-46-phase-42.md): explicit radian/length semantics and shared source placement; trim/master gates remain open.

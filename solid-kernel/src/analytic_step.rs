@@ -1745,11 +1745,10 @@ impl AnalyticModel {
             };
             lb.rotate_left(at);
             let (pa, pb) = (self.vertices[&va], self.vertices[&vb]);
-            let axial = dot(sub(pb, pa), frame.z);
-            if rho(pa).max(rho(pb)) * wrap(angle(pa) - angle(pb)).abs() > tolerance || axial.abs() <= tolerance {
+            let length = norm(sub(pb, pa));
+            if rho(pa).max(rho(pb)) * wrap(angle(pa) - angle(pb)).abs() > tolerance || length <= tolerance {
                 continue;
             }
-            let length = norm(sub(pb, pa));
             let curve = Curve::Line {
                 origin: pa,
                 direction: mul(sub(pb, pa), 1. / length),

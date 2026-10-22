@@ -73,12 +73,12 @@
     168
   ],
   "latest_qualified_source": "454b9c430f90391cf0f9c11ac47237992208dd25",
-  "latest_phase": 125,
-  "progress_snapshot": "issue-46-phase-125.md",
+  "latest_phase": 129,
+  "progress_snapshot": "issue-46-phase-129.md",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
-  "remaining": "ABC refinement passed the solver gate on 30/300 files with 14 timeouts; general CAD import, constrained mesh quality, OCCT parity, Windows and the broader P2/P3/final gates remain open",
+  "remaining": "Post-Phase-125 OCCT/native parity was measured on 19 models, but 12/38 meshes fail the default quality gate; ABC 00006600 grading, native tilted-hole quality, shared absolute quality, Windows mesh/solve, and broader P2/P3/final gates remain open",
   "latest_increment_tests": {
     "commands": [
       "cargo test -p fea-core -p fea-problem -p solid-kernel --no-default-features --locked --offline -j1"
@@ -98,7 +98,7 @@
   "last_confirmed_main_merge": "454b9c430f90391cf0f9c11ac47237992208dd25",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Phase 125 boundary repair and fillet-rim tagging plus the ABC solver-quality survey are merged; open items are listed in issue-46-resume.md, including B-rep healing, broad solver-quality recovery, native production parity and the remaining priority gates",
+    "scope": "Phase 129 cone-band seam is recorded; open items are listed in issue-46-resume.md, including ABC 00006600 grading, B-rep healing, absolute solver-quality recovery, native production parity and the remaining priority gates",
     "status": "see_resume_guide_open_list"
   },
   "base_main_head": "454b9c430f90391cf0f9c11ac47237992208dd25",

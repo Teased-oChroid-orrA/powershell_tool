@@ -4,6 +4,8 @@ This is the current entry point for Claude Code or Codex. Historical phase repor
 
 **2026-10-20 live status:** `main` includes PR #167 (Phase 125 boundary repair and fillet-rim face ownership) and PR #168 (ABC solver-quality refinement), through `454b9c4`. No PR is open. The 300-file ABC survey has 30 solver-gate passes and solves with opt-in refinement versus 3 without; six additional files time out under the same 150-second process budget. See [Phase 125](issue-46-phase-125.md), [ABC corpus evidence](issue-46-abc-corpus-2026-10-18.md), and [the live pointer](issue-46-current.json). OCCT remains production; retirement approval is false.
 
+**2026-10-21 update:** [Phase 128](issue-46-phase-128.md) reran all 19 OCCT/native model pairs: all meshed and solved, but 12 of 38 meshes failed the default quality gate. [Phase 129](issue-46-phase-129.md) fixed a shallow-cone seam in ABC `00007062`, which now reaches PLC recovery under a zero-second diagnostic timeout. Native-only tilted-hole quality, shared absolute quality failures, and ABC `00006600` grading remain open. A hosted Windows feature-off executable build passed at the Phase 128 code commit; no Windows mesh or solve has run. OCCT retirement remains unapproved.
+
 ## Establish current state
 
 1. Read root `CLAUDE.md`, then the relevant crate and `docs/AGENTS.md` instructions.

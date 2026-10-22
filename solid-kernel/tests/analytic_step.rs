@@ -1504,6 +1504,24 @@ fn unseamed_cylinder_and_cone_bands_get_a_seam_and_sample_like_the_seamed_origin
     }
 }
 
+#[test]
+fn shallow_cone_band_seams_when_axial_gap_is_below_geometry_tolerance() {
+    let seamed = solid_kernel::native_brep::NativeBrep::lathe(&[
+        [0., 0.], [9.6493746, 0.], [10.0073439, 0.002238917], [0., 0.002238917],
+    ]).unwrap().to_step_text();
+    let unseamed = seamed
+        .replace("#56 = ADVANCED_FACE('',(#55),#49,.T.);", "#56 = ADVANCED_FACE('',(#55,#74),#49,.T.);")
+        .replace("#54 = EDGE_LOOP('',(#50,#51,#52,#53));", "#54 = EDGE_LOOP('',(#50));\n#74 = FACE_BOUND('',#75,.T.);\n#75 = EDGE_LOOP('',(#52));");
+    assert_ne!(seamed, unseamed);
+    let data = inventory(&unseamed, Limits::default()).unwrap();
+    let model = AnalyticModel::read(&data, Options::foreign_cad(0.05)).unwrap();
+    assert_eq!(model.body().faces[&56].bounds.len(), 1);
+    assert!(model.sampled_surface(solid_kernel::native_surface::Limits {
+        chart_policy: solid_kernel::cylindrical_step::ChartPolicy::CanonicalizeWithinTolerance,
+        ..Default::default()
+    }, |_| true).unwrap().signed_volume_mm3 > 0.);
+}
+
 /// The wall of a tilted hole is a cylinder bounded by two ellipses. Without a seam the second ellipse has no vertex at the
 /// first one's angle, so the heal must split an ellipse edge (before, only circle and line edges could be split and the face
 /// stayed unseamed: ABC corpus, 12 files with ellipse or spline loops). The shell must equal the seamed original's.

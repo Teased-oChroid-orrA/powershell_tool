@@ -82,3 +82,7 @@ The [2026-10-21 chart diagnosis](issue-46-phase-126.md) narrows two ABC refusals
 ## Addendum, 2026-10-21: full comparison and bounded repairs
 
 [Phase 128](issue-46-phase-128.md) records the full post-Phase-125 19-model comparison and three focused repairs. All OCCT/native paths meshed and solved, but 12 of 38 meshes failed the default quality gate. The tilted hole is a native-only gate failure; the plain cross-bore is an OCCT-only gate failure. Both paths fail on five other models. A hosted feature-off Windows executable build passed, but no Windows mesh or solve ran. Synthetic seams now chart three revolution faces of local ABC file `00007062`; the full file still stops on later cone/torus band topology, and `00006600` still refuses during grading. The retirement verdict and separate approval requirement are unchanged.
+
+## Addendum, 2026-10-21: shallow cone seam and focused quality diagnosis
+
+[Phase 129](issue-46-phase-129.md) repairs the next `00007062` cone-band seam refusal with a synthetic regression. The file now reaches sampled-shell/PLC recovery, where the diagnostic zero-second timeout cancels it. The tilted-hole native-only quality failure and the shared box-with-boss quality failure were reproduced; a proposed stagnation fix failed a controlled test and was reverted. `00006600` remains a projected-chart overlap. No new per-model solver-quality or Windows mesh/solve evidence is established; the retirement verdict and approval flag are unchanged.
