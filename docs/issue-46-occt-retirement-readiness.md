@@ -74,3 +74,7 @@ The ABC 300-file sample now provides broader, separate diagnostic evidence (`iss
 Remaining work for #63: run the post-Phase-125 same-STEP OCCT/native mesh-and-solve comparison on a machine with OCCT, including quality, face loads, element/DOF counts and time; fix confirmed failures without relaxing gates; qualify native-only builds and solves on target platforms; resolve unsupported editor operations explicitly; and obtain the separate owner approval before removing OCCT or setting `occt_retirement_approved`. The flag remains `false`.
 
 The [2026-10-21 chart diagnosis](issue-46-phase-126.md) narrows two ABC refusals to projected B-spline/revolution trim overlaps; it does not change this retirement verdict.
+
+## Addendum, 2026-10-21: focused post-Phase-125 comparison
+
+[Phase 127](issue-46-phase-127.md) reran the same-STEP comparison on the planar box and filleted cylinder. Both OCCT and native paths passed the default mesh quality gate; the box matched exactly, and the filleted cylinder differed by about 0.3% in elements and strain energy. This supersedes the older absolute-gate result for that filleted-cylinder case only. The other 17 models, Windows native-only builds and solves, and the two ABC chart refusals remain open. The retirement verdict and approval flag are unchanged.
