@@ -73,12 +73,12 @@
     168
   ],
   "latest_qualified_source": "dfdb30951cfcdfc7a30a4d2ebb58b05a03e1c8e4",
-  "latest_phase": 132,
-  "progress_snapshot": "issue-46-phase-132.md",
+  "latest_phase": 134,
+  "progress_snapshot": "issue-46-phase-134.md",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
-  "remaining": "Post-Phase-125 OCCT/native parity was measured on 19 models; Phase 130 cleared native box-with-boss scaled-Jacobian failures. Phases 131-132 diagnosed the tilted-hole chart chain and shared boss-rim failures without retained code changes. Shared absolute quality, ABC 00006600 grading, native tilted-hole quality, Windows mesh/solve, and broader P2/P3/final gates remain open",
+  "remaining": "Post-Phase-125 OCCT/native parity was measured on 19 models; Phase 130 cleared native box-with-boss scaled-Jacobian failures. Phases 131-134 traced the tilted-hole chart chain and boss-rim snapping conflict and corrected a stalled grading report. Shared absolute quality, ABC 00006600 grading, native tilted-hole quality, Windows mesh/solve, and broader P2/P3/final gates remain open",
   "latest_increment_tests": {
     "commands": [
       "cargo test -p fea-core --locked --offline",
@@ -99,7 +99,7 @@
   "last_confirmed_main_merge": "454b9c430f90391cf0f9c11ac47237992208dd25",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Phases 131-132 locate the tilted-hole chart refinement chain and shared boss-rim quality failure. Next prove a safe seed-specific chart rule or rim-cavity repair, then recheck parity. ABC 00006600 grading, Windows runtime mesh/solve, B-rep healing, native production parity and broader priority gates remain open in issue-46-resume.md",
+    "scope": "Phases 131-134 locate the tilted-hole chart refinement chain and boss-rim snap conflict. Next prove a safe geometry-based chart rule or topology-aware snap repair, then recheck parity. ABC 00006600 grading, Windows runtime mesh/solve, B-rep healing, native production parity and broader priority gates remain open in issue-46-resume.md",
     "status": "see_resume_guide_open_list"
   },
   "base_main_head": "454b9c430f90391cf0f9c11ac47237992208dd25",

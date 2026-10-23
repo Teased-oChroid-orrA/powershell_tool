@@ -93,7 +93,7 @@ fn nothing_is_flagged_for_an_empty_part_or_while_sketching() {
     assert!(card(&s).is_none(), "{:?}", card(&s).map(|c| text(&c)));
 }
 
-/// STEP workflow: open, edit by menu action, pick a face (needs the OpenCascade build; without it the refusal is the test).
+/// STEP workflow: open, edit by menu action, pick a face with either CAD kernel.
 #[test]
 fn a_step_solid_opens_gets_a_hole_and_a_dangling_support_is_diagnosed() {
     let mut s = session("step");

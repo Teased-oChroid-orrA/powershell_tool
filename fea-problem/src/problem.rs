@@ -510,8 +510,8 @@ pub enum Geometry {
         #[serde(default, skip_serializing_if = "ImportScale::is_identity")]
         scale: ImportScale,
     },
-    /// A B-rep solid: its STEP text (the source of truth, edited with the OpenCascade kernel) and the cached face-tagged
-    /// surface mesh of it (all a solve needs, so a build without the kernel still solves). The cache is valid only while
+    /// A B-rep solid: its STEP text (the source of truth, edited by the available CAD kernel) and the cached face-tagged
+    /// surface mesh of it (all a solve needs). The cache is valid only while
     /// its hash matches `step`; faces are named `face1`.. in the cache's face order, like sketch edges.
     Solid {
         step: String,

@@ -1,6 +1,6 @@
 //! `Geometry::Solid`: a B-rep solid stored as its STEP text plus the cached face-tagged surface mesh the solve needs.
 //! The solve path (`solid_mesh`) uses only `solid-kernel`'s surface mesh and volume mesher, so it works in a build without
-//! OpenCascade; reading or editing the STEP text (`tessellate_step`) needs the `occt` feature and says so when it is absent.
+//! OpenCascade; reading and editing STEP uses the native kernel without `occt`, or OpenCascade with that feature.
 use crate::problem::{Geometry, Load, Problem, Support};
 use fea_core::tetmesh::MeshReport;
 use fea_core::Mesh;
@@ -252,7 +252,7 @@ pub fn remap_faces(old: &SolidCache, new: &SolidCache) -> Vec<Option<usize>> {
     out
 }
 
-/// An edit of a stored solid. These need the OpenCascade kernel (feature `occt`); without it they say so.
+/// An edit of a stored solid. The available kernel applies it or reports why the shape is unsupported.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SolidOp {
     /// Round every edge.

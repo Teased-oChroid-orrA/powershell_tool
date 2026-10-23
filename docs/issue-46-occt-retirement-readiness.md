@@ -94,3 +94,5 @@ The [2026-10-21 chart diagnosis](issue-46-phase-126.md) narrows two ABC refusals
 ## Addendum, 2026-10-22: unresolved chart and boss-rim failures
 
 [Phase 131](issue-46-phase-131.md) traces the tilted-hole's single sub-gate tet to a cylinder chart refinement chain seeded between opposite rim edges. Two narrower chord rules left its quality unchanged and were reverted. [Phase 132](issue-46-phase-132.md) localizes shared plate-with-boss failures to the boss/plate rim; its measurements used a temporary Phase 131 source snapshot and establish no production improvement. The default quality gates, Windows mesh/solve requirement, and separate retirement approval remain open.
+
+[Phase 133](issue-46-phase-133.md) makes stalled grading report non-convergence instead of success. [Phase 134](issue-46-phase-134.md) confirms that snapping creates the boss-rim short edges from initially regular lattice edges. No safe topology change or additional model gate pass is established.

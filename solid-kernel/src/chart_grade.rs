@@ -94,7 +94,6 @@ impl AnalyticModel {
             report.rounds += 1;
             report.samples_added += after - before;
             if after == before {
-                report.converged = true;
                 break;
             }
             if report.samples_added > options.max_added_samples {
