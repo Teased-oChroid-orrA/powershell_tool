@@ -72,20 +72,21 @@
     167,
     168
   ],
-  "latest_qualified_source": "454b9c430f90391cf0f9c11ac47237992208dd25",
-  "latest_phase": 130,
-  "progress_snapshot": "issue-46-phase-130.md",
+  "latest_qualified_source": "dfdb30951cfcdfc7a30a4d2ebb58b05a03e1c8e4",
+  "latest_phase": 132,
+  "progress_snapshot": "issue-46-phase-132.md",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
-  "remaining": "Post-Phase-125 OCCT/native parity was measured on 19 models; Phase 130 cleared native box-with-boss scaled-Jacobian failures, but shared absolute quality, ABC 00006600 grading, native tilted-hole quality, Windows mesh/solve, and broader P2/P3/final gates remain open",
+  "remaining": "Post-Phase-125 OCCT/native parity was measured on 19 models; Phase 130 cleared native box-with-boss scaled-Jacobian failures. Phases 131-132 diagnosed the tilted-hole chart chain and shared boss-rim failures without retained code changes. Shared absolute quality, ABC 00006600 grading, native tilted-hole quality, Windows mesh/solve, and broader P2/P3/final gates remain open",
   "latest_increment_tests": {
     "commands": [
-      "cargo test -p fea-core -p fea-problem -p solid-kernel --no-default-features --locked --offline -j1"
+      "cargo test -p fea-core --locked --offline",
+      "cargo test -p solid-kernel --locked --offline"
     ],
     "result": "passed",
-    "platform": "macOS arm64, isolated ABC worktree target after forward merge from main",
-    "at": "ce66a37",
+    "platform": "macOS arm64, Phase 130 focused crate suites (555 and 297 passed; 36 and 4 ignored)",
+    "at": "dfdb309",
     "corpus": "issue-46-abc-corpus-2026-10-18.md"
   },
   "tests": {
@@ -98,7 +99,7 @@
   "last_confirmed_main_merge": "454b9c430f90391cf0f9c11ac47237992208dd25",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Phase 130 repair gain and early PLC cancellation are recorded; open items are listed in issue-46-resume.md, including ABC 00006600 grading, B-rep healing, remaining absolute solver-quality recovery, native production parity and the remaining priority gates",
+    "scope": "Phases 131-132 locate the tilted-hole chart refinement chain and shared boss-rim quality failure. Next prove a safe seed-specific chart rule or rim-cavity repair, then recheck parity. ABC 00006600 grading, Windows runtime mesh/solve, B-rep healing, native production parity and broader priority gates remain open in issue-46-resume.md",
     "status": "see_resume_guide_open_list"
   },
   "base_main_head": "454b9c430f90391cf0f9c11ac47237992208dd25",

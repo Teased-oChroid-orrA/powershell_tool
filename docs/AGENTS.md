@@ -244,6 +244,7 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Phase 129 shallow cone seam and quality diagnoses](issue-46-phase-129.md): ABC `00007062` advances to PLC; focused tilted-hole, shared-quality, and `00006600` limits remain open.
 
 - [Phase 130 solver-gate gain and early PLC cancellation](issue-46-phase-130.md): native box-with-boss clears its scaled-Jacobian gate; tilted-hole causal diagnosis and remaining limits.
+- [Phase 131 tilted-hole chart-to-tet trace](issue-46-phase-131.md), [Phase 132 shared boss-rim diagnosis](issue-46-phase-132.md): bounded diagnostics; no retained code change or new quality-gate pass.
 
 - [Phase 41: whole-interval planar spline p-curve bounds](issue-46-phase-41.md): source/budget guards and explicit unit qualification.
 

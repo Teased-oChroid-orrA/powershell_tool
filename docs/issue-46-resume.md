@@ -8,6 +8,8 @@ This is the current entry point for Claude Code or Codex. Historical phase repor
 
 **2026-10-22 update:** [Phase 130](issue-46-phase-130.md) lets a small boundary-repair move cross the solver quality gate: native box with boss now has zero sub-gate tets, while its OCCT comparison still has three. An early PLC cancellation check prevents initialization of an already-cancelled Delaunay run. Hosted Windows app-tui and search-cli executable builds passed at `dfdb309`; no Windows mesh or solve ran. Tilted-hole native quality and ABC `00006600` remain open. Retirement remains unapproved.
 
+**2026-10-22 diagnostic update:** [Phase 131](issue-46-phase-131.md) traced the tilted-hole sub-gate tet to a specific cylinder chart refinement chain; two selective chord rules failed to improve quality and were reverted. [Phase 132](issue-46-phase-132.md) located shared plate-with-boss quality failures at its circular junction on a temporary Phase 131 source snapshot. Neither phase retained a code change or clears a quality gate. Retirement remains unapproved.
+
 ## Establish current state
 
 1. Read root `CLAUDE.md`, then the relevant crate and `docs/AGENTS.md` instructions.

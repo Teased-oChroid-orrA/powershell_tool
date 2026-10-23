@@ -1,0 +1,23 @@
+# Phase 131 — tilted-hole planar-domain chord trial (2026-10-22)
+
+Epic #46 / #63, continuing [Phase 130](issue-46-phase-130.md). OCCT retirement remains unapproved.
+
+## Trial and evidence
+
+The tilted-hole native mesh still has one boundary tet below the scaled-Jacobian gate (0.065 versus the required 0.1); OCCT has 0.121 and none. Phase 130 showed that disabling all cylindrical interior boundary-to-boundary chord refinement raises native quality to 0.120, but that blanket change would restore a known curved-chord overlap with a neighboring planar face.
+
+I tested a narrower chart rule using the neighboring planar face's sampled and classified trim loops. A synthetic square-with-hole check distinguished a chord inside the opening from a chord crossing material and a noncoplanar chord crossing material. The first trial skipped only coplanar chords certified inside an opening: on cylinder face #456 of the included tilted-hole STEP fixture, it reduced the diagnostic chart from 913 to 910 vertices (1758 to 1752 triangles), but the release native mesh remained at scaled Jacobian 0.065 / one sub-gate tet (97079 tets). A broader trial classified straight 3D chord intersections with adjacent planar material and conservatively retained refinement for a nonplanar neighbor. The release comparison again yielded native 0.065 / one sub-gate tet (97071 tets), indistinguishable from the pretrial baseline. OCCT yielded 0.121 / zero in both comparisons.
+
+The focused synthetic test and the first trial's full `cargo test -p solid-kernel --locked --offline` run passed (298 passed, 4 ignored). The release `CASE='tilted hole'` OCCT/native harness completed with both paths' static solves and equilibrium residuals around 1e-12; its printed quality gate still failed for native even though the test process exited 0. The broader trial's touched-crate suite was not rerun because the mesh result did not justify retaining it.
+
+Both chart trials were reverted. No quality limit, geometry tolerance, production tessellation, or retirement flag changed. At the end of those trials, the next task was to identify the exact interior chart edge and downstream boundary tet relation; neighboring planar-domain classification alone had not isolated the harmful chord in this model.
+
+## Focused chart-to-tet trace addendum
+
+A temporary ignored diagnostic in the release comparison harness, removed after the run, traced the baseline's unique sub-gate tet to global element **97069** (scaled Jacobian **0.064734615306**), corner nodes `[2764, 2767, 2765, 8791]`. Its boundary facets are `[2767, 2765, 8791]` on planar `face3` and `[2764, 8791, 2765]` on cylindrical `face7`. The volume mesher is an SDF lattice mesher: its boundary facets are snapped to the sampled surface and are not copies of the source chart triangles. At the centroid of the tet's face7 facet, the nearest source face7 triangle was surface triangle 1246, **0.115576934 mm** away. It uses top-rim edge #265 samples 13 and 14 plus `FacePoint { face: 456, index: 551 }` on the cylinder chart (source face #456, native face7).
+
+Instrumenting that chart point's insertion traced a concrete ancestry:
+
+`EdgePoint #399[4]` (bottom rim) + `EdgePoint #265[12]` (top rim) → `FacePoint #16` → `#72` → `#299` → `#510` → `#551`. Every step after #16 paired the previous interior point with a top-rim sample (#265[12], [12], [13], then [14]). The first edge is an interior **boundary-to-boundary diagonal between the two rim planes**; the final point is not produced directly from a coplanar rim chord. This explains why the first planar-hole-only trial removed three chart vertices yet left the local failure.
+
+The controlled temporary disable of all cylindrical boundary-to-boundary chord refinement removed that ancestry: face7 fell from 1,422 to 64 source triangles, the former sub-gate tet disappeared, and the new worst tet was #97403 at scaled Jacobian **0.120097177941**. At the *fixed baseline* face7-facet centroid, the sampled-solid signed distance changed from **+0.115576933711 mm** to **+0.114968802827 mm**; at baseline node 2764 it changed from **+0.002471595654 mm** to **−0.013944282070 mm**. Thus this refinement chain changes the sampled SDF locally where the bad boundary tet is generated, and the class-wide toggle clears the gate. The experiment does not prove that suppressing only the seed edge #399[4]–#265[12] would clear the gate or preserve other models' overlap protection. The toggle and diagnostic code were reverted. The next bounded test should isolate that seed while checking the neighboring planar trimmed domains and any other surface intersections, then require the same mesh gate before retention.

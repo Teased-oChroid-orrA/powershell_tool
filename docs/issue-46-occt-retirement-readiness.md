@@ -90,3 +90,7 @@ The [2026-10-21 chart diagnosis](issue-46-phase-126.md) narrows two ABC refusals
 ## Addendum, 2026-10-22: repair gain and cancellation
 
 [Phase 130](issue-46-phase-130.md) makes the native box-with-boss mesh cross the default scaled-Jacobian gate with a verified boundary-repair gain. Its OCCT path still fails that gate, and the native tilted-hole failure remains; a controlled chart toggle proved causality but was reverted to preserve an overlap guard. PLC now checks cancellation before initial Delaunay construction. These scoped changes do not qualify OCCT retirement or change its approval flag.
+
+## Addendum, 2026-10-22: unresolved chart and boss-rim failures
+
+[Phase 131](issue-46-phase-131.md) traces the tilted-hole's single sub-gate tet to a cylinder chart refinement chain seeded between opposite rim edges. Two narrower chord rules left its quality unchanged and were reverted. [Phase 132](issue-46-phase-132.md) localizes shared plate-with-boss failures to the boss/plate rim; its measurements used a temporary Phase 131 source snapshot and establish no production improvement. The default quality gates, Windows mesh/solve requirement, and separate retirement approval remain open.
