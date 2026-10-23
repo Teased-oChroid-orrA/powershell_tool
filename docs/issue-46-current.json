@@ -72,7 +72,7 @@
     167,
     168
   ],
-  "latest_qualified_source": "dfdb30951cfcdfc7a30a4d2ebb58b05a03e1c8e4",
+  "latest_qualified_source": "391563573185e3fa389b7f70d0f0c0cf3740e2e4",
   "latest_phase": 134,
   "progress_snapshot": "issue-46-phase-134.md",
   "handoff": "issue-46-claude-handoff.md",
@@ -81,12 +81,12 @@
   "remaining": "Post-Phase-125 OCCT/native parity was measured on 19 models; Phase 130 cleared native box-with-boss scaled-Jacobian failures. Phases 131-134 traced the tilted-hole chart chain and boss-rim snapping conflict and corrected a stalled grading report. Shared absolute quality, ABC 00006600 grading, native tilted-hole quality, Windows mesh/solve, and broader P2/P3/final gates remain open",
   "latest_increment_tests": {
     "commands": [
-      "cargo test -p fea-core --locked --offline",
-      "cargo test -p solid-kernel --locked --offline"
+      "cargo test -p solid-kernel --no-default-features --locked --offline -j1 --test chart_grade",
+      "cargo test -p solid-kernel --no-default-features --locked --offline -j1"
     ],
     "result": "passed",
-    "platform": "macOS arm64, Phase 130 focused crate suites (555 and 297 passed; 36 and 4 ignored)",
-    "at": "dfdb309",
+    "platform": "macOS arm64, Phase 133 focused grading test (1 passed) and full solid-kernel suite (297 passed, 4 ignored)",
+    "at": "3915635",
     "corpus": "issue-46-abc-corpus-2026-10-18.md"
   },
   "tests": {
