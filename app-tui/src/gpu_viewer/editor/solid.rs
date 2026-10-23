@@ -90,8 +90,10 @@ pub enum SolidAction {
     NewPart,
     /// Load template `i` of `fea_problem::templates`.
     OpenTemplate(usize),
-    /// Ask for a path and open that problem or mesh file.
+    /// Browse for a problem or mesh file.
     OpenFile,
+    BrowseParent,
+    BrowseEntry(usize),
     /// Remove all geometry, boundary conditions and the feature history.
     ClearModel,
     Solve,
@@ -265,6 +267,11 @@ struct Prompt {
     op: Option<stepops::PromptOp>,
 }
 
+struct FileBrowser {
+    dir: PathBuf,
+    entries: Vec<PathBuf>,
+}
+
 struct Preview {
     key: Problem,
     mesh: Arc<Mesh>,
@@ -294,6 +301,7 @@ pub struct SolidSession {
     /// A surface click asks for the list of applicable boundary conditions (taken by the window).
     popup: bool,
     prompt: Option<Prompt>,
+    browser: Option<FileBrowser>,
     /// The value card open beside the model (`cards`).
     card: Option<cards::CardState>,
     saved_geometry: Option<Geometry>,
@@ -387,6 +395,7 @@ impl SolidSession {
             multi: BTreeSet::new(),
             popup: false,
             prompt: None,
+            browser: None,
             card: None,
             saved_geometry: None,
             import: None,
@@ -692,7 +701,10 @@ impl SolidSession {
         let Some(prompt) = self.prompt.take() else { return };
         match prompt.row {
             None if prompt.op.is_some() => self.run_prompt_op(prompt.op.unwrap_or(stepops::PromptOp::Fillet), &prompt.text),
-            None if prompt.open => self.open_path(&prompt.text),
+            None if prompt.open => {
+                self.browser = None;
+                self.open_path(&prompt.text);
+            }
             None => self.apply_material_search(&prompt.text),
             Some(row) => {
                 let mut read = None;
@@ -1329,6 +1341,8 @@ impl SolidSession {
             SolidAction::NewPart => self.new_part(),
             SolidAction::OpenTemplate(i) => self.open_template(i),
             SolidAction::OpenFile => self.begin_open_file(),
+            SolidAction::BrowseParent => self.browse_parent(),
+            SolidAction::BrowseEntry(i) => self.browse_entry(i),
             SolidAction::ClearModel => self.clear_model(),
             SolidAction::Solve => match Self::bench_study(self.bench) {
                 Some(kind) => self.run_study(kind),
@@ -1410,6 +1424,7 @@ impl SolidSession {
             match key {
                 Key::Escape => {
                     self.prompt = None;
+                    self.browser = None;
                     self.status.clear();
                 }
                 Key::Backspace => {

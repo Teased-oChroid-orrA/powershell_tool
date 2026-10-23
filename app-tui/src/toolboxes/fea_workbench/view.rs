@@ -5,7 +5,7 @@ use fea_problem::raster::rasterize;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::canvas;
@@ -46,10 +46,30 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &FeaWorkbenchSt
         crate::toolboxes::material_lookup::view::draw(frame, popup, theme, browser, true, regions);
     }
     if let Some(prompt) = &state.prompt {
+        if let Some(browser) = &prompt.browser {
+            let prompt_width = area.width.min(90);
+            frame.render_widget(Clear, Rect { x: area.x + area.width.saturating_sub(prompt_width) / 2, y: area.y + area.height / 2, width: prompt_width, height: 3.min(area.height) });
+            let popup = crate::widgets::popup::centered_rect(85, 75, area);
+            frame.render_widget(Clear, popup);
+            let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.border_style(true)).title(" JSON · Enter open · Backspace up · Tab path · Esc cancel ");
+            let inner = block.inner(popup);
+            frame.render_widget(block, popup);
+            if inner.width > 0 && inner.height > 0 {
+                let dir = browser.dir.display().to_string();
+                let visible: String = dir.chars().rev().take(inner.width as usize).collect::<String>().chars().rev().collect();
+                let rows = std::iter::once(ListItem::new(visible))
+                    .chain(browser.error.iter().map(|e| ListItem::new(e.as_str())))
+                    .chain(browser.entries.iter().map(|p| ListItem::new(format!("{}{}", p.file_name().unwrap_or_default().to_string_lossy(), if p.is_dir() { "/" } else { "" }))));
+                let mut selected = ListState::default();
+                selected.select(Some(browser.selected + 1 + usize::from(browser.error.is_some())));
+                frame.render_stateful_widget(List::new(rows.collect::<Vec<_>>()).highlight_style(theme.selected_row_style()), inner, &mut selected);
+            }
+            return;
+        }
         let w = area.width.min(90);
         let popup = Rect { x: area.x + area.width.saturating_sub(w) / 2, y: area.y + area.height / 2, width: w, height: 3.min(area.height) };
         frame.render_widget(Clear, popup);
-        let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.border_style(true)).title(format!(" {} - Enter: open \u{b7} Esc: cancel ", prompt.label));
+        let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.border_style(true)).title(format!(" {} - Enter: open \u{b7} Tab: browse \u{b7} Esc: cancel ", prompt.label));
         let inner = block.inner(popup);
         frame.render_widget(block, popup);
         if inner.width > 0 && inner.height > 0 {

@@ -172,3 +172,52 @@ fn the_open_prompt_collects_a_path_and_replacing_is_refused_while_sketching() {
     }
     let _ = Authoring::take_view(&mut s);
 }
+
+#[test]
+fn open_browser_navigates_and_uses_existing_open_validation() {
+    let mut source = template_session("browse-source");
+    source.do_action(SolidAction::Save);
+    let dir = source.path.parent().unwrap().to_path_buf();
+    let nested = dir.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    let saved = nested.join("part.fea.json");
+    std::fs::copy(&source.path, &saved).unwrap();
+    std::fs::write(nested.join("bad.fea.json"), "not json").unwrap();
+
+    let mut s = template_session("browse-destination");
+    s.path = dir.join("destination.fea.json");
+    s.do_action(SolidAction::OpenFile);
+    assert!(s.inspector_cards().iter().any(|c| c.id == "file-browser"), "browser must be visible in the native inspector");
+    let index = s.browser.as_ref().unwrap().entries.iter().position(|p| p == &nested).unwrap();
+    s.do_action(SolidAction::BrowseEntry(index));
+    assert_eq!(s.browser.as_ref().unwrap().dir, nested);
+    let index = s.browser.as_ref().unwrap().entries.iter().position(|p| p == &saved).unwrap();
+    s.do_action(SolidAction::BrowseEntry(index));
+    assert_eq!(s.problem, source.problem);
+    assert_eq!(s.path, saved);
+    assert!(!s.prompting());
+
+    s.do_action(SolidAction::OpenFile);
+    s.do_action(SolidAction::BrowseParent);
+    assert_eq!(s.browser.as_ref().unwrap().dir, dir);
+    let before = s.problem.clone();
+    let index = s.browser.as_ref().unwrap().entries.iter().position(|p| p == &nested).unwrap();
+    s.do_action(SolidAction::BrowseEntry(index));
+    let index = s.browser.as_ref().unwrap().entries.iter().position(|p| p.ends_with("bad.fea.json")).unwrap();
+    s.do_action(SolidAction::BrowseEntry(index));
+    assert!(s.status.starts_with("Open failed"));
+    assert_eq!(s.problem, before);
+    #[cfg(not(feature = "occt"))]
+    {
+        let step = nested.join("cube.step");
+        std::fs::write(&step, solid_kernel::native_brep::NativeBrep::box_from_corners([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]).unwrap().to_step_text()).unwrap();
+        s.do_action(SolidAction::OpenFile);
+        let index = s.browser.as_ref().unwrap().entries.iter().position(|p| p == &step).unwrap();
+        s.do_action(SolidAction::BrowseEntry(index));
+        assert!(matches!(s.problem.geometry, Geometry::Solid { .. }), "{}", s.status);
+    }
+    s.do_action(SolidAction::OpenFile);
+    s.handle_key(Key::Escape, Mods::default());
+    assert!(s.browser.is_none() && !s.prompting());
+    std::fs::remove_dir_all(dir).unwrap();
+}

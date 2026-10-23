@@ -14,6 +14,7 @@ pub mod model;
 pub mod view;
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -46,6 +47,40 @@ pub enum FilePurpose {
 pub struct Prompt {
     pub label: &'static str,
     pub buffer: EditBuffer,
+    pub browser: Option<FileBrowser>,
+}
+
+pub struct FileBrowser {
+    pub dir: PathBuf,
+    pub entries: Vec<PathBuf>,
+    pub selected: usize,
+    pub error: Option<String>,
+}
+
+impl FileBrowser {
+    fn open(path: &str) -> Self {
+        let path = PathBuf::from(path);
+        let mut dir = if path.is_dir() { path } else { path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(std::path::Path::new(".")).to_path_buf() };
+        while !dir.is_dir() {
+            dir = dir.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(std::path::Path::new(".")).to_path_buf();
+        }
+        let mut browser = Self { dir, entries: Vec::new(), selected: 0, error: None };
+        browser.refresh();
+        browser
+    }
+
+    fn refresh(&mut self) {
+        self.entries.clear();
+        self.selected = 0;
+        self.error = None;
+        match std::fs::read_dir(&self.dir) {
+            Ok(read) => {
+                self.entries = read.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.is_dir() || (p.is_file() && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")))).collect();
+                self.entries.sort_by(|a, b| b.is_dir().cmp(&a.is_dir()).then_with(|| a.file_name().cmp(&b.file_name())));
+            }
+            Err(e) => self.error = Some(e.to_string()),
+        }
+    }
 }
 
 pub struct Preview {
@@ -707,7 +742,33 @@ pub fn handle_key(state: &mut FeaWorkbenchState, key: KeyEvent) -> (bool, Vec<Ef
     }
 
     if let Some(prompt) = state.prompt.as_mut() {
+        if let Some(browser) = prompt.browser.as_mut() {
+            match key.code {
+                KeyCode::Esc => state.prompt = None,
+                KeyCode::Tab => prompt.browser = None,
+                KeyCode::Up => browser.selected = browser.selected.saturating_sub(1),
+                KeyCode::Down => browser.selected = (browser.selected + 1).min(browser.entries.len().saturating_sub(1)),
+                KeyCode::Backspace => {
+                    if let Some(parent) = browser.dir.parent() { browser.dir = parent.to_path_buf(); browser.refresh(); }
+                }
+                KeyCode::Enter => {
+                    if let Some(path) = browser.entries.get(browser.selected).cloned() {
+                        if path.is_dir() { browser.dir = path; browser.refresh(); }
+                        else {
+                            state.prompt = None;
+                            return (true, vec![Effect::ReadTextFile { purpose: FilePurpose::Problem, path: path.to_string_lossy().into_owned() }]);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return (true, Vec::new());
+        }
         match key.code {
+            KeyCode::Tab => {
+                prompt.browser = Some(FileBrowser::open(prompt.buffer.trim().trim_matches('"')));
+                return (true, Vec::new());
+            }
             KeyCode::Enter => {
                 let path = prompt.buffer.trim().trim_matches('"').to_string();
                 state.prompt = None;
@@ -864,7 +925,7 @@ pub fn handle_key(state: &mut FeaWorkbenchState, key: KeyEvent) -> (bool, Vec<Ef
                 if let Some(dir) = FeaWorkbenchState::file_dir() {
                     buffer.set(format!("{}{}{}.json", dir.display(), std::path::MAIN_SEPARATOR, state.file_stem()));
                 }
-                state.prompt = Some(Prompt { label: "Open problem file", buffer });
+                state.prompt = Some(Prompt { label: "Open problem file", buffer, browser: None });
                 (true, Vec::new())
             }
             _ => (false, Vec::new()),
