@@ -247,6 +247,7 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Phase 131 tilted-hole chart-to-tet trace](issue-46-phase-131.md), [Phase 132 shared boss-rim diagnosis](issue-46-phase-132.md): bounded diagnostics; no retained code change or new quality-gate pass.
 - [Phase 133 grading progress report](issue-46-phase-133.md), [Phase 134 boss-rim snap conflict](issue-46-phase-134.md): stalled grading no longer reports convergence; snapping creates the boss-rim short edges.
 - [Phase 135 file browser](issue-46-phase-135.md): native editor and terminal FEA Workbench browse existing files while preserving typed paths.
+- [Phase 136 rejected rim snap](issue-46-phase-136.md): a candidate cleared boss quality but degraded curved-body accuracy and was reverted.
 
 - [Phase 41: whole-interval planar spline p-curve bounds](issue-46-phase-41.md): source/budget guards and explicit unit qualification.
 

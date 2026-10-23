@@ -14,6 +14,8 @@ This is the current entry point for Claude Code or Codex. Historical phase repor
 
 **2026-10-22 file workflow:** [Phase 135](issue-46-phase-135.md) adds browsing to Open in the native solid editor and terminal FEA Workbench. Meshing and OCCT retirement gates remain unchanged; retirement remains unapproved.
 
+**2026-10-22 rim-snap probe:** [Phase 136](issue-46-phase-136.md) rejects a one-vertex-per-rim-point snap rule after it degraded curved-body accuracy. A topology-aware repair remains open; retirement remains unapproved.
+
 ## Establish current state
 
 1. Read root `CLAUDE.md`, then the relevant crate and `docs/AGENTS.md` instructions.

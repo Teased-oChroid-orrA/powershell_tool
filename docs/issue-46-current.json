@@ -3,7 +3,7 @@
   "epic_complete": false,
   "branch": "main",
   "pull_request": null,
-  "pull_request_state": "none_open_after_pr_168",
+  "pull_request_state": "none_open_after_pr_170",
   "merged_prs": [
     42,
     65,
@@ -70,23 +70,27 @@
     130,
     131,
     167,
-    168
+    168,
+    169,
+    170
   ],
-  "latest_qualified_source": "391563573185e3fa389b7f70d0f0c0cf3740e2e4",
-  "latest_phase": 134,
-  "progress_snapshot": "issue-46-phase-134.md",
+  "latest_qualified_source": "55252ed74a9d2aa47c1b942818d01011ecdee15f",
+  "latest_phase": 136,
+  "progress_snapshot": "issue-46-phase-136.md",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
-  "remaining": "Post-Phase-125 OCCT/native parity was measured on 19 models; Phase 130 cleared native box-with-boss scaled-Jacobian failures. Phases 131-134 traced the tilted-hole chart chain and boss-rim snapping conflict and corrected a stalled grading report. Shared absolute quality, ABC 00006600 grading, native tilted-hole quality, Windows mesh/solve, and broader P2/P3/final gates remain open",
+  "remaining": "Phase 135 qualified file browsing in both active Open flows. Phase 136 rejected a boss-rim snap restriction because it degraded curved-body accuracy; no mesher change was retained. Shared absolute quality, ABC 00006600 grading, native tilted-hole quality, Windows mesh/solve, and broader P2/P3/final gates remain open",
   "latest_increment_tests": {
     "commands": [
-      "cargo test -p solid-kernel --no-default-features --locked --offline -j1 --test chart_grade",
-      "cargo test -p solid-kernel --no-default-features --locked --offline -j1"
+      "cargo test -p app-tui --locked --offline -j1 open_prompt_browses_and_keeps_typed_path",
+      "cargo test -p app-tui --locked --offline -j1 open_browser_navigates_and_uses_existing_open_validation",
+      "cargo test -p app-tui --locked --offline -j1",
+      "cargo build -p app-tui --locked --offline -j1"
     ],
     "result": "passed",
-    "platform": "macOS arm64, Phase 133 focused grading test (1 passed) and full solid-kernel suite (297 passed, 4 ignored)",
-    "at": "3915635",
+    "platform": "macOS arm64, Phase 135 focused browser tests, full app-tui suite (1,188 unit passed, 22 ignored; 38 rendering integration passed), executable build and real PTY browser/open check",
+    "at": "55252ed74a9d2aa47c1b942818d01011ecdee15f",
     "corpus": "issue-46-abc-corpus-2026-10-18.md"
   },
   "tests": {
@@ -96,13 +100,13 @@
     "platform": "macOS arm64 (no Windows or hosted CI evidence)",
     "at": "20a3f24"
   },
-  "last_confirmed_main_merge": "454b9c430f90391cf0f9c11ac47237992208dd25",
+  "last_confirmed_main_merge": "f59c2bdca8ce7c928dc2407dbf62d961d593acd6",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Phases 131-134 locate the tilted-hole chart refinement chain and boss-rim snap conflict. Next prove a safe geometry-based chart rule or topology-aware snap repair, then recheck parity. ABC 00006600 grading, Windows runtime mesh/solve, B-rep healing, native production parity and broader priority gates remain open in issue-46-resume.md",
+    "scope": "Phase 136 shows the boss-rim fix must preserve curved-body accuracy; pursue topology-aware local repair with connected boss and curved-body regressions, then recheck parity. Native tilted-hole quality, ABC 00006600 grading, Windows runtime mesh/solve, B-rep healing, production parity and broader priority gates remain open in issue-46-resume.md",
     "status": "see_resume_guide_open_list"
   },
-  "base_main_head": "454b9c430f90391cf0f9c11ac47237992208dd25",
+  "base_main_head": "f59c2bdca8ce7c928dc2407dbf62d961d593acd6",
   "completion_checklist": "issue-46-completion-checklist.md",
   "resume": "issue-46-resume.md",
   "pending_prs": []
