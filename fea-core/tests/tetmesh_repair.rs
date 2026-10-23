@@ -155,3 +155,41 @@ fn a_quadratic_mesh_of_the_repaired_boundary_layer_is_valid() {
     assert_eq!(q.inverted, 0);
     assert!(q.min_scaled_jacobian >= QualityThresholds::default().min_scaled_jacobian, "{}", q.min_scaled_jacobian);
 }
+
+#[test]
+#[ignore = "diagnostic: the connected boss rim still fails the default solver gate"]
+fn connected_plate_boss_rim_passes_solver_gate() {
+    let sdf = |p: V3| {
+        let q = [(p[0] - 6.0).abs() - 6.0, (p[1] - 2.0).abs() - 2.0, (p[2] - 0.5).abs() - 0.5];
+        let outside = q.map(|v| v.max(0.0));
+        let plate = (outside[0].powi(2) + outside[1].powi(2) + outside[2].powi(2)).sqrt() + q[0].max(q[1]).max(q[2]).min(0.0);
+        let r = (p[0] - 6.0).hypot(p[1] - 2.0);
+        let boss = (r - 1.2).max(1.0 - p[2]).max(p[2] - 4.0);
+        plate.min(boss)
+    };
+    let faces = |p: V3| {
+        let r = (p[0] - 6.0).hypot(p[1] - 2.0);
+        let nx = if r > 0.0 { (p[0] - 6.0) / r } else { 1.0 };
+        let ny = if r > 0.0 { (p[1] - 2.0) / r } else { 0.0 };
+        let mut out = vec![
+            FaceHit { face: 0, dist: -p[2], normal: [0.0, 0.0, -1.0] },
+            FaceHit { face: 1, dist: p[2] - 1.0, normal: [0.0, 0.0, 1.0] },
+            FaceHit { face: 2, dist: r - 1.2, normal: [nx, ny, 0.0] },
+            FaceHit { face: 3, dist: p[2] - 4.0, normal: [0.0, 0.0, 1.0] },
+        ];
+        out.retain(|h| match h.face {
+            1 => r >= 1.2 && p[0] >= 0.0 && p[0] <= 12.0 && p[1] >= 0.0 && p[1] <= 4.0,
+            2 => p[2] >= 1.0 && p[2] <= 4.0,
+            3 => r <= 1.2,
+            _ => p[0] >= 0.0 && p[0] <= 12.0 && p[1] >= 0.0 && p[1] <= 4.0,
+        });
+        out
+    };
+    let size = |_: V3| 10.0;
+    let face = |_: V3| 0;
+    let solid = Solid { lo: [0.0, 0.0, 0.0], hi: [12.0, 4.0, 4.0], sdf: &sdf, size: &size, face_of: &face, face_dists: Some(&faces) };
+    let (mesh, report, _) = mesh_solid_reported(&solid, Elastic::new(1.0, 0.3), TetOptions { base: 0.6, boundary_size: 0.25, repair: true, ..Default::default() }).unwrap();
+    let quality = mesh.quality();
+    assert_eq!(quality.inverted, 0);
+    assert_eq!(below_gate(&mesh), 0, "{} of {} below gate, min scaled Jacobian {}", below_gate(&mesh), report.tets, quality.min_scaled_jacobian);
+}
