@@ -113,6 +113,17 @@ impl SolidSession {
             let title = if self.prompt.as_ref().is_some_and(|p| p.open) { "Open file" } else { "Material search" };
             cards.push(Card::new("prompt", title, Relevance::Primary, vec![DockItem::row(format!("{label}: [{text}_]"), Tone::Warn, None, true)]));
         }
+        if let Some(browser) = &self.browser {
+            let mut items = vec![DockItem::text(browser.dir.display().to_string(), Tone::Dim)];
+            if browser.dir.parent().is_some() {
+                items.push(DockItem::row(".. (parent)", Tone::Normal, Some(ui(SolidAction::BrowseParent)), false));
+            }
+            items.extend(browser.entries.iter().enumerate().map(|(i, path)| {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                DockItem::row(format!("{}{}", name, if path.is_dir() { "/" } else { "" }), Tone::Normal, Some(ui(SolidAction::BrowseEntry(i))), false)
+            }));
+            cards.push(Card::new("file-browser", "Browse files", Relevance::Primary, items));
+        }
         let focused = self.focused_row();
         let feature = focused.map(feature_of);
         if let Some(f) = feature {

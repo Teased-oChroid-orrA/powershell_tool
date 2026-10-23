@@ -12,6 +12,8 @@ This is the current entry point for Claude Code or Codex. Historical phase repor
 
 **2026-10-22 follow-up:** [Phase 133](issue-46-phase-133.md) corrects a stalled grading report that falsely said it converged. [Phase 134](issue-46-phase-134.md) traces shared boss-rim quality failures to competing boundary vertices snapping toward one feature. Neither phase clears a model quality gate; retirement remains unapproved.
 
+**2026-10-22 file workflow:** [Phase 135](issue-46-phase-135.md) adds browsing to Open in the native solid editor and terminal FEA Workbench. Meshing and OCCT retirement gates remain unchanged; retirement remains unapproved.
+
 ## Establish current state
 
 1. Read root `CLAUDE.md`, then the relevant crate and `docs/AGENTS.md` instructions.

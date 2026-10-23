@@ -259,6 +259,49 @@ fn problems_open_from_json_and_a_bad_file_is_reported() {
 }
 
 #[test]
+fn open_prompt_browses_and_keeps_typed_path() {
+    let dir = std::env::temp_dir().join(format!("fea-browser-{}-{:?}", std::process::id(), std::thread::current().id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("part.fea.json");
+    std::fs::write(&file, FeaWorkbenchState::default().problem.to_json().unwrap()).unwrap();
+    std::fs::write(dir.join("invalid.json"), "{}").unwrap();
+    let mut s = FeaWorkbenchState::default();
+    handle_key(&mut s, key(KeyCode::Char('o')));
+    s.prompt.as_mut().unwrap().buffer.set(dir.join("typed.json").display().to_string());
+    handle_key(&mut s, key(KeyCode::Tab));
+    let browser = s.prompt.as_ref().unwrap().browser.as_ref().unwrap();
+    assert!(browser.entries.contains(&file));
+    handle_key(&mut s, key(KeyCode::Tab));
+    assert!(s.prompt.as_ref().unwrap().browser.is_none());
+    assert_eq!(s.prompt.as_ref().unwrap().buffer.trim(), dir.join("typed.json").to_string_lossy());
+    handle_key(&mut s, key(KeyCode::Tab));
+    handle_key(&mut s, key(KeyCode::Esc));
+    assert!(s.prompt.is_none(), "Esc cancels browsing and the open flow");
+    handle_key(&mut s, key(KeyCode::Char('o')));
+    s.prompt.as_mut().unwrap().buffer.set(dir.join("typed.json").display().to_string());
+    handle_key(&mut s, key(KeyCode::Tab));
+    let browser = s.prompt.as_mut().unwrap().browser.as_mut().unwrap();
+    browser.selected = browser.entries.iter().position(|p| p == &file).unwrap();
+    let (_, effects) = handle_key(&mut s, key(KeyCode::Enter));
+    assert!(matches!(effects.as_slice(), [Effect::ReadTextFile { purpose: FilePurpose::Problem, path }] if path == &file.to_string_lossy()));
+    assert!(s.prompt.is_none());
+    let msg = s.file_read(FilePurpose::Problem, file.display().to_string(), std::fs::read_to_string(&file).map_err(|e| e.to_string())).unwrap();
+    assert_eq!(msg.1, crate::theme::StatusTone::Success);
+    let bad = std::fs::read_to_string(dir.join("invalid.json")).unwrap();
+    assert_eq!(s.file_read(FilePurpose::Problem, "invalid.json".into(), Ok(bad)).unwrap().1, crate::theme::StatusTone::Danger);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn browser_starts_at_existing_ancestor_of_unsaved_problem_path() {
+    let dir = std::env::temp_dir();
+    let missing = dir.join(format!("fea-not-created-{}", std::process::id())).join("case.json");
+    let browser = FileBrowser::open(&missing.display().to_string());
+    assert_eq!(browser.dir, dir);
+    assert!(browser.error.is_none());
+}
+
+#[test]
 fn letter_keys_work_in_both_cases_for_windows_caps_lock() {
     let mut s = FeaWorkbenchState::default();
     let f0 = s.field;

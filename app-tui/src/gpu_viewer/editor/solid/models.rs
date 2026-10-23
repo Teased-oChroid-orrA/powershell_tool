@@ -90,8 +90,41 @@ impl SolidSession {
         }
         let text = self.path.to_string_lossy().into_owned();
         self.prompt = Some(Prompt { kind: EditKind::Text, label: "open problem (.json), mesh (.msh / .inp) or STEP solid (.step / .stp)".into(), text, row: None, open: true, op: None });
-        self.status = "Type the path and press Enter (Esc cancels).".into();
+        let dir = self.path.parent().filter(|p| p.is_dir()).map(Path::to_path_buf).unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        self.browse_dir(dir);
+        self.status = "Click a file, or type a path and press Enter (Esc cancels).".into();
         self.touch();
+    }
+
+    fn browse_dir(&mut self, dir: PathBuf) {
+        match std::fs::read_dir(&dir) {
+            Ok(read) => {
+                let mut entries: Vec<_> = read.filter_map(Result::ok).map(|e| e.path()).filter(|p| {
+                    p.is_dir() || p.extension().is_some_and(|e| ["json", "msh", "inp", "step", "stp"].iter().any(|x| e.eq_ignore_ascii_case(x)))
+                }).collect();
+                entries.sort_by(|a, b| b.is_dir().cmp(&a.is_dir()).then_with(|| a.file_name().cmp(&b.file_name())));
+                self.browser = Some(FileBrowser { dir, entries });
+                self.touch();
+            }
+            Err(e) => self.status = format!("Cannot browse {}: {e}", dir.display()),
+        }
+    }
+
+    pub(super) fn browse_parent(&mut self) {
+        if let Some(parent) = self.browser.as_ref().and_then(|b| b.dir.parent()).map(Path::to_path_buf) {
+            self.browse_dir(parent);
+        }
+    }
+
+    pub(super) fn browse_entry(&mut self, index: usize) {
+        let Some(path) = self.browser.as_ref().and_then(|b| b.entries.get(index)).cloned() else { return };
+        if path.is_dir() {
+            self.browse_dir(path);
+        } else {
+            self.prompt = None;
+            self.browser = None;
+            self.open_path(&path.to_string_lossy());
+        }
     }
 
     /// Open a saved problem (`.json`) or an imported mesh (anything else) at `path`.
