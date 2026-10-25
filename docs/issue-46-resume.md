@@ -16,6 +16,8 @@ This is the current entry point for Claude Code or Codex. Historical phase repor
 
 **2026-10-22 rim-snap probe:** [Phase 136](issue-46-phase-136.md) rejects a one-vertex-per-rim-point snap rule after it degraded curved-body accuracy. A topology-aware repair remains open; retirement remains unapproved.
 
+**2026-10-24 boss update:** [Phase 139](issue-46-phase-139.md) corrected the boss fixture, reentrant projection and repair surface contracts. [Phase 140](issue-46-phase-140.md) removes pinched sectors at the initial cut: the connected boss now passes its quality and manifold gates, on branch `issue-46-boss-rim-repair`. Contact re-audit, volume, same-STEP solves and the remaining boss-plan qualification are open; retirement remains unapproved.
+
 ## Establish current state
 
 1. Read root `CLAUDE.md`, then the relevant crate and `docs/AGENTS.md` instructions.

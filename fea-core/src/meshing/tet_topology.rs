@@ -308,6 +308,25 @@ mod tests {
         assert_eq!(t, old);
     }
     #[test]
+    fn checked_two_to_three_flip_can_clear_quality_gate_without_moving_boundary() {
+        let p = vec![
+            [0.0, 0.0, 0.0], [1.0, 0.0, 0.0],
+            [0.5, 0.8660254, 0.0],
+            [0.4676201654449199, 0.3117365514855523, 0.41338745434207647],
+            [0.44135538017430254, 0.3773988350832113, -0.040774254313441186],
+        ];
+        let mut top = TetTopology::new(p.clone(), vec![[0, 1, 2, 3], [0, 2, 1, 4]], 10).unwrap();
+        let signature = |faces: &[[usize; 3]]| -> BTreeMap<_, _> {
+            faces.iter().map(|&face| (key(face), parity(face))).collect()
+        };
+        let before = signature(top.boundary());
+        let q = |cells: &[[usize; 4]]| cells.iter().map(|&c| super::super::boundary_repair::scaled_jacobian(&p, c)).fold(f64::INFINITY, f64::min);
+        assert!(q(top.cells()) < super::super::quality::QualityThresholds::default().min_scaled_jacobian);
+        top.replace_cells(&[0, 1], &[[3, 0, 4, 1], [3, 4, 1, 2], [3, 2, 4, 0]]).unwrap();
+        assert_eq!(signature(top.boundary()), before);
+        assert!(q(top.cells()) > 0.3);
+    }
+    #[test]
     fn rejects_bad_indices_duplicates_flat_and_same_side_shared_faces() {
         for cells in [
             vec![[0, 1, 2, 99]],
