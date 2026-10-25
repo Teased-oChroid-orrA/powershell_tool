@@ -79,8 +79,9 @@ fn dissect(coords: &[[f64; 3]], ptr: &[usize], adj: &[u32], mut nodes: Vec<u32>,
     for &v in &nodes {
         side[v as usize] = 0;
     }
-    if sep.is_empty() || left.is_empty() || right.is_empty() {
-        // Disconnected pieces or no progress: order as is.
+    // An empty separator means the halves are disconnected: still recurse into both (no separator
+    // to eliminate last). Stop only when a half is empty (no progress).
+    if left.is_empty() || right.is_empty() {
         order.extend(nodes.iter().map(|&v| v as usize));
         return;
     }
