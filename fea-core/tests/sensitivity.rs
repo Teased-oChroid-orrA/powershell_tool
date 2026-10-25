@@ -149,3 +149,54 @@ fn thickness_is_refused_outside_plane_analyses_and_density_has_no_static_effect(
     assert!(model.sensitivities(&loads, &bc, &grad, &[Param::Thickness]).is_err());
     assert_eq!(model.sensitivities(&loads, &bc, &grad, &[Param::DensityScale(0)]).unwrap(), vec![0.0]);
 }
+
+/// A thermal load is proportional to the modulus (`f = int B^T D alpha dT`): a modulus scale moves the load vector too. With a
+/// single uniformly heated block and no other load, `u = K^-1 f` does not depend on the modulus at all.
+#[test]
+fn a_modulus_sensitivity_includes_the_thermal_load() {
+    let mut mesh = plate(1.0);
+    for b in &mut mesh.blocks {
+        b.material = b.material.with_alpha(1.2e-5);
+    }
+    let (model, bc, mut loads) = setup(mesh.clone());
+    loads.delta_t = 150.0;
+    let tip = (0..model.mesh.nodes.len()).find(|&i| (model.mesh.nodes[i][0] - 3.0).abs() < 1e-12 && (model.mesh.nodes[i][1] - 0.5).abs() < 1e-12).unwrap();
+    let dof = 2 * tip;
+    let mut grad = vec![0.0; model.mesh.n_dofs()];
+    grad[dof] = 1.0;
+    let list = [(Param::ModulusScale(0), 1e-5), (Param::ModulusScale(1), 1e-5), (Param::Thickness, 1e-6)];
+    let adj = model.sensitivities(&loads, &bc, &grad, &list.iter().map(|(p, _)| *p).collect::<Vec<_>>()).unwrap();
+    let response = |m: &Mesh| {
+        let (model, bc, _) = setup(m.clone());
+        model.solve_static(&loads, &bc).unwrap().u[dof]
+    };
+    let u0 = response(&mesh);
+    for ((p, step), a) in list.iter().zip(&adj) {
+        let num = fd(&mesh, *p, *step, &response);
+        let scale = num.abs().max(1e-6 * u0.abs());
+        assert!((a - num).abs() < 2e-4 * scale, "{p:?}: adjoint {a:e} vs finite difference {num:e}");
+    }
+}
+
+/// A mode of the lumped (HRZ) mass matrix: its sensitivity must differentiate the lumped matrix, not the consistent one.
+#[test]
+fn a_lumped_mass_frequency_sensitivity_matches_the_global_finite_difference() {
+    let mesh = plate(2.0);
+    let (model, bc, _) = setup(mesh.clone());
+    let opt = ModalOptions { n_modes: 1, tol: 1e-12, mass: MassKind::Lumped, ..ModalOptions::default() };
+    let modal = model.modal(&bc, &opt).unwrap();
+    let mut list = params(&mesh);
+    list.push((Param::DensityScale(0), 1e-5));
+    let sens = model.eigenvalue_sensitivities(&modal.modes[0], &list.iter().map(|(p, _)| *p).collect::<Vec<_>>()).unwrap();
+    let lambda = |m: &Mesh| {
+        let (model, bc, _) = setup(m.clone());
+        model.modal(&bc, &opt).unwrap().modes[0].omega2
+    };
+    for ((p, step), a) in list.iter().zip(&sens) {
+        if *p == Param::Thickness {
+            continue;
+        }
+        let num = fd(&mesh, *p, *step, &lambda);
+        assert!((a - num).abs() < 5e-4 * num.abs().max(1e-12), "{p:?}: analytic {a:e} vs finite difference {num:e}");
+    }
+}
