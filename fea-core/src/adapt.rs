@@ -273,8 +273,8 @@ pub fn size_field_at_nodes(mesh: &Mesh, h_elem: &[f64], opt: &AdaptOptions, comb
             break;
         }
     }
-    // Midside and interior nodes carry no size; give them the mean of their element's corners so the
-    // background triangles only reference corner nodes (they are the only vertices of `tris`).
+    // Midside and interior nodes carry no size (infinite here): the background triangles reference corner nodes only (the
+    // vertices of `tris`), so their placeholder value `h_max` is never interpolated.
     Ok(SizeField::new(pts, tris, h.into_iter().map(|v| if v.is_finite() { v } else { opt.h_max.min(1e30) }).collect()))
 }
 
