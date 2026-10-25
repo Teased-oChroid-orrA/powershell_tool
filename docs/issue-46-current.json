@@ -75,13 +75,13 @@
     170,
     171
   ],
-  "latest_qualified_source": "8ac288de16d4e3e2670f737bdf434617d5898644",
-  "latest_phase": 141,
-  "progress_snapshot": "issue-46-phase-141.md",
+  "latest_qualified_source": "fe1f4c86f80cee91b4267ad52feec93cd7c6e492",
+  "latest_phase": 142,
+  "progress_snapshot": "issue-46-phase-142.md",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
-  "remaining": "Phase 141: 34/38 same-STEP parity rows pass with no regression against Phase 128; t-junction (8/8) and NEMA17 (24/33) remain below the 0.1 gate on boundary cells. Boss contact/volume audits were not rerun on the final build. ABC 00006600 grading, Windows mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
+  "remaining": "Phase 142: 34/38 same-STEP parity rows pass; best-round retention took t-junction to 7/8 and NEMA17 to 24/29, which remain below the 0.1 gate on boundary cells. Boss contact/volume audits were not rerun on the final build. ABC 00006600 grading, Windows mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
   "latest_increment_tests": {
     "commands": [
       "cargo test -p fea-core -p solid-kernel -p fea-problem --release --locked --offline -j1 --no-fail-fast",
@@ -90,8 +90,8 @@
       "cargo test -p app-tui --release --locked --offline -j1"
     ],
     "result": "passed",
-    "platform": "macOS arm64, release, serial Cargo: 1121 passed / 0 failed / 47 ignored; app-tui 1226 passed / 0 failed; parity table 34/38 gate rows pass (docs/issue-46-phase-141-parity.txt); connected boss gate passes",
-    "at": "8ac288de16d4e3e2670f737bdf434617d5898644",
+    "platform": "macOS arm64, release, serial Cargo: 1122 passed / 0 failed / 47 ignored; app-tui 1226 passed / 0 failed; mesh-only parity table 34/38 gate rows pass (docs/issue-46-phase-142-parity.txt), solves rerun on the two changed rows; connected boss gate passes",
+    "at": "fe1f4c86f80cee91b4267ad52feec93cd7c6e492",
     "corpus": "issue-46-abc-corpus-2026-10-18.md"
   },
   "tests": {
@@ -104,7 +104,7 @@
   "last_confirmed_main_merge": "aa77ed4894a7fdc12385ef79f09232eff8db2f22",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Remaining boundary sub-gate cells on t-junction and NEMA17 (best-round retention was a 7/8 trial); rerun boss contact/volume audits on the Phase 141 build; fidelity measurement on fillet cases under the region bound; unaudited fea-core modules listed in Phase 141; Windows and remaining five-plan items",
+    "scope": "Remaining boundary sub-gate cells on t-junction (7/8) and NEMA17 (24/29); rerun boss contact/volume audits on the Phase 141 build; fidelity measurement on fillet cases under the region bound; unaudited fea-core modules listed in Phase 141; Windows and remaining five-plan items",
     "status": "see_resume_guide_open_list"
   },
   "base_main_head": "aa77ed4894a7fdc12385ef79f09232eff8db2f22",

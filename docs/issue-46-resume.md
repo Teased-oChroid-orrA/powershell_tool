@@ -20,6 +20,8 @@ This is the current entry point for Claude Code or Codex. Historical phase repor
 
 **2026-10-25 parity update:** [Phase 141](issue-46-phase-141.md) qualifies the repair contracts (folded-face selector, seam-aware owner guard, region fidelity bound, no new sub-gate cells) on the 19-model same-STEP table with solves: 34/38 rows pass (Phase 128: 26/38), no row worse than Phase 128, OCCT/native max displacement within 1.6%. It also records six fea-core audit fixes and the NX / SolidWorks-style ribbon. t-junction (8/8) and NEMA17 (24/33) remain below the gate; retirement remains unapproved.
 
+**2026-10-25 best-round update:** [Phase 142](issue-46-phase-142.md) makes the boundary repair return its best round instead of its last: t-junction 8/8 to 7/8, NEMA17 24/33 to 24/29, every other parity row identical; 34/38 rows still pass. Retirement remains unapproved.
+
 ## Establish current state
 
 1. Read root `CLAUDE.md`, then the relevant crate and `docs/AGENTS.md` instructions.
