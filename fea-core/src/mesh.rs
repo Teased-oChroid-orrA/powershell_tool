@@ -202,6 +202,18 @@ impl Elastic {
         }
     }
 
+    /// The same material with its whole stiffness multiplied by `s` (`e` and, for an anisotropic material, `D`; the
+    /// compliance divided). Poisson's ratio and thermal expansion are unchanged. The modulus design parameter
+    /// (`Param::ModulusScale`) and the sizing optimisation scale a block's material this way.
+    pub fn scaled(self, s: f64) -> Self {
+        let aniso = self.aniso.map(|mut an| {
+            an.d.iter_mut().flatten().for_each(|v| *v *= s);
+            an.c.iter_mut().flatten().for_each(|v| *v /= s);
+            an
+        });
+        Self { e: self.e * s, aniso, ..self }
+    }
+
     pub fn with_alpha(self, alpha: f64) -> Self {
         Self { alpha, ..self }
     }

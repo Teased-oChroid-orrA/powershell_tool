@@ -69,13 +69,13 @@ impl Model {
         if !(target > lo * w.iter().sum::<f64>() && target < hi * w.iter().sum::<f64>()) {
             return Err(format!("the budget {budget} cannot be met within the scale bounds [{lo}, {hi}] of the design blocks"));
         }
-        let e0: Vec<f64> = blocks.iter().map(|&b| self.mesh.blocks[b].material.e).collect();
+        let e0: Vec<crate::mesh::Elastic> = blocks.iter().map(|&b| self.mesh.blocks[b].material).collect();
         // Start from the uniform scale that meets the budget.
         let mut s = vec![target / w.iter().sum::<f64>(); blocks.len()];
         let apply = |s: &[f64]| -> Model {
             let mut mesh = self.mesh.clone();
             for (k, &b) in blocks.iter().enumerate() {
-                mesh.blocks[b].material.e = e0[k] * s[k];
+                mesh.blocks[b].material = e0[k].scaled(s[k]);
             }
             Model { mesh, pattern: self.pattern.clone() }
         };

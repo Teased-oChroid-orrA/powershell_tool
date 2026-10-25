@@ -71,3 +71,23 @@ fn an_unreachable_budget_is_an_error() {
     let (model, bc, loads) = series([1.0e7; 3], [1.0; 3]);
     assert!(model.optimize_compliance(&loads, &bc, &[0, 1, 2], 1e9, &OptOptions::default()).is_err());
 }
+
+/// The same sizing problem with anisotropic block materials: the scale must multiply the whole stiffness matrix (the
+/// isotropic `e` of an anisotropic material is only a display value).
+#[test]
+fn anisotropic_bars_in_series_follow_the_same_closed_form() {
+    let (e, len) = ([1.0e7, 4.0e7, 9.0e7], [1.0, 1.0, 2.0]);
+    let (mut model, bc, loads) = series(e, len);
+    for (k, b) in model.mesh.blocks.iter_mut().enumerate() {
+        b.material = Elastic::orthotropic(e[k], 0.5 * e[k], 0.5 * e[k], 0.0, 0.0, 0.0, 0.4 * e[k], 0.2 * e[k], 0.2 * e[k]).unwrap();
+    }
+    let volume: f64 = len.iter().sum();
+    let r = model.optimize_compliance(&loads, &bc, &[0, 1, 2], volume, &OptOptions::default()).unwrap();
+    assert!(r.converged, "{} iterations", r.iterations);
+    let c = volume / len.iter().zip(&e).map(|(l, e)| l / e.sqrt()).sum::<f64>();
+    for k in 0..3 {
+        let exact = c / e[k].sqrt();
+        assert!((r.scales[k] / exact - 1.0).abs() < 1e-4, "bar {k}: {} vs {exact}", r.scales[k]);
+    }
+    assert!(r.compliance.last().unwrap() < &(r.compliance[0] * 0.999), "{:?}", r.compliance);
+}
