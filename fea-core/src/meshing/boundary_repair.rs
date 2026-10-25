@@ -268,6 +268,9 @@ impl<'a> Work<'a> {
     /// Is replacing the cavity `old` (ids) by `new` (cells) an improvement: the worst element better by a margin or over the
     /// target, or the worst no worse and the penalty clearly lower.
     fn better(&self, old: &[usize], new: &[[usize; 4]]) -> bool {
+        // never more elements under the gate than the cavity had: lifting its worst element while spoiling others left the
+        // count rising over the rounds (the t-junction ended with more sub-gate elements than it had passed through)
+        if self.under_gate(new) > self.under_gate_ids(old) { return false; }
         self.better_than(self.stats(old), new)
     }
     /// (worst element, penalty) of the given elements.
@@ -283,6 +286,14 @@ impl<'a> Work<'a> {
             return false;
         }
         self.gains(old.0, new_min) || (new_min >= old.0 - 1e-12 && self.penalty_cells(new) < 0.98 * old.1 - 1e-9)
+    }
+    fn under_gate(&self, cs: &[[usize; 4]]) -> usize {
+        let gate = QualityThresholds::default().min_scaled_jacobian;
+        cs.iter().filter(|&&t| self.sj(t) < gate).count()
+    }
+    fn under_gate_ids(&self, ts: &[usize]) -> usize {
+        let gate = QualityThresholds::default().min_scaled_jacobian;
+        ts.iter().filter(|&&t| self.sj(self.tets[t]) < gate).count()
     }
     fn min_sj_cells(&self, cs: &[[usize; 4]]) -> f64 {
         cs.iter().map(|&t| self.sj(t)).fold(f64::INFINITY, f64::min)
@@ -497,25 +508,50 @@ impl<'a> Work<'a> {
         unit(g)
     }
     fn new_faces_follow_surface(&self, ts: &[usize], before: &BTreeMap<[usize; 3], BoundaryFaceState>, h: f64) -> bool {
-        for (f, apex) in self.boundary_faces(ts) {
+        let after = self.boundary_faces(ts);
+        // Surface fidelity is bounded by the region's own: no face of the result may deviate from its CAD patch by more than
+        // the worst face of the replaced surface (or the tolerance). A flat triangle on a tight fillet carries a chord error
+        // above the tolerance however it is tiled; bounding each face by its own old error, and new faces by the tolerance
+        // alone, refused nearly every slide and re-tiling there (a vertex moved along the surface trades chord error between
+        // its faces), and left flat cells on the cross-bore fillet that the unsampled guard used to clear.
+        let region_error = before.values().map(|s| s.max_surface_error).fold(max_dev() * h, f64::max);
+        let mut added = Vec::new();
+        for (&f, &apex) in &after {
             let now = self.boundary_face_state(f, apex, h);
             if !now.area.is_finite() || !now.max_surface_error.is_finite() || !now.normal_alignment.is_finite() { return false; }
             match before.get(&f) {
                 Some(old) => {
                     if old.area <= 0.0 || now.area <= 0.0
                         || now.area > 2.0 * old.area || old.area > 2.0 * now.area
-                        || now.max_surface_error > old.max_surface_error.max(max_dev() * h) + 1e-9 * h
+                        || now.max_surface_error > region_error + 1e-9 * h
                         || now.normal_alignment + 0.1 < old.normal_alignment
                         || now.normal_alignment + EPS < old.normal_alignment.min(0.5)
                         || now.owner != old.owner
                     { return false; }
                 }
                 None => {
-                    if now.normal_alignment < 0.5 || now.max_surface_error > max_dev() * h { return false; }
+                    if now.normal_alignment < 0.5 || now.max_surface_error > region_error + 1e-9 * h { return false; }
+                    if let Some(owner) = now.owner { added.push((f, apex, owner)); }
                 }
             }
         }
-        true
+        // New faces may only re-tile CAD patches that lost faces: never introduce a patch the replaced surface did not have
+        // (equality is too strict: a flip across a patch seam legitimately re-tiles two patches' faces with one patch's).
+        // A face classified to another patch is still admitted when it also touches, and faces like, a patch that lost faces:
+        // along a tangent seam (a fillet meeting its flat face or the next fillet) the classification of a face straddling
+        // the seam is arbitrary, while across a sharp edge no face faces like both patches.
+        let removed_owners: BTreeSet<_> = before.iter().filter(|(f, _)| !after.contains_key(*f)).filter_map(|(_, s)| s.owner).collect();
+        added.into_iter().all(|(f, apex, owner)| removed_owners.contains(&owner) || removed_owners.iter().any(|&r| self.face_touches_patch(f, apex, r, h)))
+    }
+    /// Does boundary face `f` touch CAD patch `face`: its centroid within the deviation bound of the patch, and its outward
+    /// normal within 60 degrees of the patch normal there. A face straddling a tangent seam does (its edges may run beyond
+    /// the seam, onto its own patch); a face across a sharp edge does not.
+    fn face_touches_patch(&self, f: [usize; 3], apex: usize, face: usize, h: f64) -> bool {
+        let Some(fd) = self.ctx.face_dists else { return false };
+        let x = f.map(|v| self.p[v]);
+        let c = scale(add(add(x[0], x[1]), x[2]), 1.0 / 3.0);
+        let Some(hit) = fd(c).into_iter().find(|hit| hit.face == face && hit.dist.is_finite()) else { return false };
+        hit.dist.abs() <= max_dev() * h && self.face_normal(c, &hit, h).is_some_and(|n| dot(self.outward(f, apex), n) >= 0.5)
     }
     fn volume_of(&self, ts: &[usize]) -> f64 {
         ts.iter().map(|&t| vol6(&self.p, self.tets[t]) / 6.0).sum()
@@ -696,10 +732,11 @@ impl<'a> Work<'a> {
         let old = self.p[v];
         let old_min = self.min_sj(&star);
         let old_faces = if boundary { Some(self.boundary_snapshot(&star, h)) } else { None };
+        let old_under = self.under_gate_ids(&star);
         let eval = |this: &mut Work, x: V3| -> (f64, f64) {
             let keep = this.p[v];
             this.p[v] = x;
-            let (m, pen) = if old_faces.as_ref().is_none_or(|before| this.new_faces_follow_surface(&star, before, h)) {
+            let (m, pen) = if this.under_gate_ids(&star) > old_under { (f64::NEG_INFINITY, f64::INFINITY) } else if old_faces.as_ref().is_none_or(|before| this.new_faces_follow_surface(&star, before, h)) {
                 (this.min_sj(&star), this.penalty_ids(&star))
             } else {
                 (f64::NEG_INFINITY, f64::INFINITY)
@@ -1230,6 +1267,7 @@ impl<'a> Work<'a> {
         let region = self.region(&c);
         let before = self.boundary_snapshot(&region, h);
         let old_stats = self.stats(&star);
+        let old_under = self.under_gate_ids(&star);
         let rest: Vec<usize> = star.iter().copied().filter(|&u| u != t).collect();
         // first with the apex moved onto the surface, then (when that spoils its other elements) where it is
         for move_apex in [true, false] {
@@ -1240,7 +1278,7 @@ impl<'a> Work<'a> {
             }
             let cells: Vec<[usize; 4]> = rest.iter().map(|&u| self.tets[u]).collect();
             let new_vol = self.volume_of(&rest);
-            if !self.better_than(old_stats, &cells) || (new_vol - old_vol).abs() > 0.05 * h * h * h {
+            if self.under_gate(&cells) > old_under || !self.better_than(old_stats, &cells) || (new_vol - old_vol).abs() > 0.05 * h * h * h {
                 self.rollback(m);
                 self.why("promote#7");
                 continue;
@@ -1672,7 +1710,16 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
     let mut best_key = (usize::MAX, usize::MAX);
     let mut stale = 0usize;
     for round in 0..opts.max_rounds {
-        let mut bad: Vec<(f64, usize)> = (0..w.tets.len()).filter(|&t| w.alive[t]).map(|t| (w.sj(w.tets[t]), t)).filter(|&(s, _)| s < opts.target).collect();
+        // cells on a boundary face turned more than 60 degrees from its CAD normal are worked like low-quality cells
+        let live: Vec<usize> = (0..w.tets.len()).filter(|&t| w.alive[t]).collect();
+        let mut folded = BTreeSet::new();
+        for (f, apex) in w.boundary_faces(&live) {
+            let h = f.iter().map(|&v| w.hv[v]).fold(0.0, f64::max);
+            if w.boundary_face_state(f, apex, h).normal_alignment < 0.5 {
+                folded.extend(w.tets_with(&f));
+            }
+        }
+        let mut bad: Vec<(f64, usize)> = live.into_iter().map(|t| (w.sj(w.tets[t]), t)).filter(|&(s, t)| s < opts.target || folded.contains(&t)).collect();
         if bad.is_empty() {
             break;
         }
@@ -1703,7 +1750,7 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
         // cheap and geometry-preserving operations first; the last resort only once they stop helping
         let split_now = opts.allow_split && round >= 2;
         for &(_, t) in &bad {
-            if !w.alive[t] || w.sj(w.tets[t]) >= opts.target {
+            if !w.alive[t] || (w.sj(w.tets[t]) >= opts.target && !folded.contains(&t)) {
                 continue;
             }
             if let Some(&(at, split)) = w.failed.get(&t) {
@@ -1721,7 +1768,7 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
         if !progress && !split_now && opts.allow_split {
             // nothing without splitting: go straight to it
             for &(_, t) in &bad {
-                if w.alive[t] && w.sj(w.tets[t]) < opts.target {
+                if w.alive[t] && (w.sj(w.tets[t]) < opts.target || folded.contains(&t)) {
                     if w.cleanup_tet(t, true) {
                         progress = true;
                     } else {
@@ -1736,6 +1783,9 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
                 // everything exact has stalled: allow the bounded relaxation off the surface for what is left
                 w.relax_enabled = true;
                 w.failed.clear();
+                // a new stage: its own budget of stale rounds (relaxed moves need a few rounds to clear anything, and cells
+                // worked for a folded face keep the count under the target from falling meanwhile)
+                stale = 0;
                 continue;
             }
             break;
@@ -1907,6 +1957,79 @@ mod tests {
         assert_eq!(w.live,1);
         assert!(w.is_bface(0,1,2));
         assert_eq!(w.tets[0],cells[0]);
+    }
+
+    #[test]
+    fn new_surface_faces_may_not_introduce_a_cad_patch() {
+        let points = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let cells = [[0, 1, 2, 3]];
+        let sdf = body_sdf(&points, &cells);
+        let owner = |_: [V3; 3]| 1usize;
+        let ctx = RepairContext { sdf: &sdf, face_dists: None, triangle_face: Some(&owner) };
+        let w = one_tet(&ctx);
+        // every face is new and owned by patch 1, which the (empty) replaced surface never had
+        assert!(!w.new_faces_follow_surface(&[0], &BTreeMap::new(), 1.0));
+        // the same faces re-tiling removed faces of patch 1 are admitted
+        let before: BTreeMap<_, _> = w.boundary_faces(&[0]).into_iter().enumerate()
+            .map(|(i, (f, apex))| ([100 + 3 * i, 101 + 3 * i, 102 + 3 * i], w.boundary_face_state(f, apex, 1.0))).collect();
+        assert!(w.new_faces_follow_surface(&[0], &before, 1.0));
+    }
+
+    #[test]
+    fn a_face_touches_a_tangent_patch_but_not_one_across_a_sharp_edge() {
+        // face [0, 1, 2] of the unit tetrahedron lies in z = 0 with outward normal -z
+        let fd = |x: V3| vec![
+            // tangent: a patch continuing the face's plane
+            FaceHit { face: 7, dist: -x[2], normal: [0.0, 0.0, -1.0] },
+            // sharp edge: a patch through the face's centroid at right angles to it
+            FaceHit { face: 8, dist: x[0] - 1.0 / 3.0, normal: [1.0, 0.0, 0.0] },
+            // far: a patch parallel to the face, half the size away
+            FaceHit { face: 9, dist: -x[2] - 0.5, normal: [0.0, 0.0, -1.0] },
+        ];
+        let sdf = |x: V3| -x[2];
+        let ctx = RepairContext { sdf: &sdf, face_dists: Some(&fd), triangle_face: None };
+        let w = one_tet(&ctx);
+        assert!(w.face_touches_patch([0, 1, 2], 3, 7, 1.0));
+        assert!(!w.face_touches_patch([0, 1, 2], 3, 8, 1.0));
+        assert!(!w.face_touches_patch([0, 1, 2], 3, 9, 1.0));
+        assert!(!w.face_touches_patch([0, 1, 2], 3, 5, 1.0));
+    }
+
+    #[test]
+    fn surface_fidelity_is_bounded_by_the_worst_face_of_the_replaced_region() {
+        // every face of the tetrahedron is off the surface z = -0.02; at h = 0.1 the base face's error is twice the tolerance
+        let sdf = |x: V3| -x[2] - 0.02;
+        let ctx = RepairContext { sdf: &sdf, face_dists: None, triangle_face: None };
+        let w = one_tet(&ctx);
+        let h = 0.1;
+        let now = w.boundary_snapshot(&[0], h);
+        let base = [0, 1, 2];
+        assert!((now[&base].max_surface_error - 0.02).abs() < 1e-12);
+        // the base face was on the surface and the others as they are: the base face may take the region's worst error
+        let mut before = now.clone();
+        before.get_mut(&base).unwrap().max_surface_error = 0.0;
+        assert!(before.values().any(|s| s.max_surface_error > 0.02));
+        assert!(w.new_faces_follow_surface(&[0], &before, h));
+        // a region that was everywhere within the tolerance may not get worse than it
+        for s in before.values_mut() {
+            s.max_surface_error = 0.0;
+        }
+        assert!(!w.new_faces_follow_surface(&[0], &before, h));
+    }
+
+    #[test]
+    fn an_operation_may_not_add_elements_under_the_gate() {
+        let sdf = |x: V3| -x[2];
+        let ctx = RepairContext { sdf: &sdf, face_dists: None, triangle_face: None };
+        let mut w = one_tet(&ctx);
+        // one flat element replaced by two less flat ones, both still under the gate
+        w.p = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.3, 0.3, 0.01], [0.3, 0.3, 0.03], [0.35, 0.3, 0.035]];
+        let (old, a, b) = ([0, 1, 2, 3], [0, 1, 2, 4], [0, 1, 2, 5]);
+        w.tets[0] = old;
+        let gate = QualityThresholds::default().min_scaled_jacobian;
+        assert!(w.sj(old) + MIN_GAIN < w.sj(a).min(w.sj(b)) && w.sj(a).max(w.sj(b)) < gate);
+        assert!(w.better(&[0], &[a]));
+        assert!(!w.better(&[0], &[a, b]));
     }
 
     #[test]
