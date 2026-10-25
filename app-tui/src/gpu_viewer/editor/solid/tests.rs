@@ -345,15 +345,19 @@ fn tree_follows_the_focus_and_clicking_features_and_surfaces_acts() {
 fn ribbon_menus_and_context_menu_explain_what_is_unavailable() {
     let s = session("ribbon");
     let ribbon = Authoring::ribbon(&s);
-    assert_eq!(ribbon.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(), ["Model", "Features", "Mesh", "Simulation"]);
+    assert_eq!(ribbon.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(), ["Model", "Mesh", "Simulation"]);
     let buttons: Vec<_> = ribbon.iter().flat_map(|t| &t.groups).flat_map(|g| &g.buttons).collect();
     let by = |l: &str| buttons.iter().find(|b| b.label == l).unwrap_or_else(|| panic!("{l}"));
     assert!(by("Solve").enabled && !by("Cancel solve").enabled);
     assert!(by("Cancel solve").reason.as_deref().is_some_and(|r| r.contains("no solve")));
     assert!(!by("Show results").enabled && by("Show results").reason.as_deref() == Some("solve the model first"));
     assert!(!by("Import mesh").enabled && by("Import mesh").reason.as_deref().is_some_and(|r| r.contains("Imported")));
-    assert!(!by("Support on surface").enabled);
-    assert!(!by("Save").enabled && !by("Undo").enabled);
+    by("Fixed support");
+    // No command is repeated in the ribbon, and file / edit commands live only in the menus and shortcuts.
+    let mut labels: Vec<&str> = buttons.iter().map(|b| b.label.as_str()).collect();
+    labels.sort_unstable();
+    assert!(labels.windows(2).all(|w| w[0] != w[1]), "duplicated ribbon command: {labels:?}");
+    assert!(["New", "Open...", "Open", "Save", "Undo", "Redo"].iter().all(|l| !labels.contains(l)), "{labels:?}");
     // Menus use the same rules.
     let titles: Vec<_> = Authoring::menus(&s).into_iter().map(|m| m.title).collect();
     assert_eq!(titles, ["File", "Edit", "Insert", "Tools", "Simulation", "Advisor"]);
@@ -1051,7 +1055,7 @@ fn the_simulation_tab_offers_every_kind_of_analysis_in_one_click() {
     use crate::gpu_viewer::bench::Bench;
     let mut s = session("analysis");
     let tab = Authoring::ribbon(&s).into_iter().find(|t| t.title == "Simulation").unwrap();
-    let group = tab.groups.iter().find(|g| g.title == "Analysis").expect("an Analysis group");
+    let group = tab.groups.iter().find(|g| g.title == "Study").expect("a Study group");
     let labels: Vec<(&str, bool)> = group.buttons.iter().map(|b| (b.label.as_str(), b.checked == Some(true))).collect();
     for want in ["Static stress", "Modal / vibration", "Buckling", "Transient", "Structural", "Thermal (steady)", "Thermal stress"] {
         assert!(labels.iter().any(|(l, _)| *l == want), "{want} in {labels:?}");

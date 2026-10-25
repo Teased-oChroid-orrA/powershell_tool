@@ -255,7 +255,8 @@ fn extrude_and_revolve_features_and_parameters() {
 fn tree_ribbon_and_menus_follow_the_mode() {
     let mut s = session("chrome");
     let tabs: Vec<String> = s.ribbon().into_iter().map(|t| t.title).collect();
-    assert!(tabs.contains(&"Features".to_string()) && !tabs.contains(&"Sketch".to_string()));
+    assert_eq!(tabs, ["Model", "Mesh", "Simulation"]);
+    assert!(s.ribbon()[0].groups.iter().any(|g| g.title == "Features" && g.buttons.iter().any(|b| b.label == "Extrude")));
     act(&mut s, SketchAction::Convert);
     assert!(s.tree().iter().any(|n| n.label.starts_with("History")));
     assert!(s.tree().iter().any(|n| n.label.starts_with("Sketch1")));
@@ -292,7 +293,7 @@ fn boundary_conditions_apply_to_selected_sketch_entities() {
     assert_eq!(s.selected.as_deref(), Some("left"));
     assert!(s.properties().iter().any(|i| matches!(i, DockItem::Line { text, .. } if text.contains("surfaces: left"))));
     let ribbon = s.ribbon();
-    let support = ribbon[0].groups.iter().flat_map(|g| &g.buttons).find(|b| b.label == "Support on selection").unwrap();
+    let support = ribbon[0].groups.iter().flat_map(|g| &g.buttons).find(|b| b.label == "Fixed support").unwrap();
     assert!(support.enabled);
     let n = s.problem.supports.len();
     s.do_action(SolidAction::SupportOnSelected);
@@ -305,7 +306,7 @@ fn boundary_conditions_apply_to_selected_sketch_entities() {
     click(&mut s, [0.0, 0.0]); // the fixed corner point
     assert!(s.all_selected().is_empty());
     let ribbon = s.ribbon();
-    let load = ribbon[0].groups.iter().flat_map(|g| &g.buttons).find(|b| b.label == "Load on selection").unwrap();
+    let load = ribbon[0].groups.iter().flat_map(|g| &g.buttons).find(|b| b.label == "Load").unwrap();
     assert!(!load.enabled && load.reason.as_deref().unwrap().contains("select an edge"));
 }
 
@@ -446,9 +447,12 @@ fn a_sketch_can_be_placed_on_a_flat_face_of_the_extruded_body() {
     let faces = s.face_choices();
     assert_eq!(faces.len(), 6, "start, end and the four sides of the rectangle");
     let end = faces.iter().position(|f| f.name == "end").unwrap();
-    // The Insert menu and the Features ribbon list the faces.
-    let label = "Sketch on face 'end'";
-    assert!(s.features_ribbon().groups.iter().flat_map(|g| g.buttons.iter()).any(|e| e.label == label), "ribbon entry");
+    // One "Sketch on face" command uses the selected flat face (NX / SolidWorks), instead of one entry per face.
+    s.selected = None;
+    let on_face = |s: &SolidSession| s.ribbon()[0].groups.iter().flat_map(|g| g.buttons.clone()).find(|e| e.label == "Sketch on face").unwrap();
+    assert!(!on_face(&s).enabled && on_face(&s).reason.as_deref().unwrap().contains("select a flat face"));
+    s.selected = Some("end".into());
+    assert!(on_face(&s).enabled);
     act(&mut s, SketchAction::NewSketchOnFace(end));
     assert!(s.sketch_mode(), "{}", s.status);
     let feature = s.sketching.as_ref().unwrap().feature;
