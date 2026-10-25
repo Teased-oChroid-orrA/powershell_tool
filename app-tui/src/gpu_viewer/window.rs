@@ -1454,12 +1454,12 @@ mod tests {
         for step in ["Model tab", "Mesh tab", "Simulation tab", "View tab"] {
             assert!(labels.iter().any(|l| l == step), "{step} among {labels:?}");
         }
-        assert!(labels.iter().any(|l| l == "New part"), "the Model step's tools are shown first: {labels:?}");
+        assert!(labels.iter().any(|l| l == "Extrude"), "the Model step's tools are shown first: {labels:?}");
         assert!(!labels.iter().any(|l| l == "Generate mesh"));
         let tab = target(&v, "Mesh tab");
         click(&mut v, tab);
         assert!(v.gui.target_labels().iter().any(|l| l == "Generate mesh"));
-        assert!(!v.gui.target_labels().iter().any(|l| l == "New part"), "only the selected step's tools are shown");
+        assert!(!v.gui.target_labels().iter().any(|l| l == "Extrude"), "only the selected step's tools are shown");
         // The Mesh step is still to do; the strip says so through the editor.
         use crate::gpu_viewer::editor::authoring::StepState;
         let ed = v.editor.as_ref().unwrap();
@@ -2057,7 +2057,7 @@ mod tests {
         problem.mesh.size = 1.0;
         let ed = crate::gpu_viewer::editor::solid::SolidSession::new(problem, std::env::temp_dir().join("window-focusstep-test.json"));
         let mut v = viewer(Some(Box::new(ed)));
-        assert!(labels(&v).iter().any(|l| l == "New part"), "starts on the Model step");
+        assert!(labels(&v).iter().any(|l| l == "Extrude"), "starts on the Model step");
         let row = target(&v, "Mesh: ");
         click(&mut v, row);
         frame(&mut v);
@@ -2065,7 +2065,7 @@ mod tests {
         let row = target(&v, "Material: ");
         click(&mut v, row);
         frame(&mut v);
-        assert!(labels(&v).iter().any(|l| l == "New part"));
+        assert!(labels(&v).iter().any(|l| l == "Extrude"));
     }
     #[test]
     fn the_units_dropdown_converts_the_saved_physical_model_through_real_clicks() {

@@ -86,6 +86,26 @@ fn per_face_distances_name_the_faces_a_point_is_close_to() {
 }
 
 #[test]
+fn trimmed_projection_directions_recover_distinct_face_normals_at_their_feet() {
+    let s = SurfaceSolid::new(box_mesh(2.0, 2.0, 2.0), 1e-9).unwrap();
+    for p in [[-0.05, -0.05, 1.0], [0.05, 0.05, 1.0]] {
+        let hits = s.faces_near(p, 0.3);
+        assert_eq!(hits.iter().map(|hit| hit.face).collect::<Vec<_>>(), [0, 2]);
+        if p[0] < 0.0 {
+            assert!((0..3).map(|k| hits[0].normal[k] * hits[1].normal[k]).sum::<f64>() > 0.999);
+        }
+        let normals: Vec<_> = hits.iter().map(|hit| {
+            let foot: V3 = std::array::from_fn(|k| p[k] - hit.dist * hit.normal[k]);
+            assert!(foot[hit.face / 2].abs() < 1e-12);
+            let on_face = s.faces_near(foot, 0.3).into_iter().find(|other| other.face == hit.face).unwrap();
+            assert!(on_face.dist.abs() < 1e-12);
+            on_face.normal
+        }).collect();
+        assert_eq!(normals, [[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]]);
+    }
+}
+
+#[test]
 fn a_surface_that_is_open_is_refused_and_an_inside_out_one_is_turned_around() {
     let mut open = box_mesh(1.0, 1.0, 1.0);
     open.triangles.pop();

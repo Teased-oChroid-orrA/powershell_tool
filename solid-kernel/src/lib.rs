@@ -387,8 +387,8 @@ impl SurfaceSolid {
         if side < 0.0 { -d } else { d }
     }
 
-    /// The model faces within `radius` of `p`: the signed distance to the plane of the nearest triangle of each, and that
-    /// triangle's outward normal (what `fea_core::tetmesh` snaps with).
+    /// Model faces within `radius`, with signed trimmed-patch distances and projection directions.
+    /// On a patch, the direction is its nearest triangle's outward normal.
     pub fn faces_near(&self, p: V3, radius: f64) -> Vec<FaceHit> {
         let mut best: HashMap<usize, (f64, usize)> = HashMap::new();
         self.bvh.within(&self.vertices, &self.triangles, p, radius, &mut |t, d2| {

@@ -41,8 +41,8 @@ pub struct Solid<'a> {
     pub size: &'a dyn Fn([f64; 3]) -> f64,
     /// Index of the model face a point on (or next to) the surface belongs to.
     pub face_of: &'a dyn Fn([f64; 3]) -> usize,
-    /// Optional: for a point, the faces it is close to with the signed distance to each (positive outside the solid)
-    /// and the face's outward unit normal there. With it, a vertex near two or three faces is snapped onto their edge or
+    /// Optional: for a point, nearby faces with signed distances and projection directions to their trimmed patches.
+    /// At a point on a patch the direction must be its outward unit normal. With it, a vertex near two or three faces is snapped onto their edge or
     /// corner instead of rounding the feature off, and boundary triangles are assigned to the face all their vertices
     /// lie on. A B-rep kernel answers it from the distance to each face.
     pub face_dists: Option<&'a dyn Fn([f64; 3]) -> Vec<FaceHit>>,
@@ -52,10 +52,25 @@ pub struct Solid<'a> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FaceHit {
     pub face: usize,
-    /// Signed distance to the face (positive outside the solid).
+    /// Distance to the trimmed face, signed by its supporting surface's outward side.
     pub dist: f64,
-    /// Outward unit normal of the face at the nearest point.
+    /// Unit projection direction: `x - dist * normal` reaches the nearest trimmed face point.
+    /// On the face, this is its outward unit normal.
     pub normal: [f64; 3],
+}
+
+impl FaceHit {
+    pub(crate) fn surface_normal(&self, x: V3, fd: &dyn Fn(V3) -> Vec<FaceHit>, tol: f64) -> Option<V3> {
+        if !self.dist.is_finite() || self.normal.iter().any(|v| !v.is_finite()) { return None; }
+        let foot = std::array::from_fn(|k| x[k] - self.dist * self.normal[k]);
+        if foot.iter().any(|v| !v.is_finite()) { return None; }
+        let on_face = fd(foot).into_iter().find(|f| f.face == self.face)?;
+        if !(on_face.dist.abs() <= tol)
+            || on_face.normal.iter().any(|v| !v.is_finite())
+            || (norm(on_face.normal) - 1.0).abs() > 1e-6
+        { return None; }
+        Some(on_face.normal)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -125,6 +140,97 @@ fn mid(a: V3, b: V3) -> V3 {
 /// Signed volume of the tetrahedron (positive when `d` is on the side `(b - a) x (c - a)` points to).
 fn volume(p: &[V3], t: [usize; 4]) -> f64 {
     dot(cross(sub(p[t[1]], p[t[0]]), sub(p[t[2]], p[t[0]])), sub(p[t[3]], p[t[0]])) / 6.0
+}
+/// Remove the smaller sectors where the kept cut is pinched: the tetrahedra around a vertex or an edge must form one
+/// face-connected fan, otherwise the boundary is not a manifold there (two sectors touching only along that edge or at that
+/// point), and no later snap or repair can make it one. Each fan keeps its largest-volume sector (ties: lowest cell index);
+/// removal can expose a new pinch, so it repeats until none is left. Returns the number of tetrahedra removed.
+fn drop_pinched_sectors(p: &[V3], cells: &mut Vec<[usize; 4]>) -> usize {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut removed = 0;
+    loop {
+        let mut vt = vec![Vec::new(); p.len()];
+        for (i, t) in cells.iter().enumerate() {
+            for &v in t {
+                vt[v].push(i);
+            }
+        }
+        let mut doomed = BTreeSet::new();
+        let mut keys: Vec<Vec<usize>> = (0..p.len()).filter(|&v| !vt[v].is_empty()).map(|v| vec![v]).collect();
+        let mut edges = BTreeSet::new();
+        for t in cells.iter() {
+            for i in 0..4 {
+                for j in i + 1..4 {
+                    edges.insert((t[i].min(t[j]), t[i].max(t[j])));
+                }
+            }
+        }
+        keys.extend(edges.into_iter().map(|(a, b)| vec![a, b]));
+        for key in keys {
+            let fan: Vec<usize> = vt[key[0]].iter().copied().filter(|&i| !doomed.contains(&i) && key.iter().all(|v| cells[i].contains(v))).collect();
+            if fan.len() < 2 {
+                continue;
+            }
+            // two cells of the fan are neighbours when they share a face holding `key`, i.e. `3 - key.len()` more vertices
+            let need = 3 - key.len();
+            let mut by_rest = BTreeMap::<Vec<usize>, Vec<usize>>::new();
+            for &i in &fan {
+                let rest: Vec<usize> = cells[i].iter().copied().filter(|v| !key.contains(v)).collect();
+                for mask in 0u32..1 << rest.len() {
+                    if mask.count_ones() as usize == need {
+                        let mut f: Vec<usize> = (0..rest.len()).filter(|k| mask & (1 << k) != 0).map(|k| rest[k]).collect();
+                        f.sort_unstable();
+                        by_rest.entry(f).or_default().push(i);
+                    }
+                }
+            }
+            let mut comp = BTreeMap::<usize, usize>::new();
+            let mut sectors: Vec<Vec<usize>> = Vec::new();
+            for &start in &fan {
+                if comp.contains_key(&start) {
+                    continue;
+                }
+                let id = sectors.len();
+                let mut sector = Vec::new();
+                let mut stack = vec![start];
+                comp.insert(start, id);
+                while let Some(i) = stack.pop() {
+                    sector.push(i);
+                    for group in by_rest.values().filter(|g| g.contains(&i)) {
+                        for &j in group {
+                            if let std::collections::btree_map::Entry::Vacant(e) = comp.entry(j) {
+                                e.insert(id);
+                                stack.push(j);
+                            }
+                        }
+                    }
+                }
+                sectors.push(sector);
+            }
+            if sectors.len() < 2 {
+                continue;
+            }
+            let weight = |s: &Vec<usize>| s.iter().map(|&i| volume(p, cells[i]).abs()).sum::<f64>();
+            let keep = (0..sectors.len())
+                .max_by(|&a, &b| weight(&sectors[a]).total_cmp(&weight(&sectors[b])).then_with(|| sectors[b].iter().min().cmp(&sectors[a].iter().min())))
+                .unwrap();
+            for (k, s) in sectors.iter().enumerate() {
+                if k != keep {
+                    doomed.extend(s.iter().copied());
+                }
+            }
+        }
+        if doomed.is_empty() {
+            return removed;
+        }
+        removed += doomed.len();
+        let mut i = 0;
+        cells.retain(|_| {
+            let keep = !doomed.contains(&i);
+            i += 1;
+            keep
+        });
+    }
 }
 /// `6 sqrt(2) V / l_rms^3`: 1 for a regular tetrahedron, 0 for a flat one, negative when inverted.
 fn quality(p: &[V3], t: [usize; 4]) -> f64 {
@@ -397,7 +503,8 @@ pub fn mesh_solid_reported(s: &Solid, mat: Elastic, opts: TetOptions) -> Result<
     }
 
     // Keep what is inside.
-    let kept: Vec<[usize; 4]> = (0..r.tets.len()).filter(|&t| r.alive[t] && (s.sdf)(r.centroid(t)) < 0.0).map(|t| r.tets[t]).collect();
+    let mut kept: Vec<[usize; 4]> = (0..r.tets.len()).filter(|&t| r.alive[t] && (s.sdf)(r.centroid(t)) < 0.0).map(|t| r.tets[t]).collect();
+    drop_pinched_sectors(&r.p, &mut kept);
     if kept.is_empty() {
         return Err("no tetrahedron lies inside the solid: the size is too coarse for it or the box misses it".into());
     }
@@ -479,7 +586,7 @@ pub fn mesh_solid_reported(s: &Solid, mat: Elastic, opts: TetOptions) -> Result<
                         continue;
                     }
                     let target = match s.face_dists {
-                        Some(fd) => snap_to_features(fd, p[v], 0.5 * local[v], reach).unwrap_or_else(|| project(s.sdf, p[v], eps)),
+                        Some(fd) => snap_to_features(fd, s.sdf, p[v], 0.5 * local[v], reach, eps).unwrap_or_else(|| project(s.sdf, p[v], eps)),
                         None => project(s.sdf, p[v], eps),
                     };
                     // The feature snap intersects the planes of the nearest triangle of each face; where those planes are nearly
@@ -560,7 +667,12 @@ pub fn mesh_solid_reported(s: &Solid, mat: Elastic, opts: TetOptions) -> Result<
     // Boundary-layer repair: the snap leaves a few percent of the elements next to a curved surface flat.
     let mut repair_report = None;
     if opts.snap && opts.repair {
-        let ctx = crate::meshing::boundary_repair::RepairContext { sdf: s.sdf, face_dists: s.face_dists };
+        let classify = |v: [V3; 3]| face_of_triangle(s, v, opts.boundary_size);
+        let ctx = crate::meshing::boundary_repair::RepairContext {
+            sdf: s.sdf,
+            face_dists: s.face_dists,
+            triangle_face: s.face_dists.map(|_| &classify as &dyn Fn([V3; 3]) -> usize),
+        };
         let (remap, rep) = crate::meshing::boundary_repair::repair(&mut p, &mut tet, &ctx, crate::meshing::boundary_repair::RepairOptions::default());
         {
             boundary = boundary_of(&tet);
@@ -657,12 +769,11 @@ fn faces_of_named(boundary: &[([usize; 3], usize)], p: &[V3], s: &Solid, mids: O
         // is ordered so that its normal points away from that vertex. (Deciding it by a dot product with the fourth
         // vertex is ill-conditioned for the sliver triangles that lie on the surface itself.)
         let [a, b, c] = f;
-        let centre = [(p[a][0] + p[b][0] + p[c][0]) / 3.0, (p[a][1] + p[b][1] + p[c][1]) / 3.0, (p[a][2] + p[b][2] + p[c][2]) / 3.0];
         let mut nodes = vec![a, b, c];
         if let Some(m) = mids {
             nodes.extend([m[&key(a, b)], m[&key(b, c)], m[&key(c, a)]]);
         }
-        by_face.entry(face_of_triangle(s, [p[a], p[b], p[c]], centre, size)).or_default().push(nodes);
+        by_face.entry(face_of_triangle(s, [p[a], p[b], p[c]], size)).or_default().push(nodes);
     }
     by_face.into_iter().map(|(i, list)| (format!("face{}", i + 1), list)).collect()
 }
@@ -730,14 +841,28 @@ fn curve_boundary_edges(mesh: &mut Mesh, s: &Solid, boundary: &[([usize; 3], usi
     }
 }
 
-/// Snap `x` onto the face, edge or corner it is close to: faces within `edge_reach` all count (their intersection is
-/// the target), otherwise the nearest face within `reach`. `None` when no face is that close.
-fn snap_to_features(fd: &dyn Fn(V3) -> Vec<FaceHit>, x: V3, edge_reach: f64, reach: f64) -> Option<V3> {
+fn reentrant_edge(fd: &dyn Fn(V3) -> Vec<FaceHit>, sdf: &dyn Fn(V3) -> f64, y: V3, faces: [usize; 2], eps: f64) -> bool {
+    if !eps.is_finite() || eps <= 0.0 { return false; }
+    let hits = fd(y);
+    let [Some(a), Some(b)] = faces.map(|f| hits.iter().find(|h| h.face == f)) else { return false };
+    let tol = 1e-3 * eps;
+    if !(a.dist.abs() <= tol && b.dist.abs() <= tol) { return false; }
+    let (Some(n0), Some(n1)) = (a.surface_normal(y, fd, tol), b.surface_normal(y, fd, tol)) else { return false };
+    let c = dot(n0, n1);
+    if c.abs() >= 0.9 { return false; }
+    let dual0: V3 = std::array::from_fn(|k| (n0[k] - c * n1[k]) / (1.0 - c * c));
+    let dual1: V3 = std::array::from_fn(|k| (n1[k] - c * n0[k]) / (1.0 - c * c));
+    for (s0, s1) in [(1.0, 1.0), (-1.0, -1.0), (-1.0, 1.0), (1.0, -1.0)] {
+        let sample = std::array::from_fn(|k| y[k] + eps * (s0 * dual0[k] + s1 * dual1[k]));
+        let d = sdf(sample);
+        if !d.is_finite() || if s0 > 0.0 && s1 > 0.0 { d <= eps / 2.0 } else { d >= -eps / 2.0 } { return false; }
+    }
+    true
+}
+
+/// Project onto nearby faces, retaining a single patch at a proven reentrant edge.
+fn snap_to_features(fd: &dyn Fn(V3) -> Vec<FaceHit>, sdf: &dyn Fn(V3) -> f64, x: V3, edge_reach: f64, reach: f64, eps: f64) -> Option<V3> {
     let hits = fd(x);
-    // A face the point lies outside of (positive distance) and is within reach of is violated, whatever the edge reach: the
-    // point is then on the edge between that face and the ones it already touches, and must be brought onto it too. Without
-    // this a vertex on one face and 5 % of the size off a neighbouring one never moved toward the second (its nearest-face
-    // fallback only ran when no face was within the edge reach).
     let mut active: Vec<usize> = hits.iter().filter(|h| h.dist.abs() < edge_reach || (h.dist > 0.0 && h.dist < reach)).map(|h| h.face).collect();
     if active.is_empty() {
         let nearest = hits.iter().filter(|h| h.dist.abs() < reach).min_by(|a, b| a.dist.abs().total_cmp(&b.dist.abs()))?;
@@ -756,12 +881,20 @@ fn snap_to_features(fd: &dyn Fn(V3) -> Vec<FaceHit>, x: V3, edge_reach: f64, rea
             break;
         }
     }
+    if let [a, b] = active.as_slice() {
+        if reentrant_edge(fd, sdf, y, [*a, *b], eps) {
+            let nearest = hits.iter().filter(|h| h.face == *a || h.face == *b)
+                .min_by(|a, b| a.dist.abs().total_cmp(&b.dist.abs()).then(a.face.cmp(&b.face)))?;
+            let foot: V3 = std::array::from_fn(|k| x[k] - nearest.dist * nearest.normal[k]);
+            if foot.iter().all(|v| v.is_finite()) && sdf(foot).abs() <= 1e-3 * eps { return Some(foot); }
+        }
+    }
     Some(y)
 }
 
 /// The model face a boundary triangle belongs to: the one every vertex lies on (when the faces can be asked), else the
 /// face of its centroid.
-fn face_of_triangle(s: &Solid, v: [V3; 3], centre: V3, size: f64) -> usize {
+fn face_of_triangle(s: &Solid, v: [V3; 3], size: f64) -> usize {
     if let Some(fd) = s.face_dists {
         // Boundary vertices are snapped onto the surface (to within 0.02 of their local size at worst), so "on a face" means
         // a hundredth of the size, not a tenth: a tolerance of 0.1 h gave a tangent fillet's rim strip, sqrt(2 r 0.1 h) wide,
@@ -772,8 +905,10 @@ fn face_of_triangle(s: &Solid, v: [V3; 3], centre: V3, size: f64) -> usize {
         for h in &per[0] {
             let others: Vec<f64> = per[1..].iter().filter_map(|l| l.iter().find(|o| o.face == h.face).map(|o| o.dist.abs())).collect();
             if others.len() == 2 && h.dist.abs() < tol && others.iter().all(|d| *d < tol) {
-                let cost = h.dist.abs() + others.iter().sum::<f64>();
-                if best.is_none_or(|b| cost < b.0) {
+                let mut distances = [h.dist.abs(), others[0], others[1]];
+                distances.sort_by(f64::total_cmp);
+                let cost = distances.into_iter().sum::<f64>();
+                if best.is_none_or(|b| cost < b.0 || (cost == b.0 && h.face < b.1)) {
                     best = Some((cost, h.face));
                 }
             }
@@ -782,13 +917,243 @@ fn face_of_triangle(s: &Solid, v: [V3; 3], centre: V3, size: f64) -> usize {
             return f;
         }
     }
+    let centre = std::array::from_fn(|k| {
+        let mut values = v.map(|p| p[k]);
+        values.sort_by(f64::total_cmp);
+        let (mut sum, mut correction) = (0.0_f64, 0.0_f64);
+        for x in values {
+            let next = sum + x;
+            correction += if sum.abs() >= x.abs() { (sum - next) + x } else { (x - next) + sum };
+            sum = next;
+        }
+        (sum + correction) / 3.0
+    });
     (s.face_of)(centre)
 }
 
 #[cfg(test)]
 mod tests {
+    fn concave_faces(x: V3) -> Vec<FaceHit> {
+        [([x[0].max(0.0), x[1], 0.0], [0.0, 0.0, 1.0]),
+         ([0.0, x[1], x[2].max(0.0)], [1.0, 0.0, 0.0])]
+            .into_iter().enumerate().map(|(face, (q, n))| {
+                let offset = sub(x, q);
+                let distance = norm(offset);
+                let signed = if dot(offset, n) < 0.0 { -distance } else { distance };
+                FaceHit { face, dist: signed, normal: if distance == 0.0 { n } else { offset.map(|v| v / signed) } }
+            }).collect()
+    }
+
+    fn concave_sdf(x: V3) -> f64 {
+        let distance = concave_faces(x).iter().map(|h| h.dist.abs()).fold(f64::INFINITY, f64::min);
+        if x[0] > 0.0 && x[2] > 0.0 { distance } else { -distance }
+    }
+
+    fn legacy_snap(fd: &dyn Fn(V3) -> Vec<FaceHit>, x: V3, edge_reach: f64, reach: f64) -> Option<V3> {
+        let hits = fd(x);
+        let mut active: Vec<usize> = hits.iter().filter(|h| h.dist.abs() < edge_reach || (h.dist > 0.0 && h.dist < reach)).map(|h| h.face).collect();
+        if active.is_empty() {
+            let nearest = hits.iter().filter(|h| h.dist.abs() < reach).min_by(|a, b| a.dist.abs().total_cmp(&b.dist.abs()))?;
+            active.push(nearest.face);
+        }
+        let mut y = x;
+        for _ in 0..12 {
+            let mut moved = 0.0f64;
+            for h in fd(y).iter().filter(|h| active.contains(&h.face)) {
+                for k in 0..3 {
+                    y[k] -= h.dist * h.normal[k];
+                }
+                moved = moved.max(h.dist.abs());
+            }
+            if moved < 1e-12 {
+                break;
+            }
+        }
+        Some(y)
+    }
+
+    #[test]
+    fn convex_bore_tangent_single_face_and_corner_snaps_stay_bit_identical() {
+        let check = |fd: &dyn Fn(V3) -> Vec<FaceHit>, sdf: &dyn Fn(V3) -> f64, x| {
+            let old = legacy_snap(fd, x, 0.125, 0.275);
+            let new = snap_to_features(fd, sdf, x, 0.125, 0.275, 0.00025);
+            assert_eq!(new.map(|p| p.map(f64::to_bits)), old.map(|p| p.map(f64::to_bits)), "{x:?}");
+        };
+        let hit = |face, x: V3, q: V3, n: V3| {
+            let offset = sub(x, q);
+            let distance = norm(offset);
+            let signed = if dot(offset, n) < 0.0 { -distance } else { distance };
+            FaceHit { face, dist: signed, normal: if distance == 0.0 { n } else { offset.map(|v| v / signed) } }
+        };
+        let convex = |x: V3| vec![
+            hit(0, x, [x[0].min(0.0), x[1], 0.0], [0.0,0.0,1.0]),
+            hit(1, x, [0.0,x[1],x[2].min(0.0)], [1.0,0.0,0.0]),
+        ];
+        let convex_sdf = |x: V3| norm([x[0].max(0.0),0.0,x[2].max(0.0)]) + x[0].max(x[2]).min(0.0);
+        for x in [[-0.02,0.0,0.03],[0.03,0.0,0.02],[-0.02,0.0,-0.03]] { check(&convex, &convex_sdf, x); }
+        let bore = |x: V3| {
+            let r = x[0].hypot(x[1]);
+            let n = [x[0]/r,x[1]/r,0.0];
+            let cap = if r < 1.0 { [n[0],n[1],1.0] } else { [x[0],x[1],1.0] };
+            vec![hit(0,x,[n[0],n[1],x[2].min(1.0)],[-n[0],-n[1],0.0]), hit(1,x,cap,[0.0,0.0,1.0])]
+        };
+        let bore_sdf = |x: V3| {
+            let (a,b) = (1.0-x[0].hypot(x[1]),x[2]-1.0);
+            a.max(0.0).hypot(b.max(0.0)) + a.max(b).min(0.0)
+        };
+        for x in [[0.98,0.0,0.98],[1.02,0.0,0.98],[1.02,0.0,1.02]] { check(&bore, &bore_sdf, x); }
+        let normals = [[1.0,0.0,0.0], [0.1_f64.cos(),0.1_f64.sin(),0.0]];
+        let tangent = |x: V3| normals.iter().enumerate().map(|(face,&normal)| FaceHit { face, dist: dot(x,normal), normal }).collect();
+        let tangent_sdf = |x: V3| normals.iter().map(|&n|dot(x,n)).fold(f64::NEG_INFINITY,f64::max);
+        check(&tangent, &tangent_sdf, [0.02,0.03,0.0]);
+        let sphere = |x: V3| { let r=norm(x); vec![FaceHit { face:0, dist:r-1.0, normal:x.map(|v|v/r) }] };
+        check(&sphere, &|x| norm(x)-1.0, [1.02,0.03,0.04]);
+        let corner = |x: V3| (0..3).map(|face| FaceHit { face, dist:x[face], normal:std::array::from_fn(|k| if k==face {1.0} else {0.0}) }).collect();
+        check(&corner, &|x|x.into_iter().fold(f64::NEG_INFINITY,f64::max), [0.02,0.03,0.04]);
+        check(&concave_faces, &|_|0.0, [0.02,0.0,0.03]);
+    }
+
+    #[test]
+    fn reentrant_snap_selects_the_nearest_trimmed_patch_deterministically() {
+        let reversed = |x| { let mut h = concave_faces(x); h.reverse(); h };
+        for fd in [&concave_faces as &dyn Fn(V3) -> Vec<FaceHit>, &reversed] {
+            for (x, expected) in [
+                ([0.0, 0.0, 0.05], [0.0, 0.0, 0.05]),
+                ([0.0, 0.0, 0.2], [0.0, 0.0, 0.2]),
+                ([0.02, 0.0, 0.03], [0.0, 0.0, 0.03]),
+                ([0.03, 0.0, 0.03], [0.03, 0.0, 0.0]),
+                ([-0.03, 0.0, 0.02], [0.0, 0.0, 0.02]),
+                ([-0.02, 0.0, -0.03], [0.0, 0.0, 0.0]),
+            ] {
+                let y = snap_to_features(fd, &concave_sdf, x, 0.125, 0.275, 0.00025).unwrap();
+                assert!(norm(sub(y, expected)) < 1e-12, "{x:?} -> {y:?}, expected {expected:?}");
+                assert!(concave_sdf(y).abs() < 1e-12);
+                let again = snap_to_features(fd, &concave_sdf, y, 0.125, 0.275, 0.00025).unwrap();
+                assert!(norm(sub(again, y)) < 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn reentrant_sector_proof_uses_oblique_dual_directions_and_refuses_ambiguity() {
+        let normals = [[1.0, 0.0, 0.0], [0.5, 0.0, 0.75_f64.sqrt()]];
+        let fd = |x: V3| normals.iter().enumerate().map(|(face, &n)| {
+            let signed_plane = dot(x, n);
+            let mut q: V3 = std::array::from_fn(|k| x[k] - signed_plane * n[k]);
+            if dot(q, normals[1 - face]) < 0.0 { q = [0.0, x[1], 0.0]; }
+            let offset = sub(x, q);
+            let distance = norm(offset);
+            let signed = if signed_plane < 0.0 { -distance } else { distance };
+            FaceHit { face, dist: signed, normal: if distance == 0.0 { n } else { offset.map(|v| v / signed) } }
+        }).collect::<Vec<_>>();
+        let sdf = |x: V3| {
+            let d = fd(x).iter().map(|h| h.dist.abs()).fold(f64::INFINITY, f64::min);
+            if normals.iter().all(|&n| dot(x, n) > 0.0) { d } else { -d }
+        };
+        let x = [0.0, 0.0, 0.05];
+        assert!(reentrant_edge(&fd, &sdf, [0.0; 3], [0, 1], 0.00025));
+        let y = snap_to_features(&fd, &sdf, x, 0.125, 0.275, 0.00025).unwrap();
+        assert!(norm(sub(x, y)) < 1e-12);
+        let reversed = |x| { let mut hits = fd(x); hits.reverse(); hits };
+        let y = snap_to_features(&reversed, &sdf, x, 0.125, 0.275, 0.00025).unwrap();
+        assert!(norm(sub(x, y)) < 1e-12);
+        assert!(!reentrant_edge(&fd, &|_| 0.0, [0.0; 3], [0, 1], 0.00025));
+        assert!(!reentrant_edge(&fd, &|_| f64::NAN, [0.0; 3], [0, 1], 0.00025));
+        assert!(!reentrant_edge(&fd, &sdf, [0.01; 3], [0, 1], 0.00025));
+    }
+
+    #[test]
+    fn reentrant_snap_preserves_a_point_already_on_the_wall() {
+        let x = [0.0, 0.0, 0.05];
+        assert_eq!(snap_to_features(&concave_faces, &concave_sdf, x, 0.125, 0.275, 0.00025), Some(x));
+    }
+
     use super::*;
     use crate::meshing::curved::{simplex_validity, Verdict};
+
+    #[test]
+    fn pinched_sectors_keep_the_largest_fan() {
+        let p = [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.5], [1.0, 1.0, 0.5], [-1.0, 0.0, 0.5], [-2.0, -2.0, 0.5], [0.0, 3.0, 3.0], [1.0, 3.0, 3.0], [0.0, 4.0, 3.0]];
+        // two sectors meeting only along the edge 0-1: the larger (cell 1) survives
+        let mut cells = vec![[0, 1, 2, 3], [0, 1, 4, 5]];
+        assert_eq!(drop_pinched_sectors(&p, &mut cells), 1);
+        assert_eq!(cells, vec![[0, 1, 4, 5]]);
+        // two sectors meeting only at vertex 1
+        let mut cells = vec![[0, 1, 2, 3], [1, 6, 7, 8]];
+        assert_eq!(drop_pinched_sectors(&p, &mut cells), 1);
+        assert_eq!(cells.len(), 1);
+        // a face-connected pair is a manifold fan and stays
+        let mut cells = vec![[0, 1, 2, 3], [0, 1, 3, 4]];
+        assert_eq!(drop_pinched_sectors(&p, &mut cells), 0);
+        assert_eq!(cells.len(), 2);
+    }
+
+    #[test]
+    fn face_tagging_is_invariant_under_vertex_and_hit_order_at_near_ties() {
+        let vertices = [[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [2.0, 0.0, 0.0]];
+        for tie in [false, true] {
+            let fd = |p: V3| {
+                let scale = 2_f64.powi(-10);
+                let small = 2_f64.powi(-63);
+                let values = [[scale, small, small], [scale, 0.0, small]];
+                let mut hits: Vec<_> = (0..2).map(|face| FaceHit {
+                    face, dist: if tie { 0.0 } else { values[face][p[0] as usize] }, normal: [0.0, 0.0, 1.0],
+                }).collect();
+                if p[0] == 0.0 { hits.reverse(); }
+                hits
+            };
+            let sdf = |p: V3| p[2];
+            let size = |_: V3| 1.0;
+            let face = |_: V3| 0;
+            let solid = Solid { lo: [-2.0; 3], hi: [2.0; 3], sdf: &sdf, size: &size, face_of: &face, face_dists: Some(&fd) };
+            for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+                assert_eq!(face_of_triangle(&solid, order.map(|i| vertices[i]), 0.25), usize::from(!tie));
+            }
+        }
+    }
+
+    #[test]
+    fn common_vertex_face_tags_do_not_follow_a_nearer_centroid_patch() {
+        let fd = |p: V3| {
+            let r = p[0].hypot(p[1]);
+            let direction = if r > 0.0 { [p[0] / r, p[1] / r] } else { [1.0, 0.0] };
+            [(0, r.max(0.5)), (1, r.min(0.5))].map(|(face, radius)| {
+                let off = [p[0] - radius * direction[0], p[1] - radius * direction[1], p[2]];
+                let d = (off[0].powi(2) + off[1].powi(2) + off[2].powi(2)).sqrt();
+                let side = if p[2] < 0.0 { -1.0 } else { 1.0 };
+                FaceHit { face, dist: side * d, normal: if d > 1e-12 { off.map(|x| side * x / d) } else { [0.0, 0.0, 1.0] } }
+            }).to_vec()
+        };
+        let sdf = |p: V3| p[2];
+        let size = |_: V3| 1.0;
+        let face = |p: V3| usize::from(p[0].hypot(p[1]) < 0.5);
+        let solid = Solid { lo: [-2.0; 3], hi: [2.0; 3], sdf: &sdf, size: &size, face_of: &face, face_dists: Some(&fd) };
+        let vertices = [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]];
+        let centre = [0.0, -1.0 / 3.0, 0.0];
+        assert_eq!(face(centre), 1);
+        for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+            assert_eq!(face_of_triangle(&solid, order.map(|i| vertices[i]), 0.25), 0);
+        }
+        let fallback = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        assert_eq!(face_of_triangle(&solid, fallback, 0.25), 1);
+    }
+
+    #[test]
+    fn fallback_face_tags_use_one_accurate_centroid_for_every_corner_order() {
+        let vertices = [[1e16, 0.0, 0.0], [1.0, 1.0, 0.0], [-1e16, 0.0, 0.0]];
+        let fd = |_: V3| Vec::new();
+        let sdf = |p: V3| p[2];
+        let size = |_: V3| 1.0;
+        let face = |p: V3| {
+            assert_eq!(p[0], 1.0 / 3.0);
+            assert_eq!(p[1], 1.0 / 3.0);
+            1
+        };
+        let solid = Solid { lo: [-1e16; 3], hi: [1e16; 3], sdf: &sdf, size: &size, face_of: &face, face_dists: Some(&fd) };
+        for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+            assert_eq!(face_of_triangle(&solid, order.map(|i| vertices[i]), 0.25), 1);
+        }
+    }
 
     /// A bent Tet10 that the eleven-point Jacobian test accepts although its mapping folds between the samples is
     /// refused by `tet10_ok` (found by random search; about one in two hundred heavily bent elements is such a case).

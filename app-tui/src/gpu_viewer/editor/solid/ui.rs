@@ -46,20 +46,11 @@ impl SolidSession {
     fn simulation_entries(&self) -> Vec<Entry> {
         let cancel = entry(if Self::bench_study(self.bench).is_some() { "Cancel study" } else { "Cancel solve" }, "Esc", SolidAction::CancelSolve).when(if self.solving() { Ok(()) } else { Err("no solve is running".into()) });
         match Self::bench_study(self.bench) {
-            None => {
-                let cases = self.problem.cases.len();
-                let active = self.problem.active_case_index();
-                let case_only = |what: &str| if cases > 0 { Ok(()) } else { Err(format!("{what}: add a second load case first (Simulation > New load case)")) };
-                vec![
-                    entry("Solve", "Ctrl/Cmd+Enter", SolidAction::Solve).when(self.solve_availability()),
-                    cancel,
-                    entry("Show results", "V", SolidAction::ShowResults).when(self.results_availability()).checked(self.show_results),
-                    entry("Gravity / body force...", "", SolidAction::OpenCard(CardForm::Gravity)),
-                    entry("New load case", "", SolidAction::NewCase),
-                    entry("Edit load case...", "", SolidAction::OpenCard(CardForm::Case(active))).when(case_only("there is only the model's own set of supports and loads")),
-                    entry("Next load case", "", SolidAction::SetCase((active + 1) % cases.max(1))).when(if cases > 1 { Ok(()) } else { Err("there is one load case at most".to_string()) }),
-                ]
-            }
+            None => vec![
+                entry("Solve", "Ctrl/Cmd+Enter", SolidAction::Solve).when(self.solve_availability()),
+                cancel,
+                entry("Show results", "V", SolidAction::ShowResults).when(self.results_availability()).checked(self.show_results),
+            ],
             Some(kind) => vec![
                 entry("Run study", "Ctrl/Cmd+Enter", SolidAction::RunStudy(kind)).when(self.study_availability(kind)),
                 cancel,
@@ -76,9 +67,60 @@ impl SolidSession {
         v.extend(fea_problem::Study::ALL.into_iter().map(|st| entry(st.label(), "", SolidAction::SetStudy(st)).checked(self.problem.study == st)));
         v
     }
+    /// Load-case commands of a static solve (none for the benches, which run their own study).
+    fn case_entries(&self) -> Vec<Entry> {
+        if Self::bench_study(self.bench).is_some() {
+            return Vec::new();
+        }
+        let cases = self.problem.cases.len();
+        let active = self.problem.active_case_index();
+        vec![
+            entry("New load case", "", SolidAction::NewCase),
+            entry("Edit load case...", "", SolidAction::OpenCard(CardForm::Case(active))).when(if cases > 0 { Ok(()) } else { Err("there is only the model's own set of supports and loads: add a second load case first (New load case)".to_string()) }),
+            entry("Next load case", "", SolidAction::SetCase((active + 1) % cases.max(1))).when(if cases > 1 { Ok(()) } else { Err("there is one load case at most".to_string()) }),
+        ]
+    }
+    /// Part operations: hole tool (click to place), plus the B-rep operations on a selected face.
+    fn part_op_entries(&self) -> Vec<Entry> {
+        vec![
+            entry("Hole", "", SolidAction::SetTool(SolidTool::Hole)).when(self.hole_availability()).checked(self.tool == SolidTool::Hole),
+            entry("Hole in face...", "", SolidAction::SolidOp(stepops::PromptOp::Hole)).when(self.solid_op_availability(stepops::PromptOp::Hole)),
+            entry("Boss on face...", "", SolidAction::SolidOp(stepops::PromptOp::Boss)).when(self.solid_op_availability(stepops::PromptOp::Boss)),
+            entry("Fillet edges...", "", SolidAction::SolidOp(stepops::PromptOp::Fillet)).when(self.solid_op_availability(stepops::PromptOp::Fillet)),
+        ]
+    }
+    /// Boundary commands. Support and Load act on the selected surfaces when there are any (SolidWorks fixtures), and
+    /// otherwise add a row to fill in: one command each instead of an "add" and an "on surface" variant.
+    fn boundary_entries(&self) -> Vec<Entry> {
+        use FieldRow::*;
+        let on_selection = self.selected_ok().is_ok();
+        let smart = |label: &str, row: FieldRow, on: SolidAction| {
+            if on_selection { entry(label, "", on) } else { entry(label, "", SolidAction::Activate(row)).when(self.row_available(row)) }
+        };
+        let mut v = Vec::new();
+        if self.problem.study.is_structural() {
+            v.push(smart("Fixed support", SupportAdd, SolidAction::SupportOnSelected));
+            v.push(smart("Load", LoadAdd, SolidAction::LoadOnSelected));
+            v.push(entry("Gravity", "", SolidAction::OpenCard(CardForm::Gravity)));
+        }
+        v.push(entry("Bushing", "", SolidAction::Activate(BushingAdd)).when(self.row_available(BushingAdd)));
+        v.push(entry("Contact", "", SolidAction::Activate(ContactAdd)).when(self.row_available(ContactAdd)));
+        v.push(entry("Assign selection", "", SolidAction::AssignSelection).when(self.assign_availability()));
+        v
+    }
     fn simulation_items(&self) -> Vec<Item> {
         let mut items: Vec<Item> = vec![Item::Heading("Analysis".into())];
         items.extend(self.analysis_entries().into_iter().map(Item::Entry));
+        items.push(Item::Heading("Mesh".into()));
+        use FieldRow::*;
+        for (label, row) in [("Element type", Element), ("Element size", MeshSize), ("Adaptive passes", AdaptPasses), ("Target error", TargetError)] {
+            items.push(item(entry(label, "", SolidAction::Activate(row)).when(self.row_available(row))));
+        }
+        items.push(item(entry("Generate mesh", "", SolidAction::GenerateMesh).when(self.mesh_availability())));
+        items.push(item(entry("Refine where recommended", "", SolidAction::RefineAll).when(self.refine_availability())));
+        items.push(item(entry("Show refinement hints", "", SolidAction::ToggleRefineShow).checked(self.show_refine)));
+        items.push(Item::Separator);
+        items.extend(self.case_entries().into_iter().map(Item::Entry));
         items.push(Item::Separator);
         items.extend(self.simulation_entries().into_iter().map(Item::Entry));
         items
@@ -375,46 +417,22 @@ impl Authoring for SolidSession {
         use FieldRow::*;
         let act = |label: &str, shortcut: &str, row: FieldRow| entry(label, shortcut, SolidAction::Activate(row)).when(self.row_available(row));
         let imported = matches!(self.problem.geometry, Geometry::Imported { .. });
+        // NX / SolidWorks layout: Model builds the part, Mesh discretizes it, Simulation sets up and runs the study.
+        // File, Undo/Redo, Save and Send-to live in the menus and shortcuts only, never repeated in the ribbon.
+        let part = vec![act("Geometry source", "", Source), act("Import mesh", "", ImportPath).when(if imported { Ok(()) } else { Err("switch the geometry source to Imported first".to_string()) }), entry("Convert to history", "", SolidAction::Sketch(SketchAction::Convert)).when(self.convert_availability()), entry("Material", "", SolidAction::OpenCard(CardForm::Materials)), entry("Units", "", SolidAction::OpenCard(CardForm::Units))];
         vec![
             RibbonTab::new("Model")
-                .group("Problem", vec![entry("New part", "Ctrl/Cmd+N", SolidAction::NewPart).when(self.replace_availability()), entry("Open file", "Ctrl/Cmd+O", SolidAction::OpenFile).when(self.replace_availability()), entry("Next template", "", SolidAction::NextTemplate), act("Analysis type", "", Analysis), entry("Material library", "", SolidAction::OpenCard(CardForm::Materials)), entry("Units", "", SolidAction::OpenCard(CardForm::Units))])
-                .group("Send", vec![entry("To Bushing", "", SolidAction::SendTo(crate::gpu_viewer::EditorKind::Bushing)).when(self.send_availability(crate::gpu_viewer::EditorKind::Bushing)), entry("To Eccentric", "", SolidAction::SendTo(crate::gpu_viewer::EditorKind::Eccentric)).when(self.send_availability(crate::gpu_viewer::EditorKind::Eccentric))])
-                .group(
-                    "Geometry",
-                    vec![
-                        entry("Hole tool", "", SolidAction::SetTool(SolidTool::Hole)).when(self.hole_availability()).checked(self.tool == SolidTool::Hole),
-                        act("Add hole", "", HoleAdd),
-                        entry("Sketch / import", "", SolidAction::Activate(Source)),
-                        act("Import mesh", "", ImportPath).when(if imported { Ok(()) } else { Err("switch the geometry source to Imported first".to_string()) }),
-                    ],
-                )
-                .group(
-                    "Boundary",
-                    vec![
-                        act("Add support", "", SupportAdd),
-                        act("Add load", "", LoadAdd),
-                        act("Add bushing", "", BushingAdd),
-                        act("Add contact", "", ContactAdd),
-                        entry("Support on surface", "", SolidAction::SupportOnSelected).when(self.selected_ok()),
-                        entry("Load on surface", "", SolidAction::LoadOnSelected).when(self.selected_ok()),
-                        entry("Assign surface", "", SolidAction::AssignSelection).when(self.assign_availability()),
-                    ],
-                )
-                .group(
-                    "Edit",
-                    vec![
-                        entry("Undo", "Ctrl/Cmd+Z", SolidAction::Undo).when(if self.can_undo() { Ok(()) } else { Err("nothing to undo".into()) }),
-                        entry("Redo", "Ctrl/Cmd+Shift+Z", SolidAction::Redo).when(if self.can_redo() { Ok(()) } else { Err("nothing to redo".into()) }),
-                        entry("Remove entry", "Del", SolidAction::RemoveFocused).when(self.remove_availability()),
-                        entry("Save", "Ctrl/Cmd+S", SolidAction::Save).when(self.save_availability()),
-                    ],
-                ),
-            self.features_ribbon(),
+                .group("Sketch", self.sketch_start_entries())
+                .group("Features", [self.solid_feature_entries(), self.part_op_entries()].concat())
+                .group("Part", part),
             RibbonTab::new("Mesh").group(
                 "Mesh",
-                vec![act("Element type", "", Element), act("Element size", "", MeshSize), act("Adaptive passes", "", AdaptPasses), act("Target error", "", TargetError), entry("Refine where recommended", "", SolidAction::RefineAll).when(self.refine_availability()), entry("Show refinement hints", "", SolidAction::ToggleRefineShow).checked(self.show_refine), entry("Generate mesh", "", SolidAction::GenerateMesh).when(self.mesh_availability())],
-            ),
-            RibbonTab::new("Simulation").group("Analysis", self.analysis_entries()).group("Study", self.simulation_entries()),
+                vec![act("Element type", "", Element), act("Element size", "", MeshSize), act("Adaptive passes", "", AdaptPasses), act("Target error", "", TargetError), entry("Generate mesh", "", SolidAction::GenerateMesh).when(self.mesh_availability())],
+            ).group("Refine", vec![entry("Refine where recommended", "", SolidAction::RefineAll).when(self.refine_availability()), entry("Show refinement hints", "", SolidAction::ToggleRefineShow).checked(self.show_refine)]),
+            RibbonTab::new("Simulation")
+                .group("Study", self.analysis_entries())
+                .group("Fixtures & loads", [self.boundary_entries(), self.case_entries()].concat())
+                .group("Run", self.simulation_entries()),
         ]
     }
 
@@ -434,8 +452,6 @@ impl Authoring for SolidSession {
     }
 
     fn menus(&self) -> Vec<Menu> {
-        use FieldRow::*;
-        let act = |label: &str, row: FieldRow| item(entry(label, "", SolidAction::Activate(row)).when(self.row_available(row)));
         vec![
             Menu {
                 title: "File".into(),
@@ -464,25 +480,11 @@ impl Authoring for SolidSession {
             },
             Menu {
                 title: "Insert".into(),
-                items: self.insert_items(vec![
-                    item(entry(SolidTool::Hole.label(), "", SolidAction::SetTool(SolidTool::Hole)).when(self.hole_availability()).checked(self.tool == SolidTool::Hole)),
-                    act("Hole (default position)", HoleAdd),
-                    act("Support", SupportAdd),
-                    act("Load", LoadAdd),
-                    act("Bushing", BushingAdd),
-                    act("Contact between bodies", ContactAdd),
-                    Item::Separator,
-                    item(entry("Support on selected surface", "", SolidAction::SupportOnSelected).when(self.selected_ok())),
-                    item(entry("Load on selected surface", "", SolidAction::LoadOnSelected).when(self.selected_ok())),
-                    Item::Separator,
-                    item(entry("Fillet all edges...", "", SolidAction::SolidOp(stepops::PromptOp::Fillet)).when(self.solid_op_availability(stepops::PromptOp::Fillet))),
-                    item(entry("Hole in selected face...", "", SolidAction::SolidOp(stepops::PromptOp::Hole)).when(self.solid_op_availability(stepops::PromptOp::Hole))),
-                    item(entry("Boss on selected face...", "", SolidAction::SolidOp(stepops::PromptOp::Boss)).when(self.solid_op_availability(stepops::PromptOp::Boss))),
-                ]),
+                items: self.insert_items([vec![Item::Heading("Part".into())], self.part_op_entries().into_iter().map(item).collect(), vec![Item::Heading("Fixtures & loads".into())], self.boundary_entries().into_iter().map(item).collect()].concat()),
             },
             Menu {
                 title: "Tools".into(),
-                items: vec![item(entry("Send to the Bushing workbench", "", SolidAction::SendTo(crate::gpu_viewer::EditorKind::Bushing)).when(self.send_availability(crate::gpu_viewer::EditorKind::Bushing))), item(entry("Send to the Eccentric Bushing workbench", "", SolidAction::SendTo(crate::gpu_viewer::EditorKind::Eccentric)).when(self.send_availability(crate::gpu_viewer::EditorKind::Eccentric))), Item::Separator, act("Analysis type", Analysis), item(entry("Material library...", "", SolidAction::OpenCard(CardForm::Materials))), item(entry("Units...", "", SolidAction::OpenCard(CardForm::Units))), act("Element type", Element), act("Adaptive passes", AdaptPasses), item(entry("Refine where recommended", "", SolidAction::RefineAll).when(self.refine_availability())), item(entry("Show refinement hints", "", SolidAction::ToggleRefineShow).checked(self.show_refine)), item(entry("Generate mesh", "", SolidAction::GenerateMesh).when(self.mesh_availability()))],
+                items: vec![item(entry("Send to the Bushing workbench", "", SolidAction::SendTo(crate::gpu_viewer::EditorKind::Bushing)).when(self.send_availability(crate::gpu_viewer::EditorKind::Bushing))), item(entry("Send to the Eccentric Bushing workbench", "", SolidAction::SendTo(crate::gpu_viewer::EditorKind::Eccentric)).when(self.send_availability(crate::gpu_viewer::EditorKind::Eccentric))), Item::Separator, item(entry("Material library...", "", SolidAction::OpenCard(CardForm::Materials))), item(entry("Units...", "", SolidAction::OpenCard(CardForm::Units)))],
             },
             Menu { title: "Simulation".into(), items: self.simulation_items() },
             Menu { title: "Advisor".into(), items: self.advisor_items() },

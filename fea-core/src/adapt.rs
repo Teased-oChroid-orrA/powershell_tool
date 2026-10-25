@@ -252,30 +252,58 @@ pub fn size_field_at_nodes(mesh: &Mesh, h_elem: &[f64], opt: &AdaptOptions, comb
             NodalSize::Min => smallest[i],
         })
         .collect();
-    // Grading limit along the triangle edges (a few relaxation sweeps converge it).
-    for _ in 0..(n_nodes.min(200)) {
-        let mut changed = false;
-        for t in &tris {
-            for k in 0..3 {
-                let (i, j) = (t[k], t[(k + 1) % 3]);
-                let d = (pts[i][0] - pts[j][0]).hypot(pts[i][1] - pts[j][1]);
-                if h[i] > h[j] + opt.grading * d {
-                    h[i] = h[j] + opt.grading * d;
-                    changed = true;
-                }
-                if h[j] > h[i] + opt.grading * d {
-                    h[j] = h[i] + opt.grading * d;
-                    changed = true;
-                }
-            }
-        }
-        if !changed {
-            break;
+    // Grading limit along the triangle edges.
+    let mut edges = Vec::with_capacity(3 * tris.len());
+    for t in &tris {
+        for k in 0..3 {
+            let (i, j) = (t[k], t[(k + 1) % 3]);
+            edges.push((i, j, (pts[i][0] - pts[j][0]).hypot(pts[i][1] - pts[j][1])));
         }
     }
-    // Midside and interior nodes carry no size; give them the mean of their element's corners so the
-    // background triangles only reference corner nodes (they are the only vertices of `tris`).
+    grade(&mut h, &edges, opt.grading);
+    // Midside and interior nodes carry no size (infinite here): the background triangles reference corner nodes only (the
+    // vertices of `tris`), so their placeholder value `h_max` is never interpolated.
     Ok(SizeField::new(pts, tris, h.into_iter().map(|v| if v.is_finite() { v } else { opt.h_max.min(1e30) }).collect()))
+}
+
+/// Impose the grading limit `h[i] <= h[j] + grading * d_ij` over the edges `(i, j, d_ij)`: the largest field below the
+/// given one that satisfies it, `h[i] = min_j (h0[j] + grading * dist(i, j))` with `dist` the shortest edge path. Computed
+/// exactly by Dijkstra from every node at once (a relaxation sweep in element order carries the limit only one element against
+/// that order per sweep, so any sweep cap leaves a long enough mesh ungraded).
+fn grade(h: &mut [f64], edges: &[(usize, usize, f64)], grading: f64) {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    let n = h.len();
+    let mut start = vec![0usize; n + 1];
+    for &(i, j, _) in edges {
+        start[i + 1] += 1;
+        start[j + 1] += 1;
+    }
+    for i in 0..n {
+        start[i + 1] += start[i];
+    }
+    let mut fill = start.clone();
+    let mut adj = vec![(0usize, 0.0f64); start[n]];
+    for &(i, j, d) in edges {
+        adj[fill[i]] = (j, grading * d);
+        fill[i] += 1;
+        adj[fill[j]] = (i, grading * d);
+        fill[j] += 1;
+    }
+    // Sizes are positive (or infinite), so their bit patterns order like the values.
+    let mut heap: BinaryHeap<Reverse<(u64, usize)>> = (0..n).filter(|&i| h[i].is_finite()).map(|i| Reverse((h[i].to_bits(), i))).collect();
+    while let Some(Reverse((bits, i))) = heap.pop() {
+        if bits != h[i].to_bits() {
+            continue; // stale entry
+        }
+        for &(j, step) in &adj[start[i]..start[i + 1]] {
+            let cand = h[i] + step;
+            if cand < h[j] {
+                h[j] = cand;
+                heap.push(Reverse((cand.to_bits(), j)));
+            }
+        }
+    }
 }
 
 /// A piecewise-linear size field on a background tetrahedral mesh with grid-accelerated lookup (the 3D analogue of
@@ -461,28 +489,15 @@ pub fn size_field_at_nodes_3d(mesh: &Mesh, h_elem: &[f64], opt: &AdaptOptions, c
         let (a, b) = (mesh.nodes[i], mesh.nodes[j]);
         ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
     };
-    for _ in 0..(n_nodes.min(200)) {
-        let mut changed = false;
-        for t in &tets {
-            for i in 0..4 {
-                for j in (i + 1)..4 {
-                    let (a, b) = (t[i], t[j]);
-                    let d = dist(a, b);
-                    if h[a] > h[b] + opt.grading * d {
-                        h[a] = h[b] + opt.grading * d;
-                        changed = true;
-                    }
-                    if h[b] > h[a] + opt.grading * d {
-                        h[b] = h[a] + opt.grading * d;
-                        changed = true;
-                    }
-                }
+    let mut edges = Vec::with_capacity(6 * tets.len());
+    for t in &tets {
+        for i in 0..4 {
+            for j in (i + 1)..4 {
+                edges.push((t[i], t[j], dist(t[i], t[j])));
             }
         }
-        if !changed {
-            break;
-        }
     }
+    grade(&mut h, &edges, opt.grading);
     let pts: Vec<[f64; 3]> = mesh.nodes.iter().map(|x| [x[0], x[1], x[2]]).collect();
     Ok(SizeField3::new(pts, tets, h.into_iter().map(|v| if v.is_finite() { v } else { opt.h_max.min(1e30) }).collect()))
 }

@@ -171,7 +171,7 @@ fn refine_everywhere_applies_the_recommended_levels_in_one_step_and_reports_when
     assert!(s.refine_availability().unwrap_err().contains("already refined"));
     s.do_action(SolidAction::RefineAll);
     assert!(s.status.contains("Nothing left"), "{}", s.status);
-    let menu = s.menus().into_iter().find(|m| m.title == "Tools").unwrap();
+    let menu = s.menus().into_iter().find(|m| m.title == "Simulation").unwrap();
     assert!(menu.items.iter().any(|i| matches!(i, crate::gpu_viewer::menu::Item::Entry(e) if e.label == "Refine where recommended")));
 }
 

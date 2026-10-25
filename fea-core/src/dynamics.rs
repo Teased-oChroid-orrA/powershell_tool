@@ -66,6 +66,8 @@ pub struct Mode {
     pub residual: f64,
     /// Effective modal mass per global axis, `(phi^T M r_axis)^2` (mass units): sums to the total mass over a complete set.
     pub effective_mass: [f64; 3],
+    /// The mass matrix the mode belongs to (its sensitivities differentiate that matrix).
+    pub mass: MassKind,
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +143,18 @@ impl Lcg {
     }
 }
 
+/// HRZ lumping of an element's consistent `nn x nn` scalar mass in place: its diagonal scaled to keep the element's mass.
+pub(crate) fn lump_hrz(me: &mut [f64], nn: usize) {
+    let total: f64 = me[..nn * nn].iter().sum();
+    let diag: f64 = (0..nn).map(|a| me[a * nn + a]).sum();
+    let s = total / diag;
+    for a in 0..nn {
+        for b in 0..nn {
+            me[a * nn + b] = if a == b { me[a * nn + a] * s } else { 0.0 };
+        }
+    }
+}
+
 fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
@@ -161,15 +175,7 @@ impl Model {
             let blk = &mesh.blocks[bi];
             kernel::mass(blk.kind, mesh.physics, blk.density, xyz, work, me)?;
             if kind == MassKind::Lumped {
-                let nn = blk.kind.n_nodes();
-                let total: f64 = me[..nn * nn].iter().sum();
-                let diag: f64 = (0..nn).map(|a| me[a * nn + a]).sum();
-                let s = total / diag;
-                for a in 0..nn {
-                    for b in 0..nn {
-                        me[a * nn + b] = if a == b { me[a * nn + a] * s } else { 0.0 };
-                    }
-                }
+                lump_hrz(me, blk.kind.n_nodes());
             }
             Ok(())
         })
@@ -414,7 +420,7 @@ impl Model {
                 let gamma: f64 = (0..self.mesh.nodes.len()).map(|nd| mphi[nd * d + axis]).sum();
                 *e = gamma * gamma;
             }
-            modes.push(Mode { omega2: q.lambda, frequency_hz: q.lambda.max(0.0).sqrt() / (2.0 * std::f64::consts::PI), shape, residual: q.residual, effective_mass: eff });
+            modes.push(Mode { omega2: q.lambda, frequency_hz: q.lambda.max(0.0).sqrt() / (2.0 * std::f64::consts::PI), shape, residual: q.residual, effective_mass: eff, mass: opt.mass });
         }
         Ok(Modal { modes, total_mass, iterations: r.iterations, subspace: r.subspace, factor_nnz: r.factor_nnz, fallback: r.fallback })
     }

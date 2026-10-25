@@ -11,7 +11,7 @@
 //! of the full solve in `tests/sensitivity.rs`.
 
 use crate::analysis::Model;
-use crate::dynamics::Mode;
+use crate::dynamics::{MassKind, Mode};
 use crate::kernel::{self, Work};
 use crate::linear::{Dirichlet, Ordering, Reduced};
 use crate::loads::{self, Loads};
@@ -55,11 +55,14 @@ impl Model {
         Ok(ke)
     }
 
-    fn element_mass(&self, bi: usize, xyz: &[[f64; 3]], work: &mut Work) -> Result<Vec<f64>, String> {
+    fn element_mass(&self, bi: usize, xyz: &[[f64; 3]], work: &mut Work, kind: MassKind) -> Result<Vec<f64>, String> {
         let blk = &self.mesh.blocks[bi];
         let nn = blk.kind.n_nodes();
         let mut me = vec![0.0; nn * nn];
         kernel::mass(blk.kind, self.mesh.physics, blk.density, xyz, work, &mut me).map_err(|er| er.to_string())?;
+        if kind == MassKind::Lumped {
+            crate::dynamics::lump_hrz(&mut me, nn);
+        }
         Ok(me)
     }
 
@@ -133,8 +136,8 @@ impl Model {
         Ok(total)
     }
 
-    /// `x^T (dM/dp) y` over all dofs.
-    fn dm_bilinear(&self, p: Param, x: &[f64], y: &[f64]) -> Result<f64, String> {
+    /// `x^T (dM/dp) y` over all dofs, for the mass matrix of `kind`.
+    fn dm_bilinear(&self, p: Param, x: &[f64], y: &[f64], kind: MassKind) -> Result<f64, String> {
         let d = self.mesh.dim();
         let mut work = Work::new();
         let mut total = 0.0;
@@ -145,7 +148,7 @@ impl Model {
                     Physics::PlaneStress { thickness } | Physics::PlaneStrain { thickness } => thickness,
                     _ => return Err("the thickness is a parameter of plane analyses only".into()),
                 };
-                let m = self.assemble_mass(crate::dynamics::MassKind::Consistent)?;
+                let m = self.assemble_mass(kind)?;
                 let mut my = vec![0.0; y.len()];
                 m.matvec_add(&self.pattern, y, &mut my);
                 return Ok(dot(x, &my) / t);
@@ -158,15 +161,15 @@ impl Model {
             let conn = blk.elem(e);
             let mut xyz: Vec<[f64; 3]> = conn.iter().map(|&n| self.mesh.nodes[n]).collect();
             let dme: Vec<f64> = match p {
-                Param::DensityScale(_) => self.element_mass(bi, &xyz, &mut work)?,
+                Param::DensityScale(_) => self.element_mass(bi, &xyz, &mut work, kind)?,
                 Param::Coord { node, axis } => {
                     let local = conn.iter().position(|&n| n == node).expect("affected element contains the node");
                     let h = self.coord_step(node);
                     let orig = xyz[local][axis];
                     xyz[local][axis] = orig + h;
-                    let mp = self.element_mass(bi, &xyz, &mut work)?;
+                    let mp = self.element_mass(bi, &xyz, &mut work, kind)?;
                     xyz[local][axis] = orig - h;
-                    let mm = self.element_mass(bi, &xyz, &mut work)?;
+                    let mm = self.element_mass(bi, &xyz, &mut work, kind)?;
                     mp.iter().zip(&mm).map(|(a, b)| (a - b) / (2.0 * h)).collect()
                 }
                 _ => unreachable!(),
@@ -186,7 +189,19 @@ impl Model {
     /// it; central difference of the assembly.
     pub(crate) fn df_dp(&self, loads: &Loads, p: Param) -> Result<Vec<f64>, String> {
         let (h, perturbed): (f64, Box<dyn Fn(f64) -> Model>) = match p {
-            Param::ModulusScale(_) | Param::DensityScale(_) => return Ok(vec![0.0; self.mesh.n_dofs()]),
+            Param::DensityScale(_) => return Ok(vec![0.0; self.mesh.n_dofs()]),
+            // A thermal load is `int B^T D eps_th`: linear in the modulus of the heated block. Every other load is independent of it.
+            Param::ModulusScale(_) if loads.delta_t == 0.0 && loads.temperature.is_none() => return Ok(vec![0.0; self.mesh.n_dofs()]),
+            Param::ModulusScale(b) => {
+                if b >= self.mesh.blocks.len() {
+                    return Err(format!("modulus parameter of missing block {b}"));
+                }
+                (1e-6, Box::new(move |s| {
+                    let mut m = self.mesh.clone();
+                    m.blocks[b].material = m.blocks[b].material.scaled(1.0 + s);
+                    Model { mesh: m, pattern: self.pattern.clone() }
+                }))
+            }
             Param::Coord { node, axis } => {
                 let h = self.coord_step(node);
                 (h, Box::new(move |s| {
@@ -260,6 +275,6 @@ impl Model {
 
     /// Sensitivity of the eigenvalue `omega^2` of a (simple) mode to `params`.
     pub fn eigenvalue_sensitivities(&self, mode: &Mode, params: &[Param]) -> Result<Vec<f64>, String> {
-        params.iter().map(|&p| Ok(self.dk_bilinear(p, &mode.shape, &mode.shape)? - mode.omega2 * self.dm_bilinear(p, &mode.shape, &mode.shape)?)).collect()
+        params.iter().map(|&p| Ok(self.dk_bilinear(p, &mode.shape, &mode.shape)? - mode.omega2 * self.dm_bilinear(p, &mode.shape, &mode.shape, mode.mass)?)).collect()
     }
 }

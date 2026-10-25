@@ -1,7 +1,7 @@
 {
   "epic": 46,
   "epic_complete": false,
-  "branch": "main",
+  "branch": "issue-46-boss-rim-repair",
   "pull_request": null,
   "pull_request_state": "none_open_after_pr_170",
   "merged_prs": [
@@ -74,23 +74,23 @@
     169,
     170
   ],
-  "latest_qualified_source": "55252ed74a9d2aa47c1b942818d01011ecdee15f",
-  "latest_phase": 136,
-  "progress_snapshot": "issue-46-phase-136.md",
+  "latest_qualified_source": "8ac288de16d4e3e2670f737bdf434617d5898644",
+  "latest_phase": 141,
+  "progress_snapshot": "issue-46-phase-141.md",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
-  "remaining": "Phase 135 qualified file browsing in both active Open flows. Phase 136 rejected a boss-rim snap restriction because it degraded curved-body accuracy; no mesher change was retained. Shared absolute quality, ABC 00006600 grading, native tilted-hole quality, Windows mesh/solve, and broader P2/P3/final gates remain open",
+  "remaining": "Phase 141: 34/38 same-STEP parity rows pass with no regression against Phase 128; t-junction (8/8) and NEMA17 (24/33) remain below the 0.1 gate on boundary cells. Boss contact/volume audits were not rerun on the final build. ABC 00006600 grading, Windows mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
   "latest_increment_tests": {
     "commands": [
-      "cargo test -p app-tui --locked --offline -j1 open_prompt_browses_and_keeps_typed_path",
-      "cargo test -p app-tui --locked --offline -j1 open_browser_navigates_and_uses_existing_open_validation",
-      "cargo test -p app-tui --locked --offline -j1",
-      "cargo build -p app-tui --locked --offline -j1"
+      "cargo test -p fea-core -p solid-kernel -p fea-problem --release --locked --offline -j1 --no-fail-fast",
+      "CASE='' cargo test -p fea-problem --features occt --release --locked --offline -j1 --test occt_vs_native -- --ignored --nocapture table",
+      "cargo test -p fea-core --release --locked --offline -j1 --test tetmesh_repair -- --ignored connected_plate_boss_rim_passes_solver_gate",
+      "cargo test -p app-tui --release --locked --offline -j1"
     ],
     "result": "passed",
-    "platform": "macOS arm64, Phase 135 focused browser tests, full app-tui suite (1,188 unit passed, 22 ignored; 38 rendering integration passed), executable build and real PTY browser/open check",
-    "at": "55252ed74a9d2aa47c1b942818d01011ecdee15f",
+    "platform": "macOS arm64, release, serial Cargo: 1121 passed / 0 failed / 47 ignored; app-tui 1226 passed / 0 failed; parity table 34/38 gate rows pass (docs/issue-46-phase-141-parity.txt); connected boss gate passes",
+    "at": "8ac288de16d4e3e2670f737bdf434617d5898644",
     "corpus": "issue-46-abc-corpus-2026-10-18.md"
   },
   "tests": {
@@ -103,7 +103,7 @@
   "last_confirmed_main_merge": "f59c2bdca8ce7c928dc2407dbf62d961d593acd6",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Phase 136 shows the boss-rim fix must preserve curved-body accuracy; pursue topology-aware local repair with connected boss and curved-body regressions, then recheck parity. Native tilted-hole quality, ABC 00006600 grading, Windows runtime mesh/solve, B-rep healing, production parity and broader priority gates remain open in issue-46-resume.md",
+    "scope": "Remaining boundary sub-gate cells on t-junction and NEMA17 (best-round retention was a 7/8 trial); rerun boss contact/volume audits on the Phase 141 build; fidelity measurement on fillet cases under the region bound; unaudited fea-core modules listed in Phase 141; Windows and remaining five-plan items",
     "status": "see_resume_guide_open_list"
   },
   "base_main_head": "f59c2bdca8ce7c928dc2407dbf62d961d593acd6",

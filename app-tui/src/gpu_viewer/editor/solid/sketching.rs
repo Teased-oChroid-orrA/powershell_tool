@@ -1304,38 +1304,46 @@ impl SolidSession {
     pub(super) fn sketch_ribbon(&self) -> Vec<RibbonTab> {
         let on_edges = if self.all_selected().is_empty() { Err("select an edge or a hole of the sketch first".to_string()) } else { Ok(()) };
         vec![RibbonTab::new("Sketch")
-            .group("Sketch", vec![entry("Finish sketch", "Enter", SketchAction::Finish), entry("Finish as sweep path", "", SketchAction::FinishPath), entry("Cancel sketch", "", SketchAction::Cancel), entry("Grid snap", "G", SketchAction::ToggleGrid).checked(self.sketching.as_ref().is_some_and(|s| s.grid_on))])
-            .group("Draw", [Tool::Line, Tool::Polyline, Tool::Rectangle, Tool::Circle, Tool::Arc, Tool::Spline].into_iter().map(|t| self.tool_entry(t)).collect())
-            .group("Select", vec![self.tool_entry(Tool::Select)])
-            .group("Constrain", self.constrain_entries())
-            .group("Dimension", vec![self.tool_entry(Tool::Dimension), entry("Fix point", "F", SketchAction::Fix).when(self.fix_availability()), entry("Construction", "X", SketchAction::ToggleConstruction).when(self.construction_availability())])
+            .group("Exit", vec![entry("Finish sketch", "Enter", SketchAction::Finish), entry("Finish as sweep path", "", SketchAction::FinishPath), entry("Cancel sketch", "", SketchAction::Cancel)])
+            .group("Draw", [Tool::Select, Tool::Line, Tool::Polyline, Tool::Rectangle, Tool::Circle, Tool::Arc, Tool::Spline].into_iter().map(|t| self.tool_entry(t)).collect())
+            .group("Dimension", vec![self.tool_entry(Tool::Dimension), entry("Fix point", "F", SketchAction::Fix).when(self.fix_availability()), entry("Construction", "X", SketchAction::ToggleConstruction).when(self.construction_availability()), entry("Grid snap", "G", SketchAction::ToggleGrid).checked(self.sketching.as_ref().is_some_and(|s| s.grid_on))])
+            .group("Relations", self.constrain_entries())
             .group(
-                "Boundary",
+                "Simulation",
                 vec![
-                    Entry::new("Support on selection", "", UiAction::Editor(EditorAction::Solid(SolidAction::SupportOnSelected))).when(on_edges.clone()),
-                    Entry::new("Load on selection", "", UiAction::Editor(EditorAction::Solid(SolidAction::LoadOnSelected))).when(on_edges),
+                    Entry::new("Fixed support", "", UiAction::Editor(EditorAction::Solid(SolidAction::SupportOnSelected))).when(on_edges.clone()),
+                    Entry::new("Load", "", UiAction::Editor(EditorAction::Solid(SolidAction::LoadOnSelected))).when(on_edges),
                 ],
             )]
     }
 
-    pub(super) fn features_ribbon(&self) -> RibbonTab {
-        let mut sketch: Vec<Entry> = PlaneChoice::ALL.iter().map(|p| entry(&format!("Sketch on {}", p.label()), "", SketchAction::NewSketch(*p))).collect();
-        sketch.extend(self.face_entries());
-        sketch.push(entry("Edit selected sketch", "", SketchAction::Edit(self.selected_feature.unwrap_or(0))).when(self.edit_availability()));
-        RibbonTab::new("Features").group("Sketch", sketch).group(
-            "Solid",
-            vec![
-                entry("Extrude", "", SketchAction::AddExtrude).when(self.feature_availability(false)),
-                entry("Revolve", "", SketchAction::AddRevolve).when(self.feature_availability(true)),
-                entry("Sweep", "", SketchAction::AddSweep).when(self.sweep_sketches().map(|_| ())),
-                entry("Convert to history", "", SketchAction::Convert).when(self.convert_availability()),
-            ],
-        )
+    /// Sketch commands, as in NX / SolidWorks: the three datum planes, the selected flat face, and editing a sketch.
+    pub(super) fn sketch_start_entries(&self) -> Vec<Entry> {
+        let mut v: Vec<Entry> = PlaneChoice::ALL.iter().map(|p| entry(&format!("Sketch on {}", p.label()), "", SketchAction::NewSketch(*p))).collect();
+        v.push(self.face_sketch_entry());
+        v.push(entry("Edit sketch", "", SketchAction::Edit(self.selected_feature.unwrap_or(0))).when(self.edit_availability()));
+        v
     }
 
-    /// "Sketch on face ..." for each flat face of the built body.
-    fn face_entries(&self) -> Vec<Entry> {
-        self.face_choices().iter().enumerate().map(|(i, f)| entry(&format!("Sketch on face '{}'", f.name), "", SketchAction::NewSketchOnFace(i))).collect()
+    /// Solid feature commands of the history.
+    pub(super) fn solid_feature_entries(&self) -> Vec<Entry> {
+        vec![
+            entry("Extrude", "", SketchAction::AddExtrude).when(self.feature_availability(false)),
+            entry("Revolve", "", SketchAction::AddRevolve).when(self.feature_availability(true)),
+            entry("Sweep", "", SketchAction::AddSweep).when(self.sweep_sketches().map(|_| ())),
+        ]
+    }
+
+    /// One "Sketch on face" command that uses the selected flat face (instead of one entry per face of the body).
+    fn face_sketch_entry(&self) -> Entry {
+        let faces = self.face_choices();
+        let picked = self.selected.as_deref().and_then(|n| faces.iter().position(|f| f.name == n));
+        let when = match picked {
+            Some(_) => Ok(()),
+            None if faces.is_empty() => Err("the body has no flat face yet: extrude or revolve a sketch first".to_string()),
+            None => Err("select a flat face of the body in the viewport first".to_string()),
+        };
+        entry("Sketch on face", "", SketchAction::NewSketchOnFace(picked.unwrap_or(0))).when(when)
     }
 
     fn edit_availability(&self) -> Result<(), String> {
@@ -1358,15 +1366,11 @@ impl SolidSession {
             v.push(Item::Entry(entry("Cancel sketch", "", SketchAction::Cancel)));
             return v;
         }
-        let mut v = base;
-        v.push(Item::Separator);
-        v.extend(PlaneChoice::ALL.iter().map(|p| Item::Entry(entry(&format!("Sketch on {}", p.label()), "", SketchAction::NewSketch(*p)))));
-        v.extend(self.face_entries().into_iter().map(Item::Entry));
-        v.push(Item::Entry(entry("Edit selected sketch", "", SketchAction::Edit(self.selected_feature.unwrap_or(0))).when(self.edit_availability())));
-        v.push(Item::Entry(entry("Extrude", "", SketchAction::AddExtrude).when(self.feature_availability(false))));
-        v.push(Item::Entry(entry("Revolve", "", SketchAction::AddRevolve).when(self.feature_availability(true))));
-        v.push(Item::Entry(entry("Sweep", "", SketchAction::AddSweep).when(self.sweep_sketches().map(|_| ()))));
-        v.push(Item::Entry(entry("Convert to feature history", "", SketchAction::Convert).when(self.convert_availability())));
+        let mut v: Vec<Item> = vec![Item::Heading("Sketch".into())];
+        v.extend(self.sketch_start_entries().into_iter().map(Item::Entry));
+        v.push(Item::Heading("Features".into()));
+        v.extend(self.solid_feature_entries().into_iter().map(Item::Entry));
+        v.extend(base);
         v
     }
 
