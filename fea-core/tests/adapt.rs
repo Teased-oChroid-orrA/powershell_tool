@@ -228,3 +228,40 @@ fn the_shared_refine_loop_refines_above_the_target_and_coarsens_below_it() {
     let best = fea_core::adapt::refine(fine, 3, false, &opt(target), |sf| solve_l(mesh_at(&|x| sf.at(x))), |_| {}).unwrap();
     assert!(best.model.mesh.n_dofs() < n0 && best.zz.relative() <= target, "{} vs {n0}, {} vs {target}", best.model.mesh.n_dofs(), best.zz.relative());
 }
+
+/// The grading limit `|h(x) - h(y)| <= grading |x - y|` must hold however far a small size has to spread: a strip of 600
+/// unit elements, every target 1000 except the last element's 1. The relaxation used to stop after 200 sweeps, and each
+/// sweep carried the limit only one element against the element order: the far end kept h = 1000 (exact: 1 + 0.4 (599 - x)).
+#[test]
+fn the_grading_limit_spreads_along_any_number_of_elements() {
+    use fea_core::adapt::{size_field_at_nodes, size_field_at_nodes_3d, NodalSize};
+    use fea_core::generate::grid;
+    let n = 600;
+    let opt = AdaptOptions::default();
+    for kind in [ElementKind::Quad4, ElementKind::Tri3, ElementKind::Tet4] {
+        let three_d = kind == ElementKind::Tet4;
+        let phys = if three_d { Physics::Solid } else { Physics::PlaneStress { thickness: 1.0 } };
+        let mesh = grid(phys, kind, Elastic::new(E, NU), [n, 1, 1], &|p| [n as f64 * p[0], p[1], p[2]]).unwrap();
+        // Target 1 on the elements touching the right end, 1000 elsewhere.
+        let mut h_elem = Vec::new();
+        for blk in &mesh.blocks {
+            for conn in blk.conn.chunks_exact(blk.kind.n_nodes()) {
+                let right = conn.iter().any(|&v| mesh.nodes[v][0] > n as f64 - 0.5);
+                h_elem.push(if right { 1.0 } else { 1000.0 });
+            }
+        }
+        let at = |x: [f64; 3]| -> f64 {
+            if three_d {
+                size_field_at_nodes_3d(&mesh, &h_elem, &opt, NodalSize::Min).unwrap().at(x)
+            } else {
+                size_field_at_nodes(&mesh, &h_elem, &opt, NodalSize::Min).unwrap().at([x[0], x[1]])
+            }
+        };
+        // Along the bottom edge the graph distance to the right end is the Euclidean one.
+        for x in [0.0, 100.0, 300.0, 599.0] {
+            let exact = 1.0 + opt.grading * (n as f64 - 1.0 - x); // the nodes at x = n - 1 carry 1
+            let h = at([x, 0.0, 0.0]);
+            assert!((h - exact).abs() < 1e-9 * exact, "{kind:?}: h({x}) = {h}, the grading limit gives {exact}");
+        }
+    }
+}
