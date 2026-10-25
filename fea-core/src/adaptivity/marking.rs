@@ -77,19 +77,22 @@ impl Budget {
 /// `children = (1 / ratio)^dim` elements. Mandatory elements stay; the rest are dropped from the lowest score up. Returns
 /// `false` when the mandatory elements alone exceed the cap (the budget is exhausted).
 pub fn trim_to_budget(marked: &mut [bool], score: &[f64], mandatory: &[bool], elements: usize, cap: usize, children: f64) -> bool {
-    let predicted = |m: &[bool]| elements as f64 + m.iter().filter(|&&x| x).count() as f64 * (children - 1.0);
-    if predicted(marked) <= cap as f64 {
+    // The marked count is kept as elements are dropped (recounting the flags per drop was quadratic in the mesh size).
+    let predicted = |count: usize| elements as f64 + count as f64 * (children - 1.0);
+    let mut count = marked.iter().filter(|&&x| x).count();
+    if predicted(count) <= cap as f64 {
         return true;
     }
     let mut droppable: Vec<usize> = (0..marked.len()).filter(|&e| marked[e] && !mandatory[e]).collect();
     droppable.sort_by(|&a, &b| score[a].total_cmp(&score[b]).then(b.cmp(&a)));
     for e in droppable {
-        if predicted(marked) <= cap as f64 {
+        if predicted(count) <= cap as f64 {
             break;
         }
         marked[e] = false;
+        count -= 1;
     }
-    predicted(marked) <= cap as f64
+    predicted(count) <= cap as f64
 }
 
 #[cfg(test)]
