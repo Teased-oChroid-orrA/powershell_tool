@@ -97,7 +97,8 @@ fn z_face(c: &SolidCache, sign: f64) -> Option<usize> {
     best.map(|(f, _)| f)
 }
 
-fn measure(base: &Problem, cache: SolidCache, step: &str, text_h: f64) -> Run {
+/// Mesh (and, with `solve`, solve the benchmark on) the solid `step` through `cache` at element size `text_h`.
+fn measure(base: &Problem, cache: SolidCache, step: &str, text_h: f64, solve_it: bool) -> Run {
     let mut r = Run::default();
     let mut p = base.clone();
     p.set_solid(step, cache);
@@ -139,7 +140,7 @@ fn measure(base: &Problem, cache: SolidCache, step: &str, text_h: f64) -> Run {
             k += 1;
         }
     }
-    if std::env::var_os("NO_SOLVE").is_some() {
+    if !solve_it {
         // meshing evidence only (the solve dominates the run time of the table)
         return r;
     }
@@ -163,9 +164,11 @@ fn compare(c: &Case) -> (Run, Run) {
     let Geometry::Solid { cache: Some(occt_cache), .. } = &base.geometry else { panic!() };
     let occt_cache = occt_cache.clone();
     let native_cache = tessellate_step_native(&c.text, occt_cache.deflection);
-    let o = measure(&base, occt_cache, &c.text, h);
+    // NO_SOLVE=1 skips the solves
+    let solve_it = std::env::var_os("NO_SOLVE").is_none();
+    let o = measure(&base, occt_cache, &c.text, h, solve_it);
     let n = match native_cache {
-        Ok(cache) => measure(&base, cache, &c.text, h),
+        Ok(cache) => measure(&base, cache, &c.text, h, solve_it),
         Err(e) => Run { err: Some(format!("native tessellation: {e}")), ..Run::default() },
     };
     (o, n)
@@ -243,6 +246,19 @@ fn the_native_path_matches_the_opencascade_path_on_quality_size_and_the_benchmar
         assert!(n.mesh_s <= 3.0 * o.mesh_s + 1.0, "{who}: meshing {:.2} s vs {:.2} s", n.mesh_s, o.mesh_s);
         assert!(n.solve_ms <= 3.0 * o.solve_ms + 1000.0, "{who}: solve {:.0} ms vs {:.0} ms", n.solve_ms, o.solve_ms);
     }
+}
+
+/// The boundary repair returns the best mesh it reached, not the last: on the t-junction through the OpenCascade tessellation its
+/// rounds pass through 7 elements under the gate and used to end at 8 (`docs/issue-46-phase-142.md`).
+#[test]
+#[ignore = "meshes the t-junction (about 25 s in release)"]
+fn the_t_junction_repair_keeps_its_best_round() {
+    let c = cases().into_iter().find(|c| c.name == "t-junction").unwrap();
+    let base = Problem::from_step(&c.name, &c.text).expect("OpenCascade import");
+    let Geometry::Solid { cache: Some(oc), .. } = &base.geometry else { panic!() };
+    let r = measure(&base, oc.clone(), &c.text, base.mesh.size * c.h_scale, false);
+    assert!(r.err.is_none(), "{:?}", r.err);
+    assert!(r.below_gate <= 7, "{} elements under the gate", r.below_gate);
 }
 
 /// Quality of the face-tagged surface triangulation each path hands to the volume mesher: triangle count, smallest angle, share of

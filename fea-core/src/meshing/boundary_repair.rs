@@ -222,6 +222,19 @@ struct Work<'a> {
     target: f64,
 }
 
+/// The mesh and every per-vertex and per-element table of a [`Work`] between rounds (no transaction open).
+struct Snapshot {
+    p: Vec<V3>,
+    tets: Vec<[usize; 4]>,
+    alive: Vec<bool>,
+    vt: Vec<Vec<usize>>,
+    bnd: Vec<bool>,
+    state: Vec<u8>,
+    hv: Vec<f64>,
+    ver: Vec<u64>,
+    live: usize,
+}
+
 #[derive(Clone, Copy)]
 struct BoundaryFaceState {
     area: f64,
@@ -272,6 +285,42 @@ impl<'a> Work<'a> {
         // count rising over the rounds (the t-junction ended with more sub-gate elements than it had passed through)
         if self.under_gate(new) > self.under_gate_ids(old) { return false; }
         self.better_than(self.stats(old), new)
+    }
+    /// The elements a round works on, worst first: those under `target`, and every cell on a boundary face turned more than 60
+    /// degrees from its CAD normal (worked like a low-quality cell); and the latter set.
+    fn round_work(&self, target: f64) -> (Vec<(f64, usize)>, BTreeSet<usize>) {
+        let live: Vec<usize> = (0..self.tets.len()).filter(|&t| self.alive[t]).collect();
+        let mut folded = BTreeSet::new();
+        for (f, apex) in self.boundary_faces(&live) {
+            let h = f.iter().map(|&v| self.hv[v]).fold(0.0, f64::max);
+            if self.boundary_face_state(f, apex, h).normal_alignment < 0.5 {
+                folded.extend(self.tets_with(&f));
+            }
+        }
+        let mut bad: Vec<(f64, usize)> = live.into_iter().map(|t| (self.sj(self.tets[t]), t)).filter(|&(s, t)| s < target || folded.contains(&t)).collect();
+        bad.sort_by(|a, b| a.0.total_cmp(&b.0));
+        (bad, folded)
+    }
+    fn snapshot(&self) -> Snapshot {
+        debug_assert_eq!(self.depth, 0, "a snapshot is taken between transactions");
+        Snapshot {
+            p: self.p.clone(),
+            tets: self.tets.clone(),
+            alive: self.alive.clone(),
+            vt: self.vt.clone(),
+            bnd: self.bnd.clone(),
+            state: self.state.clone(),
+            hv: self.hv.clone(),
+            ver: self.ver.clone(),
+            live: self.live,
+        }
+    }
+    /// Return to `s`; the failure memory refers to the abandoned mesh and is dropped.
+    fn restore(&mut self, s: Snapshot) {
+        Snapshot { p: self.p, tets: self.tets, alive: self.alive, vt: self.vt, bnd: self.bnd, state: self.state, hv: self.hv, ver: self.ver, live: self.live } = s;
+        self.clock += 1;
+        self.failed.clear();
+        self.log.clear();
     }
     /// (worst element, penalty) of the given elements.
     fn stats(&self, ids: &[usize]) -> (f64, f64) {
@@ -1608,6 +1657,11 @@ impl<'a> Work<'a> {
     }
 }
 
+/// How good a round's work list is: elements under the gate, then all of them (lower is better).
+fn round_key(bad: &[(f64, usize)], gate: f64) -> (usize, usize) {
+    (bad.iter().filter(|b| b.0 < gate).count(), bad.len())
+}
+
 /// Repair the tetrahedra `tets` (positively oriented) over the points `p` in place; returns the compacted vertex map (old to
 /// new, `usize::MAX` for a removed vertex) and a report. Vertices of the input that stay keep their relative order.
 pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, opts: RepairOptions) -> (Vec<usize>, RepairReport) {
@@ -1708,27 +1762,21 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
         return ((0..p.len()).collect(), rep);
     }
     let mut best_key = (usize::MAX, usize::MAX);
+    // The mesh at the start of the best round so far: rounds that trade one element under the gate for another can end worse
+    // than they passed through (the t-junction went through 7 elements under the gate and ended at 8), so the best is kept.
+    let mut best: Option<Snapshot> = None;
     let mut stale = 0usize;
     for round in 0..opts.max_rounds {
-        // cells on a boundary face turned more than 60 degrees from its CAD normal are worked like low-quality cells
-        let live: Vec<usize> = (0..w.tets.len()).filter(|&t| w.alive[t]).collect();
-        let mut folded = BTreeSet::new();
-        for (f, apex) in w.boundary_faces(&live) {
-            let h = f.iter().map(|&v| w.hv[v]).fold(0.0, f64::max);
-            if w.boundary_face_state(f, apex, h).normal_alignment < 0.5 {
-                folded.extend(w.tets_with(&f));
-            }
-        }
-        let mut bad: Vec<(f64, usize)> = live.into_iter().map(|t| (w.sj(w.tets[t]), t)).filter(|&(s, t)| s < opts.target || folded.contains(&t)).collect();
+        let (bad, folded) = w.round_work(opts.target);
         if bad.is_empty() {
             break;
         }
-        bad.sort_by(|a, b| a.0.total_cmp(&b.0));
         // Stagnation: operations keep succeeding by tiny steps without clearing anything. Three rounds without fewer elements
         // under the gate (or under the target) end the stage, as a stall would.
-        let key = (bad.iter().filter(|b| b.0 < gate).count(), bad.len());
+        let key = round_key(&bad, gate);
         if key < best_key {
             best_key = key;
+            best = Some(w.snapshot());
             stale = 0;
         } else {
             stale += 1;
@@ -1789,6 +1837,15 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
                 continue;
             }
             break;
+        }
+    }
+    if let Some(best) = best {
+        let end_key = round_key(&w.round_work(opts.target).0, gate);
+        if best_key < end_key {
+            if w.trace {
+                eprintln!("restoring the best round ({best_key:?} against {end_key:?} at the end)");
+            }
+            w.restore(best);
         }
     }
     if std::env::var_os("REPAIR_TRACE").is_some() {
@@ -2356,6 +2413,39 @@ mod tests {
         assert!(w.gains(gate - 0.004, gate + 0.002));
         assert!(!w.gains(gate + 0.001, gate + 0.003));
         assert!(!w.gains(gate - 0.004, gate - 0.001));
+    }
+
+    #[test]
+    fn restoring_a_snapshot_returns_every_table_to_the_kept_round() {
+        let points = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let sdf = body_sdf(&points, &[[0, 1, 2, 3]]);
+        let ctx = RepairContext { sdf: &sdf, face_dists: None, triangle_face: None };
+        let mut w = one_tet(&ctx);
+        w.max_live = 8;
+        let kept = w.snapshot();
+        // a later round: a vertex inside, the element split into four around it, a corner moved, all committed
+        w.p.push([0.2, 0.2, 0.2]);
+        w.vt.push(Vec::new());
+        w.bnd.push(false);
+        w.state.push(0);
+        w.hv.push(1.0);
+        w.ver.push(0);
+        w.log.push(Ch::Vertex);
+        w.kill(0);
+        for f in [[1, 2, 3], [0, 3, 2], [0, 1, 3], [0, 2, 1]] {
+            w.add([f[0], f[1], f[2], 4]);
+        }
+        w.set_pos(3, [0.0, 0.0, 2.0]);
+        w.commit();
+        w.failed.insert(1, (w.clock, false));
+        w.restore(kept);
+        assert_eq!(w.p, points.to_vec());
+        assert_eq!((w.tets.clone(), w.alive.clone(), w.live), (vec![[0, 1, 2, 3]], vec![true], 1));
+        assert_eq!(w.vt, vec![vec![0]; 4]);
+        assert_eq!((w.bnd.len(), w.state.len(), w.hv.len(), w.ver.len()), (4, 4, 4, 4));
+        assert!(w.failed.is_empty() && w.log.is_empty());
+        // the adjacency answers for the restored mesh
+        assert_eq!(w.tets_with(&[0, 1, 2]), vec![0]);
     }
 
     #[test]
