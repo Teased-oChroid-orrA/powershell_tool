@@ -22,11 +22,12 @@ pub fn extrude(mesh: &Mesh, z_levels: &[f64]) -> Result<Mesh, String> {
     if matches!(mesh.physics, Physics::Axisymmetric) {
         return Err("an axisymmetric mesh is revolved, not extruded".into());
     }
-    sweep(mesh, z_levels, false, &|x, z| [x[0], x[1], z])
+    sweep(mesh, z_levels, false, &[], &|x, z| [x[0], x[1], z])
 }
 
 /// Revolve about the `y` axis through the angle boundaries `angles` (radians, strictly
-/// increasing, at least two). The 2D `x` is the radius and must be non-negative.
+/// increasing, at least two). The 2D `x` is the radius and must be non-negative. A profile node on the axis (`x = 0`) is one 3D
+/// node shared by every layer (the elements around the axis are collapsed hexahedra / wedges).
 pub fn revolve(mesh: &Mesh, angles: &[f64]) -> Result<Mesh, String> {
     if mesh.nodes.iter().any(|x| x[0] < 0.0) {
         return Err("a revolved mesh needs non-negative radii (x >= 0)".into());
@@ -34,7 +35,10 @@ pub fn revolve(mesh: &Mesh, angles: &[f64]) -> Result<Mesh, String> {
     if angles.last().zip(angles.first()).is_some_and(|(b, a)| b - a > std::f64::consts::TAU + 1e-12) {
         return Err("a revolution cannot exceed 360 degrees".into());
     }
-    sweep(mesh, angles, closed_sweep(angles), &|x, phi| [x[0] * phi.cos(), x[1], x[0] * phi.sin()])
+    // A profile node on the axis (r = 0) is the same point at every angle: one node, not one per level.
+    let scale = mesh.nodes.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs()));
+    let on_axis: Vec<bool> = mesh.nodes.iter().map(|x| x[0] <= 1e-12 * scale).collect();
+    sweep(mesh, angles, closed_sweep(angles), &on_axis, &|x, phi| if x[0] <= 1e-12 * scale { [0.0, x[1], 0.0] } else { [x[0] * phi.cos(), x[1], x[0] * phi.sin()] })
 }
 
 /// Sweep along any mapping `pos(x2d, s)` of a 2D node and a level to its 3D position (a profile carried along a path),
@@ -45,7 +49,7 @@ pub fn sweep_along(mesh: &Mesh, levels: &[f64], pos: &dyn Fn([f64; 3], f64) -> [
     if matches!(mesh.physics, Physics::Axisymmetric) {
         return Err("an axisymmetric mesh is revolved, not swept".into());
     }
-    sweep(mesh, levels, false, pos)
+    sweep(mesh, levels, false, &[], pos)
 }
 
 /// A revolution that returns to its start (360 degrees). Only a revolution can: an extrusion or a path sweep whose levels
@@ -56,7 +60,9 @@ fn closed_sweep(levels: &[f64]) -> bool {
 
 type SweepMap<'a> = &'a dyn Fn([f64; 3], f64) -> [f64; 3];
 
-fn sweep(mesh: &Mesh, levels: &[f64], closed: bool, pos: SweepMap) -> Result<Mesh, String> {
+/// `on_axis[n]` (empty: none) marks the profile nodes that sweep onto themselves (the axis of a revolution): they get one 3D
+/// node at level 0, shared by every layer, and count as lying on every level.
+fn sweep(mesh: &Mesh, levels: &[f64], closed: bool, on_axis: &[bool], pos: SweepMap) -> Result<Mesh, String> {
     if mesh.dim() != 2 {
         return Err("only 2D meshes can be swept".into());
     }
@@ -69,10 +75,10 @@ fn sweep(mesh: &Mesh, levels: &[f64], closed: bool, pos: SweepMap) -> Result<Mes
     let mut ids: HashMap<(usize, usize), usize> = HashMap::new();
     let n_layers = levels.len() - 1;
     let mut node = |out: &mut Mesh, n2: usize, half: usize| -> usize {
-        let key = if closed && half == 2 * n_layers { 0 } else { half };
+        let key = if (closed && half == 2 * n_layers) || on_axis.get(n2).copied().unwrap_or(false) { 0 } else { half };
         *ids.entry((n2, key)).or_insert_with(|| {
             #[allow(clippy::manual_is_multiple_of)] // is_multiple_of needs a newer toolchain than the CI pin
-            let s = if half % 2 == 0 { levels[half / 2] } else { 0.5 * (levels[half / 2] + levels[half / 2 + 1]) };
+            let s = if key % 2 == 0 { levels[key / 2] } else { 0.5 * (levels[key / 2] + levels[key / 2 + 1]) };
             out.add_node(pos(mesh.nodes[n2], s))
         })
     };
@@ -139,19 +145,20 @@ fn sweep(mesh: &Mesh, levels: &[f64], closed: bool, pos: SweepMap) -> Result<Mes
         out.node_sets.insert(name.clone(), v);
     }
     for (name, half) in [("start", 0), ("end", if closed { 0 } else { 2 * n_layers })] {
-        let mut v: Vec<usize> = ids.iter().filter(|(k, _)| k.1 == half).map(|(_, &v)| v).collect();
+        let mut v: Vec<usize> = ids.iter().filter(|(k, _)| k.1 == half || on_axis.get(k.0).copied().unwrap_or(false)).map(|(_, &v)| v).collect();
         v.sort_unstable();
         out.node_sets.insert(name.to_string(), v);
     }
     // Surfaces from the boundary faces: end faces are single-level, lateral faces project onto a 2D surface.
     let parent: HashMap<usize, (usize, usize)> = ids.iter().map(|(&(n2, h), &n3)| (n3, (n2, h))).collect();
     let faces = out.boundary_faces();
+    let axis = |n: &usize| on_axis.get(parent[n].0).copied().unwrap_or(false);
     for (name, half) in [("start", 0), ("end", 2 * n_layers)] {
         if closed {
             out.surfaces.insert(name.to_string(), Vec::new());
             continue;
         }
-        let f: Vec<Vec<usize>> = faces.iter().filter(|f| f.nodes.iter().all(|n| parent[n].1 == half)).map(|f| f.nodes.clone()).collect();
+        let f: Vec<Vec<usize>> = faces.iter().filter(|f| f.nodes.iter().all(|n| parent[n].1 == half || axis(n))).map(|f| f.nodes.clone()).collect();
         out.surfaces.insert(name.to_string(), f);
     }
     for (name, edges) in &mesh.surfaces {

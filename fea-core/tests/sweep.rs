@@ -207,3 +207,64 @@ fn a_swept_profile_matches_the_extrusion_and_pappus() {
         assert!((r0..=r0 + 1.0).contains(&(rr + 1e-12)) || (rr - r0 - 1.0).abs() < 1e-12, "node {n:?} at radius {rr} is outside the swept band");
     }
 }
+
+/// A solid of revolution whose profile touches the axis (a shaft): every point of the axis is one node. Before the fix each
+/// layer boundary got its own copy of an axis node, all at the same place, so the axis was split into `layers` independent
+/// lines of nodes tied only through collapsed element faces (and those faces were reported as boundary faces).
+#[test]
+fn a_revolution_touching_the_axis_has_one_node_per_axis_point() {
+    let (rad, len) = (0.5f64, 4.0f64);
+    for kind in [ElementKind::Quad9, ElementKind::Quad4, ElementKind::Quad8, ElementKind::Tri6] {
+        let m2 = grid(Physics::PlaneStrain { thickness: 1.0 }, kind, Elastic::new(E, NU), [2, 8, 1], &move |q| [rad * q[0], len * q[1], 0.0]).unwrap();
+        for (segments, sector) in [(8usize, std::f64::consts::TAU), (3, std::f64::consts::FRAC_PI_2)] {
+            let angles: Vec<f64> = (0..=segments).map(|k| sector * k as f64 / segments as f64).collect();
+            let m3 = revolve(&m2, &angles).unwrap();
+            // A cantilever shaft under a tip shear: the axis deflects as one line (Timoshenko within the mesh error).
+            if segments == 8 && kind == ElementKind::Quad9 {
+                let model = Model::new(m3.clone()).unwrap();
+                let mut bc = model.dirichlet();
+                for &n in model.mesh.node_set("v0").unwrap() {
+                    for c in 0..3 {
+                        bc.fix(n, c, 0.0);
+                    }
+                }
+                let area = std::f64::consts::PI * rad * rad;
+                let p = 100.0;
+                let loads = Loads { faces: model.mesh.surfaces["v1"].iter().map(|f| (f.clone(), SurfaceLoad::Traction([p / area, 0.0, 0.0]))).collect(), ..Loads::default() };
+                let u = model.solve_static(&loads, &bc).unwrap().u;
+                let i = std::f64::consts::PI * rad.powi(4) / 4.0;
+                let g = E / (2.0 * (1.0 + NU));
+                let kappa = 6.0 * (1.0 + NU) / (7.0 + 6.0 * NU);
+                let beam = p * len.powi(3) / (3.0 * E * i) + p * len / (kappa * g * area);
+                let tip: Vec<f64> = model.mesh.node_set("v1").unwrap().iter().map(|&n| u[n * 3]).collect();
+                let mean = tip.iter().sum::<f64>() / tip.len() as f64;
+                // Spread of the displacement among coincident nodes (a split axis moves apart).
+                let mut spread = 0.0f64;
+                for a in 0..model.mesh.nodes.len() {
+                    for b in 0..a {
+                        if (0..3).all(|c| (model.mesh.nodes[a][c] - model.mesh.nodes[b][c]).abs() < 1e-12) {
+                            spread = spread.max((0..3).map(|c| (u[a * 3 + c] - u[b * 3 + c]).abs()).fold(0.0, f64::max));
+                        }
+                    }
+                }
+                eprintln!("revolved shaft tip deflection {mean:.6e} vs Timoshenko {beam:.6e}; coincident-node displacement spread {spread:.3e}");
+                assert!((mean / beam - 1.0).abs() < 0.02, "tip deflection {mean} vs {beam}");
+            }
+            let mut keys: Vec<[i64; 3]> = m3.nodes.iter().map(|x| x.map(|v| (v * 1e9).round() as i64)).collect();
+            keys.sort_unstable();
+            let distinct = keys.windows(2).filter(|w| w[0] != w[1]).count() + 1;
+            assert_eq!(distinct, m3.nodes.len(), "{kind:?}, {segments} segments: coincident nodes");
+            // The axis is not a surface: no zero-area faces there.
+            let axis_faces = m3.boundary_faces().into_iter().filter(|f| f.nodes.iter().all(|&n| m3.nodes[n][0].hypot(m3.nodes[n][2]) < 1e-12)).count();
+            assert_eq!(axis_faces, 0, "{kind:?}: faces on the axis");
+            assert!(m3.surfaces["u0"].is_empty(), "{kind:?}: the axis edge became a surface");
+            if segments == 3 {
+                // The end planes of a sector still own the axis: its nodes are in both end sets and the faces that touch it.
+                let axis: Vec<usize> = (0..m3.nodes.len()).filter(|&n| m3.nodes[n][0].hypot(m3.nodes[n][2]) < 1e-12).collect();
+                assert!(!axis.is_empty() && axis.iter().all(|n| m3.node_sets["start"].contains(n) && m3.node_sets["end"].contains(n)), "{kind:?}: axis nodes missing from the end sets");
+                assert_eq!(m3.surfaces["start"].len(), m2.n_elems(), "{kind:?}: start faces");
+                assert_eq!(m3.surfaces["end"].len(), m2.n_elems(), "{kind:?}: end faces");
+            }
+        }
+    }
+}
