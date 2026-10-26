@@ -153,7 +153,7 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, state: &FastenerHol
     }
 }
 
-fn row_label(row: FieldRow) -> String {
+pub(crate) fn row_label(row: FieldRow) -> String {
     match row {
         FieldRow::Header(text) => text.to_string(),
         FieldRow::ToggleHoleType => "Hole Type".to_string(),
@@ -164,7 +164,7 @@ fn row_label(row: FieldRow) -> String {
     }
 }
 
-fn display_value(model: &FastenerHoleModel, row: FieldRow) -> String {
+pub(crate) fn display_value(model: &FastenerHoleModel, row: FieldRow) -> String {
     match row {
         FieldRow::Header(_) => String::new(),
         FieldRow::ToggleHoleType => model.hole_type.label().to_string(),
@@ -351,7 +351,7 @@ fn countersink_readout_lines<'a>(theme: &'a Theme, model: &'a FastenerHoleModel)
             };
             let unit = if matches!(geometry.solve_for, CountersinkSolveFor::Angle) { " deg" } else { " in" };
             let band = if matches!(geometry.solve_for, CountersinkSolveFor::Angle) { model::format_angle_band(&solved_value) } else { model::format_linear_band(&solved_value) };
-            lines.push(value_line(theme, &format!("  {solved_label}"), format!("{band}{unit}"), "CALCULATED", StatusTone::Success));
+            lines.push(value_line(theme, format!("  {solved_label}"), format!("{band}{unit}"), "CALCULATED", StatusTone::Success));
         }
         Err(e) => lines.push(error_line(theme, "  Geometry", *e)),
     }

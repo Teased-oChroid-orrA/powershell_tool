@@ -5,6 +5,7 @@
 ## Purpose
 Owns: `domain/` (tolerance normalization, regular-hole fit envelope, countersink three-of-four solver, lateral surface area, secondary derivations), `model.rs`, `mod.rs` state/key routing, `view.rs`.
 Does not own: any shared solver crate - the engineering math here is wholly original to this crate.
+Consumers: the terminal head (`view.rs`, key routing here) and the native window bench `gpu_viewer/editor/fastener/` (same model and rows; it uses `toggle_selected`, `view::{row_label, display_value, build_report_text}`, `FastenerHoleModel::set_toleranced`). A change to rows, labels or results shows in both.
 
 ## Code Map
 | Looking for... | Go to |

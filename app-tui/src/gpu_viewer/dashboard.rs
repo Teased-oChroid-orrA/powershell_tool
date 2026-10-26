@@ -29,7 +29,7 @@ pub struct Workbench {
 
 pub const WORKBENCHES: [Workbench; 10] = [
     Workbench { id: "search", name: "Search", summary: "Keyword filters across text, Office, zip, rtf and pdf files. HTML report, CSV and JSON export.", opens: Opens::Window(EditorKind::Search) },
-    Workbench { id: "fastener-hole", name: "Fastener Hole", summary: "Hole, fastener and edge-distance geometry.", opens: Opens::Terminal(ToolId::FastenerHole) },
+    Workbench { id: "fastener-hole", name: "Fastener Hole", summary: "Hole, fastener and edge-distance geometry.", opens: Opens::Window(EditorKind::FastenerHole) },
     Workbench { id: "bushing", name: "Bushing", summary: "Press fit, tolerance stack, edge-distance cross-check and verified fixes.", opens: Opens::Window(EditorKind::Bushing) },
     Workbench { id: "pressure-vessel", name: "Pressure Vessel", summary: "Shell and head stresses, Lamé thick wall.", opens: Opens::Terminal(ToolId::PressureVessel) },
     Workbench { id: "preload", name: "Preload Analysis", summary: "Fastened joint preload and member stiffness.", opens: Opens::Terminal(ToolId::PreloadAnalysis) },
@@ -270,6 +270,8 @@ mod tests {
         assert_eq!(fea.args(Some(Path::new("/x/a.json"))), ["--gpu-solid", "/x/a.json"]);
         assert_eq!(fea.args(None), ["--gpu-solid"]);
         assert_eq!(Workbench::find("search").unwrap().args(None), ["--gpu-search"]);
+        assert!(Workbench::find("fastener-hole").unwrap().default_file().unwrap().ends_with("fastener-hole-case.json"));
+        assert_eq!(Workbench::find("fastener-hole").unwrap().args(Some(Path::new("c.json"))), ["--gpu-fastener", "c.json"]);
         assert_eq!(Workbench::find("search").unwrap().default_file(), None, "Search keeps its saved folder");
         assert_eq!(Workbench::find("material-lookup").unwrap().args(None), ["--toolbox", "material-lookup"]);
         assert!(fea.default_file().unwrap().ends_with("solid-model.json"));

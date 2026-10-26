@@ -80,7 +80,7 @@ impl FastenerHoleState {
         self.selected = next as usize;
     }
 
-    fn toggle_selected(&mut self) {
+    pub(crate) fn toggle_selected(&mut self) {
         let rows = model::field_rows(&self.model);
         match rows.get(self.selected).copied() {
             Some(FieldRow::ToggleHoleType) => {

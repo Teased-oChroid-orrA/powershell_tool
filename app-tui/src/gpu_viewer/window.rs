@@ -894,6 +894,12 @@ pub fn run_bushing(mut session: super::editor::bushing::BushingSession) -> Resul
     launch(ViewerProject::single(scene), Some(Box::new(session)))
 }
 
+/// Open the Fastener Hole workbench on `session`.
+pub fn run_fastener(mut session: super::editor::fastener::FastenerSession) -> Result<(), String> {
+    let scene = super::editor::authoring::Authoring::scene(&mut session)?;
+    launch(ViewerProject::single(scene), Some(Box::new(session)))
+}
+
 /// Open the Search workbench on `session`: a bench without a model, its page drawn where the model would be.
 pub fn run_search(session: super::editor::search::SearchSession) -> Result<(), String> {
     launch(ViewerProject::single(blank_scene("search")), Some(Box::new(session)))
@@ -1699,6 +1705,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// The Fastener Hole workbench through the real window: a click on a dimension starts a typed edit, the number reaches
+    /// the fit, a click on a choice switches to the countersink, and the drawing follows.
+    #[test]
+    fn the_fastener_hole_workbench_edits_by_click_and_typing_and_switches_hole_type() {
+        let dir = std::env::temp_dir().join(format!("window-fastener-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let session = crate::gpu_viewer::editor::fastener::FastenerSession::open(&dir.join("case.json")).unwrap();
+        let mut v = viewer(Some(Box::new(session)));
+        frame(&mut v);
+        assert!(property_text(&v).contains("TRANSITION"), "{}", property_text(&v));
+        let at = target(&v, "Hole 2 Diameter Nominal");
+        click(&mut v, at);
+        assert!(v.editor.as_ref().unwrap().prompting());
+        for c in "0.26".chars() {
+            v.input(Input::Key(Key::Character(c.to_string().into())));
+        }
+        v.input(Input::Key(Key::Named(NamedKey::Enter)));
+        frame(&mut v);
+        assert!(property_text(&v).contains("Fit  0.0100 -0.0000/+0.0000 in") && property_text(&v).contains("CLEARANCE"), "{}", property_text(&v));
+        let regular = v.scene().positions.len();
+        let at = target(&v, "Hole Type");
+        click(&mut v, at);
+        frame(&mut v);
+        assert!(property_text(&v).contains("Angle (calculated)  90.000"), "{}", property_text(&v));
+        assert_ne!(v.scene().positions.len(), regular, "the drawing follows the hole type");
+        assert!(tree_labels(&v).iter().any(|l| l == "Inputs (Countersunk)"), "{:?}", tree_labels(&v));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// A result shows what its colours mean, can be cycled through every field, and so can a mode shape.
     #[test]
     fn a_result_shows_a_labelled_legend_whose_title_cycles_the_field_and_modes_have_the_same_fields() {
@@ -1906,7 +1941,7 @@ mod tests {
         assert!(["left", "right", "top", "bottom", "start", "end", "hole1"].contains(&face.as_str()), "a named face of the extruded plate: {face}");
         // The tree shows the picked surface as selected, and choosing the menu entry adds the support on it.
         let selected: Vec<String> = v.editor.as_ref().unwrap().tree().into_iter().filter(|n| n.selected && n.label == face).map(|n| n.label).collect();
-        assert_eq!(selected, [face.clone()], "pointer at {at:?}");
+        assert_eq!(selected, std::slice::from_ref(&face), "pointer at {at:?}");
         let entry = target(&v, &item);
         click(&mut v, entry);
         assert_eq!(supports(&v), "Supports (1)", "{}", v.editor.as_ref().unwrap().status());
