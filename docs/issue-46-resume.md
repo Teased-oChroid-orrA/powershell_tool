@@ -22,7 +22,7 @@ This is the current entry point for Claude Code or Codex. Historical phase repor
 
 **2026-10-25 best-round update:** [Phase 142](issue-46-phase-142.md) makes the boundary repair return its best round instead of its last: t-junction 8/8 to 7/8, NEMA17 24/33 to 24/29, every other parity row identical; 34/38 rows still pass. Retirement remains unapproved.
 
-**2026-10-26 chained-move update:** [Phase 143](issue-46-phase-143.md) adds a chained vertex move to the boundary repair (a move that pushes neighbours under the gate, kept only if repairing them leaves strictly fewer) and starts the relaxation stage from the best round: t-junction OCCT 7 to 5, NEMA17 native 29 to 25, every other parity row identical; 34/38 rows still pass. A feature-edge split was tried and dropped (10/10). Retirement remains unapproved.
+**2026-10-26 chained-move update:** [Phase 143](issue-46-phase-143.md) adds a chained vertex move to the boundary repair (a move that pushes neighbours under the gate, kept only if repairing them leaves strictly fewer) and starts the relaxation stage from the best round: t-junction OCCT 7 to 5, NEMA17 native 29 to 25, every other parity row identical; 34/38 rows still pass. A feature-edge split was tried and dropped (10/10). Merged as PR #177. Retirement remains unapproved.
 
 ## Establish current state
 

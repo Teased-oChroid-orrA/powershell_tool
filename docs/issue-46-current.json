@@ -3,7 +3,7 @@
   "epic_complete": false,
   "branch": "main",
   "pull_request": null,
-  "pull_request_state": "open_for_phase_143",
+  "pull_request_state": "none_open_after_pr_177",
   "merged_prs": [
     42,
     65,
@@ -74,7 +74,8 @@
     169,
     170,
     171,
-    173
+    173,
+    177
   ],
   "latest_qualified_source": "ebd19eaf0075f45486f27bce98f44f6eaff5618d",
   "latest_phase": 143,
@@ -103,13 +104,13 @@
     "platform": "macOS arm64 (no Windows or hosted CI evidence)",
     "at": "20a3f24"
   },
-  "last_confirmed_main_merge": "ecfe476518f2f3666da2d192662d38e0ed791806",
+  "last_confirmed_main_merge": "aa545db803f1a9c7aaae9571dd8adafbf0515e97",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
     "scope": "Remaining boundary sub-gate cells on t-junction (5/8) and NEMA17 (24/25), path-dependent; a joint optimisation or local rebuild of stuck regions is the next lever; rerun boss contact/volume audits on the Phase 141 build; fidelity measurement on fillet cases under the region bound; unaudited fea-core modules listed in Phase 141; Windows and remaining five-plan items",
     "status": "see_resume_guide_open_list"
   },
-  "base_main_head": "ecfe476518f2f3666da2d192662d38e0ed791806",
+  "base_main_head": "aa545db803f1a9c7aaae9571dd8adafbf0515e97",
   "completion_checklist": "issue-46-completion-checklist.md",
   "resume": "issue-46-resume.md",
   "pending_prs": []
