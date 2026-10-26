@@ -83,6 +83,8 @@ pub enum EditorAction {
     Bushing(super::bushing::BushingAct),
     /// The Eccentric Bushing workbench (see `eccentric`).
     Eccentric(super::eccentric::EccentricAct),
+    /// The Search workbench (see `search`).
+    Search(super::search::SearchAct),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tone {
@@ -337,7 +339,7 @@ impl Session {
             EditorAction::ToggleSupports => self.state.show_supports = !self.state.show_supports,
             EditorAction::ToggleLoads => self.state.show_loads = !self.state.show_loads,
             // A member session never receives solid actions (its UI does not offer them).
-            EditorAction::Solid(_) | EditorAction::Bushing(_) | EditorAction::Eccentric(_) => {}
+            EditorAction::Solid(_) | EditorAction::Bushing(_) | EditorAction::Eccentric(_) | EditorAction::Search(_) => {}
         }
         self.touch();
     }

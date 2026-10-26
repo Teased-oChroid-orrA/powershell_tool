@@ -274,6 +274,11 @@ impl Viewer {
                     ed.card_field(index, text);
                 }
             }
+            Outcome::DocField { id, text } => {
+                if let Some(ed) = &mut self.editor {
+                    ed.document_field(id, text);
+                }
+            }
         }
     }
     fn menu_context(&self) -> MenuContext<'_> {
@@ -454,6 +459,7 @@ impl Viewer {
             let s = DisplaySettings::load_from(p);
             (self.view.style, self.view.background, self.view.key_colours) = (s.style, s.background, s.key_colours);
             self.view.panel_pos = s.panel_pos.map(super::display::sanitize_panel_pos);
+            self.view.page_layout = s.page_layout.and_then(super::display::PageLayout::sanitized);
         }
         self.display_file = path;
     }
@@ -465,7 +471,24 @@ impl Viewer {
     }
 
     /// One unit of window input.
+    /// The editor is a bench without a model (Search): its page is all egui, there is no scene to orbit or pick.
+    fn page_mode(&self) -> bool {
+        self.editor.as_ref().is_some_and(|e| e.has_document())
+    }
     pub(crate) fn input(&mut self, input: Input) {
+        if self.page_mode() {
+            match input {
+                Input::Modifiers(m) => self.mods = m,
+                Input::Key(k) => self.key_pressed(&k),
+                Input::Cursor(at) => self.pointer.cursor = Some(at),
+                // A click away from an open popup closes it; everything else is the page's (egui saw it first).
+                Input::Press(MouseButton::Left) if !self.gui.wants_pointer() => {
+                    self.gui.close_floating();
+                }
+                _ => {}
+            }
+            return;
+        }
         match input {
             Input::Modifiers(m) => self.mods = m,
             Input::Key(k) => self.key_pressed(&k),
@@ -600,8 +623,8 @@ impl Viewer {
                     KeyResult::Unhandled => {}
                 }
             }
-            // Editor mode: arrows edit properties, so only the remaining viewer keys fall through.
-            if matches!(key, Key::Named(NamedKey::Escape | NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::Tab)) {
+            // Editor mode: arrows edit properties, so only the remaining viewer keys fall through; a page has no viewer keys.
+            if self.page_mode() || matches!(key, Key::Named(NamedKey::Escape | NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::Tab)) {
                 return;
             }
         }
@@ -669,7 +692,7 @@ impl Viewer {
         let size = self.window_size();
         let background = self.view.background.colors(self.gui.background_rgb());
         // An empty model has nothing to draw (the start card says how to begin): clear the viewport only.
-        let empty = self.dashboard.is_some() || self.editor.as_ref().is_some_and(|e| !e.start_options().is_empty());
+        let empty = self.dashboard.is_some() || self.page_mode() || self.editor.as_ref().is_some_and(|e| !e.start_options().is_empty());
         let geometry = self.editor.as_ref().is_some_and(|e| e.geometry_view());
         let scene_rect = if empty { [vp.x, vp.y, 0, 0] } else { [vp.x, vp.y, vp.w, vp.h] };
         let ctx = self.gui.ctx().clone();
@@ -856,8 +879,7 @@ pub fn run_solid(problem: fea_problem::Problem, path: std::path::PathBuf) -> Res
 
 /// Open the Toolbench dashboard (`--gpu-dashboard`): the list of workbenches, each opened in its own process.
 pub fn run_dashboard() -> Result<(), String> {
-    let scene = Scene { label: "dashboard".into(), positions: vec![[0.0; 3]; 3], triangles: vec![0, 1, 2], samples: vec![[0.0; 4]; 3], times: vec![0.0], range: [0.0, 1.0], gain: 1.0, harmonic_period: None, field_label: String::new(), fields: Vec::new() };
-    let mut app = new_viewer(ViewerProject::single(scene), None);
+    let mut app = new_viewer(ViewerProject::single(blank_scene("dashboard")), None);
     let file = super::dashboard::Recents::path();
     app.dashboard = Some(super::dashboard::Dashboard::new(file.as_deref().map(super::dashboard::Recents::load_from).unwrap_or_default(), file));
     let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
@@ -870,6 +892,16 @@ pub fn run_dashboard() -> Result<(), String> {
 pub fn run_bushing(mut session: super::editor::bushing::BushingSession) -> Result<(), String> {
     let scene = super::editor::authoring::Authoring::scene(&mut session)?;
     launch(ViewerProject::single(scene), Some(Box::new(session)))
+}
+
+/// Open the Search workbench on `session`: a bench without a model, its page drawn where the model would be.
+pub fn run_search(session: super::editor::search::SearchSession) -> Result<(), String> {
+    launch(ViewerProject::single(blank_scene("search")), Some(Box::new(session)))
+}
+
+/// A one-triangle scene for a window that draws no model (the dashboard, a page bench).
+fn blank_scene(label: &str) -> Scene {
+    Scene { label: label.into(), positions: vec![[0.0; 3]; 3], triangles: vec![0, 1, 2], samples: vec![[0.0; 4]; 3], times: vec![0.0], range: [0.0, 1.0], gain: 1.0, harmonic_period: None, field_label: String::new(), fields: Vec::new() }
 }
 
 /// Open the Eccentric Bushing workbench on `session`.
@@ -2089,4 +2121,148 @@ mod tests {
         assert!((converted.thickness*converted.units.length_m()/physical_thickness-1.0).abs()<1e-12);
     }
 
+
+    #[test]
+    fn the_search_page_takes_typed_input_runs_on_enter_and_a_row_click_shows_its_matches() {
+        use crate::gpu_viewer::editor::search::SearchSession;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("fitting.txt"), "intro\nverify bolt torque\n").unwrap();
+        std::fs::write(dir.path().join("other.txt"), "bolt only\n").unwrap();
+        let mut v = viewer(Some(Box::new(SearchSession::in_memory())));
+        assert!(v.page_mode());
+        let labels = v.gui.target_labels();
+        assert!(!labels.iter().any(|l| l == "View tab"), "no 3D View tab on a page bench: {labels:?}");
+        let folder = target(&v, "Folder input");
+        click(&mut v, folder);
+        type_text(&mut v, &dir.path().to_string_lossy());
+        let find = target(&v, "Find input");
+        click(&mut v, find);
+        type_text(&mut v, "torque");
+        egui_key(&mut v, egui::Key::Enter);
+        let t = Instant::now();
+        while v.editor.as_ref().unwrap().solving() || v.gui.find_target("row fitting.txt").is_none() {
+            assert!(t.elapsed().as_secs() < 30, "no result row; status {:?}", v.editor.as_ref().unwrap().status());
+            v.editor.as_mut().unwrap().poll();
+            frame(&mut v);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(v.gui.find_target("row other.txt").is_none(), "only the file with the word is listed");
+        // Keys typed into the page never reach the viewer (no orbit, no mesh toggle), and a click on the row selects it.
+        let row = target(&v, "row fitting.txt");
+        click(&mut v, row);
+        let doc = v.editor.as_ref().unwrap().document().unwrap();
+        assert_eq!(doc.detail.unwrap().blocks[0].number, 2);
+        let before = v.view.show_mesh;
+        v.input(Input::Key(Key::Character("m".into())));
+        assert_eq!(v.view.show_mesh, before, "viewer keys do nothing on a page");
+    }
+
+    /// Press at `from`, move to `to` in steps, release there.
+    fn drag(v: &mut Viewer, from: (f64, f64), to: (f64, f64)) {
+        move_to(v, from);
+        v.test_events.push(egui::Event::PointerButton { pos: pos(from), button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        frame(v);
+        for k in 1..=6 {
+            let f = k as f64 / 6.0;
+            move_to(v, (from.0 + (to.0 - from.0) * f, from.1 + (to.1 - from.1) * f));
+        }
+        v.test_events.push(egui::Event::PointerButton { pos: pos(to), button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+        frame(v);
+        frame(v);
+    }
+
+    #[test]
+    fn the_search_page_exclude_row_opens_from_its_switch_and_the_cards_move_and_resize() {
+        use crate::gpu_viewer::editor::search::SearchSession;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("fitting.txt"), "verify bolt torque\n").unwrap();
+        let mut v = viewer(Some(Box::new(SearchSession::in_memory())));
+        assert!(v.gui.find_target("Exclude input").is_none(), "hidden until switched on");
+        let chip = target(&v, "Exclude");
+        click(&mut v, chip);
+        frame(&mut v);
+        assert!(v.gui.find_target("Exclude input").is_some(), "the switch shows the row");
+        // The new row has the keyboard: typing goes straight into it.
+        type_text(&mut v, "draft");
+        let doc = |v: &Viewer| v.editor.as_ref().unwrap().document().unwrap();
+        assert_eq!(doc(&v).extra_inputs[0].text, "draft");
+        let whole = target(&v, "Whole file");
+        click(&mut v, whole);
+        assert!(doc(&v).extra_inputs[0].choices[0].checked == Some(true), "the scope is a choice beside the input");
+        let s = v.editor.as_ref().unwrap();
+        assert!(s.document().unwrap().extra_inputs[0].note.as_deref().unwrap().contains("every file"));
+        // A result, so both cards are shown.
+        let folder = target(&v, "Folder input");
+        click(&mut v, folder);
+        type_text(&mut v, &dir.path().to_string_lossy());
+        let find = target(&v, "Find input");
+        click(&mut v, find);
+        type_text(&mut v, "torque");
+        egui_key(&mut v, egui::Key::Enter);
+        let t = Instant::now();
+        while v.editor.as_ref().unwrap().solving() || v.gui.find_target("Move the matches").is_none() {
+            assert!(t.elapsed().as_secs() < 30, "no detail card; status {:?}", v.editor.as_ref().unwrap().status());
+            v.editor.as_mut().unwrap().poll();
+            frame(&mut v);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(v.view.page_layout, None, "the default layout until a card moves");
+        let list_before = target(&v, "Move the results");
+        let grip = target(&v, "Move the matches");
+        assert!(grip.0 > list_before.0, "the matches start on the right");
+        // Drag the matches to the left edge: they go left and the results move right.
+        let gap = target(&v, "Resize the cards");
+        drag(&mut v, grip, (list_before.0 - 40.0, gap.1));
+        let l = v.view.page_layout.expect("the drop is stored");
+        assert!(l.detail_first && !l.stacked, "{l:?}");
+        assert!(target(&v, "Move the matches").0 < target(&v, "Move the results").0, "the cards swapped sides");
+        // The splitter: drag it 150 points right, the first card grows.
+        let gap = target(&v, "Resize the cards");
+        let before = l.split;
+        drag(&mut v, gap, (gap.0 + 150.0, gap.1));
+        let after = v.view.page_layout.unwrap().split;
+        assert!(after > before + 0.05, "{before} -> {after}");
+        let moved = target(&v, "Resize the cards");
+        assert!((moved.0 - (gap.0 + 150.0)).abs() < 3.0, "the splitter follows the pointer: {gap:?} -> {moved:?}");
+        // A click on a grip (no move) changes nothing.
+        let grip = target(&v, "Move the matches");
+        click(&mut v, grip);
+        assert_eq!(v.view.page_layout.unwrap().split, after);
+    }
+
+    #[test]
+    fn the_search_page_has_no_docks_and_its_guide_and_options_open_as_popovers() {
+        use crate::gpu_viewer::editor::search::SearchSession;
+        let mut v = viewer(Some(Box::new(SearchSession::in_memory())));
+        let labels = v.gui.target_labels();
+        assert!(!labels.iter().any(|l| l.ends_with(" tab") || l == "Close the inspector"), "no step strip, tool pill or inspector: {labels:?}");
+        let vp = v.viewport();
+        assert!(vp.w > 1600 - 260 - 20, "the page has the whole width beside the tree: {vp:?}");
+        // The guide: open it, click an example, it fills Find and closes.
+        let link = target(&v, "How to write a search");
+        click(&mut v, link);
+        let example = target(&v, "Example bolt, torque [near 3]");
+        click(&mut v, example);
+        assert_eq!(v.editor.as_ref().unwrap().document().unwrap().inputs[1].text, "bolt, torque [near 3]");
+        assert!(v.gui.find_target("Example bolt").is_none(), "the guide closed");
+        // Options: a popover with the settings; a switch flips in place and the popover stays.
+        let options = target(&v, "Options panel");
+        click(&mut v, options);
+        let regex = target(&v, "Use regex");
+        click(&mut v, regex);
+        assert!(v.editor.as_ref().unwrap().document().unwrap().chips.iter().any(|c| c.label == "Regex" && c.checked == Some(true)));
+        assert!(v.gui.find_target("Whole word").is_some(), "still open after a change");
+        key(&mut v, NamedKey::Escape);
+        assert!(v.gui.find_target("Exclude folders").is_none(), "Esc closes it");
+        // Report: the output folder is an input with its own Browse, as the folder to search is.
+        let report = target(&v, "Report panel");
+        click(&mut v, report);
+        let out = target(&v, "Output folder input");
+        click(&mut v, out);
+        type_text(&mut v, "/reports");
+        assert_eq!(v.editor.as_ref().unwrap().document().unwrap().panels[2].inputs[0].text, "/reports");
+        let labels = v.gui.target_labels();
+        assert_eq!(labels.iter().filter(|l| *l == "Browse").count(), 2, "Browse beside both folders: {labels:?}");
+        assert!(!v.quit, "Esc closed the popover, not the window");
+    }
 }

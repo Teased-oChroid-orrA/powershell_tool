@@ -70,6 +70,8 @@ pub enum Outcome {
     Blocked(String),
     /// The text of field `index` of the value card changed.
     CardField { index: usize, text: String },
+    /// The text of input `id` of the document changed.
+    DocField { id: u8, text: String },
 }
 
 /// Subsequence score of `query` in `text` (case-insensitive): `None` when it does not match; lower is better

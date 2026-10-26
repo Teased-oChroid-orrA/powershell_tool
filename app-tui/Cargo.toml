@@ -21,7 +21,7 @@ occt = ["fea-problem/occt", "dep:solid-kernel", "solid-kernel/occt"]
 # The same, building OpenCASCADE from source so it follows the workspace's static CRT (the prebuilt MSVC library is /MD and cannot link
 # under `crt-static`; ADR-019 addendum). About 30 minutes the first time; the Windows release workflow uses it.
 occt-source = ["occt", "solid-kernel/occt-source"]
-gpu-viewer = ["dep:wgpu", "dep:winit", "dep:bytemuck", "dep:pollster", "dep:egui", "dep:egui-wgpu", "dep:egui-winit"]
+gpu-viewer = ["dep:wgpu", "dep:winit", "dep:bytemuck", "dep:pollster", "dep:egui", "dep:egui-wgpu", "dep:egui-winit", "dep:rfd"]
 
 [dependencies]
 # Only for tests that build a STEP file with the kernel (feature `occt`).
@@ -34,6 +34,8 @@ pollster = { version = "0.3", optional = true }
 egui = { version = "0.36", default-features = false, features = ["default_fonts"], optional = true }
 egui-wgpu = { version = "0.36", default-features = false, optional = true }
 egui-winit = { version = "0.36", default-features = false, features = ["x11"], optional = true }
+# The operating system's own folder picker (Search's Browse): Win32 IFileDialog / NSOpenPanel, no runtime needed.
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"], optional = true }
 tempfile = "3"
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }

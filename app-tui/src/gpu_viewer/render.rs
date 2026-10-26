@@ -1233,7 +1233,7 @@ mod snapshot_tests {
                 show_mesh,
                 show_contour: true,
                 field: input.view.field,
-                viewport: Some(if input.editor.is_some_and(|e| !e.start_options().is_empty()) { [vp.x, vp.y, 0, 0] } else { [vp.x, vp.y, vp.w, vp.h] }),
+                viewport: Some(if input.editor.is_some_and(|e| !e.start_options().is_empty() || e.has_document()) { [vp.x, vp.y, 0, 0] } else { [vp.x, vp.y, vp.w, vp.h] }),
                 background: Some((gui.background_rgb(), gui.background_rgb())),
                 ..Default::default()
             },
@@ -1466,6 +1466,75 @@ mod snapshot_tests {
             draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
             std::fs::write(format!("{dir}/bushing-result.rgba"), read_back(&r, &texture)).unwrap();
         });
+    }
+
+    /// The Search workbench after a real search (dark, light, a narrow window) and while one runs, as raw RGBA dumps:
+    /// `FEA_SNAPSHOT_SEARCH_OUT=/dir cargo test ... search_snapshot -- --ignored`.
+    #[test]
+    #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_SEARCH_OUT"]
+    fn search_snapshot() {
+        use crate::gpu_viewer::editor::search::{SearchAct, SearchSession};
+        use crate::gpu_viewer::editor::session::EditorAction;
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_SEARCH_OUT") else { return };
+        let _guard = headless_guard();
+        let data = tempfile::tempdir().unwrap();
+        let root = data.path().join("Wing Project");
+        std::fs::create_dir_all(root.join("specs/fasteners")).unwrap();
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+        std::fs::write(root.join("specs/fasteners/hi-lok.txt"), "Fastener schedule\nHi-Lok HL18 installed with torque 40 in-lb\nsealant applied\nCheck torque after cure\nend\n").unwrap();
+        std::fs::write(root.join("specs/wing-box.md"), "# Wing box\nSpar cap bolt torque per drawing\nrib spacing 20 in\n").unwrap();
+        std::fs::write(root.join("notes/review.txt"), "Design review\nopen item: verify bolt torque on fitting\nclosed\n").unwrap();
+        std::fs::write(root.join("notes/todo.txt"), "nothing relevant here\n").unwrap();
+        let mut session = SearchSession::in_memory();
+        session.document_field(0, root.to_string_lossy().into_owned());
+        session.document_field(1, "torque, bolt".into());
+        session.act(EditorAction::Search(SearchAct::Run));
+        let t = std::time::Instant::now();
+        while session.solving() || session.state().run.results.len() < 3 {
+            session.poll();
+            assert!(t.elapsed().as_secs() < 60, "the search did not finish");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        session.poll();
+        session.act(EditorAction::Search(SearchAct::Select(0)));
+        let shoot_with = |session: &SearchSession, name: &str, dark: bool, (w, h): (u32, u32), popover: Option<&str>, layout: Option<crate::gpu_viewer::display::PageLayout>| {
+            pollster::block_on(async {
+                let adapter = test_adapter().await.expect("adapter required");
+                let s = session as &dyn Authoring;
+                let scene = Scene { label: "s".into(), positions: vec![[0.0; 3]; 3], triangles: vec![0, 1, 2], samples: vec![[0.0; 4]; 3], times: vec![0.0], range: [0.0, 1.0], gain: 1.0, harmonic_period: None, field_label: String::new(), fields: Vec::new() };
+                let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+                let texture = target(&r, w, h);
+                let mut gui = Gui::new();
+                gui.ctx().set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+                let mut view = ViewState::new(&scene);
+                view.page_layout = layout;
+                let scenes = [scene];
+                let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(s), error: None, box_drag: None, overlay: &[] };
+                gui.select_tab_named(&input, "Results");
+                if let Some(k) = popover {
+                    gui.open_doc_popover(k);
+                }
+                draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+                std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
+            });
+        };
+        let shoot = |session: &SearchSession, name: &str, dark: bool, size: (u32, u32)| shoot_with(session, name, dark, size, None, None);
+        shoot_with(&session, "search-guide", true, (1440, 900), Some("help:1"), None);
+        shoot_with(&session, "search-options", false, (1440, 900), Some("Options"), None);
+        shoot_with(&session, "search-report", true, (1440, 900), Some("Report"), None);
+        shoot(&session, "search-results-dark", true, (1440, 900));
+        shoot(&session, "search-results-light", false, (1440, 900));
+        shoot(&session, "search-narrow", true, (860, 760));
+        // The Exclude row, and the cards moved: matches on the left, then stacked under the list.
+        session.act(EditorAction::Search(SearchAct::ToggleExclude));
+        session.document_field(3, "draft, obsolete".into());
+        session.act(EditorAction::Search(SearchAct::ExcludeScope(search_core::models::ExcludeScope::File)));
+        use crate::gpu_viewer::display::PageLayout;
+        shoot_with(&session, "search-exclude-swapped", true, (1440, 900), None, Some(PageLayout { detail_first: true, stacked: false, split: 0.45 }));
+        shoot_with(&session, "search-exclude-guide", false, (1440, 900), Some("help:3"), Some(PageLayout { detail_first: false, stacked: true, split: 0.5 }));
+        shoot_with(&session, "search-exclude-narrow", true, (860, 760), None, None);
+        session.state_mut_for_snapshot();
+        shoot(&session, "search-running", true, (1440, 900));
     }
 
     /// The Eccentric Bushing workbench before and after an analysis, as raw RGBA dumps:

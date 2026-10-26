@@ -87,7 +87,7 @@ fn draw_run_hint(frame: &mut Frame, area: Rect, theme: &Theme, state: &SearchToo
 /// "house [any line] + draft [exclude file]" once the Filters field has more
 /// than one `;`-group; a one-line syntax tip while it is focused. Shown
 /// whenever it applies (not only before the first run).
-fn filter_group_hint(config: &super::model::SearchToolConfig, filters_focused: bool) -> String {
+pub(crate) fn filter_group_hint(config: &super::model::SearchToolConfig, filters_focused: bool) -> String {
     use super::model::{effective_mode, mode_label, parse_filter_groups, GroupMode};
     let groups = parse_filter_groups(&config.filters_text);
     if groups.len() > 1 {

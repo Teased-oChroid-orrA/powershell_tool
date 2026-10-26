@@ -125,10 +125,37 @@ pub struct DisplaySettings {
     /// Where the colour key and the result legend were left, as fractions of the viewport (`None`: their starting places).
     #[serde(default)]
     pub panel_pos: [Option<[f32; 2]>; 2],
+    /// How a page bench (Search) places its two cards; `None`: the default arrangement.
+    #[serde(default)]
+    pub page_layout: Option<PageLayout>,
 }
 impl Default for DisplaySettings {
     fn default() -> Self {
-        Self { style: DisplayStyle::default(), background: Background::default(), key_colours: default_key_colours(), panel_pos: [None; 2] }
+        Self { style: DisplayStyle::default(), background: Background::default(), key_colours: default_key_colours(), panel_pos: [None; 2], page_layout: None }
+    }
+}
+
+/// Where a page's two cards (the results list and the selected file's detail) sit: which comes first (left, or top),
+/// whether they stack, and the share of the room the first one takes. Set by dragging a card to a side and by the
+/// splitter between them.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PageLayout {
+    /// The detail is left of (or above) the list.
+    pub detail_first: bool,
+    /// One above the other instead of side by side.
+    pub stacked: bool,
+    /// The first card's share of the room, 0..1.
+    pub split: f32,
+}
+impl Default for PageLayout {
+    fn default() -> Self {
+        Self { detail_first: false, stacked: false, split: 0.55 }
+    }
+}
+impl PageLayout {
+    /// A stored layout kept only when its split is finite, clamped to a share both cards can live with.
+    pub fn sanitized(self) -> Option<Self> {
+        self.split.is_finite().then(|| Self { split: self.split.clamp(0.15, 0.85), ..self })
     }
 }
 /// A stored panel position kept only when it is finite, clamped into the viewport.
@@ -197,6 +224,8 @@ mod tests {
         assert_eq!(sanitize_panel_pos(Some([f32::NAN, 0.5])), None);
         assert_eq!(sanitize_panel_pos(Some([f32::INFINITY, 0.5])), None);
         assert_eq!(sanitize_panel_pos(None), None);
+        assert_eq!(PageLayout { split: 0.99, ..Default::default() }.sanitized().map(|l| l.split), Some(0.85));
+        assert_eq!(PageLayout { split: f32::NAN, ..Default::default() }.sanitized(), None);
     }
 
     #[test]
@@ -217,7 +246,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("fea-editor").join(FILE);
         assert_eq!(DisplaySettings::load_from(&path), DisplaySettings::default());
-        let s = DisplaySettings { style: DisplayStyle::HiddenLinesRemoved, background: Background::Gradient { top: [10, 20, 30], bottom: [200, 210, 220] }, key_colours: [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]], panel_pos: [Some([0.25, 0.5]), None] };
+        let s = DisplaySettings { style: DisplayStyle::HiddenLinesRemoved, background: Background::Gradient { top: [10, 20, 30], bottom: [200, 210, 220] }, key_colours: [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]], panel_pos: [Some([0.25, 0.5]), None], page_layout: Some(PageLayout { detail_first: true, stacked: true, split: 0.3 }) };
         s.save_to(&path).unwrap();
         assert_eq!(DisplaySettings::load_from(&path), s);
         crate::persistence::write(&path, "{ not json").unwrap();

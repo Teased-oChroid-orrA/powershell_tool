@@ -15,6 +15,7 @@ pub mod adapt;
 pub mod bushing;
 pub mod eccentric;
 pub mod handoff;
+pub mod search;
 pub mod solid;
 pub mod sketcher;
 

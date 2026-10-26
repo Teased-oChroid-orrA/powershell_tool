@@ -171,7 +171,7 @@ impl IndexRunState {
     }
 }
 
-pub(super) fn format_eta(secs: f64) -> String {
+pub(crate) fn format_eta(secs: f64) -> String {
     let s = secs.round() as u64;
     if s >= 3600 {
         format!("{}h{:02}m", s / 3600, (s % 3600) / 60)

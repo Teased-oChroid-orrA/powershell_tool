@@ -32,7 +32,8 @@ fn wait(s: &mut EccentricSession, what: &str, done: impl Fn(&EccentricSession) -
     let t = Instant::now();
     while !done(s) {
         s.poll();
-        assert!(t.elapsed() < Duration::from_secs(120), "timed out waiting for {what}");
+        // A hang guard, not a speed check: the full suite runs many FE solves at once and starves this one.
+        assert!(t.elapsed() < Duration::from_secs(300), "timed out waiting for {what}");
         std::thread::sleep(Duration::from_millis(5));
     }
 }
