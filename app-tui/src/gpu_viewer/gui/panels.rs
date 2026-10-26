@@ -60,7 +60,9 @@ impl Gui {
                 ui.separator();
                 ui.add_space(2.0);
                 let mut chosen = None;
-                for (i, tab) in tabs.iter().enumerate() {
+                // A page bench has no tool pill: its steps would switch nothing.
+                let steps = if input.editor.is_some_and(|e| e.has_document()) { &[][..] } else { tabs };
+                for (i, tab) in steps.iter().enumerate() {
                     let state = input.editor.and_then(|e| e.step_state(&tab.title));
                     let nudged = self.nudge.as_deref() == Some(tab.title.as_str());
                     if self.step_chip(ui, &tab.title, state, i == self.tab, nudged, p).clicked() {
@@ -238,7 +240,9 @@ impl Gui {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let scene = input.scene();
                     let mut right = format!("result {}/{} | {}", input.selected + 1, input.scenes.len(), input.view.field_name(scene));
-                    if let Some(e) = input.editor {
+                    if let Some(e) = input.editor.filter(|e| e.has_document()) {
+                        right = e.solving_for().map_or_else(|| "Ready".to_string(), |t| format!("Working... {:.1}s", t.as_secs_f32()));
+                    } else if let Some(e) = input.editor {
                         right = format!("{} | {right}", if let Some(elapsed) = e.solving_for() { format!("Working... {:.1}s", elapsed.as_secs_f32()) } else if e.dirty() { "Modified".into() } else { "Saved".into() });
                     }
                     ui.label(RichText::new(right).small().color(p.dim));
@@ -417,7 +421,7 @@ impl Gui {
         }
     }
 
-    fn dock_item(&mut self, ui: &mut egui::Ui, item: &DockItem, p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>) {
+    pub(super) fn dock_item(&mut self, ui: &mut egui::Ui, item: &DockItem, p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>) {
         let _ = hint;
         match item {
             DockItem::Heading(h) => {

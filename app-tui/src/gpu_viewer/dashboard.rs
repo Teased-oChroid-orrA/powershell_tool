@@ -28,7 +28,7 @@ pub struct Workbench {
 }
 
 pub const WORKBENCHES: [Workbench; 10] = [
-    Workbench { id: "search", name: "Search", summary: "Keyword filters across text, Office, zip, rtf and pdf files. HTML report, CSV and JSON export.", opens: Opens::Terminal(ToolId::Search) },
+    Workbench { id: "search", name: "Search", summary: "Keyword filters across text, Office, zip, rtf and pdf files. HTML report, CSV and JSON export.", opens: Opens::Window(EditorKind::Search) },
     Workbench { id: "fastener-hole", name: "Fastener Hole", summary: "Hole, fastener and edge-distance geometry.", opens: Opens::Terminal(ToolId::FastenerHole) },
     Workbench { id: "bushing", name: "Bushing", summary: "Press fit, tolerance stack, edge-distance cross-check and verified fixes.", opens: Opens::Window(EditorKind::Bushing) },
     Workbench { id: "pressure-vessel", name: "Pressure Vessel", summary: "Shell and head stresses, Lamé thick wall.", opens: Opens::Terminal(ToolId::PressureVessel) },
@@ -50,6 +50,8 @@ impl Workbench {
     /// The file used when none is given: the editor's default, in the working folder. Terminal toolboxes keep their own.
     pub fn default_file(&self) -> Option<PathBuf> {
         match self.opens {
+            // Search keeps its saved folder unless a recent one is reopened.
+            Opens::Window(EditorKind::Search) => None,
             Opens::Window(kind) => Some(std::env::current_dir().unwrap_or_default().join(kind.default_file())),
             Opens::Terminal(_) => None,
         }
@@ -267,7 +269,9 @@ mod tests {
         let fea = Workbench::find("fea").unwrap();
         assert_eq!(fea.args(Some(Path::new("/x/a.json"))), ["--gpu-solid", "/x/a.json"]);
         assert_eq!(fea.args(None), ["--gpu-solid"]);
-        assert_eq!(Workbench::find("search").unwrap().args(None), ["--toolbox", "search"]);
+        assert_eq!(Workbench::find("search").unwrap().args(None), ["--gpu-search"]);
+        assert_eq!(Workbench::find("search").unwrap().default_file(), None, "Search keeps its saved folder");
+        assert_eq!(Workbench::find("material-lookup").unwrap().args(None), ["--toolbox", "material-lookup"]);
         assert!(fea.default_file().unwrap().ends_with("solid-model.json"));
         assert_eq!(Workbench::find("lug").unwrap().default_file(), None);
     }

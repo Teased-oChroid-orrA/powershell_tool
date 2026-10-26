@@ -8,6 +8,7 @@
 //! treatment, not before.
 
 pub mod diagnostics;
+pub mod exec;
 pub mod extension_picker;
 pub mod index_view;
 pub mod indexing;
@@ -209,11 +210,8 @@ pub fn handle_key(
     if state.extension_picker.open {
         let consumed = extension_picker::handle_key(&mut state.extension_picker, key);
         if consumed && !state.extension_picker.open {
-            let mut selected: Vec<String> = state.extension_picker.selected.iter().cloned().collect();
-            selected.sort();
-            persistence::remember_recent_extensions(&mut state.recent_extensions, &selected);
-            state.config.selected_extensions = if selected.is_empty() { None } else { Some(selected.clone()) };
-            return (consumed, if selected.is_empty() { Vec::new() } else { vec![Effect::PersistSearchSettings] });
+            let save = commit_extension_picker(state);
+            return (consumed, if save { vec![Effect::PersistSearchSettings] } else { Vec::new() });
         }
         return (consumed, Vec::new());
     }
@@ -363,6 +361,105 @@ fn edit_buffer_key(buffer: &mut String, key: KeyEvent) -> Option<bool> {
         }
         _ => None,
     }
+}
+
+/// The one reducer for what the background search, report and index work sends back (`AppEvent::Search*`,
+/// `ReportWritten`, `Index*`, `ExtensionsScanned`). Both heads call it: the terminal's `app::handle_event` and the
+/// native window's Search bench, so a run behaves the same in either. Other events are ignored. Offering an index
+/// update after a run (`index_run.stale`) is left to the caller: each head asks in its own way.
+pub fn apply_event(state: &mut SearchToolState, notifications: &mut NotificationQueue, event: crate::app::AppEvent) -> Vec<Effect> {
+    use crate::app::AppEvent;
+    use search_core::orchestrator::OrchestratorError;
+    match event {
+        AppEvent::SearchProgress(report) => model::apply_progress(&mut state.run, report),
+        AppEvent::SearchFinished(result) => {
+            state.run.is_running = false;
+            state.run.elapsed = state.run.started.map(|s| s.elapsed());
+            state.run.in_flight_files.clear();
+            state.cancel_token = None;
+            match result {
+                Ok(run_result) => {
+                    state.run.results_summary_text = model::summarize(&run_result.summary);
+                    notifications.push("Search finished", StatusTone::Success);
+                    // Opening the report needs the HTML file even if HTML export is off.
+                    let write_html = state.config.export_html || state.config.open_report_when_done;
+                    let settings = model::build_settings(&state.config);
+                    return vec![Effect::WriteReport { settings, run_result, write_html }];
+                }
+                Err(OrchestratorError::Cancelled) => {
+                    state.run.status_text = "Cancelled.".to_string();
+                    notifications.push("Search cancelled", StatusTone::Info);
+                }
+                Err(e) => {
+                    state.run.status_text = format!("Error: {e}");
+                    notifications.push("Search failed", StatusTone::Danger);
+                }
+            }
+        }
+        AppEvent::SearchDiagnostics(d) => state.run.diagnostics = Some(*d),
+        AppEvent::ReportWritten(path) => {
+            state.run.last_report_path = path.clone();
+            if let Some(p) = path.filter(|_| state.config.open_report_when_done) {
+                return vec![Effect::OpenPath(p)];
+            }
+        }
+        AppEvent::IndexBuildProgress(progress) => state.index_run.apply_progress(&progress),
+        AppEvent::IndexStale { new_or_changed, removed } => state.index_run.stale = Some((new_or_changed, removed)),
+        AppEvent::IndexNarrowed(note) => state.index_run.last_narrow = Some(note),
+        AppEvent::IndexBuildFinished(result) => {
+            state.index_cancel = None;
+            match result {
+                Ok(outcome) => {
+                    state.index_run.apply_outcome(&outcome);
+                    if outcome.failed_count > 0 {
+                        // `failed_count` alone told the user something broke but
+                        // never why - surface the actual per-file reason (first
+                        // failure is usually representative of a systemic cause:
+                        // permissions, AV lock, unsupported format) instead of
+                        // leaving them to guess. Every failure is in the debug log.
+                        let detail = outcome.failed_files.first().map(|f| format!(" - e.g. {f}")).unwrap_or_default();
+                        notifications.push(format!("Index build: {} file(s) failed{detail}", outcome.failed_count), StatusTone::Warning);
+                    } else if outcome.cancelled {
+                        notifications.push("Index build cancelled (partial index kept)", StatusTone::Info);
+                    } else {
+                        notifications.push(format!("Index ready: {} documents", outcome.index_docs), StatusTone::Success);
+                    }
+                }
+                Err(e) => {
+                    state.index_run.apply_error(e.to_string());
+                    notifications.push(format!("Index build failed: {e}"), StatusTone::Danger);
+                }
+            }
+        }
+        AppEvent::ExtensionsScanned(result) => {
+            state.extension_picker = match result {
+                Ok(mut available) => {
+                    // Recently-selected extensions stay pickable even when this folder has none right now - appended
+                    // after the scanned list (most recent first) so a plain scan keeps its alphabetical order.
+                    for ext in &state.recent_extensions {
+                        if !available.iter().any(|e| e.eq_ignore_ascii_case(ext)) {
+                            available.push(ext.clone());
+                        }
+                    }
+                    extension_picker::ExtensionPicker::open_with(available, state.config.selected_extensions.as_deref())
+                }
+                Err(e) => extension_picker::ExtensionPicker::open_with_error(e),
+            };
+        }
+        _ => {}
+    }
+    Vec::new()
+}
+
+/// The extension picker closed: its selection becomes the run's extension filter and is remembered. Returns whether
+/// settings must be saved (a non-empty selection).
+pub fn commit_extension_picker(state: &mut SearchToolState) -> bool {
+    let mut selected: Vec<String> = state.extension_picker.selected.iter().cloned().collect();
+    selected.sort();
+    persistence::remember_recent_extensions(&mut state.recent_extensions, &selected);
+    let save = !selected.is_empty();
+    state.config.selected_extensions = if selected.is_empty() { None } else { Some(selected) };
+    save
 }
 
 /// Starts a run if possible, otherwise pushes a warning toast explaining

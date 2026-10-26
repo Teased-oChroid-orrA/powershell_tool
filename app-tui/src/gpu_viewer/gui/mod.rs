@@ -6,6 +6,8 @@
 //! The front end only reads what the editor and the viewer expose (`Authoring::tree/properties/ribbon/menus`,
 //! `menus::bar`) and reports clicks as `Outcome`s; availability rules stay with the model that owns them.
 mod dashboard;
+mod document;
+mod page_layout;
 mod panels;
 pub mod theme;
 pub use dashboard::DashEvent;
@@ -98,6 +100,8 @@ pub struct Gui {
     pill_rect: Option<Rect>,
     /// The step the selection last belonged to (a change brings that step's tools).
     last_focus_step: Option<&'static str>,
+    /// Scroll and selection memory of a bench's page (`Authoring::document`).
+    doc: document::DocState,
 }
 
 impl Default for Gui {
@@ -140,6 +144,7 @@ impl Gui {
             now: 0.0,
             pill_rect: None,
             last_focus_step: None,
+            doc: document::DocState::default(),
         }
     }
 
@@ -210,7 +215,7 @@ impl Gui {
     }
     /// Close whatever floats (palette, context list); true when something was open.
     pub fn close_floating(&mut self) -> bool {
-        self.palette.take().is_some() | self.floating.take().is_some()
+        self.palette.take().is_some() | self.floating.take().is_some() | self.doc.open.take().is_some()
     }
     pub fn floating_open(&self) -> bool {
         self.palette.is_some() || self.floating.is_some()
@@ -262,6 +267,11 @@ impl Gui {
     #[cfg(test)]
     pub(crate) fn nudge(&self) -> Option<&str> {
         self.nudge.as_deref()
+    }
+    /// Open a page popover by its key (a panel's label, `help:<input id>`), as a click would.
+    #[cfg(test)]
+    pub(crate) fn open_doc_popover(&mut self, key: &str) {
+        self.doc.open = Some(key.to_string());
     }
     #[cfg(test)]
     pub(crate) fn palette_open(&self) -> bool {
@@ -336,6 +346,15 @@ impl Gui {
                 self.palette = None;
             }
         }
+        // A right click on a page row selected it last frame; its menu is the selection's.
+        if let Some(at) = self.doc.pending_menu.take() {
+            let items = input.editor.map(|e| e.context_menu()).unwrap_or_default();
+            if !items.is_empty() {
+                self.menu_at = Some(at);
+                self.floating = Some(Floating { at, items });
+                self.palette = None;
+            }
+        }
         self.track_steps(input, &tabs);
         // Selecting something in the tree brings the tools of the step it belongs to.
         let focus = input.editor.and_then(|e| e.focus_step());
@@ -357,7 +376,9 @@ impl Gui {
         // What the panels leave is the model's viewport, less the room the inspector's cards take when they are shown
         // (the model is never drawn under them). It is deliberately not a CentralPanel: that would use the space up, and
         // egui would then count the pointer over the model as being over the interface.
-        let plan = if self.visible.properties { self.inspector_plan(input, &tabs) } else { None };
+        // A page bench (Search) has no docks: its options open as popovers from its own bar.
+        let page = input.editor.is_some_and(|e| e.has_document());
+        let plan = if self.visible.properties && !page { self.inspector_plan(input, &tabs) } else { None };
         let mut free = ui.available_rect_before_wrap();
         if plan.is_some() {
             free.max.x = (free.max.x - panels::INSPECTOR_WIDTH - 36.0).max(free.min.x + 240.0);
@@ -366,11 +387,17 @@ impl Gui {
         if self.visible.tree && !tree_open {
             self.tree_chip(ui.ctx(), &p);
         }
-        if self.visible.ribbon {
+        if self.visible.ribbon && !page {
             self.tool_pill(ui.ctx(), &tabs, &p, out, hint);
         }
         if let Some(plan) = &plan {
             self.inspector(ui.ctx(), plan, &p, out, hint);
+        }
+        // A bench without a model draws its page in the model's place, below the tool pill.
+        if let Some(doc) = input.editor.and_then(|e| e.document()) {
+            let top = self.pill_rect.map_or(free.top() + 8.0, |r| r.bottom() + 8.0).clamp(free.top(), free.bottom());
+            self.doc.layout = input.view.page_layout.unwrap_or_default();
+            self.document(ui, Rect::from_min_max(Pos2::new(free.left(), top), free.max), &doc, &p, out, hint);
         }
         self.model_labels(ui.ctx(), input, &p);
         self.start_card(ui.ctx(), input, &p, out, hint);

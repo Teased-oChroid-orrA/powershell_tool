@@ -283,88 +283,21 @@ pub fn handle_event(state: &mut AppState, event: AppEvent) -> Vec<Effect> {
                 _ => Vec::new(),
             }
         }
-        AppEvent::SearchProgress(report) => {
-            search::model::apply_progress(&mut state.search.run, report);
-            Vec::new()
-        }
-        AppEvent::SearchFinished(result) => handle_search_finished(state, result),
-        AppEvent::SearchDiagnostics(d) => {
-            state.search.run.diagnostics = Some(*d);
-            Vec::new()
-        }
-        AppEvent::ReportWritten(path) => {
-            state.search.run.last_report_path = path.clone();
-            match path {
-                Some(p) if state.search.config.open_report_when_done => vec![Effect::OpenPath(p)],
-                _ => Vec::new(),
+        event @ (AppEvent::SearchProgress(_)
+        | AppEvent::SearchFinished(_)
+        | AppEvent::SearchDiagnostics(_)
+        | AppEvent::ReportWritten(_)
+        | AppEvent::IndexBuildProgress(_)
+        | AppEvent::IndexStale { .. }
+        | AppEvent::IndexNarrowed(_)
+        | AppEvent::IndexBuildFinished(_)
+        | AppEvent::ExtensionsScanned(_)) => {
+            let finished = matches!(event, AppEvent::SearchFinished(_));
+            let effects = search::apply_event(&mut state.search, &mut state.notifications, event);
+            if finished {
+                offer_index_update(state);
             }
-        }
-        AppEvent::IndexBuildProgress(progress) => {
-            state.search.index_run.apply_progress(&progress);
-            Vec::new()
-        }
-        AppEvent::IndexStale { new_or_changed, removed } => {
-            state.search.index_run.stale = Some((new_or_changed, removed));
-            Vec::new()
-        }
-        AppEvent::IndexNarrowed(note) => {
-            state.search.index_run.last_narrow = Some(note);
-            Vec::new()
-        }
-        AppEvent::IndexBuildFinished(result) => {
-            state.search.index_cancel = None;
-            match result {
-                Ok(outcome) => {
-                    state.search.index_run.apply_outcome(&outcome);
-                    if outcome.failed_count > 0 {
-                        // `failed_count` alone told the user something broke but
-                        // never why - surface the actual per-file reason (first
-                        // failure is usually representative of a systemic cause:
-                        // permissions, AV lock, unsupported format) instead of
-                        // leaving them to guess. Every failure is in the debug log.
-                        let detail = outcome.failed_files.first().map(|f| format!(" - e.g. {f}")).unwrap_or_default();
-                        state.notifications.push(
-                            format!("Index build: {} file(s) failed{detail}", outcome.failed_count),
-                            StatusTone::Warning,
-                        );
-                    } else if outcome.cancelled {
-                        state.notifications.push("Index build cancelled (partial index kept)", StatusTone::Info);
-                    } else {
-                        state.notifications.push(
-                            format!("Index ready: {} documents", outcome.index_docs),
-                            StatusTone::Success,
-                        );
-                    }
-                }
-                Err(e) => {
-                    state.search.index_run.apply_error(e.to_string());
-                    state.notifications.push(format!("Index build failed: {e}"), StatusTone::Danger);
-                }
-            }
-            Vec::new()
-        }
-        AppEvent::ExtensionsScanned(result) => {
-            state.search.extension_picker = match result {
-                Ok(mut available) => {
-                    // Recently-selected extensions stay pickable even when
-                    // this particular folder doesn't happen to contain one
-                    // right now - appended (not merged-and-resorted, which
-                    // would change `scan_extensions`' existing alphabetical
-                    // output order for a plain scan with nothing to add)
-                    // after the scanned list, most-recent first, before
-                    // `open_with` so its own selection-seeding logic
-                    // (unaffected by this) still just sees one plain
-                    // `available` list.
-                    for ext in &state.search.recent_extensions {
-                        if !available.iter().any(|e| e.eq_ignore_ascii_case(ext)) {
-                            available.push(ext.clone());
-                        }
-                    }
-                    search::extension_picker::ExtensionPicker::open_with(available, state.search.config.selected_extensions.as_deref())
-                }
-                Err(e) => search::extension_picker::ExtensionPicker::open_with_error(e),
-            };
-            Vec::new()
+            effects
         }
         AppEvent::ReamerLibraryFileRead(result) => handle_reamer_library_file_read(state, result),
         AppEvent::BushingMaterialLibraryFileRead(result) => handle_bushing_material_library_file_read(state, result),
@@ -528,35 +461,6 @@ fn handle_bushing_id_library_file_read(state: &mut AppState, result: Result<Stri
     let suffix = if conflicts_remaining { " - conflicts need review (k: keep, o: overwrite, a/z: apply to all)" } else { "" };
     state.notifications.push(format!("Bushing ID library: {added} added, {merged} label update(s){suffix}"), StatusTone::Success);
     vec![Effect::PersistBushingIdLibrary]
-}
-
-fn handle_search_finished(state: &mut AppState, result: Result<SearchRunResult, OrchestratorError>) -> Vec<Effect> {
-    state.search.run.is_running = false;
-    state.search.run.elapsed = state.search.run.started.map(|s| s.elapsed());
-    state.search.run.in_flight_files.clear();
-    state.search.cancel_token = None;
-    offer_index_update(state);
-
-    match result {
-        Ok(run_result) => {
-            state.search.run.results_summary_text = search::model::summarize(&run_result.summary);
-            state.notifications.push("Search finished", StatusTone::Success);
-            // Opening the report needs the HTML file even if HTML export is off.
-            let write_html = state.search.config.export_html || state.search.config.open_report_when_done;
-            let settings = search::model::build_settings(&state.search.config);
-            vec![Effect::WriteReport { settings, run_result, write_html }]
-        }
-        Err(OrchestratorError::Cancelled) => {
-            state.search.run.status_text = "Cancelled.".to_string();
-            state.notifications.push("Search cancelled", StatusTone::Info);
-            Vec::new()
-        }
-        Err(e) => {
-            state.search.run.status_text = format!("Error: {e}");
-            state.notifications.push("Search failed", StatusTone::Danger);
-            Vec::new()
-        }
-    }
 }
 
 /// If the search that just ended found the fast index out of date, asks

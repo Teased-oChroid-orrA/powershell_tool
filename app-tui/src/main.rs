@@ -19,7 +19,6 @@ use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, EventStre
 use crossterm::execute;
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 
 use app_tui::app::{handle_event, handle_mouse, AppEvent, AppState, Effect};
 use app_tui::mouse::MouseRegions;
@@ -30,7 +29,7 @@ use app_tui::toolboxes::bushing::reamer_persistence;
 use app_tui::toolboxes::fastener_hole::persistence as fastener_hole_persistence;
 use app_tui::toolboxes::preload_analysis::persistence as preload_persistence;
 use app_tui::toolboxes::pressure_vessel::persistence as pv_persistence;
-use app_tui::toolboxes::search::{extension_picker, indexing, persistence, runner};
+use app_tui::toolboxes::search::{exec as search_exec, persistence};
 use app_tui::widgets::shell;
 
 fn main() -> io::Result<()> {
@@ -42,6 +41,10 @@ fn main() -> io::Result<()> {
         return app_tui::gpu_viewer::run_dashboard().map_err(io::Error::other);
     }
     if let Some(kind) = std::env::args().nth(1).as_deref().and_then(app_tui::gpu_viewer::EditorKind::from_flag) {
+        if kind == app_tui::gpu_viewer::EditorKind::Search {
+            // The search and index stages are logged like the terminal toolbox's (no paths or terms, see debug_log).
+            app_tui::debug_log::init();
+        }
         let path = std::env::args_os().nth(2).map_or_else(|| std::path::PathBuf::from(kind.default_file()), std::path::PathBuf::from);
         return app_tui::gpu_viewer::run_native_editor(kind, &path).map_err(io::Error::other);
     }
@@ -181,57 +184,17 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> io::Result<()> {
 /// directly for toolbox effects - `handle_event` and everything it calls
 /// stays pure/synchronous (see the plan's Event and State Model section).
 fn execute_effect(tx: &mpsc::UnboundedSender<AppEvent>, state: &mut AppState, effect: Effect) {
+    // Search, report, index, open / copy and settings effects: shared with the native Search window.
+    let Some(effect) = search_exec::execute(tx, &mut state.search, effect) else { return };
     match effect {
-        Effect::StartSearch { roots, settings, index } => {
-            let cancellation = CancellationToken::new();
-            state.search.cancel_token = Some(cancellation.clone());
-            tokio::spawn(runner::run_search(tx.clone(), cancellation, roots, settings, index));
-        }
-        Effect::WriteReport { settings, run_result, write_html } => {
-            let tx = tx.clone();
-            tokio::task::spawn_blocking(move || runner::write_report(&tx, settings, run_result, write_html));
-        }
-        Effect::OpenPath(path) => {
-            tokio::task::spawn_blocking(move || {
-                let _ = open::that(path);
-            });
-        }
-        Effect::CopyToClipboard(text) => {
-            tokio::task::spawn_blocking(move || {
-                if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                    let _ = clipboard.set_text(text);
-                }
-            });
-        }
-        Effect::WriteTextFileAndOpen { path, contents } => {
-            tokio::task::spawn_blocking(move || {
-                if let Some(parent) = std::path::Path::new(&path).parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                if std::fs::write(&path, contents).is_ok() {
-                    let _ = open::that(&path);
-                }
-            });
-        }
-        Effect::PersistSearchSettings => {
-            let persisted = state.search.to_persisted_file();
-            tokio::task::spawn_blocking(move || persistence::save(&persisted));
-        }
-        Effect::BuildIndex { settings, index_dir, cancel } => {
-            tokio::spawn(indexing::build_or_rebuild_index(tx.clone(), settings, index_dir, cancel));
-        }
-        Effect::ScanExtensions { root, exclude_folders, include_hidden } => {
-            let tx = tx.clone();
-            tokio::task::spawn_blocking(move || {
-                let path = std::path::Path::new(&root);
-                if !path.is_dir() {
-                    let _ = tx.send(AppEvent::ExtensionsScanned(Err(format!("'{root}' is not a directory"))));
-                    return;
-                }
-                let found = extension_picker::scan_extensions(path, &exclude_folders, include_hidden);
-                let _ = tx.send(AppEvent::ExtensionsScanned(Ok(found)));
-            });
-        }
+        Effect::StartSearch { .. }
+        | Effect::WriteReport { .. }
+        | Effect::OpenPath(_)
+        | Effect::CopyToClipboard(_)
+        | Effect::WriteTextFileAndOpen { .. }
+        | Effect::PersistSearchSettings
+        | Effect::BuildIndex { .. }
+        | Effect::ScanExtensions { .. } => unreachable!("carried out by search_exec::execute"),
         Effect::RunEdgeCheck { id, input, cfg, deep: _ } => {
             let tx = tx.clone();
             tokio::task::spawn_blocking(move || {

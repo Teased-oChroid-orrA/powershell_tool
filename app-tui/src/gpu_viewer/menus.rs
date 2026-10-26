@@ -166,7 +166,10 @@ pub fn view_tab(c: &MenuContext) -> RibbonTab {
 
 pub fn ribbon(c: &MenuContext) -> Vec<RibbonTab> {
     let mut tabs = c.editor.map(|e| e.ribbon()).unwrap_or_default();
-    tabs.push(view_tab(c));
+    // A bench without a model (Search) has nothing for the display, orientation and animation tools to act on.
+    if !c.editor.is_some_and(|e| e.has_document()) {
+        tabs.push(view_tab(c));
+    }
     tabs
 }
 
@@ -193,7 +196,9 @@ pub fn bar(c: &MenuContext) -> Vec<Menu> {
             ));
         }
     }
-    menus.push(view_menu(c));
+    if !c.editor.is_some_and(|e| e.has_document()) {
+        menus.push(view_menu(c));
+    }
     menus.push(window_menu(c));
     menus.push(help_menu(c));
     let rank = |m: &Menu| ORDER.iter().position(|t| *t == m.title).unwrap_or(5);

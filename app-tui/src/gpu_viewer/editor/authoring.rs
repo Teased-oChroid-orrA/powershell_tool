@@ -252,4 +252,16 @@ pub trait Authoring {
     }
     /// Right-click menu content for the current selection.
     fn context_menu(&self) -> Vec<Item>;
+
+    /// A bench without a 3D model (Search) returns the page the window draws in the model's place; the viewer's
+    /// View tab and menu, the scene and the model gestures are then left out. `None` for a model.
+    fn document(&self) -> Option<crate::gpu_viewer::ui::Document> {
+        None
+    }
+    /// Cheap form of `document().is_some()`, asked on every input event.
+    fn has_document(&self) -> bool {
+        false
+    }
+    /// The text of input `id` of the document changed.
+    fn document_field(&mut self, _id: u8, _text: String) {}
 }

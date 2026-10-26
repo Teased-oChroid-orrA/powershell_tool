@@ -41,7 +41,7 @@ enum FieldKind {
 /// `FIELDS[EXTENSIONS_FIELD]`'s `Enter` is special-cased to open the
 /// per-extension checkbox picker (a folder scan) instead of starting a
 /// plain text edit - see its handling in `handle_key` below.
-const EXTENSIONS_FIELD: usize = 9;
+pub(crate) const EXTENSIONS_FIELD: usize = 9;
 
 struct FieldDef {
     label: &'static str,
@@ -872,6 +872,62 @@ fn display_value(config: &SearchToolConfig, idx: usize, kind: FieldKind) -> Stri
         FieldKind::GroupBy => format!("{:?}", config.group_by),
         FieldKind::FastIndexLocation => super::index_view::display_location(config.index.location).to_string(),
         FieldKind::Text | FieldKind::Number => field_value_string(config, idx),
+    }
+}
+
+/// How a setting is edited outside this form (the native window's inspector rows).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SettingKind {
+    /// Typed text or a number (`set_setting_text`).
+    Typed,
+    /// An on / off switch (`step_setting` flips it).
+    Switch,
+    /// One of a few values (`step_setting` moves to the next).
+    Choice,
+}
+
+/// One setting of the form: its index, group heading, label, hint and kind. The same table drives this form and
+/// the native window, so labels, parsing and grouping have one source.
+pub(crate) fn settings() -> impl Iterator<Item = (usize, &'static str, &'static str, &'static str, SettingKind)> {
+    FIELDS.iter().enumerate().map(|(i, f)| {
+        let group = SETTINGS_HEADERS.iter().rev().find(|(at, _)| *at <= i).map_or("", |(_, g)| *g);
+        let kind = match f.kind {
+            FieldKind::Text | FieldKind::Number => SettingKind::Typed,
+            FieldKind::Bool => SettingKind::Switch,
+            _ => SettingKind::Choice,
+        };
+        (i, group, f.label, field_hint(i), kind)
+    })
+}
+
+/// The text a typed setting is edited from.
+pub(crate) fn setting_text(config: &SearchToolConfig, idx: usize) -> String {
+    field_value_string(config, idx)
+}
+
+/// The value as shown in a list (switches read On / Off).
+pub(crate) fn setting_display(config: &SearchToolConfig, idx: usize) -> String {
+    match FIELDS.get(idx).map(|f| f.kind) {
+        Some(FieldKind::Bool) => if bool_field(config, idx) { "On" } else { "Off" }.to_string(),
+        Some(kind) => display_value(config, idx, kind),
+        None => String::new(),
+    }
+}
+
+/// Whether a switch is on (false for any other kind).
+pub(crate) fn setting_on(config: &SearchToolConfig, idx: usize) -> bool {
+    bool_field(config, idx)
+}
+
+/// Commit typed text; a number that does not parse leaves the value as it was (the form's rule).
+pub(crate) fn set_setting_text(config: &mut SearchToolConfig, idx: usize, text: &str) {
+    apply_text_edit(config, idx, text)
+}
+
+/// Flip a switch or move a choice to its next value.
+pub(crate) fn step_setting(config: &mut SearchToolConfig, idx: usize) {
+    if let Some(f) = FIELDS.get(idx) {
+        apply_toggle(config, idx, f.kind);
     }
 }
 
