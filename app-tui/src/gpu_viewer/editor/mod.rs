@@ -14,6 +14,7 @@ pub mod rank;
 pub mod adapt;
 pub mod bushing;
 pub mod eccentric;
+pub mod fastener;
 pub mod handoff;
 pub mod search;
 pub mod solid;

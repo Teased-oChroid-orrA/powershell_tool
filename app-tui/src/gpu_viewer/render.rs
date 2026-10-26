@@ -1223,6 +1223,7 @@ mod snapshot_tests {
         let overlay = input.editor.map(|e| e.overlay(&cam, [vp.w as f32, vp.h as f32])).unwrap_or_default();
         let with_overlay = GuiInput { view: input.view, scenes: input.scenes, selected: input.selected, editor: input.editor, error: input.error, box_drag: input.box_drag, overlay: &overlay };
         let (output, _) = gui.run(raw(), &with_overlay);
+        let geometry = input.editor.is_some_and(|e| e.geometry_view());
         r.draw_display(
             &view,
             input.scene(),
@@ -1235,6 +1236,10 @@ mod snapshot_tests {
                 field: input.view.field,
                 viewport: Some(if input.editor.is_some_and(|e| !e.start_options().is_empty() || e.has_document()) { [vp.x, vp.y, 0, 0] } else { [vp.x, vp.y, vp.w, vp.h] }),
                 background: Some((gui.background_rgb(), gui.background_rgb())),
+                // Lit and in the colour key's colours, as the window draws a model (`window.rs`).
+                style: input.view.style_for(input.scene(), geometry),
+                shade: geometry,
+                key_colours: geometry.then_some(input.view.key_colours),
                 ..Default::default()
             },
         );
@@ -1424,7 +1429,7 @@ mod snapshot_tests {
         };
         wait(&mut session, &|s| s.fea().preview_summary().is_ok());
         session.act(EditorAction::Bushing(BushingAct::EdgeCheck(false)));
-        wait(&mut session, &|s| s.model().recommendations.len() > 0 && !s.solving());
+        wait(&mut session, &|s| !s.model().recommendations.is_empty() && !s.solving());
         let scenes_of = |s: &mut BushingSession| s.scene().unwrap();
         pollster::block_on(async {
             let adapter = test_adapter().await.expect("adapter required");
@@ -1465,6 +1470,51 @@ mod snapshot_tests {
             gui.select_tab_named(&input, "Simulation");
             draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
             std::fs::write(format!("{dir}/bushing-result.rgba"), read_back(&r, &texture)).unwrap();
+        });
+    }
+
+    /// The Fastener Hole workbench (regular fit, countersink dark and light, the Report step), as raw RGBA dumps:
+    /// `FEA_SNAPSHOT_FASTENER_OUT=/dir cargo test ... fastener_snapshot -- --ignored`.
+    #[test]
+    #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_FASTENER_OUT"]
+    fn fastener_snapshot() {
+        use crate::gpu_viewer::editor::fastener::{file::FastenerFile, FastenerAct, FastenerSession};
+        use crate::gpu_viewer::editor::session::EditorAction;
+        use crate::toolboxes::fastener_hole::model::{FastenerHoleModel, FieldRow, NumberPart, NumberTarget};
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_FASTENER_OUT") else { return };
+        let _guard = headless_guard();
+        let mut model = FastenerHoleModel::default();
+        model.commit_number(NumberTarget::RegularHole2, NumberPart::TolPlus, 0.003);
+        let mut session = FastenerSession::new(&FastenerFile::capture(&model, "Skin splice"), std::env::temp_dir().join("fastener-snapshot.json"));
+        pollster::block_on(async {
+            let adapter = test_adapter().await.expect("adapter required");
+            let (w, h) = (1360u32, 860u32);
+            let scene = session.scene().unwrap();
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+            let shoot = |r: &mut Renderer, session: &mut FastenerSession, step: &str, name: &str, dark: bool| {
+                let scene = session.scene().unwrap();
+                r.set_scene(&scene).unwrap();
+                let texture = target(r, w, h);
+                let mut gui = Gui::new();
+                gui.ctx().set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+                let mut view = ViewState::new(&scene);
+                // The light shot keeps the default style (wireframe: only the coloured faces are painted).
+                if dark {
+                    view.style = crate::gpu_viewer::display::DisplayStyle::ShadedEdges;
+                }
+                // The window opens on the editor's view, without mesh lines.
+                let (yaw, pitch) = session.initial_view().map_or((0.0, 0.0), |v| v.angles());
+                let scenes = [scene];
+                let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+                gui.select_tab_named(&input, step);
+                draw(r, &mut gui, &texture, &input, [yaw, pitch], session.default_mesh_lines());
+                std::fs::write(format!("{dir}/{name}.rgba"), read_back(r, &texture)).unwrap();
+            };
+            shoot(&mut r, &mut session, "Inputs", "fastener-regular", true);
+            session.act(EditorAction::Fastener(FastenerAct::Row(FieldRow::ToggleHoleType)));
+            shoot(&mut r, &mut session, "Inputs", "fastener-countersink", true);
+            shoot(&mut r, &mut session, "Inputs", "fastener-countersink-light", false);
+            shoot(&mut r, &mut session, "Report", "fastener-report", true);
         });
     }
 

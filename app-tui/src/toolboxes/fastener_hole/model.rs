@@ -319,7 +319,7 @@ impl FastenerHoleModel {
         }
     }
 
-    fn set_toleranced(&mut self, target: NumberTarget, value: TolerancedValue) {
+    pub fn set_toleranced(&mut self, target: NumberTarget, value: TolerancedValue) {
         match target {
             NumberTarget::RegularHole1 => self.regular.hole1 = value,
             NumberTarget::RegularHole2 => self.regular.hole2 = value,
