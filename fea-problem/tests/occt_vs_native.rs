@@ -249,7 +249,9 @@ fn the_native_path_matches_the_opencascade_path_on_quality_size_and_the_benchmar
 }
 
 /// The boundary repair returns the best mesh it reached, not the last: on the t-junction through the OpenCascade tessellation its
-/// rounds pass through 7 elements under the gate and used to end at 8 (`docs/issue-46-phase-142.md`).
+/// rounds pass through 7 elements under the gate and used to end at 8 (`docs/issue-46-phase-142.md`). The chained move (a pinned
+/// vertex moved although it pushes neighbours under the gate, the neighbours repaired after it) takes it to 5
+/// (`docs/issue-46-phase-143.md`).
 #[test]
 #[ignore = "meshes the t-junction (about 25 s in release)"]
 fn the_t_junction_repair_keeps_its_best_round() {
@@ -258,7 +260,23 @@ fn the_t_junction_repair_keeps_its_best_round() {
     let Geometry::Solid { cache: Some(oc), .. } = &base.geometry else { panic!() };
     let r = measure(&base, oc.clone(), &c.text, base.mesh.size * c.h_scale, false);
     assert!(r.err.is_none(), "{:?}", r.err);
-    assert!(r.below_gate <= 7, "{} elements under the gate", r.below_gate);
+    assert!(r.below_gate <= 5, "{} elements under the gate", r.below_gate);
+}
+
+/// The relaxation stage of the boundary repair starts from the best round the exact stage reached, not from where it stalled:
+/// with the chained move, NEMA17 through the native tessellation stalled at 37 elements under the gate after passing 33, and
+/// the relaxation from there ended at 32 (29 before the chained move). Starting from the best round it ends at 25
+/// (`docs/issue-46-phase-143.md`).
+#[test]
+#[ignore = "meshes the NEMA17 bracket through the native tessellation (about 3 minutes in release)"]
+fn the_nema17_native_relaxation_starts_from_the_best_round() {
+    let c = cases().into_iter().find(|c| c.name == "NEMA17 motor bracket").unwrap();
+    let base = Problem::from_step(&c.name, &c.text).expect("OpenCascade import");
+    let Geometry::Solid { cache: Some(oc), .. } = &base.geometry else { panic!() };
+    let native = tessellate_step_native(&c.text, oc.deflection).expect("native tessellation");
+    let r = measure(&base, native, &c.text, base.mesh.size * c.h_scale, false);
+    assert!(r.err.is_none(), "{:?}", r.err);
+    assert!(r.below_gate <= 25, "{} elements under the gate", r.below_gate);
 }
 
 /// Quality of the face-tagged surface triangulation each path hands to the volume mesher: triangle count, smallest angle, share of

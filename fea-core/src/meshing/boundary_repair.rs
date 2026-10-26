@@ -174,6 +174,9 @@ pub struct RepairReport {
     pub splits: usize,
     /// Boundary vertices sunk a little below the surface (within `RELAX_DEPTH` of the size) to lift a flat element.
     pub relaxed: usize,
+    /// Vertex moves that pushed neighbouring elements under the gate, kept because repairing those neighbours left fewer
+    /// elements under the gate than before.
+    pub chained: usize,
 }
 
 /// The geometry the repair may ask about.
@@ -223,6 +226,7 @@ struct Work<'a> {
 }
 
 /// The mesh and every per-vertex and per-element table of a [`Work`] between rounds (no transaction open).
+#[derive(Clone)]
 struct Snapshot {
     p: Vec<V3>,
     tets: Vec<[usize; 4]>,
@@ -355,6 +359,13 @@ impl<'a> Work<'a> {
             *self.reasons.entry(k).or_default() += 1;
         }
         false
+    }
+    /// Record, in the verbose trace, the operation that succeeded on the element being worked.
+    fn ok(&self, k: &'static str) -> bool {
+        if self.verbose {
+            eprintln!("      ok {k} (depth {})", self.depth);
+        }
+        true
     }
     fn mark(&self) -> usize {
         self.log.len()
@@ -557,6 +568,11 @@ impl<'a> Work<'a> {
         unit(g)
     }
     fn new_faces_follow_surface(&self, ts: &[usize], before: &BTreeMap<[usize; 3], BoundaryFaceState>, h: f64) -> bool {
+        self.surface_refusal(ts, before, h).is_none()
+    }
+    /// The first surface contract that the boundary of `ts` breaks against `before` (`None`: it follows the surface); the
+    /// reasons name the checks of [`Self::new_faces_follow_surface`] for the trace.
+    fn surface_refusal(&self, ts: &[usize], before: &BTreeMap<[usize; 3], BoundaryFaceState>, h: f64) -> Option<&'static str> {
         let after = self.boundary_faces(ts);
         // Surface fidelity is bounded by the region's own: no face of the result may deviate from its CAD patch by more than
         // the worst face of the replaced surface (or the tolerance). A flat triangle on a tight fillet carries a chord error
@@ -567,19 +583,21 @@ impl<'a> Work<'a> {
         let mut added = Vec::new();
         for (&f, &apex) in &after {
             let now = self.boundary_face_state(f, apex, h);
-            if !now.area.is_finite() || !now.max_surface_error.is_finite() || !now.normal_alignment.is_finite() { return false; }
+            if !now.area.is_finite() || !now.max_surface_error.is_finite() || !now.normal_alignment.is_finite() { return Some("surface: not finite"); }
             match before.get(&f) {
                 Some(old) => {
-                    if old.area <= 0.0 || now.area <= 0.0
-                        || now.area > 2.0 * old.area || old.area > 2.0 * now.area
-                        || now.max_surface_error > region_error + 1e-9 * h
-                        || now.normal_alignment + 0.1 < old.normal_alignment
-                        || now.normal_alignment + EPS < old.normal_alignment.min(0.5)
-                        || now.owner != old.owner
-                    { return false; }
+                    if old.area <= 0.0 || now.area <= 0.0 || now.area > 2.0 * old.area || old.area > 2.0 * now.area {
+                        return Some("surface: kept face area");
+                    }
+                    if now.max_surface_error > region_error + 1e-9 * h { return Some("surface: kept face error"); }
+                    if now.normal_alignment + 0.1 < old.normal_alignment || now.normal_alignment + EPS < old.normal_alignment.min(0.5) {
+                        return Some("surface: kept face turned");
+                    }
+                    if now.owner != old.owner { return Some("surface: kept face owner"); }
                 }
                 None => {
-                    if now.normal_alignment < 0.5 || now.max_surface_error > region_error + 1e-9 * h { return false; }
+                    if now.normal_alignment < 0.5 { return Some("surface: new face turned"); }
+                    if now.max_surface_error > region_error + 1e-9 * h { return Some("surface: new face error"); }
                     if let Some(owner) = now.owner { added.push((f, apex, owner)); }
                 }
             }
@@ -590,7 +608,8 @@ impl<'a> Work<'a> {
         // along a tangent seam (a fillet meeting its flat face or the next fillet) the classification of a face straddling
         // the seam is arbitrary, while across a sharp edge no face faces like both patches.
         let removed_owners: BTreeSet<_> = before.iter().filter(|(f, _)| !after.contains_key(*f)).filter_map(|(_, s)| s.owner).collect();
-        added.into_iter().all(|(f, apex, owner)| removed_owners.contains(&owner) || removed_owners.iter().any(|&r| self.face_touches_patch(f, apex, r, h)))
+        let ok = added.into_iter().all(|(f, apex, owner)| removed_owners.contains(&owner) || removed_owners.iter().any(|&r| self.face_touches_patch(f, apex, r, h)));
+        if ok { None } else { Some("surface: new patch") }
     }
     /// Does boundary face `f` touch CAD patch `face`: its centroid within the deviation bound of the patch, and its outward
     /// normal within 60 degrees of the patch normal there. A face straddling a tangent seam does (its edges may run beyond
@@ -670,6 +689,27 @@ impl<'a> Work<'a> {
         }
         self.state[v] = if fixed { 2 } else { 1 };
         fixed
+    }
+    /// The model edge through feature vertex `v`: its two faces (the faces within half the size) and its unit tangent there.
+    /// A corner (three or more faces) or two faces meeting nearly tangentially is not an edge a vertex can move along.
+    fn feature_edge(&self, v: usize) -> Result<(Vec<usize>, V3), &'static str> {
+        let Some(fd) = self.ctx.face_dists else { return Err("feature_edge#faces") };
+        let hits = fd(self.p[v]);
+        let near: Vec<&FaceHit> = hits.iter().filter(|h| h.dist.abs() < 0.5 * self.hv[v]).collect();
+        if near.len() != 2 {
+            return Err("optimise_vertex#1");
+        }
+        let (Some(n0), Some(n1)) = (
+            self.face_normal(self.p[v], near[0], self.hv[v]),
+            self.face_normal(self.p[v], near[1], self.hv[v]),
+        ) else { return Err("optimise_vertex#normal") };
+        let t = cross(n0, n1);
+        if norm(t) < 0.3 {
+            return Err("optimise_vertex#2");
+        }
+        let mut faces = vec![near[0].face, near[1].face];
+        faces.sort_unstable();
+        Ok((faces, unit(t)))
     }
     /// A point of the surface near `x` for the boundary vertex `v` (its own model face when faces can be asked), `None` when
     /// the point would leave the face or come too close to another one.
@@ -753,25 +793,22 @@ impl<'a> Work<'a> {
     /// Optimise vertex `v` (interior, or a free boundary vertex sliding on the surface): pattern search on the worst scaled
     /// Jacobian of its star. Returns whether it moved.
     fn optimise_vertex(&mut self, v: usize, use_pen: bool, relax: bool) -> bool {
+        self.optimise_vertex_with(v, use_pen, relax, false)
+    }
+    /// [`Self::optimise_vertex`]; with `push` a candidate may put more elements of the star under the gate (for
+    /// [`Self::chained_move`], which repairs them and judges the whole chain).
+    fn optimise_vertex_with(&mut self, v: usize, use_pen: bool, relax: bool, push: bool) -> bool {
         let boundary = self.bnd[v];
         // a vertex on an edge of the model (exactly two faces) may slide along it; corners and sharp bends stay
         let mut feature: Option<(Vec<usize>, V3)> = None;
         if boundary && self.fixed(v) {
-            let Some(fd) = self.ctx.face_dists else { return false };
-            let hits = fd(self.p[v]);
-            let near: Vec<&FaceHit> = hits.iter().filter(|h| h.dist.abs() < 0.5 * self.hv[v]).collect();
-            if near.len() != 2 {
-                return self.why("optimise_vertex#1");
+            if self.ctx.face_dists.is_none() {
+                return false;
             }
-            let (Some(n0), Some(n1)) = (
-                self.face_normal(self.p[v], near[0], self.hv[v]),
-                self.face_normal(self.p[v], near[1], self.hv[v]),
-            ) else { return self.why("optimise_vertex#normal"); };
-            let t = cross(n0, n1);
-            if norm(t) < 0.3 {
-                return self.why("optimise_vertex#2");
+            match self.feature_edge(v) {
+                Ok(f) => feature = Some(f),
+                Err(k) => return self.why(k),
             }
-            feature = Some((vec![near[0].face, near[1].face], unit(t)));
         }
         let star = self.vt[v].clone();
         if star.is_empty() {
@@ -782,13 +819,40 @@ impl<'a> Work<'a> {
         let old_min = self.min_sj(&star);
         let old_faces = if boundary { Some(self.boundary_snapshot(&star, h)) } else { None };
         let old_under = self.under_gate_ids(&star);
-        let eval = |this: &mut Work, x: V3| -> (f64, f64) {
+        // candidate refusals by reason, for the verbose trace
+        let mut refused: BTreeMap<&'static str, usize> = BTreeMap::new();
+        let eval = |this: &mut Work, x: V3, refused: &mut BTreeMap<&'static str, usize>| -> (f64, f64) {
             let keep = this.p[v];
             this.p[v] = x;
-            let (m, pen) = if this.under_gate_ids(&star) > old_under { (f64::NEG_INFINITY, f64::INFINITY) } else if old_faces.as_ref().is_none_or(|before| this.new_faces_follow_surface(&star, before, h)) {
-                (this.min_sj(&star), this.penalty_ids(&star))
+            let why = if !push && this.under_gate_ids(&star) > old_under {
+                if this.verbose {
+                    // the cells this move pushes under the gate, by their quality before it
+                    let gate = QualityThresholds::default().min_scaled_jacobian;
+                    for &t in &star {
+                        let now = this.sj(this.tets[t]);
+                        this.p[v] = keep;
+                        let was = this.sj(this.tets[t]);
+                        this.p[v] = x;
+                        if now < gate && was >= gate {
+                            let k = if was < 0.11 { "pushed under: was 0.10-0.11" } else if was < 0.15 { "pushed under: was 0.11-0.15" } else { "pushed under: was >= 0.15" };
+                            *refused.entry(k).or_default() += 1;
+                        }
+                    }
+                }
+                Some("more under the gate")
+            } else if this.verbose {
+                old_faces.as_ref().and_then(|before| this.surface_refusal(&star, before, h))
+            } else if old_faces.as_ref().is_none_or(|before| this.new_faces_follow_surface(&star, before, h)) {
+                None
             } else {
-                (f64::NEG_INFINITY, f64::INFINITY)
+                Some("surface")
+            };
+            let (m, pen) = match why {
+                None => (this.min_sj(&star), this.penalty_ids(&star)),
+                Some(k) => {
+                    if this.verbose { *refused.entry(k).or_default() += 1; }
+                    (f64::NEG_INFINITY, f64::INFINITY)
+                }
             };
             this.p[v] = keep;
             (m, pen)
@@ -882,10 +946,10 @@ impl<'a> Work<'a> {
                 break;
             }
             for &off in offsets {
-              let Some(y0) = place(self, s) else { break };
+              let Some(y0) = place(self, s) else { *refused.entry("no surface point").or_default() += 1; break };
               let y = sink(self, y0, off);
               {
-                let (val, pen) = eval(self, y);
+                let (val, pen) = eval(self, y, &mut refused);
                 if val > 1e-6 && if use_pen { val >= old_min - 1e-9 && (val > best_val + 1e-4 || (val >= best_val - 1e-4 && pen < best_pen - 1e-9)) } else { val > best_val + 1e-4 } {
                     best_val = val;
                     best_pen = pen;
@@ -905,10 +969,10 @@ impl<'a> Work<'a> {
                     break;
                 }
                 for &off in offsets {
-                  let Some(y0) = place(self, add(centre, scale(*d, r))) else { break };
+                  let Some(y0) = place(self, add(centre, scale(*d, r))) else { *refused.entry("no surface point").or_default() += 1; break };
                   let y = sink(self, y0, off);
                   {
-                    let (val, pen) = eval(self, y);
+                    let (val, pen) = eval(self, y, &mut refused);
                     if val > 1e-6 && if use_pen { val >= old_min - 1e-9 && (val > best_val + 1e-4 || (val >= best_val - 1e-4 && pen < best_pen - 1e-9)) } else { val > best_val + 1e-4 } {
                         best_val = val;
                         best_pen = pen;
@@ -923,7 +987,7 @@ impl<'a> Work<'a> {
             }
         }
         if self.verbose {
-            eprintln!("      vertex {v} (bnd {boundary}, relax {relax}, pen {use_pen}): star {} min {old_min:.4} -> {best_val:.4}, pen {old_pen:.5} -> {best_pen:.5}, moved {:.4}", star.len(), norm(sub(best, old)));
+            eprintln!("      vertex {v} (bnd {boundary}, feature {}, relax {relax}, pen {use_pen}): star {} min {old_min:.4} -> {best_val:.4}, pen {old_pen:.5} -> {best_pen:.5}, moved {:.4}, refused {refused:?}", feature.is_some(), star.len(), norm(sub(best, old)));
         }
         if !(self.gains(old_min, best_val) || (use_pen && best_pen < 0.98 * old_pen - 1e-9)) || best == old {
             return self.why("optimise_vertex#4");
@@ -1563,6 +1627,64 @@ impl<'a> Work<'a> {
 
     // ---- driver ----
 
+    /// Move `v` to the best position for its star even when that puts neighbouring elements under the gate, then repair
+    /// those neighbours by moving their other vertices. The chain is kept only when the elements it changed hold strictly
+    /// fewer elements under the gate than before and their worst is no worse; otherwise all of it is undone. Single moves at
+    /// a model feature stall when every position of a pinned vertex pushes a sound neighbour under the gate, though the
+    /// neighbour has the slack to recover once its own vertices follow.
+    fn chained_move(&mut self, v: usize) -> bool {
+        let gate = QualityThresholds::default().min_scaled_jacobian;
+        let report = self.rep.clone();
+        self.depth += 1;
+        let m = self.mark();
+        let mut kept = false;
+        if self.optimise_vertex_with(v, false, false, true) {
+            for _ in 0..2 {
+                let pushed: Vec<usize> = self.vt[v].iter().copied().filter(|&t| self.sj(self.tets[t]) < gate).collect();
+                let mut any = false;
+                for t in pushed {
+                    for w in self.tets[t] {
+                        if w != v && self.sj(self.tets[t]) < gate && self.optimise_vertex(w, false, false) {
+                            any = true;
+                        }
+                    }
+                }
+                if !any {
+                    break;
+                }
+            }
+            // Only moves happen in the chain, so the elements around the moved vertices are every element it changed.
+            let mut old: BTreeMap<usize, V3> = BTreeMap::new();
+            for ch in &self.log[m..] {
+                if let Ch::Move(u, x) = *ch {
+                    old.entry(u).or_insert(x);
+                }
+            }
+            let cells: Vec<usize> = old.keys().flat_map(|&u| self.vt[u].iter().copied()).collect::<BTreeSet<_>>().into_iter().collect();
+            let after = (self.under_gate_ids(&cells), self.min_sj(&cells));
+            let new: Vec<(usize, V3)> = old.keys().map(|&u| (u, self.p[u])).collect();
+            for (&u, &x) in &old {
+                self.p[u] = x;
+            }
+            let before = (self.under_gate_ids(&cells), self.min_sj(&cells));
+            for (u, x) in new {
+                self.p[u] = x;
+            }
+            if self.verbose {
+                eprintln!("      chain from {v}: {} vertices moved, under the gate {} -> {}, min {:.4} -> {:.4}", old.len(), before.0, after.0, before.1, after.1);
+            }
+            kept = after.0 < before.0 && after.1 >= before.1 - EPS;
+        }
+        self.depth -= 1;
+        if !kept {
+            self.rollback(m);
+            self.rep = report;
+            return self.why("chained_move#1");
+        }
+        self.commit();
+        self.rep.chained += 1;
+        true
+    }
     /// Try the operations on the bad element `t` in order; returns whether one was applied.
     fn cleanup_tet(&mut self, t: usize, allow_split: bool) -> bool {
         if !self.alive[t] {
@@ -1575,35 +1697,38 @@ impl<'a> Work<'a> {
         let interior: Vec<usize> = vs.iter().copied().filter(|&v| !self.bnd[v]).collect();
         for v in interior {
             if self.optimise_vertex(v, false, false) {
-                return true;
+                return self.ok("optimise interior vertex");
             }
         }
         // 2. reconnection of interior edges and faces
         for i in 0..4 {
             for j in i + 1..4 {
                 if !self.alive[t] {
-                    return true;
+                    return self.ok("element gone");
                 }
                 if self.remove_edge(c[i], c[j]) {
-                    return true;
+                    return self.ok("remove_edge");
                 }
             }
         }
         for k in 0..4 {
             let f: Vec<usize> = (0..4).filter(|&j| j != k).map(|j| c[j]).collect();
             if self.flip_face(f[0], f[1], f[2]) {
-                return true;
+                return self.ok("flip_face");
             }
         }
         // 3. surface moves
         let on_surface: Vec<usize> = vs.iter().copied().filter(|&v| self.bnd[v]).collect();
         for v in on_surface {
             if self.optimise_vertex(v, false, false) {
-                return true;
+                return self.ok("slide boundary vertex");
             }
         }
-        if self.peel(t) || self.promote(t) {
-            return true;
+        if self.peel(t) {
+            return self.ok("peel");
+        }
+        if self.promote(t) {
+            return self.ok("promote");
         }
         // 4. collapse, shortest edge first
         let mut edges: Vec<(f64, usize, usize)> = Vec::new();
@@ -1615,29 +1740,35 @@ impl<'a> Work<'a> {
         edges.sort_by(|a, b| a.0.total_cmp(&b.0));
         for &(_, x, y) in &edges {
             if self.collapse(x, y) || self.collapse(y, x) {
-                return true;
+                return self.ok("collapse");
             }
         }
         // 5. smoothing against the smooth penalty (progress for the second-worst element when the worst is held elsewhere)
         for v in c {
             if self.alive[t] && self.optimise_vertex(v, true, false) {
-                return true;
+                return self.ok("smooth penalty");
             }
         }
-        // 6. split, longest edge first
+        // 6. a move that pushes neighbours under the gate, repaired by moving their vertices (judged as one change)
+        for v in c {
+            if self.alive[t] && self.chained_move(v) {
+                return self.ok("chained move");
+            }
+        }
+        // 7. split, longest edge first
         if allow_split {
             for &(_, x, y) in edges.iter().rev() {
                 if self.split_edge(x, y) {
-                    return true;
+                    return self.ok("split_edge");
                 }
             }
         }
-        // 7. relaxation of boundary vertices off the surface by a bounded depth, once everything else has stalled
+        // 8. relaxation of boundary vertices off the surface by a bounded depth, once everything else has stalled
         if self.relax_enabled {
             let on_surface: Vec<usize> = c.iter().copied().filter(|&v| self.bnd[v]).collect();
             for v in on_surface {
                 if self.alive[t] && self.optimise_vertex(v, false, true) {
-                    return true;
+                    return self.ok("relax boundary vertex");
                 }
             }
         }
@@ -1646,10 +1777,14 @@ impl<'a> Work<'a> {
 
     /// Probe a failed element for trace reasons without committing the probe's mesh or counters.
     fn trace_retry(&mut self, t: usize) -> bool {
+        let gate = QualityThresholds::default().min_scaled_jacobian;
+        let count = |w: &Work| (0..w.tets.len()).filter(|&u| w.alive[u] && w.sj(w.tets[u]) < gate).count();
+        let before = count(self);
         let mark = self.mark();
         let report = self.rep.clone();
         self.depth += 1;
         let result = self.cleanup_tet(t, true);
+        eprintln!("    retry: elements under the gate {before} -> {} in the whole mesh", count(self));
         self.rollback(mark);
         self.depth -= 1;
         self.rep = report;
@@ -1786,6 +1921,18 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
                 w.relax_enabled = true;
                 w.failed.clear();
                 stale = 0;
+                // The relaxation starts from the best round reached, not from wherever the exact stage stalled: which state it
+                // starts from decides what it reaches (NEMA17 native ended at 29 or 32 elements under the gate from exact
+                // stages that stalled at 39 and 37).
+                if best_key < key {
+                    if let Some(b) = &best {
+                        if w.trace {
+                            eprintln!("relaxation starts from the best round {best_key:?} (stalled at {key:?})");
+                        }
+                        w.restore(b.clone());
+                        continue;
+                    }
+                }
             } else {
                 break;
             }
@@ -1834,6 +1981,16 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
                 // a new stage: its own budget of stale rounds (relaxed moves need a few rounds to clear anything, and cells
                 // worked for a folded face keep the count under the target from falling meanwhile)
                 stale = 0;
+                // from the best round reached, as above
+                if let Some(b) = &best {
+                    let now = round_key(&w.round_work(opts.target).0, gate);
+                    if best_key < now {
+                        if w.trace {
+                            eprintln!("relaxation starts from the best round {best_key:?} (stalled at {now:?})");
+                        }
+                        w.restore(b.clone());
+                    }
+                }
                 continue;
             }
             break;
@@ -1877,7 +2034,7 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
                     eprintln!("    cavity exterior {:?}", w.boundary_faces(&region).keys().map(|f| f.map(|v| map[&v])).collect::<Vec<_>>());
                 }
             }
-            if shown < 3 {
+            if shown < 8 {
                 eprintln!("    coords {:?} sdf {:?}", c.map(|v| w.p[v]), c.map(|v| (w.ctx.sdf)(w.p[v])));
                 w.verbose = true;
                 let r = w.trace_retry(t);
@@ -1955,6 +2112,86 @@ mod tests {
             trace: false, verbose: false, relax_enabled: false, reasons: Default::default(),
             ctx, rep: RepairReport::default(), target: 0.12,
         }
+    }
+
+    /// A 4 x 4 x 4 lattice of unit cubes cut into six elements each, its outer vertices held (corners and edges of the box are
+    /// pinned without model faces, the rest marked fixed), and the interior vertices moved by `shift`.
+    fn lattice<'a>(ctx: &'a RepairContext<'a>, shift: &[(usize, V3)]) -> Work<'a> {
+        let n = 4;
+        let id = |i: usize, j: usize, k: usize| (i * n + j) * n + k;
+        let mut p = Vec::new();
+        for i in 0..n { for j in 0..n { for k in 0..n { p.push([i as f64, j as f64, k as f64]); } } }
+        for &(v, d) in shift { p[v] = add(p[v], d); }
+        let mut tets = Vec::new();
+        for i in 0..n - 1 { for j in 0..n - 1 { for k in 0..n - 1 {
+            for perm in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+                let mut at = [i, j, k];
+                let mut c = [id(i, j, k), 0, 0, 0];
+                for (s, &axis) in perm.iter().enumerate() { at[axis] += 1; c[s + 1] = id(at[0], at[1], at[2]); }
+                if vol6(&p, c) < 0.0 { c.swap(0, 1); }
+                tets.push(c);
+            }
+        }}}
+        let mut vt = vec![Vec::new(); p.len()];
+        for (t, c) in tets.iter().enumerate() { for &v in c { vt[v].push(t); } }
+        let outer: Vec<bool> = (0..p.len()).map(|v| { let (i, j, k) = (v / (n * n), v / n % n, v % n); [i, j, k].iter().any(|&x| x == 0 || x == n - 1) }).collect();
+        let m = p.len();
+        let live = tets.len();
+        Work {
+            p, alive: vec![true; live], tets, vt, state: outer.iter().map(|&o| if o { 2 } else { 0 }).collect(), bnd: outer,
+            hv: vec![1.0; m], live, max_live: 2 * live, log: Vec::new(), ver: vec![0; m], clock: 0, failed: Default::default(),
+            depth: 0, trace: false, verbose: false, relax_enabled: false, reasons: Default::default(), ctx,
+            rep: RepairReport::default(), target: 0.12,
+        }
+    }
+
+    /// Interior vertices of the lattice, moved by up to 0.45 (found by a seeded search for a case where the plain move of
+    /// vertex 21 is refused and the chain is not).
+    const CHAIN_SHIFT: [(usize, V3); 8] = [
+        (21, [-0.41304924158162554, 0.14742076642160593, 0.30612567903211985]),
+        (22, [0.4023356688867415, 0.08041250487872005, -0.3167644823747256]),
+        (25, [0.32414582909447365, -0.25979612673960095, 0.03882080070943288]),
+        (26, [0.40912135124152704, 0.26282117039918396, 0.15579209393426321]),
+        (37, [-0.40306819590931875, 0.06166133686706212, 0.11911535391355783]),
+        (38, [0.19961982541912734, -0.14555729891584632, 0.0800885728031598]),
+        (41, [0.13477436391213726, -0.30890736711436834, -0.28403942803676135]),
+        (42, [0.18818541552226423, -0.10860156176111137, 0.3087374449269669]),
+    ];
+
+    #[test]
+    fn a_move_that_pushes_neighbours_under_the_gate_is_kept_once_they_are_repaired() {
+        let sdf = |x: V3| (-x[0]).max(x[0] - 3.0).max(-x[1]).max(x[1] - 3.0).max(-x[2]).max(x[2] - 3.0);
+        let ctx = RepairContext { sdf: &sdf, face_dists: None, triangle_face: None };
+        let mut w = lattice(&ctx, &CHAIN_SHIFT);
+        let all: Vec<usize> = (0..w.tets.len()).collect();
+        let (under, worst) = (w.under_gate_ids(&all), w.min_sj(&all));
+        assert_eq!(under, 5);
+        // every position that lifts the star of 21 pushes another of its elements under the gate
+        assert!(!w.optimise_vertex(21, false, false));
+        assert!(w.chained_move(21));
+        assert_eq!(w.under_gate_ids(&all), 0);
+        assert!(w.min_sj(&all) > worst);
+        assert_eq!(w.rep.chained, 1);
+        assert!(w.log.is_empty(), "the chain is committed as one change");
+        assert!((0..w.tets.len()).all(|t| vol6(&w.p, w.tets[t]) > 0.0));
+    }
+
+    #[test]
+    fn a_chain_that_does_not_lower_the_count_is_undone_whole() {
+        let sdf = |x: V3| (-x[0]).max(x[0] - 3.0).max(-x[1]).max(x[1] - 3.0).max(-x[2]).max(x[2] - 3.0);
+        let ctx = RepairContext { sdf: &sdf, face_dists: None, triangle_face: None };
+        let mut refused = 0;
+        for (v, _) in CHAIN_SHIFT {
+            let mut w = lattice(&ctx, &CHAIN_SHIFT);
+            let p = w.p.clone();
+            if !w.chained_move(v) {
+                refused += 1;
+                assert_eq!(w.p, p, "vertex {v}: every move of the chain is undone");
+                assert_eq!(w.rep, RepairReport::default(), "vertex {v}: and so are its counts");
+                assert!(w.log.is_empty() && w.depth == 0);
+            }
+        }
+        assert!(refused > 0, "the fixture exercises the refusal");
     }
 
     fn boundary_rim_star<'a>(ctx: &'a RepairContext<'a>) -> Work<'a> {

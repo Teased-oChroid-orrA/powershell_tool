@@ -3,7 +3,7 @@
   "epic_complete": false,
   "branch": "main",
   "pull_request": null,
-  "pull_request_state": "none_open_after_pr_173",
+  "pull_request_state": "open_for_phase_143",
   "merged_prs": [
     42,
     65,
@@ -76,23 +76,24 @@
     171,
     173
   ],
-  "latest_qualified_source": "fe1f4c86f80cee91b4267ad52feec93cd7c6e492",
-  "latest_phase": 142,
-  "progress_snapshot": "issue-46-phase-142.md",
+  "latest_qualified_source": "ebd19eaf0075f45486f27bce98f44f6eaff5618d",
+  "latest_phase": 143,
+  "progress_snapshot": "issue-46-phase-143.md",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
-  "remaining": "Phase 142: 34/38 same-STEP parity rows pass; best-round retention took t-junction to 7/8 and NEMA17 to 24/29, which remain below the 0.1 gate on boundary cells. Boss contact/volume audits were not rerun on the final build. ABC 00006600 grading, Windows mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
+  "remaining": "Phase 143: 34/38 same-STEP parity rows pass; the chained vertex move and the relaxation from the best round took t-junction OCCT to 5 (native 8) and NEMA17 native to 25 (OCCT 24), which remain below the 0.1 gate. Boss contact/volume audits were not rerun on the final build. ABC 00006600 grading, Windows mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
   "latest_increment_tests": {
     "commands": [
       "cargo test -p fea-core -p solid-kernel -p fea-problem --release --locked --offline -j1 --no-fail-fast",
       "CASE='' cargo test -p fea-problem --features occt --release --locked --offline -j1 --test occt_vs_native -- --ignored --nocapture table",
       "cargo test -p fea-core --release --locked --offline -j1 --test tetmesh_repair -- --ignored connected_plate_boss_rim_passes_solver_gate",
-      "cargo test -p app-tui --release --locked --offline -j1"
+      "cargo test -p app-tui --release --locked --offline -j1",
+      "cargo test -p fea-problem --features occt --release --locked --offline -j1 --test occt_vs_native -- --ignored the_t_junction_repair_keeps_its_best_round the_nema17_native_relaxation_starts_from_the_best_round"
     ],
     "result": "passed",
-    "platform": "macOS arm64, release, serial Cargo: 1122 passed / 0 failed / 47 ignored; app-tui 1226 passed / 0 failed; mesh-only parity table 34/38 gate rows pass (docs/issue-46-phase-142-parity.txt), solves rerun on the two changed rows; connected boss gate passes",
-    "at": "fe1f4c86f80cee91b4267ad52feec93cd7c6e492",
+    "platform": "macOS arm64, release, serial Cargo: 1124 passed / 0 failed / 47 ignored; app-tui 1226 passed / 0 failed; parity table with solves 34/38 gate rows pass (docs/issue-46-phase-143-parity.txt); connected boss gate passes; the_t_junction_repair_keeps_its_best_round and the_nema17_native_relaxation_starts_from_the_best_round pass",
+    "at": "ebd19eaf0075f45486f27bce98f44f6eaff5618d",
     "corpus": "issue-46-abc-corpus-2026-10-18.md"
   },
   "tests": {
@@ -105,7 +106,7 @@
   "last_confirmed_main_merge": "ecfe476518f2f3666da2d192662d38e0ed791806",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Remaining boundary sub-gate cells on t-junction (7/8) and NEMA17 (24/29); rerun boss contact/volume audits on the Phase 141 build; fidelity measurement on fillet cases under the region bound; unaudited fea-core modules listed in Phase 141; Windows and remaining five-plan items",
+    "scope": "Remaining boundary sub-gate cells on t-junction (5/8) and NEMA17 (24/25), path-dependent; a joint optimisation or local rebuild of stuck regions is the next lever; rerun boss contact/volume audits on the Phase 141 build; fidelity measurement on fillet cases under the region bound; unaudited fea-core modules listed in Phase 141; Windows and remaining five-plan items",
     "status": "see_resume_guide_open_list"
   },
   "base_main_head": "ecfe476518f2f3666da2d192662d38e0ed791806",
