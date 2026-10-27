@@ -1679,13 +1679,26 @@ impl<'a> Work<'a> {
         let h = self.hv[a].max(self.hv[b]);
         match (self.fixed(a), self.fixed(b)) {
             (false, false) => self.surface_point(Some(b), m, h, None),
-            (true, true) => {
-                let (fa, fb) = (self.feature_edge(a).ok()?, self.feature_edge(b).ok()?);
-                if fa.0 != fb.0 {
-                    return None;
+            (true, true) => match (self.feature_edge(a), self.feature_edge(b)) {
+                (Ok(fa), Ok(fb)) => {
+                    if fa.0 != fb.0 {
+                        return None;
+                    }
+                    self.surface_point(Some(b), m, h, Some(&fa.0))
                 }
-                self.surface_point(Some(b), m, h, Some(&fa.0))
-            }
+                // an end at a corner of three or more faces, the other near some of them: the two merge onto the corner
+                _ => {
+                    let faces = [a, b].into_iter().filter_map(|v| self.corner_faces(v)).max_by_key(Vec::len)?;
+                    let fd = self.ctx.face_dists?;
+                    for v in [a, b] {
+                        if !fd(self.p[v]).iter().filter(|x| x.dist.abs() < 0.5 * self.hv[v]).all(|x| faces.contains(&x.face)) {
+                            return None;
+                        }
+                    }
+                    let y = self.surface_point(Some(b), m, h, Some(&faces))?;
+                    (norm(sub(y, self.p[a])) <= h && norm(sub(y, self.p[b])) <= h).then_some(y)
+                }
+            },
             _ => None,
         }
     }
@@ -3113,6 +3126,41 @@ mod tests {
         assert!(!w.optimise_vertex(7, false, false));
         assert!(w.reasons.keys().any(|k| k.starts_with("corner#")), "{:?}", w.reasons);
         assert_eq!((w.p, w.tets, w.rep), snapshot);
+    }
+
+    #[test]
+    fn two_pinned_vertices_beside_a_corner_merge_onto_it() {
+        // vertex 7 on the edge x = y = 0 within half the size of the corner (three faces near), vertex 3 on the same edge 0.6
+        // below (two faces near), both pinned: the edge between them merges at the corner, not at its midpoint
+        let ctx = RepairContext { sdf: &octant_sdf, face_dists: Some(&octant_faces), triangle_face: None };
+        let mut w = corner_cube(&ctx, &[(7, [0.0, 0.0, -0.1]), (3, [0.0, 0.0, -0.6])]);
+        w.state[3] = 2;
+        assert!(w.fixed(3) && w.fixed(7));
+        assert_eq!(w.corner_faces(7), Some(vec![0, 1, 2]));
+        assert!(w.feature_edge(7).is_err());
+        let y = w.merge_point(3, 7).unwrap();
+        assert!(norm(y) < 1e-9, "{y:?}");
+        assert_eq!(w.merge_point(7, 3).map(|y| norm(y) < 1e-9), Some(true));
+        // a corner beyond the size of one end is not where they merge
+        let mut w = corner_cube(&ctx, &[(7, [0.0, 0.0, -0.4]), (3, [0.0, 0.0, -1.3])]);
+        w.state[3] = 2;
+        assert!(w.corner_faces(7).is_some());
+        assert_eq!(w.merge_point(3, 7), None);
+    }
+
+    #[test]
+    fn a_corner_merge_needs_every_face_near_either_end_at_the_corner() {
+        // a fourth face, the plane z = -0.8, is near vertex 3 but not near vertex 7: the corner of faces 0..2 does not hold it
+        let fd = |x: V3| {
+            let mut hits = octant_faces(x);
+            hits.push(FaceHit { face: 3, dist: x[2] + 0.8, normal: [0.0, 0.0, 1.0] });
+            hits
+        };
+        let ctx = RepairContext { sdf: &octant_sdf, face_dists: Some(&fd), triangle_face: None };
+        let mut w = corner_cube(&ctx, &[(7, [0.0, 0.0, -0.1]), (3, [0.0, 0.0, -0.6])]);
+        w.state[3] = 2;
+        assert_eq!(w.corner_faces(7), Some(vec![0, 1, 2]));
+        assert_eq!(w.merge_point(3, 7), None);
     }
 
     #[test]
