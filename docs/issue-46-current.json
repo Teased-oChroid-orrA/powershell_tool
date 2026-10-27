@@ -3,7 +3,7 @@
   "epic_complete": false,
   "branch": "main",
   "pull_request": null,
-  "pull_request_state": "none_open_after_pr_184",
+  "pull_request_state": "none_open_after_pr_186",
   "merged_prs": [
     42,
     65,
@@ -78,7 +78,8 @@
     177,
     180,
     182,
-    184
+    184,
+    186
   ],
   "latest_qualified_source": "d61a794e8f71451e76ea56621cae6c01f2659aa1",
   "latest_phase": 147,
@@ -97,7 +98,7 @@
     ],
     "result": "passed",
     "platform": "macOS arm64, release, serial Cargo: 1134 passed / 0 failed / 47 ignored; app-tui 1256 passed / 0 failed / 24 ignored; mesh-only parity table 36/38 gate rows pass (docs/issue-46-phase-147-parity.txt); connected boss gate passes; the_t_junction_repair_keeps_its_best_round (0 on both paths) and the_nema17_native_relaxation_starts_from_the_best_round (<= 11) pass",
-    "at": "phase-147-lower-corner-insert",
+    "at": "189b076",
     "corpus": "issue-46-abc-corpus-2026-10-18.md"
   },
   "tests": {
@@ -107,13 +108,13 @@
     "platform": "macOS arm64 (no Windows or hosted CI evidence)",
     "at": "20a3f24"
   },
-  "last_confirmed_main_merge": "3cad328f04a20c6abf9fe810bb01783c1ce39efe",
+  "last_confirmed_main_merge": "68c5910c38a31e939a498fb09008bebab91f9380",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
     "scope": "Remaining boundary sub-gate cells on NEMA17 (12/11): lower gusset corners (vertex D 0.1 from the corner; corner move refused by corner#3/#4 and corner merge by collapse#7; an operation re-tiling the face across the convex slope / gusset-side edge together with the interior vertex is untried), upper-corner moves refused by the gate or surface contracts, slot-end flat cells, base-plate fillet, corner (-30, 20, 40); rerun NEMA17 and boss solves on the Phase 147 mesh; larger or shaped rebuild cavities untried; fillet_rim_tagging with OpenCascade; unaudited fea-core modules listed in Phase 141; Windows and remaining five-plan items",
     "status": "see_resume_guide_open_list"
   },
-  "base_main_head": "3cad328f04a20c6abf9fe810bb01783c1ce39efe",
+  "base_main_head": "68c5910c38a31e939a498fb09008bebab91f9380",
   "completion_checklist": "issue-46-completion-checklist.md",
   "resume": "issue-46-resume.md",
   "pending_prs": []
