@@ -26,6 +26,8 @@ This is the current entry point for Claude Code or Codex. Historical phase repor
 
 **2026-10-26 crease-snap update:** [Phase 144](issue-46-phase-144.md) proves reentrant creases within the surface accuracy (the two faces of a tessellated model miss each other at the seam; the old round-off tolerance never proved the t-junction crease and the snap dragged wall vertices onto it) and adds stuck-region rebuilds to the boundary repair (a cavity re-tetrahedralised as a star, kept only with strictly fewer elements under the gate and a proof that the star fills the cavity): t-junction 5/8 to 0/0, NEMA17 24/25 to 23/24, every other parity row identical; 36/38 rows pass. Merged as PR #180. Retirement remains unapproved.
 
+**2026-10-26 edge-merge update:** [Phase 145](issue-46-phase-145.md) traces NEMA17's remaining cells: half of them share one boundary edge 0.05 of the size long beside the gussets' reentrant crease, its two ends pinned so that neither could take the other. The boundary repair now merges such an edge at its midpoint (on the model edge), judged over both stars with the existing surface checks: NEMA17 23/24 to 13/12, 36/38 rows pass. Retirement remains unapproved.
+
 ## Establish current state
 
 1. Read root `CLAUDE.md`, then the relevant crate and `docs/AGENTS.md` instructions.
