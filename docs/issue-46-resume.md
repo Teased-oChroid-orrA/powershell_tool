@@ -28,7 +28,7 @@ This is the current entry point for Claude Code or Codex. Historical phase repor
 
 **2026-10-26 edge-merge update:** [Phase 145](issue-46-phase-145.md) traces NEMA17's remaining cells: half of them share one boundary edge 0.05 of the size long beside the gussets' reentrant crease, its two ends pinned so that neither could take the other. The boundary repair now merges such an edge at its midpoint (on the model edge), judged over both stars with the existing surface checks: NEMA17 23/24 to 13/12, 36/38 rows pass. Merged as PR #182. Retirement remains unapproved.
 
-**2026-10-27 corner-vertex update:** [Phase 146](issue-46-phase-146.md) lets a pinned boundary vertex near a three-face model corner move onto the corner (under the existing gate and surface contracts), and makes `surface_point` on two or more faces start from a Gauss-Newton point on all of them (face-by-face projection stalled where faces meet at a shallow angle): NEMA17 13/12 to 12/12, 36/38 rows pass. The lower gusset corners stay out of reach. Retirement remains unapproved.
+**2026-10-27 corner-vertex update:** [Phase 146](issue-46-phase-146.md) lets a pinned boundary vertex near a three-face model corner move onto the corner (under the existing gate and surface contracts), and makes `surface_point` on two or more faces start from a Gauss-Newton point on all of them (face-by-face projection stalled where faces meet at a shallow angle): NEMA17 13/12 to 12/12, 36/38 rows pass. The lower gusset corners stay out of reach. Merged as PR #184. Retirement remains unapproved.
 
 ## Establish current state
 
