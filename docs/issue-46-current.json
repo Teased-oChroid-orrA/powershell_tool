@@ -3,7 +3,7 @@
   "epic_complete": false,
   "branch": "main",
   "pull_request": null,
-  "pull_request_state": "none_open_after_pr_180",
+  "pull_request_state": "none_open_after_pr_182",
   "merged_prs": [
     42,
     65,
@@ -76,7 +76,8 @@
     171,
     173,
     177,
-    180
+    180,
+    182
   ],
   "latest_qualified_source": "d61a794e8f71451e76ea56621cae6c01f2659aa1",
   "latest_phase": 145,
@@ -95,7 +96,7 @@
     ],
     "result": "passed",
     "platform": "macOS arm64, release, serial Cargo: 1128 passed / 0 failed / 47 ignored; app-tui 1256 passed / 0 failed / 24 ignored; mesh-only parity table 36/38 gate rows pass (docs/issue-46-phase-145-parity.txt); connected boss gate passes; the_t_junction_repair_keeps_its_best_round (0 on both paths) and the_nema17_native_relaxation_starts_from_the_best_round (<= 12) pass",
-    "at": "phase-145-relocating-collapse",
+    "at": "7772679",
     "corpus": "issue-46-abc-corpus-2026-10-18.md"
   },
   "tests": {
@@ -105,13 +106,13 @@
     "platform": "macOS arm64 (no Windows or hosted CI evidence)",
     "at": "20a3f24"
   },
-  "last_confirmed_main_merge": "cb82aecc27f1c06fda68352cb0e0170be02f6cd1",
+  "last_confirmed_main_merge": "bd2e8886ee4db33f1088817175dbd2f1891d4322",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
     "scope": "Remaining boundary sub-gate cells on NEMA17 (13/12): three-face gusset corners with no vertex on the corner (a corner merge of pinned pairs was tried and never kept), slot-end flat cells, base-plate fillet; rerun NEMA17 and boss solves on the Phase 145 mesh; larger or shaped rebuild cavities untried; fillet_rim_tagging with OpenCascade; unaudited fea-core modules listed in Phase 141; Windows and remaining five-plan items",
     "status": "see_resume_guide_open_list"
   },
-  "base_main_head": "cb82aecc27f1c06fda68352cb0e0170be02f6cd1",
+  "base_main_head": "bd2e8886ee4db33f1088817175dbd2f1891d4322",
   "completion_checklist": "issue-46-completion-checklist.md",
   "resume": "issue-46-resume.md",
   "pending_prs": []
