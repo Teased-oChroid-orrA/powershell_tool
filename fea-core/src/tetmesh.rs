@@ -845,7 +845,11 @@ fn reentrant_edge(fd: &dyn Fn(V3) -> Vec<FaceHit>, sdf: &dyn Fn(V3) -> f64, y: V
     if !eps.is_finite() || eps <= 0.0 { return false; }
     let hits = fd(y);
     let [Some(a), Some(b)] = faces.map(|f| hits.iter().find(|h| h.face == f)) else { return false };
-    let tol = 1e-3 * eps;
+    // `eps` is the surface accuracy (a thousandth of the size), not round-off: the two faces of a tessellated model need not
+    // meet exactly at their seam, and the alternating projection stops up to about `eps` off one of them (1e-6 to 1.2e-3 on
+    // the t-junction at sizes near 1). A round-off tolerance never proved such a seam, and the snap pulled the wall vertices
+    // beside it onto the edge. The sectors are sampled well beyond that gap.
+    let tol = eps;
     if !(a.dist.abs() <= tol && b.dist.abs() <= tol) { return false; }
     let (Some(n0), Some(n1)) = (a.surface_normal(y, fd, tol), b.surface_normal(y, fd, tol)) else { return false };
     let c = dot(n0, n1);
@@ -853,9 +857,10 @@ fn reentrant_edge(fd: &dyn Fn(V3) -> Vec<FaceHit>, sdf: &dyn Fn(V3) -> f64, y: V
     let dual0: V3 = std::array::from_fn(|k| (n0[k] - c * n1[k]) / (1.0 - c * c));
     let dual1: V3 = std::array::from_fn(|k| (n1[k] - c * n0[k]) / (1.0 - c * c));
     for (s0, s1) in [(1.0, 1.0), (-1.0, -1.0), (-1.0, 1.0), (1.0, -1.0)] {
-        let sample = std::array::from_fn(|k| y[k] + eps * (s0 * dual0[k] + s1 * dual1[k]));
+        let step = 8.0 * eps;
+        let sample = std::array::from_fn(|k| y[k] + step * (s0 * dual0[k] + s1 * dual1[k]));
         let d = sdf(sample);
-        if !d.is_finite() || if s0 > 0.0 && s1 > 0.0 { d <= eps / 2.0 } else { d >= -eps / 2.0 } { return false; }
+        if !d.is_finite() || if s0 > 0.0 && s1 > 0.0 { d <= step / 2.0 } else { d >= -step / 2.0 } { return false; }
     }
     true
 }
@@ -1060,6 +1065,36 @@ mod tests {
         assert!(!reentrant_edge(&fd, &|_| 0.0, [0.0; 3], [0, 1], 0.00025));
         assert!(!reentrant_edge(&fd, &|_| f64::NAN, [0.0; 3], [0, 1], 0.00025));
         assert!(!reentrant_edge(&fd, &sdf, [0.01; 3], [0, 1], 0.00025));
+    }
+
+    /// A tessellated model's two faces need not meet exactly at their seam: the alternating projection onto both stops a
+    /// fraction of the tessellation tolerance off one of them. The reentrant proof must still hold there, or a wall vertex next
+    /// to the edge is pulled onto it (on the t-junction this left 5 / 7 elements under the gate).
+    #[test]
+    fn reentrant_snap_holds_where_the_two_faces_miss_each_other_by_a_tessellation_gap() {
+        let gap = 1e-4;
+        let faces = |x: V3, gap: f64| -> Vec<FaceHit> {
+            [([x[0].max(0.0), x[1], 0.0], [0.0, 0.0, 1.0]), ([0.0, x[1], x[2].max(gap)], [1.0, 0.0, 0.0])]
+                .into_iter().enumerate().map(|(face, (q, n))| {
+                    let offset = sub(x, q);
+                    let distance = norm(offset);
+                    let signed = if dot(offset, n) < 0.0 { -distance } else { distance };
+                    FaceHit { face, dist: signed, normal: if distance == 0.0 { n } else { offset.map(|v| v / signed) } }
+                }).collect()
+        };
+        let fd = |x: V3| faces(x, gap);
+        let sdf = |x: V3| {
+            let distance = fd(x).iter().map(|h| h.dist.abs()).fold(f64::INFINITY, f64::min);
+            if x[0] > 0.0 && x[2] > 0.0 { distance } else { -distance }
+        };
+        for (x, expected) in [([0.0, 0.0, 0.05], [0.0, 0.0, 0.05]), ([0.02, 0.0, 0.03], [0.0, 0.0, 0.03]), ([0.03, 0.0, 0.02], [0.03, 0.0, 0.0])] {
+            let y = snap_to_features(&fd, &sdf, x, 0.125, 0.275, 0.00025).unwrap();
+            assert!(norm(sub(y, expected)) < 1e-12, "{x:?} -> {y:?}, expected {expected:?}");
+        }
+        // a gap wider than the tolerance is no seam: the edge is not proven and the wall point is still projected towards it
+        let wide = |x: V3| faces(x, 0.01);
+        let y = snap_to_features(&wide, &sdf, [0.0, 0.0, 0.05], 0.125, 0.275, 0.00025).unwrap();
+        assert!(norm(y) < 0.011, "{y:?}");
     }
 
     #[test]

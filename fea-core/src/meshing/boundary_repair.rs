@@ -177,6 +177,8 @@ pub struct RepairReport {
     /// Vertex moves that pushed neighbouring elements under the gate, kept because repairing those neighbours left fewer
     /// elements under the gate than before.
     pub chained: usize,
+    /// Cavities around a bad element re-tetrahedralised as a star from one new interior vertex (their outer faces kept).
+    pub rebuilds: usize,
 }
 
 /// The geometry the repair may ask about.
@@ -1685,6 +1687,186 @@ impl<'a> Work<'a> {
         self.rep.chained += 1;
         true
     }
+    /// The cavities a rebuild of `t` may replace: `t` with its face neighbours, the cells around each of its edges, and the
+    /// two-ring of face neighbours. Each is sorted and listed once.
+    fn rebuild_cavities(&self, t: usize) -> Vec<Vec<usize>> {
+        let face_ring = |ts: &[usize]| -> Vec<usize> {
+            let mut s: BTreeSet<usize> = ts.iter().copied().collect();
+            for &u in ts {
+                let c = self.tets[u];
+                for k in 0..4 {
+                    let f: Vec<usize> = (0..4).filter(|&j| j != k).map(|j| c[j]).collect();
+                    s.extend(self.tets_with(&f));
+                }
+            }
+            s.into_iter().collect()
+        };
+        let c = self.tets[t];
+        let ring1 = face_ring(&[t]);
+        let mut out = vec![ring1.clone()];
+        for i in 0..4 {
+            for j in i + 1..4 {
+                let mut e = self.tets_with(&[c[i], c[j]]);
+                e.sort_unstable();
+                out.push(e);
+            }
+        }
+        out.push(face_ring(&ring1));
+        let mut seen = BTreeSet::new();
+        out.retain(|cav| cav.len() >= 2 && seen.insert(cav.clone()));
+        out
+    }
+    /// Replace a cavity around the bad element `t` by the star of one new interior vertex over the cavity's outer faces. The
+    /// outer faces (mesh boundary faces among them) are kept exactly, so the surface does not change; only the inside of the
+    /// cavity is rebuilt. A cap whose two boundary faces meet along a model feature, every vertex pinned, has no vertex that
+    /// may move and no reconnection that keeps the surface; a vertex inserted under the cap does. The new vertex is placed by
+    /// pattern search on the worst scaled Jacobian of the star, which must be positive throughout (the vertex then lies in the
+    /// cavity's kernel, and the star tiles it). Interior vertices of the cavity are dropped.
+    fn rebuild(&mut self, t: usize) -> bool {
+        for cavity in self.rebuild_cavities(t) {
+            // the cavity's outer faces, as the cell and the index of the vertex opposite the face
+            let mut outer: Vec<(usize, usize)> = Vec::new();
+            for &u in &cavity {
+                let c = self.tets[u];
+                for k in 0..4 {
+                    let f: Vec<usize> = (0..4).filter(|&j| j != k).map(|j| c[j]).collect();
+                    if !self.tets_with(&f).iter().any(|&o| o != u && cavity.binary_search(&o).is_ok()) {
+                        outer.push((u, k));
+                    }
+                }
+            }
+            if self.live - cavity.len() + outer.len() > self.max_live {
+                self.why("rebuild#1");
+                continue;
+            }
+            // the outer faces must bound a ball, consistently oriented: each face taken outward from its cell, every directed
+            // edge once and its reverse once (an edge in exactly two faces, opposite ways), Euler characteristic 2. A cavity
+            // over a fold has outer faces that are not oriented this way, and a star over them overlaps its neighbours.
+            let mut directed = BTreeSet::new();
+            let mut verts = BTreeSet::new();
+            let mut manifold = true;
+            for &(u, k) in &outer {
+                let c = self.tets[u];
+                let f = [[1, 2, 3], [0, 3, 2], [0, 1, 3], [0, 2, 1]][k].map(|j| c[j]);
+                verts.extend(f);
+                for (i, j) in [(0, 1), (1, 2), (2, 0)] {
+                    manifold &= directed.insert((f[i], f[j]));
+                }
+            }
+            manifold &= directed.iter().all(|&(a, b)| directed.contains(&(b, a)));
+            if !manifold || verts.len() + outer.len() != directed.len() / 2 + 2 {
+                self.why("rebuild#2");
+                continue;
+            }
+            // the star in local numbering: the cavity's vertices, then the new vertex last
+            let local: BTreeMap<usize, usize> = verts.iter().enumerate().map(|(i, &v)| (v, i)).collect();
+            let mut lp: Vec<V3> = verts.iter().map(|&v| self.p[v]).collect();
+            lp.push([0.0; 3]);
+            let lcells: Vec<[usize; 4]> = outer.iter().map(|&(u, k)| { let mut c = self.tets[u].map(|v| local.get(&v).copied().unwrap_or(usize::MAX)); c[k] = verts.len(); c }).collect();
+            let mut eval = |x: V3| -> f64 {
+                lp[verts.len()] = x;
+                lcells.iter().map(|&c| if vol6(&lp, c) > 0.0 { scaled_jacobian(&lp, c) } else { f64::NEG_INFINITY }).fold(f64::INFINITY, f64::min)
+            };
+            let h = verts.iter().map(|&v| self.hv[v]).sum::<f64>() / verts.len() as f64;
+            let centre = |vs: &mut dyn Iterator<Item = usize>| -> V3 {
+                let (mut s, mut n) = ([0.0; 3], 0.0);
+                for v in vs { s = add(s, self.p[v]); n += 1.0; }
+                scale(s, 1.0 / n)
+            };
+            let mut seeds = vec![centre(&mut verts.iter().copied()), centre(&mut self.tets[t].iter().copied())];
+            // the point that would make each outer face's element regular, and their mean
+            let mut mean = [0.0; 3];
+            for &(u, k) in &outer {
+                let c = self.tets[u];
+                let f: Vec<usize> = (0..4).filter(|&j| j != k).map(|j| c[j]).collect();
+                let g = scale(add(add(self.p[f[0]], self.p[f[1]]), self.p[f[2]]), 1.0 / 3.0);
+                let n = unit(cross(sub(self.p[f[1]], self.p[f[0]]), sub(self.p[f[2]], self.p[f[0]])));
+                let n = if dot(n, sub(self.p[c[k]], g)) < 0.0 { scale(n, -1.0) } else { n };
+                let l = (norm(sub(self.p[f[0]], self.p[f[1]])) + norm(sub(self.p[f[1]], self.p[f[2]])) + norm(sub(self.p[f[2]], self.p[f[0]]))) / 3.0;
+                let apex = add(g, scale(n, l * (2.0f64 / 3.0).sqrt()));
+                mean = add(mean, apex);
+                seeds.push(apex);
+            }
+            seeds.push(scale(mean, 1.0 / outer.len() as f64));
+            let (mut best, mut best_val) = (seeds[0], f64::NEG_INFINITY);
+            for s in seeds {
+                let val = eval(s);
+                if val > best_val {
+                    (best, best_val) = (s, val);
+                }
+            }
+            let mut dirs = Vec::new();
+            for i in -1i32..=1 {
+                for j in -1i32..=1 {
+                    for k in -1i32..=1 {
+                        if i != 0 || j != 0 || k != 0 {
+                            dirs.push(unit([i as f64, j as f64, k as f64]));
+                        }
+                    }
+                }
+            }
+            let mut r = 0.3 * h;
+            let mut iter = 0;
+            while r > 0.005 * h && iter < 40 {
+                iter += 1;
+                let centre = best;
+                let mut improved = false;
+                for d in &dirs {
+                    let y = add(centre, scale(*d, r));
+                    let val = eval(y);
+                    if val > best_val + 1e-6 {
+                        (best, best_val) = (y, val);
+                        improved = true;
+                    }
+                }
+                if !improved {
+                    r *= 0.5;
+                }
+            }
+            if best_val <= 1e-6 {
+                self.why("rebuild#3");
+                continue;
+            }
+            // the star fills exactly the cavity: over an oriented closed surface its volume is the enclosed volume for any
+            // apex, which equals the cavity cells' total only when no cavity cell folds over another
+            lp[verts.len()] = best;
+            let star: f64 = lcells.iter().map(|&c| vol6(&lp, c)).sum();
+            let held: f64 = cavity.iter().map(|&u| vol6(&self.p, self.tets[u])).sum();
+            if (star - held).abs() > 1e-10 * held.abs() {
+                self.why("rebuild#5");
+                continue;
+            }
+            let nv = self.p.len();
+            let cells: Vec<[usize; 4]> = outer.iter().map(|&(u, k)| { let mut c = self.tets[u]; c[k] = nv; c }).collect();
+            // strictly fewer elements under the gate, the worst no worse: an operation accepted on "no worse" changes the
+            // path of what follows without lowering any count (`docs/issue-46-phase-143.md`)
+            self.p.push(best);
+            let better = self.under_gate(&cells) < self.under_gate_ids(&cavity) && self.min_sj_cells(&cells) >= self.min_sj(&cavity) - EPS;
+            self.p.pop();
+            if !better {
+                self.why("rebuild#4");
+                continue;
+            }
+            self.p.push(best);
+            self.vt.push(Vec::new());
+            self.bnd.push(false);
+            self.state.push(0);
+            self.hv.push(h);
+            self.ver.push(0);
+            self.log.push(Ch::Vertex);
+            for &u in &cavity {
+                self.kill(u);
+            }
+            for c in cells {
+                self.add(c);
+            }
+            debug_assert_eq!(self.vt[nv].len(), outer.len());
+            self.commit();
+            self.rep.rebuilds += 1;
+            return true;
+        }
+        false
+    }
     /// Try the operations on the bad element `t` in order; returns whether one was applied.
     fn cleanup_tet(&mut self, t: usize, allow_split: bool) -> bool {
         if !self.alive[t] {
@@ -2005,6 +2187,23 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
             w.restore(best);
         }
     }
+    // Stuck regions: each element still under the gate gets a cavity rebuild, kept only when it leaves strictly fewer
+    // elements under the gate. It runs on the final (best) mesh, so it can only lower the count the rounds reached.
+    for _ in 0..4 {
+        let stuck: Vec<usize> = (0..w.tets.len()).filter(|&t| w.alive[t] && w.sj(w.tets[t]) < gate).collect();
+        let mut any = false;
+        for t in stuck {
+            if w.alive[t] && w.sj(w.tets[t]) < gate && w.rebuild(t) {
+                any = true;
+            }
+        }
+        if w.trace {
+            eprintln!("stuck regions: {} rebuilds so far, {} elements under the gate", w.rep.rebuilds, (0..w.tets.len()).filter(|&t| w.alive[t] && w.sj(w.tets[t]) < gate).count());
+        }
+        if !any {
+            break;
+        }
+    }
     if std::env::var_os("REPAIR_TRACE").is_some() {
         let mut shown = 0;
         for t in 0..w.tets.len() {
@@ -2192,6 +2391,60 @@ mod tests {
             }
         }
         assert!(refused > 0, "the fixture exercises the refusal");
+    }
+
+    /// Interior vertices of the lattice moved by up to 0.4 without folding it (the elements' volumes add up to the box's),
+    /// found by a seeded search for a case where some rebuilds are kept and some refused.
+    const REBUILD_SHIFT: [(usize, V3); 8] = [
+        (21, [-0.3315232626177248, -0.2973583203401493, -0.015616695771415907]),
+        (22, [0.39332853415929536, 0.03395137281351558, 0.10906260170592882]),
+        (25, [0.3714445574389372, 0.3283562961085602, 0.11475551869940245]),
+        (26, [-0.31516195108647604, -0.0017730871543533222, 0.315493602612441]),
+        (37, [0.2584941241803029, -0.3338360513027511, -0.3619832312883444]),
+        (38, [-0.29543771266919705, 0.24914393321352624, 0.3833078515007148]),
+        (41, [0.22434864363247717, 0.07541603276310391, -0.3154825845497976]),
+        (42, [-0.015702671216021476, -0.28377916375220613, 0.04462534711911276]),
+    ];
+
+    /// Rebuild each element under 0.1 of the lattice moved by `shift`; returns how many were kept and how many refused.
+    fn rebuild_each_bad_element(shift: &[(usize, V3)]) -> (usize, usize) {
+        let sdf = |x: V3| (-x[0]).max(x[0] - 3.0).max(-x[1]).max(x[1] - 3.0).max(-x[2]).max(x[2] - 3.0);
+        let ctx = RepairContext { sdf: &sdf, face_dists: None, triangle_face: None };
+        let base = lattice(&ctx, shift);
+        let alive = |w: &Work| (0..w.tets.len()).filter(|&t| w.alive[t]).collect::<Vec<_>>();
+        let volume = |w: &Work| alive(w).iter().map(|&t| vol6(&w.p, w.tets[t])).sum::<f64>();
+        let bad: Vec<usize> = alive(&base).into_iter().filter(|&t| base.sj(base.tets[t]) < 0.1).collect();
+        let (mut kept, mut refused) = (0, 0);
+        for &t in &bad {
+            let mut w = lattice(&ctx, shift);
+            let (p, tets, under, v0) = (w.p.clone(), w.tets.clone(), w.under_gate_ids(&alive(&w)), volume(&w));
+            if w.rebuild(t) {
+                kept += 1;
+                assert!(w.under_gate_ids(&alive(&w)) < under, "element {t}: strictly fewer under the gate");
+                assert_eq!(w.rep.rebuilds, 1);
+                assert!(alive(&w).iter().all(|&u| vol6(&w.p, w.tets[u]) > 0.0), "element {t}: every element positive");
+                assert!((volume(&w) - v0).abs() < 1e-9 * v0, "element {t}: the star fills exactly the cavity: volume {v0} -> {}", volume(&w));
+                assert_eq!(w.p[..p.len()], p[..], "element {t}: no existing vertex moves");
+                assert!(w.log.is_empty() && w.depth == 0, "element {t}: committed");
+            } else {
+                refused += 1;
+                assert_eq!((w.p.clone(), w.tets.clone(), w.rep.clone()), (p, tets, RepairReport::default()), "element {t}: untouched");
+            }
+        }
+        (kept, refused)
+    }
+
+    #[test]
+    fn a_rebuild_keeps_the_cavity_surface_and_is_kept_only_when_it_lowers_the_count() {
+        assert_eq!(rebuild_each_bad_element(&REBUILD_SHIFT), (2, 1));
+    }
+
+    /// The `CHAIN_SHIFT` lattice is folded (its elements' volumes add up to more than the box's). A star over a cavity on
+    /// the fold kept the count rule but overlapped its neighbours (total volume 162.3 -> 172.1) until the rebuild checked the
+    /// orientation of the cavity's outer faces and the star's volume against the cavity's; now every rebuild there is refused.
+    #[test]
+    fn a_rebuild_over_a_fold_is_refused() {
+        assert_eq!(rebuild_each_bad_element(&CHAIN_SHIFT), (0, 5));
     }
 
     fn boundary_rim_star<'a>(ctx: &'a RepairContext<'a>) -> Work<'a> {
