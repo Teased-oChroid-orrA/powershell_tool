@@ -79,12 +79,12 @@
     180
   ],
   "latest_qualified_source": "d61a794e8f71451e76ea56621cae6c01f2659aa1",
-  "latest_phase": 144,
-  "progress_snapshot": "issue-46-phase-144.md",
+  "latest_phase": 145,
+  "progress_snapshot": "issue-46-phase-145.md",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
-  "remaining": "Phase 144: 36/38 same-STEP parity rows pass (mesh-only table); the reentrant-crease proof within the surface accuracy took the t-junction to 0/0, and stuck-region rebuilds took NEMA17 to 23 (OCCT) / 24 (native), which remain below the 0.1 gate. Boss contact/volume audits were not rerun on the final build. fillet_rim_tagging fails with OpenCascade on (pre-existing). ABC 00006600 grading, Windows mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
+  "remaining": "Phase 145: 36/38 same-STEP parity rows pass (mesh-only table); merging edges that neither end can take at their midpoint took NEMA17 from 23/24 to 13 (OCCT) / 12 (native), which remain below the 0.1 gate (gusset corners without a corner vertex, slot ends, base-plate fillet). Solves were not rerun on the Phase 145 mesh. Boss contact/volume audits were not rerun on the final build. fillet_rim_tagging fails with OpenCascade on (pre-existing). ABC 00006600 grading, Windows mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
   "latest_increment_tests": {
     "commands": [
       "cargo test -p fea-core -p solid-kernel -p fea-problem --release --locked --offline -j1 --no-fail-fast",
@@ -94,8 +94,8 @@
       "cargo test -p fea-problem --features occt --release --locked --offline -j1 --test occt_vs_native -- --ignored the_t_junction_repair_keeps_its_best_round the_nema17_native_relaxation_starts_from_the_best_round"
     ],
     "result": "passed",
-    "platform": "macOS arm64, release, serial Cargo: 1127 passed / 0 failed / 47 ignored; app-tui 1256 passed / 0 failed / 24 ignored; mesh-only parity table 36/38 gate rows pass, with solves on t-junction, NEMA17 and the boss models (docs/issue-46-phase-144-parity.txt); connected boss gate passes; the_t_junction_repair_keeps_its_best_round (0 on both paths) and the_nema17_native_relaxation_starts_from_the_best_round (<= 24) pass",
-    "at": "d61a794e8f71451e76ea56621cae6c01f2659aa1",
+    "platform": "macOS arm64, release, serial Cargo: 1128 passed / 0 failed / 47 ignored; app-tui 1256 passed / 0 failed / 24 ignored; mesh-only parity table 36/38 gate rows pass (docs/issue-46-phase-145-parity.txt); connected boss gate passes; the_t_junction_repair_keeps_its_best_round (0 on both paths) and the_nema17_native_relaxation_starts_from_the_best_round (<= 12) pass",
+    "at": "phase-145-relocating-collapse",
     "corpus": "issue-46-abc-corpus-2026-10-18.md"
   },
   "tests": {
@@ -108,7 +108,7 @@
   "last_confirmed_main_merge": "cb82aecc27f1c06fda68352cb0e0170be02f6cd1",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Remaining boundary sub-gate cells on NEMA17 (23/24), not yet examined for the seam-gap cause; larger or shaped rebuild cavities untried; rerun boss contact/volume audits on the Phase 141 build; fidelity measurement on fillet cases under the region bound; fillet_rim_tagging with OpenCascade; unaudited fea-core modules listed in Phase 141; Windows and remaining five-plan items",
+    "scope": "Remaining boundary sub-gate cells on NEMA17 (13/12): three-face gusset corners with no vertex on the corner (a corner merge of pinned pairs was tried and never kept), slot-end flat cells, base-plate fillet; rerun NEMA17 and boss solves on the Phase 145 mesh; larger or shaped rebuild cavities untried; fillet_rim_tagging with OpenCascade; unaudited fea-core modules listed in Phase 141; Windows and remaining five-plan items",
     "status": "see_resume_guide_open_list"
   },
   "base_main_head": "cb82aecc27f1c06fda68352cb0e0170be02f6cd1",

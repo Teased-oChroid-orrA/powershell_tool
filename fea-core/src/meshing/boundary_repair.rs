@@ -1418,6 +1418,12 @@ impl<'a> Work<'a> {
 
     /// Collapse `u` onto `v`.
     fn collapse(&mut self, u: usize, v: usize) -> bool {
+        self.collapse_at(u, v, None)
+    }
+    /// Collapse `u` onto `v`; with `at`, the survivor `v` moves there in the same change. The change is then judged over both
+    /// stars, and the surface against the faces before the move: two vertices pinned a fraction of the size apart beside a
+    /// crease can be merged only where neither of them stands.
+    fn collapse_at(&mut self, u: usize, v: usize, at: Option<V3>) -> bool {
         // A feature vertex may go only onto a neighbour on the same feature (same faces), under the tighter surface-deviation bound.
         let fixed_u = self.fixed(u);
         if fixed_u {
@@ -1460,8 +1466,10 @@ impl<'a> Work<'a> {
         }
         let around = self.tets_with(&[u, v]);
         let star = self.vt[u].clone();
+        // the elements that change: the star of `u`, and that of `v` too when it moves
+        let old = if at.is_some() { region.clone() } else { star.clone() };
         let h = self.hv[u].max(self.hv[v]);
-        let max_edge_old = star
+        let max_edge_old = old
             .iter()
             .flat_map(|&t| {
                 let c = self.tets[t];
@@ -1469,8 +1477,16 @@ impl<'a> Work<'a> {
             })
             .map(|(x, y)| norm(sub(self.p[x], self.p[y])))
             .fold(0.0, f64::max);
+        let (old_stats, old_under) = (self.stats(&old), self.under_gate_ids(&old));
+        let surface = bu || (at.is_some() && self.bnd[v]);
+        let before = if surface { Some(self.boundary_snapshot(&region, h)) } else { None };
+        let was = self.p[v];
+        if let Some(x) = at {
+            self.p[v] = x;
+        }
         let mut replaced: Vec<[usize; 4]> = Vec::new();
-        for &t in &star {
+        let mut refusal = None;
+        for &t in &old {
             if around.contains(&t) {
                 continue;
             }
@@ -1481,25 +1497,31 @@ impl<'a> Work<'a> {
                 }
             }
             if vol6(&self.p, c) <= 0.0 {
-                return self.why("collapse#5");
+                refusal = Some("collapse#5");
+                break;
             }
-            for &w in &c {
-                if w != v && norm(sub(self.p[w], self.p[v])) > 1.3 * max_edge_old {
-                    return self.why("collapse#6");
-                }
+            if c.iter().any(|&w| w != v && norm(sub(self.p[w], self.p[v])) > 1.3 * max_edge_old) {
+                refusal = Some("collapse#6");
+                break;
             }
             replaced.push(c);
         }
         // a collapse that only deletes elements (every tetrahedron of `u` also holds `v`) judges nothing new
-        if !replaced.is_empty() {
-            if !self.better(&star, &replaced) {
-                return self.why("collapse#7");
-            }
+        if refusal.is_none() && !replaced.is_empty()
+            && (self.under_gate(&replaced) > old_under || !self.better_than(old_stats, &replaced))
+        {
+            refusal = Some("collapse#7");
         }
-        let before = if bu { Some(self.boundary_snapshot(&region, h)) } else { None };
+        self.p[v] = was;
+        if let Some(k) = refusal {
+            return self.why(k);
+        }
         let m = self.mark();
+        if let Some(x) = at {
+            self.set_pos(v, x);
+        }
         let nb = self.neighbours(u);
-        for &t in &star {
+        for &t in &old {
             self.kill(t);
         }
         let mut new_ids = Vec::new();
@@ -1508,18 +1530,19 @@ impl<'a> Work<'a> {
         }
         self.refresh_bnd(&nb);
         self.refresh_bnd(&[v]);
-        if bu {
+        if let Some(before) = before {
             let mut affected: Vec<_> = region.iter().copied().filter(|&t| self.alive[t]).collect();
             affected.extend(new_ids.iter().copied());
-            let before = before.unwrap();
-            // how far the surface moved: the removed vertex's distance to the new boundary faces around the survivor
-            let removed = self.p[u];
-            let deviation = self
-                .boundary_faces(&affected)
-                .keys()
-                .filter(|f| f.contains(&v))
-                .map(|f| point_triangle_distance(removed, self.p[f[0]], self.p[f[1]], self.p[f[2]]))
+            // how far the surface moved: the removed vertex's (and the survivor's old position's) distance to the new boundary
+            // faces around the survivor
+            let faces: Vec<[usize; 3]> = self.boundary_faces(&affected).into_keys().filter(|f| f.contains(&v)).collect();
+            let distance = |x: V3| faces.iter()
+                .map(|f| point_triangle_distance(x, self.p[f[0]], self.p[f[1]], self.p[f[2]]))
                 .fold(f64::INFINITY, f64::min);
+            let mut deviation = if bu { distance(self.p[u]) } else { 0.0 };
+            if at.is_some() {
+                deviation = deviation.max(distance(was));
+            }
             let limit = if fixed_u { 0.5 * max_dev() } else { max_dev() };
             if !(deviation <= limit * h) || !self.new_faces_follow_surface(&affected, &before, h) {
                 self.rollback(m);
@@ -1529,6 +1552,30 @@ impl<'a> Work<'a> {
         self.commit();
         self.rep.collapses += 1;
         true
+    }
+
+    /// Where the edge `a`-`b` may merge when neither end can stay: its midpoint, on the surface for a boundary edge (on the
+    /// model edge when both ends are on the same one). `None` when an end is on a corner or the ends are on different features.
+    fn merge_point(&mut self, a: usize, b: usize) -> Option<V3> {
+        let m = scale(add(self.p[a], self.p[b]), 0.5);
+        if !self.bnd[a] && !self.bnd[b] {
+            return Some(m);
+        }
+        if !self.bnd[a] || !self.bnd[b] || !self.edge_is_boundary(a, b) {
+            return None;
+        }
+        let h = self.hv[a].max(self.hv[b]);
+        match (self.fixed(a), self.fixed(b)) {
+            (false, false) => self.surface_point(Some(b), m, h, None),
+            (true, true) => {
+                let (fa, fb) = (self.feature_edge(a).ok()?, self.feature_edge(b).ok()?);
+                if fa.0 != fb.0 {
+                    return None;
+                }
+                self.surface_point(Some(b), m, h, Some(&fa.0))
+            }
+            _ => None,
+        }
     }
 
     // ---- split (last resort) ----
@@ -1923,6 +1970,13 @@ impl<'a> Work<'a> {
         for &(_, x, y) in &edges {
             if self.collapse(x, y) || self.collapse(y, x) {
                 return self.ok("collapse");
+            }
+        }
+        for &(_, x, y) in &edges {
+            if let Some(at) = self.merge_point(x, y) {
+                if self.collapse_at(x, y, Some(at)) || self.collapse_at(y, x, Some(at)) {
+                    return self.ok("collapse to the midpoint");
+                }
             }
         }
         // 5. smoothing against the smooth penalty (progress for the second-worst element when the worst is held elsewhere)
@@ -2391,6 +2445,59 @@ mod tests {
             }
         }
         assert!(refused > 0, "the fixture exercises the refusal");
+    }
+
+    /// Interior vertices of the lattice moved without folding it, vertices 21 and 22 brought within 0.45 of each other (found by
+    /// a seeded search for a case where neither end of their edge can take the other but their midpoint can).
+    const MERGE_SHIFT: [(usize, V3); 8] = [
+        (21, [0.01275779301788753, 0.19236962101845498, 0.4097710829165493]),
+        (22, [-0.17388298454156645, -0.166034324114863, -0.3949142436616808]),
+        (25, [0.005457706079940894, -0.27467896984130175, -0.27609898443582115]),
+        (26, [-0.22665877746119276, -0.19327217097996577, 0.18329493084775303]),
+        (37, [0.20503712573452038, -0.26842811430800784, -0.018031662478240618]),
+        (38, [-0.20239292194820854, -0.08322196574864822, -0.15371950525813252]),
+        (41, [-0.029207666036728128, 0.17473697800257684, 0.009973110050718059]),
+        (42, [-0.08470752419932459, -0.25987274544706657, -0.009620944572905632]),
+    ];
+
+    /// NEMA17 kept two vertices 0.05 of the size apart beside a reentrant crease, each pinned so that neither could take the
+    /// other; merging them at their midpoint removed the edge. The merge is judged over both stars and fills the same volume.
+    #[test]
+    fn an_edge_neither_end_can_take_merges_at_its_midpoint() {
+        let sdf = |x: V3| (-x[0]).max(x[0] - 3.0).max(-x[1]).max(x[1] - 3.0).max(-x[2]).max(x[2] - 3.0);
+        let ctx = RepairContext { sdf: &sdf, face_dists: None, triangle_face: None };
+        let mut w = lattice(&ctx, &MERGE_SHIFT);
+        let all: Vec<usize> = (0..w.tets.len()).collect();
+        let total: f64 = all.iter().map(|&t| vol6(&w.p, w.tets[t])).sum();
+        assert!((total - 162.0).abs() < 1e-9, "the fixture is not folded");
+        let star: Vec<usize> = w.region(&[21, 22]);
+        let (under, worst) = (w.under_gate_ids(&star), w.min_sj(&star));
+        let around = w.tets_with(&[21, 22]).len();
+        let outside: Vec<V3> = (0..w.p.len()).filter(|&v| w.bnd[v]).map(|v| w.p[v]).collect();
+        assert!(!w.collapse(21, 22) && !w.collapse(22, 21));
+        assert!(w.log.is_empty() && w.rep.collapses == 0, "a refused collapse leaves nothing behind");
+        let at = w.merge_point(21, 22).unwrap();
+        assert_eq!(at, scale(add(w.p[21], w.p[22]), 0.5));
+        // a target that turns an element of the survivor's star inside out is refused, the mesh untouched
+        let p = w.p.clone();
+        assert!(!w.collapse_at(21, 22, Some(add(at, [0.0, 0.0, 2.0]))));
+        assert_eq!(w.p, p);
+        assert!(w.log.is_empty());
+        assert!(w.collapse_at(21, 22, Some(at)));
+        assert_eq!(w.p[22], at);
+        assert!(w.vt[21].is_empty());
+        let live: Vec<usize> = (0..w.tets.len()).filter(|&t| w.alive[t]).collect();
+        assert_eq!(live.len(), all.len() - around);
+        assert!(live.iter().all(|&t| vol6(&w.p, w.tets[t]) > 0.0));
+        let after: f64 = live.iter().map(|&t| vol6(&w.p, w.tets[t])).sum();
+        assert!((after - 162.0).abs() < 1e-9, "{after}");
+        let changed = w.region(&[22]);
+        assert!(w.under_gate_ids(&changed) <= under && w.min_sj(&changed) > worst);
+        assert_eq!((0..w.p.len()).filter(|&v| w.bnd[v]).map(|v| w.p[v]).collect::<Vec<_>>(), outside);
+        assert_eq!(w.rep.collapses, 1);
+        assert!(w.log.is_empty(), "committed");
+        // without model faces a pinned boundary pair has no edge to merge along
+        assert_eq!(w.merge_point(0, 1), None);
     }
 
     /// Interior vertices of the lattice moved by up to 0.4 without folding it (the elements' volumes add up to the box's),

@@ -271,7 +271,8 @@ fn the_t_junction_repair_keeps_its_best_round() {
 /// with the chained move, NEMA17 through the native tessellation stalled at 37 elements under the gate after passing 33, and
 /// the relaxation from there ended at 32 (29 before the chained move). Starting from the best round it ends at 25
 /// (`docs/issue-46-phase-143.md`). With the crease snap fixed the rounds reach 27, and three stuck-region rebuilds take it to
-/// 24 (`docs/issue-46-phase-144.md`).
+/// 24 (`docs/issue-46-phase-144.md`). Merging edges that neither end could take at their midpoint takes it to 12
+/// (`docs/issue-46-phase-145.md`).
 #[test]
 #[ignore = "meshes the NEMA17 bracket through the native tessellation (about 3 minutes in release)"]
 fn the_nema17_native_relaxation_starts_from_the_best_round() {
@@ -281,7 +282,7 @@ fn the_nema17_native_relaxation_starts_from_the_best_round() {
     let native = tessellate_step_native(&c.text, oc.deflection).expect("native tessellation");
     let r = measure(&base, native, &c.text, base.mesh.size * c.h_scale, false);
     assert!(r.err.is_none(), "{:?}", r.err);
-    assert!(r.below_gate <= 24, "{} elements under the gate", r.below_gate);
+    assert!(r.below_gate <= 12, "{} elements under the gate", r.below_gate);
 }
 
 /// Quality of the face-tagged surface triangulation each path hands to the volume mesher: triangle count, smallest angle, share of
