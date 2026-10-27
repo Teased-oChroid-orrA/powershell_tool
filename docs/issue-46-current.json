@@ -3,7 +3,7 @@
   "epic_complete": false,
   "branch": "main",
   "pull_request": null,
-  "pull_request_state": "phase_144_pr_open",
+  "pull_request_state": "none_open_after_pr_180",
   "merged_prs": [
     42,
     65,
@@ -75,7 +75,8 @@
     170,
     171,
     173,
-    177
+    177,
+    180
   ],
   "latest_qualified_source": "d61a794e8f71451e76ea56621cae6c01f2659aa1",
   "latest_phase": 144,
@@ -104,13 +105,13 @@
     "platform": "macOS arm64 (no Windows or hosted CI evidence)",
     "at": "20a3f24"
   },
-  "last_confirmed_main_merge": "aa545db803f1a9c7aaae9571dd8adafbf0515e97",
+  "last_confirmed_main_merge": "cb82aecc27f1c06fda68352cb0e0170be02f6cd1",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
     "scope": "Remaining boundary sub-gate cells on NEMA17 (23/24), not yet examined for the seam-gap cause; larger or shaped rebuild cavities untried; rerun boss contact/volume audits on the Phase 141 build; fidelity measurement on fillet cases under the region bound; fillet_rim_tagging with OpenCascade; unaudited fea-core modules listed in Phase 141; Windows and remaining five-plan items",
     "status": "see_resume_guide_open_list"
   },
-  "base_main_head": "aa545db803f1a9c7aaae9571dd8adafbf0515e97",
+  "base_main_head": "cb82aecc27f1c06fda68352cb0e0170be02f6cd1",
   "completion_checklist": "issue-46-completion-checklist.md",
   "resume": "issue-46-resume.md",
   "pending_prs": []
