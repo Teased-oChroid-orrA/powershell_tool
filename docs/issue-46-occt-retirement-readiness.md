@@ -98,3 +98,7 @@ The [2026-10-21 chart diagnosis](issue-46-phase-126.md) narrows two ABC refusals
 [Phase 133](issue-46-phase-133.md) makes stalled grading report non-convergence instead of success. [Phase 134](issue-46-phase-134.md) confirms that snapping creates the boss-rim short edges from initially regular lattice edges. No safe topology change or additional model gate pass is established.
 
 [Phase 135](issue-46-phase-135.md) adds file browsing to both active Open flows; it changes no mesh gate. [Phase 136](issue-46-phase-136.md) rejects a rim-snap restriction that cleared boss quality but worsened curved-body accuracy. No mesher change was retained. The retirement verdict and separate approval requirement remain unchanged.
+
+## Addendum, 2026-10-26: same-STEP parity at Phase 144
+
+Phases 141-143 qualified the boundary repair on the 19-model same-STEP table (34/38 rows passing). [Phase 144](issue-46-phase-144.md) proves reentrant creases within the surface accuracy and adds stuck-region rebuilds: the t-junction passes on both paths and 36/38 rows pass. NEMA17 (OCCT 23, native 24 elements under the 0.1 gate) still fails on both paths, Windows evidence is still missing, and `fillet_rim_tagging` still fails with OpenCascade on. The retirement verdict and the separate approval requirement remain unchanged.
