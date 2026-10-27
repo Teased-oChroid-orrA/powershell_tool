@@ -713,6 +713,112 @@ impl<'a> Work<'a> {
         faces.sort_unstable();
         Ok((faces, unit(t)))
     }
+    /// The model faces meeting at a corner near feature vertex `v`: three or more faces within half the size (sorted), else
+    /// `None`.
+    fn corner_faces(&self, v: usize) -> Option<Vec<usize>> {
+        let fd = self.ctx.face_dists?;
+        let mut faces: Vec<usize> = fd(self.p[v]).iter().filter(|h| h.dist.abs() < 0.5 * self.hv[v]).map(|h| h.face).collect();
+        faces.sort_unstable();
+        faces.dedup();
+        (faces.len() >= 3).then_some(faces)
+    }
+    /// The point near `x` on all of `faces` (a model edge or corner), by Gauss-Newton on their signed distances with the
+    /// smallest step that zeroes them: projecting onto one face after the other converges too slowly where two faces meet
+    /// at a shallow angle (about halving the error per sweep at 45 degrees). `None` when the faces do not fix a point (two
+    /// of them nearly parallel) or the iteration does not reach one.
+    fn point_on_faces(&self, x: V3, faces: &[usize], h: f64) -> Option<V3> {
+        let fd = self.ctx.face_dists?;
+        let mut y = x;
+        for _ in 0..8 {
+            let hits = fd(y);
+            let mut ns = Vec::with_capacity(faces.len());
+            let mut ds = Vec::with_capacity(faces.len());
+            for &f in faces {
+                let hit = hits.iter().find(|hit| hit.face == f)?;
+                ns.push(hit.normal);
+                ds.push(hit.dist);
+            }
+            if ds.iter().all(|d| d.abs() < 1e-9 * h) {
+                return Some(y);
+            }
+            let step = match ns.len() {
+                1 => scale(ns[0], -ds[0] / dot(ns[0], ns[0])),
+                2 => {
+                    let (g00, g01, g11) = (dot(ns[0], ns[0]), dot(ns[0], ns[1]), dot(ns[1], ns[1]));
+                    let det = g00 * g11 - g01 * g01;
+                    if det < 1e-3 {
+                        return None;
+                    }
+                    let l0 = (-ds[0] * g11 + ds[1] * g01) / det;
+                    let l1 = (-ds[1] * g00 + ds[0] * g01) / det;
+                    add(scale(ns[0], l0), scale(ns[1], l1))
+                }
+                _ => {
+                    // three or more: least squares, A y = b with A = sum n n^T and b = -sum d n
+                    let (mut a, mut b) = ([[0.0; 3]; 3], [0.0; 3]);
+                    for (n, d) in ns.iter().zip(&ds) {
+                        for i in 0..3 {
+                            b[i] -= d * n[i];
+                            for j in 0..3 {
+                                a[i][j] += n[i] * n[j];
+                            }
+                        }
+                    }
+                    let det = dot(a[0], cross(a[1], a[2]));
+                    if det.abs() < 1e-3 {
+                        return None;
+                    }
+                    scale(add(add(scale(cross(a[1], a[2]), b[0]), scale(cross(a[2], a[0]), b[1])), scale(cross(a[0], a[1]), b[2])), 1.0 / det)
+                }
+            };
+            y = add(y, step);
+        }
+        None
+    }
+    /// Move feature vertex `v` onto the model corner where `faces` meet: its one candidate is the point on all of them, kept
+    /// under the same contracts as any other move (no more elements under the gate unless `push`, the surface followed) and
+    /// only when it gains on the worst element of the star. Once a vertex sits on the corner, collapse and merge can remove
+    /// the vertices crowding it.
+    fn move_to_corner(&mut self, v: usize, faces: &[usize], push: bool) -> bool {
+        let star = self.vt[v].clone();
+        if star.is_empty() {
+            return self.why("optimise_vertex#3");
+        }
+        let h = self.hv[v];
+        let old = self.p[v];
+        // the corner of faces each within half the size is within about 0.87 of it; one much farther (faces meeting at a
+        // shallow angle) is not this vertex's corner
+        let Some(y) = self.surface_point(Some(v), old, h, Some(faces)).filter(|&y| norm(sub(y, old)) <= h) else {
+            return self.why("corner#1");
+        };
+        if norm(sub(y, old)) < 1e-9 * h {
+            return self.why("corner#2");
+        }
+        let old_min = self.min_sj(&star);
+        let old_under = self.under_gate_ids(&star);
+        let before = self.boundary_snapshot(&star, h);
+        let m = self.mark();
+        self.set_pos(v, y);
+        if !push && self.under_gate_ids(&star) > old_under {
+            self.rollback(m);
+            return self.why("corner#3");
+        }
+        if !self.new_faces_follow_surface(&star, &before, h) {
+            self.rollback(m);
+            return self.why("corner#4");
+        }
+        let val = self.min_sj(&star);
+        if !(val > 1e-6 && self.gains(old_min, val)) {
+            self.rollback(m);
+            return self.why("corner#5");
+        }
+        if self.verbose {
+            eprintln!("      vertex {v} to corner of faces {faces:?}: star {} min {old_min:.4} -> {val:.4}, moved {:.4}", star.len(), norm(sub(y, old)));
+        }
+        self.commit();
+        self.rep.slides += 1;
+        true
+    }
     /// A point of the surface near `x` for the boundary vertex `v` (its own model face when faces can be asked), `None` when
     /// the point would leave the face or come too close to another one.
     fn surface_point(&self, v: Option<usize>, x: V3, h: f64, active: Option<&[usize]>) -> Option<V3> {
@@ -725,7 +831,8 @@ impl<'a> Work<'a> {
                     None => vec![hits.iter().min_by(|a, b| a.dist.abs().total_cmp(&b.dist.abs()))?.face],
                 };
                 let others_before = hits.iter().filter(|h| !faces.contains(&h.face)).map(|h| h.dist.abs()).fold(f64::INFINITY, f64::min);
-                let mut y = x;
+                // several faces: start from the point on all of them (the face-by-face sweep below then only confirms it)
+                let mut y = if faces.len() >= 2 { self.point_on_faces(x, &faces, h).unwrap_or(x) } else { x };
                 let mut here = fd(y);
                 for _ in 0..12 {
                     let mut moved = 0.0f64;
@@ -809,7 +916,12 @@ impl<'a> Work<'a> {
             }
             match self.feature_edge(v) {
                 Ok(f) => feature = Some(f),
-                Err(k) => return self.why(k),
+                Err(k) => {
+                    if let Some(faces) = self.corner_faces(v) {
+                        return self.move_to_corner(v, &faces, push);
+                    }
+                    return self.why(k);
+                }
             }
         }
         let star = self.vt[v].clone();
@@ -2885,6 +2997,122 @@ mod tests {
             assert!(w.reasons.contains_key("optimise_vertex#normal"));
             assert_eq!((w.p, w.tets, w.rep), before);
         }
+    }
+
+    /// The solid octant x, y, z <= 0: its three model faces and its distance.
+    fn octant_faces(x: V3) -> Vec<FaceHit> {
+        (0..3).map(|k| {
+            let mut normal = [0.0; 3];
+            normal[k] = 1.0;
+            FaceHit { face: k, dist: x[k], normal }
+        }).collect()
+    }
+    fn octant_sdf(x: V3) -> f64 {
+        x[0].max(x[1]).max(x[2])
+    }
+    /// The cube [-1, 0]^3 in the corner of the octant, in six elements around its diagonal; vertex `b` sits at
+    /// `(b & 1, b >> 1 & 1, b >> 2 & 1) - 1`, so vertex 7 is the model corner. The corner vertex is pulled 0.15 to 0.25 into
+    /// the solid (no single model edge holds it, only the corner can), and `shift` places other vertices.
+    fn corner_cube<'a>(ctx: &'a RepairContext<'a>, shift: &[(usize, V3)]) -> Work<'a> {
+        let mut w = one_tet(ctx);
+        w.p = (0..8).map(|b: usize| [(b & 1) as f64 - 1.0, ((b >> 1) & 1) as f64 - 1.0, ((b >> 2) & 1) as f64 - 1.0]).collect();
+        w.p[7] = [-0.2, -0.15, -0.25];
+        for &(v, x) in shift { w.p[v] = x; }
+        w.tets = Vec::new();
+        for perm in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+            let mut c = [0, 0, 0, 0];
+            let mut at = 0;
+            for (s, &axis) in perm.iter().enumerate() { at |= 1 << axis; c[s + 1] = at; }
+            if vol6(&w.p, c) < 0.0 { c.swap(0, 1); }
+            assert!(vol6(&w.p, c) > 0.0);
+            w.tets.push(c);
+        }
+        w.vt = vec![Vec::new(); 8];
+        for (i, t) in w.tets.iter().enumerate() { for &v in t { w.vt[v].push(i); } }
+        (w.alive, w.bnd, w.state, w.hv, w.ver) = (vec![true; 6], vec![true; 8], vec![0; 8], vec![1.0; 8], vec![0; 8]);
+        (w.live, w.max_live, w.trace) = (6, 12, true);
+        w
+    }
+
+    #[test]
+    fn a_vertex_near_a_three_face_corner_moves_onto_it_and_then_stays() {
+        let ctx = RepairContext { sdf: &octant_sdf, face_dists: Some(&octant_faces), triangle_face: None };
+        let mut w = corner_cube(&ctx, &[]);
+        let all: Vec<usize> = (0..6).collect();
+        let before = w.min_sj(&all);
+        assert!(w.fixed(7));
+        assert_eq!(w.feature_edge(7).unwrap_err(), "optimise_vertex#1");
+        assert!(w.optimise_vertex(7, false, false));
+        assert!(norm(w.p[7]) < 1e-9, "the vertex lands on the corner: {:?}", w.p[7]);
+        assert!(w.min_sj(&all) > before);
+        assert_eq!(w.rep.slides, 1);
+        // the cells tile the unit cube again
+        assert!((w.tets.iter().map(|&c| vol6(&w.p, c)).sum::<f64>() - 6.0).abs() < 1e-9);
+        // on the corner there is nothing left to gain
+        assert!(!w.optimise_vertex(7, false, false));
+        assert_eq!(w.reasons.get("corner#2"), Some(&1));
+    }
+
+    #[test]
+    fn a_surface_point_on_faces_at_a_shallow_angle_reaches_their_edge_and_corner() {
+        // faces x = 0, y = 0 and a plane through the origin 15 degrees off y = 0: one face after the other shrinks the error
+        // by about cos(15 deg)^2 per sweep, far short of the 1e-6 h a surface point must reach in its 12 sweeps
+        let n = [0.0, 15_f64.to_radians().cos(), 15_f64.to_radians().sin()];
+        let fd = |x: V3| vec![
+            FaceHit { face: 0, dist: x[0], normal: [1.0, 0.0, 0.0] },
+            FaceHit { face: 1, dist: x[1], normal: [0.0, 1.0, 0.0] },
+            FaceHit { face: 2, dist: dot(x, n), normal: n },
+        ];
+        let sdf = |x: V3| x[0].max(x[1]).max(dot(x, n));
+        let ctx = RepairContext { sdf: &sdf, face_dists: Some(&fd), triangle_face: None };
+        let w = one_tet(&ctx);
+        let start = [-0.2, -0.1, -0.3];
+        // the corner of all three
+        let y = w.point_on_faces(start, &[0, 1, 2], 1.0).unwrap();
+        assert!(norm(y) < 1e-9, "{y:?}");
+        let y = w.surface_point(None, start, 1.0, Some(&[0, 1, 2])).unwrap();
+        assert!(norm(y) < 1e-9, "{y:?}");
+        // the edge of the two shallow faces (the x axis): the nearest point on it, as the sweep would reach in the limit
+        let y = w.surface_point(None, start, 1.0, Some(&[1, 2])).unwrap();
+        assert!((y[0] + 0.2).abs() < 1e-9 && y[1].abs() < 1e-9 && y[2].abs() < 1e-9, "{y:?}");
+        // two parallel faces fix no point
+        assert_eq!(w.point_on_faces(start, &[1, 1], 1.0), None);
+        assert_eq!(w.point_on_faces(start, &[1, 1, 0], 1.0), None);
+    }
+
+    #[test]
+    fn a_corner_far_beyond_the_size_is_not_the_vertex_corner() {
+        // x = 0, y = 0 and a plane 10 degrees off y = 0 that passes 0.44 from the corner vertex: all three are within half
+        // the size, but they meet 1.7 away (at z = 1.44)
+        let n = [0.0, 10_f64.to_radians().cos(), 10_f64.to_radians().sin()];
+        let fd = move |x: V3| vec![
+            FaceHit { face: 0, dist: x[0], normal: [1.0, 0.0, 0.0] },
+            FaceHit { face: 1, dist: x[1], normal: [0.0, 1.0, 0.0] },
+            FaceHit { face: 2, dist: dot(x, n) - 0.25, normal: n },
+        ];
+        let sdf = move |x: V3| x[0].max(x[1]).max(dot(x, n) - 0.25);
+        let ctx = RepairContext { sdf: &sdf, face_dists: Some(&fd), triangle_face: None };
+        let mut w = corner_cube(&ctx, &[]);
+        let snapshot = (w.p.clone(), w.tets.clone(), w.rep.clone());
+        assert_eq!(w.corner_faces(7), Some(vec![0, 1, 2]));
+        let far = w.surface_point(Some(7), w.p[7], 1.0, Some(&[0, 1, 2])).unwrap();
+        assert!(norm(sub(far, w.p[7])) > 1.5);
+        assert!(!w.optimise_vertex(7, false, false));
+        assert_eq!(w.reasons.get("corner#1"), Some(&1));
+        assert_eq!((w.p, w.tets, w.rep), snapshot);
+    }
+
+    #[test]
+    fn a_corner_move_that_would_crush_an_element_is_refused_and_leaves_the_mesh_alone() {
+        // as above, but the vertex on the edge x = y = 0 sits 0.1 below the corner, so the corner point would squash the
+        // elements between them; the move must be refused with a corner reason and change nothing
+        let ctx = RepairContext { sdf: &octant_sdf, face_dists: Some(&octant_faces), triangle_face: None };
+        let mut w = corner_cube(&ctx, &[(3, [0.0, 0.0, -0.1])]);
+        let snapshot = (w.p.clone(), w.tets.clone(), w.rep.clone());
+        assert!(w.corner_faces(7).is_some());
+        assert!(!w.optimise_vertex(7, false, false));
+        assert!(w.reasons.keys().any(|k| k.starts_with("corner#")), "{:?}", w.reasons);
+        assert_eq!((w.p, w.tets, w.rep), snapshot);
     }
 
     #[test]
