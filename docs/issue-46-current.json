@@ -81,12 +81,12 @@
     184
   ],
   "latest_qualified_source": "d61a794e8f71451e76ea56621cae6c01f2659aa1",
-  "latest_phase": 146,
-  "progress_snapshot": "issue-46-phase-146.md",
+  "latest_phase": 147,
+  "progress_snapshot": "issue-46-phase-147.md",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
-  "remaining": "Phase 146: 36/38 same-STEP parity rows pass (mesh-only table); a pinned vertex near a three-face corner may now move onto it, and surface points on two or more faces start from a Gauss-Newton point on all of them: NEMA17 13/12 to 12 (OCCT) / 12 (native), which remain below the 0.1 gate (lower gusset corners out of reach, upper-corner moves refused by the gate or surface contracts, slot ends, base-plate fillet). Solves were not rerun on the Phase 145/146 meshes. Boss contact/volume audits were not rerun on the final build. fillet_rim_tagging fails with OpenCascade on (pre-existing). ABC 00006600 grading, Windows mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
+  "remaining": "Phase 147: 36/38 same-STEP parity rows pass (mesh-only table); two pinned vertices beside a three-face corner may now merge onto it: NEMA17 12/12 to 12 (OCCT) / 11 (native), which remain below the 0.1 gate (lower gusset corners: a vertex is already 0.1 from the corner, and its corner move and corner merge are refused by the existing contracts; upper-corner moves refused; slot ends; base-plate fillet; corner (-30, 20, 40)). Solves were not rerun on the Phase 145-147 meshes. Boss contact/volume audits were not rerun on the final build. fillet_rim_tagging fails with OpenCascade on (pre-existing). ABC 00006600 grading, Windows mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
   "latest_increment_tests": {
     "commands": [
       "cargo test -p fea-core -p solid-kernel -p fea-problem --release --locked --offline -j1 --no-fail-fast",
@@ -96,8 +96,8 @@
       "cargo test -p fea-problem --features occt --release --locked --offline -j1 --test occt_vs_native -- --ignored the_t_junction_repair_keeps_its_best_round the_nema17_native_relaxation_starts_from_the_best_round"
     ],
     "result": "passed",
-    "platform": "macOS arm64, release, serial Cargo: 1132 passed / 0 failed / 47 ignored; app-tui 1256 passed / 0 failed / 24 ignored; mesh-only parity table 36/38 gate rows pass (docs/issue-46-phase-146-parity.txt); connected boss gate passes; the_t_junction_repair_keeps_its_best_round (0 on both paths) and the_nema17_native_relaxation_starts_from_the_best_round (<= 12) pass",
-    "at": "1076b0c",
+    "platform": "macOS arm64, release, serial Cargo: 1134 passed / 0 failed / 47 ignored; app-tui 1256 passed / 0 failed / 24 ignored; mesh-only parity table 36/38 gate rows pass (docs/issue-46-phase-147-parity.txt); connected boss gate passes; the_t_junction_repair_keeps_its_best_round (0 on both paths) and the_nema17_native_relaxation_starts_from_the_best_round (<= 11) pass",
+    "at": "phase-147-lower-corner-insert",
     "corpus": "issue-46-abc-corpus-2026-10-18.md"
   },
   "tests": {
@@ -110,7 +110,7 @@
   "last_confirmed_main_merge": "3cad328f04a20c6abf9fe810bb01783c1ce39efe",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Remaining boundary sub-gate cells on NEMA17 (12/12): lower gusset corners whose nearest vertices sit about 1.3 from the corner (beyond half the size; needs a corner vertex insertion or a checked wider reach), upper-corner moves refused by the gate or surface contracts, slot-end flat cells, base-plate fillet; rerun NEMA17 and boss solves on the Phase 146 mesh; larger or shaped rebuild cavities untried; fillet_rim_tagging with OpenCascade; unaudited fea-core modules listed in Phase 141; Windows and remaining five-plan items",
+    "scope": "Remaining boundary sub-gate cells on NEMA17 (12/11): lower gusset corners (vertex D 0.1 from the corner; corner move refused by corner#3/#4 and corner merge by collapse#7; an operation re-tiling the face across the convex slope / gusset-side edge together with the interior vertex is untried), upper-corner moves refused by the gate or surface contracts, slot-end flat cells, base-plate fillet, corner (-30, 20, 40); rerun NEMA17 and boss solves on the Phase 147 mesh; larger or shaped rebuild cavities untried; fillet_rim_tagging with OpenCascade; unaudited fea-core modules listed in Phase 141; Windows and remaining five-plan items",
     "status": "see_resume_guide_open_list"
   },
   "base_main_head": "3cad328f04a20c6abf9fe810bb01783c1ce39efe",
