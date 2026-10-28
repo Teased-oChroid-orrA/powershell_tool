@@ -33,14 +33,15 @@ use app_tui::toolboxes::search::{exec as search_exec, persistence};
 use app_tui::widgets::shell;
 
 fn main() -> io::Result<()> {
-    if std::env::args().nth(1).as_deref() == Some("--gpu-viewer") {
+    let first_arg = std::env::args().nth(1);
+    if first_arg.as_deref() == Some("--gpu-viewer") {
         let path = std::env::args_os().nth(2).ok_or_else(|| io::Error::other("missing GPU scene path"))?;
         return app_tui::gpu_viewer::run(std::path::Path::new(&path)).map_err(io::Error::other);
     }
-    if matches!(std::env::args().nth(1).as_deref(), Some("--gpu-dashboard" | "--gui")) {
+    if dashboard_requested(first_arg.as_deref(), cfg!(windows)) {
         return app_tui::gpu_viewer::run_dashboard().map_err(io::Error::other);
     }
-    if let Some(kind) = std::env::args().nth(1).as_deref().and_then(app_tui::gpu_viewer::EditorKind::from_flag) {
+    if let Some(kind) = first_arg.as_deref().and_then(app_tui::gpu_viewer::EditorKind::from_flag) {
         if kind == app_tui::gpu_viewer::EditorKind::Search {
             // The search and index stages are logged like the terminal toolbox's (no paths or terms, see debug_log).
             app_tui::debug_log::init();
@@ -61,6 +62,25 @@ fn main() -> io::Result<()> {
     disable_mouse_capture_best_effort();
     ratatui::restore();
     result
+}
+
+fn dashboard_requested(first_arg: Option<&str>, windows: bool) -> bool {
+    matches!(first_arg, Some("--gpu-dashboard" | "--gui")) || (windows && first_arg.is_none())
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::dashboard_requested;
+
+    #[test]
+    fn bare_windows_exe_opens_dashboard_and_flags_keep_their_routes() {
+        assert!(dashboard_requested(None, true));
+        assert!(!dashboard_requested(None, false));
+        assert!(dashboard_requested(Some("--gui"), false));
+        assert!(dashboard_requested(Some("--gpu-dashboard"), true));
+        assert!(!dashboard_requested(Some("--toolbox"), true));
+        assert!(!dashboard_requested(Some("--tui"), true));
+    }
 }
 
 /// Enables mouse input and makes sure it can never survive the process -

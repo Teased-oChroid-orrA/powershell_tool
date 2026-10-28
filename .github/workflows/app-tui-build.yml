@@ -39,9 +39,9 @@ jobs:
         shell: pwsh
         run: |
           if ("${{ inputs.occt }}" -eq "true") {
-            cargo build --release -p app-tui --features occt-source --target x86_64-pc-windows-msvc
+            cargo build --release -p app-tui --features occt-source,gpu-viewer --target x86_64-pc-windows-msvc
           } else {
-            cargo build --release -p app-tui --target x86_64-pc-windows-msvc
+            cargo build --release -p app-tui --features gpu-viewer --target x86_64-pc-windows-msvc
           }
 
       - name: Verify and list app-tui.exe
