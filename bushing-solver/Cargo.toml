@@ -33,6 +33,7 @@ publish = false
 # without pulling in this crate's own bushing-specific geometry/
 # countersink/bearing/reamer/tolerance code.
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 mechanics-core = { path = "../mechanics-core" }
 
 [dev-dependencies]

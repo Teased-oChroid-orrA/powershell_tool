@@ -27,10 +27,11 @@ pub struct Workbench {
     pub opens: Opens,
 }
 
-pub const WORKBENCHES: [Workbench; 10] = [
+pub const WORKBENCHES: [Workbench; 11] = [
     Workbench { id: "search", name: "Search", summary: "Keyword filters across text, Office, zip, rtf and pdf files. HTML report, CSV and JSON export.", opens: Opens::Window(EditorKind::Search) },
     Workbench { id: "fastener-hole", name: "Fastener Hole", summary: "Hole, fastener and edge-distance geometry.", opens: Opens::Window(EditorKind::FastenerHole) },
     Workbench { id: "bushing", name: "Bushing", summary: "Press fit, tolerance stack, edge-distance cross-check and verified fixes.", opens: Opens::Window(EditorKind::Bushing) },
+    Workbench { id: "bushing-stackup", name: "Bushing Stackup", summary: "Line-reamed through holes and per-member bushing bore preparation.", opens: Opens::Window(EditorKind::BushingStackup) },
     Workbench { id: "pressure-vessel", name: "Pressure Vessel", summary: "Shell and head stresses, Lamé thick wall.", opens: Opens::Terminal(ToolId::PressureVessel) },
     Workbench { id: "preload", name: "Preload Analysis", summary: "Fastened joint preload and member stiffness.", opens: Opens::Terminal(ToolId::PreloadAnalysis) },
     Workbench { id: "lug", name: "Lug Analysis", summary: "Pin-loaded lug on the general FE kernel.", opens: Opens::Terminal(ToolId::LugAnalysis) },
@@ -183,6 +184,9 @@ impl Dashboard {
             return;
         };
         let file = file.or_else(|| w.default_file());
+        if matches!(w.opens,Opens::Window(EditorKind::BushingStackup)) {
+            if let Some(path)=&file {if let Err(e)=super::editor::stackup::WindowLease::acquire(path){self.message=Some(e);return;}}
+        }
         match spawn(w, file.as_deref()) {
             Ok(()) => {
                 self.message = Some(format!("Opened {}.", w.name));
@@ -270,6 +274,8 @@ mod tests {
         assert_eq!(fea.args(Some(Path::new("/x/a.json"))), ["--gpu-solid", "/x/a.json"]);
         assert_eq!(fea.args(None), ["--gpu-solid"]);
         assert_eq!(Workbench::find("search").unwrap().args(None), ["--gpu-search"]);
+        assert_eq!(Workbench::find("bushing-stackup").unwrap().args(None), ["--gpu-bushing-stackup"]);
+        assert!(Workbench::find("bushing-stackup").unwrap().is_window());
         assert!(Workbench::find("fastener-hole").unwrap().default_file().unwrap().ends_with("fastener-hole-case.json"));
         assert_eq!(Workbench::find("fastener-hole").unwrap().args(Some(Path::new("c.json"))), ["--gpu-fastener", "c.json"]);
         assert_eq!(Workbench::find("search").unwrap().default_file(), None, "Search keeps its saved folder");

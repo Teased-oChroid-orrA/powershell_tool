@@ -87,6 +87,7 @@ pub enum EditorAction {
     Fastener(super::fastener::FastenerAct),
     /// The Search workbench (see `search`).
     Search(super::search::SearchAct),
+    Stackup(super::stackup::StackupAct),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tone {
@@ -341,7 +342,7 @@ impl Session {
             EditorAction::ToggleSupports => self.state.show_supports = !self.state.show_supports,
             EditorAction::ToggleLoads => self.state.show_loads = !self.state.show_loads,
             // A member session never receives solid actions (its UI does not offer them).
-            EditorAction::Solid(_) | EditorAction::Bushing(_) | EditorAction::Eccentric(_) | EditorAction::Fastener(_) | EditorAction::Search(_) => {}
+            EditorAction::Solid(_) | EditorAction::Bushing(_) | EditorAction::Eccentric(_) | EditorAction::Fastener(_) | EditorAction::Search(_) | EditorAction::Stackup(_) => {}
         }
         self.touch();
     }

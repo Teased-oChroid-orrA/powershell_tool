@@ -32,6 +32,8 @@ fn every_number_target_is_listed(t: NumberTarget) {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BushingFile {
     #[serde(default)]
+    pub stackup: Option<super::super::stackup_transfer::StackupTransfer>,
+    #[serde(default)]
     pub version: u32,
     #[serde(default)]
     pub name: String,
@@ -85,7 +87,7 @@ impl BushingFile {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
         .collect();
-        Self { version: FORMAT_VERSION, name: name.to_string(), numbers, choices, flags, housing_material: Some(m.housing_material().id.to_string()), bushing_material: Some(m.bushing_material().id.to_string()) }
+        Self { stackup: None, version: FORMAT_VERSION, name: name.to_string(), numbers, choices, flags, housing_material: Some(m.housing_material().id.to_string()), bushing_material: Some(m.bushing_material().id.to_string()) }
     }
 
     /// Put the file's inputs into `m` and recompute. Returns what could not be applied (an unknown material, a choice this

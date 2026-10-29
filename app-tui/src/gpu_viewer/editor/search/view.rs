@@ -188,7 +188,7 @@ pub(super) fn document(s: &SearchSession) -> Document {
         DocPanel { label: "Report".into(), badge: s.st.run.last_report_path.as_ref().map(|_| "ready".to_string()), inputs: vec![output_input(s)], cards: vec![c.output] },
     ];
     let modal = types_card(s).map(|card| DocModal { card, close: act(SearchAct::CloseExtensions) });
-    Document { inputs, extra_inputs, buttons, chips, notice, progress, stats, table: table(s), detail: detail(s), panels, modal }
+    Document { precision: None, policy: None, inputs, extra_inputs, buttons, chips, notice, progress, stats, table: table(s), detail: detail(s), panels, modal }
 }
 
 /// The switch that shows the Exclude row. While the row is hidden and terms are still set, the switch names them: an
@@ -360,7 +360,7 @@ fn detail(s: &SearchSession) -> Option<DocDetail> {
         subtitle.push_str(&format!("  ·  first {MAX_BLOCKS} lines shown (Export matches has all)"));
     }
     blocks.shrink_to_fit();
-    Some(DocDetail { title: file_name(&r.full_name).to_string(), subtitle, actions: result_entries(s), blocks, empty: "The file matched as a whole (all-in-file mode), with no single line to show.".into() })
+    Some(DocDetail { drawing: None, title: file_name(&r.full_name).to_string(), subtitle, actions: result_entries(s), blocks, empty: "The file matched as a whole (all-in-file mode), with no single line to show.".into() })
 }
 
 // ---------------------------------------------------------------------- tree

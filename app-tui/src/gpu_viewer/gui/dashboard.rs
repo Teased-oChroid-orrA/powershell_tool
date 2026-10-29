@@ -174,6 +174,6 @@ mod tests {
         dash.query = "bushing".into();
         frames(&mut gui, &mut dash, Vec::new());
         let names: Vec<_> = gui.targets.iter().map(|t| t.0.as_str()).filter(|l| crate::gpu_viewer::dashboard::WORKBENCHES.iter().any(|w| w.name == *l)).collect();
-        assert_eq!(names, ["Bushing", "Eccentric Bushing"]);
+        assert_eq!(names, ["Bushing", "Bushing Stackup", "Eccentric Bushing"]);
     }
 }

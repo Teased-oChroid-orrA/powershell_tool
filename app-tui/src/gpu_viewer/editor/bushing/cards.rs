@@ -58,6 +58,11 @@ impl BushingSession {
 
     pub(super) fn inspector_cards(&self) -> Vec<Card> {
         let mut cards = self.input_cards();
+        if let Some(source)=&self.stackup {
+            let member=source.inputs.members.iter().find(|m|m.id==source.member_id);
+            let policy=member.map(|m|bushing_solver::stackup::wall_policy(&source.inputs,m));
+            cards.insert(0,Card::new("stackup-machining-source","Calculated stackup hole",Relevance::Primary,vec![line(format!("Source {} / member #{} / revision {}",source.source_file,source.member_id,source.source_revision),Tone::Dim),line(format!("Current hole {:.5} in; angularity cleanup {:.5} in; adopted member hole {:.5} in",member.map_or(0.0,|m|m.hole.nominal),source.angularity_cleanup,source.adopted_hole.nominal),Tone::Normal),line(source.enlargement_reason.as_ref().map_or_else(||"Not enlarged for the bushing".into(),|reason|format!("ENLARGED: {reason}")),Tone::Title),line(format!("Source wall policy {policy:?}. Provenance retained when target inputs are edited. Target load/fit are editable defaults; its plane FE uses an extended far boundary."),Tone::Dim)]));
+        }
         cards.push(self.verdict_card());
         if let Some(c) = self.fixes_card() {
             cards.push(c);

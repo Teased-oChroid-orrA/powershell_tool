@@ -195,6 +195,8 @@ pub struct ValueCard {
 /// like the rest of the chrome; `gui/document.rs` draws it and reports edits as `Outcome::DocField`.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Document {
+    pub precision: Option<super::editor::stackup::PrecisionPage>,
+    pub policy: Option<DocTable>,
     pub inputs: Vec<DocInput>,
     /// A second row of inputs under the first, the bar's full width (Exclude, while its switch is on).
     pub extra_inputs: Vec<DocInput>,
@@ -337,6 +339,7 @@ pub struct DocRow {
 /// The selected row in full: a title, a subtitle, actions and the text blocks that matter (the matching lines).
 #[derive(Clone, Debug, PartialEq)]
 pub struct DocDetail {
+    pub drawing: Option<DocDrawing>,
     pub title: String,
     pub subtitle: String,
     pub actions: Vec<Entry>,
@@ -356,3 +359,9 @@ pub struct DocBlock {
     /// Small tags beside the number (the filters that matched).
     pub tags: Vec<String>,
 }
+
+/// Engineering-coordinate section, transformed once by the native painter.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocDrawing { pub bounds: [[f64;2];2], pub paths: Vec<DocPath> }
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocPath { pub points: Vec<[f64;2]>, pub label: String, pub kind: u8, pub selected: bool, pub select: Option<UiAction> }
