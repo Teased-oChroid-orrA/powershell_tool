@@ -4,6 +4,7 @@
 //! inspector, and adapts to that width: the bar's inputs stack on a narrow window. The table and the detail are placed
 //! by `page_layout`: a card dragged by its grip to a side of the room goes there and the other makes room, the
 //! splitter between them sets their shares, and both are kept between sessions (`PageLayout` in the display settings).
+mod stackup;
 use super::{page_layout, theme::Palette, with_alpha, Gui};
 use crate::gpu_viewer::{
     controller::{Command, UiAction},
@@ -24,6 +25,7 @@ const DRAG_LEAST: f32 = 24.0;
 /// What the page remembers between frames (scrolling and which row was selected).
 #[derive(Default)]
 pub(super) struct DocState {
+    precision: stackup::PrecisionState,
     /// The selected row last frame: a change scrolls it into view.
     selected: Option<usize>,
     /// Scroll offset and visible height of the table last frame.
@@ -74,6 +76,7 @@ impl Gui {
         if area.width() < 120.0 || area.height() < 80.0 {
             return;
         }
+        if doc.precision.is_some(){self.precision_page(ui,area,doc,p,out,hint);return;}
         let inner = area.shrink2(Vec2::new(16.0, 6.0));
         // A press outside the open popover (and outside the control that opened it) closes it, as a menu does.
         if self.doc.open.is_some() {
@@ -109,6 +112,17 @@ impl Gui {
                 self.progress_card(ui, pr, p, out, hint);
             } else if !doc.stats.is_empty() && ui.available_width() >= BAR_STACK && ui.available_height() >= 520.0 {
                 stat_tiles(ui, &doc.stats, p);
+            }
+            if let Some(policy) = &doc.policy {
+                egui::Frame::new().fill(p.panel).inner_margin(Margin::same(8)).show(ui, |ui| {
+                    ui.label(RichText::new(&policy.title).strong());
+                    egui::ScrollArea::both().id_salt("policy-summary").max_height(90.0).show(ui, |ui| {
+                        egui::Grid::new("policy-grid").striped(true).show(ui, |ui| {
+                            for c in &policy.columns { ui.label(&c.title); } ui.end_row();
+                            for row in &policy.rows { for (k,cell) in row.cells.iter().enumerate() {if k==0 {if ui.selectable_label(row.selected,cell).clicked() {out.push(Outcome::Action(row.select));}}else{ui.label(cell);}} ui.end_row(); }
+                        });
+                    });
+                });
             }
             let rest = ui.available_rect_before_wrap();
             if rest.height() < 60.0 {
@@ -676,6 +690,23 @@ impl Gui {
                     }
                 });
             });
+            let desired: f32=t.columns.iter().map(|c| c.width).sum();
+            if desired > full.width() && t.columns.iter().all(|c|c.width>0.0) {
+                let area=Rect::from_min_max(full.min+Vec2::new(0.0,48.0),full.max);
+                ui.scope_builder(UiBuilder::new().max_rect(area),|ui| {
+                    egui::ScrollArea::both().id_salt("wide-doc-table").auto_shrink([false,false]).show_rows(ui,ROW_H,t.rows.len()+1,|ui,range| {
+                        ui.set_min_width(desired+28.0);
+                        let widths:Vec<_>=t.columns.iter().map(|c| c.width).collect();
+                        if range.contains(&0) {
+                        let (head,_)=ui.allocate_exact_size(Vec2::new(desired+28.0,32.0),Sense::hover());
+                        let mut x=head.left()+14.0;
+                        for c in &t.columns { ui.painter().text(Pos2::new(x,head.center().y),Align2::LEFT_CENTER,&c.title,FontId::proportional(11.0),p.dim); x+=c.width; }
+                        }
+                        for row in range { if row>0 {self.table_row(ui,t,row-1,&widths,p,out);} }
+                    });
+                });
+                return;
+            }
             let head_top = full.top() + 48.0;
             let cols = column_widths(t, full.width() - 28.0);
             // Column headings.
@@ -759,6 +790,7 @@ impl Gui {
         for (k, (cell, w)) in row.cells.iter().zip(cols).enumerate() {
             let r = Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(*w - 8.0, ROW_H));
             let clip = painter.with_clip_rect(r.intersect(painter.clip_rect()));
+            ui.interact(r,Id::new(("doc-cell",&t.title,i,k)),Sense::hover()).on_hover_text(format!("{}: {}",t.columns[k].title,cell));
             let right = t.columns.get(k).is_some_and(|c| c.right);
             if k == 0 {
                 let name = clip.layout_no_wrap(cell.clone(), FontId::proportional(13.5), p.text);
@@ -794,6 +826,33 @@ impl Gui {
         }
     }
 
+    fn section_drawing(&mut self, ui: &mut egui::Ui, d: &crate::gpu_viewer::ui::DocDrawing, p: &Palette, out: &mut Vec<Outcome>, height:f32) {
+        let key=Id::new("section-zoom");
+        let mut zoom=ui.ctx().data_mut(|data| data.get_temp::<f64>(key).unwrap_or(1.0));
+        ui.horizontal(|ui| { if ui.button("Fit section").clicked() { zoom=1.0; } ui.label("Wheel to zoom; click a member"); });
+
+        let (rect,response)=ui.allocate_exact_size(Vec2::new(ui.available_width(),height),Sense::click());
+        if response.hovered() { zoom=(zoom*(ui.input(|i| i.smooth_scroll_delta.y) as f64*0.004).exp()).clamp(0.2,30.0); }
+        ui.ctx().data_mut(|data| data.insert_temp(key,zoom));
+        let dx=(d.bounds[1][0]-d.bounds[0][0]).max(1e-9);
+        let dy=(d.bounds[1][1]-d.bounds[0][1]).max(1e-9);
+        let scale=((rect.width()-40.0) as f64/dx).min((rect.height()-40.0) as f64/dy)*zoom;
+        let middle=[(d.bounds[0][0]+d.bounds[1][0])/2.0,(d.bounds[0][1]+d.bounds[1][1])/2.0];
+        let transform=|pt:[f64;2]| Pos2::new(rect.center().x+((pt[0]-middle[0])*scale) as f32,rect.center().y+((pt[1]-middle[1])*scale) as f32);
+        let painter=ui.painter_at(rect);
+        for path in &d.paths {
+            let points:Vec<_>=path.points.iter().map(|pt| transform(*pt)).collect();
+            let color=match path.kind { 1=>p.warn,2=>p.accent,3=>p.good,_=>p.dim };
+            if points.len()>2 && path.kind==0 { painter.add(Shape::convex_polygon(points.clone(),with_alpha(color,if path.selected {70} else {20}),Stroke::new(1.0,color))); }
+            painter.add(Shape::line(points.clone(),Stroke::new(if path.selected {2.5} else {1.2},color)));
+            if let Some(first)=points.first() {
+                let bounds=Rect::from_points(&points).expand(4.0);
+                if let Some(at)=response.hover_pos() { if bounds.contains(at) { response.clone().on_hover_text(&path.label); if response.clicked() { if let Some(a)=path.select {out.push(Outcome::Action(a));} } } }
+                if path.kind==0 && path.selected { painter.text(*first-Vec2::new(6.0,0.0),Align2::RIGHT_TOP,"Selected",FontId::proportional(11.0),color); }
+            }
+        }
+    }
+
     fn detail_card(&mut self, ui: &mut egui::Ui, d: &DocDetail, p: &Palette, out: &mut Vec<Outcome>, hint: &mut Option<String>) {
         let outer = ui.available_rect_before_wrap();
         card_frame(p).show(ui, |ui| {
@@ -816,6 +875,14 @@ impl Gui {
                 }
             });
             ui.add(egui::Separator::default().spacing(6.0));
+            if let Some(drawing) = &d.drawing {
+                let height=(ui.available_height()-55.0).clamp(140.0,450.0);
+                egui::ScrollArea::vertical().id_salt("engineering-section").auto_shrink([false,false]).show(ui,|ui| {
+                    self.section_drawing(ui,drawing,p,out,height);
+                    ui.label(RichText::new(&d.empty).small().color(p.dim));
+                });
+                return;
+            }
             if d.blocks.is_empty() {
                 ui.label(RichText::new(&d.empty).color(p.dim));
                 return;

@@ -1405,6 +1405,27 @@ mod snapshot_tests {
         });
     }
 
+    #[test]
+    #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_STACKUP_OUT"]
+    fn stackup_snapshot() {
+        use crate::gpu_viewer::editor::stackup::StackupSession;
+        let dir=std::env::var("FEA_SNAPSHOT_STACKUP_OUT").expect("snapshot folder");
+        let _guard=headless_guard();
+        let mut session=StackupSession::open(std::path::Path::new("/tmp/stackup-snapshot-unused-v2.json")).unwrap();
+        session.inputs.members.push(bushing_solver::stackup::Member::new(3));session.inputs.members[0].name="Outer lug".into();session.inputs.members[1].name="Spacer".into();session.inputs.members[1].thickness=0.25;session.inputs.members[2].name="Inner lug".into();session.inputs.bushing_enabled=true;session.inputs.common_wall=Some(0.06);session.act(crate::gpu_viewer::editor::session::EditorAction::Stackup(crate::gpu_viewer::editor::stackup::StackupAct::Recalculate));
+        pollster::block_on(async {
+            let adapter=test_adapter().await.expect("graphics adapter required");
+            let scene=session.scene().unwrap();
+            for (w,h,name,dark) in [(1360,860,"wide-dark",true),(1360,860,"wide-light",false),(780,900,"narrow-dark",true)] {
+                let mut r=Renderer::new(&adapter,wgpu::TextureFormat::Rgba8Unorm,&scene,w,h).await.unwrap();
+                let texture=target(&r,w,h);let mut gui=Gui::new();gui.ctx().set_theme(if dark {egui::Theme::Dark}else{egui::Theme::Light});
+                let view=ViewState::new(&scene);let scenes=[scene.clone()];let input=GuiInput{view:&view,scenes:&scenes,selected:0,editor:Some(&session as &dyn Authoring),error:None,box_drag:None,overlay:&[]};
+                draw(&mut r,&mut gui,&texture,&input,[0.0,0.0],false);
+                std::fs::write(format!("{dir}/{name}-{w}x{h}.rgba"),read_back(&r,&texture)).unwrap();
+            }
+        });
+    }
+
     /// The Bushing workbench: the inputs with the housing and bushing drawn, the checks with the edge-distance table, and the
     /// solved model, as raw RGBA dumps: `FEA_SNAPSHOT_BUSHING_OUT=/dir cargo test ... bushing_snapshot -- --ignored`.
     #[test]

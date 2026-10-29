@@ -17,7 +17,7 @@ review (FAA/NAS/SAE/OEM SRM) - explicitly out of scope, never ported. Also does 
 ### Find It Fast
 | Looking for... | Go to |
 |---|---|
-| End-to-end solve (the one real entry point) | `src/solve.rs::compute()` |
+| Interference-fit solve | `src/solve.rs::compute()` |
 | Material properties (Al7075, Ti-6Al-4V, bronze, ...) | `mechanics-core/src/materials.rs` (not here) |
 | Lamé thick-wall stress/compliance math | `mechanics-core/src/lame.rs` (not here) |
 | Tolerance-band resolution, bore-capability auto-adjust | `src/tolerance.rs` |
@@ -25,7 +25,8 @@ review (FAA/NAS/SAE/OEM SRM) - explicitly out of scope, never ported. Also does 
 | Axial cross-section geometry / min wall-thickness scan | `src/geometry.rs` |
 | Edge-distance bearing-profile effective thickness (exposed as `BushingOutput::t_eff_seq`, also the plate thickness for the `edge-check` cross-checks) | `src/bearing.rs` |
 | Aircraft reamer catalog + nearest-size picker | `src/reamers.rs` + `data/aircraft_reamer_catalog.csv` |
-| Proof this matches the real production engine | `tests/differential.rs`, `tests/differential_countersink.rs` |
+| Common-axis angularity cleanup and optional bushing sizing | `src/stackup.rs` (native Precision Studio); assumptions in `docs/bushing-stackup.md` |
+| Proof the interference-fit port matches the production engine | `tests/differential.rs`, `tests/differential_countersink.rs` |
 
 ### Key Relationships
 `tolerance.rs`/`countersink.rs`/`geometry.rs`/`bearing.rs`/`reamers.rs` → `solve.rs::compute()`
@@ -46,13 +47,13 @@ for the physics/material data. The dependency only goes one direction.
 ### Key Exports
 | Export | Used By | Change Impact |
 |---|---|---|
-| `solve::compute(&BushingInputs) -> BushingOutput` | `bushing_workbench.rs` (app), `bushing.rs` (app-egui) | Breaking - both UIs read dozens of `BushingOutput` fields directly |
-| `solve::{BushingInputs, BushingOutput, RangedValue, MarginCandidate, EndConstraint}` | Both UIs | New field must default via `..Default::default()` (see Contracts) |
-| `geometry::{BushingType, IdType, resolve_bushing_section_params, compute_minimum_bushing_wall}` | `bushing_visualizer.rs`, both UIs | Consumed directly for cross-section drawing, not just solving |
-| `countersink::{CsMode, CsCorner, solve_countersink}` | Both UIs | Countersink field derivation display |
-| `tolerance::{ToleranceRange, ToleranceStatus, EnforcementPolicy}` | Both UIs | Spec-row display, enforcement toggle |
-| `reamers::{ReamerEntry, nearest}` | Both UIs | Bore-diameter reamer picker dropdown |
-| `mechanics_core::lame::LameSample` (via `BushingOutput` stress-field fields) | Both UIs | Lives in `mechanics-core`, re-exposed by this crate's output type |
+| `solve::compute(&BushingInputs) -> BushingOutput` | `app-tui` Bushing model and native workbench | Breaking - consumers read dozens of `BushingOutput` fields directly |
+| `solve::{BushingInputs, BushingOutput, RangedValue, MarginCandidate, EndConstraint}` | `app-tui` | New field must default via `..Default::default()` (see Contracts) |
+| `geometry::{BushingType, IdType, resolve_bushing_section_params, compute_minimum_bushing_wall}` | `app-tui` Bushing model and native geometry | Consumed directly for cross-section drawing, not just solving |
+| `countersink::{CsMode, CsCorner, solve_countersink}` | `app-tui` | Countersink field derivation display |
+| `tolerance::{ToleranceRange, ToleranceStatus, EnforcementPolicy}` | `app-tui` | Spec-row display, enforcement toggle |
+| `reamers::{ReamerEntry, nearest}` | `app-tui` | Bore-diameter reamer picker dropdown |
+| `mechanics_core::lame::LameSample` (via `BushingOutput` stress-field fields) | `app-tui` | Lives in `mechanics-core`, re-exposed by this crate's output type |
 
 ### Core Types
 `BushingInputs` (all solve inputs, `Default`-derived) → `compute()` → `BushingOutput`.
@@ -76,12 +77,13 @@ max-interference evaluation producing *lower* stress.
 | Add/update a reamer catalog entry | `data/aircraft_reamer_catalog.csv` (sourced data - cite a real catalog) |
 
 ## Downlinks / Consumers
-No child AGENTS.md, but two active consumers:
-- `app` (dioxus-native, being phased out per root `docs/app-egui-parity-checklist.md`):
-  `bushing_workbench.rs`, `bushing_visualizer.rs`.
-- `app-egui` (active stack): `bushing.rs`, `sketches.rs`/`components.rs`.
-Both declare `bushing-solver` **and** `mechanics-core` as direct path deps - no re-export shim,
-so a UI needing `lame`/`materials` types imports `mechanics_core::...` directly.
+No child AGENTS.md. The active UI consumer is `app-tui`:
+- `src/toolboxes/bushing/model.rs` owns the interference-fit model bridge.
+- `src/gpu_viewer/editor/bushing/` owns the native workbench and visualization.
+- `src/gpu_viewer/editor/stackup.rs` consumes the pure stackup calculation.
+
+`app-tui` declares both `bushing-solver` and `mechanics-core` directly. A UI needing
+Lamé or material types imports `mechanics_core::...` without a re-export shim.
 
 ## Contracts
 - **Imperial units only, unenforced by types**: `in`, `psi`/`ksi`, `lbf`, `°F` throughout

@@ -113,6 +113,8 @@ history if a discrepancy is ever suspected.
 
 ## Global Invariants
 
+- **New engineering workbenches open in native windows from the dashboard.** Owner preference (2026-10-28): do not ship a new workbench as a dashboard tile that only opens a terminal toolbox. Bushing Stackup has no terminal view or terminal transfer route.
+
 - **Target environment (do not relax without discussion)**: Windows 10
   1809+ / Windows 11, `win-x64`. No internet access, no admin rights, no
   pre-installed runtime of any kind required on the machine running the
@@ -235,9 +237,12 @@ The app writes `toolbench-debug.log` into the folder it was launched from (`app-
 
 ## Architecture Decisions
 
-Formal ADRs live in `docs/adr/` (ADR-001 through ADR-011, covering the
-Rust/native-search architecture boundary, Tantivy adoption, extraction
-architecture, and index-location decisions). See `docs/AGENTS.md` for the
+Formal ADRs live in `docs/adr/` (ADR-001 through ADR-022: ADR-001..011
+cover the Rust/native-search boundary, Tantivy, extraction and index
+location; ADR-012..022 cover the FEA kernel, eigen/transient methods,
+native CAD, sketch history, mesh lifecycle, front end/layout, the
+OpenCascade solid kernel, failure guidance, thermal studies and hybrid
+meshing). See `docs/AGENTS.md` for the
 full index mapping decision topics to ADR numbers.
 
 ## Entry Points

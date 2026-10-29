@@ -894,6 +894,12 @@ pub fn run_bushing(mut session: super::editor::bushing::BushingSession) -> Resul
     launch(ViewerProject::single(scene), Some(Box::new(session)))
 }
 
+/// Open the line-reamed bushing stackup as a native page.
+pub fn run_stackup(session: super::editor::stackup::StackupSession) -> Result<(), String> {
+    let _lease=super::editor::stackup::WindowLease::acquire(session.path())?;
+    launch(ViewerProject::single(blank_scene("bushing-stackup")), Some(Box::new(session)))
+}
+
 /// Open the Fastener Hole workbench on `session`.
 pub fn run_fastener(mut session: super::editor::fastener::FastenerSession) -> Result<(), String> {
     let scene = super::editor::authoring::Authoring::scene(&mut session)?;

@@ -369,8 +369,10 @@ impl Gui {
         if self.visible.status {
             self.status_bar(ui, input, &p, out, hint);
         }
+        let document=input.editor.and_then(|e|e.document());
+        let precision=document.as_ref().is_some_and(|d|d.precision.is_some());
         let tree_open = self.tree_is_open();
-        if self.visible.tree && tree_open {
+        if self.visible.tree && tree_open && !precision {
             self.tree_panel(ui, input, &p, out);
         }
         // What the panels leave is the model's viewport, less the room the inspector's cards take when they are shown
@@ -384,7 +386,7 @@ impl Gui {
             free.max.x = (free.max.x - panels::INSPECTOR_WIDTH - 36.0).max(free.min.x + 240.0);
         }
         self.viewport = Some(free);
-        if self.visible.tree && !tree_open {
+        if self.visible.tree && !tree_open && !precision {
             self.tree_chip(ui.ctx(), &p);
         }
         if self.visible.ribbon && !page {
@@ -394,7 +396,7 @@ impl Gui {
             self.inspector(ui.ctx(), plan, &p, out, hint);
         }
         // A bench without a model draws its page in the model's place, below the tool pill.
-        if let Some(doc) = input.editor.and_then(|e| e.document()) {
+        if let Some(doc) = document {
             let top = self.pill_rect.map_or(free.top() + 8.0, |r| r.bottom() + 8.0).clamp(free.top(), free.bottom());
             self.doc.layout = input.view.page_layout.unwrap_or_default();
             self.document(ui, Rect::from_min_max(Pos2::new(free.left(), top), free.max), &doc, &p, out, hint);

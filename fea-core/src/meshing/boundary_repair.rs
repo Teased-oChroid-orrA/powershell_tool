@@ -910,12 +910,21 @@ impl<'a> Work<'a> {
         let boundary = self.bnd[v];
         // a vertex on an edge of the model (exactly two faces) may slide along it; corners and sharp bends stay
         let mut feature: Option<(Vec<usize>, V3)> = None;
+        let mut off_edge_slide = false;
         if boundary && self.fixed(v) {
             if self.ctx.face_dists.is_none() {
                 return false;
             }
             match self.feature_edge(v) {
-                Ok(f) => feature = Some(f),
+                Ok(f) => {
+                    let hits = self.ctx.face_dists.unwrap()(self.p[v]);
+                    let distances: Vec<_> = f.0.iter().filter_map(|face| hits.iter().find(|hit| hit.face == *face))
+                        .map(|hit| hit.dist.abs()).collect();
+                    // A point on one face, but farther from the other than the snap error, may slide away from the crease.
+                    off_edge_slide = distances.len() == 2 && distances[0].min(distances[1]) < 0.02 * self.hv[v]
+                        && (distances[0] - distances[1]).abs() > 0.02 * self.hv[v];
+                    if !off_edge_slide { feature = Some(f); }
+                }
                 Err(k) => {
                     if let Some(faces) = self.corner_faces(v) {
                         return self.move_to_corner(v, &faces, push);
@@ -931,6 +940,7 @@ impl<'a> Work<'a> {
         let h = self.hv[v];
         let old = self.p[v];
         let old_min = self.min_sj(&star);
+        let old_volume = off_edge_slide.then(|| self.volume_of(&star));
         let old_faces = if boundary { Some(self.boundary_snapshot(&star, h)) } else { None };
         let old_under = self.under_gate_ids(&star);
         // candidate refusals by reason, for the verbose trace
@@ -961,6 +971,7 @@ impl<'a> Work<'a> {
             } else {
                 Some("surface")
             };
+            let why = why.or_else(|| old_volume.filter(|&volume| (this.volume_of(&star) - volume).abs() > 1e-10 * volume.abs()).map(|_| "volume"));
             let (m, pen) = match why {
                 None => (this.min_sj(&star), this.penalty_ids(&star)),
                 Some(k) => {
