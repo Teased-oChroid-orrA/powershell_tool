@@ -353,7 +353,12 @@ impl StackupSession {
                     self.status = "Member identifiers exhausted; member not added".into();
                     return;
                 };
-                self.inputs.members.push(Member::new(id));
+                let selected = &self.inputs.members[self.selected];
+                let mut member = Member::new(id);
+                member.reference_normal_deg = selected.reference_normal_deg;
+                member.original = selected.original;
+                member.finished = selected.finished;
+                self.inputs.members.push(member);
                 self.selected = self.inputs.members.len() - 1;
             }
             StackupAct::Remove if self.inputs.members.len() > 1 => {
@@ -1013,6 +1018,33 @@ mod tests {
         s.act_stackup(StackupAct::Add);
         assert_eq!(s.inputs, before);
         assert!(s.status.contains("exhausted"));
+    }
+    #[test]
+    fn added_member_inherits_axis_constraints_without_changing_first_cleanup() {
+        for mode in [AngularityMode::Degrees, AngularityMode::CylindricalZone] {
+            let mut s = session();
+            s.inputs.members.truncate(1);
+            s.inputs.mode = mode;
+            let first = &mut s.inputs.members[0];
+            first.thickness = 1.0;
+            first.hole = stackup::Band::exact(0.5);
+            first.reference_normal_deg = 0.5;
+            first.original.degrees = 2.0;
+            first.finished.degrees = 0.0;
+            first.original.zone_diameter = 0.04;
+            first.original.reference_span = 1.1;
+            first.finished.zone_diameter = 0.002;
+            first.finished.reference_span = 0.8;
+            let expected = first.clone();
+            s.recalculate();
+            let before = s.result.as_ref().unwrap().layers[0].cleanup_diameter;
+            s.act_stackup(StackupAct::Add);
+            let added = &s.inputs.members[1];
+            assert_eq!(added.reference_normal_deg, expected.reference_normal_deg);
+            assert_eq!(added.original, expected.original);
+            assert_eq!(added.finished, expected.finished);
+            assert_eq!(s.result.as_ref().unwrap().layers[0].cleanup_diameter, before);
+        }
     }
     #[test]
     fn window_case_lock_is_exclusive_and_releases() {

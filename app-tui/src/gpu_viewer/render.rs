@@ -1423,7 +1423,25 @@ mod snapshot_tests {
                 let view=ViewState::new(&scene);let scenes=[scene.clone()];let input=GuiInput{view:&view,scenes:&scenes,selected:0,editor:Some(&session as &dyn Authoring),error:None,box_drag:None,overlay:&[]};
                 draw(&mut r,&mut gui,&texture,&input,[0.0,0.0],false);
                 std::fs::write(format!("{dir}/{name}-{w}x{h}.rgba"),read_back(&r,&texture)).unwrap();
-                for (control, pose) in [("Exploded", "exploded"), ("Stack setup", "settings")] {
+                let (x,y)=gui.find_target("Drag member 1").unwrap();
+                let start=egui::pos2(x as f32,y as f32);
+                let finish=start-egui::vec2(0.0,90.0);
+                for events in [
+                    vec![egui::Event::PointerMoved(start),egui::Event::PointerButton {pos:start,button:egui::PointerButton::Primary,pressed:true,modifiers:Default::default()}],
+                    vec![egui::Event::PointerMoved(finish)],
+                    vec![egui::Event::PointerButton {pos:finish,button:egui::PointerButton::Primary,pressed:false,modifiers:Default::default()}],
+                ] {
+                    let raw=egui::RawInput {screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(w as f32,h as f32))),events,..Default::default()};
+                    let (output,_)=gui.run(raw,&input);
+                    r.discard_egui(output);
+                }
+                draw(&mut r,&mut gui,&texture,&input,[0.0,0.0],false);
+                let offsets=gui.stackup_component_offsets();
+                assert!(offsets[0].1[0] < 0.0,"member drag did not move the member");
+                assert_eq!(offsets[0].1[1],0.0,"member drag moved its bushing");
+                assert!(offsets[1..].iter().all(|(_,offset)|*offset == [0.0,0.0]),"member drag moved neighbors");
+                std::fs::write(format!("{dir}/{name}-individual-{w}x{h}.rgba"),read_back(&r,&texture)).unwrap();
+                for (control, pose) in [("Explode all", "exploded"), ("Stack setup", "settings")] {
                     let (_, y) = gui.find_target(control).unwrap();
                     if y > h as f64 - 40.0 {
                         let raw = egui::RawInput {
@@ -1459,8 +1477,11 @@ mod snapshot_tests {
                     let (output, _) = gui.run(raw, &input);
                     r.discard_egui(output);
                     draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
-                    let expected = if pose == "settings" {"Pilot position from stack entrance (in) input"} else {"Explosion 100%"};
-                    assert!(gui.target_labels().iter().any(|label| label == expected), "snapshot did not enter {pose}");
+                    if pose == "settings" {
+                        assert!(gui.target_labels().iter().any(|label| label == "Pilot position from stack entrance (in) input"),"snapshot did not enter settings");
+                    } else {
+                        assert!(gui.stackup_component_offsets().iter().any(|(_,offset)|offset[0] > 0.0),"snapshot did not explode all");
+                    }
                     std::fs::write(format!("{dir}/{name}-{pose}-{w}x{h}.rgba"),read_back(&r,&texture)).unwrap();
                 }
             }

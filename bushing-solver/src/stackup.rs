@@ -935,6 +935,75 @@ mod tests {
         let r = calculate(&i).unwrap();
         assert!(r.layers[0].cleanup_diameter > r.layers[1].cleanup_diameter);
     }
+    fn one_two_degree_member() -> Inputs {
+        let mut input = Inputs::default();
+        input.members.truncate(1);
+        input.members[0].thickness = 1.0;
+        input.members[0].hole = Band::exact(0.5);
+        input.members[0].original.degrees = 2.0;
+        input.members[0].finished.degrees = 0.0;
+        input
+    }
+    #[test]
+    fn downstream_geometry_does_not_change_first_cleanup_with_same_axis_constraints() {
+        let mut input = one_two_degree_member();
+        let before = calculate(&input).unwrap();
+        near(before.layers[0].cleanup_diameter, 0.570146311133);
+        let mut second = input.members[0].clone();
+        second.id = 2;
+        input.members.push(second);
+        let both = calculate(&input).unwrap();
+        assert_eq!(
+            both.layers[0].cleanup_diameter,
+            before.layers[0].cleanup_diameter
+        );
+        assert_eq!(both.layers[0].final_hole, before.layers[0].final_hole);
+        input.members[1].thickness = 3.0;
+        input.members[1].hole = Band::exact(0.7);
+        let changed = calculate(&input).unwrap();
+        assert_eq!(
+            changed.layers[0].cleanup_diameter,
+            before.layers[0].cleanup_diameter
+        );
+    }
+    #[test]
+    fn tighter_downstream_constraint_changes_shared_axis_and_cleanup() {
+        let mut input = one_two_degree_member();
+        let alone = calculate(&input).unwrap();
+        input.members.push(Member::new(2));
+        let constrained = calculate(&input).unwrap();
+        assert_eq!(constrained.original_angles, [-1.0, 1.0]);
+        assert_eq!(constrained.finished_angles, [0.0, 0.0]);
+        near(constrained.layers[0].cleanup_diameter, 0.534986293878);
+        input.members.pop();
+        assert_eq!(
+            calculate(&input).unwrap().layers[0].cleanup_diameter,
+            alone.layers[0].cleanup_diameter
+        );
+    }
+    #[test]
+    fn uniform_bushing_size_changes_adopted_hole_not_angularity_cleanup() {
+        let mut input = one_two_degree_member();
+        input.bushing_enabled = true;
+        let mut second = input.members[0].clone();
+        second.id = 2;
+        input.members.push(second);
+        let individual = calculate(&input).unwrap();
+        near(individual.layers[0].cleanup_diameter, 0.570146311133);
+        near(individual.layers[1].cleanup_diameter, 0.639987850116);
+        input.uniform_od = true;
+        let uniform = calculate(&input).unwrap();
+        assert_eq!(
+            uniform.layers[0].cleanup_diameter,
+            individual.layers[0].cleanup_diameter
+        );
+        near(uniform.layers[0].final_hole.min, 0.639987850116);
+        assert!(uniform.layers[0]
+            .enlargement_reason
+            .as_deref()
+            .unwrap()
+            .contains("uniform bushing OD"));
+    }
     #[test]
     fn optional_bushing_enlargement_is_explicit() {
         let mut i = parallel();

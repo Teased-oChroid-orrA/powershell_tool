@@ -5,6 +5,7 @@ use crate::gpu_viewer::editor::{
     stackup::{PrecisionPage, StackupAct},
 };
 use bushing_solver::stackup::{ResultSet, SolidLayer, Status};
+use std::collections::BTreeMap;
 #[derive(Clone, Copy, Default, PartialEq)]
 enum ResultTab {
     #[default]
@@ -19,7 +20,7 @@ enum InspectorTab {
     Stack,
 }
 pub(super) struct PrecisionState {
-    explosion: f32,
+    motion: ComponentMotion,
     inspector: InspectorTab,
     tab: ResultTab,
     zoom: f32,
@@ -28,7 +29,7 @@ pub(super) struct PrecisionState {
 impl Default for PrecisionState {
     fn default() -> Self {
         Self {
-            explosion: 0.0,
+            motion: ComponentMotion::default(),
             inspector: InspectorTab::Member,
             tab: ResultTab::Sizing,
             zoom: 1.0,
@@ -253,6 +254,11 @@ impl Gui {
                 ui.label(RichText::new("ANGULARITY DEFINITION").small().strong().color(p.dim));
                 self.precision_switch(ui,doc,StackupAct::Mode,p,out,hint);
                 ui.label(RichText::new("Angularity is measured around each member's datum normal. All members share the same original and finished axes.").small().color(p.dim));
+                if let Some(result) = page.result.as_ref().filter(|_| page.current) {
+                    ui.label(RichText::new(format!("Effective original axis: {:.4}° to {:.4}°", result.original_angles[0], result.original_angles[1])).small().color(p.accent));
+                    ui.label(RichText::new(format!("Effective finished axis: {:.4}° to {:.4}°", result.finished_angles[0], result.finished_angles[1])).small().color(p.accent));
+                }
+                ui.label(RichText::new("Every member constrains these shared ranges. A tighter member can reduce another member's cleanup. New members inherit the selected member's angular setup.").small().color(p.dim));
                 ui.add_space(10.0);
                 ui.separator();
                 ui.label(RichText::new("OPTIONAL BUSHINGS").small().strong().color(p.dim));
@@ -472,11 +478,16 @@ impl Gui {
         out: &mut Vec<Outcome>,
         height: f32,
     ) {
+        let result = page.result.as_ref().filter(|_| page.current);
+        if let Some(result) = result {
+            self.doc.precision.motion.sync(&result.solids);
+        }
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("Stack geometry").strong());
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.small_button("Fit").clicked() {
                     self.doc.precision.zoom = 1.0;
+                    self.doc.precision.motion.drag = None;
                 }
                 if ui.small_button("+").clicked() {
                     self.doc.precision.zoom = (self.doc.precision.zoom * 1.2).min(4.0);
@@ -487,49 +498,39 @@ impl Gui {
             });
         });
         ui.horizontal_wrapped(|ui| {
-            for (label, value) in [("Fitted", 0.0), ("Exploded", 1.0)] {
-                let response = ui.selectable_label(self.doc.precision.explosion == value, label);
+            for (label, all) in [("Fitted", false), ("Explode all", true)] {
+                let response = ui.button(label);
                 self.targets.push((label.into(), response.rect));
                 if response.clicked() {
-                    self.doc.precision.explosion = value;
+                    if let Some(result) = result {
+                        self.doc
+                            .precision
+                            .motion
+                            .preset(result, page.inputs.bushing_enabled, all);
+                    }
                 }
             }
-            let response = ui.add(
-                egui::Slider::new(&mut self.doc.precision.explosion, 0.0..=1.0)
-                    .show_value(false)
-                    .text("Explosion"),
-            );
-            self.targets
-                .push(("Explosion slider".into(), response.rect));
-            let response = ui.label(
-                RichText::new(format!("{:.0}%", self.doc.precision.explosion * 100.0))
+            ui.label(
+                RichText::new("Drag one component or its label")
                     .small()
                     .color(p.dim),
             );
-            self.targets.push((
-                format!("Explosion {:.0}%", self.doc.precision.explosion * 100.0),
-                response.rect,
-            ));
         });
-        ui.label(
-            RichText::new("Drag upward to separate · downward to assemble")
-                .size(10.0)
-                .color(p.dim),
-        );
+        let status = self
+            .doc
+            .precision
+            .motion
+            .message
+            .as_deref()
+            .unwrap_or("Axial motion only; other components stay in place");
+        ui.label(RichText::new(status).size(10.0).color(p.dim));
         let (rect, response) = ui.allocate_exact_size(
             Vec2::new(ui.available_width(), (height - 120.0).max(150.0)),
             Sense::click_and_drag(),
         );
         self.targets.push(("Stack geometry drag".into(), rect));
-        if response.dragged() {
-            self.doc.precision.explosion = (self.doc.precision.explosion
-                - ui.input(|input| input.pointer.delta().y) / rect.height())
-            .clamp(0.0, 1.0);
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-        } else if response.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-        }
-        let Some(result) = page.result.as_ref().filter(|_| page.current) else {
+        let Some(result) = result else {
+            self.doc.precision.motion.drag = None;
             ui.painter_at(rect).text(
                 rect.center(),
                 Align2::CENTER_CENTER,
@@ -539,22 +540,122 @@ impl Gui {
             );
             return;
         };
-        paint_solids(
-            ui,
-            rect,
-            response.hover_pos(),
-            response.clicked(),
-            page,
-            result,
-            self.doc.precision.explosion as f64,
-            self.doc.precision.zoom,
-            p,
-            out,
-        );
+        let offsets = self.doc.precision.motion.offsets(&result.solids);
+        let frame = self
+            .doc
+            .precision
+            .motion
+            .drag
+            .map(|d| d.frame)
+            .unwrap_or_else(|| {
+                PlotFrame::fit(rect, &result.solids, &offsets, self.doc.precision.zoom)
+            });
+        let hits = component_hits(ui, page, result, &offsets, frame);
+        let hit_at = |at| {
+            hits.iter()
+                .rev()
+                .find(|hit| hit.contains(at))
+                .map(|hit| hit.key)
+        };
+        let hovered = response.hover_pos().and_then(hit_at);
+        if (response.drag_started() || response.dragged())
+            && self.doc.precision.motion.drag.is_none()
+        {
+            if let Some(origin) = ui.input(|input| input.pointer.press_origin()) {
+                if let Some(key) = hit_at(origin) {
+                    let offset = self.doc.precision.motion.offset(key);
+                    self.doc.precision.motion.drag = Some(ComponentDrag {
+                        key,
+                        origin,
+                        offset,
+                        frame,
+                    });
+                    self.doc.precision.motion.message = None;
+                    if let Some(index) = result
+                        .solids
+                        .iter()
+                        .position(|solid| solid.id == key.member)
+                    {
+                        send(out, StackupAct::Select(index));
+                    }
+                }
+            }
+        }
+        if response.dragged() {
+            if let (Some(drag), Some(pointer)) = (
+                self.doc.precision.motion.drag,
+                response.interact_pointer_pos(),
+            ) {
+                let solid = result
+                    .solids
+                    .iter()
+                    .find(|solid| solid.id == drag.key.member)
+                    .unwrap();
+                let axis = drag.frame.axis_vector(solid);
+                let delta = pointer - drag.origin;
+                let requested = drag.offset + f64::from(delta.dot(axis) / axis.length_sq());
+                if requested.is_finite() {
+                    let moved = self.doc.precision.motion.move_component(
+                        &result.solids,
+                        drag.key,
+                        requested,
+                    );
+                    self.doc.precision.motion.message = Some(format!(
+                        "{} #{}  {:+.4} in{}",
+                        drag.key.kind.name(),
+                        drag.key.member,
+                        moved,
+                        if (moved - requested).abs() > 1e-9 {
+                            " · blocked by another component"
+                        } else {
+                            ""
+                        }
+                    ));
+                }
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            }
+        } else if hovered.is_some() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
+        if response.clicked() {
+            if let Some(key) = hovered {
+                if let Some(index) = result
+                    .solids
+                    .iter()
+                    .position(|solid| solid.id == key.member)
+                {
+                    send(out, StackupAct::Select(index));
+                }
+            }
+        }
+        let offsets = self.doc.precision.motion.offsets(&result.solids);
+        let active = self
+            .doc
+            .precision
+            .motion
+            .drag
+            .map(|drag| drag.key)
+            .or(hovered);
+        paint_solids(ui, rect, page, result, &offsets, frame, active, p);
+        for hit in component_hits(ui, page, result, &offsets, frame)
+            .into_iter()
+            .filter(|hit| hit.handle)
+        {
+            self.targets.push((
+                format!(
+                    "Drag {} {}",
+                    hit.key.kind.name().to_lowercase(),
+                    hit.key.member
+                ),
+                Rect::from_points(&hit.polygon),
+            ));
+        }
+        if response.drag_stopped() || !ui.input(|input| input.pointer.primary_down()) {
+            self.doc.precision.motion.drag = None;
+        }
         ui.horizontal_wrapped(|ui| {
             for (label, color) in [("Finished axis", p.accent), ("Original axis", p.warn)] {
-                let response =
-                    ui.label(RichText::new(label).size(10.0).color(color));
+                let response = ui.label(RichText::new(label).size(10.0).color(color));
                 self.targets.push((label.into(), response.rect));
             }
             ui.label(
@@ -564,6 +665,374 @@ impl Gui {
             );
         });
     }
+    #[cfg(test)]
+    pub(crate) fn stackup_component_offsets(&self) -> Vec<(u64, [f64; 2])> {
+        self.doc
+            .precision
+            .motion
+            .geometry
+            .iter()
+            .map(|solid| {
+                (
+                    solid.id,
+                    [
+                        self.doc.precision.motion.offset(ComponentKey {
+                            member: solid.id,
+                            kind: ComponentKind::Member,
+                        }),
+                        self.doc.precision.motion.offset(ComponentKey {
+                            member: solid.id,
+                            kind: ComponentKind::Bushing,
+                        }),
+                    ],
+                )
+            })
+            .collect()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum ComponentKind {
+    Member,
+    Bushing,
+}
+impl ComponentKind {
+    fn slot(self) -> usize {
+        match self {
+            Self::Member => 0,
+            Self::Bushing => 1,
+        }
+    }
+    fn name(self) -> &'static str {
+        match self {
+            Self::Member => "Member",
+            Self::Bushing => "Bushing",
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ComponentKey {
+    member: u64,
+    kind: ComponentKind,
+}
+#[derive(Default)]
+struct ComponentMotion {
+    geometry: Vec<SolidLayer>,
+    poses: BTreeMap<ComponentKey, f64>,
+    drag: Option<ComponentDrag>,
+    message: Option<String>,
+}
+impl ComponentMotion {
+    fn sync(&mut self, solids: &[SolidLayer]) {
+        if self.geometry.as_slice() != solids {
+            self.geometry = solids.to_vec();
+            self.poses.clear();
+            self.drag = None;
+            self.message = None;
+        }
+    }
+    fn offset(&self, key: ComponentKey) -> f64 {
+        self.poses.get(&key).copied().unwrap_or(0.0)
+    }
+    fn offsets(&self, solids: &[SolidLayer]) -> Vec<[f64; 2]> {
+        solids
+            .iter()
+            .map(|solid| {
+                [
+                    self.offset(ComponentKey {
+                        member: solid.id,
+                        kind: ComponentKind::Member,
+                    }),
+                    self.offset(ComponentKey {
+                        member: solid.id,
+                        kind: ComponentKind::Bushing,
+                    }),
+                ]
+            })
+            .collect()
+    }
+    fn preset(&mut self, result: &ResultSet, bushing: bool, exploded: bool) {
+        self.poses.clear();
+        if exploded {
+            let gap = result
+                .solids
+                .iter()
+                .map(|solid| {
+                    let width = solid.body[1][0] - solid.body[0][0];
+                    let depth = solid.body[3][1] - solid.body[0][1];
+                    depth * 0.25 + width * 0.12 + 0.25
+                })
+                .fold(0.0, f64::max);
+            for (solid, offsets) in
+                result
+                    .solids
+                    .iter()
+                    .zip(explosion_offsets(&result.solids, bushing, gap, 1.0))
+            {
+                self.poses.insert(
+                    ComponentKey {
+                        member: solid.id,
+                        kind: ComponentKind::Member,
+                    },
+                    offsets[0],
+                );
+                if bushing {
+                    self.poses.insert(
+                        ComponentKey {
+                            member: solid.id,
+                            kind: ComponentKind::Bushing,
+                        },
+                        offsets[1],
+                    );
+                }
+            }
+        }
+        self.drag = None;
+        self.message = Some(
+            if exploded {
+                "All components separated"
+            } else {
+                "Assembly reset to fitted"
+            }
+            .into(),
+        );
+    }
+    fn move_component(&mut self, solids: &[SolidLayer], key: ComponentKey, requested: f64) -> f64 {
+        let source = solids.iter().find(|solid| solid.id == key.member).unwrap();
+        let current = self.offset(key);
+        if !requested.is_finite() {
+            return current;
+        }
+        let start = source.z[0] + current;
+        let end = source.z[1] + current;
+        let mut lower = f64::NEG_INFINITY;
+        let mut upper = f64::INFINITY;
+        for solid in solids {
+            // A member and its own coaxial bushing can slide through one another's bore.
+            if solid.id == key.member {
+                continue;
+            }
+            for kind in [ComponentKind::Member, ComponentKind::Bushing] {
+                if kind == ComponentKind::Bushing && solid.bushing_id.is_none() {
+                    continue;
+                }
+                let offset = self.offset(ComponentKey {
+                    member: solid.id,
+                    kind,
+                });
+                let other_start = solid.z[0] + offset;
+                let other_end = solid.z[1] + offset;
+                if other_end <= start {
+                    lower = lower.max(other_end - source.z[0]);
+                } else if other_start >= end {
+                    upper = upper.min(other_start - source.z[1]);
+                } else {
+                    return current;
+                }
+            }
+        }
+        let moved = requested.clamp(lower, upper);
+        self.poses.insert(key, moved);
+        moved
+    }
+}
+#[derive(Clone, Copy)]
+struct ComponentDrag {
+    key: ComponentKey,
+    origin: Pos2,
+    offset: f64,
+    frame: PlotFrame,
+}
+#[derive(Clone, Copy)]
+struct PlotFrame {
+    rect: Rect,
+    center: [f64; 2],
+    scale: f64,
+}
+impl PlotFrame {
+    fn project(v: [f64; 3]) -> [f64; 2] {
+        [v[0] * 0.9 + v[1] * 0.45, v[2] + v[1] * 0.25 - v[0] * 0.12]
+    }
+    fn moved(v: [f64; 3], solid: &SolidLayer, dz: f64) -> [f64; 3] {
+        [v[0] + dz * solid.axis[0] / solid.axis[2], v[1], v[2] + dz]
+    }
+    fn fit(rect: Rect, solids: &[SolidLayer], offsets: &[[f64; 2]], zoom: f32) -> Self {
+        let mut low = [f64::INFINITY; 2];
+        let mut high = [f64::NEG_INFINITY; 2];
+        for (solid, offset) in solids.iter().zip(offsets) {
+            for (points, dz) in [
+                (solid.body.as_slice(), offset[0]),
+                (solid.hole[0].as_slice(), offset[1]),
+                (solid.hole[1].as_slice(), offset[1]),
+            ] {
+                for &point in points {
+                    let q = Self::project(Self::moved(point, solid, dz));
+                    for k in 0..2 {
+                        low[k] = low[k].min(q[k]);
+                        high[k] = high[k].max(q[k]);
+                    }
+                }
+            }
+        }
+        let scale = ((rect.width() - 150.0).max(20.0) as f64 / (high[0] - low[0]).max(0.001))
+            .min((rect.height() - 60.0) as f64 / (high[1] - low[1]).max(0.001))
+            * zoom as f64;
+        Self {
+            rect,
+            center: [low[0] / 2.0 + high[0] / 2.0, low[1] / 2.0 + high[1] / 2.0],
+            scale,
+        }
+    }
+    fn pixel(self, v: [f64; 3], solid: &SolidLayer, dz: f64) -> Pos2 {
+        let point = Self::project(Self::moved(v, solid, dz));
+        Pos2::new(
+            self.rect.center().x + ((point[0] - self.center[0]) * self.scale) as f32,
+            self.rect.center().y + ((point[1] - self.center[1]) * self.scale) as f32,
+        )
+    }
+    fn axis_vector(self, solid: &SolidLayer) -> Vec2 {
+        let slope = solid.axis[0] / solid.axis[2];
+        Vec2::new(
+            (0.9 * slope * self.scale) as f32,
+            ((1.0 - 0.12 * slope) * self.scale) as f32,
+        )
+    }
+}
+struct ComponentHit {
+    key: ComponentKey,
+    polygon: Vec<Pos2>,
+    handle: bool,
+}
+impl ComponentHit {
+    fn contains(&self, point: Pos2) -> bool {
+        let mut direction = 0.0_f32;
+        for (a, b) in self.polygon.iter().zip(self.polygon.iter().cycle().skip(1)) {
+            let edge = *b - *a;
+            let delta = point - *a;
+            let cross = edge.x * delta.y - edge.y * delta.x;
+            if cross.abs() < 1e-5 {
+                continue;
+            }
+            if direction != 0.0 && direction.signum() != cross.signum() {
+                return false;
+            }
+            direction = cross;
+        }
+        direction != 0.0
+    }
+}
+const MEMBER_FACES: [[usize; 4]; 6] = [
+    [0, 1, 2, 3],
+    [0, 1, 5, 4],
+    [1, 2, 6, 5],
+    [2, 3, 7, 6],
+    [3, 0, 4, 7],
+    [4, 5, 6, 7],
+];
+fn component_label(
+    ui: &egui::Ui,
+    page: &PrecisionPage,
+    index: usize,
+    solid: &SolidLayer,
+    offsets: [f64; 2],
+    frame: PlotFrame,
+    kind: ComponentKind,
+) -> (String, Rect) {
+    let key = ComponentKey {
+        member: solid.id,
+        kind,
+    };
+    let points = match kind {
+        ComponentKind::Member => solid.body.iter().copied().collect::<Vec<_>>(),
+        ComponentKind::Bushing => solid.hole.iter().flatten().copied().collect(),
+    };
+    let bounds = Rect::from_points(
+        &points
+            .iter()
+            .map(|&point| frame.pixel(point, solid, offsets[kind.slot()]))
+            .collect::<Vec<_>>(),
+    );
+    let label = match kind {
+        ComponentKind::Member => format!("{:02} {}", index + 1, page.inputs.members[index].name),
+        ComponentKind::Bushing => format!("Bushing #{}", key.member),
+    };
+    let size = ui
+        .painter()
+        .layout_no_wrap(label.clone(), FontId::proportional(10.0), Color32::WHITE)
+        .size();
+    let x = if kind == ComponentKind::Member {
+        bounds.right() + 8.0
+    } else {
+        bounds.left() - size.x - 8.0
+    };
+    (
+        label,
+        Rect::from_min_size(Pos2::new(x, bounds.center().y - size.y / 2.0), size).expand(3.0),
+    )
+}
+fn component_hits(
+    ui: &egui::Ui,
+    page: &PrecisionPage,
+    result: &ResultSet,
+    offsets: &[[f64; 2]],
+    frame: PlotFrame,
+) -> Vec<ComponentHit> {
+    let mut hits = Vec::new();
+    for (index, (solid, &offset)) in result.solids.iter().zip(offsets).enumerate() {
+        let body = solid.body.map(|point| frame.pixel(point, solid, offset[0]));
+        for face in MEMBER_FACES {
+            hits.push(ComponentHit {
+                key: ComponentKey {
+                    member: solid.id,
+                    kind: ComponentKind::Member,
+                },
+                polygon: face.map(|i| body[i]).to_vec(),
+                handle: false,
+            });
+        }
+        if solid.bushing_id.is_some() {
+            let outer: Vec<Vec<Pos2>> = solid
+                .hole
+                .iter()
+                .map(|ring| {
+                    ring.iter()
+                        .map(|&point| frame.pixel(point, solid, offset[1]))
+                        .collect()
+                })
+                .collect();
+            for j in 0..outer[0].len() {
+                let k = (j + 1) % outer[0].len();
+                hits.push(ComponentHit {
+                    key: ComponentKey {
+                        member: solid.id,
+                        kind: ComponentKind::Bushing,
+                    },
+                    polygon: vec![outer[0][j], outer[0][k], outer[1][k], outer[1][j]],
+                    handle: false,
+                });
+            }
+        }
+        for kind in [ComponentKind::Member, ComponentKind::Bushing] {
+            if kind == ComponentKind::Bushing && solid.bushing_id.is_none() {
+                continue;
+            }
+            let (_, rect) = component_label(ui, page, index, solid, offset, frame, kind);
+            hits.push(ComponentHit {
+                key: ComponentKey {
+                    member: solid.id,
+                    kind,
+                },
+                polygon: vec![
+                    rect.left_top(),
+                    rect.right_top(),
+                    rect.right_bottom(),
+                    rect.left_bottom(),
+                ],
+                handle: true,
+            });
+        }
+    }
+    hits
 }
 
 fn explosion_offsets(
@@ -593,14 +1062,12 @@ fn explosion_offsets(
 fn paint_solids(
     ui: &mut egui::Ui,
     rect: Rect,
-    hover: Option<Pos2>,
-    clicked: bool,
     page: &PrecisionPage,
     result: &ResultSet,
-    progress: f64,
-    zoom: f32,
+    offsets: &[[f64; 2]],
+    frame: PlotFrame,
+    active: Option<ComponentKey>,
     p: &Palette,
-    out: &mut Vec<Outcome>,
 ) {
     let gap = page
         .inputs
@@ -608,39 +1075,7 @@ fn paint_solids(
         .iter()
         .map(|m| m.member_depth * 0.25 + m.member_width * 0.12 + 0.25)
         .fold(0.0, f64::max);
-    let offsets = explosion_offsets(&result.solids, page.inputs.bushing_enabled, gap, progress);
-    let project = |v: [f64; 3]| [v[0] * 0.9 + v[1] * 0.45, v[2] + v[1] * 0.25 - v[0] * 0.12];
-    let moved = |v: [f64; 3], solid: &SolidLayer, dz: f64| {
-        [v[0] + dz * solid.axis[0] / solid.axis[2], v[1], v[2] + dz]
-    };
-    let mut low = [f64::INFINITY; 2];
-    let mut high = [f64::NEG_INFINITY; 2];
-    for (solid, offset) in result.solids.iter().zip(&offsets) {
-        for (points, dz) in [
-            (solid.body.as_slice(), offset[0]),
-            (solid.hole[0].as_slice(), offset[1]),
-            (solid.hole[1].as_slice(), offset[1]),
-        ] {
-            for &point in points {
-                let q = project(moved(point, solid, dz));
-                for k in 0..2 {
-                    low[k] = low[k].min(q[k]);
-                    high[k] = high[k].max(q[k]);
-                }
-            }
-        }
-    }
-    let scale = ((rect.width() - 110.0) as f64 / (high[0] - low[0]).max(0.001))
-        .min((rect.height() - 60.0) as f64 / (high[1] - low[1]).max(0.001))
-        * zoom as f64;
-    let center = [low[0] / 2.0 + high[0] / 2.0, low[1] / 2.0 + high[1] / 2.0];
-    let pixel = |v: [f64; 3], solid: &SolidLayer, dz: f64| {
-        let a = project(moved(v, solid, dz));
-        Pos2::new(
-            rect.center().x + ((a[0] - center[0]) * scale) as f32,
-            rect.center().y + ((a[1] - center[1]) * scale) as f32,
-        )
-    };
+    let pixel = |point, solid, dz| frame.pixel(point, solid, dz);
     let painter = ui.painter_at(rect);
     let axis_center = |ring: &Vec<[f64; 3]>| {
         let n = ring.len() as f64;
@@ -673,7 +1108,7 @@ fn paint_solids(
         FontId::proportional(10.0),
         p.accent,
     );
-    for (solid, offset) in result.solids.iter().zip(&offsets) {
+    for (solid, offset) in result.solids.iter().zip(offsets) {
         let a = pixel(axis_center(&solid.original_hole[0]), solid, offset[0]);
         let b = pixel(axis_center(&solid.original_hole[1]), solid, offset[0]);
         for k in (0..12).step_by(2) {
@@ -698,8 +1133,8 @@ fn paint_solids(
             color,
         );
     }
-    for (index, (solid, offset)) in result.solids.iter().zip(&offsets).enumerate() {
-        let selected = index == page.selected;
+    for (index, (solid, offset)) in result.solids.iter().zip(offsets).enumerate() {
+        let selected = index == page.selected || active.is_some_and(|key| key.member == solid.id);
         let edge = if selected { p.accent } else { p.dim };
         let body: Vec<_> = solid
             .body
@@ -769,11 +1204,6 @@ fn paint_solids(
                 .iter()
                 .map(|ring| ring.iter().map(|&v| pixel(v, solid, offset[1])).collect())
                 .collect();
-            let bush_bounds =
-                Rect::from_points(&outer.iter().flatten().copied().collect::<Vec<_>>());
-            if clicked && hover.is_some_and(|at| bush_bounds.contains(at)) {
-                send(out, StackupAct::Select(index));
-            }
             let n = outer[0].len();
             for j in 0..n {
                 let k = (j + 1) % n;
@@ -808,7 +1238,7 @@ fn paint_solids(
                     ),
                 ));
             }
-            if progress > 0.5 {
+            if (offset[0] - offset[1]).abs() > 1e-9 {
                 let first = solid.hole[0][0];
                 let center3 = [
                     first[0] - (solid.hole[0][0][0] - solid.hole[0][24][0]) / 2.0,
@@ -833,27 +1263,104 @@ fn paint_solids(
                 );
             }
         }
-        let bounds = Rect::from_points(&body);
-        if hover.is_some_and(|at| bounds.contains(at)) {
-            if clicked {
-                send(out, StackupAct::Select(index));
+        for kind in [ComponentKind::Member, ComponentKind::Bushing] {
+            if kind == ComponentKind::Bushing && solid.bushing_id.is_none() {
+                continue;
             }
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            let key = ComponentKey {
+                member: solid.id,
+                kind,
+            };
+            let (label, bounds) = component_label(ui, page, index, solid, *offset, frame, kind);
+            if active == Some(key) {
+                painter.rect_filled(
+                    bounds.expand(2.0),
+                    CornerRadius::same(4),
+                    with_alpha(p.accent, 50),
+                );
+            }
+            painter.text(
+                bounds.left_top() + Vec2::splat(3.0),
+                Align2::LEFT_TOP,
+                label,
+                FontId::proportional(10.0),
+                if selected { p.text } else { p.dim },
+            );
         }
-        let name = &page.inputs.members[index].name;
-        painter.text(
-            Pos2::new(bounds.right() + 8.0, bounds.center().y),
-            Align2::LEFT_CENTER,
-            format!("{:02} {}", index + 1, name),
-            FontId::proportional(10.0),
-            if selected { p.text } else { p.dim },
-        );
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn motion_fixture() -> ResultSet {
+        let mut input = bushing_solver::stackup::Inputs::default();
+        input.bushing_enabled = true;
+        input.members.push(bushing_solver::stackup::Member::new(3));
+        input.members[0].thickness = 0.25;
+        input.members[1].thickness = 0.75;
+        input.members[2].thickness = 0.5;
+        for member in &mut input.members {
+            member.reference_normal_deg = 7.0;
+        }
+        bushing_solver::stackup::calculate(&input).unwrap()
+    }
+    #[test]
+    fn individual_motion_clamps_without_tunnelling_or_pushing_other_parts() {
+        let result = motion_fixture();
+        let mut motion = ComponentMotion::default();
+        motion.sync(&result.solids);
+        let middle = ComponentKey {
+            member: 2,
+            kind: ComponentKind::Member,
+        };
+        assert_eq!(motion.move_component(&result.solids, middle, -10000.0), 0.0);
+        assert_eq!(motion.move_component(&result.solids, middle, 10000.0), 0.0);
+        let first = ComponentKey {
+            member: 1,
+            kind: ComponentKind::Member,
+        };
+        let first_bush = ComponentKey {
+            member: 1,
+            kind: ComponentKind::Bushing,
+        };
+        assert_eq!(motion.move_component(&result.solids, first, -0.5), -0.5);
+        assert_eq!(motion.offset(first_bush), 0.0);
+        assert_eq!(motion.offset(middle), 0.0);
+        assert_eq!(
+            motion.move_component(&result.solids, first_bush, -0.5),
+            -0.5
+        );
+        assert_eq!(
+            motion.move_component(&result.solids, middle, -10000.0),
+            -0.5
+        );
+        let before = motion.offsets(&result.solids);
+        assert_eq!(motion.move_component(&result.solids, middle, 10000.0), 0.0);
+        let after = motion.offsets(&result.solids);
+        assert_eq!(before[0], after[0]);
+        assert_eq!(before[2], after[2]);
+        assert_eq!(after[1][1], 0.0);
+        assert_eq!(motion.move_component(&result.solids, middle, f64::NAN), 0.0);
+    }
+    #[test]
+    fn component_pick_uses_polygon_not_the_empty_corners_of_its_box() {
+        let hit = ComponentHit {
+            key: ComponentKey {
+                member: 1,
+                kind: ComponentKind::Member,
+            },
+            polygon: vec![
+                Pos2::new(0.0, 1.0),
+                Pos2::new(1.0, 0.0),
+                Pos2::new(2.0, 1.0),
+                Pos2::new(1.0, 2.0),
+            ],
+            handle: false,
+        };
+        assert!(hit.contains(Pos2::new(1.0, 1.0)));
+        assert!(!hit.contains(Pos2::new(0.1, 0.1)));
+    }
     #[test]
     fn exploded_parts_never_cross_other_members() {
         let mut input = bushing_solver::stackup::Inputs::default();
@@ -870,7 +1377,7 @@ mod tests {
                 let progress = step as f64 / 100.0;
                 let offsets = explosion_offsets(&r.solids, true, gap, progress);
                 let mut parts = Vec::new();
-                for (i, (s, o)) in r.solids.iter().zip(&offsets).enumerate() {
+                for (i, (s, o)) in r.solids.iter().zip(offsets).enumerate() {
                     for kind in 0..2 {
                         parts.push((i, kind, s.z[0] + o[kind], s.z[1] + o[kind]));
                     }
