@@ -251,6 +251,9 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Phase 136 rejected rim snap](issue-46-phase-136.md): a candidate cleared boss quality but degraded curved-body accuracy and was reverted.
 - [Phase 137 connected boss-rim cavity diagnosis](issue-46-phase-137.md): ignored failing regression, rejected local transactions, larger-cavity proof blocker; no production mesher change.
 - [Phase 148 NEMA17 boundary repair screen](issue-46-phase-148.md): reproduced the 12/11 boundary-cell baseline and rejected feature-erasing local edge swaps; no production mesher change.
+- [Phase 149 NEMA17 boundary slide](issue-46-phase-149.md): preserves feature topology while reducing sub-gate cells to 10/9 on OCCT/native; the quality gate remains open.
+- [Phase 150 OCCT fillet seam diagnosis](issue-46-phase-150.md): crossing boundary triangles require seam-conforming volume topology before face tagging.
+- [Phase 151 Windows dashboard startup](issue-46-phase-151.md): bare Windows executable opens the dashboard in a hosted launch check.
 
 - [Phase 41: whole-interval planar spline p-curve bounds](issue-46-phase-41.md): source/budget guards and explicit unit qualification.
 
