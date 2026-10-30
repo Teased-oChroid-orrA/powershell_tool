@@ -8,4 +8,4 @@ Hosted Windows build and launch remain unverified. `gh api rate_limit` could not
 
 ## 2026-10-30 addendum
 
-The default Windows workflow [run 40780539693](https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/40780539693) built and uploaded the release executable. It did not launch the app. The workflow now starts the bare executable on the hosted runner and waits for the `GS Engineering Toolbench` window title, then closes the process. This check must pass before claiming hosted launch evidence. The broader Windows mesh and solve gates remain open.
+The default Windows workflow [run 40780539693](https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/40780539693) and OCCT-enabled [run 41044530973](https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/41044530973) built and uploaded their release executables. Neither run launched the app. The workflow now starts the bare executable on the hosted runner and waits for the `GS Engineering Toolbench` window title, then closes the process. This check must pass before claiming hosted launch evidence. The broader Windows mesh and solve gates remain open.
