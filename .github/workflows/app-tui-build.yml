@@ -54,6 +54,24 @@ jobs:
           }
           Get-Item $exePath | Format-List Name, Length, LastWriteTime
 
+      - name: Verify bare executable opens the dashboard
+        shell: pwsh
+        run: |
+          $app = Start-Process "target/x86_64-pc-windows-msvc/release/app-tui.exe" -PassThru
+          try {
+            for ($i = 0; $i -lt 60; $i++) {
+              Start-Sleep -Milliseconds 500
+              $app.Refresh()
+              if ($app.HasExited) { throw "app-tui.exe exited before opening the dashboard" }
+              if ($app.MainWindowTitle -eq "GS Engineering Toolbench") { break }
+            }
+            if ($app.MainWindowTitle -ne "GS Engineering Toolbench") {
+              throw "app-tui.exe did not open the Toolbench dashboard"
+            }
+          } finally {
+            if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
+          }
+
       - name: Stage the release folder (the executable and its notices)
         shell: pwsh
         run: |

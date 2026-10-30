@@ -5,3 +5,7 @@
 The focused `startup_tests` case passed locally in the prior session, and `git diff --check` passed on this worktree. Source review confirmed that explicit editor flags still route before terminal startup. An existing macOS binary opened its dashboard for a three-second smoke check; that check did not exercise the new Windows default.
 
 Hosted Windows build and launch remain unverified. `gh api rate_limit` could not connect to `api.github.com` in this session, so the build workflow could not be dispatched. The issue's broader Windows mesh and solve gates remain open.
+
+## 2026-10-30 addendum
+
+The default Windows workflow [run 40780539693](https://github.com/Teased-oChroid-orrA/powershell_tool/actions/runs/40780539693) built and uploaded the release executable. It did not launch the app. The workflow now starts the bare executable on the hosted runner and waits for the `GS Engineering Toolbench` window title, then closes the process. This check must pass before claiming hosted launch evidence. The broader Windows mesh and solve gates remain open.
