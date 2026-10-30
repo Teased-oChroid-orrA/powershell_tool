@@ -2187,6 +2187,19 @@ mod tests {
         frame(v);
         type_text(v, text);
     }
+    fn scroll_stackup_inspector(v: &mut Viewer, delta: f32) {
+        let tab = target(v, "Member settings");
+        move_to(v, (tab.0, tab.1 + 100.0));
+        v.test_events.push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, delta),
+            phase: egui::TouchPhase::Move,
+            modifiers: Default::default(),
+        });
+        for _ in 0..12 {
+            frame(v);
+        }
+    }
     #[test]
     fn the_stackup_inspector_commits_enter_and_blur_without_duplicate_fields() {
         let mut v = stackup_viewer();
@@ -2250,8 +2263,13 @@ mod tests {
         );
         let member = target(&v, "Member settings");
         click(&mut v, member);
+        scroll_stackup_inspector(&mut v, -400.0);
         let datum=target(&v,"Datum direction");
         click(&mut v,datum);
+        for _ in 0..8 {
+            frame(&mut v);
+        }
+        scroll_stackup_inspector(&mut v, -220.0);
         replace_page_text(&mut v,"Datum normal angle (deg) input","0.5");
         assert!(!v.editor.as_ref().unwrap().document().unwrap().precision.unwrap().current);
         let datum=target(&v,"Datum direction");
@@ -2259,6 +2277,7 @@ mod tests {
         let page=v.editor.as_ref().unwrap().document().unwrap().precision.unwrap();
         assert!(page.current);
         assert_eq!(page.inputs.members[0].reference_normal_deg,0.5);
+        scroll_stackup_inspector(&mut v, 600.0);
         replace_page_text(&mut v, "Current hole nominal (in) input", "unfinished");
         egui_key(&mut v, egui::Key::Enter);
         let page = v
@@ -2302,6 +2321,32 @@ mod tests {
         assert!(page.current);
         assert_eq!(page.inputs.members[0].hole.nominal, 0.45);
         assert_eq!(page.inputs.members[1].hole.nominal, 0.55);
+    }
+    #[test]
+    fn the_compact_stackup_inspector_can_edit_pilot_registration() {
+        let mut v = stackup_viewer();
+        v.size_override = Some((780, 900));
+        frame(&mut v);
+        move_to(&mut v, (750.0, 450.0));
+        v.test_events.push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -600.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Default::default(),
+        });
+        for _ in 0..12 {
+            frame(&mut v);
+        }
+        let setup = target(&v, "Stack setup");
+        click(&mut v, setup);
+        replace_page_text(&mut v, "Pilot position from stack entrance (in) input", "0.5");
+        egui_key(&mut v, egui::Key::Enter);
+        replace_page_text(&mut v, "Pilot center offset limit (in, radial) input", "0.001");
+        egui_key(&mut v, egui::Key::Enter);
+        let page = v.editor.as_ref().unwrap().document().unwrap().precision.unwrap();
+        assert!(page.current);
+        assert_eq!(page.inputs.pilot_z, 0.5);
+        assert_eq!(page.inputs.pilot_offset, 0.001);
     }
     fn explosion_percent(v: &Viewer) -> u32 {
         labels(v)

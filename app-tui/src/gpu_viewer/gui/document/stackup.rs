@@ -79,7 +79,7 @@ impl Gui {
                             if let Some(e) = doc.buttons.iter().find(|e| e.label == "Save") {
                                 self.doc_button(ui, e, p, out, hint, false);
                             }
-                            ui.label(RichText::new(if page.current && page.error.is_none() { "● Up to date" } else { "● Editing inputs" }).small().color(if page.current && page.error.is_none() {p.good} else {p.warn}));
+                            ui.label(RichText::new(if page.current && page.error.is_none() { "Up to date" } else { "Editing inputs" }).small().color(if page.current && page.error.is_none() {p.good} else {p.warn}));
                         });
                     });
                     if let Some(error) = &page.error {
@@ -97,7 +97,7 @@ impl Gui {
                                 if response.clicked() {send(out, StackupAct::Select(i));}
                             }
                         });
-                        self.precision_member_actions(ui, doc, p, out, hint);
+                        self.precision_member_actions(ui, doc, out, hint);
                     }
                     let h = (area.height() - 200.0).clamp(500.0, 700.0);
                     let inspector_w = if compact { width } else { 330.0 };
@@ -119,7 +119,7 @@ impl Gui {
                                         }
                                     });
                                     ui.add_space(10.0);
-                                    self.precision_member_actions(ui,doc,p,out,hint);
+                                    self.precision_member_actions(ui,doc,out,hint);
                                 });
                             });
                         }
@@ -140,7 +140,10 @@ impl Gui {
                         }
                     });
                     if compact {
-                        surface(p).show(ui, |ui| {self.precision_inspector(ui,doc,page,p,out,hint,600.0);});
+                        surface(p).show(ui, |ui| {
+                            ui.set_height(600.0);
+                            self.precision_inspector(ui,doc,page,p,out,hint,600.0);
+                        });
                     }
                     self.precision_results(ui,doc,page,p,out);
                 });
@@ -151,7 +154,6 @@ impl Gui {
         &mut self,
         ui: &mut egui::Ui,
         doc: &Document,
-        p: &Palette,
         out: &mut Vec<Outcome>,
         hint: &mut Option<String>,
     ) {
@@ -174,23 +176,26 @@ impl Gui {
         out: &mut Vec<Outcome>,
         hint: &mut Option<String>,
     ) {
-        for id in ids {
-            if let Some(field) = doc
-                .panels
-                .iter()
-                .flat_map(|panel| &panel.inputs)
-                .find(|field| field.id == *id)
-            {
-                self.labelled_input(ui, field, ui.available_width(), p, out, hint);
-                if let Some(error) = &field.error {
-                    ui.label(RichText::new(error).small().color(p.warn));
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
+            for id in ids {
+                if let Some(field) = doc
+                    .panels
+                    .iter()
+                    .flat_map(|panel| &panel.inputs)
+                    .find(|field| field.id == *id)
+                {
+                    self.labelled_input(ui, field, ui.available_width(), p, out, hint);
+                    if let Some(error) = &field.error {
+                        ui.label(RichText::new(error).small().color(p.warn));
+                    }
+                    if let Some(note) = &field.note {
+                        ui.label(RichText::new(note).small().color(p.dim));
+                    }
+                    ui.add_space(6.0);
                 }
-                if let Some(note) = &field.note {
-                    ui.label(RichText::new(note).small().color(p.dim));
-                }
-                ui.add_space(6.0);
             }
-        }
+        });
     }
     fn precision_switch(
         &mut self,
@@ -549,7 +554,7 @@ impl Gui {
         ui.horizontal_wrapped(|ui| {
             for (label, color) in [("Finished axis", p.accent), ("Original axis", p.warn)] {
                 let response =
-                    ui.label(RichText::new(format!("━ {label}")).size(10.0).color(color));
+                    ui.label(RichText::new(label).size(10.0).color(color));
                 self.targets.push((label.into(), response.rect));
             }
             ui.label(
@@ -610,8 +615,7 @@ fn paint_solids(
     };
     let mut low = [f64::INFINITY; 2];
     let mut high = [f64::NEG_INFINITY; 2];
-    let frame_offsets = explosion_offsets(&result.solids, page.inputs.bushing_enabled, gap, 1.0);
-    for (solid, offset) in result.solids.iter().zip(&frame_offsets) {
+    for (solid, offset) in result.solids.iter().zip(&offsets) {
         for (points, dz) in [
             (solid.body.as_slice(), offset[0]),
             (solid.hole[0].as_slice(), offset[1]),

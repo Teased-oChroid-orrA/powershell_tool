@@ -1410,6 +1410,7 @@ mod snapshot_tests {
     fn stackup_snapshot() {
         use crate::gpu_viewer::editor::stackup::StackupSession;
         let dir=std::env::var("FEA_SNAPSHOT_STACKUP_OUT").expect("snapshot folder");
+        std::fs::create_dir_all(&dir).unwrap();
         let _guard=headless_guard();
         let mut session=StackupSession::open(std::path::Path::new("/tmp/stackup-snapshot-unused-v2.json")).unwrap();
         session.inputs.members.push(bushing_solver::stackup::Member::new(3));session.inputs.members[0].name="Outer lug".into();session.inputs.members[1].name="Spacer".into();session.inputs.members[1].thickness=0.25;session.inputs.members[2].name="Inner lug".into();session.inputs.bushing_enabled=true;session.inputs.common_wall=Some(0.06);session.act(crate::gpu_viewer::editor::session::EditorAction::Stackup(crate::gpu_viewer::editor::stackup::StackupAct::Recalculate));
@@ -1422,6 +1423,46 @@ mod snapshot_tests {
                 let view=ViewState::new(&scene);let scenes=[scene.clone()];let input=GuiInput{view:&view,scenes:&scenes,selected:0,editor:Some(&session as &dyn Authoring),error:None,box_drag:None,overlay:&[]};
                 draw(&mut r,&mut gui,&texture,&input,[0.0,0.0],false);
                 std::fs::write(format!("{dir}/{name}-{w}x{h}.rgba"),read_back(&r,&texture)).unwrap();
+                for (control, pose) in [("Exploded", "exploded"), ("Stack setup", "settings")] {
+                    let (_, y) = gui.find_target(control).unwrap();
+                    if y > h as f64 - 40.0 {
+                        let raw = egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w as f32, h as f32))),
+                            events: vec![
+                                egui::Event::PointerMoved(egui::pos2(w as f32 - 24.0, h as f32 / 2.0)),
+                                egui::Event::MouseWheel {
+                                    unit: egui::MouseWheelUnit::Point,
+                                    delta: egui::vec2(0.0, h as f32 / 2.0 - y as f32),
+                                    phase: egui::TouchPhase::Move,
+                                    modifiers: Default::default(),
+                                },
+                            ],
+                            ..Default::default()
+                        };
+                        let (output, _) = gui.run(raw, &input);
+                        r.discard_egui(output);
+                        for _ in 0..12 {
+                            draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+                        }
+                    }
+                    let (x, y) = gui.find_target(control).unwrap();
+                    let pos = egui::pos2(x as f32, y as f32);
+                    let raw = egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w as f32, h as f32))),
+                        events: vec![
+                            egui::Event::PointerMoved(pos),
+                            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
+                            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+                        ],
+                        ..Default::default()
+                    };
+                    let (output, _) = gui.run(raw, &input);
+                    r.discard_egui(output);
+                    draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+                    let expected = if pose == "settings" {"Pilot position from stack entrance (in) input"} else {"Explosion 100%"};
+                    assert!(gui.target_labels().iter().any(|label| label == expected), "snapshot did not enter {pose}");
+                    std::fs::write(format!("{dir}/{name}-{pose}-{w}x{h}.rgba"),read_back(&r,&texture)).unwrap();
+                }
             }
         });
     }

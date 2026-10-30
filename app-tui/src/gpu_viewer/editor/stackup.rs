@@ -218,7 +218,7 @@ impl StackupSession {
             .into(),
             error: (!valid).then(|| "Finite numeric value required".into()),
             note: match id {
-                4 => Some("Axial distance from stack entrance. For 1 in thickness: 0 = entry, 0.5 = midpoint, 1 = exit.".into()),
+                4 => Some("Axial distance from stack entrance. For a 1-inch stack: 0 = entry, 0.5 = midpoint, 1 = exit.".into()),
                 5 => Some("Maximum relative separation of the original and finished axis centers at the pilot; radial distance.".into()),
                 18 => Some("Angular datum measured from +Z toward +X. 0.5 means 0.5 degrees, not a position through the thickness.".into()),
                 _ => None,
