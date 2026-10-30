@@ -1405,6 +1405,89 @@ mod snapshot_tests {
         });
     }
 
+    #[test]
+    #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_STACKUP_OUT"]
+    fn stackup_snapshot() {
+        use crate::gpu_viewer::editor::stackup::StackupSession;
+        let dir=std::env::var("FEA_SNAPSHOT_STACKUP_OUT").expect("snapshot folder");
+        std::fs::create_dir_all(&dir).unwrap();
+        let _guard=headless_guard();
+        let mut session=StackupSession::open(std::path::Path::new("/tmp/stackup-snapshot-unused-v2.json")).unwrap();
+        session.inputs.members.push(bushing_solver::stackup::Member::new(3));session.inputs.members[0].name="Outer lug".into();session.inputs.members[1].name="Spacer".into();session.inputs.members[1].thickness=0.25;session.inputs.members[2].name="Inner lug".into();session.inputs.bushing_enabled=true;session.inputs.common_wall=Some(0.06);session.act(crate::gpu_viewer::editor::session::EditorAction::Stackup(crate::gpu_viewer::editor::stackup::StackupAct::Recalculate));
+        pollster::block_on(async {
+            let adapter=test_adapter().await.expect("graphics adapter required");
+            let scene=session.scene().unwrap();
+            for (w,h,name,dark) in [(1360,860,"wide-dark",true),(1360,860,"wide-light",false),(780,900,"narrow-dark",true)] {
+                let mut r=Renderer::new(&adapter,wgpu::TextureFormat::Rgba8Unorm,&scene,w,h).await.unwrap();
+                let texture=target(&r,w,h);let mut gui=Gui::new();gui.ctx().set_theme(if dark {egui::Theme::Dark}else{egui::Theme::Light});
+                let view=ViewState::new(&scene);let scenes=[scene.clone()];let input=GuiInput{view:&view,scenes:&scenes,selected:0,editor:Some(&session as &dyn Authoring),error:None,box_drag:None,overlay:&[]};
+                draw(&mut r,&mut gui,&texture,&input,[0.0,0.0],false);
+                std::fs::write(format!("{dir}/{name}-{w}x{h}.rgba"),read_back(&r,&texture)).unwrap();
+                let (x,y)=gui.find_target("Drag member 1").unwrap();
+                let start=egui::pos2(x as f32,y as f32);
+                let finish=start-egui::vec2(0.0,90.0);
+                for events in [
+                    vec![egui::Event::PointerMoved(start),egui::Event::PointerButton {pos:start,button:egui::PointerButton::Primary,pressed:true,modifiers:Default::default()}],
+                    vec![egui::Event::PointerMoved(finish)],
+                    vec![egui::Event::PointerButton {pos:finish,button:egui::PointerButton::Primary,pressed:false,modifiers:Default::default()}],
+                ] {
+                    let raw=egui::RawInput {screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(w as f32,h as f32))),events,..Default::default()};
+                    let (output,_)=gui.run(raw,&input);
+                    r.discard_egui(output);
+                }
+                draw(&mut r,&mut gui,&texture,&input,[0.0,0.0],false);
+                let offsets=gui.stackup_component_offsets();
+                assert!(offsets[0].1[0] < 0.0,"member drag did not move the member");
+                assert_eq!(offsets[0].1[1],0.0,"member drag moved its bushing");
+                assert!(offsets[1..].iter().all(|(_,offset)|*offset == [0.0,0.0]),"member drag moved neighbors");
+                std::fs::write(format!("{dir}/{name}-individual-{w}x{h}.rgba"),read_back(&r,&texture)).unwrap();
+                for (control, pose) in [("Explode all", "exploded"), ("Stack setup", "settings")] {
+                    let (_, y) = gui.find_target(control).unwrap();
+                    if y > h as f64 - 40.0 {
+                        let raw = egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w as f32, h as f32))),
+                            events: vec![
+                                egui::Event::PointerMoved(egui::pos2(w as f32 - 24.0, h as f32 / 2.0)),
+                                egui::Event::MouseWheel {
+                                    unit: egui::MouseWheelUnit::Point,
+                                    delta: egui::vec2(0.0, h as f32 / 2.0 - y as f32),
+                                    phase: egui::TouchPhase::Move,
+                                    modifiers: Default::default(),
+                                },
+                            ],
+                            ..Default::default()
+                        };
+                        let (output, _) = gui.run(raw, &input);
+                        r.discard_egui(output);
+                        for _ in 0..12 {
+                            draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+                        }
+                    }
+                    let (x, y) = gui.find_target(control).unwrap();
+                    let pos = egui::pos2(x as f32, y as f32);
+                    let raw = egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w as f32, h as f32))),
+                        events: vec![
+                            egui::Event::PointerMoved(pos),
+                            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
+                            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+                        ],
+                        ..Default::default()
+                    };
+                    let (output, _) = gui.run(raw, &input);
+                    r.discard_egui(output);
+                    draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+                    if pose == "settings" {
+                        assert!(gui.target_labels().iter().any(|label| label == "Pilot position from stack entrance (in) input"),"snapshot did not enter settings");
+                    } else {
+                        assert!(gui.stackup_component_offsets().iter().any(|(_,offset)|offset[0] > 0.0),"snapshot did not explode all");
+                    }
+                    std::fs::write(format!("{dir}/{name}-{pose}-{w}x{h}.rgba"),read_back(&r,&texture)).unwrap();
+                }
+            }
+        });
+    }
+
     /// The Bushing workbench: the inputs with the housing and bushing drawn, the checks with the edge-distance table, and the
     /// solved model, as raw RGBA dumps: `FEA_SNAPSHOT_BUSHING_OUT=/dir cargo test ... bushing_snapshot -- --ignored`.
     #[test]

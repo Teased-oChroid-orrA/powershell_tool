@@ -336,6 +336,12 @@ pub fn sendable(p: &Problem, kind: EditorKind) -> Result<(), String> {
 
 /// Send the FEA workbench's model to the workbench `kind`: the case file it is linked to (or the default name beside the FEA
 /// file) takes what changed, and its window is started, or, when one has the case open, updates itself from the file.
+fn capture_bushing_with_context(model:&BushingModel,name:&str,path:&Path)->Result<BushingFile,String> {
+    let mut file=BushingFile::capture(model,name);
+    if path.exists(){let raw=std::fs::read_to_string(path).map_err(|e|e.to_string())?;file.stackup=BushingFile::from_json(&raw)?.stackup;}
+    Ok(file)
+}
+
 pub fn send_from_fea(fea: &Path, problem: &Problem, kind: EditorKind) -> Result<String, String> {
     let mut link = Link::load(fea);
     let case = link.case(fea, kind);
@@ -348,14 +354,14 @@ pub fn send_from_fea(fea: &Path, problem: &Problem, kind: EditorKind) -> Result<
             let bushing_path = EccentricFile::new("", &bushing_case, &ui).case_path(&case);
             let (mut m, bname) = read_bushing(&bushing_path)?;
             let did = eccentric_from_problem(&mut m, &mut ui, problem)?;
-            write(&bushing_path, &BushingFile::capture(&m, &bname).to_json())?;
+            write(&bushing_path, &capture_bushing_with_context(&m, &bname, &bushing_path)?.to_json())?;
             write(&case, &EccentricFile::new(&name, &bushing_case, &ui).to_json())?;
             did
         }
         _ => {
             let (mut m, name) = read_bushing(&case)?;
             let did = bushing_from_problem(&mut m, problem)?;
-            write(&case, &BushingFile::capture(&m, &name).to_json())?;
+            write(&case, &capture_bushing_with_context(&m, &name, &case)?.to_json())?;
             did
         }
     };

@@ -104,6 +104,7 @@ pub(super) fn document(s: &SearchSession) -> Document {
             error: None,
             note: (!c.search_paths_extra.is_empty()).then(|| format!("Also searching {}", plural(c.search_paths_extra.len(), "more folder", "more folders"))),
             submit: Some(act(SearchAct::Run)),
+            commit_on_blur: false,
             grow: 1.0,
             trailing: Some(e("Browse", "", SearchAct::BrowseFolder)),
             help: None,
@@ -117,6 +118,7 @@ pub(super) fn document(s: &SearchSession) -> Document {
             error: model::regex_validation_error(c),
             note: (!groups_note.is_empty()).then_some(groups_note),
             submit: Some(act(SearchAct::Run)),
+            commit_on_blur: false,
             grow: 1.5,
             trailing: None,
             help: Some(find_help()),
@@ -188,7 +190,7 @@ pub(super) fn document(s: &SearchSession) -> Document {
         DocPanel { label: "Report".into(), badge: s.st.run.last_report_path.as_ref().map(|_| "ready".to_string()), inputs: vec![output_input(s)], cards: vec![c.output] },
     ];
     let modal = types_card(s).map(|card| DocModal { card, close: act(SearchAct::CloseExtensions) });
-    Document { inputs, extra_inputs, buttons, chips, notice, progress, stats, table: table(s), detail: detail(s), panels, modal }
+    Document { precision: None, policy: None, inputs, extra_inputs, buttons, chips, notice, progress, stats, table: table(s), detail: detail(s), panels, modal }
 }
 
 /// The switch that shows the Exclude row. While the row is hidden and terms are still set, the switch names them: an
@@ -224,6 +226,7 @@ fn exclude_input(s: &SearchSession) -> DocInput {
         error: None,
         note,
         submit: Some(act(SearchAct::Run)),
+            commit_on_blur: false,
         grow: 1.0,
         trailing: None,
         help: Some(exclude_help()),
@@ -244,7 +247,7 @@ fn output_input(s: &SearchSession) -> DocInput {
         hint: "Folder for the report and exports".into(),
         error: None,
         note: Some(if folder.is_empty() { "Empty: the report goes to the folder the app was started from; Export matches writes beside each file.".into() } else { "The HTML / CSV / JSON report and Export matches are written here.".into() }),
-        submit: None,
+        submit: None, commit_on_blur: false,
         grow: 1.0,
         trailing: Some(e("Browse", "", SearchAct::BrowseOutput)),
         help: None,
@@ -338,7 +341,7 @@ fn table(s: &SearchSession) -> DocTable {
     };
     DocTable {
         title,
-        filter: (total > 0).then(|| DocInput { id: INPUT_FILTER, label: "Filter".into(), text: s.filter.clone(), hint: "Filter by name or folder".into(), error: None, note: None, submit: None, grow: 1.0, trailing: None, help: None, choices: Vec::new() }),
+        filter: (total > 0).then(|| DocInput { id: INPUT_FILTER, label: "Filter".into(), text: s.filter.clone(), hint: "Filter by name or folder".into(), error: None, note: None, submit: None, commit_on_blur: false, grow: 1.0, trailing: None, help: None, choices: Vec::new() }),
         columns: vec![col("File", 0.0, false, SortKey::Name), col("Matches", 76.0, true, SortKey::Hits), col("Size", 84.0, true, SortKey::Size), col("Modified", 138.0, false, SortKey::Modified)],
         rows,
         empty_title,
@@ -360,7 +363,7 @@ fn detail(s: &SearchSession) -> Option<DocDetail> {
         subtitle.push_str(&format!("  ·  first {MAX_BLOCKS} lines shown (Export matches has all)"));
     }
     blocks.shrink_to_fit();
-    Some(DocDetail { title: file_name(&r.full_name).to_string(), subtitle, actions: result_entries(s), blocks, empty: "The file matched as a whole (all-in-file mode), with no single line to show.".into() })
+    Some(DocDetail { drawing: None, title: file_name(&r.full_name).to_string(), subtitle, actions: result_entries(s), blocks, empty: "The file matched as a whole (all-in-file mode), with no single line to show.".into() })
 }
 
 // ---------------------------------------------------------------------- tree

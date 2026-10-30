@@ -79,6 +79,7 @@ struct Prompt {
 }
 
 pub struct BushingSession {
+    stackup: Option<super::stackup_transfer::StackupTransfer>,
     st: BushingState,
     fea: SolidSession,
     path: PathBuf,
@@ -124,6 +125,7 @@ impl BushingSession {
         // The refinement hints are for editing a mesh; here the mesh follows the inputs.
         fea.do_action(SolidAction::ToggleRefineShow);
         let mut s = Self {
+            stackup: file.stackup.clone(),
             st,
             fea,
             name: if file.name.is_empty() { path.file_stem().and_then(|n| n.to_str()).unwrap_or("Bushing").to_string() } else { file.name.clone() },
@@ -167,7 +169,9 @@ impl BushingSession {
     // ------------------------------------------------------------------ editing
 
     fn snapshot(&self) -> BushingFile {
-        BushingFile::capture(&self.st.model, &self.name)
+        let mut file=BushingFile::capture(&self.st.model, &self.name);
+        file.stackup=self.stackup.clone();
+        file
     }
     /// Record the state before an edit so Undo can return to it.
     fn checkpoint(&mut self) {
@@ -199,6 +203,7 @@ impl BushingSession {
         }
     }
     fn set_from(&mut self, file: &BushingFile) {
+        self.stackup=file.stackup.clone();
         let skipped = file.apply(&mut self.st.model);
         if !skipped.is_empty() {
             self.status = format!("Not applied: {}.", skipped.join("; "));

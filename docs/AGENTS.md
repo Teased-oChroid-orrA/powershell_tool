@@ -43,6 +43,7 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 | Hybrid meshing + goal-oriented AMR (epic #25) | `docs/epic-hybrid-meshing-goal-amr.md`, `docs/hybrid-meshing-amr-audit.md`, `docs/hybrid-meshing-amr-evidence.md`, `docs/hybrid-meshing-amr-readiness.md`, `docs/adr/ADR-022-hybrid-meshing-and-goal-oriented-adaptivity.md` |
 | Native CAD window: benches, process model, studies in the solid editor (issue 12 phase 23) | `docs/issue-12-phase-23.md`; `docs/adr/ADR-014-native-cad-process-model.md` |
 | Eccentric bushing toolbox (spin capacity, maximum offset; realistic meshed pin, direct spin simulation, edge-limited housing) + the FEA core upgrades it drove (follower loads, arc-length contact, anisotropy, rotation, consistent friction tangent) and every improvement-list item's outcome | `docs/eccentric-bushing.md` (sections 8-9), `docs/fea-core.md` Phase 9 |
+| Bushing stackup line-reaming geometry (two full-stack axes, per-member required hole diameters, Bushing Workbench handoff) | `docs/bushing-stackup.md` |
 | MIL-HDBK-5J material library (1,375 conditions in the Bushing / Pressure Vessel pickers; provenance, conversion rules, what is estimated) | `docs/material-handbook.md` |
 | Index audit 2026-10 — freshness precision, scheduling, version stamp, measured rejections | `docs/index-audit-2026-10.md` |
 | #8 — perf/indexing/scalability evidence report | `docs/issue-8-status.md` (single-file report against #6's shipped state) |

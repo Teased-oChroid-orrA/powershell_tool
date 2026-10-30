@@ -17,6 +17,8 @@ pub mod eccentric;
 pub mod fastener;
 pub mod handoff;
 pub mod search;
+pub mod stackup;
+pub mod stackup_transfer;
 pub mod solid;
 pub mod sketcher;
 
