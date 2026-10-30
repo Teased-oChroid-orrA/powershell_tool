@@ -2163,6 +2163,211 @@ mod tests {
     }
 
 
+    fn stackup_viewer() -> Viewer {
+        use crate::gpu_viewer::editor::stackup::StackupSession;
+        viewer(Some(Box::new(
+            StackupSession::open(&std::env::temp_dir().join("never-written-stackup-interaction.json"))
+                .unwrap(),
+        )))
+    }
+    fn replace_page_text(v: &mut Viewer, label: &str, text: &str) {
+        let at = target(v, label);
+        click(v, at);
+        v.test_events.push(egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                ctrl: true,
+                command: true,
+                ..Default::default()
+            },
+        });
+        frame(v);
+        type_text(v, text);
+    }
+    #[test]
+    fn the_stackup_inspector_commits_enter_and_blur_without_duplicate_fields() {
+        let mut v = stackup_viewer();
+        assert_eq!(
+            labels(&v)
+                .iter()
+                .filter(|label| label.as_str() == "Current hole nominal (in) input")
+                .count(),
+            1
+        );
+        assert!(!labels(&v)
+            .iter()
+            .any(|label| label == "Selected member" || label == "Stack configuration"));
+        replace_page_text(&mut v, "Current hole nominal (in) input", "0.5");
+        let page = v
+            .editor
+            .as_ref()
+            .unwrap()
+            .document()
+            .unwrap()
+            .precision
+            .unwrap();
+        assert!(!page.current);
+        egui_key(&mut v, egui::Key::Enter);
+        let page = v
+            .editor
+            .as_ref()
+            .unwrap()
+            .document()
+            .unwrap()
+            .precision
+            .unwrap();
+        assert!(page.current);
+        assert_eq!(page.inputs.members[0].hole.nominal, 0.5);
+        assert!(page.result.unwrap().layers[0].cleanup_diameter > 0.5);
+        replace_page_text(&mut v, "Current hole nominal (in) input", "0.6");
+        let thickness = target(&v, "Thickness along stack z (in) input");
+        click(&mut v, thickness);
+        let page = v
+            .editor
+            .as_ref()
+            .unwrap()
+            .document()
+            .unwrap()
+            .precision
+            .unwrap();
+        assert!(page.current);
+        assert_eq!(page.inputs.members[0].hole.nominal, 0.6);
+        replace_page_text(&mut v, "Current hole nominal (in) input", "0.65");
+        let stack = target(&v, "Stack setup");
+        click(&mut v, stack);
+        assert!(
+            v.editor
+                .as_ref()
+                .unwrap()
+                .document()
+                .unwrap()
+                .precision
+                .unwrap()
+                .current
+        );
+        let member = target(&v, "Member settings");
+        click(&mut v, member);
+        let datum=target(&v,"Datum direction");
+        click(&mut v,datum);
+        replace_page_text(&mut v,"Datum normal angle (deg) input","0.5");
+        assert!(!v.editor.as_ref().unwrap().document().unwrap().precision.unwrap().current);
+        let datum=target(&v,"Datum direction");
+        click(&mut v,datum);
+        let page=v.editor.as_ref().unwrap().document().unwrap().precision.unwrap();
+        assert!(page.current);
+        assert_eq!(page.inputs.members[0].reference_normal_deg,0.5);
+        replace_page_text(&mut v, "Current hole nominal (in) input", "unfinished");
+        egui_key(&mut v, egui::Key::Enter);
+        let page = v
+            .editor
+            .as_ref()
+            .unwrap()
+            .document()
+            .unwrap()
+            .precision
+            .unwrap();
+        assert!(!page.current && page.result.is_none());
+    }
+    #[test]
+    fn the_stackup_member_selection_keeps_edits_with_their_member() {
+        let mut v = stackup_viewer();
+        replace_page_text(&mut v, "Current hole nominal (in) input", "0.45");
+        let second = target(&v, "Member 2");
+        click(&mut v, second);
+        let page = v
+            .editor
+            .as_ref()
+            .unwrap()
+            .document()
+            .unwrap()
+            .precision
+            .unwrap();
+        assert_eq!(page.selected, 1);
+        assert!(page.current);
+        assert_eq!(page.inputs.members[0].hole.nominal, 0.45);
+        assert_eq!(page.inputs.members[1].hole.nominal, 0.3);
+        replace_page_text(&mut v, "Current hole nominal (in) input", "0.55");
+        egui_key(&mut v, egui::Key::Enter);
+        let page = v
+            .editor
+            .as_ref()
+            .unwrap()
+            .document()
+            .unwrap()
+            .precision
+            .unwrap();
+        assert!(page.current);
+        assert_eq!(page.inputs.members[0].hole.nominal, 0.45);
+        assert_eq!(page.inputs.members[1].hole.nominal, 0.55);
+    }
+    fn explosion_percent(v: &Viewer) -> u32 {
+        labels(v)
+            .iter()
+            .find_map(|label| {
+                label
+                    .strip_prefix("Explosion ")?
+                    .strip_suffix('%')?
+                    .parse()
+                    .ok()
+            })
+            .unwrap()
+    }
+    #[test]
+    fn the_stackup_axes_and_continuous_explosion_do_not_change_the_calculation() {
+        let mut v = stackup_viewer();
+        let before = v
+            .editor
+            .as_ref()
+            .unwrap()
+            .document()
+            .unwrap()
+            .precision
+            .unwrap();
+        assert!(labels(&v).contains(&"Finished axis".into()));
+        assert!(labels(&v).contains(&"Original axis".into()));
+        assert_eq!(explosion_percent(&v), 0);
+        let start = target(&v, "Stack geometry drag");
+        drag(&mut v, start, (start.0, start.1 - 120.0));
+        assert!(explosion_percent(&v) > 0 && explosion_percent(&v) < 100);
+        let full = target(&v, "Exploded");
+        click(&mut v, full);
+        assert_eq!(explosion_percent(&v), 100);
+        let start = target(&v, "Stack geometry drag");
+        drag(&mut v, start, (start.0, start.1 + 120.0));
+        assert!(explosion_percent(&v) > 0 && explosion_percent(&v) < 100);
+        let fitted = target(&v, "Fitted");
+        click(&mut v, fitted);
+        assert_eq!(explosion_percent(&v), 0);
+        let after = v
+            .editor
+            .as_ref()
+            .unwrap()
+            .document()
+            .unwrap()
+            .precision
+            .unwrap();
+        assert_eq!(before.inputs, after.inputs);
+        assert_eq!(before.result, after.result);
+        assert!(!v.editor.as_ref().unwrap().dirty());
+    }
+    #[test]
+    fn the_search_page_does_not_run_when_an_input_loses_focus() {
+        use crate::gpu_viewer::editor::search::SearchSession;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("example.txt"), "do not run on blur").unwrap();
+        let mut search = SearchSession::in_memory();
+        search.document_field(100, dir.path().to_string_lossy().into_owned());
+        let mut v = viewer(Some(Box::new(search)));
+        replace_page_text(&mut v, "Find input", "do not run on blur");
+        let folder = target(&v, "Folder input");
+        click(&mut v, folder);
+        assert!(!v.editor.as_ref().unwrap().solving());
+        assert!(!labels(&v).contains(&"Stop".into()));
+    }
+
     #[test]
     fn the_search_page_takes_typed_input_runs_on_enter_and_a_row_click_shows_its_matches() {
         use crate::gpu_viewer::editor::search::SearchSession;

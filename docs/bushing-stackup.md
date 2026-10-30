@@ -29,3 +29,13 @@ Structural transfer retains the source inputs, cleanup diameter, adopted hole an
 Verification on 2026-10-29 included the full bushing-solver suite, native session and transfer tests, and GPU renders at 1360×860 in both themes and 780×900 in the dark theme. The exploded-view regression checks 101 animation positions at three separations. An independent read-only review found no remaining source blockers after checking the common-axis envelope, interior-angle extrema, enlargement reporting, revision lifecycle, geometry and transfer provenance.
 
 Final local qualification passed `cargo test -p app-tui --lib` with 1,230 passed and 25 ignored, and `cargo test -p bushing-solver` with 60 unit tests plus both integration tests passing. The ignored stackup GPU snapshot test was run separately with graphics access and passed. The calculation exercise completed for 2, 10, 100 and 1,000 members with individual and uniform bushing OD; its debug timings are smoke-check evidence only, not a performance comparison.
+
+## Input and view interaction update (2026-10-29)
+
+The inspector is the single editing surface, with **Member settings** and **Stack setup** tabs. The former Selected member and Stack configuration popovers no longer duplicate those controls. Member settings groups geometry, hole orientation, datum direction, machining limits and optional bushing policy. Stack setup contains pilot registration and shared sizing settings.
+
+**Datum normal angle (deg)** is an angular datum measured from +Z toward +X. A value of 0.5 means 0.5 degrees. **Pilot position from stack entrance (in)** is a separate axial location; 0.5 inches is the midpoint of a single 1-inch member.
+
+Enter or leaving an input commits calculation. Switching an inspector tab or closing a section commits an outstanding edit before hiding it. Invalid active text keeps results unavailable and structural transfer blocked. Discrete geometry and policy changes calculate immediately. Search inputs retain their existing Enter-only run behavior.
+
+The view shows the common finished axis, original-axis segments that follow their members, and an orientation triad. The explosion slider spans fitted (0%) through fully exploded (100%). Dragging upward in the geometry view separates components; dragging downward assembles them. Both presets remain available. View motion uses stable framing and the same collision-safe separation schedule without changing engineering inputs or results.

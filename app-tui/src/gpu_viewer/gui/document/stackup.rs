@@ -12,19 +12,27 @@ enum ResultTab {
     Wall,
     Details,
 }
+#[derive(Clone, Copy, Default, PartialEq)]
+enum InspectorTab {
+    #[default]
+    Member,
+    Stack,
+}
 pub(super) struct PrecisionState {
-    exploded: bool,
-    spacing: f32,
+    explosion: f32,
+    inspector: InspectorTab,
     tab: ResultTab,
     zoom: f32,
+    selected_member: Option<u64>,
 }
 impl Default for PrecisionState {
     fn default() -> Self {
         Self {
-            exploded: true,
-            spacing: 0.55,
+            explosion: 0.0,
+            inspector: InspectorTab::Member,
             tab: ResultTab::Sizing,
             zoom: 1.0,
+            selected_member: None,
         }
     }
 }
@@ -49,218 +57,157 @@ impl Gui {
         hint: &mut Option<String>,
     ) {
         let page = doc.precision.as_ref().unwrap();
+        let member_id = page.inputs.members[page.selected].id;
+        if self.doc.precision.selected_member != Some(member_id) {
+            for id in 10u8..=31 {
+                ui.memory_mut(|memory| memory.surrender_focus(Id::new(("doc-input", id))));
+            }
+            self.doc.precision.selected_member = Some(member_id);
+        }
         ui.scope_builder(
-            UiBuilder::new()
-                .max_rect(area.shrink2(Vec2::new(16.0, 5.0)))
-                .id_salt("precision-studio"),
+            UiBuilder::new().max_rect(area.shrink2(Vec2::new(16.0, 5.0))).id_salt("precision-studio"),
             |ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt("precision-page")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing = Vec2::new(12.0, 12.0);
-                        ui.horizontal_wrapped(|ui| {
-                            ui.vertical(|ui| {
-                                ui.label(
-                                    RichText::new("GS ENGINEERING  /  TOOLBENCH")
-                                        .size(10.0)
-                                        .color(p.dim),
-                                );
-                                ui.label(RichText::new("Bushing Stackup").size(26.0).strong());
-                                ui.label(
-                                    RichText::new(format!(
-                                        "{} members  ·  Inches / degrees  ·  Common finished axis",
-                                        page.inputs.members.len()
-                                    ))
-                                    .small()
-                                    .color(p.dim),
-                                );
-                            });
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                for label in ["Save", "Recalculate"] {
-                                    if let Some(e) = doc.buttons.iter().find(|e| e.label == label) {
-                                        self.doc_button(
-                                            ui,
-                                            e,
-                                            p,
-                                            out,
-                                            hint,
-                                            label == "Recalculate",
-                                        );
-                                    }
-                                }
-                            });
+                egui::ScrollArea::vertical().id_salt("precision-page").auto_shrink([false, false]).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(12.0, 12.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new("GS ENGINEERING  /  PRECISION STUDIO").size(10.0).color(p.dim));
+                            ui.label(RichText::new("Bushing Stackup").size(26.0).strong());
+                            ui.label(RichText::new(format!("{} members  ·  Inches / degrees  ·  One common finished axis", page.inputs.members.len())).small().color(p.dim));
                         });
-                        ui.horizontal_wrapped(|ui| {
-                            self.panel_buttons(ui, &doc.panels, p, out, hint);
-                            for chip in &doc.chips {
-                                let applicable = match chip.action {
-                                    UiAction::Editor(EditorAction::Stackup(
-                                        StackupAct::ToggleBushing | StackupAct::Mode,
-                                    )) => true,
-                                    _ => page.inputs.bushing_enabled,
-                                };
-                                if chip.enabled && applicable {
-                                    self.chip(ui, chip, p, out, hint);
-                                }
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if let Some(e) = doc.buttons.iter().find(|e| e.label == "Save") {
+                                self.doc_button(ui, e, p, out, hint, false);
                             }
+                            ui.label(RichText::new(if page.current && page.error.is_none() { "● Up to date" } else { "● Editing inputs" }).small().color(if page.current && page.error.is_none() {p.good} else {p.warn}));
                         });
-                        if let Some(error) = &page.error {
-                            ui.label(RichText::new(error).color(p.warn));
-                        }
-                        if !page.current || page.result.is_none() {
-                            ui.label(
-                                RichText::new(
-                                    doc.notice
-                                        .as_ref()
-                                        .map(|n| n.text.as_str())
-                                        .unwrap_or("Recalculate to update geometry"),
-                                )
-                                .color(p.warn),
-                            );
-                        }
-                        let width = ui.available_width();
-                        let wide = width >= 1000.0;
-                        let compact = width < 720.0;
-                        if !wide {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(RichText::new("MEMBERS").small().color(p.dim));
-                                for (i, m) in page.inputs.members.iter().enumerate() {
-                                    if ui
-                                        .selectable_label(
-                                            i == page.selected,
-                                            format!("{} · {}", i + 1, m.name),
-                                        )
-                                        .clicked()
-                                    {
-                                        send(out, StackupAct::Select(i));
-                                    }
-                                }
-                            });
-                        }
-                        if !wide {
-                            ui.horizontal_wrapped(|ui| {
-                                for (label, a) in [
-                                    ("+ Add member", StackupAct::Add),
-                                    ("Remove", StackupAct::Remove),
-                                    ("Move up", StackupAct::Up),
-                                    ("Move down", StackupAct::Down),
-                                ] {
-                                    if ui.small_button(label).clicked() {
-                                        send(out, a);
-                                    }
-                                }
-                            });
-                        }
-                        let h = (area.height() - 290.0).clamp(430.0, 620.0);
-                        let inspector_w = if compact { width } else { 248.0 };
-                        let member_w = if wide { 172.0 } else { 0.0 };
-                        let canvas_w = if compact {
-                            width
-                        } else {
-                            (width - inspector_w - member_w - if wide { 24.0 } else { 12.0 })
-                                .max(200.0)
-                        };
-                        ui.horizontal_top(|ui| {
-                            if wide {
-                                ui.allocate_ui_with_layout(
-                                    Vec2::new(member_w, h),
-                                    Layout::top_down(Align::Min),
-                                    |ui| {
-                                        surface(p).show(ui, |ui| {
-                                            ui.set_width(member_w - 28.0);
-                                            ui.set_min_height(h - 28.0);
-                                            ui.label(
-                                                RichText::new("STACK MEMBERS")
-                                                    .size(10.0)
-                                                    .strong()
-                                                    .color(p.dim),
-                                            );
-                                            ui.add_space(10.0);
-                                            egui::ScrollArea::vertical()
-                                                .id_salt("precision-members")
-                                                .max_height(h - 145.0)
-                                                .show(ui, |ui| {
-                                                    for (i, m) in
-                                                        page.inputs.members.iter().enumerate()
-                                                    {
-                                                        let response = ui.add_sized(
-                                                            [ui.available_width(), 48.0],
-                                                            egui::Button::new(format!(
-                                                                "{:02}   {}\n        {:.4} in",
-                                                                i + 1,
-                                                                m.name,
-                                                                m.thickness
-                                                            ))
-                                                            .selected(i == page.selected),
-                                                        );
-                                                        self.targets.push((
-                                                            format!("Member {}", m.id),
-                                                            response.rect,
-                                                        ));
-                                                        if response.clicked() {
-                                                            send(out, StackupAct::Select(i));
-                                                        }
-                                                    }
-                                                });
-                                            ui.add_space(10.0);
-                                            ui.horizontal_wrapped(|ui| {
-                                                for (label, a) in [
-                                                    ("+ Add", StackupAct::Add),
-                                                    ("Remove", StackupAct::Remove),
-                                                    ("Up", StackupAct::Up),
-                                                    ("Down", StackupAct::Down),
-                                                ] {
-                                                    if ui.small_button(label).clicked() {
-                                                        send(out, a);
-                                                    }
-                                                }
-                                            });
-                                        });
-                                    },
-                                );
-                            }
-                            ui.allocate_ui_with_layout(
-                                Vec2::new(canvas_w, h),
-                                Layout::top_down(Align::Min),
-                                |ui| {
-                                    surface(p).show(ui, |ui| {
-                                        ui.set_width(canvas_w - 28.0);
-                                        self.precision_canvas(ui, page, p, out, h - 28.0);
-                                    });
-                                },
-                            );
-                            if !compact {
-                                ui.allocate_ui_with_layout(
-                                    Vec2::new(inspector_w, h),
-                                    Layout::top_down(Align::Min),
-                                    |ui| {
-                                        surface(p).show(ui, |ui| {
-                                            ui.set_width(inspector_w - 28.0);
-                                            ui.set_height(h - 28.0);
-                                            self.precision_inspector(
-                                                ui,
-                                                doc,
-                                                page,
-                                                p,
-                                                out,
-                                                hint,
-                                                h - 28.0,
-                                            );
-                                        });
-                                    },
-                                );
-                            }
-                        });
-                        if compact {
-                            surface(p).show(ui, |ui| {
-                                self.precision_inspector(ui, doc, page, p, out, hint, 500.0)
-                            });
-                        }
-                        self.precision_results(ui, doc, page, p, out);
                     });
+                    if let Some(error) = &page.error {
+                        ui.label(RichText::new(error).color(p.warn));
+                    }
+                    let width = ui.available_width();
+                    let wide = width >= 1180.0;
+                    let compact = width < 940.0;
+                    if !wide {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new("MEMBERS").small().color(p.dim));
+                            for (i, m) in page.inputs.members.iter().enumerate() {
+                                let response = ui.selectable_label(i == page.selected, format!("{:02} · {}", i + 1, m.name));
+                                self.targets.push((format!("Member {}",m.id),response.rect));
+                                if response.clicked() {send(out, StackupAct::Select(i));}
+                            }
+                        });
+                        self.precision_member_actions(ui, doc, p, out, hint);
+                    }
+                    let h = (area.height() - 200.0).clamp(500.0, 700.0);
+                    let inspector_w = if compact { width } else { 330.0 };
+                    let member_w = if wide { 160.0 } else { 0.0 };
+                    let canvas_w = if compact {width} else {(width - inspector_w - member_w - if wide {24.0} else {12.0}).max(200.0)};
+                    ui.horizontal_top(|ui| {
+                        if wide {
+                            ui.allocate_ui_with_layout(Vec2::new(member_w,h), Layout::top_down(Align::Min), |ui| {
+                                surface(p).show(ui, |ui| {
+                                    ui.set_width(member_w - 28.0);
+                                    ui.set_min_height(h - 28.0);
+                                    ui.label(RichText::new("STACK MEMBERS").size(10.0).strong().color(p.dim));
+                                    ui.add_space(10.0);
+                                    egui::ScrollArea::vertical().id_salt("precision-members").max_height(h - 145.0).show(ui, |ui| {
+                                        for (i,m) in page.inputs.members.iter().enumerate() {
+                                            let response = ui.add_sized([ui.available_width(),48.0], egui::Button::new(format!("{:02}   {}\n{:.4} in",i+1,m.name,m.thickness)).selected(i == page.selected));
+                                            self.targets.push((format!("Member {}",m.id),response.rect));
+                                            if response.clicked() {send(out,StackupAct::Select(i));}
+                                        }
+                                    });
+                                    ui.add_space(10.0);
+                                    self.precision_member_actions(ui,doc,p,out,hint);
+                                });
+                            });
+                        }
+                        ui.allocate_ui_with_layout(Vec2::new(canvas_w,h), Layout::top_down(Align::Min), |ui| {
+                            surface(p).show(ui, |ui| {
+                                ui.set_width(canvas_w - 28.0);
+                                self.precision_canvas(ui,page,p,out,h - 28.0);
+                            });
+                        });
+                        if !compact {
+                            ui.allocate_ui_with_layout(Vec2::new(inspector_w,h), Layout::top_down(Align::Min), |ui| {
+                                surface(p).show(ui, |ui| {
+                                    ui.set_width(inspector_w - 28.0);
+                                    ui.set_height(h - 28.0);
+                                    self.precision_inspector(ui,doc,page,p,out,hint,h - 28.0);
+                                });
+                            });
+                        }
+                    });
+                    if compact {
+                        surface(p).show(ui, |ui| {self.precision_inspector(ui,doc,page,p,out,hint,600.0);});
+                    }
+                    self.precision_results(ui,doc,page,p,out);
+                });
             },
         );
+    }
+    fn precision_member_actions(
+        &mut self,
+        ui: &mut egui::Ui,
+        doc: &Document,
+        p: &Palette,
+        out: &mut Vec<Outcome>,
+        hint: &mut Option<String>,
+    ) {
+        ui.horizontal_wrapped(|ui| {
+            for label in ["Add", "Remove", "Up", "Down"] {
+                if let Some(e) = doc.buttons.iter().find(|e| e.label == label) {
+                    let response = ui.add_enabled(e.enabled, egui::Button::new(label).small());
+                    self.targets.push((label.into(), response.rect));
+                    self.entry_click(&response, e, out, hint);
+                }
+            }
+        });
+    }
+    fn precision_fields(
+        &mut self,
+        ui: &mut egui::Ui,
+        doc: &Document,
+        ids: &[u8],
+        p: &Palette,
+        out: &mut Vec<Outcome>,
+        hint: &mut Option<String>,
+    ) {
+        for id in ids {
+            if let Some(field) = doc
+                .panels
+                .iter()
+                .flat_map(|panel| &panel.inputs)
+                .find(|field| field.id == *id)
+            {
+                self.labelled_input(ui, field, ui.available_width(), p, out, hint);
+                if let Some(error) = &field.error {
+                    ui.label(RichText::new(error).small().color(p.warn));
+                }
+                if let Some(note) = &field.note {
+                    ui.label(RichText::new(note).small().color(p.dim));
+                }
+                ui.add_space(6.0);
+            }
+        }
+    }
+    fn precision_switch(
+        &mut self,
+        ui: &mut egui::Ui,
+        doc: &Document,
+        a: StackupAct,
+        p: &Palette,
+        out: &mut Vec<Outcome>,
+        hint: &mut Option<String>,
+    ) {
+        if let Some(entry) = doc
+            .chips
+            .iter()
+            .find(|e| e.action == UiAction::Editor(EditorAction::Stackup(a)))
+        {
+            self.chip(ui, entry, p, out, hint);
+        }
     }
     fn precision_inspector(
         &mut self,
@@ -272,127 +219,89 @@ impl Gui {
         hint: &mut Option<String>,
         height: f32,
     ) {
-        let m = &page.inputs.members[page.selected];
-        egui::ScrollArea::vertical()
-            .id_salt("precision-selected")
-            .max_height(height)
-            .show(ui, |ui| {
-                ui.label(
-                    RichText::new(format!("SELECTED MEMBER  {:02}", page.selected + 1))
-                        .size(10.0)
-                        .color(p.dim),
-                );
-                ui.label(RichText::new(&m.name).size(18.0).strong());
-                ui.add_space(12.0);
-                let input = |id| {
-                    doc.panels
-                        .iter()
-                        .flat_map(|panel| &panel.inputs)
-                        .find(|field| field.id == id)
-                };
-                if let Some(field) = input(12) {
-                    self.labelled_input(ui, field, ui.available_width(), p, out, hint);
-                }
-                if page.current {
-                    if let Some(r) = page
-                        .result
-                        .as_ref()
-                        .and_then(|r| r.layers.get(page.selected))
-                    {
-                        ui.add_space(12.0);
-                        ui.label(
-                            RichText::new("FINAL CLEANED MEMBER HOLE")
-                                .size(10.0)
-                                .color(p.dim),
-                        );
-                        ui.label(
-                            RichText::new(format!("{:.5} in", r.final_hole.min))
-                                .size(27.0)
-                                .strong()
-                                .color(
-                                    if matches!(r.status, Status::Feasible | Status::Informational)
-                                    {
-                                        p.accent
-                                    } else {
-                                        p.warn
-                                    },
-                                ),
-                        );
-                        ui.label(
-                            RichText::new(format!(
-                                "Angularity-only cleanup  {:.5} in",
-                                r.cleanup_diameter
-                            ))
-                            .small()
-                            .color(p.dim),
-                        );
-                        if let Some(reason) = &r.enlargement_reason {
-                            ui.label(
-                                RichText::new(format!("ENLARGED · {reason}"))
-                                    .small()
-                                    .color(p.warn),
-                            );
-                        }
-                        ui.label(
-                            RichText::new(format!("{:?} · {}", r.status, r.governing))
-                                .small()
-                                .color(
-                                    if matches!(r.status, Status::Feasible | Status::Informational)
-                                    {
-                                        p.good
-                                    } else {
-                                        p.warn
-                                    },
-                                ),
-                        );
-                        ui.add_space(12.0);
-                        ui.separator();
-                        if page.inputs.bushing_enabled {
-                            for (label, value) in [
-                                (
-                                    "Bushing ID",
-                                    format!("{:.5} in", page.inputs.finished_id.nominal),
-                                ),
-                                ("Installed bushing OD", format!("{:.5} in", r.od.nominal)),
-                                ("Minimum wall", format!("{:.5} in", r.wall_min)),
-                                ("Maximum wall", format!("{:.5} in", r.wall_max)),
-                                (
-                                    "Required wall",
-                                    crate::gpu_viewer::editor::stackup::optional(
-                                        r.policy.effective,
-                                    ),
-                                ),
-                            ] {
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(label).small().color(p.dim));
-                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        ui.label(RichText::new(value).small().monospace());
-                                    });
-                                });
-                            }
-                            ui.label(RichText::new(&r.comparison).small().color(p.dim));
-                        }
+        ui.horizontal(|ui| {
+            for (tab, label) in [
+                (InspectorTab::Member, "Member settings"),
+                (InspectorTab::Stack, "Stack setup"),
+            ] {
+                let response = ui.selectable_label(self.doc.precision.inspector == tab, label);
+                self.targets.push((label.into(), response.rect));
+                if response.clicked() {
+                    if !page.current {
+                        send(out, StackupAct::Recalculate);
                     }
-                } else {
-                    ui.label(RichText::new("Results stale · Recalculate").color(p.warn));
+                    self.doc.precision.inspector = tab;
                 }
-                ui.add_space(12.0);
-                ui.collapsing("Member dimensions & tolerances", |ui| {
-                    for id in [
-                        10, 11, 13, 14, 30, 31, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 28, 29,
-                        26, 27,
-                    ] {
-                        if let Some(field) = input(id) {
-                            self.labelled_input(ui, field, ui.available_width(), p, out, hint);
-                            ui.add_space(7.0);
+            }
+        });
+        ui.label(
+            RichText::new("Updates on Enter or leaving a field")
+                .size(10.0)
+                .color(p.dim),
+        );
+        ui.separator();
+        egui::ScrollArea::vertical().id_salt("precision-inspector").max_height(height - 60.0).show(ui, |ui| {
+            if self.doc.precision.inspector == InspectorTab::Stack {
+                ui.label(RichText::new("AXIS REGISTRATION").small().strong().color(p.dim));
+                self.precision_fields(ui,doc,&[4,5],p,out,hint);
+                ui.separator();
+                ui.label(RichText::new("ANGULARITY DEFINITION").small().strong().color(p.dim));
+                self.precision_switch(ui,doc,StackupAct::Mode,p,out,hint);
+                ui.label(RichText::new("Angularity is measured around each member's datum normal. All members share the same original and finished axes.").small().color(p.dim));
+                ui.add_space(10.0);
+                ui.separator();
+                ui.label(RichText::new("OPTIONAL BUSHINGS").small().strong().color(p.dim));
+                self.precision_switch(ui,doc,StackupAct::ToggleBushing,p,out,hint);
+                if page.inputs.bushing_enabled {
+                    self.precision_fields(ui,doc,&[0,1,2,3],p,out,hint);
+                    self.precision_switch(ui,doc,StackupAct::Common,p,out,hint);
+                } else {
+                    ui.label(RichText::new("Hole-only sizing ignores bushing ID and wall requirements.").small().color(p.dim));
+                }
+                return;
+            }
+            let m=&page.inputs.members[page.selected];
+            ui.label(RichText::new(format!("MEMBER {:02}",page.selected+1)).small().strong().color(p.dim));
+            if let Some(r)=page.result.as_ref().filter(|_|page.current).and_then(|r|r.layers.get(page.selected)) {
+                ui.label(RichText::new("FINAL CLEANED MEMBER HOLE").size(10.0).color(p.dim));
+                ui.label(RichText::new(format!("{:.5} in",r.final_hole.min)).size(27.0).strong().color(if matches!(r.status,Status::Feasible|Status::Informational) {p.accent} else {p.warn}));
+                self.targets.push((format!("Calculated hole {:.5}",r.final_hole.min),ui.min_rect()));
+                ui.label(RichText::new(format!("Angularity-only cleanup {:.5} in",r.cleanup_diameter)).small().color(p.dim));
+                if let Some(reason)=&r.enlargement_reason {ui.label(RichText::new(format!("ENLARGED · {reason}")).small().color(p.warn));}
+                ui.label(RichText::new(format!("{:?} · {}",r.status,r.governing)).small().color(p.dim));
+            } else {
+                ui.label(RichText::new("Finish editing to update results").small().color(p.warn));
+            }
+            ui.add_space(10.0);
+            ui.separator();
+            self.precision_fields(ui,doc,&[10,11,12],p,out,hint);
+            ui.label(RichText::new("HOLE ORIENTATION").small().strong().color(p.dim));
+            self.precision_fields(ui,doc,&[19,20,21,22,23,24],p,out,hint);
+            let datum=ui.collapsing("Datum direction", |ui| {self.precision_fields(ui,doc,&[18],p,out,hint);});
+            self.targets.push(("Datum direction".into(),datum.header_response.rect));
+            if datum.header_response.clicked() && !page.current {send(out,StackupAct::Recalculate);}
+            let dimensions=ui.collapsing("Dimensions & machining limits", |ui| {self.precision_fields(ui,doc,&[13,14,30,31,15,16,17],p,out,hint);});
+            self.targets.push(("Dimensions & machining limits".into(),dimensions.header_response.rect));
+            if dimensions.header_response.clicked() && !page.current {send(out,StackupAct::Recalculate);}
+            if page.inputs.bushing_enabled {
+                let bushing=ui.collapsing("Member bushing requirements", |ui| {
+                    self.precision_switch(ui,doc,StackupAct::WallMode,p,out,hint);
+                    self.precision_fields(ui,doc,&[25,28,29,26,27],p,out,hint);
+                    if m.imported_wall.is_some() {
+                        ui.label(RichText::new("IMPORTED WALL POLICY").small().strong().color(p.dim));
+                        for a in [StackupAct::AdoptImported,StackupAct::ClassifyImported(bushing_solver::stackup::WallMode::Required),StackupAct::ClassifyImported(bushing_solver::stackup::WallMode::Informational)] {
+                            self.precision_switch(ui,doc,a,p,out,hint);
                         }
                     }
                 });
-                if let Some(entry) = doc.buttons.iter().find(|e| e.label == "Send to Bushing") {
-                    ui.add_space(12.0);
-                    self.doc_button(ui, entry, p, out, hint, false);
+                self.targets.push(("Member bushing requirements".into(),bushing.header_response.rect));
+                if bushing.header_response.clicked() && !page.current {send(out,StackupAct::Recalculate);}
+                if let Some(entry)=doc.buttons.iter().find(|e|e.label == "Send to Bushing") {
+                    ui.add_space(10.0);
+                    self.doc_button(ui,entry,p,out,hint,false);
                 }
-            });
+            }
+        });
     }
     fn precision_results(
         &mut self,
@@ -573,32 +482,58 @@ impl Gui {
             });
         });
         ui.horizontal_wrapped(|ui| {
-            ui.selectable_value(&mut self.doc.precision.exploded, false, "Fitted");
-            ui.selectable_value(&mut self.doc.precision.exploded, true, "Exploded");
-            ui.add(
-                egui::Slider::new(&mut self.doc.precision.spacing, 0.15..=1.0)
+            for (label, value) in [("Fitted", 0.0), ("Exploded", 1.0)] {
+                let response = ui.selectable_label(self.doc.precision.explosion == value, label);
+                self.targets.push((label.into(), response.rect));
+                if response.clicked() {
+                    self.doc.precision.explosion = value;
+                }
+            }
+            let response = ui.add(
+                egui::Slider::new(&mut self.doc.precision.explosion, 0.0..=1.0)
                     .show_value(false)
-                    .text("Separation"),
+                    .text("Explosion"),
             );
+            self.targets
+                .push(("Explosion slider".into(), response.rect));
+            let response = ui.label(
+                RichText::new(format!("{:.0}%", self.doc.precision.explosion * 100.0))
+                    .small()
+                    .color(p.dim),
+            );
+            self.targets.push((
+                format!("Explosion {:.0}%", self.doc.precision.explosion * 100.0),
+                response.rect,
+            ));
         });
-        let (rect, response) = ui.allocate_exact_size(
-            Vec2::new(ui.available_width(), (height - 85.0).max(150.0)),
-            Sense::click(),
+        ui.label(
+            RichText::new("Drag upward to separate · downward to assemble")
+                .size(10.0)
+                .color(p.dim),
         );
+        let (rect, response) = ui.allocate_exact_size(
+            Vec2::new(ui.available_width(), (height - 120.0).max(150.0)),
+            Sense::click_and_drag(),
+        );
+        self.targets.push(("Stack geometry drag".into(), rect));
+        if response.dragged() {
+            self.doc.precision.explosion = (self.doc.precision.explosion
+                - ui.input(|input| input.pointer.delta().y) / rect.height())
+            .clamp(0.0, 1.0);
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        } else if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
         let Some(result) = page.result.as_ref().filter(|_| page.current) else {
             ui.painter_at(rect).text(
                 rect.center(),
                 Align2::CENTER_CENTER,
-                "Recalculate to update the geometry",
+                "Finish editing to update geometry",
                 FontId::proportional(14.0),
                 p.dim,
             );
             return;
         };
-        let progress = ui
-            .ctx()
-            .animate_bool(Id::new("precision-explode"), self.doc.precision.exploded)
-            as f64;
         paint_solids(
             ui,
             rect,
@@ -606,19 +541,26 @@ impl Gui {
             response.clicked(),
             page,
             result,
-            progress,
-            self.doc.precision.spacing as f64,
+            self.doc.precision.explosion as f64,
             self.doc.precision.zoom,
             p,
             out,
         );
-        ui.label(
-            RichText::new("Translucent members · amber original hole · blue cleaned hole · display offsets only")
-                .size(10.0)
-                .color(p.dim),
-        );
+        ui.horizontal_wrapped(|ui| {
+            for (label, color) in [("Finished axis", p.accent), ("Original axis", p.warn)] {
+                let response =
+                    ui.label(RichText::new(format!("━ {label}")).size(10.0).color(color));
+                self.targets.push((label.into(), response.rect));
+            }
+            ui.label(
+                RichText::new("Translucent members · display offsets only")
+                    .size(10.0)
+                    .color(p.dim),
+            );
+        });
     }
 }
+
 fn explosion_offsets(
     solids: &[SolidLayer],
     bushing: bool,
@@ -651,7 +593,6 @@ fn paint_solids(
     page: &PrecisionPage,
     result: &ResultSet,
     progress: f64,
-    spacing: f64,
     zoom: f32,
     p: &Palette,
     out: &mut Vec<Outcome>,
@@ -660,7 +601,7 @@ fn paint_solids(
         .inputs
         .members
         .iter()
-        .map(|m| m.member_depth * 0.25 + m.member_width * 0.12 + 0.1 + spacing * 0.25)
+        .map(|m| m.member_depth * 0.25 + m.member_width * 0.12 + 0.25)
         .fold(0.0, f64::max);
     let offsets = explosion_offsets(&result.solids, page.inputs.bushing_enabled, gap, progress);
     let project = |v: [f64; 3]| [v[0] * 0.9 + v[1] * 0.45, v[2] + v[1] * 0.25 - v[0] * 0.12];
@@ -669,7 +610,8 @@ fn paint_solids(
     };
     let mut low = [f64::INFINITY; 2];
     let mut high = [f64::NEG_INFINITY; 2];
-    for (solid, offset) in result.solids.iter().zip(&offsets) {
+    let frame_offsets = explosion_offsets(&result.solids, page.inputs.bushing_enabled, gap, 1.0);
+    for (solid, offset) in result.solids.iter().zip(&frame_offsets) {
         for (points, dz) in [
             (solid.body.as_slice(), offset[0]),
             (solid.hole[0].as_slice(), offset[1]),
@@ -684,8 +626,8 @@ fn paint_solids(
             }
         }
     }
-    let scale = ((rect.width() - 55.0) as f64 / (high[0] - low[0]).max(0.001))
-        .min((rect.height() - 32.0) as f64 / (high[1] - low[1]).max(0.001))
+    let scale = ((rect.width() - 110.0) as f64 / (high[0] - low[0]).max(0.001))
+        .min((rect.height() - 60.0) as f64 / (high[1] - low[1]).max(0.001))
         * zoom as f64;
     let center = [low[0] / 2.0 + high[0] / 2.0, low[1] / 2.0 + high[1] / 2.0];
     let pixel = |v: [f64; 3], solid: &SolidLayer, dz: f64| {
@@ -696,6 +638,62 @@ fn paint_solids(
         )
     };
     let painter = ui.painter_at(rect);
+    let axis_center = |ring: &Vec<[f64; 3]>| {
+        let n = ring.len() as f64;
+        ring.iter().fold([0.0; 3], |mut sum, point| {
+            for k in 0..3 {
+                sum[k] += point[k] / n;
+            }
+            sum
+        })
+    };
+    let first = &result.solids[0];
+    let last = result.solids.last().unwrap();
+    let first_offset = offsets[0];
+    let last_offset = *offsets.last().unwrap();
+    let start = pixel(
+        axis_center(&first.hole[0]),
+        first,
+        first_offset[0].min(first_offset[1]) - gap * 0.2,
+    );
+    let end = pixel(
+        axis_center(&last.hole[1]),
+        last,
+        last_offset[0].max(last_offset[1]) + gap * 0.2,
+    );
+    painter.line_segment([start, end], Stroke::new(1.2, with_alpha(p.accent, 200)));
+    painter.text(
+        start + Vec2::new(6.0, -8.0),
+        Align2::LEFT_BOTTOM,
+        "Finished axis",
+        FontId::proportional(10.0),
+        p.accent,
+    );
+    for (solid, offset) in result.solids.iter().zip(&offsets) {
+        let a = pixel(axis_center(&solid.original_hole[0]), solid, offset[0]);
+        let b = pixel(axis_center(&solid.original_hole[1]), solid, offset[0]);
+        for k in (0..12).step_by(2) {
+            painter.line_segment(
+                [a.lerp(b, k as f32 / 12.0), a.lerp(b, (k + 1) as f32 / 12.0)],
+                Stroke::new(1.2, with_alpha(p.warn, 220)),
+            );
+        }
+    }
+    let triad = rect.left_bottom() + Vec2::new(20.0, -55.0);
+    for (delta, label, color) in [
+        (Vec2::new(30.0, -4.0), "+X", p.warn),
+        (Vec2::new(15.0, 8.0), "+Y", p.dim),
+        (Vec2::new(0.0, 30.0), "+Z", p.accent),
+    ] {
+        painter.arrow(triad, delta, Stroke::new(1.0, color));
+        painter.text(
+            triad + delta,
+            Align2::LEFT_CENTER,
+            label,
+            FontId::proportional(9.0),
+            color,
+        );
+    }
     for (index, (solid, offset)) in result.solids.iter().zip(&offsets).enumerate() {
         let selected = index == page.selected;
         let edge = if selected { p.accent } else { p.dim };
@@ -857,6 +855,11 @@ mod tests {
         let mut input = bushing_solver::stackup::Inputs::default();
         input.bushing_enabled = true;
         input.members.push(bushing_solver::stackup::Member::new(3));
+        input.members[1].thickness = 0.25;
+        input.members[2].thickness = 0.75;
+        for member in &mut input.members {
+            member.reference_normal_deg = 7.0;
+        }
         let r = bushing_solver::stackup::calculate(&input).unwrap();
         for gap in [0.1, 0.5, 1.0] {
             for step in 0..=100 {

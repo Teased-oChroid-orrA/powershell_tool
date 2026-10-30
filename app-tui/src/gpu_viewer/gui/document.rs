@@ -562,7 +562,7 @@ impl Gui {
         if text != input.text {
             out.push(Outcome::DocField { id: input.id, text });
         }
-        if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        if r.lost_focus() && (input.commit_on_blur || ui.input(|i| i.key_pressed(egui::Key::Enter))) {
             if let Some(a) = input.submit {
                 out.push(Outcome::Action(a));
             }

@@ -119,7 +119,7 @@ impl StackupSession {
             input_revision: 0,
             result_revision: None,
             result: Err("Recalculate to evaluate geometry".into()),
-            status: "Configure geometry, then Recalculate. Inches and degrees.".into(),
+            status: "Inputs recalculate on Enter or leaving a field. Inches and degrees.".into(),
         };
         s.recalculate();
         Ok(s)
@@ -130,7 +130,7 @@ impl StackupSession {
     fn changed(&mut self) {
         self.input_revision += 1;
         self.dirty = true;
-        self.status = "Inputs modified. Results stale; Recalculate before transfer.".into();
+        self.status = "Editing inputs. Press Enter or leave the field to update results.".into();
     }
     fn recalculate(&mut self) {
         if self.drafts.iter().any(|((_, id), text)| {
@@ -217,8 +217,14 @@ impl StackupSession {
             }
             .into(),
             error: (!valid).then(|| "Finite numeric value required".into()),
-            note: None,
-            submit: None,
+            note: match id {
+                4 => Some("Axial distance from stack entrance. For 1 in thickness: 0 = entry, 0.5 = midpoint, 1 = exit.".into()),
+                5 => Some("Maximum relative separation of the original and finished axis centers at the pilot; radial distance.".into()),
+                18 => Some("Angular datum measured from +Z toward +X. 0.5 means 0.5 degrees, not a position through the thickness.".into()),
+                _ => None,
+            },
+            submit: Some(action(StackupAct::Recalculate)),
+            commit_on_blur: true,
             grow: 1.0,
             trailing: None,
             help: None,
@@ -412,6 +418,7 @@ impl StackupSession {
             _ => return,
         }
         self.changed();
+        self.recalculate();
     }
     fn drawing(&self, r: &ResultSet) -> DocDrawing {
         let mut paths = Vec::new();
@@ -695,8 +702,16 @@ impl Authoring for StackupSession {
             } else {
                 Err("Keep one member".into())
             }),
-            btn("Up", StackupAct::Up),
-            btn("Down", StackupAct::Down),
+            btn("Up", StackupAct::Up).when(if self.selected > 0 {
+                Ok(())
+            } else {
+                Err("Already first".into())
+            }),
+            btn("Down", StackupAct::Down).when(if self.selected + 1 < self.inputs.members.len() {
+                Ok(())
+            } else {
+                Err("Already last".into())
+            }),
             btn("Save", StackupAct::Save),
         ];
         buttons.push(btn("Send to Bushing", StackupAct::Send).when(self.transfer_availability()));
@@ -705,8 +720,8 @@ impl Authoring for StackupSession {
             (1, "Bushing ID min (in)"),
             (2, "Bushing ID max (in)"),
             (3, "Common wall default (in); blank disables"),
-            (4, "Pilot z from entry (in)"),
-            (5, "Pilot relative center separation max (in, radius)"),
+            (4, "Pilot position from stack entrance (in)"),
+            (5, "Pilot center offset limit (in, radial)"),
         ];
         if !self.inputs.bushing_enabled {
             global.retain(|(id, _)| *id >= 4);
@@ -722,7 +737,7 @@ impl Authoring for StackupSession {
             (15, "Machining diameter minimum (in)"),
             (16, "Machining diameter maximum (in)"),
             (17, "Final hole tolerance + (in)"),
-            (18, "Outer reference normal +x from +z (deg)"),
+            (18, "Datum normal angle (deg)"),
             (25, "Wall override (in); blank inherits"),
             (26, "Housing material ID"),
             (27, "Bushing material ID"),
@@ -731,8 +746,8 @@ impl Authoring for StackupSession {
         ];
         match self.inputs.mode {
             AngularityMode::Degrees => member.extend([
-                (19, "Original angular deviation ± (deg)"),
-                (20, "Finished angular deviation ± (deg)"),
+                (19, "Original hole angularity ± (deg)"),
+                (20, "Finished hole angularity ± (deg)"),
             ]),
             AngularityMode::CylindricalZone => member.extend([
                 (21, "Original orientation zone diameter (in)"),
@@ -837,7 +852,7 @@ impl Authoring for StackupSession {
         });
         if !self.current() {
             doc.table.empty_title = "Results stale".into();
-            doc.table.empty_body="Recalculate after all edits. Previous geometry is hidden to prevent mixing revisions.".into();
+            doc.table.empty_body="Press Enter or leave the input field to update. Previous geometry is hidden while editing.".into();
             return Some(doc);
         }
         let Ok(r) = &self.result else {
@@ -1065,8 +1080,7 @@ mod tests {
         let id = s.inputs.members[0].id;
         s.act_stackup(StackupAct::Down);
         assert_eq!(s.inputs.members[1].id, id);
-        assert!(!s.current());
-        s.recalculate();
+        assert!(s.current());
         let revision = s.result_revision;
         assert_eq!(s.document().unwrap().table.rows.len(), 2);
         s.document();

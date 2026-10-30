@@ -268,6 +268,8 @@ pub struct DocInput {
     /// A line under the input that explains what it will do (the parsed filter groups).
     pub note: Option<String>,
     pub submit: Option<UiAction>,
+    /// Also submit when the field loses focus, for calculations with committed edits.
+    pub commit_on_blur: bool,
     /// Share of the bar's width (inputs split the room left by the buttons in these proportions).
     pub grow: f32,
     /// A button drawn inside the input's right end (Browse).
