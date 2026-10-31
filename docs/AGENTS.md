@@ -258,6 +258,7 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Phase 153 surface-constrained fillet prototype](issue-46-phase-153.md): PLC recovery preserves this fillet shell but five cells still fail the unchanged solver-quality gate.
 - [Phase 154 tangent face selection](issue-46-phase-154.md): the 0.85 mm out-of-box fillet node is fixed without losing any of the 36 non-NEMA mesh gates; the 1 mm seam-area failure remains.
 - [Phase 155 seam alignment](issue-46-phase-155.md): nearby straddling boundary vertices move onto proven CAD seams before Tet10 construction; the 1 mm fillet area and traction gates pass on both surface paths.
+- [Phase 156 spline-edge grading](issue-46-phase-156.md): the ABC `00006600` chart-overlap refusal is cleared by midpoint splitting on spline edges; PLC quality and retirement remain open.
 
 - [Phase 41: whole-interval planar spline p-curve bounds](issue-46-phase-41.md): source/budget guards and explicit unit qualification.
 

@@ -83,6 +83,12 @@ impl AnalyticModel {
                 .map(|e| model.edge_points(*e).unwrap().len())
                 .sum();
             for (edge, splits) in wanted {
+                // Bisect spline parameter intervals instead of using a chart split arbitrarily near an endpoint.
+                let splits: Vec<_> = if model.edge_is_spline(edge) {
+                    splits.into_iter().map(|(segment, _)| (segment, 0.5)).collect()
+                } else {
+                    splits
+                };
                 model.insert_edge_splits(edge, &splits)?;
             }
             let after: usize = model

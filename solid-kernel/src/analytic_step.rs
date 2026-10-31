@@ -1147,6 +1147,9 @@ fn on_surface(e: &Entity, s: &Surface, c: &Curve, a: V3, b: V3, tol: f64) -> Res
     }
 }
 impl AnalyticModel {
+    pub(crate) fn edge_is_spline(&self, edge: u64) -> bool {
+        matches!(self.curves.get(&edge), Some(Curve::Spline { .. }))
+    }
     /// Insert extra samples into one edge: `(segment, t)` puts a point at fraction `t` of segment `segment` (between samples
     /// `segment` and `segment + 1`), on the edge's own curve (a line is interpolated, a circle by angle).
     pub(crate) fn insert_edge_splits(
