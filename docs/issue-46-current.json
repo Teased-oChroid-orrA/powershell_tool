@@ -93,10 +93,11 @@
   "latest_increment_tests": {
     "commands": [
       "cargo test -p solid-kernel -p fea-core --release --locked --offline -j1 --no-fail-fast",
-      "ABC_GRADED_FIRST=1 cargo run --release --locked --offline -p solid-kernel --no-default-features --example abc-corpus -- --one <00006600 file> --foreign --graded --conform-timeout 0 (A/B against the previous chart_grade.rs)"
+      "ABC_GRADED_FIRST=1 cargo run --release --locked --offline -p solid-kernel --no-default-features --example abc-corpus -- --one <00006600 file> --foreign --graded --conform-timeout 0 (A/B against the previous chart_grade.rs)",
+      "python scripts/qualify.py --jobs 2 [--cad] (hosted Workbench qualification run 41202228645 at eecb33b)"
     ],
     "result": "passed",
-    "platform": "Local macOS arm64, release, serial Cargo: 918 passed / 0 failed / 41 ignored, no warnings; ABC 00006600 previous code refuses at grade (bound #1066 segment 156 overlap), change reaches a 327-face shell (min angle 0.0855 deg) before intentional PLC cancellation. Merged by owner instruction before the hosted qualification run finished",
+    "platform": "Local macOS arm64, release, serial Cargo: 918 passed / 0 failed / 41 ignored, no warnings; ABC 00006600 previous code refuses at grade (bound #1066 segment 156 overlap), change reaches a 327-face shell (min angle 0.0855 deg) before intentional PLC cancellation. Hosted run 41202228645 (finished after the owner-requested merge): ubuntu-latest and macos-latest 3148 passed / 0 failed / 117 ignored, windows-latest 3113 passed / 0 failed / 110 ignored",
     "at": "eecb33b",
     "corpus": "issue-46-abc-corpus-2026-10-18.md"
   },
