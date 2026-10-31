@@ -39,9 +39,9 @@ def source_state():
     status = subprocess.check_output(['git', 'status', '--porcelain'], cwd=root)
     diff = subprocess.check_output(['git', 'diff', '--no-ext-diff', '--no-textconv', '--binary', 'HEAD'], cwd=root)
     digest = hashlib.sha256(commit.encode() + b'\0' + status + b'\0' + diff).hexdigest()
-    return commit, bool(status.strip()), digest
+    return commit, bool(status.strip()), digest, status
 
-starting_commit, starting_dirty, starting_state = source_state()
+starting_commit, starting_dirty, starting_state, starting_status = source_state()
 report = {'commit': starting_commit, 'platform': sys.platform, 'dirty': starting_dirty, 'scope': args.scope, 'checks': []}
 failed = False
 for command in commands:
@@ -50,11 +50,12 @@ for command in commands:
     result = subprocess.run(command, cwd=root)
     failed |= result.returncode != 0
     report['checks'].append({'command': command, 'exit_code': result.returncode, 'seconds': time.monotonic() - started})
-ending_commit, ending_dirty, ending_state = source_state()
+ending_commit, ending_dirty, ending_state, ending_status = source_state()
 report.update(ending_commit=ending_commit, ending_dirty=ending_dirty, source_changed=starting_state != ending_state)
 failed |= report['source_changed']
 if report['source_changed']:
     print('Source changed during qualification; results are not a stable-revision qualification.', file=sys.stderr)
+    print(f"Before: {starting_status.decode(errors='replace')!r}\nAfter: {ending_status.decode(errors='replace')!r}", file=sys.stderr)
 report['passed'] = not failed
 pathlib.Path(args.output).write_text(json.dumps(report, indent=2) + '\n')
 sys.exit(1 if failed else 0)

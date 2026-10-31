@@ -38,7 +38,7 @@ fn face_with_z(p: &Problem, sign: f64) -> usize {
 fn the_flat_face_next_to_tangent_fillets_is_tagged_with_its_own_area_and_no_vertex_leaves_the_solid() {
     let mut p = rounded_box();
     let top = face_with_z(&p, 1.0);
-    for (h, tolerance) in [(1.356, 0.025), (1.0, 0.005), (0.85, 0.005)] {
+    for (h, tolerance) in [(1.356, 0.025), (1.0, 0.001), (0.85, 0.005)] {
         p.mesh = MeshSpec { size: h, ..p.mesh.clone() };
         let (mesh, _) = solid_mesh(&p).unwrap();
         // No boundary vertex outside the box [0,12] x [0,14] x [0,16] (the old spike: z = 17.4 at h = 1).
@@ -48,10 +48,20 @@ fn the_flat_face_next_to_tangent_fillets_is_tagged_with_its_own_area_and_no_vert
             assert!((-slack..=12.0 + slack).contains(&v[0]) && (-slack..=14.0 + slack).contains(&v[1]) && (-slack..=16.0 + slack).contains(&v[2]), "h {h}: node {v:?} is outside the solid");
         }
         let area: f64 = mesh.surfaces[&format!("face{top}")].iter().map(|f| tri_area(&mesh.nodes, f)).sum();
-        // Measured -1.75 % (h 1.356, one and a half elements per radius), 0.00 % (1.0), -0.28 % (0.85): the remainder is the
+        // Measured -1.75 % (h 1.356, one and a half elements per radius), <=0.06 % (1.0), -0.36 % (0.85): the remainder is the
         // facets of the boundary mesh at the rim, never a strip of fillet.
         assert!((area / TOP_AREA - 1.0).abs() < tolerance, "h {h}: tagged area {area} against the exact {TOP_AREA}");
     }
+}
+
+#[test]
+fn the_fillet_rim_at_085_stays_inside_the_solid() {
+    let mut p = rounded_box();
+    p.mesh = MeshSpec { size: 0.85, ..p.mesh };
+    let (mesh, _) = solid_mesh(&p).unwrap();
+    let slack = 0.03 * 0.85;
+    let outside = mesh.nodes.iter().find(|v| !(-slack..=12.0 + slack).contains(&v[0]) || !(-slack..=14.0 + slack).contains(&v[1]) || !(-slack..=16.0 + slack).contains(&v[2]));
+    assert!(outside.is_none(), "node {outside:?} is outside the solid");
 }
 
 #[test]

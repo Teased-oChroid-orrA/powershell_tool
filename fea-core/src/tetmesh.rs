@@ -554,7 +554,6 @@ pub fn mesh_solid_reported(s: &Solid, mat: Elastic, opts: TetOptions) -> Result<
     // Snap boundary vertices onto the surface, refusing a step that flattens or badly degrades a neighbour, and smooth the
     // interior between passes so the layer next to the surface has room. Nearest-to-the-surface first: a vertex that is
     // almost there moves with little disturbance and gives its neighbours room; the far ones follow in later passes.
-    let (mut snapped, mut refused) = (0, 0);
     if opts.snap {
         // Round 0 snaps and smooths; the boundary layer is then reconnected (interior flips and smoothing only, so the surface
         // faces are untouched) and round 1 snaps again: boundary-layer slivers were what kept vertices from the surface.
@@ -654,14 +653,6 @@ pub fn mesh_solid_reported(s: &Solid, mat: Elastic, opts: TetOptions) -> Result<
         // Reconnection may have replaced the tetrahedron behind a boundary face: refresh each face's interior-side vertex (the
         // faces themselves are unchanged), which the outward orientation of the named faces is taken from.
         boundary = boundary_of(&tet);
-        // What ended on the surface and what did not.
-        for &v in &order {
-            if (s.sdf)(p[v]).abs() <= 0.02 * local[v] {
-                snapped += 1;
-            } else {
-                refused += 1;
-            }
-        }
     }
 
     // Boundary-layer repair: the snap leaves a few percent of the elements next to a curved surface flat.
@@ -673,48 +664,60 @@ pub fn mesh_solid_reported(s: &Solid, mat: Elastic, opts: TetOptions) -> Result<
             face_dists: s.face_dists,
             triangle_face: s.face_dists.map(|_| &classify as &dyn Fn([V3; 3]) -> usize),
         };
-        let (remap, rep) = crate::meshing::boundary_repair::repair(&mut p, &mut tet, &ctx, crate::meshing::boundary_repair::RepairOptions::default());
-        {
-            boundary = boundary_of(&tet);
-            on_boundary = vec![false; p.len()];
-            for (f, _) in &boundary {
-                for &v in f {
-                    on_boundary[v] = true;
-                }
-            }
-            let _ = remap;
-            // what ended on the surface, recounted (the repair slides and removes boundary vertices)
-            let mut longest = vec![0.0f64; p.len()];
-            for v in &tet {
-                for i in 0..4 {
-                    for j in i + 1..4 {
-                        let l = norm(sub(p[v[i]], p[v[j]]));
-                        longest[v[i]] = longest[v[i]].max(l);
-                        longest[v[j]] = longest[v[j]].max(l);
-                    }
-                }
-            }
-            snapped = 0;
-            refused = 0;
-            for v in 0..p.len() {
-                if on_boundary[v] {
-                    if (s.sdf)(p[v]).abs() <= 0.02 * longest[v].min(opts.boundary_size) {
-                        snapped += 1;
-                    } else {
-                        refused += 1;
-                    }
-                }
+        let (_remap, rep) = crate::meshing::boundary_repair::repair(&mut p, &mut tet, &ctx, crate::meshing::boundary_repair::RepairOptions::default());
+        boundary = boundary_of(&tet);
+        on_boundary = vec![false; p.len()];
+        for (f, _) in &boundary {
+            for &v in f {
+                on_boundary[v] = true;
             }
         }
         repair_report = Some(rep);
     }
 
+    if opts.snap {
+        if let Some(fd) = s.face_dists {
+            align_near_seams(&mut p, &tet, &boundary, s.sdf, fd, opts.boundary_size);
+        }
+    }
+
+    let (mut snapped, mut refused) = (0, 0);
+    if opts.snap {
+        let mut longest = vec![0.0f64; p.len()];
+        for v in &tet {
+            for i in 0..4 {
+                for j in i + 1..4 {
+                    let l = norm(sub(p[v[i]], p[v[j]]));
+                    longest[v[i]] = longest[v[i]].max(l);
+                    longest[v[j]] = longest[v[j]].max(l);
+                }
+            }
+        }
+        for (v, &boundary_vertex) in on_boundary.iter().enumerate() {
+            if boundary_vertex {
+                if (s.sdf)(p[v]).abs() <= 0.02 * longest[v].min(opts.boundary_size) {
+                    snapped += 1;
+                } else {
+                    refused += 1;
+                }
+            }
+        }
+    }
+
     // Report.
     let mut total = 0.0;
     let mut worst = f64::INFINITY;
+    let mut repair_min_sj = f64::INFINITY;
+    let mut repair_bad = 0;
+    let repair_gate = crate::meshing::quality::QualityThresholds::default().min_scaled_jacobian;
     for v in &tet {
         let vol = volume(&p, *v);
         total += vol;
+        if repair_report.is_some() {
+            let sj = crate::meshing::boundary_repair::scaled_jacobian(&p, *v);
+            repair_min_sj = repair_min_sj.min(sj);
+            repair_bad += usize::from(sj < repair_gate);
+        }
         let mut sum = 0.0;
         for i in 0..4 {
             for j in i + 1..4 {
@@ -727,6 +730,11 @@ pub fn mesh_solid_reported(s: &Solid, mat: Elastic, opts: TetOptions) -> Result<
     }
     if worst <= 0.0 {
         return Err("the mesh has an inverted or flat tetrahedron: the size is too coarse for the boundary".into());
+    }
+    if let Some(rep) = &mut repair_report {
+        rep.min_sj_after = repair_min_sj;
+        rep.bad_after = repair_bad;
+        rep.volume_after = total;
     }
 
     // Build the mesh.
@@ -868,7 +876,15 @@ fn reentrant_edge(fd: &dyn Fn(V3) -> Vec<FaceHit>, sdf: &dyn Fn(V3) -> f64, y: V
 /// Project onto nearby faces, retaining a single patch at a proven reentrant edge.
 fn snap_to_features(fd: &dyn Fn(V3) -> Vec<FaceHit>, sdf: &dyn Fn(V3) -> f64, x: V3, edge_reach: f64, reach: f64, eps: f64) -> Option<V3> {
     let hits = fd(x);
-    let mut active: Vec<usize> = hits.iter().filter(|h| h.dist.abs() < edge_reach || (h.dist > 0.0 && h.dist < reach)).map(|h| h.face).collect();
+    let surface_dist = sdf(x).abs();
+    // The wide positive reach finds a nearby bore, but a distant tangent face must not pull the vertex off its patch.
+    let mut active: Vec<usize> = hits.iter().filter(|h| {
+        if h.dist > 0.0 {
+            h.dist < reach && (surface_dist <= eps || h.dist <= surface_dist + eps)
+        } else {
+            h.dist.abs() < edge_reach
+        }
+    }).map(|h| h.face).collect();
     if active.is_empty() {
         let nearest = hits.iter().filter(|h| h.dist.abs() < reach).min_by(|a, b| a.dist.abs().total_cmp(&b.dist.abs()))?;
         active.push(nearest.face);
@@ -895,6 +911,85 @@ fn snap_to_features(fd: &dyn Fn(V3) -> Vec<FaceHit>, sdf: &dyn Fn(V3) -> f64, x:
         }
     }
     Some(y)
+}
+
+/// Pull only a boundary vertex that makes a triangle straddle two CAD patches onto their nearby shared seam.
+/// The move is judged on every incident surface triangle and tetrahedron before Tet10 midsides are constructed.
+fn align_near_seams(p: &mut [V3], tet: &[[usize; 4]], boundary: &[([usize; 3], usize)], sdf: &dyn Fn(V3) -> f64, fd: &dyn Fn(V3) -> Vec<FaceHit>, size: f64) {
+    use std::collections::{BTreeMap, BTreeSet};
+    let tol = FACE_TOL * size;
+    let min_sj = crate::meshing::quality::QualityThresholds::default().min_scaled_jacobian;
+    let on = |hits: &[FaceHit]| -> BTreeSet<usize> { hits.iter().filter(|h| h.dist.abs() <= tol).map(|h| h.face).collect() };
+    let mut surface_at = vec![Vec::new(); p.len()];
+    let mut cells_at = vec![Vec::new(); p.len()];
+    for (i, &(f, _)) in boundary.iter().enumerate() {
+        for v in f { surface_at[v].push(i); }
+    }
+    for (i, t) in tet.iter().enumerate() {
+        for &v in t { cells_at[v].push(i); }
+    }
+    let mut proposals: BTreeMap<usize, (f64, V3)> = BTreeMap::new();
+    for &(f, _) in boundary {
+        let hits = f.map(|v| fd(p[v]));
+        let members = hits.each_ref().map(|h| on(h));
+        if !members[0].intersection(&members[1]).any(|face| members[2].contains(face)) {
+            for off in 0..3 {
+                let a = (off + 1) % 3;
+                let b = (off + 2) % 3;
+                for &target_face in members[a].intersection(&members[b]) {
+                    if members[off].contains(&target_face) { continue; }
+                    let Some(hit) = hits[off].iter().find(|h| h.face == target_face) else { continue };
+                    let Some(&source_face) = members[off].iter().next().filter(|_| members[off].len() == 1) else { continue };
+                    if source_face == target_face { continue; }
+                    let v = f[off];
+                    let local = cells_at[v].iter().flat_map(|&i| tet[i]).map(|u| norm(sub(p[u], p[v]))).fold(0.0, f64::max).min(size);
+                    let reach = OFF_SURFACE * local;
+                    if !(hit.dist.abs() > tol && hit.dist.abs() <= reach) { continue; }
+                    let foot = std::array::from_fn(|k| p[v][k] - hit.dist * hit.normal[k]);
+                    if foot.iter().any(|x| !x.is_finite()) || sdf(foot).abs() > 1e-3 * local { continue; }
+                    let at_foot = fd(foot);
+                    if [source_face, target_face].iter().any(|face| !at_foot.iter().any(|h| h.face == *face && h.dist.abs() <= 1e-3 * local)) { continue; }
+                    let travel = norm(sub(foot, p[v]));
+                    if travel > reach { continue; }
+                    let candidate = (travel, foot);
+                    if proposals.get(&v).is_none_or(|old| travel < old.0) { proposals.insert(v, candidate); }
+                }
+            }
+        }
+    }
+    for (v, (_, foot)) in proposals {
+        let before_faces: Vec<_> = surface_at[v].iter().map(|&i| {
+            let f = boundary[i].0;
+            let sets = f.map(|u| on(&fd(p[u])));
+            sets[0].intersection(&sets[1]).filter(|face| sets[2].contains(*face)).copied().collect::<BTreeSet<_>>()
+        }).collect();
+        let before_bad = before_faces.iter().filter(|owners| owners.is_empty()).count();
+        if before_bad == 0 { continue; }
+        let old_quality: Vec<_> = cells_at[v].iter().map(|&i| crate::meshing::boundary_repair::scaled_jacobian(p, tet[i])).collect();
+        let old = p[v];
+        p[v] = foot;
+        let mut after_bad = 0;
+        let mut preserved = true;
+        for (j, &i) in surface_at[v].iter().enumerate() {
+            let f = boundary[i].0;
+            let sets = f.map(|u| on(&fd(p[u])));
+            let owners: BTreeSet<_> = sets[0].intersection(&sets[1]).filter(|face| sets[2].contains(*face)).copied().collect();
+            after_bad += usize::from(owners.is_empty());
+            preserved &= before_faces[j].is_empty() || !before_faces[j].is_disjoint(&owners);
+            let triangle = |vertices: [V3; 3]| {
+                let [a, b, c] = vertices;
+                cross(sub(b, a), sub(c, a))
+            };
+            let n1 = triangle(f.map(|u| p[u]));
+            let n0 = triangle(f.map(|u| if u == v { old } else { p[u] }));
+            preserved &= dot(n0, n1) > 0.5 * norm(n0) * norm(n1) && (0.5..=2.0).contains(&(norm(n1) / norm(n0)));
+        }
+        let cells_ok = cells_at[v].iter().zip(old_quality).all(|(&i, before)| {
+            let after = crate::meshing::boundary_repair::scaled_jacobian(p, tet[i]);
+            after.is_finite() && after >= before.min(min_sj) - 1e-12
+        });
+        if after_bad >= before_bad || !preserved || !cells_ok { p[v] = old; }
+    }
 }
 
 /// The model face a boundary triangle belongs to: the one every vertex lies on (when the faces can be asked), else the
