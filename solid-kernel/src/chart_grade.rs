@@ -58,6 +58,11 @@ impl AnalyticModel {
         };
         let faces: Vec<u64> = model.body().faces.keys().copied().collect();
         for _ in 0..options.max_rounds {
+            // Each split segment is bisected on the edge's own curve (by parameter: arc angle, line or spline parameter), not
+            // split where the chart put its point. That point can lie arbitrarily near an end of the segment; repeated rounds
+            // then left samples nanometres apart, below the edge-to-face projection residual (a spline edge of ABC `00006600`
+            // refused as overlapping trim segments, and its circle edges carried about 57,000 such gaps that made the shell
+            // unmeshable). Bisection keeps every new sample at least a power-of-two part of its source segment.
             let mut wanted: BTreeMap<u64, Vec<(usize, f64)>> = BTreeMap::new();
             for &face in &faces {
                 let splits: Vec<BoundarySplit> = model.boundary_splits(
@@ -69,7 +74,7 @@ impl AnalyticModel {
                     options.max_points_per_face,
                 )?;
                 for s in splits {
-                    wanted.entry(s.edge).or_default().push((s.segment, s.t));
+                    wanted.entry(s.edge).or_default().push((s.segment, 0.5));
                 }
             }
             if wanted.is_empty() {
@@ -83,12 +88,6 @@ impl AnalyticModel {
                 .map(|e| model.edge_points(*e).unwrap().len())
                 .sum();
             for (edge, splits) in wanted {
-                // Bisect spline parameter intervals instead of using a chart split arbitrarily near an endpoint.
-                let splits: Vec<_> = if model.edge_is_spline(edge) {
-                    splits.into_iter().map(|(segment, _)| (segment, 0.5)).collect()
-                } else {
-                    splits
-                };
                 model.insert_edge_splits(edge, &splits)?;
             }
             let after: usize = model
@@ -111,5 +110,46 @@ impl AnalyticModel {
             }
         }
         Ok((model, report))
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analytic_step::Options;
+    use crate::step::{inventory, Limits};
+
+    /// Grading bisects every split segment (Phases 156-157). A chart-requested fraction near an end of a segment had left
+    /// samples of ABC `00006600` nanometres apart (a spline edge refused, its circle edges carried about 57,000 such gaps).
+    /// Every graded interval, measured in the edge's own parameter, must be a dyadic part of one source interval at a dyadic
+    /// offset.
+    #[test]
+    fn grading_bisects_every_split_segment() {
+        let data = inventory(include_str!("../tests/data/cross-bore-filleted.step"), Limits::default()).unwrap();
+        let model = AnalyticModel::read(&data, Options { geometry_tolerance_mm: 1e-4, ..Options::default() }).unwrap();
+        let (graded, _) = model
+            .graded(GradeOptions { policy: ChartPolicy::CanonicalizeWithinTolerance, ..GradeOptions::default() }, 50_000_000)
+            .unwrap();
+        let mut split_edges = 0;
+        for &edge in model.body().edges.keys() {
+            let (source, after) = (model.edge_sample_parameters(edge), graded.edge_sample_parameters(edge));
+            if after.len() > source.len() {
+                split_edges += 1;
+            }
+            for w in after.windows(2) {
+                let k = source.partition_point(|&u| u <= w[0] + 1e-12).clamp(1, source.len() - 1);
+                let (a, b) = (source[k - 1], source[k]);
+                let (size, offset) = ((w[1] - w[0]) / (b - a), (w[0] - a) / (w[1] - w[0]));
+                let depth = -size.log2();
+                assert!(
+                    w[1] <= b + 1e-9 * (b - a)
+                        && (size * 2f64.powi(depth.round() as i32) - 1.).abs() < 1e-6
+                        && (offset - offset.round()).abs() < 1e-6,
+                    "edge #{edge}: [{}, {}] is not a bisection of [{a}, {b}]",
+                    w[0],
+                    w[1]
+                );
+            }
+        }
+        assert!(split_edges > 0, "grading split no edge");
     }
 }

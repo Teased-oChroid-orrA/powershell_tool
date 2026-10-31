@@ -646,7 +646,6 @@ impl AnalyticModel {
                     outgoing.push(SegmentRef {
                         edge: usage.edge,
                         lower: if usage.forward { j } else { p.len() - 2 - j },
-                        ascending: usage.forward,
                     });
                 }
             }
@@ -656,9 +655,6 @@ impl AnalyticModel {
                 outgoing.reverse();
                 let n = outgoing.len();
                 outgoing.rotate_left(1 % n.max(1));
-                for o in &mut outgoing {
-                    o.ascending = !o.ascending;
-                }
             }
             if samples.len() != l.points.len() {
                 return Err(fail(
@@ -766,40 +762,31 @@ impl AnalyticModel {
             if next(a) != b {
                 continue;
             }
-            let (pa, pb, p) = (
-                inputs.vertices[a].chart,
-                inputs.vertices[b].chart,
-                v.data().chart,
-            );
+            let (pa, pb) = (inputs.vertices[a].chart, inputs.vertices[b].chart);
             let length = ((pb[0] - pa[0]).powi(2) + (pb[1] - pa[1]).powi(2)).sqrt();
             if length < 2. * floor_mm || length == 0. {
                 continue;
             }
-            let t = ((p[0] - pa[0]).powi(2) + (p[1] - pa[1]).powi(2)).sqrt() / length;
             let seg = inputs.segments[a];
             out.push(BoundarySplit {
                 edge: seg.edge,
                 segment: seg.lower,
-                t: if seg.ascending { t } else { 1. - t },
             });
         }
         Ok(out)
     }
 }
-/// A refinement point on segment `segment` (between edge samples `segment` and `segment + 1`) of `edge`, at fraction `t` of
-/// the way from the lower-index sample to the upper one.
+/// A segment (between edge samples `segment` and `segment + 1`) of `edge` that a face chart's refinement split. Only the
+/// segment is reported: where the chart put its point is not used (see [`AnalyticModel::graded`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct BoundarySplit {
     pub edge: u64,
     pub segment: usize,
-    pub t: f64,
 }
 #[derive(Debug, Clone, Copy)]
 struct SegmentRef {
     edge: u64,
     lower: usize,
-    /// Whether the traversal runs from the lower-index sample to the upper one.
-    ascending: bool,
 }
 struct ChartInputs {
     loops: Vec<TrimLoop>,

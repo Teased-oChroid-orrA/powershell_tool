@@ -1146,9 +1146,48 @@ fn on_surface(e: &Entity, s: &Surface, c: &Curve, a: V3, b: V3, tol: f64) -> Res
         Ok(())
     }
 }
+/// The angle of `a` on a circle or an ellipse and the signed angle from `a` to `b` (the shorter way round); `None` for other
+/// curves.
+fn arc_step(curve: &Curve, a: V3, b: V3) -> Option<(f64, f64)> {
+    let angle = |p: V3| match curve {
+        Curve::Circle { frame, .. } => {
+            let d = sub(p, frame.origin);
+            Some(dot(d, frame.y).atan2(dot(d, frame.x)))
+        }
+        Curve::Ellipse { frame, major, minor } => {
+            let d = sub(p, frame.origin);
+            Some((dot(d, frame.y) / minor).atan2(dot(d, frame.x) / major))
+        }
+        _ => None,
+    };
+    let (a0, a1) = (angle(a)?, angle(b)?);
+    let mut delta = a1 - a0;
+    if delta > std::f64::consts::PI {
+        delta -= TAU;
+    } else if delta < -std::f64::consts::PI {
+        delta += TAU;
+    }
+    Some((a0, delta))
+}
 impl AnalyticModel {
-    pub(crate) fn edge_is_spline(&self, edge: u64) -> bool {
-        matches!(self.curves.get(&edge), Some(Curve::Spline { .. }))
+    /// The curve parameter of every sample of an edge, increasing from 0 at its first sample: the spline parameter (shifted),
+    /// the angle on a circle or an ellipse, the distance along a line.
+    #[cfg(test)]
+    pub(crate) fn edge_sample_parameters(&self, edge: u64) -> Vec<f64> {
+        let points = &self.edges[&edge];
+        let curve = &self.curves[&edge];
+        if let Curve::Spline { params, .. } = curve {
+            return params.iter().map(|u| (u - params[0]).abs()).collect();
+        }
+        let mut out = vec![0.];
+        for w in points.windows(2) {
+            let step = match curve {
+                Curve::Line { .. } => norm(sub(w[1], w[0])),
+                _ => arc_step(curve, w[0], w[1]).unwrap().1.abs(),
+            };
+            out.push(out.last().unwrap() + step);
+        }
+        out
     }
     /// Insert extra samples into one edge: `(segment, t)` puts a point at fraction `t` of segment `segment` (between samples
     /// `segment` and `segment + 1`), on the edge's own curve (a line is interpolated, a circle by angle).
@@ -1192,17 +1231,7 @@ impl AnalyticModel {
                 let p = match curve {
                     Curve::Line { .. } => add(mul(w[0], 1. - t), mul(w[1], t)),
                     Curve::Circle { frame, radius } => {
-                        let angle = |p: V3| {
-                            let d = sub(p, frame.origin);
-                            dot(d, frame.y).atan2(dot(d, frame.x))
-                        };
-                        let (a0, a1) = (angle(w[0]), angle(w[1]));
-                        let mut delta = a1 - a0;
-                        if delta > std::f64::consts::PI {
-                            delta -= TAU;
-                        } else if delta < -std::f64::consts::PI {
-                            delta += TAU;
-                        }
+                        let (a0, delta) = arc_step(curve, w[0], w[1]).unwrap();
                         let a = a0 + delta * t;
                         frame.point([radius * a.cos(), radius * a.sin(), 0.])
                     }
@@ -1211,17 +1240,7 @@ impl AnalyticModel {
                         major,
                         minor,
                     } => {
-                        let angle = |p: V3| {
-                            let d = sub(p, frame.origin);
-                            (dot(d, frame.y) / minor).atan2(dot(d, frame.x) / major)
-                        };
-                        let (a0, a1) = (angle(w[0]), angle(w[1]));
-                        let mut delta = a1 - a0;
-                        if delta > std::f64::consts::PI {
-                            delta -= TAU;
-                        } else if delta < -std::f64::consts::PI {
-                            delta += TAU;
-                        }
+                        let (a0, delta) = arc_step(curve, w[0], w[1]).unwrap();
                         let a = a0 + delta * t;
                         frame.point([major * a.cos(), minor * a.sin(), 0.])
                     }
