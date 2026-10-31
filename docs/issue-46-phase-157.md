@@ -10,7 +10,7 @@ Two mechanisms in `AnalyticModel::graded` produced those gaps. Faces sharing an 
 
 ## Change
 
-Grading keeps the chart's split fractions, and spline intervals are still bisected (Phase 156). A new sample is dropped if it would land nearer than the model's geometry tolerance to another sample of its segment: an existing end sample or a split already kept in that round. The edge and its faces only agree to within that tolerance, so closer samples carry no geometry, and their face-chart images can swap order (the Phase 156 overlap refusal). The rule is the model's own tolerance, not a new constant: 1e-7 mm by default, chord/10 for the foreign-CAD reading (0.005 mm at the 0.05 mm chord the ABC runs use), 1e-4 mm in the OCCT fillet tests. No existing sample is moved or merged.
+Grading keeps the chart's split fractions, and spline intervals are still bisected (Phase 156). A new sample is dropped if it would land nearer than the model's geometry tolerance to another sample of its segment: an existing end sample or a split already kept in that round. The edge and its faces only agree to within that tolerance, so closer samples carry no geometry, and their face-chart images can swap order (the Phase 156 overlap refusal). The rule is the model's own tolerance, not a new constant: 1e-7 mm by default, chord/10 for the foreign-CAD reading (0.005 mm at the 0.05 mm chord the ABC runs use), 1e-4 mm in the OCCT fillet tests. No existing sample is moved or merged. When every split a round asks for is dropped, nothing is inserted and `GradeReport::converged` stays false, as Phase 133 made it for any round that requests splits but inserts none: the faces still want those splits.
 
 `boundary_splits` now measures the floor on the world chord between the segment's two samples instead of the chart length. Sphere and torus charts are conformal, so chart lengths there are not millimetres (this answers the open question left by the Phase 157 candidate). The parity table below is identical with and without this change.
 
@@ -26,7 +26,7 @@ The first Phase 157 candidate (`03492e9`, never merged) bisected every requested
 
 ## Results
 
-New lib test `chart_grade::tests::grading_keeps_new_samples_a_geometry_tolerance_apart` grades four redistributable fillet/torus files with the foreign-CAD reading. It asserts that no new sample lies within half the geometry tolerance of its neighbour; the half allows for the chart fraction following the curve only to first order. With the spacing forced to zero the test fails (`cross-bore-filleted edge #1333: new samples 5.055e-4 mm apart (tolerance 0.005)`); with the rule it passes.
+New lib test `chart_grade::tests::grading_keeps_new_samples_a_geometry_tolerance_apart` grades four redistributable fillet/torus files with the foreign-CAD reading. It asserts that no new sample lies within the geometry tolerance of its neighbour (the closest is 17.5 tolerances apart). With the spacing forced to zero the test fails (`cross-bore-filleted edge #1496: new samples 2.89361229239061e-6 mm apart (tolerance 0.005)`); with the rule it passes.
 
 `cargo test -p solid-kernel -p fea-core --release --locked --offline -j1 --no-fail-fast` on macOS arm64: 919 passed, 0 failed, 41 ignored, no compiler warnings.
 

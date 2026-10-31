@@ -159,8 +159,7 @@ mod tests {
                 for w in after.windows(2) {
                     let original = source.windows(2).any(|s| s[0] == w[0] && s[1] == w[1]);
                     let gap = (0..3).map(|k| (w[1][k] - w[0][k]).powi(2)).sum::<f64>().sqrt();
-                    // The spacing is applied to the chart fraction, which follows the curve only to first order.
-                    assert!(original || gap >= 0.5 * tolerance, "{name} edge #{edge}: new samples {gap:e} mm apart (tolerance {tolerance})");
+                    assert!(original || gap >= tolerance, "{name} edge #{edge}: new samples {gap:e} mm apart (tolerance {tolerance})");
                 }
             }
         }
