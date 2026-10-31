@@ -172,8 +172,11 @@ fn grading_and_quality_refinement_lift_the_filleted_shells_without_changing_the_
         // the worst corners of these shells are on the tori and planes of the end fillets and on the acute ellipse edges of the
         // tilted hole (Phase 100/101 limits), not on a spline face; grading must not make the shell worse
         // (the plain shell can now be better than the graded one: with decimated spline edges its needles are gone, and the
-        // graded corner is the intrinsic one of the end fillets, 0.198 degrees on the filleted cross bore)
-        assert!(angle >= before.min(0.19), "{}: {before} -> {angle}", c.name);
+        // graded corner is the intrinsic one of the end fillets on the filleted cross bore). Phase 157 re-baselined this bound
+        // from 0.19 (owner decision): that corner was 0.198 degrees only while grading kept both faces' copies of each split of
+        // the small-angle cascade at the fillet end vertex, 2.9e-6 to 2e-8 mm apart under a 1e-4 mm geometry tolerance. With
+        // samples kept a geometry tolerance apart the same corner is 0.156 degrees.
+        assert!(angle >= before.min(0.15), "{}: {before} -> {angle}", c.name);
         if let Some(face) = c.spline_face {
             let worst = face_min_angle(&after, face);
             eprintln!("  spline face #{face}: worst corner {worst:.2} degrees");
