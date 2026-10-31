@@ -256,6 +256,7 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Phase 151 Windows dashboard startup](issue-46-phase-151.md): bare Windows executable opens the dashboard in a hosted launch check.
 - [Phase 152 fillet snap and seam evaluation](issue-46-phase-152.md): traces the out-of-box node to shared feature snapping and rejects two fallback rules after a native cross-bore quality regression; the seam-area gate remains open.
 - [Phase 153 surface-constrained fillet prototype](issue-46-phase-153.md): PLC recovery preserves this fillet shell but five cells still fail the unchanged solver-quality gate.
+- [Phase 154 tangent face selection](issue-46-phase-154.md): the 0.85 mm out-of-box fillet node is fixed without losing any of the 36 non-NEMA mesh gates; the 1 mm seam-area failure remains.
 
 - [Phase 41: whole-interval planar spline p-curve bounds](issue-46-phase-41.md): source/budget guards and explicit unit qualification.
 

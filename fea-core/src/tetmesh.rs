@@ -868,7 +868,15 @@ fn reentrant_edge(fd: &dyn Fn(V3) -> Vec<FaceHit>, sdf: &dyn Fn(V3) -> f64, y: V
 /// Project onto nearby faces, retaining a single patch at a proven reentrant edge.
 fn snap_to_features(fd: &dyn Fn(V3) -> Vec<FaceHit>, sdf: &dyn Fn(V3) -> f64, x: V3, edge_reach: f64, reach: f64, eps: f64) -> Option<V3> {
     let hits = fd(x);
-    let mut active: Vec<usize> = hits.iter().filter(|h| h.dist.abs() < edge_reach || (h.dist > 0.0 && h.dist < reach)).map(|h| h.face).collect();
+    let surface_dist = sdf(x).abs();
+    // The wide positive reach finds a nearby bore, but a distant tangent face must not pull the vertex off its patch.
+    let mut active: Vec<usize> = hits.iter().filter(|h| {
+        if h.dist > 0.0 {
+            h.dist < reach && (surface_dist <= eps || h.dist <= surface_dist + eps)
+        } else {
+            h.dist.abs() < edge_reach
+        }
+    }).map(|h| h.face).collect();
     if active.is_empty() {
         let nearest = hits.iter().filter(|h| h.dist.abs() < reach).min_by(|a, b| a.dist.abs().total_cmp(&b.dist.abs()))?;
         active.push(nearest.face);

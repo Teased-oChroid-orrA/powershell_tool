@@ -55,6 +55,16 @@ fn the_flat_face_next_to_tangent_fillets_is_tagged_with_its_own_area_and_no_vert
 }
 
 #[test]
+fn the_fillet_rim_at_085_stays_inside_the_solid() {
+    let mut p = rounded_box();
+    p.mesh = MeshSpec { size: 0.85, ..p.mesh };
+    let (mesh, _) = solid_mesh(&p).unwrap();
+    let slack = 0.03 * 0.85;
+    let outside = mesh.nodes.iter().find(|v| !(-slack..=12.0 + slack).contains(&v[0]) || !(-slack..=14.0 + slack).contains(&v[1]) || !(-slack..=16.0 + slack).contains(&v[2]));
+    assert!(outside.is_none(), "node {outside:?} is outside the solid");
+}
+
+#[test]
 fn a_uniform_traction_on_that_face_carries_the_closed_form_force() {
     let mut p = rounded_box();
     let (top, bottom) = (face_with_z(&p, 1.0), face_with_z(&p, -1.0));
