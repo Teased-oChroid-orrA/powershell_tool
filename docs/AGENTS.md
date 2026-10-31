@@ -254,6 +254,7 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Phase 149 NEMA17 boundary slide](issue-46-phase-149.md): preserves feature topology while reducing sub-gate cells to 10/9 on OCCT/native; the quality gate remains open.
 - [Phase 150 OCCT fillet seam diagnosis](issue-46-phase-150.md): crossing boundary triangles require seam-conforming volume topology before face tagging.
 - [Phase 151 Windows dashboard startup](issue-46-phase-151.md): bare Windows executable opens the dashboard in a hosted launch check.
+- [Phase 152 fillet snap and seam evaluation](issue-46-phase-152.md): traces the out-of-box node to shared feature snapping and rejects two fallback rules after a native cross-bore quality regression; the seam-area gate remains open.
 
 - [Phase 41: whole-interval planar spline p-curve bounds](issue-46-phase-41.md): source/budget guards and explicit unit qualification.
 
