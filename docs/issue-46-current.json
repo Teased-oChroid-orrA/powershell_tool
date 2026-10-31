@@ -3,7 +3,7 @@
   "epic_complete": false,
   "branch": "main",
   "pull_request": null,
-  "pull_request_state": "none_open_after_pr_193",
+  "pull_request_state": "none_open_after_pr_195",
   "merged_prs": [
     42,
     65,
@@ -80,24 +80,24 @@
     182,
     184,
     186,
-    193
+    193,
+    195
   ],
-  "latest_qualified_source": "91689ce04f559a758948f8811f8fdef9776b068d",
-  "latest_phase": 155,
-  "progress_snapshot": "issue-46-phase-155.md",
+  "latest_qualified_source": "eecb33b7271b916a7510ea3c9e2d160e200c8a21",
+  "latest_phase": 156,
+  "progress_snapshot": "issue-46-phase-156.md",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
-  "remaining": "Phase 155: nearby volume-mesh vertices align with CAD face seams before Tet10 midside construction; the 1 mm filleted-box top area is 80.0000 mm2 (OCCT tessellation) and 80.04584 mm2 (native) against 80 exact, and the 36 non-NEMA mesh-only parity rows pass unchanged gates. NEMA17 is deferred by owner request (12 OCCT / 11 native sub-gate cells, Phase 147). ABC 00006600 chart grading (Phase 156, unmerged), 00006600 PLC quality and solve, 00007062 small-angle PLC, general CAD seam conformity, Windows native-only mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
+  "remaining": "Phase 155: nearby volume-mesh vertices align with CAD face seams before Tet10 midside construction; the 1 mm filleted-box top area is 80.0000 mm2 (OCCT tessellation) and 80.04584 mm2 (native) against 80 exact, and the 36 non-NEMA mesh-only parity rows pass unchanged gates. NEMA17 is deferred by owner request (12 OCCT / 11 native sub-gate cells, Phase 147). ABC 00006600 PLC quality and solve (Phase 156 fixed its chart-grading refusal only), 00007062 small-angle PLC, general CAD seam conformity, Windows native-only mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
   "latest_increment_tests": {
     "commands": [
-      "python scripts/qualify.py --jobs 2 [--cad] (hosted Workbench qualification run 41197398567: cargo test --workspace on ubuntu-latest, macos-latest, windows-latest)",
-      "CASE='' NO_SOLVE=1 cargo test -p fea-problem --features occt --release --locked --offline -j1 --test occt_vs_native -- --ignored --nocapture table",
-      "cargo test -p app-tui --locked --offline -j1"
+      "cargo test -p solid-kernel -p fea-core --release --locked --offline -j1 --no-fail-fast",
+      "ABC_GRADED_FIRST=1 cargo run --release --locked --offline -p solid-kernel --no-default-features --example abc-corpus -- --one <00006600 file> --foreign --graded --conform-timeout 0 (A/B against the previous chart_grade.rs)"
     ],
     "result": "passed",
-    "platform": "Hosted: ubuntu-latest and macos-latest 3148 passed / 0 failed / 117 ignored (with --cad); windows-latest 3113 passed / 0 failed / 110 ignored. Local macOS arm64: 36/36 non-NEMA mesh-only parity rows pass unchanged gates; app-tui 1279 passed / 25 ignored",
-    "at": "91689ce",
+    "platform": "Local macOS arm64, release, serial Cargo: 918 passed / 0 failed / 41 ignored, no warnings; ABC 00006600 previous code refuses at grade (bound #1066 segment 156 overlap), change reaches a 327-face shell (min angle 0.0855 deg) before intentional PLC cancellation. Merged by owner instruction before the hosted qualification run finished",
+    "at": "eecb33b",
     "corpus": "issue-46-abc-corpus-2026-10-18.md"
   },
   "tests": {
@@ -107,13 +107,13 @@
     "platform": "macOS arm64 (no Windows or hosted CI evidence)",
     "at": "20a3f24"
   },
-  "last_confirmed_main_merge": "5467ba417f1fe758ef375071a6e20ee666b8bef9",
+  "last_confirmed_main_merge": "29dcc200f40b3f564bbf771d13742addc1067f23",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Non-NEMA Issue #63 gates: qualify and merge Phase 156 (ABC 00006600 spline chart grading); 00006600 PLC quality and solve; 00007062 small-angle surface/PLC strategy (not a longer timeout); broader native/OCCT solves; Windows native-only mesh/solve; remaining five-plan items. NEMA17 deferred by owner request",
+    "scope": "Non-NEMA Issue #63 gates: 00006600 PLC quality and solve; 00007062 small-angle surface/PLC strategy (not a longer timeout); broader native/OCCT solves; Windows native-only mesh/solve; remaining five-plan items. NEMA17 deferred by owner request",
     "status": "see_resume_guide_open_list"
   },
-  "base_main_head": "5467ba417f1fe758ef375071a6e20ee666b8bef9",
+  "base_main_head": "29dcc200f40b3f564bbf771d13742addc1067f23",
   "completion_checklist": "issue-46-completion-checklist.md",
   "resume": "issue-46-resume.md",
   "pending_prs": []

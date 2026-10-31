@@ -34,6 +34,8 @@ This is the current entry point for Claude Code or Codex. Historical phase repor
 
 **2026-10-31 seam-alignment update:** [Phase 154](issue-46-phase-154.md) keeps the solid snap from pulling an off-surface vertex onto a distant tangent face, and [Phase 155](issue-46-phase-155.md) moves a vertex of a boundary triangle that straddles a nearby CAD face seam onto the seam before Tet10 midside construction, kept only when face ownership, orientation and the scaled-Jacobian gate hold. The 1 mm filleted-box top area is 80.0000 mm² on OCCT tessellation and 80.04584 mm² on native against 80 mm² exact; the 36 non-NEMA mesh-only parity rows pass unchanged gates. Merged as PR #193 after hosted workspace qualification passed on Ubuntu, macOS and Windows. NEMA17 is deferred by owner request. Retirement remains unapproved.
 
+**2026-10-31 spline-grading update:** [Phase 156](issue-46-phase-156.md) bisects spline-edge parameter intervals during chart grading, so ABC `00006600` no longer refuses with overlapping trim segments and reaches a 327-face graded shell (read with `--foreign`). It has no conforming tetrahedral mesh or solve yet; `00007062` needs a small-angle PLC strategy. Merged as PR #195. Retirement remains unapproved.
+
 ## Establish current state
 
 1. Read root `CLAUDE.md`, then the relevant crate and `docs/AGENTS.md` instructions.
