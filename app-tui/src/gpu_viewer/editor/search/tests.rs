@@ -49,6 +49,7 @@ fn a_search_runs_on_the_session_runtime_and_its_matches_fill_the_table_and_the_d
     std::fs::write(dir.path().join("miss.txt"), "nothing to see\n").unwrap();
     let mut s = SearchSession::in_memory();
     s.st.config.output_folder = dir.path().join("out").to_string_lossy().into_owned();
+    s.st.config.export_html = true;
     s.document_field(INPUT_FOLDER, dir.path().to_string_lossy().into_owned());
     s.document_field(INPUT_FIND, "bolt".into());
     act_on(&mut s, SearchAct::Run);
@@ -69,6 +70,16 @@ fn a_search_runs_on_the_session_runtime_and_its_matches_fill_the_table_and_the_d
     assert!(s.status().contains("1 file with matches"), "{}", s.status());
     assert_eq!(s.st.recent_searches.len(), 1, "the run is remembered like in the terminal");
     assert_eq!(s.step_state("Results"), Some(StepState::Done));
+    let report = PathBuf::from(s.st.run.last_report_path.as_deref().expect("the report is written"));
+    assert_eq!(report.parent(), Some(dir.path().join("out").as_path()), "the report goes to the output folder");
+}
+
+#[test]
+fn a_test_session_writes_no_report_unless_a_test_asks_for_one() {
+    // An empty output folder means the working folder: a test run would leave `search-report.html` in the crate and
+    // fail the qualification's unchanged-source check.
+    let s = SearchSession::in_memory();
+    assert!(!s.st.config.export_html, "the HTML report is off in a test session");
 }
 
 #[test]

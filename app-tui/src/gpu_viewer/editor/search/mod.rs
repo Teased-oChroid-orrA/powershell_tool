@@ -166,6 +166,9 @@ impl SearchSession {
         let mut s = Self::with_state(SearchToolState::default(), false).expect("runtime");
         // Never a real dialog in a test: Browse answers "cancelled" unless a test sets its own picker.
         s.pick_folder = |_| None;
+        // An empty output folder is the working folder: a test that runs a search must not leave a report in the
+        // crate. Tests that check the report turn it back on with their own output folder.
+        s.st.config.export_html = false;
         s
     }
     #[cfg(test)]
