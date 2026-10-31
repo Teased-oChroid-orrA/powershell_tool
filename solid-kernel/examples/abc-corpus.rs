@@ -16,7 +16,8 @@
 //! fixed, a unit force across the other end); the detail then carries `gate=pass|fail`, `path=protected|fallback`, the
 //! worst scaled Jacobian `sj`, the largest edge ratio `er`, `tets`, the gate refusal and the solve outcome.
 //! `--refine` (with `--quality`) conforms with the sliver recipe: `Options::min_scaled_jacobian` 0.2, six passes of the flip pass (`ABC_PASSES`, 0 for none). The experiments' variables `ABC_RADIUS_EDGE`, `ABC_MIN_SJ`, `ABC_SMOOTH`, `ABC_RECONNECT`, `ABC_PLANAR`
-//! override single options; `ABC_SHOW_BAD` lists the tetrahedra under the gate.
+//! override single options; `ABC_SHOW_BAD` lists the tetrahedra under the gate; `ABC_NOFALLBACK` reports the protected
+//! recovery's refusal instead of falling back to unprotected recovery.
 //! Child mode (internal): `abc-corpus --one FILE [--conform-timeout S]` prints one row to stdout.
 //! Models are never copied into the repository; commit aggregate statistics only (their licence stays with their creators).
 use solid_kernel::analytic_step::{AnalyticModel, Options};
@@ -313,6 +314,10 @@ fn survey(
                         .and_then(|v| v.parse().ok())
                     {
                         o.smooth_rounds = r;
+                    }
+                    // ABC_NOFALLBACK: report the protected recovery's own refusal instead of falling back to unprotected recovery
+                    if std::env::var_os("ABC_NOFALLBACK").is_some() {
+                        o.unprotected_fallback = false;
                     }
                     if std::env::var_os("ABC_RECONNECT").is_some() {
                         o.reconnect = Some(fea_core::meshing::tet_flip::FlipOptions {
