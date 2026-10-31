@@ -557,8 +557,6 @@ pub fn mesh_solid_reported(s: &Solid, mat: Elastic, opts: TetOptions) -> Result<
     if opts.snap {
         // Round 0 snaps and smooths; the boundary layer is then reconnected (interior flips and smoothing only, so the surface
         // faces are untouched) and round 1 snaps again: boundary-layer slivers were what kept vertices from the surface.
-        let mut order: Vec<usize> = Vec::new();
-        let mut local: Vec<f64> = Vec::new();
         for round in 0..RECONNECT_ROUNDS + 1 {
             let mut incident: Vec<Vec<usize>> = vec![Vec::new(); p.len()];
             let mut neighbours: Vec<Vec<usize>> = vec![Vec::new(); p.len()];
@@ -574,8 +572,8 @@ pub fn mesh_solid_reported(s: &Solid, mat: Elastic, opts: TetOptions) -> Result<
             }
             // Reach is local: the longest edge at the vertex, not the global boundary size. Where the size field asks for
             // elements far smaller than `boundary_size`, a global reach would pull several vertices onto one feature point.
-            local = (0..p.len()).map(|v| neighbours[v].iter().map(|&u| norm(sub(p[u], p[v]))).fold(0.0, f64::max).min(opts.boundary_size)).collect();
-            order = (0..p.len()).filter(|&v| on_boundary[v]).collect();
+            let local: Vec<f64> = (0..p.len()).map(|v| neighbours[v].iter().map(|&u| norm(sub(p[u], p[v]))).fold(0.0, f64::max).min(opts.boundary_size)).collect();
+            let mut order: Vec<usize> = (0..p.len()).filter(|&v| on_boundary[v]).collect();
             order.sort_by(|&a, &b| (s.sdf)(p[a]).abs().total_cmp(&(s.sdf)(p[b]).abs()));
             for _pass in 0..SNAP_PASSES {
                 let mut moved_any = false;
