@@ -58,7 +58,13 @@ impl AnalyticModel {
         };
         let faces: Vec<u64> = model.body().faces.keys().copied().collect();
         for _ in 0..options.max_rounds {
-            let mut wanted: BTreeMap<u64, Vec<(usize, f64)>> = BTreeMap::new();
+            // Splits keep the chart's fractions: its concentric-shell splits grade toward small features, below the floor
+            // when a sliver face needs it. But a new sample nearer than the model's geometry tolerance to another sample of
+            // its segment is dropped: the edge and its faces only agree to that tolerance, so such samples carry no geometry
+            // and their face-chart images can swap order. Faces sharing a segment asked for nearly equal fractions, and
+            // repeated splits near one end did the same; on ABC `00006600` that left a spline edge refused as overlapping
+            // trim segments (Phase 156) and about 57,000 sub-10 nm gaps on circle edges (Phase 157).
+            let mut wanted: BTreeMap<u64, BTreeMap<usize, Vec<(f64, f64)>>> = BTreeMap::new();
             for &face in &faces {
                 let splits: Vec<BoundarySplit> = model.boundary_splits(
                     face,
@@ -69,7 +75,9 @@ impl AnalyticModel {
                     options.max_points_per_face,
                 )?;
                 for s in splits {
-                    wanted.entry(s.edge).or_default().push((s.segment, s.t));
+                    // A spline's parameter is not proportional to the chart: its interval is bisected (Phase 156).
+                    let t = if model.edge_is_spline(s.edge) { 0.5 } else { s.t };
+                    wanted.entry(s.edge).or_default().entry(s.segment).or_default().push((t, s.spacing));
                 }
             }
             if wanted.is_empty() {
@@ -83,12 +91,18 @@ impl AnalyticModel {
                 .map(|e| model.edge_points(*e).unwrap().len())
                 .sum();
             for (edge, splits) in wanted {
-                // Bisect spline parameter intervals instead of using a chart split arbitrarily near an endpoint.
-                let splits: Vec<_> = if model.edge_is_spline(edge) {
-                    splits.into_iter().map(|(segment, _)| (segment, 0.5)).collect()
-                } else {
-                    splits
-                };
+                let mut kept = Vec::new();
+                for (segment, mut ts) in splits {
+                    ts.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    let mut last = 0.;
+                    for (t, spacing) in ts {
+                        if t - last >= spacing && 1. - t >= spacing {
+                            kept.push((segment, t));
+                            last = t;
+                        }
+                    }
+                }
+                let splits = kept;
                 model.insert_edge_splits(edge, &splits)?;
             }
             let after: usize = model
@@ -111,5 +125,44 @@ impl AnalyticModel {
             }
         }
         Ok((model, report))
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analytic_step::Options;
+    use crate::step::{inventory, Limits};
+
+    /// Grading never puts a new edge sample nearer than the model's geometry tolerance to another sample of its edge
+    /// (Phase 157). Without that rule, faces sharing a segment and repeated splits near one end left samples of ABC
+    /// `00006600` nanometres apart.
+    #[test]
+    fn grading_keeps_new_samples_a_geometry_tolerance_apart() {
+        let mut graded_edges = 0;
+        for (name, source) in [
+            ("cross-bore-filleted", include_str!("../tests/data/cross-bore-filleted.step")),
+            ("t-junction-filleted", include_str!("../tests/data/t-junction-filleted.step")),
+            ("tilted-hole-filleted", include_str!("../tests/data/tilted-hole-filleted.step")),
+            ("torus", include_str!("../tests/data/torus.step")),
+        ] {
+            let data = inventory(source, Limits::default()).unwrap();
+            let model = AnalyticModel::read(&data, Options::foreign_cad(0.05)).unwrap();
+            let tolerance = model.geometry_tolerance_mm();
+            let (graded, _) = model
+                .graded(GradeOptions { policy: ChartPolicy::CanonicalizeWithinTolerance, ..GradeOptions::default() }, 50_000_000)
+                .unwrap();
+            for &edge in model.body().edges.keys() {
+                let (source, after) = (model.edge_points(edge).unwrap(), graded.edge_points(edge).unwrap());
+                if after.len() > source.len() {
+                    graded_edges += 1;
+                }
+                for w in after.windows(2) {
+                    let original = source.windows(2).any(|s| s[0] == w[0] && s[1] == w[1]);
+                    let gap = (0..3).map(|k| (w[1][k] - w[0][k]).powi(2)).sum::<f64>().sqrt();
+                    assert!(original || gap >= tolerance, "{name} edge #{edge}: new samples {gap:e} mm apart (tolerance {tolerance})");
+                }
+            }
+        }
+        assert!(graded_edges > 0, "grading split no edge");
     }
 }

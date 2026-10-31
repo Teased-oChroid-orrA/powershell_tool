@@ -771,16 +771,20 @@ impl AnalyticModel {
                 inputs.vertices[b].chart,
                 v.data().chart,
             );
-            let length = ((pb[0] - pa[0]).powi(2) + (pb[1] - pa[1]).powi(2)).sqrt();
-            if length < 2. * floor_mm || length == 0. {
+            let chart_length = ((pb[0] - pa[0]).powi(2) + (pb[1] - pa[1]).powi(2)).sqrt();
+            // The floor is a world length: conformal (sphere, torus) charts are not in millimetres.
+            let (wa, wb) = (inputs.vertices[a].world, inputs.vertices[b].world);
+            let length = ((wb[0] - wa[0]).powi(2) + (wb[1] - wa[1]).powi(2) + (wb[2] - wa[2]).powi(2)).sqrt();
+            if !(length >= 2. * floor_mm) || chart_length == 0. {
                 continue;
             }
-            let t = ((p[0] - pa[0]).powi(2) + (p[1] - pa[1]).powi(2)).sqrt() / length;
+            let t = ((p[0] - pa[0]).powi(2) + (p[1] - pa[1]).powi(2)).sqrt() / chart_length;
             let seg = inputs.segments[a];
             out.push(BoundarySplit {
                 edge: seg.edge,
                 segment: seg.lower,
                 t: if seg.ascending { t } else { 1. - t },
+                spacing: self.geometry_tolerance_mm() / length,
             });
         }
         Ok(out)
@@ -793,6 +797,8 @@ pub(crate) struct BoundarySplit {
     pub edge: u64,
     pub segment: usize,
     pub t: f64,
+    /// The model's geometry tolerance as a fraction of the segment's length: the closest a new sample may come to another.
+    pub spacing: f64,
 }
 #[derive(Debug, Clone, Copy)]
 struct SegmentRef {
