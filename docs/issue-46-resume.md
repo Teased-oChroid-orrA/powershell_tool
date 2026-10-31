@@ -32,6 +32,8 @@ This is the current entry point for Claude Code or Codex. Historical phase repor
 
 **2026-10-27 corner-merge update:** [Phase 147](issue-46-phase-147.md) traces the lower gusset corners: a vertex is already 0.1 from each corner (Phase 146's 1.3 was an interior vertex), so a corner insertion was not built. Two pinned vertices beside a three-face corner may now merge onto it (an edge vertex with a corner vertex, every face near either end at that corner), under the existing collapse contracts: NEMA17 12/12 to 12/11, every other parity row identical, 36/38 rows pass. The lower-corner merge is refused by the gate contract. Merged as PR #186. Retirement remains unapproved.
 
+**2026-10-31 seam-alignment update:** [Phase 154](issue-46-phase-154.md) keeps the solid snap from pulling an off-surface vertex onto a distant tangent face, and [Phase 155](issue-46-phase-155.md) moves a vertex of a boundary triangle that straddles a nearby CAD face seam onto the seam before Tet10 midside construction, kept only when face ownership, orientation and the scaled-Jacobian gate hold. The 1 mm filleted-box top area is 80.0000 mm² on OCCT tessellation and 80.04584 mm² on native against 80 mm² exact; the 36 non-NEMA mesh-only parity rows pass unchanged gates. Merged as PR #193 after hosted workspace qualification passed on Ubuntu, macOS and Windows. NEMA17 is deferred by owner request. Retirement remains unapproved.
+
 ## Establish current state
 
 1. Read root `CLAUDE.md`, then the relevant crate and `docs/AGENTS.md` instructions.
