@@ -36,6 +36,8 @@ This is the current entry point for Claude Code or Codex. Historical phase repor
 
 **2026-10-31 spline-grading update:** [Phase 156](issue-46-phase-156.md) bisects spline-edge parameter intervals during chart grading, so ABC `00006600` no longer refuses with overlapping trim segments and reaches a 327-face graded shell (read with `--foreign`). It has no conforming tetrahedral mesh or solve yet; `00007062` needs a small-angle PLC strategy. Merged as PR #195. Retirement remains unapproved.
 
+**2026-10-31 grading-spacing update:** [Phase 157](issue-46-phase-157.md) keeps each new graded edge sample at least the model's geometry tolerance from its neighbours on the segment (faces sharing a segment, and repeated splits near a small angle, had inserted samples nanometres apart). ABC `00006600` goes from a 0.0855° to a 4.733° minimum shell angle and `00007062` from 0.0316° to 2.904°; both now reach conforming PLC meshes but fail the unchanged default solver gate on boundary sliver tetrahedra, so neither is solved. The 36 non-NEMA mesh-only parity rows are identical to main. The filleted cross-bore grading bound was re-baselined from 0.19° to 0.15° by owner decision. Merged as PR #198 after hosted qualification passed on Ubuntu, macOS and Windows. Retirement remains unapproved.
+
 ## Establish current state
 
 1. Read root `CLAUDE.md`, then the relevant crate and `docs/AGENTS.md` instructions.

@@ -3,7 +3,7 @@
   "epic_complete": false,
   "branch": "main",
   "pull_request": null,
-  "pull_request_state": "none_open_after_pr_195",
+  "pull_request_state": "none_open_after_pr_198",
   "merged_prs": [
     42,
     65,
@@ -81,24 +81,26 @@
     184,
     186,
     193,
-    195
+    195,
+    198
   ],
-  "latest_qualified_source": "eecb33b7271b916a7510ea3c9e2d160e200c8a21",
-  "latest_phase": 156,
-  "progress_snapshot": "issue-46-phase-156.md",
+  "latest_qualified_source": "497ba059d016b79bf9443834043218872dbefe0d",
+  "latest_phase": 157,
+  "progress_snapshot": "issue-46-phase-157.md",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
-  "remaining": "Phase 155: nearby volume-mesh vertices align with CAD face seams before Tet10 midside construction; the 1 mm filleted-box top area is 80.0000 mm2 (OCCT tessellation) and 80.04584 mm2 (native) against 80 exact, and the 36 non-NEMA mesh-only parity rows pass unchanged gates. NEMA17 is deferred by owner request (12 OCCT / 11 native sub-gate cells, Phase 147). ABC 00006600 PLC quality and solve (Phase 156 fixed its chart-grading refusal only), 00007062 small-angle PLC, general CAD seam conformity, Windows native-only mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
+  "remaining": "Phase 157: chart grading keeps new edge samples a geometry tolerance apart, so ABC 00006600 (min shell angle 4.733 deg, 0 edges under 1e-5 mm) and 00007062 (min shell angle 2.904 deg) now reach conforming PLC meshes; both fail the unchanged default solver gate on boundary sliver tetrahedra (scaled Jacobian 0.000), so neither is solved. The 36 non-NEMA mesh-only parity rows pass, identical to main bb54f14. NEMA17 is deferred by owner request. Boundary sliver quality for the ABC files, the 300-file ABC rerun, general CAD seam conformity, Windows native-only mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
   "latest_increment_tests": {
     "commands": [
       "cargo test -p solid-kernel -p fea-core --release --locked --offline -j1 --no-fail-fast",
-      "ABC_GRADED_FIRST=1 cargo run --release --locked --offline -p solid-kernel --no-default-features --example abc-corpus -- --one <00006600 file> --foreign --graded --conform-timeout 0 (A/B against the previous chart_grade.rs)",
-      "python scripts/qualify.py --jobs 2 [--cad] (hosted Workbench qualification run 41202228645 at eecb33b)"
+      "CASE='' NO_SOLVE=1 cargo test -p fea-problem --features occt --release --locked --offline -j1 --test occt_vs_native -- --ignored --nocapture table",
+      "ABC_GRADED_FIRST=1 cargo run --release --locked --offline -j1 -p solid-kernel --no-default-features --example abc-corpus -- --one <file> --foreign --graded [--conform-timeout 0 | --steiner 200000 --conform-timeout 300 --merge --quality --refine] (00006600, 00007062)",
+      "Hosted Workbench qualification run 41243516885 at 497ba05"
     ],
     "result": "passed",
-    "platform": "Local macOS arm64, release, serial Cargo: 918 passed / 0 failed / 41 ignored, no warnings; ABC 00006600 previous code refuses at grade (bound #1066 segment 156 overlap), change reaches a 327-face shell (min angle 0.0855 deg) before intentional PLC cancellation. Hosted run 41202228645 (finished after the owner-requested merge): ubuntu-latest and macos-latest 3148 passed / 0 failed / 117 ignored, windows-latest 3113 passed / 0 failed / 110 ignored",
-    "at": "eecb33b",
+    "platform": "Local macOS arm64, release, serial Cargo: 919 passed / 0 failed / 41 ignored, no warnings; parity 36/38 (NEMA17 fails as before), identical to main. Hosted run 41243516885: qualify passed on ubuntu-latest, macos-latest and windows-latest",
+    "at": "497ba05",
     "corpus": "issue-46-abc-corpus-2026-10-18.md"
   },
   "tests": {
@@ -108,13 +110,13 @@
     "platform": "macOS arm64 (no Windows or hosted CI evidence)",
     "at": "20a3f24"
   },
-  "last_confirmed_main_merge": "29dcc200f40b3f564bbf771d13742addc1067f23",
+  "last_confirmed_main_merge": "4cf9acc531bcd20db7ef05c89a4fde0906aab54a",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Non-NEMA Issue #63 gates: 00006600 PLC quality and solve; 00007062 small-angle surface/PLC strategy (not a longer timeout); broader native/OCCT solves; Windows native-only mesh/solve; remaining five-plan items. NEMA17 deferred by owner request",
+    "scope": "Non-NEMA Issue #63 gates: boundary sliver quality so 00006600 and 00007062 pass the default solver gate and solve; 300-file ABC rerun; broader native/OCCT solves; Windows native-only mesh/solve; remaining five-plan items. NEMA17 deferred by owner request",
     "status": "see_resume_guide_open_list"
   },
-  "base_main_head": "29dcc200f40b3f564bbf771d13742addc1067f23",
+  "base_main_head": "4cf9acc531bcd20db7ef05c89a4fde0906aab54a",
   "completion_checklist": "issue-46-completion-checklist.md",
   "resume": "issue-46-resume.md",
   "pending_prs": []
