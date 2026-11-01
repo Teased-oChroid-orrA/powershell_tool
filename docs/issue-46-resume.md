@@ -38,6 +38,8 @@ This is the current entry point for Claude Code or Codex. Historical phase repor
 
 **2026-10-31 grading-spacing update:** [Phase 157](issue-46-phase-157.md) keeps each new graded edge sample at least the model's geometry tolerance from its neighbours on the segment (faces sharing a segment, and repeated splits near a small angle, had inserted samples nanometres apart). ABC `00006600` goes from a 0.0855° to a 4.733° minimum shell angle and `00007062` from 0.0316° to 2.904°; both now reach conforming PLC meshes but fail the unchanged default solver gate on boundary sliver tetrahedra, so neither is solved. The 36 non-NEMA mesh-only parity rows are identical to main. The filleted cross-bore grading bound was re-baselined from 0.19° to 0.15° by owner decision. Merged as PR #198 after hosted qualification passed on Ubuntu, macOS and Windows. Retirement remains unapproved.
 
+**2026-10-31 sliver-livelock update:** [Phase 158](issue-46-phase-158.md) makes a segment split that recovers a required sub-facet required as well, so the sliver floor no longer refuses it; the sliver stage on ABC `00006600` had requeued one sub-facet and one segment millions of times and rolled back every quality point. It now keeps 2,505 quality points in its 20 s clock; given unlimited time it ends by itself with 483 cells under the gate's 0.1 (minimum scaled Jacobian 0.035). Neither ABC file passes the unchanged default solver gate, so neither is solved. Merged as PR #200 after hosted qualification passed on Ubuntu, macOS and Windows. Retirement remains unapproved.
+
 ## Establish current state
 
 1. Read root `CLAUDE.md`, then the relevant crate and `docs/AGENTS.md` instructions.
