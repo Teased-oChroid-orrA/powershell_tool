@@ -35,7 +35,7 @@ The gate command (`ABC_GRADED_FIRST=1 abc-corpus --one <file> --foreign --graded
 | `00006600` gate / solve | passes / solved | passes / solved (sJ 0.1135, er 7.5, 297,399 tetrahedra) |
 | `00006600` run time | 170 s | 130 s |
 
-`00007062` now gets the same mesh at the default clock as with 900 s: the stage ends by itself (nothing left it may do), not by the clock. Its run time does not drop because the stage now does all its work inside the 20 s instead of stopping early.
+`00007062` now gets the same mesh at the default clock as with 900 s: the stage ends at its 50,000 point cap, not at the clock. (Corrected after merge: an earlier version of this page said the stage ends by itself. STAGEDBG shows the stage starting at 2,786 Steiner points and ending at 54,179, so 51,393 points, of which 27,666 are quality points and the rest splits they forced; about 52,000 cells were still under the bound when it stopped, and the post-stage reconnection and smoothing take that to 448.) Its run time does not drop because the stage now does all its work inside the 20 s instead of stopping early.
 
 `cargo test -p solid-kernel -p fea-core --release --locked --offline -j1 --no-fail-fast` on macOS arm64: 927 passed, 0 failed, 41 ignored, no warnings (as Phase 163). The `plc_conform` unit tests and the `plc_conform`, `plc_merge` and `plc_preserving` integration tests also pass in a debug build, where the new assertion compares the index with the scan of every mesh at every segment split.
 
@@ -45,9 +45,20 @@ On this machine the stage needs most of its 20 s on `00007062`. With the clock s
 
 A second profile of the stage after the change is flat (about 13,200 samples over 18 s): the candidate-point previews of `better_point` (Delaunay cavity and insphere tests, scaled Jacobians of the new cells) about 31%, point insertions about 20%, full cell classifications (`bad_cells_from_scratch`, needed when the cell cache is empty, as at the start of the stage) about 7%, the facet ball index lookups (`FacetIndex::near`, including building and sorting the candidate list) about 6%. None of these is a single hot spot that can be removed while keeping the insertion sequence identical; fewer candidate points would change the sequence and the mesh.
 
+## Where the 448 cells are (study after merge)
+
+`plc-run` on the dumped `00007062` shell with `PLC_CELLS=1 PLC_MERGE=1 PLC_REFINE=1 PLC_QSEC=900 PLC_SECS=900` (same mesh as the default clock), and a script over the dumped shell:
+
+- **371 of the 448 cells lie on one narrow conical band** of the shell: x from 10.39 to 10.49 mm, radius from 16.32 to 16.45 mm, all the way round (facet normals have an x component of about -0.87). This band holds 14,075 of the shell's 101,792 triangles, the shell's smallest triangle angle (2.28 degrees, the "smallest shell angle" of the earlier phases) and its shortest edges (5.48e-3 mm, which sets the sliver floor `optional_floor`). A tenth of the band's triangles have a smallest angle under 12.4 degrees, against 26.7 degrees for the shell as a whole.
+- 39 more lie on a ring at x of about 20 mm, radius about 9.6 mm; the remaining 38 are scattered.
+- 362 cells have one quality point and three shell vertices, with one face on a sub-facet: flat cells between a sub-facet and a quality point just off it. 72 have two quality points, 2 have three, and 12 have none (all four vertices on the shell), which interior smoothing cannot move.
+- More smoothing rounds barely help: 448 cells with 2 rounds, 420 with 3, 386 with 6 (minimum scaled Jacobian 0.019, 0.019, 0.029), at 190 s, 245 s and 433 s for the whole run.
+
+So the residue comes mainly from how the surface mesher triangulates this narrow band, not from the volume stage. The next step is to look at that band's chart and grading in the surface mesher (`chart_mesh.rs`, `chart_grade.rs`, `analytic_step.rs`), as Phases 161 and 162 did for `00006600`; that is not done here.
+
 ## Limits / not shown
 
-- `00007062` still fails the default solver gate: 448 cells under 0.1, minimum scaled Jacobian 0.0190 (edge ratio 29.2 is within the limit), so it is not solved. The 448-cell residue is the next item.
+- `00007062` still fails the default solver gate: 448 cells under 0.1, minimum scaled Jacobian 0.0190 (edge ratio 29.2 is within the limit), so it is not solved. Most of the 448 cells lie on one narrow conical band (see above); fixing that band's surface mesh is the next item.
 - The default-clock result on `00007062` depends on the speed of the machine (see above). No Windows or hosted timing is shown.
 - The mesh-only parity table (`occt_vs_native`) was not rerun; this change keeps the insertion sequence, which the two files above show for their shells only.
 - The numbers are from one machine (macOS arm64). No 300-file ABC rerun is shown here.

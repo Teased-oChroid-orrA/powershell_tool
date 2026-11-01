@@ -121,7 +121,7 @@
   "last_confirmed_main_merge": "e18f4ace14a5809debde4fce4cec22fdbd5c6301",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Non-NEMA Issue #63 gates: 00007062's 448-cell residue under 0.1 (minimum scaled Jacobian 0.019; 12 all-boundary cells) so it passes the default solver gate and solves; the sliver-stage time margin on slower machines; the 300-file ABC rerun with the smoothing recipe; broader native/OCCT solves; Windows native-only mesh/solve; remaining five-plan items. NEMA17 deferred by owner request",
+    "scope": "Non-NEMA Issue #63 gates: 00007062's 448-cell residue under 0.1 (minimum scaled Jacobian 0.019; 371 cells on one narrow conical band at x 10.39-10.49 mm, radius 16.32-16.45 mm, which holds the shell's 2.28 degree triangle angle and its shortest edges; 12 all-boundary cells), starting with that band's surface mesh, so it passes the default solver gate and solves; the sliver-stage time margin on slower machines; the 300-file ABC rerun with the smoothing recipe; broader native/OCCT solves; Windows native-only mesh/solve; remaining five-plan items. NEMA17 deferred by owner request",
     "status": "see_resume_guide_open_list"
   },
   "base_main_head": "e18f4ace14a5809debde4fce4cec22fdbd5c6301",
