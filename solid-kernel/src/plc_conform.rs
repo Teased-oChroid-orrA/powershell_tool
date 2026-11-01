@@ -581,7 +581,7 @@ impl FacetMesh {
     /// faces of the tetrahedralization. This resolves cospherical ties (grids,
     /// right angles) that a refinement would otherwise chase to zero size.
     /// Returns the number of flips.
-    fn flip_toward(&mut self, faces: &FastSet<[usize; 3]>) -> usize {
+    fn flip_toward(&mut self, faces: &FastMap<[usize; 3], u32>) -> usize {
         let mut flips = 0;
         'again: loop {
             let mut across = BTreeMap::<[usize; 2], usize>::new();
@@ -591,7 +591,7 @@ impl FacetMesh {
                 }
             }
             for i in 0..self.tris.len() {
-                if faces.contains(&face_key(self.tris[i])) {
+                if faces.contains_key(&face_key(self.tris[i])) {
                     continue;
                 }
                 let t = self.tris[i];
@@ -605,7 +605,7 @@ impl FacetMesh {
                     let uv = |v: usize| self.uv[&v];
                     let convex = orientation_2d(uv(a[0]), uv(a[1]), uv(a[2])) == Ordering::Greater
                         && orientation_2d(uv(b[0]), uv(b[1]), uv(b[2])) == Ordering::Greater;
-                    if convex && faces.contains(&face_key(a)) && faces.contains(&face_key(b)) {
+                    if convex && faces.contains_key(&face_key(a)) && faces.contains_key(&face_key(b)) {
                         let (lo, hi) = (i.min(j), i.max(j));
                         self.tris[hi] = b;
                         self.tris[lo] = a;
@@ -880,6 +880,32 @@ impl SegmentGrid {
         out
     }
 }
+/// Every edge and face of the triangulation with the number of tetrahedra that have it (absent at zero).
+#[derive(Clone, Default, Debug, PartialEq)]
+struct Presence {
+    edges: FastMap<[usize; 2], u32>,
+    faces: FastMap<[usize; 3], u32>,
+}
+impl Presence {
+    fn count(&mut self, [a, b, c, d]: [usize; 4], add: bool) {
+        fn step<K: std::hash::Hash + Eq>(map: &mut FastMap<K, u32>, key: K, add: bool) {
+            if add {
+                *map.entry(key).or_default() += 1;
+            } else if let std::collections::hash_map::Entry::Occupied(mut e) = map.entry(key) {
+                *e.get_mut() -= 1;
+                if *e.get() == 0 {
+                    e.remove();
+                }
+            }
+        }
+        for (x, y) in [(a, b), (a, c), (a, d), (b, c), (b, d), (c, d)] {
+            step(&mut self.edges, edge(x, y), add);
+        }
+        for f in [[a, b, c], [a, b, d], [a, c, d], [b, c, d]] {
+            step(&mut self.faces, face_key(f), add);
+        }
+    }
+}
 #[derive(Clone)]
 struct State {
     delaunay: Delaunay3,
@@ -887,6 +913,8 @@ struct State {
     segments: BTreeSet<[usize; 2]>,
     seg_grid: SegmentGrid,
     meshes: Vec<FacetMesh>,
+    /// Edge and face counts of the triangulation once the first exact presence check has built them (`State::ensure_presence`).
+    presence: Option<Presence>,
     /// Sub-segments / sub-facets known to be encroached (or forced) and not yet split.
     enc_segments: BTreeSet<[usize; 2]>,
     enc_tris: BTreeSet<(usize, [usize; 3])>,
@@ -941,17 +969,20 @@ impl State {
             .flat_map(|m| m.tris.iter().map(|t| (*t, m.parent)))
             .collect()
     }
-    fn tet_edges_and_faces(&self) -> (FastSet<[usize; 2]>, FastSet<[usize; 3]>) {
-        let (mut edges, mut faces) = (FastSet::default(), FastSet::default());
-        for [a, b, c, d] in self.delaunay.cells() {
-            for (x, y) in [(a, b), (a, c), (a, d), (b, c), (b, d), (c, d)] {
-                edges.insert(edge(x, y));
-            }
-            for f in [[a, b, c], [a, b, d], [a, c, d], [b, c, d]] {
-                faces.insert(face_key(f));
-            }
+    /// The edges and faces of the triangulation, each with the number of tetrahedra that have it, built from every cell.
+    fn tet_edges_and_faces(&self) -> Presence {
+        let mut p = Presence::default();
+        for t in self.delaunay.cells() {
+            p.count(t, true);
         }
-        (edges, faces)
+        p
+    }
+    /// The edge and face counts of the triangulation, built once and then kept current by `insert`: rebuilding them for every
+    /// exact presence check took about three quarters of the sliver stage on ABC `00006600` (Phase 159).
+    fn ensure_presence(&mut self) {
+        if self.presence.is_none() {
+            self.presence = Some(self.tet_edges_and_faces());
+        }
     }
     fn segment_encroached(&self, s: [usize; 2]) -> bool {
         let pts = self.points();
@@ -1267,6 +1298,14 @@ impl State {
             ));
         }
         let i = self.delaunay.insert(p).map_err(mesh_error)?;
+        if let Some(presence) = self.presence.as_mut() {
+            for &t in self.delaunay.last_removed() {
+                presence.count(t, false);
+            }
+            for &t in self.delaunay.last_added() {
+                presence.count(t, true);
+            }
+        }
         self.steiner += 1;
         Ok(i)
     }
@@ -1677,19 +1716,20 @@ fn drive(
         // Encroachment is only a sufficient condition; verify presence exactly and
         // force whatever a cospherical tie left out.
         *rounds += 1;
-        let (edges, faces) = state.tet_edges_and_faces();
+        state.ensure_presence();
+        let Some(Presence { edges, faces }) = &state.presence else { unreachable!() };
         let missing_segments: Vec<_> = state
             .segments
             .iter()
             .copied()
-            .filter(|s| !edges.contains(s))
+            .filter(|s| !edges.contains_key(s))
             .collect();
         let missing_tris: Vec<(usize, [usize; 3])> = state
             .meshes
             .iter()
             .enumerate()
             .flat_map(|(k, m)| m.tris.iter().map(move |t| (k, *t)))
-            .filter(|(_, t)| !faces.contains(&face_key(*t)))
+            .filter(|(_, t)| !faces.contains_key(&face_key(*t)))
             .collect();
         // A cospherical tie can make the facet's planar triangulation pick the other
         // diagonal than the tetrahedralization: align it before refining anything.
@@ -1860,6 +1900,7 @@ fn initial_state(
         segments,
         seg_grid,
         meshes,
+        presence: None,
         enc_segments: BTreeSet::new(),
         enc_tris: BTreeSet::new(),
         forced_tris: BTreeSet::new(),
@@ -2183,6 +2224,27 @@ fn extract(state: State, input_vertices: usize, rounds: usize) -> Result<Conform
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The edge and face counts kept current by every insertion equal the ones rebuilt from all cells (Phase 159).
+    #[test]
+    fn presence_counts_follow_insertions() {
+        let vertices = [
+            [0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.],
+            [0., 0., 1.], [1., 0., 1.], [1., 1., 1.], [0., 1., 1.],
+        ];
+        let facets = [
+            [0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4],
+            [3, 7, 6], [3, 6, 2], [0, 4, 7], [0, 7, 3], [1, 2, 6], [1, 6, 5],
+        ];
+        let (mut state, _) = initial_state(&vertices, &facets, None, Options::default()).unwrap();
+        state.ensure_presence();
+        for i in 0..200 {
+            let x = |k: u64| ((i as u64 * 2654435761 + k * 40503) % 1000) as f64 / 1000.;
+            state.insert([x(1), x(2), x(3)]).unwrap();
+        }
+        let rebuilt = state.tet_edges_and_faces();
+        assert!(rebuilt.edges.len() > 1000);
+        assert_eq!(state.presence.as_ref().unwrap(), &rebuilt);
+    }
     /// A required sub-facet (one the triangulation lacked) whose circumcentre encroaches a segment shorter than the sliver
     /// floor: the split it needs is required, not optional. Refusing it at the floor queued the same sub-facet and segment again
     /// until the sliver stage's clock ran out and its work was rolled back (ABC `00006600`, Phase 158).

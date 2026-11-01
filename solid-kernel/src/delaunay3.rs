@@ -37,6 +37,7 @@ pub(crate) struct Delaunay3 {
     marks: Vec<u32>,
     epoch: u32,
     removed: Vec<[usize; 4]>,
+    added: Vec<[usize; 4]>,
 }
 impl Delaunay3 {
     pub fn new(seed: &TetTopology, max_cells: usize) -> Self {
@@ -61,11 +62,16 @@ impl Delaunay3 {
             max_cells,
             epoch: 0,
             removed: Vec::new(),
+            added: Vec::new(),
         }
     }
     /// Vertex sets of the tetrahedra destroyed by the most recent insertion.
     pub fn last_removed(&self) -> &[[usize; 4]] {
         &self.removed
+    }
+    /// Vertex sets of the tetrahedra created by the most recent insertion (every one has the new vertex).
+    pub fn last_added(&self) -> &[[usize; 4]] {
+        &self.added
     }
     /// Dense copy of the live tetrahedra with their face neighbours (same face
     /// order as `TetTopology::neighbors`).
@@ -254,6 +260,7 @@ impl Delaunay3 {
             }
         }
         self.removed = cavity.iter().map(|&c| removed_vertices[&c]).collect();
+        self.added = created.iter().map(|&c| self.tets[c].v).collect();
         for c in dead {
             self.tets[c].alive = false;
             self.free.push(c);
