@@ -3,7 +3,7 @@
   "epic_complete": false,
   "branch": "main",
   "pull_request": null,
-  "pull_request_state": "none_open_after_pr_210",
+  "pull_request_state": "none_open_after_pr_212",
   "merged_prs": [
     42,
     65,
@@ -88,25 +88,27 @@
     204,
     206,
     208,
-    210
+    210,
+    212
   ],
-  "latest_qualified_source": "31958263c1d138817d1f4b2c4c3c0a0071a72b6d",
-  "latest_phase": 163,
-  "progress_snapshot": "issue-46-phase-163.md",
+  "latest_qualified_source": "5a86bb95f52d544a1cfbfcfa24d2300a95c7952a",
+  "latest_phase": 164,
+  "progress_snapshot": "issue-46-phase-164.md",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
-  "remaining": "Phase 163: abc-corpus --refine alternates the post-extraction flip pass with two rounds of interior smoothing (it set smooth_rounds to 0 before). The last 00006600 cell came from the sliver floor, the shortest input segment of the whole shell, which Phase 162 raised from 6.47e-4 to at least 8.89e-3 mm; smoothing moves that cell's interior point. At the default 20 s clock ABC 00006600 now passes the unchanged default solver gate (minimum scaled Jacobian 0.1135, edge ratio 7.5) and solves. 00007062's edge ratio drops from 61.3 to 34.3 and its cells under 0.1 from 58,843 to 36,667, but its minimum scaled Jacobian stays 0.0006, so it is not solved. Smoothing runs outside --conform-timeout (about +50 s and +35 s). NEMA17 is deferred by owner request. The scaled Jacobian of 00007062 (its all-boundary slivers, the 2.28 degree shell angle, the boundary-split budget), the 300-file ABC rerun with the new recipe, general CAD seam conformity, Windows native-only mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
+  "remaining": "Phase 164: split_segment finds the facet meshes a segment bounds through a vertex-to-mesh index (State::vertex_meshes) instead of testing every mesh, about 70% of the sliver stage on 00007062; the insertion sequence is unchanged (00007062 plc-run output identical to main at PLC_QSEC=900). At the default 20 s clock 00007062's sliver stage now finishes on macOS arm64 (cells under 0.1 36,667 -> 448, minimum scaled Jacobian 0.0006 -> 0.019, edge ratio 29.2) but with a thin margin (a 13 s clock stops it early), so the result depends on machine speed; it still fails the unchanged default solver gate and is not solved. 00006600 still passes and solves (170 -> 130 s). NEMA17 is deferred by owner request. The 448-cell residue of 00007062 (12 all-boundary), the sliver-stage margin on slower machines, the 300-file ABC rerun with the smoothing recipe, general CAD seam conformity, Windows native-only mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
   "latest_increment_tests": {
     "commands": [
       "cargo test -p solid-kernel -p fea-core --release --locked --offline -j1 --no-fail-fast",
-      "ABC_GRADED_FIRST=1 cargo run --release --locked --offline -j1 -p solid-kernel --no-default-features --example abc-corpus -- --one <file> --foreign --graded --steiner 200000 --conform-timeout 300 --merge --quality --refine (00006600, 00007062; ABC_SMOOTH 0, 1, 2, 3, 6)",
-      "PLC_SMOOTH=3 PLC_MERGE=1 PLC_REFINE=1 PLC_CELLS=1 PLC_QSEC=900 PLC_SECS=900 target/release/examples/plc-run <dumped 00006600 shell>",
-      "Hosted Workbench qualification run 41339381216 at 3195826"
+      "cargo test -p solid-kernel --locked --offline --lib plc_conform; --test plc_conform --test plc_merge --test plc_preserving (debug: index checked against the full scan)",
+      "PLC_MERGE=1 PLC_REFINE=1 PLC_SMOOTH=2 PLC_QSEC=900 PLC_SECS=900 [PLC_VERIFY_KEPT=1] plc-run <dumped 00006600 and 00007062 shells> (branch and main ad42e72)",
+      "ABC_GRADED_FIRST=1 cargo run --release --locked --offline -j1 -p solid-kernel --no-default-features --example abc-corpus -- --one <file> --foreign --graded --steiner 200000 --conform-timeout 300 --merge --quality --refine (00006600, 00007062)",
+      "Hosted Workbench qualification run 41345593545 at 5a86bb9"
     ],
     "result": "passed",
-    "platform": "Local macOS arm64, release, serial Cargo: 927 passed / 0 failed / 41 ignored, no warnings; parity table not rerun (it does not use the abc-corpus recipe). Hosted run 41339381216 was still running when PR #210 was merged on the owner's standing instruction to merge and handle failures afterwards. Phase 162's run 41330669874 (PR #208, also merged while running) passed qualify on ubuntu-latest, macos-latest and windows-latest",
-    "at": "3195826",
+    "platform": "Local macOS arm64, release, serial Cargo: 927 passed / 0 failed / 41 ignored, no warnings; parity table not rerun. Hosted run 41345593545 was queued when PR #212 was merged on the owner's standing instruction to merge and handle failures afterwards. Phase 163's run 41339381216 (PR #210, also merged while running) passed qualify on ubuntu-latest, macos-latest and windows-latest",
+    "at": "5a86bb9",
     "corpus": "issue-46-abc-corpus-2026-10-18.md"
   },
   "tests": {
@@ -116,13 +118,13 @@
     "platform": "macOS arm64 (no Windows or hosted CI evidence)",
     "at": "20a3f24"
   },
-  "last_confirmed_main_merge": "0703b9e269e16c220dbaf9ebeae04cb2cbde88c1",
+  "last_confirmed_main_merge": "e18f4ace14a5809debde4fce4cec22fdbd5c6301",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Non-NEMA Issue #63 gates: 00007062's minimum scaled Jacobian (0.0006; 4,521 all-boundary cells under 0.1 that smoothing cannot move, the 2.28 degree shell angle, the boundary-split budget) so it passes the default solver gate and solves; the 300-file ABC rerun with the smoothing recipe; broader native/OCCT solves; Windows native-only mesh/solve; remaining five-plan items. NEMA17 deferred by owner request",
+    "scope": "Non-NEMA Issue #63 gates: 00007062's 448-cell residue under 0.1 (minimum scaled Jacobian 0.019; 12 all-boundary cells) so it passes the default solver gate and solves; the sliver-stage time margin on slower machines; the 300-file ABC rerun with the smoothing recipe; broader native/OCCT solves; Windows native-only mesh/solve; remaining five-plan items. NEMA17 deferred by owner request",
     "status": "see_resume_guide_open_list"
   },
-  "base_main_head": "0703b9e269e16c220dbaf9ebeae04cb2cbde88c1",
+  "base_main_head": "e18f4ace14a5809debde4fce4cec22fdbd5c6301",
   "completion_checklist": "issue-46-completion-checklist.md",
   "resume": "issue-46-resume.md",
   "pending_prs": []
