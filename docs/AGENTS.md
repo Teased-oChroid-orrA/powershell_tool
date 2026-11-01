@@ -260,6 +260,7 @@ prose into this file or into root `CLAUDE.md`. Link to the source file.
 - [Phase 155 seam alignment](issue-46-phase-155.md): nearby straddling boundary vertices move onto proven CAD seams before Tet10 construction; the 1 mm fillet area and traction gates pass on both surface paths.
 - [Phase 156 spline-edge grading](issue-46-phase-156.md): the ABC `00006600` chart-overlap refusal is cleared by midpoint splitting on spline edges; PLC quality and retirement remain open.
 - [Phase 157 graded sample spacing](issue-46-phase-157.md): grading drops new edge samples nearer than the model's geometry tolerance; ABC `00006600` (4.7°) and `00007062` (2.9°) shells now conform in PLC but fail the default solver gate; one spline_surfaces bound re-baselined by owner decision.
+- [Phase 158 required splits below the sliver floor](issue-46-phase-158.md): a required sub-facet's segment split is required too, ending a sliver-stage livelock that discarded every quality point on ABC `00006600` (cells under the gate 50,820 to 31,400 at the default clock; 483 given unlimited time); neither ABC file passes the gate yet.
 
 - [Phase 41: whole-interval planar spline p-curve bounds](issue-46-phase-41.md): source/budget guards and explicit unit qualification.
 
