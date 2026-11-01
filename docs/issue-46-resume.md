@@ -42,6 +42,8 @@ This is the current entry point for Claude Code or Codex. Historical phase repor
 
 **2026-10-31 presence-table update:** [Phase 159](issue-46-phase-159.md) keeps the sliver stage's edge and face presence counts current per insertion instead of rebuilding them from every cell for each exact check (about three quarters of the stage time); the stage is about five times faster with the same sequence of insertions. At the default 20 s clock ABC `00006600` goes from 31,400 to 3,380 cells under the gate's 0.1 and `00007062` from 96,023 to 85,052; neither passes the unchanged default solver gate, so neither is solved. Merged as PR #202 after hosted qualification passed on Ubuntu, macOS and Windows. Retirement remains unapproved.
 
+**2026-11-01 sliver point-search update:** [Phase 160](issue-46-phase-160.md) has the sliver stage try 14 picking points inside a sliver's circumsphere and take one that encroaches nothing and gives better new cells than the circumcentre, and has post-stage reconnection judge flips by the scaled Jacobian instead of the radius ratio; further speed work keeps the same sequence of insertions. At the default 20 s clock on an idle CPU, ABC `00006600` goes from 3,380 to 19 cells under the gate's 0.1 (minimum scaled Jacobian 0.0621, edge ratio 13.6; under CPU load the clock rolls it back to 28 cells), and `00007062` has 87,029. Neither passes the unchanged default solver gate, so neither is solved; the 19 cells on `00006600` come from cap triangles in its graded shell. Merged as PR #204 after hosted qualification (run 41277830701) passed on Ubuntu, macOS and Windows. Retirement remains unapproved.
+
 ## Establish current state
 
 1. Read root `CLAUDE.md`, then the relevant crate and `docs/AGENTS.md` instructions.

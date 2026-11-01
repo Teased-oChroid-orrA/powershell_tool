@@ -3,7 +3,7 @@
   "epic_complete": false,
   "branch": "main",
   "pull_request": null,
-  "pull_request_state": "none_open_after_pr_202",
+  "pull_request_state": "none_open_after_pr_204",
   "merged_prs": [
     42,
     65,
@@ -84,25 +84,26 @@
     195,
     198,
     200,
-    202
+    202,
+    204
   ],
-  "latest_qualified_source": "f5058a4d3d4ebeed905a6634f5d03c61639ad497",
-  "latest_phase": 159,
-  "progress_snapshot": "issue-46-phase-159.md",
+  "latest_qualified_source": "3113ce7ec6f3ba4fce7cec2c5f2c9511096aeffe",
+  "latest_phase": 160,
+  "progress_snapshot": "issue-46-phase-160.md",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
-  "remaining": "Phase 159: the sliver stage keeps its edge and face presence table current per insertion instead of rebuilding it for every check, about five times faster with the same insertions. At the default 20 s clock ABC 00006600 goes from 31,400 to 3,380 cells under the gate's 0.1 (minimum scaled Jacobian 0.023, largest edge ratio 21.2) and 00007062 from 96,023 to 85,052 (0.0004, 164.1); neither passes the unchanged default solver gate, so neither is solved. NEMA17 is deferred by owner request. A better point than the circumcentre for slivers, reconnection by scaled Jacobian, further sliver-stage speed, the 300-file ABC rerun, general CAD seam conformity, Windows native-only mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
+  "remaining": "Phase 160: the sliver stage searches 14 picking points inside a sliver's circumsphere for one that encroaches nothing and gives better new cells than the circumcentre, and post-stage reconnection judges flips by the scaled Jacobian; speed work keeps the same insertion sequence. At the default 20 s clock on an idle CPU, ABC 00006600 goes from 3,380 to 19 cells under the gate's 0.1 (minimum scaled Jacobian 0.0621, edge ratio 13.6; under CPU load the clock rolls back to 28 cells) and 00007062 has 87,029 (0.0022, 67.3); neither passes the unchanged default solver gate, so neither is solved. The 19 cells on 00006600 come from cap triangles in the graded shell (surface stage). NEMA17 is deferred by owner request. Removing those caps, the boundary-split budget on 00007062, the 300-file ABC rerun, general CAD seam conformity, Windows native-only mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
   "latest_increment_tests": {
     "commands": [
       "cargo test -p solid-kernel -p fea-core --release --locked --offline -j1 --no-fail-fast",
       "ABC_GRADED_FIRST=1 cargo run --release --locked --offline -j1 -p solid-kernel --no-default-features --example abc-corpus -- --one <file> --foreign --graded --steiner 200000 --conform-timeout 300 --merge --quality --refine (00006600, 00007062)",
-      "STAGEDBG=1 PLC_MERGE=1 PLC_REFINE=1 PLC_QSEC=900 PLC_SECS=900 target/release/examples/plc-run <dumped 00006600 and 00007062 shells>",
-      "Hosted Workbench qualification run 41261832393 at f5058a4"
+      "STAGEDBG=1 PLC_MERGE=1 PLC_REFINE=1 PLC_QSEC=900 target/release/examples/plc-run <dumped 00006600 and 00007062 shells>",
+      "Hosted Workbench qualification run 41277830701 at 3113ce7"
     ],
     "result": "passed",
-    "platform": "Local macOS arm64, release, serial Cargo: 921 passed / 0 failed / 41 ignored, no warnings; with PLC_QSEC=900 the refine rounds and final report are identical to Phase 158. Hosted run 41261832393: qualify passed on ubuntu-latest, macos-latest and windows-latest",
-    "at": "f5058a4",
+    "platform": "Local macOS arm64, release, serial Cargo: 924 passed / 0 failed / 41 ignored (solid-kernel rerun with the review fix: 303 / 0 / 4); with PLC_QSEC=900 every speed step gives the identical insertion sequence. Hosted run 41277830701: qualify passed on ubuntu-latest, macos-latest and windows-latest",
+    "at": "3113ce7",
     "corpus": "issue-46-abc-corpus-2026-10-18.md"
   },
   "tests": {
@@ -112,13 +113,13 @@
     "platform": "macOS arm64 (no Windows or hosted CI evidence)",
     "at": "20a3f24"
   },
-  "last_confirmed_main_merge": "bee8cab8966d3c827adb2ad22a3d8072d93e6f98",
+  "last_confirmed_main_merge": "46d296832610c457177bf7426f5744281c975504",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Non-NEMA Issue #63 gates: sliver-stage speed and a candidate-point search for the cells the plain step leaves unresolved, so 00006600 and 00007062 pass the default solver gate and solve; 300-file ABC rerun; broader native/OCCT solves; Windows native-only mesh/solve; remaining five-plan items. NEMA17 deferred by owner request",
+    "scope": "Non-NEMA Issue #63 gates: remove the cap triangles of the graded 00006600 shell (surface stage) so its last cells pass the default solver gate and it solves; the boundary-split budget that keeps 00007062 far from the gate; 300-file ABC rerun; broader native/OCCT solves; Windows native-only mesh/solve; remaining five-plan items. NEMA17 deferred by owner request",
     "status": "see_resume_guide_open_list"
   },
-  "base_main_head": "bee8cab8966d3c827adb2ad22a3d8072d93e6f98",
+  "base_main_head": "46d296832610c457177bf7426f5744281c975504",
   "completion_checklist": "issue-46-completion-checklist.md",
   "resume": "issue-46-resume.md",
   "pending_prs": []
