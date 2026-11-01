@@ -1589,7 +1589,12 @@ fn drive(
                     state.refused_tris.insert((k, t));
                     continue;
                 }
-                // The centre is rejected; its encroached segments are split first.
+                // The centre is rejected; its encroached segments are split first. Recovering a required sub-facet makes
+                // those splits required as well: the sliver floor refuses only optional splits, and a refused split here would
+                // queue the same sub-facet and segment again forever (ABC `00006600`, Phase 158).
+                if state.required_tris.contains(&(k, t)) {
+                    state.required_segments.extend(hit.iter().copied());
+                }
                 state.enc_segments.extend(hit);
                 state.enc_tris.insert((k, t));
                 if was_forced {
@@ -1606,6 +1611,9 @@ fn drive(
                     if !state.required_tris.contains(&(k, t)) && state.refused_segments.contains(&s) {
                         state.refused_tris.insert((k, t));
                         continue;
+                    }
+                    if state.required_tris.contains(&(k, t)) {
+                        state.required_segments.insert(s);
                     }
                     state.enc_segments.insert(s);
                     state.enc_tris.insert((k, t));
@@ -1639,6 +1647,9 @@ fn drive(
                     if !state.required_tris.contains(&(k, t)) && state.refused_segments.contains(&s) {
                         state.refused_tris.insert((k, t));
                         continue;
+                    }
+                    if state.required_tris.contains(&(k, t)) {
+                        state.required_segments.insert(s);
                     }
                     state.enc_segments.insert(s);
                     state.enc_tris.insert((k, t));
@@ -1754,36 +1765,14 @@ fn publish(
         Err(fail(ErrorKind::Cancelled, "PLC recovery cancelled"))
     }
 }
-fn conform_attempt(
+/// The recovery's starting state: the Delaunay tetrahedralization of the input vertices, the facet meshes (and the patches
+/// of input facets each one covers) and the segments, with the initially encroached items queued.
+fn initial_state(
     vertices: &[V3],
     facets: &[[usize; 3]],
     frozen: Option<&[bool]>,
     options: Options,
-    progress: &mut dyn FnMut(Progress) -> bool,
-) -> Result<Conforming, Error> {
-    if facets.is_empty() || facets.iter().flatten().any(|&v| v >= vertices.len()) {
-        return Err(fail(ErrorKind::Topology, "invalid PLC facet list"));
-    }
-    let mut incidence = BTreeMap::<[usize; 2], usize>::new();
-    for f in facets {
-        for k in 0..3 {
-            *incidence.entry(edge(f[k], f[(k + 1) % 3])).or_default() += 1;
-        }
-    }
-    if incidence.values().any(|&n| n != 2) {
-        return Err(fail(
-            ErrorKind::Topology,
-            "PLC must be a closed manifold shell (every edge in exactly two facets)",
-        ));
-    }
-    if !progress(Progress {
-        phase: Phase::Delaunay,
-        steiner: 0,
-        missing_segments: 0,
-        missing_facets: 0,
-    }) {
-        return Err(fail(ErrorKind::Cancelled, "PLC recovery cancelled"));
-    }
+) -> Result<(State, Vec<Vec<usize>>), Error> {
     let limits = DelaunayLimits {
         max_points: vertices.len() + options.max_steiner,
         max_cells: options.max_cells,
@@ -1933,6 +1922,39 @@ fn conform_attempt(
     for k in 0..state.meshes.len() {
         state.refresh_mesh(k)?;
     }
+    Ok((state, patches))
+}
+fn conform_attempt(
+    vertices: &[V3],
+    facets: &[[usize; 3]],
+    frozen: Option<&[bool]>,
+    options: Options,
+    progress: &mut dyn FnMut(Progress) -> bool,
+) -> Result<Conforming, Error> {
+    if facets.is_empty() || facets.iter().flatten().any(|&v| v >= vertices.len()) {
+        return Err(fail(ErrorKind::Topology, "invalid PLC facet list"));
+    }
+    let mut incidence = BTreeMap::<[usize; 2], usize>::new();
+    for f in facets {
+        for k in 0..3 {
+            *incidence.entry(edge(f[k], f[(k + 1) % 3])).or_default() += 1;
+        }
+    }
+    if incidence.values().any(|&n| n != 2) {
+        return Err(fail(
+            ErrorKind::Topology,
+            "PLC must be a closed manifold shell (every edge in exactly two facets)",
+        ));
+    }
+    if !progress(Progress {
+        phase: Phase::Delaunay,
+        steiner: 0,
+        missing_segments: 0,
+        missing_facets: 0,
+    }) {
+        return Err(fail(ErrorKind::Cancelled, "PLC recovery cancelled"));
+    }
+    let (mut state, patches) = initial_state(vertices, facets, frozen, options)?;
     let mut rounds = 0;
     let (mut snapshot, mut next_snapshot) = (None, 0);
     let mut cancelled = false;
@@ -2161,6 +2183,37 @@ fn extract(state: State, input_vertices: usize, rounds: usize) -> Result<Conform
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A required sub-facet (one the triangulation lacked) whose circumcentre encroaches a segment shorter than the sliver
+    /// floor: the split it needs is required, not optional. Refusing it at the floor queued the same sub-facet and segment again
+    /// until the sliver stage's clock ran out and its work was rolled back (ABC `00006600`, Phase 158).
+    #[test]
+    fn a_required_sub_facet_gets_its_split_below_the_sliver_floor() {
+        let vertices = [
+            [0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.],
+            [0., 0., 1.], [1., 0., 1.], [1., 1., 1.], [0., 1., 1.],
+        ];
+        let facets = [
+            [0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4],
+            [3, 7, 6], [3, 6, 2], [0, 4, 7], [0, 7, 3], [1, 2, 6], [1, 6, 5],
+        ];
+        let options = Options { min_scaled_jacobian: Some(0.2), max_quality_seconds: 5., ..Options::default() };
+        let (mut state, _) = initial_state(&vertices, &facets, None, options).unwrap();
+        // sliver stage under way, every segment below its floor; the right triangle's circumcentre is the midpoint of the
+        // face diagonal 0-2, a segment
+        let t = state.meshes[0].tris[0];
+        assert!(state.segments.contains(&[0, 2]));
+        state.optional_floor = 10.;
+        state.quality_start = Some(0);
+        state.quality_clock = Some(std::time::Instant::now());
+        state.required_tris.insert((0, t));
+        state.enc_tris.insert((0, t));
+        let start = std::time::Instant::now();
+        let (mut rounds, mut snapshot, mut next) = (0, None, usize::MAX);
+        drive(&mut state, &mut |_| true, &mut rounds, &mut snapshot, &mut next).unwrap();
+        assert!(state.segment_steiner >= 1, "the diagonal was not split");
+        assert!(!state.segments.contains(&[0, 2]));
+        assert!(start.elapsed().as_secs_f64() < 5., "{:?}", start.elapsed());
+    }
     #[test]
     fn cancellation_precedes_delaunay_initialization() {
         let vertices = [[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];

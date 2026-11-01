@@ -218,6 +218,7 @@ fn survey(
     // per-face sampling first; when that stage fails, from the graded model (`AnalyticModel::graded`), the production path.
     let (mut faces, mut nv, mut nt, mut vol, mut angle) = (0, 0, 0, 0., f64::INFINITY);
     let (mut steiner, mut cells, mut worst_err, mut graded_bodies) = (0usize, 0usize, 0f64, 0usize);
+    let (mut quality_steiner, mut unresolved) = (0usize, 0usize);
     let mut qualities = Vec::new();
     let limits = solid_kernel::native_surface::Limits {
         face_work: 20_000_000,
@@ -395,9 +396,11 @@ fn survey(
         steiner += report.segment_steiner + report.facet_steiner;
         cells += report.interior_cells;
         worst_err = worst_err.max(report.volume_error_relative);
+        quality_steiner += report.quality_steiner;
+        unresolved += report.unresolved_bad_cells;
     }
     let mut detail = format!(
-        "bodies {} graded {graded_bodies} steiner {steiner} cells {cells} volume_error {worst_err:.3e}",
+        "bodies {} graded {graded_bodies} steiner {steiner} quality_steiner {quality_steiner} unresolved {unresolved} cells {cells} volume_error {worst_err:.3e}",
         models.len()
     );
     if quality {
