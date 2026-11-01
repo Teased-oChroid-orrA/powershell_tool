@@ -2145,7 +2145,12 @@ impl AnalyticModel {
                         let lower = order[j].min(order[j + 1]);
                         let tt = if u.forward { t } else { 1. - t };
                         self.insert_edge_splits(u.edge, &[(lower, tt)]).ok()?;
-                        lower + 1
+                        // `insert_edge_splits` skips a point it cannot evaluate or that repeats a sample
+                        if self.edges.get(&u.edge)?.len() == n + 1 {
+                            self.drop_samples_beside(u.edge, lower + 1)
+                        } else {
+                            lower + 1
+                        }
                     }
                 };
                 let len = self.edges.get(&u.edge)?.len();
@@ -2159,6 +2164,36 @@ impl AnalyticModel {
             }
         }
         None
+    }
+    /// Remove the interior samples of `edge` next to sample `index` that lie nearer than the geometry tolerance to it, and
+    /// return the sample's index afterwards. A seam end inserted on a loop's edge is an exact point of its curve; an old
+    /// sample beside it carries no geometry and, once the edge is split there, leaves a piece far shorter than the corner's
+    /// other side: on ABC `00006600` a cone seam landed 6.47e-4 mm from a circle's midpoint sample, against a 0.005 mm
+    /// tolerance, and that corner's 4.7 degree angle left cells under the solver gate (Phase 162). Grading keeps the same
+    /// spacing (`AnalyticModel::graded`). The chord across a dropped sample moves off the curve by less than the tolerance
+    /// more than before. An end sample is never dropped: taking the edge's vertex as the seam's end instead would put the
+    /// seam off the generator, which the cone chart refuses.
+    fn drop_samples_beside(&mut self, edge: u64, mut index: usize) -> usize {
+        let tolerance = self.geometry_tolerance_mm;
+        let samples = self.edges.get_mut(&edge).unwrap();
+        let near = |samples: &[V3], i: usize, index: usize| norm(sub(samples[i], samples[index])) < tolerance;
+        let mut drop = Vec::new();
+        if index + 2 < samples.len() && near(samples, index + 1, index) {
+            drop.push(index + 1);
+        }
+        if index >= 2 && near(samples, index - 1, index) {
+            drop.push(index - 1);
+        }
+        for &i in &drop {
+            samples.remove(i);
+            if let Some(Curve::Spline { params, .. }) = self.curves.get_mut(&edge) {
+                params.remove(i);
+            }
+            if i < index {
+                index -= 1;
+            }
+        }
+        index
     }
     /// Split `edge` at its interior sample `index` into two edges meeting at a new vertex, in every face that uses it. Only
     /// circle and line edges (whose pieces keep the whole curve and their own sample slices) are split.
