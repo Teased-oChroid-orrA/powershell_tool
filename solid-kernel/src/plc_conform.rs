@@ -1064,27 +1064,12 @@ struct Missing {
     segments: BTreeSet<[usize; 2]>,
     /// Missing sub-facets of each mesh, in the order of its `tris`.
     tris: Vec<Vec<[usize; 3]>>,
-    /// The meshes holding each vertex.
-    vertex_meshes: Vec<Vec<usize>>,
     /// Since the last check: edges that appeared or disappeared, and segments added or removed.
     edge_log: Vec<[usize; 2]>,
     /// Since the last check: faces that appeared or disappeared.
     face_log: Vec<[usize; 3]>,
     /// Since the last check: meshes whose sub-facets changed.
     mesh_log: Vec<usize>,
-}
-impl Missing {
-    /// Note that the vertices of mesh `k` belong to it.
-    fn own_vertices(&mut self, k: usize, mesh: &FacetMesh) {
-        for &v in mesh.uv.keys() {
-            if self.vertex_meshes.len() <= v {
-                self.vertex_meshes.resize(v + 1, Vec::new());
-            }
-            if !self.vertex_meshes[v].contains(&k) {
-                self.vertex_meshes[v].push(k);
-            }
-        }
-    }
 }
 #[derive(Clone)]
 struct State {
@@ -1093,6 +1078,9 @@ struct State {
     segments: BTreeSet<[usize; 2]>,
     seg_grid: SegmentGrid,
     meshes: Vec<FacetMesh>,
+    /// The meshes holding each vertex (in their `uv`), kept current by [`State::own_vertex`]: scanning every mesh for the
+    /// facets a split segment bounds took about 70% of the sliver stage on ABC `00007062` (Phase 164).
+    vertex_meshes: Vec<Vec<usize>>,
     facet_index: FacetIndex,
     /// Edge and face counts of the triangulation once the first exact presence check has built them (`State::ensure_presence`).
     presence: Option<Presence>,
@@ -1185,6 +1173,15 @@ impl State {
             m.mesh_log.push(k);
         }
     }
+    /// Note that mesh `k` holds vertex `v` (call it after every insertion into a mesh; a mesh never loses a vertex).
+    fn own_vertex(&mut self, k: usize, v: usize) {
+        if self.vertex_meshes.len() <= v {
+            self.vertex_meshes.resize(v + 1, Vec::new());
+        }
+        if !self.vertex_meshes[v].contains(&k) {
+            self.vertex_meshes[v].push(k);
+        }
+    }
     /// The sub-segments (in order) and sub-facets (by mesh, in `tris` order) missing from the triangulation, from every one.
     fn missing_items_from_scratch(&mut self) -> (Vec<[usize; 2]>, Vec<(usize, [usize; 3])>) {
         self.ensure_presence();
@@ -1207,14 +1204,11 @@ impl State {
         let absent = |t: &[usize; 3]| !faces.contains_key(&face_key(*t));
         let m = match self.missing.as_mut() {
             None => {
-                let mut m = Missing {
+                let m = Missing {
                     segments: self.segments.iter().copied().filter(|s| !edges.contains_key(s)).collect(),
                     tris: self.meshes.iter().map(|mesh| mesh.tris.iter().copied().filter(absent).collect()).collect(),
                     ..Missing::default()
                 };
-                for (k, mesh) in self.meshes.iter().enumerate() {
-                    m.own_vertices(k, mesh);
-                }
                 self.missing.insert(m)
             }
             Some(m) => {
@@ -1226,14 +1220,9 @@ impl State {
                     }
                 }
                 let mut dirty = std::mem::take(&mut m.mesh_log);
-                dirty.sort_unstable();
-                dirty.dedup();
-                for &k in &dirty {
-                    m.own_vertices(k, &self.meshes[k]);
-                }
                 // a face can only be a sub-facet of a mesh holding all three of its vertices
                 for f in std::mem::take(&mut m.face_log) {
-                    for &k in m.vertex_meshes.get(f[0]).map_or(&[][..], |v| v) {
+                    for &k in self.vertex_meshes.get(f[0]).map_or(&[][..], |v| v) {
                         let uv = &self.meshes[k].uv;
                         if uv.contains_key(&f[1]) && uv.contains_key(&f[2]) {
                             dirty.push(k);
@@ -1851,12 +1840,20 @@ impl State {
                 self.seg_grid.add(h, pts);
             }
         }
-        // Both facets bounded by the segment gain the new point on their edge.
+        // Both facets bounded by the segment gain the new point on their edge; such a mesh holds both ends.
+        let mut holding = self.vertex_meshes.get(a).cloned().unwrap_or_default();
+        holding.sort_unstable();
+        debug_assert_eq!(
+            holding.iter().copied().filter(|&k| self.meshes[k].has_boundary_edge(s)).collect::<Vec<_>>(),
+            (0..self.meshes.len()).filter(|&k| self.meshes[k].has_boundary_edge(s)).collect::<Vec<_>>(),
+            "the vertex index disagrees with the scan of every mesh"
+        );
         let mut touched = Vec::new();
-        for k in 0..self.meshes.len() {
+        for k in holding {
             if self.meshes[k].has_boundary_edge(s) {
                 self.mesh_changed(k);
                 self.meshes[k].insert(mi, m, Some(s))?;
+                self.own_vertex(k, mi);
                 touched.push(k);
             }
         }
@@ -2198,6 +2195,7 @@ fn drive(
                     ),
                 ));
             }
+            state.own_vertex(k, id);
             let inserted = state.insert(cc)?;
             debug_assert_eq!(inserted, id);
             state.facet_steiner += 1;
@@ -2394,6 +2392,15 @@ fn initial_state(
         segments,
         seg_grid,
         facet_index: FacetIndex::new(vertices, meshes.len()),
+        vertex_meshes: {
+            let mut held = vec![Vec::new(); vertices.len()];
+            for (k, mesh) in meshes.iter().enumerate() {
+                for &v in mesh.uv.keys() {
+                    held[v].push(k);
+                }
+            }
+            held
+        },
         meshes,
         presence: None,
         enc_segments: BTreeSet::new(),
