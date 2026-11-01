@@ -40,6 +40,8 @@ This is the current entry point for Claude Code or Codex. Historical phase repor
 
 **2026-10-31 sliver-livelock update:** [Phase 158](issue-46-phase-158.md) makes a segment split that recovers a required sub-facet required as well, so the sliver floor no longer refuses it; the sliver stage on ABC `00006600` had requeued one sub-facet and one segment millions of times and rolled back every quality point. It now keeps 2,505 quality points in its 20 s clock; given unlimited time it ends by itself with 483 cells under the gate's 0.1 (minimum scaled Jacobian 0.035). Neither ABC file passes the unchanged default solver gate, so neither is solved. Merged as PR #200 after hosted qualification passed on Ubuntu, macOS and Windows. Retirement remains unapproved.
 
+**2026-10-31 presence-table update:** [Phase 159](issue-46-phase-159.md) keeps the sliver stage's edge and face presence counts current per insertion instead of rebuilding them from every cell for each exact check (about three quarters of the stage time); the stage is about five times faster with the same sequence of insertions. At the default 20 s clock ABC `00006600` goes from 31,400 to 3,380 cells under the gate's 0.1 and `00007062` from 96,023 to 85,052; neither passes the unchanged default solver gate, so neither is solved. Merged as PR #202 after hosted qualification passed on Ubuntu, macOS and Windows. Retirement remains unapproved.
+
 ## Establish current state
 
 1. Read root `CLAUDE.md`, then the relevant crate and `docs/AGENTS.md` instructions.
