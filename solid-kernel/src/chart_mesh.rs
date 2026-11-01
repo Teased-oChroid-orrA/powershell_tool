@@ -200,6 +200,7 @@ fn shape_chart(
     surface: Option<&Surface>,
     chord_mm: f64,
     shaping: Shaping,
+    forced: &dyn Fn(usize, usize, f64) -> bool,
 ) -> Result<ShapedChart, Error> {
     let Shaping {
         quality,
@@ -346,6 +347,12 @@ fn shape_chart(
         // face despite correct topological boundary recovery. Split curved interior
         // boundary-to-boundary chords on the evaluated surface, preserving every
         // constrained boundary segment and sharing the new point across both sides.
+        // `forced` (given the two boundary samples and the chord's sagitta) decides
+        // which such chords are split whatever their sagitta: the model's rule
+        // spares only a chord whose split point lies within the geometry tolerance
+        // of the chord and whose ends share no neighbouring face. Splitting that one
+        // put the midpoint of a corner's short diagonal against its long side,
+        // leaving a 4.7/170 degree cap on ABC `00006600` (Phase 161).
         if let Some(surface) = surface.filter(|s| !matches!(s, Surface::Plane(_))) {
             let mut work = 0usize;
             loop {
@@ -369,10 +376,20 @@ fn shape_chart(
                         continue;
                     }
                     let [a, b] = edge.vertices();
-                    let boundary_diagonal =
-                        a.index() < boundary_count && b.index() < boundary_count;
+                    let boundary_diagonal = a.index() < boundary_count && b.index() < boundary_count;
+                    let ends = [a.index(), b.index()];
                     let a = a.data();
                     let b = b.data();
+                    let chart = chart_midpoint(a.chart, b.chart);
+                    let world = surface.point(chart).ok_or_else(|| {
+                        fail(ErrorKind::Geometry, "unresolved curved interior point")
+                    })?;
+                    let chord: V3 = std::array::from_fn(|i| a.world[i] / 2. + b.world[i] / 2.);
+                    let sag = ((world[0] - chord[0]).powi(2)
+                        + (world[1] - chord[1]).powi(2)
+                        + (world[2] - chord[2]).powi(2))
+                    .sqrt();
+                    let boundary_diagonal = boundary_diagonal && forced(ends[0], ends[1], sag);
                     // The cylinder keeps its closed-form bound on the circumferential span; the other curved surfaces
                     // use the sagitta itself: the chart midpoint's surface point against the chord midpoint.
                     let span = (a.chart[0] - b.chart[0]).abs();
@@ -389,20 +406,8 @@ fn shape_chart(
                         if a.chart[0] == b.chart[0] {
                             continue;
                         }
-                    }
-                    let chart = chart_midpoint(a.chart, b.chart);
-                    let world = surface.point(chart).ok_or_else(|| {
-                        fail(ErrorKind::Geometry, "unresolved curved interior point")
-                    })?;
-                    let chord: V3 = std::array::from_fn(|i| a.world[i] / 2. + b.world[i] / 2.);
-                    if bound.is_none() {
-                        let sag = ((world[0] - chord[0]).powi(2)
-                            + (world[1] - chord[1]).powi(2)
-                            + (world[2] - chord[2]).powi(2))
-                        .sqrt();
-                        if !boundary_diagonal && sag <= chord_mm {
-                            continue;
-                        }
+                    } else if !boundary_diagonal && sag <= chord_mm {
+                        continue;
                     }
                     if world != chord {
                         candidates.push(ChartVertex {
@@ -468,6 +473,7 @@ fn triangulate(
     surface: Option<&Surface>,
     chord_mm: f64,
     quality: Option<ChartQuality>,
+    forced: &dyn Fn(usize, usize, f64) -> bool,
 ) -> Result<ChartMesh, Error> {
     let ShapedChart {
         cdt,
@@ -485,6 +491,7 @@ fn triangulate(
             quality,
             split_boundary: false,
         },
+        forced,
     )?;
     let parity = regions(&cdt, max_work)?;
     let mut triangles = Vec::new();
@@ -567,6 +574,7 @@ impl AnalyticModel {
         quality: Option<ChartQuality>,
     ) -> Result<ChartMesh, Error> {
         let inputs = self.chart_inputs(face_id, max_work, policy)?;
+        let forced = self.forced_diagonals(face_id, &inputs.vertices);
         let mut mesh = triangulate(
             face_id,
             &inputs.loops,
@@ -575,9 +583,74 @@ impl AnalyticModel {
             inputs.surface.as_ref(),
             self.chord_tolerance_mm(),
             quality,
+            &forced,
         )?;
         mesh.chart_adjustments = inputs.adjustments;
         Ok(mesh)
+    }
+    /// Which boundary diagonals of `face_id`'s chart (chords between two of its boundary `samples`, given their sagitta)
+    /// the chord rule splits whatever their sagitta. A chord is spared only when its split point lies within the geometry
+    /// tolerance of the chord, so the split carries no geometry, and it cannot overlap a neighbouring face: its ends share
+    /// no other face and neither lies on a plane of a face the other one touches. A seam's samples count the face itself
+    /// as a neighbour, so a chord between two of them is always split. The neighbours are found on the first chord within
+    /// the tolerance, so most faces never scan the body.
+    fn forced_diagonals<'a>(
+        &'a self,
+        face_id: u64,
+        samples: &[ChartVertex],
+    ) -> impl Fn(usize, usize, f64) -> bool + 'a {
+        let tolerance = self.geometry_tolerance_mm();
+        let sources: Vec<SampleKey> = samples.iter().map(|v| v.source).collect();
+        let worlds: Vec<V3> = samples.iter().map(|v| v.world).collect();
+        let neighbours = std::cell::OnceCell::<Vec<BTreeSet<u64>>>::new();
+        let find_neighbours = move || {
+            let body = self.body();
+            let mut edge_faces = BTreeMap::<u64, BTreeSet<u64>>::new();
+            for f in body.faces.values() {
+                for u in f.bounds.iter().flat_map(|b| &b.edges) {
+                    edge_faces.entry(u.edge).or_default().insert(f.id);
+                }
+            }
+            let mut uses = BTreeMap::<u64, usize>::new();
+            for u in body.faces[&face_id].bounds.iter().flat_map(|b| &b.edges) {
+                *uses.entry(u.edge).or_default() += 1;
+            }
+            let faces_of = |edge: &u64| {
+                let mut faces = edge_faces.get(edge).cloned().unwrap_or_default();
+                if uses.get(edge).is_none_or(|n| *n < 2) {
+                    faces.remove(&face_id);
+                }
+                faces
+            };
+            let mut vertex_edges = BTreeMap::<u64, Vec<u64>>::new();
+            for (id, e) in &body.edges {
+                vertex_edges.entry(e.start).or_default().push(*id);
+                vertex_edges.entry(e.end).or_default().push(*id);
+            }
+            sources
+                .iter()
+                .map(|source| match source {
+                    SampleKey::Vertex(id) => vertex_edges.get(id).into_iter().flatten().flat_map(faces_of).collect(),
+                    SampleKey::EdgePoint { edge, .. } => faces_of(edge),
+                    SampleKey::FacePoint { .. } => BTreeSet::new(),
+                })
+                .collect::<Vec<_>>()
+        };
+        let on_plane = move |p: V3, faces: &BTreeSet<u64>| {
+            faces.iter().any(|f| {
+                self.surface(*f).is_some_and(|s| {
+                    matches!(s, Surface::Plane(_))
+                        && s.project(p).is_some_and(|q| q.residual_mm <= tolerance)
+                })
+            })
+        };
+        move |a, b, sag| {
+            if sag > tolerance {
+                return true;
+            }
+            let n = neighbours.get_or_init(&find_neighbours);
+            !n[a].is_disjoint(&n[b]) || on_plane(worlds[b], &n[a]) || on_plane(worlds[a], &n[b])
+        }
     }
     fn chart_inputs(
         &self,
@@ -714,6 +787,9 @@ impl AnalyticModel {
                 }),
                 split_boundary: true,
             },
+            // Grading keeps every boundary diagonal split: the interior points it adds steer where the edges are graded,
+            // and sparing them there coarsened the graded edges of ABC `00007062` (Phase 161).
+            &|_, _, _| true,
         )?;
         // Loop membership of every original sample.
         let mut loop_of = Vec::with_capacity(boundary_count);
@@ -854,7 +930,7 @@ mod tests {
                 source: SampleKey::Vertex(i as u64),
             })
             .collect();
-        let mesh = triangulate(0, &loops, v, 10000, None, 0.05, None).unwrap();
+        let mesh = triangulate(0, &loops, v, 10000, None, 0.05, None, &|_, _, _| true).unwrap();
         let area: f64 = mesh
             .triangles
             .iter()
@@ -913,6 +989,7 @@ mod tests {
                 quality: None,
                 split_boundary: true,
             },
+            &|_, _, _| true,
         )
         .unwrap();
 
@@ -941,4 +1018,111 @@ mod tests {
             );
         }
     }
+
+    /// The largest corner angle (degrees) of the chart's domain triangles, in 3D.
+    fn largest_angle(shaped: &ShapedChart) -> f64 {
+        let parity = regions(&shaped.cdt, 10_000).unwrap();
+        let mut largest: f64 = 0.;
+        for face in shaped.cdt.inner_faces().filter(|f| parity[f.index()] == Some(true)) {
+            let p = face.vertices().map(|v| shaped.vertices[v.index()].world);
+            for i in 0..3 {
+                let u = crate::sub(p[(i + 1) % 3], p[i]);
+                let w = crate::sub(p[(i + 2) % 3], p[i]);
+                let cos = crate::dot(u, w) / (crate::dot(u, u) * crate::dot(w, w)).sqrt();
+                largest = largest.max(cos.clamp(-1., 1.).acos().to_degrees());
+            }
+        }
+        largest
+    }
+
+    /// Reduced from the cone faces of ABC `00006600` (Phase 161): a chart corner whose sides are 6.47e-4 and 7.81e-3 mm.
+    /// Splitting the corner's diagonal at its chart midpoint leaves a 4.7/4.7/170.5 degree cap against the long side; the
+    /// diagonal's sagitta is far below any tolerance, so the split carries no geometry.
+    #[test]
+    fn a_boundary_diagonal_left_unsplit_leaves_no_cap() {
+        let surface = Surface::Cylinder {
+            frame: Frame {
+                origin: [0., 0., 0.],
+                x: [1., 0., 0.],
+                y: [0., 1., 0.],
+                z: [0., 0., 1.],
+            },
+            radius: 8.5,
+        };
+        let (s, l) = (6.47e-4, 7.81e-3);
+        let points = vec![[0., 0.], [s, 0.], [s, l], [0., l]];
+        let loops = vec![TrimLoop {
+            bound_id: 1,
+            points: points.clone(),
+            is_outer: true,
+        }];
+        let shaped = |forced: &dyn Fn(usize, usize, f64) -> bool| {
+            let vertices = points
+                .iter()
+                .enumerate()
+                .map(|(i, &chart)| ChartVertex {
+                    chart,
+                    world: surface.point(chart).unwrap(),
+                    source: SampleKey::Vertex(i as u64),
+                })
+                .collect();
+            shape_chart(
+                1,
+                &loops,
+                vertices,
+                10_000,
+                Some(&surface),
+                0.05,
+                Shaping {
+                    quality: None,
+                    split_boundary: false,
+                },
+                forced,
+            )
+            .unwrap()
+        };
+        let always = shaped(&|_, _, _| true);
+        assert_eq!(always.vertices.len(), 5);
+        assert!(largest_angle(&always) > 170., "{}", largest_angle(&always));
+        let spared = shaped(&|_, _, sag| sag > 1e-7);
+        assert_eq!(spared.vertices.len(), 4);
+        assert!(largest_angle(&spared) < 90.01, "{}", largest_angle(&spared));
+    }
+
+    /// The model's rule on a cylinder read at foreign-CAD tolerance: a chord between two samples of one circle (both on
+    /// that end's plane) and a chord between the seam's ends are split whatever their sagitta; a chord across the band is
+    /// spared only while its sagitta is within the geometry tolerance.
+    #[test]
+    fn a_boundary_diagonal_is_spared_only_within_tolerance_and_off_shared_faces() {
+        let text = crate::native_brep::NativeBrep::cylinder_z([0., 0., 0.], 2., 3.).unwrap().to_step_text();
+        let data = crate::step::inventory(&text, crate::step::Limits::default()).unwrap();
+        let model = AnalyticModel::read(&data, crate::analytic_step::Options::foreign_cad(0.05)).unwrap();
+        let tolerance = model.geometry_tolerance_mm();
+        let wall = *model
+            .body()
+            .faces
+            .keys()
+            .find(|f| matches!(model.surface(**f), Some(Surface::Cylinder { .. })))
+            .unwrap();
+        let inputs = model
+            .chart_inputs(wall, 1_000_000, crate::cylindrical_step::ChartPolicy::Strict)
+            .unwrap();
+        let forced = model.forced_diagonals(wall, &inputs.vertices);
+        let at = |z: f64, vertex: bool| -> Vec<usize> {
+            (0..inputs.vertices.len())
+                .filter(|&i| {
+                    (inputs.vertices[i].world[2] - z).abs() < 1e-9
+                        && matches!(inputs.vertices[i].source, SampleKey::Vertex(_)) == vertex
+                })
+                .collect()
+        };
+        let (bottom, top) = (at(0., false), at(3., false));
+        let (seam_bottom, seam_top) = (at(0., true), at(3., true));
+        assert!(bottom.len() > 1 && !top.is_empty() && !seam_bottom.is_empty() && !seam_top.is_empty());
+        assert!(forced(bottom[0], bottom[1], 0.));
+        assert!(forced(seam_bottom[0], seam_top[0], 0.));
+        assert!(!forced(bottom[0], top[0], tolerance));
+        assert!(forced(bottom[0], top[0], 2. * tolerance));
+    }
+
 }
