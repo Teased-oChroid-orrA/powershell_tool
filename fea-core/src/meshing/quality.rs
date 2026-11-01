@@ -134,15 +134,39 @@ fn norm(a: V3) -> f64 {
 
 /// Determinant of the unit-column matrix of `cols` (2 or 3 vectors; 2D uses the in-plane components).
 fn unit_det(cols: &[V3], dim: usize) -> f64 {
-    let u: Vec<V3> = cols.iter().map(|c| {
-        let n = norm(if dim == 2 { [c[0], c[1], 0.0] } else { *c });
+    // no allocation: this runs for every corner of every element of a quality pass
+    let unit = |c: V3| {
+        let n = norm(if dim == 2 { [c[0], c[1], 0.0] } else { c });
         if n > 0.0 { [c[0] / n, c[1] / n, if dim == 2 { 0.0 } else { c[2] / n }] } else { [0.0; 3] }
-    }).collect();
+    };
     if dim == 2 {
-        u[0][0] * u[1][1] - u[0][1] * u[1][0]
+        let (a, b) = (unit(cols[0]), unit(cols[1]));
+        a[0] * b[1] - a[1] * b[0]
     } else {
-        dot(u[0], cross(u[1], u[2]))
+        dot(unit(cols[0]), cross(unit(cols[1]), unit(cols[2])))
     }
+}
+
+/// Scaled Jacobian of a straight simplex from its `dim + 1` corners: the worst corner's unit-edge determinant over the
+/// regular simplex's, negative when inverted.
+fn simplex_scaled_jacobian(corners: &[V3], dim: usize) -> f64 {
+    let orient = simplex_orientation(corners, dim);
+    let ideal = if dim == 2 { 3f64.sqrt() / 2.0 } else { 0.5f64.sqrt() };
+    let mut worst = f64::INFINITY;
+    for i in 0..corners.len() {
+        let mut others = [[0.0; 3]; 3];
+        for (k, j) in (0..corners.len()).filter(|&j| j != i).enumerate() {
+            others[k] = sub(corners[j], corners[i]);
+        }
+        worst = worst.min(unit_det(&others[..dim], dim).abs());
+    }
+    let v = worst / ideal;
+    if orient > 0.0 { v } else { -v }
+}
+
+/// Scaled Jacobian of a tetrahedron, exactly what [`element_quality`] reports for `Tet4`, without its other measures.
+pub fn tet_scaled_jacobian(corners: &[V3; 4]) -> f64 {
+    simplex_scaled_jacobian(corners, 3)
 }
 
 /// Signed measure sign of a straight simplex (triangle: area sign; tetrahedron: volume sign).
@@ -178,16 +202,7 @@ pub fn element_quality(kind: ElementKind, xyz: &[V3]) -> ElementQuality {
     let edge_ratio = if lmin > 0.0 { lmax / lmin } else { f64::INFINITY };
 
     let scaled_jacobian = if kind.is_simplex() {
-        let orient = simplex_orientation(corners, dim);
-        let ideal = if dim == 2 { 3f64.sqrt() / 2.0 } else { 0.5f64.sqrt() };
-        let mut worst = f64::INFINITY;
-        for i in 0..nc {
-            let others: Vec<V3> = (0..nc).filter(|&j| j != i).map(|j| sub(corners[j], corners[i])).collect();
-            let det = unit_det(&others, dim).abs();
-            worst = worst.min(det);
-        }
-        let v = worst / ideal;
-        if orient > 0.0 { v } else { -v }
+        simplex_scaled_jacobian(corners, dim)
     } else {
         let mut worst = f64::INFINITY;
         for c in 0..nc {
@@ -303,6 +318,24 @@ mod tests {
         assert!(bowtie.scaled_jacobian <= 0.0);
         let flat_tet = element_quality(ElementKind::Tet4, &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]]);
         assert!(flat_tet.scaled_jacobian.abs() < 1e-12 && flat_tet.radius_ratio.abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_tetrahedron_scaled_jacobian_is_the_element_quality_value_bit_for_bit() {
+        let mut state = 3u64;
+        let mut next = move || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        let mut tets: Vec<[V3; 4]> = (0..500).map(|_| std::array::from_fn(|_| std::array::from_fn(|_| next()))).collect();
+        // flat, with a repeated corner, and inverted
+        tets.push([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]]);
+        tets.push([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+        tets.push([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]);
+        for t in &tets {
+            let (got, want) = (tet_scaled_jacobian(t), element_quality(ElementKind::Tet4, t).scaled_jacobian);
+            assert_eq!(got.to_bits(), want.to_bits(), "{t:?}");
+        }
     }
 
     #[test]

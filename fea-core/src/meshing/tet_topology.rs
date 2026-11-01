@@ -76,6 +76,25 @@ pub fn sphere_side(t: [Point; 4], p: Point) -> Result<SphereSide, MeshError> {
         SphereSide::Outside
     })
 }
+/// [`sphere_side`] for a tetrahedron already known to be positively oriented (`orientation` is `Greater`, as every cell of
+/// a [`TetTopology`] is) with coordinates that passed the predicate range check: the same answer without recomputing
+/// either.
+pub fn sphere_side_positive(t: [Point; 4], p: Point) -> Result<SphereSide, MeshError> {
+    debug_assert_eq!(orientation(t[0], t[1], t[2], t[3]).ok(), Some(Ordering::Greater));
+    debug_assert!(checked(&[t[0], t[1], t[2], t[3], p]).is_ok());
+    let s = insphere(coord(t[0]), coord(t[1]), coord(t[2]), coord(t[3]), coord(p));
+    if !s.is_finite() {
+        return Err(MeshError::Failed("non-finite sphere predicate".into()));
+    }
+    // a positive cell has orient3d < 0, which reverses the sign of insphere
+    Ok(if s == 0. {
+        SphereSide::On
+    } else if s < 0. {
+        SphereSide::Inside
+    } else {
+        SphereSide::Outside
+    })
+}
 fn faces(t: [usize; 4]) -> [[usize; 3]; 4] {
     let [a, b, c, d] = t;
     [[b, c, d], [a, d, c], [a, b, d], [a, c, b]]
@@ -281,6 +300,12 @@ mod tests {
             assert_eq!(sphere_side(t, p[4]).unwrap(), SphereSide::Inside);
             assert_eq!(sphere_side(t, [2., 2., 2.]).unwrap(), SphereSide::Outside);
             assert_eq!(sphere_side(t, p[1]).unwrap(), SphereSide::On);
+        }
+        // a positive cell gives the same answer without the orientation
+        let positive = [p[0], p[1], p[2], p[3]];
+        assert_eq!(orientation(positive[0], positive[1], positive[2], positive[3]).unwrap(), Ordering::Greater);
+        for q in [p[4], [2., 2., 2.], p[1], [0.5, 0.5, 0.5], [0.3, 0.3, -0.1]] {
+            assert_eq!(sphere_side_positive(positive, q).unwrap(), sphere_side(positive, q).unwrap());
         }
         assert!(orientation(p[0], p[1], p[2], [f64::INFINITY, 0., 0.]).is_err());
         assert!(orientation(p[0], p[1], p[2], [1e100, 0., 1.]).is_err());

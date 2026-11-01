@@ -21,7 +21,8 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, Copy)]
 pub struct FlipOptions {
     pub max_passes: usize,
-    /// Only cells with a radius ratio below this are reconnected.
+    /// Only cells with a radius ratio below this are reconnected. With [`improve_by`] / `optimize_by` the threshold is in the
+    /// units of the caller's quality instead (for example the scaled Jacobian), not the radius ratio.
     pub target: f64,
     /// Smallest worst-quality gain an operation must achieve.
     pub min_gain: f64,
@@ -47,6 +48,9 @@ impl Default for FlipOptions {
         }
     }
 }
+/// What a flip pass did. The `min_radius_ratio_*` and `cells_below_target_*` fields are measured with the quality the pass
+/// judged cells by: the radius ratio for [`improve`], the caller's quality (for example the scaled Jacobian) for
+/// [`improve_by`] / `optimize_by`, despite their names.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FlipReport {
     pub passes: usize,

@@ -18,15 +18,14 @@ use crate::{
 };
 use fea_core::meshing::{
     tet_delaunay::{tetrahedralize, Limits as DelaunayLimits},
-    quality::element_quality,
-    tet_flip::{improve, FlipOptions, FlipReport},
-    tet_smooth::{optimize, SmoothOptions},
+    quality::tet_scaled_jacobian,
+    tet_flip::{improve, improve_by, FlipOptions, FlipReport},
+    tet_smooth::{optimize, optimize_by, SmoothOptions},
     tet_topology::{
         in_circle_2d, orientation, orientation_2d, sphere_side, SphereSide, TetTopology,
     },
     MeshError,
 };
-use fea_core::ElementKind;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{BuildHasherDefault, Hasher};
@@ -57,7 +56,6 @@ impl Hasher for FastHasher {
     }
 }
 type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<FastHasher>>;
-type FastSet<K> = std::collections::HashSet<K, BuildHasherDefault<FastHasher>>;
 #[derive(Debug, Clone, Copy)]
 pub struct Options {
     pub max_steiner: usize,
@@ -74,7 +72,9 @@ pub struct Options {
     /// leaves the recovered cells as they are. Slivers are not addressed.
     pub max_radius_edge: Option<f64>,
     /// Reconnect low-quality interior cells by 2-3 flips and edge removals after
-    /// extraction (boundary, sub-facets and vertices are preserved exactly).
+    /// extraction (boundary, sub-facets and vertices are preserved exactly). With
+    /// `min_scaled_jacobian` set, cells are judged by the scaled Jacobian, so
+    /// `FlipOptions::target` is a scaled-Jacobian threshold.
     pub reconnect: Option<FlipOptions>,
     /// With `reconnect`, alternate that pass with smoothing of the interior vertices (`fea_core::meshing::tet_smooth`) for up
     /// to this many rounds (`0`: reconnection only). Boundary vertices and the boundary never move.
@@ -167,7 +167,9 @@ pub struct Report {
     pub max_radius_edge_ratio: f64,
     /// Interior cells above `max_radius_edge` whose centre could not be inserted.
     pub unresolved_bad_cells: usize,
-    /// Result of the optional reconnection pass over the interior cells.
+    /// Result of the optional reconnection pass over the interior cells. With
+    /// `Options::min_scaled_jacobian` set, its `min_radius_ratio_*` and
+    /// `cells_below_target_*` fields are in scaled-Jacobian units.
     pub reconnection: Option<FlipReport>,
     pub hull_cells: usize,
     pub interior_cells: usize,
@@ -320,37 +322,23 @@ fn outside_cells(
     facets: &[[usize; 3]],
     points: &[V3],
 ) -> Vec<bool> {
-    let faces_of = |t: [usize; 4]| {
-        let [a, b, c, d] = t;
-        [[b, c, d], [a, d, c], [a, b, d], [a, c, b]]
-    };
-    let facet_keys: FastSet<[usize; 3]> = facets.iter().map(|f| face_key(*f)).collect();
-    let mut owners = FastMap::<[usize; 3], Vec<(usize, usize)>>::default();
-    for (i, t) in cells.iter().enumerate() {
-        for (k, f) in faces_of(*t).into_iter().enumerate() {
-            let key = face_key(f);
-            if facet_keys.contains(&key) {
-                owners.entry(key).or_default().push((i, k));
-            }
-        }
-    }
+    let lookup = FacetLookup::new(facets, points.len());
+    // `blocked[i][k]`: face `k` of cell `i` is a sub-facet
+    let mut blocked = vec![[false; 4]; cells.len()];
     let mut inside = vec![false; cells.len()];
     let mut stack = Vec::new();
-    for f in facets {
-        for &(i, k) in owners.get(&face_key(*f)).map_or(&[][..], |v| v) {
-            let apex = points[cells[i][k]];
-            let [a, b, c] = f.map(|v| points[v]);
-            // The interior side of an outward face is the Less side.
-            if orientation(a, b, c, apex) == Ok(Ordering::Less) && !inside[i] {
-                inside[i] = true;
-                stack.push(i);
-            }
+    for (i, t) in cells.iter().enumerate() {
+        let (b, seeded) = lookup.faces(*t, points);
+        blocked[i] = b;
+        if seeded {
+            inside[i] = true;
+            stack.push(i);
         }
     }
     while let Some(i) = stack.pop() {
-        for (k, f) in faces_of(cells[i]).into_iter().enumerate() {
+        for k in 0..4 {
             if let Some(j) = neighbors[i][k] {
-                if !inside[j] && !facet_keys.contains(&face_key(f)) {
+                if !inside[j] && !blocked[i][k] {
                     inside[j] = true;
                     stack.push(j);
                 }
@@ -358,6 +346,72 @@ fn outside_cells(
         }
     }
     inside.into_iter().map(|x| !x).collect()
+}
+/// The faces of a tetrahedron, `k` opposite vertex `k`, each oriented outward of a positive cell.
+fn cell_faces(t: [usize; 4]) -> [[usize; 3]; 4] {
+    let [a, b, c, d] = t;
+    [[b, c, d], [a, d, c], [a, b, d], [a, c, b]]
+}
+/// The sub-facets by their keys, for telling which faces of a cell are sub-facets and whether one has the cell on its
+/// inner side.
+struct FacetLookup {
+    /// each sub-facet by its key, with its outward orientation
+    keys: FastMap<[usize; 3], [usize; 3]>,
+    /// the other orientations of a key that two meshes hold differently
+    other_sides: FastMap<[usize; 3], Vec<[usize; 3]>>,
+    /// Only a face with all three vertices on sub-facets can be one: the others are not looked up.
+    on_facet: Vec<bool>,
+}
+impl FacetLookup {
+    fn new(facets: &[[usize; 3]], points: usize) -> Self {
+        let mut keys = FastMap::<[usize; 3], [usize; 3]>::default();
+        let mut other_sides = FastMap::<[usize; 3], Vec<[usize; 3]>>::default();
+        let mut on_facet = vec![false; points];
+        for f in facets {
+            let first = *keys.entry(face_key(*f)).or_insert(*f);
+            if first != *f {
+                other_sides.entry(face_key(*f)).or_default().push(*f);
+            }
+            for &v in f {
+                on_facet[v] = true;
+            }
+        }
+        Self { keys, other_sides, on_facet }
+    }
+    /// Which faces of the cell `t` are sub-facets, and whether one of them has the cell on its inner side.
+    fn faces(&self, t: [usize; 4], points: &[V3]) -> ([bool; 4], bool) {
+        let (mut blocked, mut seeded) = ([false; 4], false);
+        for (k, f) in cell_faces(t).into_iter().enumerate() {
+            if !f.iter().all(|&v| self.on_facet[v]) {
+                continue;
+            }
+            let key = face_key(f);
+            if let Some(first) = self.keys.get(&key) {
+                blocked[k] = true;
+                let apex = points[t[k]];
+                for f in std::iter::once(first).chain(self.other_sides.get(&key).into_iter().flatten()) {
+                    let [a, b, c] = f.map(|v| points[v]);
+                    // The interior side of an outward face is the Less side.
+                    if !seeded && orientation(a, b, c, apex) == Ok(Ordering::Less) {
+                        seeded = true;
+                    }
+                }
+            }
+        }
+        (blocked, seeded)
+    }
+}
+/// Inside flags and sliver keys of the Delaunay cells by id, kept from one round of quality refinement to the next: only
+/// the cells created since are classified again. A cell keeps its side of the shell while it lives (points never move,
+/// and the sub-facets only ever subdivide or re-triangulate the same surface). A facet flip in `drive` drops the cache all
+/// the same, since it changes which faces block the flood without creating cells.
+#[derive(Clone)]
+struct CellCache {
+    bound: f64,
+    min_sj: f64,
+    inside: Vec<bool>,
+    /// The badness key of an inside cell the refinement should remove ([`State::bad_cells`]), by id.
+    key: Vec<Option<f64>>,
 }
 /// Planar Delaunay triangulation of one input facet and the Steiner points on it.
 #[derive(Clone)]
@@ -375,8 +429,13 @@ struct FacetMesh {
     spheres: Vec<Option<(V3, f64)>>,
     /// Box around all the balls of `spheres` (valid with `spheres`): a vertex outside it encroaches no sub-facet.
     ball_box: ([f64; 3], [f64; 3]),
+    /// The balls of `spheres` by index, rebuilt with them, for a mesh of at least [`FacetMesh::GRID_MIN`] sub-facets: a
+    /// scan of a large merged patch's balls took about a third of the sliver stage on ABC `00006600` (Phase 160).
+    ball_grid: Option<BallGrid<usize>>,
 }
 impl FacetMesh {
+    /// Fewest sub-facets for which [`FacetMesh::ball_grid`] is kept; smaller meshes are scanned.
+    const GRID_MIN: usize = 32;
     fn new(parent: usize, f: [usize; 3], points: &[V3]) -> Result<Self, Error> {
         Self::patch(parent, &[f], points)
     }
@@ -409,6 +468,7 @@ impl FacetMesh {
             tris: members.to_vec(),
             spheres: Vec::new(),
             ball_box: ([0.; 3], [0.; 3]),
+            ball_grid: None,
         };
         for v in members.iter().flatten() {
             let q = mesh.project(points[*v]);
@@ -643,6 +703,16 @@ impl FacetMesh {
                 }
             }
             self.ball_box = (lo, hi);
+            // every change of `tris` leaves `spheres` shorter than `tris`, so the grid is rebuilt after each one
+            self.ball_grid = (self.tris.len() >= Self::GRID_MIN).then(|| {
+                let mut grid = BallGrid::new(&[lo, hi]);
+                for (i, sphere) in self.spheres.iter().enumerate() {
+                    if let Some((cc, r2)) = sphere {
+                        grid.place(i, *cc, r2.sqrt(), true);
+                    }
+                }
+                grid
+            });
         }
         debug_assert!(
             self.tris.iter().zip(&self.spheres).all(|(t, s)| {
@@ -789,19 +859,22 @@ impl PointGrid {
         Some(false)
     }
 }
-/// Multi-level grid over the diametral balls of the segments, answering "which segments does this point encroach" without
-/// scanning all of them. A segment of length `l` lives on the level whose cell size is at least `l` (cell = root / 2^level),
-/// in every cell its ball's bounding box touches (at most 3 per axis), so a point inside the ball is in one of those cells.
-/// It only prunes candidates: the caller applies the exact [`encroaches`] test, so the answers equal the full scan.
+/// Multi-level grid over balls, answering "which balls hold this point" without scanning all of them. A ball of diameter `d`
+/// lives on the level whose cell size is at least `d` (cell = root / 2^level), in every cell its bounding box touches (at
+/// most 3 per axis), so a point inside the ball is in one of those cells; a ball wider than the root cell is kept in a list
+/// every query returns. It only prunes candidates: the caller applies the exact test, so the answers equal the full scan.
+/// Segments use it for their diametral balls ([`SegmentGrid`]), facet meshes for the boxes around their sub-facet balls.
 #[derive(Clone)]
-struct SegmentGrid {
+struct BallGrid<K> {
     lo: V3,
     root: f64,
-    buckets: FastMap<(u8, i64, i64, i64), Vec<[usize; 2]>>,
+    buckets: FastMap<(u8, i64, i64, i64), Vec<K>>,
+    oversize: Vec<K>,
     lowest: u8,
     highest: u8,
 }
-impl SegmentGrid {
+type SegmentGrid = BallGrid<[usize; 2]>;
+impl<K: Copy + PartialEq> BallGrid<K> {
     const MAX_LEVEL: u8 = 60;
     fn new(vertices: &[V3]) -> Self {
         let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
@@ -813,7 +886,7 @@ impl SegmentGrid {
         }
         let extent = (0..3).map(|k| hi[k] - lo[k]).fold(0., f64::max);
         let root = if extent.is_finite() && extent > 0. { extent * 2. } else { 1. };
-        Self { lo, root, buckets: FastMap::default(), lowest: Self::MAX_LEVEL, highest: 0 }
+        Self { lo, root, buckets: FastMap::default(), oversize: Vec::new(), lowest: Self::MAX_LEVEL, highest: 0 }
     }
     fn level(&self, length: f64) -> u8 {
         let l = (self.root / length).log2().floor();
@@ -827,24 +900,31 @@ impl SegmentGrid {
         let r = radius * (1. + 1e-6) + 1e-12 * (1. + norm2(centre).sqrt());
         std::array::from_fn(|k| (self.cell(level, centre[k] - r, k), self.cell(level, centre[k] + r, k)))
     }
-    fn place(&mut self, s: [usize; 2], pts: &[V3], add: bool) {
-        let (pa, pb) = (pts[s[0]], pts[s[1]]);
-        let length = norm2(sub(pa, pb)).sqrt();
-        let level = self.level(length);
-        let centre: V3 = std::array::from_fn(|i| (pa[i] + pb[i]) * 0.5);
-        let range = self.ranges(level, centre, length * 0.5);
+    /// Add or remove `key` with the ball (`centre`, `radius`); a removal must repeat the ball of the addition.
+    fn place(&mut self, key: K, centre: V3, radius: f64, add: bool) {
+        // a ball wider than the root cell (or not finite) would touch too many cells: it is a candidate of every query
+        if !(2. * radius <= self.root && centre.iter().all(|x| x.is_finite())) {
+            if add {
+                self.oversize.push(key);
+            } else if let Some(at) = self.oversize.iter().position(|e| *e == key) {
+                self.oversize.swap_remove(at);
+            }
+            return;
+        }
+        let level = self.level(2. * radius);
+        let range = self.ranges(level, centre, radius);
         for x in range[0].0..=range[0].1 {
             for y in range[1].0..=range[1].1 {
                 for z in range[2].0..=range[2].1 {
-                    let key = (level, x, y, z);
+                    let key3 = (level, x, y, z);
                     if add {
-                        self.buckets.entry(key).or_default().push(s);
-                    } else if let Some(b) = self.buckets.get_mut(&key) {
-                        if let Some(at) = b.iter().position(|e| *e == s) {
+                        self.buckets.entry(key3).or_default().push(key);
+                    } else if let Some(b) = self.buckets.get_mut(&key3) {
+                        if let Some(at) = b.iter().position(|e| *e == key) {
                             b.swap_remove(at);
                         }
                         if b.is_empty() {
-                            self.buckets.remove(&key);
+                            self.buckets.remove(&key3);
                         }
                     }
                 }
@@ -855,29 +935,81 @@ impl SegmentGrid {
             self.highest = self.highest.max(level);
         }
     }
-    fn add(&mut self, s: [usize; 2], pts: &[V3]) {
-        self.place(s, pts, true);
-    }
-    fn remove(&mut self, s: [usize; 2], pts: &[V3]) {
-        self.place(s, pts, false);
-    }
-    /// The segments (other than those with an end in `skip`) whose diametral ball holds `p`, in no particular order.
-    fn encroached_by(&self, pts: &[V3], p: V3, skip: Option<usize>) -> Vec<[usize; 2]> {
-        let mut out = Vec::new();
+    /// Every key whose ball may hold `p` (a superset of those that do), each once per level it lives on: a key sits in
+    /// several cells of its level, but a point lies in exactly one cell per level.
+    fn candidates(&self, p: V3) -> impl Iterator<Item = K> + '_ {
         let (mut lo, mut hi) = (self.lowest, self.highest);
         if lo > hi {
             (lo, hi) = (1, 0);
         }
-        for level in lo..=hi {
-            let key = (level, self.cell(level, p[0], 0), self.cell(level, p[1], 1), self.cell(level, p[2], 2));
-            if let Some(b) = self.buckets.get(&key) {
-                out.extend(b.iter().copied().filter(|s| {
-                    skip.map_or(true, |v| s[0] != v && s[1] != v) && encroaches(pts[s[0]], pts[s[1]], p)
-                }));
+        (lo..=hi)
+            .filter_map(move |level| {
+                self.buckets.get(&(level, self.cell(level, p[0], 0), self.cell(level, p[1], 1), self.cell(level, p[2], 2)))
+            })
+            .flatten()
+            .chain(&self.oversize)
+            .copied()
+    }
+}
+impl SegmentGrid {
+    fn place_segment(&mut self, s: [usize; 2], pts: &[V3], add: bool) {
+        let (pa, pb) = (pts[s[0]], pts[s[1]]);
+        let centre: V3 = std::array::from_fn(|i| (pa[i] + pb[i]) * 0.5);
+        self.place(s, centre, norm2(sub(pa, pb)).sqrt() * 0.5, add);
+    }
+    fn add(&mut self, s: [usize; 2], pts: &[V3]) {
+        self.place_segment(s, pts, true);
+    }
+    fn remove(&mut self, s: [usize; 2], pts: &[V3]) {
+        self.place_segment(s, pts, false);
+    }
+    /// The segments (other than those with an end in `skip`) whose diametral ball holds `p`, in no particular order.
+    fn encroached_by(&self, pts: &[V3], p: V3, skip: Option<usize>) -> Vec<[usize; 2]> {
+        // a segment is a candidate once: it lives on one level, and only a segment longer than the root cell (none: the
+        // root is twice the input extent) is in the oversize list
+        self.candidates(p)
+            .filter(|s| skip.map_or(true, |v| s[0] != v && s[1] != v) && encroaches(pts[s[0]], pts[s[1]], p))
+            .collect()
+    }
+}
+/// The facet meshes filed by the box around their sub-facet balls, so an encroachment query visits only the meshes near the
+/// point: scanning every mesh for every candidate point took about a quarter of the sliver stage on ABC `00006600` (Phase
+/// 160). Every change of a mesh's triangles must mark it `stale`; [`FacetIndex::near`] files it again before answering.
+#[derive(Clone)]
+struct FacetIndex {
+    grid: BallGrid<usize>,
+    /// The ball (around the mesh's ball box) each mesh is filed under; `None`: not filed, it has no ball.
+    balls: Vec<Option<(V3, f64)>>,
+    stale: Vec<usize>,
+}
+impl FacetIndex {
+    fn new(vertices: &[V3], meshes: usize) -> Self {
+        Self { grid: BallGrid::new(vertices), balls: vec![None; meshes], stale: (0..meshes).collect() }
+    }
+    /// The meshes whose ball box may hold `p`, in index order, with their sub-facet balls current.
+    fn near(&mut self, meshes: &mut [FacetMesh], pts: &[V3], p: V3) -> Vec<usize> {
+        for k in std::mem::take(&mut self.stale) {
+            meshes[k].ensure_spheres(pts);
+            let (lo, hi) = meshes[k].ball_box;
+            let ball = (0..3).all(|i| lo[i] <= hi[i]).then(|| {
+                let c: V3 = std::array::from_fn(|i| (lo[i] + hi[i]) * 0.5);
+                (c, norm2(sub(hi, c)).sqrt())
+            });
+            if ball != self.balls[k] {
+                if let Some((c, r)) = self.balls[k] {
+                    self.grid.place(k, c, r, false);
+                }
+                if let Some((c, r)) = ball {
+                    self.grid.place(k, c, r, true);
+                }
+                self.balls[k] = ball;
             }
         }
-        // a segment can sit in several cells of its level, but a point lies in exactly one cell per level
-        out
+        let mut near: Vec<usize> = self.grid.candidates(p).collect();
+        near.sort_unstable();
+        near.dedup();
+        debug_assert!(near.iter().all(|&k| meshes[k].spheres.len() == meshes[k].tris.len()), "a changed facet mesh was not marked stale");
+        near
     }
 }
 /// Every edge and face of the triangulation with the number of tetrahedra that have it (absent at zero).
@@ -887,22 +1019,70 @@ struct Presence {
     faces: FastMap<[usize; 3], u32>,
 }
 impl Presence {
-    fn count(&mut self, [a, b, c, d]: [usize; 4], add: bool) {
-        fn step<K: std::hash::Hash + Eq>(map: &mut FastMap<K, u32>, key: K, add: bool) {
+    /// Count the edges and faces of the cell in (`add`) or out; an edge or face that appears or disappears goes to the
+    /// logs of `missing`, when kept.
+    fn count(&mut self, [a, b, c, d]: [usize; 4], add: bool, mut missing: Option<&mut Missing>) {
+        /// Whether the key appeared or disappeared.
+        fn step<K: std::hash::Hash + Eq>(map: &mut FastMap<K, u32>, key: K, add: bool) -> bool {
             if add {
-                *map.entry(key).or_default() += 1;
+                let n = map.entry(key).or_default();
+                *n += 1;
+                *n == 1
             } else if let std::collections::hash_map::Entry::Occupied(mut e) = map.entry(key) {
                 *e.get_mut() -= 1;
                 if *e.get() == 0 {
                     e.remove();
+                    return true;
                 }
+                false
+            } else {
+                false
             }
         }
         for (x, y) in [(a, b), (a, c), (a, d), (b, c), (b, d), (c, d)] {
-            step(&mut self.edges, edge(x, y), add);
+            let e = edge(x, y);
+            if step(&mut self.edges, e, add) {
+                if let Some(m) = missing.as_deref_mut() {
+                    m.edge_log.push(e);
+                }
+            }
         }
         for f in [[a, b, c], [a, b, d], [a, c, d], [b, c, d]] {
-            step(&mut self.faces, face_key(f), add);
+            let f = face_key(f);
+            if step(&mut self.faces, f, add) {
+                if let Some(m) = missing.as_deref_mut() {
+                    m.face_log.push(f);
+                }
+            }
+        }
+    }
+}
+/// The sub-segments and sub-facets missing from the triangulation, kept from one exact presence check of `drive` to the
+/// next once the first has run: a check looks again only at what changed since (`State::missing_items`).
+#[derive(Clone, Default)]
+struct Missing {
+    segments: BTreeSet<[usize; 2]>,
+    /// Missing sub-facets of each mesh, in the order of its `tris`.
+    tris: Vec<Vec<[usize; 3]>>,
+    /// The meshes holding each vertex.
+    vertex_meshes: Vec<Vec<usize>>,
+    /// Since the last check: edges that appeared or disappeared, and segments added or removed.
+    edge_log: Vec<[usize; 2]>,
+    /// Since the last check: faces that appeared or disappeared.
+    face_log: Vec<[usize; 3]>,
+    /// Since the last check: meshes whose sub-facets changed.
+    mesh_log: Vec<usize>,
+}
+impl Missing {
+    /// Note that the vertices of mesh `k` belong to it.
+    fn own_vertices(&mut self, k: usize, mesh: &FacetMesh) {
+        for &v in mesh.uv.keys() {
+            if self.vertex_meshes.len() <= v {
+                self.vertex_meshes.resize(v + 1, Vec::new());
+            }
+            if !self.vertex_meshes[v].contains(&k) {
+                self.vertex_meshes[v].push(k);
+            }
         }
     }
 }
@@ -913,6 +1093,7 @@ struct State {
     segments: BTreeSet<[usize; 2]>,
     seg_grid: SegmentGrid,
     meshes: Vec<FacetMesh>,
+    facet_index: FacetIndex,
     /// Edge and face counts of the triangulation once the first exact presence check has built them (`State::ensure_presence`).
     presence: Option<Presence>,
     /// Sub-segments / sub-facets known to be encroached (or forced) and not yet split.
@@ -958,6 +1139,10 @@ struct State {
     frozen_facets: BTreeSet<usize>,
     /// Sub-facets whose circumcentre could only be placed by splitting a frozen segment: left as they are.
     unrefinable: BTreeSet<(usize, [usize; 3])>,
+    /// Cell classification carried between quality rounds.
+    cell_cache: Option<CellCache>,
+    /// Missing sub-segments and sub-facets carried between presence checks.
+    missing: Option<Missing>,
 }
 impl State {
     fn points(&self) -> &[V3] {
@@ -973,9 +1158,18 @@ impl State {
     fn tet_edges_and_faces(&self) -> Presence {
         let mut p = Presence::default();
         for t in self.delaunay.cells() {
-            p.count(t, true);
+            p.count(t, true, None);
         }
         p
+    }
+    /// A copy to return to after a failed sliver stage, without the caches that are rebuilt from scratch when absent (the
+    /// presence table, the kept missing items and the kept cell classification): cloning and dropping them took about a
+    /// tenth of the stage on ABC `00006600` (Phase 160).
+    fn rollback_copy(&mut self) -> State {
+        let caches = (self.presence.take(), self.missing.take(), self.cell_cache.take());
+        let copy = self.clone();
+        (self.presence, self.missing, self.cell_cache) = caches;
+        copy
     }
     /// The edge and face counts of the triangulation, built once and then kept current by `insert`: rebuilding them for every
     /// exact presence check took about three quarters of the sliver stage on ABC `00006600` (Phase 159).
@@ -983,6 +1177,80 @@ impl State {
         if self.presence.is_none() {
             self.presence = Some(self.tet_edges_and_faces());
         }
+    }
+    /// Mark the sub-facets of mesh `k` changed (for the facet index and the kept missing items).
+    fn mesh_changed(&mut self, k: usize) {
+        self.facet_index.stale.push(k);
+        if let Some(m) = self.missing.as_mut() {
+            m.mesh_log.push(k);
+        }
+    }
+    /// The sub-segments (in order) and sub-facets (by mesh, in `tris` order) missing from the triangulation, from every one.
+    fn missing_items_from_scratch(&mut self) -> (Vec<[usize; 2]>, Vec<(usize, [usize; 3])>) {
+        self.ensure_presence();
+        let Some(Presence { edges, faces }) = &self.presence else { unreachable!() };
+        let segments = self.segments.iter().copied().filter(|s| !edges.contains_key(s)).collect();
+        let tris = self
+            .meshes
+            .iter()
+            .enumerate()
+            .flat_map(|(k, m)| m.tris.iter().map(move |t| (k, *t)))
+            .filter(|(_, t)| !faces.contains_key(&face_key(*t)))
+            .collect();
+        (segments, tris)
+    }
+    /// [`State::missing_items_from_scratch`], looking again only at the edges and faces that appeared or disappeared, the
+    /// segments added or removed and the meshes changed since the previous call (`PLC_VERIFY_KEPT` checks it is the same).
+    fn missing_items(&mut self) -> (Vec<[usize; 2]>, Vec<(usize, [usize; 3])>) {
+        self.ensure_presence();
+        let Some(Presence { edges, faces }) = &self.presence else { unreachable!() };
+        let absent = |t: &[usize; 3]| !faces.contains_key(&face_key(*t));
+        let m = match self.missing.as_mut() {
+            None => {
+                let mut m = Missing {
+                    segments: self.segments.iter().copied().filter(|s| !edges.contains_key(s)).collect(),
+                    tris: self.meshes.iter().map(|mesh| mesh.tris.iter().copied().filter(absent).collect()).collect(),
+                    ..Missing::default()
+                };
+                for (k, mesh) in self.meshes.iter().enumerate() {
+                    m.own_vertices(k, mesh);
+                }
+                self.missing.insert(m)
+            }
+            Some(m) => {
+                for e in std::mem::take(&mut m.edge_log) {
+                    if self.segments.contains(&e) && !edges.contains_key(&e) {
+                        m.segments.insert(e);
+                    } else {
+                        m.segments.remove(&e);
+                    }
+                }
+                let mut dirty = std::mem::take(&mut m.mesh_log);
+                dirty.sort_unstable();
+                dirty.dedup();
+                for &k in &dirty {
+                    m.own_vertices(k, &self.meshes[k]);
+                }
+                // a face can only be a sub-facet of a mesh holding all three of its vertices
+                for f in std::mem::take(&mut m.face_log) {
+                    for &k in m.vertex_meshes.get(f[0]).map_or(&[][..], |v| v) {
+                        let uv = &self.meshes[k].uv;
+                        if uv.contains_key(&f[1]) && uv.contains_key(&f[2]) {
+                            dirty.push(k);
+                        }
+                    }
+                }
+                dirty.sort_unstable();
+                dirty.dedup();
+                m.tris.resize(self.meshes.len(), Vec::new());
+                for k in dirty {
+                    m.tris[k] = self.meshes[k].tris.iter().copied().filter(absent).collect();
+                }
+                m
+            }
+        };
+        let tris = m.tris.iter().enumerate().flat_map(|(k, ts)| ts.iter().map(move |t| (k, *t))).collect();
+        (m.segments.iter().copied().collect(), tris)
     }
     fn segment_encroached(&self, s: [usize; 2]) -> bool {
         let pts = self.points();
@@ -1123,11 +1391,11 @@ impl State {
         }
         self.enc_segments.extend(hit);
         let mut hit_tris = Vec::new();
-        for (k, m) in self.meshes.iter_mut().enumerate() {
+        for k in self.facet_index.near(&mut self.meshes, pts, p) {
+            let m = &self.meshes[k];
             if self.frozen_facets.contains(&k) {
                 continue;
             }
-            m.ensure_spheres(pts);
             if (0..3).any(|i| p[i] < m.ball_box.0[i] || p[i] > m.ball_box.1[i]) {
                 continue;
             }
@@ -1150,34 +1418,19 @@ impl State {
     /// One batch of quality refinement. Returns whether anything was queued or
     /// inserted (false: nothing left to do or nothing more can be done).
     fn refine_quality(&mut self, bound: f64, min_sj: f64) -> Result<bool, Error> {
-        let (cells, neighbors) = self.delaunay.snapshot();
         let pts = self.points().to_vec();
-        let facet_list: Vec<[usize; 3]> = self
-            .meshes
-            .iter()
-            .flat_map(|m| m.tris.iter().copied())
-            .collect();
-        let outside = outside_cells(&cells, &neighbors, &facet_list, &pts);
-        let mut bad: Vec<(f64, [usize; 4])> = Vec::new();
-        for (t, out) in cells.iter().zip(&outside) {
-            if *out {
-                continue;
-            }
-            let corners = t.map(|v| pts[v]);
-            match tet_circumsphere(corners) {
-                Some((_, ratio)) if ratio <= bound => {
-                    if min_sj > 0. {
-                        let sj = element_quality(ElementKind::Tet4, &corners).scaled_jacobian;
-                        if sj < min_sj {
-                            // after every cell the radius-edge bound rejects, the worst sliver first
-                            bad.push((bound.min(1e6) * (1. - sj / min_sj).max(0.), *t));
-                        }
-                    }
-                }
-                found => bad.push((found.map_or(f64::MAX, |x| x.1), *t)),
-            }
+        let bad = self.bad_cells(bound, min_sj, &pts);
+        if std::env::var_os("PLC_VERIFY_KEPT").is_some() {
+            let (full, inside) = self.bad_cells_from_scratch(bound, min_sj, &pts);
+            let kept = &self.cell_cache.as_ref().expect("set by bad_cells").inside;
+            assert!(
+                full.len() == bad.len() && full.iter().zip(&bad).all(|(a, b)| a.0.to_bits() == b.0.to_bits() && a.1 == b.1 && a.2 == b.2),
+                "kept cell classification differs from a full one: {} against {} bad cells",
+                bad.len(),
+                full.len()
+            );
+            assert!(self.delaunay.ids().into_iter().all(|id| inside[id] == kept[id]), "kept inside flags differ from a full classification");
         }
-        bad.sort_by(|a, b| b.0.total_cmp(&a.0));
         self.quality_rounds += 1;
         if min_sj > 0. && self.quality_rounds > 5000 {
             self.unresolved_bad = bad.len();
@@ -1199,7 +1452,14 @@ impl State {
         let mut killed = BTreeSet::new();
         let mut progressed = false;
         let mut unresolved = 0;
-        for (_, t) in bad.into_iter().take(batch) {
+        // STAGEDBG: why cells stay (no centre, frozen/refused segment, segment at the floor, frozen/refused sub-facet, insertion)
+        let mut why = [0usize; 5];
+        let (mut placed, mut created_bad, mut queued) = (0usize, 0usize, 0usize);
+        // STAGEDBG: segments the queued points encroach (input, sub-segment; length over the floor < 2, < 4, < 16, more) and
+        // queued slivers with a non-encroaching point in the picking region
+        let (mut seg_kind, mut seg_len, mut free_alt) = ([0usize; 2], [0usize; 4], 0usize);
+        let stagedbg = std::env::var_os("STAGEDBG").is_some();
+        for (_, t, id) in bad.into_iter().take(batch) {
             let mut key = t;
             key.sort_unstable();
             if killed.contains(&key) {
@@ -1221,61 +1481,75 @@ impl State {
                 .filter(|c| (min_sj <= 0. || norm2(sub(*c, centroid)) <= 9. * longest2) && sphere_side(corners, *c) == Ok(SphereSide::Inside));
             let cc = match centre {
                 Some(c) => c,
-                None if min_sj > 0. && element_quality(ElementKind::Tet4, &corners).scaled_jacobian < min_sj => centroid,
+                None if min_sj > 0. && tet_scaled_jacobian(&corners) < min_sj => centroid,
                 None => {
                     unresolved += 1;
+                    why[0] += 1;
                     continue;
                 }
             };
+            let centre = cc;
+            // not killed: the cell is still alive under `id`
+            let cc = if min_sj > 0. { self.better_point(corners, cc, &current, id) } else { cc };
             let hit: Vec<[usize; 2]> = self.seg_grid.encroached_by(&current, cc, None);
             // A centre that encroaches a frozen segment or facet cannot be placed (the item may not be split): the cell stays.
             // Neither can one that encroaches a sub-segment already at the floor when the cell is a sliver: a sliver is not
             // worth a refusal of the whole recovery.
-            if hit.iter().any(|s| self.frozen_segments.contains(s) || self.refused_segments.contains(s))
+            let frozen_hit = hit.iter().any(|s| self.frozen_segments.contains(s) || self.refused_segments.contains(s));
+            if frozen_hit
                 || (min_sj > 0.
                     && hit
                         .iter()
                         .any(|s| norm2(sub(current[s[0]], current[s[1]])).sqrt() < self.optional_floor))
             {
                 unresolved += 1;
+                why[if frozen_hit { 1 } else { 2 }] += 1;
                 continue;
             }
-            let mut hit_tris = Vec::new();
-            let mut hits_frozen = false;
-            for (k, m) in self.meshes.iter_mut().enumerate() {
-                m.ensure_spheres(&current);
-                if (0..3).any(|i| cc[i] < m.ball_box.0[i] || cc[i] > m.ball_box.1[i]) {
-                    continue;
-                }
-                for (&f, sphere) in m.tris.iter().zip(&m.spheres) {
-                    if let Some((fc, r2)) = sphere {
-                        if norm2(sub(cc, *fc)) < *r2 * (1. - 1e-9) {
-                            if self.frozen_facets.contains(&k) {
-                                hits_frozen = true;
-                            }
-                            hit_tris.push((k, f));
-                        }
-                    }
-                }
-            }
+            let hit_tris = self.facets_encroached_by(&current, cc);
+            let hits_frozen = hit_tris.iter().any(|(k, _)| self.frozen_facets.contains(k));
             if hits_frozen || hit_tris.iter().any(|x| self.unrefinable.contains(x) || self.refused_tris.contains(x)) {
                 unresolved += 1;
+                why[3] += 1;
                 continue;
             }
             if !hit.is_empty() || !hit_tris.is_empty() {
+                if stagedbg && min_sj > 0. {
+                    for s in &hit {
+                        seg_kind[usize::from(s.iter().any(|&v| v >= self.input_vertices))] += 1;
+                        let r = norm2(sub(current[s[0]], current[s[1]])).sqrt() / self.optional_floor;
+                        seg_len[[2., 4., 16.].iter().take_while(|&&b| r >= b).count()] += 1;
+                    }
+                    if Self::picking_points(corners, centre).into_iter().any(|q| {
+                        self.seg_grid.encroached_by(&current, q, None).is_empty() && self.facets_encroached_by(&current, q).is_empty()
+                    }) {
+                        free_alt += 1;
+                    }
+                }
                 self.enc_segments.extend(hit);
                 // encroached by the rejected centre, not by a vertex
                 self.forced_tris.extend(hit_tris.iter().copied());
                 self.enc_tris.extend(hit_tris);
                 progressed = true;
+                queued += 1;
                 continue;
             }
-            match self.insert(cc) {
+            match self.insert_near(cc, Some(id)) {
                 Ok(i) => {
                     debug_assert_eq!(i, current.len());
                     current.push(cc);
                     self.quality_steiner += 1;
                     progressed = true;
+                    placed += 1;
+                    if min_sj > 0. && std::env::var_os("STAGEDBG").is_some() {
+                        let pts = self.points();
+                        created_bad += self
+                            .delaunay
+                            .last_added()
+                            .iter()
+                            .filter(|t| tet_scaled_jacobian(&t.map(|v| pts[v])) < min_sj)
+                            .count();
+                    }
                     for r in self.delaunay.last_removed() {
                         let mut k = *r;
                         k.sort_unstable();
@@ -1283,27 +1557,241 @@ impl State {
                     }
                 }
                 // A centre outside the hull or a degenerate cavity: leave this cell.
-                Err(e) if e.kind == ErrorKind::Geometry => unresolved += 1,
+                Err(e) if e.kind == ErrorKind::Geometry => {
+                    unresolved += 1;
+                    why[4] += 1;
+                }
                 Err(e) => return Err(e),
             }
+        }
+        if std::env::var_os("STAGEDBG").is_some() {
+            eprintln!("refine why: no-centre {} frozen-segment {} floor-segment {} frozen-facet {} insertion {} | placed {placed} created-bad {created_bad} queued-splits {queued} | segments input/sub {seg_kind:?} by length/floor <2,<4,<16,more {seg_len:?} free-alternative {free_alt}", why[0], why[1], why[2], why[3], why[4]);
         }
         self.unresolved_bad = unresolved;
         Ok(progressed)
     }
+    /// The badness key of the inside cell `t` when the refinement should remove it: its radius-edge ratio over `bound`
+    /// (`f64::MAX` without a circumsphere), else, for a sliver under `min_sj`, a key below `bound` that grows as the scaled
+    /// Jacobian falls.
+    fn badness(t: [usize; 4], pts: &[V3], bound: f64, min_sj: f64) -> Option<f64> {
+        let corners = t.map(|v| pts[v]);
+        match tet_circumsphere(corners) {
+            Some((_, ratio)) if ratio <= bound => {
+                if min_sj > 0. {
+                    let sj = tet_scaled_jacobian(&corners);
+                    if sj < min_sj {
+                        // after every cell the radius-edge bound rejects, the worst sliver first
+                        return Some(bound.min(1e6) * (1. - sj / min_sj).max(0.));
+                    }
+                }
+                None
+            }
+            found => Some(found.map_or(f64::MAX, |x| x.1)),
+        }
+    }
+    /// The inside cells to remove, worst first (ties by cell id), with their keys and Delaunay ids, from a full
+    /// classification of every cell; also the inside flags by id.
+    fn bad_cells_from_scratch(&self, bound: f64, min_sj: f64, pts: &[V3]) -> (Vec<(f64, [usize; 4], usize)>, Vec<bool>) {
+        let (cells, neighbors) = self.delaunay.snapshot();
+        let ids = self.delaunay.ids();
+        let facet_list: Vec<[usize; 3]> = self.meshes.iter().flat_map(|m| m.tris.iter().copied()).collect();
+        let outside = outside_cells(&cells, &neighbors, &facet_list, pts);
+        let mut inside = vec![false; self.delaunay.id_bound()];
+        let mut bad = Vec::new();
+        for ((t, out), &id) in cells.iter().zip(&outside).zip(&ids) {
+            if !*out {
+                inside[id] = true;
+                if let Some(key) = Self::badness(*t, pts, bound, min_sj) {
+                    bad.push((key, *t, id));
+                }
+            }
+        }
+        bad.sort_by(|a, b| b.0.total_cmp(&a.0));
+        (bad, inside)
+    }
+    /// [`State::bad_cells_from_scratch`], classifying only the cells created since the previous call: the result is the
+    /// same (`PLC_VERIFY_KEPT` checks it every round).
+    fn bad_cells(&mut self, bound: f64, min_sj: f64, pts: &[V3]) -> Vec<(f64, [usize; 4], usize)> {
+        let created = self.delaunay.take_created();
+        let kept = self.cell_cache.as_ref().is_some_and(|c| c.bound.to_bits() == bound.to_bits() && c.min_sj.to_bits() == min_sj.to_bits());
+        if !kept {
+            let (bad, inside) = self.bad_cells_from_scratch(bound, min_sj, pts);
+            let mut key = vec![None; inside.len()];
+            for &(k, _, id) in &bad {
+                key[id] = Some(k);
+            }
+            self.cell_cache = Some(CellCache { bound, min_sj, inside, key });
+            return bad;
+        }
+        let n = self.delaunay.id_bound();
+        let facet_list: Vec<[usize; 3]> = self.meshes.iter().flat_map(|m| m.tris.iter().copied()).collect();
+        let lookup = FacetLookup::new(&facet_list, pts.len());
+        let delaunay = &self.delaunay;
+        let cache = self.cell_cache.as_mut().expect("kept above");
+        cache.inside.resize(n, false);
+        cache.key.resize(n, None);
+        let mut fresh: Vec<usize> = created.into_iter().filter(|&id| delaunay.cell(id).is_some()).collect();
+        fresh.sort_unstable();
+        fresh.dedup();
+        // position + 1 in `fresh`, by id
+        let mut slot = vec![0usize; n];
+        for (i, &id) in fresh.iter().enumerate() {
+            slot[id] = i + 1;
+            cache.inside[id] = false;
+        }
+        // The same flood as `outside_cells`, over the new cells: seeded by a sub-facet they lie inside of, or by a kept
+        // inside neighbour across a face that is no sub-facet.
+        let mut blocked = vec![[false; 4]; fresh.len()];
+        let mut stack = Vec::new();
+        for (i, &id) in fresh.iter().enumerate() {
+            let (v, nb) = delaunay.cell(id).expect("live");
+            let (b, seeded) = lookup.faces(v, pts);
+            blocked[i] = b;
+            let joined = seeded || (0..4).any(|k| !b[k] && nb[k].is_some_and(|j| slot[j] == 0 && cache.inside[j]));
+            if joined {
+                cache.inside[id] = true;
+                stack.push(i);
+            }
+        }
+        while let Some(i) = stack.pop() {
+            let (_, nb) = delaunay.cell(fresh[i]).expect("live");
+            for k in 0..4 {
+                if let Some(j) = nb[k] {
+                    if slot[j] != 0 && !cache.inside[j] && !blocked[i][k] {
+                        cache.inside[j] = true;
+                        stack.push(slot[j] - 1);
+                    }
+                }
+            }
+        }
+        for &id in &fresh {
+            let (v, _) = delaunay.cell(id).expect("live");
+            cache.key[id] = if cache.inside[id] { Self::badness(v, pts, bound, min_sj) } else { None };
+        }
+        let mut bad: Vec<(f64, [usize; 4], usize)> = (0..n)
+            .filter_map(|id| {
+                let k = cache.key[id]?;
+                let (v, _) = delaunay.cell(id)?;
+                Some((k, v, id))
+            })
+            .collect();
+        bad.sort_by(|a, b| b.0.total_cmp(&a.0));
+        bad
+    }
+    /// The sub-facets whose circumsphere (the smallest ball through their corners) has `p` strictly inside.
+    fn facets_encroached_by(&mut self, current: &[V3], p: V3) -> Vec<(usize, [usize; 3])> {
+        // the sub-facets of mesh `k`, in index order, by its ball grid when it has one and `by_grid`
+        let scan = |k: usize, m: &FacetMesh, hit: &mut Vec<(usize, [usize; 3])>, by_grid: bool| {
+            if (0..3).any(|i| p[i] < m.ball_box.0[i] || p[i] > m.ball_box.1[i]) {
+                return;
+            }
+            let test = |i: usize| {
+                if let Some((fc, r2)) = m.spheres[i] {
+                    if norm2(sub(p, fc)) < r2 * (1. - 1e-9) {
+                        hit.push((k, m.tris[i]));
+                    }
+                }
+            };
+            match m.ball_grid.as_ref().filter(|_| by_grid) {
+                Some(grid) => {
+                    let mut near: Vec<usize> = grid.candidates(p).collect();
+                    near.sort_unstable();
+                    near.dedup();
+                    near.into_iter().for_each(test);
+                }
+                None => (0..m.tris.len()).for_each(test),
+            }
+        };
+        let mut hit = Vec::new();
+        for k in self.facet_index.near(&mut self.meshes, current, p) {
+            scan(k, &self.meshes[k], &mut hit, true);
+        }
+        #[cfg(debug_assertions)]
+        {
+            // the index only prunes: it must return exactly what the scan of every mesh does
+            let mut full = Vec::new();
+            for (k, m) in self.meshes.iter_mut().enumerate() {
+                m.ensure_spheres(current);
+                scan(k, m, &mut full, false);
+            }
+            debug_assert_eq!(hit, full, "facet index disagrees with the full scan");
+        }
+        hit
+    }
+    /// A point for the sliver `corners` instead of its centre `cc`, when one is better. Inserting the centre often makes new
+    /// slivers (on ABC `00006600` about 100 cells under the bound per point in the first rounds, about 2 in the last). Points a
+    /// little away from the centre that are still strictly inside the cell's circumsphere remove the cell too (the picking
+    /// region of Li's sliver removal); this takes the one whose new cells have the best worst scaled Jacobian, if that is better
+    /// than the centre's and the point encroaches no segment or sub-facet. Otherwise the centre stays, with its usual handling.
+    fn better_point(&mut self, corners: [V3; 4], cc: V3, current: &[V3], id: usize) -> V3 {
+        // the worst scaled Jacobian of the cells inserting `q` would make; the scan stops at the first at most `floor`
+        let worst_new = |q: V3, d: &mut Delaunay3, floor: f64| -> f64 {
+            let Ok(cones) = d.preview(q, Some(id)) else { return f64::NEG_INFINITY };
+            let at = |v: usize| if v == current.len() { q } else { current[v] };
+            let mut worst = f64::INFINITY;
+            for t in &cones {
+                worst = worst.min(tet_scaled_jacobian(&t.map(at)));
+                if worst <= floor {
+                    break;
+                }
+            }
+            worst
+        };
+        let base = worst_new(cc, &mut self.delaunay, f64::NEG_INFINITY);
+        if !base.is_finite() || base >= self.options.min_scaled_jacobian.unwrap_or(0.) {
+            return cc;
+        }
+        let free: Vec<V3> = Self::picking_points(corners, cc)
+            .into_iter()
+            .filter(|&q| self.seg_grid.encroached_by(current, q, None).is_empty() && self.facets_encroached_by(current, q).is_empty())
+            .collect();
+        // the first point with the strictly best value wins, so a later one only has to beat the best so far
+        let mut best = (base, cc);
+        for q in free {
+            let w = worst_new(q, &mut self.delaunay, best.0);
+            if w > best.0 {
+                best = (w, q);
+            }
+        }
+        best.1
+    }
+    /// The points around the centre `cc` of the cell `corners` that [`State::better_point`] tries: 14 directions at 0.3 of
+    /// the smaller of the circumradius and the shortest edge, those strictly inside the circumsphere.
+    fn picking_points(corners: [V3; 4], cc: V3) -> Vec<V3> {
+        let shortest = (0..4)
+            .flat_map(|i| ((i + 1)..4).map(move |j| (i, j)))
+            .map(|(i, j)| norm2(sub(corners[i], corners[j])))
+            .fold(f64::INFINITY, f64::min)
+            .sqrt();
+        let radius = 0.3 * norm2(sub(cc, corners[0])).sqrt().min(shortest);
+        let s = 1. / 3f64.sqrt();
+        [
+            [1., 0., 0.], [-1., 0., 0.], [0., 1., 0.], [0., -1., 0.], [0., 0., 1.], [0., 0., -1.],
+            [s, s, s], [s, s, -s], [s, -s, s], [s, -s, -s], [-s, s, s], [-s, s, -s], [-s, -s, s], [-s, -s, -s],
+        ]
+        .iter()
+        .map(|u| std::array::from_fn(|k| cc[k] + radius * u[k]))
+        .filter(|q| sphere_side(corners, *q) == Ok(SphereSide::Inside))
+        .collect()
+    }
     fn insert(&mut self, p: V3) -> Result<usize, Error> {
+        self.insert_near(p, None)
+    }
+    /// [`State::insert`], locating `p` from the live Delaunay cell `near`.
+    fn insert_near(&mut self, p: V3, near: Option<usize>) -> Result<usize, Error> {
         if self.steiner >= self.steiner_cap {
             return Err(fail(
                 ErrorKind::Limit,
                 BUDGET_MESSAGE,
             ));
         }
-        let i = self.delaunay.insert(p).map_err(mesh_error)?;
+        let i = self.delaunay.insert_near(p, near).map_err(mesh_error)?;
         if let Some(presence) = self.presence.as_mut() {
             for &t in self.delaunay.last_removed() {
-                presence.count(t, false);
+                presence.count(t, false, self.missing.as_mut());
             }
             for &t in self.delaunay.last_added() {
-                presence.count(t, true);
+                presence.count(t, true, self.missing.as_mut());
             }
         }
         self.steiner += 1;
@@ -1353,6 +1841,9 @@ impl State {
         self.enc_segments.remove(&s);
         let halves = [edge(a, mi), edge(mi, b)];
         self.segments.extend(halves);
+        if let Some(m) = self.missing.as_mut() {
+            m.edge_log.extend([s, halves[0], halves[1]]);
+        }
         {
             let pts = self.delaunay.points();
             self.seg_grid.remove(s, pts);
@@ -1364,6 +1855,7 @@ impl State {
         let mut touched = Vec::new();
         for k in 0..self.meshes.len() {
             if self.meshes[k].has_boundary_edge(s) {
+                self.mesh_changed(k);
                 self.meshes[k].insert(mi, m, Some(s))?;
                 touched.push(k);
             }
@@ -1678,6 +2170,7 @@ fn drive(
             };
             // The facet mesh is updated first: it changes nothing when it refuses.
             let id = pts.len();
+            state.mesh_changed(k);
             if let Err(refusal) = state.meshes[k].insert(id, cc, None) {
                 // The centre sits on the facet boundary within rounding: split the
                 // closest boundary sub-segment instead and revisit the sub-facet.
@@ -1716,30 +2209,31 @@ fn drive(
         // Encroachment is only a sufficient condition; verify presence exactly and
         // force whatever a cospherical tie left out.
         *rounds += 1;
-        state.ensure_presence();
-        let Some(Presence { edges, faces }) = &state.presence else { unreachable!() };
-        let missing_segments: Vec<_> = state
-            .segments
-            .iter()
-            .copied()
-            .filter(|s| !edges.contains_key(s))
-            .collect();
-        let missing_tris: Vec<(usize, [usize; 3])> = state
-            .meshes
-            .iter()
-            .enumerate()
-            .flat_map(|(k, m)| m.tris.iter().map(move |t| (k, *t)))
-            .filter(|(_, t)| !faces.contains_key(&face_key(*t)))
-            .collect();
+        let (missing_segments, missing_tris) = state.missing_items();
+        if std::env::var_os("PLC_VERIFY_KEPT").is_some() {
+            assert!(
+                (missing_segments.clone(), missing_tris.clone()) == state.missing_items_from_scratch(),
+                "kept missing items differ from a full presence check"
+            );
+        }
+        let Some(Presence { faces, .. }) = &state.presence else { unreachable!() };
         // A cospherical tie can make the facet's planar triangulation pick the other
         // diagonal than the tetrahedralization: align it before refining anything.
         let mut flipped = 0;
         if missing_segments.is_empty() && !missing_tris.is_empty() {
-            for mesh in &mut state.meshes {
-                flipped += mesh.flip_toward(&faces);
+            for (k, mesh) in state.meshes.iter_mut().enumerate() {
+                let n = mesh.flip_toward(&faces);
+                if n > 0 {
+                    state.facet_index.stale.push(k);
+                    if let Some(m) = state.missing.as_mut() {
+                        m.mesh_log.push(k);
+                    }
+                }
+                flipped += n;
             }
         }
         if flipped > 0 {
+            state.cell_cache = None;
             for k in 0..state.meshes.len() {
                 state.refresh_mesh(k)?;
             }
@@ -1762,7 +2256,7 @@ fn drive(
                 state.quality_start.get_or_insert(state.steiner);
                 state.quality_clock.get_or_insert_with(std::time::Instant::now);
                 if min_sj.is_some() && state.steiner >= *next_snapshot {
-                    *snapshot = Some(state.clone());
+                    *snapshot = Some(state.rollback_copy());
                     *next_snapshot = state.steiner + state.steiner / 4 + 8;
                 }
                 publish(&*state, Phase::Facets, (0, 0), progress)?;
@@ -1899,6 +2393,7 @@ fn initial_state(
         grid: std::cell::RefCell::new(PointGrid::new(vertices)),
         segments,
         seg_grid,
+        facet_index: FacetIndex::new(vertices, meshes.len()),
         meshes,
         presence: None,
         enc_segments: BTreeSet::new(),
@@ -1943,6 +2438,8 @@ fn initial_state(
             .map(|(i, _)| patch_of[i])
             .collect(),
         unrefinable: BTreeSet::new(),
+        cell_cache: None,
+        missing: None,
         min_segment: {
             let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
             for v in vertices {
@@ -2099,14 +2596,31 @@ fn extract(state: State, input_vertices: usize, rounds: usize) -> Result<Conform
         None => (interior, None),
         Some(flip) => {
             let seed = TetTopology::new(points.clone(), interior, max_cells).map_err(mesh_error)?;
+            // With the sliver recipe the flips (and the smoothing) judge cells by the scaled Jacobian the solver gate uses: by
+            // radius ratio they turned the stage's cells into slivers (ABC `00006600`: 388 cells under 0.1 against 19, Phase 160).
+            let by_sj = |p: &[fea_core::meshing::tet_topology::Point], t: [usize; 4]| {
+                let sj = tet_scaled_jacobian(&t.map(|v| p[v]));
+                if sj.is_finite() { sj.max(0.) } else { 0. }
+            };
+            let sliver_recipe = state.options.min_scaled_jacobian.is_some();
             if smooth_rounds > 0 {
-                let (better, report) =
-                    optimize(&seed, &BTreeSet::new(), flip, &SmoothOptions::default(), smooth_rounds).map_err(mesh_error)?;
+                let smoothing = SmoothOptions::default();
+                let (better, report) = if sliver_recipe {
+                    optimize_by(&seed, &BTreeSet::new(), flip, &smoothing, smooth_rounds, &by_sj)
+                } else {
+                    optimize(&seed, &BTreeSet::new(), flip, &smoothing, smooth_rounds)
+                }
+                .map_err(mesh_error)?;
                 // smoothing moves interior vertices: the points of the result are the improved ones
                 points = better.points().to_vec();
                 (better.cells().to_vec(), Some(report.flips))
             } else {
-                let (better, report) = improve(&seed, &BTreeSet::new(), flip).map_err(mesh_error)?;
+                let (better, report) = if sliver_recipe {
+                    improve_by(&seed, &BTreeSet::new(), flip, &by_sj)
+                } else {
+                    improve(&seed, &BTreeSet::new(), flip)
+                }
+                .map_err(mesh_error)?;
                 (better.cells().to_vec(), Some(report))
             }
         }
@@ -2276,6 +2790,88 @@ mod tests {
         assert!(!state.segments.contains(&[0, 2]));
         assert!(start.elapsed().as_secs_f64() < 5., "{:?}", start.elapsed());
     }
+    /// Inserting a sliver's circumcentre can make new slivers; the search returns a point inside the circumsphere whose new
+    /// cells are better and that encroaches no segment or sub-facet (Phase 160).
+    #[test]
+    fn the_sliver_point_search_takes_a_better_point_than_the_centre() {
+        // a unit box whose faces are 6 x 6 grids, so the sub-facet and segment balls stay near the faces
+        let n: i64 = 6;
+        let faces: [([i64; 3], [i64; 3], [i64; 3]); 6] = [
+            ([0, 0, 0], [0, 1, 0], [1, 0, 0]),
+            ([0, 0, 1], [1, 0, 0], [0, 1, 0]),
+            ([0, 0, 0], [1, 0, 0], [0, 0, 1]),
+            ([0, 1, 0], [0, 0, 1], [1, 0, 0]),
+            ([0, 0, 0], [0, 0, 1], [0, 1, 0]),
+            ([1, 0, 0], [0, 1, 0], [0, 0, 1]),
+        ];
+        let mut index = std::collections::HashMap::new();
+        let (mut vertices, mut facets): (Vec<V3>, Vec<[usize; 3]>) = (Vec::new(), Vec::new());
+        for (a, u, v) in faces {
+            for i in 0..n {
+                for j in 0..n {
+                    let k = [(i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1)].map(|(s, t)| {
+                        let p: [i64; 3] = std::array::from_fn(|c| a[c] * n + u[c] * s + v[c] * t);
+                        *index.entry(p).or_insert_with(|| {
+                            vertices.push(p.map(|x| x as f64 / n as f64));
+                            vertices.len() - 1
+                        })
+                    });
+                    facets.push([k[0], k[1], k[2]]);
+                    facets.push([k[0], k[2], k[3]]);
+                }
+            }
+        }
+        let options = Options { min_scaled_jacobian: Some(0.2), ..Options::default() };
+        let (mut state, _) = initial_state(&vertices, &facets, None, options).unwrap();
+        let mut seed = 11u64;
+        let mut next = move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for _ in 0..250 {
+            let p: V3 = std::array::from_fn(|_| 0.05 + 0.9 * next());
+            state.insert(p).unwrap();
+        }
+        let (cells, neighbors) = state.delaunay.snapshot();
+        let current = state.points().to_vec();
+        let facet_list: Vec<[usize; 3]> = state.meshes.iter().flat_map(|m| m.tris.iter().copied()).collect();
+        let outside = outside_cells(&cells, &neighbors, &facet_list, &current);
+        let worst = |cones: Vec<[usize; 4]>, q: V3| -> f64 {
+            cones
+                .iter()
+                .map(|t| {
+                    let corners = t.map(|v| if v == current.len() { q } else { current[v] });
+                    tet_scaled_jacobian(&corners)
+                })
+                .fold(f64::INFINITY, f64::min)
+        };
+        let ids = state.delaunay.ids();
+        let mut moved = 0;
+        for ((t, out), &id) in cells.iter().zip(&outside).zip(&ids) {
+            if *out {
+                continue;
+            }
+            let corners = t.map(|v| current[v]);
+            if tet_scaled_jacobian(&corners) >= 0.2 {
+                continue;
+            }
+            let Some((c, _)) = tet_circumsphere(corners) else { continue };
+            if sphere_side(corners, c) != Ok(SphereSide::Inside) {
+                continue;
+            }
+            let r = state.better_point(corners, c, &current, id);
+            if r == c {
+                continue;
+            }
+            moved += 1;
+            assert!(sphere_side(corners, r) == Ok(SphereSide::Inside), "{r:?} is not inside the circumsphere of {corners:?}");
+            assert!(state.seg_grid.encroached_by(&current, r, None).is_empty(), "{r:?} encroaches a segment");
+            assert!(state.facets_encroached_by(&current, r).is_empty(), "{r:?} encroaches a sub-facet");
+            let (at_r, at_c) = (worst(state.delaunay.preview(r, None).unwrap(), r), worst(state.delaunay.preview(c, None).unwrap(), c));
+            assert!(at_r > at_c, "{r:?}: {at_r} is not better than the centre's {at_c}");
+        }
+        assert!(moved >= 1, "the search never left the centre");
+    }
     #[test]
     fn cancellation_precedes_delaunay_initialization() {
         let vertices = [[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
@@ -2320,6 +2916,44 @@ mod tests {
             }
         }
         assert!(grid_answers > 200, "the grid should answer most queries, answered {grid_answers}");
+    }
+    /// The ball grid only prunes: its candidates hold every ball that contains the point, after additions and removals, for
+    /// balls of every size including those wider than the root cell and those outside the grid box.
+    #[test]
+    fn ball_grid_candidates_hold_every_ball_with_the_point() {
+        let mut state = 5u64;
+        let mut next = move || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let corners: Vec<V3> = vec![[0.; 3], [10.; 3]];
+        let mut grid = BallGrid::<usize>::new(&corners);
+        let mut balls: Vec<Option<(V3, f64)>> = Vec::new();
+        let mut pruned = 0;
+        for round in 0..600 {
+            if round % 3 != 2 || balls.iter().all(Option::is_none) {
+                let centre: V3 = std::array::from_fn(|_| next() * 14. - 2.);
+                let radius = next().powi(3) * [0.2, 2., 15., 1e4][round % 4];
+                grid.place(balls.len(), centre, radius, true);
+                balls.push(Some((centre, radius)));
+            } else {
+                let k = (next() * balls.len() as f64) as usize % balls.len();
+                if let Some((c, r)) = balls[k].take() {
+                    grid.place(k, c, r, false);
+                }
+            }
+            let p: V3 = std::array::from_fn(|_| next() * 14. - 2.);
+            let got: BTreeSet<usize> = grid.candidates(p).collect();
+            for (k, b) in balls.iter().enumerate() {
+                match b {
+                    Some((c, r)) if norm2(sub(p, *c)) < r * r => assert!(got.contains(&k), "round {round}: ball {k} missed"),
+                    None => assert!(!got.contains(&k), "round {round}: removed ball {k} returned"),
+                    _ => {}
+                }
+            }
+            pruned += balls.iter().flatten().count() - got.len().min(balls.iter().flatten().count());
+        }
+        assert!(pruned > 0, "the grid never pruned a ball");
     }
 
     fn quad(v: &mut Vec<V3>, f: &mut Vec<[usize; 3]>, a: V3, b: V3, c: V3, d: V3) {

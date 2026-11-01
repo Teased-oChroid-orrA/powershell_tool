@@ -9,7 +9,7 @@
 
 use super::{
     quality::element_quality,
-    tet_flip::{improve, FlipOptions, FlipReport},
+    tet_flip::{improve_by, FlipOptions, FlipReport},
     tet_topology::{orientation, Point, TetTopology},
     MeshError,
 };
@@ -78,10 +78,6 @@ fn worst_by(points: &[Point], cells: &[[usize; 4]], ids: &[usize], q: QualityFn<
     ids.iter()
         .map(|&c| q(points, cells[c]))
         .fold(f64::INFINITY, f64::min)
-}
-
-fn worst(points: &[Point], cells: &[[usize; 4]], ids: &[usize]) -> f64 {
-    worst_by(points, cells, ids, &quality)
 }
 
 /// Move interior vertices of `top` to improve the worst incident radius ratio. See the module documentation.
@@ -286,17 +282,31 @@ pub fn optimize(
     smoothing: &SmoothOptions,
     max_rounds: usize,
 ) -> Result<(TetTopology, OptimizeReport), MeshError> {
+    optimize_by(top, protected_faces, flip, smoothing, max_rounds, &quality)
+}
+
+/// [`optimize`] with a caller-supplied cell quality for both stages (for example the scaled Jacobian); the report's
+/// `min_radius_ratio_*` fields then hold that quality's global minimum, and `flip.target` is in its units.
+pub fn optimize_by(
+    top: &TetTopology,
+    protected_faces: &BTreeSet<[usize; 3]>,
+    flip: FlipOptions,
+    smoothing: &SmoothOptions,
+    max_rounds: usize,
+    quality: QualityFn<'_>,
+) -> Result<(TetTopology, OptimizeReport), MeshError> {
     let mut current = top.clone();
     let mut flips: Option<FlipReport> = None;
     let mut moves = 0;
     let mut rounds = 0;
-    let before = worst(
+    let before = worst_by(
         top.points(),
         top.cells(),
         &(0..top.cells().len()).collect::<Vec<_>>(),
+        quality,
     );
     for _ in 0..max_rounds {
-        let (a, fr) = improve(&current, protected_faces, flip)?;
+        let (a, fr) = improve_by(&current, protected_faces, flip, quality)?;
         let n_flips = fr.face_flips + fr.edge_removals.values().sum::<usize>();
         flips = Some(match flips {
             None => fr,
@@ -311,7 +321,7 @@ pub fn optimize(
                 acc
             }
         });
-        let (b, sr) = smooth_vertices(&a, smoothing)?;
+        let (b, sr) = smooth_vertices_by(&a, smoothing, quality)?;
         current = b;
         moves += sr.moves;
         rounds += 1;
@@ -319,10 +329,11 @@ pub fn optimize(
             break;
         }
     }
-    let after = worst(
+    let after = worst_by(
         current.points(),
         current.cells(),
         &(0..current.cells().len()).collect::<Vec<_>>(),
+        quality,
     );
     Ok((
         current,
@@ -340,6 +351,7 @@ pub fn optimize(
 mod tests {
     use super::*;
     use crate::meshing::tet_delaunay::{tetrahedralize, Limits};
+    use crate::meshing::tet_flip::improve;
 
     fn cloud(n: usize, seed: u64) -> Vec<Point> {
         let mut s = seed;

@@ -8,7 +8,7 @@
 //! conflicting tetrahedron is refused. `plc_conform` therefore surrounds its input with far points so that no insertion
 //! is ever outside the hull.
 use fea_core::meshing::{
-    tet_topology::{orientation, sphere_side, Point, SphereSide, TetTopology},
+    tet_topology::{orientation, sphere_side_positive, Point, SphereSide, TetTopology},
     MeshError,
 };
 use std::cmp::Ordering;
@@ -38,6 +38,8 @@ pub(crate) struct Delaunay3 {
     epoch: u32,
     removed: Vec<[usize; 4]>,
     added: Vec<[usize; 4]>,
+    /// Ids of the cells created since the last [`Delaunay3::take_created`], while tracking is on.
+    created: Option<Vec<usize>>,
 }
 impl Delaunay3 {
     pub fn new(seed: &TetTopology, max_cells: usize) -> Self {
@@ -63,7 +65,22 @@ impl Delaunay3 {
             epoch: 0,
             removed: Vec::new(),
             added: Vec::new(),
+            created: None,
         }
+    }
+    /// The ids of the cells created since the previous call (some may have been removed again; ids repeat when reused).
+    /// The first call turns the tracking on and returns nothing.
+    pub fn take_created(&mut self) -> Vec<usize> {
+        std::mem::replace(&mut self.created, Some(Vec::new())).unwrap_or_default()
+    }
+    /// Vertices and face neighbours (same order as [`Delaunay3::snapshot`]) of the cell `id`, if it is live.
+    pub fn cell(&self, id: usize) -> Option<([usize; 4], [Option<usize>; 4])> {
+        let t = self.tets.get(id).filter(|t| t.alive)?;
+        Some((t.v, t.n.map(|n| (n != NONE).then_some(n))))
+    }
+    /// One more than the largest cell id.
+    pub fn id_bound(&self) -> usize {
+        self.tets.len()
     }
     /// Vertex sets of the tetrahedra destroyed by the most recent insertion.
     pub fn last_removed(&self) -> &[[usize; 4]] {
@@ -104,8 +121,12 @@ impl Delaunay3 {
     }
     /// Returns the located tetrahedron and whether `p` is outside the hull (then
     /// the tetrahedron is the one whose hull face the walk left through).
-    fn locate(&self, p: Point) -> Result<(usize, bool), MeshError> {
-        let mut c = if self.tets[self.last].alive {
+    /// The walk starts at `start` when that cell is alive (a cell near `p` makes the walk short), else at the last cell
+    /// created.
+    fn locate(&self, p: Point, start: Option<usize>) -> Result<(usize, bool), MeshError> {
+        let mut c = if let Some(s) = start.filter(|&s| self.tets.get(s).is_some_and(|t| t.alive)) {
+            s
+        } else if self.tets[self.last].alive {
             self.last
         } else {
             self.tets
@@ -134,17 +155,35 @@ impl Delaunay3 {
         }
         Err(MeshError::Failed("point location did not terminate".into()))
     }
-    /// Insert `p`, returning its index. A failed insertion leaves the mesh unchanged.
-    pub fn insert(&mut self, p: Point) -> Result<usize, MeshError> {
-        match self.try_insert(p, false) {
-            Err(MeshError::NonConforming(_)) => self.try_insert(p, true),
+    /// Insert `p`, returning its index. A failed insertion leaves the mesh unchanged. The point location starts at the live
+    /// cell `near` (see [`Delaunay3::ids`]), when given.
+    pub fn insert_near(&mut self, p: Point, near: Option<usize>) -> Result<usize, MeshError> {
+        match self.try_insert(p, false, near) {
+            Err(MeshError::NonConforming(_)) => self.try_insert(p, true, near),
             other => other,
         }
     }
-    fn try_insert(&mut self, p: Point, strict: bool) -> Result<usize, MeshError> {
-        let (start, outside) = self.locate(p)?;
+    /// The tetrahedra inserting `p` would create (vertex `self.points().len()` standing for `p`), without changing the mesh.
+    /// The point location starts at the live cell `near`, when given.
+    pub fn preview(&mut self, p: Point, near: Option<usize>) -> Result<Vec<[usize; 4]>, MeshError> {
+        let cones = match self.cavity(p, false, near) {
+            Err(MeshError::NonConforming(_)) => self.cavity(p, true, near),
+            other => other,
+        }?
+        .1;
+        Ok(cones.into_iter().map(|(v, _)| v).collect())
+    }
+    /// The ids of the live cells, in the order of [`Delaunay3::snapshot`]. An id stays with its cell until an insertion
+    /// removes the cell.
+    pub fn ids(&self) -> Vec<usize> {
+        (0..self.tets.len()).filter(|&i| self.tets[i].alive).collect()
+    }
+    /// The insertion cavity of `p` (marked with the current epoch) and its boundary faces coned to `p`, each with the cell
+    /// across it.
+    fn cavity(&mut self, p: Point, strict: bool, near: Option<usize>) -> Result<(Vec<usize>, Vec<([usize; 4], usize)>), MeshError> {
+        let (start, outside) = self.locate(p, near)?;
         if outside
-            && sphere_side(self.tets[start].v.map(|v| self.points[v]), p)? == SphereSide::Outside
+            && sphere_side_positive(self.tets[start].v.map(|v| self.points[v]), p)? == SphereSide::Outside
         {
             return Err(MeshError::Unsupported(
                 "point lies outside the hull and outside every conflicting tetrahedron".into(),
@@ -166,7 +205,8 @@ impl Delaunay3 {
                 if nb == NONE || self.marks[nb] == epoch {
                     continue;
                 }
-                let side = sphere_side(self.tets[nb].v.map(|v| self.points[v]), p)?;
+                // every cell is positive: the seed's are, and each cone is built on the inner side of its face
+                let side = sphere_side_positive(self.tets[nb].v.map(|v| self.points[v]), p)?;
                 let joins = if strict {
                     side == SphereSide::Inside
                 } else {
@@ -206,6 +246,11 @@ impl Delaunay3 {
                 "insertion cell budget exceeded".into(),
             ));
         }
+        Ok((cavity, cones))
+    }
+    fn try_insert(&mut self, p: Point, strict: bool, near: Option<usize>) -> Result<usize, MeshError> {
+        let (cavity, cones) = self.cavity(p, strict, near)?;
+        let index = self.points.len();
         // Commit: allocate the cone tetrahedra, link them, retire the cavity.
         let removed_vertices: BTreeMap<usize, [usize; 4]> =
             cavity.iter().map(|&c| (c, self.tets[c].v)).collect();
@@ -261,6 +306,9 @@ impl Delaunay3 {
         }
         self.removed = cavity.iter().map(|&c| removed_vertices[&c]).collect();
         self.added = created.iter().map(|&c| self.tets[c].v).collect();
+        if let Some(log) = self.created.as_mut() {
+            log.extend_from_slice(&created);
+        }
         for c in dead {
             self.tets[c].alive = false;
             self.free.push(c);
@@ -275,6 +323,7 @@ impl Delaunay3 {
 mod tests {
     use super::*;
     use fea_core::meshing::tet_delaunay::{tetrahedralize, Limits};
+    use fea_core::meshing::tet_topology::sphere_side;
     fn cube() -> Vec<Point> {
         let mut p = Vec::new();
         for x in [0., 1.] {
@@ -314,7 +363,7 @@ mod tests {
             [0.77, 0.19, 0.93],
         ];
         for q in extra {
-            let i = d.insert(q).unwrap();
+            let i = d.insert_near(q, None).unwrap();
             assert_eq!(i, points.len());
             points.push(q);
             let v = volume(d.points(), d.cells());
@@ -342,11 +391,11 @@ mod tests {
         let mut d = Delaunay3::new(&seed, 10_000);
         // One ulp above the z = 1 face, over the face interior.
         let above = [0.3, 0.4, f64::from_bits(1.0f64.to_bits() + 1)];
-        d.insert(above).unwrap();
+        d.insert_near(above, None).unwrap();
         assert!((volume(d.points(), d.cells()) - 1.).abs() < 1e-12);
-        assert!(d.insert([0.5, 0.5, 40.]).is_err());
+        assert!(d.insert_near([0.5, 0.5, 40.], None).is_err());
         // The failed insertion left the mesh usable.
-        d.insert([0.6, 0.6, 0.6]).unwrap();
+        d.insert_near([0.6, 0.6, 0.6], None).unwrap();
     }
     #[test]
     fn the_cell_budget_is_a_hard_limit_and_a_failed_insertion_changes_nothing() {
@@ -354,7 +403,7 @@ mod tests {
         let mut d = Delaunay3::new(&seed, seed.cells().len() + 1);
         let before: Vec<_> = d.cells().collect();
         assert!(matches!(
-            d.insert([0.5, 0.5, 0.5]),
+            d.insert_near([0.5, 0.5, 0.5], None),
             Err(MeshError::LimitExceeded(_))
         ));
         assert_eq!(before, d.cells().collect::<Vec<_>>());
