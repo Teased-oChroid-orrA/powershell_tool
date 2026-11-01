@@ -3,7 +3,7 @@
   "epic_complete": false,
   "branch": "main",
   "pull_request": null,
-  "pull_request_state": "none_open_after_pr_198",
+  "pull_request_state": "none_open_after_pr_200",
   "merged_prs": [
     42,
     65,
@@ -82,25 +82,26 @@
     186,
     193,
     195,
-    198
+    198,
+    200
   ],
-  "latest_qualified_source": "497ba059d016b79bf9443834043218872dbefe0d",
-  "latest_phase": 157,
-  "progress_snapshot": "issue-46-phase-157.md",
+  "latest_qualified_source": "915e32028e6b91811257aace311699666a7b104a",
+  "latest_phase": 158,
+  "progress_snapshot": "issue-46-phase-158.md",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
-  "remaining": "Phase 157: chart grading keeps new edge samples a geometry tolerance apart, so ABC 00006600 (min shell angle 4.733 deg, 0 edges under 1e-5 mm) and 00007062 (min shell angle 2.904 deg) now reach conforming PLC meshes; both fail the unchanged default solver gate on boundary sliver tetrahedra (scaled Jacobian 0.000), so neither is solved. The 36 non-NEMA mesh-only parity rows pass, identical to main bb54f14. NEMA17 is deferred by owner request. Boundary sliver quality for the ABC files, the 300-file ABC rerun, general CAD seam conformity, Windows native-only mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
+  "remaining": "Phase 158: a segment split that recovers a required sub-facet is no longer refused at the sliver floor, which removes a sliver-stage livelock on ABC 00006600 (0 to 2,505 quality points in the 20 s clock; with unlimited time the stage ends by itself with 483 cells under the gate's 0.1, minimum scaled Jacobian 0.035). Neither 00006600 nor 00007062 (96,023 cells under 0.1) passes the unchanged default solver gate, so neither is solved. NEMA17 is deferred by owner request. Sliver-stage speed, a candidate-point search for the remaining bad cells, the 300-file ABC rerun, general CAD seam conformity, Windows native-only mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
   "latest_increment_tests": {
     "commands": [
       "cargo test -p solid-kernel -p fea-core --release --locked --offline -j1 --no-fail-fast",
-      "CASE='' NO_SOLVE=1 cargo test -p fea-problem --features occt --release --locked --offline -j1 --test occt_vs_native -- --ignored --nocapture table",
-      "ABC_GRADED_FIRST=1 cargo run --release --locked --offline -j1 -p solid-kernel --no-default-features --example abc-corpus -- --one <file> --foreign --graded [--conform-timeout 0 | --steiner 200000 --conform-timeout 300 --merge --quality --refine] (00006600, 00007062)",
-      "Hosted Workbench qualification run 41243516885 at 497ba05"
+      "ABC_GRADED_FIRST=1 cargo run --release --locked --offline -j1 -p solid-kernel --no-default-features --example abc-corpus -- --one <file> --foreign --graded --steiner 200000 --conform-timeout 300 --merge --quality --refine (00006600, 00007062)",
+      "STAGEDBG=1 PLC_MERGE=1 PLC_REFINE=1 PLC_SECS=900 target/release/examples/plc-run <dumped 00006600 shell>",
+      "Hosted Workbench qualification run 41256309175 at 915e320"
     ],
     "result": "passed",
-    "platform": "Local macOS arm64, release, serial Cargo: 919 passed / 0 failed / 41 ignored, no warnings; parity 36/38 (NEMA17 fails as before), identical to main. Hosted run 41243516885: qualify passed on ubuntu-latest, macos-latest and windows-latest",
-    "at": "497ba05",
+    "platform": "Local macOS arm64, release, serial Cargo: 920 passed / 0 failed / 41 ignored, no warnings; new test a_required_sub_facet_gets_its_split_below_the_sliver_floor fails on the previous code. Hosted run 41256309175: qualify passed on ubuntu-latest, macos-latest and windows-latest",
+    "at": "915e320",
     "corpus": "issue-46-abc-corpus-2026-10-18.md"
   },
   "tests": {
@@ -110,13 +111,13 @@
     "platform": "macOS arm64 (no Windows or hosted CI evidence)",
     "at": "20a3f24"
   },
-  "last_confirmed_main_merge": "4cf9acc531bcd20db7ef05c89a4fde0906aab54a",
+  "last_confirmed_main_merge": "e83871d8dc21b0377ce5ce41a54a22f77d4d2938",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Non-NEMA Issue #63 gates: boundary sliver quality so 00006600 and 00007062 pass the default solver gate and solve; 300-file ABC rerun; broader native/OCCT solves; Windows native-only mesh/solve; remaining five-plan items. NEMA17 deferred by owner request",
+    "scope": "Non-NEMA Issue #63 gates: sliver-stage speed and a candidate-point search for the cells the plain step leaves unresolved, so 00006600 and 00007062 pass the default solver gate and solve; 300-file ABC rerun; broader native/OCCT solves; Windows native-only mesh/solve; remaining five-plan items. NEMA17 deferred by owner request",
     "status": "see_resume_guide_open_list"
   },
-  "base_main_head": "4cf9acc531bcd20db7ef05c89a4fde0906aab54a",
+  "base_main_head": "e83871d8dc21b0377ce5ce41a54a22f77d4d2938",
   "completion_checklist": "issue-46-completion-checklist.md",
   "resume": "issue-46-resume.md",
   "pending_prs": []
