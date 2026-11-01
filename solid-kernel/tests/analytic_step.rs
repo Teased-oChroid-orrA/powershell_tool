@@ -1504,6 +1504,76 @@ fn unseamed_cylinder_and_cone_bands_get_a_seam_and_sample_like_the_seamed_origin
     }
 }
 
+/// The seam of an unseamed band ends on the second loop at the first loop's angle. A sample of that loop's edge just beside
+/// that point must not leave a piece shorter than the geometry tolerance: on ABC `00006600` a cone seam landed 6.47e-4 mm
+/// from a circle's midpoint sample (tolerance 0.005 mm), and the corner it left had a 4.7 degree angle that kept cells under
+/// the solver gate (Phase 162). Here the frustum's base circle (radius 6) is turned so that one of its interior samples lies
+/// 0.002 mm round from the seam's angle: that sample is dropped. (The same gap to the circle's vertex is not handled: the
+/// vertex cannot be dropped, and taking it as the seam's end puts the seam off the generator, which the cone chart refuses.)
+#[test]
+fn a_band_seam_drops_the_loop_sample_beside_its_end() {
+    let tolerance = 0.005;
+    let seamed = AnalyticModel::read(&inventory(include_str!("data/frustum.step"), Limits::default()).unwrap(), Options::foreign_cad(0.05)).unwrap();
+    // the base circle's samples are evenly spaced from its vertex: turn it so that sample `segments / 2` comes 0.002 mm past
+    // a full turn, where the seam (at angle 0) ends
+    let segments = (seamed.edge_points(78).unwrap().len() - 1) as f64;
+    let step = std::f64::consts::TAU / segments;
+    let theta = (segments - (segments / 2.).floor()) * step + 0.002 / 6.;
+    let fixture = include_str!("data/frustum.step");
+    for edited in [
+        "#17 = ADVANCED_FACE('',(#18),#31,.T.);",
+        "#19 = EDGE_LOOP('',(#20,#54,#77,#104));",
+        "#57 = CARTESIAN_POINT('',(6.,-1.469576158977E-15,0.));",
+        "#84 = DIRECTION('',(1.,0.,-0.));",
+    ] {
+        assert_eq!(fixture.matches(edited).count(), 1, "{edited}");
+    }
+    let unseamed = fixture
+        .replace("#17 = ADVANCED_FACE('',(#18),#31,.T.);", "#17 = ADVANCED_FACE('',(#18,#900),#31,.T.);")
+        .replace(
+            "#19 = EDGE_LOOP('',(#20,#54,#77,#104));",
+            "#19 = EDGE_LOOP('',(#20));\n#900 = FACE_BOUND('',#901,.T.);\n#901 = EDGE_LOOP('',(#77));",
+        )
+        .replace(
+            "#57 = CARTESIAN_POINT('',(6.,-1.469576158977E-15,0.));",
+            &format!("#57 = CARTESIAN_POINT('',({:.15E},{:.15E},0.));", 6. * theta.cos(), 6. * theta.sin()),
+        )
+        .replace(
+            "#84 = DIRECTION('',(1.,0.,-0.));",
+            &format!("#84 = DIRECTION('',({:.15E},{:.15E},0.));", theta.cos(), theta.sin()),
+        );
+    let data = inventory(&unseamed, Limits::default()).unwrap();
+    let model = AnalyticModel::read(&data, Options::foreign_cad(0.05)).unwrap();
+    assert_eq!(model.body().faces[&17].bounds.len(), 1, "the band is seamed");
+    let mut base = 0;
+    for &edge in model.body().edges.keys() {
+        let points = model.edge_points(edge).unwrap();
+        if points.iter().all(|p| p[2].abs() < 1e-9) {
+            base += points.len() - 1;
+        }
+        for w in points.windows(2) {
+            let gap = (0..3).map(|k| (w[1][k] - w[0][k]).powi(2)).sum::<f64>().sqrt();
+            assert!(gap >= tolerance, "edge #{edge}: samples {gap:e} mm apart (tolerance {tolerance})");
+        }
+    }
+    // the base circle keeps its sample count: the seam's end replaced the sample beside it
+    assert_eq!(base as f64, segments, "theta {theta}");
+    let volume = |model: &AnalyticModel| {
+        model
+            .sampled_surface(
+                solid_kernel::native_surface::Limits {
+                    chart_policy: solid_kernel::cylindrical_step::ChartPolicy::CanonicalizeWithinTolerance,
+                    ..Default::default()
+                },
+                |_| true,
+            )
+            .unwrap()
+            .signed_volume_mm3
+    };
+    let (a, b) = (volume(&seamed), volume(&model));
+    assert!(b > 0. && (a - b).abs() < 1e-3 * a, "{a} {b}");
+}
+
 #[test]
 fn shallow_cone_band_seams_when_axial_gap_is_below_geometry_tolerance() {
     let seamed = solid_kernel::native_brep::NativeBrep::lathe(&[
