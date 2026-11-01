@@ -1,0 +1,96 @@
+name: Windows native STEP runtime
+# Feature-off (no OpenCascade) STEP import, volume mesh and static solve on hosted Windows x64: the focused fea-problem tests and
+# the built-in native rows of the same-STEP benchmark (docs/issue-46-windows-runtime-plan.md). Evidence for the host that ran it;
+# not the clean-machine, packaged-app gate.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'fea-problem/**'
+      - 'solid-kernel/**'
+      - 'fea-core/**'
+      - 'mechanics-core/**'
+      - 'nema17-motor-bracket.step'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/**'
+      - '.github/workflows/windows-step-runtime.yml'
+concurrency:
+  group: windows-step-runtime-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+jobs:
+  native-step:
+    runs-on: windows-latest
+    timeout-minutes: 150
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+    steps:
+      # The pull request's own head commit, not GitHub's merge commit, so the run names the exact source it tested.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Host and source
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force evidence | Out-Null
+          & {
+            Get-CimInstance Win32_Processor | Format-List Name, Manufacturer, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed
+            Get-CimInstance Win32_OperatingSystem | Format-List Caption, Version, BuildNumber, OSArchitecture, TotalVisibleMemorySize
+            rustc -vV
+            cargo -V
+            "commit $(git rev-parse HEAD)"
+          } *>&1 | Tee-Object -FilePath evidence/host.txt
+      - name: OpenCascade is not in the feature set
+        shell: bash
+        run: |
+          cargo tree -p fea-problem -e features --no-default-features --locked > evidence/features.txt
+          if grep -i occt evidence/features.txt; then echo "::error::occt is active"; exit 1; fi
+          grep -c . evidence/features.txt
+      - name: Focused feature-off STEP tests (native_solid, solid)
+        shell: bash
+        run: |
+          set -o pipefail
+          start=$(date +%s)
+          cargo test -p fea-problem --no-default-features --locked -j 2 --test native_solid --test solid 2>&1 | tee evidence/focused.log
+          cargo test -p fea-problem --no-default-features --locked -j 2 --test native_solid supports_and_loads_follow_their_faces_and_the_edited_solid_solves -- --exact 2>&1 | tee evidence/exact.log
+          echo "focused wall $(( $(date +%s) - start )) s (build included)" | tee -a evidence/focused.log
+          # A filter that selects nothing exits 0: require the counts.
+          grep -q 'running 3 tests' evidence/focused.log && grep -q 'running 7 tests' evidence/focused.log
+          [ "$(grep -c 'test result: ok\. [1-9][0-9]* passed; 0 failed' evidence/focused.log)" = 2 ]
+          grep -q 'running 1 test$' evidence/exact.log && grep -q 'test result: ok\. 1 passed; 0 failed' evidence/exact.log
+      - name: Build the native benchmark (release)
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test -p fea-problem --no-default-features --locked --release -j 2 --test native_step_benchmark --no-run --message-format=json > evidence/bench-build.json
+          python -c "import json,sys; print(next(m['executable'] for m in map(json.loads, open(sys.argv[1])) if m.get('reason') == 'compiler-artifact' and m['target']['name'] == 'native_step_benchmark' and m.get('executable')))" evidence/bench-build.json > evidence/bench-exe.txt
+          cat evidence/bench-exe.txt
+      - name: Native benchmark rows (time and peak memory)
+        shell: pwsh
+        run: |
+          $exe = (Get-Content evidence/bench-exe.txt -Raw).Trim()
+          $clock = [Diagnostics.Stopwatch]::StartNew()
+          $p = Start-Process -FilePath $exe -ArgumentList 'native_rows', '--exact', '--ignored', '--nocapture' -NoNewWindow -PassThru -RedirectStandardOutput evidence/bench.out -RedirectStandardError evidence/bench.err
+          $null = $p.Handle  # keeps ExitCode readable after exit
+          $peak = 0
+          while (-not $p.HasExited) {
+            try { $p.Refresh(); $peak = [Math]::Max($peak, $p.PeakWorkingSet64) } catch {}
+            Start-Sleep -Milliseconds 500
+          }
+          $p.WaitForExit()
+          $clock.Stop()
+          Get-Content evidence/bench.out, evidence/bench.err
+          $line = "benchmark exit $($p.ExitCode), wall $([Math]::Round($clock.Elapsed.TotalSeconds, 1)) s, peak working set $([Math]::Round($peak / 1MB, 1)) MiB (sampled every 0.5 s)"
+          $line | Tee-Object -FilePath evidence/bench-resources.txt
+          Add-Content $env:GITHUB_STEP_SUMMARY ("``````n" + ((Get-Content evidence/host.txt | Select-String 'Name|BuildNumber|commit|host:') -join "`n") + "`n" + ((Get-Content evidence/bench.err) -join "`n") + "`n$line`n``````")
+          if ($p.ExitCode -ne 0) { exit 1 }
+          if (-not (Select-String -Path evidence/bench.out -Pattern '^running 1 test$' -Quiet)) { Write-Error 'the benchmark filter selected no test'; exit 1 }
+          if (-not (Select-String -Path evidence/bench.out -Pattern 'test result: ok\. 1 passed; 0 failed' -Quiet)) { Write-Error 'the benchmark did not pass'; exit 1 }
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-step-runtime
+          path: evidence
