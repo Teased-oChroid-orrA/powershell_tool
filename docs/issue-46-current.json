@@ -3,7 +3,7 @@
   "epic_complete": false,
   "branch": "main",
   "pull_request": null,
-  "pull_request_state": "none_open_after_pr_204",
+  "pull_request_state": "none_open_after_pr_206",
   "merged_prs": [
     42,
     65,
@@ -85,25 +85,27 @@
     198,
     200,
     202,
-    204
+    204,
+    206
   ],
-  "latest_qualified_source": "3113ce7ec6f3ba4fce7cec2c5f2c9511096aeffe",
-  "latest_phase": 160,
-  "progress_snapshot": "issue-46-phase-160.md",
+  "latest_qualified_source": "b3b6cd1d7121b2f48b9cbdb40430f6efa62bf988",
+  "latest_phase": 161,
+  "progress_snapshot": "issue-46-phase-161.md",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
-  "remaining": "Phase 160: the sliver stage searches 14 picking points inside a sliver's circumsphere for one that encroaches nothing and gives better new cells than the circumcentre, and post-stage reconnection judges flips by the scaled Jacobian; speed work keeps the same insertion sequence. At the default 20 s clock on an idle CPU, ABC 00006600 goes from 3,380 to 19 cells under the gate's 0.1 (minimum scaled Jacobian 0.0621, edge ratio 13.6; under CPU load the clock rolls back to 28 cells) and 00007062 has 87,029 (0.0022, 67.3); neither passes the unchanged default solver gate, so neither is solved. The 19 cells on 00006600 come from cap triangles in the graded shell (surface stage). NEMA17 is deferred by owner request. Removing those caps, the boundary-split budget on 00007062, the 300-file ABC rerun, general CAD seam conformity, Windows native-only mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
+  "remaining": "Phase 161: the final chart triangulation leaves a boundary diagonal unsplit only when its split point lies within the geometry tolerance of the chord and its ends share no neighbouring face or plane; grading still forces every split, so the graded edge samples are unchanged. With the sliver stage given time (ABC_QSEC=900, a diagnostic), ABC 00006600 goes from 19 to 6 cells under the gate's 0.1 (minimum scaled Jacobian 0.0481, edge ratio 12.6); at the default 20 s clock under desktop load it has 12 (main 28). 00007062 goes from 79,179 to 58,843 cells under 0.1 and its largest edge ratio from 164.1 to 61.3, but its smallest shell angle is 2.28 degrees against main's 2.90. Neither passes the unchanged default solver gate, so neither is solved. The 6 cells left on 00006600 sit at the cone corners, whose sides are 6.47e-4 and 7.81e-3 mm; grading refuses a generator split below 2 x floor_mm. NEMA17 is deferred by owner request. A graded split at those corners without relaxing the floor, locating the 2.28 degree shell angle and the boundary-split budget on 00007062, the 300-file ABC rerun, general CAD seam conformity, Windows native-only mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
   "latest_increment_tests": {
     "commands": [
       "cargo test -p solid-kernel -p fea-core --release --locked --offline -j1 --no-fail-fast",
       "ABC_GRADED_FIRST=1 cargo run --release --locked --offline -j1 -p solid-kernel --no-default-features --example abc-corpus -- --one <file> --foreign --graded --steiner 200000 --conform-timeout 300 --merge --quality --refine (00006600, 00007062)",
-      "STAGEDBG=1 PLC_MERGE=1 PLC_REFINE=1 PLC_QSEC=900 target/release/examples/plc-run <dumped 00006600 and 00007062 shells>",
-      "Hosted Workbench qualification run 41277830701 at 3113ce7"
+      "PLC_CELLS=1 PLC_QSEC=900 PLC_SECS=900 target/release/examples/plc-run <dumped 00006600 shell>",
+      "CASE='' NO_SOLVE=1 cargo test -p fea-problem --features occt --release --locked --offline -j1 --test occt_vs_native -- --ignored --nocapture table",
+      "Hosted Workbench qualification run 41320770393 at b3b6cd1"
     ],
     "result": "passed",
-    "platform": "Local macOS arm64, release, serial Cargo: 924 passed / 0 failed / 41 ignored (solid-kernel rerun with the review fix: 303 / 0 / 4); with PLC_QSEC=900 every speed step gives the identical insertion sequence. Hosted run 41277830701: qualify passed on ubuntu-latest, macos-latest and windows-latest",
-    "at": "3113ce7",
+    "platform": "Local macOS arm64, release, serial Cargo: 926 passed / 0 failed / 41 ignored, no warnings; mesh-only parity table 36 of 38 rows pass, same as main (the 2 failures are NEMA17, deferred). Hosted run 41320770393: qualify passed on ubuntu-latest, macos-latest and windows-latest",
+    "at": "b3b6cd1",
     "corpus": "issue-46-abc-corpus-2026-10-18.md"
   },
   "tests": {
@@ -113,13 +115,13 @@
     "platform": "macOS arm64 (no Windows or hosted CI evidence)",
     "at": "20a3f24"
   },
-  "last_confirmed_main_merge": "46d296832610c457177bf7426f5744281c975504",
+  "last_confirmed_main_merge": "d796d63869f15c4e78a5fb8458b947fba4605de4",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Non-NEMA Issue #63 gates: remove the cap triangles of the graded 00006600 shell (surface stage) so its last cells pass the default solver gate and it solves; the boundary-split budget that keeps 00007062 far from the gate; 300-file ABC rerun; broader native/OCCT solves; Windows native-only mesh/solve; remaining five-plan items. NEMA17 deferred by owner request",
+    "scope": "Non-NEMA Issue #63 gates: a graded split near the 00006600 cone corners (sides 6.47e-4 vs 7.81e-3 mm) without relaxing the floor, so its last 6 cells pass the default solver gate and it solves; locating the 2.28 degree shell angle and the boundary-split budget that keep 00007062 far from the gate; 300-file ABC rerun; broader native/OCCT solves; Windows native-only mesh/solve; remaining five-plan items. NEMA17 deferred by owner request",
     "status": "see_resume_guide_open_list"
   },
-  "base_main_head": "46d296832610c457177bf7426f5744281c975504",
+  "base_main_head": "d796d63869f15c4e78a5fb8458b947fba4605de4",
   "completion_checklist": "issue-46-completion-checklist.md",
   "resume": "issue-46-resume.md",
   "pending_prs": []
