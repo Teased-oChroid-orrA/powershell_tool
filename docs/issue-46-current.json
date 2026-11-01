@@ -3,7 +3,7 @@
   "epic_complete": false,
   "branch": "main",
   "pull_request": null,
-  "pull_request_state": "none_open_after_pr_206",
+  "pull_request_state": "none_open_after_pr_208",
   "merged_prs": [
     42,
     65,
@@ -86,26 +86,27 @@
     200,
     202,
     204,
-    206
+    206,
+    208
   ],
-  "latest_qualified_source": "b3b6cd1d7121b2f48b9cbdb40430f6efa62bf988",
-  "latest_phase": 161,
-  "progress_snapshot": "issue-46-phase-161.md",
+  "latest_qualified_source": "da25eb5c36ff9cc694f650c1c4258289852f88dc",
+  "latest_phase": 162,
+  "progress_snapshot": "issue-46-phase-162.md",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
-  "remaining": "Phase 161: the final chart triangulation leaves a boundary diagonal unsplit only when its split point lies within the geometry tolerance of the chord and its ends share no neighbouring face or plane; grading still forces every split, so the graded edge samples are unchanged. With the sliver stage given time (ABC_QSEC=900, a diagnostic), ABC 00006600 goes from 19 to 6 cells under the gate's 0.1 (minimum scaled Jacobian 0.0481, edge ratio 12.6); at the default 20 s clock under desktop load it has 12 (main 28). 00007062 goes from 79,179 to 58,843 cells under 0.1 and its largest edge ratio from 164.1 to 61.3, but its smallest shell angle is 2.28 degrees against main's 2.90. Neither passes the unchanged default solver gate, so neither is solved. The 6 cells left on 00006600 sit at the cone corners, whose sides are 6.47e-4 and 7.81e-3 mm; grading refuses a generator split below 2 x floor_mm. NEMA17 is deferred by owner request. A graded split at those corners without relaxing the floor, locating the 2.28 degree shell angle and the boundary-split budget on 00007062, the 300-file ABC rerun, general CAD seam conformity, Windows native-only mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
+  "remaining": "Phase 162: when a band seam's end is inserted on a loop's edge, an interior sample of that edge lying within the geometry tolerance of it is dropped, so the seam no longer leaves a piece shorter than the tolerance. ABC 00006600 goes from 6 to 1 cell under the gate's 0.1 with the sliver stage given time (ABC_QSEC=900, a diagnostic) and has 1 at the default 20 s clock on an idle CPU (minimum scaled Jacobian 0.0481 -> 0.0773, edge ratio 12.6 -> 7.5, smallest shell angle 4.73 -> 6.39 degrees); 00007062 is unchanged (58,843 cells under 0.1, edge ratio 61.3, shell angle 2.28 degrees). Neither passes the unchanged default solver gate, so neither is solved. The last 00006600 cell is a sliver at input vertex 5851 whose point encroaches two 7.81e-3 mm sub-segments; the sliver stage refuses those splits because they are below its floor, the shortest input segment, which Phase 162 raised from 6.47e-4 to at least 8.89e-3 mm by removing the short seam piece (local trace, not committed). NEMA17 is deferred by owner request. That last cell without lowering the floor, a seam end within the tolerance of an edge's end vertex, locating the 2.28 degree shell angle and the boundary-split budget on 00007062, the 300-file ABC rerun, general CAD seam conformity, Windows native-only mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
   "latest_increment_tests": {
     "commands": [
       "cargo test -p solid-kernel -p fea-core --release --locked --offline -j1 --no-fail-fast",
       "ABC_GRADED_FIRST=1 cargo run --release --locked --offline -j1 -p solid-kernel --no-default-features --example abc-corpus -- --one <file> --foreign --graded --steiner 200000 --conform-timeout 300 --merge --quality --refine (00006600, 00007062)",
-      "PLC_CELLS=1 PLC_QSEC=900 PLC_SECS=900 target/release/examples/plc-run <dumped 00006600 shell>",
+      "PLC_MERGE=1 PLC_REFINE=1 PLC_CELLS=1 PLC_QSEC=900 PLC_SECS=900 target/release/examples/plc-run <dumped 00006600 shell>",
       "CASE='' NO_SOLVE=1 cargo test -p fea-problem --features occt --release --locked --offline -j1 --test occt_vs_native -- --ignored --nocapture table",
-      "Hosted Workbench qualification run 41320770393 at b3b6cd1"
+      "Hosted Workbench qualification run 41330669874 at da25eb5"
     ],
     "result": "passed",
-    "platform": "Local macOS arm64, release, serial Cargo: 926 passed / 0 failed / 41 ignored, no warnings; mesh-only parity table 36 of 38 rows pass, same as main (the 2 failures are NEMA17, deferred). Hosted run 41320770393: qualify passed on ubuntu-latest, macos-latest and windows-latest",
-    "at": "b3b6cd1",
+    "platform": "Local macOS arm64, release, serial Cargo: 927 passed / 0 failed / 41 ignored, no warnings; mesh-only parity table all 38 rows identical to main, 36 pass (the 2 failures are NEMA17, deferred). Hosted run 41330669874 (qualify on ubuntu-latest, macos-latest, windows-latest) was still running at merge: the owner merged without waiting for it",
+    "at": "da25eb5",
     "corpus": "issue-46-abc-corpus-2026-10-18.md"
   },
   "tests": {
@@ -115,13 +116,13 @@
     "platform": "macOS arm64 (no Windows or hosted CI evidence)",
     "at": "20a3f24"
   },
-  "last_confirmed_main_merge": "d796d63869f15c4e78a5fb8458b947fba4605de4",
+  "last_confirmed_main_merge": "9261d4d90bcaab29637c3605b181f3210b37e4aa",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "Non-NEMA Issue #63 gates: a graded split near the 00006600 cone corners (sides 6.47e-4 vs 7.81e-3 mm) without relaxing the floor, so its last 6 cells pass the default solver gate and it solves; locating the 2.28 degree shell angle and the boundary-split budget that keep 00007062 far from the gate; 300-file ABC rerun; broader native/OCCT solves; Windows native-only mesh/solve; remaining five-plan items. NEMA17 deferred by owner request",
+    "scope": "Non-NEMA Issue #63 gates: the last 00006600 cell (a sliver at input vertex 5851 whose point encroaches two 7.81e-3 mm sub-segments below the sliver floor, the shortest input segment) without lowering the floor, so it passes the default solver gate and solves; locating the 2.28 degree shell angle and the boundary-split budget that keep 00007062 far from the gate; 300-file ABC rerun; broader native/OCCT solves; Windows native-only mesh/solve; remaining five-plan items. NEMA17 deferred by owner request",
     "status": "see_resume_guide_open_list"
   },
-  "base_main_head": "d796d63869f15c4e78a5fb8458b947fba4605de4",
+  "base_main_head": "9261d4d90bcaab29637c3605b181f3210b37e4aa",
   "completion_checklist": "issue-46-completion-checklist.md",
   "resume": "issue-46-resume.md",
   "pending_prs": []
