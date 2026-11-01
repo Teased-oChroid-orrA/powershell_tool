@@ -15,7 +15,7 @@
 //! `QualityThresholds::default()` and conformity) and, for a passing body, runs a static solve (the end of the longest axis
 //! fixed, a unit force across the other end); the detail then carries `gate=pass|fail`, `path=protected|fallback`, the
 //! worst scaled Jacobian `sj`, the largest edge ratio `er`, `tets`, the gate refusal and the solve outcome.
-//! `--refine` (with `--quality`) conforms with the sliver recipe: `Options::min_scaled_jacobian` 0.2, six passes of the flip pass (`ABC_PASSES`, 0 for none). The experiments' variables `ABC_RADIUS_EDGE`, `ABC_MIN_SJ`, `ABC_SMOOTH`, `ABC_RECONNECT`, `ABC_PLANAR`
+//! `--refine` (with `--quality`) conforms with the sliver recipe: `Options::min_scaled_jacobian` 0.2, six passes of the flip pass (`ABC_PASSES`, 0 for none) alternated with two rounds of interior smoothing (`ABC_SMOOTH`). The experiments' variables `ABC_RADIUS_EDGE`, `ABC_MIN_SJ`, `ABC_SMOOTH`, `ABC_RECONNECT`, `ABC_PLANAR`
 //! override single options; `ABC_SHOW_BAD` lists the tetrahedra under the gate; `ABC_NOFALLBACK` reports the protected
 //! recovery's refusal instead of falling back to unprotected recovery.
 //! Child mode (internal): `abc-corpus --one FILE [--conform-timeout S]` prints one row to stdout.
@@ -294,7 +294,9 @@ fn survey(
                                 ..Default::default()
                             });
                         }
-                        o.smooth_rounds = 0;
+                        // two rounds: the fewest that clear the last sliver of ABC 00006600 and bring 00007062's edge ratio
+                        // under the gate's 50 (Phase 163); smoothing runs after the recovery, outside `--conform-timeout`
+                        o.smooth_rounds = 2;
                     }
                     // ABC_RADIUS_EDGE: Options::max_radius_edge; ABC_RECONNECT=1: flip/edge-removal pass; ABC_PLANAR=1: with it
                     // also reconnect flat boundary patches (experiments on the quality gate)
