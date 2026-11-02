@@ -99,6 +99,59 @@ impl Inventory {
     pub fn raw_bodies_with_limits(&self, limits: TopologyLimits) -> Result<Vec<RawBody>, Error> {
         crate::step_topology::bodies(self, limits)
     }
+    /// A copy of the document moved by the rigid motion `x -> R x + t` (rows of `rotation` are the rows of R, which the caller
+    /// guarantees orthonormal with determinant +1; `translation` in the source length unit): every three-coordinate
+    /// `CARTESIAN_POINT` is moved and every three-coordinate `DIRECTION` turned, in simple and complex entities alike. These are
+    /// the only coordinate carriers of the geometry; lengths, radii, angles, weights and parameters are invariant under the
+    /// motion. Two-coordinate points and directions (p-curves in a parameter plane) stay. The copy is a different document: its
+    /// fingerprint hashes the source fingerprint and the motion, so references into the source do not resolve in it.
+    pub(crate) fn rigidly_moved(
+        &self,
+        rotation: [[f64; 3]; 3],
+        translation: [f64; 3],
+    ) -> Result<Inventory, Error> {
+        let mut out = self.clone();
+        for e in out.entities.values_mut() {
+            for c in &mut e.components {
+                let moved = match c.name.as_str() {
+                    "CARTESIAN_POINT" => true,
+                    "DIRECTION" => false,
+                    _ => continue,
+                };
+                let Some(Value::List(coordinates)) = c.args.get_mut(1) else {
+                    continue;
+                };
+                if coordinates.len() != 3 {
+                    continue;
+                }
+                let mut p = [0.; 3];
+                for (k, v) in coordinates.iter().enumerate() {
+                    p[k] = match v {
+                        Value::Real(x) if x.is_finite() => *x,
+                        Value::Integer(i) if i.unsigned_abs() <= 1u64 << 53 => *i as f64,
+                        _ => {
+                            return Err(Error {
+                                offset: e.offset,
+                                kind: ErrorKind::Geometry,
+                                detail: format!("#{}: non-numeric coordinate cannot be placed", e.id),
+                            })
+                        }
+                    };
+                }
+                for (k, v) in coordinates.iter_mut().enumerate() {
+                    let r = (0..3).map(|j| rotation[k][j] * p[j]).sum::<f64>();
+                    *v = Value::Real(if moved { r + translation[k] } else { r });
+                }
+            }
+        }
+        let mut hash = Sha256::new();
+        hash.update(self.document.0);
+        for x in rotation.iter().flatten().chain(&translation) {
+            hash.update(x.to_le_bytes());
+        }
+        out.document = DocumentFingerprint(hash.finalize().into());
+        Ok(out)
+    }
     pub fn header(&self) -> &[Call] {
         &self.header
     }

@@ -55,12 +55,22 @@ fn ambiguous_or_missing_direct_representations_refuse() {
         binding.body().id
     );
     let end = SOURCE.rfind("ENDSEC;").unwrap();
+    // a second representation in the same context (an AP203 validation property, a shape aspect) binds the same way
     let duplicated = format!("{}{record}{}", &SOURCE[..end], &SOURCE[end..]);
+    let same = BodyContext::read(&inventory(&duplicated, Limits::default()).unwrap()).unwrap();
+    assert_eq!(same.length_context().entity, binding.length_context().entity);
+    assert_eq!(same.millimetres_per_source_unit(), binding.millimetres_per_source_unit());
+    // one in another context is ambiguous
+    let other = format!(
+        "#999999=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#{}),#999998);#999998=( GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNIT_ASSIGNED_CONTEXT((#999997)) REPRESENTATION_CONTEXT('','') );#999997=( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT($,.METRE.) );",
+        binding.body().id
+    );
+    let elsewhere = format!("{}{other}{}", &SOURCE[..end], &SOURCE[end..]);
     assert!(
-        BodyContext::read(&inventory(&duplicated, Limits::default()).unwrap())
+        BodyContext::read(&inventory(&elsewhere, Limits::default()).unwrap())
             .unwrap_err()
             .detail
-            .contains("multiple body representations")
+            .contains("multiple body representations in different contexts")
     );
     let absent = replace(
         SOURCE,

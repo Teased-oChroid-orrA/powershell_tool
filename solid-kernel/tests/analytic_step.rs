@@ -145,7 +145,7 @@ fn inconsistent_geometry_unknown_contexts_and_assembly_are_not_partially_accepte
     )
     .unwrap_err()
     .detail
-    .contains("assembly/placement"));
+    .contains("is not a REPRESENTATION_MAP"));
 }
 #[test]
 fn tiny_direction_magnitudes_normalize_without_reciprocal_overflow() {

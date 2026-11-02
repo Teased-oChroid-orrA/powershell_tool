@@ -152,6 +152,7 @@ impl NativeBrep {
     pub fn from_step_text(text: &str) -> Result<Self, String> {
         let data = inventory(text, Limits::default()).map_err(e2s)?;
         let ctx = BodyContext::read(&data).map_err(e2s)?;
+        let data = ctx.document(&data);
         let scale = ctx.millimetres_per_source_unit();
         let body = ctx.body();
         let mut out = NativeBrep::default();
