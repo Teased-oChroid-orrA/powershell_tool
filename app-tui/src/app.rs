@@ -194,7 +194,7 @@ pub enum Effect {
     BuildIndex { settings: SearchSettings, index_dir: std::path::PathBuf, cancel: CancellationToken },
     ScanExtensions { root: String, exclude_folders: Vec<String>, include_hidden: bool },
     /// Writes the Pressure Vessel Analyzer's plain-text report
-    /// (`pressure_vessel::view::build_report_text`, already fully built by
+    /// (`pressure_vessel::report::build_report_text`, already fully built by
     /// the time this effect is constructed - pure text generation, no I/O)
     /// to its fixed report path and opens it.
     ExportPressureVesselReport(String),
@@ -1397,7 +1397,7 @@ fn execute_command(state: &mut AppState, cmd: Command) -> Vec<Effect> {
             Vec::new()
         }
         Command::ExportPressureVesselReport => {
-            vec![Effect::ExportPressureVesselReport(pressure_vessel::view::build_report_text(&state.pressure_vessel.model))]
+            vec![Effect::ExportPressureVesselReport(pressure_vessel::report::build_report_text(&state.pressure_vessel.model))]
         }
         Command::OpenPressureVesselMaterialPicker => {
             state.pressure_vessel.material_picker = pressure_vessel::material_picker::MaterialPickerState::open_now();

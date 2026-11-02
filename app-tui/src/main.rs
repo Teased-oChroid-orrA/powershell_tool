@@ -369,13 +369,7 @@ fn execute_effect(tx: &mpsc::UnboundedSender<AppEvent>, state: &mut AppState, ef
             });
         }
         Effect::PersistPressureVesselMaterials => {
-            let materials: Vec<pv_persistence::PersistedMaterial> = state
-                .pressure_vessel
-                .model
-                .custom_materials
-                .iter()
-                .map(|m| pv_persistence::PersistedMaterial { name: m.name.to_string(), e_ksi: m.e_ksi, sy_ksi: m.sy_ksi, ftu_ksi: m.ftu_ksi, nu: m.nu, alpha_u_f: m.alpha_u_f })
-                .collect();
+            let materials = state.pressure_vessel.model.persisted_custom_materials();
             tokio::task::spawn_blocking(move || pv_persistence::save(&materials));
         }
         Effect::ExportBushingReport(contents) => {

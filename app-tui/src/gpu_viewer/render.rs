@@ -1601,6 +1601,45 @@ mod snapshot_tests {
         });
     }
 
+    /// The Pressure Vessel workbench (the inputs with the hoop contour, the checks, the material picker; dark, light, a
+    /// narrow window), as raw RGBA dumps: `FEA_SNAPSHOT_VESSEL_OUT=/dir cargo test ... vessel_snapshot -- --ignored`.
+    #[test]
+    #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_VESSEL_OUT"]
+    fn vessel_snapshot() {
+        use crate::gpu_viewer::editor::session::EditorAction;
+        use crate::gpu_viewer::editor::vessel::{file::VesselFile, VesselAct, VesselSession};
+        use crate::toolboxes::pressure_vessel::model::{FieldRow, PressureVesselModel};
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_VESSEL_OUT") else { return };
+        let _guard = headless_guard();
+        let mut session = VesselSession::new(&VesselFile::capture(&PressureVesselModel::default(), "Accumulator"), std::env::temp_dir().join("vessel-snapshot.json"));
+        let shoot = |session: &mut VesselSession, step: &str, name: &str, dark: bool, (w, h): (u32, u32)| {
+            pollster::block_on(async {
+                let adapter = test_adapter().await.expect("adapter required");
+                let scene = session.scene().unwrap();
+                let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+                let texture = target(&r, w, h);
+                let mut gui = Gui::new();
+                gui.ctx().set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+                let view = ViewState::new(&scene);
+                let (yaw, pitch) = session.initial_view().map_or((0.0, 0.0), |v| v.angles());
+                let scenes = [scene];
+                let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+                gui.select_tab_named(&input, step);
+                draw(&mut r, &mut gui, &texture, &input, [yaw, pitch], session.default_mesh_lines());
+                std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
+            });
+        };
+        shoot(&mut session, "Inputs", "vessel-inputs-dark", true, (1440, 900));
+        shoot(&mut session, "Inputs", "vessel-inputs-light", false, (1440, 900));
+        shoot(&mut session, "Inputs", "vessel-narrow", true, (860, 760));
+        session.act(EditorAction::Vessel(VesselAct::Step("Results")));
+        shoot(&mut session, "Results", "vessel-results-dark", true, (1440, 900));
+        shoot(&mut session, "Results", "vessel-results-light", false, (1440, 900));
+        session.act(EditorAction::Vessel(VesselAct::Step("Inputs")));
+        session.act(EditorAction::Vessel(VesselAct::Row(FieldRow::OpenMaterialPicker)));
+        shoot(&mut session, "Inputs", "vessel-picker-dark", true, (1440, 900));
+    }
+
     /// The Search workbench after a real search (dark, light, a narrow window) and while one runs, as raw RGBA dumps:
     /// `FEA_SNAPSHOT_SEARCH_OUT=/dir cargo test ... search_snapshot -- --ignored`.
     #[test]

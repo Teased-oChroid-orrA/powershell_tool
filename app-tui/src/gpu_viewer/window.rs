@@ -906,6 +906,12 @@ pub fn run_fastener(mut session: super::editor::fastener::FastenerSession) -> Re
     launch(ViewerProject::single(scene), Some(Box::new(session)))
 }
 
+/// Open the Pressure Vessel workbench on `session`.
+pub fn run_vessel(mut session: super::editor::vessel::VesselSession) -> Result<(), String> {
+    let scene = super::editor::authoring::Authoring::scene(&mut session)?;
+    launch(ViewerProject::single(scene), Some(Box::new(session)))
+}
+
 /// Open the Search workbench on `session`: a bench without a model, its page drawn where the model would be.
 pub fn run_search(session: super::editor::search::SearchSession) -> Result<(), String> {
     launch(ViewerProject::single(blank_scene("search")), Some(Box::new(session)))
@@ -1749,6 +1755,35 @@ mod tests {
         assert!(property_text(&v).contains("Angle (calculated)  90.000"), "{}", property_text(&v));
         assert_ne!(v.scene().positions.len(), regular, "the drawing follows the hole type");
         assert!(tree_labels(&v).iter().any(|l| l == "Inputs (Countersunk)"), "{:?}", tree_labels(&v));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The Pressure Vessel window: a click on an input types it and the checks and the contour follow; Material opens
+    /// the picker card.
+    #[test]
+    fn the_pressure_vessel_workbench_edits_by_click_and_typing_and_opens_the_material_picker() {
+        let dir = std::env::temp_dir().join(format!("window-vessel-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let session = crate::gpu_viewer::editor::vessel::VesselSession::open(&dir.join("case.json")).unwrap();
+        let mut v = viewer(Some(Box::new(session)));
+        frame(&mut v);
+        assert!(property_text(&v).contains("Inner diameter  4.0000 in"), "{}", property_text(&v));
+        let hoop = v.scene().range;
+        let at = target(&v, "Wall Thickness");
+        click(&mut v, at);
+        assert!(v.editor.as_ref().unwrap().prompting());
+        for c in "0.5".chars() {
+            v.input(Input::Key(Key::Character(c.to_string().into())));
+        }
+        v.input(Input::Key(Key::Named(NamedKey::Enter)));
+        frame(&mut v);
+        assert!(property_text(&v).contains("Inner diameter  5.0000 in"), "{}", property_text(&v));
+        assert_ne!(v.scene().range, hoop, "the contour follows the wall");
+        // The inspector's Material row (the tree and the ribbon have one too).
+        let at = v.gui.find_target_after("Material card", "Material").unwrap();
+        click(&mut v, at);
+        frame(&mut v);
+        assert!(v.editor.as_ref().unwrap().value_card().is_some_and(|c| c.title == "Material"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

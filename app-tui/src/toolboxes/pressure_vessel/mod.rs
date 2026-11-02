@@ -26,6 +26,7 @@
 pub mod material_picker;
 pub mod model;
 pub mod persistence;
+pub mod report;
 pub mod view;
 
 use crossterm::event::{KeyCode, KeyEvent};
@@ -183,7 +184,7 @@ pub fn handle_key(state: &mut PressureVesselState, key: KeyEvent) -> (bool, Vec<
             state.show_numbers = !state.show_numbers;
             (true, Vec::new())
         }
-        KeyCode::Char('e' | 'E') => (true, vec![Effect::ExportPressureVesselReport(view::build_report_text(&state.model))]),
+        KeyCode::Char('e' | 'E') => (true, vec![Effect::ExportPressureVesselReport(report::build_report_text(&state.model))]),
         KeyCode::PageUp => {
             state.results_scroll = state.results_scroll.saturating_sub(crate::widgets::scroll_paragraph::SCROLL_STEP);
             (true, Vec::new())

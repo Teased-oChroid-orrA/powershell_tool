@@ -252,6 +252,13 @@ impl Gui {
         let (_, r) = self.targets.iter().find(|(l, _)| l.starts_with(prefix))?;
         Some(((r.center().x * ppp) as f64, (r.center().y * ppp) as f64))
     }
+    /// Centre (window pixels) of the first control whose label is exactly `label` after the one labelled `after`.
+    #[cfg(test)]
+    pub(crate) fn find_target_after(&self, after: &str, label: &str) -> Option<(f64, f64)> {
+        let ppp = self.ctx.pixels_per_point();
+        let (_, r) = self.targets.iter().skip_while(|(l, _)| l != after).find(|(l, _)| l == label)?;
+        Some(((r.center().x * ppp) as f64, (r.center().y * ppp) as f64))
+    }
     #[cfg(test)]
     pub(crate) fn target_labels(&self) -> Vec<String> {
         self.targets.iter().map(|(l, _)| l.clone()).collect()

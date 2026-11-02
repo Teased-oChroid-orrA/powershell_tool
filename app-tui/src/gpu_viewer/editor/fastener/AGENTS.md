@@ -11,7 +11,7 @@ Does not own: any fit, countersink, area or tolerance formula (`toolboxes/fasten
 |---|---|
 | Session, `FastenerAct`, `Authoring` impl, typed edits, undo / save / export | `mod.rs` |
 | Inspector cards (one per form section, results, drawing note), tree, ribbon, menus, status verdict | `cards.rs` |
-| The picture: revolved wall profile per part, plate size, colour codes and key labels | `drawing.rs` |
+| The picture: revolved wall profile per part, plate size, colour codes and key labels (the mesh builder is `editor/drawing.rs`) | `drawing.rs` |
 | The saved case (JSON: choices by label, each dimension `[min, nominal, max]`) | `file.rs` |
 | Input-level test (click a dimension, type, switch hole type) | `gpu_viewer/window.rs` `the_fastener_hole_workbench_*` |
 | GPU snapshots (regular, countersink dark / light-wireframe, Report step) | `gpu_viewer/render.rs` `fastener_snapshot` (`FEA_SNAPSHOT_FASTENER_OUT=dir`, ignored) |
@@ -20,7 +20,7 @@ Does not own: any fit, countersink, area or tolerance formula (`toolboxes/fasten
 - **One model for both heads.** Rows come from `model::field_rows` (only input dimensions; the solved countersink dimension is never a row), choices cycle through `FastenerHoleState::toggle_selected`, numbers go through `FastenerHoleModel::commit_number`. Never re-implement a row, a cycle or a formula here. Every calculated value is shown `nominal -minus/+plus` (`model::format_*_band`), labelled with its origin (calculated / derived / transferred / preserved) as the terminal readout tags it.
 - A typed value equal to the current one is not an edit (no undo step). A value that parses but makes no valid band (`commit_number` leaves the dimension unchanged) is reported in the status bar and leaves no undo step.
 - **The drawing is the nominal hole, to scale; the plate is not an input.** Regular: two stacked parts (Hole 1 above, Hole 2 below, a small gap). Countersunk: the solved primary countersink over its straight hole. Plate size and thickness are picked from the hole only for the picture (the Drawing card says so). The secondary countersink is not drawn. A case that cannot be drawn shows an empty scene (`drawing::empty`), never the last picture, and the Drawing card says why.
-- The quarter cut faces the opening Isometric view (`SWEEP_START`); change the two together. Surfaces are shared-vertex grids (`Mesh::grid`) so the window's feature edges are only the real outlines; separate quads per facet would draw every facet edge.
+- The quarter cut faces the opening Isometric view (`editor/drawing.rs` `SWEEP_START`, shared with Pressure Vessel); change the two together. Surfaces are shared-vertex grids (`drawing::Mesh::grid`) so the window's feature edges are only the real outlines; separate quads per facet would draw every facet edge.
 - Colour codes 0..3 map to `key_labels` per hole type. Code 0 (the parts) is not painted in the Wireframe / hidden-line styles (`fs_highlight`), by the viewer's design.
 - `bench()` is `Static`, `benches()` is empty. Export writes `view::build_report_text` beside the case (`<case>.report.txt`), the same text as the terminal toolbox's `e`.
 

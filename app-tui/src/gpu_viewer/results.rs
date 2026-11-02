@@ -72,7 +72,10 @@ pub fn result_card(input: &GuiInput) -> Card {
     let mut out = Vec::new();
     let [lo, hi] = view.range(scene);
     out.push(DockItem::Legend { lo, hi });
-    out.push(DockItem::text(format!("{}  |  units consistent with the model inputs", view.field_name(scene)), Tone::Dim));
+    // The editor's unit when it names one (the legend's title uses the same), else the model's own.
+    let name = view.field_name(scene);
+    let unit = input.editor.map(|e| e.field_unit(&name)).unwrap_or_default();
+    out.push(DockItem::text(if unit.is_empty() { format!("{name}  |  units consistent with the model inputs") } else { format!("{name} [{unit}]") }, Tone::Dim));
     if scene.harmonic_period.is_some() {
         out.push(DockItem::text("modal amplitude is arbitrary (mass-normalized)", Tone::Dim));
     }
@@ -168,5 +171,15 @@ mod tests {
         assert!(!card.items.iter().any(|i| matches!(i, DockItem::Line { text, .. } if text.starts_with("Field "))), "the field is a tree row");
         let help = ViewState { show_help: true, ..view };
         assert!(result_card(&input(&help, &scenes)).items.iter().any(|i| matches!(i, DockItem::Line { text, .. } if text == "Keys")));
+    }
+
+    #[test]
+    fn the_result_card_names_the_editors_unit_when_it_has_one() {
+        use crate::gpu_viewer::editor::authoring::Authoring;
+        let mut s = crate::gpu_viewer::editor::vessel::VesselSession::open(&std::env::temp_dir().join("results-unit-never-saved.json")).unwrap();
+        let scenes = [s.scene().unwrap()];
+        let view = ViewState::new(&scenes[0]);
+        let card = result_card(&GuiInput { editor: Some(&s), ..input(&view, &scenes) });
+        assert!(card.items.iter().any(|i| matches!(i, DockItem::Line { text, .. } if text == "Hoop stress [psi]")), "{:?}", card.items.iter().filter_map(|i| i.plain_text()).collect::<Vec<_>>());
     }
 }

@@ -2,22 +2,14 @@
 //! the hole's profile shows on the two cut faces). Regular: two stacked parts, the upper bored at Hole 1, the lower at
 //! Hole 2. Countersunk: one plate with the solved primary countersink over its straight hole. The plate's outer size and
 //! thickness are only for the picture (the workbench has no plate inputs); the hole itself is the inputs' nominal shape.
-use crate::gpu_viewer::Scene;
+use crate::gpu_viewer::{editor::drawing::Mesh, Scene};
 use crate::toolboxes::fastener_hole::model::{FastenerHoleModel, HoleType};
-use std::f64::consts::PI;
 
 /// Colour codes (the colour key, `key_labels`).
 pub const CODE_PART: f32 = 0.0;
 pub const CODE_WALL_A: f32 = 1.0;
 pub const CODE_WALL_B: f32 = 2.0;
 pub const CODE_SECTION: f32 = 3.0;
-
-/// Facets around the drawn three quarters.
-const SEGMENTS: usize = 72;
-/// The drawn sweep starts at this angle (the cut quarter is the one before it), so the cut faces the opening (isometric)
-/// camera.
-const SWEEP_START: f64 = 1.75 * PI;
-const SWEEP: f64 = 1.5 * PI;
 
 /// What the colour key says for each code, by hole type.
 pub fn key_labels(hole: HoleType) -> [&'static str; 4] {
@@ -35,84 +27,22 @@ struct Block<'a> {
     outer: f64,
 }
 
-#[derive(Default)]
-struct Mesh {
-    positions: Vec<[f64; 3]>,
-    triangles: Vec<u32>,
-    codes: Vec<f32>,
-}
-impl Mesh {
-    /// A surface through `rows` of points (each row the same length): neighbouring quads share their vertices, so only
-    /// its outline and real creases read as edges.
-    fn grid(&mut self, rows: &[Vec<[f64; 3]>], code: f32) {
-        let base = self.positions.len() as u32;
-        let n = rows[0].len() as u32;
-        for row in rows {
-            self.positions.extend(row);
-            self.codes.extend(std::iter::repeat_n(code, row.len()));
-        }
-        for i in 0..rows.len() as u32 - 1 {
-            for j in 0..n - 1 {
-                let (a, b) = (base + i * n + j, base + (i + 1) * n + j);
-                self.triangles.extend([a, a + 1, b + 1, a, b + 1, b]);
-            }
-        }
+fn block(mesh: &mut Mesh, b: &Block) {
+    let code = |c: f32| move |_: &[f64; 3]| c;
+    let (top, bottom) = (b.wall[0], b.wall[b.wall.len() - 1]);
+    for (w, c) in b.wall.windows(2).zip(b.codes) {
+        mesh.revolve(w, code(*c));
     }
-    fn block(&mut self, b: &Block) {
-        let at = |r: f64, z: f64, a: f64| [r * a.cos(), z, r * a.sin()];
-        let angles: Vec<f64> = (0..=SEGMENTS).map(|k| SWEEP_START + SWEEP * k as f64 / SEGMENTS as f64).collect();
-        // A surface of revolution through the profile points `line`, swept over the drawn angles.
-        let revolve = |m: &mut Mesh, line: &[(f64, f64)], code: f32| {
-            let rows: Vec<Vec<[f64; 3]>> = angles.iter().map(|&a| line.iter().map(|&(r, z)| at(r, z, a)).collect()).collect();
-            m.grid(&rows, code);
-        };
-        let (top, bottom) = (b.wall[0], b.wall[b.wall.len() - 1]);
-        for (w, code) in b.wall.windows(2).zip(b.codes) {
-            revolve(self, w, *code);
-        }
-        revolve(self, &[top, (b.outer, top.1)], CODE_PART);
-        revolve(self, &[bottom, (b.outer, bottom.1)], CODE_PART);
-        revolve(self, &[(b.outer, top.1), (b.outer, bottom.1)], CODE_PART);
-        for a in [angles[0], angles[SEGMENTS]] {
-            let rows: Vec<Vec<[f64; 3]>> = b.wall.iter().map(|&(r, z)| vec![at(r, z, a), at(b.outer, z, a)]).collect();
-            self.grid(&rows, CODE_SECTION);
-        }
-    }
-    /// Centred and scaled to the unit span, like every other scene.
-    fn into_scene(self, label: String) -> Result<Scene, String> {
-        let mut lo = [f64::INFINITY; 3];
-        let mut hi = [f64::NEG_INFINITY; 3];
-        for p in &self.positions {
-            for a in 0..3 {
-                lo[a] = lo[a].min(p[a]);
-                hi[a] = hi[a].max(p[a]);
-            }
-        }
-        let span = (0..3).map(|a| hi[a] - lo[a]).fold(0.0, f64::max);
-        if !span.is_finite() || span <= 0.0 {
-            return Err("nothing to draw".into());
-        }
-        let mid: [f64; 3] = std::array::from_fn(|a| 0.5 * (lo[a] + hi[a]));
-        let scene = Scene {
-            label,
-            positions: self.positions.iter().map(|p| std::array::from_fn(|a| ((p[a] - mid[a]) / span) as f32)).collect(),
-            samples: self.codes.iter().map(|c| [0.0, 0.0, 0.0, *c]).collect(),
-            triangles: self.triangles,
-            times: vec![0.0],
-            range: [CODE_PART, CODE_SECTION],
-            gain: 1.0,
-            harmonic_period: None,
-            field_label: "part (see color key)".into(),
-            fields: Vec::new(),
-        };
-        scene.validate()?;
-        Ok(scene)
-    }
+    mesh.revolve(&[top, (b.outer, top.1)], code(CODE_PART));
+    mesh.revolve(&[bottom, (b.outer, bottom.1)], code(CODE_PART));
+    mesh.revolve(&[(b.outer, top.1), (b.outer, bottom.1)], code(CODE_PART));
+    let rows: Vec<Vec<(f64, f64)>> = b.wall.iter().map(|&(r, z)| vec![(r, z), (b.outer, z)]).collect();
+    mesh.cut(&rows, code(CODE_SECTION));
 }
 
 /// A scene with nothing visible in it (one degenerate triangle), for a case that cannot be drawn.
 pub fn empty(name: &str) -> Scene {
-    Scene { label: format!("{name} | nothing to draw"), positions: vec![[0.0; 3]; 3], triangles: vec![0, 1, 2], samples: vec![[0.0; 4]; 3], times: vec![0.0], range: [CODE_PART, CODE_SECTION], gain: 1.0, harmonic_period: None, field_label: String::new(), fields: Vec::new() }
+    super::super::drawing::empty(format!("{name} | nothing to draw"), [CODE_PART, CODE_SECTION])
 }
 
 /// What is drawn, in inches (for the inspector's note and the tests).
@@ -166,9 +96,9 @@ pub fn scene(m: &FastenerHoleModel, name: &str) -> Result<(Scene, Layout), Strin
     let (blocks, layout) = plan(m)?;
     let mut mesh = Mesh::default();
     for (wall, codes) in &blocks {
-        mesh.block(&Block { wall, codes, outer: layout.outer_radius });
+        block(&mut mesh, &Block { wall, codes, outer: layout.outer_radius });
     }
-    Ok((mesh.into_scene(format!("{name} | {}", m.hole_type.label()))?, layout))
+    Ok((mesh.into_scene(format!("{name} | {}", m.hole_type.label()), "part (see color key)", [CODE_PART, CODE_SECTION], Vec::new())?, layout))
 }
 
 #[cfg(test)]

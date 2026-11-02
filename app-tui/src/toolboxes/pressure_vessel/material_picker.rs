@@ -89,7 +89,7 @@ impl Default for AddMaterialForm {
 }
 
 impl AddMaterialForm {
-    fn field_text(&self, field: AddMaterialField) -> &str {
+    pub(crate) fn field_text(&self, field: AddMaterialField) -> &str {
         match field {
             AddMaterialField::Name => &self.name,
             AddMaterialField::E => &self.e_ksi,
@@ -101,7 +101,7 @@ impl AddMaterialForm {
         }
     }
 
-    fn set_field_text(&mut self, field: AddMaterialField, text: String) {
+    pub(crate) fn set_field_text(&mut self, field: AddMaterialField, text: String) {
         match field {
             AddMaterialField::Name => self.name = text,
             AddMaterialField::E => self.e_ksi = text,
@@ -123,7 +123,7 @@ impl AddMaterialForm {
     /// outside its physically possible range would make
     /// `pressure-vessel-solver`'s own formulas divide by a near-zero or
     /// negative quantity).
-    fn validate(&self) -> Result<(String, f64, f64, f64, f64, f64), String> {
+    pub(crate) fn validate(&self) -> Result<(String, f64, f64, f64, f64, f64), String> {
         let name = self.name.trim();
         if name.is_empty() {
             return Err("Name must not be blank".to_string());
@@ -166,7 +166,7 @@ impl MaterialPickerState {
         Self { open: true, ..Default::default() }
     }
 
-    fn visible_indices(&self, model: &PressureVesselModel) -> Vec<usize> {
+    pub(crate) fn visible_indices(&self, model: &PressureVesselModel) -> Vec<usize> {
         let needle = self.filter_text.trim().to_lowercase();
         let catalog = model.material_catalog();
         if needle.is_empty() {

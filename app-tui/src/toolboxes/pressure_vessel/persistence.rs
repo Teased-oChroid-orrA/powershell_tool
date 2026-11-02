@@ -11,14 +11,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::paths::app_data_dir;
 
-fn config_path() -> Option<PathBuf> {
+/// Where the custom materials are kept (`None`: no app data folder on this machine).
+pub fn config_path() -> Option<PathBuf> {
     app_data_dir().map(|d| d.join("settings-tui-pressure-vessel.json"))
 }
 
 /// Fixed (non-timestamped) export destination for the `e` "export report"
 /// key - overwritten on every export, so it always reflects the latest
 /// vessel design rather than accumulating a file per press. Path
-/// resolution lives here (not in the pure `view.rs::build_report_text`,
+/// resolution lives here (not in the pure `report.rs::build_report_text`,
 /// which only builds the text) so `Effect::ExportPressureVesselReport`'s
 /// execution in `main.rs` is the only place that touches the filesystem,
 /// matching this crate's own "side effects only in `execute_effect`" rule.
@@ -39,6 +40,12 @@ pub struct PersistedMaterial {
     pub ftu_ksi: f64,
     pub nu: f64,
     pub alpha_u_f: f64,
+}
+
+impl From<&mechanics_core::materials::Material> for PersistedMaterial {
+    fn from(m: &mechanics_core::materials::Material) -> Self {
+        Self { name: m.name.to_string(), e_ksi: m.e_ksi, sy_ksi: m.sy_ksi, ftu_ksi: m.ftu_ksi, nu: m.nu, alpha_u_f: m.alpha_u_f }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -66,8 +73,13 @@ fn load_from(path: &Path) -> Option<PersistedFile> {
 /// interrupt the user.
 pub fn save(materials: &[PersistedMaterial]) {
     if let Some(path) = config_path() {
-        save_to(&path, &PersistedFile { materials: materials.to_vec() });
+        save_at(&path, materials);
     }
+}
+
+/// [`save`] to `path` instead of the app data folder (the native window's tests keep theirs in a temp folder).
+pub fn save_at(path: &Path, materials: &[PersistedMaterial]) {
+    save_to(path, &PersistedFile { materials: materials.to_vec() });
 }
 
 fn save_to(path: &Path, file: &PersistedFile) {

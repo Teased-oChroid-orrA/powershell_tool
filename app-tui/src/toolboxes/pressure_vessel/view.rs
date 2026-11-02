@@ -25,6 +25,7 @@ use pressure_vessel_solver::stress::{stress_at_inner_surface_with_thermal, stres
 use pressure_vessel_solver::thickness::ThicknessSolverOutcome;
 
 use super::model::{self, FieldRow, PressureVesselModel};
+use super::report::{display_value, fmt_margin, passes, tone_for_margin};
 use super::PressureVesselState;
 
 const MIN_READOUT_WIDTH: u16 = 34;
@@ -100,15 +101,6 @@ fn fields_required_width(state: &PressureVesselState) -> u16 {
     2 + label_width + max_value_width + 2
 }
 
-fn display_value(model: &PressureVesselModel, row: FieldRow) -> String {
-    match row {
-        FieldRow::Header(_) => String::new(),
-        FieldRow::ToggleEndCondition => if model.closed_ends { "Closed ends" } else { "Open ends" }.to_string(),
-        FieldRow::OpenMaterialPicker => model.material().name.to_string(),
-        FieldRow::Number(target) => target.format_value(model.number_value(target)),
-    }
-}
-
 fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, state: &PressureVesselState, focused: bool, regions: &mut crate::mouse::MouseRegions) {
     let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.border_style(focused)).title(" Inputs ");
     let inner = block.inner(area);
@@ -167,25 +159,6 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, state: &PressureVes
     }
 }
 
-fn tone_for_margin(margin: f64) -> StatusTone {
-    if !margin.is_finite() {
-        StatusTone::Neutral
-    } else if margin < 0.0 {
-        StatusTone::Danger
-    } else if margin < 0.15 {
-        StatusTone::Warning
-    } else {
-        StatusTone::Success
-    }
-}
-
-/// `em dash` for an unbounded (infinite) margin - no governing demand for
-/// that check - matching both existing GUI heads' own `fmt_margin`
-/// (`app/src/components.rs`, `app-egui/src/components.rs`).
-fn fmt_margin(margin: f64) -> String {
-    if margin.is_infinite() { "\u{2014}".to_string() } else { format!("{margin:+.2}") }
-}
-
 fn draw_readout(frame: &mut Frame, area: Rect, theme: &Theme, model: &PressureVesselModel, show_numbers: bool, scroll: u16) {
     let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.border_style(false)).title(" Results ");
     let inner = block.inner(area);
@@ -220,7 +193,7 @@ fn readout_lines<'a>(theme: &'a Theme, model: &'a PressureVesselModel, show_numb
 
     let governing_result = governing(&model.rows).clone();
     let classification = classify(&geometry);
-    let passed = model.rows.iter().filter(|r| r.margin.is_finite() && r.margin >= 0.0).count();
+    let passed = model.rows.iter().filter(|r| passes(r)).count();
     let total = model.rows.len();
     let all_pass = passed == total;
 
@@ -417,74 +390,6 @@ fn surface_breakdown_lines(s: StressState) -> Vec<Line<'static>> {
     ]
 }
 
-/// Plain-text export - vessel spec, governing/classification, every check,
-/// buckling/thermal notes, and the minimum-thickness solve outcome. Pure
-/// and synchronous (no filesystem access) so `mod.rs`'s `e` key can build
-/// it directly in the reducer and hand the finished string to `main.rs`
-/// via `Effect::ExportPressureVesselReport` - the reducer itself still
-/// never touches the filesystem (see this crate's own `Contracts` in
-/// `AGENTS.md`).
-pub fn build_report_text(model: &PressureVesselModel) -> String {
-    let mut out = String::new();
-    out.push_str("Pressure Vessel Analyzer Report\n");
-    out.push_str("================================\n\n");
-
-    let (geometry, pressure) = match (&model.geometry, &model.pressure) {
-        (Ok(g), Ok(p)) => (*g, *p),
-        (g, p) => {
-            if let Err(e) = g {
-                out.push_str(&format!("Invalid geometry: {e:?}\n"));
-            }
-            if let Err(e) = p {
-                out.push_str(&format!("Invalid pressure: {e:?}\n"));
-            }
-            return out;
-        }
-    };
-
-    out.push_str(&format!("Outer diameter:   {:.4} in\n", 2.0 * geometry.outer_radius));
-    out.push_str(&format!("Inner diameter:   {:.4} in\n", 2.0 * geometry.inner_radius));
-    out.push_str(&format!("Wall thickness:   {:.4} in\n", geometry.wall_thickness()));
-    out.push_str(&format!("Internal pressure: {:.0} psi\n", pressure.internal_pressure));
-    out.push_str(&format!("External pressure: {:.0} psi\n", pressure.external_pressure));
-    out.push_str(&format!("End condition:    {}\n", if model.closed_ends { "Closed ends" } else { "Open ends" }));
-    out.push_str(&format!("Material:         {}\n", model.material().name));
-    if model.temperature_differential != 0.0 {
-        out.push_str(&format!("Temperature differential (inner - outer): {:+.1} degF\n", model.temperature_differential));
-    }
-    out.push_str(&format!("Classification:   {}\n", if classify(&geometry) == GeometryClassification::ThinWall { "Thin-wall" } else { "Thick-wall" }));
-    out.push('\n');
-
-    if !model.rows.is_empty() {
-        let governing_result = governing(&model.rows);
-        out.push_str(&format!("Governing: {} ({})\n\n", governing_result.name, fmt_margin(governing_result.margin)));
-        out.push_str("Checks:\n");
-        for r in &model.rows {
-            out.push_str(&format!("  {:<28} applied {:>10.0} psi  allowable {:>10.0} psi  MS {}\n", r.name, r.applied, r.allowable, fmt_margin(r.margin)));
-        }
-        out.push('\n');
-    }
-
-    match &model.buckling {
-        BucklingApplicability::NotApplicable => out.push_str("Buckling: not applicable - no external pressure entered.\n"),
-        BucklingApplicability::InsufficientData => out.push_str("Buckling: insufficient data - enter an unsupported length.\n"),
-        BucklingApplicability::OutsideValidityRange => out.push_str("Buckling: outside the formulas' validity range (OD/t < 40).\n"),
-        BucklingApplicability::Evaluated(_) => {}
-    }
-
-    match &model.thickness_outcome {
-        Some(ThicknessSolverOutcome::Converged(sol)) => {
-            out.push_str(&format!("Minimum wall thickness for required MS {:.2} (pressure only, not thermal-aware): {:.4} in\n", model.required_ms, sol.wall_thickness));
-        }
-        Some(ThicknessSolverOutcome::Infeasible { largest_radius_tried, best_margin_found }) => {
-            out.push_str(&format!("No wall thickness up to {largest_radius_tried:.1} in satisfies the required MS (best margin found: {}).\n", fmt_margin(*best_margin_found)));
-        }
-        None => {}
-    }
-
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -670,23 +575,5 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn build_report_text_contains_the_governing_mode_and_every_check() {
-        let model = PressureVesselModel::default();
-        let text = build_report_text(&model);
-        assert!(text.contains("Governing:"));
-        for r in &model.rows {
-            assert!(text.contains(r.name), "report must mention check `{}`", r.name);
-        }
-    }
-
-    #[test]
-    fn build_report_text_on_invalid_geometry_still_produces_readable_output() {
-        let mut model = PressureVesselModel::default();
-        model.commit_number(NumberTarget::WallThickness, 10.0);
-        let text = build_report_text(&model);
-        assert!(text.contains("Invalid geometry"));
     }
 }

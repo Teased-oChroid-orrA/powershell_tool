@@ -32,7 +32,7 @@ pub const WORKBENCHES: [Workbench; 11] = [
     Workbench { id: "fastener-hole", name: "Fastener Hole", summary: "Hole, fastener and edge-distance geometry.", opens: Opens::Window(EditorKind::FastenerHole) },
     Workbench { id: "bushing", name: "Bushing", summary: "Press fit, tolerance stack, edge-distance cross-check and verified fixes.", opens: Opens::Window(EditorKind::Bushing) },
     Workbench { id: "bushing-stackup", name: "Bushing Stackup", summary: "Line-reamed through holes and per-member bushing bore preparation.", opens: Opens::Window(EditorKind::BushingStackup) },
-    Workbench { id: "pressure-vessel", name: "Pressure Vessel", summary: "Shell and head stresses, Lamé thick wall.", opens: Opens::Terminal(ToolId::PressureVessel) },
+    Workbench { id: "pressure-vessel", name: "Pressure Vessel", summary: "Shell and head stresses, Lamé thick wall.", opens: Opens::Window(EditorKind::PressureVessel) },
     Workbench { id: "preload", name: "Preload Analysis", summary: "Fastened joint preload and member stiffness.", opens: Opens::Terminal(ToolId::PreloadAnalysis) },
     Workbench { id: "lug", name: "Lug Analysis", summary: "Pin-loaded lug on the general FE kernel.", opens: Opens::Terminal(ToolId::LugAnalysis) },
     Workbench { id: "eccentric-bushing", name: "Eccentric Bushing", summary: "Spin capacity and maximum offset of an offset bore.", opens: Opens::Window(EditorKind::Eccentric) },

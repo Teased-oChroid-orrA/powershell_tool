@@ -189,8 +189,14 @@ pub fn field_hint(row: FieldRow) -> &'static str {
 /// this narrow. The leak is bounded by how many materials a user manually
 /// adds in a session (a handful, realistically), not by anything that
 /// scales with runtime or input size.
+/// A user-added material (its id carries the prefix `leak_custom_material` gives it).
+pub fn is_custom(m: &Material) -> bool {
+    m.id.starts_with(CUSTOM_ID_PREFIX)
+}
+const CUSTOM_ID_PREFIX: &str = "custom:";
+
 fn leak_custom_material(name: String, e_ksi: f64, sy_ksi: f64, ftu_ksi: f64, nu: f64, alpha_u_f: f64) -> &'static Material {
-    let id: &'static str = Box::leak(format!("custom:{name}").into_boxed_str());
+    let id: &'static str = Box::leak(format!("{CUSTOM_ID_PREFIX}{name}").into_boxed_str());
     let name: &'static str = Box::leak(name.into_boxed_str());
     // `fbru_ksi`/`fsu_ksi` (bearing/shear ultimate) are bushing-specific
     // fields `pressure-vessel-solver` never reads - zeroed rather than
@@ -295,6 +301,11 @@ impl PressureVesselModel {
         self.custom_materials.push(material);
         self.material_index = self.material_catalog().len() - 1;
         self.recompute();
+    }
+
+    /// The user-added materials as they are saved between runs (`persistence::save`).
+    pub fn persisted_custom_materials(&self) -> Vec<super::persistence::PersistedMaterial> {
+        self.custom_materials.iter().map(|m| (*m).into()).collect()
     }
 
     pub fn number_value(&self, target: NumberTarget) -> f64 {
