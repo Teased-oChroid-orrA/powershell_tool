@@ -124,7 +124,7 @@ pub fn launch(kind: EditorKind, file: &Path) -> Result<(), String> {
 #[cfg(not(test))]
 fn launch_process(kind: EditorKind, file: &Path) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    std::process::Command::new(exe).arg(kind.flag()).arg(file).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().map(|_| ()).map_err(|e| e.to_string())
+    crate::console::without_console_window(&mut std::process::Command::new(exe)).arg(kind.flag()).arg(file).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------- reading a bushing model

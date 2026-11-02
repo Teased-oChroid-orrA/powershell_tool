@@ -208,7 +208,7 @@ fn spawn(w: &Workbench, file: Option<&Path>) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let args = w.args(file);
     let quiet = |c: &mut Command| {
-        c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        crate::console::without_console_window(c).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     };
     if w.is_window() {
         let mut c = Command::new(&exe);
