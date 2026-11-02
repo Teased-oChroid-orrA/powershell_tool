@@ -108,7 +108,7 @@
       "OCCT_ROOT=<prebuilt> STEP_DIR=<corpus> NO_SOLVE=1 cargo test -p fea-problem --features occt --release --locked --offline -j1 --test occt_vs_native -- --ignored --nocapture table"
     ],
     "result": "passed",
-    "platform": "Local macOS arm64, release, branch merged with main at 2ec523f: 135 binaries, 1,156 passed / 0 failed / 48 ignored; corpus table 834 s (35 models; OCCT meshed 3 gate 1; native meshed 2 gate 1). Merged as PR #222 on the standing merge permission while hosted checks were still running. Windows not run",
+    "platform": "Local macOS arm64, release, branch merged with main at 2ec523f: 135 binaries, 1,156 passed / 0 failed / 48 ignored; corpus table 834 s (35 models; OCCT meshed 3 gate 1; native meshed 2 gate 1). Merged as PR #222 on the standing merge permission while hosted checks were still running; they all passed afterwards (qualify on ubuntu/macOS/Windows, Windows native-step runtime). Corpus rerun not run on Windows",
     "at": "d747e7d",
     "corpus": "issue-46-phase-168.md"
   },
