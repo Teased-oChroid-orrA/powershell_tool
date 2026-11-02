@@ -81,43 +81,79 @@ fn opt(v: f64) -> String {
     }
 }
 
-/// Property lines for the highlighted material.
-pub fn lines<'a>(theme: &Theme, m: &Material) -> Vec<Line<'a>> {
-    let mut out = Vec::new();
-    let Some(x) = m.extra else {
-        out.push(Line::from(format!("E {:.0} ksi  Sy {} Ftu {} Fsu {} Fbru {} (ksi)  nu {}", m.e_ksi, trim(m.sy_ksi), trim(m.ftu_ksi), opt(m.fsu_ksi), opt(m.fbru_ksi), trim(m.nu))));
-        return out;
-    };
+/// One handbook condition's values as plain text, shared by the terminal property panel ([`lines`]) and the native
+/// Material Lookup window's property grid. Directional values read "L 75 / LT 76"; a missing value is "-".
+pub struct Facts {
+    /// Alloy, temper, form and thickness.
+    pub heading: String,
+    /// Handbook table, basis, clad and specification.
+    pub source: String,
+    pub ftu: String,
+    pub fty: String,
+    pub fcy: String,
+    pub fsu: String,
+    /// Bearing ultimate / yield at e/D 2.0 and 1.5 (ksi).
+    pub fbru: (String, String),
+    pub fbry: (String, String),
+    pub elongation: String,
+    /// E, with `*` when it is a group-typical estimate.
+    pub e: String,
+    pub ec: String,
+    pub g: String,
+    pub nu: String,
+    pub density: String,
+    /// Which values are estimates and what the solver takes.
+    pub note: String,
+}
+
+/// The handbook record of `m` as plain text; `None` for a curated typical-value material (no record).
+pub fn facts(m: &Material) -> Option<Facts> {
+    let x = m.extra?;
     let basis = match x.basis {
         "A" => "A-basis",
         "B" => "B-basis",
         "S" => "S-basis (specification minimum)",
         _ => "no statistical basis stated",
     };
-    out.push(Line::from(Span::styled(format!("{} - {} {} {}", x.alloy, x.temper, x.form, if x.thickness.is_empty() { String::new() } else { format!("{} in", x.thickness) }).trim().to_string(), theme.title_style(false))));
-    out.push(Line::from(format!("MIL-HDBK-5J Table {} - {basis}{}{}", x.table, if x.clad { " - clad" } else { "" }, if x.spec.is_empty() { String::new() } else { format!(" - {}", x.spec) })));
-    out.push(Line::from(format!("Ftu {}  Fty {}  Fcy {}  Fsu {}  (ksi)", dir(&x.ftu), dir(&x.fty), dir(&x.fcy), dir(&x.fsu))));
-    out.push(Line::from(format!(
-        "Fbru {} / {}  Fbry {} / {}  (ksi, e/D 2.0 / 1.5)   elongation {} %",
-        opt(x.fbru_e20_ksi),
-        opt(x.fbru_e15_ksi),
-        opt(x.fbry_e20_ksi),
-        opt(x.fbry_e15_ksi),
-        dir(&x.elong)
-    )));
-    out.push(Line::from(format!(
-        "E {} / Ec {} / G {} (ksi)  nu {}  density {} lb/in^3",
-        if x.estimated.contains('E') && !x.estimated.starts_with("alpha") && x.estimated.split(", ").any(|e| e == "E") { format!("{:.0}*", m.e_ksi) } else { format!("{:.0}", m.e_ksi) },
-        opt(x.ec_ksi),
-        opt(x.g_ksi),
-        if x.estimated.split(", ").any(|e| e == "nu") { format!("{}*", trim(m.nu)) } else { trim(m.nu) },
-        if x.density_lb_in3 == 0.0 { "-".to_string() } else { format!("{:.3}", x.density_lb_in3) }
-    )));
-    out.push(Line::from(Span::styled(
-        format!("Solver uses the lowest of L/LT. * or alpha {} microstrain/F = group-typical, not in the handbook ({}).", trim(m.alpha_u_f), x.estimated),
-        theme.disabled_style(),
-    )));
-    out
+    let estimated = |name: &str| x.estimated.split(", ").any(|e| e == name);
+    Some(Facts {
+        heading: format!("{} - {} {} {}", x.alloy, x.temper, x.form, if x.thickness.is_empty() { String::new() } else { format!("{} in", x.thickness) }).trim().to_string(),
+        source: format!("MIL-HDBK-5J Table {} - {basis}{}{}", x.table, if x.clad { " - clad" } else { "" }, if x.spec.is_empty() { String::new() } else { format!(" - {}", x.spec) }),
+        ftu: dir(&x.ftu),
+        fty: dir(&x.fty),
+        fcy: dir(&x.fcy),
+        fsu: dir(&x.fsu),
+        fbru: (opt(x.fbru_e20_ksi), opt(x.fbru_e15_ksi)),
+        fbry: (opt(x.fbry_e20_ksi), opt(x.fbry_e15_ksi)),
+        elongation: dir(&x.elong),
+        e: if estimated("E") { format!("{:.0}*", m.e_ksi) } else { format!("{:.0}", m.e_ksi) },
+        ec: opt(x.ec_ksi),
+        g: opt(x.g_ksi),
+        nu: if estimated("nu") { format!("{}*", trim(m.nu)) } else { trim(m.nu) },
+        density: if x.density_lb_in3 == 0.0 { "-".to_string() } else { format!("{:.3}", x.density_lb_in3) },
+        note: format!("Solver uses the lowest of L/LT. * or alpha {} microstrain/F = group-typical, not in the handbook ({}).", trim(m.alpha_u_f), x.estimated),
+    })
+}
+
+/// The solver fields of a curated typical-value material (no handbook record) as `(label, value)` pairs, ksi.
+pub fn curated_values(m: &Material) -> Vec<(&'static str, String)> {
+    vec![("E", format!("{:.0}", m.e_ksi)), ("Fty", trim(m.sy_ksi)), ("Ftu", trim(m.ftu_ksi)), ("Fsu", opt(m.fsu_ksi)), ("Fbru", opt(m.fbru_ksi)), ("Poisson ratio", trim(m.nu))]
+}
+
+/// Property lines for the highlighted material.
+pub fn lines<'a>(theme: &Theme, m: &Material) -> Vec<Line<'a>> {
+    let Some(f) = facts(m) else {
+        let v = curated_values(m);
+        return vec![Line::from(format!("E {} ksi  Sy {} Ftu {} Fsu {} Fbru {} (ksi)  nu {}", v[0].1, v[1].1, v[2].1, v[3].1, v[4].1, v[5].1))];
+    };
+    vec![
+        Line::from(Span::styled(f.heading, theme.title_style(false))),
+        Line::from(f.source),
+        Line::from(format!("Ftu {}  Fty {}  Fcy {}  Fsu {}  (ksi)", f.ftu, f.fty, f.fcy, f.fsu)),
+        Line::from(format!("Fbru {} / {}  Fbry {} / {}  (ksi, e/D 2.0 / 1.5)   elongation {} %", f.fbru.0, f.fbru.1, f.fbry.0, f.fbry.1, f.elongation)),
+        Line::from(format!("E {} / Ec {} / G {} (ksi)  nu {}  density {} lb/in^3", f.e, f.ec, f.g, f.nu, f.density)),
+        Line::from(Span::styled(f.note, theme.disabled_style())),
+    ]
 }
 
 #[cfg(test)]

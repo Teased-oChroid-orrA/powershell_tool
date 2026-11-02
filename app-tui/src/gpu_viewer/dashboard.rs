@@ -38,7 +38,7 @@ pub const WORKBENCHES: [Workbench; 11] = [
     Workbench { id: "eccentric-bushing", name: "Eccentric Bushing", summary: "Spin capacity and maximum offset of an offset bore.", opens: Opens::Window(EditorKind::Eccentric) },
     Workbench { id: "fea", name: "FEA Workbench", summary: "Sketch, STEP or mesh; supports, loads, solve, contour.", opens: Opens::Window(EditorKind::Solid) },
     Workbench { id: "members", name: "Frame and Truss", summary: "Nodes, truss and frame members, supports and loads.", opens: Opens::Window(EditorKind::Members) },
-    Workbench { id: "material-lookup", name: "Material Lookup", summary: "About 1,400 materials; type to search.", opens: Opens::Terminal(ToolId::MaterialLookup) },
+    Workbench { id: "material-lookup", name: "Material Lookup", summary: "About 1,400 materials; type to search.", opens: Opens::Window(EditorKind::Materials) },
 ];
 
 impl Workbench {
@@ -52,7 +52,7 @@ impl Workbench {
     pub fn default_file(&self) -> Option<PathBuf> {
         match self.opens {
             // Search keeps its saved folder unless a recent one is reopened.
-            Opens::Window(EditorKind::Search) => None,
+            Opens::Window(EditorKind::Search | EditorKind::Materials) => None,
             Opens::Window(kind) => Some(std::env::current_dir().unwrap_or_default().join(kind.default_file())),
             Opens::Terminal(_) => None,
         }
@@ -279,7 +279,8 @@ mod tests {
         assert!(Workbench::find("fastener-hole").unwrap().default_file().unwrap().ends_with("fastener-hole-case.json"));
         assert_eq!(Workbench::find("fastener-hole").unwrap().args(Some(Path::new("c.json"))), ["--gpu-fastener", "c.json"]);
         assert_eq!(Workbench::find("search").unwrap().default_file(), None, "Search keeps its saved folder");
-        assert_eq!(Workbench::find("material-lookup").unwrap().args(None), ["--toolbox", "material-lookup"]);
+        assert_eq!(Workbench::find("material-lookup").unwrap().args(None), ["--gpu-materials"]);
+        assert_eq!(Workbench::find("material-lookup").unwrap().default_file(), None, "Material Lookup has no file");
         assert!(fea.default_file().unwrap().ends_with("solid-model.json"));
         assert_eq!(Workbench::find("lug").unwrap().default_file(), None);
     }

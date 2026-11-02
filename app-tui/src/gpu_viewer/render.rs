@@ -1670,6 +1670,45 @@ mod snapshot_tests {
         shoot(&session, "search-running", true, (1440, 900));
     }
 
+    /// The Material Lookup workbench (one material's properties, then a comparison; dark, light, a narrow window), as
+    /// raw RGBA dumps: `FEA_SNAPSHOT_MATERIALS_OUT=/dir cargo test ... materials_snapshot -- --ignored`.
+    #[test]
+    #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_MATERIALS_OUT"]
+    fn materials_snapshot() {
+        use crate::gpu_viewer::editor::materials::{MaterialsAct, MaterialsSession, INPUT_SEARCH};
+        use crate::gpu_viewer::editor::session::EditorAction;
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_MATERIALS_OUT") else { return };
+        let _guard = headless_guard();
+        let mut session = MaterialsSession::with_report(None);
+        session.document_field(INPUT_SEARCH, "7075".into());
+        let shoot = |session: &MaterialsSession, name: &str, dark: bool, (w, h): (u32, u32)| {
+            pollster::block_on(async {
+                let adapter = test_adapter().await.expect("adapter required");
+                let s = session as &dyn Authoring;
+                let scene = Scene { label: "m".into(), positions: vec![[0.0; 3]; 3], triangles: vec![0, 1, 2], samples: vec![[0.0; 4]; 3], times: vec![0.0], range: [0.0, 1.0], gain: 1.0, harmonic_period: None, field_label: String::new(), fields: Vec::new() };
+                let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+                let texture = target(&r, w, h);
+                let mut gui = Gui::new();
+                gui.ctx().set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+                let view = ViewState::new(&scene);
+                let scenes = [scene];
+                let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(s), error: None, box_drag: None, overlay: &[] };
+                draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+                std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
+            });
+        };
+        shoot(&session, "materials-properties-dark", true, (1440, 900));
+        shoot(&session, "materials-properties-light", false, (1440, 900));
+        let marks: Vec<usize> = session.state().hits.iter().take(3).copied().collect();
+        for i in marks {
+            session.act(EditorAction::Materials(MaterialsAct::ToggleMark(i)));
+        }
+        session.act(EditorAction::Materials(MaterialsAct::Compare));
+        shoot(&session, "materials-compare-dark", true, (1440, 900));
+        shoot(&session, "materials-compare-light", false, (1440, 900));
+        shoot(&session, "materials-narrow", true, (860, 760));
+    }
+
     /// The Eccentric Bushing workbench before and after an analysis, as raw RGBA dumps:
     /// `FEA_SNAPSHOT_ECC_OUT=/dir cargo test ... eccentric_snapshot -- --ignored`.
     #[test]

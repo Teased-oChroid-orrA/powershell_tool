@@ -342,12 +342,30 @@ pub struct DocRow {
 #[derive(Clone, Debug, PartialEq)]
 pub struct DocDetail {
     pub drawing: Option<DocDrawing>,
+    /// A property grid shown instead of the blocks (a material's values, a side-by-side comparison).
+    pub grid: Option<DocGrid>,
     pub title: String,
     pub subtitle: String,
     pub actions: Vec<Entry>,
     pub blocks: Vec<DocBlock>,
     /// Shown when there are no blocks.
     pub empty: String,
+}
+
+/// Labelled values in columns: a header, then rows whose first cell is the label. Cells listed in `best` are drawn in
+/// the good colour (the best value of a comparison row); a `section` row is a heading across the grid.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct DocGrid {
+    pub columns: Vec<String>,
+    pub rows: Vec<DocGridRow>,
+    /// A dim line under the grid (what the marks mean, where the values come from).
+    pub note: String,
+}
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct DocGridRow {
+    pub cells: Vec<String>,
+    pub best: Vec<usize>,
+    pub section: bool,
 }
 
 /// A numbered line with optional context lines around it; `marks` are byte ranges of `text` to highlight.

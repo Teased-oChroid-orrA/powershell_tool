@@ -363,7 +363,7 @@ fn detail(s: &SearchSession) -> Option<DocDetail> {
         subtitle.push_str(&format!("  ·  first {MAX_BLOCKS} lines shown (Export matches has all)"));
     }
     blocks.shrink_to_fit();
-    Some(DocDetail { drawing: None, title: file_name(&r.full_name).to_string(), subtitle, actions: result_entries(s), blocks, empty: "The file matched as a whole (all-in-file mode), with no single line to show.".into() })
+    Some(DocDetail { drawing: None, grid: None, title: file_name(&r.full_name).to_string(), subtitle, actions: result_entries(s), blocks, empty: "The file matched as a whole (all-in-file mode), with no single line to show.".into() })
 }
 
 // ---------------------------------------------------------------------- tree

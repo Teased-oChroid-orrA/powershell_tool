@@ -911,6 +911,11 @@ pub fn run_search(session: super::editor::search::SearchSession) -> Result<(), S
     launch(ViewerProject::single(blank_scene("search")), Some(Box::new(session)))
 }
 
+/// Open a page bench (no model; its page is drawn where the model would be) on `session`.
+pub fn run_page(session: Box<dyn Authoring>, label: &str) -> Result<(), String> {
+    launch(ViewerProject::single(blank_scene(label)), Some(session))
+}
+
 /// A one-triangle scene for a window that draws no model (the dashboard, a page bench).
 fn blank_scene(label: &str) -> Scene {
     Scene { label: label.into(), positions: vec![[0.0; 3]; 3], triangles: vec![0, 1, 2], samples: vec![[0.0; 4]; 3], times: vec![0.0], range: [0.0, 1.0], gain: 1.0, harmonic_period: None, field_label: String::new(), fields: Vec::new() }
@@ -1059,6 +1064,13 @@ mod tests {
         button(v, MouseButton::Left, true);
         button(v, MouseButton::Left, false);
         frame(v);
+    }
+    /// Two clicks after a pause: egui counts a click within 0.6 s of the click before last as a triple click, and
+    /// `double_clicked()` only answers a count of exactly two.
+    fn double_click(v: &mut Viewer, at: (f64, f64)) {
+        v.test_time += 1.0;
+        click(v, at);
+        click(v, at);
     }
     fn key(v: &mut Viewer, k: NamedKey) {
         v.input(Input::Key(Key::Named(k)));
@@ -2530,6 +2542,53 @@ mod tests {
         let grip = target(&v, "Move the matches");
         click(&mut v, grip);
         assert_eq!(v.view.page_layout.unwrap().split, after);
+    }
+
+    #[test]
+    fn the_materials_page_searches_sorts_marks_on_double_click_and_compares() {
+        use crate::gpu_viewer::editor::materials::MaterialsSession;
+        use crate::toolboxes::material_lookup::model;
+        let mut v = viewer(Some(Box::new(MaterialsSession::with_report(None))));
+        assert!(v.page_mode());
+        let doc = |v: &Viewer| v.editor.as_ref().unwrap().document().unwrap();
+        let input = target(&v, "Search input");
+        click(&mut v, input);
+        type_text(&mut v, "7075");
+        let want = model::filter_sort(&model::Query { text: "7075".into(), ..model::Query::default() });
+        assert!(!want.is_empty());
+        assert_eq!(doc(&v).table.rows.len(), want.len(), "typing filters with the toolbox's own query");
+        // A header click sorts by that column, largest first.
+        let fty = target(&v, "Fty ksi column");
+        click(&mut v, fty);
+        let d = doc(&v);
+        assert_eq!(d.table.columns.iter().find(|c| c.title == "Fty ksi").unwrap().sorted, Some(false));
+        // Double-click two rows on screen (the sort keeps the highlighted material in view, and a click on a row cut by
+        // the list's edge scrolls it in, so look again each time and skip the edge row): both are marked, in order.
+        let mut marked: Vec<String> = Vec::new();
+        for _ in 0..2 {
+            let shown: Vec<String> = labels(&v).into_iter().filter_map(|l| l.strip_prefix("row ").map(str::to_string)).collect();
+            let name = shown.iter().skip(1).find(|n| !marked.contains(n)).unwrap_or_else(|| panic!("{shown:?}")).clone();
+            let row = target(&v, &format!("row {name}"));
+            double_click(&mut v, row);
+            // The clicked row is the one highlighted, and a row in view does not move (egui's row positions match the
+            // painted ones).
+            assert_eq!(target(&v, &format!("row {name}")), row, "a click on a row in view does not scroll the list");
+            assert!(doc(&v).table.rows.iter().any(|r| r.selected && r.cells[0] == name), "the clicked row is highlighted");
+            marked.push(name);
+        }
+        let d = doc(&v);
+        let badge = |name: &str| d.table.rows.iter().find(|r| r.cells[0] == name).and_then(|r| r.badge.clone());
+        assert_eq!((badge(&marked[0]), badge(&marked[1])), (Some("#1".into()), Some("#2".into())));
+        assert_eq!(d.chips[0].label, "Compare (2)");
+        let compare = target(&v, "Compare (2)");
+        click(&mut v, compare);
+        let detail = doc(&v).detail.unwrap();
+        assert!(detail.title.starts_with("Compare"), "{}", detail.title);
+        assert_eq!(detail.grid.unwrap().columns, ["Property", "Unit", "#1", "#2"]);
+        // Keys typed into the page never reach the viewer.
+        let before = v.view.show_mesh;
+        v.input(Input::Key(Key::Character("m".into())));
+        assert_eq!(v.view.show_mesh, before);
     }
 
     #[test]

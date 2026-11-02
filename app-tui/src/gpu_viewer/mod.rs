@@ -55,6 +55,8 @@ pub enum EditorKind {
     /// The Search workbench (`editor::search`); its argument is an optional folder to search, its settings are the
     /// Search toolbox's own (`settings-tui.json`).
     Search,
+    /// The Material Lookup workbench (`editor::materials`); it has no file.
+    Materials,
 }
 impl EditorKind {
     /// Command-line flag of the editor process.
@@ -67,10 +69,11 @@ impl EditorKind {
             EditorKind::Eccentric => "--gpu-eccentric",
             EditorKind::FastenerHole => "--gpu-fastener",
             EditorKind::Search => "--gpu-search",
+            EditorKind::Materials => "--gpu-materials",
         }
     }
     pub fn from_flag(flag: &str) -> Option<Self> {
-        [EditorKind::Members, EditorKind::Solid, EditorKind::Bushing, EditorKind::BushingStackup, EditorKind::Eccentric, EditorKind::FastenerHole, EditorKind::Search].into_iter().find(|k| k.flag() == flag)
+        [EditorKind::Members, EditorKind::Solid, EditorKind::Bushing, EditorKind::BushingStackup, EditorKind::Eccentric, EditorKind::FastenerHole, EditorKind::Search, EditorKind::Materials].into_iter().find(|k| k.flag() == flag)
     }
     pub fn title(self) -> &'static str {
         match self {
@@ -81,9 +84,10 @@ impl EditorKind {
             EditorKind::Eccentric => "Eccentric bushing workbench",
             EditorKind::FastenerHole => "Fastener hole workbench",
             EditorKind::Search => "Search workbench",
+            EditorKind::Materials => "Material Lookup",
         }
     }
-    /// File used when none is given (Search: none, the saved folder is kept).
+    /// File used when none is given (Search: none, the saved folder is kept; Material Lookup has no file).
     pub fn default_file(self) -> &'static str {
         match self {
             EditorKind::Members => "member-model.json",
@@ -92,7 +96,7 @@ impl EditorKind {
             EditorKind::BushingStackup => "bushing-stackup.json",
             EditorKind::Eccentric => "eccentric-case.json",
             EditorKind::FastenerHole => "fastener-hole-case.json",
-            EditorKind::Search => "",
+            EditorKind::Search | EditorKind::Materials => "",
         }
     }
 }
@@ -117,6 +121,7 @@ pub fn run_native_editor(kind: EditorKind, path: &std::path::Path) -> Result<(),
             EditorKind::Eccentric => window::run_eccentric(editor::eccentric::EccentricSession::open(path)?),
             EditorKind::FastenerHole => window::run_fastener(editor::fastener::FastenerSession::open(path)?),
             EditorKind::Search => window::run_search(editor::search::SearchSession::open(Some(path))?),
+            EditorKind::Materials => window::run_page(Box::new(editor::materials::MaterialsSession::open(Some(path))?), "materials"),
         }
     }
     #[cfg(not(feature = "gpu-viewer"))]
@@ -149,7 +154,7 @@ mod tests {
 
     #[test]
     fn editor_flags_round_trip_and_unknown_flags_are_not_editors() {
-        for k in [EditorKind::Members, EditorKind::Solid, EditorKind::Bushing, EditorKind::BushingStackup, EditorKind::Eccentric, EditorKind::FastenerHole, EditorKind::Search] {
+        for k in [EditorKind::Members, EditorKind::Solid, EditorKind::Bushing, EditorKind::BushingStackup, EditorKind::Eccentric, EditorKind::FastenerHole, EditorKind::Search, EditorKind::Materials] {
             assert_eq!(EditorKind::from_flag(k.flag()), Some(k));
         }
         assert_eq!(EditorKind::from_flag("--gpu-viewer"), None);

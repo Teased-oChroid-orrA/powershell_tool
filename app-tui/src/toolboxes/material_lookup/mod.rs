@@ -53,14 +53,14 @@ impl MaterialLookupState {
     }
 
     /// Re-runs the query, keeping the highlighted material if it is still listed.
-    fn refilter(&mut self) {
+    pub(crate) fn refilter(&mut self) {
         let keep = self.current();
         self.hits = model::filter_sort(&self.query);
         self.cursor = keep.and_then(|k| self.hits.iter().position(|&h| h == k)).unwrap_or(0);
         self.detail_scroll = 0;
     }
 
-    fn move_cursor(&mut self, delta: isize) {
+    pub(crate) fn move_cursor(&mut self, delta: isize) {
         if self.hits.is_empty() {
             self.cursor = 0;
             return;
@@ -170,7 +170,7 @@ pub fn handle_key(state: &mut MaterialLookupState, key: KeyEvent) -> (bool, Vec<
 
 impl MaterialLookupState {
     /// A changed search starts at the best match, not wherever the old cursor was.
-    fn refilter_from_top(&mut self) {
+    pub(crate) fn refilter_from_top(&mut self) {
         self.hits = model::filter_sort(&self.query);
         self.cursor = 0;
         self.detail_scroll = 0;

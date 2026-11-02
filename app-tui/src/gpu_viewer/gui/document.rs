@@ -11,7 +11,7 @@ use crate::gpu_viewer::{
     display::PageLayout,
     editor::session::Tone,
     menu::{Entry, Outcome},
-    ui::{DocBlock, DocDetail, DocHelp, DocInput, DocModal, DocPanel, DocProgress, DocTable, Document},
+    ui::{DocBlock, DocDetail, DocGrid, DocHelp, DocInput, DocModal, DocPanel, DocProgress, DocTable, Document},
 };
 use egui::{text::LayoutJob, Align, Align2, Color32, CornerRadius, FontId, Id, Layout, Margin, Pos2, Rect, RichText, Sense, Shape, Stroke, TextFormat, UiBuilder, Vec2};
 
@@ -761,8 +761,11 @@ impl Gui {
                 self.doc.selected = selected;
             }
             let shown = ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
+                // `show_rows` places row i at i * (ROW_H + item spacing): the rows are packed, so the spacing is zero before
+                // it is called (zeroed only inside, the rows drift from where egui thinks they are, ten rows by the
+                // fiftieth, and a click or a scroll-to-selected lands on the wrong row).
+                ui.spacing_mut().item_spacing.y = 0.0;
                 scroll.show_rows(ui, ROW_H, t.rows.len(), |ui, range| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
                     for i in range {
                         self.table_row(ui, t, i, &cols, p, out);
                     }
@@ -793,17 +796,17 @@ impl Gui {
             ui.interact(r,Id::new(("doc-cell",&t.title,i,k)),Sense::hover()).on_hover_text(format!("{}: {}",t.columns[k].title,cell));
             let right = t.columns.get(k).is_some_and(|c| c.right);
             if k == 0 {
-                let name = clip.layout_no_wrap(cell.clone(), FontId::proportional(13.5), p.text);
-                let name_w = name.size().x;
-                clip.galley(Pos2::new(r.left() + 4.0, r.top() + 5.0), name, p.text);
+                // The badge leads the name: a long name is cut at the cell's edge, the badge must still show.
+                let mut name_x = r.left() + 4.0;
                 if let Some(b) = &row.badge {
                     let g = clip.layout_no_wrap(b.clone(), FontId::monospace(10.0), p.accent);
-                    let br = Rect::from_min_size(Pos2::new(r.left() + 12.0 + name_w, r.top() + 7.0), g.size() + Vec2::new(10.0, 3.0));
-                    if br.right() < r.right() {
-                        clip.rect_filled(br, CornerRadius::same(5), with_alpha(p.accent, 28));
-                        clip.galley(br.min + Vec2::new(5.0, 1.5), g, p.accent);
-                    }
+                    let br = Rect::from_min_size(Pos2::new(name_x, r.top() + 7.0), g.size() + Vec2::new(10.0, 3.0));
+                    clip.rect_filled(br, CornerRadius::same(5), with_alpha(p.accent, 28));
+                    clip.galley(br.min + Vec2::new(5.0, 1.5), g, p.accent);
+                    name_x = br.right() + 6.0;
                 }
+                let name = clip.layout_no_wrap(cell.clone(), FontId::proportional(13.5), p.text);
+                clip.galley(Pos2::new(name_x, r.top() + 5.0), name, p.text);
                 let sub = clip.layout_no_wrap(row.sub.clone(), FontId::proportional(11.5), p.dim);
                 clip.galley(Pos2::new(r.left() + 4.0, r.top() + 23.0), sub, p.dim);
             } else {
@@ -883,6 +886,10 @@ impl Gui {
                 });
                 return;
             }
+            if let Some(g) = &d.grid {
+                egui::ScrollArea::both().id_salt(("doc-grid", &d.title)).auto_shrink([false, false]).show(ui, |ui| property_grid(ui, g, p));
+                return;
+            }
             if d.blocks.is_empty() {
                 ui.label(RichText::new(&d.empty).color(p.dim));
                 return;
@@ -937,6 +944,45 @@ fn stat_tiles(ui: &mut egui::Ui, stats: &[(String, String)], p: &Palette) {
             });
         }
     });
+}
+
+/// Labelled values in columns (a material's properties, a comparison): dim small-caps header, striped rows, values in
+/// monospace so digits line up, the best of a row in the good colour.
+fn property_grid(ui: &mut egui::Ui, g: &DocGrid, p: &Palette) {
+    egui::Grid::new("doc-grid").striped(true).spacing(Vec2::new(18.0, 7.0)).show(ui, |ui| {
+        if !g.columns.is_empty() {
+            for c in &g.columns {
+                ui.label(RichText::new(c.to_uppercase()).size(10.5).color(p.dim));
+            }
+            ui.end_row();
+        }
+        for (i, r) in g.rows.iter().enumerate() {
+            if r.section {
+                // A short blank row between sections (`add_space` is not allowed inside a grid).
+                if i > 0 {
+                    ui.label(RichText::new(" ").size(4.0));
+                    ui.end_row();
+                }
+                ui.label(RichText::new(r.cells.first().map_or("", String::as_str)).strong().size(12.5).color(p.accent));
+                ui.end_row();
+                continue;
+            }
+            for (k, cell) in r.cells.iter().enumerate() {
+                if k == 0 {
+                    ui.label(RichText::new(cell).color(p.text));
+                } else if r.best.contains(&k) {
+                    ui.label(RichText::new(cell).monospace().strong().color(p.good));
+                } else {
+                    ui.label(RichText::new(cell).monospace().color(if k + 1 == r.cells.len() && g.columns.last().is_some_and(|c| c == "Unit") { p.dim } else { p.text }));
+                }
+            }
+            ui.end_row();
+        }
+    });
+    if !g.note.is_empty() {
+        ui.add_space(10.0);
+        ui.add(egui::Label::new(RichText::new(&g.note).small().color(p.dim)).wrap());
+    }
 }
 
 /// One matching line with its neighbours: a line-number gutter, the matched filters as tags, the context lines dim

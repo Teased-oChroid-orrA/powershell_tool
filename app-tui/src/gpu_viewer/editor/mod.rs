@@ -16,6 +16,7 @@ pub mod bushing;
 pub mod eccentric;
 pub mod fastener;
 pub mod handoff;
+pub mod materials;
 pub mod search;
 pub mod stackup;
 pub mod stackup_transfer;
