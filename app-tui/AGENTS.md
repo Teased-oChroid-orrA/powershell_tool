@@ -68,8 +68,10 @@ Does not own: search/matching/extraction (`search-core`), the index engine (`nat
 ## Pitfalls
 - **Failure guidance and STEP solids live in the native solid editor** (`src/gpu_viewer/editor/solid/guidance.rs`, `stepops.rs`): the
   card / status-bar fix come from `fea_problem::diagnose` (ADR-020; ranker "Failure fixes" in `Advisors`, same measured gate);
-  STEP open, hole / boss / fillet need `--features occt` (prebuilt OpenCASCADE via `cadrum`; set `OCCT_ROOT` to an extracted
-  tarball if its download fails). Without the feature those entries are disabled with the reason. A kernel edit renumbers
+  STEP open, hole / boss / fillet run on the native pipeline by default (`fea_problem::native_solid`: round holes and bosses on flat
+  faces, fillet of a convex polyhedron) and on OpenCASCADE with `--features occt` (prebuilt via `cadrum`; set `OCCT_ROOT` to an
+  extracted tarball if its download fails). A shape the native modeller cannot edit is refused in the status bar with a reason
+  starting "without OpenCASCADE" (capability matrix: `docs/issue-46-phase-166.md`). A kernel edit renumbers
   `faceN`; `Problem::apply_solid_op` carries supports and loads across it by geometry (`solid::remap_faces`) and renames a lost
   one `removed:faceN`, which the diagnosis offers to retarget / drop. Findings that need a result (`diagnose_result`, e.g. an
   absurd displacement) are added to the same card, cached per result. A remedy row previews itself: `DockItem::row_with_preview`
