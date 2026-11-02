@@ -1,6 +1,6 @@
 # Phase 166: editor-operation capability matrix, native against OpenCASCADE
 
-Issues #46 / #63, Track C step 2 of `issue-46-abc-and-retirement-gates-plan.md` (the editor capability matrix the retirement gate lists as a prerequisite; Phase 165 measured STEP import on a licensed corpus). Branch `claude/elated-cerf-e39929`, based on `main` at `1a59333`. No gate, tolerance, budget or approval flag was changed; `occt_retirement_approved` stays false.
+Issues #46 / #63, Track C step 2 of `issue-46-abc-and-retirement-gates-plan.md` (the editor capability matrix the retirement gate lists as a prerequisite; Phase 165 measured STEP import on a licensed corpus). Branch `claude/elated-cerf-e39929`, based on `main` at `1a59333` and merged with `main` at `08ace1d` (Phases 165 and 167; source unchanged by that merge). No gate, tolerance, budget or approval flag was changed; `occt_retirement_approved` stays false.
 
 ## What the application exposes
 
@@ -60,14 +60,15 @@ macOS arm64, release.
 ```
 cargo test -p fea-problem -p solid-kernel --release --locked --offline -j1
 OCCT_ROOT=<prebuilt occt-8_0_1_rev3> cargo test -p fea-problem --features occt --release --locked --offline --test solid --test native_solid --test fillet_rim_tagging
-OCCT_ROOT=<prebuilt occt-8_0_1_rev3> cargo test -p solid-kernel --features occt --release --locked --offline --lib cad --test native_brep_occt --test occt --test native_brep_boolean --test native_brep_fillet
+OCCT_ROOT=<prebuilt occt-8_0_1_rev3> cargo test -p solid-kernel --features occt --release --locked --offline --lib cad
+OCCT_ROOT=<prebuilt occt-8_0_1_rev3> cargo test -p solid-kernel --features occt --release --locked --offline --test occt --test native_brep_occt --test native_brep_boolean --test native_brep_fillet
 cargo test -p app-tui --release --locked --offline -j1 --lib a_step_solid_opens_gets_a_hole
 ```
 
 - Feature off, `fea-problem` and `solid-kernel`: 526 passed, 0 failed, 10 ignored (serial Cargo, no warnings).
 - Feature on, `fea-problem` `solid` / `native_solid` / `fillet_rim_tagging`: 12 + 6 + 6 passed, 1 ignored (a diagnostic). The three new `native_solid` tests also pass here, where the cache comes from OpenCASCADE.
-- Feature on, `solid-kernel` `cad` / `native_brep_occt` / `native_brep_boolean`: 3 + 3 + 2 passed (`occt` and `native_brep_fillet` matched no test in that filter run).
-- `app-tui`, feature off: APP_RESULT
+- Feature on, `solid-kernel` lib `cad`: 3 passed; `occt` / `native_brep_occt` / `native_brep_boolean` / `native_brep_fillet`: 5 + 3 + 8 + 4 passed.
+- `app-tui`, feature off: `a_step_solid_opens_gets_a_hole_and_a_dangling_support_is_diagnosed` passed (the native fillet refusal reaches the status bar and the model is unchanged).
 
 ## What this shows and does not show
 
