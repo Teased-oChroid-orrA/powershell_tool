@@ -89,3 +89,104 @@ fn the_native_tessellation_agrees_with_the_cache_it_replaces() {
     // A text that is not a solid we can read says why instead of producing a cache.
     assert!(fea_problem::solid::tessellate_step("ISO-10303-21;\nHEADER;\nENDSEC;\nDATA;\nENDSEC;\nEND-ISO-10303-21;\n", 0.01).is_err());
 }
+
+/// The native modeller numbers faces from 0 in its own order; a refusal is shown with the editor's `faceN` of the cache (from 1,
+/// in whichever kernel made the cache: with `occt` the cache is OpenCascade's), so the face it names is the one meant. Phase 166.
+#[test]
+fn a_native_refusal_names_the_face_as_the_editor_does() {
+    use fea_problem::native_solid::apply_op_native;
+    let parts = |p: &Problem| match &p.geometry {
+        Geometry::Solid { step, cache: Some(c) } => (step.clone(), c.clone()),
+        _ => panic!("not a solid"),
+    };
+    let named = |e: &str| -> usize {
+        assert!(!e.match_indices("face ").any(|(i, _)| e[i + 5..].starts_with(|c: char| c.is_ascii_digit())), "a kernel index is left: {e}");
+        let at = e.find("face").expect("a face is named") + 4;
+        e[at..].chars().take_while(char::is_ascii_digit).collect::<String>().parse().expect("faceN")
+    };
+    let mut p = cube();
+    let top = face_with_normal(&p, [0., 0., 1.]);
+    let (step, cache) = parts(&p);
+    let (step, cache) = apply_op_native(&step, &cache, &SolidOp::Hole { face: top, diameter: 2.0 }).unwrap();
+    p.geometry = Geometry::Solid { step: step.clone(), cache: Some(cache.clone()) };
+    // Every face with the through hole's rim is flat and normal to z: the fillet names one of them.
+    let e = apply_op_native(&step, &cache, &SolidOp::Fillet { radius: 0.5 }).unwrap_err();
+    assert!(e.starts_with("without OpenCASCADE, the edges cannot be filleted: face") && e.contains("has a hole"), "{e}");
+    let (_, n) = flat_face(&cache, named(&e)).unwrap();
+    assert!((n[2].abs() - 1.0).abs() < 1e-9, "{e}: {n:?}");
+    // A hole across the first one's axis may touch its wall, the only curved face.
+    let side = face_with_normal(&p, [1., 0., 0.]);
+    let e = apply_op_native(&step, &cache, &SolidOp::Hole { face: side, diameter: 1.0 }).unwrap_err();
+    assert!(e.starts_with("without OpenCASCADE, this hole cannot be cut:") && e.contains("may touch"), "{e}");
+    assert!(flat_face(&cache, named(&e)).unwrap_err().contains("curved"), "{e}");
+}
+
+/// A STEP solid the native importer reads (B-spline edges) but the native modeller cannot edit: every edit says so, and in the
+/// build without OpenCascade the problem is left as it was. Phase 166.
+#[test]
+fn a_solid_the_native_modeller_cannot_edit_is_refused_for_every_edit() {
+    use fea_problem::native_solid::apply_op_native;
+    let text = include_str!("../../solid-kernel/tests/data/wavy-prism.step");
+    let p = Problem::from_step("wavy", text).unwrap();
+    let c = cache_of(&p).clone();
+    let flat = (1..=c.face_names().len()).find(|f| flat_face(&c, *f).is_ok()).expect("a flat cap");
+    for op in [SolidOp::Fillet { radius: 0.2 }, SolidOp::Hole { face: flat, diameter: 0.5 }, SolidOp::Boss { face: flat, diameter: 0.5, height: 0.5 }] {
+        let e = apply_op_native(text, &c, &op).unwrap_err();
+        assert!(e.starts_with("without OpenCASCADE, this solid cannot be edited:") && e.contains("not supported by the native modeller"), "{op:?}: {e}");
+        #[cfg(not(feature = "occt"))]
+        {
+            let mut q = p.clone();
+            assert_eq!(q.apply_solid_op(&op).unwrap_err(), e);
+            assert_eq!(q, p, "{op:?}: a refused edit changes nothing");
+        }
+    }
+}
+
+/// Every OpenCascade-written fixture of `solid-kernel/tests/data` (30 files: analytic and spline solids, holes, fillets, chamfers,
+/// assemblies) through every native edit: an edit either gives a closed solid with more faces, or is refused with its reason (a
+/// face check shared with OpenCascade, or the native modeller's own refusal starting "without OpenCASCADE"). Nothing panics,
+/// nothing is approximated silently. The editor-operation capability matrix rests on this sweep (`docs/issue-46-phase-166.md`).
+#[test]
+fn every_native_edit_of_every_fixture_succeeds_or_says_why() {
+    use fea_problem::native_solid::apply_op_native;
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../solid-kernel/tests/data");
+    let mut files: Vec<_> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().is_some_and(|x| x == "step")).collect();
+    files.sort();
+    assert!(files.len() >= 30, "{}", files.len());
+    let (mut edited, mut refused) = (0, 0);
+    for path in files {
+        let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let p = match std::panic::catch_unwind(|| Problem::from_step(&name, &text)) {
+            Err(_) => panic!("{name}: the import panicked"),
+            Ok(Err(e)) => {
+                assert!(!e.is_empty(), "{name}");
+                continue;
+            }
+            Ok(Ok(p)) => p,
+        };
+        let c = cache_of(&p).clone();
+        let faces = c.face_names().len();
+        let flat = (1..=faces).find(|f| flat_face(&c, *f).is_ok());
+        let curved = (1..=faces).find(|f| flat_face(&c, *f).is_err());
+        let mut ops = vec![SolidOp::Fillet { radius: 0.2 }];
+        ops.extend(flat.into_iter().flat_map(|face| [SolidOp::Hole { face, diameter: 0.5 }, SolidOp::Boss { face, diameter: 0.5, height: 0.5 }]));
+        ops.extend(curved.map(|face| SolidOp::Hole { face, diameter: 0.5 }));
+        for op in ops {
+            match std::panic::catch_unwind(|| apply_op_native(&text, &c, &op)) {
+                Err(_) => panic!("{name} {op:?}: panicked"),
+                Ok(Ok((step, cache))) => {
+                    let mut q = p.clone();
+                    q.geometry = Geometry::Solid { step, cache: Some(cache) };
+                    assert!(q.edge_names().len() > faces && solid_surface(&q).is_ok(), "{name} {op:?}");
+                    edited += 1;
+                }
+                Ok(Err(e)) => {
+                    assert!(e.starts_with("without OpenCASCADE, ") || e.contains("pick a flat face"), "{name} {op:?}: {e}");
+                    refused += 1;
+                }
+            }
+        }
+    }
+    assert!(edited >= 10 && refused >= 50, "{edited} edited, {refused} refused");
+}
