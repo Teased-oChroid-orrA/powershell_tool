@@ -123,7 +123,7 @@
   "last_confirmed_main_merge": "0bbd19de747b244c7ac20c6570e39a76ead589ec",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "ABC 00006600/00007062 parked as known refusals by owner decision (2026-11-01). Retirement work on the production path: native STEP product-structure/placement mapping and degree plane-angle units (21 + 2 of 33 corpus refusals; Phase 168 in progress); editor-operation capability matrix (Phase 166 in progress); packaged offline clean-machine app-tui.exe acceptance on Windows; owner decisions on the narrowed gate (corpus acceptance rate, native default with per-model OCCT fallback, P2/P3 as prerequisites) and on import sizing of thin-walled large parts. NEMA17 deferred by owner request",
+    "scope": "ABC 00006600/00007062 parked as known refusals by owner decision (2026-11-01). Retirement gate adopted 2026-11-01 (issue-46-abc-and-retirement-gates-plan.md): native must import and mesh every licensed-corpus file OCCT reads; retirement means OCCT removed from the build; P2/P3 are roadmap. Work: native STEP product-structure/placement mapping and degree plane-angle units (21 + 2 of 33 corpus refusals; Phase 168 in progress); remaining native import classes; editor-operation capability matrix (Phase 166 in progress); packaged offline clean-machine app-tui.exe acceptance on Windows. NEMA17 deferred by owner request",
     "status": "see_resume_guide_open_list"
   },
   "base_main_head": "e18f4ace14a5809debde4fce4cec22fdbd5c6301",
