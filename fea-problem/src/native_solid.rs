@@ -5,7 +5,7 @@
 //! Face numbers: the native face order is the order of the face entities in the STEP text, which is also the order of the
 //! surface mesh this module produces. A cache made by another kernel numbers faces differently, so an edit finds its flat face by
 //! plane (point and normal), never by number.
-use crate::solid::{finish_import, flat_face, SolidCache, SolidOp, StepImport};
+use crate::solid::{finish_import, flat_face, remap_faces, SolidCache, SolidOp, StepImport};
 use solid_kernel::analytic_step::{AnalyticModel, Options};
 use solid_kernel::cylindrical_step::ChartPolicy;
 use solid_kernel::native_brep::NativeBrep;
@@ -65,9 +65,47 @@ pub fn import_step_native(step: &str) -> Result<StepImport, String> {
     Ok(finish_import(cache, lo, hi, diag))
 }
 
-/// Apply `op` natively; returns the new STEP text and its tessellation (the same contract as the OpenCascade `apply_op`).
+/// A native tessellation of `step` in the units of `cache` (faces in the native order, which is the `NativeBrep` face order).
+fn native_cache(step: &str, cache: &SolidCache) -> Result<SolidCache, String> {
+    let scale = cache.coordinate_scale;
+    let (_, surface) = sample(step, chord_of(cache.deflection / scale))?;
+    let mut out = SolidCache::new(step, surface.mesh, cache.deflection);
+    out.coordinate_scale = scale;
+    for v in &mut out.vertices {
+        for x in v {
+            *x *= scale;
+        }
+    }
+    Ok(out)
+}
+
+/// A refusal of the native modeller in the editor's words: the modeller names faces by its own index from 0 (`face 6`), the
+/// editor by the cache's `faceN` from 1, and a cache made by another kernel numbers them differently again. Each `face <index>`
+/// is renamed to the cache face it is (`remap_faces` on a native tessellation of the same text), so the user can find it.
+fn refusal(what: &str, step: &str, cache: &SolidCache, err: String) -> String {
+    let map = if err.contains("face ") { native_cache(step, cache).map(|n| remap_faces(&n, cache)).unwrap_or_default() } else { Vec::new() };
+    let (mut out, mut rest) = (String::new(), err.as_str());
+    while let Some(at) = rest.find("face ") {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at + 5..];
+        let digits = tail.bytes().take_while(u8::is_ascii_digit).count();
+        match tail[..digits].parse::<usize>() {
+            Ok(k) => match map.get(k).copied().flatten() {
+                Some(j) => out.push_str(&format!("face{}", j + 1)),
+                None => out.push_str(&format!("a face of the STEP solid (native index {k})")),
+            },
+            Err(_) => out.push_str("face "),
+        }
+        rest = &tail[digits..];
+    }
+    out.push_str(rest);
+    format!("without OpenCASCADE, {what}: {out}")
+}
+
+/// Apply `op` natively; returns the new STEP text and its tessellation (the same contract as the OpenCascade `apply_op`). A shape
+/// the native modeller cannot edit is refused with its reason, prefixed "without OpenCASCADE".
 pub fn apply_op_native(step: &str, cache: &SolidCache, op: &SolidOp) -> Result<(String, SolidCache), String> {
-    let brep = NativeBrep::from_step_text(step)?;
+    let brep = NativeBrep::from_step_text(step).map_err(|e| refusal("this solid cannot be edited", step, cache, e))?;
     let scale = cache.coordinate_scale;
     let positive = |v: f64, what: &str| if v.is_finite() && v > 0.0 { Ok(()) } else { Err(format!("the {what} must be a positive number")) };
     // The flat face the cache calls `face`, found in the B-rep by its plane and position.
@@ -87,29 +125,21 @@ pub fn apply_op_native(step: &str, cache: &SolidCache, op: &SolidOp) -> Result<(
     let result = match *op {
         SolidOp::Fillet { radius } => {
             positive(radius, "fillet radius")?;
-            brep.fillet_all_convex(radius / scale)?
+            brep.fillet_all_convex(radius / scale).map_err(|e| refusal("the edges cannot be filleted", step, cache, e))?
         }
         SolidOp::Hole { face, diameter } => {
             positive(diameter, "hole diameter")?;
             let (f, c) = flat(face)?;
-            brep.drill(f, c, 0.5 * diameter / scale, None)?
+            brep.drill(f, c, 0.5 * diameter / scale, None).map_err(|e| refusal("this hole cannot be cut", step, cache, e))?
         }
         SolidOp::Boss { face, diameter, height } => {
             positive(diameter, "boss diameter")?;
             positive(height, "boss height")?;
             let (f, c) = flat(face)?;
-            brep.boss(f, c, 0.5 * diameter / scale, height / scale)?
+            brep.boss(f, c, 0.5 * diameter / scale, height / scale).map_err(|e| refusal("this boss cannot be added", step, cache, e))?
         }
     };
     let new_step = result.to_step_text();
-    let deflection = cache.deflection;
-    let (_, surface) = sample(&new_step, chord_of(deflection / scale))?;
-    let mut new_cache = SolidCache::new(&new_step, surface.mesh, deflection);
-    new_cache.coordinate_scale = scale;
-    for v in &mut new_cache.vertices {
-        for x in v {
-            *x *= scale;
-        }
-    }
+    let new_cache = native_cache(&new_step, cache)?;
     Ok((new_step, new_cache))
 }

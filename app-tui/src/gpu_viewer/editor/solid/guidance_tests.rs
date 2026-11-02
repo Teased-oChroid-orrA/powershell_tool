@@ -122,6 +122,13 @@ fn a_step_solid_opens_gets_a_hole_and_a_dangling_support_is_diagnosed() {
         s.prompt.as_mut().unwrap().text = "2".into();
         s.commit_prompt();
         assert_eq!(s.problem.edge_names().len(), 7, "{}", s.status);
+        // What the native modeller cannot do (round the edges of a holed solid) is refused in the status, model unchanged.
+        let holed = s.problem.clone();
+        s.begin_solid_op(PromptOp::Fillet);
+        s.prompt.as_mut().unwrap().text = "0.5".into();
+        s.commit_prompt();
+        assert!(s.status.starts_with("without OpenCASCADE, the edges cannot be filleted: face") && s.status.contains("has a hole"), "{}", s.status);
+        assert_eq!(s.problem, holed);
         s.do_action(SolidAction::Undo);
         assert_eq!(s.problem.edge_names().len(), 6);
     }
