@@ -52,6 +52,8 @@ This is the current entry point for Claude Code or Codex. Historical phase repor
 
 **2026-11-01 segment-split index update:** [Phase 164](issue-46-phase-164.md) has `split_segment` find the facet meshes a segment bounds through a vertex-to-mesh index instead of testing every mesh (about 70% of the sliver stage on ABC `00007062`), with the insertion sequence unchanged. At the default 20 s clock `00007062`'s sliver stage now finishes on macOS arm64: cells under 0.1 drop from 36,667 to 448 and the minimum scaled Jacobian rises from 0.0006 to 0.019, but it still fails the unchanged default solver gate, so it is not solved; the stage needs most of its 20 s, so a slower machine still stops it early. `00006600` still passes and solves. Merged as PR #212 while hosted qualification (run 41345593545) was queued, on the owner's instruction to merge and handle failures afterwards; Phase 163's run 41339381216 has since passed on Ubuntu, macOS and Windows. Retirement remains unapproved.
 
+**2026-11-01 retirement corpus update:** the ABC pair is parked as known refusals by owner decision. [Phase 165](issue-46-phase-165.md) runs the production path over 35 licensed real-CAD files: native refuses 33 at STEP import (21 on assembly/placement mapping), OCCT meshes 3 at the import's own default size, and on the files both read the two paths agree. The narrowed retirement gate in `issue-46-abc-and-retirement-gates-plan.md` is a proposal awaiting three owner decisions (corpus acceptance rate, whether native default with per-model OCCT fallback counts as retired, whether P2/P3 are prerequisites). `occt_retirement_approved` stays false.
+
 ## Establish current state
 
 1. Read root `CLAUDE.md`, then the relevant crate and `docs/AGENTS.md` instructions.

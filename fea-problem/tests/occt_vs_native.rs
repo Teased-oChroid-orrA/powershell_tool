@@ -31,7 +31,9 @@ struct Run {
     solve_ms: f64,
     max_disp: f64,
     energy: f64,
-    reaction_z: f64,
+    /// reaction along the load axis
+    reaction: f64,
+    axis: usize,
     equilibrium: f64,
     solved: bool,
     /// Elements below the solver gate's scaled Jacobian (0.1).
@@ -84,17 +86,32 @@ fn cases() -> Vec<Case> {
     ]
 }
 
-/// The flat face with outward normal `+-z` that lies furthest along it (the top for `+1`, the bottom for `-1`).
-fn z_face(c: &SolidCache, sign: f64) -> Option<usize> {
-    let mut best: Option<(usize, f64)> = None;
-    for f in 1..=c.face_names().len() {
-        if let Ok((centre, n)) = flat_face(c, f) {
-            if n[2] * sign > 0.999 && best.is_none_or(|(_, z)| centre[2] * sign > z * sign) {
-                best = Some((f, centre[2]));
-            }
-        }
-    }
-    best.map(|(f, _)| f)
+/// Every `.step` / `.stp` file of the folder `dir` (not committed: a local corpus of real parts), at the import's element size.
+fn dir_cases(dir: &str) -> Vec<Case> {
+    let mut paths: Vec<_> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("STEP_DIR {dir}: {e}"))
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("step") || x.eq_ignore_ascii_case("stp")))
+        .collect();
+    paths.sort();
+    paths
+        .iter()
+        .map(|p| {
+            let text = String::from_utf8_lossy(&std::fs::read(p).unwrap()).into_owned();
+            from_file(&p.file_name().unwrap().to_string_lossy(), &text, 1.0)
+        })
+        .collect()
+}
+
+/// Every flat face with outward normal `+-axis` that lies furthest along it (the top for `+1`, the bottom for `-1`). All the
+/// coplanar faces at that level are taken, so the benchmark loads the same surface whatever the kernel's face numbering or splitting.
+fn axis_faces(c: &SolidCache, axis: usize, sign: f64) -> Vec<usize> {
+    let flat: Vec<(usize, f64, f64)> = (1..=c.face_names().len()).filter_map(|f| flat_face(c, f).ok().map(|(centre, n)| (f, centre[axis], n[axis]))).collect();
+    let (lo, hi) = flat.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), (_, x, _)| (lo.min(*x), hi.max(*x)));
+    let facing: Vec<(usize, f64)> = flat.into_iter().filter(|(_, _, n)| n * sign > 0.999).map(|(f, x, _)| (f, x)).collect();
+    let Some(level) = facing.iter().map(|(_, x)| x * sign).reduce(f64::max) else { return Vec::new() };
+    let tol = 1e-6 * (hi - lo).max(level.abs()).max(1.0);
+    facing.into_iter().filter(|(_, x)| (x * sign - level).abs() <= tol).map(|(f, _)| f).collect()
 }
 
 /// Mesh (and, with `solve`, solve the benchmark on) the solid `step` through `cache` at element size `text_h`.
@@ -103,12 +120,20 @@ fn measure(base: &Problem, cache: SolidCache, step: &str, text_h: f64, solve_it:
     let mut p = base.clone();
     p.set_solid(step, cache);
     p.mesh.size = text_h;
-    let Some((bottom, top)) = (match &p.geometry { Geometry::Solid { cache: Some(c), .. } => z_face(c, -1.0).zip(z_face(c, 1.0)), _ => None }) else {
-        r.err = Some("no flat +z / -z face pair for the benchmark".into());
+    // fixed on the lowest flat faces normal to z (else x, else y), loaded along that axis on the highest ones
+    let pair = match &p.geometry {
+        Geometry::Solid { cache: Some(c), .. } => [2, 0, 1].into_iter().map(|a| (a, axis_faces(c, a, -1.0), axis_faces(c, a, 1.0))).find(|(_, b, t)| !b.is_empty() && !t.is_empty()),
+        _ => None,
+    };
+    let Some((axis, bottom, top)) = pair else {
+        r.err = Some("no flat face pair along x, y or z for the benchmark".into());
         return r;
     };
-    p.supports = vec![Support::fixed(&format!("face{bottom}"))];
-    p.loads = vec![Load::Traction { edge: format!("face{top}"), tx: 0.0, ty: 0.0, tz: 10.0 }];
+    r.axis = axis;
+    let mut t = [0.0; 3];
+    t[axis] = 10.0;
+    p.supports = bottom.iter().map(|f| Support::fixed(&format!("face{f}"))).collect();
+    p.loads = top.iter().map(|f| Load::Traction { edge: format!("face{f}"), tx: t[0], ty: t[1], tz: t[2] }).collect();
     let t = Instant::now();
     let (mesh, rep) = match solid_mesh(&p) {
         Ok(v) => v,
@@ -150,7 +175,7 @@ fn measure(base: &Problem, cache: SolidCache, step: &str, text_h: f64, solve_it:
             r.solve_ms = s.summary.solve_ms;
             r.max_disp = s.summary.max_displacement.value;
             r.energy = s.summary.strain_energy;
-            r.reaction_z = s.summary.reaction[2];
+            r.reaction = s.summary.reaction[r.axis];
             r.equilibrium = s.summary.equilibrium_error;
         }
         Err(e) => r.err = Some(format!("solve: {e}")),
@@ -159,7 +184,13 @@ fn measure(base: &Problem, cache: SolidCache, step: &str, text_h: f64, solve_it:
 }
 
 fn compare(c: &Case) -> (Run, Run) {
-    let base = Problem::from_step(&c.name, &c.text).expect("OpenCascade import");
+    let base = match Problem::from_step(&c.name, &c.text) {
+        Ok(b) => b,
+        Err(e) => {
+            let refused = Run { err: Some(format!("OpenCascade import: {e}")), ..Run::default() };
+            return (refused.clone(), Run { err: Some("not run (no OpenCascade import to compare with)".into()), ..Run::default() });
+        }
+    };
     let h = base.mesh.size * c.h_scale;
     let Geometry::Solid { cache: Some(occt_cache), .. } = &base.geometry else { panic!() };
     let occt_cache = occt_cache.clone();
@@ -178,8 +209,8 @@ fn row(name: &str, which: &str, r: &Run) -> String {
     match &r.err {
         Some(e) if r.tets == 0 => format!("{name:<34} {which:<6} REFUSED: {e}"),
         _ => format!(
-            "{name:<34} {which:<6} tets {:>6} dofs {:>7} sJ {:.3} rr {:.3} er {:>5.1} jump {:>4.1} gates {} (<0.1: {}, on boundary {}) mesh {:>6.2}s solve {:>7.1}ms | umax {:.5e} U {:.5e} Rz {:>9.3} eq {:.1e}{}",
-            r.tets, r.dofs, r.min_sj, r.min_radius_ratio, r.max_edge_ratio, r.size_jump, if r.gates { "ok" } else { "NO" }, r.below_gate, r.below_gate_on_boundary, r.mesh_s, r.solve_ms, r.max_disp, r.energy, r.reaction_z, r.equilibrium,
+            "{name:<34} {which:<6} tets {:>6} dofs {:>7} sJ {:.3} rr {:.3} er {:>5.1} jump {:>4.1} gates {} (<0.1: {}, on boundary {}) mesh {:>6.2}s solve {:>7.1}ms | umax {:.5e} U {:.5e} R{} {:>9.3} eq {:.1e}{}",
+            r.tets, r.dofs, r.min_sj, r.min_radius_ratio, r.max_edge_ratio, r.size_jump, if r.gates { "ok" } else { "NO" }, r.below_gate, r.below_gate_on_boundary, r.mesh_s, r.solve_ms, r.max_disp, r.energy, ["x", "y", "z"][r.axis], r.reaction, r.equilibrium,
             r.err.as_ref().map(|e| format!(" [{e}]")).unwrap_or_default()
         ),
     }
@@ -190,13 +221,27 @@ fn row(name: &str, which: &str, r: &Run) -> String {
 #[ignore = "meshes and solves 19 models twice; run in release with --nocapture"]
 fn table() {
     let only = std::env::var("CASE").unwrap_or_default();
-    // SCALE multiplies every element size (1.6 is the size of the assertion test); NO_SOLVE=1 skips the solve.
+    // SCALE multiplies every element size (1.6 is the size of the assertion test); NO_SOLVE=1 skips the solve; STEP_DIR replaces
+    // the built-in models by every STEP file of a local folder.
     let scale: f64 = std::env::var("SCALE").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0);
-    for c in cases().into_iter().filter(|c| c.name.contains(&only)) {
+    let all = std::env::var("STEP_DIR").map_or_else(|_| cases(), |d| dir_cases(&d));
+    // models, then for OpenCascade and native: meshed, passing the default quality gate, solved
+    let (mut models, mut tally) = (0, [[0usize; 3]; 2]);
+    for c in all.into_iter().filter(|c| c.name.contains(&only)) {
         let c = Case { h_scale: c.h_scale * scale, ..c };
         let (o, n) = compare(&c);
         eprintln!("{}\n{}", row(&c.name, "OCCT", &o), row(&c.name, "native", &n));
+        models += 1;
+        for (k, r) in [&o, &n].into_iter().enumerate() {
+            tally[k][0] += usize::from(r.tets > 0);
+            tally[k][1] += usize::from(r.gates);
+            tally[k][2] += usize::from(r.solved);
+        }
     }
+    eprintln!(
+        "summary: {models} models; OCCT meshed {} gate {} solved {}; native meshed {} gate {} solved {}",
+        tally[0][0], tally[0][1], tally[0][2], tally[1][0], tally[1][1], tally[1][2]
+    );
 }
 
 /// The comparison with assertions, at a size 1.6 times coarser than the table (about a quarter of the elements) so the solves stay
@@ -227,8 +272,8 @@ fn the_native_path_matches_the_opencascade_path_on_quality_size_and_the_benchmar
         // The share of elements under the gate's scaled Jacobian (all of them boundary-layer elements, see the document).
         let share = |r: &Run| r.below_gate as f64 / r.tets as f64;
         assert!(share(&n) <= 2.5 * share(&o) + 0.015, "{who}: sub-gate share {:.4} vs {:.4}", share(&n), share(&o));
-        // Compliance, strain energy per squared load (U / Rz^2): independent of how much boundary area the mesh gives the loaded face.
-        let compliance = |r: &Run| r.energy / (r.reaction_z * r.reaction_z);
+        // Compliance, strain energy per squared load (U / R^2): independent of how much boundary area the mesh gives the loaded face.
+        let compliance = |r: &Run| r.energy / (r.reaction * r.reaction);
         assert!(rel(compliance(&n), compliance(&o)) < 0.05, "{who}: compliance {} vs {}", compliance(&n), compliance(&o));
         // A load face that meets a tangent fillet owns a strip of boundary triangles along its rim, about sqrt(2 r 0.1 h) wide (a
         // vertex within a tenth of the size of the plane counts as on it) and different between tessellations: the loaded area
@@ -236,10 +281,10 @@ fn the_native_path_matches_the_opencascade_path_on_quality_size_and_the_benchmar
         // The total load and the local maximum move with it, so those two are compared elsewhere only (Phase 124, limits).
         if !who.contains("all edges filleted") {
             assert!(rel(n.energy, o.energy) < 0.06, "{who}: strain energy {} vs {}", n.energy, o.energy);
-            assert!(rel(n.reaction_z, o.reaction_z) < 0.04, "{who}: reaction {} vs {}", n.reaction_z, o.reaction_z);
+            assert!(rel(n.reaction, o.reaction) < 0.04, "{who}: reaction {} vs {}", n.reaction, o.reaction);
             assert!(rel(n.max_disp, o.max_disp) < 0.15, "{who}: max displacement {} vs {}", n.max_disp, o.max_disp);
         } else {
-            assert!(rel(n.reaction_z, o.reaction_z) < 0.15, "{who}: reaction {} vs {}", n.reaction_z, o.reaction_z);
+            assert!(rel(n.reaction, o.reaction) < 0.15, "{who}: reaction {} vs {}", n.reaction, o.reaction);
         }
         // Criterion 3: element and degree-of-freedom counts within 15 %, times within a factor 3 (plus a second of slack for noise).
         assert!(rel(n.tets as f64, o.tets as f64) < 0.15 && rel(n.dofs as f64, o.dofs as f64) < 0.15, "{who}: tets {} vs {}", n.tets, o.tets);
