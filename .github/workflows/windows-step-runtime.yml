@@ -15,6 +15,7 @@ on:
       - 'Cargo.lock'
       - '.cargo/**'
       - '.github/workflows/windows-step-runtime.yml'
+      - '!**/*.md'
 concurrency:
   group: windows-step-runtime-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
