@@ -3,7 +3,7 @@
   "epic_complete": false,
   "branch": "main",
   "pull_request": null,
-  "pull_request_state": "none_open_after_pr_212",
+  "pull_request_state": "none_open_after_pr_215",
   "merged_prs": [
     42,
     65,
@@ -89,7 +89,8 @@
     206,
     208,
     210,
-    212
+    212,
+    215
   ],
   "latest_qualified_source": "a820c5f588b9b2c2d3d3ea82c37f35045c56276f",
   "latest_phase": 167,
@@ -107,7 +108,7 @@
       "Hosted Windows native STEP runtime run 41362857299 at a820c5f"
     ],
     "result": "passed",
-    "platform": "Hosted windows-latest (Intel Xeon Platinum 8370C, 2 cores / 4 logical, Windows Server 2025 10.0.26100, rustc 1.99.1 x86_64-pc-windows-msvc): 3 + 7 + 1 focused passed; benchmark 14 solved, 13 default gate, 802 s, peak working set 1921 MiB. Local macOS arm64 (Apple M1): same counts, 10 rows identical to every printed digit, 4 differ in the last digits.",
+    "platform": "Hosted windows-latest (Intel Xeon Platinum 8370C, 2 cores / 4 logical, Windows Server 2025 10.0.26100, rustc 1.99.1 x86_64-pc-windows-msvc): 3 + 7 + 1 focused passed; benchmark 14 solved, 13 default gate, 802 s, peak working set 1921 MiB. Local macOS arm64 (Apple M1): same counts, 10 rows identical to every printed digit, 4 differ in the last digits. Merged as PR #215 (squash 838a7aa) on the standing merge permission while the final-head runs (Windows native STEP runtime 41365397031, Workbench qualification 41365397060, at 17e2732: docs and a Markdown path exclusion in the workflow) were still running.",
     "at": "a820c5f",
     "corpus": "issue-46-phase-167.md"
   },
@@ -118,7 +119,7 @@
     "platform": "macOS arm64 (no Windows or hosted CI evidence)",
     "at": "20a3f24"
   },
-  "last_confirmed_main_merge": "e18f4ace14a5809debde4fce4cec22fdbd5c6301",
+  "last_confirmed_main_merge": "838a7aa375942a88dfe54a465c3f91d94a11d43e",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
     "scope": "Non-NEMA Issue #63 gates: 00007062's 448-cell residue under 0.1 (minimum scaled Jacobian 0.019; 371 cells on one narrow conical band at x 10.39-10.49 mm, radius 16.32-16.45 mm, which holds the shell's 2.28 degree triangle angle and its shortest edges; 12 all-boundary cells), starting with that band's surface mesh, so it passes the default solver gate and solves; the sliver-stage time margin on slower machines; the 300-file ABC rerun with the smoothing recipe; broader native/OCCT solves; Windows native-only mesh/solve; remaining five-plan items. NEMA17 deferred by owner request",
