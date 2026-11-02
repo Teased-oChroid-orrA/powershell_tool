@@ -29,6 +29,26 @@ Status: research and execution plan, 2026-10-23. This covers the two named ABC f
 3. Execute the unchecked items in `issue-46-completion-checklist.md` as separate qualified increments: P0 capability/dependency/budget/target-platform exit; P1 general B-rep, constrained segment/facet recovery, absolute solver quality and exact CAD boundary; P2 curved Tet10 convergence, surface/core hybrid transitions, strong anisotropic metric adaptation and motion/ALE/history transfer; P3 measured cost, held-out/OOD learning with deterministic fallback, AMR time-to-accuracy/autotuner. Use `issue-46-benchmarks.md`'s independent Kirsch, Lamé, LE1/LE10 and Mode I controls. Do not turn on learned predictions or claim time-to-accuracy gain from the already recorded no-gain cases.
 4. Reuse the separate Windows runtime plan for feature-off on-target STEP mesh and solve, plus touched-crate local qualification. Preserve the offline/self-contained Windows release contract, progress/cancellation, exact predicates, unchanged admission thresholds and source/face identity. Record precise commit, platform, commands, counts, time/memory and error limits in a new append-only phase report; advance the live pointer and checklist only to the measured scope. Use this repository's authorized forward-only branch/PR/plain-push/squash-merge flow. OCCT removal and setting `occt_retirement_approved` require separate explicit owner approval even after every technical gate passes.
 
+## Retirement gate, 2026-11-01 (Phase 165)
+
+Status: proposed with Phase 165 and adopted by the owner on 2026-11-01 (decisions below). It changes no implementation or approval state, and `occt_retirement_approved` stays false: setting it still needs a separate explicit owner approval after every item passes. [Phase 165](issue-46-phase-165.md) ran the production path over 35 licensed real-CAD files (33 NIST PMI models, 2 OpenCascade samples). Native refused 33 at STEP import (21 on placement mapping); OCCT read all 35 but meshed only 3 at the import's own default size. The ABC pair is parked as known refusals by owner decision and does not count toward retirement.
+
+The gate, per model and per stage, so that a refusal is attributed rather than averaged away:
+
+1. **Built-in parity.** The 19-model same-STEP table and its asserted comparison, as in Track C step 1: every row that OCCT passes, native passes; NEMA17 stays a documented joint failure by owner request.
+2. **Real-CAD corpus, measured by stage.** On a fixed, licensed corpus (Phase 165's 35 files, extended only with files of verified usage rights): (a) import: the share of files native reads, against the files OCCT reads; (b) for files both paths read, at a size both meshers accept: native meshes, passes the default gate wherever OCCT passes, and matches OCCT's benchmark within the asserted comparison's factors (compliance 5 %, energy 6 %, reaction 4 %, displacement 15 %, counts 15 %, times within 3x). For (a), native must read every file OCCT reads (owner decision 1).
+3. **Target platform.** Feature-off STEP import, mesh and solve on Windows (`issue-46-windows-runtime-plan.md`), with the release contract unchanged. [Phase 167](issue-46-phase-167.md) shows this for the 14 built-in native models with `cargo test` on hosted Windows; the packaged offline clean-machine acceptance of `app-tui.exe` remains.
+4. **Editor operations.** A native/OCCT capability matrix of every editor operation; every operation native does not support refuses explicitly with the reason, never silently falls back.
+5. **Fallback.** Until a model passes 1-4 natively, it keeps a reviewed per-model OCCT route. That state is an intermediate milestone, not retirement (owner decision 2).
+6. **Completion checklist.** P0 and P1 items of `issue-46-completion-checklist.md` remain prerequisites; P2 and P3 items do not (owner decision 3).
+
+Owner decisions, 2026-11-01:
+
+1. **Corpus acceptance rate:** native must import and mesh every licensed-corpus file that OpenCascade reads. Files OpenCascade also refuses stay explicit refusals on both paths.
+2. **Native by default with per-model OCCT fallback does not count as retirement.** Retirement means OpenCascade is removed from the build; native-by-default with a bundled fallback is an intermediate milestone.
+3. **P2/P3 checklist items are roadmap work**, not retirement prerequisites. P0/P1 remain prerequisites.
+4. **Thin-walled large parts keep refusing.** When the import's default size (wall / 3) asks for more elements than `solid_mesh` accepts, the fast, explicit refusal that tells the user to increase the size stays. The default is not coarsened to a size that does not resolve the wall (a floor at the accepted estimate was measured and dropped in Phase 165).
+
 ## Stop conditions
 
 Keep a refusal and document it if a proposed repair changes source topology without proof, makes distinct edge samples coincide, worsens chart/shell fidelity, exceeds bounded work, skips a 0.0316° feature without preserving geometry, admits a mesh that fails the default solver gate, regresses any previously passing model, or relies on a quality threshold/tolerance increase. A partial ABC improvement is evidence for that file and stage only.

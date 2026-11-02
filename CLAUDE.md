@@ -148,9 +148,10 @@ history if a discrepancy is ever suspected.
   in the source. Use each worktree's own target for qualification; a focused
   pass from a shared target is not evidence for the intended checkout.
 
-- **Hosted Windows CI is the only Windows evidence.** The test workflows (`ci.yml`, `windows-tests.yml`, `solid-kernel-occt.yml`) were
-  removed once the build workflow was the only gate wanted; run the workspace tests locally, and rerun the Windows `app-tui`
-  exe build (`app-tui-build.yml`) by hand. The separate `search-cli` Windows workflow was disabled and removed by owner request;
+- **Hosted Windows CI is the only Windows evidence.** The old test workflows (`ci.yml`, `windows-tests.yml`, `solid-kernel-occt.yml`)
+  were removed. `qualification.yml` runs `scripts/qualify.py` (workspace tests; Windows without CAD features) on ubuntu, macOS and
+  Windows for code PRs; `windows-step-runtime.yml` runs the feature-off STEP import/mesh/solve tests and native benchmark rows on
+  Windows for PRs touching those crates (`docs/issue-46-phase-167.md`). Rerun the Windows `app-tui` exe build (`app-tui-build.yml`) by hand. The separate `search-cli` Windows workflow was disabled and removed by owner request;
   the CLI source remains. A test workflow can be restored from git history. Hosted runners are not one machine: a numerical failure that appears only on some runs is first a
   hardware question (`Win32_Processor` name; `private-gemm-x86` 0.1.20 returned wrong products on AMD EPYC 7763 hosts, fixed by
   the 0.1.22 pin in `Cargo.lock`). New workflow files cannot be dispatched until they are on the default branch: give them a
