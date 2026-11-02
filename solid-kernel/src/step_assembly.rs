@@ -1,6 +1,7 @@
 //! STEP product structure: placed instances of the solid parts of an assembly (epic #51, "assemblies and placements").
 //!
-//! `step_body::BodyContext` refuses assemblies. This module reads the explicit product structure
+//! `step_body::BodyContext::read_all` reads every instance through this module (one body per instance, moved into the root's
+//! frame). This module reads the explicit product structure
 //! (`NEXT_ASSEMBLY_USAGE_OCCURRENCE`, `PRODUCT_DEFINITION_SHAPE`, `SHAPE_DEFINITION_REPRESENTATION`,
 //! `CONTEXT_DEPENDENT_SHAPE_REPRESENTATION` with `REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION` and
 //! `ITEM_DEFINED_TRANSFORMATION`) of a tree-shaped assembly and returns, for every leaf instance, the part's solid and the rigid
@@ -144,6 +145,9 @@ fn frame(data: &Inventory, id: u64) -> Result<Placement, Error> {
         .entities()
         .get(&id)
         .ok_or_else(|| fail(format!("missing placement #{id}")))?;
+    if e.components.iter().any(|c| c.name.starts_with("CARTESIAN_TRANSFORMATION_OPERATOR")) {
+        return Err(fail(format!("#{id}: a CARTESIAN_TRANSFORMATION_OPERATOR placement may scale or mirror; only a rigid AXIS2_PLACEMENT_3D frame is supported")));
+    }
     let c = call(e, "AXIS2_PLACEMENT_3D")
         .ok_or_else(|| fail(format!("#{id} is not an AXIS2_PLACEMENT_3D")))?;
     let [_, loc, axis, refd] = c.args.as_slice() else {
@@ -272,11 +276,12 @@ impl Product<'_> {
                         "leaf definition #{definition} has no shape representation"
                     ))
                 })?;
-                let solids: Vec<u64> = self
+                let mut solids: Vec<u64> = self
                     .items(rep)?
                     .into_iter()
                     .filter(|i| self.bodies.contains_key(i))
                     .collect();
+                solids.extend(related_solids(self.data, rep, &self.bodies)?);
                 match solids.as_slice() {
                     [solid] => out.push(PlacedPart {
                         solid: *solid,
@@ -349,13 +354,86 @@ impl Product<'_> {
     }
 }
 
+/// The `MAPPED_ITEM`s that place shape. A mapped item that is an item only of `DRAUGHTING_MODEL`s (simple, or complex with
+/// `SHAPE_REPRESENTATION` as AP242 writes its PMI views) shows a representation in an annotation view and places no shape: it is
+/// left out, as every PMI test model of NIST writes one. A mapped item that is an item of any other representation places shape.
+/// A malformed one, or one that is an item of no representation, is refused rather than ignored.
+pub(crate) fn shape_mapped_items(data: &Inventory) -> Result<BTreeSet<u64>, Error> {
+    let ents = data.entities();
+    // mapped item -> whether some holder is not a draughting model, whether some holder is one
+    let mut held: BTreeMap<u64, (bool, bool)> = BTreeMap::new();
+    for (id, e) in ents {
+        if let Some(c) = call(e, "MAPPED_ITEM") {
+            let [_, Value::Ref(map), Value::Ref(_)] = c.args.as_slice() else {
+                return Err(fail(format!("#{id}: malformed MAPPED_ITEM")));
+            };
+            if !ents
+                .get(map)
+                .is_some_and(|m| call(m, "REPRESENTATION_MAP").is_some())
+            {
+                return Err(fail(format!(
+                    "mapped item #{id}: #{map} is not a REPRESENTATION_MAP"
+                )));
+            }
+            held.entry(*id).or_default();
+        }
+    }
+    if held.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    for e in ents.values() {
+        let draughting = e.components.iter().any(|c| c.name == "DRAUGHTING_MODEL");
+        for c in &e.components {
+            // a representation's (name, items, context)
+            let [Value::String(_), Value::List(items), Value::Ref(_)] = c.args.as_slice() else {
+                continue;
+            };
+            for i in items.iter().filter_map(reference) {
+                if let Some(h) = held.get_mut(&i) {
+                    if draughting {
+                        h.1 = true;
+                    } else {
+                        h.0 = true;
+                    }
+                }
+            }
+        }
+    }
+    let mut shape = BTreeSet::new();
+    for (id, (other, draughting)) in held {
+        if other {
+            shape.insert(id);
+        } else if !draughting {
+            return Err(fail(format!(
+                "mapped item #{id} is an item of no representation"
+            )));
+        }
+    }
+    Ok(shape)
+}
+
+/// Whether the file has product structure that can place shape: an assembly usage, a context-dependent shape representation, a
+/// relationship with a transformation, or a mapped item that places shape ([`shape_mapped_items`]). A file without any of these
+/// holds its solids where their representations put them.
+pub(crate) fn places_shape(data: &Inventory) -> Result<bool, Error> {
+    let structure = data.entities().values().any(|e| {
+        e.components.iter().any(|c| {
+            matches!(
+                c.name.as_str(),
+                "NEXT_ASSEMBLY_USAGE_OCCURRENCE"
+                    | "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION"
+                    | "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION"
+            )
+        })
+    });
+    Ok(structure || !shape_mapped_items(data)?.is_empty())
+}
+
 /// Read the instances of a tree-shaped assembly. A file without product structure is refused (use `BodyContext` for a single
 /// body); so is anything the module header lists.
 pub fn read(data: &Inventory) -> Result<Assembly, Error> {
     let ents = data.entities();
-    let has_mapped = ents
-        .values()
-        .any(|e| e.components.iter().any(|c| c.name == "MAPPED_ITEM"));
+    let has_mapped = !shape_mapped_items(data)?.is_empty();
     let has_usage = ents.values().any(|e| {
         e.components
             .iter()
@@ -476,6 +554,67 @@ pub fn read(data: &Inventory) -> Result<Assembly, Error> {
     Ok(Assembly { root: *root, parts })
 }
 
+/// The solids of the representations that a plain `SHAPE_REPRESENTATION_RELATIONSHIP` (one without a transformation) joins to
+/// `rep`: a part's shape representation that holds only its placement, related to the `ADVANCED_BREP_SHAPE_REPRESENTATION` of its
+/// solid, as most exporters write a part. Such a relationship shares one coordinate space, so the solid sits at `rep`'s placement.
+/// One level only; a related representation with a different length unit is refused.
+fn related_solids(
+    data: &Inventory,
+    rep: u64,
+    bodies: &BTreeMap<u64, RawBody>,
+) -> Result<Vec<u64>, Error> {
+    let mut out = Vec::new();
+    for (id, e) in data.entities() {
+        if call(e, "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION").is_some() {
+            continue;
+        }
+        let Some(c) = call(e, "SHAPE_REPRESENTATION_RELATIONSHIP")
+            .filter(|c| c.args.len() == 4)
+            .or_else(|| {
+                call(e, "SHAPE_REPRESENTATION_RELATIONSHIP")
+                    .and(call(e, "REPRESENTATION_RELATIONSHIP"))
+            })
+        else {
+            continue;
+        };
+        let [_, _, Value::Ref(r1), Value::Ref(r2)] = c.args.as_slice() else {
+            return Err(fail(format!(
+                "#{id}: malformed SHAPE_REPRESENTATION_RELATIONSHIP"
+            )));
+        };
+        let other = match (*r1 == rep, *r2 == rep) {
+            (true, false) => *r2,
+            (false, true) => *r1,
+            _ => continue,
+        };
+        let Some(o) = data.entities().get(&other) else {
+            continue;
+        };
+        let items: Vec<u64> = o
+            .components
+            .iter()
+            .find_map(|c| match c.args.as_slice() {
+                [Value::String(_), Value::List(items), Value::Ref(_)] => {
+                    Some(items.iter().filter_map(reference).collect())
+                }
+                _ => None,
+            })
+            .unwrap_or_default();
+        let solids: Vec<u64> = items.into_iter().filter(|i| bodies.contains_key(i)).collect();
+        if solids.is_empty() {
+            continue;
+        }
+        let (m_rep, m_other) = (rep_metres(data, rep)?, rep_metres(data, other)?);
+        if (m_rep - m_other).abs() > 1e-12 * m_rep.abs() {
+            return Err(fail(format!(
+                "#{id}: the related representations use different length units"
+            )));
+        }
+        out.extend(solids);
+    }
+    Ok(out)
+}
+
 /// The items of a shape representation.
 fn rep_items(data: &Inventory, rep: u64) -> Result<Vec<u64>, Error> {
     let e = data
@@ -519,12 +658,13 @@ fn rep_metres(data: &Inventory, rep: u64) -> Result<f64, Error> {
 
 fn read_mapped(data: &Inventory) -> Result<Assembly, Error> {
     let ents = data.entities();
-    // MAPPED_ITEM id -> (REPRESENTATION_MAP id, target placement)
+    let shape = shape_mapped_items(data)?;
+    // MAPPED_ITEM id -> (REPRESENTATION_MAP id, target placement); annotation-view items are left out
     let mut mapped: BTreeMap<u64, (u64, u64)> = BTreeMap::new();
     // REPRESENTATION_MAP id -> (origin placement, mapped representation)
     let mut maps: BTreeMap<u64, (u64, u64)> = BTreeMap::new();
     for (id, e) in ents {
-        if let Some(c) = call(e, "MAPPED_ITEM") {
+        if let Some(c) = call(e, "MAPPED_ITEM").filter(|_| shape.contains(id)) {
             let [_, Value::Ref(map), Value::Ref(target)] = c.args.as_slice() else {
                 return Err(fail(format!("#{id}: malformed MAPPED_ITEM")));
             };
@@ -581,6 +721,14 @@ fn read_mapped(data: &Inventory) -> Result<Assembly, Error> {
         ) -> Result<(), Error> {
             if !active.insert(rep) {
                 return Err(fail(format!("representation #{rep} contains itself")));
+            }
+            for solid in related_solids(self.data, rep, &self.bodies)? {
+                out.push(PlacedPart {
+                    solid,
+                    definition: rep,
+                    path: path.clone(),
+                    placement: world,
+                });
             }
             for item in rep_items(self.data, rep)? {
                 if self.bodies.contains_key(&item) {

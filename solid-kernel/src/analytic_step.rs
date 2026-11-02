@@ -1,5 +1,5 @@
 //! Native analytic geometry feasibility checks, not trimmed B-Rep/solid validity.
-//! Supported subset: one directly represented, unplaced body; line/circle edges
+//! Supported subset: one body per solid or, under product structure, per placed instance (`step_body::BodyContext`); line/circle edges
 //! and verified full-domain two-control degree-one splines;
 //! plane/cylinder/sphere/cone/torus surfaces (the last three charted in `curved_surface`) and exactly coplanar convex
 //! bilinear spline patches.
@@ -342,31 +342,99 @@ fn curve(data: &Inventory, e: &Entity, scale: f64) -> Result<Curve, Error> {
         _ => Err(error(e, "unsupported referenced 3D curve geometry")),
     }
 }
-/// Radians per plane-angle unit of the file: only the explicit SI radian is accepted (a degree-based file is refused rather
-/// than guessed), and there must be exactly one plane-angle unit.
-fn plane_angle_factor(data: &Inventory, e: &Entity) -> Result<f64, Error> {
-    let mut found = None;
-    for unit in data.entities().values() {
-        if !unit.components.iter().any(|c| c.name == "PLANE_ANGLE_UNIT") {
-            continue;
-        }
-        let radian = unit.components.iter().any(|c| {
-            c.name == "SI_UNIT"
-                && matches!(c.args.as_slice(), [Value::Omitted, Value::Enum(n)] if n == "RADIAN")
-        });
-        if found.replace(radian).is_some() {
-            return Err(error(e, "ambiguous plane-angle units"));
+/// Radians per plane-angle unit assigned in the representation context `context` (the body's): the SI radian (1), or a
+/// conversion-based unit (a degree) whose `PLANE_ANGLE_MEASURE_WITH_UNIT` states its size in an explicit SI radian; that
+/// factor is used exactly as declared, never inferred from the unit's name. Only a cone's semi-angle needs it, so a refusal is
+/// returned as its reason and raised at the first cone.
+fn plane_angle_factor(data: &Inventory, context: u64) -> Result<f64, String> {
+    let ents = data.entities();
+    let si_radian = |u: &Entity| {
+        u.components.len() == 3
+            && u.components.iter().all(|c| match (c.name.as_str(), c.args.as_slice()) {
+                ("NAMED_UNIT", [Value::Derived]) | ("PLANE_ANGLE_UNIT", []) => true,
+                ("SI_UNIT", [Value::Omitted, Value::Enum(n)]) => n == "RADIAN",
+                _ => false,
+            })
+    };
+    let assigned = ents
+        .get(&context)
+        .and_then(|e| e.components.iter().find(|c| c.name == "GLOBAL_UNIT_ASSIGNED_CONTEXT"))
+        .and_then(|c| match c.args.as_slice() {
+            [Value::List(units)] => Some(units),
+            _ => None,
+        })
+        .ok_or("the body's representation context assigns no units")?;
+    let mut angle = assigned
+        .iter()
+        .filter_map(|v| if let Value::Ref(id) = v { ents.get(id) } else { None })
+        .filter(|u| u.components.iter().any(|c| c.name == "PLANE_ANGLE_UNIT"));
+    let unit = angle
+        .next()
+        .ok_or("a cone's semi-angle needs a plane-angle unit assigned in its representation context")?;
+    if angle.next().is_some() {
+        return Err("ambiguous plane-angle units".into());
+    }
+    if si_radian(unit) {
+        return Ok(1.);
+    }
+    let unsupported = || {
+        format!(
+            "#{}: unsupported plane-angle unit (only the SI radian or a conversion-based unit stated in SI radians)",
+            unit.id
+        )
+    };
+    let dimensionless = |v: &Value| match v {
+        Value::Derived => true,
+        Value::Ref(d) => ents.get(d).is_some_and(|d| {
+            matches!(d.components.as_slice(), [c] if c.name == "DIMENSIONAL_EXPONENTS"
+                && c.args.len() == 7
+                && c.args.iter().all(|x| matches!(x, Value::Real(r) if *r == 0.) || matches!(x, Value::Integer(0))))
+        }),
+        _ => false,
+    };
+    let mut measure = None;
+    if unit.components.len() != 3 {
+        return Err(unsupported());
+    }
+    for c in &unit.components {
+        match (c.name.as_str(), c.args.as_slice()) {
+            ("CONVERSION_BASED_UNIT", [Value::String(_), Value::Ref(m)]) => measure = Some(*m),
+            ("NAMED_UNIT", [d]) if dimensionless(d) => {}
+            ("PLANE_ANGLE_UNIT", []) => {}
+            _ => return Err(unsupported()),
         }
     }
-    match found {
-        Some(true) => Ok(1.),
-        _ => Err(error(
-            e,
-            "a cone's semi-angle needs one explicit SI radian plane-angle unit",
-        )),
+    let m = measure.and_then(|m| ents.get(&m)).ok_or_else(unsupported)?;
+    let factor = match m.components.as_slice() {
+        [c] if matches!(c.name.as_str(), "PLANE_ANGLE_MEASURE_WITH_UNIT" | "MEASURE_WITH_UNIT") => {
+            match c.args.as_slice() {
+                [Value::Typed(v), Value::Ref(basis)]
+                    if v.name == "PLANE_ANGLE_MEASURE"
+                        && ents.get(basis).is_some_and(si_radian) =>
+                {
+                    match v.args.as_slice() {
+                        [Value::Real(x)] => *x,
+                        [Value::Integer(i)] if i.unsigned_abs() <= 1u64 << 53 => *i as f64,
+                        _ => return Err(unsupported()),
+                    }
+                }
+                _ => return Err(unsupported()),
+            }
+        }
+        _ => return Err(unsupported()),
+    };
+    if factor.is_finite() && factor > 0. {
+        Ok(factor)
+    } else {
+        Err(format!("#{}: plane-angle conversion factor must be positive", m.id))
     }
 }
-fn surface(data: &Inventory, id: u64, scale: f64) -> Result<Surface, Error> {
+fn surface(
+    data: &Inventory,
+    id: u64,
+    scale: f64,
+    radians: &Result<f64, String>,
+) -> Result<Surface, Error> {
     let e = &data.entities()[&id];
     match e.components.as_slice() {
         [c] => match (c.name.as_str(), c.args.as_slice()) {
@@ -384,7 +452,7 @@ fn surface(data: &Inventory, id: u64, scale: f64) -> Result<Surface, Error> {
                 radius: radius(e, r, scale)?,
             }),
             ("CONICAL_SURFACE", [Value::String(_), Value::Ref(f), r, a]) => {
-                let semi_angle = scalar(e, a)? * plane_angle_factor(data, e)?;
+                let semi_angle = scalar(e, a)? * radians.clone().map_err(|r| error(e, r))?;
                 if !(semi_angle > 1e-6 && semi_angle < FRAC_PI_2 - 1e-6) {
                     return Err(error(e, "cone semi-angle outside (0, 90) degrees"));
                 }
@@ -1348,8 +1416,12 @@ impl AnalyticModel {
                 "require finite 0 < geometry tolerance <= chord tolerance",
             ));
         }
+        // a placed instance is read from the moved copy of the document
+        let placed = context.placed_document();
+        let data = placed.as_deref().unwrap_or(data);
         let body = context.body();
         let scale = context.millimetres_per_source_unit();
+        let radians = plane_angle_factor(data, context.length_context().entity);
         let mut vertices = BTreeMap::new();
         for v in body.vertices.values() {
             let p = scale_coordinates(&data.entities()[&v.point], v.coordinates, scale)?;
@@ -1540,7 +1612,7 @@ impl AnalyticModel {
                 let swept = swept_surface(data, source_surface, scale, &samples)?;
                 (Surface::Param(std::sync::Arc::new(swept)), None)
             } else {
-                let source = surface(data, face.surface, scale)?;
+                let source = surface(data, face.surface, scale, &radians)?;
                 // A sphere is charted around each face's own centre, from the face's boundary loops in traversal order.
                 let source = if let Surface::Sphere { .. } = source {
                     let mut loops = Vec::new();

@@ -28,6 +28,20 @@ and four edits of it (`examples/write-shapes.rs`): the hole moved to x = 14, a s
 hole 5 mm; `edit-plate-centre-hole` / `edit-plate-twin-holes` are one hole at x = 20 and two at x = 15 and 25. They test
 `face_identity`.
 
+## Product structure and plane-angle units (Phase 168)
+
+Hand-edited from the fixtures above (no downloaded file), tested by `tests/step_placement.rs`:
+
+- `pmi-view-single-part.step`: `edit-plate.step` plus a PMI annotation view as NIST writes one: a `DRAUGHTING_MODEL` holding a
+  `MAPPED_ITEM` that maps the plate's representation at a shifted, turned placement (`#500`..`#511`). It places no shape, so the
+  plate reads exactly as the bare file.
+- `placed-single-part.step`: `assembly-two-instances.step` with only its first instance (`#940`..`#953` removed), and the box's
+  solid moved into its own `ADVANCED_BREP_SHAPE_REPRESENTATION` (`#960`) joined to the part's placement-only `SHAPE_REPRESENTATION`
+  (`#10`) by a plain `SHAPE_REPRESENTATION_RELATIONSHIP` (`#961`), as most exporters write a part. The box lands on x 9..10,
+  y 5..7, z 0..3.
+- `cone-degrees.step`: `cone.step` with its plane-angle unit a `CONVERSION_BASED_UNIT('DEGREE')` of
+  `PLANE_ANGLE_MEASURE(0.0174532925199433)` SI radians and the semi-angle restated in degrees (32.00538320810856).
+
 ## Edges that are not lines or circles
 
 `tilted-hole` (a 40 x 30 x 20 block, 4 mm hole tilted along (0.5, 0.2, 1): ellipse edges), `t-junction` (cylinder R6 x 30 with a

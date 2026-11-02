@@ -128,7 +128,11 @@ fn ambiguous_unsupported_and_inconsistent_structure_is_refused_with_a_reason() {
         "does not join",
     );
     // Both a product structure and mapped items.
-    refuse(SOURCE.replace("ENDSEC;\nEND-ISO", "#990 = MAPPED_ITEM('',#991,#905);\n#991 = REPRESENTATION_MAP(#905,#904);\nENDSEC;\nEND-ISO"), "both assembly usages and mapped items");
+    // (the mapped item is an item of the assembly's shape representation, so it places shape)
+    refuse(SOURCE.replace("ENDSEC;\nEND-ISO", "#990 = MAPPED_ITEM('',#991,#905);\n#991 = REPRESENTATION_MAP(#905,#904);\nENDSEC;\nEND-ISO").replace("(#905,#931,#941),#345)", "(#905,#931,#941,#990),#345)"), "both assembly usages and mapped items");
+    // A mapped item that only shows a representation in an annotation view (a PMI draughting model) places no shape.
+    let view = SOURCE.replace("ENDSEC;\nEND-ISO", "#990 = MAPPED_ITEM('',#991,#905);\n#991 = REPRESENTATION_MAP(#905,#904);\n#992 = DRAUGHTING_MODEL('',(#990),#345);\nENDSEC;\nEND-ISO");
+    assert_eq!(read(&inventory(&view, Limits::default()).unwrap()).unwrap().parts.len(), 2);
     // A degenerate frame: reference direction parallel to the axis.
     refuse(
         SOURCE.replace(
