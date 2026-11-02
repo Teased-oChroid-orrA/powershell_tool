@@ -3,7 +3,7 @@
   "epic_complete": false,
   "branch": "main",
   "pull_request": null,
-  "pull_request_state": "none_open_after_pr_220",
+  "pull_request_state": "none_open_after_pr_222",
   "merged_prs": [
     42,
     65,
@@ -92,26 +92,25 @@
     212,
     215,
     217,
-    220
+    220,
+    222
   ],
-  "latest_qualified_source": "ab5aa6c23f13621e7e6bd5c295d78380e42c0b87",
-  "latest_phase": 166,
-  "progress_snapshot": "issue-46-phase-166.md",
+  "latest_qualified_source": "d747e7d51729a78a6da423c5a78e48d3c9c2afc2",
+  "latest_phase": 168,
+  "progress_snapshot": "issue-46-phase-168.md",
   "handoff": "issue-46-claude-handoff.md",
   "production_backend": "OCCT",
   "occt_retirement_approved": false,
-  "remaining": "Phase 166 (PR #220, squash 85036c2): editor-operation capability matrix (retirement gate item 4). Every solid-editor operation (STEP open, re-tessellate, hole, boss, fillet, face carry-over, undo, STEP write-back, sketch features) with native and OCCT support and the test behind each cell; native open/hole/boss/fillet are partial (fillet: convex polyhedra; hole/boss: flat faces whose axis meets only perpendicular planes; no editing of solids with spline, ellipse or complex edge curves). A sweep of every native edit over the 30 OCCT-written fixtures found no panic and no silent fallback (27 open, 13 edits succeed, 87 refused with reasons). Native refusals now name the editor's faceN (they used the kernel's 0-based index) and start 'without OpenCASCADE'. Earlier: Phase 165 (PR #217, squash 0bbd19d): production-path same-STEP comparison over 35 licensed real-CAD files (33 NIST PMI, 2 OpenCascade samples; none committed). Native refuses 33 at STEP import (21 on assembly/placement mapping, 3 multiple representations, 2 degree plane-angle units, others); OCCT meshes 3 at its own default size (30 refused by the element estimate at the wall-rule size, 2 non-manifold). Benchmark now holds and loads every coplanar extreme face; built-in table still 36/38, asserted comparison passes. Default-size floor measured and dropped. Narrowed retirement-gate proposal awaits three owner decisions. Phase 167: feature-off (no OpenCascade) STEP import, volume mesh and static solve qualified on hosted Windows x64 (Xeon Platinum 8370C, Server 2025 build 26100) at a820c5f: fea-problem native_solid 3/3, solid 7/7, and the 14 built-in native rows of the same-STEP benchmark (native_step_benchmark) all solved in balance, 13/14 at the default quality gate (NEMA17 4 cells under 0.1, as on macOS). Open: packaged offline clean-machine app-tui.exe acceptance on Windows 10 1809+/11, other runner hardware. Earlier: Phase 164: split_segment finds the facet meshes a segment bounds through a vertex-to-mesh index (State::vertex_meshes) instead of testing every mesh, about 70% of the sliver stage on 00007062; the insertion sequence is unchanged (00007062 plc-run output identical to main at PLC_QSEC=900). At the default 20 s clock 00007062's sliver stage now finishes on macOS arm64 (cells under 0.1 36,667 -> 448, minimum scaled Jacobian 0.0006 -> 0.019, edge ratio 29.2) but with a thin margin (a 13 s clock stops it early), so the result depends on machine speed; it still fails the unchanged default solver gate and is not solved. 00006600 still passes and solves (170 -> 130 s). NEMA17 is deferred by owner request. The 448-cell residue of 00007062 (12 all-boundary), the sliver-stage margin on slower machines, the 300-file ABC rerun with the smoothing recipe, general CAD seam conformity, Windows native-only mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
+  "remaining": "Phase 168 (PR #222, squash d747e7d): native STEP import of parts inside product structure and degree plane-angle units. The corpus's 'assembly' files are single parts whose MAPPED_ITEMs only feed PMI draughting views (now ignored); real assembly instances are read in the root frame from a rigidly moved document copy, one body each (synthetic fixtures only: the corpus has no assembly); a solid listed by several same-context representations binds once; degree units stated in SI radians scale cone angles. Corpus: 33 of 35 files pass structure/binding/units (8 before); native still meshes 2 vs OCCT 3 (screw.step is the gap: spline edge coverage); remaining native strict-read classes: edge/surface disagreement 7, chart work budget 6, spline edge coverage 5, edge endpoint off circle 4 / line 3, placement directions 2, spherical orientation 2, others 4. Production native path still reads one body (multi-instance files refuse there). Earlier: Phase 166 (PR #220, squash 85036c2): editor-operation capability matrix (retirement gate item 4). Every solid-editor operation (STEP open, re-tessellate, hole, boss, fillet, face carry-over, undo, STEP write-back, sketch features) with native and OCCT support and the test behind each cell; native open/hole/boss/fillet are partial (fillet: convex polyhedra; hole/boss: flat faces whose axis meets only perpendicular planes; no editing of solids with spline, ellipse or complex edge curves). A sweep of every native edit over the 30 OCCT-written fixtures found no panic and no silent fallback (27 open, 13 edits succeed, 87 refused with reasons). Native refusals now name the editor's faceN (they used the kernel's 0-based index) and start 'without OpenCASCADE'. Earlier: Phase 165 (PR #217, squash 0bbd19d): production-path same-STEP comparison over 35 licensed real-CAD files (33 NIST PMI, 2 OpenCascade samples; none committed). Native refuses 33 at STEP import (21 on assembly/placement mapping, 3 multiple representations, 2 degree plane-angle units, others); OCCT meshes 3 at its own default size (30 refused by the element estimate at the wall-rule size, 2 non-manifold). Benchmark now holds and loads every coplanar extreme face; built-in table still 36/38, asserted comparison passes. Default-size floor measured and dropped. Narrowed retirement-gate proposal awaits three owner decisions. Phase 167: feature-off (no OpenCascade) STEP import, volume mesh and static solve qualified on hosted Windows x64 (Xeon Platinum 8370C, Server 2025 build 26100) at a820c5f: fea-problem native_solid 3/3, solid 7/7, and the 14 built-in native rows of the same-STEP benchmark (native_step_benchmark) all solved in balance, 13/14 at the default quality gate (NEMA17 4 cells under 0.1, as on macOS). Open: packaged offline clean-machine app-tui.exe acceptance on Windows 10 1809+/11, other runner hardware. Earlier: Phase 164: split_segment finds the facet meshes a segment bounds through a vertex-to-mesh index (State::vertex_meshes) instead of testing every mesh, about 70% of the sliver stage on 00007062; the insertion sequence is unchanged (00007062 plc-run output identical to main at PLC_QSEC=900). At the default 20 s clock 00007062's sliver stage now finishes on macOS arm64 (cells under 0.1 36,667 -> 448, minimum scaled Jacobian 0.0006 -> 0.019, edge ratio 29.2) but with a thin margin (a 13 s clock stops it early), so the result depends on machine speed; it still fails the unchanged default solver gate and is not solved. 00006600 still passes and solves (170 -> 130 s). NEMA17 is deferred by owner request. The 448-cell residue of 00007062 (12 all-boundary), the sliver-stage margin on slower machines, the 300-file ABC rerun with the smoothing recipe, general CAD seam conformity, Windows native-only mesh/solve, B-rep healing and broader P2/P3/final gates remain open",
   "latest_increment_tests": {
     "commands": [
-      "cargo test -p fea-problem -p solid-kernel --release --locked --offline -j1",
-      "OCCT_ROOT=<prebuilt> cargo test -p fea-problem --features occt --release --locked --offline --test solid --test native_solid --test fillet_rim_tagging",
-      "OCCT_ROOT=<prebuilt> cargo test -p solid-kernel --features occt --release --locked --offline --lib cad; --test occt --test native_brep_occt --test native_brep_boolean --test native_brep_fillet",
-      "cargo test -p app-tui --release --locked --offline --lib a_step_solid_opens_gets_a_hole"
+      "cargo test -p solid-kernel -p fea-core -p fea-problem --release --locked --offline -j1 --no-fail-fast",
+      "OCCT_ROOT=<prebuilt> STEP_DIR=<corpus> NO_SOLVE=1 cargo test -p fea-problem --features occt --release --locked --offline -j1 --test occt_vs_native -- --ignored --nocapture table"
     ],
     "result": "passed",
-    "platform": "Local macOS arm64, release: feature off 526 passed / 0 failed / 10 ignored; feature on fea-problem 12 + 6 + 6, solid-kernel 3 + 5 + 3 + 8 + 4; app-tui 1. Merged as PR #220 on the standing merge permission while hosted qualification was still running. Windows and the OCCT app-level window test not run",
-    "at": "ab5aa6c",
-    "corpus": "issue-46-phase-166.md"
+    "platform": "Local macOS arm64, release, branch merged with main at 2ec523f: 135 binaries, 1,156 passed / 0 failed / 48 ignored; corpus table 834 s (35 models; OCCT meshed 3 gate 1; native meshed 2 gate 1). Merged as PR #222 on the standing merge permission while hosted checks were still running. Windows not run",
+    "at": "d747e7d",
+    "corpus": "issue-46-phase-168.md"
   },
   "tests": {
     "workspace_passed": 2862,
@@ -120,13 +119,13 @@
     "platform": "macOS arm64 (no Windows or hosted CI evidence)",
     "at": "20a3f24"
   },
-  "last_confirmed_main_merge": "85036c20e17c75711322cfe5702cfa1dd962d36b",
+  "last_confirmed_main_merge": "d747e7d51729a78a6da423c5a78e48d3c9c2afc2",
   "pointer_scope": "Last qualified increment and confirmed integration state; origin/main resolves the live head, which may include tracking-only commits.",
   "next_work": {
-    "scope": "ABC 00006600/00007062 parked as known refusals by owner decision (2026-11-01). Retirement gate adopted 2026-11-01 (issue-46-abc-and-retirement-gates-plan.md): native must import and mesh every licensed-corpus file OCCT reads; retirement means OCCT removed from the build; P2/P3 are roadmap. Work: native STEP product-structure/placement mapping and degree plane-angle units (21 + 2 of 33 corpus refusals; Phase 168 in progress); remaining native import classes; native editor gaps listed in issue-46-phase-166.md (holes/bosses meeting curved faces or other features, fillets beyond convex polyhedra, editing solids with spline/ellipse/complex edges); packaged offline clean-machine app-tui.exe acceptance on Windows. NEMA17 deferred by owner request",
+    "scope": "ABC 00006600/00007062 parked as known refusals by owner decision (2026-11-01). Retirement gate adopted 2026-11-01 (issue-46-abc-and-retirement-gates-plan.md): native must import and mesh every licensed-corpus file OCCT reads; retirement means OCCT removed from the build; P2/P3 are roadmap. Work: remaining native STEP import classes after Phase 168 (edge/surface disagreement, chart work budget, spline edge coverage incl. screw.step, edge endpoints off their curves); native editor gaps listed in issue-46-phase-166.md (holes/bosses meeting curved faces or other features, fillets beyond convex polyhedra, editing solids with spline/ellipse/complex edges); packaged offline clean-machine app-tui.exe acceptance on Windows. NEMA17 deferred by owner request",
     "status": "see_resume_guide_open_list"
   },
-  "base_main_head": "85036c20e17c75711322cfe5702cfa1dd962d36b",
+  "base_main_head": "d747e7d51729a78a6da423c5a78e48d3c9c2afc2",
   "completion_checklist": "issue-46-completion-checklist.md",
   "resume": "issue-46-resume.md",
   "pending_prs": []
