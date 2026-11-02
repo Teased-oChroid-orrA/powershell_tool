@@ -275,7 +275,8 @@ enum Curve {
         major: f64,
         minor: f64,
     },
-    /// A B-spline (rational or not) edge curve covering its whole domain, with the parameter of every sample in edge order.
+    /// A B-spline (rational or not) edge curve, covering its whole domain or the part between the edge's vertices, with the
+    /// parameter of every sample in edge order.
     Spline {
         curve: std::sync::Arc<crate::nurbs::NurbsCurve>,
         params: Vec<f64>,
@@ -955,20 +956,55 @@ fn samples(
     }
     Ok(points)
 }
-/// Sample a B-spline edge curve over its whole domain: every distinct knot is a sample, and a parameter interval is bisected
-/// until the curve at its quarter points and midpoint lies within the chord tolerance of the chord. Unlike `nurbs_sample` it
-/// certifies nothing (the interval bounds of that sampler need 40 000 points for a 10 mm cross-bore intersection curve at
-/// 0.05 mm); the endpoints are checked against the vertices by the caller.
 /// Share of the chord tolerance spent by the bisection; the decimation gets the rest.
 const SPLIT_SHARE: f64 = 0.25;
 /// No decimated segment is longer than this many chords: the face mesher needs boundary spacing comparable to its own.
 const MAX_SEGMENT_CHORDS: f64 = 30.;
-fn sample_spline_adaptive(
+/// The parameter of a vertex that lies inside a spline curve (an edge using part of the curve). The bounded global curve
+/// distance gives the candidate, which must lie within the geometry tolerance. A distance bracket says nothing about
+/// uniqueness, so the curve is also sampled to the chord tolerance over its whole domain: the polyline segments within
+/// chord + geometry tolerance of the vertex must form one run that holds the candidate. A curve that comes back near the
+/// vertex elsewhere refuses rather than picking one of the passes.
+fn spline_vertex_parameter(
     curve: &crate::nurbs::NurbsCurve,
+    vertex: V3,
+    geometry_tolerance_mm: f64,
     chord_mm: f64,
     max_points: usize,
-) -> Result<(Vec<f64>, Vec<V3>), String> {
-    sample_spline_with(curve, chord_mm, max_points, SPLIT_SHARE)
+) -> Result<f64, String> {
+    let off_curve = "a spline edge's vertex is neither an end of its curve nor on it";
+    // the search stops as soon as its lower bound proves the vertex off the curve
+    let mut proven_off = false;
+    let found = crate::nurbs_distance::distance(
+        curve,
+        vertex,
+        crate::nurbs_distance::Options {
+            distance_tolerance: 0.25 * geometry_tolerance_mm,
+            ..Default::default()
+        },
+        |p| {
+            proven_off = p.distance_bounds[0] > geometry_tolerance_mm;
+            !proven_off
+        },
+    );
+    let found = match found {
+        Err(_) if proven_off => return Err(off_curve.into()),
+        other => other.map_err(|e| e.detail)?,
+    };
+    if !(found.distance_bounds[1] <= geometry_tolerance_mm) {
+        return Err(off_curve.into());
+    }
+    let t = found.candidate_parameter;
+    let (params, points) = sample_spline_with(curve, chord_mm, max_points, SPLIT_SHARE)?;
+    let near: Vec<usize> = (0..points.len() - 1)
+        .filter(|&i| crate::segment_distance(vertex, points[i], points[i + 1]).0 <= chord_mm + geometry_tolerance_mm)
+        .collect();
+    let one_run = near.windows(2).all(|w| w[1] == w[0] + 1);
+    let holds = near.iter().any(|&i| params[i] <= t && t <= params[i + 1]);
+    if !one_run || !holds {
+        return Err("a spline edge's vertex lies on its curve more than once".into());
+    }
+    Ok(t)
 }
 fn sample_spline_with(
     curve: &crate::nurbs::NurbsCurve,
@@ -978,6 +1014,10 @@ fn sample_spline_with(
 ) -> Result<(Vec<f64>, Vec<V3>), String> {
     sample_spline_range(curve, curve.domain(), chord_mm, max_points, split_share)
 }
+/// Sample a B-spline edge curve over `domain` (its whole domain, or the part an edge uses): every distinct knot inside is a
+/// sample, and a parameter interval is bisected until the curve at its quarter points and midpoint lies within the chord
+/// tolerance of the chord. Unlike `nurbs_sample` it certifies nothing (the interval bounds of that sampler need 40 000 points
+/// for a 10 mm cross-bore intersection curve at 0.05 mm); the endpoints are checked against the vertices by the caller.
 fn sample_spline_range(
     curve: &crate::nurbs::NurbsCurve,
     domain: [f64; 2],
@@ -1445,41 +1485,44 @@ impl AnalyticModel {
                     context.read_spline_curve_active_domain(data, reference, crate::nurbs::Limits::default())?;
                 if declaration.curve.degree() != 1 || declaration.curve.control_points().len() != 2
                 {
-                    // A general B-spline edge over its whole domain: endpoints must be the vertices (in the edge's sense), the
-                    // interior is sampled to the chord tolerance.
+                    // A general B-spline edge over its whole domain or a part of it: each vertex (in the edge's sense) is an
+                    // end of the curve or a point inside it, located by `spline_vertex_parameter`; the edge's interval is
+                    // sampled to the chord tolerance.
                     let curve_domain = declaration.curve.domain();
-                    let (first, last) = (
-                        declaration
-                            .curve
-                            .evaluate(curve_domain[0])
-                            .map_err(|e| error(geometry, e.detail))?,
-                        declaration
-                            .curve
-                            .evaluate(curve_domain[1])
-                            .map_err(|e| error(geometry, e.detail))?,
-                    );
-                    let (start, end) = if edge.same_sense {
-                        (first, last)
+                    let budget = opt.max_edge_points.min(opt.max_total_points.saturating_sub(total));
+                    let (low, high) = if edge.same_sense {
+                        (vertices[&edge.start], vertices[&edge.end])
                     } else {
-                        (last, first)
+                        (vertices[&edge.end], vertices[&edge.start])
                     };
-                    for (curve_end, vertex) in
-                        [(start, vertices[&edge.start]), (end, vertices[&edge.end])]
-                    {
-                        if norm(sub(curve_end, vertex)) > opt.geometry_tolerance_mm {
-                            return Err(error(
-                                geometry,
-                                "a spline edge must cover its whole curve: an end of the curve is not the vertex",
-                            ));
-                        }
+                    let mut range = [0.; 2];
+                    for (k, vertex) in [low, high].into_iter().enumerate() {
+                        let curve_end = declaration
+                            .curve
+                            .evaluate(curve_domain[k])
+                            .map_err(|e| error(geometry, e.detail))?;
+                        range[k] = if norm(sub(curve_end, vertex)) <= opt.geometry_tolerance_mm {
+                            curve_domain[k]
+                        } else {
+                            spline_vertex_parameter(
+                                &declaration.curve,
+                                vertex,
+                                opt.geometry_tolerance_mm,
+                                opt.chord_mm,
+                                budget,
+                            )
+                            .map_err(|detail| error(geometry, detail))?
+                        };
                     }
-                    let (mut params, mut pts) = sample_spline_adaptive(
-                        &declaration.curve,
-                        opt.chord_mm,
-                        opt.max_edge_points
-                            .min(opt.max_total_points.saturating_sub(total)),
-                    )
-                    .map_err(|detail| error(geometry, detail))?;
+                    if !(range[0] < range[1]) {
+                        return Err(error(
+                            geometry,
+                            "a spline edge's vertices are out of order on its curve (an edge across a closed curve's seam)",
+                        ));
+                    }
+                    let (mut params, mut pts) =
+                        sample_spline_range(&declaration.curve, range, opt.chord_mm, budget, SPLIT_SHARE)
+                            .map_err(|detail| error(geometry, detail))?;
                     if !edge.same_sense {
                         params.reverse();
                         pts.reverse();
@@ -2372,7 +2415,7 @@ mod conversion_tests {
         let curve = crate::nurbs::NurbsCurve::new_clamped(6, knots, controls, vec![1.; n], crate::nurbs::Limits::default()).unwrap();
         let chord = 0.0376;
         let (_, plain) = sample_spline_with(&curve, chord, 100_000, 1.).unwrap();
-        let (params, points) = sample_spline_adaptive(&curve, chord, 100_000).unwrap();
+        let (params, points) = sample_spline_with(&curve, chord, 100_000, SPLIT_SHARE).unwrap();
         eprintln!("SAMPLES plain {} decimated {}", plain.len(), points.len());
         assert!(points.len() * 2 <= plain.len(), "{} decimated samples against {} plain", points.len(), plain.len());
         assert_eq!(params.len(), points.len());
@@ -2392,6 +2435,30 @@ mod conversion_tests {
         assert!(worst <= chord, "worst deviation {worst} exceeds the chord {chord}");
         let longest = points.windows(2).map(|w| norm(sub(w[1], w[0]))).fold(0., f64::max);
         assert!(longest <= MAX_SEGMENT_CHORDS * chord * (1. + 1e-9), "segment {longest} longer than the cap");
+    }
+    /// A vertex inside a spline curve is located on it; one the curve passes twice (a crossing) or one off the curve refuses.
+    #[test]
+    fn a_vertex_inside_a_spline_is_located_once_or_refused() {
+        let limits = crate::nurbs::Limits::default();
+        let wiggly: Vec<V3> = (0..8).map(|i| [i as f64, (i as f64 * 0.9).sin(), 0.]).collect();
+        let knots = vec![0., 0., 0., 0., 0.2, 0.4, 0.6, 0.8, 1., 1., 1., 1.];
+        let curve = crate::nurbs::NurbsCurve::new_clamped(3, knots, wiggly, vec![1.; 8], limits).unwrap();
+        let t = 0.37;
+        let found = spline_vertex_parameter(&curve, curve.evaluate(t).unwrap(), 1e-7, 0.01, 100_000).unwrap();
+        assert!(norm(sub(curve.evaluate(found).unwrap(), curve.evaluate(t).unwrap())) <= 1e-7, "{found}");
+        let off = add(curve.evaluate(t).unwrap(), [0., 0., 1e-3]);
+        assert!(spline_vertex_parameter(&curve, off, 1e-7, 0.01, 100_000).unwrap_err().contains("neither"));
+        // (0,0) -> (2,0), then (1,1) -> (1,-1): the point (1,0) is on the polyline twice
+        let crossing = crate::nurbs::NurbsCurve::new_clamped(
+            1,
+            vec![0., 0., 0.25, 0.5, 0.75, 1., 1.],
+            vec![[0., 0., 0.], [2., 0., 0.], [1., 1., 0.], [1., -1., 0.], [3., -1., 0.]],
+            vec![1.; 5],
+            limits,
+        )
+        .unwrap();
+        assert!(spline_vertex_parameter(&crossing, [1., 0., 0.], 1e-7, 0.01, 100_000).unwrap_err().contains("more than once"));
+        assert!(spline_vertex_parameter(&crossing, [1.5, 0., 0.], 1e-7, 0.01, 100_000).is_ok());
     }
     #[test]
     fn coordinate_length_conversion_preserves_units_zeros_and_rejects_invalid_scales() {
