@@ -35,13 +35,17 @@ use app_tui::widgets::shell;
 fn main() -> io::Result<()> {
     let first_arg = std::env::args().nth(1);
     if first_arg.as_deref() == Some("--gpu-viewer") {
+        app_tui::console::release_own_console();
         let path = std::env::args_os().nth(2).ok_or_else(|| io::Error::other("missing GPU scene path"))?;
         return app_tui::gpu_viewer::run(std::path::Path::new(&path)).map_err(io::Error::other);
     }
     if dashboard_requested(first_arg.as_deref(), cfg!(windows)) {
+        // A double-clicked app-tui.exe gets a console of its own; the dashboard is a window and does not need it.
+        app_tui::console::release_own_console();
         return app_tui::gpu_viewer::run_dashboard().map_err(io::Error::other);
     }
     if let Some(kind) = first_arg.as_deref().and_then(app_tui::gpu_viewer::EditorKind::from_flag) {
+        app_tui::console::release_own_console();
         if kind == app_tui::gpu_viewer::EditorKind::Search {
             // The search and index stages are logged like the terminal toolbox's (no paths or terms, see debug_log).
             app_tui::debug_log::init();
