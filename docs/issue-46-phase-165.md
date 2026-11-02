@@ -91,10 +91,10 @@ The change moves only supports and loads, so every mesh column is unchanged.
 
 - It shows that on this licensed real-CAD corpus, native STEP import coverage is the dominant blocker for retirement: 33 of 35 files stop there, 21 of them on placement mapping.
 - It shows that OCCT's own production path meshes few of these files at their default size (3 of 35), because of the import sizing rule above. A gate based on "native meshes what OCCT meshes" is therefore measured on very few real files at default sizes.
-- It does not show native meshing quality on real assemblies, because native cannot read them yet. It does not cover Windows (feature-off STEP mesh and solve on the target is still unmeasured), the editor operations, or OCCT's healing of the two non-manifold tessellations.
+- It does not show native meshing quality on real assemblies, because native cannot read them yet. It was measured on macOS only; [Phase 167](issue-46-phase-167.md), run in parallel, covers feature-off STEP import, mesh and solve of the built-in models on hosted Windows, not this corpus. It does not cover the editor operations or OCCT's healing of the two non-manifold tessellations.
 
 ## Follow-ups
 
 - Native STEP placement mapping for single-body files wrapped in a product structure, then for true assemblies (21 files). Degree plane-angle units with an explicit conversion (2 files directly, more after the tolerant read).
 - Import sizing for thin-walled large parts: an owner decision, since a coarser default would mesh but would not resolve the wall (see the retirement-gate proposal in `issue-46-abc-and-retirement-gates-plan.md`).
-- Editor-operation capability matrix and Windows feature-off qualification, as already planned.
+- Editor-operation capability matrix (Phase 166, in progress). Windows feature-off qualification of the built-in models is Phase 167.
