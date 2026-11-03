@@ -94,9 +94,6 @@ struct Job {
     id: u64,
     sig: Problem,
     started: Instant,
-    /// An animation job that generates the load-release transient (its result is cached for the
-    /// consolidated native window) rather than building scenes from existing results.
-    transient: bool,
 }
 
 /// What a cached raster was drawn from.
@@ -139,12 +136,6 @@ pub struct FeaWorkbenchState {
     pub dynamic: Option<Box<DynSolved>>,
     pub dyn_error: Option<String>,
     dyn_job: Option<Job>,
-    animation_job: Option<Job>,
-    /// The load-release transient generated for the inputs it was computed for: part of the one
-    /// consolidated native window (`g` and `t` both open it).
-    transient: Option<(Problem, crate::gpu_viewer::scene::ViewerProject)>,
-    animation_progress: Option<crate::gpu_viewer::progress::GenerationProgress>,
-    viewer_launch: Option<(u64, Instant)>,
     /// Whether the canvas and readout show the dynamic result (while it still belongs to the inputs).
     pub show_dynamic: bool,
     /// Mode drawn on the canvas.
@@ -196,10 +187,6 @@ impl FeaWorkbenchState {
             dynamic: None,
             dyn_error: None,
             dyn_job: None,
-            animation_job: None,
-            transient: None,
-            animation_progress: None,
-            viewer_launch: None,
             show_dynamic: false,
             mode: 0,
             auto_solve: false,
@@ -371,7 +358,7 @@ impl FeaWorkbenchState {
         if !preview_current && self.preview_job.is_none() && wanted {
             self.mesh_requested = false;
             let id = self.take_job_id();
-            self.preview_job = Some(Job { id, sig: preview_key(&sig), started: Instant::now(), transient: false });
+            self.preview_job = Some(Job { id, sig: preview_key(&sig), started: Instant::now() });
             effects.push(Effect::RunFeaPreview { id, problem: Box::new(preview_key(&sig)), import_text: import_text.clone() });
         }
 
@@ -407,77 +394,11 @@ impl FeaWorkbenchState {
             return Vec::new();
         }
         let id = self.take_job_id();
-        self.solve_job = Some(Job { id, sig: sig.clone(), started: Instant::now(), transient: false });
+        self.solve_job = Some(Job { id, sig: sig.clone(), started: Instant::now() });
         self.solve_error = None;
         vec![Effect::RunFeaSolve { id, problem: Box::new(sig), import_text }]
     }
 
-    /// The cached load-release transient, when it was computed for the current inputs.
-    fn cached_transient(&self) -> Option<&crate::gpu_viewer::scene::ViewerProject> {
-        self.transient.as_ref().filter(|(sig, _)| *sig == self.problem).map(|(_, p)| p)
-    }
-
-    /// Key `t`: compute the load-release transient (once per set of inputs), then open the single
-    /// native window with it together with every other result computed for these inputs.
-    pub fn start_animation(&mut self) -> Vec<Effect> {
-        if self.animation_job.is_some() || self.viewer_launch.is_some() {
-            return Vec::new();
-        }
-        if self.cached_transient().is_some() {
-            return self.open_gpu();
-        }
-        let id = self.take_job_id();
-        self.solve_error = None;
-        self.animation_progress = Some(crate::gpu_viewer::progress::GenerationProgress::stage("Preparing animation"));
-        let sig = self.problem.clone();
-        self.animation_job = Some(Job {
-            id,
-            sig: sig.clone(),
-            started: Instant::now(),
-            transient: true,
-        });
-        vec![Effect::RunFeaAnimation {
-            id,
-            problem: Box::new(sig),
-            import_text: self.import_text(),
-        }]
-    }
-    pub fn finish_animation(
-        &mut self,
-        id: u64,
-        result: Result<crate::gpu_viewer::scene::ViewerProject, String>,
-    ) -> Vec<Effect> {
-        let Some(job) = self.animation_job.take_if(|j| j.id == id) else {
-            return Vec::new();
-        };
-        self.animation_progress = None;
-        if job.sig != self.problem {
-            return Vec::new();
-        }
-        match result {
-            // A finished transient joins the cache; the one window then opens with everything.
-            Ok(project) if job.transient => {
-                self.solve_error = None;
-                self.transient = Some((job.sig, project));
-                self.open_gpu_as(Some(id))
-            }
-            Ok(mut project) => {
-                if let Some(t) = self.cached_transient() {
-                    if let Err(e) = project.append(t.clone()) {
-                        self.solve_error = Some(e);
-                        return Vec::new();
-                    }
-                }
-                self.solve_error = None;
-                self.viewer_launch = Some((id, Instant::now()));
-                vec![Effect::OpenGpuScene { id, scene: Box::new(project) }]
-            }
-            Err(e) => {
-                self.solve_error = Some(e);
-                Vec::new()
-            }
-        }
-    }
     /// Key `f`: the native frame/truss editor, on `member-model.json` beside the workbench's other files.
     pub fn open_member_editor(&mut self) -> Vec<Effect> {
         let path = Self::file_dir().unwrap_or_default().join(crate::gpu_viewer::EditorKind::Members.default_file()).to_string_lossy().into_owned();
@@ -507,80 +428,6 @@ impl FeaWorkbenchState {
             }
         }
     }
-    /// Keys `g` and `t`: the single native window. It holds every result computed for the current
-    /// inputs - the static solution, computed natural-frequency / buckling modes and the cached
-    /// load-release transient - so nothing needs its own window.
-    pub fn open_gpu(&mut self) -> Vec<Effect> {
-        self.open_gpu_as(None)
-    }
-    /// `open_gpu`, optionally continuing the job id of a transient that just finished.
-    fn open_gpu_as(&mut self, job: Option<u64>) -> Vec<Effect> {
-        if self.animation_job.is_some() || self.viewer_launch.is_some() {
-            return Vec::new();
-        }
-        let mut sources = Vec::new();
-        let mut selected = 0;
-        if let Some(s) = self.solved.as_deref().filter(|s| s.problem == self.problem) {
-            sources.push(crate::gpu_viewer::scene::SceneSource::from_solved(s, self.field));
-        }
-        if let Some(d) = self.dynamic.as_deref().filter(|d| d.problem() == &self.problem) {
-            if d.model().mesh.nodes.len().checked_mul(d.n_modes()).is_none_or(|n| n > 4_000_000) {
-                self.solve_error = Some("computed modes exceed the native session budget; use a coarser mesh".into());
-                return Vec::new();
-            }
-            if self.show_dynamic {
-                selected = sources.len() + self.mode.min(d.n_modes().saturating_sub(1));
-            }
-            sources.extend(crate::gpu_viewer::scene::SceneSource::from_dynamic(d));
-        }
-        if sources.is_empty() {
-            // Only the transient exists: open it directly.
-            return match self.cached_transient().cloned() {
-                Some(project) => {
-                    let id = job.unwrap_or_else(|| self.take_job_id());
-                    self.solve_error = None;
-                    self.viewer_launch = Some((id, Instant::now()));
-                    vec![Effect::OpenGpuScene { id, scene: Box::new(project) }]
-                }
-                None => {
-                    self.solve_error = Some("solve the current inputs (r), compute modes (n / b) or the transient (t) before opening the native window".into());
-                    Vec::new()
-                }
-            };
-        }
-        let source = crate::gpu_viewer::scene::ProjectSource { sources, selected, problem: self.problem.clone() };
-        let id = job.unwrap_or_else(|| self.take_job_id());
-        self.solve_error = None;
-        self.animation_progress = Some(crate::gpu_viewer::progress::GenerationProgress::stage("Preparing GPU scene"));
-        self.animation_job = Some(Job {
-            id,
-            sig: self.problem.clone(),
-            started: Instant::now(),
-            transient: false,
-        });
-        vec![Effect::BuildFeaGpuScene {
-            id,
-            source: Box::new(source),
-        }]
-    }
-
-    pub fn update_animation_progress(&mut self, id: u64, progress: crate::gpu_viewer::progress::GenerationProgress) {
-        if self.animation_job.as_ref().is_some_and(|j| j.id == id && j.sig == self.problem) {
-            self.animation_progress = Some(progress);
-        }
-    }
-    pub fn animation_status(&self) -> Option<String> {
-        if let Some((_, started)) = &self.viewer_launch { return Some(format!("Opening native GPU viewport ({:.1} s)", started.elapsed().as_secs_f64())); }
-        let job = self.animation_job.as_ref()?;
-        if job.sig != self.problem {
-            return Some(format!("Inputs changed; previous animation finishing ({:.1} s)", job.started.elapsed().as_secs_f64()));
-        }
-        Some(format!("{} ({:.1} s)", self.animation_progress.as_ref().map(|p| p.text()).unwrap_or_else(|| "Preparing animation".into()), job.started.elapsed().as_secs_f64()))
-    }
-    pub fn viewer_ready(&mut self, id: u64) {
-        if self.viewer_launch.is_some_and(|(live, _)| live == id) { self.viewer_launch = None; }
-    }
-
     /// Start natural frequencies (`Modal`) or buckling load factors (`Buckling`) of the current inputs (keys `n`, `b`).
     pub fn start_dynamic(&mut self, kind: DynKind) -> Vec<Effect> {
         if self.dyn_job.is_some() {
@@ -597,7 +444,7 @@ impl FeaWorkbenchState {
             return Vec::new();
         }
         let id = self.take_job_id();
-        self.dyn_job = Some(Job { id, sig: sig.clone(), started: Instant::now(), transient: false });
+        self.dyn_job = Some(Job { id, sig: sig.clone(), started: Instant::now() });
         self.dyn_error = None;
         vec![Effect::RunFeaDynamic { id, problem: Box::new(sig), import_text, kind, n_modes: if kind == DynKind::Modal { 6 } else { 3 } }]
     }

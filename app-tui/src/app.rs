@@ -132,10 +132,6 @@ pub enum AppEvent {
     TextFileRead { purpose: fea_workbench::FilePurpose, path: String, result: Result<String, String> },
     /// A write requested by `Effect::WriteTextFile` finished.
     TextFileWritten { path: String, result: Result<(), String> },
-    FeaAnimationFinished { id: u64, result: Box<Result<crate::gpu_viewer::scene::ViewerProject,String>> },
-    FeaAnimationProgress { id: u64, progress: crate::gpu_viewer::progress::GenerationProgress },
-    GpuViewerReady { id: u64 },
-    GpuViewerFinished { id: u64, result: Result<(), String> },
     /// The native editor window (members or solid) was closed.
     NativeEditorFinished { kind: crate::gpu_viewer::EditorKind, path: String, result: Result<(), String> },
     Quit,
@@ -149,9 +145,6 @@ pub enum AppEvent {
 /// terminal, no tokio runtime, and no filesystem/OS access.
 #[derive(Debug)]
 pub enum Effect {
-    BuildFeaGpuScene { id:u64, source:Box<crate::gpu_viewer::scene::ProjectSource> },
-    RunFeaAnimation { id:u64, problem:Box<fea_problem::Problem>, import_text:Option<String> },
-    OpenGpuScene { id: u64, scene: Box<crate::gpu_viewer::scene::ViewerProject> },
     /// Open the native frame/truss member editor on this project file (created on first save).
     /// Open the native editor window for the frame/truss members or the meshed solid model at `path`.
     OpenNativeEditor { kind: crate::gpu_viewer::EditorKind, path: String },
@@ -291,14 +284,6 @@ pub fn handle_event(state: &mut AppState, event: AppEvent) -> Vec<Effect> {
                 Ok(()) => state.notifications.push(format!("Saved {path}"), StatusTone::Success),
                 Err(e) => state.notifications.push(format!("Could not write {path}: {e}"), StatusTone::Danger),
             }
-            Vec::new()
-        }
-        AppEvent::FeaAnimationFinished {id,result} => state.fea_workbench.finish_animation(id,*result),
-        AppEvent::FeaAnimationProgress {id,progress} => { state.fea_workbench.update_animation_progress(id, progress); Vec::new() },
-        AppEvent::GpuViewerReady { id } => { state.fea_workbench.viewer_ready(id); Vec::new() },
-        AppEvent::GpuViewerFinished { id, result } => {
-            state.fea_workbench.viewer_ready(id);
-            if let Err(e) = result { state.notifications.push(e, StatusTone::Danger); }
             Vec::new()
         }
         AppEvent::NativeEditorFinished { kind, path, result } => match result {
