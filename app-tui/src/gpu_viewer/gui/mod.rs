@@ -72,6 +72,12 @@ pub struct Gui {
     floating_rect: Option<Rect>,
     hint: Option<String>,
     viewport: Option<Rect>,
+    /// What the docks leave: the viewport plus the inspector's column. The movable key and legend may be dragged
+    /// anywhere in it (beside or below the inspector's cards), not only over the model.
+    room: Option<Rect>,
+    /// The corner the unmoved key / result legend was started in this run (its pivot, so the panel hugs that corner
+    /// whatever its measured size); `None` until it is first shown, or when it was restored from a stored position.
+    legend_corner: [Option<(Corner, Pos2)>; 2],
     /// Interactive controls of the last frame by label, in points (tests click them).
     targets: Vec<(String, Rect)>,
     /// The row under the pointer that previews its effect this frame, and the one that did last frame.
@@ -129,6 +135,8 @@ impl Gui {
             floating_rect: None,
             hint: None,
             viewport: None,
+            room: None,
+            legend_corner: [None; 2],
             targets: Vec::new(),
             hover_now: None,
             hover_prev: None,
@@ -389,6 +397,7 @@ impl Gui {
         let page = input.editor.is_some_and(|e| e.has_document());
         let plan = if self.visible.properties && !page { self.inspector_plan(input, &tabs) } else { None };
         let mut free = ui.available_rect_before_wrap();
+        self.room = Some(free);
         if plan.is_some() {
             free.max.x = (free.max.x - panels::INSPECTOR_WIDTH - 36.0).max(free.min.x + 240.0);
         }
@@ -553,7 +562,7 @@ impl Gui {
         painter.rect(r, 2.0, p.accent.gamma_multiply(0.16), egui::Stroke::new(1.0, p.accent), egui::StrokeKind::Inside);
     }
 
-    /// What the colours mean, bottom right of the model: the field's name and unit over a colour bar with its values for a
+    /// What the colours mean, in the corner of the model the model covers least: the field's name and unit over a colour bar with its values for a
     /// result (click the name for the next field), or the colour key of the model's own state (body, support, load, selected).
     fn contour_legend(&mut self, ctx: &egui::Context, input: &GuiInput, p: &Palette, out: &mut Vec<Outcome>) {
         use crate::gpu_viewer::text::colormap;
@@ -582,13 +591,41 @@ impl Gui {
             let [r, g, b] = colormap(t);
             Color32::from_rgb(r, g, b)
         };
-        // Both can be dragged anywhere in the viewport (the position is kept while the window runs). The key starts under the tool
-        // pill at the right edge, the result legend at the bottom right.
+        // Both can be dragged anywhere the docks leave, the inspector's column included (the position is kept while the window
+        // runs). Unmoved, each starts in the corner of the model's viewport the model covers least: the key under the tool pill
+        // at the right edge, the result legend at the bottom right, unless the model fills that corner.
         let slot = usize::from(!geometry);
-        let default = if geometry { Pos2::new(vp.right() - 150.0, vp.top() + 150.0) } else { Pos2::new(vp.right() - 270.0, vp.bottom() - 270.0) };
-        // A stored position is a fraction of the viewport, so a resized window cannot strand the panel (`constrain_to` keeps it inside).
-        let start = input.view.panel_pos[slot].map_or(default, |f| Pos2::new(vp.left() + f[0] * vp.width(), vp.top() + f[1] * vp.height()));
-        let shown = egui::Area::new(Id::new(if geometry { "colour-key" } else { "contour-legend" })).fade_in(false).movable(true).constrain_to(vp).default_pos(start).order(Order::Middle).show(ctx, |ui| {
+        let room = self.room.unwrap_or(vp).union(vp);
+        let area = Id::new(if geometry { "colour-key" } else { "contour-legend" });
+        // egui sizes a new area at this before it is measured, and keeps the pivot it then constrains: never wider than the viewport.
+        let size = corner_slot_size(if geometry { Vec2::new(150.0, 170.0) } else { Vec2::new(260.0, 250.0) }, vp);
+        // egui keeps an area's position after its first frame: while it does, the pivot only has to stay the same.
+        let cached = if ctx.memory(|m| m.area_rect(area).is_some()) { self.legend_corner[slot] } else { None };
+        let (pivot, start) = match (cached, input.view.panel_pos[slot]) {
+            (Some((c, at)), _) => (c.align(), at),
+            // A stored position is a fraction of that room, so a resized window cannot strand the panel (`constrain_to`
+            // keeps it inside).
+            (None, Some(f)) => {
+                self.legend_corner[slot] = None;
+                (Align2::LEFT_TOP, Pos2::new(room.left() + f[0] * room.width(), room.top() + f[1] * room.height()))
+            }
+            (None, None) => {
+                let preferred = if geometry { Corner::TopRight } else { Corner::BottomRight };
+                let v = input.view;
+                let cam = crate::gpu_viewer::editor::camera::Camera { yaw: v.yaw, pitch: v.pitch, zoom: v.zoom, aspect: vp.width().max(1.0) / vp.height().max(1.0), pan: v.pan };
+                let screen: Vec<Pos2> = scene.positions.iter().map(|&q| {
+                    let (ndc, _) = cam.project(q);
+                    Pos2::new(vp.left() + (ndc[0] + 1.0) * 0.5 * vp.width(), vp.top() + (1.0 - ndc[1]) * 0.5 * vp.height())
+                }).collect();
+                let at = |i: &u32| screen.get(*i as usize).copied().unwrap_or(Pos2::ZERO);
+                let triangles = scene.triangles.chunks_exact(3).map(|t| [at(&t[0]), at(&t[1]), at(&t[2])]);
+                let (c, slot_rect) = emptiest_corner(vp, size, triangles, preferred);
+                let at = c.align().pos_in_rect(&slot_rect);
+                self.legend_corner[slot] = Some((c, at));
+                (c.align(), at)
+            }
+        };
+        let shown = egui::Area::new(area).fade_in(false).movable(true).constrain_to(room).pivot(pivot).default_pos(start).default_size(size).order(Order::Middle).show(ctx, |ui| {
             panels::popup_frame(p).fill(p.panel).inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| {
                 // Text that can be selected would take the drag that moves the panel.
                 ui.style_mut().interaction.selectable_labels = false;
@@ -657,10 +694,10 @@ impl Gui {
                 }
             });
         });
-        // Where the panel was left is kept, relative to the viewport.
+        // Where the panel was left is kept, relative to the room it moves in.
         if shown.response.drag_stopped() {
             let min = shown.response.rect.min;
-            let frac = [(min.x - vp.left()) / vp.width().max(1.0), (min.y - vp.top()) / vp.height().max(1.0)];
+            let frac = [(min.x - room.left()) / room.width().max(1.0), (min.y - room.top()) / room.height().max(1.0)];
             out.push(Outcome::Action(UiAction::Command(Command::SetPanelPos(slot, frac))));
         }
     }
@@ -1000,6 +1037,82 @@ impl Gui {
     }
 }
 
+/// A corner of the model's viewport a movable panel can start in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Corner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl Corner {
+    fn align(self) -> Align2 {
+        match self {
+            Corner::TopLeft => Align2::LEFT_TOP,
+            Corner::TopRight => Align2::RIGHT_TOP,
+            Corner::BottomLeft => Align2::LEFT_BOTTOM,
+            Corner::BottomRight => Align2::RIGHT_BOTTOM,
+        }
+    }
+}
+
+/// A panel slot of about `size` that fits `vp` with its margins (a narrow viewport keeps the panel's pivot corner inside).
+fn corner_slot_size(size: Vec2, vp: Rect) -> Vec2 {
+    size.min(vp.size() - Vec2::splat(2.0 * CORNER_SIDE)).max(Vec2::ZERO)
+}
+
+/// Gap between a corner panel and the viewport's sides.
+const CORNER_SIDE: f32 = 12.0;
+
+/// Where a panel of about `size` starts when nobody has moved it: the corner slot of `vp` the projected model `triangles`
+/// cover least, measured on a grid of samples in each slot (ties keep `preferred`, then the order below). The top slots sit
+/// under the tool pill.
+fn emptiest_corner(vp: Rect, size: Vec2, triangles: impl Iterator<Item = [Pos2; 3]>, preferred: Corner) -> (Corner, Rect) {
+    const GRID: usize = 12;
+    const SIDE: f32 = CORNER_SIDE;
+    const UNDER_PILL: f32 = 150.0;
+    let size = corner_slot_size(size, vp);
+    let (left, right) = (vp.left() + SIDE, (vp.right() - size.x - SIDE).max(vp.left() + SIDE));
+    let (top, bottom) = ((vp.top() + UNDER_PILL).min(vp.bottom() - size.y).max(vp.top()), (vp.bottom() - size.y - SIDE).max(vp.top()));
+    let at = |c: Corner| match c {
+        Corner::TopLeft => Pos2::new(left, top),
+        Corner::TopRight => Pos2::new(right, top),
+        Corner::BottomLeft => Pos2::new(left, bottom),
+        Corner::BottomRight => Pos2::new(right, bottom),
+    };
+    let mut order = vec![preferred];
+    order.extend([Corner::BottomRight, Corner::TopRight, Corner::BottomLeft, Corner::TopLeft].into_iter().filter(|&c| c != preferred));
+    let slots: Vec<Rect> = order.iter().map(|&c| Rect::from_min_size(at(c), size)).collect();
+    let samples: Vec<Vec<Pos2>> = slots
+        .iter()
+        .map(|r| (0..GRID * GRID).map(|k| r.min + Vec2::new((k % GRID) as f32 + 0.5, (k / GRID) as f32 + 0.5) * (r.size() / GRID as f32)).collect())
+        .collect();
+    let mut hit = vec![vec![false; GRID * GRID]; slots.len()];
+    let inside = |q: Pos2, [a, b, c]: [Pos2; 3]| {
+        let side = |p: Pos2, u: Pos2, v: Pos2| (v - u).x * (p - u).y - (v - u).y * (p - u).x;
+        let (d1, d2, d3) = (side(q, a, b), side(q, b, c), side(q, c, a));
+        !((d1 < 0.0 || d2 < 0.0 || d3 < 0.0) && (d1 > 0.0 || d2 > 0.0 || d3 > 0.0))
+    };
+    for t in triangles {
+        let bounds = Rect::from_points(&t);
+        for (k, r) in slots.iter().enumerate() {
+            if !r.intersects(bounds) {
+                continue;
+            }
+            for (j, &q) in samples[k].iter().enumerate() {
+                if !hit[k][j] && bounds.contains(q) && inside(q, t) {
+                    hit[k][j] = true;
+                }
+            }
+        }
+    }
+    let covered: Vec<usize> = hit.iter().map(|h| h.iter().filter(|&&x| x).count()).collect();
+    // The first slot with the fewest points (`min_by_key` keeps the first of equals).
+    let best = (0..slots.len()).min_by_key(|&k| covered[k]).unwrap_or(0);
+    (order[best], slots[best])
+}
+
 /// `Color32` with its alpha replaced.
 pub(crate) fn with_alpha(c: Color32, a: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
@@ -1007,11 +1120,72 @@ pub(crate) fn with_alpha(c: Color32, a: u8) -> Color32 {
 
 #[cfg(test)]
 impl Gui {
+    /// What the docks left last frame (points): the viewport plus the inspector's column.
+    pub(crate) fn room(&self) -> Option<Rect> {
+        self.room
+    }
+
     /// Select the ribbon tab called `title` (tests and snapshots).
     pub(crate) fn select_tab_named(&mut self, input: &GuiInput, title: &str) {
         let mctx = MenuContext { view: input.view, scene: input.scene(), results: if input.editor.is_some() { 1 } else { input.scenes.len() }, editor: input.editor, visible: self.visible, adaptive: self.adapt.enabled };
         if let Some(i) = menus::ribbon(&mctx).iter().position(|t| t.title == title) {
             self.tab = i;
         }
+    }
+}
+
+#[cfg(test)]
+mod corner_tests {
+    use super::*;
+
+    fn vp() -> Rect {
+        Rect::from_min_size(Pos2::new(100.0, 50.0), Vec2::new(1000.0, 700.0))
+    }
+
+    /// An axis-aligned rectangle as two triangles.
+    fn quad(a: Pos2, b: Pos2) -> Vec<[Pos2; 3]> {
+        let (c, d) = (Pos2::new(b.x, a.y), Pos2::new(a.x, b.y));
+        vec![[a, c, b], [a, b, d]]
+    }
+
+    #[test]
+    fn a_partly_covered_corner_loses_to_a_less_covered_one() {
+        let size = Vec2::new(260.0, 250.0);
+        // The bottom right slot is half covered, the top right a sliver: the top right wins although it is not preferred.
+        let mut model = quad(Pos2::new(700.0, 610.0), Pos2::new(1095.0, 745.0));
+        model.extend(quad(Pos2::new(1050.0, 150.0), Pos2::new(1095.0, 745.0)));
+        model.extend(quad(Pos2::new(105.0, 200.0), Pos2::new(600.0, 745.0)));
+        let (c, _) = emptiest_corner(vp(), size, model.into_iter(), Corner::BottomRight);
+        assert_eq!(c, Corner::TopRight);
+    }
+
+    #[test]
+    fn an_empty_model_or_a_clear_preferred_corner_keeps_the_preferred_corner() {
+        let size = Vec2::new(260.0, 250.0);
+        let (c, at) = emptiest_corner(vp(), size, std::iter::empty(), Corner::BottomRight);
+        assert_eq!((c, at.max), (Corner::BottomRight, Pos2::new(1100.0 - 12.0, 750.0 - 12.0)));
+        assert_eq!(c.align().pos_in_rect(&at), at.max, "the panel hugs the corner by its pivot");
+        // A model in the middle leaves every corner clear: still the preferred one.
+        let middle = quad(Pos2::new(550.0, 350.0), Pos2::new(650.0, 450.0)).into_iter();
+        assert_eq!(emptiest_corner(vp(), size, middle, Corner::TopRight), (Corner::TopRight, Rect::from_min_size(Pos2::new(828.0, 200.0), size)));
+    }
+
+    #[test]
+    fn a_model_filling_the_preferred_corner_moves_the_panel_to_the_emptiest_one() {
+        let size = Vec2::new(260.0, 250.0);
+        // A lug drawn along the bottom edge, its head at the right: both bottom corners and the top right are covered,
+        // the top left not at all. Two big triangles each, no vertex inside any slot: coverage is by area, not by nodes.
+        let mut model = quad(Pos2::new(105.0, 600.0), Pos2::new(1095.0, 700.0));
+        model.extend(quad(Pos2::new(950.0, 250.0), Pos2::new(1050.0, 700.0)));
+        let (c, at) = emptiest_corner(vp(), size, model.into_iter(), Corner::BottomRight);
+        assert_eq!((c, at.min), (Corner::TopLeft, Pos2::new(112.0, 200.0)), "the top-left slot under the tool pill");
+    }
+
+    #[test]
+    fn a_viewport_smaller_than_the_panel_keeps_the_slot_inside_its_top_left() {
+        let small = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(200.0, 180.0));
+        let (_, at) = emptiest_corner(small, Vec2::new(260.0, 250.0), std::iter::empty(), Corner::BottomRight);
+        assert!(small.contains_rect(at), "{at:?}");
+        assert_eq!(at.max, Pos2::new(188.0, 168.0));
     }
 }

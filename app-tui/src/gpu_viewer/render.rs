@@ -1273,6 +1273,9 @@ mod snapshot_tests {
         let raw = || egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w as f32, h as f32))), ..Default::default() };
         let view = texture.create_view(&Default::default());
         let ctx = gui.ctx().clone();
+        // The chrome sees the camera the scene is drawn with (the window's chrome and renderer share one `ViewState`).
+        let synced = crate::gpu_viewer::controller::ViewState { yaw: camera[0], pitch: camera[1], zoom: 1.5, pan: [0.0, 0.0], ..input.view.clone() };
+        let input = &GuiInput { view: &synced, scenes: input.scenes, selected: input.selected, editor: input.editor, error: input.error, box_drag: input.box_drag, overlay: input.overlay };
         // The first passes only measure (a scroll area and a floating card take the size of what they held the
         // pass before); their texture uploads still have to reach the renderer.
         for _ in 0..3 {

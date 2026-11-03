@@ -1650,8 +1650,8 @@ mod tests {
         }
     }
 
-    /// The colour key can be dragged anywhere in the viewport, each swatch is a colour picker whose choice is kept, and
-    /// the glyphs and the model use it.
+    /// The colour key can be dragged anywhere the docks leave (over the model or beside the inspector's cards), each swatch
+    /// is a colour picker whose choice is kept, and the glyphs and the model use it.
     #[test]
     fn the_colour_key_moves_and_its_colours_change_and_persist() {
         let path = std::env::temp_dir().join(format!("window-key-{}", std::process::id())).join("display.json");
@@ -1683,11 +1683,29 @@ mod tests {
         let vp = v.gui.viewport_px(v.window_size());
         let ppp = v.gui.ctx().pixels_per_point();
         assert!(after.min.x * ppp >= vp.x as f32 - 1.0 && after.max.x * ppp <= (vp.x + vp.w) as f32 + 1.0, "inside the viewport");
-        // Where it was left is kept as a fraction of the viewport, and a new session starts it there.
+        // The inspector's column does not fence it in: it can be dragged past the viewport's right edge, beside the cards.
+        let room = v.gui.room().expect("the room is laid out");
+        let vp_right = (vp.x + vp.w) as f32 / ppp;
+        assert!(room.right() > vp_right + 200.0, "the inspector is shown: room {room:?}, viewport right {vp_right}");
+        let grab = after.min + egui::vec2(24.0, 14.0);
+        let to = egui::pos2(vp_right + 150.0, grab.y);
+        v.test_events.push(egui::Event::PointerMoved(grab));
+        frame(&mut v);
+        v.test_events.push(egui::Event::PointerButton { pos: grab, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        frame(&mut v);
+        for step in 1..=6 {
+            v.test_events.push(egui::Event::PointerMoved(grab + (to - grab) * (step as f32 / 6.0)));
+            frame(&mut v);
+        }
+        v.test_events.push(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+        frame(&mut v);
+        frame(&mut v);
+        let after = area(&v);
+        assert!((after.min.x - (to.x - 24.0)).abs() < 3.0 && after.max.x > vp_right + 100.0, "dragged past the viewport to {after:?}");
+        assert!(room.contains_rect(after), "still inside what the docks leave: {after:?} in {room:?}");
+        // Where it was left is kept as a fraction of that room, and a new session starts it there.
         let frac = v.view.panel_pos[0].expect("the drag's end is recorded");
-        let vpp = v.gui.viewport_px(v.window_size());
-        let ppp = v.gui.ctx().pixels_per_point();
-        assert!((frac[0] * vpp.w as f32 / ppp + vpp.x as f32 / ppp - after.min.x).abs() < 3.0, "fraction {frac:?} matches {after:?}");
+        assert!((room.left() + frac[0] * room.width() - after.min.x).abs() < 3.0 && (room.top() + frac[1] * room.height() - after.min.y).abs() < 3.0, "fraction {frac:?} matches {after:?}");
         assert_eq!(DisplaySettings::load_from(&path).panel_pos[0], Some(frac));
         let mut again = member_viewer();
         again.attach_display_store(Some(path.clone()));
