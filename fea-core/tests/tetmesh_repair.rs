@@ -284,11 +284,11 @@ fn bridges(m: &Mesh, fd: &dyn Fn(V3) -> Vec<FaceHit>, h: f64) -> (usize, f64) {
 
 /// The plate-boss rim is a concave circle. The repair's crease stage puts boundary vertices on it, so few boundary facets bridge
 /// the rim; without the repair the snapped mesh has many (the failure this guards against).
-/// Slow (two meshes of about 170 000 cells, about 3 minutes in release): run with
+/// Slow (two meshes of about 170 000 cells, about a minute in release): run with
 /// `cargo test -p fea-core --release --test tetmesh_repair -- --ignored no_boundary_facet_bridges`. The fast check of the same
 /// stage is `fea-problem/tests/facet_naming.rs`.
 #[test]
-#[ignore = "slow: about 3 minutes in release"]
+#[ignore = "slow: about a minute in release"]
 fn no_boundary_facet_bridges_the_concave_plate_boss_rim() {
     let size = |_: V3| 10.0;
     let face = |p: V3| boss_face_hits(p).into_iter().min_by(|a, b| a.dist.abs().total_cmp(&b.dist.abs())).unwrap().face;
@@ -300,6 +300,6 @@ fn no_boundary_facet_bridges_the_concave_plate_boss_rim() {
     eprintln!("bridges without repair {before:?}, with repair {after:?}, report {report:?}");
     assert!(before.0 > 0, "the fixture no longer has a facet across the rim");
     // Phase 173 residual: bridges whose disk holds a boundary vertex sunk inside the solid beside the rim (K lies 0.04 to 0.36
-    // of the size in front of that facet) are refused, about 9 % of the area before (docs/issue-46-phase-173.md).
+    // of the size in front of that facet) are refused, about 5 % of the area before (docs/issue-46-phase-173.md).
     assert!(after.1 <= 0.15 * before.1, "{} facets ({:.5}) still bridge the rim, against {:.5} without repair", after.0, after.1, before.1);
 }

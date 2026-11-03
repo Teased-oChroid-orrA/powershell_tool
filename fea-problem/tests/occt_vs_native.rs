@@ -616,7 +616,8 @@ fn flat_face_facet_areas() {
                 }
                 worst = worst.max((area / surface - 1.0).abs());
                 fins += steep;
-                if steep > 0.0 {
+                // a face with steep facets, or named far from its surface area (no facet at all: -100 %)
+                if steep > 0.0 || (area / surface - 1.0).abs() > 0.05 {
                     eprintln!("  {:<34} {which:<6} face{f:<4} surface {surface:>11.5} facets {area:>11.5} ({:+.3} %), over 45 deg {steep:.5} ({:.3} %)", c.name, 100.0 * (area / surface - 1.0), 100.0 * steep / surface);
                 }
             }

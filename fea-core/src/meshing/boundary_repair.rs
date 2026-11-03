@@ -2126,6 +2126,22 @@ impl<'a> Work<'a> {
         self.rep.creases += 1;
         true
     }
+    /// [`Self::recover_creases`], undone whole if the mesh ends with more elements under the gate than it started with (each
+    /// split is judged over its own region only; this bounds the whole mesh).
+    fn recover_creases_kept(&mut self, gate: f64) {
+        let under = |w: &Self| (0..w.tets.len()).filter(|&t| w.alive[t] && w.sj(w.tets[t]) < gate).count();
+        let (before, kept) = (under(self), self.snapshot());
+        let report = self.rep.clone();
+        self.recover_creases();
+        let after = under(self);
+        if after > before {
+            self.restore(kept);
+            self.rep = report;
+        }
+        if self.trace {
+            eprintln!("crease splits: {} ({before} -> {after} elements under the gate{})", self.rep.creases, if after > before { ", undone" } else { "" });
+        }
+    }
     /// Split every crease candidate that passes [`Self::split_crease`], a few sweeps (a bridge facet has two candidate edges;
     /// splitting one leaves a smaller bridge across the other).
     fn recover_creases(&mut self) {
@@ -2587,14 +2603,13 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
         }
         eprintln!("boundary vertices by |sdf|/h: <0.02 {} <0.1 {} <0.25 {} <0.5 {} <1 {} >=1 {}; off-surface (>=0.1h) on a bad element: {bad_off}", hist[0], hist[1], hist[2], hist[3], hist[4], hist[5]);
     }
-    // Concave creases first, on a mesh with model faces: the quality rounds then work on the cells the splits make.
-    if w.ctx.face_dists.is_some() && w.ctx.triangle_face.is_some() && std::env::var_os("TEMP_NO_CREASE").is_none() {
-        w.recover_creases();
-        if w.trace {
-            eprintln!("crease splits: {}", w.rep.creases);
-        }
+    let creases = w.ctx.face_dists.is_some() && w.ctx.triangle_face.is_some();
+    let untouched = !all.iter().any(|&t| w.sj(w.tets[t]) < opts.target);
+    if creases && untouched {
+        // nothing for the rounds to do: the crease stage is the only change
+        w.recover_creases_kept(gate);
     }
-    if w.rep.creases == 0 && !all.iter().any(|&t| w.sj(w.tets[t]) < opts.target) {
+    if untouched && w.rep.creases == 0 {
         // nothing to do: hand the mesh back untouched with the identity map
         let mut rep = w.rep.clone();
         rep.tets_after = n0;
@@ -2730,6 +2745,11 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
         if !any {
             break;
         }
+    }
+    // Concave creases last, on the final mesh: the rounds reach their count from the snapped mesh, as without the stage. Run
+    // before them, the splits changed where the rounds ended (screw.step native 46 elements under the gate, 47 with them).
+    if creases && !untouched {
+        w.recover_creases_kept(gate);
     }
     if std::env::var_os("REPAIR_TRACE").is_some() {
         let mut shown = 0;
