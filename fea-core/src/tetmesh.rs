@@ -117,7 +117,7 @@ const SNAP_PASSES: usize = 6;
 /// plane intersection at a tangent edge); the plain projection is used instead.
 const OFF_SURFACE: f64 = 0.05;
 /// A boundary vertex counts as lying on a model face when within this fraction of the boundary size of it.
-const FACE_TOL: f64 = 0.01;
+pub(crate) const FACE_TOL: f64 = 0.01;
 /// Reconnect-and-snap-again rounds after the first snap.
 const RECONNECT_ROUNDS: usize = 4;
 
@@ -847,7 +847,7 @@ fn curve_boundary_edges(mesh: &mut Mesh, s: &Solid, boundary: &[([usize; 3], usi
     }
 }
 
-fn reentrant_edge(fd: &dyn Fn(V3) -> Vec<FaceHit>, sdf: &dyn Fn(V3) -> f64, y: V3, faces: [usize; 2], eps: f64) -> bool {
+pub(crate) fn reentrant_edge(fd: &dyn Fn(V3) -> Vec<FaceHit>, sdf: &dyn Fn(V3) -> f64, y: V3, faces: [usize; 2], eps: f64) -> bool {
     if !eps.is_finite() || eps <= 0.0 { return false; }
     let hits = fd(y);
     let [Some(a), Some(b)] = faces.map(|f| hits.iter().find(|h| h.face == f)) else { return false };
