@@ -171,7 +171,7 @@ fn the_mesh_test_row_applies_a_recommendation_for_these_inputs_and_starts_a_test
     assert!(s.mesh_advice_text().starts_with("Not run"));
     // A recommendation made for the inputs shown is shown in the row, and a click applies it (one undo step).
     let sig = mesh_test::signature(&s.model().input().unwrap());
-    s.mesh_advice = Some((sig, MeshAdvice { rows: vec![], recommended: 54, converged: true, total_ms: 1.0 }));
+    s.mesh_advice = Some((sig, MeshAdvice { rows: vec![], recommended: 54, converged: true, collapse_reference: None, total_ms: 1.0 }));
     assert!(s.mesh_advice_text().contains("Recommended 54"), "{}", s.mesh_advice_text());
     act(&mut s, LugAct::Row(FieldRow::MeshAdvice));
     assert_eq!(s.model().elements_around, Some(54));

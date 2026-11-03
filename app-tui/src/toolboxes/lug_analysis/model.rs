@@ -518,16 +518,16 @@ pub fn field_hint(row: FieldRow) -> &'static str {
         FieldRow::ToggleMeshDensity => "Preset for the elements around the bore at the far spacing (typing a number below overrides it). The loaded sector of a loose pin is refined on top of this.",
         FieldRow::MeshSection => "Solver, plasticity, nonlinearity, pin bending and mesh settings; the defaults suit most lugs. Enter, Space or a click opens and closes the section.",
         FieldRow::ToggleAutoRefine => "On: finer angular spacing around the loaded sector when a loose pin makes a narrow contact patch (Hertz width). Off: the uniform spacing only.",
-        FieldRow::MeshAdvice => "Enter runs a brief test: the elastic case at several mesh sizes (frictionless, in parallel), timed and compared, and recommends the coarsest size whose hoop stress, pressure and pin travel have converged. Enter again applies the recommendation.",
+        FieldRow::MeshAdvice => "Enter runs a brief test: the elastic case (and, with the plastic limit load on, the collapse) at several mesh sizes (frictionless, in parallel), timed and compared, and recommends the coarsest size whose hoop stress, pressure, pin travel and collapse have converged. An oblique collapse falls slowly with refinement, so it is compared with its extrapolated value. Enter again applies the recommendation.",
         FieldRow::ToggleSolver => "Kernel: the general finite-element kernel (fea-core) runs every analysis. Legacy: the older condensed / finite-strain solvers of lug-solver. Compare: both, the legacy result shown beside the kernel's. A case the kernel cannot run falls back to the legacy solver with a note.",
         FieldRow::ToggleBushing => "A bushing pressed into the hole: the pin then bears on the bushing, whose outer surface meets the hole in a contact with the interference fit and friction (the fit pressure is solved and can be lost). Turning it on sets the pin just under the bushing's inner diameter.",
         FieldRow::OpenBushingMaterialPicker => "Enter opens the material browser for the bushing (elastic in every analysis).",
         FieldRow::ToggleFlowRule => "Flow stress of the perfectly plastic collapse. (Ftu + Fty)/2 is the old rule (15 % low on average on NACA TN 1503, kernel solver). Ftu is 7 % low on average, from 13 % low to 2 % high. Ftu (1 + elongation) is the true stress at large strain: 5 % mean error but up to 14 % high for brittle alloys (75S), so it is not conservative. The note under Results gives the figures of the solver in use.",
         FieldRow::TogglePinBody => "Rigid: the pin is an analytic circle. Elastic: the pin is meshed as a disc, ovalises under the bearing load and spreads it (lowers the edge pressure peak of a loose pin). The collapse load does not depend on it.",
-        FieldRow::ToggleFiniteStrain => "Flow stress: a perfectly plastic collapse at the chosen flow stress. Finite strain: a true stress-strain curve (from Fty, Ftu and the elongation), large-deformation kinematics and a failure strain taken from the material library (validated for 2014, 2024 and 7075 aluminium against 20 NACA bearing points, within -9 to +3 %). Axial loads without a bushing only; a few seconds.",
+        FieldRow::ToggleFiniteStrain => "Flow stress: a perfectly plastic collapse at the chosen flow stress. Finite strain: a true stress-strain curve (from Fty, Ftu and the elongation), large-deformation kinematics and a failure strain taken from the material library (validated for 2014, 2024 and 7075 aluminium against 20 NACA bearing points, within -9 to +3 %). The kernel solver runs it for every load direction and with a bushing (the calibration itself is on axial, unbushed lugs); the legacy solver only for axial loads without a bushing. A few seconds.",
         FieldRow::ToggleSecondOrder => "Add the geometric stiffness of the stress state (P-delta): tension in the lug stiffens it, compression softens it. Matters for slender lugs and oblique loads; costs a rebuild of the model.",
         FieldRow::TogglePinBending => "Double shear: the pin bends between the clevis ears and the lug, so the lug faces carry more bearing load than the middle. Gives the slice distribution, the peaking factor and the pin bending and shear stresses.",
-        FieldRow::TogglePlastic => "Also find the collapse load: plane-strain elastic-perfectly-plastic at (Ftu + Fty)/2 (capped by sqrt(3) Fsu), the pin driven until the load peaks. Adds the Ultimate margin; independent of the applied load.",
+        FieldRow::TogglePlastic => "Also find the collapse load: plane-strain elastic-perfectly-plastic at the Flow Stress Rule's stress (Ftu by default), the pin driven until the load peaks. Adds the Ultimate margin; independent of the applied load.",
     }
 }
 
@@ -1079,8 +1079,15 @@ fn collapse(cached: &mut CachedModel, input: &LugInput, kernel: bool) -> Collaps
             }
         }
     }
+    if limit.is_some() && !input.case.is_axial() && input.mesh.elements_around < OBLIQUE_COLLAPSE_AROUND {
+        notes.push(format!("The collapse of an oblique load falls with mesh refinement ({} around the bore here; the default lug at 45 deg drops 5 % from 72 to 180 around and is still falling), so the Ultimate margin may be optimistic. The Mesh Size Test includes the collapse and extrapolates it.", input.mesh.elements_around));
+    }
     CollapseOut { limit, finite, reused, notes }
 }
+
+/// Below this many elements around the bore the flow-rule collapse of an oblique load is flagged as mesh-limited
+/// (`mesh_test`'s evidence: 45 deg, 5865 / 5726 / 5639 / 5579 lbf at 72 / 80 / 120 / 180 around).
+const OBLIQUE_COLLAPSE_AROUND: usize = 120;
 
 /// Run one analysis, reusing `cache` when the model it holds still matches. Returns the result and the
 /// model to keep for next time.
@@ -1641,6 +1648,10 @@ mod tests {
         let (r, _) = run(&m.input().unwrap(), None);
         let r = r.unwrap();
         assert!(r.finite.is_some() && r.limit.is_none() && r.solver == SolverChoice::Kernel, "{:?}", r.notes);
+        assert!(!r.notes.iter().any(|n| n.contains("legacy solver is available")), "{:?}", r.notes);
+        // The hint says so too: only the legacy solver is restricted to axial, unbushed lugs.
+        let hint = field_hint(FieldRow::ToggleFiniteStrain);
+        assert!(!hint.contains("without a bushing only") && hint.contains("every load direction") && hint.contains("legacy solver only"), "{hint}");
         m.commit_number(NumberTarget::LoadAngle, 0.0);
         m.toggle_bushing();
         let (r, _) = run(&m.input().unwrap(), None);
@@ -1686,6 +1697,7 @@ mod tests {
         let mut ui = LugUiModel::default();
         ui.mesh_open = true; // the analysis switches sit in the Advanced section
         assert_eq!(ui.flow_rule, FlowRule::Ultimate, "the validated, never-high rule is the default");
+        assert!(field_hint(FieldRow::TogglePlastic).contains("Ftu by default"), "the hint names the default rule");
         let has = |m: &LugUiModel, r: FieldRow| field_rows(m).contains(&r);
         assert!(has(&ui, FieldRow::ToggleFlowRule) && !has(&ui, FieldRow::Number(NumberTarget::Elongation)));
         ui.flow_rule = FlowRule::TrueUltimate;
