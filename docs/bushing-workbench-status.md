@@ -6,6 +6,11 @@ repository, along with `app-egui/` — `app-tui/`'s own Bushing Workbench
 (`app-tui/src/toolboxes/bushing/`, see `app-tui/AGENTS.md`) is the current,
 actively-developed implementation. Kept only as a historical record.
 
+**Correction (2026-11-03):** The `materials.rs` and `lame.rs` entries below
+describe their location when this work was done. Both now live in
+`mechanics-core/src/`; `bushing-solver` imports them directly and does not
+re-export them. See `docs/issue-11-phase-1.md` for the move.
+
 ---
 
 A new Toolbench tool (`app/src/bushing_workbench.rs`, backed by the new
