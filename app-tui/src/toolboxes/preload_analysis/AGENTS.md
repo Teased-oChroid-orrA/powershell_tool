@@ -22,7 +22,7 @@ Does not own: any preload mechanics (`fastened-joint-solver/AGENTS.md`).
 | Add/change a Preload Analysis editable field | `src/toolboxes/preload_analysis/model.rs` (`NumberTarget`/`field_rows`) - member-stack fields are indexed (`NumberTarget::MemberThickness(usize)` etc.), added/removed via `ToggleAddMember`/`ToggleRemoveMember` up to `MAX_MEMBERS` |
 
 ## Contracts
-- The FE member-compliance cross-check is a read-only second opinion in `Member Stiffness: Pressure Cone` mode (default). In `Finite Element` mode (Advanced section) the solver is fed the cone half angle whose compliance equals the FE one (`FeResult::equivalent_angle_deg`, bisected to 1e-6 and tested to reproduce the FE `C_m`): one solver path, no second solve, no solver change. `PreloadModel::fe_angle_deg` is set only by `PreloadSession::sync_fe_angle` (window) for exactly the current joint (cleared while pending/failed/stale, falling back to the user's cone angle, labelled in Inputs and Results). `FeInput` deliberately excludes the solver angle, so applying it never re-triggers the FE job. `PreloadSession::start_fe` starts the worker 400 ms (`FE_WAIT`) after the joint stops changing (the first at once); `current(&input)` returns a result only for exactly the inputs shown, so a stale result is never displayed as current. Members are assumed Poisson's ratio 0.3 (`fe_check::MEMBER_NU`); the report export includes the cross-check when it is current.
+- The FE member-compliance cross-check is a read-only second opinion in `Member Stiffness: Pressure Cone` mode (default). In `Finite Element` mode (Advanced section) the solver is fed the cone half angle whose compliance equals the FE one (`FeResult::equivalent_angle_deg`, bisected to 1e-6 and tested to reproduce the FE `C_m`): one solver path, no second solve, no solver change. `PreloadModel::fe_angle_deg` is set only by `PreloadSession::sync_fe_angle` (window) for exactly the current joint (cleared while pending/failed/stale, falling back to the user's cone angle, labelled in Inputs and Results). `FeInput` deliberately excludes the solver angle, so applying it never re-triggers the FE job. `PreloadSession::start_fe` starts the worker 400 ms (`FE_WAIT`) after the joint stops changing (the first at once); `current(&input)` returns a result only for exactly the inputs shown, so a stale result is never displayed as current. Each member has its own Poisson's ratio; old case files default it to 0.3. The report export includes the cross-check when it is current.
 - `model.rs` only bridges `solve::compute`; member-stack fields are indexed (`NumberTarget::MemberThickness(usize)` etc.), added/removed up to `MAX_MEMBERS`.
 - `Tightening From` (Nut/Bolt Head) must reach `JointInputs.tightening_from`; it was once a dead toggle.
 
@@ -40,7 +40,7 @@ Crate-internal. `model.rs`: `PreloadModel`, `Mode`, `FieldRow`, `NumberTarget`, 
 ## Design Rationale
 - Bridge only: the whole engine is `fastened-joint-solver`, which has no UI dependency.
 - Catalog selection fills ordinary editable `Number` rows (and reports "Custom" once edited away), so the catalog never hides an overridable value.
-- Member stack is a variable-length list (1-4 members) with its own add/remove actions, so `field_rows` takes the model.
+- Member stack is a variable-length list (1-6 members) with its own add/remove actions, so `field_rows` takes the model.
 
 ## Patterns
 ### Adding an editable field

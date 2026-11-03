@@ -291,8 +291,8 @@ impl PreloadModel {
             .iter()
             .take(MAX_MEMBERS)
             .map(|l| match l.role {
-                LayerRole::Washer => MemberUi { name: l.role.name(), thickness: if l.thickness > 0.0 { l.thickness } else { w_t }, e: l.material.e_psi, hole_diameter: w_id, outer_diameter: w_od },
-                _ => MemberUi { name: l.role.name(), thickness: l.thickness, e: l.material.e_psi, hole_diameter: hole, outer_diameter: 0.0 },
+                LayerRole::Washer => MemberUi { name: l.role.name(), thickness: if l.thickness > 0.0 { l.thickness } else { w_t }, e: l.material.e_psi, hole_diameter: w_id, outer_diameter: w_od, ..MemberUi::default() },
+                _ => MemberUi { name: l.role.name(), thickness: l.thickness, e: l.material.e_psi, hole_diameter: hole, ..MemberUi::default() },
             })
             .collect();
 

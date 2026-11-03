@@ -101,10 +101,12 @@ pub fn label_bearing_model(m: BearingPressureModel) -> &'static str {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MemberUi {
     /// Display role (`Plate`, `Washer`, `Shim`, ...) - a label for the stack
-    /// diagram only; the solver sees thickness/modulus/hole/outer diameter.
+    /// diagram only; the solver sees thickness/modulus/hole/outer diameter,
+    /// while the member FE also sees Poisson's ratio.
     pub name: &'static str,
     pub thickness: f64,
     pub e: f64,
+    pub nu: f64,
     pub hole_diameter: f64,
     /// `0.0` means "unbounded" (no outer-geometry truncation) - same
     /// zero-sentinel convention `BushingModel::bore_capability_min_width`
@@ -115,7 +117,7 @@ pub struct MemberUi {
 impl Default for MemberUi {
     /// A 0.25 in aluminium plate (in, psi like every input), its hole the default AN6 clearance hole.
     fn default() -> Self {
-        Self { name: "Plate", thickness: 0.25, e: 10_300_000.0, hole_diameter: 0.406, outer_diameter: 0.0 }
+        Self { name: "Plate", thickness: 0.25, e: 10_300_000.0, nu: 0.3, hole_diameter: 0.406, outer_diameter: 0.0 }
     }
 }
 
@@ -151,6 +153,7 @@ pub enum NumberTarget {
     UltimateStrength,
     MemberThickness(usize),
     MemberModulus(usize),
+    MemberPoissonRatio(usize),
     MemberHoleDiameter(usize),
     MemberOuterDiameter(usize),
     MuThreadTolPct,
@@ -202,6 +205,7 @@ impl NumberTarget {
             NumberTarget::UltimateStrength => "Ultimate Strength".to_string(),
             NumberTarget::MemberThickness(i) => format!("Member {} Thickness", i + 1),
             NumberTarget::MemberModulus(i) => format!("Member {} Modulus (E)", i + 1),
+            NumberTarget::MemberPoissonRatio(i) => format!("Member {} Poisson's Ratio", i + 1),
             NumberTarget::MemberHoleDiameter(i) => format!("Member {} Hole Diameter", i + 1),
             NumberTarget::MemberOuterDiameter(i) => format!("Member {} Outer Diameter (0=unbounded)", i + 1),
             NumberTarget::MuThreadTolPct => "Thread Friction Tolerance".to_string(),
@@ -234,7 +238,7 @@ impl NumberTarget {
     /// type-enforced either).
     pub fn format_value(self, value: f64) -> String {
         match self {
-            NumberTarget::MuThread | NumberTarget::MuBearing | NumberTarget::FastenerNu | NumberTarget::FrictionInterfaceMu | NumberTarget::NutPoissonRatio => format!("{value:.3}"),
+            NumberTarget::MuThread | NumberTarget::MuBearing | NumberTarget::FastenerNu | NumberTarget::MemberPoissonRatio(_) | NumberTarget::FrictionInterfaceMu | NumberTarget::NutPoissonRatio => format!("{value:.3}"),
             NumberTarget::ThreadStarts | NumberTarget::EngagedThreads => format!("{value:.0}"),
             _ if self.is_angle() => format!("{value:.2} deg"),
             NumberTarget::AppliedTorque | NumberTarget::PrevailingTorque => format!("{value:.2} in-lbf"),
@@ -348,6 +352,7 @@ pub fn field_hint(row: FieldRow) -> &'static str {
         FieldRow::Number(NumberTarget::UltimateStrength) => "Material ultimate strength - drives the ultimate margin of safety on every stress section.",
         FieldRow::Number(NumberTarget::MemberThickness(_)) => "This member's thickness along the clamped stack.",
         FieldRow::Number(NumberTarget::MemberModulus(_)) => "This member's elastic modulus.",
+        FieldRow::Number(NumberTarget::MemberPoissonRatio(_)) => "This member's Poisson's ratio for the axisymmetric FE check; must be greater than -1 and less than 0.5.",
         FieldRow::Number(NumberTarget::MemberHoleDiameter(_)) => "This member's clearance-hole diameter.",
         FieldRow::Number(NumberTarget::MemberOuterDiameter(_)) => "This member's own available outer geometry - truncates the pressure cone if narrower than its ideal growth; 0 means unbounded.",
         FieldRow::ToggleAddMember => "Append another member to the clamped stack (up to 6 - washers count as members).",
@@ -501,7 +506,7 @@ impl Default for PreloadModel {
             shank_length: 1.0,
             shank_diameter: g.d,
             embedment_settlement: 0.0,
-            members: vec![MemberUi { name: "Plate", thickness: 0.75, e: 10_300_000.0, hole_diameter: 0.406, outer_diameter: 0.0 }],
+            members: vec![MemberUi { name: "Plate", thickness: 0.75, e: 10_300_000.0, nu: 0.3, hole_diameter: 0.406, outer_diameter: 0.0 }],
             external_load_enabled: false,
             external_axial_load: 500.0,
             slip_enabled: false,
@@ -581,6 +586,7 @@ pub fn field_rows(model: &PreloadModel) -> Vec<FieldRow> {
     for i in 0..model.members.len() {
         rows.push(FieldRow::Number(NumberTarget::MemberThickness(i)));
         rows.push(FieldRow::Number(NumberTarget::MemberModulus(i)));
+        rows.push(FieldRow::Number(NumberTarget::MemberPoissonRatio(i)));
         rows.push(FieldRow::Number(NumberTarget::MemberHoleDiameter(i)));
     }
     if model.members.len() < MAX_MEMBERS {
@@ -690,6 +696,7 @@ impl PreloadModel {
         let inputs = self.build_inputs();
         Some(super::fe_check::FeInput {
             members: self.member_stack().members,
+            poisson_ratios: self.members.iter().map(|m| m.nu).collect(),
             contact_diameter: 2.0 * inputs.geometry.bearing_outer_radius,
             cone_half_angle_deg: self.cone_half_angle_deg,
             fastener_compliance: solution.compliance.c_b,
@@ -812,6 +819,7 @@ impl PreloadModel {
             NumberTarget::UltimateStrength => self.ultimate_strength,
             NumberTarget::MemberThickness(i) => self.members.get(i).map(|m| m.thickness).unwrap_or(0.0),
             NumberTarget::MemberModulus(i) => self.members.get(i).map(|m| m.e).unwrap_or(0.0),
+            NumberTarget::MemberPoissonRatio(i) => self.members.get(i).map(|m| m.nu).unwrap_or(0.0),
             NumberTarget::MemberHoleDiameter(i) => self.members.get(i).map(|m| m.hole_diameter).unwrap_or(0.0),
             NumberTarget::MemberOuterDiameter(i) => self.members.get(i).map(|m| m.outer_diameter).unwrap_or(0.0),
             NumberTarget::MuThreadTolPct => self.mu_thread_tol_pct,
@@ -842,7 +850,7 @@ impl PreloadModel {
     /// [`commit_number`](Self::commit_number) without the solve, for setting many fields at once (a case file):
     /// call [`recompute`](Self::recompute) after. Returns whether the value was taken (a finite one).
     pub fn set_number(&mut self, target: NumberTarget, raw: f64) -> bool {
-        if !raw.is_finite() {
+        if !raw.is_finite() || matches!(target, NumberTarget::MemberPoissonRatio(_)) && !(raw > -1.0 && raw < 0.5) {
             return false;
         }
         match target {
@@ -882,6 +890,11 @@ impl PreloadModel {
             NumberTarget::MemberModulus(i) => {
                 if let Some(m) = self.members.get_mut(i) {
                     m.e = raw;
+                }
+            }
+            NumberTarget::MemberPoissonRatio(i) => {
+                if let Some(m) = self.members.get_mut(i) {
+                    m.nu = raw;
                 }
             }
             NumberTarget::MemberHoleDiameter(i) => {

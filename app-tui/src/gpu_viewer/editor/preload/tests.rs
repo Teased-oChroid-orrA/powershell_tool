@@ -239,3 +239,24 @@ fn save_and_reopen_round_trips_the_joint_and_export_writes_the_report_with_the_f
     act(&mut s, PreloadAct::Save);
     assert!(s.status().starts_with("Save conflict"), "{}", s.status());
 }
+
+#[test]
+fn member_poisson_ratio_edits_save_and_old_cases_keep_the_default() {
+    let mut s = session("member-nu");
+    assert!(model::field_rows(s.model()).contains(&FieldRow::Number(NumberTarget::MemberPoissonRatio(0))));
+    edit(&mut s, NumberTarget::MemberPoissonRatio(0), "0.37");
+    assert_eq!(s.model().members[0].nu, 0.37);
+    assert_eq!(s.model().fe_input().unwrap().poisson_ratios, [0.37]);
+    edit(&mut s, NumberTarget::MemberPoissonRatio(0), "0.5");
+    assert_eq!(s.model().members[0].nu, 0.37);
+    let saved = PreloadFile::capture(s.model(), "case");
+    let mut restored = PreloadModel::default();
+    assert!(PreloadFile::from_json(&saved.to_json()).unwrap().apply(&mut restored).is_empty());
+    assert_eq!(restored.members[0].nu, 0.37);
+
+    let mut old: serde_json::Value = serde_json::from_str(&saved.to_json()).unwrap();
+    old["members"][0].as_object_mut().unwrap().remove("nu");
+    let mut restored = PreloadModel::default();
+    assert!(PreloadFile::from_json(&old.to_string()).unwrap().apply(&mut restored).is_empty());
+    assert_eq!(restored.members[0].nu, 0.3);
+}

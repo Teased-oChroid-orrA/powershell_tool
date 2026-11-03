@@ -10,13 +10,11 @@ use fastened_joint_solver::compliance::{member_stack_compliance, Member, MemberS
 use fastened_joint_solver::service::joint_load_fraction;
 use fea_problem::joint::{member_field, Layer, MemberFe, MemberField};
 
-/// Poisson's ratio assumed for every member (the joint model carries moduli only).
-pub const MEMBER_NU: f64 = 0.3;
-
 /// What the check is made for; two equal inputs give one result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FeInput {
     pub members: Vec<Member>,
+    pub poisson_ratios: Vec<f64>,
     /// Bearing diameter at the head and the nut (the solver uses one for both).
     pub contact_diameter: f64,
     pub cone_half_angle_deg: f64,
@@ -49,7 +47,10 @@ pub fn run(input: &FeInput) -> Result<FeResult, String> {
 /// [`run`] together with the solved member stack it measured (stress per unit clamp force anywhere in it), so one solve
 /// feeds both the cross-check and a picture of the joint.
 pub fn run_with_field(input: &FeInput) -> Result<(FeResult, MemberField), String> {
-    let layers: Vec<Layer> = input.members.iter().map(|m| Layer { thickness: m.thickness, e: m.e, nu: MEMBER_NU, hole_diameter: m.hole_diameter, outer_diameter: m.outer_diameter }).collect();
+    if input.members.len() != input.poisson_ratios.len() {
+        return Err("one Poisson ratio is required per member".into());
+    }
+    let layers: Vec<Layer> = input.members.iter().zip(&input.poisson_ratios).map(|(m, &nu)| Layer { thickness: m.thickness, e: m.e, nu, hole_diameter: m.hole_diameter, outer_diameter: m.outer_diameter }).collect();
     let field = member_field(&layers, input.contact_diameter, input.contact_diameter)?;
     let fe = field.fe;
     let stack = MemberStack { members: input.members.clone() };
@@ -87,6 +88,7 @@ mod tests {
     fn input() -> FeInput {
         FeInput {
             members: vec![Member { thickness: 0.5, e: 10.3e6, hole_diameter: 0.3125, outer_diameter: None }, Member { thickness: 0.5, e: 10.3e6, hole_diameter: 0.3125, outer_diameter: None }],
+            poisson_ratios: vec![0.3, 0.3],
             contact_diameter: 0.75,
             cone_half_angle_deg: 30.0,
             fastener_compliance: 4.0e-8,
@@ -121,6 +123,20 @@ mod tests {
     fn a_bad_stack_is_an_error_not_a_result() {
         let mut i = input();
         i.contact_diameter = 0.2; // smaller than the hole
+        assert!(run(&i).is_err());
+    }
+
+    #[test]
+    fn each_member_poisson_ratio_reaches_the_fe_model() {
+        let mut i = input();
+        let baseline = run(&i).unwrap().fe.compliance;
+        i.poisson_ratios = vec![0.22, 0.38];
+        let actual = run(&i).unwrap().fe.compliance;
+        assert!((actual / baseline - 1.0).abs() > 1e-4);
+        let layers: Vec<Layer> = i.members.iter().zip(&i.poisson_ratios).map(|(m, &nu)| Layer { thickness: m.thickness, e: m.e, nu, hole_diameter: m.hole_diameter, outer_diameter: m.outer_diameter }).collect();
+        let expected = fea_problem::joint::member_compliance(&layers, i.contact_diameter, i.contact_diameter).unwrap().compliance;
+        assert!((actual / expected - 1.0).abs() < 1e-10);
+        i.poisson_ratios.pop();
         assert!(run(&i).is_err());
     }
 }

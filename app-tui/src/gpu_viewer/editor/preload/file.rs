@@ -62,7 +62,7 @@ fn every_number_target_is_listed(t: NumberTarget) {
         | ThreadRootDia | ThreadPitch | ThreadStarts | ThreadAngleDeg | FastenerE | FastenerNu | ShankLength | ShankDiameter | ExternalAxialLoad | AppliedShearLoad | FrictionInterfaceMu | ProofLoad | YieldStrength | UltimateStrength | MuThreadTolPct
         | MuBearingTolPct | PitchDiameterTol | BearingRadiusTol | TorqueTolPct | MonteCarloSamples | MonteCarloSeed | EngagedThreads | NutModulus | NutPoissonRatio | NutOuterDiameter | EmbedmentSettlement | ThreadEngagementLength
         | ThreadShearStrength => {}
-        MemberThickness(_) | MemberModulus(_) | MemberHoleDiameter(_) | MemberOuterDiameter(_) => {}
+        MemberThickness(_) | MemberModulus(_) | MemberPoissonRatio(_) | MemberHoleDiameter(_) | MemberOuterDiameter(_) => {}
     }
 }
 
@@ -73,11 +73,15 @@ pub struct FileMember {
     pub role: String,
     pub thickness: f64,
     pub e: f64,
+    #[serde(default = "default_member_nu")]
+    pub nu: f64,
     pub hole_diameter: f64,
     /// `0`: unbounded.
     #[serde(default)]
     pub outer_diameter: f64,
 }
+
+fn default_member_nu() -> f64 { 0.3 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PreloadFile {
@@ -136,7 +140,7 @@ impl PreloadFile {
             version: FORMAT_VERSION,
             name: name.to_string(),
             numbers: NUMBERS.iter().map(|(t, key)| (key.to_string(), m.number_value(*t))).collect(),
-            members: m.members.iter().map(|u| FileMember { role: u.name.to_string(), thickness: u.thickness, e: u.e, hole_diameter: u.hole_diameter, outer_diameter: u.outer_diameter }).collect(),
+            members: m.members.iter().map(|u| FileMember { role: u.name.to_string(), thickness: u.thickness, e: u.e, nu: u.nu, hole_diameter: u.hole_diameter, outer_diameter: u.outer_diameter }).collect(),
             mode: m.mode.label().to_string(),
             tightening_from: label_tightening_from(m.tightening_from).to_string(),
             bearing_model: label_bearing_model(m.bearing_model).to_string(),
@@ -162,11 +166,16 @@ impl PreloadFile {
                 m.members = self
                     .members
                     .iter()
-                    .map(|f| MemberUi {
+                    .enumerate()
+                    .map(|(i, f)| MemberUi {
                         // An unknown role is a plate: the role only names the layer in the stack picture.
                         name: LayerRole::from_name(&f.role).unwrap_or(LayerRole::Plate).name(),
                         thickness: f.thickness,
                         e: f.e,
+                        nu: if f.nu.is_finite() && f.nu > -1.0 && f.nu < 0.5 { f.nu } else {
+                            skipped.push(format!("member {} Poisson ratio: must be greater than -1 and less than 0.5", i + 1));
+                            default_member_nu()
+                        },
                         hole_diameter: f.hole_diameter,
                         outer_diameter: f.outer_diameter,
                     })

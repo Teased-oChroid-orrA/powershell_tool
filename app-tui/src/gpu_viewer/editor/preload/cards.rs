@@ -14,7 +14,6 @@ use crate::gpu_viewer::{
 };
 use crate::theme::{fmt_margin, tone_for_margin, StatusTone};
 use crate::toolboxes::preload_analysis::{
-    fe_check::MEMBER_NU,
     joint_templates::stack_diagram,
     model::{self, FieldRow, MAX_MEMBERS},
     report::{display_value, margins, passes, status_label},
@@ -307,7 +306,7 @@ impl PreloadSession {
                 if let Some(a) = r.equivalent_angle_deg {
                     items.push(value("Equivalent cone", format!("{a:.1} deg")));
                 }
-                items.push(line(format!("Axisymmetric, members at Poisson's ratio {MEMBER_NU}. Member Stiffness: Finite Element solves the joint with it."), Tone::Dim));
+                items.push(line("Axisymmetric; each member uses its own Poisson's ratio. Member Stiffness: Finite Element solves the joint with them.", Tone::Dim));
                 items
             }
             Some(Err(e)) => vec![line(format!("The member finite-element model failed: {e}."), Tone::Warn)],
