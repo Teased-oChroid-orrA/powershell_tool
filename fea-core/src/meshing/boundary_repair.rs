@@ -1983,7 +1983,6 @@ impl<'a> Work<'a> {
                 bridges.push(f);
                 cavity.insert(t);
                 if cavity.len() > MAX_CAVITY || bridges.len() > MAX_CAVITY {
-                    if std::env::var_os("CREASE_DEBUG").is_some() { eprintln!("cavity via across: cells {} disk {}", cavity.len(), bridges.len()); }
                     return self.why("split_crease#cavity");
                 }
                 continue;
@@ -1995,7 +1994,6 @@ impl<'a> Work<'a> {
             };
             cavity.insert(next);
             if cavity.len() > MAX_CAVITY {
-                if std::env::var_os("CREASE_DEBUG").is_some() { eprintln!("cavity via grow: cells {} disk {} apex {:.3e} sj {:.3}", cavity.len(), bridges.len(), apex(self, u, k), { let mut x = self.tets[u].map(|v| self.p[v]); x[k] = pos; scaled_jacobian(&x, [0, 1, 2, 3]) }); }
                 return self.why("split_crease#cavity");
             }
         };
@@ -2053,9 +2051,6 @@ impl<'a> Work<'a> {
                 let f = FACES[k].map(|j| self.tets[u][j]);
                 let twice_area = norm(cross(sub(self.p[f[1]], self.p[f[0]]), sub(self.p[f[2]], self.p[f[0]])));
                 if !(v > -0.02 * h * twice_area) {
-                    if std::env::var_os("CREASE_DEBUG").is_some() {
-                        eprintln!("outside ({a},{b}) K {pos:?}: face {f:?} front/h {:.3} rung {} disk {} cells {} corners {:?}", -v / twice_area / h, f.contains(&a) && f.contains(&b), bridges.len(), cavity.len(), f.map(|x| self.on_faces(x, h)));
-                    }
                     return self.why("split_crease#outside");
                 }
                 wedge += v;
@@ -2101,13 +2096,6 @@ impl<'a> Work<'a> {
         self.refresh_bnd(&touched);
         let crossed: Vec<usize> = sa.iter().chain(sb).copied().collect();
         if let Some(reason) = self.surface_refusal_on(&new_ids, &before, h, &crossed) {
-            if std::env::var_os("CREASE_DEBUG").is_some() {
-                eprintln!("crease ({a},{b}) {reason}: K {pos:?} faces {sa:?} {sb:?}");
-                for (f, apex) in self.boundary_faces(&new_ids) {
-                    let st = self.boundary_face_state(f, apex, h);
-                    eprintln!("   face {f:?} owner {:?} align {:.3} err/h {:.3} corners {:?}", st.owner, st.normal_alignment, st.max_surface_error / h, f.map(|v| self.on_faces(v, h)));
-                }
-            }
             self.rollback(m);
             self.depth -= 1;
             self.why(reason);
@@ -2148,15 +2136,6 @@ impl<'a> Work<'a> {
             }
             if !any {
                 break;
-            }
-        }
-        if std::env::var_os("CREASE_DEBUG").is_some() {
-            let live: Vec<usize> = (0..self.tets.len()).filter(|&t| self.alive[t]).collect();
-            for (f, _) in self.boundary_faces(&live) {
-                let c = f.map(|v| { let h = self.hv[v]; (self.on_faces(v, 1.0 / FACE_TOL * 0.0025 / 0.01 * 0.01), self.on_faces(v, h)) });
-                let wide: Vec<Vec<usize>> = f.map(|v| self.on_faces(v, 0.25)).to_vec();
-                if wide.iter().any(Vec::is_empty) || wide[0].iter().any(|g| wide[1].contains(g) && wide[2].contains(g)) { continue; }
-                eprintln!("left bridge {f:?} wide {wide:?} local {:?} hv {:?}", c.iter().map(|x| x.1.clone()).collect::<Vec<_>>(), f.map(|v| self.hv[v]));
             }
         }
     }
