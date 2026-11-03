@@ -182,6 +182,17 @@ pub enum Surface {
         major: f64,
         minor: f64,
     },
+    /// A spindle torus (major radius below minor), charted for one face. In a plane through the axis the surface is two
+    /// circles of radius `minor` centred `major` either side of the axis; the face lies on one *part*, the outer "apple"
+    /// (the circle on the point's own side) or the inner "lemon" (the circle on the far side, `lemon`), on one side of the
+    /// equator. `frame` is set per face (see `curved_surface`) so that the part is a graph over its xy plane and the
+    /// geometric normal has a positive `z` component: the chart is the point's `(x, y)` in it.
+    Spindle {
+        frame: Frame,
+        major: f64,
+        minor: f64,
+        lemon: bool,
+    },
     /// A parametric surface (a rational B-spline surface, or a B-spline curve revolved or extruded), charted by its parameter
     /// rectangle (see `curved_surface::SplineSurface`).
     Param(std::sync::Arc<crate::curved_surface::SplineSurface>),
@@ -466,11 +477,17 @@ fn surface(
             }
             ("TOROIDAL_SURFACE", [Value::String(_), Value::Ref(f), major, minor]) => {
                 let (major, minor) = (radius(e, major, scale)?, radius(e, minor, scale)?);
-                if major <= minor {
-                    return Err(error(
-                        e,
-                        "horn and spindle tori (major radius not above minor radius) are not implemented",
-                    ));
+                if major == minor {
+                    return Err(error(e, "horn tori (major radius equal to minor radius) are not implemented"));
+                }
+                if major < minor {
+                    // the part, side and chart frame are set per face, from its boundary
+                    return Ok(Surface::Spindle {
+                        frame: frame(data, *f, scale)?,
+                        major,
+                        minor,
+                        lemon: false,
+                    });
                 }
                 Ok(Surface::Torus {
                     frame: frame(data, *f, scale)?,
@@ -1198,7 +1215,9 @@ fn on_surface(e: &Entity, s: &Surface, c: &Curve, a: V3, b: V3, tol: f64) -> Res
                 .max((min - radius).abs())
         }
         // Sphere, cone and torus: the largest distance from the surface over the declared locus (the segment between the
-        // endpoints, or the whole circle, which lies on these surfaces entirely or not at all).
+        // endpoints, or the whole circle, which lies on these surfaces entirely or not at all). A spindle torus face is charted
+        // on one part of its surface, but a circle on it (a meridian) runs over both, so this measures to the whole surface;
+        // the endpoints above, and every boundary sample (`localized_spindle`), are held to the face's own part.
         (surface, curve) => {
             let points: Vec<V3> = match curve {
                 Curve::Line { .. } => (0..=16)
@@ -1656,8 +1675,9 @@ impl AnalyticModel {
                 (Surface::Param(std::sync::Arc::new(swept)), None)
             } else {
                 let source = surface(data, face.surface, scale, &radians)?;
-                // A sphere is charted around each face's own centre, from the face's boundary loops in traversal order.
-                let source = if let Surface::Sphere { .. } = source {
+                // A sphere is charted around each face's own centre, a spindle torus over the part and side its face lies
+                // on, and a cone on the nappe its face lies on, from the face's boundary loops in traversal order.
+                let source = if let Surface::Sphere { .. } | Surface::Spindle { .. } | Surface::Cone { .. } = source {
                     let mut loops = Vec::new();
                     for bound in &face.bounds {
                         let mut points = Vec::new();
@@ -1674,8 +1694,11 @@ impl AnalyticModel {
                         }
                         loops.push(points);
                     }
-                    source
-                        .localized_sphere(&loops, face.same_sense)
+                    match source {
+                        Surface::Sphere { .. } => source.localized_sphere(&loops, face.same_sense),
+                        Surface::Cone { .. } => Ok(source.localized_cone(&loops)),
+                        _ => source.localized_spindle(&loops, opt.geometry_tolerance_mm),
+                    }
                         .map_err(|mut err| {
                             err.offset = data.entities()[&face.surface].offset;
                             err

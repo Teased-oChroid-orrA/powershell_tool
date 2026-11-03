@@ -28,6 +28,8 @@ struct Run {
     size_jump: f64,
     gates: bool,
     mesh_s: f64,
+    /// Volume enclosed by the surface triangulation handed to the mesher (model units cubed).
+    volume: f64,
     solve_ms: f64,
     max_disp: f64,
     energy: f64,
@@ -117,6 +119,11 @@ fn axis_faces(c: &SolidCache, axis: usize, sign: f64) -> Vec<usize> {
 /// Mesh (and, with `solve`, solve the benchmark on) the solid `step` through `cache` at element size `text_h`.
 fn measure(base: &Problem, cache: SolidCache, step: &str, text_h: f64, solve_it: bool) -> Run {
     let mut r = Run::default();
+    let at = |i: usize| cache.vertices[i];
+    r.volume = cache.triangles.iter().map(|t| {
+        let (a, b, c) = (at(t[0]), at(t[1]), at(t[2]));
+        (a[0] * (b[1] * c[2] - b[2] * c[1]) + a[1] * (b[2] * c[0] - b[0] * c[2]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6.0
+    }).sum();
     let mut p = base.clone();
     p.set_solid(step, cache);
     p.mesh.size = text_h;
@@ -209,8 +216,8 @@ fn row(name: &str, which: &str, r: &Run) -> String {
     match &r.err {
         Some(e) if r.tets == 0 => format!("{name:<34} {which:<6} REFUSED: {e}"),
         _ => format!(
-            "{name:<34} {which:<6} tets {:>6} dofs {:>7} sJ {:.3} rr {:.3} er {:>5.1} jump {:>4.1} gates {} (<0.1: {}, on boundary {}) mesh {:>6.2}s solve {:>7.1}ms | umax {:.5e} U {:.5e} R{} {:>9.3} eq {:.1e}{}",
-            r.tets, r.dofs, r.min_sj, r.min_radius_ratio, r.max_edge_ratio, r.size_jump, if r.gates { "ok" } else { "NO" }, r.below_gate, r.below_gate_on_boundary, r.mesh_s, r.solve_ms, r.max_disp, r.energy, ["x", "y", "z"][r.axis], r.reaction, r.equilibrium,
+            "{name:<34} {which:<6} vol {:.6e} tets {:>6} dofs {:>7} sJ {:.3} rr {:.3} er {:>5.1} jump {:>4.1} gates {} (<0.1: {}, on boundary {}) mesh {:>6.2}s solve {:>7.1}ms | umax {:.5e} U {:.5e} R{} {:>9.3} eq {:.1e}{}",
+            r.volume, r.tets, r.dofs, r.min_sj, r.min_radius_ratio, r.max_edge_ratio, r.size_jump, if r.gates { "ok" } else { "NO" }, r.below_gate, r.below_gate_on_boundary, r.mesh_s, r.solve_ms, r.max_disp, r.energy, ["x", "y", "z"][r.axis], r.reaction, r.equilibrium,
             r.err.as_ref().map(|e| format!(" [{e}]")).unwrap_or_default()
         ),
     }
@@ -230,7 +237,9 @@ fn table() {
     for c in all.into_iter().filter(|c| c.name.contains(&only)) {
         let c = Case { h_scale: c.h_scale * scale, ..c };
         let (o, n) = compare(&c);
-        eprintln!("{}\n{}", row(&c.name, "OCCT", &o), row(&c.name, "native", &n));
+        // the B-rep's exact volume, against which both tessellations' volumes (`vol`, model units) can be read
+        let exact = Brep::from_step_text(&c.text).map(|b| format!("{:.6e} kernel mm³", b.volume())).unwrap_or_else(|e| format!("unavailable ({e})"));
+        eprintln!("{}\n{}\n{:<34} exact  vol {exact}", row(&c.name, "OCCT", &o), row(&c.name, "native", &n), c.name);
         models += 1;
         for (k, r) in [&o, &n].into_iter().enumerate() {
             tally[k][0] += usize::from(r.tets > 0);

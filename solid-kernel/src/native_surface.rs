@@ -270,7 +270,13 @@ impl AnalyticModel {
                         // The chart of a sphere, cone or torus is not the surface parameterization: take the normal at the
                         // triangle's own location.
                         let world = std::array::from_fn(|i| (a[i] + b[i] + c[i]) / 3.);
-                        let n = surface.normal_at_world(world).unwrap();
+                        // none on the axis of a cone or spindle torus (its apex or cusp)
+                        let n = surface.normal_at_world(world).ok_or_else(|| {
+                            fail(
+                                ErrorKind::Geometry,
+                                format!("face #{} has a sampled triangle centred where its surface has no normal", face.id),
+                            )
+                        })?;
                         if face.same_sense {
                             n
                         } else {
