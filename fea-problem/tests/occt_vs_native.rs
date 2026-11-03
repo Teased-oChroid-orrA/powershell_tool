@@ -6,7 +6,9 @@
 //! Needs the `occt` feature. Run: `cargo test -p fea-problem --features occt --release --test occt_vs_native -- --nocapture`.
 #![cfg(feature = "occt")]
 
+use fea_core::loads::assemble;
 use fea_core::meshing::adjacency::Adjacency;
+use fea_core::{Loads, SurfaceLoad};
 use fea_core::meshing::quality::QualityThresholds;
 use fea_problem::native_solid::tessellate_step_native;
 use fea_problem::solid::{flat_face, solid_mesh, SolidCache};
@@ -526,7 +528,9 @@ fn benchmark_face_areas() {
 
 /// Why the volume mesh's facets named after the loaded face are tilted off its plane (`CASE` / `STEP_DIR` as for `table`): each such
 /// facet's corners, the model faces each corner lies on (within the namer's `FACE_TOL` of a hundredth of the size), and whether the
-/// name came from all three corners sharing a face or from the face nearest the centroid.
+/// name came from all three corners sharing a face or from the face nearest the centroid. Each class prints its flat (corner) area and
+/// its curved area, the load a unit traction puts on it through the solve's own face integration; flat facets whose corners all
+/// lie on the face are one line, and the face's totals end its list.
 #[test]
 #[ignore = "diagnostic table"]
 fn loaded_face_tilted_facets() {
@@ -550,29 +554,44 @@ fn loaded_face_tilted_facets() {
             let (mesh, _) = solid_mesh(&p).unwrap();
             let on = |x: [f64; 3]| -> Vec<(usize, f64)> { solid.faces_near(x, 1.2 * h).into_iter().filter(|f| f.dist.abs() <= 0.01 * h).map(|f| (f.face + 1, f.dist)).collect() };
             eprintln!("{} {which}: size {h:.4}, loaded {top:?}", c.name);
+            // The load a unit traction along the axis puts on `facets`, through the solve's own (curved, Tet10 midside) face
+            // integration: their curved area. The benchmark's reaction is the traction times this over the loaded faces.
+            let curved = |facets: &[Vec<usize>]| -> f64 {
+                let mut unit = [0.0; 3];
+                unit[axis] = 1.0;
+                let loads = Loads { faces: facets.iter().map(|f| (f.clone(), SurfaceLoad::Traction(unit))).collect(), ..Default::default() };
+                assemble(&mesh, &loads).unwrap().iter().skip(axis).step_by(3).sum()
+            };
             for f in &top {
-                let mut by_kind: std::collections::BTreeMap<String, (usize, f64)> = std::collections::BTreeMap::new();
-                for facet in mesh.surfaces.get(&format!("face{f}")).map_or(&[][..], Vec::as_slice) {
+                let all = mesh.surfaces.get(&format!("face{f}")).map_or(&[][..], Vec::as_slice);
+                let mut by_kind: std::collections::BTreeMap<String, (f64, Vec<Vec<usize>>)> = std::collections::BTreeMap::new();
+                let mut linear = 0.0;
+                for facet in all {
                     let v = [0, 1, 2].map(|k| mesh.nodes[facet[k]]);
                     let (u, w) = ([v[1][0] - v[0][0], v[1][1] - v[0][1], v[1][2] - v[0][2]], [v[2][0] - v[0][0], v[2][1] - v[0][1], v[2][2] - v[0][2]]);
                     let n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
                     let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                    linear += 0.5 * len;
                     let tilt = (n[axis].abs() / len).clamp(-1.0, 1.0).acos().to_degrees();
-                    if tilt <= 1.0 {
-                        continue;
-                    }
                     let sets: Vec<Vec<usize>> = v.iter().map(|x| on(*x).into_iter().map(|(f, _)| f).collect()).collect();
                     let shared = sets[0].iter().any(|g| *g == *f && sets[1].contains(g) && sets[2].contains(g));
-                    let mut pattern: Vec<String> = sets.iter().map(|s| format!("{s:?}")).collect();
-                    pattern.sort();
-                    let key = format!("{} tilt {:>2}0s {}", if shared { "all-on" } else { "centroid" }, (tilt / 10.0) as usize, pattern.join(" "));
+                    let key = if tilt <= 1.0 && shared {
+                        // the bulk of the face, one line
+                        "all-on flat".to_string()
+                    } else {
+                        let mut pattern: Vec<String> = sets.iter().map(|s| format!("{s:?}")).collect();
+                        pattern.sort();
+                        let angle = if tilt <= 1.0 { "flat    ".to_string() } else { format!("tilt {:>2}0s", (tilt / 10.0) as usize) };
+                        format!("{} {angle} {}", if shared { "all-on" } else { "centroid" }, pattern.join(" "))
+                    };
                     let e = by_kind.entry(key).or_default();
-                    e.0 += 1;
-                    e.1 += 0.5 * len;
+                    e.0 += 0.5 * len;
+                    e.1.push(facet.clone());
                 }
-                for (k, (n, a)) in &by_kind {
-                    eprintln!("  face{f} {k:<70} facets {n:>4} area {a:.5}");
+                for (k, (a, facets)) in &by_kind {
+                    eprintln!("  face{f} {k:<70} facets {:>4} area {a:.5} curved {:.5}", facets.len(), curved(facets));
                 }
+                eprintln!("  face{f} total: facets {} area {linear:.5} curved {:.5}", all.len(), curved(all));
             }
         }
     }
