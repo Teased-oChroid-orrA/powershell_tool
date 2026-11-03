@@ -174,7 +174,7 @@ pub(crate) fn chart_usages<'a>(
     bound: &'a crate::step_topology::RawBound,
 ) -> Vec<&'a crate::step_topology::EdgeUse> {
     let seam = |edge: u64| {
-        matches!(surface, Surface::Sphere { .. })
+        matches!(surface, Surface::Sphere { .. } | Surface::Spindle { .. })
             && bound.edges.iter().filter(|u| u.edge == edge).count() == 2
             && bound
                 .edges
@@ -201,7 +201,7 @@ impl AnalyticModel {
             .get(&face_id)
             .ok_or_else(|| fail(ErrorKind::Geometry, "unknown face"))?;
         let surface = self.surface(face_id).unwrap();
-        if !matches!(surface, Surface::Plane(_) | Surface::Sphere { .. } | Surface::Param(_)) {
+        if !matches!(surface, Surface::Plane(_) | Surface::Sphere { .. } | Surface::Spindle { .. } | Surface::Param(_)) {
             return Err(fail(
                 ErrorKind::Geometry,
                 "periodic/nonplanar trim charts are not implemented",

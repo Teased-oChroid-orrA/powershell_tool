@@ -11,6 +11,9 @@
 //!   seam sides, exactly as a cylinder's seam.
 //! * **torus**: the conformal coordinates `(R u, R w(v))` with `w(v) = 2 r / sqrt(R^2 - r^2) * atan(m tan(v/2))`,
 //!   `m = sqrt((R - r) / (R + r))`; both coordinates are periodic.
+//! * **spindle torus** (`R < r`): the face's part of the surface (see `Surface::Spindle`) is a graph over the plane at right
+//!   angles to the axis, and the chart is the projection onto that plane (not conformal: lengths along the meridian grow by
+//!   `sqrt(1 + slope^2)`). The cusp on the axis is an ordinary chart point; only its normal is undefined.
 //!
 //! A chart orientation counter-clockwise in the plane is the *outward* geometric normal of the surface, as for the plane and
 //! the cylinder. Faces containing a pole, the apex, or wrapping a full sphere or torus are refused, not approximated.
@@ -117,12 +120,17 @@ fn tube_scale(major: f64, minor: f64) -> Option<f64> {
 fn tube_modulus(major: f64, minor: f64) -> f64 {
     ((major - minor) / (major + minor)).sqrt()
 }
+/// A point's distance from the frame's axis and height along it.
+fn meridian(frame: &Frame, p: V3) -> (f64, f64) {
+    let d = sub(p, frame.origin);
+    (dot(d, frame.x).hypot(dot(d, frame.y)), dot(d, frame.z))
+}
 
 impl Surface {
     /// The periods of the two raw coordinates (`None`: not periodic).
     pub(crate) fn periods(&self) -> [Option<f64>; 2] {
         match self {
-            Self::Plane(_) | Self::Sphere { .. } | Self::Param(_) => [None, None],
+            Self::Plane(_) | Self::Sphere { .. } | Self::Spindle { .. } | Self::Param(_) => [None, None],
             Self::Cylinder { radius, .. } => [Some(radius * TAU), None],
             Self::Cone { semi_angle, .. } => [Some(TAU * semi_angle.sin()), None],
             Self::Torus { major, minor, .. } => [
@@ -138,9 +146,11 @@ impl Surface {
             return None;
         }
         let r = match self {
-            Self::Plane(_) | Self::Cylinder { .. } | Self::Sphere { .. } | Self::Param(_) => {
-                return self.project(p).map(|q| q.chart)
-            }
+            Self::Plane(_)
+            | Self::Cylinder { .. }
+            | Self::Sphere { .. }
+            | Self::Spindle { .. }
+            | Self::Param(_) => return self.project(p).map(|q| q.chart),
             Self::Cone {
                 frame,
                 radius,
@@ -229,6 +239,25 @@ impl Surface {
                 let q = dot(d, frame.x).hypot(dot(d, frame.y));
                 ((q - major).hypot(dot(d, frame.z)) - minor).abs()
             }
+            Self::Spindle {
+                frame,
+                major,
+                minor,
+                lemon,
+            } => {
+                // distance in the meridian half-plane to the part's arc: its circle where the foot lies on the arc, else
+                // the nearer end of the arc (the cusp on the axis or the point on the equator)
+                let (q, h) = meridian(frame, p);
+                let (centre, sign) = if *lemon { (-major, -1.) } else { (*major, 1.) };
+                let d = (q - centre).hypot(h);
+                let foot = [centre + minor * (q - centre) / d, minor * h / d];
+                if d > 0. && foot[0] >= 0. && foot[1] * sign >= 0. {
+                    (d - minor).abs()
+                } else {
+                    let cusp = sign * (minor * minor - major * major).sqrt();
+                    q.hypot(h - cusp).min((q - centre - minor).hypot(h))
+                }
+            }
             _ => return None,
         };
         r.is_finite().then_some(r)
@@ -240,6 +269,12 @@ impl Surface {
             Self::Cylinder { frame, radius } => {
                 let d = sub(p, frame.origin);
                 Some((dot(d, frame.x).hypot(dot(d, frame.y)) - radius).abs())
+            }
+            // both parts: the meridian circles centred either side of the axis
+            Self::Spindle { frame, major, minor, .. } => {
+                let (q, h) = meridian(frame, p);
+                let r = ((q - major).hypot(h) - minor).abs().min(((q + major).hypot(h) - minor).abs());
+                r.is_finite().then_some(r)
             }
             _ => self.residual_curved(p),
         }
@@ -275,6 +310,10 @@ impl Surface {
                 self.plane_of_raw([beta, raw[1]])
             }
             Self::Torus { .. } => self.raw(p)?,
+            Self::Spindle { frame, .. } => {
+                let d = sub(p, frame.origin);
+                [dot(d, frame.x), dot(d, frame.y)]
+            }
             _ => return None,
         };
         (chart[0].is_finite() && chart[1].is_finite()).then_some(Projection { chart, residual_mm })
@@ -331,6 +370,22 @@ impl Surface {
                 let v = 2. * phi;
                 let q = major + minor * v.cos();
                 frame.point([q * u.cos(), q * u.sin(), minor * v.sin()])
+            }
+            Self::Spindle {
+                frame,
+                major,
+                minor,
+                lemon,
+            } => {
+                let q = chart[0].hypot(chart[1]);
+                let c = if *lemon { q + major } else { q - major };
+                let s = minor * minor - c * c;
+                // outside the part's disc (a few ulp of rounding at its rim is the rim)
+                if s < -64. * f64::EPSILON * minor * minor {
+                    return None;
+                }
+                let h = s.max(0.).sqrt();
+                frame.point([chart[0], chart[1], if *lemon { -h } else { h }])
             }
             _ => return None,
         };
@@ -405,8 +460,126 @@ impl Surface {
                 }
                 mul(v, 1. / n)
             }
+            // `S_u x S_v` of STEP's parameterization (OpenCASCADE's normal): away from the centre of the generating circle on
+            // the apple, toward it on the lemon, where `R + r cos v` is negative. The cusp on the axis has none.
+            Self::Spindle {
+                frame,
+                major,
+                lemon,
+                ..
+            } => {
+                let d = sub(p, frame.origin);
+                let h = dot(d, frame.z);
+                let radial = sub(d, mul(frame.z, h));
+                let q = norm(radial);
+                if q == 0. {
+                    return None;
+                }
+                let e = mul(radial, 1. / q);
+                let (centre, sign) = if *lemon { (-major, -1.) } else { (*major, 1.) };
+                let v = add(mul(e, q - centre), mul(frame.z, h));
+                let n = norm(v);
+                if n == 0. {
+                    return None;
+                }
+                mul(v, sign / n)
+            }
         };
         finite(n).then_some(n)
+    }
+    /// A cone set up for one face. STEP's cone has two nappes: the radius `radius + t tan(semi_angle)` turns negative past the
+    /// apex, where the point is on the far side of the axis. A face whose boundary lies on that nappe (none of it beyond the
+    /// apex on the other) is the same point set as the cone with the axis reversed and the origin moved past the apex by its
+    /// own distance from it (radius `radius` there again); the geometric normal `S_u x S_v` is the same for both, so the face
+    /// keeps its orientation. Any other face is returned as it is.
+    pub(crate) fn localized_cone(&self, loops: &[Vec<V3>]) -> Surface {
+        let Self::Cone {
+            frame,
+            radius,
+            semi_angle,
+            centre,
+        } = self
+        else {
+            return self.clone();
+        };
+        let slant = |p: &V3| (radius + dot(sub(*p, frame.origin), frame.z) * semi_angle.tan()) / semi_angle.sin();
+        let points = || loops.iter().flatten();
+        if !(points().all(|p| slant(p) <= APEX_SLANT) && points().any(|p| slant(p) < -APEX_SLANT)) {
+            return self.clone();
+        }
+        Self::Cone {
+            frame: Frame {
+                origin: add(frame.origin, mul(frame.z, -2. * radius / semi_angle.tan())),
+                x: frame.x,
+                y: mul(frame.y, -1.),
+                z: mul(frame.z, -1.),
+            },
+            radius: *radius,
+            semi_angle: *semi_angle,
+            centre: *centre,
+        }
+    }
+    /// A spindle torus set up for one face from its boundary sample loops: the part (apple or lemon) whose meridian circle
+    /// the samples lie on, and the side of the equator they lie on; the frame's `z` is turned to the side the geometric normal
+    /// points to (`x` kept, `y = z x x`), so the projection onto the frame's plane is a chart counter-clockwise about that
+    /// normal. Refused when the boundary crosses the equator (no graph) or a sample is farther than `tolerance` from the
+    /// chosen part.
+    pub(crate) fn localized_spindle(&self, loops: &[Vec<V3>], tolerance: f64) -> Result<Surface, Error> {
+        let Self::Spindle {
+            frame,
+            major,
+            minor,
+            ..
+        } = self
+        else {
+            return Ok(self.clone());
+        };
+        let points: Vec<(f64, f64)> = loops.iter().flatten().map(|p| meridian(frame, *p)).collect();
+        if points.is_empty() {
+            return Err(fail(ErrorKind::Geometry, "a spindle-torus face without a boundary is not charted"));
+        }
+        let off = |centre: f64| {
+            points
+                .iter()
+                .map(|(q, h)| ((q - centre).hypot(*h) - minor).abs())
+                .fold(0., f64::max)
+        };
+        let lemon = off(-major) < off(*major);
+        let low = points.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+        let high = points.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+        if low < -tolerance && high > tolerance {
+            return Err(fail(
+                ErrorKind::Geometry,
+                "a spindle-torus face crossing its equator is not charted",
+            ));
+        }
+        let side = if high > -low { 1. } else { -1. };
+        // the normal's component along the axis has the sign of the height on the apple and the opposite on the lemon
+        let flip = if lemon { -side } else { side };
+        let local = Self::Spindle {
+            frame: Frame {
+                origin: frame.origin,
+                x: frame.x,
+                y: mul(frame.y, flip),
+                z: mul(frame.z, flip),
+            },
+            major: *major,
+            minor: *minor,
+            lemon,
+        };
+        for p in loops.iter().flatten() {
+            let r = local.residual_curved(*p).unwrap_or(f64::INFINITY);
+            if !(r <= tolerance) {
+                return Err(fail(
+                    ErrorKind::Geometry,
+                    &format!(
+                        "a spindle-torus face boundary sample is {r:e} mm off the {} part it is charted on",
+                        if lemon { "lemon" } else { "apple" }
+                    ),
+                ));
+            }
+        }
+        Ok(local)
     }
     /// A sphere re-framed for one face: `z` is the face's own centre, which puts the stereographic pole opposite the face.
     ///
@@ -1235,6 +1408,124 @@ mod tests {
             if matches!(s, Surface::Cone { .. }) {
                 assert!((a - 1.).abs() < 1e-4, "isometric development: {a}");
             }
+        }
+    }
+    /// STEP's parameterization of a torus `C + (R + r cos v)(cos u x + sin u y) + r sin v z` and its `S_u x S_v` direction.
+    fn torus_param(f: &Frame, major: f64, minor: f64, u: f64, v: f64) -> (V3, V3) {
+        let at = |u: f64, v: f64| {
+            let q = major + minor * v.cos();
+            f.point([q * u.cos(), q * u.sin(), minor * v.sin()])
+        };
+        let h = 1e-6;
+        let du = mul(sub(at(u + h, v), at(u - h, v)), 0.5 / h);
+        let dv = mul(sub(at(u, v + h), at(u, v - h)), 0.5 / h);
+        let n = cross(du, dv);
+        (at(u, v), mul(n, 1. / norm(n)))
+    }
+    /// The faces of a spindle torus (major 3, minor 5, the cusps 4 from the centre): one boundary ring on each part and side,
+    /// as `(lemon, side, ring)`.
+    fn spindle_rings() -> Vec<(bool, f64, Vec<V3>)> {
+        let f = frame();
+        let mut out = Vec::new();
+        // tube angles: apple above and below its equator, lemon (where 3 + 5 cos v < 0) above and below
+        for (lemon, side, v) in [(false, 1., 1.2), (false, -1., -1.2), (true, 1., 2.6), (true, -1., -2.6)] {
+            let ring = (0..16).map(|i| torus_param(&f, 3., 5., i as f64 * TAU / 16., v).0).collect();
+            out.push((lemon, side, ring));
+        }
+        out
+    }
+    fn spindle(lemon_ring: usize) -> Surface {
+        let (_, _, ring) = &spindle_rings()[lemon_ring];
+        Surface::Spindle { frame: frame(), major: 3., minor: 5., lemon: false }
+            .localized_spindle(&[ring.clone()], 1e-9)
+            .unwrap()
+    }
+    #[test]
+    fn a_spindle_face_is_charted_on_its_own_part_and_side() {
+        for (k, (lemon, side, ring)) in spindle_rings().into_iter().enumerate() {
+            let s = spindle(k);
+            let Surface::Spindle { frame: f, lemon: l, .. } = &s else { panic!() };
+            assert_eq!(*l, lemon, "ring {k}");
+            // the chart frame's z is turned to the side the normal points to: up on the apple's upper half and the lemon's
+            // lower half
+            assert_eq!(f.z[2], if lemon { -side } else { side }, "ring {k}");
+            for p in &ring {
+                // the projection and the point of a chart are inverse on the part, and the boundary is on the surface
+                let q = s.project(*p).unwrap();
+                assert!(q.residual_mm < 1e-12, "ring {k}: {}", q.residual_mm);
+                assert!(norm(sub(s.point(q.chart).unwrap(), *p)) < 1e-12, "ring {k}");
+            }
+            // the cusp on the axis is a chart point of every part (the centre of the chart)
+            let cusp = s.point([0., 0.]).unwrap();
+            assert!(s.residual_curved(cusp).unwrap() < 1e-12 && s.normal_at_world(cusp).is_none(), "ring {k}");
+            // a point of the other part, or of the other side, is on the surface but off the face's part
+            let other = spindle_rings()[k ^ 2].2[3];
+            let mirror = spindle_rings()[k ^ 1].2[3];
+            for p in [other, mirror] {
+                assert!(s.distance(p).unwrap() < 1e-12, "ring {k}");
+                assert!(s.residual_curved(p).unwrap() > 0.5, "ring {k}");
+            }
+            // outside the part's disc there is no point
+            assert!(s.point([if lemon { 2.1 } else { 8.1 }, 0.]).is_none(), "ring {k}");
+        }
+    }
+    #[test]
+    fn the_spindle_normal_is_steps_su_x_sv_and_counter_clockwise_in_the_chart() {
+        for (k, (_, _, _)) in spindle_rings().into_iter().enumerate() {
+            let s = spindle(k);
+            let v = [1.2, -1.2, 2.6, -2.6][k];
+            for u in [0.3, 2., 4.5] {
+                let (p, n) = torus_param(&frame(), 3., 5., u, v);
+                let m = s.normal_at_world(p).unwrap();
+                assert!(dot(m, n) > 1. - 1e-9, "ring {k}, u {u}: {m:?} vs {n:?}");
+                // a small chart triangle counter-clockwise about the projection of `p` faces along the normal
+                let c = s.project(p).unwrap().chart;
+                let [a, b, d] = [[0., 0.], [0.01, 0.], [0., 0.01]].map(|e| s.point([c[0] + e[0], c[1] + e[1]]).unwrap());
+                assert!(dot(cross(sub(b, a), sub(d, a)), m) > 0., "ring {k}, u {u}");
+            }
+        }
+    }
+    #[test]
+    fn a_spindle_face_across_its_equator_or_off_its_part_is_refused() {
+        let s = Surface::Spindle { frame: frame(), major: 3., minor: 5., lemon: false };
+        let rings = spindle_rings();
+        // the apple's two sides together: the boundary crosses the equator
+        assert!(s.localized_spindle(&[rings[0].2.clone(), rings[1].2.clone()], 1e-9).is_err());
+        // a sample 1e-3 off the surface
+        let mut ring = rings[2].2.clone();
+        ring[5][0] += 1e-3;
+        assert!(s.localized_spindle(&[ring.clone()], 1e-9).is_err());
+        assert!(s.localized_spindle(&[ring], 2e-3).is_ok());
+    }
+    #[test]
+    fn a_cone_face_on_the_far_nappe_is_the_same_points_with_the_same_normal() {
+        let (radius, semi_angle) = (2., 0.6);
+        let cone = Surface::Cone { frame: frame(), radius, semi_angle, centre: 0. };
+        // STEP's `C + (R + v tan a)(cos u x + sin u y) + v z` past the apex (v < -R / tan a = -2.92)
+        let f = frame();
+        let at = |u: f64, v: f64| {
+            let q = radius + v * semi_angle.tan();
+            f.point([q * u.cos(), q * u.sin(), v])
+        };
+        let ring: Vec<V3> = (0..12).map(|i| at(i as f64 * TAU / 12., -5.)).collect();
+        assert!(cone.project(ring[0]).is_none(), "the cone chart refused the far nappe before");
+        let local = cone.localized_cone(&[ring.clone()]);
+        for (u, v) in [(0.4, -4.), (2.5, -6.), (5., -3.5)] {
+            let p = at(u, v);
+            let q = local.project(p).unwrap();
+            assert!(q.residual_mm < 1e-12);
+            assert!(norm(sub(local.point(q.chart).unwrap(), p)) < 1e-12);
+            let h = 1e-6;
+            let du = mul(sub(at(u + h, v), at(u - h, v)), 0.5 / h);
+            let dv = mul(sub(at(u, v + h), at(u, v - h)), 0.5 / h);
+            let n = mul(cross(du, dv), 1. / norm(cross(du, dv)));
+            assert!(dot(local.normal_at_world(p).unwrap(), n) > 1. - 1e-9, "{u} {v}");
+        }
+        // a face on the usual nappe, or on both, is left as it is
+        let near: Vec<V3> = (0..12).map(|i| at(i as f64 * TAU / 12., 1.)).collect();
+        for loops in [vec![near.clone()], vec![near, ring]] {
+            let Surface::Cone { frame: g, .. } = cone.localized_cone(&loops) else { panic!() };
+            assert_eq!(g.z, frame().z);
         }
     }
     #[test]

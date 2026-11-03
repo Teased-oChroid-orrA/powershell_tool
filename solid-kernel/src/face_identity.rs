@@ -199,7 +199,7 @@ impl AnalyticModel {
                     Surface::Cylinder { .. } => Kind::Cylinder,
                     Surface::Sphere { .. } => Kind::Sphere,
                     Surface::Cone { .. } => Kind::Cone,
-                    Surface::Torus { .. } => Kind::Torus,
+                    Surface::Torus { .. } | Surface::Spindle { .. } => Kind::Torus,
                 Surface::Param(_) => Kind::Spline,
                 },
             )
@@ -307,6 +307,12 @@ impl AnalyticModel {
                     frame,
                     major,
                     minor,
+                }
+                | Surface::Spindle {
+                    frame,
+                    major,
+                    minor,
+                    ..
                 } => {
                     let a = canonical_axis(frame.z);
                     let n = surface

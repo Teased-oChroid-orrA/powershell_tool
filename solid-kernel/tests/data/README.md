@@ -20,6 +20,15 @@ chamfered by 1.5, a cone R5 x 8, a hemisphere R4, a cylinder R3 x 8 capped by tw
 millimetres and are exact analytic shapes, so `tests/curved_step.rs` compares the native import with closed-form volumes
 without needing an OCCT-enabled test build.
 
+Phase 170 added two more (no downloaded file), tested by `tests/curved_step.rs`:
+
+- `spindle-cap.step` is hand-written: a cylinder R8 x 10 capped by the inner (lemon) part of a spindle torus (major 7, minor 25,
+  axis pointing down from 10 mm below the base). The cap holds the torus' cusp on the axis inside its face. Its exact volume
+  (2340.3249 mm³) is integrated in the test.
+- `far-nappe-chamfer.step` is `cylinder-chamfered-top.step` with the chamfer cone's position moved to origin (0, 0, 18.5), axis +z
+  (`#68`, `#69`). The cone is the same set of points, but the face now lies on the nappe past the apex, as some exporters write
+  it.
+
 ## Assembly and edit fixtures
 
 `assembly-mapped-items.step` is the box of `assembly-two-instances.step` instanced by two `MAPPED_ITEM`s of one `REPRESENTATION_MAP`

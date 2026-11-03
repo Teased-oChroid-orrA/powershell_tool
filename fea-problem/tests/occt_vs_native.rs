@@ -28,6 +28,8 @@ struct Run {
     size_jump: f64,
     gates: bool,
     mesh_s: f64,
+    /// Volume enclosed by the surface triangulation handed to the mesher (model units cubed).
+    volume: f64,
     solve_ms: f64,
     max_disp: f64,
     energy: f64,
@@ -117,6 +119,11 @@ fn axis_faces(c: &SolidCache, axis: usize, sign: f64) -> Vec<usize> {
 /// Mesh (and, with `solve`, solve the benchmark on) the solid `step` through `cache` at element size `text_h`.
 fn measure(base: &Problem, cache: SolidCache, step: &str, text_h: f64, solve_it: bool) -> Run {
     let mut r = Run::default();
+    let at = |i: usize| cache.vertices[i];
+    r.volume = cache.triangles.iter().map(|t| {
+        let (a, b, c) = (at(t[0]), at(t[1]), at(t[2]));
+        (a[0] * (b[1] * c[2] - b[2] * c[1]) + a[1] * (b[2] * c[0] - b[0] * c[2]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6.0
+    }).sum();
     let mut p = base.clone();
     p.set_solid(step, cache);
     p.mesh.size = text_h;
@@ -209,8 +216,8 @@ fn row(name: &str, which: &str, r: &Run) -> String {
     match &r.err {
         Some(e) if r.tets == 0 => format!("{name:<34} {which:<6} REFUSED: {e}"),
         _ => format!(
-            "{name:<34} {which:<6} tets {:>6} dofs {:>7} sJ {:.3} rr {:.3} er {:>5.1} jump {:>4.1} gates {} (<0.1: {}, on boundary {}) mesh {:>6.2}s solve {:>7.1}ms | umax {:.5e} U {:.5e} R{} {:>9.3} eq {:.1e}{}",
-            r.tets, r.dofs, r.min_sj, r.min_radius_ratio, r.max_edge_ratio, r.size_jump, if r.gates { "ok" } else { "NO" }, r.below_gate, r.below_gate_on_boundary, r.mesh_s, r.solve_ms, r.max_disp, r.energy, ["x", "y", "z"][r.axis], r.reaction, r.equilibrium,
+            "{name:<34} {which:<6} vol {:.6e} tets {:>6} dofs {:>7} sJ {:.3} rr {:.3} er {:>5.1} jump {:>4.1} gates {} (<0.1: {}, on boundary {}) mesh {:>6.2}s solve {:>7.1}ms | umax {:.5e} U {:.5e} R{} {:>9.3} eq {:.1e}{}",
+            r.volume, r.tets, r.dofs, r.min_sj, r.min_radius_ratio, r.max_edge_ratio, r.size_jump, if r.gates { "ok" } else { "NO" }, r.below_gate, r.below_gate_on_boundary, r.mesh_s, r.solve_ms, r.max_disp, r.energy, ["x", "y", "z"][r.axis], r.reaction, r.equilibrium,
             r.err.as_ref().map(|e| format!(" [{e}]")).unwrap_or_default()
         ),
     }
@@ -230,7 +237,9 @@ fn table() {
     for c in all.into_iter().filter(|c| c.name.contains(&only)) {
         let c = Case { h_scale: c.h_scale * scale, ..c };
         let (o, n) = compare(&c);
-        eprintln!("{}\n{}", row(&c.name, "OCCT", &o), row(&c.name, "native", &n));
+        // the B-rep's exact volume, against which both tessellations' volumes (`vol`, model units) can be read
+        let exact = Brep::from_step_text(&c.text).map(|b| format!("{:.6e} kernel mm³", b.volume())).unwrap_or_else(|e| format!("unavailable ({e})"));
+        eprintln!("{}\n{}\n{:<34} exact  vol {exact}", row(&c.name, "OCCT", &o), row(&c.name, "native", &n), c.name);
         models += 1;
         for (k, r) in [&o, &n].into_iter().enumerate() {
             tally[k][0] += usize::from(r.tets > 0);
@@ -413,6 +422,196 @@ fn native_edge_sampling() {
             let steps: Vec<f64> = pts.windows(2).map(|w| d(w[0], w[1])).collect();
             let length: f64 = steps.iter().sum();
             eprintln!("  edge {id}: {} points, length {:.3}, spacing {:.4} .. {:.4}", pts.len(), length, steps.iter().cloned().fold(f64::INFINITY, f64::min), steps.iter().cloned().fold(0.0, f64::max));
+        }
+    }
+}
+
+/// The benchmark's loaded and fixed faces (`measure`'s rule) of each model, face by face: tessellated area of each path against the
+/// B-rep's exact face area (OpenCascade `BRepGProp::SurfaceProperties`), with the face's boundary polygon (segments, longest one).
+/// A tessellated face is paired with the exact face whose centre is nearest its area centroid. `CASE` / `STEP_DIR` as for `table`.
+#[test]
+#[ignore = "diagnostic table"]
+fn benchmark_face_areas() {
+    let only = std::env::var("CASE").unwrap_or_default();
+    let all = std::env::var("STEP_DIR").map_or_else(|_| cases(), |d| dir_cases(&d));
+    let dist = |a: [f64; 3], b: [f64; 3]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+    for c in all.into_iter().filter(|c| c.name.contains(&only)) {
+        let base = Problem::from_step(&c.name, &c.text).expect("OpenCascade import");
+        let Geometry::Solid { cache: Some(oc), .. } = &base.geometry else { panic!() };
+        let exact = Brep::from_step_text(&c.text).expect("OpenCascade read").faces();
+        let nc = tessellate_step_native(&c.text, oc.deflection).expect("native tessellation");
+        eprintln!("{} (chord {:.4})", c.name, oc.deflection);
+        for (which, cache) in [("OCCT", oc), ("native", &nc)] {
+            let Some((axis, bottom, top)) = [2, 0, 1].into_iter().map(|a| (a, axis_faces(cache, a, -1.0), axis_faces(cache, a, 1.0))).find(|(_, b, t)| !b.is_empty() && !t.is_empty()) else {
+                eprintln!("  {which:<6} no flat face pair");
+                continue;
+            };
+            for (role, faces) in [("fixed", &bottom), ("loaded", &top)] {
+                let (mut sum, mut sum_exact) = (0.0, 0.0);
+                for f in faces {
+                    // area, area centroid and the edges used once (the boundary polygon) of the face's triangles
+                    let (mut area, mut centre) = (0.0, [0.0; 3]);
+                    let mut edges: std::collections::HashMap<(usize, usize), usize> = std::collections::HashMap::new();
+                    for (t, tf) in cache.triangles.iter().zip(&cache.face) {
+                        if *tf + 1 != *f {
+                            continue;
+                        }
+                        let [a, b, d] = t.map(|i| cache.vertices[i]);
+                        let (u, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [d[0] - a[0], d[1] - a[1], d[2] - a[2]]);
+                        let ar = 0.5 * dist([u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]], [0.0; 3]);
+                        area += ar;
+                        (0..3).for_each(|k| centre[k] += ar * (a[k] + b[k] + d[k]) / 3.0);
+                        for k in 0..3 {
+                            let (p, q) = (t[k], t[(k + 1) % 3]);
+                            *edges.entry((p.min(q), p.max(q))).or_default() += 1;
+                        }
+                    }
+                    let centre = centre.map(|x| x / area);
+                    let boundary: Vec<f64> = edges.iter().filter(|(_, n)| **n == 1).map(|((p, q), _)| dist(cache.vertices[*p], cache.vertices[*q])).collect();
+                    let e = exact.iter().min_by(|a, b| dist(a.centre, centre).total_cmp(&dist(b.centre, centre))).unwrap();
+                    sum += area;
+                    sum_exact += e.area;
+                    eprintln!(
+                        "  {which:<6} {role:<6} face{f:<4} centre ({:>9.4}, {:>9.4}, {:>9.4}) area {:>11.5} exact {:>11.5} ({:+.3} %, exact face {} at {:.1e}) boundary {:>4} segments, longest {:.4}",
+                        centre[0], centre[1], centre[2], area, e.area, 100.0 * (area / e.area - 1.0), e.index + 1, dist(e.centre, centre), boundary.len(), boundary.iter().copied().fold(0.0, f64::max)
+                    );
+                }
+                eprintln!("  {which:<6} {role:<6} along {} total {sum:.5} exact {sum_exact:.5} ({:+.3} %)", ["x", "y", "z"][axis], 100.0 * (sum / sum_exact - 1.0));
+            }
+            // The solve loads the volume mesh's boundary facets named after the face, not the surface triangles: the lattice mesher
+            // tags each facet with the surface face nearest it. Their area (corner nodes), and how much of it is off the face's plane.
+            let mut p = base.clone();
+            p.set_solid(&c.text, cache.clone());
+            let mesh = match solid_mesh(&p) {
+                Ok((m, _)) => m,
+                Err(e) => {
+                    eprintln!("  {which:<6} volume mesh refused: {e}");
+                    continue;
+                }
+            };
+            for (role, faces) in [("fixed", &bottom), ("loaded", &top)] {
+                for f in faces {
+                    let level = flat_face(cache, *f).unwrap().0[axis];
+                    let (mut area, mut tilted, mut off, mut n) = (0.0, 0.0, 0.0, 0);
+                    for facet in mesh.surfaces.get(&format!("face{f}")).map_or(&[][..], Vec::as_slice) {
+                        let [a, b, d] = [0, 1, 2].map(|k| mesh.nodes[facet[k]]);
+                        let (u, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [d[0] - a[0], d[1] - a[1], d[2] - a[2]]);
+                        let nv = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+                        let ar = 0.5 * dist(nv, [0.0; 3]);
+                        area += ar;
+                        n += 1;
+                        // more than a degree off the face normal / a corner more than a thousandth of the chord off its plane
+                        if (nv[axis].abs() / (2.0 * ar)) < 1f64.to_radians().cos() {
+                            tilted += ar;
+                        }
+                        if [a, b, d].iter().any(|x| (x[axis] - level).abs() > 1e-3 * cache.deflection) {
+                            off += ar;
+                        }
+                    }
+                    eprintln!("  {which:<6} {role:<6} face{f:<4} volume-mesh facets {n:>5} area {area:>11.5} (tilted > 1 deg {tilted:.5}, a corner off the plane {off:.5})");
+                }
+            }
+        }
+    }
+}
+
+/// Why the volume mesh's facets named after the loaded face are tilted off its plane (`CASE` / `STEP_DIR` as for `table`): each such
+/// facet's corners, the model faces each corner lies on (within the namer's `FACE_TOL` of a hundredth of the size), and whether the
+/// name came from all three corners sharing a face or from the face nearest the centroid.
+#[test]
+#[ignore = "diagnostic table"]
+fn loaded_face_tilted_facets() {
+    use fea_problem::solid::solid_surface;
+    let only = std::env::var("CASE").unwrap_or_default();
+    let all = std::env::var("STEP_DIR").map_or_else(|_| cases(), |d| dir_cases(&d));
+    let paths = std::env::var("PATHS").unwrap_or_else(|_| "OCCT,native".into());
+    for c in all.into_iter().filter(|c| c.name.contains(&only)) {
+        let base = Problem::from_step(&c.name, &c.text).expect("OpenCascade import");
+        let Geometry::Solid { cache: Some(oc), .. } = &base.geometry else { panic!() };
+        let nc = tessellate_step_native(&c.text, oc.deflection).expect("native tessellation");
+        for (which, cache) in [("OCCT", oc), ("native", &nc)] {
+            if !paths.contains(which) {
+                continue;
+            }
+            let Some((axis, _, top)) = [2, 0, 1].into_iter().map(|a| (a, axis_faces(cache, a, -1.0), axis_faces(cache, a, 1.0))).find(|(_, b, t)| !b.is_empty() && !t.is_empty()) else { continue };
+            let mut p = base.clone();
+            p.set_solid(&c.text, cache.clone());
+            let h = p.mesh.size;
+            let solid = solid_surface(&p).unwrap();
+            let (mesh, _) = solid_mesh(&p).unwrap();
+            let on = |x: [f64; 3]| -> Vec<(usize, f64)> { solid.faces_near(x, 1.2 * h).into_iter().filter(|f| f.dist.abs() <= 0.01 * h).map(|f| (f.face + 1, f.dist)).collect() };
+            eprintln!("{} {which}: size {h:.4}, loaded {top:?}", c.name);
+            for f in &top {
+                let mut by_kind: std::collections::BTreeMap<String, (usize, f64)> = std::collections::BTreeMap::new();
+                for facet in mesh.surfaces.get(&format!("face{f}")).map_or(&[][..], Vec::as_slice) {
+                    let v = [0, 1, 2].map(|k| mesh.nodes[facet[k]]);
+                    let (u, w) = ([v[1][0] - v[0][0], v[1][1] - v[0][1], v[1][2] - v[0][2]], [v[2][0] - v[0][0], v[2][1] - v[0][1], v[2][2] - v[0][2]]);
+                    let n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+                    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                    let tilt = (n[axis].abs() / len).clamp(-1.0, 1.0).acos().to_degrees();
+                    if tilt <= 1.0 {
+                        continue;
+                    }
+                    let sets: Vec<Vec<usize>> = v.iter().map(|x| on(*x).into_iter().map(|(f, _)| f).collect()).collect();
+                    let shared = sets[0].iter().any(|g| *g == *f && sets[1].contains(g) && sets[2].contains(g));
+                    let mut pattern: Vec<String> = sets.iter().map(|s| format!("{s:?}")).collect();
+                    pattern.sort();
+                    let key = format!("{} tilt {:>2}0s {}", if shared { "all-on" } else { "centroid" }, (tilt / 10.0) as usize, pattern.join(" "));
+                    let e = by_kind.entry(key).or_default();
+                    e.0 += 1;
+                    e.1 += 0.5 * len;
+                }
+                for (k, (n, a)) in &by_kind {
+                    eprintln!("  face{f} {k:<70} facets {n:>4} area {a:.5}");
+                }
+            }
+        }
+    }
+}
+
+/// Every flat face of each model (`CASE` / `STEP_DIR` as for `table`): the area of the volume mesh's facets named after it against
+/// the surface triangles' area, and the part of it in facets more than 45 degrees off the face's plane.
+#[test]
+#[ignore = "diagnostic table"]
+fn flat_face_facet_areas() {
+    let only = std::env::var("CASE").unwrap_or_default();
+    let all = std::env::var("STEP_DIR").map_or_else(|_| cases(), |d| dir_cases(&d));
+    let paths = std::env::var("PATHS").unwrap_or_else(|_| "OCCT,native".into());
+    for c in all.into_iter().filter(|c| c.name.contains(&only)) {
+        let base = Problem::from_step(&c.name, &c.text).expect("OpenCascade import");
+        let Geometry::Solid { cache: Some(oc), .. } = &base.geometry else { panic!() };
+        let nc = tessellate_step_native(&c.text, oc.deflection);
+        for (which, cache) in [("OCCT", Some(oc.clone())), ("native", nc.ok())] {
+            let Some(cache) = cache.filter(|_| paths.contains(which)) else { continue };
+            let mut p = base.clone();
+            p.set_solid(&c.text, cache.clone());
+            let Ok((mesh, _)) = solid_mesh(&p) else { continue };
+            let (mut worst, mut fins) = (0.0f64, 0.0);
+            for f in 1..=cache.face_names().len() {
+                let Ok((_, n)) = flat_face(&cache, f) else { continue };
+                let surface: f64 = cache.triangles.iter().zip(&cache.face).filter(|(_, tf)| **tf + 1 == f).map(|(t, _)| {
+                    let [a, b, d] = t.map(|i| cache.vertices[i]);
+                    let (u, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [d[0] - a[0], d[1] - a[1], d[2] - a[2]]);
+                    0.5 * ((u[1] * w[2] - u[2] * w[1]).powi(2) + (u[2] * w[0] - u[0] * w[2]).powi(2) + (u[0] * w[1] - u[1] * w[0]).powi(2)).sqrt()
+                }).sum();
+                let (mut area, mut steep) = (0.0, 0.0);
+                for facet in mesh.surfaces.get(&format!("face{f}")).map_or(&[][..], Vec::as_slice) {
+                    let [a, b, d] = [0, 1, 2].map(|k| mesh.nodes[facet[k]]);
+                    let (u, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [d[0] - a[0], d[1] - a[1], d[2] - a[2]]);
+                    let m = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+                    let len = (m[0] * m[0] + m[1] * m[1] + m[2] * m[2]).sqrt();
+                    area += 0.5 * len;
+                    if (m[0] * n[0] + m[1] * n[1] + m[2] * n[2]) < 45f64.to_radians().cos() * len {
+                        steep += 0.5 * len;
+                    }
+                }
+                worst = worst.max((area / surface - 1.0).abs());
+                fins += steep;
+                if steep > 0.0 {
+                    eprintln!("  {:<34} {which:<6} face{f:<4} surface {surface:>11.5} facets {area:>11.5} ({:+.3} %), over 45 deg {steep:.5} ({:.3} %)", c.name, 100.0 * (area / surface - 1.0), 100.0 * steep / surface);
+                }
+            }
+            eprintln!("{:<34} {which:<6} flat faces: worst facet/surface area {:.3} %, facets over 45 deg {fins:.5}", c.name, 100.0 * worst);
         }
     }
 }
