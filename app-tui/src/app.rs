@@ -1427,7 +1427,7 @@ fn execute_command(state: &mut AppState, cmd: Command) -> Vec<Effect> {
             Vec::new()
         }
         Command::ExportPreloadAnalysisReport => {
-            vec![Effect::ExportPreloadAnalysisReport(preload_analysis::view::build_report_text(&state.preload_analysis.model, &state.preload_analysis.fe))]
+            vec![Effect::ExportPreloadAnalysisReport(preload_analysis::report::build_report_text(&state.preload_analysis.model, state.preload_analysis.fe_current()))]
         }
         Command::OpenBoltPicker => {
             state.preload_analysis.bolt_picker = preload_analysis::bolt_picker::BoltPickerState::open_for(&state.preload_analysis.model);

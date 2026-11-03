@@ -10,11 +10,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::theme::{StatusTone, Theme};
+use crate::theme::{fmt_margin, tone_for_margin, StatusTone, Theme};
 
 use fastened_joint_solver::solve::{JointSolution, SolverStatus, StressSection};
 
 use super::model::{self, PreloadModel};
+use super::report::{display_value, status_label};
 use super::PreloadAnalysisState;
 
 const MIN_READOUT_WIDTH: u16 = 44;
@@ -62,36 +63,6 @@ fn compute_label_width(rows: &[model::FieldRow]) -> u16 {
         .max()
         .unwrap_or(0) as u16
         + 2
-}
-
-fn display_value(model: &PreloadModel, row: model::FieldRow) -> String {
-    match row {
-        model::FieldRow::Header(_) => String::new(),
-        model::FieldRow::ToggleMode => model.mode.label().to_string(),
-        model::FieldRow::OpenBoltPicker => model.matching_bolt().map(|b| b.designation.to_string()).unwrap_or_else(|| "Custom".to_string()),
-        model::FieldRow::OpenTemplatePicker => format!("{} member(s) - Enter to choose", model.members.len()),
-        model::FieldRow::ToggleTighteningFrom => model::label_tightening_from(model.tightening_from).to_string(),
-        model::FieldRow::AdvancedSection => String::new(),
-        model::FieldRow::ToggleBearingModel => model::label_bearing_model(model.bearing_model).to_string(),
-        model::FieldRow::ToggleMemberStiffness => match (model.member_stiffness_fe, model.fe_angle_deg) {
-            (false, _) => "Pressure Cone".to_string(),
-            (true, Some(a)) => format!("Finite Element (cone {a:.1} deg)"),
-            (true, None) => "Finite Element (pending, using cone)".to_string(),
-        },
-        model::FieldRow::ToggleExternalLoadEnabled => bool_label(model.external_load_enabled),
-        model::FieldRow::ToggleSlipEnabled => bool_label(model.slip_enabled),
-        model::FieldRow::ToggleStrengthLimitsEnabled => bool_label(model.strength_limits_enabled),
-        model::FieldRow::ToggleAddMember => format!("Enter ({}/{})", model.members.len(), model::MAX_MEMBERS),
-        model::FieldRow::ToggleRemoveMember => "Enter".to_string(),
-        model::FieldRow::ToggleUncertaintyEnabled => bool_label(model.uncertainty_enabled),
-        model::FieldRow::ToggleMonteCarloEnabled => bool_label(model.monte_carlo_enabled),
-        model::FieldRow::ToggleThreadLoadDistributionEnabled => bool_label(model.thread_load_distribution_enabled),
-        model::FieldRow::Number(target) => target.format_value(model.number_value(target)),
-    }
-}
-
-fn bool_label(b: bool) -> String {
-    if b { "Enabled" } else { "Disabled" }.to_string()
 }
 
 fn fields_required_width(state: &PreloadAnalysisState) -> u16 {
@@ -168,22 +139,6 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, state: &PreloadAnal
     }
 }
 
-fn tone_for_margin(margin: f64) -> StatusTone {
-    if !margin.is_finite() {
-        StatusTone::Neutral
-    } else if margin < 0.0 {
-        StatusTone::Danger
-    } else if margin < 0.15 {
-        StatusTone::Warning
-    } else {
-        StatusTone::Success
-    }
-}
-
-fn fmt_margin(margin: f64) -> String {
-    if margin.is_infinite() { "\u{2014}".to_string() } else { format!("{margin:+.2}") }
-}
-
 fn tone_color(tone: StatusTone) -> ratatui::style::Color {
     use ratatui::style::Color;
     match tone {
@@ -231,12 +186,7 @@ fn readout_lines<'a>(theme: &'a Theme, model: &'a PreloadModel, fe: &super::FeCh
         }
     };
 
-    let (status_text, status_tone) = match solution.status {
-        SolverStatus::Converged => ("CONVERGED", StatusTone::Success),
-        SolverStatus::PrevailingTorqueExceedsApplied => ("PREVAILING TORQUE EXCEEDS APPLIED", StatusTone::Warning),
-        SolverStatus::NotBracketed => ("NOT BRACKETED", StatusTone::Danger),
-        SolverStatus::MaxIterationsExceeded => ("MAX ITERATIONS EXCEEDED", StatusTone::Danger),
-    };
+    let (status_text, status_tone) = status_label(solution.status);
     let mut headline = vec![Span::styled(format!("Preload {:.0} lbf  from {:.1} in-lbf   ", solution.preload, solution.torque.applied), theme.title_style(false).add_modifier(Modifier::BOLD)), Span::styled(status_text, theme.status_style(status_tone).add_modifier(Modifier::BOLD))];
     if solution.status != SolverStatus::Converged {
         headline.push(Span::raw(format!("   residual {:.4}", solution.torque.residual)));
@@ -383,96 +333,6 @@ fn numbers_panel_lines(theme: &Theme, solution: &JointSolution) -> Vec<Line<'sta
     lines
 }
 
-/// Plain-text export - mirrors `pressure_vessel/view.rs::build_report_text`'s
-/// pattern: pure and synchronous, no filesystem access.
-pub fn build_report_text(model: &PreloadModel, fe: &super::FeCheckState) -> String {
-    let mut s = String::new();
-    s.push_str("Preload Analysis Report\n");
-    s.push_str("========================\n\n");
-    s.push_str(&format!("Mode: {}\n", model.mode.label()));
-    s.push_str(&format!("Tightening from: {}\n\n", model::label_tightening_from(model.tightening_from)));
-
-    let solution = match &model.output {
-        Ok(s) => s,
-        Err(e) => {
-            s.push_str(&format!("Invalid input: {e:?}\n"));
-            return s;
-        }
-    };
-
-    s.push_str(&format!("Solver status: {:?}\n", solution.status));
-    s.push_str(&format!("Solved preload: {:.4}\n", solution.preload));
-    s.push_str(&format!(
-        "Torque breakdown: applied {:.4}, thread {:.4} ({:.1}%), bearing {:.4} ({:.1}%), prevailing {:.4} ({:.1}%), residual {:.4}\n\n",
-        solution.torque.applied,
-        solution.torque.thread,
-        solution.torque.thread_fraction() * 100.0,
-        solution.torque.bearing,
-        solution.torque.bearing_fraction() * 100.0,
-        solution.torque.prevailing,
-        solution.torque.prevailing_fraction() * 100.0,
-        solution.torque.residual
-    ));
-    s.push_str(&format!(
-        "Deformation: fastener elongation {:.6}, member compression {:.6}, total {:.6}\n",
-        solution.deformation.fastener_elongation, solution.deformation.member_compression, solution.deformation.total_closure
-    ));
-    s.push_str(&format!(
-        "Nut rotation: {:.4} rev ({:.2} deg), fastener twist {:.3} deg, est. tool rotation {:.2} deg\n\n",
-        solution.rotation.revolutions, solution.rotation.degrees, solution.rotation.torsional_twist_degrees, solution.rotation.estimated_tool_rotation_degrees
-    ));
-    for (label, section) in [("Shank", &solution.stress.shank), ("Tensile area", &solution.stress.tensile_stress_area), ("Thread root", &solution.stress.thread_root)] {
-        s.push_str(&format!(
-            "{label}: axial {:.2}, shear {:.2}, von Mises {:.2}, yield MS {}, ult MS {}\n",
-            section.axial,
-            section.torsional_shear,
-            section.von_mises,
-            fmt_margin(section.yield_margin),
-            fmt_margin(section.ultimate_margin)
-        ));
-    }
-    if let Some(service) = &solution.service_load {
-        s.push_str(&format!(
-            "\nService load: external {:.4}, bolt load {:.4}, clamp load {:.4}, separation load {:.4}, margin {}\n",
-            service.external_load,
-            service.bolt_load,
-            service.member_load,
-            service.separation_load,
-            fmt_margin(service.separation_margin)
-        ));
-    }
-    if let (Some(capacity), Some(margin)) = (solution.slip_capacity, solution.slip_margin) {
-        s.push_str(&format!("Slip capacity {capacity:.4}, margin {}\n", fmt_margin(margin)));
-    }
-    if let Some(u) = solution.uncertainty {
-        s.push_str(&format!("\nUncertainty (worst case): preload {:.1} .. {:.1} .. {:.1} lbf (min/nominal/max)\n", u.preload_min, u.preload_nominal, u.preload_max));
-    }
-    if let Some(mc) = solution.monte_carlo {
-        s.push_str(&format!(
-            "Uncertainty (Monte Carlo, seed {}, {} samples): preload mean {:.1} +/- {:.1} lbf, range {:.1} .. {:.1} lbf\n",
-            mc.seed, mc.samples, mc.preload_mean, mc.preload_std_dev, mc.preload_min, mc.preload_max
-        ));
-    }
-    if !solution.warnings.is_empty() {
-        s.push_str("\nWarnings:\n");
-        for w in &solution.warnings {
-            s.push_str(&format!("  - {w}\n"));
-        }
-    }
-    if let Some(Ok(r)) = model.fe_input().and_then(|i| fe.current(&i)) {
-        s.push_str(&format!(
-            "\nMember compliance cross-check (FE, axisymmetric): cone C_m {:.4e}, FE C_m {:.4e} ({:+.1}%); joint load fraction cone {:.3}, FE {:.3}{}\n",
-            r.cone,
-            r.fe.compliance,
-            r.difference() * 100.0,
-            r.fraction_cone,
-            r.fraction_fe,
-            r.equivalent_angle_deg.map(|a| format!("; equivalent cone half angle {a:.1} deg")).unwrap_or_default()
-        ));
-    }
-    s
-}
-
 /// The finite-element member-compliance cross-check (`fe_check.rs`): the solver's cone estimate
 /// beside the axisymmetric FE value, the joint load fraction each gives, and the cone half angle that
 /// would reproduce the FE compliance.
@@ -614,7 +474,7 @@ mod tests {
     #[test]
     fn build_report_text_mentions_the_solver_status_and_preload() {
         let model = PreloadModel::default();
-        let text = build_report_text(&model, &super::super::FeCheckState::default());
+        let text = super::super::report::build_report_text(&model, None);
         assert!(text.contains("Solver status:"));
         assert!(text.contains("Solved preload:"));
     }

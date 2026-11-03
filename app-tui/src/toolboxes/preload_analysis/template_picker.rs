@@ -38,13 +38,6 @@ pub struct TemplatePickerState {
     base_seed: u64,
 }
 
-fn mix(seed: u64) -> u64 {
-    let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
-}
-
 impl TemplatePickerState {
     /// Opens with a seed derived from the clock, so each session starts a
     /// different random sequence (tests use [`open_with_seed`](Self::open_with_seed)).
@@ -72,7 +65,7 @@ impl TemplatePickerState {
     }
 
     pub fn generate(&mut self) {
-        let next = mix(self.base_seed.wrapping_add(self.history.len() as u64 + 1));
+        let next = joint_templates::random_seed(self.base_seed, self.history.len() as u64 + 1);
         self.history.push(next);
         self.cursor = Self::random_index();
     }

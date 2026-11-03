@@ -58,6 +58,8 @@ pub struct Renderer {
     /// Only the state-coloured faces (support, load, selection), for the styles without a surface.
     highlight_pipeline: wgpu::RenderPipeline,
     hidden_pipeline: wgpu::RenderPipeline,
+    /// The surface blended over what is already drawn at the pass's blend constant (`DisplayOptions::translucent`).
+    translucent_pipeline: wgpu::RenderPipeline,
     bg_pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     bind: wgpu::BindGroup,
@@ -99,10 +101,13 @@ pub struct DisplayOptions {
     pub key_colours: Option<[[u8; 3]; 4]>,
     /// Screen-space shift of the view in NDC units.
     pub pan: [f32; 2],
+    /// `(first, opacity)`: the triangles from index `first` of `Scene::triangles` on are drawn at `opacity` over the
+    /// ones before them, nearest layer only, in the styles that paint the surface (`Authoring::translucent`).
+    pub translucent: Option<(u32, f32)>,
 }
 impl Default for DisplayOptions {
     fn default() -> Self {
-        Self { show_mesh: false, show_contour: true, field: 0, viewport: None, background: None, style: DisplayStyle::Shaded, swing: None, shade: false, key_colours: None, pan: [0.0, 0.0] }
+        Self { show_mesh: false, show_contour: true, field: 0, viewport: None, background: None, style: DisplayStyle::Shaded, swing: None, shade: false, key_colours: None, pan: [0.0, 0.0], translucent: None }
     }
 }
 
@@ -224,7 +229,7 @@ impl Renderer {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let make = |label: &str, vs: &str, fs: &str, lines: bool, depth_write: bool, compare: wgpu::CompareFunction, colour: wgpu::ColorWrites| {
+        let make = |label: &str, vs: &str, fs: &str, lines: bool, depth_write: bool, compare: wgpu::CompareFunction, colour: wgpu::ColorWrites, blend: Option<wgpu::BlendState>| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pl),
@@ -238,7 +243,7 @@ impl Renderer {
                     module: &shader,
                     entry_point: Some(fs),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: colour })],
+                    targets: &[Some(wgpu::ColorTargetState { format, blend, write_mask: colour })],
                 }),
                 primitive: wgpu::PrimitiveState {
                     topology: if lines { wgpu::PrimitiveTopology::LineList } else { wgpu::PrimitiveTopology::TriangleList },
@@ -258,12 +263,15 @@ impl Renderer {
             })
         };
         use wgpu::CompareFunction::{Always, Less, LessEqual};
-        let pipeline = make("FEA surface", "vs", "fs", false, true, Less, wgpu::ColorWrites::ALL);
-        let depth_pipeline = make("FEA surface depth only", "vs", "fs", false, true, Less, wgpu::ColorWrites::empty());
-        let mesh_pipeline = make("FEA mesh overlay", "vs_mesh", "fs_mesh", true, false, LessEqual, wgpu::ColorWrites::ALL);
-        let highlight_pipeline = make("FEA highlighted faces", "vs_mesh", "fs_highlight", false, false, LessEqual, wgpu::ColorWrites::ALL);
-        let edge_pipeline = make("FEA feature edges", "vs_mesh", "fs_edge", true, false, LessEqual, wgpu::ColorWrites::ALL);
-        let hidden_pipeline = make("FEA hidden edges", "vs_mesh", "fs_hidden", true, false, Always, wgpu::ColorWrites::ALL);
+        let pipeline = make("FEA surface", "vs", "fs", false, true, Less, wgpu::ColorWrites::ALL, None);
+        let depth_pipeline = make("FEA surface depth only", "vs", "fs", false, true, Less, wgpu::ColorWrites::empty(), None);
+        let mesh_pipeline = make("FEA mesh overlay", "vs_mesh", "fs_mesh", true, false, LessEqual, wgpu::ColorWrites::ALL, None);
+        let highlight_pipeline = make("FEA highlighted faces", "vs_mesh", "fs_highlight", false, false, LessEqual, wgpu::ColorWrites::ALL, None);
+        let edge_pipeline = make("FEA feature edges", "vs_mesh", "fs_edge", true, false, LessEqual, wgpu::ColorWrites::ALL, None);
+        let hidden_pipeline = make("FEA hidden edges", "vs_mesh", "fs_hidden", true, false, Always, wgpu::ColorWrites::ALL, None);
+        // colour = opacity * surface + (1 - opacity) * what is behind, the opacity being the pass's blend constant.
+        let over = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Constant, dst_factor: wgpu::BlendFactor::OneMinusConstant, operation: wgpu::BlendOperation::Add };
+        let translucent_pipeline = make("FEA translucent surface", "vs", "fs", false, false, LessEqual, wgpu::ColorWrites::ALL, Some(wgpu::BlendState { color: over, alpha: over }));
         let bg_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("FEA background"),
             layout: Some(&pl),
@@ -318,6 +326,7 @@ impl Renderer {
             edge_pipeline,
             highlight_pipeline,
             hidden_pipeline,
+            translucent_pipeline,
             bg_pipeline,
             feature,
             feature_count: feature_data.len() as u32,
@@ -433,7 +442,7 @@ impl Renderer {
         camera: [f32; 4],
         options: DisplayOptions,
     ) {
-        let DisplayOptions { show_mesh, show_contour, field, viewport, background, style, swing, shade, key_colours, pan } = options;
+        let DisplayOptions { show_mesh, show_contour, field, viewport, background, style, swing, shade, key_colours, pan, translucent } = options;
         // A stale index (result switched, field absent) falls back to the primary scalar.
         let field = if field <= scene.fields.len() { field } else { 0 };
         let range = match field.checked_sub(1) {
@@ -522,10 +531,22 @@ impl Renderer {
                 pass.set_viewport(vp[0] as f32, vp[1] as f32, vp[2] as f32, vp[3] as f32, 0.0, 1.0);
                 pass.set_scissor_rect(vp[0], vp[1], vp[2], vp[3]);
                 pass.set_vertex_buffer(0, self.vertices.slice(..));
+                // A translucent tail is drawn after the solid triangles: its depth first, then its nearest layer blended
+                // over them (one layer, so its own overlaps never darken it). A hidden-line style draws it as solid.
+                let tail = translucent.filter(|_| style.paints_surface()).map(|(first, opacity)| (first.min(self.count) / 3 * 3, opacity.clamp(0.0, 1.0)));
+                let solid = tail.map_or(self.count, |(first, _)| first);
                 if style.occludes() {
                     pass.set_pipeline(if style.paints_surface() { &self.pipeline } else { &self.depth_pipeline });
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..self.count, 0, 0..1);
+                    pass.draw_indexed(0..solid, 0, 0..1);
+                }
+                if let Some((first, opacity)) = tail {
+                    pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.set_pipeline(&self.depth_pipeline);
+                    pass.draw_indexed(first..self.count, 0, 0..1);
+                    pass.set_pipeline(&self.translucent_pipeline);
+                    pass.set_blend_constant(wgpu::Color { r: f64::from(opacity), g: f64::from(opacity), b: f64::from(opacity), a: f64::from(opacity) });
+                    pass.draw_indexed(first..self.count, 0, 0..1);
                 }
                 if shade && !style.paints_surface() {
                     pass.set_pipeline(&self.highlight_pipeline);
@@ -759,6 +780,46 @@ impl Renderer {
             assert!((half - still).abs() < 1.5 && (still - full).abs() < 1.5, "a static draw with the same gain is the fully deformed one: {half} {still} {full}");
         });
     }
+    /// A translucent tail lets what it encloses show through: a small cube inside a big one is hidden while the big one
+    /// is solid, shows through it at the given opacity, and a hidden-line style ignores the translucency.
+    #[test]
+    #[ignore = "requires a native graphics adapter"]
+    fn a_translucent_tail_shows_the_solid_part_it_encloses() {
+        let _guard = headless_guard();
+        pollster::block_on(async {
+            let adapter = test_adapter().await.expect("adapter required");
+            let (inner, outer) = (cube(), cube());
+            let mut scene = cube();
+            // The inner cube (value 1, red end of the map) first, then the outer one (value 0, blue), twice its size.
+            scene.positions = inner.positions.iter().map(|p| p.map(|c| 0.4 * c)).chain(outer.positions.iter().copied()).collect();
+            scene.samples = (0..16).map(|i| [0.0, 0.0, 0.0, if i < 8 { 1.0 } else { 0.0 }]).collect();
+            scene.triangles = inner.triangles.iter().copied().chain(outer.triangles.iter().map(|i| i + 8)).collect();
+            let first = inner.triangles.len() as u32;
+            let (w, h) = (160u32, 160u32);
+            let renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+            let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let draw = |style, translucent| {
+                renderer.draw_display(&texture.create_view(&Default::default()), &scene, 0.0, 1.0, [0.9, -0.4, 1.2, 1.0], DisplayOptions { style, translucent, ..Default::default() });
+                read_back(&renderer, &texture)
+            };
+            let reddish = |img: &[u8]| img.chunks_exact(4).filter(|p| p[0] as i32 > p[2] as i32 + 20).count();
+            assert_eq!(reddish(&draw(DisplayStyle::Shaded, None)), 0, "a solid outer cube hides the inner one");
+            let seen = reddish(&draw(DisplayStyle::Shaded, Some((first, 0.35))));
+            assert!(seen > 300, "the inner cube shows through: {seen} pixels");
+            assert!(reddish(&draw(DisplayStyle::Shaded, Some((first, 0.9)))) < seen, "less of it through a more opaque cube");
+            assert_eq!(reddish(&draw(DisplayStyle::HiddenLinesRemoved, Some((first, 0.35)))), 0, "hidden lines draw it solid");
+        });
+    }
+
     /// The model's state colours are the user's: a face coded as a support is drawn in the chosen colour, and the default
     /// colours are what the contour map always gave.
     #[test]
@@ -1240,6 +1301,7 @@ mod snapshot_tests {
                 style: input.view.style_for(input.scene(), geometry),
                 shade: geometry,
                 key_colours: geometry.then_some(input.view.key_colours),
+                translucent: input.editor.and_then(|e| e.translucent()),
                 ..Default::default()
             },
         );
@@ -1638,6 +1700,56 @@ mod snapshot_tests {
         session.act(EditorAction::Vessel(VesselAct::Step("Inputs")));
         session.act(EditorAction::Vessel(VesselAct::Row(FieldRow::OpenMaterialPicker)));
         shoot(&mut session, "Inputs", "vessel-picker-dark", true, (1440, 900));
+    }
+
+    /// The Preload Analysis workbench (inputs dark, light and in a narrow window; the parts picture before the member FE
+    /// answers; the FE stress after; the bolt picker), as raw RGBA dumps:
+    /// `FEA_SNAPSHOT_PRELOAD_OUT=/dir cargo test ... preload_snapshot -- --ignored`.
+    #[test]
+    #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_PRELOAD_OUT"]
+    fn preload_snapshot() {
+        use crate::gpu_viewer::editor::preload::{file::PreloadFile, PreloadAct, PreloadSession};
+        use crate::gpu_viewer::editor::session::EditorAction;
+        use crate::toolboxes::preload_analysis::model::{FieldRow, PreloadModel};
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_PRELOAD_OUT") else { return };
+        let _guard = headless_guard();
+        let mut session = PreloadSession::new(&PreloadFile::capture(&PreloadModel::default(), "Lap joint"), std::env::temp_dir().join("preload-snapshot.json"));
+        let shoot = |session: &mut PreloadSession, step: &str, name: &str, dark: bool, (w, h): (u32, u32)| {
+            pollster::block_on(async {
+                let adapter = test_adapter().await.expect("adapter required");
+                let scene = session.scene().unwrap();
+                let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+                let texture = target(&r, w, h);
+                let mut gui = Gui::new();
+                gui.ctx().set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+                let view = ViewState::new(&scene);
+                let (yaw, pitch) = session.initial_view().map_or((0.0, 0.0), |v| v.angles());
+                let scenes = [scene];
+                let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+                gui.select_tab_named(&input, step);
+                draw(&mut r, &mut gui, &texture, &input, [yaw, pitch], session.default_mesh_lines());
+                std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
+            });
+        };
+        // Before the member FE answers the picture is the parts in the colour key.
+        if session.fe_current().is_none() {
+            shoot(&mut session, "Inputs", "preload-parts-dark", true, (1440, 900));
+        }
+        let start = std::time::Instant::now();
+        while session.fe_current().is_none() {
+            assert!(start.elapsed() < std::time::Duration::from_secs(120), "the member FE never answered");
+            session.poll();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        shoot(&mut session, "Inputs", "preload-inputs-dark", true, (1440, 900));
+        shoot(&mut session, "Inputs", "preload-inputs-light", false, (1440, 900));
+        shoot(&mut session, "Inputs", "preload-narrow", true, (860, 760));
+        session.act(EditorAction::Preload(PreloadAct::Step("Results")));
+        shoot(&mut session, "Results", "preload-results-dark", true, (1440, 900));
+        shoot(&mut session, "Results", "preload-results-light", false, (1440, 900));
+        session.act(EditorAction::Preload(PreloadAct::Step("Inputs")));
+        session.act(EditorAction::Preload(PreloadAct::Row(FieldRow::OpenBoltPicker)));
+        shoot(&mut session, "Inputs", "preload-picker-dark", true, (1440, 900));
     }
 
     /// The Search workbench after a real search (dark, light, a narrow window) and while one runs, as raw RGBA dumps:

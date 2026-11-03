@@ -26,6 +26,7 @@ pub mod joint_templates;
 pub mod template_picker;
 pub mod model;
 pub mod persistence;
+pub mod report;
 pub mod view;
 
 use crossterm::event::{KeyCode, KeyEvent};
@@ -163,6 +164,11 @@ impl PreloadAnalysisState {
         self.model.set_fe_angle(angle);
     }
 
+    /// The member-compliance cross-check for exactly the joint shown, when there is one.
+    pub fn fe_current(&self) -> Option<&Result<fe_check::FeResult, String>> {
+        self.model.fe_input().and_then(|i| self.fe.current(&i))
+    }
+
     /// A worker finished job `id`; a result for older inputs is kept only as "stale" (it never matches `current`).
     pub fn finish_fe(&mut self, id: u64, result: Result<fe_check::FeResult, String>) {
         let Some((_, input, _)) = self.fe.job.take_if(|(j, _, _)| *j == id) else { return };
@@ -282,7 +288,7 @@ pub fn handle_key(state: &mut PreloadAnalysisState, key: KeyEvent) -> (bool, Vec
             state.template_picker = TemplatePickerState::open();
             (true, Vec::new())
         }
-        KeyCode::Char('e' | 'E') => (true, vec![Effect::ExportPreloadAnalysisReport(view::build_report_text(&state.model, &state.fe))]),
+        KeyCode::Char('e' | 'E') => (true, vec![Effect::ExportPreloadAnalysisReport(report::build_report_text(&state.model, state.fe_current()))]),
         KeyCode::PageUp => {
             state.results_scroll = state.results_scroll.saturating_sub(crate::widgets::scroll_paragraph::SCROLL_STEP);
             (true, Vec::new())

@@ -1,6 +1,6 @@
 //! What the Pressure Vessel workbench shows: the inspector's cards, the tree, the ribbon and the menus. Plain data built
 //! from the model; the window draws it. Row labels, values, margins and their tones are the terminal toolbox's
-//! (`model::row_label`, `report::{display_value, fmt_margin, tone_for_margin}`), every number comes from
+//! (`model::row_label`, `report::display_value`, `theme::{fmt_margin, tone_for_margin}`), every number comes from
 //! `pressure-vessel-solver`.
 use super::{drawing, VesselAct, VesselSession};
 use crate::gpu_viewer::{
@@ -12,10 +12,10 @@ use crate::gpu_viewer::{
     menu::{Entry, Item, Menu},
     ui::{DockItem, RibbonTab, TreeNode},
 };
-use crate::theme::StatusTone;
+use crate::theme::{fmt_margin, tone_for_margin, StatusTone};
 use crate::toolboxes::pressure_vessel::{
     model::{self, FieldRow},
-    report::{display_value, fmt_margin, passes, tone_for_margin},
+    report::{display_value, passes},
 };
 use mechanics_core::lame::lame_constants;
 use pressure_vessel_solver::{
@@ -44,7 +44,7 @@ fn value(label: impl Into<String>, text: impl Into<String>) -> DockItem {
 fn psi(v: f64) -> String {
     format!("{v:.0} psi")
 }
-/// The window's tone for a margin's (`report::tone_for_margin`): a pass reads on, a failure or a thin margin warns.
+/// The window's tone for a margin's (`theme::tone_for_margin`): a pass reads on, a failure or a thin margin warns.
 fn margin_tone(margin: f64) -> Tone {
     match tone_for_margin(margin) {
         StatusTone::Success => Tone::On,

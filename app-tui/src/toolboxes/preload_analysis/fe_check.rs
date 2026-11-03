@@ -8,7 +8,7 @@
 
 use fastened_joint_solver::compliance::{member_stack_compliance, Member, MemberStack};
 use fastened_joint_solver::service::joint_load_fraction;
-use fea_problem::joint::{member_compliance, Layer, MemberFe};
+use fea_problem::joint::{member_field, Layer, MemberFe, MemberField};
 
 /// Poisson's ratio assumed for every member (the joint model carries moduli only).
 pub const MEMBER_NU: f64 = 0.3;
@@ -43,8 +43,15 @@ impl FeResult {
 }
 
 pub fn run(input: &FeInput) -> Result<FeResult, String> {
+    run_with_field(input).map(|(r, _)| r)
+}
+
+/// [`run`] together with the solved member stack it measured (stress per unit clamp force anywhere in it), so one solve
+/// feeds both the cross-check and a picture of the joint.
+pub fn run_with_field(input: &FeInput) -> Result<(FeResult, MemberField), String> {
     let layers: Vec<Layer> = input.members.iter().map(|m| Layer { thickness: m.thickness, e: m.e, nu: MEMBER_NU, hole_diameter: m.hole_diameter, outer_diameter: m.outer_diameter }).collect();
-    let fe = member_compliance(&layers, input.contact_diameter, input.contact_diameter)?;
+    let field = member_field(&layers, input.contact_diameter, input.contact_diameter)?;
+    let fe = field.fe;
     let stack = MemberStack { members: input.members.clone() };
     let cone_at = |angle: f64| member_stack_compliance(&stack, input.contact_diameter, input.contact_diameter, angle);
     let cone = cone_at(input.cone_half_angle_deg);
@@ -70,7 +77,7 @@ pub fn run(input: &FeInput) -> Result<FeResult, String> {
             0.0
         }
     };
-    Ok(FeResult { fe, cone, equivalent_angle_deg, fraction_cone: fraction(cone), fraction_fe: fraction(fe.compliance) })
+    Ok((FeResult { fe, cone, equivalent_angle_deg, fraction_cone: fraction(cone), fraction_fe: fraction(fe.compliance) }, field))
 }
 
 #[cfg(test)]
@@ -97,6 +104,17 @@ mod tests {
         // A softer member (higher compliance) lowers the bolt's share of an external load.
         assert!(r.fraction_fe.abs() > 0.0 && r.fraction_cone.abs() > 0.0);
         assert_eq!(r.fraction_fe > r.fraction_cone, r.fe.compliance > r.cone);
+    }
+
+    #[test]
+    fn the_field_crosses_threads_and_is_the_solve_the_cross_check_measured() {
+        fn send<T: Send + 'static>(_: &T) {}
+        let (r, field) = run_with_field(&input()).unwrap();
+        send(&field);
+        assert_eq!(field.fe, r.fe);
+        // A unit clamp force through the bearing ring: compression just under the head, inside the ring.
+        let s = std::thread::spawn(move || field.stress_at(0.25, 0.01)).join().unwrap().expect("inside the stack");
+        assert!(s[1] < 0.0, "{s:?}");
     }
 
     #[test]

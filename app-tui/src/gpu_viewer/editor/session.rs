@@ -91,6 +91,7 @@ pub enum EditorAction {
     Materials(super::materials::MaterialsAct),
     /// The Pressure Vessel workbench (see `vessel`).
     Vessel(super::vessel::VesselAct),
+    Preload(super::preload::PreloadAct),
     Stackup(super::stackup::StackupAct),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -346,7 +347,7 @@ impl Session {
             EditorAction::ToggleSupports => self.state.show_supports = !self.state.show_supports,
             EditorAction::ToggleLoads => self.state.show_loads = !self.state.show_loads,
             // A member session never receives solid actions (its UI does not offer them).
-            EditorAction::Solid(_) | EditorAction::Bushing(_) | EditorAction::Eccentric(_) | EditorAction::Fastener(_) | EditorAction::Search(_) | EditorAction::Materials(_) | EditorAction::Vessel(_) | EditorAction::Stackup(_) => {}
+            EditorAction::Solid(_) | EditorAction::Bushing(_) | EditorAction::Eccentric(_) | EditorAction::Fastener(_) | EditorAction::Search(_) | EditorAction::Materials(_) | EditorAction::Vessel(_) | EditorAction::Preload(_) | EditorAction::Stackup(_) => {}
         }
         self.touch();
     }

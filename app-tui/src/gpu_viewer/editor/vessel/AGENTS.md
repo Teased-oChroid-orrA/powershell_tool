@@ -4,7 +4,7 @@
 
 ## Purpose
 Owns: the window front end of Pressure Vessel (inspector cards, tree, ribbon, menus, typed edits, undo, the case file, the material picker card) and `drawing.rs`, the stress contour.
-Does not own: any stress, margin, buckling or thickness formula (`pressure-vessel-solver`, reached through `PressureVesselModel::commit_number` / `recompute`, and `stress_at_radius_with_thermal` for the picture), the form's rows and labels (`model::field_rows`, `model::row_label`), value text and margin tone (`report::{display_value, fmt_margin, tone_for_margin, passes}`), the report (`report::build_report_text`), the material filter and add-form checks (`material_picker::{MaterialPickerState::visible_indices, AddMaterialForm}`), the window or the cards' drawing (`gpu_viewer/gui`).
+Does not own: any stress, margin, buckling or thickness formula (`pressure-vessel-solver`, reached through `PressureVesselModel::commit_number` / `recompute`, and `stress_at_radius_with_thermal` for the picture), the form's rows and labels (`model::field_rows`, `model::row_label`), value text and pass rule (`report::{display_value, passes}`), margin text and tone (`theme::{fmt_margin, tone_for_margin}`, shared by every toolbox), the report (`report::build_report_text`), the material filter and add-form checks (`material_picker::{MaterialPickerState::visible_indices, AddMaterialForm}`), the window or the cards' drawing (`gpu_viewer/gui`).
 
 ## Code Map
 | Looking for... | Go to |

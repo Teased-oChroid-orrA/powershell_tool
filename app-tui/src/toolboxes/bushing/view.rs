@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::theme::{StatusTone, Theme};
+use crate::theme::{fmt_margin, tone_for_margin, StatusTone, Theme};
 
 use bushing_solver::tolerance::ToleranceStatus;
 
@@ -286,22 +286,6 @@ fn draw_fields(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingStat
     if let Some(hint_area) = hint_area {
         frame.render_widget(Paragraph::new(Line::from(Span::styled(hint, theme.disabled_style()))).wrap(Wrap { trim: true }), hint_area);
     }
-}
-
-fn tone_for_margin(margin: f64) -> StatusTone {
-    if !margin.is_finite() {
-        StatusTone::Neutral
-    } else if margin < 0.0 {
-        StatusTone::Danger
-    } else if margin < 0.15 {
-        StatusTone::Warning
-    } else {
-        StatusTone::Success
-    }
-}
-
-fn fmt_margin(margin: f64) -> String {
-    if margin.is_infinite() { "\u{2014}".to_string() } else { format!("{margin:+.2}") }
 }
 
 /// Maps a [`StatusTone`] to a concrete `ratatui` color without borrowing a

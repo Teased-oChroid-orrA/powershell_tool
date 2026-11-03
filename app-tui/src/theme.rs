@@ -136,3 +136,23 @@ pub enum StatusTone {
     Danger,
     Info,
 }
+
+/// A margin of safety's tone: no demand (an unbounded margin) neutral, negative danger, under 0.15 a warning, else
+/// success. The one rule every toolbox and native window reads.
+pub fn tone_for_margin(margin: f64) -> StatusTone {
+    if !margin.is_finite() {
+        StatusTone::Neutral
+    } else if margin < 0.0 {
+        StatusTone::Danger
+    } else if margin < 0.15 {
+        StatusTone::Warning
+    } else {
+        StatusTone::Success
+    }
+}
+
+/// A margin of safety as text: an em dash for an unbounded margin (nothing loads that check), else signed to two
+/// decimals.
+pub fn fmt_margin(margin: f64) -> String {
+    if margin.is_infinite() { "\u{2014}".to_string() } else { format!("{margin:+.2}") }
+}

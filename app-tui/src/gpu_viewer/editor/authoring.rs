@@ -200,6 +200,11 @@ pub trait Authoring {
     }
     /// The text of field `index` of the value card changed.
     fn card_field(&mut self, _index: usize, _text: String) {}
+    /// `(first, opacity)`: the scene's triangles from index `first` of `Scene::triangles` on are drawn at `opacity` so
+    /// what they enclose shows through (the Preload members around the bolt). `None` draws every triangle solid.
+    fn translucent(&self) -> Option<(u32, f32)> {
+        None
+    }
     /// Draw element edges when the window opens.
     fn default_mesh_lines(&self) -> bool {
         false

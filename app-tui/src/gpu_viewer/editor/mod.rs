@@ -21,6 +21,7 @@ pub mod materials;
 pub mod search;
 pub mod stackup;
 pub mod vessel;
+pub mod preload;
 pub mod stackup_transfer;
 pub mod solid;
 pub mod sketcher;

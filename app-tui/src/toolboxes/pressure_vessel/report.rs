@@ -2,7 +2,7 @@
 //! text and tone, and the plain-text report. The terminal view (`view.rs`) and the native window
 //! (`gpu_viewer/editor/vessel`) both read them here so the two never word a result differently.
 
-use crate::theme::StatusTone;
+use crate::theme::fmt_margin;
 
 use pressure_vessel_solver::buckling::BucklingApplicability;
 use pressure_vessel_solver::failure::governing;
@@ -24,26 +24,6 @@ pub fn display_value(model: &PressureVesselModel, row: FieldRow) -> String {
 /// A check passes at a margin of zero or more. An unbounded margin (nothing loads that check, e.g. no pressure) passes.
 pub fn passes(r: &pressure_vessel_solver::failure::MarginResult) -> bool {
     r.margin >= 0.0
-}
-
-/// A margin's tone: no demand neutral, negative danger, under 0.15 a warning, else success.
-pub fn tone_for_margin(margin: f64) -> StatusTone {
-    if !margin.is_finite() {
-        StatusTone::Neutral
-    } else if margin < 0.0 {
-        StatusTone::Danger
-    } else if margin < 0.15 {
-        StatusTone::Warning
-    } else {
-        StatusTone::Success
-    }
-}
-
-/// `em dash` for an unbounded (infinite) margin - no governing demand for
-/// that check - matching both existing GUI heads' own `fmt_margin`
-/// (`app/src/components.rs`, `app-egui/src/components.rs`).
-pub fn fmt_margin(margin: f64) -> String {
-    if margin.is_infinite() { "\u{2014}".to_string() } else { format!("{margin:+.2}") }
 }
 
 /// Plain-text export - vessel spec, governing/classification, every check,

@@ -20,8 +20,26 @@ use fastened_joint_solver::compliance::{FastenerSegment, Member, MemberStack};
 use fastened_joint_solver::solve::{compute, AnalysisMode, FrictionInputs, JointGeometry, JointInputs, JointSolution, MonteCarloSettings, TighteningMember, UncertaintyInputs};
 use fastened_joint_solver::thread_load_distribution::ThreadLoadDistributionInputs;
 use fastened_joint_solver::thread::ThreadGeometry;
-use fastened_joint_solver::thread_catalog::{find_matching, BoltCatalogEntry, AN_BOLT_CATALOG};
+use fastened_joint_solver::thread_catalog::{find_matching, BoltCatalogEntry, AN_BOLT_CATALOG, HI_LOK_CATALOG, MS_BOLT_CATALOG, NAS_UNF_BOLT_CATALOG, NAS_UNJF_BOLT_CATALOG};
 use fastened_joint_solver::validation::ValidationError;
+
+/// The fastener catalogs a bolt is picked from, in the order they are offered: `(section title, entries)`.
+pub const BOLT_SECTIONS: [(&str, &[BoltCatalogEntry]); 5] = [
+    ("AN3-AN20 (Aerospace Standard)", AN_BOLT_CATALOG),
+    ("NAS Tension/Shear Bolts (UNJF)", NAS_UNJF_BOLT_CATALOG),
+    ("NAS1003-1020 Machine Bolts (UNF)", NAS_UNF_BOLT_CATALOG),
+    ("MS21250 (UNJF)", MS_BOLT_CATALOG),
+    ("Hi-Lok HL18 Pins (UNJ)", HI_LOK_CATALOG),
+];
+
+/// A Hi-Lok pin: the catalog fills its thread geometry only (no sourced preload or torque-off value). Compared by
+/// designation, not address: a catalog slice copied into a const or static of this crate is a separate allocation.
+pub fn is_hi_lok(entry: &BoltCatalogEntry) -> bool {
+    HI_LOK_CATALOG.iter().any(|e| e.designation == entry.designation)
+}
+
+/// What picking a Hi-Lok pin does not set.
+pub const HI_LOK_NOTE: &str = "Thread geometry only - Hi-Lok preload is set by the collar's designed torque-off value, not typed in here. Set Target Preload from the applicable SRM/spec.";
 
 pub const MAX_MEMBERS: usize = 6;
 pub const MIN_MEMBERS: usize = 1;
@@ -95,8 +113,9 @@ pub struct MemberUi {
 }
 
 impl Default for MemberUi {
+    /// A 0.25 in aluminium plate (in, psi like every input), its hole the default AN6 clearance hole.
     fn default() -> Self {
-        Self { name: "Plate", thickness: 10.0, e: 70_000.0, hole_diameter: 11.0, outer_diameter: 0.0 }
+        Self { name: "Plate", thickness: 0.25, e: 10_300_000.0, hole_diameter: 0.406, outer_diameter: 0.0 }
     }
 }
 
@@ -815,8 +834,16 @@ impl PreloadModel {
     /// Commits one edited numeric field. A non-finite result is silently
     /// ignored - same convention every other toolbox in this crate uses.
     pub fn commit_number(&mut self, target: NumberTarget, raw: f64) {
+        if self.set_number(target, raw) {
+            self.recompute();
+        }
+    }
+
+    /// [`commit_number`](Self::commit_number) without the solve, for setting many fields at once (a case file):
+    /// call [`recompute`](Self::recompute) after. Returns whether the value was taken (a finite one).
+    pub fn set_number(&mut self, target: NumberTarget, raw: f64) -> bool {
         if !raw.is_finite() {
-            return;
+            return false;
         }
         match target {
             NumberTarget::AppliedTorque => self.applied_torque = raw,
@@ -882,7 +909,7 @@ impl PreloadModel {
             NumberTarget::ThreadEngagementLength => self.thread_engagement_length = raw.max(0.0),
             NumberTarget::ThreadShearStrength => self.thread_shear_strength = raw.max(0.0),
         }
-        self.recompute();
+        true
     }
 
     pub fn toggle_mode(&mut self) {
@@ -955,7 +982,9 @@ impl PreloadModel {
 
     pub fn add_member(&mut self) {
         if self.members.len() < MAX_MEMBERS {
-            self.members.push(MemberUi::default());
+            // The new plate takes the bolt's clearance hole from the stack it joins.
+            let hole_diameter = self.members.last().map_or(MemberUi::default().hole_diameter, |m| m.hole_diameter);
+            self.members.push(MemberUi { hole_diameter, ..MemberUi::default() });
             self.recompute();
         }
     }
@@ -981,6 +1010,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_hi_lok_section_of_the_offered_catalog_and_only_it_is_hi_lok() {
+        // `BOLT_SECTIONS` holds copies of the solver's catalog slices, so the test goes through it, not the statics.
+        for (title, entries) in BOLT_SECTIONS {
+            for e in entries {
+                assert_eq!(is_hi_lok(e), title.starts_with("Hi-Lok"), "{}", e.designation);
+            }
+        }
+    }
+
+    #[test]
     fn default_model_solves_successfully() {
         let model = PreloadModel::default();
         assert!(model.output.is_ok(), "{:?}", model.output);
@@ -990,6 +1029,18 @@ mod tests {
     fn default_model_produces_positive_preload() {
         let model = PreloadModel::default();
         let solution = model.output.as_ref().unwrap();
+        assert!(solution.preload > 0.0);
+    }
+
+    #[test]
+    fn an_added_member_is_an_imperial_plate_on_the_same_hole_and_the_joint_still_solves() {
+        // The default member was once metric (10 in thick, E 70000 psi, an 11 in hole) in this all-imperial model.
+        let mut model = PreloadModel::default();
+        model.members[0].hole_diameter = 0.39;
+        model.add_member();
+        let added = model.members[1];
+        assert_eq!((added.thickness, added.e, added.hole_diameter), (0.25, 10_300_000.0, 0.39));
+        let solution = model.output.as_ref().expect("a two-plate joint solves");
         assert!(solution.preload > 0.0);
     }
 

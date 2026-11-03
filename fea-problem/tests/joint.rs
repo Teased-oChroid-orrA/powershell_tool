@@ -116,3 +116,39 @@ fn compliance_sensitivities_are_exact_for_uncoupled_members_and_match_difference
     }
     assert!((s.compliance - member_compliance(&stack, 1.0, 1.0).unwrap().compliance).abs() < 1e-12 * s.compliance);
 }
+
+/// `2 pi r` times the axial stress per unit clamp force, integrated across the whole stack at height `y` (Simpson).
+fn axial_force_through(field: &fea_problem::joint::MemberField, r0: f64, r1: f64, y: f64) -> f64 {
+    let n = 2000;
+    let h = (r1 - r0) / n as f64;
+    (0..=n)
+        .map(|k| {
+            let r = r0 + h * k as f64;
+            let w = if k == 0 || k == n { 1.0 } else if k % 2 == 1 { 4.0 } else { 2.0 };
+            w * 2.0 * PI * r * field.stress_at(r, y).expect("inside the stack")[1]
+        })
+        .sum::<f64>()
+        * h
+        / 3.0
+}
+
+#[test]
+fn the_member_field_carries_the_clamp_force_through_every_section_and_is_the_compliance_model() {
+    let stack = [layer(0.5, 10.0e6, 0.5, None), layer(0.5, 29.0e6, 0.5, None)];
+    let field = fea_problem::joint::member_field(&stack, 1.0, 1.0).unwrap();
+    // The same model member_compliance solves.
+    assert_eq!(field.fe.compliance, member_compliance(&stack, 1.0, 1.0).unwrap().compliance);
+    // Equilibrium: every section of the stack carries the unit clamp force in compression.
+    let r_out = field.fe.outer_radius_used;
+    for y in [0.1, 0.25, 0.75, 0.9] {
+        let f = axial_force_through(&field, 0.25, r_out, y);
+        assert!((f + 1.0).abs() < 0.01, "y {y}: {f}");
+    }
+    // At the head face the compression sits under the bearing annulus: the annulus carries it all.
+    let under = axial_force_through(&field, 0.25, 0.5, 1e-9);
+    assert!((under + 1.0).abs() < 0.03, "{under}");
+    // Compression spreads with depth: the axial stress just outside the bearing radius grows from the face to the mid-plane.
+    let at = |y: f64| field.stress_at(0.7, y).unwrap()[1];
+    assert!(at(0.5).abs() > 5.0 * at(1e-9).abs(), "{} {}", at(1e-9), at(0.5));
+    assert!(field.stress_at(r_out + 1.0, 0.5).is_none(), "outside the stack");
+}

@@ -45,6 +45,41 @@ pub fn member_compliance(layers: &[Layer], head_diameter: f64, nut_diameter: f64
 
 pub fn member_compliance_sized(layers: &[Layer], head_diameter: f64, nut_diameter: f64, size_fraction: f64) -> Result<MemberFe, String> {
     let clock = std::time::Instant::now();
+    let (model, u, r_big) = solve_members(layers, head_diameter, nut_diameter, size_fraction)?;
+    let energy = model.strain_energy(&u)?;
+    Ok(MemberFe { compliance: 2.0 * energy, elements: model.mesh.n_elems(), dofs: model.mesh.n_dofs(), outer_radius_used: r_big, ms: clock.elapsed().as_secs_f64() * 1e3 })
+}
+
+/// The solved stack under a unit clamp force (the model [`member_compliance`] solves), for reading its stress anywhere.
+/// Coordinates are `(r, y)`: `y` runs from the head face (`0`) to the nut face (the stack thickness). Multiply by the
+/// clamp force for the stress under a preload.
+pub struct MemberField {
+    pub model: Model,
+    pub u: Vec<f64>,
+    pub locator: fea_core::locate::Locator,
+    pub fe: MemberFe,
+}
+
+impl MemberField {
+    /// Stress per unit clamp force at radius `r`, axial position `y`: `[radial, axial, hoop, shear r-y, 0, 0]`
+    /// (compression negative). `None` outside the stack.
+    pub fn stress_at(&self, r: f64, y: f64) -> Option<[f64; 6]> {
+        self.locator.stress_at(&self.model, &self.u, [r, y, 0.0], 0.0)
+    }
+}
+
+pub fn member_field(layers: &[Layer], head_diameter: f64, nut_diameter: f64) -> Result<MemberField, String> {
+    let clock = std::time::Instant::now();
+    let (model, u, r_big) = solve_members(layers, head_diameter, nut_diameter, SIZE_FRACTION)?;
+    let compliance = 2.0 * model.strain_energy(&u)?;
+    let fe = MemberFe { compliance, elements: model.mesh.n_elems(), dofs: model.mesh.n_dofs(), outer_radius_used: r_big, ms: clock.elapsed().as_secs_f64() * 1e3 };
+    let locator = model.locator();
+    Ok(MemberField { model, u, locator, fe })
+}
+
+/// The member model solved under its unit bearing loads: the model, its displacements and the outer radius given to
+/// members without one.
+fn solve_members(layers: &[Layer], head_diameter: f64, nut_diameter: f64, size_fraction: f64) -> Result<(Model, Vec<f64>, f64), String> {
     let (model, loads, bc, r_big) = member_model(layers, head_diameter, nut_diameter, size_fraction)?;
     let sol = model.solve_static_with(&loads, &bc, fea_core::SolveMethod::Direct)?;
     // The head and nut loads balance only if the pressures integrate to equal forces: check, not assume.
@@ -52,8 +87,7 @@ pub fn member_compliance_sized(layers: &[Layer], head_diameter: f64, nut_diamete
     if net.abs() > 1e-6 {
         return Err(format!("the head and nut loads do not balance (net {net:.2e}): the bearing faces are mismatched"));
     }
-    let u = model.strain_energy(&sol.u)?;
-    Ok(MemberFe { compliance: 2.0 * u, elements: model.mesh.n_elems(), dofs: model.mesh.n_dofs(), outer_radius_used: r_big, ms: clock.elapsed().as_secs_f64() * 1e3 })
+    Ok((model, sol.u, r_big))
 }
 
 /// Exact derivatives of the member compliance with respect to each member's modulus and Poisson's ratio (the mesh does not depend on

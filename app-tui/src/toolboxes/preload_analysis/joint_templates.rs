@@ -46,6 +46,13 @@ pub enum LayerRole {
 }
 
 impl LayerRole {
+    pub const ALL: [LayerRole; 5] = [LayerRole::Washer, LayerRole::Plate, LayerRole::Shim, LayerRole::Doubler, LayerRole::Fitting];
+
+    /// The role named `name` (`name()` read back).
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.name() == name)
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             LayerRole::Washer => "Washer",
@@ -180,6 +187,15 @@ impl Rng {
 
 const PLATE_THICKNESSES: [f64; 13] = [0.040, 0.050, 0.063, 0.071, 0.080, 0.090, 0.100, 0.125, 0.160, 0.190, 0.250, 0.312, 0.375];
 const FRICTIONS: [f64; 5] = [0.10, 0.12, 0.15, 0.18, 0.20];
+
+/// The seed of the `n`th random joint of a sequence that starts from `base` (a clock reading, say): consecutive `n` give
+/// unrelated joints, the same `(base, n)` the same one.
+pub fn random_seed(base: u64, n: u64) -> u64 {
+    let mut z = base.wrapping_add(n).wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
 
 /// A random but physically sensible joint: 2-3 plates (maybe a shim and a
 /// doubler/fitting), washers on 0-2 sides, an AN6-AN12-ish bolt, grip length

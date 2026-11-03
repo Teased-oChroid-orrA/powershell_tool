@@ -21,11 +21,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 
-use fastened_joint_solver::thread_catalog::{BoltCatalogEntry, AN_BOLT_CATALOG, HI_LOK_CATALOG, MS_BOLT_CATALOG, NAS_UNF_BOLT_CATALOG, NAS_UNJF_BOLT_CATALOG};
+use fastened_joint_solver::thread_catalog::BoltCatalogEntry;
 
 use crate::theme::Theme;
 
-use super::model::PreloadModel;
+use super::model::{is_hi_lok, PreloadModel, BOLT_SECTIONS, HI_LOK_NOTE};
 use crate::app::Effect;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -34,22 +34,9 @@ enum PickerRow {
     Entry(&'static BoltCatalogEntry),
 }
 
-/// The picker's own name for the catalog an entry came from - only Hi-Lok
-/// needs a distinct footer note (no sourced preload/torque-off value), so
-/// this is the one place that association is needed.
-fn is_hi_lok(entry: &BoltCatalogEntry) -> bool {
-    HI_LOK_CATALOG.iter().any(|e| std::ptr::eq(e, entry))
-}
-
 fn rows() -> Vec<PickerRow> {
     let mut rows = Vec::new();
-    for (label, catalog) in [
-        ("AN3-AN20 (Aerospace Standard)", AN_BOLT_CATALOG),
-        ("NAS Tension/Shear Bolts (UNJF)", NAS_UNJF_BOLT_CATALOG),
-        ("NAS1003-1020 Machine Bolts (UNF)", NAS_UNF_BOLT_CATALOG),
-        ("MS21250 (UNJF)", MS_BOLT_CATALOG),
-        ("Hi-Lok HL18 Pins (UNJ)", HI_LOK_CATALOG),
-    ] {
+    for (label, catalog) in BOLT_SECTIONS {
         rows.push(PickerRow::Section(label));
         rows.extend(catalog.iter().map(PickerRow::Entry));
     }
@@ -164,7 +151,7 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, picker: &BoltPickerS
     if let Some(note_area) = note_area {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "Thread geometry only - Hi-Lok preload is set by the collar's designed torque-off value, not typed in here. Set Target Preload from the applicable SRM/spec.",
+                HI_LOK_NOTE,
                 theme.disabled_style(),
             )))
             .wrap(Wrap { trim: true }),

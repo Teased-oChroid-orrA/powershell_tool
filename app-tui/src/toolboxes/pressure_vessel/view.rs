@@ -25,7 +25,8 @@ use pressure_vessel_solver::stress::{stress_at_inner_surface_with_thermal, stres
 use pressure_vessel_solver::thickness::ThicknessSolverOutcome;
 
 use super::model::{self, FieldRow, PressureVesselModel};
-use super::report::{display_value, fmt_margin, passes, tone_for_margin};
+use super::report::{display_value, passes};
+use crate::theme::{fmt_margin, tone_for_margin};
 use super::PressureVesselState;
 
 const MIN_READOUT_WIDTH: u16 = 34;

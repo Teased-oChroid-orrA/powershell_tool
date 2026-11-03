@@ -708,7 +708,7 @@ impl Viewer {
                         if self.view.deformed { self.view.gain } else { 0.0 },
                         [self.view.yaw, self.view.pitch, self.view.zoom, vp.w.max(1) as f32 / vp.h.max(1) as f32,
                         ],
-                        DisplayOptions { show_mesh: self.view.show_mesh && !self.editor.as_ref().is_some_and(|e| e.shows_body_only()), show_contour: self.view.show_contour, field: self.view.field, viewport: Some(scene_rect), background: Some(background), style: self.view.style_for(&self.project.scenes[self.project.selected], geometry), swing: self.view.swing(&self.project.scenes[self.project.selected]), shade: geometry, key_colours: geometry.then_some(self.view.key_colours), pan: self.view.pan,
+                        DisplayOptions { show_mesh: self.view.show_mesh && !self.editor.as_ref().is_some_and(|e| e.shows_body_only()), show_contour: self.view.show_contour, field: self.view.field, viewport: Some(scene_rect), background: Some(background), style: self.view.style_for(&self.project.scenes[self.project.selected], geometry), swing: self.view.swing(&self.project.scenes[self.project.selected]), shade: geometry, key_colours: geometry.then_some(self.view.key_colours), pan: self.view.pan, translucent: self.editor.as_ref().and_then(|e| e.translucent()),
                         },
                     );
                     r.paint_egui(&view, &ctx, full.take().expect("painted once"), [size.0, size.1],
@@ -908,6 +908,12 @@ pub fn run_fastener(mut session: super::editor::fastener::FastenerSession) -> Re
 
 /// Open the Pressure Vessel workbench on `session`.
 pub fn run_vessel(mut session: super::editor::vessel::VesselSession) -> Result<(), String> {
+    let scene = super::editor::authoring::Authoring::scene(&mut session)?;
+    launch(ViewerProject::single(scene), Some(Box::new(session)))
+}
+
+/// Open the Preload Analysis workbench on `session`.
+pub fn run_preload(mut session: super::editor::preload::PreloadSession) -> Result<(), String> {
     let scene = super::editor::authoring::Authoring::scene(&mut session)?;
     launch(ViewerProject::single(scene), Some(Box::new(session)))
 }
@@ -1784,6 +1790,37 @@ mod tests {
         click(&mut v, at);
         frame(&mut v);
         assert!(v.editor.as_ref().unwrap().value_card().is_some_and(|c| c.title == "Material"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The Preload Analysis window: a click on Applied Torque types it and the preload follows; the Bolt row opens the
+    /// bolt picker card.
+    #[test]
+    fn the_preload_workbench_edits_the_torque_by_click_and_typing_and_opens_the_bolt_picker() {
+        let dir = std::env::temp_dir().join(format!("window-preload-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let session = crate::gpu_viewer::editor::preload::PreloadSession::open(&dir.join("case.json")).unwrap();
+        let mut v = viewer(Some(Box::new(session)));
+        frame(&mut v);
+        let before = property_text(&v);
+        assert!(before.contains("Applied Torque  360.00 in-lbf"), "{before}");
+        let at = target(&v, "Applied Torque");
+        click(&mut v, at);
+        assert!(v.editor.as_ref().unwrap().prompting());
+        for c in "180".chars() {
+            v.input(Input::Key(Key::Character(c.to_string().into())));
+        }
+        v.input(Input::Key(Key::Named(NamedKey::Enter)));
+        frame(&mut v);
+        assert!(!v.editor.as_ref().unwrap().prompting());
+        let after = property_text(&v);
+        assert!(after.contains("Applied Torque  180.00 in-lbf"), "{after}");
+        let preload = |t: &str| t.lines().find(|l| l.starts_with("Preload  ")).map(str::to_string);
+        assert!(preload(&after).is_some() && preload(&after) != preload(&before), "half the torque, another preload: {:?} -> {:?}", preload(&before), preload(&after));
+        let at = target(&v, "Bolt (AN Standard)");
+        click(&mut v, at);
+        frame(&mut v);
+        assert!(v.editor.as_ref().unwrap().value_card().is_some_and(|c| c.title == "Bolt"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
