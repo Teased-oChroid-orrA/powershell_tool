@@ -425,3 +425,92 @@ fn native_edge_sampling() {
         }
     }
 }
+
+/// The benchmark's loaded and fixed faces (`measure`'s rule) of each model, face by face: tessellated area of each path against the
+/// B-rep's exact face area (OpenCascade `BRepGProp::SurfaceProperties`), with the face's boundary polygon (segments, longest one).
+/// A tessellated face is paired with the exact face whose centre is nearest its area centroid. `CASE` / `STEP_DIR` as for `table`.
+#[test]
+#[ignore = "diagnostic table"]
+fn benchmark_face_areas() {
+    let only = std::env::var("CASE").unwrap_or_default();
+    let all = std::env::var("STEP_DIR").map_or_else(|_| cases(), |d| dir_cases(&d));
+    let dist = |a: [f64; 3], b: [f64; 3]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+    for c in all.into_iter().filter(|c| c.name.contains(&only)) {
+        let base = Problem::from_step(&c.name, &c.text).expect("OpenCascade import");
+        let Geometry::Solid { cache: Some(oc), .. } = &base.geometry else { panic!() };
+        let exact = Brep::from_step_text(&c.text).expect("OpenCascade read").faces();
+        let nc = tessellate_step_native(&c.text, oc.deflection).expect("native tessellation");
+        eprintln!("{} (chord {:.4})", c.name, oc.deflection);
+        for (which, cache) in [("OCCT", oc), ("native", &nc)] {
+            let Some((axis, bottom, top)) = [2, 0, 1].into_iter().map(|a| (a, axis_faces(cache, a, -1.0), axis_faces(cache, a, 1.0))).find(|(_, b, t)| !b.is_empty() && !t.is_empty()) else {
+                eprintln!("  {which:<6} no flat face pair");
+                continue;
+            };
+            for (role, faces) in [("fixed", &bottom), ("loaded", &top)] {
+                let (mut sum, mut sum_exact) = (0.0, 0.0);
+                for f in faces {
+                    // area, area centroid and the edges used once (the boundary polygon) of the face's triangles
+                    let (mut area, mut centre) = (0.0, [0.0; 3]);
+                    let mut edges: std::collections::HashMap<(usize, usize), usize> = std::collections::HashMap::new();
+                    for (t, tf) in cache.triangles.iter().zip(&cache.face) {
+                        if *tf + 1 != *f {
+                            continue;
+                        }
+                        let [a, b, d] = t.map(|i| cache.vertices[i]);
+                        let (u, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [d[0] - a[0], d[1] - a[1], d[2] - a[2]]);
+                        let ar = 0.5 * dist([u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]], [0.0; 3]);
+                        area += ar;
+                        (0..3).for_each(|k| centre[k] += ar * (a[k] + b[k] + d[k]) / 3.0);
+                        for k in 0..3 {
+                            let (p, q) = (t[k], t[(k + 1) % 3]);
+                            *edges.entry((p.min(q), p.max(q))).or_default() += 1;
+                        }
+                    }
+                    let centre = centre.map(|x| x / area);
+                    let boundary: Vec<f64> = edges.iter().filter(|(_, n)| **n == 1).map(|((p, q), _)| dist(cache.vertices[*p], cache.vertices[*q])).collect();
+                    let e = exact.iter().min_by(|a, b| dist(a.centre, centre).total_cmp(&dist(b.centre, centre))).unwrap();
+                    sum += area;
+                    sum_exact += e.area;
+                    eprintln!(
+                        "  {which:<6} {role:<6} face{f:<4} centre ({:>9.4}, {:>9.4}, {:>9.4}) area {:>11.5} exact {:>11.5} ({:+.3} %, exact face {} at {:.1e}) boundary {:>4} segments, longest {:.4}",
+                        centre[0], centre[1], centre[2], area, e.area, 100.0 * (area / e.area - 1.0), e.index + 1, dist(e.centre, centre), boundary.len(), boundary.iter().copied().fold(0.0, f64::max)
+                    );
+                }
+                eprintln!("  {which:<6} {role:<6} along {} total {sum:.5} exact {sum_exact:.5} ({:+.3} %)", ["x", "y", "z"][axis], 100.0 * (sum / sum_exact - 1.0));
+            }
+            // The solve loads the volume mesh's boundary facets named after the face, not the surface triangles: the lattice mesher
+            // tags each facet with the surface face nearest it. Their area (corner nodes), and how much of it is off the face's plane.
+            let mut p = base.clone();
+            p.set_solid(&c.text, cache.clone());
+            let mesh = match solid_mesh(&p) {
+                Ok((m, _)) => m,
+                Err(e) => {
+                    eprintln!("  {which:<6} volume mesh refused: {e}");
+                    continue;
+                }
+            };
+            for (role, faces) in [("fixed", &bottom), ("loaded", &top)] {
+                for f in faces {
+                    let level = flat_face(cache, *f).unwrap().0[axis];
+                    let (mut area, mut tilted, mut off, mut n) = (0.0, 0.0, 0.0, 0);
+                    for facet in mesh.surfaces.get(&format!("face{f}")).map_or(&[][..], Vec::as_slice) {
+                        let [a, b, d] = [0, 1, 2].map(|k| mesh.nodes[facet[k]]);
+                        let (u, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [d[0] - a[0], d[1] - a[1], d[2] - a[2]]);
+                        let nv = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+                        let ar = 0.5 * dist(nv, [0.0; 3]);
+                        area += ar;
+                        n += 1;
+                        // more than a degree off the face normal / a corner more than a thousandth of the chord off its plane
+                        if (nv[axis].abs() / (2.0 * ar)) < 1f64.to_radians().cos() {
+                            tilted += ar;
+                        }
+                        if [a, b, d].iter().any(|x| (x[axis] - level).abs() > 1e-3 * cache.deflection) {
+                            off += ar;
+                        }
+                    }
+                    eprintln!("  {which:<6} {role:<6} face{f:<4} volume-mesh facets {n:>5} area {area:>11.5} (tilted > 1 deg {tilted:.5}, a corner off the plane {off:.5})");
+                }
+            }
+        }
+    }
+}
