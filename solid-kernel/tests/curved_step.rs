@@ -25,6 +25,16 @@ fn rounded_box(a: f64, b: f64, c: f64, r: f64) -> f64 {
         + 4. / 3. * PI * r * r * r
 }
 
+/// A cylinder of radius 8 and height 10 capped by the lemon part of a spindle torus (major 7, minor 25, axis pointing down from
+/// 10 mm below the base): the cap rises from 20 mm under the torus' equator at the rim to its cusp 24 mm under it on the axis.
+/// The cap's volume of revolution by Simpson's rule (smooth integrand; 2e5 intervals put the rule's error far below 1e-9).
+fn spindle_cap() -> f64 {
+    let f = |r: f64| TAU * r * ((625. - (r + 7.) * (r + 7.)).sqrt() - 20.);
+    let (n, h) = (200_000, 8. / 200_000.);
+    let inner: f64 = (1..n).map(|i| if i % 2 == 1 { 4. } else { 2. } * f(i as f64 * h)).sum();
+    PI * 64. * 10. + (f(0.) + f(8.) + inner) * h / 3.
+}
+
 fn cases() -> Vec<Case> {
     vec![
         Case {
@@ -65,6 +75,18 @@ fn cases() -> Vec<Case> {
             source: include_str!("data/capsule.step"),
             exact: PI * 9. * 8. + 4. / 3. * PI * 27.,
             faces: 3,
+        },
+        Case {
+            name: "cylinder with a spindle-torus cap (cusp in the face)",
+            source: include_str!("data/spindle-cap.step"),
+            exact: spindle_cap(),
+            faces: 3,
+        },
+        Case {
+            name: "chamfer declared on the cone's far nappe",
+            source: include_str!("data/far-nappe-chamfer.step"),
+            exact: PI * 25. * 10. - TAU * (1.5 * 1.5 / 2.) * (5. - 0.5),
+            faces: 4,
         },
         Case {
             name: "full torus (periodic in both directions)",

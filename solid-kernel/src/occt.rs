@@ -186,6 +186,10 @@ impl Brep {
         Ok(Self::one(s.fillet_edges(radius, s.iter_edge()).map_err(err)?))
     }
 
+    /// Exact enclosed volume of the B-rep (OpenCASCADE `BRepGProp::VolumeProperties`, no tessellation).
+    pub fn volume(&self) -> f64 {
+        self.solids.iter().map(|s| s.volume()).sum()
+    }
     pub fn face_count(&self) -> usize {
         self.solids.iter().map(|s| s.iter_face().count()).sum()
     }
