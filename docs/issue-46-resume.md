@@ -64,6 +64,8 @@ This is the current entry point for Claude Code or Codex. Historical phase repor
 
 **2026-11-01 spline edge update:** [Phase 169](issue-46-phase-169.md) (merged as PR #225, `28bb85c`) reads spline edges that use part of their curve (STEP keeps no trim parameters on an edge; `screw.step` splits one cubic into two edges). An interior vertex is located by bounded curve distance within the geometry tolerance, and the curve must pass it once. No corpus file refuses on spline coverage any more. `screw.step` now stops on its spindle-torus head (inner lemon part, a cusp inside one face), which needs a new surface chart; three NIST files refuse strictly on vertices more than 1e-7 mm off their splines and pass that stage in the tolerant re-read. Native still meshes 2 corpus files against OCCT's 3.
 
+**2026-11-02 spindle torus update:** [Phase 170](issue-46-phase-170.md) (merged as PR #227, `6b64721`) reads spindle-torus faces (charted per face on their own part and side, normal `S_u x S_v`) and cone faces declared on the far nappe. `screw.step` now meshes natively, so on the 35-file corpus native meshes every file OpenCASCADE meshes (3 each, 1 each passing the default gate). OpenCASCADE still imports all 35 files and native reads 3. The comparison table now prints exact B-rep volumes; native's tessellations sit up to 0.91 % below them at the harness chord. Phase 169's "cusp inside face #874" was wrong: the slot removes the axis.
+
 ## Establish current state
 
 1. Read root `CLAUDE.md`, then the relevant crate and `docs/AGENTS.md` instructions.
