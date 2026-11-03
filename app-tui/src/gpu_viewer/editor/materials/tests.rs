@@ -57,7 +57,7 @@ fn a_column_click_sorts_and_a_second_click_reverses() {
 }
 
 #[test]
-fn basis_and_group_filter_like_the_terminal() {
+fn basis_and_group_filter_the_results() {
     let mut s = session();
     run(&mut s, MaterialsAct::Basis(model::Basis::A));
     assert!(s.state().hits.iter().all(|&i| model::catalog()[i].extra.is_some_and(|x| x.basis == "A")));

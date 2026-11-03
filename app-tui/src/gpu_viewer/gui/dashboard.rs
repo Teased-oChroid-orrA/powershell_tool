@@ -2,7 +2,7 @@
 //! It fills the window; the window it lives in has no model, so nothing else is drawn.
 use super::{theme, Gui};
 use crate::gpu_viewer::dashboard::{ago, unix_now, Dashboard, Workbench};
-use egui::{CornerRadius, FontId, Rect, RichText, Sense, Stroke, Vec2};
+use egui::{CornerRadius, FontId, RichText, Sense, Stroke, Vec2};
 use std::path::PathBuf;
 
 /// What the person asked the dashboard for.
@@ -80,18 +80,12 @@ impl Gui {
         let inner = rect.shrink(14.0);
         let name = painter.layout_no_wrap(w.name.to_string(), FontId::proportional(15.0), p.text);
         painter.galley(inner.min, name.clone(), p.text);
-        // How it opens, top right.
-        let (tag, col) = if w.is_window() { ("window", p.good) } else { ("terminal", p.warn) };
-        let t = painter.layout_no_wrap(tag.to_string(), FontId::monospace(11.0), col);
-        let tr = Rect::from_min_size(egui::pos2(inner.right() - t.size().x - 12.0, inner.top()), t.size() + Vec2::new(12.0, 4.0));
-        painter.rect_filled(tr, CornerRadius::same(9), col.gamma_multiply(0.18));
-        painter.galley(tr.min + Vec2::new(6.0, 2.0), t, col);
         let body = painter.layout(w.summary.to_string(), FontId::proportional(12.5), p.dim, inner.width());
         painter.galley(inner.min + Vec2::new(0.0, name.size().y + 6.0), body, p.dim);
         let last = dash.recents.last(w.id).map_or_else(|| "not opened yet".to_string(), |r| format!("{}, {}", r.path.as_deref().map(file_name).unwrap_or("last session"), ago(now, r.opened)));
         let foot = painter.layout_no_wrap(format!("last: {last}"), FontId::monospace(11.0), p.dim);
         painter.galley(egui::pos2(inner.left(), inner.bottom() - foot.size().y), foot, p.dim);
-        let resp = resp.on_hover_text(if w.is_window() { "Opens in its own window" } else { "Opens in a terminal window" });
+        let resp = resp.on_hover_text("Opens in its own window");
         resp.clicked().then(|| DashEvent::Open(w.id, None))
     }
 
@@ -132,7 +126,7 @@ mod tests {
     use crate::gpu_viewer::dashboard::Recents;
 
     fn raw(events: Vec<egui::Event>) -> egui::RawInput {
-        egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1100.0, 760.0))), events, ..Default::default() }
+        egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1100.0, 760.0))), events, ..Default::default() }
     }
     fn frames(gui: &mut Gui, dash: &mut Dashboard, events: Vec<egui::Event>) -> Vec<DashEvent> {
         let mut all = Vec::new();

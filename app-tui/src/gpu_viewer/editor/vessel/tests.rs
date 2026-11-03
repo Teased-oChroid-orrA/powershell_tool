@@ -43,7 +43,7 @@ fn choices(card: &ValueCard) -> Vec<String> {
 }
 
 #[test]
-fn it_opens_on_the_terminal_forms_inputs_with_the_checks_and_a_contour() {
+fn it_opens_on_the_models_inputs_with_the_checks_and_a_contour() {
     let mut s = session("open");
     assert_eq!(s.title(), "Pressure Vessel | tank");
     assert!(s.benches().is_empty());
@@ -54,7 +54,7 @@ fn it_opens_on_the_terminal_forms_inputs_with_the_checks_and_a_contour() {
         ["vessel-geometry", "vessel-pressure-end-condition", "vessel-material", "vessel-analysis-options", "vessel-result", "vessel-checks", "vessel-thickness", "vessel-wall", "vessel-drawing"]
     );
     let t = texts(&cards);
-    // The rows are the terminal form's labels and values; the checks are the solver's.
+    // The rows are the model's labels and values; the checks are the solver's.
     assert!(t.contains("Outer Diameter  6.0000 in") && t.contains("End Condition  Closed ends"), "{t}");
     assert!(t.contains("Classification  Thick-wall") && t.contains("Inner diameter  4.0000 in"), "{t}");
     assert!(t.contains("Radial / hoop / axial  -5000 / 13000 / 4000 psi"), "the Shigley bore: {t}");
@@ -124,7 +124,7 @@ fn the_picker_searches_the_catalog_picks_and_adds_a_material_of_ones_own() {
     s.card_field(0, "4130".into());
     let card = s.value_card().unwrap();
     let hits = choices(&card);
-    // The terminal's own filter (`material_detail::matches`): the best matches lead.
+    // The shared filter (`material_detail::matches`): the best matches lead.
     assert!(hits.len() >= 2 && hits[0].contains("4130"), "{hits:?}");
     let i = s.model().material_catalog().iter().position(|m| m.name == hits[0]).unwrap();
     act(&mut s, VesselAct::PickMaterial(i));
@@ -156,7 +156,7 @@ fn the_picker_searches_the_catalog_picks_and_adds_a_material_of_ones_own() {
 }
 
 #[test]
-fn save_and_reopen_round_trips_every_input_and_a_custom_material_and_export_writes_the_terminal_report() {
+fn save_and_reopen_round_trips_every_input_and_a_custom_material_and_export_writes_the_report() {
     let mut s = session("save");
     edit(&mut s, NumberTarget::ExternalPressure, "100");
     edit(&mut s, NumberTarget::UnsupportedLength, "24");

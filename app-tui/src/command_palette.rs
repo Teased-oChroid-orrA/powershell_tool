@@ -1,10 +1,6 @@
-//! Global command palette. Concept ported from both existing GUI heads'
-//! own `command_palette.rs` (a plain `Command` enum + fuzzy-filtered list,
-//! toggled by a global keychord regardless of focus) - only the rendering
-//! backend differs. `app-egui/`'s own palette is an explicitly documented
-//! "scoped subset" missing several commands `app/`'s has (OpenReport,
-//! BrowseOutputFolder-equivalent, ClearRecentSearches); this palette
-//! starts with the fuller set from day one.
+//! Global command palette: a plain `Command` enum + fuzzy-filtered list,
+//! toggled by a global keychord regardless of focus. Commands are scoped to
+//! the terminal toolbox they act on (`Command::scope`).
 
 use crate::widgets::popup::centered_rect;
 use ratatui::Frame;
@@ -22,11 +18,7 @@ pub enum Command {
     SwitchToFastenerHole,
     SwitchToBushing,
     SwitchToEccentricBushing,
-    SwitchToLugAnalysis,
     SwitchToFeaWorkbench,
-    SwitchToPressureVessel,
-    SwitchToPreloadAnalysis,
-    SwitchToMaterialLookup,
     SwitchToDupes,
     SwitchToRename,
     SwitchToLogs,
@@ -52,21 +44,10 @@ pub enum Command {
     OpenReamerPicker,
     OpenHousingMaterialPicker,
     OpenBushingMaterialPicker,
-    TogglePressureVesselNumbersPanel,
-    ExportPressureVesselReport,
-    OpenPressureVesselMaterialPicker,
-    TogglePreloadAnalysisNumbersPanel,
-    ExportPreloadAnalysisReport,
-    OpenBoltPicker,
-    ToggleLugAnalysisProfile,
-    ExportLugAnalysisReport,
-    OpenLugMaterialBrowser,
     SolveFeaWorkbench,
     SaveFeaWorkbenchProblem,
     ExportFeaWorkbenchReport,
     ExportFeaWorkbenchVtu,
-    ToggleMaterialLookupCompare,
-    ExportMaterialLookupReport,
     Quit,
 }
 
@@ -76,11 +57,7 @@ impl Command {
         Command::SwitchToFastenerHole,
         Command::SwitchToBushing,
         Command::SwitchToEccentricBushing,
-        Command::SwitchToLugAnalysis,
         Command::SwitchToFeaWorkbench,
-        Command::SwitchToPressureVessel,
-        Command::SwitchToPreloadAnalysis,
-        Command::SwitchToMaterialLookup,
         Command::SwitchToDupes,
         Command::SwitchToRename,
         Command::SwitchToLogs,
@@ -100,21 +77,10 @@ impl Command {
         Command::OpenReamerPicker,
         Command::OpenHousingMaterialPicker,
         Command::OpenBushingMaterialPicker,
-        Command::TogglePressureVesselNumbersPanel,
-        Command::ExportPressureVesselReport,
-        Command::OpenPressureVesselMaterialPicker,
-        Command::TogglePreloadAnalysisNumbersPanel,
-        Command::ExportPreloadAnalysisReport,
-        Command::OpenBoltPicker,
-        Command::ToggleLugAnalysisProfile,
-        Command::ExportLugAnalysisReport,
-        Command::OpenLugMaterialBrowser,
         Command::SolveFeaWorkbench,
         Command::SaveFeaWorkbenchProblem,
         Command::ExportFeaWorkbenchReport,
         Command::ExportFeaWorkbenchVtu,
-        Command::ToggleMaterialLookupCompare,
-        Command::ExportMaterialLookupReport,
         Command::Quit,
     ];
 
@@ -124,11 +90,7 @@ impl Command {
             Command::SwitchToFastenerHole => "Switch to: Fastener Holes",
             Command::SwitchToBushing => "Switch to: Bushing Workbench",
             Command::SwitchToEccentricBushing => "Switch to: Eccentric Bushing",
-            Command::SwitchToLugAnalysis => "Switch to: Lug Analysis",
             Command::SwitchToFeaWorkbench => "Switch to: FEA Workbench",
-            Command::SwitchToPressureVessel => "Switch to: Pressure Vessel Analyzer",
-            Command::SwitchToPreloadAnalysis => "Switch to: Preload Analysis",
-            Command::SwitchToMaterialLookup => "Switch to: Material Lookup",
             Command::SwitchToDupes => "Switch to: Duplicate Finder (soon)",
             Command::SwitchToRename => "Switch to: Batch Rename (soon)",
             Command::SwitchToLogs => "Switch to: Log Analyzer (soon)",
@@ -148,21 +110,10 @@ impl Command {
             Command::OpenReamerPicker => "Open reamer catalog (Bore Diameter)",
             Command::OpenHousingMaterialPicker => "Open Housing Material picker",
             Command::OpenBushingMaterialPicker => "Open Bushing Material picker",
-            Command::TogglePressureVesselNumbersPanel => "Toggle Numbers panel",
-            Command::ExportPressureVesselReport => "Export report",
-            Command::OpenPressureVesselMaterialPicker => "Open Material picker",
-            Command::TogglePreloadAnalysisNumbersPanel => "Toggle Numbers panel",
-            Command::ExportPreloadAnalysisReport => "Export report",
-            Command::OpenBoltPicker => "Open Bolt (AN Standard) catalog",
-            Command::ToggleLugAnalysisProfile => "Toggle bore profile",
-            Command::ExportLugAnalysisReport => "Export report",
-            Command::OpenLugMaterialBrowser => "Open Lug Material browser",
             Command::SolveFeaWorkbench => "Solve the problem",
             Command::SaveFeaWorkbenchProblem => "Save problem (JSON)",
             Command::ExportFeaWorkbenchReport => "Export report",
             Command::ExportFeaWorkbenchVtu => "Export result (.vtu for ParaView)",
-            Command::ToggleMaterialLookupCompare => "Toggle comparison view",
-            Command::ExportMaterialLookupReport => "Export list and comparison",
             Command::Quit => "Quit",
         }
     }
@@ -177,11 +128,7 @@ impl Command {
             | Command::SwitchToFastenerHole
             | Command::SwitchToBushing
             | Command::SwitchToEccentricBushing
-            | Command::SwitchToLugAnalysis
             | Command::SwitchToFeaWorkbench
-            | Command::SwitchToPressureVessel
-            | Command::SwitchToPreloadAnalysis
-            | Command::SwitchToMaterialLookup
             | Command::SwitchToDupes
             | Command::SwitchToRename
             | Command::SwitchToLogs
@@ -200,11 +147,7 @@ impl Command {
             Command::ToggleBushingNumbersPanel | Command::ExportBushingReport | Command::OpenReamerPicker | Command::OpenHousingMaterialPicker | Command::OpenBushingMaterialPicker => {
                 Some(ToolId::Bushing)
             }
-            Command::TogglePressureVesselNumbersPanel | Command::ExportPressureVesselReport | Command::OpenPressureVesselMaterialPicker => Some(ToolId::PressureVessel),
-            Command::TogglePreloadAnalysisNumbersPanel | Command::ExportPreloadAnalysisReport | Command::OpenBoltPicker => Some(ToolId::PreloadAnalysis),
-            Command::ToggleLugAnalysisProfile | Command::ExportLugAnalysisReport | Command::OpenLugMaterialBrowser => Some(ToolId::LugAnalysis),
             Command::SolveFeaWorkbench | Command::SaveFeaWorkbenchProblem | Command::ExportFeaWorkbenchReport | Command::ExportFeaWorkbenchVtu => Some(ToolId::FeaWorkbench),
-            Command::ToggleMaterialLookupCompare | Command::ExportMaterialLookupReport => Some(ToolId::MaterialLookup),
         }
     }
 }

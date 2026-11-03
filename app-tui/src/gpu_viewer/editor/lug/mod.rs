@@ -302,7 +302,7 @@ impl LugSession {
             Err(e) => self.status = format!("Could not save {}: {e}", self.path.display()),
         }
     }
-    /// The terminal toolbox's report text of the analysis of the inputs shown, beside the case file.
+    /// The plain-text report (`model::report_text`) of the analysis of the inputs shown, beside the case file.
     fn export(&mut self) {
         let Some(run) = self.current_run() else {
             self.status = "Nothing to export yet: the analysis of these inputs has not finished.".into();

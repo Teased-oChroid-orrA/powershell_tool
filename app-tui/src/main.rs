@@ -27,8 +27,6 @@ use app_tui::toolboxes::bushing::bushing_id_persistence;
 use app_tui::toolboxes::bushing::material_persistence as bushing_material_persistence;
 use app_tui::toolboxes::bushing::reamer_persistence;
 use app_tui::toolboxes::fastener_hole::persistence as fastener_hole_persistence;
-use app_tui::toolboxes::preload_analysis::persistence as preload_persistence;
-use app_tui::toolboxes::pressure_vessel::persistence as pv_persistence;
 use app_tui::toolboxes::search::{exec as search_exec, persistence};
 use app_tui::widgets::shell;
 
@@ -233,28 +231,6 @@ fn execute_effect(tx: &mpsc::UnboundedSender<AppEvent>, state: &mut AppState, ef
                 let _ = tx.send(AppEvent::EccentricFinished { id, result: Box::new(result) });
             });
         }
-        Effect::RunLugAnalysis { id, input, cache } => {
-            let tx = tx.clone();
-            tokio::task::spawn_blocking(move || {
-                // The cache moves into the run; after a panic there is none to hand back.
-                let (result, cache) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app_tui::toolboxes::lug_analysis::model::run(&input, cache))).unwrap_or_else(|_| (Err("the lug analysis stopped unexpectedly".to_string()), None));
-                let _ = tx.send(AppEvent::LugAnalysisFinished { id, result: Box::new(result), cache });
-            });
-        }
-        Effect::RunLugMeshTest { id, input } => {
-            let tx = tx.clone();
-            tokio::task::spawn_blocking(move || {
-                let result = guarded("the mesh test", || app_tui::toolboxes::lug_analysis::mesh_test::run(&input));
-                let _ = tx.send(AppEvent::LugMeshTestFinished { id, result: Box::new(result) });
-            });
-        }
-        Effect::RunMemberFe { id, input } => {
-            let tx = tx.clone();
-            tokio::task::spawn_blocking(move || {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app_tui::toolboxes::preload_analysis::fe_check::run(&input))).unwrap_or_else(|_| Err("the FE check stopped unexpectedly".to_string()));
-                let _ = tx.send(AppEvent::MemberFeFinished { id, result: Box::new(result) });
-            });
-        }
         Effect::RunFeaPreview { id, problem, import_text } => {
             let tx = tx.clone();
             tokio::task::spawn_blocking(move || {
@@ -357,35 +333,9 @@ fn execute_effect(tx: &mpsc::UnboundedSender<AppEvent>, state: &mut AppState, ef
                 let _ = tx.send(AppEvent::TextFileRead { purpose, path, result });
             });
         }
-        Effect::ExportPressureVesselReport(contents) => {
-            tokio::task::spawn_blocking(move || {
-                let Some(path) = pv_persistence::report_path() else { return };
-                if let Some(parent) = path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                if std::fs::write(&path, contents).is_ok() {
-                    let _ = open::that(&path);
-                }
-            });
-        }
-        Effect::PersistPressureVesselMaterials => {
-            let materials = state.pressure_vessel.model.persisted_custom_materials();
-            tokio::task::spawn_blocking(move || pv_persistence::save(&materials));
-        }
         Effect::ExportBushingReport(contents) => {
             tokio::task::spawn_blocking(move || {
                 let Some(path) = bushing_persistence::report_path() else { return };
-                if let Some(parent) = path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                if std::fs::write(&path, contents).is_ok() {
-                    let _ = open::that(&path);
-                }
-            });
-        }
-        Effect::ExportPreloadAnalysisReport(contents) => {
-            tokio::task::spawn_blocking(move || {
-                let Some(path) = preload_persistence::report_path() else { return };
                 if let Some(parent) = path.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }

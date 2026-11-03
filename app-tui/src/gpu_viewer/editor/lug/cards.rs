@@ -1,5 +1,5 @@
 //! What the Lug Analysis workbench shows: the inspector's cards, the tree, the ribbon and the menus. Plain data built from
-//! the model and the last run; the window draws it. Row labels, values and hints are the terminal toolbox's
+//! the model and the last run; the window draws it. Row labels, values and hints are the model's
 //! (`model::{row_label, display_value, field_hint}`, `LugUiModel::validation_hint`); every number comes from `lug-solver`
 //! through `model::run` (`LugRun`: solution, checks, collapse, bushing, pin bending, comparison, notes).
 use super::{drawing, LugAct, LugSession};
@@ -112,7 +112,7 @@ impl LugSession {
         }
     }
 
-    /// One card per section of the terminal form (`field_rows`), in the form's own order; the Advanced settings row
+    /// One card per section of the input rows (`field_rows`), in the form's own order; the Advanced settings row
     /// starts its own card and its sections follow it.
     fn input_cards(&self) -> Vec<Card> {
         let mut sections: Vec<(String, Vec<DockItem>)> = Vec::new();

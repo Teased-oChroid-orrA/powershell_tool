@@ -27,7 +27,7 @@ pub fn release_own_console() {
 }
 
 /// Start `cmd` without a console window: a process started by a window that has no console would otherwise get a
-/// new one. A terminal toolbox still gets its own window (`cmd /C start` opens a new console for it).
+/// new one.
 pub fn without_console_window(cmd: &mut Command) -> &mut Command {
     #[cfg(windows)]
     {

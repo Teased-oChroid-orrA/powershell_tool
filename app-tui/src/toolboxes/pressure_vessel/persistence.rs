@@ -1,6 +1,6 @@
-//! Cross-relaunch persistence for the Pressure Vessel Analyzer toolbox -
-//! currently just user-added custom materials (`material_picker.rs`'s
-//! "add new material" flow). Uses `crate::paths::app_data_dir` (shared with
+//! Cross-relaunch persistence for the Pressure Vessel window -
+//! user-added custom materials (`material_picker.rs`'s
+//! "add new material" form). Uses `crate::paths::app_data_dir` (shared with
 //! every other toolbox's persistence module) under a fourth, distinct
 //! filename so this toolbox's settings never collide with Search Files'
 //! `settings-tui.json` or either other toolbox's own settings file.
@@ -14,17 +14,6 @@ use crate::paths::app_data_dir;
 /// Where the custom materials are kept (`None`: no app data folder on this machine).
 pub fn config_path() -> Option<PathBuf> {
     app_data_dir().map(|d| d.join("settings-tui-pressure-vessel.json"))
-}
-
-/// Fixed (non-timestamped) export destination for the `e` "export report"
-/// key - overwritten on every export, so it always reflects the latest
-/// vessel design rather than accumulating a file per press. Path
-/// resolution lives here (not in the pure `report.rs::build_report_text`,
-/// which only builds the text) so `Effect::ExportPressureVesselReport`'s
-/// execution in `main.rs` is the only place that touches the filesystem,
-/// matching this crate's own "side effects only in `execute_effect`" rule.
-pub fn report_path() -> Option<PathBuf> {
-    app_data_dir().map(|d| d.join("reports").join("pressure-vessel-report.txt"))
 }
 
 /// One user-added material - plain owned fields (unlike
@@ -70,14 +59,8 @@ fn load_from(path: &Path) -> Option<PersistedFile> {
 
 /// Best-effort, write-to-temp-then-rename - same crash-safety reasoning as
 /// `search/persistence.rs::save_to`. A failed save is never a reason to
-/// interrupt the user.
-pub fn save(materials: &[PersistedMaterial]) {
-    if let Some(path) = config_path() {
-        save_at(&path, materials);
-    }
-}
-
-/// [`save`] to `path` instead of the app data folder (the native window's tests keep theirs in a temp folder).
+/// interrupt the user. The Pressure Vessel window saves to `config_path()`
+/// (its tests to a temp folder).
 pub fn save_at(path: &Path, materials: &[PersistedMaterial]) {
     save_to(path, &PersistedFile { materials: materials.to_vec() });
 }

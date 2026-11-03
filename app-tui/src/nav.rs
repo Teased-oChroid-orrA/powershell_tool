@@ -1,43 +1,30 @@
-//! Toolbox registry and focus tracking. A plain enum + match, not a trait
-//! object registry - matches how both existing GUI heads (`app/`,
-//! `app-egui/`) still switch tools years into their own toolbox counts. A
-//! `Toolbox` trait is worth adding only once a second real toolbox is
-//! actually being migrated and the hardcoded match starts hurting.
+//! Terminal toolbox registry and focus tracking. A plain enum + match, not a
+//! trait object registry: a `Toolbox` trait is worth adding only once the
+//! hardcoded match starts hurting. Material Lookup, Pressure Vessel, Preload
+//! and Lug Analysis have no terminal toolbox: they open in native windows from
+//! the dashboard (`gpu_viewer/dashboard.rs`).
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolId {
     Search,
     FastenerHole,
     Bushing,
-    LugAnalysis,
     EccentricBushing,
     FeaWorkbench,
-    PressureVessel,
-    PreloadAnalysis,
-    MaterialLookup,
     Dupes,
     Rename,
     Logs,
 }
 
 impl ToolId {
-    /// Deliberately excludes `app-egui`'s `StressSolver` - a documented,
-    /// permanent exclusion (its PINN/AMR dependency would force the same
-    /// `windows`-crate workspace-exclusion problem `app-egui` has, see
-    /// `app-tui/AGENTS.md`), not an oversight like the other three were.
-    /// `FastenerHole`/`PreloadAnalysis` have no equivalent in either
-    /// existing GUI head - both are toolboxes unique to this crate, not
-    /// ported placeholders.
-    pub const ALL: [ToolId; 12] = [
+    /// Rail order. The PINN/AMR Stress Solver is deliberately absent (a
+    /// permanent exclusion, see the root `CLAUDE.md`).
+    pub const ALL: [ToolId; 8] = [
         ToolId::Search,
         ToolId::FastenerHole,
         ToolId::Bushing,
         ToolId::EccentricBushing,
-        ToolId::LugAnalysis,
         ToolId::FeaWorkbench,
-        ToolId::PressureVessel,
-        ToolId::PreloadAnalysis,
-        ToolId::MaterialLookup,
         ToolId::Dupes,
         ToolId::Rename,
         ToolId::Logs,
@@ -50,11 +37,7 @@ impl ToolId {
             ToolId::FastenerHole => "fastener-hole",
             ToolId::Bushing => "bushing",
             ToolId::EccentricBushing => "eccentric-bushing",
-            ToolId::LugAnalysis => "lug",
             ToolId::FeaWorkbench => "fea",
-            ToolId::PressureVessel => "pressure-vessel",
-            ToolId::PreloadAnalysis => "preload",
-            ToolId::MaterialLookup => "material-lookup",
             ToolId::Dupes => "dupes",
             ToolId::Rename => "rename",
             ToolId::Logs => "logs",
@@ -71,22 +54,15 @@ impl ToolId {
             ToolId::FastenerHole => "Fastener Holes",
             ToolId::Bushing => "Bushing Workbench",
             ToolId::EccentricBushing => "Eccentric Bushing",
-            ToolId::LugAnalysis => "Lug Analysis",
             ToolId::FeaWorkbench => "FEA Workbench",
-            ToolId::PressureVessel => "Pressure Vessel Analyzer",
-            ToolId::PreloadAnalysis => "Preload Analysis",
-            ToolId::MaterialLookup => "Material Lookup",
             ToolId::Dupes => "Duplicate Finder",
             ToolId::Rename => "Batch Rename",
             ToolId::Logs => "Log Analyzer",
         }
     }
 
-    /// Search Files, Fastener Holes, Bushing Workbench, Pressure Vessel
-    /// Analyzer, and Preload Analysis are migrated - Dupes/Rename/Logs
-    /// still render as dimmed "Soon" rail entries, mirroring both existing
-    /// heads' own inert-placeholder convention for their own not-yet-built
-    /// tools.
+    /// Dupes/Rename/Logs are not built yet: they render as dimmed "Soon"
+    /// rail entries.
     pub fn enabled(self) -> bool {
         !matches!(self, ToolId::Dupes | ToolId::Rename | ToolId::Logs)
     }
@@ -182,11 +158,10 @@ mod tests {
 
     #[test]
     fn every_tool_has_a_distinct_title_and_the_migrated_toolboxes_are_enabled() {
-        // Regression guard for the rail once genuinely missing three
-        // entries (`Dupes`/`Rename`/`Logs`) that both `app/` and
-        // `app-egui/` show as inert placeholders - `ALL` must list every
-        // variant, `enabled()` must gate them correctly.
-        assert_eq!(ToolId::ALL.len(), 12);
+        // Regression guard for the rail once genuinely missing the three
+        // placeholder entries (`Dupes`/`Rename`/`Logs`) - `ALL` must list
+        // every variant, `enabled()` must gate them correctly.
+        assert_eq!(ToolId::ALL.len(), 8);
         let titles: Vec<&str> = ToolId::ALL.iter().map(|t| t.title()).collect();
         let mut distinct = titles.clone();
         distinct.sort_unstable();

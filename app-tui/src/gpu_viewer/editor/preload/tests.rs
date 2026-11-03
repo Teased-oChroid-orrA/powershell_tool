@@ -48,7 +48,7 @@ fn wait_for_fe(s: &mut PreloadSession) {
 }
 
 #[test]
-fn it_opens_on_the_terminal_forms_inputs_draws_the_parts_then_the_fe_stress() {
+fn it_opens_on_the_models_inputs_draws_the_parts_then_the_fe_stress() {
     let mut s = session("open");
     assert_eq!(s.title(), "Preload Analysis | lap joint");
     assert!(s.benches().is_empty());
@@ -76,7 +76,7 @@ fn it_opens_on_the_terminal_forms_inputs_draws_the_parts_then_the_fe_stress() {
         ]
     );
     let t = texts(&cards);
-    // The rows are the terminal form's labels and values, worded for a click; the results are the solver's.
+    // The rows are the model's labels and values, worded for a click; the results are the solver's.
     assert!(t.contains("Analysis Mode  Torque Controlled") && t.contains("Bolt (AN Standard)  AN6"), "{t}");
     assert!(t.contains("Joint Template  1 member") && t.contains("Add Joint Member  Add (1/6)") && t.contains("Advanced settings  Show"), "{t}");
     let preload = s.model().output.as_ref().unwrap().preload;
@@ -135,7 +135,7 @@ fn a_typed_value_reaches_the_solver_and_undo_returns() {
 }
 
 #[test]
-fn switches_members_and_the_advanced_section_follow_the_terminal_rows() {
+fn switches_members_and_the_advanced_section_follow_the_model_rows() {
     let mut s = session("rows");
     // Showing the advanced rows is not an edit of the joint.
     act(&mut s, PreloadAct::Row(FieldRow::AdvancedSection));
@@ -159,6 +159,15 @@ fn switches_members_and_the_advanced_section_follow_the_terminal_rows() {
     assert!(s.model().uses_fe_stiffness());
     assert_eq!(s.model().solver_cone_angle_deg(), angle);
     assert!(texts(&s.inspector()).contains(&format!("Finite Element (cone {angle:.1} deg)")));
+    // The member compliance is then the FE one (to the angle bisection tolerance).
+    let fe_c = s.fe_current().unwrap().as_ref().unwrap().0.fe.compliance;
+    let c_m = s.model().output.as_ref().unwrap().compliance.c_m;
+    assert!((c_m / fe_c - 1.0).abs() < 1e-6, "{c_m:e} vs FE {fe_c:e}");
+    // Editing the joint drops the (now stale) FE angle at once: no FE value is applied to other inputs.
+    let t = s.model().members[0].thickness * 1.5;
+    edit(&mut s, NumberTarget::MemberThickness(0), &t.to_string());
+    assert!(!s.model().uses_fe_stiffness());
+    assert_eq!(s.model().solver_cone_angle_deg(), s.model().cone_half_angle_deg);
 }
 
 #[test]

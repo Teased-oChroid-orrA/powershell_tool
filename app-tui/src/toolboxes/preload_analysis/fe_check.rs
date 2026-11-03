@@ -4,7 +4,7 @@
 //! each implies and the cone half angle that would reproduce the FE value.
 //!
 //! The solver's own numbers are untouched: this is a read-only second opinion that runs on a
-//! worker a moment after the joint stops changing (`PreloadAnalysisState::tick`).
+//! worker a moment after the joint stops changing (`PreloadSession::start_fe`, `gpu_viewer/editor/preload`).
 
 use fastened_joint_solver::compliance::{member_stack_compliance, Member, MemberStack};
 use fastened_joint_solver::service::joint_load_fraction;

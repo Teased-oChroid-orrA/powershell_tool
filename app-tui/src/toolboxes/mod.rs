@@ -1,7 +1,10 @@
-//! Toolbox registry. Search Files, Fastener Holes, Bushing Workbench, and
-//! Pressure Vessel Analyzer are real toolboxes; Dupes/Rename/Logs exist
-//! only as `ToolId` rail placeholders (see `nav.rs`) until they're migrated
-//! in a future phase.
+//! Toolbox registry. Search Files, Fastener Holes, Bushing Workbench,
+//! Eccentric Bushing and the FEA Workbench are terminal toolboxes (`nav.rs`);
+//! Dupes/Rename/Logs exist only as `ToolId` rail placeholders.
+//! `lug_analysis`, `material_lookup`, `preload_analysis` and `pressure_vessel`
+//! have no terminal toolbox: they are the models their native windows
+//! (`gpu_viewer/editor/`) wrap (`material_lookup` is also the FEA Workbench's
+//! material picker).
 
 pub mod bushing;
 pub mod fea_workbench;

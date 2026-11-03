@@ -238,7 +238,7 @@ impl PreloadSession {
             Err(e) => self.status = format!("Could not save {}: {e}", self.path.display()),
         }
     }
-    /// The terminal toolbox's report text (with the member cross-check for this joint), beside the case file.
+    /// The plain-text report (with the member cross-check for this joint), beside the case file.
     fn export(&mut self) {
         let target = self.path.with_extension("report.txt");
         let fe = self.fe_check_current();

@@ -1,6 +1,6 @@
 //! The bolt and joint-template pickers as value cards. The bolt catalog (`model::BOLT_SECTIONS`), what picking an entry
 //! fills (`PreloadModel::select_bolt`), the presets and the random joints (`joint_templates::{presets, random,
-//! random_seed}`) and what applying one sets (`PreloadModel::apply_template`) are the terminal toolbox's own.
+//! random_seed}`) and what applying one sets (`PreloadModel::apply_template`) are `toolboxes::preload_analysis`'s own.
 use super::{PreloadAct, PreloadSession};
 use crate::gpu_viewer::{
     controller::UiAction,

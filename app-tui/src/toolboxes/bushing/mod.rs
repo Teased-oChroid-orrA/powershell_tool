@@ -99,8 +99,7 @@ pub struct BushingState {
     pub friction_picker: FrictionPickerState,
     pub bushing_id_picker: BushingIdPickerState,
     /// `d` toggles a text-only panel (Lamé constants + full per-radius
-    /// hoop/radial/axial stress field breakdown) - same reasoning as
-    /// `PressureVesselState::show_numbers`.
+    /// hoop/radial/axial stress field breakdown).
     pub show_numbers: bool,
     /// PageUp/PageDown-adjusted scroll offset into the Results pane -
     /// clamped on every render by `widgets::scroll_paragraph::render`, so

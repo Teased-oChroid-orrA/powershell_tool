@@ -51,7 +51,9 @@ HTML report plus optional CSV/JSON export. It has grown into a multi-tool
 Pressure Vessel Analyzer, Preload Analysis, Lug Analysis, an FEA Workbench
 (define a 2D / extruded / imported-mesh problem, solve it on `fea-core`, contour
 the result) and Material Lookup
-(placeholders remain for Dupes/Rename/Logs).
+(placeholders remain for Dupes/Rename/Logs). Every workbench opens in a native
+window from the dashboard; Pressure Vessel, Preload, Lug and Material Lookup
+have no terminal toolbox any more (removed 2026-11-03).
 
 **Migration complete: PowerShell -> C#/WinUI -> Rust.** The PowerShell and
 C#/WinUI tiers were removed from the tree (recoverable from git history;
@@ -80,7 +82,7 @@ nodes.
 |------|----------|------|--------|
 | Search/matching/extraction core | `search-core/` | `search-core/AGENTS.md` | Active. Zero GUI deps. |
 | Fast re-search index engine | `native-search/` | `native-search/AGENTS.md` | Active. Tantivy-backed. |
-| ratatui GUI head | `app-tui/` | `app-tui/AGENTS.md` + per-toolbox `app-tui/src/toolboxes/{search,fastener_hole,bushing,pressure_vessel,preload_analysis,lug_analysis,fea_workbench}/AGENTS.md` | Active. Sole GUI head. |
+| ratatui GUI head | `app-tui/` | `app-tui/AGENTS.md` + per-toolbox `app-tui/src/toolboxes/{search,fastener_hole,bushing,eccentric_bushing,fea_workbench}/AGENTS.md` (terminal toolboxes) and `{pressure_vessel,preload_analysis,lug_analysis,material_lookup}/AGENTS.md` (window-only models; windows under `app-tui/src/gpu_viewer/editor/`) | Active. Sole GUI head (terminal + native windows). |
 | Bushing press-fit solver | `bushing-solver/` | `bushing-solver/AGENTS.md` | Active. Consumed by `app-tui`. |
 | Fastened joint preload solver | `fastened-joint-solver/` | `fastened-joint-solver/AGENTS.md` | Active. Consumed by `app-tui` Preload Analysis. |
 | Edge-distance cross-checks (stress superposition / FE / allowables) | `edge-check/` | `edge-check/AGENTS.md` | Active on `main` (the contact FE is merged). Consumed by `app-tui` Bushing `c`/`C`. |

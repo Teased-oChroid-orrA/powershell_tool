@@ -1,101 +1,59 @@
 //! The Toolbench dashboard: every workbench in one list, how each one opens, and what was opened last. Pure data;
 //! `gui/dashboard.rs` draws it and `window.rs` carries out a launch.
 //!
-//! Process model (ADR-014): a workbench with a native window is its own `app-tui` process (`--gpu-solid [file]`, ...);
-//! one that is still a terminal toolbox is opened in a new terminal (`app-tui --toolbox <slug>`). The dashboard window
-//! stays open as the launcher and only records what it started (`Recents`).
+//! Process model (ADR-014): every workbench is its own native-window `app-tui` process (`--gpu-solid [file]`, ...).
+//! The dashboard window stays open as the launcher and only records what it started (`Recents`).
 use super::EditorKind;
-use crate::nav::ToolId;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// How a workbench opens.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Opens {
-    /// A native window process.
-    Window(EditorKind),
-    /// A terminal toolbox.
-    Terminal(ToolId),
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct Workbench {
-    /// Stable id: the toolbox slug, or the editor's for the ones without a terminal toolbox.
+    /// Stable id, kept in the recent list (`Recents`).
     pub id: &'static str,
     pub name: &'static str,
     pub summary: &'static str,
-    pub opens: Opens,
+    /// The native window it opens.
+    pub kind: EditorKind,
 }
 
 pub const WORKBENCHES: [Workbench; 11] = [
-    Workbench { id: "search", name: "Search", summary: "Keyword filters across text, Office, zip, rtf and pdf files. HTML report, CSV and JSON export.", opens: Opens::Window(EditorKind::Search) },
-    Workbench { id: "fastener-hole", name: "Fastener Hole", summary: "Hole, fastener and edge-distance geometry.", opens: Opens::Window(EditorKind::FastenerHole) },
-    Workbench { id: "bushing", name: "Bushing", summary: "Press fit, tolerance stack, edge-distance cross-check and verified fixes.", opens: Opens::Window(EditorKind::Bushing) },
-    Workbench { id: "bushing-stackup", name: "Bushing Stackup", summary: "Line-reamed through holes and per-member bushing bore preparation.", opens: Opens::Window(EditorKind::BushingStackup) },
-    Workbench { id: "pressure-vessel", name: "Pressure Vessel", summary: "Shell and head stresses, Lamé thick wall.", opens: Opens::Window(EditorKind::PressureVessel) },
-    Workbench { id: "preload", name: "Preload Analysis", summary: "Fastened joint preload and member stiffness.", opens: Opens::Window(EditorKind::Preload) },
-    Workbench { id: "lug", name: "Lug Analysis", summary: "Pin-loaded lug on the general FE kernel.", opens: Opens::Window(EditorKind::Lug) },
-    Workbench { id: "eccentric-bushing", name: "Eccentric Bushing", summary: "Spin capacity and maximum offset of an offset bore.", opens: Opens::Window(EditorKind::Eccentric) },
-    Workbench { id: "fea", name: "FEA Workbench", summary: "Sketch, STEP or mesh; supports, loads, solve, contour.", opens: Opens::Window(EditorKind::Solid) },
-    Workbench { id: "members", name: "Frame and Truss", summary: "Nodes, truss and frame members, supports and loads.", opens: Opens::Window(EditorKind::Members) },
-    Workbench { id: "material-lookup", name: "Material Lookup", summary: "About 1,400 materials; type to search.", opens: Opens::Window(EditorKind::Materials) },
+    Workbench { id: "search", name: "Search", summary: "Keyword filters across text, Office, zip, rtf and pdf files. HTML report, CSV and JSON export.", kind: EditorKind::Search },
+    Workbench { id: "fastener-hole", name: "Fastener Hole", summary: "Hole, fastener and edge-distance geometry.", kind: EditorKind::FastenerHole },
+    Workbench { id: "bushing", name: "Bushing", summary: "Press fit, tolerance stack, edge-distance cross-check and verified fixes.", kind: EditorKind::Bushing },
+    Workbench { id: "bushing-stackup", name: "Bushing Stackup", summary: "Line-reamed through holes and per-member bushing bore preparation.", kind: EditorKind::BushingStackup },
+    Workbench { id: "pressure-vessel", name: "Pressure Vessel", summary: "Shell and head stresses, Lamé thick wall.", kind: EditorKind::PressureVessel },
+    Workbench { id: "preload", name: "Preload Analysis", summary: "Fastened joint preload and member stiffness.", kind: EditorKind::Preload },
+    Workbench { id: "lug", name: "Lug Analysis", summary: "Pin-loaded lug on the general FE kernel.", kind: EditorKind::Lug },
+    Workbench { id: "eccentric-bushing", name: "Eccentric Bushing", summary: "Spin capacity and maximum offset of an offset bore.", kind: EditorKind::Eccentric },
+    Workbench { id: "fea", name: "FEA Workbench", summary: "Sketch, STEP or mesh; supports, loads, solve, contour.", kind: EditorKind::Solid },
+    Workbench { id: "members", name: "Frame and Truss", summary: "Nodes, truss and frame members, supports and loads.", kind: EditorKind::Members },
+    Workbench { id: "material-lookup", name: "Material Lookup", summary: "About 1,400 materials; type to search.", kind: EditorKind::Materials },
 ];
 
 impl Workbench {
     pub fn find(id: &str) -> Option<&'static Workbench> {
         WORKBENCHES.iter().find(|w| w.id == id)
     }
-    pub fn is_window(&self) -> bool {
-        matches!(self.opens, Opens::Window(_))
-    }
-    /// The file used when none is given: the editor's default, in the working folder. Terminal toolboxes keep their own.
+    /// The file used when none is given: the editor's default, in the working folder.
     pub fn default_file(&self) -> Option<PathBuf> {
-        match self.opens {
+        match self.kind {
             // Search keeps its saved folder unless a recent one is reopened.
-            Opens::Window(EditorKind::Search | EditorKind::Materials) => None,
-            Opens::Window(kind) => Some(std::env::current_dir().unwrap_or_default().join(kind.default_file())),
-            Opens::Terminal(_) => None,
+            EditorKind::Search | EditorKind::Materials => None,
+            kind => Some(std::env::current_dir().unwrap_or_default().join(kind.default_file())),
         }
     }
     /// Command line (after the program) that starts the workbench.
     pub fn args(&self, file: Option<&Path>) -> Vec<String> {
-        match self.opens {
-            Opens::Window(kind) => {
-                let mut a = vec![kind.flag().to_string()];
-                a.extend(file.map(|f| f.to_string_lossy().into_owned()));
-                a
-            }
-            Opens::Terminal(tool) => vec!["--toolbox".into(), tool.slug().into()],
-        }
+        let mut a = vec![self.kind.flag().to_string()];
+        a.extend(file.map(|f| f.to_string_lossy().into_owned()));
+        a
     }
     /// Whether the name or summary contains every word of `query` (case-insensitive); an empty query matches all.
     pub fn matches(&self, query: &str) -> bool {
         let hay = format!("{} {}", self.name, self.summary).to_lowercase();
         query.split_whitespace().all(|w| hay.contains(&w.to_lowercase()))
     }
-}
-
-/// Program and arguments that run `exe args` in a new terminal window on `os` (`std::env::consts::OS`), or `None`
-/// where no terminal can be started without writing a script (macOS: see [`macos_script`]).
-pub fn terminal_command(os: &str, exe: &Path, args: &[String]) -> Option<(String, Vec<String>)> {
-    let exe = exe.to_string_lossy().into_owned();
-    match os {
-        // `start` opens a new console window for a console program; the empty string is the window title.
-        "windows" => Some(("cmd".into(), ["/C", "start", "", &exe].iter().map(|s| s.to_string()).chain(args.iter().cloned()).collect())),
-        "linux" => Some(("x-terminal-emulator".into(), ["-e".to_string(), exe].into_iter().chain(args.iter().cloned()).collect())),
-        _ => None,
-    }
-}
-
-/// A `.command` script that runs `exe args`; macOS opens it in Terminal.
-pub fn macos_script(exe: &Path, args: &[String]) -> String {
-    let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
-    let mut line = quote(&exe.to_string_lossy());
-    for a in args {
-        line.push(' ');
-        line.push_str(&quote(a));
-    }
-    format!("#!/bin/sh\nexec {line}\n")
 }
 
 /// One thing the dashboard started.
@@ -177,14 +135,14 @@ impl Dashboard {
     pub fn visible(&self) -> Vec<&'static Workbench> {
         WORKBENCHES.iter().filter(|w| w.matches(&self.query)).collect()
     }
-    /// Start `workbench` (on `file` when it is a window workbench with one), record it, and keep the list on disk.
+    /// Start `workbench` (on `file` when given, else its default), record it, and keep the list on disk.
     pub fn launch(&mut self, id: &str, file: Option<PathBuf>) {
         let Some(w) = Workbench::find(id) else {
             self.message = Some(format!("No workbench called {id}."));
             return;
         };
         let file = file.or_else(|| w.default_file());
-        if matches!(w.opens,Opens::Window(EditorKind::BushingStackup)) {
+        if w.kind == EditorKind::BushingStackup {
             if let Some(path)=&file {if let Err(e)=super::editor::stackup::WindowLease::acquire(path){self.message=Some(e);return;}}
         }
         match spawn(w, file.as_deref()) {
@@ -206,47 +164,11 @@ impl Dashboard {
 fn spawn(w: &Workbench, file: Option<&Path>) -> Result<(), String> {
     use std::process::{Command, Stdio};
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let args = w.args(file);
-    let quiet = |c: &mut Command| {
-        crate::console::without_console_window(c).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    };
-    if w.is_window() {
-        let mut c = Command::new(&exe);
-        c.args(&args);
-        quiet(&mut c);
-        // The child is not waited for: the window it opens belongs to it.
-        return c.spawn().map(|_| ()).map_err(|e| e.to_string());
-    }
-    let os = std::env::consts::OS;
-    if let Some((program, a)) = terminal_command(os, &exe, &args) {
-        let mut c = Command::new(&program);
-        c.args(&a);
-        quiet(&mut c);
-        return c.spawn().map(|_| ()).map_err(|e| format!("{program}: {e}"));
-    }
-    if os == "macos" {
-        return open_macos_script(w, &exe, &args);
-    }
-    Err(format!("no terminal is known for {os}; run app-tui in a terminal"))
-}
-
-/// macOS: Terminal runs a `.command` script (the only way to hand it arguments). Unix-only code: the Windows build must still compile.
-#[cfg(unix)]
-fn open_macos_script(w: &Workbench, exe: &Path, args: &[String]) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-    use std::process::{Command, Stdio};
-    let dir = tempfile::tempdir().map_err(|e| e.to_string())?.keep();
-    let script = dir.join(format!("toolbench-{}.command", w.id));
-    crate::persistence::write(&script, macos_script(exe, args)).map_err(|e| e.to_string())?;
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
-    let mut c = Command::new("open");
-    c.arg(&script).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    c.spawn().map(|_| ()).map_err(|e| format!("open: {e}"))
-}
-
-#[cfg(not(unix))]
-fn open_macos_script(_: &Workbench, _: &Path, _: &[String]) -> Result<(), String> {
-    Err("this build has no macOS terminal launcher".into())
+    let mut c = Command::new(&exe);
+    c.args(w.args(file));
+    crate::console::without_console_window(&mut c).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    // The child is not waited for: the window it opens belongs to it.
+    c.spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -254,28 +176,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_workbench_has_a_distinct_id_and_the_terminal_ones_use_their_toolbox_slug() {
+    fn every_workbench_has_a_distinct_id() {
         let mut ids: Vec<_> = WORKBENCHES.iter().map(|w| w.id).collect();
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), WORKBENCHES.len());
         for w in WORKBENCHES {
-            if let Opens::Terminal(t) = w.opens {
-                assert_eq!(w.id, t.slug(), "{}", w.name);
-                assert!(t.enabled());
-            }
             assert_eq!(Workbench::find(w.id).map(|f| f.name), Some(w.name));
         }
     }
 
     #[test]
-    fn window_workbenches_open_their_editor_on_a_file_and_terminal_ones_by_slug() {
+    fn workbenches_open_their_editor_on_a_file() {
         let fea = Workbench::find("fea").unwrap();
         assert_eq!(fea.args(Some(Path::new("/x/a.json"))), ["--gpu-solid", "/x/a.json"]);
         assert_eq!(fea.args(None), ["--gpu-solid"]);
         assert_eq!(Workbench::find("search").unwrap().args(None), ["--gpu-search"]);
         assert_eq!(Workbench::find("bushing-stackup").unwrap().args(None), ["--gpu-bushing-stackup"]);
-        assert!(Workbench::find("bushing-stackup").unwrap().is_window());
         assert!(Workbench::find("fastener-hole").unwrap().default_file().unwrap().ends_with("fastener-hole-case.json"));
         assert_eq!(Workbench::find("fastener-hole").unwrap().args(Some(Path::new("c.json"))), ["--gpu-fastener", "c.json"]);
         assert_eq!(Workbench::find("search").unwrap().default_file(), None, "Search keeps its saved folder");
@@ -283,7 +200,7 @@ mod tests {
         assert_eq!(Workbench::find("material-lookup").unwrap().default_file(), None, "Material Lookup has no file");
         assert!(fea.default_file().unwrap().ends_with("solid-model.json"));
         let lug = Workbench::find("lug").unwrap();
-        assert!(lug.is_window() && lug.default_file().unwrap().ends_with("lug-case.json"));
+        assert!(lug.default_file().unwrap().ends_with("lug-case.json"));
         assert_eq!(lug.args(None), ["--gpu-lug"]);
     }
 
@@ -293,16 +210,6 @@ mod tests {
         assert_eq!(hay("").len(), WORKBENCHES.len());
         assert_eq!(hay("EDGE distance"), ["fastener-hole", "bushing"]);
         assert!(hay("zzz").is_empty());
-    }
-
-    #[test]
-    fn a_terminal_is_started_the_way_each_os_does_it() {
-        let (p, a) = terminal_command("windows", Path::new(r"C:\t\app-tui.exe"), &["--toolbox".into(), "lug".into()]).unwrap();
-        assert_eq!((p.as_str(), a.as_slice()), ("cmd", ["/C", "start", "", r"C:\t\app-tui.exe", "--toolbox", "lug"].map(String::from).as_slice()));
-        assert_eq!(terminal_command("linux", Path::new("/a"), &["x".into()]).unwrap().1, ["-e", "/a", "x"]);
-        assert!(terminal_command("macos", Path::new("/a"), &[]).is_none());
-        let s = macos_script(Path::new("/Apps/it's/app-tui"), &["--toolbox".into(), "lug".into()]);
-        assert_eq!(s, "#!/bin/sh\nexec '/Apps/it'\\''s/app-tui' '--toolbox' 'lug'\n");
     }
 
     #[test]

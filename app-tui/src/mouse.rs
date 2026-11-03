@@ -20,16 +20,11 @@ pub enum ClickTarget {
     PresetRow(usize),
     SettingsFieldRow(usize),
     FastenerRow(usize),
-    PressureVesselRow(usize),
     BushingRow(usize),
     BushingAdviceRow(usize),
-    TemplateRow(usize),
     ReamerRow(usize),
-    PreloadAnalysisRow(usize),
-    BoltRow(usize),
     MaterialRow(usize),
     MaterialLookupRow(usize),
-    LugAnalysisRow(usize),
     EccentricRow(usize),
     FeaWorkbenchRow(usize),
     PaletteRow(usize),
@@ -56,7 +51,6 @@ pub struct MouseRegions {
     /// workspace pane index.
     pub settings_section_panes: Vec<(Rect, crate::toolboxes::search::settings_view::Section)>,
     pub fastener_rows: Vec<(Rect, usize)>,
-    pub pressure_vessel_rows: Vec<(Rect, usize)>,
     pub bushing_rows: Vec<(Rect, usize)>,
     /// Everything clickable in the Bushing Results pane (action bar buttons,
     /// failing-check lines) - or, while the Fixes window is open, only that
@@ -66,15 +60,9 @@ pub struct MouseRegions {
     pub bushing_results: Option<Rect>,
     /// The Fixes window's outer rect while it is open.
     pub advice_window: Option<Rect>,
-    /// Preload Analysis joint-template window: rows/buttons and outer rect.
-    pub template_actions: Vec<(Rect, crate::toolboxes::preload_analysis::template_picker::TemplateAction)>,
-    pub template_window: Option<Rect>,
     pub reamer_rows: Vec<(Rect, usize)>,
-    pub preload_analysis_rows: Vec<(Rect, usize)>,
-    pub bolt_rows: Vec<(Rect, usize)>,
     pub material_rows: Vec<(Rect, usize)>,
     pub material_lookup_rows: Vec<(Rect, usize)>,
-    pub lug_analysis_rows: Vec<(Rect, usize)>,
     pub eccentric_rows: Vec<(Rect, usize)>,
     pub fea_workbench_rows: Vec<(Rect, usize)>,
     /// Row regions for the Bushing friction-coefficient picker - navigable

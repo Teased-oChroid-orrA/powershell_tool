@@ -1,6 +1,6 @@
-# toolboxes/material_lookup/ — Material Lookup toolbox
+# toolboxes/material_lookup/ — Material Lookup state (window + FEA picker)
 
-> TL;DR: Searchable, filterable, sortable browser over every built-in material (17 curated typicals + 1,375 MIL-HDBK-5J conditions in `mechanics-core`), with a property panel and a side-by-side comparison of up to four marked materials. Also the picker overlay used by Lug Analysis (`picking: true`).
+> TL;DR: Searchable, filterable, sortable browser over every built-in material (17 curated typicals + 1,375 MIL-HDBK-5J conditions in `mechanics-core`), with a property panel and a side-by-side comparison of up to four marked materials. No terminal toolbox (rail entry) since 2026-11-03: the Material Lookup window (`gpu_viewer/editor/materials/AGENTS.md`) wraps `MaterialLookupState`, and `view.rs` / `handle_key` stay as the terminal FEA Workbench's material picker overlay (`picking: true`, `fea_workbench::material_browser`).
 
 ## Purpose
 Owns: the pure query/sort/compare/report layer (`model.rs`), state + keys (`mod.rs`), rendering (`view.rs`).

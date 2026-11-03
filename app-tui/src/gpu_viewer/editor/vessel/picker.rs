@@ -1,7 +1,7 @@
 //! The material picker as a value card: a search field over a short list of the catalog's best matches, and a form for
-//! a material of one's own. The filter, the form's fields and their checks, and what adding sets are the terminal
-//! toolbox's own (`material_picker::{MaterialPickerState::visible_indices, AddMaterialForm}`,
-//! `PressureVesselModel::add_custom_material`); an added material is kept between runs as the terminal toolbox keeps it.
+//! a material of one's own. The filter, the form's fields and their checks, and what adding sets are the toolbox
+//! model's (`material_picker::{visible_indices, AddMaterialForm}`, `PressureVesselModel::add_custom_material`); an
+//! added material is kept between runs (`persistence::save_at`).
 use super::{VesselAct, VesselSession};
 use crate::gpu_viewer::{
     controller::UiAction,
@@ -9,7 +9,7 @@ use crate::gpu_viewer::{
     ui::{CardRow, ValueCard},
 };
 use crate::toolboxes::pressure_vessel::{
-    material_picker::{AddMaterialField, AddMaterialForm, MaterialPickerState, ADD_MATERIAL_FIELDS},
+    material_picker::{visible_indices, AddMaterialField, AddMaterialForm, ADD_MATERIAL_FIELDS},
     model::is_custom,
     persistence,
 };
@@ -28,9 +28,9 @@ fn act(a: VesselAct) -> UiAction {
     UiAction::Editor(EditorAction::Vessel(a))
 }
 
-/// The form's text fields (every field but its Save row), in order: field `i` of the card is `FORM[i - 1]`.
+/// The form's text fields, in order: field `i` of the card is `ADD_MATERIAL_FIELDS[i - 1]`.
 fn form_fields() -> impl Iterator<Item = AddMaterialField> {
-    ADD_MATERIAL_FIELDS.into_iter().filter(|f| *f != AddMaterialField::Save)
+    ADD_MATERIAL_FIELDS.into_iter()
 }
 
 impl VesselSession {
@@ -43,7 +43,7 @@ impl VesselSession {
         let p = self.picker.as_ref()?;
         if let Some(form) = &p.add {
             let mut rows: Vec<CardRow> = form_fields().enumerate().map(|(k, f)| CardRow::Field { label: f.label().into(), text: form.field_text(f).to_string(), index: k + 1, unit: String::new() }).collect();
-            rows.push(CardRow::Text("Kept for the next run too, with the materials added in the terminal toolbox.".into()));
+            rows.push(CardRow::Text("Kept for the next run too.".into()));
             if let Some(e) = &form.error {
                 rows.push(CardRow::Text(format!("Not added: {e}.")));
             }
@@ -52,8 +52,7 @@ impl VesselSession {
         let m = &self.model;
         let current = m.material_index;
         let catalog = m.material_catalog();
-        let filter = MaterialPickerState { filter_text: p.query.clone(), ..Default::default() };
-        let hits = filter.visible_indices(m);
+        let hits = visible_indices(m, &p.query);
         let more = hits.len().saturating_sub(SHOWN);
         // The current material first so it is never lost behind the search.
         let mut shown: Vec<usize> = hits.iter().copied().take(SHOWN).collect();

@@ -1,6 +1,6 @@
 //! What the Preload Analysis results read as, independent of any front end: each input row's display text, the
-//! margins and the verdict they give, and the plain-text report. The terminal view (`view.rs`) and the native window
-//! (`gpu_viewer/editor/preload`) both read them here so the two never word a result differently.
+//! margins and the verdict they give, and the plain-text report. The native window
+//! (`gpu_viewer/editor/preload`) reads them here, so no front end words a result differently.
 
 use fastened_joint_solver::solve::{JointSolution, SolverStatus};
 
@@ -159,3 +159,15 @@ pub fn build_report_text(model: &PreloadModel, fe: Option<&Result<FeResult, Stri
     s
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_report_text_mentions_the_solver_status_and_preload() {
+        let text = build_report_text(&PreloadModel::default(), None);
+        assert!(text.contains("Solver status:"));
+        assert!(text.contains("Solved preload:"));
+    }
+}

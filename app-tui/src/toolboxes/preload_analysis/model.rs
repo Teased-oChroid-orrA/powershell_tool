@@ -397,7 +397,7 @@ pub struct PreloadModel {
     pub member_stiffness_fe: bool,
     /// The Advanced section of the field list is open.
     pub advanced_open: bool,
-    /// Cone half angle matching the FE compliance of exactly the current joint; set by `PreloadAnalysisState::sync_fe_angle`.
+    /// Cone half angle matching the FE compliance of exactly the current joint; set by `PreloadSession::sync_fe_angle` (`gpu_viewer/editor/preload`).
     pub fe_angle_deg: Option<f64>,
 
     pub thread_major_dia: f64,

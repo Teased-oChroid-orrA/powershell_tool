@@ -97,7 +97,7 @@ impl PreloadSession {
         cards
     }
 
-    /// The window's text for an input row: the form's, with the terminal's key hints worded for a click.
+    /// The window's text for an input row: the model's, with its key hints worded for a click.
     fn row_value(&self, row: FieldRow) -> String {
         let n = self.model.members.len();
         match row {
@@ -109,7 +109,7 @@ impl PreloadSession {
         }
     }
 
-    /// One card per section of the terminal form (`field_rows`), in the form's own order; the Advanced row starts its
+    /// One card per section of the input rows (`field_rows`), in the form's own order; the Advanced row starts its
     /// own card and its sections follow it.
     fn input_cards(&self) -> Vec<Card> {
         let mut sections: Vec<(String, Vec<DockItem>)> = Vec::new();
@@ -145,7 +145,7 @@ impl PreloadSession {
             .collect()
     }
 
-    /// The clamped stack from head to nut (the terminal's stack picture, as captions).
+    /// The clamped stack from head to nut (as captions).
     fn stack_card(&self) -> Card {
         let rows = stack_diagram(&self.model);
         let last = rows.len().saturating_sub(1);

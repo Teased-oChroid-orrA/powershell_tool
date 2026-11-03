@@ -1,4 +1,4 @@
-//! The Material Lookup workbench in the native window: the terminal toolbox's own state (`toolboxes::material_lookup`:
+//! The Material Lookup workbench in the native window: the shared state (`toolboxes::material_lookup`:
 //! `MaterialLookupState` over `model::{catalog, groups, Query, filter_sort, compare_rows, report_text}`) behind the
 //! window chrome. Like Search it is a page bench (`Authoring::document`): a search bar with the basis choice, the
 //! results table sorted by a click on a column, and a card with the selected material's properties or the side-by-side
@@ -55,7 +55,7 @@ pub(crate) fn act(a: MaterialsAct) -> crate::gpu_viewer::controller::UiAction {
 
 pub struct MaterialsSession {
     st: MaterialLookupState,
-    /// Where Export writes (`<app data>/reports/material-lookup.txt`, the terminal toolbox's file).
+    /// Where Export writes (`<app data>/reports/material-lookup.txt`).
     report: Option<PathBuf>,
     status: String,
 }
@@ -119,7 +119,7 @@ impl MaterialsSession {
                     st.query.descending = !st.query.descending;
                 } else {
                     st.query.sort = k;
-                    // As in the terminal: a property starts with the largest first, a name A-Z.
+                    // A property starts with the largest first, a name A-Z.
                     st.query.descending = k != SortKey::Name;
                 }
                 st.refilter();
@@ -252,7 +252,7 @@ impl Authoring for MaterialsSession {
     fn document_field(&mut self, id: u8, text: String) {
         if id == INPUT_SEARCH && text != self.st.query.text {
             self.st.query.text = text;
-            // A changed search starts at the best match (the terminal's rule).
+            // A changed search starts at the best match.
             self.st.refilter_from_top();
         }
     }

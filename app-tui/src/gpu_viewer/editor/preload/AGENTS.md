@@ -1,6 +1,6 @@
 # gpu_viewer/editor/preload/ - the Preload Analysis workbench in the native window
 
-> TL;DR: `PreloadSession` is an `Authoring` over the terminal toolbox's own `PreloadModel` (the same rows, solve, bolt catalog, joint templates and report), plus a to-scale three-quarter picture of the joint: each member a revolved double frustum coloured by the member finite-element model's stress, the shank in the bore. No stress is computed here.
+> TL;DR: `PreloadSession` is an `Authoring` over `toolboxes::preload_analysis`'s `PreloadModel` (the same rows, solve, bolt catalog, joint templates and report), plus a to-scale three-quarter picture of the joint: each member a revolved double frustum coloured by the member finite-element model's stress, the shank in the bore. No stress is computed here.
 
 ## Purpose
 Owns: the window front end of Preload Analysis (inspector cards, tree, ribbon, menus, typed edits, undo, the case file, the bolt and joint-template picker cards), the member-FE job (debounce, worker, angle sync) and `drawing.rs`, the picture.
@@ -19,7 +19,7 @@ Does not own: any preload, torque, stiffness or stress formula (`fastened-joint-
 | GPU snapshots (parts, inputs / results dark and light, narrow, picker) | `gpu_viewer/render.rs` `preload_snapshot` (`FEA_SNAPSHOT_PRELOAD_OUT=dir`, ignored) |
 
 ## Contracts
-- **One model for both heads.** The window wraps `PreloadModel` directly; never re-implement a row, a check or a formula here.
+- **The window is the only head** (the terminal toolbox was removed 2026-11-03). It wraps `PreloadModel` directly; never re-implement a row, a check or a formula here.
 - **The FE does the legwork.** One worker solve (`fe_check::run_with_field`) feeds both the cross-check card and the picture; the cone half angle drawn is `FeResult::equivalent_angle_deg`, else the user's. The picture's member stress is `stress_at * preload`; the shank's is the solver's shank section. Until the answer for exactly this joint arrives the scene is a geometry view in part codes (`drawing::KEY_LABELS`: member, washer, bolt, cut face).
 - **Draw order is a contract with the renderer**: the shank and every cut face first, the members' revolved surfaces last; `drawing::scene` returns where they start and `Authoring::translucent` draws them at `drawing::MEMBER_OPACITY` (owner choice 2026-11-03: fixed 35%, no control) so the bolt shows through. Cut faces stay solid so the section reads exactly. Hidden-line styles draw everything solid.
 - The shank radius is `min(shank/2, 0.98 x the narrowest bore)` so it never coincides with a bore surface.

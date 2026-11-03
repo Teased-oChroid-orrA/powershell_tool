@@ -1,5 +1,5 @@
 //! What the Pressure Vessel workbench shows: the inspector's cards, the tree, the ribbon and the menus. Plain data built
-//! from the model; the window draws it. Row labels, values, margins and their tones are the terminal toolbox's
+//! from the model; the window draws it. Row labels, values, margins and their tones are the model's
 //! (`model::row_label`, `report::display_value`, `theme::{fmt_margin, tone_for_margin}`), every number comes from
 //! `pressure-vessel-solver`.
 use super::{drawing, VesselAct, VesselSession};
@@ -92,7 +92,7 @@ impl VesselSession {
         cards
     }
 
-    /// One card per section of the terminal form (`field_rows`), in the form's own order, each row's warning under it.
+    /// One card per section of the input rows (`field_rows`), in the form's own order, each row's warning under it.
     fn input_cards(&self) -> Vec<Card> {
         let m = &self.model;
         let mut sections: Vec<(String, Vec<DockItem>)> = Vec::new();

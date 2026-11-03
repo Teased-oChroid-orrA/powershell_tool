@@ -66,7 +66,7 @@ pub struct VesselSession {
     redo: Vec<VesselFile>,
     prompt: Option<Prompt>,
     picker: Option<picker::Picker>,
-    /// Where materials added here are kept between runs (the terminal toolbox's file; `None`: nowhere).
+    /// Where materials added here are kept between runs (`toolboxes::pressure_vessel::persistence`; `None`: nowhere).
     library: Option<PathBuf>,
     status: String,
     step: &'static str,
@@ -162,7 +162,7 @@ impl VesselSession {
             Err(e) => self.status = format!("Could not save {}: {e}", self.path.display()),
         }
     }
-    /// The terminal toolbox's report text, beside the case file (`name.report.txt`).
+    /// The plain-text report, beside the case file (`name.report.txt`).
     fn export(&mut self) {
         let target = self.path.with_extension("report.txt");
         match crate::persistence::write(&target, report::build_report_text(&self.model)) {

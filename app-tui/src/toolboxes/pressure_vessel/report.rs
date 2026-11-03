@@ -1,6 +1,6 @@
 //! What the Pressure Vessel results read as, independent of any front end: each input row's display text, the margin's
-//! text and tone, and the plain-text report. The terminal view (`view.rs`) and the native window
-//! (`gpu_viewer/editor/vessel`) both read them here so the two never word a result differently.
+//! text and tone, and the plain-text report. The native window
+//! (`gpu_viewer/editor/vessel`) reads them here, so no front end words a result differently.
 
 use crate::theme::fmt_margin;
 

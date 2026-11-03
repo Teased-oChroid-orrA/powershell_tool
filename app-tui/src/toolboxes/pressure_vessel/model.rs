@@ -116,8 +116,8 @@ pub enum FieldRow {
     /// same reasoning, applied here.
     Header(&'static str),
     ToggleEndCondition,
-    /// Opens the material picker overlay (`material_picker.rs`) rather
-    /// than cycling in place - once custom materials exist alongside the
+    /// Opens the material picker (the window's `editor/vessel/picker.rs`,
+    /// filtered by `material_picker::visible_indices`) rather than cycling in place - once custom materials exist alongside the
     /// 17 built-in ones, a filterable list is strictly more usable than
     /// stepping through one at a time.
     OpenMaterialPicker,

@@ -1,6 +1,6 @@
 # gpu_viewer/editor/vessel/ - the Pressure Vessel workbench in the native window
 
-> TL;DR: `VesselSession` is an `Authoring` over the terminal toolbox's own `PressureVesselModel` (the same rows, checks, minimum-wall solve, material catalog and report), plus a to-scale three-quarter section of the cylinder coloured by its Lamé stress through the wall. No stress is computed here.
+> TL;DR: `VesselSession` is an `Authoring` over `toolboxes::pressure_vessel`'s `PressureVesselModel` (the same rows, checks, minimum-wall solve, material catalog and report), plus a to-scale three-quarter section of the cylinder coloured by its Lamé stress through the wall. No stress is computed here.
 
 ## Purpose
 Owns: the window front end of Pressure Vessel (inspector cards, tree, ribbon, menus, typed edits, undo, the case file, the material picker card) and `drawing.rs`, the stress contour.
@@ -19,12 +19,12 @@ Does not own: any stress, margin, buckling or thickness formula (`pressure-vesse
 | GPU snapshots (inputs / results dark and light, narrow, picker) | `gpu_viewer/render.rs` `vessel_snapshot` (`FEA_SNAPSHOT_VESSEL_OUT=dir`, ignored) |
 
 ## Contracts
-- **One model for both heads.** The terminal `PressureVesselState` is not used; the window wraps `PressureVesselModel` directly. Never re-implement a row, a check or a formula here.
+- **The window is the only head** (the terminal toolbox was removed 2026-11-03). It wraps `PressureVesselModel` directly. Never re-implement a row, a check or a formula here.
 - **A check with no load on it passes** (`report::passes`: margin >= 0, an unbounded margin passes). The verdict, tree and step state all use it.
 - A typed value equal to the current one is not an edit (no undo step). Inputs that make no vessel show an empty scene (`drawing::empty`) and the Drawing card says why; never the last picture.
 - The picture is a long cylinder drawn `drawing::LENGTH_PER_OD` outer diameters long, only for the picture (the analysis is per unit length). Its fields are `drawing::FIELDS` (hoop first); the session reports `shows_result` true, `geometry_view` false, unit psi.
 - The quarter cut faces the opening Isometric view (`editor/drawing.rs` `SWEEP_START`, shared with Fastener Hole).
-- **Custom materials persist where the terminal toolbox keeps them** (`persistence::config_path`, held in `VesselSession::library`) and travel with a case (`VesselFile::custom_material`). A case naming a material this machine lacks and does not describe is reported in the status bar; the rest applies.
+- **Custom materials persist in `settings-tui-pressure-vessel.json`** (`persistence::config_path`, kept name for existing files; held in `VesselSession::library`) and travel with a case (`VesselFile::custom_material`). A case naming a material this machine lacks and does not describe is reported in the status bar; the rest applies.
 - `bench()` is `Static`, `benches()` is empty. Export writes `report::build_report_text` beside the case (`<case>.report.txt`).
 
 ## Pitfalls

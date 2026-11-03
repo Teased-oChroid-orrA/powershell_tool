@@ -52,13 +52,13 @@ fn wait_for_run(s: &mut LugSession) {
 }
 
 #[test]
-fn it_opens_on_the_terminal_forms_inputs_draws_the_parts_then_the_kernel_field() {
+fn it_opens_on_the_models_inputs_draws_the_parts_then_the_kernel_field() {
     let mut s = session("open");
     assert_eq!(s.title(), "Lug Analysis | clevis lug");
     assert!(s.benches().is_empty());
     assert_eq!(s.initial_view(), Some(StandardView::Front));
     assert_eq!(s.ribbon().into_iter().map(|t| t.title).collect::<Vec<_>>(), ["Inputs", "Results", "Report"]);
-    // One card per section of the terminal form, then the result and the drawing.
+    // One card per section of the input rows, then the result and the drawing.
     assert_eq!(ids(&s.inspector()), ["lug-lug-geometry", "lug-material", "lug-bushing", "lug-pin", "lug-load", "lug-advanced-settings", "lug-result", "lug-drawing"]);
     let t = texts(&s.inspector());
     assert!(t.contains("Hole Diameter D") && t.contains("Head Shape  Round (e = W/2)") && t.contains("Pin Load P"), "{t}");
@@ -137,7 +137,7 @@ fn a_typed_value_reaches_the_solver_and_undo_returns() {
 }
 
 #[test]
-fn switches_and_the_advanced_section_follow_the_terminal_rows() {
+fn switches_and_the_advanced_section_follow_the_model_rows() {
     let mut s = session("rows");
     // Showing the advanced rows is not an edit of the lug.
     act(&mut s, LugAct::Row(FieldRow::MeshSection));
@@ -162,6 +162,33 @@ fn switches_and_the_advanced_section_follow_the_terminal_rows() {
     act(&mut s, LugAct::Undo);
     assert_eq!(s.model().solver, SolverChoice::Kernel);
     assert_eq!(s.redo.len(), 1);
+}
+
+#[test]
+fn the_mesh_test_row_applies_a_recommendation_for_these_inputs_and_starts_a_test_otherwise() {
+    let mut s = session("mesh-test");
+    act(&mut s, LugAct::Row(FieldRow::MeshSection));
+    assert!(s.mesh_advice_text().starts_with("Not run"));
+    // A recommendation made for the inputs shown is shown in the row, and a click applies it (one undo step).
+    let sig = mesh_test::signature(&s.model().input().unwrap());
+    s.mesh_advice = Some((sig, MeshAdvice { rows: vec![], recommended: 54, converged: true, total_ms: 1.0 }));
+    assert!(s.mesh_advice_text().contains("Recommended 54"), "{}", s.mesh_advice_text());
+    act(&mut s, LugAct::Row(FieldRow::MeshAdvice));
+    assert_eq!(s.model().elements_around, Some(54));
+    assert_eq!(s.undo.len(), 1);
+    // Changing the geometry makes it stale; a failure is shown in the row.
+    edit(&mut s, NumberTarget::Thickness, "0.3");
+    assert!(s.mesh_advice_text().starts_with("Inputs changed"), "{}", s.mesh_advice_text());
+    s.mesh_error = Some("boom".into());
+    assert_eq!(s.mesh_advice_text(), "Failed: boom");
+    // A click on stale advice starts a test for the inputs shown; a second click while it runs starts no other.
+    s.mesh_error = None;
+    act(&mut s, LugAct::Row(FieldRow::MeshAdvice));
+    let job = s.mesh_job.clone().expect("a mesh test runs");
+    assert_eq!(job.1, mesh_test::signature(&s.model().input().unwrap()));
+    assert!(s.mesh_advice_text().starts_with("Testing mesh sizes"));
+    act(&mut s, LugAct::Row(FieldRow::MeshAdvice));
+    assert_eq!(s.mesh_job, Some(job), "no second test while one runs");
 }
 
 #[test]
