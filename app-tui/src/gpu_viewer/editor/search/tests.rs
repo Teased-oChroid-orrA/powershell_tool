@@ -28,6 +28,22 @@ fn with_results() -> SearchSession {
     s.st.run.started = Some(Instant::now());
     s
 }
+
+#[test]
+fn cached_search_rows_follow_filter_sort_selection_and_new_runs() {
+    let mut s = with_results();
+    let original = view::document(&s).table.rows;
+    assert_eq!(view::document(&s).table.rows, original);
+    s.filter = "pdf".into();
+    assert_eq!(view::document(&s).table.rows.len(), 2);
+    s.sort = (SortKey::Hits, false);
+    s.selected = Some(2);
+    let rows = view::document(&s).table.rows;
+    assert!(rows[0].selected && rows[0].cells[0] == "plan.pdf");
+    s.st.run.started = Some(Instant::now());
+    s.st.run.results = vec![result("/w/new.pdf", 1, 1), result("/w/other.pdf", 2, 2), result("/w/third.txt", 3, 3)];
+    assert_eq!(view::document(&s).table.rows[0].cells[0], "other.pdf");
+}
 fn act_on(s: &mut SearchSession, a: SearchAct) {
     s.act(EditorAction::Search(a));
 }

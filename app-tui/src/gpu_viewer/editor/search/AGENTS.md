@@ -28,6 +28,6 @@ Does not own: running a search, the index, reports or settings persistence (`too
 - Both guides must stay true to the parser: `tests::every_example_of_the_exclude_guide_is_a_valid_exclusion` checks the Exclude guide; `tests::every_example_of_the_find_guide_parses_the_way_the_guide_says` parses every example and checks the tag semantics it describes. Change the guide and the parser together.
 
 ## Pitfalls
-- `Authoring::document()` is rebuilt every frame (all visible rows as strings); the table body is virtualised (`ScrollArea::show_rows`), but a run with tens of thousands of hit files will cost per frame. Measure before adding per-row work.
+- `Authoring::document()` is rebuilt every frame, but its result rows are cached across unchanged frames. Run start, result count, filter, sort, selection and root path invalidate the cache. The table body is virtualised (`ScrollArea::show_rows`); large runs still clone cached rows each frame.
 - Strings from the terminal toolbox may carry glyphs the window font lacks (`⚠`, `…`); pass them through `view::plain`.
 - A short window drops the stacked detail (both need `MIN_STACKED`) and the figure tiles; this is deliberate, not a missing feature.

@@ -26,6 +26,7 @@ use crate::gpu_viewer::{
 use crate::notifications::NotificationQueue;
 use crate::toolboxes::search::{self as search, exec, model, persistence, settings_view, SearchToolState};
 use search_core::models::FileSearchResult;
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -111,6 +112,7 @@ const SETTING_OUTPUT: usize = 14;
 
 pub struct SearchSession {
     st: SearchToolState,
+    rows_cache: RefCell<Option<view::RowsCache>>,
     notes: NotificationQueue,
     /// Owns the search, report, index and scan tasks; dropped with the window.
     rt: tokio::runtime::Runtime,
@@ -180,6 +182,7 @@ impl SearchSession {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_name("search").build().map_err(|e| format!("cannot start the search workers: {e}"))?;
         let (tx, rx) = mpsc::unbounded_channel();
         Ok(Self {
+            rows_cache: RefCell::new(None),
             notes: NotificationQueue::default(),
             rt,
             tx,

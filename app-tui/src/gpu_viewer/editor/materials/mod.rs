@@ -19,9 +19,10 @@ use crate::gpu_viewer::{
     Scene,
 };
 use crate::toolboxes::material_lookup::{
-    model::{Basis, SortKey},
+    model::{Basis, Query, SortKey},
     MaterialLookupState,
 };
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 /// The search input of the page.
@@ -55,6 +56,7 @@ pub(crate) fn act(a: MaterialsAct) -> crate::gpu_viewer::controller::UiAction {
 
 pub struct MaterialsSession {
     st: MaterialLookupState,
+    rows_cache: RefCell<Option<view::RowsCache>>,
     /// Where Export writes (`<app data>/reports/material-lookup.txt`).
     report: Option<PathBuf>,
     status: String,
@@ -67,7 +69,7 @@ impl MaterialsSession {
     }
 
     pub(crate) fn with_report(report: Option<PathBuf>) -> Self {
-        Self { st: MaterialLookupState::default(), report, status: String::new() }
+        Self { st: MaterialLookupState::default(), rows_cache: RefCell::new(None), report, status: String::new() }
     }
 
     pub fn state(&self) -> &MaterialLookupState {

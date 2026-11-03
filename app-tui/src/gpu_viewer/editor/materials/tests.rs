@@ -1,4 +1,18 @@
 use super::*;
+
+#[test]
+fn cached_material_rows_follow_selection_marks_and_query() {
+    let mut s = MaterialsSession::with_report(None);
+    let original = view::document(&s).table.rows;
+    assert_eq!(view::document(&s).table.rows, original);
+    s.st.cursor = 1;
+    s.st.toggle_mark();
+    let rows = view::document(&s).table.rows;
+    assert!(rows[1].selected && rows[1].badge.as_deref() == Some("#1"));
+    s.st.query.text = "7075".into();
+    s.st.refilter();
+    assert!(view::document(&s).table.rows.len() < original.len());
+}
 use crate::gpu_viewer::editor::authoring::Authoring;
 use crate::toolboxes::material_lookup::model;
 

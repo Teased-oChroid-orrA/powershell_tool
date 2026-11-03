@@ -13,6 +13,22 @@ use crate::gpu_viewer::{
 use crate::toolboxes::search::{indexing::format_eta, model, preview, run_view, settings_view};
 use search_core::models::{ExcludeScope, MatchMode};
 
+pub(super) struct RowsCache {
+    started: Option<std::time::Instant>,
+    result_count: usize,
+    sort: (SortKey, bool),
+    filter: String,
+    selected: Option<usize>,
+    root: String,
+    rows: Vec<DocRow>,
+}
+
+impl RowsCache {
+    fn current(&self, s: &SearchSession) -> bool {
+        self.started == s.st.run.started && self.result_count == s.st.run.results.len() && self.sort == s.sort && self.filter == s.filter && self.selected == s.selected && self.root == s.st.config.search_path
+    }
+}
+
 fn e(label: &str, shortcut: &str, a: SearchAct) -> Entry {
     Entry::new(label, shortcut, act(a))
 }
@@ -303,33 +319,38 @@ fn run_progress(s: &SearchSession) -> DocProgress {
 
 fn table(s: &SearchSession) -> DocTable {
     let run = &s.st.run;
-    let view = s.view();
-    let current = s.current();
     let col = |title: &str, width: f32, right: bool, key: SortKey| DocColumn { title: title.into(), width, right, sort: Some(act(SearchAct::SortBy(key))), sorted: (s.sort.0 == key).then_some(s.sort.1) };
-    let root = s.st.config.search_path.trim().trim_end_matches(['/', '\\']).to_string();
-    let rows = view
-        .iter()
-        .map(|&i| {
-            let r = &run.results[i];
-            let folder = std::path::Path::new(&r.full_name).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-            let rel = folder.strip_prefix(&root).map(|f| f.trim_start_matches(['/', '\\']).to_string());
-            let sub = match rel {
-                Some(f) if f.is_empty() => "(top folder)".to_string(),
-                Some(f) => f,
-                None => folder,
-            };
-            DocRow {
-                cells: vec![file_name(&r.full_name).to_string(), group(r.hits.len()), crate::format::format_bytes(r.file_length), r.modified.format("%Y-%m-%d %H:%M").to_string()],
-                sub,
-                selected: current == Some(i),
-                select: act(SearchAct::Select(i)),
-                open: Some(act(SearchAct::Open(i))),
-                badge: std::path::Path::new(&r.full_name).extension().map(|x| x.to_string_lossy().to_uppercase()),
-            }
-        })
-        .collect();
+    let cached = s.rows_cache.borrow().as_ref().filter(|c| c.current(s)).map(|c| c.rows.clone());
+    let rows = cached.unwrap_or_else(|| {
+        let view = s.view();
+        let current = s.current();
+        let root = s.st.config.search_path.trim().trim_end_matches(['/', '\\']).to_string();
+        let rows: Vec<DocRow> = view
+            .iter()
+            .map(|&i| {
+                let r = &run.results[i];
+                let folder = std::path::Path::new(&r.full_name).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+                let rel = folder.strip_prefix(&root).map(|f| f.trim_start_matches(['/', '\\']).to_string());
+                let sub = match rel {
+                    Some(f) if f.is_empty() => "(top folder)".to_string(),
+                    Some(f) => f,
+                    None => folder,
+                };
+                DocRow {
+                    cells: vec![file_name(&r.full_name).to_string(), group(r.hits.len()), crate::format::format_bytes(r.file_length), r.modified.format("%Y-%m-%d %H:%M").to_string()],
+                    sub,
+                    selected: current == Some(i),
+                    select: act(SearchAct::Select(i)),
+                    open: Some(act(SearchAct::Open(i))),
+                    badge: std::path::Path::new(&r.full_name).extension().map(|x| x.to_string_lossy().to_uppercase()),
+                }
+            })
+            .collect();
+        *s.rows_cache.borrow_mut() = Some(RowsCache { started: run.started, result_count: run.results.len(), sort: s.sort, filter: s.filter.clone(), selected: s.selected, root: s.st.config.search_path.clone(), rows: rows.clone() });
+        rows
+    });
     let total = run.results.len();
-    let title = if total == 0 { "Results".to_string() } else if view.len() == total { format!("Results  ·  {}", plural(total, "file", "files")) } else { format!("Results  ·  {} of {}", group(view.len()), plural(total, "file", "files")) };
+    let title = if total == 0 { "Results".to_string() } else if rows.len() == total { format!("Results  ·  {}", plural(total, "file", "files")) } else { format!("Results  ·  {} of {}", group(rows.len()), plural(total, "file", "files")) };
     let (empty_title, empty_body) = if total > 0 {
         ("Nothing matches the filter".to_string(), "Clear the filter to see every file with matches.".to_string())
     } else if run.is_running {

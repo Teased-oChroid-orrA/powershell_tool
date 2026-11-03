@@ -11,6 +11,20 @@ use crate::toolboxes::material_lookup::model::{self, compare_rows, format_value,
 use crate::widgets::material_detail;
 use mechanics_core::materials::Material;
 
+pub(super) struct RowsCache {
+    query: super::Query,
+    hits: Vec<usize>,
+    cursor: usize,
+    marked: Vec<usize>,
+    rows: Vec<DocRow>,
+}
+
+impl RowsCache {
+    fn current(&self, s: &MaterialsSession) -> bool {
+        self.query == s.st.query && self.hits == s.st.hits && self.cursor == s.st.cursor && self.marked == s.st.marked
+    }
+}
+
 fn e(label: &str, shortcut: &str, a: MaterialsAct) -> Entry {
     Entry::new(label, shortcut, act(a))
 }
@@ -99,36 +113,41 @@ fn table(s: &MaterialsSession) -> DocTable {
     let q = &s.st.query;
     let col = |title: &str, width: f32, right: bool, key: Option<SortKey>| DocColumn { title: title.into(), width, right, sort: key.map(|k| act(MaterialsAct::SortBy(k))), sorted: key.filter(|k| *k == q.sort).map(|_| !q.descending) };
     let cat = model::catalog();
-    let rows = s
-        .st
-        .hits
-        .iter()
-        .enumerate()
-        .map(|(row, &i)| {
-            let m = cat[i];
-            let mut sub = model::group_of(m).to_string();
-            if let Some(x) = m.extra.filter(|x| !x.spec.is_empty()) {
-                sub.push_str(&format!("  ·  {}", x.spec));
-            }
-            DocRow {
-                cells: vec![
-                    m.name.to_string(),
-                    basis_of(m).to_string(),
-                    value(m.ftu_ksi, 1),
-                    value(m.sy_ksi, 1),
-                    value(m.fbru_ksi, 1),
-                    value(m.e_ksi, 0),
-                    format_value(model::density(m), 3),
-                    format_value(model::specific_yield_in(m), 0),
-                ],
-                sub,
-                selected: row == s.st.cursor,
-                select: act(MaterialsAct::Select(row)),
-                open: Some(act(MaterialsAct::ToggleMark(i))),
-                badge: s.st.marked.iter().position(|&x| x == i).map(|p| format!("#{}", p + 1)),
-            }
-        })
-        .collect();
+    let cached = s.rows_cache.borrow().as_ref().filter(|c| c.current(s)).map(|c| c.rows.clone());
+    let rows = cached.unwrap_or_else(|| {
+        let rows: Vec<DocRow> = s
+            .st
+            .hits
+            .iter()
+            .enumerate()
+            .map(|(row, &i)| {
+                let m = cat[i];
+                let mut sub = model::group_of(m).to_string();
+                if let Some(x) = m.extra.filter(|x| !x.spec.is_empty()) {
+                    sub.push_str(&format!("  ·  {}", x.spec));
+                }
+                DocRow {
+                    cells: vec![
+                        m.name.to_string(),
+                        basis_of(m).to_string(),
+                        value(m.ftu_ksi, 1),
+                        value(m.sy_ksi, 1),
+                        value(m.fbru_ksi, 1),
+                        value(m.e_ksi, 0),
+                        format_value(model::density(m), 3),
+                        format_value(model::specific_yield_in(m), 0),
+                    ],
+                    sub,
+                    selected: row == s.st.cursor,
+                    select: act(MaterialsAct::Select(row)),
+                    open: Some(act(MaterialsAct::ToggleMark(i))),
+                    badge: s.st.marked.iter().position(|&x| x == i).map(|p| format!("#{}", p + 1)),
+                }
+            })
+            .collect();
+        *s.rows_cache.borrow_mut() = Some(RowsCache { query: q.clone(), hits: s.st.hits.clone(), cursor: s.st.cursor, marked: s.st.marked.clone(), rows: rows.clone() });
+        rows
+    });
     let total = model::catalog().len();
     let shown = s.st.hits.len();
     DocTable {

@@ -22,7 +22,7 @@ Does not own: the catalogue, groups, query, sort, basis filter, compare rows and
 - **No file.** `--gpu-materials` ignores its argument; Export writes `<app data>/reports/material-lookup.txt` and opens it. Tests use `MaterialsSession::with_report(None|Some(tempdir))`, never the app data folder.
 
 ## Pitfalls
-- `document()` is rebuilt every frame for all ~1,400 rows; the table body is virtualised, but adding per-row work costs on every frame.
+- `document()` is rebuilt every frame, but its ~1,400 result rows are cached until query, hits, cursor or marks change. The table body is virtualised; cached rows are still cloned each frame.
 - The Material Lookup terminal toolbox is gone (2026-11-03), but `toolboxes::material_lookup` state / model / view stay: they are the material picker of the terminal FEA Workbench (`fea_workbench::material_browser`) and the solid editor's materials card.
 - Window tests double-click with `window.rs` tests' `double_click` (a 1 s pause, then two clicks): egui counts a third click within 0.6 s of the click before last as a triple click, and `Response::double_clicked()` answers only a count of exactly two, so two `click()`s right after another click never double-click.
 - The table body (`gui/document.rs`, `ScrollArea::show_rows`) places row i at i * (`ROW_H` + item spacing); the rows are packed, so the spacing is zeroed *before* `show_rows`. Zeroed only inside the closure (the state before 2026-11-02), clicks, scroll-to-selected and the scrollbar drifted 10 px per row from the painted rows: a click on a row in view selected one ten rows up and scrolled the list.
