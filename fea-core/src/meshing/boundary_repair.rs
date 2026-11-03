@@ -21,7 +21,7 @@
 //! geometry and quality checks. Element count may grow by at most [`RepairOptions::max_growth`].
 
 use super::quality::QualityThresholds;
-use crate::tetmesh::FaceHit;
+use crate::tetmesh::{reentrant_edge, FaceHit, FACE_TOL};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod cavity_contact;
@@ -179,6 +179,8 @@ pub struct RepairReport {
     pub chained: usize,
     /// Cavities around a bad element re-tetrahedralised as a star from one new interior vertex (their outer faces kept).
     pub rebuilds: usize,
+    /// Boundary edges across a concave model edge split at the crease (a new vertex on both faces), before the quality rounds.
+    pub creases: usize,
 }
 
 /// The geometry the repair may ask about.
@@ -575,6 +577,12 @@ impl<'a> Work<'a> {
     /// The first surface contract that the boundary of `ts` breaks against `before` (`None`: it follows the surface); the
     /// reasons name the checks of [`Self::new_faces_follow_surface`] for the trace.
     fn surface_refusal(&self, ts: &[usize], before: &BTreeMap<[usize; 3], BoundaryFaceState>, h: f64) -> Option<&'static str> {
+        self.surface_refusal_on(ts, before, h, &[])
+    }
+    /// [`Self::surface_refusal`]; a new face classified to a patch the replaced surface did not have is also admitted when that
+    /// patch is one of `crossed` and each of its corners lies on one of them (a crease split re-tiles the facets bridging two
+    /// patches with faces on them, or with smaller bridges, named after either patch).
+    fn surface_refusal_on(&self, ts: &[usize], before: &BTreeMap<[usize; 3], BoundaryFaceState>, h: f64, crossed: &[usize]) -> Option<&'static str> {
         let after = self.boundary_faces(ts);
         // Surface fidelity is bounded by the region's own: no face of the result may deviate from its CAD patch by more than
         // the worst face of the replaced surface (or the tolerance). A flat triangle on a tight fillet carries a chord error
@@ -610,7 +618,11 @@ impl<'a> Work<'a> {
         // along a tangent seam (a fillet meeting its flat face or the next fillet) the classification of a face straddling
         // the seam is arbitrary, while across a sharp edge no face faces like both patches.
         let removed_owners: BTreeSet<_> = before.iter().filter(|(f, _)| !after.contains_key(*f)).filter_map(|(_, s)| s.owner).collect();
-        let ok = added.into_iter().all(|(f, apex, owner)| removed_owners.contains(&owner) || removed_owners.iter().any(|&r| self.face_touches_patch(f, apex, r, h)));
+        let ok = added.into_iter().all(|(f, apex, owner)| {
+            removed_owners.contains(&owner)
+                || removed_owners.iter().any(|&r| self.face_touches_patch(f, apex, r, h))
+                || (crossed.contains(&owner) && f.iter().all(|&v| self.on_faces(v, h).iter().any(|g| crossed.contains(g))))
+        });
         if ok { None } else { Some("surface: new patch") }
     }
     /// Does boundary face `f` touch CAD patch `face`: its centroid within the deviation bound of the patch, and its outward
@@ -1810,6 +1822,340 @@ impl<'a> Work<'a> {
         true
     }
 
+    // ---- concave creases ----
+
+    /// Model faces vertex `v` lies on: within [`FACE_TOL`] of `h`, the tolerance the namer gives a triangle to a face with.
+    fn on_faces(&self, v: usize, h: f64) -> Vec<usize> {
+        let Some(fd) = self.ctx.face_dists else { return Vec::new() };
+        let mut faces: Vec<usize> = fd(self.p[v]).into_iter().filter(|hit| hit.dist.abs() <= FACE_TOL * h).map(|hit| hit.face).collect();
+        faces.sort_unstable();
+        faces.dedup();
+        faces
+    }
+    /// Boundary edges whose two ends lie on faces, but on no face in common: the edges of the facets that bridge a model edge.
+    fn crease_candidates(&self) -> Vec<(usize, usize)> {
+        let live: Vec<usize> = (0..self.tets.len()).filter(|&t| self.alive[t]).collect();
+        let mut edges = BTreeSet::new();
+        for f in self.boundary_faces(&live).into_keys() {
+            for (a, b) in [(f[0], f[1]), (f[1], f[2]), (f[0], f[2])] {
+                edges.insert((a, b));
+            }
+        }
+        edges.into_iter().filter(|&(a, b)| {
+            let h = 0.5 * (self.hv[a] + self.hv[b]);
+            let (fa, fb) = (self.on_faces(a, h), self.on_faces(b, h));
+            !fa.is_empty() && !fb.is_empty() && fa.iter().all(|f| !fb.contains(f))
+        }).collect()
+    }
+    /// Split boundary edge (a, b), whose ends lie on different faces, at the point K where a face of a meets a face of b along a
+    /// proven concave edge (`tetmesh::reentrant_edge`), K within one edge length of the midpoint. The two facets on (a, b)
+    /// bridge the crease, and K lies inside the mesh behind them (the surface moves inward, onto the model). The cells around
+    /// (a, b), grown across every outer face that K does not see, are replaced by the star of K over their outer faces other
+    /// than the two bridges: K's fan over the bridges' outline becomes the new surface, and the wedge between the bridges and
+    /// that fan leaves the mesh. As in [`Self::rebuild`], the outer faces must bound a ball and the star must fill the cavity
+    /// less the wedge. Kept only when the worst new cell is no worse than min(old worst, gate), no more cells are under the
+    /// gate, and the new surface follows the model ([`Self::surface_refusal_on`], with faces lying on either crossed patch
+    /// admitted). K is a feature vertex.
+    fn split_crease(&mut self, a: usize, b: usize) -> bool {
+        let (Some(fd), Some(_)) = (self.ctx.face_dists, self.ctx.triangle_face) else { return false };
+        let fan = self.tets_with(&[a, b]);
+        if fan.is_empty() || !self.edge_is_boundary(a, b) {
+            return self.why("split_crease#edge");
+        }
+        let h = 0.5 * (self.hv[a] + self.hv[b]);
+        let (sa, sb) = (self.on_faces(a, h), self.on_faces(b, h));
+        if sa.is_empty() || sb.is_empty() || sa.iter().any(|f| sb.contains(f)) {
+            return self.why("split_crease#faces");
+        }
+        let mid = scale(add(self.p[a], self.p[b]), 0.5);
+        let len = norm(sub(self.p[a], self.p[b]));
+        // the crease point nearest the midpoint, else nearest either end (the leftover bridges of K's fan turn across the
+        // crease when K lies beyond a neighbouring bridge edge)
+        let mut tried: Vec<V3> = Vec::new();
+        for seed in [mid, self.p[a], self.p[b]] {
+            let mut crease = None;
+            'pairs: for &fa in &sa {
+                for &fb in &sb {
+                    let Some(k) = self.surface_point(None, seed, h, Some(&[fa, fb])) else { continue };
+                    if norm(sub(k, mid)) <= len && reentrant_edge(fd, self.ctx.sdf, k, [fa, fb], 1e-3 * h) {
+                        crease = Some(k);
+                        break 'pairs;
+                    }
+                }
+            }
+            let Some(pos) = crease else {
+                self.why("split_crease#crease");
+                continue;
+            };
+            if tried.iter().any(|&x| norm(sub(x, pos)) < 1e-3 * h) {
+                continue;
+            }
+            tried.push(pos);
+            if self.crease_star(a, b, pos, &sa, &sb, h) {
+                return true;
+            }
+        }
+        false
+    }
+    /// The star of crease point `pos` over the cells around boundary edge (a, b) ([`Self::split_crease`]).
+    fn crease_star(&mut self, a: usize, b: usize, pos: V3, sa: &[usize], sb: &[usize], h: f64) -> bool {
+        /// Cells a crease cavity may grow to.
+        const MAX_CAVITY: usize = 160;
+        const FACES: [[usize; 3]; 4] = [[1, 2, 3], [0, 3, 2], [0, 1, 3], [0, 2, 1]];
+        let (Some(fd), Some(classify)) = (self.ctx.face_dists, self.ctx.triangle_face) else { return false };
+        let fan = self.tets_with(&[a, b]);
+        // the surface K's fan replaces: the two bridges, and any surface face of the cavity K does not see (one beside K on the
+        // same face: its cell with K is flat)
+        let mut bridges: Vec<[usize; 3]> = self.boundary_faces(&fan).into_keys().filter(|f| f.contains(&a) && f.contains(&b)).collect();
+        if bridges.len() != 2 {
+            return self.why("split_crease#bridges");
+        }
+        // the face of cell u opposite its vertex k, sorted, and six times the volume of the cell with that vertex moved to K
+        let face = |w: &Self, u: usize, k: usize| -> [usize; 3] {
+            let mut f = FACES[k].map(|j| w.tets[u][j]);
+            f.sort_unstable();
+            f
+        };
+        let apex = |w: &Self, u: usize, k: usize| -> f64 {
+            let mut x = w.tets[u].map(|v| w.p[v]);
+            x[k] = pos;
+            vol6(&x, [0, 1, 2, 3])
+        };
+        let outer_of = |w: &Self, cavity: &BTreeSet<usize>| -> Vec<(usize, usize)> {
+            let mut outer = Vec::new();
+            for &u in cavity {
+                for k in 0..4 {
+                    let f = face(w, u, k);
+                    if !w.tets_with(&f).iter().any(|&o| o != u && cavity.contains(&o)) {
+                        outer.push((u, k));
+                    }
+                }
+            }
+            outer
+        };
+        let gate = QualityThresholds::default().min_scaled_jacobian;
+        let here = fd(pos);
+        // an inner face is grown across for quality only within this many sizes of K (beyond it the cavity sprawls)
+        let reach = 1.5;
+        let mut cavity: BTreeSet<usize> = fan.iter().copied().collect();
+        let outer = loop {
+            let outer = outer_of(self, &cavity);
+            // a face K does not see must go into the cavity; so does an inner face whose cell with K would be under the gate
+            let star_sj = |u: usize, k: usize| {
+                let mut x = self.tets[u].map(|v| self.p[v]);
+                x[k] = pos;
+                scaled_jacobian(&x, [0, 1, 2, 3])
+            };
+            let grow = outer.iter().filter(|&&(u, k)| !bridges.contains(&face(self, u, k))).find(|&&(u, k)| {
+                let f = face(self, u, k);
+                let near = || norm(sub(scale(add(add(self.p[f[0]], self.p[f[1]]), self.p[f[2]]), 1.0 / 3.0), pos)) <= reach * h;
+                apex(self, u, k) <= 0.0 || (star_sj(u, k) < gate && self.tets_with(&f).len() == 2 && near())
+            });
+            let Some(&(u, k)) = grow else {
+                // each outline edge (x, y) of the replaced disk becomes K's fan face (x, y, K), oriented as the disk face it
+                // bordered; where that face would face neither crossed face (a smaller bridge standing across the crease, or
+                // one to a vertex off the surface), the surface face beyond the edge joins the disk
+                let mut directed: Vec<(usize, usize)> = Vec::new();
+                for f in &bridges {
+                    let Some(&t) = self.tets_with(f).first() else { continue };
+                    let apex = self.tets[t].into_iter().find(|v| !f.contains(v)).unwrap();
+                    let n = self.outward(*f, apex);
+                    let g = if dot(cross(sub(self.p[f[1]], self.p[f[0]]), sub(self.p[f[2]], self.p[f[0]])), n) >= 0.0 { *f } else { [f[0], f[2], f[1]] };
+                    directed.extend([(g[0], g[1]), (g[1], g[2]), (g[2], g[0])]);
+                }
+                let across = directed.iter().copied().filter(|&(x, y)| !directed.contains(&(y, x))).find(|&(x, y)| {
+                    let n = cross(sub(self.p[y], self.p[x]), sub(pos, self.p[x]));
+                    // judged against the patch the namer will give it, as `surface_refusal` judges it
+                    let owner = classify([self.p[x], self.p[y], pos]);
+                    let m = here.iter().find(|hit| hit.face == owner).and_then(|hit| self.face_normal(pos, hit, h));
+                    norm(n) <= 1e-12 * h * h || m.is_none_or(|m| dot(unit(n), m) < 0.5)
+                });
+                let Some((x, y)) = across else { break outer };
+                let mut beyond = None;
+                for t in self.tets_with(&[x, y]) {
+                    for f in self.boundary_faces(&[t]).into_keys() {
+                        if f.contains(&x) && f.contains(&y) && !bridges.contains(&f) {
+                            beyond = Some((t, f));
+                        }
+                    }
+                }
+                let Some((t, f)) = beyond else { return self.why("split_crease#beyond") };
+                bridges.push(f);
+                cavity.insert(t);
+                if cavity.len() > MAX_CAVITY || bridges.len() > MAX_CAVITY {
+                    return self.why("split_crease#cavity");
+                }
+                continue;
+            };
+            let f = face(self, u, k);
+            let Some(&next) = self.tets_with(&f).iter().find(|&&o| o != u) else {
+                bridges.push(f);
+                continue;
+            };
+            cavity.insert(next);
+            if cavity.len() > MAX_CAVITY {
+                return self.why("split_crease#cavity");
+            }
+        };
+        let cavity: Vec<usize> = cavity.into_iter().collect();
+        if self.live - cavity.len() + outer.len() - bridges.len() > self.max_live {
+            return self.why("split_crease#budget");
+        }
+        // the outer faces bound a ball, consistently oriented (each directed edge once, its reverse once; Euler characteristic 2)
+        let mut directed = BTreeSet::new();
+        let mut verts = BTreeSet::new();
+        let mut manifold = true;
+        for &(u, k) in &outer {
+            let f = FACES[k].map(|j| self.tets[u][j]);
+            verts.extend(f);
+            for (i, j) in [(0, 1), (1, 2), (2, 0)] {
+                manifold &= directed.insert((f[i], f[j]));
+            }
+        }
+        manifold &= directed.iter().all(|&(x, y)| directed.contains(&(y, x)));
+        if !manifold || verts.len() + outer.len() != directed.len() / 2 + 2 {
+            return self.why("split_crease#ball");
+        }
+        // the replaced surface is a disk (connected, Euler characteristic 1), so K's fan over its outline closes the surface
+        {
+            let mut edges: BTreeMap<(usize, usize), usize> = BTreeMap::new();
+            let mut corners = BTreeSet::new();
+            for f in &bridges {
+                corners.extend(*f);
+                for (i, j) in [(0, 1), (1, 2), (0, 2)] {
+                    *edges.entry((f[i], f[j])).or_default() += 1;
+                }
+            }
+            let mut reached = BTreeSet::from([bridges[0]]);
+            let mut queue = vec![bridges[0]];
+            while let Some(f) = queue.pop() {
+                for g in &bridges {
+                    if !reached.contains(g) && g.iter().filter(|v| f.contains(v)).count() == 2 {
+                        reached.insert(*g);
+                        queue.push(*g);
+                    }
+                }
+            }
+            if reached.len() != bridges.len() || corners.len() + bridges.len() != edges.len() + 1 || edges.values().any(|&n| n > 2) {
+                return self.why("split_crease#disk");
+            }
+        }
+        // K behind both bridges (the surface moves inward), and the star with the wedge fills exactly the cavity
+        let held: f64 = cavity.iter().map(|&u| vol6(&self.p, self.tets[u])).sum();
+        let (mut star, mut wedge) = (0.0, 0.0);
+        for &(u, k) in &outer {
+            let v = apex(self, u, k);
+            if bridges.contains(&face(self, u, k)) {
+                // behind the replaced face, or in front of it by no more than the outside depth `surface_point` allows (0.02 of
+                // the size: a face with a corner just off the surface)
+                let f = FACES[k].map(|j| self.tets[u][j]);
+                let twice_area = norm(cross(sub(self.p[f[1]], self.p[f[0]]), sub(self.p[f[2]], self.p[f[0]])));
+                if !(v > -0.02 * h * twice_area) {
+                    return self.why("split_crease#outside");
+                }
+                wedge += v;
+            } else {
+                star += v;
+            }
+        }
+        if (star + wedge - held).abs() > 1e-10 * held.abs() {
+            return self.why("split_crease#fold");
+        }
+        let nv = self.p.len();
+        let cells: Vec<[usize; 4]> = outer.iter().filter(|&&(u, k)| !bridges.contains(&face(self, u, k))).map(|&(u, k)| {
+            let mut c = self.tets[u];
+            c[k] = nv;
+            c
+        }).collect();
+        self.p.push(pos);
+        let positive = self.min_sj_cells(&cells) > 1e-6;
+        self.p.pop();
+        if !positive {
+            return self.why("split_crease#inverted");
+        }
+        // judged over every cell at the cavity's vertices, before and after (the clean-up below may change them all)
+        let old_region = self.region(&verts.iter().copied().collect::<Vec<_>>());
+        let (old_min, old_under) = (self.min_sj(&old_region), self.under_gate_ids(&old_region));
+        let before = self.boundary_snapshot(&cavity, h);
+        self.depth += 1;
+        let m = self.mark();
+        self.p.push(pos);
+        self.vt.push(Vec::new());
+        self.bnd.push(false);
+        // on two faces at a sharp edge: a feature vertex, which the quality rounds may not slide off the crease
+        self.state.push(2);
+        self.hv.push(h);
+        self.ver.push(0);
+        self.log.push(Ch::Vertex);
+        for &u in &cavity {
+            self.kill(u);
+        }
+        let new_ids: Vec<usize> = cells.into_iter().map(|c| self.add(c)).collect();
+        let mut touched: Vec<usize> = verts.into_iter().collect();
+        touched.push(nv);
+        self.refresh_bnd(&touched);
+        let crossed: Vec<usize> = sa.iter().chain(sb).copied().collect();
+        if let Some(reason) = self.surface_refusal_on(&new_ids, &before, h, &crossed) {
+            self.rollback(m);
+            self.depth -= 1;
+            self.why(reason);
+            return self.why("split_crease#surface");
+        }
+        // improve the cells round K, as after an edge split (each operation under its own surface and quality rules)
+        for _ in 0..3 {
+            let mut any = false;
+            for t in self.vt[nv].clone() {
+                if self.alive[t] && self.sj(self.tets[t]) < self.target {
+                    any |= self.cleanup_tet(t, false);
+                }
+            }
+            if !any {
+                break;
+            }
+        }
+        touched.retain(|&v| !self.vt[v].is_empty());
+        let region = self.region(&touched);
+        let (new_min, new_under) = (self.min_sj(&region), self.under_gate_ids(&region));
+        if new_min < old_min.min(gate) || new_under > old_under || self.vt[nv].is_empty() {
+            self.rollback(m);
+            self.depth -= 1;
+            return self.why("split_crease#quality");
+        }
+        self.depth -= 1;
+        self.commit();
+        self.rep.creases += 1;
+        true
+    }
+    /// [`Self::recover_creases`], undone whole if the mesh ends with more elements under the gate than it started with (each
+    /// split is judged over its own region only; this bounds the whole mesh).
+    fn recover_creases_kept(&mut self, gate: f64) {
+        let under = |w: &Self| (0..w.tets.len()).filter(|&t| w.alive[t] && w.sj(w.tets[t]) < gate).count();
+        let (before, kept) = (under(self), self.snapshot());
+        let report = self.rep.clone();
+        self.recover_creases();
+        let after = under(self);
+        if after > before {
+            self.restore(kept);
+            self.rep = report;
+        }
+        if self.trace {
+            eprintln!("crease splits: {} ({before} -> {after} elements under the gate{})", self.rep.creases, if after > before { ", undone" } else { "" });
+        }
+    }
+    /// Split every crease candidate that passes [`Self::split_crease`], a few sweeps (a bridge facet has two candidate edges;
+    /// splitting one leaves a smaller bridge across the other).
+    fn recover_creases(&mut self) {
+        for _ in 0..4 {
+            let mut any = false;
+            for (a, b) in self.crease_candidates() {
+                any |= self.split_crease(a, b);
+            }
+            if !any {
+                break;
+            }
+        }
+    }
+
     // ---- driver ----
 
     /// Move `v` to the best position for its star even when that puts neighbouring elements under the gate, then repair
@@ -2257,7 +2603,13 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
         }
         eprintln!("boundary vertices by |sdf|/h: <0.02 {} <0.1 {} <0.25 {} <0.5 {} <1 {} >=1 {}; off-surface (>=0.1h) on a bad element: {bad_off}", hist[0], hist[1], hist[2], hist[3], hist[4], hist[5]);
     }
-    if !all.iter().any(|&t| w.sj(w.tets[t]) < opts.target) {
+    let creases = w.ctx.face_dists.is_some() && w.ctx.triangle_face.is_some();
+    let untouched = !all.iter().any(|&t| w.sj(w.tets[t]) < opts.target);
+    if creases && untouched {
+        // nothing for the rounds to do: the crease stage is the only change
+        w.recover_creases_kept(gate);
+    }
+    if untouched && w.rep.creases == 0 {
         // nothing to do: hand the mesh back untouched with the identity map
         let mut rep = w.rep.clone();
         rep.tets_after = n0;
@@ -2393,6 +2745,11 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
         if !any {
             break;
         }
+    }
+    // Concave creases last, on the final mesh: the rounds reach their count from the snapped mesh, as without the stage. Run
+    // before them, the splits changed where the rounds ended (screw.step native 46 elements under the gate, 47 with them).
+    if creases && !untouched {
+        w.recover_creases_kept(gate);
     }
     if std::env::var_os("REPAIR_TRACE").is_some() {
         let mut shown = 0;

@@ -260,3 +260,46 @@ fn connected_plate_boss_rim_passes_solver_gate() {
         assert_eq!(seen.len(), link.len(), "disconnected boundary link at {v}");
     }
 }
+
+/// Boundary facets across a model edge (`docs/issue-46-phase-173.md`): every corner lies on some face (within a hundredth of the
+/// size, the namer's tolerance) but no face holds all three. At a concave edge the snap leaves such facets bridging the crease.
+fn bridges(m: &Mesh, fd: &dyn Fn(V3) -> Vec<FaceHit>, h: f64) -> (usize, f64) {
+    let on = |x: V3| -> Vec<usize> { fd(x).into_iter().filter(|hit| hit.dist.abs() <= 0.01 * h).map(|hit| hit.face).collect() };
+    let (mut count, mut area) = (0, 0.0);
+    for faces in m.surfaces.values() {
+        for f in faces {
+            let corners = [0, 1, 2].map(|k| on(m.nodes[f[k]]));
+            if corners.iter().any(Vec::is_empty) || corners[0].iter().any(|face| corners[1].contains(face) && corners[2].contains(face)) {
+                continue;
+            }
+            let (p, q, r) = (m.nodes[f[0]], m.nodes[f[1]], m.nodes[f[2]]);
+            let (u, v) = ([q[0] - p[0], q[1] - p[1], q[2] - p[2]], [r[0] - p[0], r[1] - p[1], r[2] - p[2]]);
+            let c = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+            count += 1;
+            area += 0.5 * (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
+        }
+    }
+    (count, area)
+}
+
+/// The plate-boss rim is a concave circle. The repair's crease stage puts boundary vertices on it, so few boundary facets bridge
+/// the rim; without the repair the snapped mesh has many (the failure this guards against).
+/// Slow (two meshes of about 170 000 cells, about a minute in release): run with
+/// `cargo test -p fea-core --release --test tetmesh_repair -- --ignored no_boundary_facet_bridges`. The fast check of the same
+/// stage is `fea-problem/tests/facet_naming.rs`.
+#[test]
+#[ignore = "slow: about a minute in release"]
+fn no_boundary_facet_bridges_the_concave_plate_boss_rim() {
+    let size = |_: V3| 10.0;
+    let face = |p: V3| boss_face_hits(p).into_iter().min_by(|a, b| a.dist.abs().total_cmp(&b.dist.abs())).unwrap().face;
+    let solid = Solid { lo: [0.0, 0.0, 0.0], hi: [12.0, 4.0, 4.0], sdf: &boss_sdf, size: &size, face_of: &face, face_dists: Some(&boss_faces) };
+    let run = |repair: bool| mesh_solid_reported(&solid, Elastic::new(1.0, 0.3), TetOptions { base: 0.6, boundary_size: BOSS_H, repair, ..Default::default() }).unwrap();
+    let (plain, _, _) = run(false);
+    let (repaired, _, report) = run(true);
+    let (before, after) = (bridges(&plain, &boss_faces, BOSS_H), bridges(&repaired, &boss_faces, BOSS_H));
+    eprintln!("bridges without repair {before:?}, with repair {after:?}, report {report:?}");
+    assert!(before.0 > 0, "the fixture no longer has a facet across the rim");
+    // Phase 173 residual: bridges whose disk holds a boundary vertex sunk inside the solid beside the rim (K lies 0.04 to 0.36
+    // of the size in front of that facet) are refused, about 5 % of the area before (docs/issue-46-phase-173.md).
+    assert!(after.1 <= 0.15 * before.1, "{} facets ({:.5}) still bridge the rim, against {:.5} without repair", after.0, after.1, before.1);
+}
