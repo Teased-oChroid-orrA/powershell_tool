@@ -2588,7 +2588,7 @@ pub fn repair(p: &mut Vec<V3>, tets: &mut Vec<[usize; 4]>, ctx: &RepairContext, 
         eprintln!("boundary vertices by |sdf|/h: <0.02 {} <0.1 {} <0.25 {} <0.5 {} <1 {} >=1 {}; off-surface (>=0.1h) on a bad element: {bad_off}", hist[0], hist[1], hist[2], hist[3], hist[4], hist[5]);
     }
     // Concave creases first, on a mesh with model faces: the quality rounds then work on the cells the splits make.
-    if w.ctx.face_dists.is_some() && w.ctx.triangle_face.is_some() {
+    if w.ctx.face_dists.is_some() && w.ctx.triangle_face.is_some() && std::env::var_os("TEMP_NO_CREASE").is_none() {
         w.recover_creases();
         if w.trace {
             eprintln!("crease splits: {}", w.rep.creases);

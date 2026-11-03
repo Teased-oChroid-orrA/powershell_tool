@@ -282,9 +282,13 @@ fn bridges(m: &Mesh, fd: &dyn Fn(V3) -> Vec<FaceHit>, h: f64) -> (usize, f64) {
     (count, area)
 }
 
-/// The plate-boss rim is a concave circle. The repair's crease stage puts boundary vertices on it, so no boundary facet bridges
-/// the rim; without the repair the snapped mesh still has such facets (the failure this guards against).
+/// The plate-boss rim is a concave circle. The repair's crease stage puts boundary vertices on it, so few boundary facets bridge
+/// the rim; without the repair the snapped mesh has many (the failure this guards against).
+/// Slow (two meshes of about 170 000 cells, about 3 minutes in release): run with
+/// `cargo test -p fea-core --release --test tetmesh_repair -- --ignored no_boundary_facet_bridges`. The fast check of the same
+/// stage is `fea-problem/tests/facet_naming.rs`.
 #[test]
+#[ignore = "slow: about 3 minutes in release"]
 fn no_boundary_facet_bridges_the_concave_plate_boss_rim() {
     let size = |_: V3| 10.0;
     let face = |p: V3| boss_face_hits(p).into_iter().min_by(|a, b| a.dist.abs().total_cmp(&b.dist.abs())).unwrap().face;
