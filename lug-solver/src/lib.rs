@@ -17,6 +17,7 @@ pub mod thickness;
 pub use contact::PointResult;
 pub use contact::{IfacePoint, InterfaceSpec};
 pub use fe::Material;
+pub use fea_solve::LugField;
 pub use geometry::LugGeometry;
 pub use mesh::{BushingMesh, MeshSpec, Refinement};
 pub use plastic::{Hardening, PlaneMode};

@@ -918,6 +918,12 @@ pub fn run_preload(mut session: super::editor::preload::PreloadSession) -> Resul
     launch(ViewerProject::single(scene), Some(Box::new(session)))
 }
 
+/// Open the Lug Analysis workbench on `session`.
+pub fn run_lug(mut session: super::editor::lug::LugSession) -> Result<(), String> {
+    let scene = super::editor::authoring::Authoring::scene(&mut session)?;
+    launch(ViewerProject::single(scene), Some(Box::new(session)))
+}
+
 /// Open the Search workbench on `session`: a bench without a model, its page drawn where the model would be.
 pub fn run_search(session: super::editor::search::SearchSession) -> Result<(), String> {
     launch(ViewerProject::single(blank_scene("search")), Some(Box::new(session)))
@@ -1821,6 +1827,35 @@ mod tests {
         click(&mut v, at);
         frame(&mut v);
         assert!(v.editor.as_ref().unwrap().value_card().is_some_and(|c| c.title == "Bolt"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The Lug Analysis window: a click on Pin Load P types it; the Lug Material row opens the material picker card.
+    #[test]
+    fn the_lug_workbench_edits_the_load_by_click_and_typing_and_opens_the_material_picker() {
+        let dir = std::env::temp_dir().join(format!("window-lug-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let session = crate::gpu_viewer::editor::lug::LugSession::open(&dir.join("case.json")).unwrap();
+        let mut v = viewer(Some(Box::new(session)));
+        frame(&mut v);
+        let before = property_text(&v);
+        assert!(before.contains("Pin Load P  4000.0 lbf"), "{before}");
+        let at = target(&v, "Pin Load P");
+        click(&mut v, at);
+        assert!(v.editor.as_ref().unwrap().prompting());
+        for c in "5200".chars() {
+            v.input(Input::Key(Key::Character(c.to_string().into())));
+        }
+        v.input(Input::Key(Key::Named(NamedKey::Enter)));
+        frame(&mut v);
+        assert!(!v.editor.as_ref().unwrap().prompting());
+        let after = property_text(&v);
+        assert!(after.contains("Pin Load P  5200.0 lbf"), "{after}");
+        assert!(v.editor.as_ref().unwrap().dirty());
+        let at = target(&v, "Lug Material");
+        click(&mut v, at);
+        frame(&mut v);
+        assert!(v.editor.as_ref().unwrap().value_card().is_some_and(|c| c.title == "Lug material"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -34,7 +34,7 @@ pub const WORKBENCHES: [Workbench; 11] = [
     Workbench { id: "bushing-stackup", name: "Bushing Stackup", summary: "Line-reamed through holes and per-member bushing bore preparation.", opens: Opens::Window(EditorKind::BushingStackup) },
     Workbench { id: "pressure-vessel", name: "Pressure Vessel", summary: "Shell and head stresses, Lamé thick wall.", opens: Opens::Window(EditorKind::PressureVessel) },
     Workbench { id: "preload", name: "Preload Analysis", summary: "Fastened joint preload and member stiffness.", opens: Opens::Window(EditorKind::Preload) },
-    Workbench { id: "lug", name: "Lug Analysis", summary: "Pin-loaded lug on the general FE kernel.", opens: Opens::Terminal(ToolId::LugAnalysis) },
+    Workbench { id: "lug", name: "Lug Analysis", summary: "Pin-loaded lug on the general FE kernel.", opens: Opens::Window(EditorKind::Lug) },
     Workbench { id: "eccentric-bushing", name: "Eccentric Bushing", summary: "Spin capacity and maximum offset of an offset bore.", opens: Opens::Window(EditorKind::Eccentric) },
     Workbench { id: "fea", name: "FEA Workbench", summary: "Sketch, STEP or mesh; supports, loads, solve, contour.", opens: Opens::Window(EditorKind::Solid) },
     Workbench { id: "members", name: "Frame and Truss", summary: "Nodes, truss and frame members, supports and loads.", opens: Opens::Window(EditorKind::Members) },
@@ -282,7 +282,9 @@ mod tests {
         assert_eq!(Workbench::find("material-lookup").unwrap().args(None), ["--gpu-materials"]);
         assert_eq!(Workbench::find("material-lookup").unwrap().default_file(), None, "Material Lookup has no file");
         assert!(fea.default_file().unwrap().ends_with("solid-model.json"));
-        assert_eq!(Workbench::find("lug").unwrap().default_file(), None);
+        let lug = Workbench::find("lug").unwrap();
+        assert!(lug.is_window() && lug.default_file().unwrap().ends_with("lug-case.json"));
+        assert_eq!(lug.args(None), ["--gpu-lug"]);
     }
 
     #[test]

@@ -56,25 +56,9 @@ fn compute_label_width(rows: &[FieldRow]) -> u16 {
 }
 
 fn display_value(state: &LugAnalysisState, row: FieldRow) -> String {
-    let m = &state.model;
     match row {
-        FieldRow::Header(_) => String::new(),
-        FieldRow::Number(t) => t.format_value(m.number_value(t)),
-        FieldRow::ToggleHeadShape => if m.head_round { "Round (e = W/2)" } else { "Custom" }.to_string(),
-        FieldRow::OpenMaterialPicker => m.material().name.to_string(),
-        FieldRow::ToggleBushing => if m.bushing { "On (pressed into the hole)" } else { "Off (pin bears on the hole)" }.to_string(),
-        FieldRow::OpenBushingMaterialPicker => m.bushing_material().name.to_string(),
-        FieldRow::ToggleMeshDensity => if m.elements_around.is_some() { format!("Custom ({} around)", m.effective_elements_around()) } else { m.density.label().to_string() },
-        FieldRow::MeshSection => format!("{} around the bore", m.effective_elements_around()),
-        FieldRow::ToggleAutoRefine => if m.auto_refine { "On (loaded sector of a loose pin)" } else { "Off (uniform spacing)" }.to_string(),
         FieldRow::MeshAdvice => state.mesh_advice_text(),
-        FieldRow::ToggleSolver => m.solver.label().to_string(),
-        FieldRow::TogglePlastic => if m.plastic { "On (plane-strain collapse)" } else { "Off (elastic only)" }.to_string(),
-        FieldRow::ToggleFlowRule => m.flow_rule.label().to_string(),
-        FieldRow::TogglePinBody => m.pin_body.label().to_string(),
-        FieldRow::ToggleFiniteStrain => if m.finite_strain { "Finite strain (true stress-strain)" } else { "Perfectly plastic (flow stress rule)" }.to_string(),
-        FieldRow::ToggleSecondOrder => if m.second_order { "On (P-delta)" } else { "Off (small displacement)" }.to_string(),
-        FieldRow::TogglePinBending => if m.pin_bending { "On (double shear, slices)" } else { "Off (uniform through the thickness)" }.to_string(),
+        r => model::display_value(&state.model, r),
     }
 }
 

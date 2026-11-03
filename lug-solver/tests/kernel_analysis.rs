@@ -362,3 +362,29 @@ fn condensed_plateau_probe() {
         eprintln!("   travel {:.5} load {:.0}", c.travel, c.load_lbf);
     }
 }
+
+#[test]
+fn the_field_is_the_one_the_solution_is_read_from() {
+    let b = BushingSpec { inner_dia: 0.40, material: STEEL, interference_dia: 0.001, friction: 0.15 };
+    let fe = FeaLug::build_bushed(&lug(), AL, MeshSpec { elements_around: 32, ..Default::default() }, true, PlaneMode::Stress, Some(b)).unwrap();
+    let (s, f) = fe.analyze_field(PinSpec::new(0.3995, 0.1), LoadCase { load_lbf: 1500.0, angle_deg: 0.0 }).unwrap();
+    assert!(f.half);
+    assert_eq!(f.nodes, fe.mesh.nodes);
+    assert_eq!((f.stress.len(), f.u.len(), f.elems.len(), f.group.len()), (fe.mesh.nodes.len(), fe.mesh.nodes.len(), fe.mesh.elems.len(), fe.mesh.elems.len()));
+    assert!(f.group.contains(&1) && f.group.contains(&0));
+    // The peak von Mises stress of the lug (away from the clamped end) is the field's.
+    let g = lug();
+    let clamp_x = (g.length - 0.5 * g.width).max(0.6 * g.length);
+    let mut in_bushing = vec![false; f.nodes.len()];
+    for (e, grp) in f.elems.iter().zip(&f.group) {
+        if *grp == 1 {
+            e.iter().for_each(|&n| in_bushing[n] = true);
+        }
+    }
+    let peak = (0..f.nodes.len()).filter(|&i| !in_bushing[i] && f.nodes[i][0] <= clamp_x).map(|i| fea_core::kernel::von_mises(&f.stress[i])).fold(0.0f64, f64::max);
+    assert_eq!(peak, s.peak_von_mises);
+    // The bore moves along the load (an axial load points to -x, away from the clamped end).
+    let bore = f.u[fe.mesh.node_id(0, 0)];
+    assert!(bore[0] < 0.0 && f.u.iter().all(|u| u[0] <= 1e-9), "bore {bore:?}");
+    assert_eq!(fe.analyze(PinSpec::new(0.3995, 0.1), LoadCase { load_lbf: 1500.0, angle_deg: 0.0 }).unwrap().peak_von_mises, s.peak_von_mises);
+}

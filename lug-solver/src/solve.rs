@@ -828,7 +828,7 @@ impl LugModel {
 
 /// The bushing's mesh stack (inner radius and element layers through the wall) for a lug hole of
 /// `geom`, validating the spec.
-pub(crate) fn bushing_mesh(geom: &LugGeometry, mesh: MeshSpec, b: &BushingSpec) -> Result<BushingMesh, String> {
+pub fn bushing_mesh(geom: &LugGeometry, mesh: MeshSpec, b: &BushingSpec) -> Result<BushingMesh, String> {
     if !(b.inner_dia.is_finite() && b.inner_dia > 0.0 && b.inner_dia < geom.hole_dia * (1.0 - 1e-3)) {
         return Err("the bushing's inner diameter must be positive and smaller than the hole".into());
     }

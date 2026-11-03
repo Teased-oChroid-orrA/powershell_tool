@@ -21,6 +21,24 @@ fn angle_deg(p: &[f64; 3]) -> f64 {
     p[1].atan2(p[0]).to_degrees().rem_euclid(360.0)
 }
 
+/// The nodal field of a kernel solution on the lug and bushing mesh (an elastic pin's nodes left out),
+/// for contour plots. Node numbering is [`FeaLug::mesh`]'s.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LugField {
+    /// Node positions relative to the hole centre (in).
+    pub nodes: Vec<[f64; 2]>,
+    /// Q9 connectivity, local order `3*b + a`.
+    pub elems: Vec<[usize; 9]>,
+    /// Material group of every element: 0 lug, 1 bushing.
+    pub group: Vec<u8>,
+    /// A half model on `y >= 0` (mirror it about `y = 0` for the full lug).
+    pub half: bool,
+    /// Nodal stress `[xx, yy, zz, xy, yz, zx]` (psi).
+    pub stress: Vec<[f64; 6]>,
+    /// Nodal displacement (in).
+    pub u: Vec<[f64; 2]>,
+}
+
 /// A run with a meshed elastic pin: the solution on the lug + pin model and what is needed to read it.
 struct ElasticRun {
     nl: NlSolution,
@@ -170,6 +188,11 @@ impl FeaLug {
     /// fit, finite-strain elastic geometry ([`set_geometric_nonlinearity`](Self::set_geometric_nonlinearity))
     /// and friction are all included.
     pub fn analyze(&self, pin: PinSpec, case: LoadCase) -> Result<LugSolution, String> {
+        self.analyze_field(pin, case).map(|(s, _)| s)
+    }
+
+    /// [`analyze`](Self::analyze) and the nodal stress and displacement it reads its results from.
+    pub fn analyze_field(&self, pin: PinSpec, case: LoadCase) -> Result<(LugSolution, LugField), String> {
         if !(pin.diameter.is_finite() && pin.diameter > 0.0) {
             return Err("pin diameter must be positive".into());
         }
@@ -352,7 +375,9 @@ impl FeaLug {
         let recover_ms = t1.elapsed().as_secs_f64() * 1e3;
         let net_section_stress = if self.geom.width > self.geom.hole_dia { case.load_lbf / ((self.geom.width - self.geom.hole_dia) * t) } else { 0.0 };
         let kt_net = if net_section_stress > 0.0 { peak_hoop / net_section_stress } else { 0.0 };
-        Ok(LugSolution {
+        let n = mesh.nodes.len();
+        let field = LugField { nodes: mesh.nodes.clone(), elems: mesh.elems.clone(), group: mesh.elem_group.clone(), half: self.half, stress: stresses[..n].to_vec(), u: (0..n).map(|i| [nl.u[2 * i], nl.u[2 * i + 1]]).collect() };
+        let solution = LugSolution {
             load: [case.load_lbf * dir[0], case.load_lbf * dir[1]],
             pin_centre,
             bearing_deflection: (travel - s_eq).max(0.0),
@@ -376,6 +401,7 @@ impl FeaLug {
             contact_iterations: nl.steps.iter().map(|s| s.iterations).sum(),
             timings: Timings { contact_ms, recover_ms, ..Default::default() },
             verification,
-        })
+        };
+        Ok((solution, field))
     }
 }

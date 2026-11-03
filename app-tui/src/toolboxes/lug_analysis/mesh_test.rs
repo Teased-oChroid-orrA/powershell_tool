@@ -51,9 +51,9 @@ impl MeshAdvice {
         let r = self.rows.iter().find(|r| r.around == self.recommended);
         let t = r.map_or(String::new(), |r| format!(", {:.0} ms", r.ms));
         if self.converged {
-            format!("Recommended {} around the bore{t} (Enter applies)", self.recommended)
+            format!("Recommended {} around the bore{t} (click applies)", self.recommended)
         } else {
-            format!("Not converged by {} around the bore{t}: use more (Enter applies)", self.recommended)
+            format!("Not converged by {} around the bore{t}: use more (click applies)", self.recommended)
         }
     }
 }

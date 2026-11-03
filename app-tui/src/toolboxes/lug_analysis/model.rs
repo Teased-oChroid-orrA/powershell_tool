@@ -5,7 +5,7 @@
 //! material allowables.
 
 use lug_solver::fea::FeaLug;
-use lug_solver::{auto_refinement_for, BushingSpec, FiniteLug, FsMaterial, FsOptions, FsResult, Hardening, LimitLoad, LimitOptions, LoadCase, LugGeometry, LugModel, LugSolution, Material as FeMaterial, MeshSpec, PinBending, PinBody, PinSpec, PlaneMode, Shear, Thermal, ThicknessResult};
+use lug_solver::{auto_refinement_for, BushingSpec, LugField, FiniteLug, FsMaterial, FsOptions, FsResult, Hardening, LimitLoad, LimitOptions, LoadCase, LugGeometry, LugModel, LugSolution, Material as FeMaterial, MeshSpec, PinBending, PinBody, PinSpec, PlaneMode, Shear, Thermal, ThicknessResult};
 use mechanics_core::fracture::Basis;
 use mechanics_core::materials::{fbru_at_edge_ratio, Material};
 use std::sync::Arc;
@@ -356,6 +356,8 @@ pub struct LugRun {
     pub solver: SolverChoice,
     /// The legacy solver's answer for the same inputs, when the Compare solver is chosen.
     pub comparison: Option<Box<Comparison>>,
+    /// The nodal stress and displacement on the kernel mesh (`None` when the legacy solver produced `solution`).
+    pub field: Option<Arc<LugField>>,
 }
 
 /// The legacy solver's result beside the kernel's (Solver: Compare).
@@ -526,6 +528,30 @@ pub fn field_hint(row: FieldRow) -> &'static str {
         FieldRow::ToggleSecondOrder => "Add the geometric stiffness of the stress state (P-delta): tension in the lug stiffens it, compression softens it. Matters for slender lugs and oblique loads; costs a rebuild of the model.",
         FieldRow::TogglePinBending => "Double shear: the pin bends between the clevis ears and the lug, so the lug faces carry more bearing load than the middle. Gives the slice distribution, the peaking factor and the pin bending and shear stresses.",
         FieldRow::TogglePlastic => "Also find the collapse load: plane-strain elastic-perfectly-plastic at (Ftu + Fty)/2 (capped by sqrt(3) Fsu), the pin driven until the load peaks. Adds the Ultimate margin; independent of the applied load.",
+    }
+}
+
+/// The value text of an input row (both heads). The mesh test row has no value of its own: its text is the test's
+/// progress, which the caller holds.
+pub fn display_value(m: &LugUiModel, row: FieldRow) -> String {
+    match row {
+        FieldRow::Header(_) => String::new(),
+        FieldRow::Number(t) => t.format_value(m.number_value(t)),
+        FieldRow::ToggleHeadShape => if m.head_round { "Round (e = W/2)" } else { "Custom" }.to_string(),
+        FieldRow::OpenMaterialPicker => m.material().name.to_string(),
+        FieldRow::ToggleBushing => if m.bushing { "On (pressed into the hole)" } else { "Off (pin bears on the hole)" }.to_string(),
+        FieldRow::OpenBushingMaterialPicker => m.bushing_material().name.to_string(),
+        FieldRow::ToggleMeshDensity => if m.elements_around.is_some() { format!("Custom ({} around)", m.effective_elements_around()) } else { m.density.label().to_string() },
+        FieldRow::MeshSection => format!("{} around the bore", m.effective_elements_around()),
+        FieldRow::ToggleAutoRefine => if m.auto_refine { "On (loaded sector of a loose pin)" } else { "Off (uniform spacing)" }.to_string(),
+        FieldRow::MeshAdvice => String::new(),
+        FieldRow::ToggleSolver => m.solver.label().to_string(),
+        FieldRow::TogglePlastic => if m.plastic { "On (plane-strain collapse)" } else { "Off (elastic only)" }.to_string(),
+        FieldRow::ToggleFlowRule => m.flow_rule.label().to_string(),
+        FieldRow::TogglePinBody => m.pin_body.label().to_string(),
+        FieldRow::ToggleFiniteStrain => if m.finite_strain { "Finite strain (true stress-strain)" } else { "Perfectly plastic (flow stress rule)" }.to_string(),
+        FieldRow::ToggleSecondOrder => if m.second_order { "On (P-delta)" } else { "Off (small displacement)" }.to_string(),
+        FieldRow::TogglePinBending => if m.pin_bending { "On (double shear, slices)" } else { "Off (uniform through the thickness)" }.to_string(),
     }
 }
 
@@ -954,16 +980,18 @@ fn kernel_unsupported(input: &LugInput) -> Option<&'static str> {
     None
 }
 
-/// The elastic analysis on `solver` (`kernel` true: the general kernel).
-fn elastic(cached: &mut CachedModel, input: &LugInput, kernel: bool) -> Result<LugSolution, String> {
+/// The elastic analysis on `solver` (`kernel` true: the general kernel, which also gives the nodal field).
+fn elastic(cached: &mut CachedModel, input: &LugInput, kernel: bool) -> Result<(LugSolution, Option<Arc<LugField>>), String> {
     if kernel {
         if let Some(why) = kernel_unsupported(input) {
             return Err(why.to_string());
         }
-        kernel_model(cached, PlaneMode::Stress, input.second_order)?.analyze(input.pin, input.case)
+        let (s, field) = kernel_model(cached, PlaneMode::Stress, input.second_order)?.analyze_field(input.pin, input.case)?;
+        Ok((s, Some(Arc::new(field))))
     } else {
         let model = legacy_model(cached)?;
-        if input.second_order { model.solve_second_order(input.pin, input.case) } else { model.solve(input.pin, input.case) }
+        let s = if input.second_order { model.solve_second_order(input.pin, input.case) } else { model.solve(input.pin, input.case) }?;
+        Ok((s, None))
     }
 }
 
@@ -1098,7 +1126,7 @@ pub fn run(input: &LugInput, cache: Option<CachedModel>) -> (Result<LugRun, Stri
             solved = elastic(&mut cached, input, false);
         }
     }
-    let solution = match solved {
+    let (solution, field) = match solved {
         Ok(s) => s,
         Err(e) => return (Err(e), Some(cached)),
     };
@@ -1129,7 +1157,7 @@ pub fn run(input: &LugInput, cache: Option<CachedModel>) -> (Result<LugRun, Stri
     let comparison = if input.solver == SolverChoice::Compare && solver == SolverChoice::Kernel {
         let t = std::time::Instant::now();
         match elastic(&mut cached, input, false) {
-            Ok(s) => {
+            Ok((s, _)) => {
                 let c = if input.plastic { collapse(&mut cached, input, false) } else { CollapseOut { limit: None, finite: None, reused: false, notes: Vec::new() } };
                 extra_notes.extend(c.notes.into_iter().map(|x| format!("Legacy: {x}")));
                 Some(Box::new(Comparison { solution: s, limit: c.limit, finite: c.finite, ms: t.elapsed().as_secs_f64() * 1e3 }))
@@ -1167,7 +1195,7 @@ pub fn run(input: &LugInput, cache: Option<CachedModel>) -> (Result<LugRun, Stri
     if solver == SolverChoice::Kernel {
         notes.insert(0, format!("Solved on the general finite-element kernel (fea-core) in {main_ms:.0} ms."));
     }
-    let run = LugRun { input: input.clone(), solution, checks, notes, limit, finite, limit_reused, reused_model: reused, thickness, total_ms: t0.elapsed().as_secs_f64() * 1e3, solver, comparison };
+    let run = LugRun { input: input.clone(), solution, checks, notes, limit, finite, limit_reused, reused_model: reused, thickness, total_ms: t0.elapsed().as_secs_f64() * 1e3, solver, comparison, field };
     (Ok(run), Some(cached))
 }
 

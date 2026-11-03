@@ -1752,6 +1752,56 @@ mod snapshot_tests {
         shoot(&mut session, "Inputs", "preload-picker-dark", true, (1440, 900));
     }
 
+    /// The Lug Analysis workbench (the parts picture before the analysis answers; inputs dark, light and in a narrow
+    /// window over the von Mises contour; the results; the material picker), as raw RGBA dumps:
+    /// `FEA_SNAPSHOT_LUG_OUT=/dir cargo test ... lug_snapshot -- --ignored`.
+    #[test]
+    #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_LUG_OUT"]
+    fn lug_snapshot() {
+        use crate::gpu_viewer::editor::lug::{file::LugFile, LugAct, LugSession};
+        use crate::gpu_viewer::editor::session::EditorAction;
+        use crate::toolboxes::lug_analysis::model::{FieldRow, LugUiModel};
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_LUG_OUT") else { return };
+        let _guard = headless_guard();
+        let mut session = LugSession::new(&LugFile::capture(&LugUiModel::default(), "Clevis lug"), std::env::temp_dir().join("lug-snapshot.json"));
+        let shoot = |session: &mut LugSession, step: &str, name: &str, dark: bool, (w, h): (u32, u32)| {
+            pollster::block_on(async {
+                let adapter = test_adapter().await.expect("adapter required");
+                let scene = session.scene().unwrap();
+                let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+                let texture = target(&r, w, h);
+                let mut gui = Gui::new();
+                gui.ctx().set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+                let view = ViewState::new(&scene);
+                let (yaw, pitch) = session.initial_view().map_or((0.0, 0.0), |v| v.angles());
+                let scenes = [scene];
+                let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+                gui.select_tab_named(&input, step);
+                draw(&mut r, &mut gui, &texture, &input, [yaw, pitch], session.default_mesh_lines());
+                std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
+            });
+        };
+        // Before the analysis answers the picture is the parts in the colour key.
+        if session.current_run().is_none() {
+            shoot(&mut session, "Inputs", "lug-parts-dark", true, (1440, 900));
+        }
+        let start = std::time::Instant::now();
+        while session.current_run().is_none() {
+            assert!(start.elapsed() < std::time::Duration::from_secs(300), "the lug analysis never answered");
+            session.poll();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        shoot(&mut session, "Inputs", "lug-inputs-dark", true, (1440, 900));
+        shoot(&mut session, "Inputs", "lug-inputs-light", false, (1440, 900));
+        shoot(&mut session, "Inputs", "lug-narrow", true, (860, 760));
+        session.act(EditorAction::Lug(LugAct::Step("Results")));
+        shoot(&mut session, "Results", "lug-results-dark", true, (1440, 900));
+        shoot(&mut session, "Results", "lug-results-light", false, (1440, 900));
+        session.act(EditorAction::Lug(LugAct::Step("Inputs")));
+        session.act(EditorAction::Lug(LugAct::Row(FieldRow::OpenMaterialPicker)));
+        shoot(&mut session, "Inputs", "lug-picker-dark", true, (1440, 900));
+    }
+
     /// The Search workbench after a real search (dark, light, a narrow window) and while one runs, as raw RGBA dumps:
     /// `FEA_SNAPSHOT_SEARCH_OUT=/dir cargo test ... search_snapshot -- --ignored`.
     #[test]
