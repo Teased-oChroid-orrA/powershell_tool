@@ -42,6 +42,8 @@ struct Run {
     below_gate: usize,
     /// ... of which touch the boundary (a corner node on a named surface).
     below_gate_on_boundary: usize,
+    /// Boundary edges not shared by exactly two boundary facets (the named surfaces together): 0 on a manifold boundary.
+    open_edges: usize,
 }
 
 struct Case {
@@ -172,6 +174,13 @@ fn measure(base: &Problem, cache: SolidCache, step: &str, text_h: f64, solve_it:
             k += 1;
         }
     }
+    let mut edges = std::collections::HashMap::<(usize, usize), usize>::new();
+    for f in mesh.surfaces.values().flatten() {
+        for (a, b) in [(f[0], f[1]), (f[1], f[2]), (f[2], f[0])] {
+            *edges.entry((a.min(b), a.max(b))).or_default() += 1;
+        }
+    }
+    r.open_edges = edges.values().filter(|&&n| n != 2).count();
     if !solve_it {
         // meshing evidence only (the solve dominates the run time of the table)
         return r;
@@ -216,8 +225,8 @@ fn row(name: &str, which: &str, r: &Run) -> String {
     match &r.err {
         Some(e) if r.tets == 0 => format!("{name:<34} {which:<6} REFUSED: {e}"),
         _ => format!(
-            "{name:<34} {which:<6} vol {:.6e} tets {:>6} dofs {:>7} sJ {:.3} rr {:.3} er {:>5.1} jump {:>4.1} gates {} (<0.1: {}, on boundary {}) mesh {:>6.2}s solve {:>7.1}ms | umax {:.5e} U {:.5e} R{} {:>9.3} eq {:.1e}{}",
-            r.volume, r.tets, r.dofs, r.min_sj, r.min_radius_ratio, r.max_edge_ratio, r.size_jump, if r.gates { "ok" } else { "NO" }, r.below_gate, r.below_gate_on_boundary, r.mesh_s, r.solve_ms, r.max_disp, r.energy, ["x", "y", "z"][r.axis], r.reaction, r.equilibrium,
+            "{name:<34} {which:<6} vol {:.6e} tets {:>6} dofs {:>7} sJ {:.3} rr {:.3} er {:>5.1} jump {:>4.1} gates {} (<0.1: {}, on boundary {}) open edges {} mesh {:>6.2}s solve {:>7.1}ms | umax {:.5e} U {:.5e} R{} {:>9.3} eq {:.1e}{}",
+            r.volume, r.tets, r.dofs, r.min_sj, r.min_radius_ratio, r.max_edge_ratio, r.size_jump, if r.gates { "ok" } else { "NO" }, r.below_gate, r.below_gate_on_boundary, r.open_edges, r.mesh_s, r.solve_ms, r.max_disp, r.energy, ["x", "y", "z"][r.axis], r.reaction, r.equilibrium,
             r.err.as_ref().map(|e| format!(" [{e}]")).unwrap_or_default()
         ),
     }
@@ -607,7 +616,8 @@ fn flat_face_facet_areas() {
                 }
                 worst = worst.max((area / surface - 1.0).abs());
                 fins += steep;
-                if steep > 0.0 {
+                // a face with steep facets, or named far from its surface area (no facet at all: -100 %)
+                if steep > 0.0 || (area / surface - 1.0).abs() > 0.05 {
                     eprintln!("  {:<34} {which:<6} face{f:<4} surface {surface:>11.5} facets {area:>11.5} ({:+.3} %), over 45 deg {steep:.5} ({:.3} %)", c.name, 100.0 * (area / surface - 1.0), 100.0 * steep / surface);
                 }
             }

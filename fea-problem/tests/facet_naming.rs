@@ -13,20 +13,15 @@ fn normal_area(v: [[f64; 3]; 3]) -> ([f64; 3], f64) {
     (n.map(|x| x / l), 0.5 * l)
 }
 
-/// A 10 x 10 x 4 box with a R2 x 3 boss on its top: the top face meets the boss along a concave circle. For each flat face, the
-/// area of the facets named after it against its surface area, and the facets more than 45 degrees off its plane grouped by the
-/// model faces their corners lie on (within a hundredth of the size, the namer's tolerance).
-#[test]
-#[ignore = "diagnostic table"]
-fn facets_named_after_a_flat_face_at_a_concave_edge() {
-    let text = NativeBrep::box_from_corners([0.; 3], [10., 10., 4.]).unwrap().boss(5, [5., 5., 4.], 2., 3.).unwrap().to_step_text();
-    let p = Problem::from_step("box + boss", &text).unwrap();
+/// For each flat face of `p`: its surface area, the area of the facets named after it, and the facets more than 45 degrees off
+/// its plane grouped by the model faces their corners lie on (within a hundredth of the size, the namer's tolerance).
+fn flat_face_naming(p: &Problem) -> Vec<(usize, f64, f64, BTreeMap<String, (usize, f64)>)> {
     let Geometry::Solid { cache: Some(cache), .. } = &p.geometry else { panic!() };
     let h = p.mesh.size;
-    let solid = solid_surface(&p).unwrap();
-    let (mesh, _) = solid_mesh(&p).unwrap();
+    let solid = solid_surface(p).unwrap();
+    let (mesh, _) = solid_mesh(p).unwrap();
     let on = |x: [f64; 3]| -> Vec<usize> { solid.faces_near(x, 1.2 * h).into_iter().filter(|f| f.dist.abs() <= 0.01 * h).map(|f| f.face + 1).collect() };
-    eprintln!("size {h:.4}");
+    let mut rows = Vec::new();
     for (f, surface) in solid.face_areas().iter().enumerate().map(|(f, a)| (f + 1, *a)) {
         let Ok((_, n)) = flat_face(cache, f) else { continue };
         let (mut area, mut steep) = (0.0, BTreeMap::<String, (usize, f64)>::new());
@@ -42,9 +37,39 @@ fn facets_named_after_a_flat_face_at_a_concave_edge() {
                 e.1 += a;
             }
         }
+        rows.push((f, surface, area, steep));
+    }
+    rows
+}
+
+/// A 10 x 10 x 4 box with a R2 x 3 boss on its top: the top face (face6) meets the boss along a concave circle.
+fn box_with_boss() -> Problem {
+    let text = NativeBrep::box_from_corners([0.; 3], [10., 10., 4.]).unwrap().boss(5, [5., 5., 4.], 2., 3.).unwrap().to_step_text();
+    Problem::from_step("box + boss", &text).unwrap()
+}
+
+/// The table for the box with a boss.
+#[test]
+#[ignore = "diagnostic table"]
+fn facets_named_after_a_flat_face_at_a_concave_edge() {
+    let p = box_with_boss();
+    eprintln!("size {:.4}", p.mesh.size);
+    for (f, surface, area, steep) in flat_face_naming(&p) {
         eprintln!("face{f:<3} surface {surface:>9.5} facets {area:>9.5} ({:+.3} %)", 100.0 * (area / surface - 1.0));
         for (corners, (count, a)) in steep {
             eprintln!("  over 45 deg, corners on {corners:<24} facets {count:>3} area {a:.5}");
         }
     }
+}
+
+/// The repair's crease stage puts boundary vertices on the concave circle, so no facet named after the top face bridges it
+/// (Phase 172 found 24, 2.35 mm2, 45 degrees off the plane; `docs/issue-46-phase-173.md`), and the face's named area stays
+/// within half a per cent of its surface area.
+#[test]
+fn no_facet_named_after_the_top_face_bridges_the_boss_rim() {
+    let rows = flat_face_naming(&box_with_boss());
+    let (_, surface, area, steep) = rows.iter().find(|r| r.0 == 6).expect("face6 is flat");
+    let steep_area: f64 = steep.values().map(|x| x.1).sum();
+    assert!(steep.is_empty(), "face6 carries {steep_area:.5} mm2 of facets over 45 degrees off its plane: {steep:?}");
+    assert!((area / surface - 1.0).abs() < 5e-3, "face6 named area {area:.5} against {surface:.5}");
 }
