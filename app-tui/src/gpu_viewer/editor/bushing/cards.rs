@@ -70,6 +70,9 @@ impl BushingSession {
         cards.push(self.edge_card());
         cards.push(self.numbers_card());
         cards.push(self.fe_card());
+        if let Some(card) = self.fit_pressure_card() {
+            cards.push(card);
+        }
         cards
     }
 
@@ -276,12 +279,6 @@ impl BushingSession {
                 let sum = &s.summary;
                 items.push(field("Max von Mises", format!("{:.0} psi", sum.max_von_mises.value), Tone::Normal));
                 if let Some(i) = sum.interfaces.first() {
-                    let analytic = m.output.pressure;
-                    items.push(field("Fit pressure, FE", format!("{:.0} psi mean, {:.0} peak", i.mean_pressure, i.peak_pressure), Tone::Normal));
-                    if analytic > 0.0 {
-                        let rel = 100.0 * (i.mean_pressure - analytic) / analytic;
-                        items.push(field("Closed form", format!("{analytic:.0} psi ({rel:+.1} % apart)"), if rel.abs() > 15.0 { Tone::Warn } else { Tone::Dim }));
-                    }
                     items.push(field("Open arc", format!("{:.0}\u{b0}", i.open_arc_deg), if i.open_arc_deg > 0.0 { Tone::Warn } else { Tone::Normal }));
                     items.push(field("Friction torque capacity", format!("{:.1} lbf in", i.torque_capacity), Tone::Normal));
                     items.push(field("Slipping share", format!("{:.0} %", 100.0 * i.slip_share), Tone::Normal));
@@ -301,6 +298,20 @@ impl BushingSession {
             items.push(DockItem::row("Cancel solve", Tone::Warn, Some(act(BushingAct::CancelSolve)), false));
         }
         Card::new("bushing-fe", "Finite-element model", Relevance::Primary, items).for_steps(&["Simulation"])
+    }
+
+    fn fit_pressure_card(&self) -> Option<Card> {
+        let solved = self.fea.current_solution().filter(|s| s.problem == self.fea.problem)?;
+        let fit = solved.summary.interfaces.first()?;
+        let lame = self.st.model.output.pressure;
+        let mut items = vec![field("FE mean / peak", format!("{:.0} / {:.0} psi", fit.mean_pressure, fit.peak_pressure), Tone::Normal)];
+        if lame > 0.0 {
+            let delta = fit.mean_pressure - lame;
+            items.push(field("Lame closed form", format!("{lame:.0} psi"), Tone::Normal));
+            items.push(field("FE minus Lame", format!("{delta:+.0} psi ({:+.1} %)", 100.0 * delta / lame), if delta.abs() / lame > 0.15 { Tone::Warn } else { Tone::Dim }));
+            items.push(line("The FE uses finite rectangular housing and discretized contact; Lame assumes ideal concentric cylinders. Treat the difference as a cross-check, not a correction.", Tone::Dim));
+        }
+        Some(Card::new("bushing-fit-comparison", "Fit pressure comparison", Relevance::Context, items).for_steps(&["Simulation"]))
     }
 
     // ------------------------------------------------------------------ tree

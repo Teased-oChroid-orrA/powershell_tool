@@ -1614,6 +1614,7 @@ mod snapshot_tests {
         });
         session.act(EditorAction::Bushing(BushingAct::Solve));
         wait(&mut session, &|s| s.fea().current_solution().is_some() && !s.solving());
+        session.act(EditorAction::Bushing(BushingAct::Step("Simulation")));
         pollster::block_on(async {
             let adapter = test_adapter().await.expect("adapter required");
             let (w, h) = (1360u32, 860u32);
