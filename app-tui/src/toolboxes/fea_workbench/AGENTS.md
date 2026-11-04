@@ -28,6 +28,7 @@ Does not own: the problem schema, meshing, solving, results, rasterising or the 
 
 ## Mesh and material controls
 - Rows added with the epic #25 work (all default to the earlier behaviour): `Mesh Strategy` (also for extrusions: Hex + Wedge), `Auto Size Features` (`mesh.predict_sizes`), `Adaptivity Driver` (ZZ / Equilibrated / Goal-oriented), `Bond Regions` and `Region k Material` (a sketch with extra regions; Enter opens the material browser with `material_target` set), `Material Model` / `Hardening Modulus` (elastic-plastic; hidden with bushings or thermal studies). `n` refines frequencies on the eigenvalue estimate when `Adaptive Passes > 0`. The readout shows the plastic summary; the result has an `Equivalent plastic strain` field.
+- Polygon holes loaded from a case list editable x/y rows for every vertex, using the same numeric edit path as an outer polygon. The hole boundary remains one named surface (`holeN`).
 
 ## Pitfalls
 - Number rows accept `e` / `E` / `+` so `2.9e7` can be typed; text rows (mesh path) accept any graphic character.

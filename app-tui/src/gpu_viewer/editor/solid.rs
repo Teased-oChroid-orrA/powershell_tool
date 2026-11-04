@@ -219,7 +219,7 @@ pub fn feature_of(row: FieldRow) -> Feature {
         HeatLoadAdd => Feature::HeatLoad(usize::MAX),
         Material | Young | Poisson | Alpha | Density | Yield | PlasticRow | HardeningRow | DeltaT => Feature::Material,
         Source | ImportPath | OuterKind | Outer(_) | PolyPoint(..) | PolyAdd | PolyRemove | HoleAdd | Depth | Layers => Feature::Geometry,
-        HoleKind(h) | Hole(h, _) | HoleRemove(h) => Feature::Hole(h),
+        HoleKind(h) | Hole(h, _) | HolePoint(h, _, _) | HoleRemove(h) => Feature::Hole(h),
         Element | MeshStrategyRow | AdaptModeRow | PredictRow | BondRegionsRow | RegionMaterial(_) | MeshSize | HoleFactor | AdaptPasses | TargetError | Reorient => Feature::Mesh,
         SupportKind(s) | SupportEdge(s) | SupportCoord(s, _) | SupportComp(s, _) | SupportRemove(s) => Feature::Support(s),
         SupportAdd => Feature::Support(usize::MAX),

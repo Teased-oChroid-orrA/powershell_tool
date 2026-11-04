@@ -31,6 +31,7 @@ pub enum FieldRow {
     PolyRemove,
     HoleKind(usize),
     Hole(usize, usize),
+    HolePoint(usize, usize, usize),
     HoleRemove(usize),
     HoleAdd,
     Depth,
@@ -98,7 +99,7 @@ pub enum EditKind {
 pub fn edit_kind(row: FieldRow) -> EditKind {
     use FieldRow::*;
     match row {
-        Thickness | Young | Poisson | Alpha | Density | Yield | HardeningRow | DeltaT | Conductivity | HeatSource | ReferenceTemp | HeatSupportCoord(..) | HeatSupportTemp(..) | HeatLoadParam(..) | Outer(..) | PolyPoint(..) | Hole(..) | Depth | Layers | MeshSize | HoleFactor | AdaptPasses | TargetError | SupportCoord(..) | LoadParam(..) | BushingParam(..) | ContactFriction(..) => EditKind::Number,
+        Thickness | Young | Poisson | Alpha | Density | Yield | HardeningRow | DeltaT | Conductivity | HeatSource | ReferenceTemp | HeatSupportCoord(..) | HeatSupportTemp(..) | HeatLoadParam(..) | Outer(..) | PolyPoint(..) | Hole(..) | HolePoint(..) | Depth | Layers | MeshSize | HoleFactor | AdaptPasses | TargetError | SupportCoord(..) | LoadParam(..) | BushingParam(..) | ContactFriction(..) => EditKind::Number,
         SupportComp(..) => EditKind::Component,
         ImportPath => EditKind::Text,
         _ => EditKind::Action,
@@ -155,7 +156,13 @@ pub fn field_rows(p: &Problem) -> Vec<FieldRow> {
             }
             for (h, s) in holes.iter().enumerate() {
                 r.push(HoleKind(h));
-                r.extend((0..s.params().len()).map(|i| Hole(h, i)));
+                if let Shape::Polygon { pts } = s {
+                    for i in 0..pts.len() {
+                        r.extend([HolePoint(h, i, 0), HolePoint(h, i, 1)]);
+                    }
+                } else {
+                    r.extend((0..s.params().len()).map(|i| Hole(h, i)));
+                }
                 r.push(HoleRemove(h));
             }
             r.push(HoleAdd);
@@ -302,6 +309,7 @@ pub fn row_label(p: &Problem, row: FieldRow) -> String {
             Geometry::Sketch { holes, .. } => format!("  {}", shape_param(&holes[h], i)),
             _ => String::new(),
         },
+        HolePoint(_, i, a) => format!("  Point {} {}", i + 1, AXIS[a]),
         HoleRemove(h) => format!("  Remove Hole {}", h + 1),
         HoleAdd => "Add Hole".into(),
         Depth => "Extrusion Depth".into(),
@@ -389,6 +397,13 @@ pub fn number_value(p: &Problem, row: FieldRow) -> Option<f64> {
             Geometry::Sketch { holes, .. } => holes.get(h)?.params().get(i)?.1,
             _ => return None,
         },
+        HolePoint(h, i, a) => match &p.geometry {
+            Geometry::Sketch { holes, .. } => match holes.get(h)? {
+                Shape::Polygon { pts } => pts.get(i)?[a],
+                _ => return None,
+            },
+            _ => return None,
+        },
         Depth => match &p.geometry {
             Geometry::Sketch { depth, .. } => *depth,
             _ => return None,
@@ -449,6 +464,15 @@ pub fn set_number(p: &mut Problem, row: FieldRow, v: f64) {
             if let Geometry::Sketch { holes, .. } = &mut p.geometry {
                 if let Some(s) = holes.get_mut(h) {
                     s.set_param(i, v);
+                }
+            }
+        }
+        HolePoint(h, i, a) => {
+            if let Geometry::Sketch { holes, .. } = &mut p.geometry {
+                if let Some(Shape::Polygon { pts }) = holes.get_mut(h) {
+                    if let Some(pt) = pts.get_mut(i) {
+                        pt[a] = v;
+                    }
                 }
             }
         }
@@ -562,7 +586,7 @@ pub fn row_value(p: &Problem, names: &[String], import_len: Option<usize>, row: 
         HeatLoadEdge(l) => p.thermal.loads.get(l).and_then(|x| x.edge()).map(|e| edge_text(e, names)).unwrap_or_default(),
         HoleKind(h) => match &p.geometry {
             Geometry::Sketch { holes, .. } => match &holes[h] {
-                Shape::Polygon { pts } => format!("Polygon ({} points: edit in the problem file)", pts.len()),
+                Shape::Polygon { pts } => format!("Polygon ({} editable points)", pts.len()),
                 s => s.label().to_string(),
             },
             _ => String::new(),
@@ -592,7 +616,7 @@ pub fn row_value(p: &Problem, names: &[String], import_len: Option<usize>, row: 
             None => "Free".to_string(),
         },
         Layers | AdaptPasses => format!("{}", number_value(p, row).unwrap_or(0.0).round()),
-        Thickness | Young | Poisson | Alpha | Density | DeltaT | Conductivity | HeatSource | ReferenceTemp | HeatSupportCoord(..) | HeatSupportTemp(..) | HeatLoadParam(..) | Outer(..) | PolyPoint(..) | Hole(..) | Depth | MeshSize | HoleFactor | TargetError | SupportCoord(..) | LoadParam(..) | BushingParam(..) | ContactFriction(..) => {
+        Thickness | Young | Poisson | Alpha | Density | DeltaT | Conductivity | HeatSource | ReferenceTemp | HeatSupportCoord(..) | HeatSupportTemp(..) | HeatLoadParam(..) | Outer(..) | PolyPoint(..) | Hole(..) | HolePoint(..) | Depth | MeshSize | HoleFactor | TargetError | SupportCoord(..) | LoadParam(..) | BushingParam(..) | ContactFriction(..) => {
             let _ = d;
             number_value(p, row).map_or(String::new(), format_number)
         }
@@ -624,6 +648,7 @@ pub fn field_hint(row: FieldRow) -> &'static str {
         OuterKind => "Enter changes the outline: rectangle (edges bottom / right / top / left), circle or slot (edge outer), polygon (edges edge1..edgeN).",
         Outer(_) | Hole(..) => "Dimension of the shape (slot angle in degrees from the x axis).",
         PolyPoint(..) => "Polygon vertex; edge i runs from point i to point i+1 and is named edge{i}.",
+        HolePoint(..) => "Hole polygon vertex; the hole boundary is named hole{n}.",
         PolyAdd => "Splits the closing edge with a new vertex at its midpoint.",
         PolyRemove => "Removes the last vertex.",
         HoleKind(_) => "Enter cycles circle, slot and rectangle holes. A hole's edge is named hole{n}.",

@@ -221,6 +221,21 @@ fn holes_and_polygon_points_are_editable() {
 }
 
 #[test]
+fn a_polygon_hole_lists_its_points_and_edits_a_coordinate() {
+    let mut s = FeaWorkbenchState::default();
+    let Geometry::Sketch { holes, .. } = &mut s.problem.geometry else { panic!() };
+    holes.push(fea_problem::Shape::Polygon { pts: vec![[4.0, 0.3], [4.2, 0.3], [4.1, 0.5]] });
+    let h = holes.len() - 1;
+    let row = FieldRow::HolePoint(h, 1, 0);
+    assert!(s.rows().contains(&row));
+    assert_eq!(model::row_value(&s.problem, &[], None, FieldRow::HoleKind(h)), "Polygon (3 editable points)");
+    assert_eq!(model::row_label(&s.problem, row), "  Point 2 x");
+    assert_eq!(model::number_value(&s.problem, row), Some(4.2));
+    model::set_number(&mut s.problem, row, 4.25);
+    assert_eq!(model::number_value(&s.problem, row), Some(4.25));
+}
+
+#[test]
 fn the_geometry_source_toggles_to_an_imported_file_and_back_keeping_the_sketch() {
     let mut s = auto_state();
     let sketch = s.problem.geometry.clone();
