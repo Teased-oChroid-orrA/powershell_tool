@@ -55,6 +55,8 @@ pub enum StackupAct {
     AdoptImported,
     ClassifyImported(WallMode),
     Recalculate,
+    Undo,
+    Redo,
     Save,
     Send,
 }
@@ -86,6 +88,8 @@ pub struct StackupSession {
     pub inputs: Inputs,
     selected: usize,
     drafts: BTreeMap<(u64, u8), String>,
+    undo: Vec<EditSnapshot>,
+    redo: Vec<EditSnapshot>,
     path: PathBuf,
     file_revision: Option<String>,
     dirty: bool,
@@ -94,6 +98,13 @@ pub struct StackupSession {
     result: Result<Arc<ResultSet>, String>,
     status: String,
 }
+#[derive(Clone, PartialEq)]
+struct EditSnapshot {
+    inputs: Inputs,
+    selected: usize,
+    drafts: BTreeMap<(u64, u8), String>,
+}
+const UNDO_LIMIT: usize = 100;
 impl StackupSession {
     pub fn open(path: &Path) -> Result<Self, String> {
         let inputs = if path.exists() {
@@ -113,6 +124,8 @@ impl StackupSession {
             inputs,
             selected: 0,
             drafts: BTreeMap::new(),
+            undo: Vec::new(),
+            redo: Vec::new(),
             path: path.into(),
             file_revision: crate::persistence::revision(path),
             dirty: false,
@@ -126,6 +139,34 @@ impl StackupSession {
     }
     fn current(&self) -> bool {
         self.result_revision == Some(self.input_revision)
+    }
+    fn snapshot(&self) -> EditSnapshot {
+        EditSnapshot { inputs: self.inputs.clone(), selected: self.selected, drafts: self.drafts.clone() }
+    }
+    fn record(&mut self, before: EditSnapshot) {
+        if self.snapshot() == before { return; }
+        self.undo.push(before);
+        if self.undo.len() > UNDO_LIMIT { self.undo.remove(0); }
+        self.redo.clear();
+    }
+    fn restore(&mut self, snapshot: EditSnapshot) {
+        self.inputs = snapshot.inputs;
+        self.selected = snapshot.selected;
+        self.drafts = snapshot.drafts;
+        self.changed();
+        self.recalculate();
+    }
+    fn undo(&mut self) {
+        if let Some(previous) = self.undo.pop() {
+            self.redo.push(self.snapshot());
+            self.restore(previous);
+        }
+    }
+    fn redo(&mut self) {
+        if let Some(next) = self.redo.pop() {
+            self.undo.push(self.snapshot());
+            self.restore(next);
+        }
     }
     fn changed(&mut self) {
         self.input_revision += 1;
@@ -335,6 +376,7 @@ impl StackupSession {
         }
     }
     fn act_stackup(&mut self, a: StackupAct) {
+        let before = self.snapshot();
         match a {
             StackupAct::Select(i) if i < self.inputs.members.len() => {
                 self.selected = i;
@@ -412,6 +454,8 @@ impl StackupSession {
                 self.recalculate();
                 return;
             }
+            StackupAct::Undo => { self.undo(); return; }
+            StackupAct::Redo => { self.redo(); return; }
             StackupAct::Save => {
                 self.save();
                 return;
@@ -422,6 +466,7 @@ impl StackupSession {
             }
             _ => return,
         }
+        self.record(before);
         self.changed();
         self.recalculate();
     }
@@ -518,12 +563,13 @@ impl Authoring for StackupSession {
         }
     }
     fn key(&mut self, key: Key, mods: Mods) -> KeyResult {
-        if matches!(key,Key::Char(c) if mods.command&&c.eq_ignore_ascii_case(&'s')) {
-            self.save();
-            KeyResult::Handled
-        } else {
-            KeyResult::Unhandled
+        match key {
+            Key::Char(c) if mods.command && c.eq_ignore_ascii_case(&'s') => self.save(),
+            Key::Char(c) if mods.command && c.eq_ignore_ascii_case(&'z') && mods.shift => self.redo(),
+            Key::Char(c) if mods.command && c.eq_ignore_ascii_case(&'z') => self.undo(),
+            _ => return KeyResult::Unhandled,
         }
+        KeyResult::Handled
     }
     fn click(&mut self, _: [f32; 2], _: [f32; 2], _: &Camera) -> bool {
         false
@@ -640,9 +686,11 @@ impl Authoring for StackupSession {
         if self.value(id) == text {
             return;
         }
+        let before = self.snapshot();
         self.drafts.insert(key, text.clone());
         self.changed();
         if !valid_text(id, &text) {
+            self.record(before);
             return;
         }
         let value = text.parse::<f64>().unwrap_or(0.0);
@@ -695,6 +743,7 @@ impl Authoring for StackupSession {
             29 => m.finished_id_max = (!text.trim().is_empty()).then_some(value),
             _ => {}
         }
+        self.record(before);
     }
     fn document(&self) -> Option<Document> {
         let m = &self.inputs.members[self.selected];
@@ -717,6 +766,8 @@ impl Authoring for StackupSession {
             } else {
                 Err("Already last".into())
             }),
+            btn("Undo", StackupAct::Undo).when(if self.undo.is_empty() { Err("No edit to undo".into()) } else { Ok(()) }),
+            btn("Redo", StackupAct::Redo).when(if self.redo.is_empty() { Err("No edit to redo".into()) } else { Ok(()) }),
             btn("Save", StackupAct::Save),
         ];
         buttons.push(btn("Send to Bushing", StackupAct::Send).when(self.transfer_availability()));
@@ -1009,6 +1060,24 @@ mod tests {
     use super::*;
     fn session() -> StackupSession {
         StackupSession::open(Path::new("/tmp/never-created-stackup-v2.json")).unwrap()
+    }
+    #[test]
+    fn undo_and_redo_restore_fields_drafts_and_member_order() {
+        let mut s = session();
+        let original = s.inputs.clone();
+        s.document_field(11, "0.75".into());
+        assert_eq!(s.inputs.members[0].thickness, 0.75);
+        s.act_stackup(StackupAct::Add);
+        assert_eq!(s.inputs.members.len(), original.members.len() + 1);
+        s.key(Key::Char('z'), Mods { command: true, ..Default::default() });
+        assert_eq!(s.inputs.members.len(), original.members.len());
+        s.key(Key::Char('z'), Mods { command: true, ..Default::default() });
+        assert_eq!(s.inputs, original);
+        assert!(s.drafts.is_empty() && s.current());
+        s.key(Key::Char('Z'), Mods { command: true, shift: true });
+        assert_eq!(s.inputs.members[0].thickness, 0.75);
+        assert_eq!(s.value(11), "0.75");
+        assert!(s.current());
     }
     #[test]
     fn exhausted_member_ids_do_not_mutate_stack() {

@@ -80,6 +80,11 @@ impl Gui {
                             if let Some(e) = doc.buttons.iter().find(|e| e.label == "Save") {
                                 self.doc_button(ui, e, p, out, hint, false);
                             }
+                            for label in ["Redo", "Undo"] {
+                                if let Some(e) = doc.buttons.iter().find(|e| e.label == label) {
+                                    self.doc_button(ui, e, p, out, hint, false);
+                                }
+                            }
                             ui.label(RichText::new(if page.current && page.error.is_none() { "Up to date" } else { "Editing inputs" }).small().color(if page.current && page.error.is_none() {p.good} else {p.warn}));
                         });
                     });
