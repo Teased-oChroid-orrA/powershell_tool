@@ -40,6 +40,12 @@ fn copy_content_uses_displayed_lines_without_line_numbers() {
 }
 
 #[test]
+fn report_auto_open_control_is_absent_from_the_ribbon() {
+    let s = SearchSession::in_memory();
+    assert!(view::ribbon(&s).iter().flat_map(|tab| &tab.groups).flat_map(|group| &group.buttons).all(|button| button.label != "Open when done"));
+}
+
+#[test]
 fn cached_search_rows_follow_filter_sort_selection_and_new_runs() {
     let mut s = with_results();
     let original = view::document(&s).table.rows;

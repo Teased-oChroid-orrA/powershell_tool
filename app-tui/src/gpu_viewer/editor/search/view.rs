@@ -656,7 +656,7 @@ pub(super) fn ribbon(s: &SearchSession) -> Vec<RibbonTab> {
             when(e("Stop build", "Esc", SearchAct::CancelIndex), ix.is_building, "no index is building"),
             Entry::new(format!("Location: {}", settings_view::setting_display(c, 30)), "", act(SearchAct::Step(30))),
         ]),
-        RibbonTab::new("Output").group("Write", vec![switch(s, "HTML report", 16), switch(s, "CSV", 17), switch(s, "JSON", 18), switch(s, "Open when done", 19)]).group("Where", vec![e("Output folder...", "", SearchAct::BrowseOutput), report_entry(s)]),
+        RibbonTab::new("Output").group("Write", vec![switch(s, "HTML report", 16), switch(s, "CSV", 17), switch(s, "JSON", 18)]).group("Where", vec![e("Output folder...", "", SearchAct::BrowseOutput), report_entry(s)]),
     ]
 }
 
