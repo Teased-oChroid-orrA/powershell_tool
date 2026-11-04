@@ -110,6 +110,27 @@ fn the_choices_cycle_and_the_countersink_cards_show_the_solved_dimension_only() 
 }
 
 #[test]
+fn knife_edge_requires_actual_thickness_and_survives_save_and_undo() {
+    let mut s = session("knife-edge");
+    act(&mut s, FastenerAct::Row(FieldRow::ToggleHoleType));
+    assert!(texts(&s.inspector()).contains("Knife edge: unchecked"));
+    let row = FieldRow::Number(NumberTarget::CsPlateThickness, NumberPart::Nominal, "Plate Thickness");
+    edit(&mut s, row, "0.125");
+    assert!(texts(&s.inspector()).contains("Knife edge: FAIL"));
+    edit(&mut s, row, "0.2");
+    assert!(texts(&s.inspector()).contains("Knife edge: clear"));
+    act(&mut s, FastenerAct::Save);
+    let back = FastenerSession::open(&s.path).unwrap();
+    assert_eq!(back.model().countersink.plate_thickness.unwrap().nominal, 0.2);
+    act(&mut s, FastenerAct::Undo);
+    assert!(texts(&s.inspector()).contains("Knife edge: FAIL"));
+    let mut old = FastenerFile::capture(s.model(), "old");
+    old.dimensions.remove("plate thickness");
+    let older = FastenerSession::new(&old, dir("old-knife-edge").join("case.json"));
+    assert!(texts(&older.inspector()).contains("Knife edge: unchecked"));
+}
+
+#[test]
 fn save_and_reopen_round_trips_every_input_and_export_writes_the_terminal_report() {
     let mut s = session("save");
     act(&mut s, FastenerAct::Row(FieldRow::ToggleHoleType));

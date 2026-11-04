@@ -171,6 +171,7 @@ pub(crate) fn display_value(model: &FastenerHoleModel, row: FieldRow) -> String 
         FieldRow::ToggleToleranceMode => model.tolerance_mode.label().to_string(),
         FieldRow::ToggleSolveFor => model.countersink.solve_for.label().to_string(),
         FieldRow::ToggleSecondaryMethod => model.countersink.secondary_method.label().to_string(),
+        FieldRow::Number(NumberTarget::CsPlateThickness, _, _) if model.countersink.plate_thickness.is_none() => "-- enter thickness --".to_string(),
         FieldRow::Number(target, part, _) => format_part(target, part, &model.get_toleranced(target)),
     }
 }
@@ -271,6 +272,8 @@ pub fn build_report_text(model: &FastenerHoleModel) -> String {
                 Ok(area) => s.push_str(&format!("  Lateral Surface Area: {} in^2\n\n", model::format_area_band(area))),
                 Err(_) => s.push_str("  Lateral Surface Area: INCOMPLETE\n\n"),
             }
+
+            s.push_str(&knife_edge_text(model));
 
             s.push_str(&format!("Secondary Countersink ({}):\n", model.countersink.secondary_method.label()));
             match &model.countersink_secondary {
@@ -401,7 +404,17 @@ fn countersink_readout_lines<'a>(theme: &'a Theme, model: &'a FastenerHoleModel)
         lines.push(Line::from(Span::styled(format!("  Area {mark}"), theme.status_style(tone))));
     }
 
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(knife_edge_text(model).trim().to_string(), theme.status_style(if model.knife_edge.is_some_and(|c| c.clear) { StatusTone::Success } else { StatusTone::Warning }))));
+
     lines
+}
+
+pub(crate) fn knife_edge_text(model: &FastenerHoleModel) -> String {
+    match model.knife_edge {
+        Some(c) => format!("Knife edge: {}. Remaining thickness {:.4} in nominal, {:.4} in minimum, {:.4} in maximum.\n", if c.clear { "clear" } else { "FAIL" }, c.nominal, c.minimum, c.maximum),
+        None => "Knife edge: unchecked; enter actual plate thickness and valid countersink geometry.\n".to_string(),
+    }
 }
 
 #[cfg(test)]

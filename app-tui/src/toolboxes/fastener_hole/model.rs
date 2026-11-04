@@ -76,6 +76,7 @@ pub enum NumberTarget {
     CsDepth,
     CsAngle,
     CsSecondaryHoleDiameter,
+    CsPlateThickness,
 }
 
 impl NumberTarget {
@@ -143,6 +144,7 @@ pub fn field_hint(row: FieldRow) -> &'static str {
         FieldRow::Number(NumberTarget::CsDepth, _, _) => "Countersink depth from the surface to the straight-hole transition.",
         FieldRow::Number(NumberTarget::CsAngle, _, _) => "Countersink included angle.",
         FieldRow::Number(NumberTarget::CsSecondaryHoleDiameter, _, _) => "Secondary (opposite-face) countersink's hole diameter - its depth/angle are derived per the Secondary Method above.",
+        FieldRow::Number(NumberTarget::CsPlateThickness, _, _) => "Actual plate thickness at the primary countersink. Required for the knife-edge check; zero or missing means unchecked.",
     }
 }
 
@@ -170,6 +172,7 @@ pub fn field_rows(model: &FastenerHoleModel) -> Vec<FieldRow> {
         }
         HoleType::Countersunk => {
             rows.push(FieldRow::Header("Countersink Geometry"));
+            rows.extend(dimension_rows(model.tolerance_mode, NumberTarget::CsPlateThickness, "Plate Thickness"));
             rows.push(FieldRow::ToggleSolveFor);
             let cs = &model.countersink;
             if cs.solve_for != CountersinkSolveFor::OuterDiameter {
@@ -228,6 +231,7 @@ impl Default for RegularHoleUi {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CountersinkUi {
+    pub plate_thickness: Option<TolerancedValue>,
     pub solve_for: CountersinkSolveFor,
     pub outer: TolerancedValue,
     pub hole: TolerancedValue,
@@ -240,6 +244,7 @@ pub struct CountersinkUi {
 impl Default for CountersinkUi {
     fn default() -> Self {
         Self {
+            plate_thickness: None,
             solve_for: CountersinkSolveFor::Angle,
             outer: TolerancedValue::exact(0.500).unwrap(),
             hole: TolerancedValue::exact(0.250).unwrap(),
@@ -283,6 +288,7 @@ pub struct FastenerHoleModel {
     pub countersink_secondary: Result<CountersinkGeometry, GeometryError>,
     pub countersink_secondary_area: Result<TolerancedValue, GeometryError>,
     pub countersink_area_check: Option<AreaPreservationCheck>,
+    pub knife_edge: Option<countersink::KnifeEdgeCheck>,
 }
 
 impl Default for FastenerHoleModel {
@@ -299,6 +305,7 @@ impl Default for FastenerHoleModel {
             countersink_secondary: Err(GeometryError::UnderdeterminedGeometry),
             countersink_secondary_area: Err(GeometryError::UnderdeterminedGeometry),
             countersink_area_check: None,
+            knife_edge: None,
         };
         model.recompute();
         model
@@ -316,6 +323,7 @@ impl FastenerHoleModel {
             NumberTarget::CsDepth => self.countersink.depth,
             NumberTarget::CsAngle => self.countersink.angle,
             NumberTarget::CsSecondaryHoleDiameter => self.countersink.secondary_hole,
+            NumberTarget::CsPlateThickness => self.countersink.plate_thickness.unwrap_or(TolerancedValue::exact(0.25).unwrap()),
         }
     }
 
@@ -329,6 +337,11 @@ impl FastenerHoleModel {
             NumberTarget::CsDepth => self.countersink.depth = value,
             NumberTarget::CsAngle => self.countersink.angle = value,
             NumberTarget::CsSecondaryHoleDiameter => self.countersink.secondary_hole = value,
+            NumberTarget::CsPlateThickness => {
+                if value.min > 0.0 {
+                    self.countersink.plate_thickness = Some(value);
+                }
+            }
         }
     }
 
@@ -353,6 +366,7 @@ impl FastenerHoleModel {
         self.regular_secondary = regular_hole::derive_and_verify(&self.regular_fit, &self.regular.reference);
 
         self.countersink_primary = countersink::solve(&countersink_inputs(&self.countersink));
+        self.knife_edge = self.countersink.plate_thickness.and_then(|t| self.countersink_primary.as_ref().ok().map(|g| countersink::knife_edge(t, g.depth)));
         self.countersink_primary_area = match &self.countersink_primary {
             Ok(geometry) => surface_area::lateral_surface_area_toleranced(&geometry.outer_diameter, &geometry.hole_diameter, &geometry.angle_deg),
             Err(e) => Err(*e),

@@ -90,6 +90,43 @@ pub struct CountersinkGeometry {
     pub solve_for: CountersinkSolveFor,
 }
 
+/// Remaining material below the primary countersink at every tolerance extreme.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KnifeEdgeCheck {
+    pub nominal: f64,
+    pub minimum: f64,
+    pub maximum: f64,
+    pub clear: bool,
+}
+
+pub fn knife_edge(thickness: TolerancedValue, depth: TolerancedValue) -> KnifeEdgeCheck {
+    let minimum = thickness.min - depth.max;
+    KnifeEdgeCheck {
+        nominal: thickness.nominal - depth.nominal,
+        minimum,
+        maximum: thickness.max - depth.min,
+        clear: minimum > 0.0,
+    }
+}
+
+#[cfg(test)]
+mod knife_edge_tests {
+    use super::*;
+
+    #[test]
+    fn worst_case_remaining_wall_uses_thinnest_plate_and_deepest_sink() {
+        let plate = TolerancedValue::from_nominal_tol(0.20, 0.02, 0.01).unwrap();
+        let depth = TolerancedValue::from_nominal_tol(0.17, 0.01, 0.02).unwrap();
+        let check = knife_edge(plate, depth);
+        assert!((check.nominal - 0.03).abs() < 1e-12);
+        assert!((check.minimum + 0.01).abs() < 1e-12);
+        assert!((check.maximum - 0.05).abs() < 1e-12);
+        assert!(!check.clear);
+        assert!(!knife_edge(TolerancedValue::exact(0.125).unwrap(), TolerancedValue::exact(0.125).unwrap()).clear);
+        assert!(knife_edge(TolerancedValue::exact(0.126).unwrap(), TolerancedValue::exact(0.125).unwrap()).clear);
+    }
+}
+
 /// Exactly three of the four fields must be `Some` - the one matching
 /// `solve_for` must be `None` (and vice versa); any other shape is
 /// [`GeometryError::UnderdeterminedGeometry`].

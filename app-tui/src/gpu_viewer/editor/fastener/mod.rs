@@ -184,13 +184,14 @@ impl FastenerSession {
         let FieldRow::Number(target, part, _) = p.row else { return };
         let label = view::row_label(p.row);
         let before = self.st.model.get_toleranced(target);
+        let before_plate = self.st.model.countersink.plate_thickness;
         match p.text.trim().parse::<f64>() {
             // Typing the value it already has is not an edit: no undo step.
-            Ok(v) if v.is_finite() && v == model::part_value(&before, part) => {}
+            Ok(v) if v.is_finite() && v == model::part_value(&before, part) && (target != model::NumberTarget::CsPlateThickness || self.st.model.countersink.plate_thickness.is_some()) => {}
             Ok(v) if v.is_finite() => {
                 self.checkpoint();
                 self.st.model.commit_number(target, part, v);
-                if self.st.model.get_toleranced(target) == before {
+                if self.st.model.get_toleranced(target) == before && (target != model::NumberTarget::CsPlateThickness || self.st.model.countersink.plate_thickness == before_plate) {
                     self.undo.pop();
                     self.status = format!("{label} not changed: {v} does not make a valid tolerance band.");
                 } else {

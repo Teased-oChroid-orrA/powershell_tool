@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 const FORMAT_VERSION: u32 = 1;
 
 /// Every input dimension with its key in the file.
-pub const DIMENSIONS: [(NumberTarget, &str); 8] = [
+pub const DIMENSIONS: [(NumberTarget, &str); 9] = [
     (NumberTarget::RegularHole1, "hole 1 diameter"),
     (NumberTarget::RegularHole2, "hole 2 diameter"),
     (NumberTarget::RegularReference, "secondary reference hole"),
@@ -18,12 +18,13 @@ pub const DIMENSIONS: [(NumberTarget, &str); 8] = [
     (NumberTarget::CsDepth, "countersink depth"),
     (NumberTarget::CsAngle, "countersink angle"),
     (NumberTarget::CsSecondaryHoleDiameter, "secondary hole diameter"),
+    (NumberTarget::CsPlateThickness, "plate thickness"),
 ];
 #[allow(dead_code)]
 fn every_number_target_is_listed(t: NumberTarget) {
     use NumberTarget::*;
     match t {
-        RegularHole1 | RegularHole2 | RegularReference | CsOuterDiameter | CsHoleDiameter | CsDepth | CsAngle | CsSecondaryHoleDiameter => {}
+        RegularHole1 | RegularHole2 | RegularReference | CsOuterDiameter | CsHoleDiameter | CsDepth | CsAngle | CsSecondaryHoleDiameter | CsPlateThickness => {}
     }
 }
 
@@ -65,6 +66,7 @@ impl FastenerFile {
         .collect();
         let dimensions = DIMENSIONS
             .iter()
+            .filter(|(t, _)| *t != NumberTarget::CsPlateThickness || m.countersink.plate_thickness.is_some())
             .map(|(t, key)| {
                 let v = m.get_toleranced(*t);
                 (key.to_string(), [v.min, v.nominal, v.max])
@@ -77,6 +79,7 @@ impl FastenerFile {
     /// offer, a dimension whose bounds are not a valid tolerance band); everything else is applied.
     pub fn apply(&self, m: &mut FastenerHoleModel) -> Vec<String> {
         let mut skipped = Vec::new();
+        m.countersink.plate_thickness = None;
         let mut choice = |key: &str, apply: &mut dyn FnMut(&str) -> bool| {
             if let Some(want) = self.choices.get(key) {
                 if !apply(want) {
@@ -90,6 +93,10 @@ impl FastenerFile {
         choice("secondary method", &mut |w| from_label(SecondaryCountersinkMethod::PreserveDepth, SecondaryCountersinkMethod::cycle, SecondaryCountersinkMethod::label, w).map(|v| m.countersink.secondary_method = v).is_some());
         for (t, key) in DIMENSIONS {
             let Some([min, nominal, max]) = self.dimensions.get(key).copied() else { continue };
+            if t == NumberTarget::CsPlateThickness && min <= 0.0 {
+                skipped.push(format!("{key}: thickness must be positive"));
+                continue;
+            }
             // A nominal outside its own band is not a tolerance the form could have produced.
             match TolerancedValue::from_bounds_with_nominal(nominal, min, max).ok().filter(|v| v.nominal == nominal) {
                 Some(v) => m.set_toleranced(t, v),

@@ -56,7 +56,7 @@ impl FastenerSession {
         let m = &self.st.model;
         match m.hole_type {
             HoleType::Regular => m.regular_secondary.is_ok(),
-            HoleType::Countersunk => m.countersink_primary.is_ok() && m.countersink_secondary.is_ok(),
+            HoleType::Countersunk => m.countersink_primary.is_ok() && m.countersink_secondary.is_ok() && m.knife_edge.is_none_or(|c| c.clear),
         }
     }
 
@@ -71,7 +71,7 @@ impl FastenerSession {
             HoleType::Countersunk => match &m.countersink_primary {
                 Ok(g) => {
                     let (label, v) = solved(g.solve_for, g);
-                    format!("Countersink {}: {}.", label.to_lowercase(), if g.solve_for == CountersinkSolveFor::Angle { angle(&v) } else { linear(&v) })
+                    format!("Countersink {}: {}. {}", label.to_lowercase(), if g.solve_for == CountersinkSolveFor::Angle { angle(&v) } else { linear(&v) }, view::knife_edge_text(m).trim())
                 }
                 Err(e) => format!("The countersink does not solve: {e}."),
             },
@@ -177,6 +177,7 @@ impl FastenerSession {
             secondary.push(DockItem::field("Area difference", format!("{} in^2", model::format_area(check.delta)), Tone::Normal, None, false));
             secondary.push(line(if check.preserved { "Area preserved" } else { "Area NOT preserved" }, ok_tone(check.preserved)));
         }
+        primary.push(line(view::knife_edge_text(m).trim(), if m.knife_edge.is_some_and(|c| c.clear) { Tone::On } else { Tone::Warn }));
         vec![
             Card::new("fastener-primary", "Primary countersink", Relevance::Primary, primary),
             Card::new("fastener-secondary", format!("Secondary countersink ({})", method.label()), Relevance::Context, secondary),
@@ -220,6 +221,9 @@ impl FastenerSession {
             HoleType::Countersunk => {
                 result(4, "Primary countersink".into(), m.countersink_primary.is_ok());
                 result(5, "Secondary countersink".into(), m.countersink_secondary.is_ok() && m.countersink_area_check.is_none_or(|c| c.preserved));
+                if let Some(check) = m.knife_edge {
+                    result(7, "Knife edge".into(), check.clear);
+                }
             }
         }
         out.push(TreeNode::new(6, 1, 'R', "Report").selected(self.step == "Report").on_click(step("Report")));
