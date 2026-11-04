@@ -122,7 +122,18 @@ impl EccentricSession {
                 }
                 let mut sofar = format!("{} solve{} done", p.solves_done, if p.solves_done == 1 { "" } else { "s" });
                 if let Some((lo, hi)) = p.bracket {
-                    sofar.push_str(&format!(", the answer lies in {lo:.4} to {hi:.4}"));
+                    if job.task == Task::MaxOffset && hi > 0.0 {
+                        run.push(field(if p.bracket_design_basis { "Verified to hold" } else { "Fit-alone bound" }, format!("{lo:.4} in"), if p.bracket_design_basis { Tone::On } else { Tone::Dim }));
+                        run.push(DockItem::Bracket { lower: lo, upper: hi });
+                        run.push(field("Unresolved up to", format!("{hi:.4} in"), Tone::Dim));
+                        if p.bracket_design_basis {
+                            run.push(button(&format!("Accept verified {lo:.4} in now"), EccentricAct::AcceptBracket));
+                        } else {
+                            run.push(line("Loaded capacity has not verified this bound yet.", Tone::Dim));
+                        }
+                    } else {
+                        sofar.push_str(&format!(", the answer lies in {lo:.4} to {hi:.4}"));
+                    }
                 }
                 run.push(line(sofar, Tone::Dim));
             }

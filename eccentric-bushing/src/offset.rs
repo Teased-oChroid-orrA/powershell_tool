@@ -5,7 +5,7 @@
 //! usually higher (the pin's pressure squeezes the bushing): the answer is then looked for above the fit-only one, with
 //! full analyses, and below it when contact is lost under the load.
 
-use crate::model::{analyze_from_fit, analyze_strict, fit_capacity_with, solve_fit, Inputs, INTERRUPTED, MIN_WALL_FRACTION};
+use crate::model::{analyze_from_fit, analyze_strict, fit_capacity_with, fit_for, Inputs, INTERRUPTED, MIN_WALL_FRACTION};
 use crate::control::Control;
 use crate::scaling::Scale;
 
@@ -161,7 +161,7 @@ pub fn max_offset(inp: &Inputs, tol: f64) -> Result<OffsetLimit, String> {
 pub fn max_offset_with(inp: &Inputs, tol: f64, ctl: &Control) -> Result<OffsetLimit, String> {
     inp.validate()?;
     let sc = Scale::of(inp);
-    max_offset_scaled(&sc.inputs(inp), tol, ctl).map(|l| sc.limit(l, true))
+    max_offset_scaled(&sc.inputs(inp), tol, &ctl.clone().with_progress_scale(sc.l)).map(|l| sc.limit(l, true))
 }
 
 /// [`max_offset_with`] on inputs in units of the bore radius and the housing modulus (see `scaling`).
@@ -176,7 +176,7 @@ fn max_offset_scaled(inp: &Inputs, tol: f64, ctl: &Control) -> Result<OffsetLimi
     };
     let loaded_margin = |e: f64| analyze_strict(&Inputs { offset: e, ..*inp }, ctl).map(|a| a.margin);
     // The fit-alone limit first: it is the answer on the conservative basis and the starting point on the other.
-    let fit = search_up(0.0, bound, tol, ctl, None, fit_margin);
+    let fit = search_up(0.0, bound, tol, &ctl.clone().with_bracket_basis(!inp.credit_pin_load || inp.load_lbf <= 0.0), None, fit_margin);
     let mut evaluations = fit.evals;
     if fit.halted.is_some() || !inp.credit_pin_load || inp.load_lbf <= 0.0 {
         return Ok(limit(&fit, wall_limit, fit.reached_top, false, evaluations));
@@ -193,10 +193,10 @@ fn max_offset_scaled(inp: &Inputs, tol: f64, ctl: &Control) -> Result<OffsetLimi
     };
     let found = if start >= -MARGIN_TOL {
         // The usual case: the pin's squeeze raises the capacity, so the hold lasts beyond the fit-alone limit.
-        search_up(e_fit, bound, tol, ctl, Some(start), loaded_margin)
+        search_up(e_fit, bound, tol, &ctl.clone().with_bracket_basis(true), Some(start), loaded_margin)
     } else {
         // Contact lost under the load: the loaded capacity is below the fit's, look below.
-        search_up(0.0, e_fit, tol, ctl, None, loaded_margin)
+        search_up(0.0, e_fit, tol, &ctl.clone().with_bracket_basis(true), None, loaded_margin)
     };
     Ok(limit(&found, wall_limit, found.reached_top && start >= -MARGIN_TOL, true, evaluations + found.evals))
 }
@@ -210,7 +210,7 @@ pub fn max_load(inp: &Inputs, tol: f64) -> Result<OffsetLimit, String> {
 pub fn max_load_with(inp: &Inputs, tol: f64, ctl: &Control) -> Result<OffsetLimit, String> {
     inp.validate()?;
     let sc = Scale::of(inp);
-    max_load_scaled(&sc.inputs(inp), tol, ctl).map(|l| sc.limit(l, false))
+    max_load_scaled(&sc.inputs(inp), tol, &ctl.clone().with_progress_scale(sc.f())).map(|l| sc.limit(l, false))
 }
 
 /// [`max_load_with`] on scaled inputs.
@@ -221,7 +221,7 @@ fn max_load_scaled(inp: &Inputs, tol: f64, ctl: &Control) -> Result<OffsetLimit,
     }
     // On the fit-alone basis the capacity does not depend on the load: a closed form from one solve.
     // The fit (stage 1) does not depend on the pin load: it is solved once and every probe starts from it.
-    let fit = solve_fit(inp, ctl).map_err(|e| if e == INTERRUPTED { format!("{}: no result yet", ctl.interrupt.reason().unwrap_or("stopped")) } else { e })?;
+    let fit = fit_for(inp, ctl).map_err(|e| if e == INTERRUPTED { format!("{}: no result yet", ctl.interrupt.reason().unwrap_or("stopped")) } else { e })?;
     let f_fit = fit.capacity(inp.friction) / arm;
     let fit_only = OffsetLimit { value: f_fit, upper: None, halted: None, caveat: None, wall_limit: 0.0, bounded_by_wall: false, set_by_loaded_run: false, evaluations: 1 };
     if !inp.credit_pin_load {

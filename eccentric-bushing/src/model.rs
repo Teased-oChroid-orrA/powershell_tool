@@ -9,6 +9,7 @@ use crate::control::Control;
 use crate::scaling::Scale;
 use fea_core::{Elastic, ElementKind, Loads, Model, NlSolution, Physics};
 use mechanics_core::materials::Material;
+use std::sync::{Arc, Mutex};
 
 /// In-plane orthotropy of a body: the constants along its own axes `1, 2` (`e_psi` of [`Elasticity`] is `E1`), with the
 /// axes turned `angle_deg` from the global `x` axis. The out-of-plane constants are taken equal to the in-plane ones
@@ -396,6 +397,45 @@ pub(crate) struct Fit {
     pts: Vec<Pt>,
 }
 
+/// Reuses a solved fit while one Eccentric Bushing workbench stays open.
+#[derive(Default)]
+pub struct FitCache(Mutex<Vec<(Inputs, Arc<Fit>)>>);
+
+impl std::fmt::Debug for FitCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FitCache").finish_non_exhaustive()
+    }
+}
+
+fn fit_key(inp: &Inputs) -> Inputs {
+    Inputs {
+        pin: Elasticity::iso(1.0, 0.0), pin_friction: 0.0, pin_clearance_dia: 0.0,
+        credit_pin_load: false, load_lbf: 0.0, load_angle_deg: 0.0,
+        direct_onset: false, min_wall: 0.0, ..*inp
+    }
+}
+
+pub(crate) fn fit_for(inp: &Inputs, ctl: &Control) -> Result<Arc<Fit>, String> {
+    inp.validate()?;
+    if ctl.interrupt.reason().is_some() { return Err(INTERRUPTED.into()); }
+    let key = fit_key(inp);
+    if let Some(cache) = &ctl.fit_cache {
+        if let Some((_, fit)) = cache.0.lock().unwrap().iter().find(|(saved, _)| *saved == key) {
+            return Ok(Arc::clone(fit));
+        }
+    }
+    let fit = Arc::new(solve_fit(inp, ctl)?);
+    if let Some(cache) = &ctl.fit_cache {
+        let mut entries = cache.0.lock().unwrap();
+        if let Some((_, existing)) = entries.iter().find(|(saved, _)| *saved == key) {
+            return Ok(Arc::clone(existing));
+        }
+        if entries.len() == 16 { entries.remove(0); }
+        entries.push((key, Arc::clone(&fit)));
+    }
+    Ok(fit)
+}
+
 fn fit_specs(b: &Built, eps_n: f64, inp: &Inputs) -> Vec<fea_core::contact::ContactSpec> {
     interference_contacts("fit", b.housing_bore.clone(), b.bushing_od.clone(), eps_n, inp.friction, 0.5 * inp.interference_dia, 6.0 * b.h).to_vec()
 }
@@ -656,7 +696,7 @@ pub fn fit_capacity(inp: &Inputs) -> Result<f64, String> {
 pub fn fit_capacity_with(inp: &Inputs, ctl: &Control) -> Result<f64, String> {
     let sc = Scale::of(inp);
     let nd = sc.inputs(inp);
-    solve_fit(&nd, ctl).map(|f| sc.torque(capacity(&f.pts, nd.friction)))
+    fit_for(&nd, ctl).map(|f| sc.torque(capacity(&f.pts, nd.friction)))
 }
 
 /// Run the fit, then the pin load, and read the interface.
@@ -702,7 +742,7 @@ fn analyze_core(inp: &Inputs, shared: Option<&Fit>, ctl: &Control, fall_back: bo
     let fit = match shared {
         Some(f) => f,
         None => {
-            own = solve_fit(inp, ctl)?;
+            own = fit_for(inp, ctl)?;
             &own
         }
     };
@@ -804,7 +844,7 @@ pub fn analyze_fields(inp: &Inputs, ctl: &Control) -> Result<(Analysis, String),
     let (u, model) = match &loaded {
         Some((nl, model)) => (&nl.u, model),
         None => {
-            fit_only = solve_fit(inp, ctl)?;
+            fit_only = fit_for(inp, ctl)?;
             (&fit_only.sol.u, &fit_only.b.model)
         }
     };
@@ -879,5 +919,17 @@ mod tests {
         let direct = fit_capacity(&i).unwrap();
         let (fit, plain) = (solve_fit(&nd, &Control::default()).unwrap(), capacity(&solve_fit(&nd, &Control::default()).unwrap().pts, nd.friction));
         assert!((sc.torque(plain) / direct - 1.0).abs() < 1e-12 && fit.pts.len() > 10);
+    }
+
+    #[test]
+    fn fit_cache_reuses_geometry_across_loads_and_keeps_geometry_in_key() {
+        let inp = coarse();
+        let ctl = Control::default().with_fit_cache(Arc::new(FitCache::default()));
+        let first = fit_for(&inp, &ctl).unwrap();
+        let changed_load = Inputs { load_lbf: inp.load_lbf * 2.0, pin_clearance_dia: inp.pin_clearance_dia * 0.5, ..inp };
+        let again = fit_for(&changed_load, &ctl).unwrap();
+        assert!(Arc::ptr_eq(&first, &again));
+        assert_ne!(fit_key(&inp), fit_key(&Inputs { offset: inp.offset + 0.001, ..inp }));
+        assert_ne!(fit_key(&inp), fit_key(&Inputs { bushing: Elasticity::iso(inp.bushing.e_psi * 1.1, inp.bushing.nu), ..inp }));
     }
 }

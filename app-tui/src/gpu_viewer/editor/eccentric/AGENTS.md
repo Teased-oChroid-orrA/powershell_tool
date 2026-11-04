@@ -4,7 +4,7 @@
 
 ## Purpose
 Owns: the window front end (inspector cards for Inputs and Analysis, tree, ribbon, menus, undo, the case file, exports beside the case) and the two derived pictures: `fe.rs` (inputs -> `Problem`) and `vtu.rs` (the solver's `.vtu` -> `SceneSource`).
-Does not own: any mechanics (`eccentric-bushing/AGENTS.md`; the crate is unchanged), the Bushing inputs (`gpu_viewer/editor/bushing`, `toolboxes/bushing`), the window or the cards' drawing.
+Does not own: any mechanics (`eccentric-bushing/AGENTS.md`), the Bushing inputs (`gpu_viewer/editor/bushing`, `toolboxes/bushing`), the window or the cards' drawing.
 
 ## Code Map
 | Looking for... | Go to |
@@ -22,6 +22,7 @@ Does not own: any mechanics (`eccentric-bushing/AGENTS.md`; the crate is unchang
 - The picture is read-only (no picking). Its mesh is its own (`fe.rs`), not the solver's: do not compare its stresses with an analysis. The solved scene opens at true size (`gain = 1`).
 - **FEA hand-off** (`handoff.rs`, `EccentricAct::OpenInFea`): like the Bushing window's; the FEA workbench's Send also writes the Bushing case this one reads (the offset, load angle and boss go to this case file, everything shared to the Bushing case), and `watch` reloads both.
 - Switches (axial condition, housing, capacity basis, direct spin check, Advanced) work whether or not the Advanced rows are open: the ribbon offers some of them.
+- While Max offset runs, the Run card plots the live bracket. A fit-only bracket is labelled preliminary when pin-load credit is selected. Accept verified bound appears only after the selected capacity basis has verified it; it stops the search and retains the conservative lower and upper bounds.
 
 ## Pitfalls
 - `vtu::scene_source` reads only what `fea_core::vtu::write` writes (`displacement`, `von_mises`, `stress_xx_yy_zz_xy_yz_zx`; plane cell types); a change to that writer or to the solver's field names breaks it, and `vtu::tests` writes then reads to catch it.

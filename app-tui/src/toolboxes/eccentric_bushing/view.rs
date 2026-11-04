@@ -125,7 +125,7 @@ pub fn readout_lines<'a>(theme: &Theme, state: &EccentricState, bushing: &Bushin
             Task::Fields => "analysing for the field export",
         };
         let info = theme.status_style(StatusTone::Info);
-        lines.push(Line::from(Span::styled(format!("\u{2026} {what} ({:.0} s; c cancels)", job.started.elapsed().as_secs_f64()), info)));
+        lines.push(Line::from(Span::styled(format!("\u{2026} {what} ({:.0} s; c cancels{})", job.started.elapsed().as_secs_f64(), if job.task == Task::MaxOffset { ", a accepts the verified bound" } else { "" }), info)));
         if let Some(p) = job.control.progress.as_ref().map(|p| p.snapshot()) {
             if !p.detail.is_empty() {
                 lines.push(Line::from(Span::styled(format!("  {}", p.detail), theme.disabled_style())));

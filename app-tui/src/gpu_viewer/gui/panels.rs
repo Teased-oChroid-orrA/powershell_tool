@@ -432,6 +432,13 @@ impl Gui {
             DockItem::Gap => {
                 ui.add_space(4.0);
             }
+            DockItem::Bracket { lower, upper } => {
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 12.0), Sense::hover());
+                ui.painter().rect_filled(rect, 4.0, with_alpha(p.warn, 55));
+                let verified = (*lower / *upper).clamp(0.0, 1.0) as f32;
+                let fill = Rect::from_min_max(rect.min, Pos2::new(rect.left() + rect.width() * verified, rect.bottom()));
+                ui.painter().rect_filled(fill, 4.0, p.good);
+            }
             DockItem::Line { text, tone, action, focused, hover } => {
                 let color = tone_color(p, *tone);
                 match action {

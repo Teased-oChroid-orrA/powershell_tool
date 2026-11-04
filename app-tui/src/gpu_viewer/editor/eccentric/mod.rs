@@ -43,6 +43,7 @@ pub enum EccentricAct {
     /// Analyse this offset (the solved model is drawn afterwards).
     Analyse,
     Cancel,
+    AcceptBracket,
     ReloadBushing,
     OpenBushing,
     /// Open the case in the FEA workbench (saved first); it comes back through the FEA workbench's Send.
@@ -110,6 +111,14 @@ impl Drop for EccentricSession {
 const UNDO_LIMIT: usize = 100;
 
 impl EccentricSession {
+    #[cfg(test)]
+    pub(crate) fn show_bracket_for_snapshot(&mut self) {
+        self.st.start(&self.bushing, Task::MaxOffset);
+        self.st.job.as_ref().unwrap().control.progress.as_ref().unwrap().set(eccentric_bushing::ProgressState {
+            stage: "loaded margin".into(), solves_done: 5, bracket: Some((0.032, 0.048)), bracket_design_basis: true, ..Default::default()
+        });
+    }
+
     pub fn new(file: &EccentricFile, path: PathBuf) -> Self {
         let mut st = EccentricState::default();
         st.ui = file.ui();
@@ -456,6 +465,7 @@ impl EccentricSession {
             EccentricAct::Step(s) => self.step = s,
             EccentricAct::Analyse => self.analyse(),
             EccentricAct::Cancel => self.st.cancel(),
+            EccentricAct::AcceptBracket => self.st.accept_bracket(),
             EccentricAct::ReloadBushing => self.reload_bushing(),
             EccentricAct::OpenBushing => self.open_bushing(),
             EccentricAct::OpenInFea => self.open_in_fea(),

@@ -14,5 +14,5 @@ mod offset;
 
 pub use control::{Control, Progress, ProgressState};
 pub use fea_core::Interrupt;
-pub use model::{analyze, analyze_fields, analyze_with, fit_capacity, fit_capacity_with, spin_onset_torque, Analysis, Elasticity, Inputs, Orthotropy, ProfileBin};
+pub use model::{analyze, analyze_fields, analyze_with, fit_capacity, fit_capacity_with, spin_onset_torque, Analysis, Elasticity, FitCache, Inputs, Orthotropy, ProfileBin};
 pub use offset::{max_load, max_load_with, max_offset, max_offset_with, sweep_offset, OffsetLimit, SweepPoint};

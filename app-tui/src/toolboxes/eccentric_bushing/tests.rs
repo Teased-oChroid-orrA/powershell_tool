@@ -194,7 +194,7 @@ fn a_running_job_shows_its_progress_and_the_queue_in_the_results() {
     s.start(&b, Task::Sweep);
     let p = control.progress.clone().unwrap();
     // The worker's side: a stage, a step event and a search bracket become the display lines.
-    p.set(eccentric_bushing::ProgressState { stage: "pin load".into(), detail: "e 0.0200 in, 8856 lbf, pin load: step 3, pin carries 1180 lbf".into(), solves_done: 5, bracket: Some((0.0475, 0.0612)) });
+    p.set(eccentric_bushing::ProgressState { stage: "pin load".into(), detail: "e 0.0200 in, 8856 lbf, pin load: step 3, pin carries 1180 lbf".into(), solves_done: 5, bracket: Some((0.0475, 0.0612)), ..Default::default() });
     let theme = crate::theme::Theme::default();
     let text: String = super::view::readout_lines(&theme, &s, &b).iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
     assert!(text.contains("searching the maximum load") && text.contains("c cancels") && text.contains("queued next: sweep"), "{text}");
@@ -213,6 +213,30 @@ fn a_stopped_search_reports_its_verified_bracket() {
     assert!(text.contains("stopped early"), "{text}");
     let unsolved = eccentric_bushing::OffsetLimit { halted: None, caveat: Some("the solve at 0.1 failed (x)".into()), ..l.clone() };
     assert!(model::caveat_note(&unsolved).is_some_and(|n| n.starts_with("caution")) && model::caveat_note(&l).is_none());
+}
+
+#[test]
+fn accepting_a_live_offset_bracket_keeps_the_verified_lower_bound() {
+    let mut state = EccentricState::default();
+    let b = bushing();
+    state.start(&b, Task::MaxOffset);
+    state.accept_bracket();
+    assert!(!state.job.as_ref().unwrap().accepted_bracket, "no bracket exists yet");
+    let progress = state.job.as_ref().unwrap().control.progress.as_ref().unwrap().clone();
+    progress.set(eccentric_bushing::ProgressState { bracket: Some((0.0123, 0.0456)), ..Default::default() });
+    state.accept_bracket();
+    assert!(!state.job.as_ref().unwrap().accepted_bracket, "fit-only bound is not verified on the loaded basis");
+    progress.set(eccentric_bushing::ProgressState { bracket: Some((0.0123, 0.0456)), bracket_design_basis: true, ..Default::default() });
+    state.accept_bracket();
+    let job = state.job.as_ref().unwrap();
+    assert!(job.accepted_bracket);
+    assert!(job.control.interrupt.cancel.as_ref().unwrap().load(std::sync::atomic::Ordering::Relaxed));
+    let id = job.id;
+    let limit = eccentric_bushing::OffsetLimit { value: 0.0123, upper: Some(0.0456), halted: Some("cancelled".into()), caveat: None, wall_limit: 0.1, bounded_by_wall: false, set_by_loaded_run: false, evaluations: 4 };
+    state.finish(id, Ok(Output::MaxOffset(limit)), &b);
+    let saved = &state.max_offset.as_ref().unwrap().1;
+    assert_eq!(saved.value, 0.0123);
+    assert!(saved.halted.as_deref().unwrap().contains("accepted the verified lower bound"));
 }
 
 #[test]

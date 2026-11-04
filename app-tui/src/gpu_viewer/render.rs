@@ -1967,6 +1967,8 @@ mod snapshot_tests {
         session.act(EditorAction::Eccentric(EccentricAct::Step("Analysis")));
         wait(&mut session, &|s| s.state().analysis.is_some() && !s.solving());
         shoot(&mut session, "Analysis", "ecc-result");
+        session.show_bracket_for_snapshot();
+        shoot(&mut session, "Analysis", "ecc-offset-bracket");
     }
 
     /// The un-meshed 3D body in every display style and the same body meshed, as raw RGBA dumps:

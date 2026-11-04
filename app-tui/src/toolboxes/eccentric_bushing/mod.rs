@@ -27,6 +27,7 @@ pub struct Job {
     /// Stop flag (`c`), deadline and progress record shared with the worker: a stopped search reports the bracket it had,
     /// the view reads the progress.
     pub control: Control,
+    pub accepted_bracket: bool,
 }
 
 /// One finished analysis kept for comparison with the next ones.
@@ -62,6 +63,7 @@ pub struct EccentricState {
     pub history: Vec<HistoryEntry>,
     pub job: Option<Job>,
     pub queue: VecDeque<Task>,
+    fit_cache: std::sync::Arc<eccentric_bushing::FitCache>,
     next_job: u64,
     pub error: Option<String>,
 }
@@ -82,6 +84,7 @@ impl Default for EccentricState {
             history: Vec::new(),
             job: None,
             queue: VecDeque::new(),
+            fit_cache: std::sync::Arc::default(),
             next_job: 1,
             error: None,
         }
@@ -131,8 +134,8 @@ impl EccentricState {
                 self.error = None;
                 let id = self.next_job;
                 self.next_job += 1;
-                let control = model::new_control(task);
-                self.job = Some(Job { id, task, sig: input, started: std::time::Instant::now(), control: control.clone() });
+                let control = model::new_control(task).with_fit_cache(self.fit_cache.clone());
+                self.job = Some(Job { id, task, sig: input, started: std::time::Instant::now(), control: control.clone(), accepted_bracket: false });
                 vec![Effect::RunEccentric { id, task, input: Box::new(input), control }]
             }
         }
@@ -159,6 +162,16 @@ impl EccentricState {
         self.queue.clear();
     }
 
+    /// Stop a maximum-offset search and retain its verified lower bound.
+    pub fn accept_bracket(&mut self) {
+        if let Some(job) = self.job.as_mut().filter(|j| j.task == Task::MaxOffset && j.control.progress.as_ref().is_some_and(|p| { let state = p.snapshot(); state.bracket.is_some() && state.bracket_design_basis })) {
+            job.accepted_bracket = true;
+            if let Some(flag) = &job.control.interrupt.cancel {
+                flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+
     /// A worker finished job `id`; returns the file to write for a field export and the next queued run.
     pub fn finish(&mut self, id: u64, result: Result<Output, String>, bushing: &BushingModel) -> Vec<Effect> {
         let Some(job) = self.job.take_if(|j| j.id == id) else { return Vec::new() };
@@ -168,7 +181,10 @@ impl EccentricState {
                 self.remember(&job.sig, &a);
                 self.analysis = Some((job.sig, *a));
             }
-            Ok(Output::MaxOffset(l)) => self.max_offset = Some((job.sig, l)),
+            Ok(Output::MaxOffset(mut l)) => {
+                if job.accepted_bracket { l.halted = Some("accepted the verified lower bound before the search finished".into()); }
+                self.max_offset = Some((job.sig, l));
+            }
             Ok(Output::MaxLoad(l)) => self.max_load = Some((job.sig, l)),
             Ok(Output::Sweep(points)) => self.sweep = Some((job.sig, points)),
             Ok(Output::Fields(a, vtu)) => {
@@ -289,6 +305,10 @@ pub fn handle_key(state: &mut EccentricState, bushing: &BushingModel, key: KeyEv
         KeyCode::Char('l' | 'L') => (true, state.start(bushing, Task::MaxLoad)),
         KeyCode::Char('c' | 'C') => {
             state.cancel();
+            (true, Vec::new())
+        }
+        KeyCode::Char('a' | 'A') => {
+            state.accept_bracket();
             (true, Vec::new())
         }
         KeyCode::Char('s' | 'S') => (true, state.start(bushing, Task::Sweep)),

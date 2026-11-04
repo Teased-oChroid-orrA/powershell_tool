@@ -89,6 +89,8 @@ pub enum DockItem {
     /// A label with its value; a click (when `action` is set) edits it.
     Field { label: String, value: String, tone: Tone, action: Option<UiAction>, focused: bool },
     Gap,
+    /// Verified lower part of a live search bracket, from zero to `upper`.
+    Bracket { lower: f64, upper: f64 },
     /// Contour colour bar with its value range.
     Legend { lo: f32, hi: f32 },
 }
