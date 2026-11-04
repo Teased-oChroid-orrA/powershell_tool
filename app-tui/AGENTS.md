@@ -392,3 +392,5 @@ Records: `docs/issue-12-phase-24.md`, `docs/adr/ADR-015-parametric-sketch-histor
 
 `--gpu-bushing-stackup` opens the native-only page. It has no terminal toolbox or cross-routing. Pure engineering types and calculation live in `bushing-solver/src/stackup.rs`; native session, cached result revisions and typed transfer live in `gpu_viewer/editor/stackup*.rs`. Coordinate and wall definitions are recorded in `docs/bushing-stackup.md`.
 The material fields choose IDs from the Bushing catalog (including saved custom materials). Unknown typed IDs are rejected; a case with unknown material IDs cannot be saved or transferred.
+An offset case can also transfer to Eccentric Bushing. It creates linked Bushing and Eccentric files; the maximum pilot offset becomes the representative eccentricity, and a 90-degree load gives the largest spin moment. The transferred case names the assumed load for review.
+The native page uses a member strip, with member and transfer actions also available through the ribbon and menus.

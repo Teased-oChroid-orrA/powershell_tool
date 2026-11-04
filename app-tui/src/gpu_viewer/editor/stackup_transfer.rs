@@ -1,6 +1,8 @@
 //! Native Bushing case construction from the calculated member machining result.
 use super::bushing::file::BushingFile;
-use crate::toolboxes::bushing::model::BushingModel;
+use super::eccentric::file::EccentricFile;
+use crate::toolboxes::bushing::model::{BushingModel, NumberTarget};
+use crate::toolboxes::eccentric_bushing::model::{build_input, EccentricUi};
 use bushing_solver::stackup::{self, Band, Inputs, Status, WallMode};
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -84,6 +86,24 @@ pub fn prepare(
     });
     Ok(file)
 }
+/// A maximum-offset case, with the load perpendicular to the offset for the largest spin moment.
+pub fn prepare_eccentric(inputs: &Inputs, index: usize, source: &str, revision: u64) -> Result<(BushingFile, EccentricFile), String> {
+    if inputs.pilot_offset <= 0.0 {
+        return Err("Set a positive pilot center offset limit for an eccentric case".into());
+    }
+    let mut bushing = prepare(inputs, index, source, revision)?;
+    // The eccentric offset carries the axis shift; keep the housing edge distance at the member centre.
+    bushing.numbers.insert(NumberTarget::EdgeDist.label().into(), inputs.members[index].member_width / 2.0);
+    let mut model = BushingModel::default();
+    let missing = bushing.apply(&mut model);
+    if !missing.is_empty() {
+        return Err(format!("Bushing transfer could not resolve {}", missing.join(", ")));
+    }
+    let ui = EccentricUi { offset: inputs.pilot_offset, load_angle: 90.0, edge_limited: true, ..EccentricUi::default() };
+    build_input(&model, &ui)?;
+    let eccentric = EccentricFile::new(&format!("Stackup member #{} maximum offset; review load", inputs.members[index].id), "bushing.json", &ui);
+    Ok((bushing, eccentric))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,5 +169,19 @@ mod tests {
                 .stackup,
             file.stackup
         );
+    }
+    #[test]
+    fn offset_case_links_bushing_and_uses_maximum_spin_moment_direction() {
+        let mut inputs = Inputs::default();
+        inputs.bushing_enabled = true;
+        inputs.members.truncate(1);
+        inputs.members[0].original.degrees = 0.0;
+        inputs.members[0].finished.degrees = 0.0;
+        inputs.pilot_offset = 0.02;
+        let (bushing, file) = prepare_eccentric(&inputs, 0, "source", 1).unwrap();
+        assert_eq!(bushing.numbers[NumberTarget::EdgeDist.label()], inputs.members[0].member_width / 2.0);
+        assert_eq!(file.bushing_case, "bushing.json");
+        assert_eq!((file.offset, file.load_angle, file.edge_limited), (0.02, 90.0, true));
+        assert!(file.name.contains("review load"));
     }
 }

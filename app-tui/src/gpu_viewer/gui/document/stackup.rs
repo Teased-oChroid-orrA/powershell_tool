@@ -316,6 +316,9 @@ impl Gui {
                     ui.add_space(10.0);
                     self.doc_button(ui,entry,p,out,hint,false);
                 }
+                if let Some(entry)=doc.buttons.iter().find(|e|e.label == "Send offset case to Eccentric") {
+                    self.doc_button(ui,entry,p,out,hint,false);
+                }
             }
         });
     }

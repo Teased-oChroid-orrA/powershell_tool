@@ -62,6 +62,7 @@ pub enum StackupAct {
     CloseMaterial,
     Save,
     Send,
+    SendEccentric,
 }
 fn action(a: StackupAct) -> UiAction {
     UiAction::Editor(EditorAction::Stackup(a))
@@ -336,18 +337,21 @@ impl StackupSession {
         }
         Ok(())
     }
-    fn send(&mut self) {
+    fn send(&mut self, eccentric: bool) {
         if let Err(e) = self.transfer_availability() {
             self.status = e;
             return;
         }
-        let file = match super::stackup_transfer::prepare(
+        let transfer = if eccentric { super::stackup_transfer::prepare_eccentric(
             &self.inputs,
             self.selected,
             &self.path.to_string_lossy(),
             self.input_revision,
-        ) {
-            Ok(file) => file,
+        ).map(|(file, eccentric)| (file, Some(eccentric))) } else { super::stackup_transfer::prepare(
+            &self.inputs, self.selected, &self.path.to_string_lossy(), self.input_revision,
+        ).map(|file| (file, None)) };
+        let (file, eccentric_file) = match transfer {
+            Ok(files) => files,
             Err(e) => {
                 self.status = format!("Transfer refused: {e}");
                 return;
@@ -385,8 +389,16 @@ impl StackupSession {
             self.status = format!("Could not write transfer: {e}");
             return;
         }
-        match super::handoff::launch(crate::gpu_viewer::EditorKind::Bushing,&dir.join("bushing.json")) {
-            Ok(())=>self.status=format!("Opened member #{} in native Bushing Workbench. Calculated member hole, enlargement reason and wall context preserved.",self.inputs.members[self.selected].id),
+        if let Some(eccentric_file) = eccentric_file {
+            if let Err(e) = crate::persistence::write(dir.join("eccentric.json"), eccentric_file.to_json()) {
+                self.status = format!("Bushing case saved at {}, but eccentric case write failed: {e}", dir.display());
+                return;
+            }
+        }
+        let kind = if eccentric { crate::gpu_viewer::EditorKind::Eccentric } else { crate::gpu_viewer::EditorKind::Bushing };
+        let target = dir.join(if eccentric { "eccentric.json" } else { "bushing.json" });
+        match super::handoff::launch(kind,&target) {
+            Ok(())=>self.status=if eccentric { format!("Opened member #{} at the pilot offset limit with a 90-degree load. Review load before analysis; machining provenance is in bushing.json.",self.inputs.members[self.selected].id) } else { format!("Opened member #{} in native Bushing Workbench. Calculated member hole, enlargement reason and wall context preserved.",self.inputs.members[self.selected].id) },
             Err(e)=>self.status=format!("Transfer saved at {}, launch failed: {e}",dir.display()),
         }
     }
@@ -485,7 +497,11 @@ impl StackupSession {
                 return;
             }
             StackupAct::Send => {
-                self.send();
+                self.send(false);
+                return;
+            }
+            StackupAct::SendEccentric => {
+                self.send(true);
                 return;
             }
             _ => return,
@@ -694,10 +710,21 @@ impl Authoring for StackupSession {
         vec![]
     }
     fn ribbon(&self) -> Vec<RibbonTab> {
-        vec![]
+        let doc = self.document().expect("Stackup always has a page");
+        let group = |labels: &[&str]| doc.buttons.iter().filter(|e| labels.contains(&e.label.as_str())).cloned().collect();
+        vec![RibbonTab::new("Stackup")
+            .group("Members", group(&["Add", "Remove", "Up", "Down"]))
+            .group("Edit", group(&["Undo", "Redo", "Recalculate", "Save"]))
+            .group("Transfer", group(&["Send to Bushing", "Send offset case to Eccentric"]))]
     }
     fn menus(&self) -> Vec<Menu> {
-        vec![]
+        let tabs = self.ribbon();
+        let groups = &tabs[0].groups;
+        vec![
+            Menu { title: "File".into(), items: groups[1].buttons.iter().filter(|e| e.label == "Save").cloned().map(Item::Entry).collect() },
+            Menu { title: "Edit".into(), items: groups[0].buttons.iter().chain(groups[1].buttons.iter().filter(|e| e.label != "Save")).cloned().map(Item::Entry).collect() },
+            Menu { title: "Tools".into(), items: groups[2].buttons.iter().cloned().map(Item::Entry).collect() },
+        ]
     }
     fn context_menu(&self) -> Vec<Item> {
         vec![]
@@ -799,6 +826,7 @@ impl Authoring for StackupSession {
             btn("Save", StackupAct::Save),
         ];
         buttons.push(btn("Send to Bushing", StackupAct::Send).when(self.transfer_availability()));
+        buttons.push(btn("Send offset case to Eccentric", StackupAct::SendEccentric).when(self.transfer_availability().and_then(|_| if self.inputs.pilot_offset > 0.0 { Ok(()) } else { Err("Set a positive pilot offset limit".into()) })));
         let mut global = vec![
             (0, "Bushing ID nominal (in)"),
             (1, "Bushing ID min (in)"),
@@ -1138,6 +1166,29 @@ mod tests {
         assert!(s.transfer_availability().unwrap_err().contains("catalog"));
         s.save();
         assert!(s.status.contains("unknown material"));
+    }
+    #[test]
+    fn eccentric_transfer_requires_a_positive_offset_limit() {
+        let mut s = session();
+        s.inputs.bushing_enabled = true;
+        for member in &mut s.inputs.members {
+            member.original.degrees = 0.0;
+            member.finished.degrees = 0.0;
+        }
+        s.recalculate();
+        let button = |s: &StackupSession| s.document().unwrap().buttons.into_iter().find(|b| b.label == "Send offset case to Eccentric").unwrap();
+        assert!(!button(&s).enabled);
+        s.inputs.pilot_offset = 0.02;
+        s.recalculate();
+        assert!(button(&s).enabled);
+    }
+    #[test]
+    fn member_strip_actions_are_available_in_ribbon_and_menus() {
+        let s = session();
+        let ribbon = s.ribbon();
+        assert!(ribbon[0].groups.iter().flat_map(|g| &g.buttons).any(|e| e.label == "Add"));
+        assert!(ribbon[0].groups.iter().flat_map(|g| &g.buttons).any(|e| e.label == "Send to Bushing"));
+        assert!(s.menus().iter().any(|m| m.title == "Edit" && m.items.iter().any(|item| matches!(item, Item::Entry(e) if e.label == "Undo"))));
     }
     #[test]
     fn exhausted_member_ids_do_not_mutate_stack() {
