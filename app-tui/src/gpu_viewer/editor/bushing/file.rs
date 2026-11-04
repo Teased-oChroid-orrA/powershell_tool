@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const FORMAT_VERSION: u32 = 1;
+const UNITS: &str = "in-lbf-ksi-F";
 
 /// Every number row. The match forces a compile error when a target is added without a line here.
 pub const NUMBERS: [NumberTarget; 40] = {
@@ -31,6 +32,9 @@ fn every_number_target_is_listed(t: NumberTarget) {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BushingFile {
+    /// Empty only for older files, which used these same units without declaring them.
+    #[serde(default)]
+    pub units: String,
     #[serde(default)]
     pub stackup: Option<super::super::stackup_transfer::StackupTransfer>,
     #[serde(default)]
@@ -87,7 +91,7 @@ impl BushingFile {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
         .collect();
-        Self { stackup: None, version: FORMAT_VERSION, name: name.to_string(), numbers, choices, flags, housing_material: Some(m.housing_material().id.to_string()), bushing_material: Some(m.bushing_material().id.to_string()) }
+        Self { units: UNITS.into(), stackup: None, version: FORMAT_VERSION, name: name.to_string(), numbers, choices, flags, housing_material: Some(m.housing_material().id.to_string()), bushing_material: Some(m.bushing_material().id.to_string()) }
     }
 
     /// Put the file's inputs into `m` and recompute. Returns what could not be applied (an unknown material, a choice this
@@ -159,6 +163,9 @@ impl BushingFile {
         if f.version > FORMAT_VERSION {
             return Err(format!("this file is version {}, newer than this program reads ({FORMAT_VERSION})", f.version));
         }
+        if !f.units.is_empty() && f.units != UNITS {
+            return Err(format!("unsupported Bushing case units '{}'; expected {UNITS}", f.units));
+        }
         Ok(f)
     }
 }
@@ -216,5 +223,7 @@ mod tests {
     fn a_broken_or_newer_file_is_refused_with_a_reason() {
         assert!(BushingFile::from_json("{ nope").unwrap_err().contains("not a bushing file"));
         assert!(BushingFile::from_json(r#"{"version": 99}"#).unwrap_err().contains("newer"));
+        assert!(BushingFile::from_json(r#"{"units":"mm-N-MPa-C"}"#).unwrap_err().contains("unsupported Bushing case units"));
+        assert!(BushingFile::from_json(r#"{"numbers":{"Bore Diameter":0.5}}"#).is_ok(), "older unitless cases remain imperial");
     }
 }

@@ -102,6 +102,9 @@ impl BushingSession {
             }
         }
         let editing_hint = self.prompt.is_some();
+        if let Some((_, items)) = sections.first_mut() {
+            items.insert(0, line("US customary inputs only: in, lbf, ksi, deg F. Convert metric values before entry.", Tone::Warn));
+        }
         sections
             .into_iter()
             .enumerate()

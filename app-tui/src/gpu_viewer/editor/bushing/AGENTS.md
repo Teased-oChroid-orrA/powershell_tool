@@ -21,6 +21,7 @@ Does not own: any Lame / press-fit / tolerance / edge-distance formula (`bushing
 - `bench()` is `Static` and `benches()` is empty: the Window menu offers no benches here. `key_labels()` renames the colour key (Housing, Support, Load, Bushing); the bushing is coloured as "selected" by `SolidSession::highlight_bushings` (flood fill from its bore, `bushing_nodes`).
 - **FEA hand-off** (`handoff.rs`, `BushingAct::OpenInFea`): the case is saved, its derived `Problem` written as `<case>.fea.json`, and the FEA workbench's Send writes back only what changed (the case file is the interface; `watch` takes it in once a second, as one undo step, unless this window has unsaved edits). The window keeps a heartbeat only while the case is linked.
 - A typed value equal to the current one is not an edit (no undo step, no new mesh). Picker choices and fixes go through the same `checkpoint` / `changed` pair as typed edits.
+- Inputs use US customary units (in, lbf, ksi, °F), stated on the Inputs card. New case files declare `in-lbf-ksi-F`; older files without a declaration retain the same interpretation, and files declaring other units are refused.
 - Strings that come from the model, advice and edge check pass through `cards::plain`: the window font lacks arrows and several symbols.
 - A `Field` whose tone is `Warn` is drawn as an edit box by the window, so an input a failing check points at is marked `! label` instead.
 

@@ -185,9 +185,13 @@ impl FastenerSession {
 
     fn drawing_card(&self) -> Card {
         let items = match drawing::layout(&self.st.model) {
-            Ok(l) => vec![
-                line(format!("To scale at the nominal dimensions, a quarter cut away. The plate ({:.3} in across, {:.3} in thick) is only for the picture.", 2.0 * l.outer_radius, l.thickness), Tone::Dim),
-            ],
+            Ok(l) => {
+                let mut items = vec![line(format!("To scale at the nominal dimensions, a quarter cut away. The plate ({:.3} in across, {:.3} in thick) is only for the picture.", 2.0 * l.outer_radius, l.thickness), Tone::Dim)];
+                if self.st.model.hole_type == HoleType::Countersunk {
+                    items.push(line("Drawing shows the primary countersink only. The secondary is calculated for the companion hole and listed in its own card.", Tone::Dim));
+                }
+                items
+            },
             Err(why) => vec![line(format!("Nothing to draw: {why}."), Tone::Warn)],
         };
         Card::new("fastener-drawing", "Drawing", Relevance::Info, items).for_steps(&["Inputs"])

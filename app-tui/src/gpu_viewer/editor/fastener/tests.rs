@@ -90,6 +90,8 @@ fn the_choices_cycle_and_the_countersink_cards_show_the_solved_dimension_only() 
     assert!(t.contains("Angle (calculated)  90.000 -0.000/+0.000 deg"), "{t}");
     assert!(!t.contains("Angle Nominal"), "the solved dimension is never an input: {t}");
     assert!(t.contains("Secondary countersink (Preserve Depth)"), "{t}");
+    assert!(t.contains("Drawing shows the primary countersink only."), "{t}");
+    assert!(t.contains("The secondary is calculated for the companion hole and listed in its own card."), "{t}");
     act(&mut s, FastenerAct::Row(FieldRow::ToggleSolveFor));
     assert_eq!(s.model().countersink.solve_for, CountersinkSolveFor::OuterDiameter);
     assert!(texts(&s.inspector()).contains("Outer diameter (calculated)"));
