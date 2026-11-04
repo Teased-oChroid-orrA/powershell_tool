@@ -1406,15 +1406,16 @@ mod tests {
     }
 
     #[test]
-    fn open_report_when_done_opens_the_written_report_and_forces_html_output() {
+    fn reports_open_only_on_demand_even_with_a_legacy_auto_open_setting() {
         let mut state = AppState::default();
         state.search.config.export_html = false;
         state.search.config.open_report_when_done = true;
         let effects = handle_event(&mut state, AppEvent::SearchFinished(Ok(SearchRunResult::default())));
-        assert!(matches!(effects.as_slice(), [Effect::WriteReport { write_html: true, .. }]), "the HTML report is needed to open it");
+        assert!(matches!(effects.as_slice(), [Effect::WriteReport { write_html: false, .. }]));
 
         let effects = handle_event(&mut state, AppEvent::ReportWritten(Some("/tmp/report.html".to_string())));
-        assert!(matches!(effects.as_slice(), [Effect::OpenPath(p)] if p == "/tmp/report.html"));
+        assert!(effects.is_empty());
+        assert_eq!(state.search.run.last_report_path.as_deref(), Some("/tmp/report.html"));
     }
 
     #[test]

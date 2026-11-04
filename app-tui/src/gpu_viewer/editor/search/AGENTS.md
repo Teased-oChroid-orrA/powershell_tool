@@ -25,6 +25,7 @@ Does not own: running a search, the index, reports or settings persistence (`too
 - **Both folders are an input plus Browse.** The folder to search (bar) and the output folder (Report popover, `DocPanel::inputs`, `INPUT_OUTPUT`) are typed or chosen with the same picker (`SearchSession::pick`); the output picker starts in the output folder, else the searched one. Output folder is never a settings row or value card (`Edit(14)` and the ribbon open the picker). Empty output folder: the report lands in the working folder, Export matches beside each file.
 - **Browse is the OS folder picker** (`rfd`, feature `gpu-viewer`): modal, on the window thread (macOS requires it). It blocks the event loop while open; the background search keeps running and its events are folded in on the next poll.
 - The results table shows files with a hit, in found order until a column is clicked; `selected` is an index into `run.results` (append-only during a run), so selection survives new results. The detail shows at most `MAX_BLOCKS` lines; Export matches writes all.
+- Copy content uses those displayed detail lines, including context, without line numbers. The Open report button appears after an HTML report is written; the report never opens automatically.
 - Both guides must stay true to the parser: `tests::every_example_of_the_exclude_guide_is_a_valid_exclusion` checks the Exclude guide; `tests::every_example_of_the_find_guide_parses_the_way_the_guide_says` parses every example and checks the tag semantics it describes. Change the guide and the parser together.
 
 ## Pitfalls

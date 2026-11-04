@@ -68,7 +68,7 @@ const FIELDS: &[FieldDef] = &[
     FieldDef { label: "Export HTML", kind: FieldKind::Bool },
     FieldDef { label: "Export CSV", kind: FieldKind::Bool },
     FieldDef { label: "Export JSON", kind: FieldKind::Bool },
-    FieldDef { label: "Open report when done", kind: FieldKind::Bool },
+    FieldDef { label: "Open report when done (legacy)", kind: FieldKind::Bool },
     FieldDef { label: "Parallel", kind: FieldKind::Bool },
     FieldDef { label: "Throttle limit", kind: FieldKind::Number },
     FieldDef { label: "Heavy throttle limit", kind: FieldKind::Number },
@@ -114,6 +114,7 @@ const SETTINGS_HEADERS: &[(usize, &str)] = &[
 fn settings_field_rows() -> Vec<SettingsFieldRow> {
     let mut rows = Vec::with_capacity(FIELDS.len() + SETTINGS_HEADERS.len());
     for i in 0..FIELDS.len() {
+        if i == 19 { continue; }
         if let Some((_, label)) = SETTINGS_HEADERS.iter().find(|(idx, _)| *idx == i) {
             rows.push(SettingsFieldRow::Header(label));
         }
@@ -889,7 +890,7 @@ pub(crate) enum SettingKind {
 /// One setting of the form: its index, group heading, label, hint and kind. The same table drives this form and
 /// the native window, so labels, parsing and grouping have one source.
 pub(crate) fn settings() -> impl Iterator<Item = (usize, &'static str, &'static str, &'static str, SettingKind)> {
-    FIELDS.iter().enumerate().map(|(i, f)| {
+    FIELDS.iter().enumerate().filter(|(i, _)| *i != 19).map(|(i, f)| {
         let group = SETTINGS_HEADERS.iter().rev().find(|(at, _)| *at <= i).map_or("", |(_, g)| *g);
         let kind = match f.kind {
             FieldKind::Text | FieldKind::Number => SettingKind::Typed,
@@ -1340,7 +1341,7 @@ mod tests {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
-        let (longest_index, longest_hint) = (0..FIELDS.len()).map(|i| (i, field_hint(i))).max_by_key(|(_, hint)| hint.len()).expect("at least one field");
+        let (longest_index, longest_hint) = settings().map(|(i, _, _, hint, _)| (i, hint)).max_by_key(|(_, hint)| hint.len()).expect("at least one field");
         assert!(!longest_hint.is_empty());
 
         for width in [40u16, 50, 60, 84, 98, 140] {

@@ -87,6 +87,7 @@ fn result_entries(s: &SearchSession) -> Vec<Entry> {
         e("Open", "Enter", SearchAct::OpenSelected).when(ok.clone()),
         e("Show in folder", "", SearchAct::Reveal).when(ok.clone()),
         e("Copy path", "Ctrl+C", SearchAct::CopyPath).when(ok.clone()),
+        when(e("Copy content", "", SearchAct::CopyContent), s.current_result().is_some_and(|r| !r.hits.is_empty()), "this result has no displayed lines"),
         e("Export matches", "Ctrl+E", SearchAct::ExportHits).when(ok),
     ]
 }
@@ -142,7 +143,8 @@ pub(super) fn document(s: &SearchSession) -> Document {
         },
     ];
     let extra_inputs = if s.show_exclude { vec![exclude_input(s)] } else { Vec::new() };
-    let buttons = if run.is_running { vec![stop_entry(s)] } else { vec![run_entry(s)] };
+    let mut buttons = if run.is_running { vec![stop_entry(s)] } else { vec![run_entry(s)] };
+    if run.last_report_path.is_some() { buttons.push(report_entry(s)); }
     let mut chips = match_mode_chips(s);
     chips.push(exclude_chip(s));
     chips.push(switch(s, "Regex", 6));
@@ -372,6 +374,12 @@ fn table(s: &SearchSession) -> DocTable {
 
 /// Matching lines shown for one file (a file can have thousands; the export has them all).
 const MAX_BLOCKS: usize = 400;
+
+pub(super) fn copy_content(r: &search_core::models::FileSearchResult) -> String {
+    r.hits.iter().take(MAX_BLOCKS).flat_map(|h| {
+        h.before.iter().chain(std::iter::once(&h.match_line)).chain(h.after.iter())
+    }).cloned().collect::<Vec<_>>().join("\n")
+}
 
 fn detail(s: &SearchSession) -> Option<DocDetail> {
     let r = s.current_result()?;

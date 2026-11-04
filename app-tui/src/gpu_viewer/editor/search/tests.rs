@@ -30,6 +30,16 @@ fn with_results() -> SearchSession {
 }
 
 #[test]
+fn copy_content_uses_displayed_lines_without_line_numbers() {
+    let mut s = with_results();
+    s.selected = Some(0);
+    let expected = "above\na bolt torque line\nabove\na bolt torque line\nabove\na bolt torque line";
+    assert_eq!(view::copy_content(s.current_result().unwrap()), expected);
+    let detail = s.document().unwrap().detail.unwrap();
+    assert!(detail.actions.iter().any(|a| a.label == "Copy content"));
+}
+
+#[test]
 fn cached_search_rows_follow_filter_sort_selection_and_new_runs() {
     let mut s = with_results();
     let original = view::document(&s).table.rows;
@@ -88,6 +98,7 @@ fn a_search_runs_on_the_session_runtime_and_its_matches_fill_the_table_and_the_d
     assert_eq!(s.step_state("Results"), Some(StepState::Done));
     let report = PathBuf::from(s.st.run.last_report_path.as_deref().expect("the report is written"));
     assert_eq!(report.parent(), Some(dir.path().join("out").as_path()), "the report goes to the output folder");
+    assert!(doc.buttons.iter().any(|button| button.label == "Open report"));
 }
 
 #[test]

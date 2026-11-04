@@ -381,8 +381,7 @@ pub fn apply_event(state: &mut SearchToolState, notifications: &mut Notification
                 Ok(run_result) => {
                     state.run.results_summary_text = model::summarize(&run_result.summary);
                     notifications.push("Search finished", StatusTone::Success);
-                    // Opening the report needs the HTML file even if HTML export is off.
-                    let write_html = state.config.export_html || state.config.open_report_when_done;
+                    let write_html = state.config.export_html;
                     let settings = model::build_settings(&state.config);
                     return vec![Effect::WriteReport { settings, run_result, write_html }];
                 }
@@ -398,10 +397,7 @@ pub fn apply_event(state: &mut SearchToolState, notifications: &mut Notification
         }
         AppEvent::SearchDiagnostics(d) => state.run.diagnostics = Some(*d),
         AppEvent::ReportWritten(path) => {
-            state.run.last_report_path = path.clone();
-            if let Some(p) = path.filter(|_| state.config.open_report_when_done) {
-                return vec![Effect::OpenPath(p)];
-            }
+            state.run.last_report_path = path;
         }
         AppEvent::IndexBuildProgress(progress) => state.index_run.apply_progress(&progress),
         AppEvent::IndexStale { new_or_changed, removed } => state.index_run.stale = Some((new_or_changed, removed)),

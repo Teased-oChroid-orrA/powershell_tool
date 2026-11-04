@@ -43,6 +43,7 @@ pub enum SearchAct {
     OpenSelected,
     Reveal,
     CopyPath,
+    CopyContent,
     ExportHits,
     OpenReport,
     SortBy(SortKey),
@@ -427,6 +428,7 @@ impl SearchSession {
             SearchAct::OpenSelected => self.with_current(|r, _| Effect::OpenPath(r.full_name.clone()), "Opened"),
             SearchAct::Reveal => self.with_current(|r, _| Effect::OpenPath(Path::new(&r.full_name).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()), "Showing the folder of"),
             SearchAct::CopyPath => self.with_current(|r, _| Effect::CopyToClipboard(r.full_name.clone()), "Copied the path of"),
+            SearchAct::CopyContent => self.with_current(|r, _| Effect::CopyToClipboard(view::copy_content(r)), "Copied the content of"),
             SearchAct::ExportHits => self.with_current(export_hits, "Exported the matches of"),
             SearchAct::OpenReport => match self.st.run.last_report_path.clone() {
                 Some(p) => {

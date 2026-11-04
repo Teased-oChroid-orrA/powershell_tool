@@ -70,7 +70,7 @@ The Filters field is parsed by `model::parse_filter_groups`: `;` separates group
 - Call `search_core::orchestrator::run`/`run_candidates` with `progress: None` from this crate — that's `cli/`'s deliberate headless shortcut ("a terminal can't easily redraw anyway" — except this crate is exactly the head that can); always thread a real progress channel.
 - Call `native_index::build_or_update_corpus_index` (the plain, non-`Send` variant) from this crate — always use `build_or_update_corpus_index_send`, since this crate's tokio runtime is multi-threaded.
 - One build path: `Build / update` updates an existing index incrementally; an index that cannot be opened/reopened (`NsStatus::CorruptIndex`) is wiped and rebuilt from scratch once (`indexing::build_or_rebuild_index`). There is no separate "rebuild" command or force flag.
-- `open_report_when_done` is honored in `app.rs` (`ReportWritten` -> `Effect::OpenPath`); it also forces HTML output even when `export_html` is off.
+- `open_report_when_done` remains in saved settings for compatibility, but the control is hidden and no longer opens a report or forces HTML export. Reports open only through the Open report action.
 - Start a second index build while one runs (one Tantivy writer per index folder): `start_index_build` and `run_or_notify` both refuse while `index_run.is_building`.
 
 ## Settings View
