@@ -57,6 +57,9 @@ pub enum StackupAct {
     Recalculate,
     Undo,
     Redo,
+    OpenMaterial(u8),
+    PickMaterial(usize),
+    CloseMaterial,
     Save,
     Send,
 }
@@ -90,6 +93,8 @@ pub struct StackupSession {
     drafts: BTreeMap<(u64, u8), String>,
     undo: Vec<EditSnapshot>,
     redo: Vec<EditSnapshot>,
+    materials: Vec<&'static mechanics_core::materials::Material>,
+    material_picker: Option<u8>,
     path: PathBuf,
     file_revision: Option<String>,
     dirty: bool,
@@ -126,6 +131,8 @@ impl StackupSession {
             drafts: BTreeMap::new(),
             undo: Vec::new(),
             redo: Vec::new(),
+            materials: crate::toolboxes::bushing::model::BushingModel::default().material_catalog(),
+            material_picker: None,
             path: path.into(),
             file_revision: crate::persistence::revision(path),
             dirty: false,
@@ -246,7 +253,7 @@ impl StackupSession {
     }
     fn field(&self, id: u8, label: &str) -> DocInput {
         let text = self.value(id);
-        let valid = valid_text(id, &text);
+        let valid = valid_text(id, &text) && (!matches!(id, 26 | 27) || self.materials.iter().any(|m| m.id == text));
         DocInput {
             id,
             label: label.into(),
@@ -257,7 +264,7 @@ impl StackupSession {
                 ""
             }
             .into(),
-            error: (!valid).then(|| "Finite numeric value required".into()),
+            error: (!valid).then(|| if matches!(id, 26 | 27) { "Choose a catalog material".into() } else { "Finite numeric value required".into() }),
             note: match id {
                 4 => Some("Axial distance from stack entrance. For a 1-inch stack: 0 = entry, 0.5 = midpoint, 1 = exit.".into()),
                 5 => Some("Maximum relative separation of the original and finished axis centers at the pilot; radial distance.".into()),
@@ -267,12 +274,16 @@ impl StackupSession {
             submit: Some(action(StackupAct::Recalculate)),
             commit_on_blur: true,
             grow: 1.0,
-            trailing: None,
+            trailing: matches!(id, 26 | 27).then(|| Entry::new("Choose", "", action(StackupAct::OpenMaterial(id)))),
             help: None,
             choices: vec![],
         }
     }
     fn save(&mut self) {
+        if self.inputs.members.iter().any(|m| !self.materials.iter().any(|v| v.id == m.housing_material) || !self.materials.iter().any(|v| v.id == m.bushing_material)) {
+            self.status = "Cannot save unknown material IDs. Choose catalog materials for every member.".into();
+            return;
+        }
         if self.drafts.iter().any(|((_, id), t)| {
             (self.inputs.bushing_enabled || !bushing_field(*id)) && !valid_text(*id, t)
         }) {
@@ -300,6 +311,10 @@ impl StackupSession {
         }
     }
     fn transfer_availability(&self) -> Result<(), String> {
+        let member = &self.inputs.members[self.selected];
+        if !self.materials.iter().any(|m| m.id == member.housing_material) || !self.materials.iter().any(|m| m.id == member.bushing_material) {
+            return Err("Choose catalog housing and bushing materials before transfer".into());
+        }
         if !self.inputs.bushing_enabled {
             return Err("Enable optional bushing sizing first".into());
         }
@@ -456,6 +471,15 @@ impl StackupSession {
             }
             StackupAct::Undo => { self.undo(); return; }
             StackupAct::Redo => { self.redo(); return; }
+            StackupAct::OpenMaterial(id) if matches!(id, 26 | 27) => { self.material_picker = Some(id); return; }
+            StackupAct::PickMaterial(index) => {
+                if let (Some(id), Some(material)) = (self.material_picker.take(), self.materials.get(index)) {
+                    self.document_field(id, material.id.to_string());
+                    self.recalculate();
+                }
+                return;
+            }
+            StackupAct::CloseMaterial => { self.material_picker = None; return; }
             StackupAct::Save => {
                 self.save();
                 return;
@@ -682,6 +706,10 @@ impl Authoring for StackupSession {
         true
     }
     fn document_field(&mut self, id: u8, text: String) {
+        if matches!(id, 26 | 27) && !self.materials.iter().any(|m| m.id == text) {
+            self.status = "Unknown material ID. Choose a catalog material.".into();
+            return;
+        }
         let key = self.key_for(id);
         if self.value(id) == text {
             return;
@@ -843,6 +871,18 @@ impl Authoring for StackupSession {
             ],
             ..Document::default()
         };
+        if let Some(id) = self.material_picker {
+            let selected = self.value(id);
+            doc.modal = Some(DocModal {
+                card: super::authoring::Card::new("stackup-material", if id == 26 { "Housing material" } else { "Bushing material" }, super::authoring::Relevance::Primary,
+                    self.materials.iter().enumerate().map(|(index, material)| DockItem::row(
+                        format!("{}  ·  {}", material.name, material.id),
+                        if material.id == selected { Tone::On } else { Tone::Normal },
+                        Some(action(StackupAct::PickMaterial(index))), false,
+                    )).collect()),
+                close: action(StackupAct::CloseMaterial),
+            });
+        }
         doc.precision = Some(PrecisionPage {
             inputs: self.inputs.clone(),
             result: self.result.as_ref().ok().cloned(),
@@ -1078,6 +1118,26 @@ mod tests {
         assert_eq!(s.inputs.members[0].thickness, 0.75);
         assert_eq!(s.value(11), "0.75");
         assert!(s.current());
+    }
+    #[test]
+    fn material_picker_uses_catalog_ids_and_rejects_unknown_text() {
+        let mut s = session();
+        let original = s.inputs.members[0].housing_material.clone();
+        s.document_field(26, "not-in-catalog".into());
+        assert_eq!(s.inputs.members[0].housing_material, original);
+        s.act_stackup(StackupAct::OpenMaterial(26));
+        assert!(s.document().unwrap().modal.is_some());
+        let index = s.materials.iter().position(|m| m.id != original).unwrap();
+        let selected = s.materials[index].id;
+        s.act_stackup(StackupAct::PickMaterial(index));
+        assert_eq!(s.inputs.members[0].housing_material, selected);
+        assert!(s.document().unwrap().modal.is_none());
+        s.act_stackup(StackupAct::Undo);
+        assert_eq!(s.inputs.members[0].housing_material, original);
+        s.inputs.members[0].housing_material = "not-in-catalog".into();
+        assert!(s.transfer_availability().unwrap_err().contains("catalog"));
+        s.save();
+        assert!(s.status.contains("unknown material"));
     }
     #[test]
     fn exhausted_member_ids_do_not_mutate_stack() {

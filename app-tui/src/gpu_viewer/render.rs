@@ -1550,6 +1550,16 @@ mod snapshot_tests {
                     std::fs::write(format!("{dir}/{name}-{pose}-{w}x{h}.rgba"),read_back(&r,&texture)).unwrap();
                 }
             }
+            session.act(crate::gpu_viewer::editor::session::EditorAction::Stackup(crate::gpu_viewer::editor::stackup::StackupAct::OpenMaterial(26)));
+            let (w, h) = (1360, 860);
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+            let texture = target(&r, w, h);
+            let mut gui = Gui::new();
+            let view = ViewState::new(&scene);
+            let scenes = [scene];
+            let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+            draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+            std::fs::write(format!("{dir}/material-picker.rgba"), read_back(&r, &texture)).unwrap();
         });
     }
 

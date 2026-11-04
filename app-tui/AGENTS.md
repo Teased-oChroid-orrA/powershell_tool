@@ -391,3 +391,4 @@ Records: `docs/issue-12-phase-24.md`, `docs/adr/ADR-015-parametric-sketch-histor
 ## Bushing Stackup native workbench
 
 `--gpu-bushing-stackup` opens the native-only page. It has no terminal toolbox or cross-routing. Pure engineering types and calculation live in `bushing-solver/src/stackup.rs`; native session, cached result revisions and typed transfer live in `gpu_viewer/editor/stackup*.rs`. Coordinate and wall definitions are recorded in `docs/bushing-stackup.md`.
+The material fields choose IDs from the Bushing catalog (including saved custom materials). Unknown typed IDs are rejected; a case with unknown material IDs cannot be saved or transferred.

@@ -76,7 +76,11 @@ impl Gui {
         if area.width() < 120.0 || area.height() < 80.0 {
             return;
         }
-        if doc.precision.is_some(){self.precision_page(ui,area,doc,p,out,hint);return;}
+        if doc.precision.is_some(){
+            self.precision_page(ui,area,doc,p,out,hint);
+            if let Some(modal) = &doc.modal { self.modal(ui.ctx(),modal,p,out,hint); }
+            return;
+        }
         let inner = area.shrink2(Vec2::new(16.0, 6.0));
         // A press outside the open popover (and outside the control that opened it) closes it, as a menu does.
         if self.doc.open.is_some() {
