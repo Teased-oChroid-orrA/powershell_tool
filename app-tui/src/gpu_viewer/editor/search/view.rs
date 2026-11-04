@@ -8,7 +8,7 @@ use crate::gpu_viewer::{
         session::Tone,
     },
     menu::{Entry, Item, Menu},
-    ui::{CardRow, DocBlock, DocColumn, DocDetail, DocHelp, DocInput, DocModal, DocNotice, DocPanel, DocProgress, DocRow, DocTable, Document, HelpRow, HelpSection, DockItem, RibbonTab, TreeNode, ValueCard},
+    ui::{CardRow, DocColumn, DocDetail, DocHelp, DocInput, DocModal, DocNotice, DocPanel, DocProgress, DocRow, DocTable, DocText, Document, HelpRow, HelpSection, DockItem, RibbonTab, TreeNode, ValueCard},
 };
 use crate::toolboxes::search::{indexing::format_eta, model, preview, run_view, settings_view};
 use search_core::models::{ExcludeScope, MatchMode};
@@ -87,7 +87,6 @@ fn result_entries(s: &SearchSession) -> Vec<Entry> {
         e("Open", "Enter", SearchAct::OpenSelected).when(ok.clone()),
         e("Show in folder", "", SearchAct::Reveal).when(ok.clone()),
         e("Copy path", "Ctrl+C", SearchAct::CopyPath).when(ok.clone()),
-        when(e("Copy content", "", SearchAct::CopyContent), s.current_result().is_some_and(|r| !r.hits.is_empty()), "this result has no displayed lines"),
         e("Export matches", "Ctrl+E", SearchAct::ExportHits).when(ok),
     ]
 }
@@ -372,27 +371,34 @@ fn table(s: &SearchSession) -> DocTable {
     }
 }
 
-/// Matching lines shown for one file (a file can have thousands; the export has them all).
-const MAX_BLOCKS: usize = 400;
-
-pub(super) fn copy_content(r: &search_core::models::FileSearchResult) -> String {
-    r.hits.iter().take(MAX_BLOCKS).flat_map(|h| {
-        h.before.iter().chain(std::iter::once(&h.match_line)).chain(h.after.iter())
-    }).cloned().collect::<Vec<_>>().join("\n")
+pub(super) fn full_text(r: &search_core::models::FileSearchResult, lines: &[String]) -> DocText {
+    let mut hits = std::collections::HashMap::new();
+    for h in &r.hits { hits.entry(h.line_number).or_insert_with(Vec::new).push(h); }
+    let mut content = String::new();
+    let mut marks = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 { content.push('\n'); }
+        let offset = content.len();
+        content.push_str(line);
+        if let Some(found) = hits.get(&((i + 1) as i32)) {
+            let filters: Vec<String> = found.iter().filter(|h| h.match_line == *line).flat_map(|h| h.matched_filters.iter().cloned()).collect();
+            marks.extend(preview::highlight_ranges(line, &filters).into_iter().map(|(start, end)| (offset + start, offset + end)));
+        }
+    }
+    DocText { content: content.into(), marks: marks.into() }
 }
 
 fn detail(s: &SearchSession) -> Option<DocDetail> {
     let r = s.current_result()?;
-    let mut blocks: Vec<DocBlock> = r.hits.iter().take(MAX_BLOCKS).map(|h| DocBlock { number: h.line_number, before: h.before.clone(), text: h.match_line.clone(), after: h.after.clone(), marks: preview::highlight_ranges(&h.match_line, &h.matched_filters), tags: h.matched_filters.clone() }).collect();
     let mut subtitle = format!("{}  ·  {}", r.full_name, plain(&preview::metadata_summary(r)));
     if r.low_confidence_pdf {
         subtitle.push_str("  ·  scanned PDF: text may be incomplete");
     }
-    if r.hits.len() > MAX_BLOCKS {
-        subtitle.push_str(&format!("  ·  first {MAX_BLOCKS} lines shown (Export matches has all)"));
-    }
-    blocks.shrink_to_fit();
-    Some(DocDetail { drawing: None, grid: None, title: file_name(&r.full_name).to_string(), subtitle, actions: result_entries(s), blocks, empty: "The file matched as a whole (all-in-file mode), with no single line to show.".into() })
+    let preview = s.preview.as_ref().filter(|p| p.path == r.full_name);
+    let text = preview.and_then(|p| p.text.clone());
+    let empty = preview.map_or("Loading the full document...".to_string(), |p| p.status.clone());
+    if text.is_some() { subtitle.push_str("  ·  Select text, then right-click to copy"); }
+    Some(DocDetail { drawing: None, grid: None, title: file_name(&r.full_name).to_string(), subtitle, actions: result_entries(s), blocks: Vec::new(), text, empty })
 }
 
 // ---------------------------------------------------------------------- tree

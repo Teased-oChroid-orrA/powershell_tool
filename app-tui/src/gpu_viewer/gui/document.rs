@@ -11,7 +11,7 @@ use crate::gpu_viewer::{
     display::PageLayout,
     editor::session::Tone,
     menu::{Entry, Outcome},
-    ui::{DocBlock, DocDetail, DocGrid, DocHelp, DocInput, DocModal, DocPanel, DocProgress, DocTable, Document},
+    ui::{DocBlock, DocDetail, DocGrid, DocHelp, DocInput, DocModal, DocPanel, DocProgress, DocTable, DocText, Document},
 };
 use egui::{text::LayoutJob, Align, Align2, Color32, CornerRadius, FontId, Id, Layout, Margin, Pos2, Rect, RichText, Sense, Shape, Stroke, TextFormat, UiBuilder, Vec2};
 
@@ -894,6 +894,10 @@ impl Gui {
                 egui::ScrollArea::both().id_salt(("doc-grid", &d.title)).auto_shrink([false, false]).show(ui, |ui| property_grid(ui, g, p));
                 return;
             }
+            if let Some(text) = &d.text {
+                egui::ScrollArea::vertical().id_salt(("full-document", &d.subtitle)).auto_shrink([false, false]).show(ui, |ui| selectable_document(ui, text, p));
+                return;
+            }
             if d.blocks.is_empty() {
                 ui.label(RichText::new(&d.empty).color(p.dim));
                 return;
@@ -912,6 +916,34 @@ impl Gui {
             });
         });
     }
+}
+
+fn selectable_document(ui: &mut egui::Ui, document: &DocText, p: &Palette) {
+    use egui::TextBuffer as _;
+    let mut text: &str = &document.content;
+    let mut layouter = |ui: &egui::Ui, value: &dyn egui::TextBuffer, width: f32| {
+        let source = value.as_str();
+        let mut job = LayoutJob { wrap: egui::text::TextWrapping { max_width: width, ..Default::default() }, ..Default::default() };
+        let normal = TextFormat { font_id: FontId::monospace(12.5), color: p.text, ..Default::default() };
+        let marked = TextFormat { background: with_alpha(p.warn, 90), ..normal.clone() };
+        let mut pos = 0;
+        for &(start, end) in document.marks.iter() {
+            if start < pos || end > source.len() || !source.is_char_boundary(start) || !source.is_char_boundary(end) { continue; }
+            job.append(&source[pos..start], 0.0, normal.clone());
+            job.append(&source[start..end], 0.0, marked.clone());
+            pos = end;
+        }
+        job.append(&source[pos..], 0.0, normal);
+        ui.painter().layout_job(job)
+    };
+    let output = egui::TextEdit::multiline(&mut text).font(FontId::monospace(12.5)).desired_width(ui.available_width()).layouter(&mut layouter).show(ui);
+    let selected = output.cursor_range.filter(|range| !range.is_empty()).map(|range| text.char_range(range.as_sorted_char_range()).to_string());
+    output.response.context_menu(|ui| {
+        if ui.add_enabled(selected.is_some(), egui::Button::new("Copy selection")).clicked() {
+            if let Some(value) = &selected { ui.ctx().copy_text(value.clone()); }
+            ui.close();
+        }
+    });
 }
 
 fn segment_width(ui: &egui::Ui, label: &str, p: &Palette) -> f32 {

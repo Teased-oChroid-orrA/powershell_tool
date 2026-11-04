@@ -348,8 +348,17 @@ pub struct DocDetail {
     pub subtitle: String,
     pub actions: Vec<Entry>,
     pub blocks: Vec<DocBlock>,
+    /// Full extracted document, when the page offers selectable text.
+    pub text: Option<DocText>,
     /// Shown when there are no blocks.
     pub empty: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocText {
+    pub content: std::sync::Arc<str>,
+    /// Non-overlapping UTF-8 byte ranges in `content`.
+    pub marks: std::sync::Arc<[(usize, usize)]>,
 }
 
 /// Labelled values in columns: a header, then rows whose first cell is the label. Cells listed in `best` are drawn in

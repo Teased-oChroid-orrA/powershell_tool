@@ -181,6 +181,7 @@ fn detail(s: &MaterialsSession) -> Option<DocDetail> {
             subtitle,
             actions: vec![e("Properties", "Esc", MaterialsAct::Compare), clear_marks_entry(s), export_entry()],
             blocks: Vec::new(),
+            text: None,
             empty: String::new(),
         });
     }
@@ -190,7 +191,7 @@ fn detail(s: &MaterialsSession) -> Option<DocDetail> {
         Some(f) => format!("{}  ·  {}", f.heading, f.source),
         None => format!("{}  ·  typical values, no handbook record", model::CURATED_GROUP),
     };
-    Some(DocDetail { drawing: None, grid: Some(property_grid(m)), title: m.name.to_string(), subtitle, actions: vec![mark_entry(s), compare_entry(s)], blocks: Vec::new(), empty: String::new() })
+    Some(DocDetail { drawing: None, grid: Some(property_grid(m)), title: m.name.to_string(), subtitle, actions: vec![mark_entry(s), compare_entry(s)], blocks: Vec::new(), text: None, empty: String::new() })
 }
 
 fn row(label: &str, value: String, unit: &str) -> DocGridRow {

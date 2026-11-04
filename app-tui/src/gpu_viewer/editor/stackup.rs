@@ -1119,7 +1119,7 @@ impl Authoring for StackupSession {
             ]));
         }
         doc.policy = Some(policy);
-        doc.detail=Some(DocDetail{drawing:Some(self.drawing(r)),grid:None,title:"Stack section, x-z".into(),subtitle:"Shared limiting scenario, true scale. Orange original, green bore, blue common axis. Click a layer to edit.".into(),actions:vec![],blocks:vec![],empty:format!("Selected {} #{}. OD center x={:.5} in. Resulting bore capacity is the largest common circular reamer diameter allowed locally by selected OD and wall; actual requested ID remains shared. {}",m.name,m.id,r.layers[self.selected].center_x,if self.current(){""}else{"DRAWING STALE"})});
+        doc.detail=Some(DocDetail{drawing:Some(self.drawing(r)),grid:None,title:"Stack section, x-z".into(),subtitle:"Shared limiting scenario, true scale. Orange original, green bore, blue common axis. Click a layer to edit.".into(),actions:vec![],blocks:vec![],text:None,empty:format!("Selected {} #{}. OD center x={:.5} in. Resulting bore capacity is the largest common circular reamer diameter allowed locally by selected OD and wall; actual requested ID remains shared. {}",m.name,m.id,r.layers[self.selected].center_x,if self.current(){""}else{"DRAWING STALE"})});
         Some(doc)
     }
 }

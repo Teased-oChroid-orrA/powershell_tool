@@ -2590,7 +2590,8 @@ mod tests {
         let row = target(&v, "row fitting.txt");
         click(&mut v, row);
         let doc = v.editor.as_ref().unwrap().document().unwrap();
-        assert_eq!(doc.detail.unwrap().blocks[0].number, 2);
+        let detail = doc.detail.unwrap();
+        assert!(detail.text.is_some() || detail.empty.contains("Loading"));
         let before = v.view.show_mesh;
         v.input(Input::Key(Key::Character("m".into())));
         assert_eq!(v.view.show_mesh, before, "viewer keys do nothing on a page");

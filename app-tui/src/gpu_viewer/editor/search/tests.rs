@@ -30,13 +30,61 @@ fn with_results() -> SearchSession {
 }
 
 #[test]
-fn copy_content_uses_displayed_lines_without_line_numbers() {
+fn full_document_text_has_no_line_numbers_and_only_matching_text_is_marked() {
     let mut s = with_results();
     s.selected = Some(0);
-    let expected = "above\na bolt torque line\nabove\na bolt torque line\nabove\na bolt torque line";
-    assert_eq!(view::copy_content(s.current_result().unwrap()), expected);
+    let r = s.st.run.results.get_mut(0).unwrap();
+    r.lines_cache = vec!["above".into(), "a bolt torque line".into(), "below".into()];
+    r.total_line_count = 3;
+    r.hits = vec![hit(2, "a bolt torque line", "bolt")];
+    s.poll();
     let detail = s.document().unwrap().detail.unwrap();
-    assert!(detail.actions.iter().any(|a| a.label == "Copy content"));
+    let text = detail.text.unwrap();
+    assert_eq!(&*text.content, "above\na bolt torque line\nbelow");
+    assert_eq!(&text.content[text.marks[0].0..text.marks[0].1], "bolt");
+    assert!(detail.actions.iter().all(|a| a.label != "Copy content"));
+}
+
+#[test]
+fn a_document_larger_than_the_embedded_report_limit_loads_every_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("long.txt");
+    let mut lines = vec!["ordinary line".to_string(); 4_005];
+    lines[4_004] = "last bolt".into();
+    std::fs::write(&path, lines.join("\n")).unwrap();
+    let mut s = SearchSession::in_memory();
+    let mut r = result(&path.to_string_lossy(), 0, 0);
+    r.total_line_count = lines.len() as i32;
+    r.lines_cache = lines[..4_000].to_vec();
+    r.hits = vec![hit(4_005, "last bolt", "bolt")];
+    s.st.run.results.push(r);
+    let start = Instant::now();
+    loop {
+        s.poll();
+        if let Some(text) = s.document().unwrap().detail.unwrap().text {
+            assert_eq!(text.content.lines().count(), 4_005);
+            assert!(text.content.ends_with("last bolt"));
+            assert_eq!(&text.content[text.marks[0].0..text.marks[0].1], "bolt");
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(5), "full preview did not load");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn an_old_preview_cannot_replace_a_new_run_of_the_same_file() {
+    let mut s = SearchSession::in_memory();
+    let mut r = result("/w/same.txt", 1, 0);
+    r.lines_cache = vec!["new bolt".into()];
+    r.total_line_count = 1;
+    r.hits = vec![hit(1, "new bolt", "bolt")];
+    s.st.run.results.push(r);
+    s.poll();
+    let current = s.preview.as_ref().unwrap().generation;
+    s.preview_tx.send(PreviewEvent::Done(current.wrapping_sub(1), Ok(vec!["old bolt".into()]))).unwrap();
+    s.poll();
+    assert_eq!(&*s.document().unwrap().detail.unwrap().text.unwrap().content, "new bolt");
 }
 
 #[test]
@@ -94,10 +142,10 @@ fn a_search_runs_on_the_session_runtime_and_its_matches_fill_the_table_and_the_d
     assert_eq!(doc.table.rows.len(), 1, "only the file with a match is listed");
     assert_eq!(doc.table.rows[0].cells[0], "hit.txt");
     let d = doc.detail.expect("the first result is shown");
-    assert_eq!(d.blocks.len(), 1);
-    assert_eq!(d.blocks[0].number, 2);
-    let (a, b) = d.blocks[0].marks[0];
-    assert_eq!(&d.blocks[0].text[a..b], "bolt", "the match is highlighted");
+    let text = d.text.expect("the entire document is shown");
+    assert_eq!(&*text.content, "first line\nthe bolt torque is 40\nlast line\n");
+    let (a, b) = text.marks[0];
+    assert_eq!(&text.content[a..b], "bolt", "the match is highlighted");
     assert!(doc.stats.iter().any(|(l, v)| l == "Files with matches" && v == "1"), "{:?}", doc.stats);
     assert!(s.status().contains("1 file with matches"), "{}", s.status());
     assert_eq!(s.st.recent_searches.len(), 1, "the run is remembered like in the terminal");

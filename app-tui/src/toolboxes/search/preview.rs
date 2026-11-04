@@ -1,8 +1,8 @@
 //! Match-highlighting for the Search Files preview pane.
 //!
-//! `highlight_ranges` ports `app/src/preview.rs::highlighted_line`'s
-//! range-computation core verbatim (same case-insensitive substring scan +
-//! overlap-merge algorithm, same tolerance documented on the original:
+//! `highlight_ranges` follows `app/src/preview.rs::highlighted_line`'s
+//! case-insensitive substring scan and overlap-merge algorithm, while keeping
+//! byte offsets valid when Unicode lowercasing changes their length. It has the same tolerance documented on the original:
 //! "close enough for a preview highlight, not required to be pixel-identical
 //! to the HTML report's own highlighter" - the report's own highlighter in
 //! `search_core::report` stays the source of truth for the saved report).
@@ -16,10 +16,8 @@ use search_core::models::FileSearchResult;
 
 /// Case-insensitive substring scan for every filter in `matched_filters`
 /// against `line`, merged into a sorted, non-overlapping list of byte
-/// ranges. Ported 1:1 from `app/src/preview.rs::highlighted_line`'s first
-/// half (the range computation, before it starts building UI elements).
+/// ranges. Ranges refer to the original line's UTF-8 bytes.
 pub fn highlight_ranges(line: &str, matched_filters: &[String]) -> Vec<(usize, usize)> {
-    let lower_line = line.to_lowercase();
     let mut ranges: Vec<(usize, usize)> = Vec::new();
 
     for f in matched_filters {
@@ -27,13 +25,16 @@ pub fn highlight_ranges(line: &str, matched_filters: &[String]) -> Vec<(usize, u
             continue;
         }
         let lower_f = f.to_lowercase();
-        let mut search_from = 0usize;
-        while search_from <= lower_line.len() {
-            let Some(rel_pos) = lower_line[search_from..].find(&lower_f) else { break };
-            let start = search_from + rel_pos;
-            let end = start + lower_f.len();
-            ranges.push((start, end));
-            search_from = end.max(start + 1);
+        for (start, _) in line.char_indices() {
+            let mut folded = String::new();
+            for (offset, c) in line[start..].char_indices() {
+                folded.extend(c.to_lowercase());
+                if folded == lower_f {
+                    ranges.push((start, start + offset + c.len_utf8()));
+                    break;
+                }
+                if !lower_f.starts_with(&folded) { break; }
+            }
         }
     }
 
@@ -104,6 +105,13 @@ pub fn metadata_summary(result: &FileSearchResult) -> String {
 mod tests {
     use super::*;
     use ratatui::style::{Color, Modifier};
+
+    #[test]
+    fn unicode_case_expansion_keeps_original_byte_offsets() {
+        let line = "İbolt";
+        assert_eq!(highlight_ranges(line, &["bolt".into()]), vec![(2, 6)]);
+        assert_eq!(highlight_ranges(line, &["i̇".into()]), vec![(0, 2)]);
+    }
 
     fn hl_style() -> Style {
         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)

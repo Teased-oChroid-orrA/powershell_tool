@@ -26,6 +26,7 @@ use crate::gpu_viewer::{
 use crate::notifications::NotificationQueue;
 use crate::toolboxes::search::{self as search, exec, model, persistence, settings_view, SearchToolState};
 use search_core::models::FileSearchResult;
+use tokio_util::sync::CancellationToken;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -43,7 +44,6 @@ pub enum SearchAct {
     OpenSelected,
     Reveal,
     CopyPath,
-    CopyContent,
     ExportHits,
     OpenReport,
     SortBy(SortKey),
@@ -126,6 +126,11 @@ pub struct SearchSession {
     sort: (SortKey, bool),
     /// The selected result (index into `st.run.results`).
     selected: Option<usize>,
+    preview: Option<Preview>,
+    preview_generation: u64,
+    preview_tx: mpsc::UnboundedSender<PreviewEvent>,
+    preview_rx: mpsc::UnboundedReceiver<PreviewEvent>,
+    preview_cancel: Option<CancellationToken>,
     edit: Option<Edit>,
     /// Asks for a folder, starting in the given one (the system dialog; tests answer without one).
     pick_folder: fn(&Path) -> Option<PathBuf>,
@@ -140,8 +145,21 @@ pub struct SearchSession {
     settings_file: PathBuf,
 }
 
+struct Preview {
+    generation: u64,
+    path: String,
+    text: Option<crate::gpu_viewer::ui::DocText>,
+    status: String,
+}
+
+enum PreviewEvent {
+    Progress(u64, String),
+    Done(u64, Result<Vec<String>, String>),
+}
+
 impl Drop for SearchSession {
     fn drop(&mut self) {
+        if let Some(cancel) = &self.preview_cancel { cancel.cancel(); }
         search::request_cancel(&self.st);
         if let Some(c) = &self.st.index_cancel {
             c.cancel();
@@ -182,6 +200,7 @@ impl SearchSession {
     fn with_state(st: SearchToolState, persist: bool) -> Result<Self, String> {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_name("search").build().map_err(|e| format!("cannot start the search workers: {e}"))?;
         let (tx, rx) = mpsc::unbounded_channel();
+        let (preview_tx, preview_rx) = mpsc::unbounded_channel();
         Ok(Self {
             rows_cache: RefCell::new(None),
             notes: NotificationQueue::default(),
@@ -193,6 +212,11 @@ impl SearchSession {
             filter: String::new(),
             sort: (SortKey::Found, false),
             selected: None,
+            preview: None,
+            preview_generation: 0,
+            preview_tx,
+            preview_rx,
+            preview_cancel: None,
             edit: None,
             pick_folder: system_folder_picker,
             stale: None,
@@ -265,6 +289,8 @@ impl SearchSession {
         self.take_note();
         if !effects.is_empty() {
             self.selected = None;
+            if let Some(cancel) = self.preview_cancel.take() { cancel.cancel(); }
+            self.preview = None;
             self.stale = None;
             self.status = format!("Searching {}...", self.st.config.search_path.trim());
             self.execute(effects);
@@ -325,6 +351,45 @@ impl SearchSession {
     }
     fn current_result(&self) -> Option<&FileSearchResult> {
         self.current().and_then(|i| self.st.run.results.get(i))
+    }
+
+    fn refresh_preview(&mut self) -> bool {
+        let Some(result) = self.current_result() else {
+            if let Some(cancel) = self.preview_cancel.take() { cancel.cancel(); }
+            return self.preview.take().is_some();
+        };
+        let path = result.full_name.clone();
+        if self.preview.as_ref().is_some_and(|p| p.path == path) { return false; }
+        let cached = (result.total_line_count as usize <= result.lines_cache.len() && !result.lines_cache.is_empty()).then(|| view::full_text(result, &result.lines_cache));
+        self.preview_generation = self.preview_generation.wrapping_add(1);
+        let generation = self.preview_generation;
+        if let Some(cancel) = self.preview_cancel.take() { cancel.cancel(); }
+        if let Some(text) = cached {
+            self.preview = Some(Preview { generation, path, text: Some(text), status: String::new() });
+            return true;
+        }
+        self.preview = Some(Preview { generation, path: path.clone(), text: None, status: "Loading the full document...".into() });
+        let tx = self.preview_tx.clone();
+        let cancel = CancellationToken::new();
+        self.preview_cancel = Some(cancel.clone());
+        let config = self.st.config.clone();
+        self.rt.spawn(async move {
+            let loaded = async {
+                let meta = tokio::fs::metadata(&path).await.map_err(|e| e.to_string())?;
+                if meta.len() as f64 > config.max_file_size_mb * 1_048_576.0 { return Err("The file now exceeds the search size limit.".to_string()); }
+                let bytes = search_core::file_reader::read_file_bytes_robust(&path, config.file_timeout_seconds.max(1) as u64, 0, 0, None, &cancel).await.map_err(|e| format!("{e:?}"))?;
+                if cancel.is_cancelled() { return Err("Cancelled".into()); }
+                let ext = Path::new(&path).extension().map(|s| format!(".{}", s.to_string_lossy().to_lowercase())).unwrap_or_default();
+                let progress_tx = tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let mut progress = |page: i32, _elapsed: std::time::Duration| { let _ = progress_tx.send(PreviewEvent::Progress(generation, format!("Extracting document text: page {page}..."))); };
+                    search_core::extraction::extract_lines_by_extension(&ext, &bytes, config.pdf_timeout_seconds.max(1) as u64, Some(&mut progress), config.ocr_scanned_pdfs)
+                        .map(|v| v.lines).map_err(|e| format!("{e:?}"))
+                }).await.map_err(|e| e.to_string())?
+            }.await;
+            if !cancel.is_cancelled() { let _ = tx.send(PreviewEvent::Done(generation, loaded)); }
+        });
+        true
     }
     fn move_selection(&mut self, delta: i32) {
         let view = self.view();
@@ -428,7 +493,6 @@ impl SearchSession {
             SearchAct::OpenSelected => self.with_current(|r, _| Effect::OpenPath(r.full_name.clone()), "Opened"),
             SearchAct::Reveal => self.with_current(|r, _| Effect::OpenPath(Path::new(&r.full_name).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()), "Showing the folder of"),
             SearchAct::CopyPath => self.with_current(|r, _| Effect::CopyToClipboard(r.full_name.clone()), "Copied the path of"),
-            SearchAct::CopyContent => self.with_current(|r, _| Effect::CopyToClipboard(view::copy_content(r)), "Copied the content of"),
             SearchAct::ExportHits => self.with_current(export_hits, "Exported the matches of"),
             SearchAct::OpenReport => match self.st.run.last_report_path.clone() {
                 Some(p) => {
@@ -658,6 +722,25 @@ impl Authoring for SearchSession {
                 } else {
                     self.status = "Tick the file types to search; none ticked searches every supported type.".into();
                 }
+            }
+        }
+        changed |= self.refresh_preview();
+        while let Ok(event) = self.preview_rx.try_recv() {
+            match event {
+                PreviewEvent::Progress(generation, status) if self.preview.as_ref().is_some_and(|p| p.generation == generation) => {
+                    if let Some(p) = &mut self.preview { p.status = status; changed = true; }
+                }
+                PreviewEvent::Done(generation, result) if self.preview.as_ref().is_some_and(|p| p.generation == generation) => {
+                    let ready = result.and_then(|lines| self.current_result().map(|r| view::full_text(r, &lines)).ok_or_else(|| "Result changed while loading.".to_string()));
+                    if let Some(p) = &mut self.preview {
+                        match ready {
+                            Ok(text) => { p.text = Some(text); p.status.clear(); }
+                            Err(error) => p.status = format!("Cannot display the full document: {error}"),
+                        }
+                    }
+                    changed = true;
+                }
+                _ => {}
             }
         }
         changed
