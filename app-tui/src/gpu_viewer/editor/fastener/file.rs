@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 const FORMAT_VERSION: u32 = 1;
 
 /// Every input dimension with its key in the file.
-pub const DIMENSIONS: [(NumberTarget, &str); 9] = [
+pub const DIMENSIONS: [(NumberTarget, &str); 11] = [
     (NumberTarget::RegularHole1, "hole 1 diameter"),
     (NumberTarget::RegularHole2, "hole 2 diameter"),
     (NumberTarget::RegularReference, "secondary reference hole"),
@@ -19,12 +19,14 @@ pub const DIMENSIONS: [(NumberTarget, &str); 9] = [
     (NumberTarget::CsAngle, "countersink angle"),
     (NumberTarget::CsSecondaryHoleDiameter, "secondary hole diameter"),
     (NumberTarget::CsPlateThickness, "plate thickness"),
+    (NumberTarget::EdgeDistance, "edge distance"),
+    (NumberTarget::Pitch, "pitch"),
 ];
 #[allow(dead_code)]
 fn every_number_target_is_listed(t: NumberTarget) {
     use NumberTarget::*;
     match t {
-        RegularHole1 | RegularHole2 | RegularReference | CsOuterDiameter | CsHoleDiameter | CsDepth | CsAngle | CsSecondaryHoleDiameter | CsPlateThickness => {}
+        RegularHole1 | RegularHole2 | RegularReference | CsOuterDiameter | CsHoleDiameter | CsDepth | CsAngle | CsSecondaryHoleDiameter | CsPlateThickness | EdgeDistance | Pitch => {}
     }
 }
 
@@ -66,7 +68,12 @@ impl FastenerFile {
         .collect();
         let dimensions = DIMENSIONS
             .iter()
-            .filter(|(t, _)| *t != NumberTarget::CsPlateThickness || m.countersink.plate_thickness.is_some())
+            .filter(|(t, _)| match t {
+                NumberTarget::CsPlateThickness => m.countersink.plate_thickness.is_some(),
+                NumberTarget::EdgeDistance => m.edge_distance.is_some(),
+                NumberTarget::Pitch => m.pitch.is_some(),
+                _ => true,
+            })
             .map(|(t, key)| {
                 let v = m.get_toleranced(*t);
                 (key.to_string(), [v.min, v.nominal, v.max])
@@ -80,6 +87,8 @@ impl FastenerFile {
     pub fn apply(&self, m: &mut FastenerHoleModel) -> Vec<String> {
         let mut skipped = Vec::new();
         m.countersink.plate_thickness = None;
+        m.edge_distance = None;
+        m.pitch = None;
         let mut choice = |key: &str, apply: &mut dyn FnMut(&str) -> bool| {
             if let Some(want) = self.choices.get(key) {
                 if !apply(want) {
@@ -93,8 +102,8 @@ impl FastenerFile {
         choice("secondary method", &mut |w| from_label(SecondaryCountersinkMethod::PreserveDepth, SecondaryCountersinkMethod::cycle, SecondaryCountersinkMethod::label, w).map(|v| m.countersink.secondary_method = v).is_some());
         for (t, key) in DIMENSIONS {
             let Some([min, nominal, max]) = self.dimensions.get(key).copied() else { continue };
-            if t == NumberTarget::CsPlateThickness && min <= 0.0 {
-                skipped.push(format!("{key}: thickness must be positive"));
+            if matches!(t, NumberTarget::CsPlateThickness | NumberTarget::EdgeDistance | NumberTarget::Pitch) && min <= 0.0 {
+                skipped.push(format!("{key}: distance must be positive"));
                 continue;
             }
             // A nominal outside its own band is not a tolerance the form could have produced.

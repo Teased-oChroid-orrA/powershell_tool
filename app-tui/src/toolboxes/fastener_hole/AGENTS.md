@@ -3,7 +3,7 @@
 > TL;DR: Regular/countersunk fastener-hole design tool, unique to this crate. Owns its own pure engineering `domain/` (zero ratatui/crossterm), deliberately not built on `bushing-solver::tolerance`.
 
 ## Purpose
-Owns: `domain/` (tolerance normalization, regular-hole fit envelope, countersink three-of-four solver, lateral surface area, secondary derivations), `model.rs`, `mod.rs` state/key routing, `view.rs`.
+Owns: `domain/` (tolerance normalization, regular-hole fit envelope, countersink three-of-four solver, lateral surface area, secondary derivations, geometric edge/pitch web checks), `model.rs`, `mod.rs` state/key routing, `view.rs`.
 Does not own: any shared solver crate - the engineering math here is wholly original to this crate.
 Consumers: the terminal head (`view.rs`, key routing here) and the native window bench `gpu_viewer/editor/fastener/` (same model and rows; it uses `toggle_selected`, `view::{row_label, display_value, build_report_text}`, `FastenerHoleModel::set_toleranced`). A change to rows, labels or results shows in both.
 
@@ -24,6 +24,7 @@ Consumers: the terminal head (`view.rs`, key routing here) and the native window
 ## Contracts
 - `domain/` has zero `ratatui`/`crossterm` imports; only INPUT dimensions belong in `field_rows`, never CALCULATED/TRANSFERRED/PRESERVED values.
 - Each engineering concern has its own `domain/` module with brute-force/round-trip tests; extend those, not spot checks.
+- Edge distance is centre-to-edge; pitch is centre-to-centre. Their checks use worst-case surface diameters and report geometric web only; strength and code spacing limits are not implied.
 
 ## Pitfalls
 - **Fastener Holes deliberately has no `d`-toggled Numbers panel**, unlike Bushing/Pressure Vessel Analyzer/Preload Analysis. Investigated and confirmed: this toolbox's readout panel (`view.rs::regular_readout_lines`/`countersink_readout_lines`) already shows full nominal+min/max detail for every calculated/derived value inline, unconditionally - there is no extra hidden detail comparable to Bushing's per-radius stress field to put behind a toggle. Adding one here would be a no-op UI element with nothing behind it, not real parity. If a future change adds genuinely new derived detail to this toolbox that's too verbose for the always-visible readout, that's when a Numbers-panel-style toggle would earn its keep - not before.

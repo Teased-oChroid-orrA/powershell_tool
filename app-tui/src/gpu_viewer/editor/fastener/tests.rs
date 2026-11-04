@@ -43,7 +43,7 @@ fn it_opens_on_the_terminal_forms_inputs_with_the_fit_and_a_drawing() {
     assert!(s.benches().is_empty());
     assert_eq!(s.ribbon().into_iter().map(|t| t.title).collect::<Vec<_>>(), ["Inputs", "Report"]);
     let cards = s.inspector();
-    assert_eq!(ids(&cards), ["fastener-hole-setup", "fastener-regular-hole-dimensions", "fastener-fit", "fastener-companion", "fastener-drawing"]);
+    assert_eq!(ids(&cards), ["fastener-hole-setup", "fastener-regular-hole-dimensions", "fastener-hole-layout", "fastener-fit", "fastener-companion", "fastener-layout", "fastener-drawing"]);
     let t = texts(&cards);
     // The rows are the terminal form's labels and values.
     assert!(t.contains("Hole Type  Regular") && t.contains("Hole 1 Diameter Nominal  0.2500 in"), "{t}");
@@ -131,6 +131,65 @@ fn knife_edge_requires_actual_thickness_and_survives_save_and_undo() {
 }
 
 #[test]
+fn edge_and_pitch_use_actual_distances_and_show_worst_case_webs() {
+    let mut s = session("edge-pitch");
+    assert!(texts(&s.inspector()).contains("Edge: unchecked"));
+    edit(&mut s, FieldRow::Number(NumberTarget::EdgeDistance, NumberPart::Nominal, "Edge Distance"), "0.1");
+    edit(&mut s, FieldRow::Number(NumberTarget::Pitch, NumberPart::Nominal, "Pitch"), "0.2");
+    assert!(texts(&s.inspector()).contains("BREAKOUT") && texts(&s.inspector()).contains("OVERLAP"));
+    assert!(!s.valid());
+    edit(&mut s, FieldRow::Number(NumberTarget::EdgeDistance, NumberPart::Nominal, "Edge Distance"), "0.5");
+    edit(&mut s, FieldRow::Number(NumberTarget::Pitch, NumberPart::Nominal, "Pitch"), "0.6");
+    assert!(s.valid());
+    assert!((s.model().edge_web.unwrap().minimum - 0.375).abs() < 1e-12);
+    assert!((s.model().pitch_web.unwrap().minimum - 0.35).abs() < 1e-12);
+    act(&mut s, FastenerAct::Save);
+    let back = FastenerSession::open(&s.path).unwrap();
+    assert_eq!(back.model().pitch.unwrap().nominal, 0.6);
+    assert!(view::build_report_text(back.model()).contains("strength and code limits not checked"));
+}
+
+#[test]
+fn transfers_create_distinct_cases_with_hole_dimensions() {
+    use crate::gpu_viewer::editor::{bushing::file::BushingFile, preload::file::PreloadFile};
+    use crate::toolboxes::{bushing::model::BushingModel, preload_analysis::model::PreloadModel};
+    let mut s = session("transfer");
+    edit(&mut s, FieldRow::Number(NumberTarget::EdgeDistance, NumberPart::Nominal, "Edge Distance"), "0.75");
+    act(&mut s, FastenerAct::SendToBushing);
+    assert!(s.status().contains("Opened"), "{}", s.status());
+    let first = s.path.with_extension("bushing.json");
+    let raw = std::fs::read_to_string(&first).unwrap();
+    let mut b = BushingModel::default();
+    BushingFile::from_json(&raw).unwrap().apply(&mut b);
+    assert_eq!(b.bore_dia, 0.25);
+    assert_eq!(b.edge_dist, 0.75);
+    act(&mut s, FastenerAct::SendToBushing);
+    assert!(s.path.with_extension("bushing-2.json").exists());
+    assert_eq!(std::fs::read_to_string(first).unwrap(), raw);
+    act(&mut s, FastenerAct::SendToPreload);
+    assert!(s.status().contains("Opened"), "{}", s.status());
+    let mut p = PreloadModel::default();
+    PreloadFile::from_json(&std::fs::read_to_string(s.path.with_extension("preload.json")).unwrap()).unwrap().apply(&mut p);
+    assert_eq!(p.members[0].hole_diameter, 0.25);
+}
+
+#[test]
+fn countersunk_transfer_uses_straight_bore_and_actual_plate_thickness() {
+    use crate::gpu_viewer::editor::bushing::file::BushingFile;
+    use crate::toolboxes::bushing::model::BushingModel;
+    let mut s = session("counter-transfer");
+    act(&mut s, FastenerAct::Row(FieldRow::ToggleHoleType));
+    edit(&mut s, FieldRow::Number(NumberTarget::CsPlateThickness, NumberPart::Nominal, "Plate Thickness"), "0.2");
+    edit(&mut s, FieldRow::Number(NumberTarget::CsHoleDiameter, NumberPart::Nominal, "Hole Diameter"), "0.3125");
+    act(&mut s, FastenerAct::SendToBushing);
+    assert!(s.status().contains("Opened"), "{}", s.status());
+    let mut b = BushingModel::default();
+    BushingFile::from_json(&std::fs::read_to_string(s.path.with_extension("bushing.json")).unwrap()).unwrap().apply(&mut b);
+    assert_eq!(b.bore_dia, 0.3125);
+    assert_eq!(b.housing_len, 0.2);
+}
+
+#[test]
 fn save_and_reopen_round_trips_every_input_and_export_writes_the_terminal_report() {
     let mut s = session("save");
     act(&mut s, FastenerAct::Row(FieldRow::ToggleHoleType));
@@ -157,11 +216,13 @@ fn a_file_with_an_unknown_choice_or_an_impossible_band_applies_the_rest_and_says
     f.choices.insert("hole type".into(), "Countersunk".into());
     f.choices.insert("solve for".into(), "Volume".into());
     f.dimensions.insert("countersink depth".into(), [0.2, 0.1, 0.3]);
+    f.dimensions.insert("edge distance".into(), [-0.1, 0.1, 0.2]);
     f.dimensions.insert("countersink outer diameter".into(), [0.6, 0.62, 0.64]);
     let s = FastenerSession::new(&f, dir("skip").join("case.json"));
     assert_eq!(s.model().hole_type, HoleType::Countersunk);
     assert_eq!(s.model().countersink.outer.nominal, 0.62);
     assert_eq!(s.model().countersink.depth.nominal, 0.125, "the impossible band is not applied");
+    assert!(s.model().edge_distance.is_none());
     assert!(s.status().contains("solve for: Volume") && s.status().contains("countersink depth"), "{}", s.status());
     assert!(FastenerFile::from_json("{\"version\": 99}").unwrap_err().contains("newer version"));
 }

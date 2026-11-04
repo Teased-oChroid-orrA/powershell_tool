@@ -54,6 +54,7 @@ impl FastenerSession {
     /// Every result the inputs give is valid (nothing reads INVALID).
     pub(super) fn valid(&self) -> bool {
         let m = &self.st.model;
+        if m.edge_web.is_some_and(|c| !c.clear()) || m.pitch_web.is_some_and(|c| !c.clear()) { return false; }
         match m.hole_type {
             HoleType::Regular => m.regular_secondary.is_ok(),
             HoleType::Countersunk => m.countersink_primary.is_ok() && m.countersink_secondary.is_ok() && m.knife_edge.is_none_or(|c| c.clear),
@@ -63,7 +64,7 @@ impl FastenerSession {
     /// One line for the status bar: the answer to the question the hole type asks.
     pub(super) fn verdict(&self) -> String {
         let m = &self.st.model;
-        match m.hole_type {
+        let answer = match m.hole_type {
             HoleType::Regular => {
                 let fit = &m.regular_fit;
                 format!("{}: fit {} in.", classification(fit.classification).0, model::format_band(fit.nominal, fit.min, fit.max, model::format_linear))
@@ -75,7 +76,8 @@ impl FastenerSession {
                 }
                 Err(e) => format!("The countersink does not solve: {e}."),
             },
-        }
+        };
+        if m.edge_web.is_some_and(|c| !c.clear()) || m.pitch_web.is_some_and(|c| !c.clear()) { format!("{answer} Edge / pitch geometry fails; see result card.") } else { answer }
     }
 
     // ------------------------------------------------------------------ inspector
@@ -86,6 +88,8 @@ impl FastenerSession {
             HoleType::Regular => self.regular_cards(),
             HoleType::Countersunk => self.countersink_cards(),
         });
+        cards.push(Card::new("fastener-layout", "Edge / pitch geometry", Relevance::Context,
+            view::layout_text(&self.st.model).lines().skip(1).map(|s| line(s, if s.contains("BREAKOUT") || s.contains("OVERLAP") { Tone::Warn } else { Tone::Normal })).collect()));
         cards.push(self.drawing_card());
         cards
     }
@@ -226,6 +230,8 @@ impl FastenerSession {
                 }
             }
         }
+        if let Some(c) = m.edge_web { result(8, "Edge geometry".into(), c.clear()); }
+        if let Some(c) = m.pitch_web { result(9, "Pitch geometry".into(), c.clear()); }
         out.push(TreeNode::new(6, 1, 'R', "Report").selected(self.step == "Report").on_click(step("Report")));
         out
     }
@@ -249,7 +255,8 @@ impl FastenerSession {
                     entry("Save", "Ctrl/Cmd+S", FastenerAct::Save),
                 ],
             ),
-            RibbonTab::new("Report").group("Report", vec![entry("Export report", "", FastenerAct::Export), entry("Save", "Ctrl/Cmd+S", FastenerAct::Save)]),
+            RibbonTab::new("Report").group("Report", vec![entry("Export report", "", FastenerAct::Export), entry("Save", "Ctrl/Cmd+S", FastenerAct::Save)])
+                .group("Send", vec![entry("To Bushing", "", FastenerAct::SendToBushing), entry("To Preload", "", FastenerAct::SendToPreload)]),
         ]
     }
 
@@ -260,7 +267,7 @@ impl FastenerSession {
         vec![
             Menu { title: "File".into(), items: pick("Report", &["Save", "Export report"]) },
             Menu { title: "Edit".into(), items: pick("Inputs", &["Undo", "Redo"]) },
-            Menu { title: "Tools".into(), items: pick("Inputs", &["Hole type", "Tolerance input", "Solve for", "Secondary method"]) },
+            Menu { title: "Tools".into(), items: pick("Inputs", &["Hole type", "Tolerance input", "Solve for", "Secondary method"]).into_iter().chain(pick("Report", &["To Bushing", "To Preload"])).collect() },
         ]
     }
 }

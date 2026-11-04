@@ -172,6 +172,8 @@ pub(crate) fn display_value(model: &FastenerHoleModel, row: FieldRow) -> String 
         FieldRow::ToggleSolveFor => model.countersink.solve_for.label().to_string(),
         FieldRow::ToggleSecondaryMethod => model.countersink.secondary_method.label().to_string(),
         FieldRow::Number(NumberTarget::CsPlateThickness, _, _) if model.countersink.plate_thickness.is_none() => "-- enter thickness --".to_string(),
+        FieldRow::Number(NumberTarget::EdgeDistance, _, _) if model.edge_distance.is_none() => "-- enter distance --".to_string(),
+        FieldRow::Number(NumberTarget::Pitch, _, _) if model.pitch.is_none() => "-- enter pitch --".to_string(),
         FieldRow::Number(target, part, _) => format_part(target, part, &model.get_toleranced(target)),
     }
 }
@@ -298,7 +300,16 @@ pub fn build_report_text(model: &FastenerHoleModel) -> String {
             }
         }
     }
+    s.push_str(&layout_text(model));
     s
+}
+
+pub(crate) fn layout_text(model: &FastenerHoleModel) -> String {
+    let line = |name: &str, check: Option<super::domain::layout::WebCheck>| match check {
+        Some(c) => format!("  {name}: {}. Web {:.4} in nominal, {:.4} in minimum, {:.4} in maximum.\n", if c.clear() { "geometrically clear" } else if name == "Edge" { "BREAKOUT" } else { "OVERLAP" }, c.nominal, c.minimum, c.maximum),
+        None => format!("  {name}: unchecked; enter a positive distance and valid hole geometry.\n"),
+    };
+    format!("\nEdge / Pitch Geometry (strength and code limits not checked):\n{}{}", line("Edge", model.edge_web), line("Pitch", model.pitch_web))
 }
 
 fn regular_readout_lines<'a>(theme: &'a Theme, model: &'a FastenerHoleModel) -> Vec<Line<'a>> {
@@ -327,7 +338,12 @@ fn regular_readout_lines<'a>(theme: &'a Theme, model: &'a FastenerHoleModel) -> 
     };
     lines.push(Line::from(vec![Span::raw("  Classification: "), Span::styled(label, theme.status_style(tone))]));
 
+    lines.extend(layout_lines(theme, model));
     lines
+}
+
+fn layout_lines<'a>(theme: &'a Theme, model: &FastenerHoleModel) -> Vec<Line<'a>> {
+    layout_text(model).lines().map(|s| Line::from(Span::styled(s.to_string(), theme.status_style(if s.contains("BREAKOUT") || s.contains("OVERLAP") { StatusTone::Danger } else if s.contains("unchecked") { StatusTone::Warning } else { StatusTone::Info })))).collect()
 }
 
 fn solve_for_label(target: CountersinkSolveFor) -> &'static str {
@@ -407,6 +423,7 @@ fn countersink_readout_lines<'a>(theme: &'a Theme, model: &'a FastenerHoleModel)
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(knife_edge_text(model).trim().to_string(), theme.status_style(if model.knife_edge.is_some_and(|c| c.clear) { StatusTone::Success } else { StatusTone::Warning }))));
 
+    lines.extend(layout_lines(theme, model));
     lines
 }
 

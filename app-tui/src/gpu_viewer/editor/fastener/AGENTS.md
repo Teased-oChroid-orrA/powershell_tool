@@ -23,6 +23,7 @@ Does not own: any fit, countersink, area or tolerance formula (`toolboxes/fasten
 - The quarter cut faces the opening Isometric view (`editor/drawing.rs` `SWEEP_START`, shared with Pressure Vessel); change the two together. Surfaces are shared-vertex grids (`drawing::Mesh::grid`) so the window's feature edges are only the real outlines; separate quads per facet would draw every facet edge.
 - Colour codes 0..3 map to `key_labels` per hole type. Code 0 (the parts) is not painted in the Wireframe / hidden-line styles (`fs_highlight`), by the viewer's design.
 - `bench()` is `Static`, `benches()` is empty. Export writes `view::build_report_text` beside the case (`<case>.report.txt`), the same text as the terminal toolbox's `e`.
+- Send to Bushing / Preload writes a unique new case beside the Fastener Hole source and opens it; it transfers the primary nominal straight-hole diameter and only supported context. Source and existing target files remain untouched. Review bolt, bushing fit and omitted tolerances in the target.
 
 ## Pitfalls
 - The inspector's cards are rebuilt every frame: use `drawing::layout` (no mesh) for the Drawing card, never `drawing::scene`.

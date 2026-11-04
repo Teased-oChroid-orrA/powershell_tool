@@ -7,6 +7,7 @@
 
 use super::domain::countersink::{self, AreaPreservationCheck, CountersinkGeometry, CountersinkInputs, CountersinkSolveFor, SecondaryCountersinkMethod};
 use super::domain::regular_hole::{self, FitEnvelope, FitPreservationCheck};
+use super::domain::layout::{self, WebCheck};
 use super::domain::surface_area;
 use super::domain::{GeometryError, TolerancedValue};
 
@@ -77,6 +78,8 @@ pub enum NumberTarget {
     CsAngle,
     CsSecondaryHoleDiameter,
     CsPlateThickness,
+    EdgeDistance,
+    Pitch,
 }
 
 impl NumberTarget {
@@ -144,7 +147,9 @@ pub fn field_hint(row: FieldRow) -> &'static str {
         FieldRow::Number(NumberTarget::CsDepth, _, _) => "Countersink depth from the surface to the straight-hole transition.",
         FieldRow::Number(NumberTarget::CsAngle, _, _) => "Countersink included angle.",
         FieldRow::Number(NumberTarget::CsSecondaryHoleDiameter, _, _) => "Secondary (opposite-face) countersink's hole diameter - its depth/angle are derived per the Secondary Method above.",
-        FieldRow::Number(NumberTarget::CsPlateThickness, _, _) => "Actual plate thickness at the primary countersink. Required for the knife-edge check; zero or missing means unchecked.",
+        FieldRow::Number(NumberTarget::CsPlateThickness, _, _) => "Actual plate thickness at the primary countersink. Enter a positive value for the knife-edge check; missing leaves it unchecked.",
+        FieldRow::Number(NumberTarget::EdgeDistance, _, _) => "Distance from the first hole's centre to the free edge. Checks geometric breakout only, not edge strength.",
+        FieldRow::Number(NumberTarget::Pitch, _, _) => "Centre-to-centre distance to the companion hole. Checks geometric overlap only, not spacing strength.",
     }
 }
 
@@ -192,6 +197,9 @@ pub fn field_rows(model: &FastenerHoleModel) -> Vec<FieldRow> {
             rows.extend(dimension_rows(model.tolerance_mode, NumberTarget::CsSecondaryHoleDiameter, "Secondary Hole Diameter"));
         }
     }
+    rows.push(FieldRow::Header("Hole Layout"));
+    rows.extend(dimension_rows(model.tolerance_mode, NumberTarget::EdgeDistance, "Edge Distance"));
+    rows.extend(dimension_rows(model.tolerance_mode, NumberTarget::Pitch, "Pitch"));
     rows
 }
 
@@ -279,6 +287,10 @@ pub struct FastenerHoleModel {
     pub tolerance_mode: ToleranceInputMode,
     pub regular: RegularHoleUi,
     pub countersink: CountersinkUi,
+    pub edge_distance: Option<TolerancedValue>,
+    pub pitch: Option<TolerancedValue>,
+    pub edge_web: Option<WebCheck>,
+    pub pitch_web: Option<WebCheck>,
 
     pub regular_fit: FitEnvelope,
     pub regular_secondary: Result<(TolerancedValue, FitPreservationCheck), GeometryError>,
@@ -298,6 +310,10 @@ impl Default for FastenerHoleModel {
             tolerance_mode: ToleranceInputMode::default(),
             regular: RegularHoleUi::default(),
             countersink: CountersinkUi::default(),
+            edge_distance: None,
+            pitch: None,
+            edge_web: None,
+            pitch_web: None,
             regular_fit: regular_hole::compute_fit(&RegularHoleUi::default().hole1, &RegularHoleUi::default().hole2),
             regular_secondary: Err(GeometryError::UnderdeterminedGeometry),
             countersink_primary: Err(GeometryError::UnderdeterminedGeometry),
@@ -313,6 +329,15 @@ impl Default for FastenerHoleModel {
 }
 
 impl FastenerHoleModel {
+    pub fn optional_input(&self, target: NumberTarget) -> Option<Option<TolerancedValue>> {
+        match target {
+            NumberTarget::CsPlateThickness => Some(self.countersink.plate_thickness),
+            NumberTarget::EdgeDistance => Some(self.edge_distance),
+            NumberTarget::Pitch => Some(self.pitch),
+            _ => None,
+        }
+    }
+
     pub fn get_toleranced(&self, target: NumberTarget) -> TolerancedValue {
         match target {
             NumberTarget::RegularHole1 => self.regular.hole1,
@@ -324,6 +349,8 @@ impl FastenerHoleModel {
             NumberTarget::CsAngle => self.countersink.angle,
             NumberTarget::CsSecondaryHoleDiameter => self.countersink.secondary_hole,
             NumberTarget::CsPlateThickness => self.countersink.plate_thickness.unwrap_or(TolerancedValue::exact(0.25).unwrap()),
+            NumberTarget::EdgeDistance => self.edge_distance.unwrap_or(TolerancedValue::exact(0.5).unwrap()),
+            NumberTarget::Pitch => self.pitch.unwrap_or(TolerancedValue::exact(1.0).unwrap()),
         }
     }
 
@@ -341,6 +368,12 @@ impl FastenerHoleModel {
                 if value.min > 0.0 {
                     self.countersink.plate_thickness = Some(value);
                 }
+            }
+            NumberTarget::EdgeDistance => {
+                if value.min > 0.0 { self.edge_distance = Some(value); }
+            }
+            NumberTarget::Pitch => {
+                if value.min > 0.0 { self.pitch = Some(value); }
             }
         }
     }
@@ -403,6 +436,16 @@ impl FastenerHoleModel {
                 self.countersink_area_check = None;
             }
         }
+        let first = match self.hole_type {
+            HoleType::Regular => (self.regular.hole1.min > 0.0).then_some(self.regular.hole1),
+            HoleType::Countersunk => self.countersink_primary.as_ref().ok().map(|g| g.outer_diameter),
+        };
+        let second = match self.hole_type {
+            HoleType::Regular => (self.regular.hole2.min > 0.0).then_some(self.regular.hole2),
+            HoleType::Countersunk => self.countersink_secondary.as_ref().ok().map(|g| g.outer_diameter),
+        };
+        self.edge_web = self.edge_distance.and_then(|distance| first.map(|diameter| layout::edge_web(distance, diameter)));
+        self.pitch_web = self.pitch.and_then(|distance| first.zip(second).map(|(a, b)| layout::pitch_web(distance, a, b)));
     }
 }
 
@@ -449,6 +492,17 @@ pub fn format_area_band(v: &TolerancedValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn countersink_layout_uses_surface_diameters_not_the_straight_bore() {
+        let mut model = FastenerHoleModel::default();
+        model.hole_type = HoleType::Countersunk;
+        model.edge_distance = Some(TolerancedValue::exact(0.2).unwrap());
+        model.pitch = Some(TolerancedValue::exact(0.5).unwrap());
+        model.recompute();
+        assert!((model.edge_web.unwrap().minimum + 0.05).abs() < 1e-12);
+        assert!((model.pitch_web.unwrap().minimum + 0.03125).abs() < 1e-12);
+    }
 
     #[test]
     fn default_model_computes_a_transition_fit_for_two_equal_default_holes() {

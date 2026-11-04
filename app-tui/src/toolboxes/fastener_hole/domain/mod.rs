@@ -5,6 +5,7 @@
 
 pub mod countersink;
 pub mod errors;
+pub mod layout;
 pub mod regular_hole;
 pub mod surface_area;
 pub mod tolerance;

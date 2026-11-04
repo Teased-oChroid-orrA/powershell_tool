@@ -7,6 +7,7 @@
 mod cards;
 pub mod drawing;
 pub mod file;
+mod transfer;
 
 use super::{
     authoring::{Authoring, Card},
@@ -38,6 +39,8 @@ pub enum FastenerAct {
     Redo,
     Save,
     Export,
+    SendToBushing,
+    SendToPreload,
 }
 
 struct Prompt {
@@ -184,14 +187,14 @@ impl FastenerSession {
         let FieldRow::Number(target, part, _) = p.row else { return };
         let label = view::row_label(p.row);
         let before = self.st.model.get_toleranced(target);
-        let before_plate = self.st.model.countersink.plate_thickness;
+        let before_optional = self.st.model.optional_input(target);
         match p.text.trim().parse::<f64>() {
             // Typing the value it already has is not an edit: no undo step.
-            Ok(v) if v.is_finite() && v == model::part_value(&before, part) && (target != model::NumberTarget::CsPlateThickness || self.st.model.countersink.plate_thickness.is_some()) => {}
+            Ok(v) if v.is_finite() && v == model::part_value(&before, part) && before_optional.is_none_or(|v| v.is_some()) => {}
             Ok(v) if v.is_finite() => {
                 self.checkpoint();
                 self.st.model.commit_number(target, part, v);
-                if self.st.model.get_toleranced(target) == before && (target != model::NumberTarget::CsPlateThickness || self.st.model.countersink.plate_thickness == before_plate) {
+                if self.st.model.get_toleranced(target) == before && self.st.model.optional_input(target) == before_optional {
                     self.undo.pop();
                     self.status = format!("{label} not changed: {v} does not make a valid tolerance band.");
                 } else {
@@ -221,6 +224,8 @@ impl FastenerSession {
             FastenerAct::Redo => self.redo(),
             FastenerAct::Save => self.save(),
             FastenerAct::Export => self.export(),
+            FastenerAct::SendToBushing => self.status = transfer::send(&self.st.model, &self.path, &self.name, crate::gpu_viewer::EditorKind::Bushing).unwrap_or_else(|e| format!("Bushing transfer failed: {e}")),
+            FastenerAct::SendToPreload => self.status = transfer::send(&self.st.model, &self.path, &self.name, crate::gpu_viewer::EditorKind::Preload).unwrap_or_else(|e| format!("Preload transfer failed: {e}")),
         }
     }
 }
