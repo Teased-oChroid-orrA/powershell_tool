@@ -87,8 +87,8 @@ pub fn tip(topic: EdgeTopic) -> Tip {
             title: "Recommended edge distance (P90 / P95 / P99)",
             sections: &[
                 ("What it does", "Re-runs every check over the variability the nominal margin ignores (fit pressure over its tolerance band, material strength scatter, each model's own error, bearing strength) and finds the e/D where the chance of failing is 10 % / 5 % / 1 %, once for the applied load (falls as the housing gets longer) and once for the bearing-limit load (the edge must outlast the bearing; a ratio, independent of length). The recommendation is the larger of the two over the models, at P99."),
-                ("Strengths", "Covers all the scatters at once, so a pass here means failure is unlikely even at the worst of them. Assumed: strength CV 5 % (typical handbook values, not your data); model error contact FE 7 % (spread of its 12 NACA test points), superposition 15 % (judgement, unvalidated), allowables 0 % (already statistical); fit pressure uniform over the band; normal independent factors clipped at 3 sigma."),
-                ("Weaknesses", "The scatter inputs are assumptions, not measurements: other CVs move the numbers. No applied-load variability. 800 Monte-Carlo samples (about 1 % of an e/D unit of noise at P99)."),
+                ("Strengths", "Covers all the scatters at once, so a pass here means failure is unlikely even at the worst of them. Defaults (editable in Uncertainty): strength CV 5 % (typical handbook values, not your data); model error contact FE 7 % (spread of its 12 NACA test points), superposition 15 % (judgement, unvalidated), allowables 0 % (already statistical); fit pressure uniform over the band; normal independent factors clipped at 3 sigma."),
+                ("Weaknesses", "The scatter inputs are assumptions, not measurements: other CVs move the numbers. CV means standard deviation divided by mean; controls use percent. No applied-load variability. 800 Monte-Carlo samples (about 1 % of an e/D unit of noise at P99)."),
                 ("Restrictions", "A design guide, not a certification value. The legacy solver check has no variability and is shown for comparison only."),
             ],
         },
@@ -160,21 +160,86 @@ pub struct EdgeCheckRun {
     pub bushing: Option<BushingSpec>,
     /// Whether the contact FE was included.
     pub deep: bool,
+    pub settings: EdgeSettings,
     pub report: EdgeReport,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct EdgeSettings {
+    pub strength_cv: f64,
+    pub model_cvs: Vec<(&'static str, f64)>,
+}
+
+impl Default for EdgeSettings {
+    fn default() -> Self {
+        Self { strength_cv: EdgeConfig::default().strength_cv, model_cvs: Vec::new() }
+    }
+}
+
+impl EdgeSettings {
+    pub fn rows(&self, model: &BushingModel) -> Vec<(Option<&'static str>, &'static str, f64)> {
+        let cfg = EdgeConfig { include_plastic: true, bushing: bushing_spec(model), ..EdgeConfig::default() };
+        let mut rows = vec![(None, "Strength CV (%)", self.strength_cv)];
+        rows.extend(default_models(&cfg).iter().filter(|m| m.model_cv() > 0.0).map(|m| {
+            let cv = self.model_cvs.iter().find(|(id, _)| *id == m.id()).map_or(m.model_cv(), |(_, cv)| *cv);
+            (Some(m.id()), m.label(), cv)
+        }));
+        rows
+    }
+
+    pub fn set_percent(&mut self, id: Option<&'static str>, percent: f64) -> Result<bool, String> {
+        if !percent.is_finite() || !(0.0..=100.0).contains(&percent) {
+            return Err("CV must be between 0 and 100 percent".into());
+        }
+        let cv = percent / 100.0;
+        match id {
+            None if self.strength_cv == cv => Ok(false),
+            None => { self.strength_cv = cv; Ok(true) }
+            Some(id) => {
+                if let Some((_, old)) = self.model_cvs.iter_mut().find(|(name, _)| *name == id) {
+                    if *old == cv { return Ok(false); }
+                    *old = cv;
+                } else {
+                    self.model_cvs.push((id, cv));
+                }
+                Ok(true)
+            }
+        }
+    }
+}
+
+pub fn cv_percent(cv: f64) -> String {
+    super::model::format_for_edit(cv * 100.0)
+}
+
+#[derive(Debug, Default)]
+pub struct EdgeEditor {
+    pub selected: usize,
+    pub editing: bool,
+    pub buffer: crate::widgets::number_edit::EditBuffer,
+    pub error: Option<String>,
+}
+
 /// What a run depends on: the plate/load/fit input and the bushing.
-pub type EdgeSig = (EdgeInput, Option<BushingSpec>);
+pub type EdgeSig = (EdgeInput, Option<BushingSpec>, EdgeSettings);
 
 /// The signature of a run for the live inputs, or `None` if they cannot be checked.
 pub fn live_signature(model: &BushingModel, deep: bool) -> Option<EdgeSig> {
-    prepare(model, deep).ok().map(|(input, cfg)| (input, cfg.bushing))
+    live_signature_with(model, &EdgeSettings::default(), deep)
+}
+
+pub fn live_signature_with(model: &BushingModel, settings: &EdgeSettings, deep: bool) -> Option<EdgeSig> {
+    prepare_with(model, settings, deep).ok().map(|(input, cfg)| (input, cfg.bushing, settings.clone()))
 }
 
 /// A finished run no longer matches the live inputs (including the bushing
 /// the contact model uses, which `EdgeInput` does not carry).
 pub fn is_stale(model: &BushingModel, run: &EdgeCheckRun) -> bool {
-    live_signature(model, run.deep).as_ref() != Some(&(run.input.clone(), run.bushing))
+    is_stale_with(model, &EdgeSettings::default(), run)
+}
+
+pub fn is_stale_with(model: &BushingModel, settings: &EdgeSettings, run: &EdgeCheckRun) -> bool {
+    live_signature_with(model, settings, run.deep).as_ref() != Some(&(run.input.clone(), run.bushing, run.settings.clone()))
 }
 
 /// Builds the cross-check input from the live model, or says why it can't.
@@ -220,8 +285,12 @@ fn bushing_spec(model: &BushingModel) -> Option<BushingSpec> {
 /// checked. Cheap: the heavy part is [`execute`], which the TUI runs off the
 /// UI thread.
 pub fn prepare(model: &BushingModel, deep: bool) -> Result<(EdgeInput, EdgeConfig), String> {
+    prepare_with(model, &EdgeSettings::default(), deep)
+}
+
+pub fn prepare_with(model: &BushingModel, settings: &EdgeSettings, deep: bool) -> Result<(EdgeInput, EdgeConfig), String> {
     let input = build_input(model)?;
-    let cfg = EdgeConfig { include_plastic: deep, bushing: bushing_spec(model), ..EdgeConfig::default() };
+    let cfg = EdgeConfig { include_plastic: deep, bushing: bushing_spec(model), strength_cv: settings.strength_cv, model_cvs: settings.model_cvs.clone(), ..EdgeConfig::default() };
     Ok((input, cfg))
 }
 
@@ -229,13 +298,18 @@ pub fn prepare(model: &BushingModel, deep: bool) -> Result<(EdgeInput, EdgeConfi
 /// compiled optimised even in dev builds). Blocking; call from a worker.
 pub fn execute(input: EdgeInput, cfg: &EdgeConfig) -> EdgeCheckRun {
     let report = run(&default_models(cfg), &input, cfg);
-    EdgeCheckRun { input, bushing: cfg.bushing, deep: cfg.include_plastic, report }
+    EdgeCheckRun { input, bushing: cfg.bushing, deep: cfg.include_plastic, settings: EdgeSettings { strength_cv: cfg.strength_cv, model_cvs: cfg.model_cvs.clone() }, report }
 }
 
 /// `deep` also runs the elastic-plastic contact FE. Blocking (tests, scripts);
 /// the UI goes through [`prepare`] + [`execute`] on a worker thread.
 pub fn run_check(model: &BushingModel, deep: bool) -> Result<EdgeCheckRun, String> {
     let (input, cfg) = prepare(model, deep)?;
+    Ok(execute(input, &cfg))
+}
+
+pub fn run_check_with(model: &BushingModel, settings: &EdgeSettings, deep: bool) -> Result<EdgeCheckRun, String> {
+    let (input, cfg) = prepare_with(model, settings, deep)?;
     Ok(execute(input, &cfg))
 }
 
@@ -521,7 +595,8 @@ pub fn detail_lines(topic: EdgeTopic, run: Option<&EdgeCheckRun>, model: &Bushin
     let Some(run) = run else { return vec!["Not run yet: press c (or C).".to_string()] };
     let r = &run.report;
     if topic == EdgeTopic::Recommended {
-        let mut out = vec![format!("Fit pressure band {:.0}-{:.0} psi (nominal {:.0}); strength CV {:.0} %.", run.input.fit_pressure_min, run.input.fit_pressure_max, r.fit_pressure, 100.0 * r.strength_cv)];
+        let mut out = vec![format!("Fit pressure band {:.0}-{:.0} psi (nominal {:.0}); strength CV {} %.", run.input.fit_pressure_min, run.input.fit_pressure_max, r.fit_pressure, cv_percent(r.strength_cv))];
+        out.extend(r.models.iter().map(|m| format!("{} model CV {} %.", m.label, cv_percent(m.model_cv))));
         for (l, name) in ["P90", "P95", "P99"].iter().enumerate() {
             let cell = |t: usize| r.recommended_for(t, l).map_or("-".to_string(), |(e, who)| format!("{} ({})", fmt_cell(r, Some(e)).0, short_name(who)));
             out.push(format!("{name}: applied load e/D {}; bearing limit e/D {}; actual {:.2}.", cell(TARGET_APPLIED), cell(TARGET_BEARING), r.edge / r.bore_diameter));
@@ -535,7 +610,7 @@ pub fn detail_lines(topic: EdgeTopic, run: Option<&EdgeCheckRun>, model: &Bushin
     if let Some(e) = &m.error {
         return vec![format!("Not evaluated: {e}")];
     }
-    let mut out = vec![format!("{} ms.", m.elapsed.as_millis())];
+    let mut out = vec![format!("{} ms; strength CV {} %, model CV {} %.", m.elapsed.as_millis(), cv_percent(r.strength_cv), cv_percent(m.model_cv))];
     for t in m.targets.iter().flatten() {
         let e = match t.e_min {
             EdgeMin::Value(v) => format!("{:.2}", v / r.bore_diameter),
@@ -574,8 +649,9 @@ pub fn report_text(run: &EdgeCheckRun) -> String {
         r.bearing_limit_load,
         r.fit_pressure
     ));
+    s.push_str(&format!("  Strength CV {} %\n", cv_percent(r.strength_cv)));
     for m in &r.models {
-        s.push_str(&format!("  {} ({} ms)\n", m.label, m.elapsed.as_millis()));
+        s.push_str(&format!("  {} ({} ms; model CV {} %)\n", m.label, m.elapsed.as_millis(), cv_percent(m.model_cv)));
         if let Some(err) = &m.error {
             s.push_str(&format!("    not evaluated: {err}\n"));
             continue;
@@ -592,7 +668,7 @@ pub fn report_text(run: &EdgeCheckRun) -> String {
         }
         if let (Some(a), Some(b), Some(c)) = (m.level(0), m.level(1), m.level(2)) {
             let at = |t: usize, l: usize| m.level_at(t, l).map_or("-".to_string(), |e| fmt_e_min(r, e));
-            s.push_str(&format!("    recommended e/D (fail prob <= 10%/5%/1%): applied load {} / {} / {}; bearing limit {} / {} / {}  (strength CV {:.0}%, model CV {:.0}%; overall {} / {} / {})\n", at(TARGET_APPLIED, 0), at(TARGET_APPLIED, 1), at(TARGET_APPLIED, 2), at(TARGET_BEARING, 0), at(TARGET_BEARING, 1), at(TARGET_BEARING, 2), 100.0 * r.strength_cv, 100.0 * m.model_cv, fmt_e_min(r, a), fmt_e_min(r, b), fmt_e_min(r, c)));
+            s.push_str(&format!("    recommended e/D (fail prob <= 10%/5%/1%): applied load {} / {} / {}; bearing limit {} / {} / {}  (strength CV {}%, model CV {}%; overall {} / {} / {})\n", at(TARGET_APPLIED, 0), at(TARGET_APPLIED, 1), at(TARGET_APPLIED, 2), at(TARGET_BEARING, 0), at(TARGET_BEARING, 1), at(TARGET_BEARING, 2), cv_percent(r.strength_cv), cv_percent(m.model_cv), fmt_e_min(r, a), fmt_e_min(r, b), fmt_e_min(r, c)));
         }
         for n in &m.notes {
             s.push_str(&format!("    note: {n}\n"));
@@ -686,6 +762,43 @@ mod tests {
             mc: None,
             e_levels: [EdgeMin::NotSearched; 3],
         }
+    }
+
+    #[test]
+    fn uncertainty_controls_reach_the_runner_and_preserve_nominal_results() {
+        let model = BushingModel::default();
+        let baseline = run_check(&model, false).unwrap();
+        let mut settings = EdgeSettings::default();
+        let fields = settings.rows(&model);
+        assert_eq!(fields.len(), 3);
+        assert_eq!(fields[0], (None, "Strength CV (%)", 0.05));
+        assert!(fields.iter().all(|(id, _, _)| *id != Some("allowables")));
+        assert_eq!(cv_percent(0.07), "7");
+        settings.set_percent(None, 12.5).unwrap();
+        let id = fields[1].0;
+        settings.set_percent(id, 25.25).unwrap();
+        let run = run_check_with(&model, &settings, false).unwrap();
+        assert!(!is_stale_with(&model, &settings, &run));
+        assert!(is_stale_with(&model, &settings, &baseline));
+        assert_eq!(run.report.strength_cv, 0.125);
+        assert_eq!(run.report.models[0].model_cv, 0.2525);
+        assert_eq!(run.report.models[1].model_cv, 0.0);
+        let old = baseline.report.models[0].targets[0].as_ref().unwrap();
+        let new = run.report.models[0].targets[0].as_ref().unwrap();
+        assert_eq!(old.margin, new.margin);
+        assert_eq!(old.capacity_lbf, new.capacity_lbf);
+        assert_ne!(old.mc.as_ref().unwrap().p05, new.mc.as_ref().unwrap().p05);
+        let text = report_text(&run);
+        assert!(text.contains("Strength CV 12.5 %") && text.contains("model CV 25.25 %"), "{text}");
+        let tip = detail_lines(EdgeTopic::Recommended, Some(&run), &model).join("\n");
+        assert!(tip.contains("strength CV 12.5 %") && tip.contains("model CV 25.25 %"), "{tip}");
+        let tip = detail_lines(EdgeTopic::StressSuperposition, Some(&run), &model).join("\n");
+        assert!(tip.contains("model CV 25.25 %"), "{tip}");
+        for invalid in [f64::NAN, f64::INFINITY, -0.1, 100.1] {
+            assert!(settings.set_percent(None, invalid).is_err());
+        }
+        settings.set_percent(id, 0.0).unwrap();
+        assert!(settings.rows(&model).iter().any(|(row, _, cv)| *row == id && *cv == 0.0), "zeroed model CV stays editable");
     }
 
     #[test]

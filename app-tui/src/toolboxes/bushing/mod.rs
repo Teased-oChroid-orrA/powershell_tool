@@ -65,6 +65,8 @@ pub enum BushingAction {
     EdgeCheckDeep,
     /// Pin/unpin the tooltip for one cross-check (also shown on hover).
     EdgeInfo(edge_check::EdgeTopic),
+    EdgeSettings,
+    EdgeCv(usize),
     Export,
     AdviceTab(AdviceTab),
     AdviceRow(usize),
@@ -116,6 +118,8 @@ pub struct BushingState {
     pub input_error: Option<String>,
     /// The last edge-distance cross-check (key `c`) and the input it ran for.
     pub edge_check: Option<edge_check::EdgeCheckRun>,
+    pub edge_settings: edge_check::EdgeSettings,
+    pub edge_editor: Option<edge_check::EdgeEditor>,
     /// Tooltip topic under the mouse (and where), set from `Moved` events.
     pub edge_hover: Option<(edge_check::EdgeTopic, u16, u16)>,
     /// Tooltip pinned by a click (for terminals without mouse motion); Esc closes.
@@ -187,6 +191,8 @@ impl Default for BushingState {
             advice: AdviceWindow::default(),
             input_error: None,
             edge_check: None,
+            edge_settings: Default::default(),
+            edge_editor: None,
             edge_hover: None,
             edge_info_pinned: None,
             edge_job: None,
@@ -268,6 +274,14 @@ impl BushingState {
             BushingAction::EdgeCheck => return self.start_edge_check(false),
             BushingAction::EdgeCheckDeep => return self.start_edge_check(true),
             BushingAction::EdgeInfo(topic) => self.edge_info_pinned = if self.edge_info_pinned == Some(topic) { None } else { Some(topic) },
+            BushingAction::EdgeSettings => {
+                self.edge_info_pinned = None;
+                self.edge_notice = None;
+                self.edge_editor = Some(Default::default());
+            }
+            BushingAction::EdgeCv(i) => {
+                self.edge_editor = Some(edge_check::EdgeEditor { selected: i, ..Default::default() });
+            }
             BushingAction::Export => return vec![Effect::ExportBushingReport(self.report_text())],
             BushingAction::AdviceTab(tab) => {
                 self.advice.tab = tab;
@@ -306,10 +320,10 @@ impl BushingState {
     }
 
     fn launch_edge_check(&mut self, deep: bool, auto: bool) -> Result<Vec<Effect>, String> {
-        let (input, cfg) = edge_check::prepare(&self.model, deep)?;
+        let (input, cfg) = edge_check::prepare_with(&self.model, &self.edge_settings, deep)?;
         let id = self.next_edge_job;
         self.next_edge_job += 1;
-        self.edge_job = Some(EdgeJob { id, deep, auto, started: std::time::Instant::now(), sig: (input.clone(), cfg.bushing) });
+        self.edge_job = Some(EdgeJob { id, deep, auto, started: std::time::Instant::now(), sig: (input.clone(), cfg.bushing, self.edge_settings.clone()) });
         if !auto {
             self.edge_notice = None;
             self.last_applied = None;
@@ -326,7 +340,7 @@ impl BushingState {
     /// start-up (until a value changes or the user has run a check once) and
     /// never reports an invalid input as an error (the manual run does).
     pub fn auto_edge_check(&mut self) -> Vec<Effect> {
-        let Some(sig) = edge_check::live_signature(&self.model, self.edge_deep_pref) else { return Vec::new() };
+        let Some(sig) = edge_check::live_signature_with(&self.model, &self.edge_settings, self.edge_deep_pref) else { return Vec::new() };
         match &self.edge_seen {
             None => self.edge_seen = Some((sig.clone(), std::time::Instant::now())),
             Some((seen, _)) if *seen != sig => {
@@ -340,7 +354,7 @@ impl BushingState {
         }
         let settled = self.edge_seen.as_ref().is_some_and(|(_, at)| at.elapsed().as_millis() as u64 >= EDGE_AUTO_DEBOUNCE_MS);
         let armed = self.edge_armed || self.edge_check.is_some();
-        let up_to_date = self.edge_check.as_ref().is_some_and(|run| (run.input.clone(), run.bushing) == sig);
+        let up_to_date = self.edge_check.as_ref().is_some_and(|run| (run.input.clone(), run.bushing, run.settings.clone()) == sig);
         if !settled || !armed || up_to_date || self.edge_job.is_some() {
             return Vec::new();
         }
@@ -388,7 +402,7 @@ impl BushingState {
     /// Runs the cross-check synchronously for the current inputs (tests and
     /// scripted use; the UI uses [`start_edge_check`](Self::start_edge_check)).
     pub fn run_edge_check(&mut self, deep: bool) {
-        match edge_check::run_check(&self.model, deep) {
+        match edge_check::run_check_with(&self.model, &self.edge_settings, deep) {
             Ok(run) => {
                 self.edge_check = Some(run);
                 self.last_applied = None;
@@ -398,11 +412,59 @@ impl BushingState {
         }
     }
 
+    pub fn set_edge_cv(&mut self, id: Option<&'static str>, percent: f64) -> Result<bool, String> {
+        let current = self.edge_settings.rows(&self.model).into_iter().find(|(row, _, _)| *row == id).map(|(_, _, cv)| cv);
+        if current == Some(percent / 100.0) { return Ok(false); }
+        let changed = self.edge_settings.set_percent(id, percent)?;
+        if changed {
+            self.edge_armed = true;
+            self.edge_job = None;
+            self.edge_notice = None;
+            self.edge_seen = edge_check::live_signature_with(&self.model, &self.edge_settings, self.edge_deep_pref).map(|sig| (sig, std::time::Instant::now()));
+        }
+        Ok(changed)
+    }
+
+    fn handle_edge_editor_key(&mut self, key: KeyEvent) {
+        let Some(mut editor) = self.edge_editor.take() else { return };
+        let rows = self.edge_settings.rows(&self.model);
+        editor.selected = editor.selected.min(rows.len() - 1);
+        if editor.editing {
+            match key.code {
+                KeyCode::Esc => { editor.editing = false; editor.error = None; }
+                KeyCode::Enter => {
+                    let result = editor.buffer.trim().parse::<f64>().map_err(|_| "Enter a number between 0 and 100 percent".to_string())
+                        .and_then(|v| self.set_edge_cv(rows[editor.selected].0, v));
+                    match result {
+                        Ok(_) => { editor.editing = false; editor.error = None; }
+                        Err(why) => editor.error = Some(why),
+                    }
+                }
+                _ => { crate::widgets::number_edit::handle_buffer_key(&mut editor.buffer, &key); }
+            }
+        } else {
+            match key.code {
+                KeyCode::Esc => return,
+                KeyCode::Up => editor.selected = (editor.selected + rows.len() - 1) % rows.len(),
+                KeyCode::Down => editor.selected = (editor.selected + 1) % rows.len(),
+                KeyCode::Enter => {
+                    editor.editing = true;
+                    editor.buffer.set(edge_check::cv_percent(rows[editor.selected].2));
+                }
+                _ => if let Some(c) = crate::widgets::number_edit::number_char(&key) {
+                    editor.editing = true;
+                    editor.buffer.set(c.to_string());
+                },
+            }
+        }
+        self.edge_editor = Some(editor);
+    }
+
     /// The exported report: the model's own text plus the cross-check, if it
     /// has been run for the current inputs.
     pub fn report_text(&self) -> String {
         let mut text = view::build_report_text(&self.model);
-        if let Some(run) = &self.edge_check {
+        if let Some(run) = self.edge_check.as_ref().filter(|run| !edge_check::is_stale_with(&self.model, &self.edge_settings, run)) {
             text.push_str(&edge_check::report_text(run));
         }
         text
@@ -504,6 +566,10 @@ impl BushingState {
 /// this toolbox's workspace pane has focus - same `(consumed, effects)`
 /// contract as every other toolbox in this crate.
 pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>) {
+    if state.edge_editor.is_some() {
+        state.handle_edge_editor_key(key);
+        return (true, Vec::new());
+    }
     if key.code == KeyCode::Esc {
         if state.edge_info_pinned.is_some() {
             state.edge_info_pinned = None;
@@ -677,6 +743,7 @@ pub fn handle_key(state: &mut BushingState, key: KeyEvent) -> (bool, Vec<Effect>
         }
         KeyCode::Char('f' | 'F' | 'a' | 'A') => (true, state.perform(BushingAction::OpenFixes)),
         KeyCode::Char('w' | 'W') => (true, state.perform(BushingAction::OpenExplain)),
+        KeyCode::Char('v' | 'V') => (true, state.perform(BushingAction::EdgeSettings)),
         KeyCode::Char('c') => (true, state.start_edge_check(false)),
         KeyCode::Char('C') => (true, state.start_edge_check(true)),
         KeyCode::Char('e' | 'E') => (true, vec![Effect::ExportBushingReport(state.report_text())]),
@@ -730,6 +797,43 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent { code, modifiers: KeyModifiers::NONE, kind: KeyEventKind::Press, state: KeyEventState::NONE }
+    }
+
+    #[test]
+    fn uncertainty_editor_validates_cancels_and_debounces_changes() {
+        let mut state = BushingState::default();
+        state.run_edge_check(false);
+        assert!(!state.set_edge_cv(None, 5.0).unwrap());
+        let settings = state.edge_settings.clone();
+        for invalid in [f64::NAN, f64::INFINITY, -1.0, 101.0] {
+            assert!(state.set_edge_cv(None, invalid).is_err());
+            assert_eq!(state.edge_settings, settings);
+        }
+        handle_key(&mut state, key(KeyCode::Char('V')));
+        assert!(state.edge_editor.is_some());
+        handle_key(&mut state, key(KeyCode::Char('9')));
+        handle_key(&mut state, key(KeyCode::Esc));
+        assert_eq!(state.edge_settings, settings, "Esc cancels the edit");
+        handle_key(&mut state, key(KeyCode::Char('9')));
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert_eq!(state.edge_settings.strength_cv, 0.09);
+        assert!(!state.report_text().contains("Edge-Distance Cross-Check"));
+        assert!(state.auto_edge_check().is_empty(), "debounce waits");
+        state.edge_seen.as_mut().unwrap().1 -= std::time::Duration::from_millis(EDGE_AUTO_DEBOUNCE_MS + 1);
+        let effects = state.auto_edge_check();
+        assert!(matches!(effects.as_slice(), [Effect::RunEdgeCheck { cfg, .. }] if cfg.strength_cv == 0.09));
+        let old_id = state.edge_job.as_ref().unwrap().id;
+        let old_run = state.edge_check.clone().unwrap();
+        assert!(state.set_edge_cv(None, 10.0).unwrap());
+        assert!(state.edge_job.is_none());
+        state.finish_edge_check(old_id, old_run);
+        assert!(edge_check::is_stale_with(&state.model, &state.edge_settings, state.edge_check.as_ref().unwrap()));
+        handle_key(&mut state, key(KeyCode::Down));
+        handle_key(&mut state, key(KeyCode::Char('0')));
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert_eq!(state.edge_settings.rows(&state.model)[1].2, 0.0);
+        handle_key(&mut state, key(KeyCode::Esc));
+        assert!(state.edge_editor.is_none());
     }
 
     #[test]
@@ -1061,6 +1165,9 @@ mod tests {
         assert!(state.report_text().contains("Edge-Distance Cross-Check"));
         let effects = state.perform(BushingAction::Export);
         assert!(matches!(effects.as_slice(), [Effect::ExportBushingReport(t)] if t.contains("Stress superposition")));
+        state.model.load += 100.0;
+        state.model.recompute();
+        assert!(!state.report_text().contains("Edge-Distance Cross-Check"), "a stale cross-check must not be exported");
     }
 
     #[test]

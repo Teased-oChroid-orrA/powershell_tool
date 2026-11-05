@@ -1759,6 +1759,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[test]
+    fn bushing_uncertainty_edits_by_click_and_typing() {
+        let dir = std::env::temp_dir().join(format!("window-bushing-cv-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let session = crate::gpu_viewer::editor::bushing::BushingSession::open(&dir.join("case.json")).unwrap();
+        let mut v = viewer(Some(Box::new(session)));
+        v.size_override = Some((1600, 1800));
+        frame(&mut v);
+        let at = target(&v, "Checks tab");
+        click(&mut v, at);
+        for label in ["Strength CV (%)", "Stress superposition model CV (%)", "Contact FE (bushing + housing, elastic-plastic) model CV (%)"] {
+            let at = target(&v, label);
+            click(&mut v, at);
+            assert!(v.editor.as_ref().unwrap().prompting(), "{label}");
+            for c in "12.5".chars() {
+                v.input(Input::Key(Key::Character(c.to_string().into())));
+            }
+            v.input(Input::Key(Key::Named(NamedKey::Enter)));
+            frame(&mut v);
+            assert!(!v.editor.as_ref().unwrap().prompting());
+            assert!(property_text(&v).contains(&format!("{label}  12.5")), "{}", property_text(&v));
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// The Fastener Hole workbench through the real window: a click on a dimension starts a typed edit, the number reaches
     /// the fit, a click on a choice switches to the countersink, and the drawing follows.
     #[test]

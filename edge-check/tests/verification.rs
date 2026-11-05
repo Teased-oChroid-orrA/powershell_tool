@@ -316,3 +316,26 @@ fn recommended_edge_distances_rise_with_the_survival_level_and_collapse_to_the_n
     assert_eq!(who, "analytic");
     assert!(e_of(rec) >= p99 - 1e-12);
 }
+
+#[test]
+fn model_cv_overrides_change_reliability_but_leave_nominal_capacity_unchanged() {
+    let models: Vec<Box<dyn EdgeModel>> = vec![Box::new(AnalyticModel)];
+    let point = input(2.0, 1000.0, 8000.0, 0.0);
+    let zero = EdgeConfig { strength_cv: 0.0, model_cvs: vec![("analytic", 0.0)], ..EdgeConfig::default() };
+    let high = EdgeConfig { model_cvs: vec![("analytic", 0.25)], ..zero.clone() };
+    let disabled = EdgeConfig { model_error: false, ..high.clone() };
+    let baseline = run(&models, &point, &zero);
+    let changed = run(&models, &point, &high);
+    let off = run(&models, &point, &disabled);
+    assert_eq!(baseline.models[0].model_cv, 0.0);
+    assert_eq!(changed.models[0].model_cv, 0.25);
+    assert_eq!(off.models[0].model_cv, 0.0);
+    let a = baseline.models[0].targets[1].as_ref().unwrap();
+    let b = changed.models[0].targets[1].as_ref().unwrap();
+    let c = off.models[0].targets[1].as_ref().unwrap();
+    assert_eq!(a.margin, b.margin);
+    assert_eq!(a.capacity_lbf, b.capacity_lbf);
+    assert_ne!(a.e_levels, b.e_levels);
+    assert_eq!(a.e_levels, c.e_levels);
+    assert_ne!(a.mc.as_ref().unwrap().p05, b.mc.as_ref().unwrap().p05);
+}

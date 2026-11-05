@@ -30,3 +30,5 @@ Does not own: any Lame / press-fit / tolerance / edge-distance formula (`bushing
 - The default case fails the edge-distance (sequencing) check: that is the solver's answer for its own default fixture, not a bug here.
 - Picker state (`ReamerPickerState`, `BushingIdPickerState`) loads the user's library from disk when created: build it once per opened picker (`open_picker`), never per frame.
 - Tests that want the result drawn must rebuild the scene after the solve (`needs_scene`, `scene()`), as the window does.
+
+- Checks uncertainty fields reuse `BushingState::edge_settings`; `PromptTarget::EdgeCv` routes validation without a solver input, undo checkpoint or new FE mesh. These transient controls are not saved in the bushing case.

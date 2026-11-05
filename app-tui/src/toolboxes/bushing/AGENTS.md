@@ -55,8 +55,10 @@ Does not own: any Lamé/press-fit/tolerance math (`bushing-solver/AGENTS.md`).
 - The import-conflict prompt (`k`/`o`/`z`/`a` keys and its dialog) is shared in `conflict_prompt.rs`; a picker supplies only its title and two description lines. Popup geometry is `widgets/popup.rs::centered_rect`, shared app-wide - do not re-add a local copy.
 - `m` inside the reamer picker reaches manual numeric entry; Bore Diameter's `Enter` opens the catalog (a real bore is reamed to a real size).
 
+## Edge-check uncertainty controls
+- Edge-check uncertainty lives in `BushingState::edge_settings`, separate from `BushingInputs` / `NumberTarget`. Results `Uncertainty` (`v` / `V`) opens percentage controls for strength and each registered model with a nonzero default model CV. Native Checks exposes the same controls. Values accept finite 0..100 percent; zero disables that scatter and remains editable. Changes invalidate the report, discard in-flight work and rerun after the existing 400 ms debounce. Settings last the session only; saved engineering cases and undo do not include them. Reports and model/recommendation tooltips show the exact run's CVs.
+
 ## Known gaps (deliberately not done)
-- **Edge-check strength CV (5%) and model-error CVs are fixed assumptions**, shown in the tooltips/report but not editable. They are not solver inputs, so they must NOT become a `NumberTarget` (that enum is 1:1 with `BushingInputs`, and `advice.rs` trials rely on it); expose them as edge-check state with their own control in the Results pane.
 - **`FitType` presets are generic ratios of bore diameter, not ISO/ANSI fit classes** (H7/p6, FN, ...). Mapping to a standard needs a product decision on which standard.
 
 ## Public API

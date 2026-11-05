@@ -89,7 +89,7 @@ impl BushingSession {
             let item = match row {
                 FieldRow::AdvancedSection => DockItem::field("Advanced settings", if m.advanced_open { "shown" } else { "hidden" }, Tone::Dim, Some(act(BushingAct::Row(row))), false),
                 _ => {
-                    let editing = self.prompt.as_ref().filter(|p| p.row == row);
+                    let editing = self.prompt.as_ref().filter(|p| p.target == super::PromptTarget::Input(row));
                     let value = editing.map_or_else(|| view::display_value(m, row), |p| format!("{}_", p.text));
                     let flagged = matches!(row, FieldRow::Number(t) if related.contains(&t));
                     let tone = if editing.is_some() { Tone::Warn } else { Tone::Normal };
@@ -215,6 +215,14 @@ impl BushingSession {
                 }
             }
         }
+        items.push(line("Uncertainty: CV = standard deviation / mean. Enter 0..100 percent.", Tone::Dim));
+        for (id, label, cv) in self.st.edge_settings.rows(m) {
+            let editing = self.prompt.as_ref().filter(|p| p.target == super::PromptTarget::EdgeCv(id));
+            let value = editing.map_or_else(|| edge_check::cv_percent(cv), |p| format!("{}_", p.text));
+            let label = if id.is_some() { format!("{label} model CV (%)") } else { label.to_string() };
+            items.push(DockItem::field(label, value, if editing.is_some() { Tone::Warn } else { Tone::Normal }, Some(act(BushingAct::EdgeCv(id))), editing.is_some()));
+        }
+        items.push(line("Edits rerun after 400 ms. Settings last this session only.", Tone::Dim));
         items.push(DockItem::row("Run quick check", Tone::Title, Some(act(BushingAct::EdgeCheck(false))), false));
         items.push(DockItem::row("Run with contact FE (about 3 s)", Tone::Title, Some(act(BushingAct::EdgeCheck(true))), false));
         Card::new("bushing-edge-check", "Edge-distance cross-check", Relevance::Context, items).for_steps(&["Checks"])

@@ -262,3 +262,37 @@ fn inputs_that_describe_no_bushing_in_a_housing_keep_the_last_picture_and_say_so
     edit(&mut s, NumberTarget::EdgeDist, "0.9");
     assert!(!s.status().contains("No FE picture"));
 }
+
+#[test]
+fn uncertainty_card_edits_both_cvs_without_changing_the_case_inputs() {
+    let mut s = session();
+    let inputs = BushingFile::capture(&s.st.model, "test");
+    let rows = s.st.edge_settings.rows(&s.st.model);
+    let actions: Vec<_> = card(&s.inspector(), "bushing-edge-check").items.iter().filter_map(|item| {
+        if let DockItem::Field { action: Some(UiAction::Editor(EditorAction::Bushing(BushingAct::EdgeCv(id)))), .. } = item { Some(*id) } else { None }
+    }).collect();
+    assert_eq!(actions, rows.iter().map(|(id, _, _)| *id).collect::<Vec<_>>());
+    for (id, _, _) in &rows {
+        act(&mut s, BushingAct::EdgeCv(*id));
+        assert!(s.prompting());
+        type_text(&mut s, "12.5");
+        s.key(Key::Enter, Mods::default());
+        assert!(!s.prompting());
+        assert_eq!(s.st.edge_settings.rows(&s.st.model).iter().find(|(row, _, _)| row == id).unwrap().2, 0.125);
+    }
+    act(&mut s, BushingAct::EdgeCv(None));
+    type_text(&mut s, "101");
+    s.key(Key::Enter, Mods::default());
+    assert!(s.status.contains("between 0 and 100"));
+    assert_eq!(s.st.edge_settings.strength_cv, 0.125);
+    act(&mut s, BushingAct::EdgeCv(None));
+    type_text(&mut s, "3");
+    s.key(Key::Escape, Mods::default());
+    assert_eq!(s.st.edge_settings.strength_cv, 0.125);
+    assert_eq!(serde_json::to_value(BushingFile::capture(&s.st.model, "test")).unwrap(), serde_json::to_value(inputs).unwrap());
+    assert!(s.undo.is_empty(), "uncertainty does not edit the engineering case");
+    s.poll();
+    assert!(s.st.edge_job.is_none(), "debounce waits");
+    wait(&mut s, "updated uncertainty", |s| s.st.edge_check.as_ref().is_some_and(|r| r.report.strength_cv == 0.125));
+    assert!(s.st.report_text().contains("Strength CV 12.5 %"));
+}

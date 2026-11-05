@@ -53,6 +53,7 @@ pub enum BushingAct {
     ClosePicker,
     /// Run the edge-distance cross-check (`.0`: with the contact FE).
     EdgeCheck(bool),
+    EdgeCv(Option<&'static str>),
     CancelEdgeCheck,
     /// Show the fixes for a failing check, or all of them.
     ShowFixes(CheckKind),
@@ -71,8 +72,14 @@ pub enum BushingAct {
     ToggleResults,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PromptTarget {
+    Input(FieldRow),
+    EdgeCv(Option<&'static str>),
+}
+
 struct Prompt {
-    row: FieldRow,
+    target: PromptTarget,
     text: String,
     /// Nothing typed yet: the first character replaces the value instead of extending it.
     fresh: bool,
@@ -330,12 +337,19 @@ impl BushingSession {
     }
     fn begin_prompt(&mut self, row: FieldRow, text: String) {
         self.picker = None;
-        self.prompt = Some(Prompt { row, text, fresh: true });
+        self.prompt = Some(Prompt { target: PromptTarget::Input(row), text, fresh: true });
     }
     fn commit_prompt(&mut self) {
         let Some(p) = self.prompt.take() else { return };
-        match p.row {
-            FieldRow::Number(t) => match p.text.trim().parse::<f64>() {
+        match p.target {
+            PromptTarget::EdgeCv(id) => {
+                self.status = match p.text.trim().parse::<f64>().map_err(|_| "Enter a number between 0 and 100 percent".to_string()).and_then(|v| self.st.set_edge_cv(id, v)) {
+                    Ok(true) => "Uncertainty changed; edge check reruns after 400 ms. Settings last this session only.".into(),
+                    Ok(false) => String::new(),
+                    Err(why) => format!("Uncertainty not changed: {why}"),
+                };
+            }
+            PromptTarget::Input(FieldRow::Number(t)) => match p.text.trim().parse::<f64>() {
                 Ok(v) if v.is_finite() => {
                     // Typing the value it already has is not an edit: no undo step, no recompute, no new mesh.
                     if v != self.st.model.number_value(t) {
@@ -346,7 +360,7 @@ impl BushingSession {
                 }
                 _ => self.status = format!("{} not changed: {:?} is not a number.", t.label(), p.text.trim()),
             },
-            FieldRow::Tol(g) => {
+            PromptTarget::Input(FieldRow::Tol(g)) => {
                 self.checkpoint();
                 match self.st.model.commit_tolerance_text(g, &p.text) {
                     Ok(()) => self.changed(),
@@ -361,8 +375,8 @@ impl BushingSession {
     }
     fn prompt_char(&mut self, c: char) {
         let Some(p) = &mut self.prompt else { return };
-        let ok = match p.row {
-            FieldRow::Tol(_) => c.is_ascii_digit() || matches!(c, '.' | '+' | '-' | ' ' | '/' | ',' | '\u{b1}'),
+        let ok = match p.target {
+            PromptTarget::Input(FieldRow::Tol(_)) => c.is_ascii_digit() || matches!(c, '.' | '+' | '-' | ' ' | '/' | ',' | '\u{b1}'),
             _ => c.is_ascii_digit() || matches!(c, '.' | '-' | '+' | 'e' | 'E'),
         };
         if ok && p.text.len() < 40 {
@@ -422,7 +436,7 @@ impl BushingSession {
         self.st.model.checks.iter().filter(|c| c.severity == Severity::Fail).count()
     }
     fn edge_current(&self) -> bool {
-        self.st.edge_check.as_ref().is_some_and(|r| !edge_check::is_stale(&self.st.model, r))
+        self.st.edge_check.as_ref().is_some_and(|r| !edge_check::is_stale_with(&self.st.model, &self.st.edge_settings, r))
     }
 
     // ------------------------------------------------------------------ dispatch
@@ -449,6 +463,12 @@ impl BushingSession {
             BushingAct::TypeValue(t) => self.begin_prompt(FieldRow::Number(t), model::format_for_edit(self.st.model.number_value(t))),
             BushingAct::ClosePicker => self.picker = None,
             BushingAct::EdgeCheck(deep) => self.start_edge_check(deep),
+            BushingAct::EdgeCv(id) => {
+                if let Some((_, _, cv)) = self.st.edge_settings.rows(&self.st.model).into_iter().find(|(row, _, _)| *row == id) {
+                    self.picker = None;
+                    self.prompt = Some(Prompt { target: PromptTarget::EdgeCv(id), text: edge_check::cv_percent(cv), fresh: true });
+                }
+            }
             BushingAct::CancelEdgeCheck => {
                 self.st.cancel_edge_check();
                 self.edge_jobs.clear();

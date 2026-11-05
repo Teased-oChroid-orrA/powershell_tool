@@ -34,6 +34,8 @@ pub struct EdgeConfig {
     /// Include each model's own prediction error (`EdgeModel::model_cv`) in the
     /// Monte-Carlo pass and the recommended edge distances.
     pub model_error: bool,
+    /// Optional model-specific prediction-error CVs; absent models use their defaults.
+    pub model_cvs: Vec<(&'static str, f64)>,
     /// `Fbru` at `e/D = 1.5` (psi) for the tabulated-allowable check.
     pub fbru_e15: Option<f64>,
     /// Edge-distance search bracket, in multiples of the bore diameter.
@@ -49,7 +51,7 @@ pub struct EdgeConfig {
 
 impl Default for EdgeConfig {
     fn default() -> Self {
-        Self { mc_samples: 2000, seed: 0x5EED_ED6E, strength_cv: 0.05, model_error: true, fbru_e15: None, search_lo: 0.75, search_hi: 8.0, include_plastic: false, bushing: None }
+        Self { mc_samples: 2000, seed: 0x5EED_ED6E, strength_cv: 0.05, model_error: true, model_cvs: Vec::new(), fbru_e15: None, search_lo: 0.75, search_hi: 8.0, include_plastic: false, bushing: None }
     }
 }
 
@@ -436,7 +438,7 @@ pub fn run(models: &[Box<dyn EdgeModel>], input: &EdgeInput, cfg: &EdgeConfig) -
     let mut reports = Vec::with_capacity(models.len());
     for model in models {
         let t0 = Instant::now();
-        let model_cv = if cfg.model_error { model.model_cv() } else { 0.0 };
+        let model_cv = if cfg.model_error { cfg.model_cvs.iter().find(|(id, _)| *id == model.id()).map_or_else(|| model.model_cv(), |(_, cv)| *cv) } else { 0.0 };
         let mut rep = ModelReport { id: model.id(), label: model.label(), field_model: model.is_field_model(), error: None, targets: vec![None; TARGETS.len()], notes: Vec::new(), elapsed: Duration::ZERO, model_cv };
         match model.respond(&input.geom, &input.strengths, input.fit_pressure) {
             Err(e) => rep.error = Some(e),

@@ -25,7 +25,7 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingState, 
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(theme.border_style(focused))
-        .title(crate::widgets::title::toolbox_title("Bushing Workbench", &["Enter Edit", "e Export", "d Details"], area.width));
+        .title(crate::widgets::title::toolbox_title("Bushing Workbench", &["Enter Edit", "v Uncertainty", "e Export", "d Details"], area.width));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -62,6 +62,9 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingState, 
     }
     draw_edge_tip(frame, area, theme, state);
     draw_edge_status(frame, area, theme, state);
+    if state.edge_editor.is_some() {
+        draw_edge_editor(frame, area, theme, state, regions);
+    }
 }
 
 /// The persistent cross-check status tooltip, top right of the pane: while a
@@ -318,15 +321,17 @@ fn draw_readout(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingSta
         (None, inner)
     };
     // While the Fixes window is open it owns the mouse: publish only its regions.
-    let interactive = !state.advice.open;
+    let interactive = !state.advice.open && state.edge_editor.is_none();
     if let Some(bar) = bar_area {
         draw_action_bar(frame, bar, theme, state, interactive.then_some(&mut *regions));
     }
-    let stale = state.edge_check.as_ref().is_some_and(|run| super::edge_check::is_stale(&state.model, run));
+    let stale = state.edge_check.as_ref().is_some_and(|run| super::edge_check::is_stale_with(&state.model, &state.edge_settings, run));
     let running = state.edge_job.as_ref().map(|j| (j.started.elapsed().as_secs_f64(), j.deep));
     let edge_section = super::edge_check::section_lines_with(theme, state.edge_check.as_ref(), stale, &state.model, running);
     let advisories = super::edge_check::advisories(state.edge_check.as_ref(), stale);
-    let (lines, tags) = readout_lines(theme, &state.model, state.show_numbers, state.last_applied.as_deref(), state.input_error.as_deref(), edge_section, advisories);
+    let (mut lines, mut tags) = readout_lines(theme, &state.model, state.show_numbers, state.last_applied.as_deref(), state.input_error.as_deref(), edge_section, advisories);
+    tags.push((lines.len(), BushingAction::EdgeSettings));
+    lines.push(Line::from(Span::styled("Uncertainty (v): edit strength / model CVs (%)", theme.status_style(StatusTone::Info))));
     let clicks = crate::widgets::scroll_paragraph::render_interactive(frame, body_area, theme, lines, state.results_scroll, &tags);
     if interactive {
         regions.bushing_actions.extend(clicks);
@@ -366,6 +371,7 @@ fn draw_action_bar(frame: &mut Frame, area: Rect, theme: &Theme, state: &Bushing
     let (deep_label, deep_style) = busy(true, " +Contact FE ");
     buttons.push((quick_label, BushingAction::EdgeCheck, quick_style));
     buttons.push((deep_label, BushingAction::EdgeCheckDeep, deep_style));
+    buttons.push((" Uncertainty (v) ".to_string(), BushingAction::EdgeSettings, Style::default().add_modifier(Modifier::REVERSED)));
     buttons.push((" Export ".to_string(), BushingAction::Export, Style::default().add_modifier(Modifier::REVERSED)));
 
     let mut spans = Vec::new();
@@ -384,6 +390,35 @@ fn draw_action_bar(frame: &mut Frame, area: Rect, theme: &Theme, state: &Bushing
         x += w + 1;
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn draw_edge_editor(frame: &mut Frame, area: Rect, theme: &Theme, state: &BushingState, regions: &mut crate::mouse::MouseRegions) {
+    let Some(editor) = &state.edge_editor else { return };
+    let popup = crate::widgets::popup::centered_rect(78, 65, area);
+    frame.render_widget(ratatui::widgets::Clear, popup);
+    let block = Block::default().borders(Borders::ALL).border_style(theme.border_style(true)).title(" Edge-check uncertainty (%) ");
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    regions.bushing_actions.clear();
+    regions.bushing_rows.clear();
+    regions.bushing_results = None;
+    if inner.width == 0 || inner.height == 0 { return; }
+    let parts = Layout::default().direction(Direction::Vertical).constraints([Constraint::Min(1), Constraint::Length(4)]).split(inner);
+    let rows = state.edge_settings.rows(&state.model);
+    let items = rows.iter().enumerate().map(|(i, (id, label, cv))| {
+        let value = if editor.editing && i == editor.selected { editor.buffer.with_cursor() } else { super::edge_check::cv_percent(*cv) };
+        let label = if id.is_some() { format!("{label} model CV (%)") } else { label.to_string() };
+        ListItem::new(format!("{label}: {value}")).style(if i == editor.selected { theme.selected_row_style() } else { Style::default() })
+    }).collect();
+    let offset = crate::widgets::scroll_list::render(frame, parts[0], items, Some(editor.selected));
+    regions.bushing_actions.extend(crate::mouse::list_row_regions(parts[0], offset, rows.len()).into_iter().map(|(rect, i)| (rect, BushingAction::EdgeCv(i))));
+    let note = vec![
+        Line::from(editor.error.as_deref().unwrap_or("CV = standard deviation / mean. Enter 0..100 percent.")),
+        Line::from("Up/Down select; Enter edit/save; Esc cancel/close."),
+        Line::from("Edits rerun after 400 ms. Settings last this session only."),
+        Line::from("Defaults are assumptions; model CV 0 is fixed for allowables."),
+    ];
+    frame.render_widget(Paragraph::new(note).wrap(Wrap { trim: true }), parts[1]);
 }
 
 /// Centered pop-up: tab 1 lists the verified fixes (click a row to select,
@@ -842,6 +877,23 @@ mod tests {
         let area = Rect::new(0, 0, width, height);
         let mut regions = crate::mouse::MouseRegions::default();
         terminal.draw(|f| draw(f, area, &Theme::default_palette(), state, true, &mut regions)).unwrap();
+    }
+
+    #[test]
+    fn uncertainty_popup_renders_percentages_and_only_publishes_its_own_actions() {
+        let mut state = BushingState::default();
+        state.perform(BushingAction::EdgeSettings);
+        let text = rendered_text(&state, 160, 40);
+        assert!(text.contains("Strength CV (%): 5") && text.contains("Contact FE") && text.contains("model CV (%): 7"), "{text}");
+        let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+        let mut regions = crate::mouse::MouseRegions::default();
+        terminal.draw(|f| draw(f, Rect::new(0, 0, 160, 40), &Theme::default_palette(), &state, true, &mut regions)).unwrap();
+        assert_eq!(regions.bushing_actions.len(), state.edge_settings.rows(&state.model).len());
+        assert!(regions.bushing_actions.iter().all(|(_, action)| matches!(action, BushingAction::EdgeCv(_))));
+        assert!(regions.bushing_rows.is_empty());
+        for (w, h) in [(0, 0), (1, 1), (10, 4), (40, 12), (70, 25)] {
+            draw_at(w, h, &state);
+        }
     }
 
     #[test]
