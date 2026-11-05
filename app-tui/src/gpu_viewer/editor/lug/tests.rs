@@ -261,3 +261,52 @@ fn save_and_reopen_round_trips_the_lug_and_export_writes_the_report() {
     act(&mut s, LugAct::Save);
     assert!(s.status().starts_with("Save conflict"), "{}", s.status());
 }
+
+#[test]
+fn pin_strength_selection_overrides_and_legacy_case_reset_round_trip() {
+    let strength_material = catalog().iter().find(|m| m.name.contains("7075") && m.fsu_ksi > 0.0).unwrap().name;
+    let mut m = LugUiModel { pin_bending: true, pin_strength_material: Some(strength_material.into()), pin_fty_override: Some(70_000.0), pin_fsu_override: Some(50_000.0), ..LugUiModel::default() };
+    let file = LugFile::capture(&m, "pin");
+    assert_eq!(file.version, 2);
+    let mut restored = LugUiModel::default();
+    file.apply(&mut restored);
+    assert_eq!(restored.pin_strength_material.as_deref(), Some(strength_material));
+    assert_eq!(restored.pin_fty_override, Some(70_000.0));
+    assert_eq!(restored.pin_fsu_override, Some(50_000.0));
+
+    m.pin_strength_material = None;
+    let old = LugFile { version: 1, ..LugFile::capture(&m, "old") };
+    restored.pin_strength_material = Some(strength_material.into());
+    restored.pin_fty_override = Some(75_000.0);
+    old.apply(&mut restored);
+    assert!(restored.pin_strength_material.is_none() && restored.pin_fty_override.is_none() && restored.pin_fsu_override.is_none());
+
+    let mut invalid = LugFile::capture(&m, "invalid");
+    invalid.pin_strength_material = Some("deleted catalog entry".into());
+    invalid.pin_fty_override = Some(75_000.0);
+    invalid.pin_fsu_override = Some(45_000.0);
+    let skipped = invalid.apply(&mut restored);
+    assert!(skipped.iter().any(|item| item.contains("deleted catalog entry")));
+    assert!(restored.pin_strength_material.is_none() && restored.pin_fty_override.is_none() && restored.pin_fsu_override.is_none());
+}
+
+#[test]
+fn pin_strength_picker_selects_catalog_and_clears_overrides_with_undo() {
+    let mut s = session("pin-strength-picker");
+    act(&mut s, LugAct::Row(FieldRow::MeshSection));
+    act(&mut s, LugAct::Row(FieldRow::TogglePinBending));
+    s.model.pin_fty_override = Some(70_000.0);
+    s.model.pin_fsu_override = Some(50_000.0);
+    act(&mut s, LugAct::Row(FieldRow::OpenPinStrengthPicker));
+    assert_eq!(s.value_card().unwrap().title, "Pin strength material");
+    let choice = catalog().iter().position(|m| m.name.contains("7075") && m.fsu_ksi > 0.0).unwrap();
+    act(&mut s, LugAct::PickMaterial(choice));
+    assert!(s.model.pin_strength_material.as_deref() == Some(catalog()[choice].name));
+    assert!(s.model.pin_fty_override.is_none() && s.model.pin_fsu_override.is_none());
+    act(&mut s, LugAct::Undo);
+    assert!(s.model.pin_strength_material.is_none());
+    assert_eq!(s.model.pin_fty_override, Some(70_000.0));
+    s.model.pin_fty_override = Some(75_000.0);
+    edit(&mut s, NumberTarget::PinFty, "0");
+    assert!(s.model.pin_fty_override.is_none(), "zero clears override and restores catalog value");
+}

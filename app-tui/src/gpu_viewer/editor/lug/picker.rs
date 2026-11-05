@@ -17,6 +17,7 @@ const SHOWN: usize = 12;
 pub enum Target {
     Lug,
     Bushing,
+    PinStrength,
 }
 
 pub struct Picker {
@@ -38,6 +39,7 @@ impl LugSession {
         match target {
             Target::Lug => self.model.material_index,
             Target::Bushing => self.model.bushing_material_index,
+            Target::PinStrength => self.model.pin_strength_material.as_deref().and_then(|name| catalog().iter().position(|m| m.name == name)).unwrap_or(usize::MAX),
         }
     }
 
@@ -48,7 +50,7 @@ impl LugSession {
         let more = hits.len().saturating_sub(SHOWN);
         // The current material first so it is never lost behind the search.
         let mut shown: Vec<usize> = hits.iter().copied().take(SHOWN).collect();
-        if p.query.trim().is_empty() && !shown.contains(&current) {
+        if p.query.trim().is_empty() && current < catalog().len() && !shown.contains(&current) {
             shown.insert(0, current);
             shown.truncate(SHOWN);
         }
@@ -57,7 +59,8 @@ impl LugSession {
             let m = catalog()[i];
             // The handbook leaves some bearing allowables blank (stored as 0).
             let fbru = if m.fbru_ksi > 0.0 { format!("{:.0}", m.fbru_ksi) } else { "n/a".into() };
-            let detail = format!("Ftu {:.0}, Fty {:.0}, Fbru {fbru} ksi", m.ftu_ksi, m.sy_ksi);
+            let fsu = if m.fsu_ksi > 0.0 { format!("{:.0}", m.fsu_ksi) } else { "n/a".into() };
+            let detail = format!("Fty {:.0}, Fsu {fsu}, Ftu {:.0}, Fbru {fbru} ksi", m.sy_ksi, m.ftu_ksi);
             rows.push(CardRow::Choice { label: m.name.to_string(), detail, action: act(LugAct::PickMaterial(i)), current: i == current });
         }
         if more > 0 {
@@ -69,6 +72,7 @@ impl LugSession {
         let (title, note) = match p.target {
             Target::Lug => ("Lug material", "E, Fty, Ftu and the bearing allowables of the checks come from it."),
             Target::Bushing => ("Bushing material", "The bushing is elastic in every analysis: its modulus, Poisson ratio and expansion are used."),
+            Target::PinStrength => ("Pin strength material", "Fty and Fsu feed pin checks; beam stiffness remains set by Pin Body."),
         };
         rows.push(CardRow::Text(note.into()));
         Some(ValueCard { title: title.into(), width: 400.0, tag: "catalog".into(), rows, apply_label: "Close".into(), apply: act(LugAct::ClosePicker), cancel: act(LugAct::ClosePicker) })
@@ -89,6 +93,11 @@ impl LugSession {
         match target {
             Target::Lug => self.model.material_index = i,
             Target::Bushing => self.model.bushing_material_index = i,
+            Target::PinStrength => {
+                self.model.pin_strength_material = Some(catalog()[i].name.to_string());
+                self.model.pin_fty_override = None;
+                self.model.pin_fsu_override = None;
+            }
         }
         self.changed();
     }

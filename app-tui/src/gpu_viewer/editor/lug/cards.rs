@@ -130,7 +130,7 @@ impl LugSession {
             // The window draws a Warn value as an edit box: only the row being typed is one.
             let tone = if editing.is_some() { Tone::Warn } else { Tone::Normal };
             // A catalog name is too long for the value column: it reads on its own line under the row.
-            let picker = matches!(row, FieldRow::OpenMaterialPicker | FieldRow::OpenBushingMaterialPicker);
+            let picker = matches!(row, FieldRow::OpenMaterialPicker | FieldRow::OpenBushingMaterialPicker | FieldRow::OpenPinStrengthPicker);
             let shown = if picker { "Browse".to_string() } else { text.clone() };
             let mut items = vec![DockItem::field(model::row_label(row), shown, tone, Some(act(LugAct::Row(row))), editing.is_some())];
             if picker {

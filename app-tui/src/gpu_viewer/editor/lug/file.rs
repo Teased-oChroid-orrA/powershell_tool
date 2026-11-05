@@ -7,7 +7,7 @@ use crate::toolboxes::material_lookup::model::catalog;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-const FORMAT_VERSION: u32 = 1;
+const FORMAT_VERSION: u32 = 2;
 
 /// Every number input that is not an override, with its key in the file.
 pub const NUMBERS: [(NumberTarget, &str); 17] = [
@@ -35,7 +35,7 @@ fn every_number_target_is_listed(t: NumberTarget) {
     use NumberTarget::*;
     match t {
         HoleDia | Width | Edge | HeadCorner | Thickness | ModelLength | PinDia | Friction | Load | LoadAngle | BushingId | BushingInterference | BushingFriction | TemperatureChange | ClevisOffset | MaxGrowth | FirstLayerAspect => {}
-        Ductility | Elongation | ElementsAround => {}
+        Ductility | Elongation | ElementsAround | PinFty | PinFsu => {}
     }
 }
 
@@ -81,6 +81,12 @@ pub struct LugFile {
     pub elongation: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_strain: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin_strength_material: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin_fty_override: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin_fsu_override: Option<f64>,
 }
 
 /// Every switch with its key in the file.
@@ -132,6 +138,9 @@ impl LugFile {
             elements_around: m.elements_around,
             elongation: m.elongation,
             failure_strain: m.failure_strain,
+            pin_strength_material: m.pin_strength_material.clone(),
+            pin_fty_override: m.pin_fty_override,
+            pin_fsu_override: m.pin_fsu_override,
         }
     }
 
@@ -139,6 +148,11 @@ impl LugFile {
     /// model refuses); everything else is applied.
     pub fn apply(&self, m: &mut LugUiModel) -> Vec<String> {
         let mut skipped = Vec::new();
+        if self.version < 2 {
+            m.pin_strength_material = None;
+            m.pin_fty_override = None;
+            m.pin_fsu_override = None;
+        }
         for (t, key) in NUMBERS {
             if let Some(v) = self.numbers.get(key) {
                 m.commit_number(t, *v);
@@ -154,6 +168,16 @@ impl LugFile {
             match material_index(name) {
                 Some(i) => *slot = i,
                 None => skipped.push(format!("{what}: {name} is not in the catalog")),
+            }
+        }
+        if self.version >= 2 {
+            m.pin_strength_material = self.pin_strength_material.as_deref().filter(|name| material_index(name).is_some()).map(str::to_owned);
+            m.pin_fty_override = self.pin_fty_override.filter(|v| v.is_finite() && *v > 0.0);
+            m.pin_fsu_override = self.pin_fsu_override.filter(|v| v.is_finite() && *v > 0.0);
+            if let Some(name) = self.pin_strength_material.as_deref().filter(|name| material_index(name).is_none()) {
+                m.pin_fty_override = None;
+                m.pin_fsu_override = None;
+                skipped.push(format!("pin strength material: {name} is not in the catalog"));
             }
         }
         let mut label = |text: &str, what: &str, found: Option<()>| {

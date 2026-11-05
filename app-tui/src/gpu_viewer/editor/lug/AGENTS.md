@@ -11,7 +11,7 @@ Does not own: any lug formula or check (`lug-solver` through `toolboxes/lug_anal
 |---|---|
 | Session, `LugAct`, `Authoring` impl, typed edits, undo / save / export, analysis and mesh-test jobs (`poll`, `current_run`) | `mod.rs` |
 | Inspector cards (one per form section, Result, Contact, Stress, Ultimate, Finite, Bushing, Pin bending, Comparison, Notes, Bore profile, Load-travel curve, Model, Drawing), tree, ribbon, menus, status verdict | `cards.rs` |
-| Lug / bushing material picker (search field 0, 12 shown, current first) | `picker.rs` |
+| Lug / bushing / pin-strength material picker (search field 0, 12 shown, current first) | `picker.rs` |
 | The picture: Q9 -> 8 triangles, half model mirrored; von Mises / hoop / displacement; part codes before the field | `drawing.rs` |
 | The saved case (JSON: numbers by key, materials by name, choices by label, switches, overrides) | `file.rs` |
 | Session tests | `tests.rs` |

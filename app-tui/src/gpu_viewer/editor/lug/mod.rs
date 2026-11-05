@@ -328,6 +328,7 @@ impl LugSession {
             }
             FieldRow::OpenMaterialPicker => return self.open_picker(picker::Target::Lug),
             FieldRow::OpenBushingMaterialPicker => return self.open_picker(picker::Target::Bushing),
+            FieldRow::OpenPinStrengthPicker => return self.open_picker(picker::Target::PinStrength),
             // Showing more rows is not an edit of the lug.
             FieldRow::MeshSection => {
                 self.model.mesh_open = !self.model.mesh_open;
@@ -369,7 +370,12 @@ impl LugSession {
                 // The model keeps the old value for one it refuses; say so instead of recording an edit.
                 let mut edited = self.model.clone();
                 edited.commit_number(target, v);
-                if edited.number_value(target) == before {
+                let unchanged = match target {
+                    model::NumberTarget::PinFty => edited.pin_fty_override == self.model.pin_fty_override,
+                    model::NumberTarget::PinFsu => edited.pin_fsu_override == self.model.pin_fsu_override,
+                    _ => edited.number_value(target) == before,
+                };
+                if unchanged {
                     self.status = format!("{} not changed: {v} is out of range.", target.label());
                     return;
                 }

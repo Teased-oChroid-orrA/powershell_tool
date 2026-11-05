@@ -225,6 +225,14 @@ impl PinBodyChoice {
     }
 }
 
+/// Pin strength data used only by pin bending checks; independent from elastic body choice.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PinStrengths {
+    pub name: String,
+    pub fty_psi: Option<f64>,
+    pub fsu_psi: Option<f64>,
+}
+
 /// Everything one analysis depends on; two equal inputs give the same result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LugInput {
@@ -249,6 +257,7 @@ pub struct LugInput {
     /// Through-thickness pin bending in double shear: the clevis load centroid's distance (in)
     /// from the lug face.
     pub pin_bending: Option<f64>,
+    pub pin_strengths: Option<PinStrengths>,
     pub solver: SolverChoice,
     /// Refine the bore mesh around the loaded sector of a loose pin (on top of `mesh`).
     pub auto_refine: bool,
@@ -396,6 +405,8 @@ pub enum NumberTarget {
     ElementsAround,
     MaxGrowth,
     FirstLayerAspect,
+    PinFty,
+    PinFsu,
 }
 
 impl NumberTarget {
@@ -421,6 +432,8 @@ impl NumberTarget {
             NumberTarget::ElementsAround => "Elements Around Bore",
             NumberTarget::MaxGrowth => "Max Growth Ratio",
             NumberTarget::FirstLayerAspect => "First Layer Aspect",
+            NumberTarget::PinFty => "Pin Yield Strength Fty",
+            NumberTarget::PinFsu => "Pin Shear Ultimate Fsu",
         }
     }
 
@@ -446,6 +459,8 @@ impl NumberTarget {
             NumberTarget::ElementsAround => "Elements around the full bore circle at the far spacing (12 to 240). More is slower and converges the stress peaks; use the mesh test below for a recommendation.",
             NumberTarget::MaxGrowth => "Largest layer-to-layer size growth from the bore outward (1.05 to 2). Lower is smoother and adds layers.",
             NumberTarget::FirstLayerAspect => "Radial over tangential size of the first element layer at the bore (0.3 to 3). Smaller is thinner next to the bore.",
+            NumberTarget::PinFty => "Pin bending yield allowable override (psi); blank follows selected pin strength material.",
+            NumberTarget::PinFsu => "Pin double-shear ultimate allowable override (psi); blank follows selected pin strength material.",
         }
     }
 
@@ -459,6 +474,7 @@ impl NumberTarget {
             NumberTarget::Ductility | NumberTarget::Elongation => format!("{:.1} %", v * 100.0),
             NumberTarget::ElementsAround => format!("{v:.0}"),
             NumberTarget::MaxGrowth | NumberTarget::FirstLayerAspect => format!("{v:.2}"),
+            NumberTarget::PinFty | NumberTarget::PinFsu => format!("{v:.0} psi"),
             _ => format!("{v:.4} in"),
         }
     }
@@ -474,6 +490,7 @@ pub enum FieldRow {
     TogglePlastic,
     ToggleBushing,
     OpenBushingMaterialPicker,
+    OpenPinStrengthPicker,
     TogglePinBody,
     ToggleFiniteStrain,
     ToggleSecondOrder,
@@ -497,6 +514,7 @@ pub fn row_label(row: FieldRow) -> &'static str {
         FieldRow::TogglePlastic => "Plastic Limit Load",
         FieldRow::ToggleBushing => "Bushing",
         FieldRow::OpenBushingMaterialPicker => "Bushing Material",
+        FieldRow::OpenPinStrengthPicker => "Pin strength material",
         FieldRow::TogglePinBody => "Pin Body",
         FieldRow::ToggleFiniteStrain => "Ultimate Model",
         FieldRow::ToggleSecondOrder => "Geometric Nonlinearity",
@@ -522,6 +540,7 @@ pub fn field_hint(row: FieldRow) -> &'static str {
         FieldRow::ToggleSolver => "Kernel: the general finite-element kernel (fea-core) runs every analysis. Legacy: the older condensed / finite-strain solvers of lug-solver. Compare: both, the legacy result shown beside the kernel's. A case the kernel cannot run falls back to the legacy solver with a note.",
         FieldRow::ToggleBushing => "A bushing pressed into the hole: the pin then bears on the bushing, whose outer surface meets the hole in a contact with the interference fit and friction (the fit pressure is solved and can be lost). Turning it on sets the pin just under the bushing's inner diameter.",
         FieldRow::OpenBushingMaterialPicker => "Enter opens the material browser for the bushing (elastic in every analysis).",
+        FieldRow::OpenPinStrengthPicker => "Strength allowables for the pin bending checks; beam stiffness remains set by Pin Body.",
         FieldRow::ToggleFlowRule => "Flow stress of the perfectly plastic collapse. (Ftu + Fty)/2 is the old rule (15 % low on average on NACA TN 1503, kernel solver). Ftu is 7 % low on average, from 13 % low to 2 % high. Ftu (1 + elongation) is the true stress at large strain: 5 % mean error but up to 14 % high for brittle alloys (75S), so it is not conservative. The note under Results gives the figures of the solver in use.",
         FieldRow::TogglePinBody => "Rigid: the pin is an analytic circle. Elastic: the pin is meshed as a disc, ovalises under the bearing load and spreads it (lowers the edge pressure peak of a loose pin). The collapse load does not depend on it.",
         FieldRow::ToggleFiniteStrain => "Flow stress: a perfectly plastic collapse at the chosen flow stress. Finite strain: a true stress-strain curve (from Fty, Ftu and the elongation), large-deformation kinematics and a failure strain taken from the material library (validated for 2014, 2024 and 7075 aluminium against 20 NACA bearing points, within -9 to +3 %). The kernel solver runs it for every load direction and with a bushing (the calibration itself is on axial, unbushed lugs); the legacy solver only for axial loads without a bushing. A few seconds.",
@@ -541,6 +560,7 @@ pub fn display_value(m: &LugUiModel, row: FieldRow) -> String {
         FieldRow::OpenMaterialPicker => m.material().name.to_string(),
         FieldRow::ToggleBushing => if m.bushing { "On (pressed into the hole)" } else { "Off (pin bears on the hole)" }.to_string(),
         FieldRow::OpenBushingMaterialPicker => m.bushing_material().name.to_string(),
+        FieldRow::OpenPinStrengthPicker => m.pin_strength_material.as_deref().unwrap_or("Select material").to_string(),
         FieldRow::ToggleMeshDensity => if m.elements_around.is_some() { format!("Custom ({} around)", m.effective_elements_around()) } else { m.density.label().to_string() },
         FieldRow::MeshSection => format!("{} around the bore", m.effective_elements_around()),
         FieldRow::ToggleAutoRefine => if m.auto_refine { "On (loaded sector of a loose pin)" } else { "Off (uniform spacing)" }.to_string(),
@@ -599,6 +619,9 @@ pub struct LugUiModel {
     pub bushing_friction: f64,
     pub bushing_material_index: usize,
     pub pin_body: PinBodyChoice,
+    pub pin_strength_material: Option<String>,
+    pub pin_fty_override: Option<f64>,
+    pub pin_fsu_override: Option<f64>,
     /// Temperature change (deg F).
     pub delta_t: f64,
     /// Finite-strain ultimate model (needs Plastic Limit Load).
@@ -647,6 +670,9 @@ impl Default for LugUiModel {
             bushing_friction: 0.2,
             bushing_material_index: default_bushing_material_index(),
             pin_body: PinBodyChoice::Rigid,
+            pin_strength_material: None,
+            pin_fty_override: None,
+            pin_fsu_override: None,
             delta_t: 0.0,
             finite_strain: false,
             failure_strain: None,
@@ -723,7 +749,8 @@ pub fn field_rows(model: &LugUiModel) -> Vec<FieldRow> {
         rows.push(FieldRow::ToggleSecondOrder);
         rows.push(FieldRow::TogglePinBending);
         if model.pin_bending {
-            rows.push(FieldRow::Number(NumberTarget::ClevisOffset));
+            rows.extend([FieldRow::Number(NumberTarget::ClevisOffset), FieldRow::OpenPinStrengthPicker,
+                FieldRow::Number(NumberTarget::PinFty), FieldRow::Number(NumberTarget::PinFsu)]);
         }
     }
     rows
@@ -791,6 +818,8 @@ impl LugUiModel {
             NumberTarget::ElementsAround => self.effective_elements_around() as f64,
             NumberTarget::MaxGrowth => self.max_growth,
             NumberTarget::FirstLayerAspect => self.first_layer_aspect,
+            NumberTarget::PinFty => self.pin_fty_override.or_else(|| self.pin_strength_material.as_deref().and_then(|n| catalog().iter().find(|m| m.name == n).map(|m| m.sy_ksi * 1000.0))).unwrap_or(0.0),
+            NumberTarget::PinFsu => self.pin_fsu_override.or_else(|| self.pin_strength_material.as_deref().and_then(|n| catalog().iter().find(|m| m.name == n).map(|m| m.fsu_ksi * 1000.0))).unwrap_or(0.0),
         }
     }
 
@@ -841,6 +870,8 @@ impl LugUiModel {
             NumberTarget::ElementsAround if (12.0..=240.0).contains(&raw) => self.elements_around = Some(raw.round() as usize),
             NumberTarget::MaxGrowth if (1.05..=2.0).contains(&raw) => self.max_growth = raw,
             NumberTarget::FirstLayerAspect if (0.3..=3.0).contains(&raw) => self.first_layer_aspect = raw,
+            NumberTarget::PinFty => self.pin_fty_override = (raw > 0.0).then_some(raw),
+            NumberTarget::PinFsu => self.pin_fsu_override = (raw > 0.0).then_some(raw),
             _ => {}
         }
     }
@@ -907,6 +938,11 @@ impl LugUiModel {
             return Err("the material needs a positive modulus and a Poisson ratio between 0 and 0.5".into());
         }
         let pin_material = self.pin_body.material();
+        let pin_strengths = self.pin_strength_material.as_deref().and_then(|name| catalog().iter().find(|m| m.name == name)).map(|m| PinStrengths {
+            name: m.name.to_string(),
+            fty_psi: self.pin_fty_override.or((m.sy_ksi > 0.0).then_some(m.sy_ksi * 1000.0)),
+            fsu_psi: self.pin_fsu_override.or((m.fsu_ksi > 0.0).then_some(m.fsu_ksi * 1000.0)),
+        });
         let thermal = Thermal { delta_t: self.delta_t, alpha_lug: material.alpha, alpha_bushing: bushing.as_ref().map_or(0.0, |b| b.material.alpha), alpha_pin: pin_material.map_or(material.alpha, |m| m.2) };
         let pin = PinSpec { thermal, body: pin_material.map_or(PinBody::Rigid, |m| PinBody::Elastic(FeMaterial { e_psi: m.0, nu: m.1 })), ..PinSpec::new(self.pin_dia, self.friction) };
         Ok(LugInput {
@@ -923,6 +959,7 @@ impl LugUiModel {
             failure_overridden: self.failure_strain.is_some(),
             second_order: self.second_order,
             pin_bending: self.pin_bending.then_some(self.clevis_offset),
+            pin_strengths,
             solver: self.solver,
             auto_refine: self.auto_refine,
         })
@@ -1351,8 +1388,18 @@ pub fn evaluate_with(input: &LugInput, s: &LugSolution, limit: Option<&LimitLoad
             let ms = m.ftu_psi / hoop - 1.0;
             checks.push(Check { name: "Hoop (peak slice)", detail: format!("elastic hoop {} at the most loaded slice vs Ftu {}", ksi(*hoop), ksi(m.ftu_psi)), margin: Some(ms), status: if ms >= 0.0 { Status::Pass } else { Status::Warn } });
         }
-        notes.push("Pin bending: double shear, the clevis ears as point reactions, the lug as slices on its own load-travel curve (steel pin unless an elastic pin is chosen). No pin allowable is checked.".to_string());
+        notes.push("Pin bending uses double shear and clevis ears as point reactions. Beam stiffness follows Pin Body; strength allowables use the separate pin strength material. Separate bending and shear checks do not establish combined pin capacity.".to_string());
         notes.push(format!("The slice model (a pin as a beam on the lug's springs) gives the mean-field distribution: peaking {:.2}. A 3D kernel model of the same stubby pin (`lug-solver/tests/fea_bridge.rs`) shows the lug face bearing 12-17 % above the mean, and that face value grows with mesh refinement (a load-transfer singularity at the lug face: no converged elastic value exists), so treat the peak slice as a lower bound for a stubby pin.", t.peaking));
+    } else if input.pin_bending.is_some() {
+        checks.push(Check { name: "Pin bending analysis", detail: "requested pin bending could not be calculated; pin margins unavailable".into(), margin: None, status: Status::Warn });
+    }
+    if let Some((t, _)) = thickness {
+        if let Some(strength) = &input.pin_strengths {
+            checks.push(pin_allowable_check("Pin bending yield", t.pin_bending_stress, strength.fty_psi, "Fty"));
+            checks.push(pin_allowable_check("Pin double shear", t.pin_shear_stress, strength.fsu_psi, "Fsu"));
+        } else {
+            checks.push(Check { name: "Pin strength", detail: "no pin strength material selected".into(), margin: None, status: Status::Warn });
+        }
     }
     if input.second_order {
         notes.push(if used == SolverChoice::Legacy {
@@ -1391,6 +1438,16 @@ pub fn evaluate_with(input: &LugInput, s: &LugSolution, limit: Option<&LimitLoad
         notes.push(format!("Edge ratio e/D {e_over_d:.2} is very small: shear-out through the head is likely to govern."));
     }
     (checks, notes)
+}
+
+fn pin_allowable_check(name: &'static str, stress: f64, allowable: Option<f64>, label: &str) -> Check {
+    match allowable.filter(|v| v.is_finite() && *v > 0.0) {
+        Some(a) if stress.is_finite() && stress > 0.0 => {
+            let margin = a / stress - 1.0;
+            Check { name, detail: format!("{} vs {label} {:.1} ksi", format!("{:.1} ksi", stress / 1000.0), a / 1000.0), margin: Some(margin), status: if margin >= 0.0 { Status::Pass } else { Status::Fail } }
+        }
+        _ => Check { name, detail: format!("{label} not available for selected pin strength material"), margin: None, status: Status::Warn },
+    }
 }
 
 /// Plain-text report (written by the `e` key).
@@ -1666,7 +1723,23 @@ mod tests {
         let (t, hoop) = r.thickness.as_ref().expect("pin bending result");
         assert!(t.peaking > 1.0 && *hoop > 0.0);
         assert!(r.checks.iter().any(|c| c.name == "Pin bending") && r.checks.iter().any(|c| c.name == "Hoop (peak slice)"));
+        assert_eq!(check(&r, "Pin strength").status, Status::Warn);
+        let omitted = evaluate_with(&r.input, &r.solution, None, None, None, r.solver).0;
+        assert_eq!(omitted.iter().find(|c| c.name == "Pin bending analysis").unwrap().status, Status::Warn);
         assert!(report_text(&r).contains("Pin bending"));
+        let strength_name = catalog()[default_material_index()].name.to_string();
+        let mut with_strength = LugUiModel { plastic: false, thickness: 0.8, load: 9000.0, pin_bending: true, pin_strength_material: Some(strength_name), ..LugUiModel::default() };
+        let (r, _) = run(&with_strength.input().unwrap(), None);
+        let r = r.unwrap();
+        let bending = check(&r, "Pin bending yield");
+        assert_eq!(bending.status, Status::Fail);
+        assert!((bending.margin.unwrap() - (with_strength.input().unwrap().pin_strengths.unwrap().fty_psi.unwrap() / r.thickness.as_ref().unwrap().0.pin_bending_stress - 1.0)).abs() < 1e-12);
+        let shear = check(&r, "Pin double shear");
+        assert_eq!(shear.status, Status::Pass);
+        assert!((shear.margin.unwrap() - (with_strength.input().unwrap().pin_strengths.unwrap().fsu_psi.unwrap() / r.thickness.as_ref().unwrap().0.pin_shear_stress - 1.0)).abs() < 1e-12);
+        with_strength.pin_fty_override = Some(1.0);
+        let (r, _) = run(&with_strength.input().unwrap(), None);
+        assert_eq!(check(&r.unwrap(), "Pin bending yield").status, Status::Fail);
         // P-delta on a stocky axial lug changes little but must run and pass its self-checks.
         let m = LugUiModel { plastic: false, second_order: true, ..LugUiModel::default() };
         let (r, _) = run(&m.input().unwrap(), None);
