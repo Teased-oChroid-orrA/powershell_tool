@@ -1711,6 +1711,18 @@ mod snapshot_tests {
         session.act(EditorAction::Vessel(VesselAct::Step("Results")));
         shoot(&mut session, "Results", "vessel-results-dark", true, (1440, 900));
         shoot(&mut session, "Results", "vessel-results-light", false, (1440, 900));
+        use crate::gpu_viewer::editor::session::{Key, Mods};
+        use crate::toolboxes::pressure_vessel::model::NumberTarget;
+        for (target, text) in [(NumberTarget::CorrosionAllowance, "0.125"), (NumberTarget::MillUndertolerance, "12.5")] {
+            session.act(EditorAction::Vessel(VesselAct::Row(FieldRow::Number(target))));
+            for c in text.chars() {
+                session.key(Key::Char(c), Mods::default());
+            }
+            session.key(Key::Enter, Mods::default());
+        }
+        shoot(&mut session, "Results", "vessel-allowances-results", true, (1440, 900));
+        session.act(EditorAction::Vessel(VesselAct::Step("Inputs")));
+        shoot(&mut session, "Inputs", "vessel-allowances-inputs", true, (1440, 900));
         session.act(EditorAction::Vessel(VesselAct::Step("Inputs")));
         session.act(EditorAction::Vessel(VesselAct::Row(FieldRow::OpenMaterialPicker)));
         shoot(&mut session, "Inputs", "vessel-picker-dark", true, (1440, 900));

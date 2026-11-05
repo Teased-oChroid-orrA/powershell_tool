@@ -133,7 +133,7 @@ impl VesselSession {
     fn result_card(&self) -> Card {
         let m = &self.model;
         let items = match (&m.geometry, &m.pressure) {
-            (Err(e), _) => vec![line(format!("Invalid geometry: {e:?}."), Tone::Warn), line("Every check needs an inner radius above zero: the wall must be thinner than half the outer diameter.", Tone::Dim)],
+            (Err(e), _) => vec![line(format!("Invalid geometry: {e:?}."), Tone::Warn), line("Use a positive nominal bore and remaining wall, nonnegative corrosion, and mill undertolerance below 100%.", Tone::Dim)],
             (_, Err(e)) => vec![line(format!("Invalid pressure: {e:?}."), Tone::Warn)],
             (Ok(g), Ok(_)) => {
                 let passed = m.rows.iter().filter(|r| passes(r)).count();
@@ -144,6 +144,7 @@ impl VesselSession {
                     DockItem::field("Margin of safety", fmt_margin(gov.margin), margin_tone(gov.margin), None, false),
                     value("Classification", if classify(g) == GeometryClassification::ThinWall { "Thin-wall" } else { "Thick-wall" }),
                     value("Inner diameter", format!("{:.4} in", 2.0 * g.inner_radius)),
+                    value("Remaining wall", format!("{:.4} in", g.wall_thickness())),
                     value("Material", m.material().name),
                 ]
             }
@@ -170,9 +171,11 @@ impl VesselSession {
         });
         let thickness = match &m.thickness_outcome {
             Some(ThicknessSolverOutcome::Converged(sol)) => vec![
-                value(format!("Minimum wall for MS {:.2}", m.required_ms), format!("{:.4} in", sol.wall_thickness)),
-                line(format!("Entered wall {:.4} in.", geometry.wall_thickness()), ok_tone(geometry.wall_thickness() >= sol.wall_thickness)),
-                line("Pressure only: the solve does not include thermal stress.", Tone::Dim),
+                value(format!("Minimum remaining wall for MS {:.2}", m.required_ms), format!("{:.4} in", sol.wall_thickness)),
+                value("Minimum nominal wall", format!("{:.4} in", m.wall_allowance().unwrap().nominal_thickness(sol.wall_thickness))),
+                value("Sizing outer diameter", format!("{:.4} in", 2.0 * sol.outer_radius)),
+                line(format!("Entered nominal wall {:.4} in; remaining wall {:.4} in.", m.wall_thickness, geometry.wall_thickness()), ok_tone(geometry.wall_thickness() >= sol.wall_thickness)),
+                line("Pressure only, without thermal stress or buckling. Sizing holds the analyzed bore fixed and grows OD.", Tone::Dim),
             ],
             Some(ThicknessSolverOutcome::Infeasible { largest_radius_tried, best_margin_found }) => vec![
                 line(format!("No wall up to {largest_radius_tried:.1} in reaches MS {:.2} (best {}).", m.required_ms, fmt_margin(*best_margin_found)), Tone::Warn),
@@ -203,7 +206,7 @@ impl VesselSession {
     fn drawing_card(&self) -> Card {
         let items = match (&self.model.geometry, &self.model.pressure) {
             (Ok(g), Ok(_)) => vec![line(
-                format!("To scale, a quarter cut away, coloured by the stress at each radius. The drawn length ({:.2} in, {} outer diameters) is only for the picture. Click the legend's title for the next stress.", drawing::LENGTH_PER_OD * 2.0 * g.outer_radius, drawing::LENGTH_PER_OD),
+                format!("Remaining wall, to scale, with a quarter cut away, coloured by stress. Nominal OD stays fixed; mill loss and internal corrosion enlarge the bore. The drawn length ({:.2} in, {} outer diameters) is only for the picture. Click the legend's title for the next stress.", drawing::LENGTH_PER_OD * 2.0 * g.outer_radius, drawing::LENGTH_PER_OD),
                 Tone::Dim,
             )],
             _ => vec![line("Nothing to draw: the inputs make no vessel.", Tone::Warn)],

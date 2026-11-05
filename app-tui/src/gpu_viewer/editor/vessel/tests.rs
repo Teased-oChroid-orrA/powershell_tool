@@ -158,6 +158,8 @@ fn the_picker_searches_the_catalog_picks_and_adds_a_material_of_ones_own() {
 #[test]
 fn save_and_reopen_round_trips_every_input_and_a_custom_material_and_export_writes_the_report() {
     let mut s = session("save");
+    edit(&mut s, NumberTarget::CorrosionAllowance, "0.125");
+    edit(&mut s, NumberTarget::MillUndertolerance, "12.5");
     edit(&mut s, NumberTarget::ExternalPressure, "100");
     edit(&mut s, NumberTarget::UnsupportedLength, "24");
     edit(&mut s, NumberTarget::TemperatureDifferential, "50");
@@ -171,11 +173,78 @@ fn save_and_reopen_round_trips_every_input_and_a_custom_material_and_export_writ
     act(&mut s, VesselAct::Export);
     let report = std::fs::read_to_string(s.path.with_extension("report.txt")).unwrap();
     assert_eq!(report, report::build_report_text(s.model()));
+    assert!(report.contains("Corrosion allowance: 0.1250 in") && report.contains("Mill undertolerance: 12.50 %"), "{report}");
+    assert!(report.contains("Remaining wall thickness: 0.7500 in") && report.contains("Minimum nominal wall thickness with allowances"), "{report}");
     // A file another program changed is not overwritten.
     crate::persistence::write(&s.path, "{}").unwrap();
     edit(&mut s, NumberTarget::ExternalPressure, "200");
     act(&mut s, VesselAct::Save);
     assert!(s.status().starts_with("Save conflict"), "{}", s.status());
+}
+
+#[test]
+fn allowances_drive_the_checks_contour_minimum_wall_and_undo() {
+    use pressure_vessel_solver::{failure::evaluate_failure_modes, geometry::CylinderGeometry, thickness::ThicknessSolverOutcome};
+    let mut s = session("allowances");
+    let before = s.scene().unwrap().range;
+    let before_margin = s.model.rows[0].margin;
+    edit(&mut s, NumberTarget::CorrosionAllowance, "0.125");
+    edit(&mut s, NumberTarget::MillUndertolerance, "12.5");
+    let g = s.model.geometry.unwrap();
+    assert_eq!(g, CylinderGeometry::new(2.25, 3.0).unwrap());
+    assert_eq!(s.model.rows, evaluate_failure_modes(&g, &s.model.pressure.unwrap(), s.model.material()));
+    assert!(s.model.rows[0].margin < before_margin);
+    assert!(s.needs_scene());
+    let scene = s.scene().unwrap();
+    assert!(scene.range[1] > before[1]);
+    let expected_hoop = 5000.0 * (3.0_f64.powi(2) + 2.25_f64.powi(2)) / (3.0_f64.powi(2) - 2.25_f64.powi(2));
+    assert!((scene.range[1] as f64 - expected_hoop).abs() < 0.5);
+    let ThicknessSolverOutcome::Converged(sol) = s.model.thickness_outcome.as_ref().unwrap() else { panic!("minimum wall") };
+    let nominal = s.model.wall_allowance().unwrap().nominal_thickness(sol.wall_thickness);
+    assert!((nominal * 0.875 - 0.125 - sol.wall_thickness).abs() < 1e-12);
+    assert!(sol.governing.margin >= s.model.required_ms);
+    let mut candidate = PressureVesselModel::default();
+    candidate.outer_diameter = 2.0 * sol.outer_radius;
+    candidate.wall_thickness = nominal;
+    candidate.corrosion_allowance = 0.125;
+    candidate.mill_undertolerance = 12.5;
+    candidate.recompute();
+    assert!((candidate.geometry.unwrap().inner_radius - g.inner_radius).abs() < 1e-12);
+    assert!(candidate.rows.iter().all(|r| r.margin >= s.model.required_ms));
+    let text = texts(&s.inspector());
+    assert!(text.contains("Remaining wall  0.7500 in") && text.contains("Minimum nominal wall"), "{text}");
+    act(&mut s, VesselAct::Undo);
+    assert_eq!(s.model.mill_undertolerance, 0.0);
+    assert_eq!(s.model.geometry.unwrap().wall_thickness(), 0.875);
+    act(&mut s, VesselAct::Undo);
+    assert_eq!(s.model.corrosion_allowance, 0.0);
+    assert_eq!(s.scene().unwrap().range, before);
+    act(&mut s, VesselAct::Redo);
+    assert_eq!(s.model.corrosion_allowance, 0.125);
+}
+
+#[test]
+fn invalid_allowances_clear_results_and_old_cases_reset_losses_to_zero() {
+    let mut s = session("invalid-allowances");
+    let mut old = s.snapshot();
+    assert_eq!(old.version, 2, "older readers must reject cases whose wall losses they cannot apply");
+    old.version = 1;
+    old.numbers.remove("corrosion allowance");
+    old.numbers.remove("mill undertolerance percent");
+    let old = VesselFile::from_json(&old.to_json()).unwrap();
+    for (target, value) in [(NumberTarget::CorrosionAllowance, "-1"), (NumberTarget::CorrosionAllowance, "1"), (NumberTarget::MillUndertolerance, "-1"), (NumberTarget::MillUndertolerance, "100")] {
+        old.apply(&mut s.model);
+        edit(&mut s, target, value);
+        assert!(s.model.geometry.is_err() && s.model.rows.is_empty() && s.model.thickness_outcome.is_none());
+        assert_eq!(s.scene().unwrap().positions.len(), 3);
+        assert!(target.validation_hint(&s.model).is_some());
+        assert!(report::build_report_text(&s.model).contains("Invalid geometry"));
+    }
+    old.apply(&mut s.model);
+    assert_eq!(s.model.corrosion_allowance, 0.0);
+    assert_eq!(s.model.mill_undertolerance, 0.0);
+    assert_eq!(s.model.geometry.unwrap().wall_thickness(), 1.0);
+    assert!(!s.model.rows.is_empty());
 }
 
 #[test]

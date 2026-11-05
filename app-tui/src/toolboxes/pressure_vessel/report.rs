@@ -37,6 +37,11 @@ pub fn build_report_text(model: &PressureVesselModel) -> String {
     let mut out = String::new();
     out.push_str("Pressure Vessel Analyzer Report\n");
     out.push_str("================================\n\n");
+    out.push_str(&format!("Nominal wall thickness: {:.4} in\n", model.wall_thickness));
+    out.push_str(&format!("Corrosion allowance: {:.4} in\n", model.corrosion_allowance));
+    out.push_str(&format!("Mill undertolerance: {:.2} %\n", model.mill_undertolerance));
+    out.push_str("Remaining wall = nominal wall * (1 - mill undertolerance / 100) - corrosion allowance.\n");
+    out.push_str("Nominal OD stays fixed; all loss enlarges the bore. Checks and drawing use remaining wall.\n\n");
 
     let (geometry, pressure) = match (&model.geometry, &model.pressure) {
         (Ok(g), Ok(p)) => (*g, *p),
@@ -53,7 +58,7 @@ pub fn build_report_text(model: &PressureVesselModel) -> String {
 
     out.push_str(&format!("Outer diameter:   {:.4} in\n", 2.0 * geometry.outer_radius));
     out.push_str(&format!("Inner diameter:   {:.4} in\n", 2.0 * geometry.inner_radius));
-    out.push_str(&format!("Wall thickness:   {:.4} in\n", geometry.wall_thickness()));
+    out.push_str(&format!("Remaining wall thickness: {:.4} in\n", geometry.wall_thickness()));
     out.push_str(&format!("Internal pressure: {:.0} psi\n", pressure.internal_pressure));
     out.push_str(&format!("External pressure: {:.0} psi\n", pressure.external_pressure));
     out.push_str(&format!("End condition:    {}\n", if model.closed_ends { "Closed ends" } else { "Open ends" }));
@@ -83,7 +88,10 @@ pub fn build_report_text(model: &PressureVesselModel) -> String {
 
     match &model.thickness_outcome {
         Some(ThicknessSolverOutcome::Converged(sol)) => {
-            out.push_str(&format!("Minimum wall thickness for required MS {:.2} (pressure only, not thermal-aware): {:.4} in\n", model.required_ms, sol.wall_thickness));
+            out.push_str(&format!("Minimum remaining wall thickness for required MS {:.2}: {:.4} in\n", model.required_ms, sol.wall_thickness));
+            out.push_str(&format!("Minimum nominal wall thickness with allowances: {:.4} in\n", model.wall_allowance().unwrap().nominal_thickness(sol.wall_thickness)));
+            out.push_str(&format!("Sizing outer diameter: {:.4} in\n", 2.0 * sol.outer_radius));
+            out.push_str("Pressure only, without thermal stress or buckling. Sizing holds the analyzed bore fixed and grows OD.\n");
         }
         Some(ThicknessSolverOutcome::Infeasible { largest_radius_tried, best_margin_found }) => {
             out.push_str(&format!("No wall thickness up to {largest_radius_tried:.1} in satisfies the required MS (best margin found: {}).\n", fmt_margin(*best_margin_found)));

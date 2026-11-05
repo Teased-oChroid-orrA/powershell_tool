@@ -1834,6 +1834,20 @@ mod tests {
         frame(&mut v);
         assert!(property_text(&v).contains("Inner diameter  5.0000 in"), "{}", property_text(&v));
         assert_ne!(v.scene().range, hoop, "the contour follows the wall");
+        let hoop = v.scene().range;
+        for (label, text) in [("Corrosion Allowance", "0.125"), ("Mill Undertolerance", "12.5")] {
+            let at = target(&v, label);
+            click(&mut v, at);
+            assert!(v.editor.as_ref().unwrap().prompting());
+            for c in text.chars() {
+                v.input(Input::Key(Key::Character(c.to_string().into())));
+            }
+            v.input(Input::Key(Key::Named(NamedKey::Enter)));
+            frame(&mut v);
+        }
+        assert!(property_text(&v).contains("Remaining wall  0.3125 in"), "{}", property_text(&v));
+        assert!(property_text(&v).contains("Inner diameter  5.3750 in"), "{}", property_text(&v));
+        assert!(v.scene().range[1] > hoop[1], "both allowances reach the contour through native input");
         // The inspector's Material row (the tree and the ribbon have one too).
         let at = v.gui.find_target_after("Material card", "Material").unwrap();
         click(&mut v, at);

@@ -9,12 +9,15 @@ use crate::toolboxes::pressure_vessel::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-const FORMAT_VERSION: u32 = 1;
+// Older readers must not silently ignore wall-loss inputs and show optimistic checks.
+const FORMAT_VERSION: u32 = 2;
 
 /// Every number input with its key in the file.
-pub const NUMBERS: [(NumberTarget, &str); 7] = [
+pub const NUMBERS: [(NumberTarget, &str); 9] = [
     (NumberTarget::OuterDiameter, "outer diameter"),
     (NumberTarget::WallThickness, "wall thickness"),
+    (NumberTarget::CorrosionAllowance, "corrosion allowance"),
+    (NumberTarget::MillUndertolerance, "mill undertolerance percent"),
     (NumberTarget::InternalPressure, "internal pressure"),
     (NumberTarget::ExternalPressure, "external pressure"),
     (NumberTarget::RequiredMs, "required minimum MS"),
@@ -25,7 +28,7 @@ pub const NUMBERS: [(NumberTarget, &str); 7] = [
 fn every_number_target_is_listed(t: NumberTarget) {
     use NumberTarget::*;
     match t {
-        OuterDiameter | WallThickness | InternalPressure | ExternalPressure | RequiredMs | UnsupportedLength | TemperatureDifferential => {}
+        OuterDiameter | WallThickness | CorrosionAllowance | MillUndertolerance | InternalPressure | ExternalPressure | RequiredMs | UnsupportedLength | TemperatureDifferential => {}
     }
 }
 
@@ -63,6 +66,9 @@ impl VesselFile {
     /// have and the file does not describe); everything else is applied.
     pub fn apply(&self, m: &mut PressureVesselModel) -> Vec<String> {
         let mut skipped = Vec::new();
+        // Cases written before wall allowances mean zero loss, including when applied over an edited model.
+        m.corrosion_allowance = 0.0;
+        m.mill_undertolerance = 0.0;
         for (t, key) in NUMBERS {
             if let Some(v) = self.numbers.get(key) {
                 m.commit_number(t, *v);

@@ -23,7 +23,7 @@
 use mechanics_core::materials::{Material, MATERIALS};
 use pressure_vessel_solver::buckling::{evaluate_buckling, BucklingApplicability};
 use pressure_vessel_solver::failure::{evaluate_failure_modes_with_thermal, MarginResult};
-use pressure_vessel_solver::geometry::{CylinderGeometry, GeometryError};
+use pressure_vessel_solver::geometry::{CylinderGeometry, GeometryError, WallAllowance};
 use pressure_vessel_solver::pressure::{EndCondition, PressureError, PressureLoading};
 use pressure_vessel_solver::thermal::ThermalLoading;
 use pressure_vessel_solver::thickness::{solve_minimum_thickness, ThicknessSolverInputs, ThicknessSolverOutcome};
@@ -35,6 +35,8 @@ use pressure_vessel_solver::thickness::{solve_minimum_thickness, ThicknessSolver
 pub enum NumberTarget {
     OuterDiameter,
     WallThickness,
+    CorrosionAllowance,
+    MillUndertolerance,
     InternalPressure,
     ExternalPressure,
     RequiredMs,
@@ -47,6 +49,8 @@ impl NumberTarget {
         match self {
             NumberTarget::OuterDiameter => "Outer Diameter",
             NumberTarget::WallThickness => "Wall Thickness",
+            NumberTarget::CorrosionAllowance => "Corrosion Allowance",
+            NumberTarget::MillUndertolerance => "Mill Undertolerance",
             NumberTarget::InternalPressure => "Internal Pressure",
             NumberTarget::ExternalPressure => "External Pressure",
             NumberTarget::RequiredMs => "Required Minimum MS",
@@ -61,7 +65,8 @@ impl NumberTarget {
     /// `LINEAR_DECIMALS`/`ANGLE_DECIMALS` constants).
     pub fn format_value(self, value: f64) -> String {
         match self {
-            NumberTarget::OuterDiameter | NumberTarget::WallThickness | NumberTarget::UnsupportedLength => format!("{value:.4} in"),
+            NumberTarget::OuterDiameter | NumberTarget::WallThickness | NumberTarget::CorrosionAllowance | NumberTarget::UnsupportedLength => format!("{value:.4} in"),
+            NumberTarget::MillUndertolerance => format!("{value:.2} %"),
             NumberTarget::InternalPressure | NumberTarget::ExternalPressure => format!("{value:.0} psi"),
             NumberTarget::RequiredMs => format!("{value:.2}"),
             NumberTarget::TemperatureDifferential => format!("{value:+.1} \u{b0}F"),
@@ -94,6 +99,16 @@ impl NumberTarget {
                 }
             }
             NumberTarget::InternalPressure => (model.internal_pressure < 0.0).then(|| "must be \u{2265} 0".to_string()),
+            NumberTarget::CorrosionAllowance => {
+                if model.corrosion_allowance < 0.0 {
+                    Some("must be >= 0".to_string())
+                } else if model.geometry == Err(GeometryError::NoRemainingWall) {
+                    Some("allowances leave no positive wall".to_string())
+                } else {
+                    None
+                }
+            }
+            NumberTarget::MillUndertolerance => (!(0.0..100.0).contains(&model.mill_undertolerance)).then(|| "must be >= 0 and < 100 %".to_string()),
             NumberTarget::ExternalPressure => (model.external_pressure < 0.0).then(|| "must be \u{2265} 0".to_string()),
             NumberTarget::UnsupportedLength => (model.unsupported_length < 0.0).then(|| "must be \u{2265} 0".to_string()),
             // A negative required MS and any temperature differential
@@ -126,7 +141,7 @@ pub enum FieldRow {
 
 /// The complete navigable row list, grouped under `Header` dividers - same
 /// pattern `toolboxes/bushing/model.rs`/`toolboxes/preload_analysis/model.rs`
-/// already use. Content-fixed (always the same 9 real rows, every input
+/// already use. Content-fixed (always the same 11 real rows, every input
 /// always relevant), so this takes no `model` argument - unlike Fastener
 /// Holes/Bushing/Preload Analysis, whose row lists vary with toolbox state.
 pub fn field_rows() -> Vec<FieldRow> {
@@ -134,6 +149,8 @@ pub fn field_rows() -> Vec<FieldRow> {
         FieldRow::Header("Geometry"),
         FieldRow::Number(NumberTarget::OuterDiameter),
         FieldRow::Number(NumberTarget::WallThickness),
+        FieldRow::Number(NumberTarget::CorrosionAllowance),
+        FieldRow::Number(NumberTarget::MillUndertolerance),
         FieldRow::Header("Pressure & End Condition"),
         FieldRow::Number(NumberTarget::InternalPressure),
         FieldRow::Number(NumberTarget::ExternalPressure),
@@ -167,7 +184,9 @@ pub fn field_hint(row: FieldRow) -> &'static str {
         FieldRow::ToggleEndCondition => "Open ends (e.g. a pipe run) or closed ends (a capped vessel) - changes the axial stress term in the failure-mode solve.",
         FieldRow::OpenMaterialPicker => "Pick from the built-in material catalog or a previously-added custom material - Enter opens a filterable list.",
         FieldRow::Number(NumberTarget::OuterDiameter) => "Vessel outer diameter.",
-        FieldRow::Number(NumberTarget::WallThickness) => "Wall thickness - must be less than half the outer diameter (else the inner radius would be non-positive).",
+        FieldRow::Number(NumberTarget::WallThickness) => "Nominal wall before mill undertolerance and corrosion; must be less than half the outer diameter.",
+        FieldRow::Number(NumberTarget::CorrosionAllowance) => "Uniform internal corrosion loss in inches, subtracted after mill undertolerance; outer diameter stays fixed.",
+        FieldRow::Number(NumberTarget::MillUndertolerance) => "Maximum wall shortfall as a percentage of nominal wall, before corrosion; 0 <= value < 100.",
         FieldRow::Number(NumberTarget::InternalPressure) => "Internal pressure.",
         FieldRow::Number(NumberTarget::ExternalPressure) => "External pressure - nonzero together with an unsupported length enables the buckling check.",
         FieldRow::Number(NumberTarget::RequiredMs) => "Required minimum margin of safety - the minimum-thickness solve targets this margin, not just zero.",
@@ -213,6 +232,8 @@ fn leak_custom_material(name: String, e_ksi: f64, sy_ksi: f64, ftu_ksi: f64, nu:
 pub struct PressureVesselModel {
     pub outer_diameter: f64,
     pub wall_thickness: f64,
+    pub corrosion_allowance: f64,
+    pub mill_undertolerance: f64,
     pub internal_pressure: f64,
     pub external_pressure: f64,
     pub closed_ends: bool,
@@ -254,6 +275,8 @@ impl Default for PressureVesselModel {
         let mut model = Self {
             outer_diameter: 6.0,
             wall_thickness: 1.0,
+            corrosion_allowance: 0.0,
+            mill_undertolerance: 0.0,
             internal_pressure: 5000.0,
             external_pressure: 0.0,
             closed_ends: true,
@@ -312,6 +335,8 @@ impl PressureVesselModel {
         match target {
             NumberTarget::OuterDiameter => self.outer_diameter,
             NumberTarget::WallThickness => self.wall_thickness,
+            NumberTarget::CorrosionAllowance => self.corrosion_allowance,
+            NumberTarget::MillUndertolerance => self.mill_undertolerance,
             NumberTarget::InternalPressure => self.internal_pressure,
             NumberTarget::ExternalPressure => self.external_pressure,
             NumberTarget::RequiredMs => self.required_ms,
@@ -335,6 +360,8 @@ impl PressureVesselModel {
         match target {
             NumberTarget::OuterDiameter => self.outer_diameter = raw,
             NumberTarget::WallThickness => self.wall_thickness = raw,
+            NumberTarget::CorrosionAllowance => self.corrosion_allowance = raw,
+            NumberTarget::MillUndertolerance => self.mill_undertolerance = raw,
             NumberTarget::InternalPressure => self.internal_pressure = raw,
             NumberTarget::ExternalPressure => self.external_pressure = raw,
             NumberTarget::RequiredMs => self.required_ms = raw,
@@ -349,6 +376,10 @@ impl PressureVesselModel {
         self.recompute();
     }
 
+    pub fn wall_allowance(&self) -> Result<WallAllowance, GeometryError> {
+        WallAllowance::new(self.corrosion_allowance, self.mill_undertolerance)
+    }
+
     /// Recomputes every derived result from current input state - the full
     /// applicable failure-mode set (thermal-superposed when a temperature
     /// differential is entered), buckling (if applicable), and the
@@ -358,7 +389,8 @@ impl PressureVesselModel {
     pub fn recompute(&mut self) {
         let outer_radius = (self.outer_diameter / 2.0).max(0.0);
         let inner_radius = outer_radius - self.wall_thickness;
-        self.geometry = CylinderGeometry::new(inner_radius, outer_radius);
+        self.geometry = CylinderGeometry::new(inner_radius, outer_radius)
+            .and_then(|nominal| self.wall_allowance()?.remaining_geometry(nominal));
         let end_condition = if self.closed_ends { EndCondition::Closed } else { EndCondition::Open };
         self.pressure = PressureLoading::new(self.internal_pressure, self.external_pressure, end_condition);
 
@@ -416,6 +448,34 @@ pub fn format_for_edit(value: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thermal_and_buckling_checks_use_the_remaining_geometry() {
+        let mut model = PressureVesselModel::default();
+        for (target, value) in [
+            (NumberTarget::WallThickness, 0.05),
+            (NumberTarget::InternalPressure, 0.0),
+            (NumberTarget::ExternalPressure, 50.0),
+            (NumberTarget::UnsupportedLength, 24.0),
+            (NumberTarget::TemperatureDifferential, 50.0),
+            (NumberTarget::CorrosionAllowance, 0.005),
+            (NumberTarget::MillUndertolerance, 12.5),
+        ] {
+            model.commit_number(target, value);
+        }
+        let expected = CylinderGeometry::new(3.0 - (0.05 * 0.875 - 0.005), 3.0).unwrap();
+        let pressure = model.pressure.unwrap();
+        let thermal = model.thermal_loading(model.material());
+        let mut rows = evaluate_failure_modes_with_thermal(&expected, &pressure, model.material(), thermal.as_ref());
+        let BucklingApplicability::Evaluated(buckling) = evaluate_buckling(&expected, &pressure, model.material(), Some(24.0)) else { panic!("thin shell buckling") };
+        rows.push(buckling);
+        for (actual, expected) in model.rows.iter().zip(&rows) {
+            assert_eq!(actual.name, expected.name);
+            assert!((actual.applied - expected.applied).abs() < 1e-6);
+            assert!((actual.margin - expected.margin).abs() < 1e-8);
+        }
+        assert_eq!(model.rows.len(), 5);
+    }
 
     #[test]
     fn default_model_matches_both_existing_gui_heads_defaults() {
