@@ -44,12 +44,22 @@ pub struct RetryStatus {
 #[derive(Debug)]
 pub enum ReadFileError {
     Cancelled,
-    Timeout { path: String, timeout_seconds: u64 },
-    Io { path: String, source: std::io::Error },
+    Timeout {
+        path: String,
+        timeout_seconds: u64,
+    },
+    Io {
+        path: String,
+        source: std::io::Error,
+    },
     /// The stream ended before delivering the byte count it reported at
     /// open time - the file was very likely truncated by another process
     /// mid-read.
-    Truncated { path: String, expected: u64, got: u64 },
+    Truncated {
+        path: String,
+        expected: u64,
+        got: u64,
+    },
 }
 
 impl std::fmt::Display for ReadFileError {
@@ -117,7 +127,10 @@ pub async fn read_file_bytes_robust(
         match attempt_result {
             Ok(bytes) => return Ok(bytes),
             Err(ReadFileError::Cancelled) => return Err(ReadFileError::Cancelled),
-            Err(ReadFileError::Io { source, .. }) if source.kind() != std::io::ErrorKind::PermissionDenied && attempt <= max_retries => {
+            Err(ReadFileError::Io { source, .. })
+                if source.kind() != std::io::ErrorKind::PermissionDenied
+                    && attempt <= max_retries =>
+            {
                 if let Some(cb) = on_retry.as_deref_mut() {
                     cb(RetryStatus {
                         attempt,
@@ -151,12 +164,18 @@ pub async fn read_file_bytes_robust(
 async fn read_once(path: &str) -> Result<Vec<u8>, ReadFileError> {
     let mut file = tokio::fs::File::open(path)
         .await
-        .map_err(|e| ReadFileError::Io { path: path.to_string(), source: e })?;
+        .map_err(|e| ReadFileError::Io {
+            path: path.to_string(),
+            source: e,
+        })?;
 
     let expected_len = file
         .metadata()
         .await
-        .map_err(|e| ReadFileError::Io { path: path.to_string(), source: e })?
+        .map_err(|e| ReadFileError::Io {
+            path: path.to_string(),
+            source: e,
+        })?
         .len();
 
     let mut buffer = vec![0u8; expected_len as usize];
@@ -166,7 +185,10 @@ async fn read_once(path: &str) -> Result<Vec<u8>, ReadFileError> {
         let read = file
             .read(&mut buffer[total_read..])
             .await
-            .map_err(|e| ReadFileError::Io { path: path.to_string(), source: e })?;
+            .map_err(|e| ReadFileError::Io {
+                path: path.to_string(),
+                source: e,
+            })?;
         if read == 0 {
             break;
         }
@@ -245,8 +267,12 @@ pub fn enumerate_files_safely(
                         Ok(ft) if ft.is_dir() => child_dirs.push(path),
                         Ok(ft) if ft.is_file() => match e.metadata() {
                             Ok(meta) => {
-                                let modified = meta.modified().map(system_time_to_local).unwrap_or_else(|_| Local::now());
-                                let created = meta.created().map(system_time_to_local).unwrap_or(modified);
+                                let modified = meta
+                                    .modified()
+                                    .map(system_time_to_local)
+                                    .unwrap_or_else(|_| Local::now());
+                                let created =
+                                    meta.created().map(system_time_to_local).unwrap_or(modified);
                                 child_files.push(EnumeratedFile {
                                     path,
                                     length: meta.len() as i64,
@@ -282,9 +308,14 @@ pub fn enumerate_files_safely(
             if !include_hidden && is_hidden(&d) {
                 continue;
             }
-            let dir_name = d.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let dir_name = d
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
             let full_path = d.to_string_lossy().to_string();
-            if !exclude_folders.is_empty() && is_excluded_directory(&dir_name, &full_path, exclude_folders) {
+            if !exclude_folders.is_empty()
+                && is_excluded_directory(&dir_name, &full_path, exclude_folders)
+            {
                 continue;
             }
             // The fast re-search index lives in a folder of the searched tree and must never be walked as if it held
@@ -305,7 +336,7 @@ pub fn enumerate_files_safely(
 }
 
 #[cfg(windows)]
-fn is_hidden(path: &Path) -> bool {
+pub(crate) fn is_hidden(path: &Path) -> bool {
     use std::os::windows::fs::MetadataExt;
     const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
     std::fs::metadata(path)
@@ -317,7 +348,7 @@ fn is_hidden(path: &Path) -> bool {
 /// CLAUDE.md - so this path only matters for local development/testing on
 /// macOS/Linux, where there's no real "hidden" file attribute bit).
 #[cfg(not(windows))]
-fn is_hidden(path: &Path) -> bool {
+pub(crate) fn is_hidden(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
         .map(|n| n.starts_with('.'))
@@ -332,7 +363,11 @@ fn is_hidden(path: &Path) -> bool {
 /// (contains a separator) must match a contiguous run of segments, so
 /// excluding "src/bin" still works as a sub-path exclusion without falling
 /// back to substring matching.
-fn is_excluded_directory(directory_name: &str, full_path: &str, exclude_folders: &[String]) -> bool {
+fn is_excluded_directory(
+    directory_name: &str,
+    full_path: &str,
+    exclude_folders: &[String],
+) -> bool {
     let is_sep = |c: char| c == '/' || c == '\\';
 
     for raw in exclude_folders {
@@ -369,6 +404,28 @@ fn is_excluded_directory(directory_name: &str, full_path: &str, exclude_folders:
     false
 }
 
+#[cfg(feature = "semantic-search")]
+pub(crate) fn is_excluded_path(path: &Path, root: &Path, exclude_folders: &[String]) -> bool {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return true;
+    };
+    let Some(parent) = relative.parent() else {
+        return false;
+    };
+    let mut current = root.to_path_buf();
+    for segment in parent.components() {
+        current.push(segment);
+        let name = current
+            .file_name()
+            .map(|name| name.to_string_lossy())
+            .unwrap_or_default();
+        if is_excluded_directory(&name, &current.to_string_lossy(), exclude_folders) {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,16 +437,9 @@ mod tests {
         std::fs::write(&path, b"hello world").unwrap();
 
         let cancellation = CancellationToken::new();
-        let bytes = read_file_bytes_robust(
-            path.to_str().unwrap(),
-            30,
-            3,
-            10,
-            None,
-            &cancellation,
-        )
-        .await
-        .unwrap();
+        let bytes = read_file_bytes_robust(path.to_str().unwrap(), 30, 3, 10, None, &cancellation)
+            .await
+            .unwrap();
 
         assert_eq!(bytes, b"hello world");
     }
@@ -426,7 +476,8 @@ mod tests {
         let cancellation = CancellationToken::new();
         cancellation.cancel();
 
-        let result = read_file_bytes_robust(path.to_str().unwrap(), 30, 3, 10, None, &cancellation).await;
+        let result =
+            read_file_bytes_robust(path.to_str().unwrap(), 30, 3, 10, None, &cancellation).await;
         assert!(matches!(result, Err(ReadFileError::Cancelled)));
     }
 
@@ -455,12 +506,19 @@ mod tests {
             .map(|f| f.path.file_name().unwrap().to_string_lossy().to_string())
             .collect();
         assert!(names.contains(&"a.txt".to_string()));
-        assert!(names.contains(&"c.txt".to_string()), "excluding 'bin' must not exclude 'robin'");
-        assert!(!names.contains(&"b.txt".to_string()), "'bin' folder must be pruned");
+        assert!(
+            names.contains(&"c.txt".to_string()),
+            "excluding 'bin' must not exclude 'robin'"
+        );
+        assert!(
+            !names.contains(&"b.txt".to_string()),
+            "'bin' folder must be pruned"
+        );
     }
 
     #[test]
-    fn the_index_folder_is_never_walked_even_when_hidden_files_are_included_and_nothing_is_excluded() {
+    fn the_index_folder_is_never_walked_even_when_hidden_files_are_included_and_nothing_is_excluded(
+    ) {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
         let index = dir.path().join(crate::native_index::INDEX_FOLDER_NAME);
@@ -468,9 +526,23 @@ mod tests {
         std::fs::write(index.join("meta.json"), b"{}").unwrap();
         std::fs::create_dir(index.join("nested")).unwrap();
         std::fs::write(index.join("nested").join("seg.txt"), b"x").unwrap();
-        let (files, _) = enumerate_files_safely(dir.path().to_str().unwrap(), true, &[], &CancellationToken::new(), None).unwrap();
-        let names: Vec<String> = files.iter().map(|f| f.path.file_name().unwrap().to_string_lossy().to_string()).collect();
-        assert_eq!(names, vec!["a.txt".to_string()], "the index folder is not a document source");
+        let (files, _) = enumerate_files_safely(
+            dir.path().to_str().unwrap(),
+            true,
+            &[],
+            &CancellationToken::new(),
+            None,
+        )
+        .unwrap();
+        let names: Vec<String> = files
+            .iter()
+            .map(|f| f.path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["a.txt".to_string()],
+            "the index folder is not a document source"
+        );
     }
 
     #[test]
@@ -481,14 +553,23 @@ mod tests {
         let cancellation = CancellationToken::new();
         cancellation.cancel();
 
-        let result = enumerate_files_safely(dir.path().to_str().unwrap(), true, &[], &cancellation, None);
+        let result =
+            enumerate_files_safely(dir.path().to_str().unwrap(), true, &[], &cancellation, None);
         assert!(result.is_err());
     }
 
     #[test]
     fn is_excluded_directory_matches_whole_segment_not_substring() {
-        assert!(is_excluded_directory("bin", "/Users/x/project/bin", &["bin".to_string()]));
-        assert!(!is_excluded_directory("robin", "/Users/robin/Documents", &["bin".to_string()]));
+        assert!(is_excluded_directory(
+            "bin",
+            "/Users/x/project/bin",
+            &["bin".to_string()]
+        ));
+        assert!(!is_excluded_directory(
+            "robin",
+            "/Users/robin/Documents",
+            &["bin".to_string()]
+        ));
     }
 
     #[test]

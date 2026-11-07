@@ -51,6 +51,24 @@ pub fn palette(dark: bool) -> Palette {
     }
 }
 
+/// The Search concept uses a low-luminance slate palette throughout.
+pub fn search_palette() -> Palette {
+    let rgb = |r, g, b| Color32::from_rgb(r, g, b);
+    Palette {
+        bg: rgb(32, 45, 51),
+        panel: rgb(42, 57, 64),
+        raised: rgb(38, 52, 58),
+        line: rgb(64, 81, 88),
+        text: rgb(216, 226, 223),
+        dim: rgb(154, 173, 170),
+        accent: rgb(97, 192, 170),
+        on_accent: rgb(243, 251, 248),
+        good: rgb(145, 218, 198),
+        warn: rgb(212, 172, 99),
+        bad: rgb(212, 135, 127),
+    }
+}
+
 pub fn tone_color(p: &Palette, tone: Tone) -> Color32 {
     match tone {
         Tone::Title => p.accent,
@@ -64,7 +82,11 @@ pub fn tone_color(p: &Palette, tone: Tone) -> Color32 {
 
 fn visuals(dark: bool) -> egui::Visuals {
     let p = palette(dark);
-    let mut v = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+    let mut v = if dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
     v.panel_fill = p.panel;
     v.window_fill = p.panel;
     v.extreme_bg_color = p.bg;
@@ -72,7 +94,12 @@ fn visuals(dark: bool) -> egui::Visuals {
     v.window_stroke = Stroke::new(1.0, p.line);
     v.window_corner_radius = CornerRadius::same(10);
     v.menu_corner_radius = CornerRadius::same(8);
-    v.window_shadow = egui::Shadow { offset: [0, 6], blur: 22, spread: 0, color: Color32::from_black_alpha(if dark { 110 } else { 46 }) };
+    v.window_shadow = egui::Shadow {
+        offset: [0, 6],
+        blur: 22,
+        spread: 0,
+        color: Color32::from_black_alpha(if dark { 110 } else { 46 }),
+    };
     v.popup_shadow = v.window_shadow;
     v.selection.bg_fill = p.accent.gamma_multiply(0.30);
     v.selection.stroke = Stroke::new(1.0, p.accent);
@@ -98,7 +125,13 @@ fn visuals(dark: bool) -> egui::Visuals {
     w.open.weak_bg_fill = p.raised;
     w.open.bg_fill = p.raised;
     w.open.bg_stroke = Stroke::new(1.0, p.line);
-    for s in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+    for s in [
+        &mut w.noninteractive,
+        &mut w.inactive,
+        &mut w.hovered,
+        &mut w.active,
+        &mut w.open,
+    ] {
         s.corner_radius = r;
         s.expansion = 0.0;
     }
@@ -111,11 +144,23 @@ pub fn install(ctx: &egui::Context) {
     ctx.style_mut_of(egui::Theme::Light, |s| s.visuals = visuals(false));
     ctx.all_styles_mut(|s| {
         s.text_styles = [
-            (TextStyle::Small, FontId::new(11.0, FontFamily::Proportional)),
+            (
+                TextStyle::Small,
+                FontId::new(11.0, FontFamily::Proportional),
+            ),
             (TextStyle::Body, FontId::new(13.0, FontFamily::Proportional)),
-            (TextStyle::Button, FontId::new(13.0, FontFamily::Proportional)),
-            (TextStyle::Heading, FontId::new(16.0, FontFamily::Proportional)),
-            (TextStyle::Monospace, FontId::new(12.0, FontFamily::Monospace)),
+            (
+                TextStyle::Button,
+                FontId::new(13.0, FontFamily::Proportional),
+            ),
+            (
+                TextStyle::Heading,
+                FontId::new(16.0, FontFamily::Proportional),
+            ),
+            (
+                TextStyle::Monospace,
+                FontId::new(12.0, FontFamily::Monospace),
+            ),
         ]
         .into();
         s.spacing.item_spacing = egui::vec2(8.0, 5.0);
@@ -139,7 +184,11 @@ mod tests {
         let l = |c: Color32| {
             let f = |v: u8| {
                 let v = v as f32 / 255.0;
-                if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+                if v <= 0.03928 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
             };
             0.2126 * f(c.r()) + 0.7152 * f(c.g()) + 0.0722 * f(c.b())
         };
@@ -152,12 +201,25 @@ mod tests {
         for dark in [false, true] {
             let p = palette(dark);
             for surface in [p.bg, p.panel, p.raised] {
-                assert!(contrast(p.text, surface) >= 7.0, "text on a surface, dark={dark}");
-                assert!(contrast(p.dim, surface) >= 3.4, "secondary text, dark={dark}: {}", contrast(p.dim, surface));
+                assert!(
+                    contrast(p.text, surface) >= 7.0,
+                    "text on a surface, dark={dark}"
+                );
+                assert!(
+                    contrast(p.dim, surface) >= 3.4,
+                    "secondary text, dark={dark}: {}",
+                    contrast(p.dim, surface)
+                );
                 assert!(contrast(p.accent, surface) >= 3.0, "accent, dark={dark}");
-                assert!(contrast(p.warn, surface) >= 3.0 && contrast(p.good, surface) >= 3.0, "semantic colours, dark={dark}");
+                assert!(
+                    contrast(p.warn, surface) >= 3.0 && contrast(p.good, surface) >= 3.0,
+                    "semantic colours, dark={dark}"
+                );
             }
-            assert!(contrast(p.on_accent, p.accent) >= 3.0, "text on a filled accent, dark={dark}");
+            assert!(
+                contrast(p.on_accent, p.accent) >= 3.0,
+                "text on a filled accent, dark={dark}"
+            );
         }
     }
 }

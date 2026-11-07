@@ -149,12 +149,20 @@ impl StackupSession {
         self.result_revision == Some(self.input_revision)
     }
     fn snapshot(&self) -> EditSnapshot {
-        EditSnapshot { inputs: self.inputs.clone(), selected: self.selected, drafts: self.drafts.clone() }
+        EditSnapshot {
+            inputs: self.inputs.clone(),
+            selected: self.selected,
+            drafts: self.drafts.clone(),
+        }
     }
     fn record(&mut self, before: EditSnapshot) {
-        if self.snapshot() == before { return; }
+        if self.snapshot() == before {
+            return;
+        }
         self.undo.push(before);
-        if self.undo.len() > UNDO_LIMIT { self.undo.remove(0); }
+        if self.undo.len() > UNDO_LIMIT {
+            self.undo.remove(0);
+        }
         self.redo.clear();
     }
     fn restore(&mut self, snapshot: EditSnapshot) {
@@ -254,7 +262,8 @@ impl StackupSession {
     }
     fn field(&self, id: u8, label: &str) -> DocInput {
         let text = self.value(id);
-        let valid = valid_text(id, &text) && (!matches!(id, 26 | 27) || self.materials.iter().any(|m| m.id == text));
+        let valid = valid_text(id, &text)
+            && (!matches!(id, 26 | 27) || self.materials.iter().any(|m| m.id == text));
         DocInput {
             id,
             label: label.into(),
@@ -281,8 +290,13 @@ impl StackupSession {
         }
     }
     fn save(&mut self) {
-        if self.inputs.members.iter().any(|m| !self.materials.iter().any(|v| v.id == m.housing_material) || !self.materials.iter().any(|v| v.id == m.bushing_material)) {
-            self.status = "Cannot save unknown material IDs. Choose catalog materials for every member.".into();
+        if self.inputs.members.iter().any(|m| {
+            !self.materials.iter().any(|v| v.id == m.housing_material)
+                || !self.materials.iter().any(|v| v.id == m.bushing_material)
+        }) {
+            self.status =
+                "Cannot save unknown material IDs. Choose catalog materials for every member."
+                    .into();
             return;
         }
         if self.drafts.iter().any(|((_, id), t)| {
@@ -313,7 +327,15 @@ impl StackupSession {
     }
     fn transfer_availability(&self) -> Result<(), String> {
         let member = &self.inputs.members[self.selected];
-        if !self.materials.iter().any(|m| m.id == member.housing_material) || !self.materials.iter().any(|m| m.id == member.bushing_material) {
+        if !self
+            .materials
+            .iter()
+            .any(|m| m.id == member.housing_material)
+            || !self
+                .materials
+                .iter()
+                .any(|m| m.id == member.bushing_material)
+        {
             return Err("Choose catalog housing and bushing materials before transfer".into());
         }
         if !self.inputs.bushing_enabled {
@@ -342,14 +364,23 @@ impl StackupSession {
             self.status = e;
             return;
         }
-        let transfer = if eccentric { super::stackup_transfer::prepare_eccentric(
-            &self.inputs,
-            self.selected,
-            &self.path.to_string_lossy(),
-            self.input_revision,
-        ).map(|(file, eccentric)| (file, Some(eccentric))) } else { super::stackup_transfer::prepare(
-            &self.inputs, self.selected, &self.path.to_string_lossy(), self.input_revision,
-        ).map(|file| (file, None)) };
+        let transfer = if eccentric {
+            super::stackup_transfer::prepare_eccentric(
+                &self.inputs,
+                self.selected,
+                &self.path.to_string_lossy(),
+                self.input_revision,
+            )
+            .map(|(file, eccentric)| (file, Some(eccentric)))
+        } else {
+            super::stackup_transfer::prepare(
+                &self.inputs,
+                self.selected,
+                &self.path.to_string_lossy(),
+                self.input_revision,
+            )
+            .map(|file| (file, None))
+        };
         let (file, eccentric_file) = match transfer {
             Ok(files) => files,
             Err(e) => {
@@ -390,16 +421,37 @@ impl StackupSession {
             return;
         }
         if let Some(eccentric_file) = eccentric_file {
-            if let Err(e) = crate::persistence::write(dir.join("eccentric.json"), eccentric_file.to_json()) {
-                self.status = format!("Bushing case saved at {}, but eccentric case write failed: {e}", dir.display());
+            if let Err(e) =
+                crate::persistence::write(dir.join("eccentric.json"), eccentric_file.to_json())
+            {
+                self.status = format!(
+                    "Bushing case saved at {}, but eccentric case write failed: {e}",
+                    dir.display()
+                );
                 return;
             }
         }
-        let kind = if eccentric { crate::gpu_viewer::EditorKind::Eccentric } else { crate::gpu_viewer::EditorKind::Bushing };
-        let target = dir.join(if eccentric { "eccentric.json" } else { "bushing.json" });
-        match super::handoff::launch(kind,&target) {
-            Ok(())=>self.status=if eccentric { format!("Opened member #{} at the pilot offset limit with a 90-degree load. Review load before analysis; machining provenance is in bushing.json.",self.inputs.members[self.selected].id) } else { format!("Opened member #{} in native Bushing Workbench. Calculated member hole, enlargement reason and wall context preserved.",self.inputs.members[self.selected].id) },
-            Err(e)=>self.status=format!("Transfer saved at {}, launch failed: {e}",dir.display()),
+        let kind = if eccentric {
+            crate::gpu_viewer::EditorKind::Eccentric
+        } else {
+            crate::gpu_viewer::EditorKind::Bushing
+        };
+        let target = dir.join(if eccentric {
+            "eccentric.json"
+        } else {
+            "bushing.json"
+        });
+        match super::handoff::launch(kind, &target) {
+            Ok(()) => {
+                self.status = if eccentric {
+                    format!("Opened member #{} at the pilot offset limit with a 90-degree load. Review load before analysis; machining provenance is in bushing.json.",self.inputs.members[self.selected].id)
+                } else {
+                    format!("Opened member #{} in native Bushing Workbench. Calculated member hole, enlargement reason and wall context preserved.",self.inputs.members[self.selected].id)
+                }
+            }
+            Err(e) => {
+                self.status = format!("Transfer saved at {}, launch failed: {e}", dir.display())
+            }
         }
     }
     fn act_stackup(&mut self, a: StackupAct) {
@@ -481,17 +533,31 @@ impl StackupSession {
                 self.recalculate();
                 return;
             }
-            StackupAct::Undo => { self.undo(); return; }
-            StackupAct::Redo => { self.redo(); return; }
-            StackupAct::OpenMaterial(id) if matches!(id, 26 | 27) => { self.material_picker = Some(id); return; }
+            StackupAct::Undo => {
+                self.undo();
+                return;
+            }
+            StackupAct::Redo => {
+                self.redo();
+                return;
+            }
+            StackupAct::OpenMaterial(id) if matches!(id, 26 | 27) => {
+                self.material_picker = Some(id);
+                return;
+            }
             StackupAct::PickMaterial(index) => {
-                if let (Some(id), Some(material)) = (self.material_picker.take(), self.materials.get(index)) {
+                if let (Some(id), Some(material)) =
+                    (self.material_picker.take(), self.materials.get(index))
+                {
                     self.document_field(id, material.id.to_string());
                     self.recalculate();
                 }
                 return;
             }
-            StackupAct::CloseMaterial => { self.material_picker = None; return; }
+            StackupAct::CloseMaterial => {
+                self.material_picker = None;
+                return;
+            }
             StackupAct::Save => {
                 self.save();
                 return;
@@ -605,7 +671,9 @@ impl Authoring for StackupSession {
     fn key(&mut self, key: Key, mods: Mods) -> KeyResult {
         match key {
             Key::Char(c) if mods.command && c.eq_ignore_ascii_case(&'s') => self.save(),
-            Key::Char(c) if mods.command && c.eq_ignore_ascii_case(&'z') && mods.shift => self.redo(),
+            Key::Char(c) if mods.command && c.eq_ignore_ascii_case(&'z') && mods.shift => {
+                self.redo()
+            }
             Key::Char(c) if mods.command && c.eq_ignore_ascii_case(&'z') => self.undo(),
             _ => return KeyResult::Unhandled,
         }
@@ -711,19 +779,49 @@ impl Authoring for StackupSession {
     }
     fn ribbon(&self) -> Vec<RibbonTab> {
         let doc = self.document().expect("Stackup always has a page");
-        let group = |labels: &[&str]| doc.buttons.iter().filter(|e| labels.contains(&e.label.as_str())).cloned().collect();
+        let group = |labels: &[&str]| {
+            doc.buttons
+                .iter()
+                .filter(|e| labels.contains(&e.label.as_str()))
+                .cloned()
+                .collect()
+        };
         vec![RibbonTab::new("Stackup")
             .group("Members", group(&["Add", "Remove", "Up", "Down"]))
             .group("Edit", group(&["Undo", "Redo", "Recalculate", "Save"]))
-            .group("Transfer", group(&["Send to Bushing", "Send offset case to Eccentric"]))]
+            .group(
+                "Transfer",
+                group(&["Send to Bushing", "Send offset case to Eccentric"]),
+            )]
     }
     fn menus(&self) -> Vec<Menu> {
         let tabs = self.ribbon();
         let groups = &tabs[0].groups;
         vec![
-            Menu { title: "File".into(), items: groups[1].buttons.iter().filter(|e| e.label == "Save").cloned().map(Item::Entry).collect() },
-            Menu { title: "Edit".into(), items: groups[0].buttons.iter().chain(groups[1].buttons.iter().filter(|e| e.label != "Save")).cloned().map(Item::Entry).collect() },
-            Menu { title: "Tools".into(), items: groups[2].buttons.iter().cloned().map(Item::Entry).collect() },
+            Menu {
+                title: "File".into(),
+                items: groups[1]
+                    .buttons
+                    .iter()
+                    .filter(|e| e.label == "Save")
+                    .cloned()
+                    .map(Item::Entry)
+                    .collect(),
+            },
+            Menu {
+                title: "Edit".into(),
+                items: groups[0]
+                    .buttons
+                    .iter()
+                    .chain(groups[1].buttons.iter().filter(|e| e.label != "Save"))
+                    .cloned()
+                    .map(Item::Entry)
+                    .collect(),
+            },
+            Menu {
+                title: "Tools".into(),
+                items: groups[2].buttons.iter().cloned().map(Item::Entry).collect(),
+            },
         ]
     }
     fn context_menu(&self) -> Vec<Item> {
@@ -821,12 +919,30 @@ impl Authoring for StackupSession {
             } else {
                 Err("Already last".into())
             }),
-            btn("Undo", StackupAct::Undo).when(if self.undo.is_empty() { Err("No edit to undo".into()) } else { Ok(()) }),
-            btn("Redo", StackupAct::Redo).when(if self.redo.is_empty() { Err("No edit to redo".into()) } else { Ok(()) }),
+            btn("Undo", StackupAct::Undo).when(if self.undo.is_empty() {
+                Err("No edit to undo".into())
+            } else {
+                Ok(())
+            }),
+            btn("Redo", StackupAct::Redo).when(if self.redo.is_empty() {
+                Err("No edit to redo".into())
+            } else {
+                Ok(())
+            }),
             btn("Save", StackupAct::Save),
         ];
         buttons.push(btn("Send to Bushing", StackupAct::Send).when(self.transfer_availability()));
-        buttons.push(btn("Send offset case to Eccentric", StackupAct::SendEccentric).when(self.transfer_availability().and_then(|_| if self.inputs.pilot_offset > 0.0 { Ok(()) } else { Err("Set a positive pilot offset limit".into()) })));
+        buttons.push(
+            btn("Send offset case to Eccentric", StackupAct::SendEccentric).when(
+                self.transfer_availability().and_then(|_| {
+                    if self.inputs.pilot_offset > 0.0 {
+                        Ok(())
+                    } else {
+                        Err("Set a positive pilot offset limit".into())
+                    }
+                }),
+            ),
+        );
         let mut global = vec![
             (0, "Bushing ID nominal (in)"),
             (1, "Bushing ID min (in)"),
@@ -878,6 +994,8 @@ impl Authoring for StackupSession {
             cards: vec![],
         };
         let mut doc = Document {
+            sidebar: None,
+            header: None,
             buttons,
             panels: vec![
                 panel("Stack configuration", global),
@@ -902,12 +1020,31 @@ impl Authoring for StackupSession {
         if let Some(id) = self.material_picker {
             let selected = self.value(id);
             doc.modal = Some(DocModal {
-                card: super::authoring::Card::new("stackup-material", if id == 26 { "Housing material" } else { "Bushing material" }, super::authoring::Relevance::Primary,
-                    self.materials.iter().enumerate().map(|(index, material)| DockItem::row(
-                        format!("{}  ·  {}", material.name, material.id),
-                        if material.id == selected { Tone::On } else { Tone::Normal },
-                        Some(action(StackupAct::PickMaterial(index))), false,
-                    )).collect()),
+                card: super::authoring::Card::new(
+                    "stackup-material",
+                    if id == 26 {
+                        "Housing material"
+                    } else {
+                        "Bushing material"
+                    },
+                    super::authoring::Relevance::Primary,
+                    self.materials
+                        .iter()
+                        .enumerate()
+                        .map(|(index, material)| {
+                            DockItem::row(
+                                format!("{}  ·  {}", material.name, material.id),
+                                if material.id == selected {
+                                    Tone::On
+                                } else {
+                                    Tone::Normal
+                                },
+                                Some(action(StackupAct::PickMaterial(index))),
+                                false,
+                            )
+                        })
+                        .collect(),
+                ),
                 close: action(StackupAct::CloseMaterial),
             });
         }
@@ -948,30 +1085,31 @@ impl Authoring for StackupSession {
                 ],
                 130.0,
             ),
-            rows: self
-                .inputs
-                .members
-                .iter()
-                .enumerate()
-                .map(|(index, member)| {
-                    let p = stackup::wall_policy(&self.inputs, member);
-                    DocRow {
-                        cells: vec![
-                            format!("{} / #{} {}", index + 1, member.id, member.name),
-                            optional(p.effective),
-                            p.source.into(),
-                            format!("{:?}", p.mode),
-                            "Not current".into(),
-                            "Recalculate / review inputs".into(),
-                        ],
-                        sub: String::new(),
-                        selected: index == self.selected,
-                        select: action(StackupAct::Select(index)),
-                        open: None,
-                        badge: None,
-                    }
-                })
-                .collect(),
+            rows: std::sync::Arc::new(
+                self.inputs
+                    .members
+                    .iter()
+                    .enumerate()
+                    .map(|(index, member)| {
+                        let p = stackup::wall_policy(&self.inputs, member);
+                        DocRow {
+                            cells: vec![
+                                format!("{} / #{} {}", index + 1, member.id, member.name),
+                                optional(p.effective),
+                                p.source.into(),
+                                format!("{:?}", p.mode),
+                                "Not current".into(),
+                                "Recalculate / review inputs".into(),
+                            ],
+                            sub: String::new(),
+                            selected: index == self.selected,
+                            select: action(StackupAct::Select(index)),
+                            open: None,
+                            badge: None,
+                        }
+                    })
+                    .collect(),
+            ),
             ..DocTable::default()
         });
         if !self.current() {
@@ -1044,7 +1182,7 @@ impl Authoring for StackupSession {
             } else {
                 "STALE".into()
             };
-            policy.rows.push(row(vec![
+            std::sync::Arc::make_mut(&mut policy.rows).push(row(vec![
                 format!("{} / #{} {}", index + 1, member.id, member.name),
                 optional(lr.policy.effective),
                 lr.policy.source.into(),
@@ -1069,7 +1207,7 @@ impl Authoring for StackupSession {
                 lr.imported_comparison.as_deref().unwrap_or("")
             );
             let band = |d: stackup::Band| format!("{:.5} [{:.5},{:.5}]", d.nominal, d.min, d.max);
-            doc.table.rows.push(row(vec![
+            std::sync::Arc::make_mut(&mut doc.table.rows).push(row(vec![
                 format!("{} / #{} {}", index + 1, member.id, member.name),
                 format!("{:.5}", member.thickness),
                 band(member.hole),
@@ -1119,7 +1257,7 @@ impl Authoring for StackupSession {
             ]));
         }
         doc.policy = Some(policy);
-        doc.detail=Some(DocDetail{drawing:Some(self.drawing(r)),grid:None,title:"Stack section, x-z".into(),subtitle:"Shared limiting scenario, true scale. Orange original, green bore, blue common axis. Click a layer to edit.".into(),actions:vec![],blocks:vec![],text:None,empty:format!("Selected {} #{}. OD center x={:.5} in. Resulting bore capacity is the largest common circular reamer diameter allowed locally by selected OD and wall; actual requested ID remains shared. {}",m.name,m.id,r.layers[self.selected].center_x,if self.current(){""}else{"DRAWING STALE"})});
+        doc.detail=Some(DocDetail{drawing:Some(self.drawing(r)),grid:None,title:"Stack section, x-z".into(),subtitle:"Shared limiting scenario, true scale. Orange original, green bore, blue common axis. Click a layer to edit.".into(),actions:vec![],match_navigation:None,scroll_to_line:None,scroll_request:None,blocks:vec![],text:None,empty:format!("Selected {} #{}. OD center x={:.5} in. Resulting bore capacity is the largest common circular reamer diameter allowed locally by selected OD and wall; actual requested ID remains shared. {}",m.name,m.id,r.layers[self.selected].center_x,if self.current(){""}else{"DRAWING STALE"})});
         Some(doc)
     }
 }
@@ -1137,12 +1275,30 @@ mod tests {
         assert_eq!(s.inputs.members[0].thickness, 0.75);
         s.act_stackup(StackupAct::Add);
         assert_eq!(s.inputs.members.len(), original.members.len() + 1);
-        s.key(Key::Char('z'), Mods { command: true, ..Default::default() });
+        s.key(
+            Key::Char('z'),
+            Mods {
+                command: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(s.inputs.members.len(), original.members.len());
-        s.key(Key::Char('z'), Mods { command: true, ..Default::default() });
+        s.key(
+            Key::Char('z'),
+            Mods {
+                command: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(s.inputs, original);
         assert!(s.drafts.is_empty() && s.current());
-        s.key(Key::Char('Z'), Mods { command: true, shift: true });
+        s.key(
+            Key::Char('Z'),
+            Mods {
+                command: true,
+                shift: true,
+            },
+        );
         assert_eq!(s.inputs.members[0].thickness, 0.75);
         assert_eq!(s.value(11), "0.75");
         assert!(s.current());
@@ -1176,7 +1332,14 @@ mod tests {
             member.finished.degrees = 0.0;
         }
         s.recalculate();
-        let button = |s: &StackupSession| s.document().unwrap().buttons.into_iter().find(|b| b.label == "Send offset case to Eccentric").unwrap();
+        let button = |s: &StackupSession| {
+            s.document()
+                .unwrap()
+                .buttons
+                .into_iter()
+                .find(|b| b.label == "Send offset case to Eccentric")
+                .unwrap()
+        };
         assert!(!button(&s).enabled);
         s.inputs.pilot_offset = 0.02;
         s.recalculate();
@@ -1186,9 +1349,20 @@ mod tests {
     fn member_strip_actions_are_available_in_ribbon_and_menus() {
         let s = session();
         let ribbon = s.ribbon();
-        assert!(ribbon[0].groups.iter().flat_map(|g| &g.buttons).any(|e| e.label == "Add"));
-        assert!(ribbon[0].groups.iter().flat_map(|g| &g.buttons).any(|e| e.label == "Send to Bushing"));
-        assert!(s.menus().iter().any(|m| m.title == "Edit" && m.items.iter().any(|item| matches!(item, Item::Entry(e) if e.label == "Undo"))));
+        assert!(ribbon[0]
+            .groups
+            .iter()
+            .flat_map(|g| &g.buttons)
+            .any(|e| e.label == "Add"));
+        assert!(ribbon[0]
+            .groups
+            .iter()
+            .flat_map(|g| &g.buttons)
+            .any(|e| e.label == "Send to Bushing"));
+        assert!(s.menus().iter().any(|m| m.title == "Edit"
+            && m.items
+                .iter()
+                .any(|item| matches!(item, Item::Entry(e) if e.label == "Undo"))));
     }
     #[test]
     fn exhausted_member_ids_do_not_mutate_stack() {
@@ -1223,7 +1397,10 @@ mod tests {
             assert_eq!(added.reference_normal_deg, expected.reference_normal_deg);
             assert_eq!(added.original, expected.original);
             assert_eq!(added.finished, expected.finished);
-            assert_eq!(s.result.as_ref().unwrap().layers[0].cleanup_diameter, before);
+            assert_eq!(
+                s.result.as_ref().unwrap().layers[0].cleanup_diameter,
+                before
+            );
         }
     }
     #[test]

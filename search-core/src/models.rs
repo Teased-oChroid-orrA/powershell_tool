@@ -120,6 +120,10 @@ pub struct SearchSettings {
     /// `cache_file_path` (a different concern: result caching vs.
     /// failure tracking, and either can be enabled without the other).
     pub failure_log_path: Option<String>,
+    /// Build local neural embeddings beside the exact Tantivy index. This
+    /// does not participate in matching or the result-cache fingerprint.
+    #[serde(default, skip_serializing)]
+    pub semantic_index: bool,
     pub dry_run: bool,
 
     pub max_retries: i32,
@@ -141,7 +145,9 @@ pub struct SearchSettings {
 /// sandboxed/unusual environments) - falls back to the old fixed default
 /// in that case rather than panicking.
 pub fn default_throttle_limit() -> i32 {
-    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(5);
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(5);
     ((cores * 2) as i32).clamp(4, 32)
 }
 
@@ -153,7 +159,9 @@ pub fn default_throttle_limit() -> i32 {
 /// while multiplying peak memory. Clamped to [2, 16] - a smaller ceiling
 /// than the light default's [4, 32], deliberately, for the same reason.
 pub fn default_heavy_throttle_limit() -> i32 {
-    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
     (cores as i32).clamp(2, 16)
 }
 
@@ -161,7 +169,12 @@ impl SearchSettings {
     /// Every *searched-for* filter text: the primary filters, then each
     /// non-exclusion group's.
     pub fn all_filters(&self) -> impl Iterator<Item = &String> {
-        self.filters.iter().chain(self.filter_groups.iter().filter(|g| g.exclude.is_none()).flat_map(|g| g.filters.iter()))
+        self.filters.iter().chain(
+            self.filter_groups
+                .iter()
+                .filter(|g| g.exclude.is_none())
+                .flat_map(|g| g.filters.iter()),
+        )
     }
 }
 
@@ -195,6 +208,7 @@ impl Default for SearchSettings {
             heavy_throttle_limit: default_heavy_throttle_limit(),
             cache_file_path: None,
             failure_log_path: None,
+            semantic_index: false,
             dry_run: false,
             max_retries: 3,
             retry_delay_ms: 250,
@@ -371,8 +385,7 @@ pub mod extension_catalog {
         ExtensionCategoryDefinition {
             category: "Logs & structured data",
             extensions: &[
-                ".log", ".json", ".xml", ".yaml", ".yml", ".ini", ".cfg", ".conf", ".toml",
-                ".env",
+                ".log", ".json", ".xml", ".yaml", ".yml", ".ini", ".cfg", ".conf", ".toml", ".env",
             ],
         },
         ExtensionCategoryDefinition {
@@ -419,7 +432,11 @@ mod tests {
         assert_eq!(s.max_file_size_mb, 50.0);
         assert_eq!(s.max_embed_lines, 4000);
         assert_eq!(s.pdf_timeout_seconds, 15);
-        assert!((4..=32).contains(&s.throttle_limit), "throttle_limit out of expected range: {}", s.throttle_limit);
+        assert!(
+            (4..=32).contains(&s.throttle_limit),
+            "throttle_limit out of expected range: {}",
+            s.throttle_limit
+        );
         assert_eq!(s.max_retries, 3);
         assert_eq!(s.retry_delay_ms, 250);
         assert_eq!(s.file_timeout_seconds, 30);
@@ -437,8 +454,7 @@ mod tests {
         let mut sorted = all.clone();
         sorted.sort_by_key(|e| e.to_lowercase());
         assert_eq!(all, sorted, "all_extensions() must already be sorted");
-        let unique: std::collections::HashSet<_> =
-            all.iter().map(|e| e.to_lowercase()).collect();
+        let unique: std::collections::HashSet<_> = all.iter().map(|e| e.to_lowercase()).collect();
         assert_eq!(unique.len(), all.len(), "must be deduplicated");
     }
 

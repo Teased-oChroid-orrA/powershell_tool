@@ -10,7 +10,10 @@ use std::collections::HashMap;
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
-use crate::models::{ExcludeScope, FileSearchResult, FileSearchStatus, FilterGroup, LineHit, MatchMode, SearchSettings};
+use crate::models::{
+    ExcludeScope, FileSearchResult, FileSearchStatus, FilterGroup, LineHit, MatchMode,
+    SearchSettings,
+};
 
 /// One cached file's prior result, keyed by full path in [`CacheFile`].
 ///
@@ -89,7 +92,9 @@ struct FingerprintFields<'a> {
 /// [`CachedFileEntry::last_write_time_ticks`] for why nanoseconds-since-epoch
 /// (not .NET ticks) is fine here.
 pub fn ticks_from_modified(modified: DateTime<Local>) -> i64 {
-    modified.timestamp_nanos_opt().unwrap_or_else(|| modified.timestamp_millis().saturating_mul(1_000_000))
+    modified
+        .timestamp_nanos_opt()
+        .unwrap_or_else(|| modified.timestamp_millis().saturating_mul(1_000_000))
 }
 
 /// Only the settings that affect *matching* feed the fingerprint (not
@@ -113,7 +118,10 @@ pub fn compute_fingerprint(settings: &SearchSettings) -> String {
 /// Returns `None` if the cache file doesn't exist, can't be read, or was
 /// built with different settings (a full rescan is then correct and
 /// expected).
-pub fn try_load(cache_file_path: &str, settings: &SearchSettings) -> Option<HashMap<String, CachedFileEntry>> {
+pub fn try_load(
+    cache_file_path: &str,
+    settings: &SearchSettings,
+) -> Option<HashMap<String, CachedFileEntry>> {
     if !std::path::Path::new(cache_file_path).exists() {
         return None;
     }
@@ -136,8 +144,10 @@ pub fn save(
     candidates: &[CandidateMetadata],
     all_results: &[FileSearchResult],
 ) {
-    let candidate_by_path: HashMap<String, &CandidateMetadata> =
-        candidates.iter().map(|c| (c.full_name.to_lowercase(), c)).collect();
+    let candidate_by_path: HashMap<String, &CandidateMetadata> = candidates
+        .iter()
+        .map(|c| (c.full_name.to_lowercase(), c))
+        .collect();
 
     let mut entries: HashMap<String, CachedFileEntry> = HashMap::new();
     for r in all_results {
@@ -250,6 +260,7 @@ mod tests {
         b.parallel = !a.parallel;
         b.throttle_limit = 99;
         b.dry_run = true;
+        b.semantic_index = true;
         a.output_folder = "/somewhere/else".to_string();
         assert_eq!(compute_fingerprint(&a), compute_fingerprint(&b));
     }
@@ -333,9 +344,16 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "first");
 
         super::atomic_write(path_str, b"second").unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "second", "rename must replace, not append or fail");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "second",
+            "rename must replace, not append or fail"
+        );
 
-        assert!(!dir.path().join("cache.json.tmp").exists(), "the temp file must not linger after a successful write");
+        assert!(
+            !dir.path().join("cache.json.tmp").exists(),
+            "the temp file must not linger after a successful write"
+        );
     }
 
     #[test]

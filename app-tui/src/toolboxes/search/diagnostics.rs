@@ -80,6 +80,8 @@ pub struct SearchDiagnostics {
     pub verified: i32,
     pub cache_reused: i32,
     pub matched_files: usize,
+    /// Files rejected because their filter matches failed the selected match mode.
+    pub skipped_by_mode: i32,
     pub health: Option<IndexHealth>,
 }
 
