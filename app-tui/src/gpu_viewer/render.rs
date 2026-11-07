@@ -1,4 +1,7 @@
-use super::{display::{line_colors, DisplayStyle}, Scene};
+use super::{
+    display::{line_colors, DisplayStyle},
+    Scene,
+};
 use wgpu::util::DeviceExt;
 #[cfg(test)]
 static HEADLESS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -107,7 +110,19 @@ pub struct DisplayOptions {
 }
 impl Default for DisplayOptions {
     fn default() -> Self {
-        Self { show_mesh: false, show_contour: true, field: 0, viewport: None, background: None, style: DisplayStyle::Shaded, swing: None, shade: false, key_colours: None, pan: [0.0, 0.0], translucent: None }
+        Self {
+            show_mesh: false,
+            show_contour: true,
+            field: 0,
+            viewport: None,
+            background: None,
+            style: DisplayStyle::Shaded,
+            swing: None,
+            shade: false,
+            key_colours: None,
+            pan: [0.0, 0.0],
+            translucent: None,
+        }
     }
 }
 
@@ -115,7 +130,11 @@ fn field_buffer(device: &wgpu::Device, scene: &Scene) -> wgpu::Buffer {
     let flat: Vec<f32> = if scene.fields.is_empty() {
         vec![0.0; 4]
     } else {
-        scene.fields.iter().flat_map(|f| f.values.iter().copied()).collect()
+        scene
+            .fields
+            .iter()
+            .flat_map(|f| f.values.iter().copied())
+            .collect()
     };
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("alternative scalar fields"),
@@ -134,18 +153,31 @@ fn scene_bind(
         label: None,
         layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: samples.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: uniform.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 2, resource: fields.as_entire_binding() },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: samples.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: uniform.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: fields.as_entire_binding(),
+            },
         ],
     })
 }
 fn check_budget(limits: &wgpu::Limits, scene: &Scene, what: &str) -> Result<(), String> {
-    let max = limits.max_storage_buffer_binding_size.min(limits.max_buffer_size);
+    let max = limits
+        .max_storage_buffer_binding_size
+        .min(limits.max_buffer_size);
     let sample_bytes = scene.samples.len() as u64 * 16;
     let field_bytes = scene.positions.len() as u64 * scene.fields.len() as u64 * 4;
     if sample_bytes > max || field_bytes > max {
-        return Err(format!("{what} exceeds this adapter's storage-buffer limit"));
+        return Err(format!(
+            "{what} exceeds this adapter's storage-buffer limit"
+        ));
     }
     Ok(())
 }
@@ -161,14 +193,12 @@ impl Renderer {
         let limits = adapter.limits();
         check_budget(&limits, scene, "scene")?;
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: Some("FEA viewport"),
-                    required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default().using_resolution(limits),
-                    ..Default::default()
-                },
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("FEA viewport"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default().using_resolution(limits),
+                ..Default::default()
+            })
             .await
             .map_err(|e| e.to_string())?;
         let samples = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -229,7 +259,14 @@ impl Renderer {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let make = |label: &str, vs: &str, fs: &str, lines: bool, depth_write: bool, compare: wgpu::CompareFunction, colour: wgpu::ColorWrites, blend: Option<wgpu::BlendState>| {
+        let make = |label: &str,
+                    vs: &str,
+                    fs: &str,
+                    lines: bool,
+                    depth_write: bool,
+                    compare: wgpu::CompareFunction,
+                    colour: wgpu::ColorWrites,
+                    blend: Option<wgpu::BlendState>| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pl),
@@ -237,16 +274,28 @@ impl Renderer {
                     module: &shader,
                     entry_point: Some(vs),
                     compilation_options: Default::default(),
-                    buffers: &[Some(wgpu::VertexBufferLayout { array_stride: 12, step_mode: wgpu::VertexStepMode::Vertex, attributes: &wgpu::vertex_attr_array![0=>Float32x3] })],
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: 12,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![0=>Float32x3],
+                    })],
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
                     entry_point: Some(fs),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState { format, blend, write_mask: colour })],
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend,
+                        write_mask: colour,
+                    })],
                 }),
                 primitive: wgpu::PrimitiveState {
-                    topology: if lines { wgpu::PrimitiveTopology::LineList } else { wgpu::PrimitiveTopology::TriangleList },
+                    topology: if lines {
+                        wgpu::PrimitiveTopology::LineList
+                    } else {
+                        wgpu::PrimitiveTopology::TriangleList
+                    },
                     cull_mode: None,
                     ..Default::default()
                 },
@@ -263,26 +312,108 @@ impl Renderer {
             })
         };
         use wgpu::CompareFunction::{Always, Less, LessEqual};
-        let pipeline = make("FEA surface", "vs", "fs", false, true, Less, wgpu::ColorWrites::ALL, None);
-        let depth_pipeline = make("FEA surface depth only", "vs", "fs", false, true, Less, wgpu::ColorWrites::empty(), None);
-        let mesh_pipeline = make("FEA mesh overlay", "vs_mesh", "fs_mesh", true, false, LessEqual, wgpu::ColorWrites::ALL, None);
-        let highlight_pipeline = make("FEA highlighted faces", "vs_mesh", "fs_highlight", false, false, LessEqual, wgpu::ColorWrites::ALL, None);
-        let edge_pipeline = make("FEA feature edges", "vs_mesh", "fs_edge", true, false, LessEqual, wgpu::ColorWrites::ALL, None);
-        let hidden_pipeline = make("FEA hidden edges", "vs_mesh", "fs_hidden", true, false, Always, wgpu::ColorWrites::ALL, None);
+        let pipeline = make(
+            "FEA surface",
+            "vs",
+            "fs",
+            false,
+            true,
+            Less,
+            wgpu::ColorWrites::ALL,
+            None,
+        );
+        let depth_pipeline = make(
+            "FEA surface depth only",
+            "vs",
+            "fs",
+            false,
+            true,
+            Less,
+            wgpu::ColorWrites::empty(),
+            None,
+        );
+        let mesh_pipeline = make(
+            "FEA mesh overlay",
+            "vs_mesh",
+            "fs_mesh",
+            true,
+            false,
+            LessEqual,
+            wgpu::ColorWrites::ALL,
+            None,
+        );
+        let highlight_pipeline = make(
+            "FEA highlighted faces",
+            "vs_mesh",
+            "fs_highlight",
+            false,
+            false,
+            LessEqual,
+            wgpu::ColorWrites::ALL,
+            None,
+        );
+        let edge_pipeline = make(
+            "FEA feature edges",
+            "vs_mesh",
+            "fs_edge",
+            true,
+            false,
+            LessEqual,
+            wgpu::ColorWrites::ALL,
+            None,
+        );
+        let hidden_pipeline = make(
+            "FEA hidden edges",
+            "vs_mesh",
+            "fs_hidden",
+            true,
+            false,
+            Always,
+            wgpu::ColorWrites::ALL,
+            None,
+        );
         // colour = opacity * surface + (1 - opacity) * what is behind, the opacity being the pass's blend constant.
-        let over = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Constant, dst_factor: wgpu::BlendFactor::OneMinusConstant, operation: wgpu::BlendOperation::Add };
-        let translucent_pipeline = make("FEA translucent surface", "vs", "fs", false, false, LessEqual, wgpu::ColorWrites::ALL, Some(wgpu::BlendState { color: over, alpha: over }));
+        let over = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::Constant,
+            dst_factor: wgpu::BlendFactor::OneMinusConstant,
+            operation: wgpu::BlendOperation::Add,
+        };
+        let translucent_pipeline = make(
+            "FEA translucent surface",
+            "vs",
+            "fs",
+            false,
+            false,
+            LessEqual,
+            wgpu::ColorWrites::ALL,
+            Some(wgpu::BlendState {
+                color: over,
+                alpha: over,
+            }),
+        );
         let bg_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("FEA background"),
             layout: Some(&pl),
-            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_bg"), compilation_options: Default::default(), buffers: &[] },
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_bg"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs_bg"),
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
             }),
-            primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: Some(false),
@@ -387,11 +518,13 @@ impl Renderer {
                 usage: wgpu::BufferUsages::INDEX,
             });
         let feature_data = scene.feature_edges(FEATURE_CREASE_DEG);
-        self.feature = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("feature edges"),
-            contents: bytemuck::cast_slice(&feature_data),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+        self.feature = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("feature edges"),
+                contents: bytemuck::cast_slice(&feature_data),
+                usage: wgpu::BufferUsages::INDEX,
+            });
         self.feature_count = feature_data.len() as u32;
         self.bind = bind;
         self.vertices = vertices;
@@ -442,9 +575,25 @@ impl Renderer {
         camera: [f32; 4],
         options: DisplayOptions,
     ) {
-        let DisplayOptions { show_mesh, show_contour, field, viewport, background, style, swing, shade, key_colours, pan, translucent } = options;
+        let DisplayOptions {
+            show_mesh,
+            show_contour,
+            field,
+            viewport,
+            background,
+            style,
+            swing,
+            shade,
+            key_colours,
+            pan,
+            translucent,
+        } = options;
         // A stale index (result switched, field absent) falls back to the primary scalar.
-        let field = if field <= scene.fields.len() { field } else { 0 };
+        let field = if field <= scene.fields.len() {
+            field
+        } else {
+            0
+        };
         let range = match field.checked_sub(1) {
             Some(k) => scene.fields[k].range,
             None => scene.range,
@@ -454,11 +603,19 @@ impl Renderer {
             gain * (std::f32::consts::TAU * time / period).sin()
         });
         // A static result swings smoothly from undeformed to deformed and back.
-        let gain = swing.map_or(gain, |period| gain * 0.5 * (1.0 - (std::f32::consts::TAU * time / period).cos()));
+        let gain = swing.map_or(gain, |period| {
+            gain * 0.5 * (1.0 - (std::f32::consts::TAU * time / period).cos())
+        });
         let (top, bottom) = background.unwrap_or(([6, 8, 12], [6, 8, 12]));
         let lines = line_colors(top, bottom);
         let lin = |c: f32| {
-            if !self.srgb { c } else if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+            if !self.srgb {
+                c
+            } else if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
         };
         let rgba = |c: [f32; 3]| [lin(c[0]), lin(c[1]), lin(c[2]), 1.0];
         let rgb8 = |c: [u8; 3]| rgba(c.map(|v| f32::from(v) / 255.0));
@@ -470,7 +627,10 @@ impl Renderer {
                     a as u32,
                     b as u32,
                     scene.positions.len() as u32,
-                    u32::from(!show_contour) | u32::from(shade) << 1 | u32::from(key_colours.is_some()) << 2 | (field as u32) << 8,
+                    u32::from(!show_contour)
+                        | u32::from(shade) << 1
+                        | u32::from(key_colours.is_some()) << 2
+                        | (field as u32) << 8,
                 ],
                 settings: [blend, gain, range[0], range[1]],
                 camera,
@@ -494,7 +654,12 @@ impl Renderer {
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear({
                             let [r, g, b, _] = rgb8(top);
-                            wgpu::Color { r: f64::from(r), g: f64::from(g), b: f64::from(b), a: 1.0 }
+                            wgpu::Color {
+                                r: f64::from(r),
+                                g: f64::from(g),
+                                b: f64::from(b),
+                                a: 1.0,
+                            }
                         }),
                         store: wgpu::StoreOp::Store,
                     },
@@ -528,15 +693,31 @@ impl Renderer {
                 pass.draw(0..3, 0..1);
             }
             if draw_scene {
-                pass.set_viewport(vp[0] as f32, vp[1] as f32, vp[2] as f32, vp[3] as f32, 0.0, 1.0);
+                pass.set_viewport(
+                    vp[0] as f32,
+                    vp[1] as f32,
+                    vp[2] as f32,
+                    vp[3] as f32,
+                    0.0,
+                    1.0,
+                );
                 pass.set_scissor_rect(vp[0], vp[1], vp[2], vp[3]);
                 pass.set_vertex_buffer(0, self.vertices.slice(..));
                 // A translucent tail is drawn after the solid triangles: its depth first, then its nearest layer blended
                 // over them (one layer, so its own overlaps never darken it). A hidden-line style draws it as solid.
-                let tail = translucent.filter(|_| style.paints_surface()).map(|(first, opacity)| (first.min(self.count) / 3 * 3, opacity.clamp(0.0, 1.0)));
+                let tail =
+                    translucent
+                        .filter(|_| style.paints_surface())
+                        .map(|(first, opacity)| {
+                            (first.min(self.count) / 3 * 3, opacity.clamp(0.0, 1.0))
+                        });
                 let solid = tail.map_or(self.count, |(first, _)| first);
                 if style.occludes() {
-                    pass.set_pipeline(if style.paints_surface() { &self.pipeline } else { &self.depth_pipeline });
+                    pass.set_pipeline(if style.paints_surface() {
+                        &self.pipeline
+                    } else {
+                        &self.depth_pipeline
+                    });
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.draw_indexed(0..solid, 0, 0..1);
                 }
@@ -545,7 +726,12 @@ impl Renderer {
                     pass.set_pipeline(&self.depth_pipeline);
                     pass.draw_indexed(first..self.count, 0, 0..1);
                     pass.set_pipeline(&self.translucent_pipeline);
-                    pass.set_blend_constant(wgpu::Color { r: f64::from(opacity), g: f64::from(opacity), b: f64::from(opacity), a: f64::from(opacity) });
+                    pass.set_blend_constant(wgpu::Color {
+                        r: f64::from(opacity),
+                        g: f64::from(opacity),
+                        b: f64::from(opacity),
+                        a: f64::from(opacity),
+                    });
                     pass.draw_indexed(first..self.count, 0, 0..1);
                 }
                 if shade && !style.paints_surface() {
@@ -578,10 +764,13 @@ impl Renderer {
     fn upload_egui_textures(&mut self, output: &mut egui::FullOutput) -> Vec<egui::TextureId> {
         for (id, deltas) in output.textures_delta.set.drain() {
             for delta in &deltas {
-                self.egui.update_texture(&self.device, &self.queue, id, delta);
+                self.egui
+                    .update_texture(&self.device, &self.queue, id, delta);
             }
         }
-        std::mem::take(&mut output.textures_delta.free).into_iter().collect()
+        std::mem::take(&mut output.textures_delta.free)
+            .into_iter()
+            .collect()
     }
 
     /// A frame that cannot be shown (no surface texture this time): keep the egui renderer's textures in step.
@@ -593,13 +782,24 @@ impl Renderer {
 
     /// Paint one egui frame over `view` (call after `draw_display`): uploads the frame's texture changes, tessellates
     /// its shapes and draws them without clearing what is there.
-    pub fn paint_egui(&mut self, view: &wgpu::TextureView, ctx: &egui::Context, mut output: egui::FullOutput, size_px: [u32; 2]) {
+    pub fn paint_egui(
+        &mut self,
+        view: &wgpu::TextureView,
+        ctx: &egui::Context,
+        mut output: egui::FullOutput,
+        size_px: [u32; 2],
+    ) {
         let ppp = output.pixels_per_point;
         let freed = self.upload_egui_textures(&mut output);
         let jobs = ctx.tessellate(std::mem::take(&mut output.shapes), ppp);
-        let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: size_px, pixels_per_point: ppp };
+        let screen = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: size_px,
+            pixels_per_point: ppp,
+        };
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        let extra = self.egui.update_buffers(&self.device, &self.queue, &mut encoder, &jobs, &screen);
+        let extra =
+            self.egui
+                .update_buffers(&self.device, &self.queue, &mut encoder, &jobs, &screen);
         {
             let mut pass = encoder
                 .begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -608,7 +808,10 @@ impl Renderer {
                         view,
                         depth_slice: None,
                         resolve_target: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
                     })],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
@@ -618,300 +821,540 @@ impl Renderer {
                 .forget_lifetime();
             self.egui.render(&mut pass, &jobs, &screen);
         }
-        self.queue.submit(extra.into_iter().chain(Some(encoder.finish())));
+        self.queue
+            .submit(extra.into_iter().chain(Some(encoder.finish())));
         for id in &freed {
             self.egui.free_texture(id);
         }
     }
 }
 
-    /// Copy an RGBA8 texture back to the CPU as tightly packed rows.
-    #[cfg(test)]
-    fn read_back(renderer: &Renderer, texture: &wgpu::Texture) -> Vec<u8> {
-        let (width, height) = (texture.width(), texture.height());
-        let stride = (width * 4).div_ceil(256) * 256;
-        let buffer = renderer.device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: (stride * height) as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let mut encoder = renderer.device.create_command_encoder(&Default::default());
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
+/// Copy an RGBA8 texture back to the CPU as tightly packed rows.
+#[cfg(test)]
+fn read_back(renderer: &Renderer, texture: &wgpu::Texture) -> Vec<u8> {
+    let (width, height) = (texture.width(), texture.height());
+    let stride = (width * 4).div_ceil(256) * 256;
+    let buffer = renderer.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: (stride * height) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = renderer.device.create_command_encoder(&Default::default());
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(stride),
+                rows_per_image: Some(height),
             },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(stride),
-                    rows_per_image: Some(height),
-                },
-            },
-            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-        );
-        renderer.queue.submit(Some(encoder.finish()));
-        let (tx, rx) = std::sync::mpsc::channel();
-        buffer
-            .slice(..)
-            .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
-        renderer.device.poll(wgpu::PollType::wait_indefinitely()).expect("device poll");
-        rx.recv().unwrap().unwrap();
-        let padded = buffer.slice(..).get_mapped_range().expect("mapped range").to_vec();
-        buffer.unmap();
-        padded
-            .chunks_exact(stride as usize)
-            .flat_map(|row| row[..(width * 4) as usize].iter().copied())
-            .collect()
-    }
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    renderer.queue.submit(Some(encoder.finish()));
+    let (tx, rx) = std::sync::mpsc::channel();
+    buffer
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+    renderer
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("device poll");
+    rx.recv().unwrap().unwrap();
+    let padded = buffer
+        .slice(..)
+        .get_mapped_range()
+        .expect("mapped range")
+        .to_vec();
+    buffer.unmap();
+    padded
+        .chunks_exact(stride as usize)
+        .flat_map(|row| row[..(width * 4) as usize].iter().copied())
+        .collect()
+}
 
-    #[cfg(test)]
-    fn cube() -> Scene {
-        let positions: Vec<[f32; 3]> = (0..8).map(|i| [(i & 1) as f32 - 0.5, ((i >> 1) & 1) as f32 - 0.5, ((i >> 2) & 1) as f32 - 0.5]).collect();
-        let quads = [[0, 1, 3, 2], [4, 6, 7, 5], [0, 4, 5, 1], [2, 3, 7, 6], [0, 2, 6, 4], [1, 5, 7, 3]];
-        Scene {
-            label: "cube".into(),
-            samples: vec![[0.0; 4]; 8],
-            positions,
-            triangles: quads.iter().flat_map(|q| [q[0], q[1], q[2], q[0], q[2], q[3]]).collect(),
-            times: vec![0.0],
-            range: [0.0, 1.0],
-            gain: 1.0,
-            harmonic_period: None,
-            field_label: String::new(),
-            fields: Vec::new(),
+#[cfg(test)]
+fn cube() -> Scene {
+    let positions: Vec<[f32; 3]> = (0..8)
+        .map(|i| {
+            [
+                (i & 1) as f32 - 0.5,
+                ((i >> 1) & 1) as f32 - 0.5,
+                ((i >> 2) & 1) as f32 - 0.5,
+            ]
+        })
+        .collect();
+    let quads = [
+        [0, 1, 3, 2],
+        [4, 6, 7, 5],
+        [0, 4, 5, 1],
+        [2, 3, 7, 6],
+        [0, 2, 6, 4],
+        [1, 5, 7, 3],
+    ];
+    Scene {
+        label: "cube".into(),
+        samples: vec![[0.0; 4]; 8],
+        positions,
+        triangles: quads
+            .iter()
+            .flat_map(|q| [q[0], q[1], q[2], q[0], q[2], q[3]])
+            .collect(),
+        times: vec![0.0],
+        range: [0.0, 1.0],
+        gain: 1.0,
+        harmonic_period: None,
+        field_label: String::new(),
+        fields: Vec::new(),
+    }
+}
+
+/// Surface-less styles still show the faces that carry a state (a support, a load, the selection), and the
+/// background gradient covers the whole target, not only the viewport the model is drawn into.
+#[test]
+#[ignore = "requires a native graphics adapter"]
+fn wireframe_highlights_state_faces_and_the_background_spans_the_window() {
+    let _guard = headless_guard();
+    pollster::block_on(async {
+        let adapter = test_adapter().await.expect("adapter required");
+        let mut scene = cube();
+        // The x = 0 face (vertices with bit 0 clear) is a load (code 2) on the geometry view's 0..3 scale.
+        for (i, s) in scene.samples.iter_mut().enumerate() {
+            s[3] = if i & 1 == 0 { 2.0 } else { 0.0 };
         }
-    }
-
-    /// Surface-less styles still show the faces that carry a state (a support, a load, the selection), and the
-    /// background gradient covers the whole target, not only the viewport the model is drawn into.
-    #[test]
-    #[ignore = "requires a native graphics adapter"]
-    fn wireframe_highlights_state_faces_and_the_background_spans_the_window() {
-        let _guard = headless_guard();
-        pollster::block_on(async {
-            let adapter = test_adapter().await.expect("adapter required");
-            let mut scene = cube();
-            // The x = 0 face (vertices with bit 0 clear) is a load (code 2) on the geometry view's 0..3 scale.
-            for (i, s) in scene.samples.iter_mut().enumerate() {
-                s[3] = if i & 1 == 0 { 2.0 } else { 0.0 };
-            }
-            scene.range = [0.0, 3.0];
-            let (w, h) = (160u32, 160u32);
-            let renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
-            let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
-                label: None,
-                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            });
-            let black = Some(([0u8; 3], [0u8; 3]));
-            let draw = |style, shade, viewport, background| {
-                renderer.draw_display(&texture.create_view(&Default::default()), &scene, 0.0, 1.0, [0.9, -0.4, 1.2, 1.0], DisplayOptions { style, shade, viewport, background, ..Default::default() });
-                read_back(&renderer, &texture)
-            };
-            let painted = |img: &[u8]| img.chunks_exact(4).filter(|p| p[..3].iter().any(|c| *c > 3)).count();
-            let plain = draw(DisplayStyle::Wireframe, false, None, black);
-            let lit = draw(DisplayStyle::Wireframe, true, None, black);
-            assert!(painted(&lit) > painted(&plain) + 500, "the state face is filled in wireframe: {} vs {}", painted(&lit), painted(&plain));
-            let hlr = draw(DisplayStyle::HiddenLinesRemoved, true, None, black);
-            assert!(painted(&hlr) > painted(&draw(DisplayStyle::HiddenLinesRemoved, false, None, black)), "and in hidden lines removed");
-            // The gradient reaches the pixels beside the viewport rectangle.
-            let img = draw(DisplayStyle::Wireframe, false, Some([60, 0, 40, 160]), Some(([0; 3], [200; 3])));
-            let px = |x: u32, y: u32| img[((y * w + x) * 4) as usize];
-            assert!(px(2, h - 3) > px(2, 2) + 150, "left strip: bottom {} top {}", px(2, h - 3), px(2, 2));
-            assert!(px(w - 3, h - 3) > px(w - 3, 2) + 150, "right strip: bottom {} top {}", px(w - 3, h - 3), px(w - 3, 2));
+        scene.range = [0.0, 3.0];
+        let (w, h) = (160u32, 160u32);
+        let renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+            .await
+            .unwrap();
+        let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
         });
-    }
+        let black = Some(([0u8; 3], [0u8; 3]));
+        let draw = |style, shade, viewport, background| {
+            renderer.draw_display(
+                &texture.create_view(&Default::default()),
+                &scene,
+                0.0,
+                1.0,
+                [0.9, -0.4, 1.2, 1.0],
+                DisplayOptions {
+                    style,
+                    shade,
+                    viewport,
+                    background,
+                    ..Default::default()
+                },
+            );
+            read_back(&renderer, &texture)
+        };
+        let painted = |img: &[u8]| {
+            img.chunks_exact(4)
+                .filter(|p| p[..3].iter().any(|c| *c > 3))
+                .count()
+        };
+        let plain = draw(DisplayStyle::Wireframe, false, None, black);
+        let lit = draw(DisplayStyle::Wireframe, true, None, black);
+        assert!(
+            painted(&lit) > painted(&plain) + 500,
+            "the state face is filled in wireframe: {} vs {}",
+            painted(&lit),
+            painted(&plain)
+        );
+        let hlr = draw(DisplayStyle::HiddenLinesRemoved, true, None, black);
+        assert!(
+            painted(&hlr) > painted(&draw(DisplayStyle::HiddenLinesRemoved, false, None, black)),
+            "and in hidden lines removed"
+        );
+        // The gradient reaches the pixels beside the viewport rectangle.
+        let img = draw(
+            DisplayStyle::Wireframe,
+            false,
+            Some([60, 0, 40, 160]),
+            Some(([0; 3], [200; 3])),
+        );
+        let px = |x: u32, y: u32| img[((y * w + x) * 4) as usize];
+        assert!(
+            px(2, h - 3) > px(2, 2) + 150,
+            "left strip: bottom {} top {}",
+            px(2, h - 3),
+            px(2, 2)
+        );
+        assert!(
+            px(w - 3, h - 3) > px(w - 3, 2) + 150,
+            "right strip: bottom {} top {}",
+            px(w - 3, h - 3),
+            px(w - 3, 2)
+        );
+    });
+}
 
-    /// A static result swings: at the start of a swing the part is undeformed, half a period later fully deformed.
-    #[test]
-    #[ignore = "requires a native graphics adapter"]
-    fn a_static_result_swings_between_undeformed_and_deformed() {
-        let _guard = headless_guard();
-        pollster::block_on(async {
-            let adapter = test_adapter().await.expect("adapter required");
-            let mut scene = cube();
-            // Every vertex moves +x by 0.4 in the one stored frame; a field makes it a result.
-            scene.samples = scene.positions.iter().map(|_| [0.4, 0.0, 0.0, 0.0]).collect();
-            scene.fields.push(crate::gpu_viewer::scene::ScalarField::from_f64("f", &[0.0; 8]).unwrap());
-            let (w, h) = (160u32, 160u32);
-            let renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
-            let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
-                label: None,
-                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            });
-            let draw = |time: f32, swing: Option<f32>| {
-                renderer.draw_display(&texture.create_view(&Default::default()), &scene, time, 1.0, [0.0, 0.0, 1.0, 1.0], DisplayOptions { swing, ..Default::default() });
-                read_back(&renderer, &texture)
-            };
-            // The mean x of the painted pixels.
-            let centre = |img: &[u8]| {
-                let (mut sum, mut n) = (0.0f64, 0.0f64);
-                for (i, p) in img.chunks_exact(4).enumerate() {
-                    if p[..3].iter().any(|c| *c > 20) {
-                        sum += (i as u32 % w) as f64;
-                        n += 1.0;
-                    }
+/// A static result swings: at the start of a swing the part is undeformed, half a period later fully deformed.
+#[test]
+#[ignore = "requires a native graphics adapter"]
+fn a_static_result_swings_between_undeformed_and_deformed() {
+    let _guard = headless_guard();
+    pollster::block_on(async {
+        let adapter = test_adapter().await.expect("adapter required");
+        let mut scene = cube();
+        // Every vertex moves +x by 0.4 in the one stored frame; a field makes it a result.
+        scene.samples = scene
+            .positions
+            .iter()
+            .map(|_| [0.4, 0.0, 0.0, 0.0])
+            .collect();
+        scene
+            .fields
+            .push(crate::gpu_viewer::scene::ScalarField::from_f64("f", &[0.0; 8]).unwrap());
+        let (w, h) = (160u32, 160u32);
+        let renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+            .await
+            .unwrap();
+        let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let draw = |time: f32, swing: Option<f32>| {
+            renderer.draw_display(
+                &texture.create_view(&Default::default()),
+                &scene,
+                time,
+                1.0,
+                [0.0, 0.0, 1.0, 1.0],
+                DisplayOptions {
+                    swing,
+                    ..Default::default()
+                },
+            );
+            read_back(&renderer, &texture)
+        };
+        // The mean x of the painted pixels.
+        let centre = |img: &[u8]| {
+            let (mut sum, mut n) = (0.0f64, 0.0f64);
+            for (i, p) in img.chunks_exact(4).enumerate() {
+                if p[..3].iter().any(|c| *c > 20) {
+                    sum += (i as u32 % w) as f64;
+                    n += 1.0;
                 }
-                sum / n.max(1.0)
-            };
-            let start = centre(&draw(0.0, Some(2.0)));
-            let half = centre(&draw(1.0, Some(2.0)));
-            let still = centre(&draw(1.0, None));
-            let full = centre(&draw(0.0, None));
-            let undeformed = centre(&draw(0.0, Some(2.0)));
-            assert!((start - undeformed).abs() < 1e-9, "the same time draws the same frame");
-            assert!(half > start + 10.0, "half a period later the part has moved right: {start} -> {half}");
-            assert!((half - still).abs() < 1.5 && (still - full).abs() < 1.5, "a static draw with the same gain is the fully deformed one: {half} {still} {full}");
-        });
-    }
-    /// A translucent tail lets what it encloses show through: a small cube inside a big one is hidden while the big one
-    /// is solid, shows through it at the given opacity, and a hidden-line style ignores the translucency.
-    #[test]
-    #[ignore = "requires a native graphics adapter"]
-    fn a_translucent_tail_shows_the_solid_part_it_encloses() {
-        let _guard = headless_guard();
-        pollster::block_on(async {
-            let adapter = test_adapter().await.expect("adapter required");
-            let (inner, outer) = (cube(), cube());
-            let mut scene = cube();
-            // The inner cube (value 1, red end of the map) first, then the outer one (value 0, blue), twice its size.
-            scene.positions = inner.positions.iter().map(|p| p.map(|c| 0.4 * c)).chain(outer.positions.iter().copied()).collect();
-            scene.samples = (0..16).map(|i| [0.0, 0.0, 0.0, if i < 8 { 1.0 } else { 0.0 }]).collect();
-            scene.triangles = inner.triangles.iter().copied().chain(outer.triangles.iter().map(|i| i + 8)).collect();
-            let first = inner.triangles.len() as u32;
-            let (w, h) = (160u32, 160u32);
-            let renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
-            let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
-                label: None,
-                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            });
-            let draw = |style, translucent| {
-                renderer.draw_display(&texture.create_view(&Default::default()), &scene, 0.0, 1.0, [0.9, -0.4, 1.2, 1.0], DisplayOptions { style, translucent, ..Default::default() });
-                read_back(&renderer, &texture)
-            };
-            let reddish = |img: &[u8]| img.chunks_exact(4).filter(|p| p[0] as i32 > p[2] as i32 + 20).count();
-            assert_eq!(reddish(&draw(DisplayStyle::Shaded, None)), 0, "a solid outer cube hides the inner one");
-            let seen = reddish(&draw(DisplayStyle::Shaded, Some((first, 0.35))));
-            assert!(seen > 300, "the inner cube shows through: {seen} pixels");
-            assert!(reddish(&draw(DisplayStyle::Shaded, Some((first, 0.9)))) < seen, "less of it through a more opaque cube");
-            assert_eq!(reddish(&draw(DisplayStyle::HiddenLinesRemoved, Some((first, 0.35)))), 0, "hidden lines draw it solid");
-        });
-    }
-
-    /// The model's state colours are the user's: a face coded as a support is drawn in the chosen colour, and the default
-    /// colours are what the contour map always gave.
-    #[test]
-    #[ignore = "requires a native graphics adapter"]
-    fn the_key_colours_decide_how_the_models_states_are_drawn() {
-        let _guard = headless_guard();
-        pollster::block_on(async {
-            let adapter = test_adapter().await.expect("adapter required");
-            let mut scene = cube();
-            for (i, s) in scene.samples.iter_mut().enumerate() {
-                s[3] = if i & 1 == 0 { 1.0 } else { 0.0 };
             }
-            scene.range = [0.0, 3.0];
-            let (w, h) = (160u32, 160u32);
-            let renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
-            let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
-                label: None,
-                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            });
-            let draw = |key: Option<[[u8; 3]; 4]>, style| {
-                renderer.draw_display(&texture.create_view(&Default::default()), &scene, 0.0, 1.0, [0.9, -0.4, 1.2, 1.0], DisplayOptions { style, shade: true, key_colours: key, ..Default::default() });
-                read_back(&renderer, &texture)
-            };
-            let red = |img: &[u8]| img.chunks_exact(4).filter(|p| p[0] > 120 && p[0] as i32 > p[1] as i32 + 80 && p[0] as i32 > p[2] as i32 + 80).count();
-            let default = crate::gpu_viewer::display::default_key_colours();
-            let plain = draw(None, DisplayStyle::Shaded);
-            let same = draw(Some(default), DisplayStyle::Shaded);
-            // The defaults reproduce the contour map's colours (to rounding).
-            let diff = plain.iter().zip(&same).filter(|(a, b)| (**a as i32 - **b as i32).abs() > 2).count();
-            assert!(diff < 40, "{diff} bytes differ between the map and its default key");
-            assert_eq!(red(&plain), 0, "teal support faces have no red");
-            let mut custom = default;
-            custom[1] = [255, 0, 0];
-            assert!(red(&draw(Some(custom), DisplayStyle::Shaded)) > 300, "the support face is red when the support colour is");
-            // The highlight pass of a wireframe uses the key too.
-            assert!(red(&draw(Some(custom), DisplayStyle::Wireframe)) > 100, "and in a wireframe");
+            sum / n.max(1.0)
+        };
+        let start = centre(&draw(0.0, Some(2.0)));
+        let half = centre(&draw(1.0, Some(2.0)));
+        let still = centre(&draw(1.0, None));
+        let full = centre(&draw(0.0, None));
+        let undeformed = centre(&draw(0.0, Some(2.0)));
+        assert!(
+            (start - undeformed).abs() < 1e-9,
+            "the same time draws the same frame"
+        );
+        assert!(
+            half > start + 10.0,
+            "half a period later the part has moved right: {start} -> {half}"
+        );
+        assert!(
+            (half - still).abs() < 1.5 && (still - full).abs() < 1.5,
+            "a static draw with the same gain is the fully deformed one: {half} {still} {full}"
+        );
+    });
+}
+/// A translucent tail lets what it encloses show through: a small cube inside a big one is hidden while the big one
+/// is solid, shows through it at the given opacity, and a hidden-line style ignores the translucency.
+#[test]
+#[ignore = "requires a native graphics adapter"]
+fn a_translucent_tail_shows_the_solid_part_it_encloses() {
+    let _guard = headless_guard();
+    pollster::block_on(async {
+        let adapter = test_adapter().await.expect("adapter required");
+        let (inner, outer) = (cube(), cube());
+        let mut scene = cube();
+        // The inner cube (value 1, red end of the map) first, then the outer one (value 0, blue), twice its size.
+        scene.positions = inner
+            .positions
+            .iter()
+            .map(|p| p.map(|c| 0.4 * c))
+            .chain(outer.positions.iter().copied())
+            .collect();
+        scene.samples = (0..16)
+            .map(|i| [0.0, 0.0, 0.0, if i < 8 { 1.0 } else { 0.0 }])
+            .collect();
+        scene.triangles = inner
+            .triangles
+            .iter()
+            .copied()
+            .chain(outer.triangles.iter().map(|i| i + 8))
+            .collect();
+        let first = inner.triangles.len() as u32;
+        let (w, h) = (160u32, 160u32);
+        let renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+            .await
+            .unwrap();
+        let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
         });
-    }
+        let draw = |style, translucent| {
+            renderer.draw_display(
+                &texture.create_view(&Default::default()),
+                &scene,
+                0.0,
+                1.0,
+                [0.9, -0.4, 1.2, 1.0],
+                DisplayOptions {
+                    style,
+                    translucent,
+                    ..Default::default()
+                },
+            );
+            read_back(&renderer, &texture)
+        };
+        let reddish = |img: &[u8]| {
+            img.chunks_exact(4)
+                .filter(|p| p[0] as i32 > p[2] as i32 + 20)
+                .count()
+        };
+        assert_eq!(
+            reddish(&draw(DisplayStyle::Shaded, None)),
+            0,
+            "a solid outer cube hides the inner one"
+        );
+        let seen = reddish(&draw(DisplayStyle::Shaded, Some((first, 0.35))));
+        assert!(seen > 300, "the inner cube shows through: {seen} pixels");
+        assert!(
+            reddish(&draw(DisplayStyle::Shaded, Some((first, 0.9)))) < seen,
+            "less of it through a more opaque cube"
+        );
+        assert_eq!(
+            reddish(&draw(DisplayStyle::HiddenLinesRemoved, Some((first, 0.35)))),
+            0,
+            "hidden lines draw it solid"
+        );
+    });
+}
 
-    /// Each display style paints what CAD says: shaded fills the faces, wireframe only the edges, hidden lines
-    /// removed only the edges in front, hidden lines visible those and the dimmed rest; a gradient runs top to bottom.
-    #[test]
-    #[ignore = "requires a native graphics adapter"]
-    fn display_styles_paint_what_cad_says() {
-        let _guard = headless_guard();
-        pollster::block_on(async {
-            let adapter = test_adapter().await.expect("adapter required");
-            let scene = cube();
-            let (w, h) = (160u32, 160u32);
-            let renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
-            let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
-                label: None,
-                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            });
-            let black = Some(([0u8; 3], [0u8; 3]));
-            let draw = |style, background| {
-                renderer.draw_display(&texture.create_view(&Default::default()), &scene, 0.0, 1.0, [0.6, -0.5, 1.2, 1.0], DisplayOptions { style, background, ..Default::default() });
-                read_back(&renderer, &texture)
-            };
-            let painted = |img: &[u8]| img.chunks_exact(4).filter(|p| p[..3].iter().any(|c| *c > 3)).count();
-            let bright = |img: &[u8]| img.chunks_exact(4).filter(|p| p[..3].iter().all(|c| *c > 200)).count();
-            let shaded = draw(DisplayStyle::Shaded, black);
-            let with_edges = draw(DisplayStyle::ShadedEdges, black);
-            let hlv = draw(DisplayStyle::HiddenLinesVisible, black);
-            let hlr = draw(DisplayStyle::HiddenLinesRemoved, black);
-            let wire = draw(DisplayStyle::Wireframe, black);
-            assert!(painted(&shaded) > (w * h) as usize / 8, "shaded fills the faces");
-            assert_eq!(bright(&shaded), 0, "shaded draws no edges");
-            assert!(bright(&with_edges) > 100, "shaded with edges draws its edges");
-            assert!(painted(&wire) < painted(&shaded) / 4 && bright(&wire) > 100, "wireframe is edges only");
-            assert!(painted(&hlr) < painted(&shaded) / 4 && bright(&hlr) > 50, "hidden lines removed shows no fill, only edges");
-            assert!(bright(&hlr) < bright(&wire), "the edges behind the cube are removed");
-            assert!(painted(&hlv) > painted(&hlr), "hidden lines visible adds the dimmed hidden edges");
-            assert_eq!(bright(&hlv), bright(&hlr), "the visible edges are the same ones as with hidden lines removed");
-            // A gradient runs from the top colour to the bottom one.
-            let grad = draw(DisplayStyle::Wireframe, Some(([0; 3], [200; 3])));
-            let px = |img: &[u8], x: u32, y: u32| img[((y * w + x) * 4) as usize];
-            assert!(px(&grad, 2, h - 3) > px(&grad, 2, 2) + 150, "bottom {} top {}", px(&grad, 2, h - 3), px(&grad, 2, 2));
+/// The model's state colours are the user's: a face coded as a support is drawn in the chosen colour, and the default
+/// colours are what the contour map always gave.
+#[test]
+#[ignore = "requires a native graphics adapter"]
+fn the_key_colours_decide_how_the_models_states_are_drawn() {
+    let _guard = headless_guard();
+    pollster::block_on(async {
+        let adapter = test_adapter().await.expect("adapter required");
+        let mut scene = cube();
+        for (i, s) in scene.samples.iter_mut().enumerate() {
+            s[3] = if i & 1 == 0 { 1.0 } else { 0.0 };
+        }
+        scene.range = [0.0, 3.0];
+        let (w, h) = (160u32, 160u32);
+        let renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+            .await
+            .unwrap();
+        let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
         });
-    }
+        let draw = |key: Option<[[u8; 3]; 4]>, style| {
+            renderer.draw_display(
+                &texture.create_view(&Default::default()),
+                &scene,
+                0.0,
+                1.0,
+                [0.9, -0.4, 1.2, 1.0],
+                DisplayOptions {
+                    style,
+                    shade: true,
+                    key_colours: key,
+                    ..Default::default()
+                },
+            );
+            read_back(&renderer, &texture)
+        };
+        let red = |img: &[u8]| {
+            img.chunks_exact(4)
+                .filter(|p| {
+                    p[0] > 120 && p[0] as i32 > p[1] as i32 + 80 && p[0] as i32 > p[2] as i32 + 80
+                })
+                .count()
+        };
+        let default = crate::gpu_viewer::display::default_key_colours();
+        let plain = draw(None, DisplayStyle::Shaded);
+        let same = draw(Some(default), DisplayStyle::Shaded);
+        // The defaults reproduce the contour map's colours (to rounding).
+        let diff = plain
+            .iter()
+            .zip(&same)
+            .filter(|(a, b)| (**a as i32 - **b as i32).abs() > 2)
+            .count();
+        assert!(
+            diff < 40,
+            "{diff} bytes differ between the map and its default key"
+        );
+        assert_eq!(red(&plain), 0, "teal support faces have no red");
+        let mut custom = default;
+        custom[1] = [255, 0, 0];
+        assert!(
+            red(&draw(Some(custom), DisplayStyle::Shaded)) > 300,
+            "the support face is red when the support colour is"
+        );
+        // The highlight pass of a wireframe uses the key too.
+        assert!(
+            red(&draw(Some(custom), DisplayStyle::Wireframe)) > 100,
+            "and in a wireframe"
+        );
+    });
+}
+
+/// Each display style paints what CAD says: shaded fills the faces, wireframe only the edges, hidden lines
+/// removed only the edges in front, hidden lines visible those and the dimmed rest; a gradient runs top to bottom.
+#[test]
+#[ignore = "requires a native graphics adapter"]
+fn display_styles_paint_what_cad_says() {
+    let _guard = headless_guard();
+    pollster::block_on(async {
+        let adapter = test_adapter().await.expect("adapter required");
+        let scene = cube();
+        let (w, h) = (160u32, 160u32);
+        let renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+            .await
+            .unwrap();
+        let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let black = Some(([0u8; 3], [0u8; 3]));
+        let draw = |style, background| {
+            renderer.draw_display(
+                &texture.create_view(&Default::default()),
+                &scene,
+                0.0,
+                1.0,
+                [0.6, -0.5, 1.2, 1.0],
+                DisplayOptions {
+                    style,
+                    background,
+                    ..Default::default()
+                },
+            );
+            read_back(&renderer, &texture)
+        };
+        let painted = |img: &[u8]| {
+            img.chunks_exact(4)
+                .filter(|p| p[..3].iter().any(|c| *c > 3))
+                .count()
+        };
+        let bright = |img: &[u8]| {
+            img.chunks_exact(4)
+                .filter(|p| p[..3].iter().all(|c| *c > 200))
+                .count()
+        };
+        let shaded = draw(DisplayStyle::Shaded, black);
+        let with_edges = draw(DisplayStyle::ShadedEdges, black);
+        let hlv = draw(DisplayStyle::HiddenLinesVisible, black);
+        let hlr = draw(DisplayStyle::HiddenLinesRemoved, black);
+        let wire = draw(DisplayStyle::Wireframe, black);
+        assert!(
+            painted(&shaded) > (w * h) as usize / 8,
+            "shaded fills the faces"
+        );
+        assert_eq!(bright(&shaded), 0, "shaded draws no edges");
+        assert!(
+            bright(&with_edges) > 100,
+            "shaded with edges draws its edges"
+        );
+        assert!(
+            painted(&wire) < painted(&shaded) / 4 && bright(&wire) > 100,
+            "wireframe is edges only"
+        );
+        assert!(
+            painted(&hlr) < painted(&shaded) / 4 && bright(&hlr) > 50,
+            "hidden lines removed shows no fill, only edges"
+        );
+        assert!(
+            bright(&hlr) < bright(&wire),
+            "the edges behind the cube are removed"
+        );
+        assert!(
+            painted(&hlv) > painted(&hlr),
+            "hidden lines visible adds the dimmed hidden edges"
+        );
+        assert_eq!(
+            bright(&hlv),
+            bright(&hlr),
+            "the visible edges are the same ones as with hidden lines removed"
+        );
+        // A gradient runs from the top colour to the bottom one.
+        let grad = draw(DisplayStyle::Wireframe, Some(([0; 3], [200; 3])));
+        let px = |img: &[u8], x: u32, y: u32| img[((y * w + x) * 4) as usize];
+        assert!(
+            px(&grad, 2, h - 3) > px(&grad, 2, 2) + 150,
+            "bottom {} top {}",
+            px(&grad, 2, h - 3),
+            px(&grad, 2, 2)
+        );
+    });
+}
 
 #[cfg(test)]
 mod tests {
@@ -928,7 +1371,11 @@ mod tests {
                 label: "big".into(),
                 positions: vec![[-1.5, -1.5, 0.0], [1.5, -1.5, 0.0], [0.0, 1.5, 0.0]],
                 triangles: vec![0, 1, 2],
-                samples: vec![[0.0, 0.0, 0.0, 0.2], [0.0, 0.0, 0.0, 0.5], [0.0, 0.0, 0.0, 0.8]],
+                samples: vec![
+                    [0.0, 0.0, 0.0, 0.2],
+                    [0.0, 0.0, 0.0, 0.5],
+                    [0.0, 0.0, 0.0, 0.8],
+                ],
                 times: vec![0.0],
                 range: [0.0, 1.0],
                 gain: 1.0,
@@ -937,10 +1384,16 @@ mod tests {
                 fields: Vec::new(),
             };
             let (w, h) = (128u32, 96u32);
-            let renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+            let renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+                .await
+                .unwrap();
             let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
                 label: None,
-                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -949,25 +1402,48 @@ mod tests {
                 view_formats: &[],
             });
             let draw = |viewport| {
-                renderer.draw_display(&texture.create_view(&Default::default()), &scene, 0.0, 1.0, [0.0, 0.0, 1.0, 1.0], DisplayOptions { viewport, ..Default::default() });
+                renderer.draw_display(
+                    &texture.create_view(&Default::default()),
+                    &scene,
+                    0.0,
+                    1.0,
+                    [0.0, 0.0, 1.0, 1.0],
+                    DisplayOptions {
+                        viewport,
+                        ..Default::default()
+                    },
+                );
                 read_back(&renderer, &texture)
             };
-            let clear = [(0.025f32 * 255.0).round() as u8, (0.03f32 * 255.0).round() as u8, (0.045f32 * 255.0).round() as u8];
+            let clear = [
+                (0.025f32 * 255.0).round() as u8,
+                (0.03f32 * 255.0).round() as u8,
+                (0.045f32 * 255.0).round() as u8,
+            ];
             let is_clear = |px: &[u8]| (0..3).all(|k| px[k].abs_diff(clear[k]) <= 1);
             let full = draw(None);
             let painted = |img: &[u8]| img.chunks_exact(4).filter(|p| !is_clear(p)).count();
-            assert!(painted(&full) > (w * h) as usize / 2, "the oversized triangle covers most of the target");
+            assert!(
+                painted(&full) > (w * h) as usize / 2,
+                "the oversized triangle covers most of the target"
+            );
             let rect = [32u32, 16, 64, 48];
             let img = draw(Some(rect));
             let mut inside = 0;
             for y in 0..h {
                 for x in 0..w {
                     let px = &img[((y * w + x) * 4) as usize..][..4];
-                    let in_rect = x >= rect[0] && x < rect[0] + rect[2] && y >= rect[1] && y < rect[1] + rect[3];
+                    let in_rect = x >= rect[0]
+                        && x < rect[0] + rect[2]
+                        && y >= rect[1]
+                        && y < rect[1] + rect[3];
                     if in_rect {
                         inside += usize::from(!is_clear(px));
                     } else {
-                        assert!(is_clear(px), "pixel ({x}, {y}) outside the viewport was painted");
+                        assert!(
+                            is_clear(px),
+                            "pixel ({x}, {y}) outside the viewport was painted"
+                        );
                     }
                 }
             }
@@ -987,7 +1463,11 @@ mod tests {
                 label: "small".into(),
                 positions: vec![[-0.2, -0.2, 0.0], [0.2, -0.2, 0.0], [0.0, 0.2, 0.0]],
                 triangles: vec![0, 1, 2],
-                samples: vec![[0.0, 0.0, 0.0, 0.2], [0.0, 0.0, 0.0, 0.5], [0.0, 0.0, 0.0, 0.8]],
+                samples: vec![
+                    [0.0, 0.0, 0.0, 0.2],
+                    [0.0, 0.0, 0.0, 0.5],
+                    [0.0, 0.0, 0.0, 0.8],
+                ],
                 times: vec![0.0],
                 range: [0.0, 1.0],
                 gain: 1.0,
@@ -996,10 +1476,16 @@ mod tests {
                 fields: Vec::new(),
             };
             let (w, h) = (128u32, 128u32);
-            let renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+            let renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+                .await
+                .unwrap();
             let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
                 label: None,
-                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -1008,9 +1494,23 @@ mod tests {
                 view_formats: &[],
             });
             let centroid = |pan: [f32; 2]| {
-                renderer.draw_display(&texture.create_view(&Default::default()), &scene, 0.0, 1.0, [0.0, 0.0, 1.0, 1.0], DisplayOptions { pan, ..Default::default() });
+                renderer.draw_display(
+                    &texture.create_view(&Default::default()),
+                    &scene,
+                    0.0,
+                    1.0,
+                    [0.0, 0.0, 1.0, 1.0],
+                    DisplayOptions {
+                        pan,
+                        ..Default::default()
+                    },
+                );
                 let img = read_back(&renderer, &texture);
-                let clear = [(0.025f32 * 255.0).round() as u8, (0.03f32 * 255.0).round() as u8, (0.045f32 * 255.0).round() as u8];
+                let clear = [
+                    (0.025f32 * 255.0).round() as u8,
+                    (0.03f32 * 255.0).round() as u8,
+                    (0.045f32 * 255.0).round() as u8,
+                ];
                 let (mut sx, mut sy, mut n) = (0.0f64, 0.0f64, 0.0f64);
                 for y in 0..h {
                     for x in 0..w {
@@ -1028,8 +1528,14 @@ mod tests {
             let (x0, y0) = centroid([0.0, 0.0]);
             // NDC +0.5 is a quarter of the width to the right; +0.25 is an eighth of the height up (y grows downward).
             let (x1, y1) = centroid([0.5, 0.25]);
-            assert!((x1 - x0 - 0.25 * f64::from(w)).abs() < 1.5, "x {x0} -> {x1}");
-            assert!((y0 - y1 - 0.125 * f64::from(h)).abs() < 1.5, "y {y0} -> {y1}");
+            assert!(
+                (x1 - x0 - 0.25 * f64::from(w)).abs() < 1.5,
+                "x {x0} -> {x1}"
+            );
+            assert!(
+                (y0 - y1 - 0.125 * f64::from(h)).abs() < 1.5,
+                "y {y0} -> {y1}"
+            );
         });
     }
     #[test]
@@ -1083,7 +1589,11 @@ mod tests {
                     time,
                     1.0,
                     [0.0, 0.0, 1.6, 1.0],
-                    DisplayOptions { show_mesh: mesh, show_contour: contour, ..Default::default() },
+                    DisplayOptions {
+                        show_mesh: mesh,
+                        show_contour: contour,
+                        ..Default::default()
+                    },
                 );
                 read_back(renderer, &texture)
             };
@@ -1122,7 +1632,10 @@ mod tests {
             }];
             renderer.set_scene(&multi).unwrap();
             let draw_field = |field| {
-                let o = DisplayOptions { field, ..Default::default() };
+                let o = DisplayOptions {
+                    field,
+                    ..Default::default()
+                };
                 renderer.draw_display(
                     &texture.create_view(&Default::default()),
                     &multi,
@@ -1134,29 +1647,62 @@ mod tests {
                 read_back(&renderer, &texture)
             };
             let primary = draw_field(0);
-            assert_ne!(primary, draw_field(1), "field selection changes the contour");
-            assert_eq!(primary, draw_field(9), "out-of-range field falls back to the primary scalar");
+            assert_ne!(
+                primary,
+                draw_field(1),
+                "field selection changes the contour"
+            );
+            assert_eq!(
+                primary,
+                draw_field(9),
+                "out-of-range field falls back to the primary scalar"
+            );
             // The egui chrome is painted over the scene without clearing it.
             let (tw, th) = (texture.width(), texture.height());
             let ctx = egui::Context::default();
-            let raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(tw as f32, th as f32))), ..Default::default() };
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(tw as f32, th as f32),
+                )),
+                ..Default::default()
+            };
             let frame = ctx.run_ui(raw, |ui| {
                 egui::Panel::top("t").exact_size(20.0).show(ui, |ui| {
                     ui.label("chrome");
                 });
             });
             let view = texture.create_view(&Default::default());
-            renderer.draw_display(&view, &multi, 0.0, 1.0, [0.0, 0.0, 1.6, 1.0], DisplayOptions::default());
+            renderer.draw_display(
+                &view,
+                &multi,
+                0.0,
+                1.0,
+                [0.0, 0.0, 1.6, 1.0],
+                DisplayOptions::default(),
+            );
             let before = read_back(&renderer, &texture);
             renderer.paint_egui(&view, &ctx, frame, [tw, th]);
             let after = read_back(&renderer, &texture);
             assert_ne!(before, after, "the chrome changes pixels");
-            let row = |img: &[u8], y: u32| img[(y * tw * 4) as usize..((y + 1) * tw * 4) as usize].to_vec();
-            assert_eq!(row(&before, th - 1), row(&after, th - 1), "pixels below the panel keep the scene");
+            let row = |img: &[u8], y: u32| {
+                img[(y * tw * 4) as usize..((y + 1) * tw * 4) as usize].to_vec()
+            };
+            assert_eq!(
+                row(&before, th - 1),
+                row(&after, th - 1),
+                "pixels below the panel keep the scene"
+            );
             // A frame that could not be shown still carries texture changes (the font atlas grows with new text); handing
             // it to `discard_egui` keeps the next painted frame valid instead of panicking in egui.
             let frame = |text: &str| {
-                let raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(tw as f32, th as f32))), ..Default::default() };
+                let raw = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(tw as f32, th as f32),
+                    )),
+                    ..Default::default()
+                };
                 ctx.run_ui(raw, |ui| {
                     egui::Panel::top("t2").show(ui, |ui| {
                         ui.label(text);
@@ -1221,7 +1767,9 @@ mod performance_tests {
             let r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, 512, 256)
                 .await
                 .unwrap();
-            r.device.poll(wgpu::PollType::wait_indefinitely()).expect("device poll");
+            r.device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .expect("device poll");
             let upload = start.elapsed();
             let texture = r.device.create_texture(&wgpu::TextureDescriptor {
                 label: None,
@@ -1242,7 +1790,9 @@ mod performance_tests {
             for t in &scene.times {
                 r.draw(&view, &scene, *t, scene.gain, [0.0, 0.0, 1.6, 2.0]);
             }
-            r.device.poll(wgpu::PollType::wait_indefinitely()).expect("device poll");
+            r.device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .expect("device poll");
             eprintln!("GPU profile: adapter={:?}, vertices={n}, triangles={}, frames={}, sample_bytes={}, uniform_bytes_per_frame={}, upload_ms={:.3}, playback_ms={:.3}",adapter.get_info(),scene.triangles.len()/3,scene.times.len(),scene.samples.len()*16,r.uniform.size(),upload.as_secs_f64()*1000.0,start.elapsed().as_secs_f64()*1000.0);
         });
     }
@@ -1251,12 +1801,18 @@ mod performance_tests {
 #[cfg(test)]
 mod snapshot_tests {
     use super::*;
-    use crate::gpu_viewer::{controller::ViewState, editor::authoring::Authoring, gui::Gui, results::GuiInput, transport};
+    use crate::gpu_viewer::{
+        controller::ViewState, editor::authoring::Authoring, gui::Gui, results::GuiInput, transport,
+    };
 
     fn target(r: &Renderer, w: u32, h: u32) -> wgpu::Texture {
         r.device.create_texture(&wgpu::TextureDescriptor {
             label: None,
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -1268,14 +1824,41 @@ mod snapshot_tests {
 
     /// One chrome + scene frame into `texture`, like the window does: run egui twice (the second pass has the
     /// measured sizes of the first), draw the scene into the viewport, paint the chrome.
-    fn draw(r: &mut Renderer, gui: &mut Gui, texture: &wgpu::Texture, input: &GuiInput, camera: [f32; 2], show_mesh: bool) {
+    fn draw(
+        r: &mut Renderer,
+        gui: &mut Gui,
+        texture: &wgpu::Texture,
+        input: &GuiInput,
+        camera: [f32; 2],
+        show_mesh: bool,
+    ) {
         let (w, h) = (texture.width(), texture.height());
-        let raw = || egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w as f32, h as f32))), ..Default::default() };
+        let raw = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(w as f32, h as f32),
+            )),
+            ..Default::default()
+        };
         let view = texture.create_view(&Default::default());
         let ctx = gui.ctx().clone();
         // The chrome sees the camera the scene is drawn with (the window's chrome and renderer share one `ViewState`).
-        let synced = crate::gpu_viewer::controller::ViewState { yaw: camera[0], pitch: camera[1], zoom: 1.5, pan: [0.0, 0.0], ..input.view.clone() };
-        let input = &GuiInput { view: &synced, scenes: input.scenes, selected: input.selected, editor: input.editor, error: input.error, box_drag: input.box_drag, overlay: input.overlay };
+        let synced = crate::gpu_viewer::controller::ViewState {
+            yaw: camera[0],
+            pitch: camera[1],
+            zoom: 1.5,
+            pan: [0.0, 0.0],
+            ..input.view.clone()
+        };
+        let input = &GuiInput {
+            view: &synced,
+            scenes: input.scenes,
+            selected: input.selected,
+            editor: input.editor,
+            error: input.error,
+            box_drag: input.box_drag,
+            overlay: input.overlay,
+        };
         // The first passes only measure (a scroll area and a floating card take the size of what they held the
         // pass before); their texture uploads still have to reach the renderer.
         for _ in 0..3 {
@@ -1283,9 +1866,26 @@ mod snapshot_tests {
             r.paint_egui(&view, &ctx, pass, [w, h]);
         }
         let vp = gui.viewport_px((w, h));
-        let cam = crate::gpu_viewer::editor::camera::Camera { yaw: camera[0], pitch: camera[1], zoom: 1.5, aspect: vp.w as f32 / vp.h as f32, pan: [0.0, 0.0] };
-        let overlay = input.editor.map(|e| e.overlay(&cam, [vp.w as f32, vp.h as f32])).unwrap_or_default();
-        let with_overlay = GuiInput { view: input.view, scenes: input.scenes, selected: input.selected, editor: input.editor, error: input.error, box_drag: input.box_drag, overlay: &overlay };
+        let cam = crate::gpu_viewer::editor::camera::Camera {
+            yaw: camera[0],
+            pitch: camera[1],
+            zoom: 1.5,
+            aspect: vp.w as f32 / vp.h as f32,
+            pan: [0.0, 0.0],
+        };
+        let overlay = input
+            .editor
+            .map(|e| e.overlay(&cam, [vp.w as f32, vp.h as f32]))
+            .unwrap_or_default();
+        let with_overlay = GuiInput {
+            view: input.view,
+            scenes: input.scenes,
+            selected: input.selected,
+            editor: input.editor,
+            error: input.error,
+            box_drag: input.box_drag,
+            overlay: &overlay,
+        };
         let (output, _) = gui.run(raw(), &with_overlay);
         let geometry = input.editor.is_some_and(|e| e.geometry_view());
         r.draw_display(
@@ -1298,7 +1898,16 @@ mod snapshot_tests {
                 show_mesh,
                 show_contour: true,
                 field: input.view.field,
-                viewport: Some(if input.editor.is_some_and(|e| !e.start_options().is_empty() || e.has_document()) { [vp.x, vp.y, 0, 0] } else { [vp.x, vp.y, vp.w, vp.h] }),
+                viewport: Some(
+                    if input
+                        .editor
+                        .is_some_and(|e| !e.start_options().is_empty() || e.has_document())
+                    {
+                        [vp.x, vp.y, 0, 0]
+                    } else {
+                        [vp.x, vp.y, vp.w, vp.h]
+                    },
+                ),
                 background: Some((gui.background_rgb(), gui.background_rgb())),
                 // Lit and in the colour key's colours, as the window draws a model (`window.rs`).
                 style: input.view.style_for(input.scene(), geometry),
@@ -1316,23 +1925,39 @@ mod snapshot_tests {
     #[test]
     #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_SCENE / FEA_SNAPSHOT_OUT"]
     fn hud_snapshot() {
-        let (Ok(scene_path), Ok(out)) = (std::env::var("FEA_SNAPSHOT_SCENE"), std::env::var("FEA_SNAPSHOT_OUT")) else {
+        let (Ok(scene_path), Ok(out)) = (
+            std::env::var("FEA_SNAPSHOT_SCENE"),
+            std::env::var("FEA_SNAPSHOT_OUT"),
+        ) else {
             return;
         };
         let _guard = headless_guard();
-        let field: usize = std::env::var("FEA_SNAPSHOT_FIELD").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let field: usize = std::env::var("FEA_SNAPSHOT_FIELD")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
         let project = transport::read_project(std::fs::File::open(scene_path).unwrap()).unwrap();
         let scene = &project.scenes[project.selected];
         pollster::block_on(async {
             let adapter = test_adapter().await.expect("adapter required");
             let (w, h) = (1280u32, 800u32);
-            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, scene, w, h).await.unwrap();
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, scene, w, h)
+                .await
+                .unwrap();
             let mut view = ViewState::new(scene);
             view.field = field;
             view.show_help = std::env::var("FEA_SNAPSHOT_HELP").is_ok();
             let texture = target(&r, w, h);
             let mut gui = Gui::new();
-            let input = GuiInput { view: &view, scenes: &project.scenes, selected: project.selected, editor: None, error: None, box_drag: None, overlay: &[] };
+            let input = GuiInput {
+                view: &view,
+                scenes: &project.scenes,
+                selected: project.selected,
+                editor: None,
+                error: None,
+                box_drag: None,
+                overlay: &[],
+            };
             draw(&mut r, &mut gui, &texture, &input, [0.35, 0.4], true);
             std::fs::write(out, read_back(&r, &texture)).unwrap();
         });
@@ -1344,13 +1969,22 @@ mod snapshot_tests {
     #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_MENU_OUT"]
     fn context_menu_snapshot() {
         use crate::gpu_viewer::editor::solid::{SolidAction, SolidSession};
-        let Ok(dir) = std::env::var("FEA_SNAPSHOT_MENU_OUT") else { return };
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_MENU_OUT") else {
+            return;
+        };
         let _guard = headless_guard();
-        let mut problem = fea_problem::templates::templates().into_iter().map(|(_, p)| p).find(|p| p.analysis == fea_problem::Analysis::Solid).unwrap();
+        let mut problem = fea_problem::templates::templates()
+            .into_iter()
+            .map(|(_, p)| p)
+            .find(|p| p.analysis == fea_problem::Analysis::Solid)
+            .unwrap();
         problem.mesh.size = 0.3;
         let mut session = SolidSession::new(problem, "demo-menu.json".into());
         let t = std::time::Instant::now();
-        while session.scene().map_or(true, |s| !s.label.contains("body (not meshed)")) {
+        while session
+            .scene()
+            .map_or(true, |s| !s.label.contains("body (not meshed)"))
+        {
             session.poll();
             assert!(t.elapsed().as_secs() < 60, "body did not finish");
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -1360,14 +1994,31 @@ mod snapshot_tests {
             let adapter = test_adapter().await.expect("adapter required");
             let (w, h) = (1280u32, 800u32);
             let scene = session.scene().unwrap();
-            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+                .await
+                .unwrap();
             let texture = target(&r, w, h);
             let mut gui = Gui::new();
             gui.ctx().set_theme(egui::Theme::Dark);
             let view = ViewState::new(&scene);
             let scenes = [scene];
-            let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
-            let ctx = crate::gpu_viewer::menus::MenuContext { view: &view, scene: input.scene(), results: 1, editor: input.editor, visible: Default::default(), adaptive: true };
+            let input = GuiInput {
+                view: &view,
+                scenes: &scenes,
+                selected: 0,
+                editor: Some(&session as &dyn Authoring),
+                error: None,
+                box_drag: None,
+                overlay: &[],
+            };
+            let ctx = crate::gpu_viewer::menus::MenuContext {
+                view: &view,
+                scene: input.scene(),
+                results: 1,
+                editor: input.editor,
+                visible: Default::default(),
+                adaptive: true,
+            };
             gui.open_context((640.0, 300.0), crate::gpu_viewer::menus::context(&ctx));
             gui.toggle_background_picker();
             draw(&mut r, &mut gui, &texture, &input, [-0.6, -0.5], false);
@@ -1376,19 +2027,47 @@ mod snapshot_tests {
             gui.toggle_background_picker();
             gui.close_floating();
             let mut session = session;
-            session.do_action(SolidAction::OpenCard(crate::gpu_viewer::editor::solid::CardForm::Pressure));
-            let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+            session.do_action(SolidAction::OpenCard(
+                crate::gpu_viewer::editor::solid::CardForm::Pressure,
+            ));
+            let input = GuiInput {
+                view: &view,
+                scenes: &scenes,
+                selected: 0,
+                editor: Some(&session as &dyn Authoring),
+                error: None,
+                box_drag: None,
+                overlay: &[],
+            };
             draw(&mut r, &mut gui, &texture, &input, [-0.6, -0.5], false);
             std::fs::write(format!("{dir}/card.rgba"), read_back(&r, &texture)).unwrap();
             // The material library, and the Simulation tab with its Analysis group.
             session.do_action(SolidAction::CardCancel);
-            session.do_action(SolidAction::OpenCard(crate::gpu_viewer::editor::solid::CardForm::Materials));
+            session.do_action(SolidAction::OpenCard(
+                crate::gpu_viewer::editor::solid::CardForm::Materials,
+            ));
             session.do_action(SolidAction::CardMaterialGroup);
-            let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+            let input = GuiInput {
+                view: &view,
+                scenes: &scenes,
+                selected: 0,
+                editor: Some(&session as &dyn Authoring),
+                error: None,
+                box_drag: None,
+                overlay: &[],
+            };
             draw(&mut r, &mut gui, &texture, &input, [-0.6, -0.5], false);
             std::fs::write(format!("{dir}/library.rgba"), read_back(&r, &texture)).unwrap();
             session.do_action(SolidAction::CardCancel);
-            let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+            let input = GuiInput {
+                view: &view,
+                scenes: &scenes,
+                selected: 0,
+                editor: Some(&session as &dyn Authoring),
+                error: None,
+                box_drag: None,
+                overlay: &[],
+            };
             gui.select_tab_named(&input, "Simulation");
             draw(&mut r, &mut gui, &texture, &input, [-0.6, -0.5], false);
             std::fs::write(format!("{dir}/simulation.rgba"), read_back(&r, &texture)).unwrap();
@@ -1401,7 +2080,9 @@ mod snapshot_tests {
     #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_RESULT_OUT"]
     fn result_legend_snapshot() {
         use crate::gpu_viewer::editor::solid::{SolidAction, SolidSession};
-        let Ok(dir) = std::env::var("FEA_SNAPSHOT_RESULT_OUT") else { return };
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_RESULT_OUT") else {
+            return;
+        };
         let _guard = headless_guard();
         let mut problem = fea_problem::templates::templates().remove(0).1;
         problem.mesh.size = 0.6;
@@ -1422,7 +2103,9 @@ mod snapshot_tests {
             let adapter = test_adapter().await.expect("adapter required");
             let (w, h) = (1280u32, 800u32);
             let scene = session.scene().unwrap();
-            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+                .await
+                .unwrap();
             let texture = target(&r, w, h);
             let mut gui = Gui::new();
             gui.ctx().set_theme(egui::Theme::Dark);
@@ -1430,7 +2113,15 @@ mod snapshot_tests {
             let mut view = ViewState::new(&scene);
             view.field = 0;
             let scenes = [scene];
-            let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+            let input = GuiInput {
+                view: &view,
+                scenes: &scenes,
+                selected: 0,
+                editor: Some(&session as &dyn Authoring),
+                error: None,
+                box_drag: None,
+                overlay: &[],
+            };
             gui.select_tab_named(&input, "Simulation");
             draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
             std::fs::write(format!("{dir}/result.rgba"), read_back(&r, &texture)).unwrap();
@@ -1442,18 +2133,37 @@ mod snapshot_tests {
     #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_DASH_OUT"]
     fn dashboard_snapshot() {
         use crate::gpu_viewer::dashboard::{unix_now, Dashboard, Recents};
-        let Ok(dir) = std::env::var("FEA_SNAPSHOT_DASH_OUT") else { return };
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_DASH_OUT") else {
+            return;
+        };
         let _guard = headless_guard();
         let mut recents = Recents::default();
         let now = unix_now();
         recents.record("fea", Some("/work/bracket.json".into()), now - 7_200);
-        recents.record("members", Some("/work/wing-truss.json".into()), now - 90_000);
+        recents.record(
+            "members",
+            Some("/work/wing-truss.json".into()),
+            now - 90_000,
+        );
         let mut dash = Dashboard::new(recents, None);
         pollster::block_on(async {
             let adapter = test_adapter().await.expect("adapter required");
             let (w, h) = (1280u32, 800u32);
-            let scene = Scene { label: "d".into(), positions: vec![[0.0; 3]; 3], triangles: vec![0, 1, 2], samples: vec![[0.0; 4]; 3], times: vec![0.0], range: [0.0, 1.0], gain: 1.0, harmonic_period: None, field_label: String::new(), fields: Vec::new() };
-            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+            let scene = Scene {
+                label: "d".into(),
+                positions: vec![[0.0; 3]; 3],
+                triangles: vec![0, 1, 2],
+                samples: vec![[0.0; 4]; 3],
+                times: vec![0.0],
+                range: [0.0, 1.0],
+                gain: 1.0,
+                harmonic_period: None,
+                field_label: String::new(),
+                fields: Vec::new(),
+            };
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+                .await
+                .unwrap();
             for (name, theme) in [("light", egui::Theme::Light), ("dark", egui::Theme::Dark)] {
                 let texture = target(&r, w, h);
                 let mut gui = Gui::new();
@@ -1461,11 +2171,21 @@ mod snapshot_tests {
                 let view = texture.create_view(&Default::default());
                 let ctx = gui.ctx().clone();
                 for _ in 0..3 {
-                    let raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w as f32, h as f32))), ..Default::default() };
+                    let raw = egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(w as f32, h as f32),
+                        )),
+                        ..Default::default()
+                    };
                     let (out, _) = gui.run_dashboard(raw, &mut dash);
                     r.paint_egui(&view, &ctx, out, [w, h]);
                 }
-                std::fs::write(format!("{dir}/dashboard-{name}.rgba"), read_back(&r, &texture)).unwrap();
+                std::fs::write(
+                    format!("{dir}/dashboard-{name}.rgba"),
+                    read_back(&r, &texture),
+                )
+                .unwrap();
             }
         });
     }
@@ -1474,45 +2194,118 @@ mod snapshot_tests {
     #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_STACKUP_OUT"]
     fn stackup_snapshot() {
         use crate::gpu_viewer::editor::stackup::StackupSession;
-        let dir=std::env::var("FEA_SNAPSHOT_STACKUP_OUT").expect("snapshot folder");
+        let dir = std::env::var("FEA_SNAPSHOT_STACKUP_OUT").expect("snapshot folder");
         std::fs::create_dir_all(&dir).unwrap();
-        let _guard=headless_guard();
-        let mut session=StackupSession::open(std::path::Path::new("/tmp/stackup-snapshot-unused-v2.json")).unwrap();
-        session.inputs.members.push(bushing_solver::stackup::Member::new(3));session.inputs.members[0].name="Outer lug".into();session.inputs.members[1].name="Spacer".into();session.inputs.members[1].thickness=0.25;session.inputs.members[2].name="Inner lug".into();session.inputs.bushing_enabled=true;session.inputs.common_wall=Some(0.06);session.act(crate::gpu_viewer::editor::session::EditorAction::Stackup(crate::gpu_viewer::editor::stackup::StackupAct::Recalculate));
+        let _guard = headless_guard();
+        let mut session =
+            StackupSession::open(std::path::Path::new("/tmp/stackup-snapshot-unused-v2.json"))
+                .unwrap();
+        session
+            .inputs
+            .members
+            .push(bushing_solver::stackup::Member::new(3));
+        session.inputs.members[0].name = "Outer lug".into();
+        session.inputs.members[1].name = "Spacer".into();
+        session.inputs.members[1].thickness = 0.25;
+        session.inputs.members[2].name = "Inner lug".into();
+        session.inputs.bushing_enabled = true;
+        session.inputs.common_wall = Some(0.06);
+        session.act(crate::gpu_viewer::editor::session::EditorAction::Stackup(
+            crate::gpu_viewer::editor::stackup::StackupAct::Recalculate,
+        ));
         pollster::block_on(async {
-            let adapter=test_adapter().await.expect("graphics adapter required");
-            let scene=session.scene().unwrap();
-            for (w,h,name,dark) in [(1360,860,"wide-dark",true),(1360,860,"wide-light",false),(780,900,"narrow-dark",true)] {
-                let mut r=Renderer::new(&adapter,wgpu::TextureFormat::Rgba8Unorm,&scene,w,h).await.unwrap();
-                let texture=target(&r,w,h);let mut gui=Gui::new();gui.ctx().set_theme(if dark {egui::Theme::Dark}else{egui::Theme::Light});
-                let view=ViewState::new(&scene);let scenes=[scene.clone()];let input=GuiInput{view:&view,scenes:&scenes,selected:0,editor:Some(&session as &dyn Authoring),error:None,box_drag:None,overlay:&[]};
-                draw(&mut r,&mut gui,&texture,&input,[0.0,0.0],false);
-                std::fs::write(format!("{dir}/{name}-{w}x{h}.rgba"),read_back(&r,&texture)).unwrap();
-                let (x,y)=gui.find_target("Drag member 1").unwrap();
-                let start=egui::pos2(x as f32,y as f32);
-                let finish=start-egui::vec2(0.0,90.0);
+            let adapter = test_adapter().await.expect("graphics adapter required");
+            let scene = session.scene().unwrap();
+            for (w, h, name, dark) in [
+                (1360, 860, "wide-dark", true),
+                (1360, 860, "wide-light", false),
+                (780, 900, "narrow-dark", true),
+            ] {
+                let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+                    .await
+                    .unwrap();
+                let texture = target(&r, w, h);
+                let mut gui = Gui::new();
+                gui.ctx().set_theme(if dark {
+                    egui::Theme::Dark
+                } else {
+                    egui::Theme::Light
+                });
+                let view = ViewState::new(&scene);
+                let scenes = [scene.clone()];
+                let input = GuiInput {
+                    view: &view,
+                    scenes: &scenes,
+                    selected: 0,
+                    editor: Some(&session as &dyn Authoring),
+                    error: None,
+                    box_drag: None,
+                    overlay: &[],
+                };
+                draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+                std::fs::write(
+                    format!("{dir}/{name}-{w}x{h}.rgba"),
+                    read_back(&r, &texture),
+                )
+                .unwrap();
+                let (x, y) = gui.find_target("Drag member 1").unwrap();
+                let start = egui::pos2(x as f32, y as f32);
+                let finish = start - egui::vec2(0.0, 90.0);
                 for events in [
-                    vec![egui::Event::PointerMoved(start),egui::Event::PointerButton {pos:start,button:egui::PointerButton::Primary,pressed:true,modifiers:Default::default()}],
+                    vec![
+                        egui::Event::PointerMoved(start),
+                        egui::Event::PointerButton {
+                            pos: start,
+                            button: egui::PointerButton::Primary,
+                            pressed: true,
+                            modifiers: Default::default(),
+                        },
+                    ],
                     vec![egui::Event::PointerMoved(finish)],
-                    vec![egui::Event::PointerButton {pos:finish,button:egui::PointerButton::Primary,pressed:false,modifiers:Default::default()}],
+                    vec![egui::Event::PointerButton {
+                        pos: finish,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: Default::default(),
+                    }],
                 ] {
-                    let raw=egui::RawInput {screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(w as f32,h as f32))),events,..Default::default()};
-                    let (output,_)=gui.run(raw,&input);
+                    let raw = egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(w as f32, h as f32),
+                        )),
+                        events,
+                        ..Default::default()
+                    };
+                    let (output, _) = gui.run(raw, &input);
                     r.discard_egui(output);
                 }
-                draw(&mut r,&mut gui,&texture,&input,[0.0,0.0],false);
-                let offsets=gui.stackup_component_offsets();
-                assert!(offsets[0].1[0] < 0.0,"member drag did not move the member");
-                assert_eq!(offsets[0].1[1],0.0,"member drag moved its bushing");
-                assert!(offsets[1..].iter().all(|(_,offset)|*offset == [0.0,0.0]),"member drag moved neighbors");
-                std::fs::write(format!("{dir}/{name}-individual-{w}x{h}.rgba"),read_back(&r,&texture)).unwrap();
+                draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+                let offsets = gui.stackup_component_offsets();
+                assert!(offsets[0].1[0] < 0.0, "member drag did not move the member");
+                assert_eq!(offsets[0].1[1], 0.0, "member drag moved its bushing");
+                assert!(
+                    offsets[1..].iter().all(|(_, offset)| *offset == [0.0, 0.0]),
+                    "member drag moved neighbors"
+                );
+                std::fs::write(
+                    format!("{dir}/{name}-individual-{w}x{h}.rgba"),
+                    read_back(&r, &texture),
+                )
+                .unwrap();
                 for (control, pose) in [("Explode all", "exploded"), ("Stack setup", "settings")] {
                     let (_, y) = gui.find_target(control).unwrap();
                     if y > h as f64 - 40.0 {
                         let raw = egui::RawInput {
-                            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w as f32, h as f32))),
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(w as f32, h as f32),
+                            )),
                             events: vec![
-                                egui::Event::PointerMoved(egui::pos2(w as f32 - 24.0, h as f32 / 2.0)),
+                                egui::Event::PointerMoved(egui::pos2(
+                                    w as f32 - 24.0,
+                                    h as f32 / 2.0,
+                                )),
                                 egui::Event::MouseWheel {
                                     unit: egui::MouseWheelUnit::Point,
                                     delta: egui::vec2(0.0, h as f32 / 2.0 - y as f32),
@@ -1531,11 +2324,24 @@ mod snapshot_tests {
                     let (x, y) = gui.find_target(control).unwrap();
                     let pos = egui::pos2(x as f32, y as f32);
                     let raw = egui::RawInput {
-                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w as f32, h as f32))),
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(w as f32, h as f32),
+                        )),
                         events: vec![
                             egui::Event::PointerMoved(pos),
-                            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
-                            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+                            egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Primary,
+                                pressed: true,
+                                modifiers: Default::default(),
+                            },
+                            egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Primary,
+                                pressed: false,
+                                modifiers: Default::default(),
+                            },
                         ],
                         ..Default::default()
                     };
@@ -1543,23 +2349,54 @@ mod snapshot_tests {
                     r.discard_egui(output);
                     draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
                     if pose == "settings" {
-                        assert!(gui.target_labels().iter().any(|label| label == "Pilot position from stack entrance (in) input"),"snapshot did not enter settings");
+                        assert!(
+                            gui.target_labels()
+                                .iter()
+                                .any(|label| label
+                                    == "Pilot position from stack entrance (in) input"),
+                            "snapshot did not enter settings"
+                        );
                     } else {
-                        assert!(gui.stackup_component_offsets().iter().any(|(_,offset)|offset[0] > 0.0),"snapshot did not explode all");
+                        assert!(
+                            gui.stackup_component_offsets()
+                                .iter()
+                                .any(|(_, offset)| offset[0] > 0.0),
+                            "snapshot did not explode all"
+                        );
                     }
-                    std::fs::write(format!("{dir}/{name}-{pose}-{w}x{h}.rgba"),read_back(&r,&texture)).unwrap();
+                    std::fs::write(
+                        format!("{dir}/{name}-{pose}-{w}x{h}.rgba"),
+                        read_back(&r, &texture),
+                    )
+                    .unwrap();
                 }
             }
-            session.act(crate::gpu_viewer::editor::session::EditorAction::Stackup(crate::gpu_viewer::editor::stackup::StackupAct::OpenMaterial(26)));
+            session.act(crate::gpu_viewer::editor::session::EditorAction::Stackup(
+                crate::gpu_viewer::editor::stackup::StackupAct::OpenMaterial(26),
+            ));
             let (w, h) = (1360, 860);
-            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+                .await
+                .unwrap();
             let texture = target(&r, w, h);
             let mut gui = Gui::new();
             let view = ViewState::new(&scene);
             let scenes = [scene];
-            let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+            let input = GuiInput {
+                view: &view,
+                scenes: &scenes,
+                selected: 0,
+                editor: Some(&session as &dyn Authoring),
+                error: None,
+                box_drag: None,
+                overlay: &[],
+            };
             draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
-            std::fs::write(format!("{dir}/material-picker.rgba"), read_back(&r, &texture)).unwrap();
+            std::fs::write(
+                format!("{dir}/material-picker.rgba"),
+                read_back(&r, &texture),
+            )
+            .unwrap();
         });
     }
 
@@ -1571,12 +2408,17 @@ mod snapshot_tests {
         use crate::gpu_viewer::editor::bushing::{file::BushingFile, BushingAct, BushingSession};
         use crate::gpu_viewer::editor::session::EditorAction;
         use crate::toolboxes::bushing::model::{BushingModel, NumberTarget};
-        let Ok(dir) = std::env::var("FEA_SNAPSHOT_BUSHING_OUT") else { return };
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_BUSHING_OUT") else {
+            return;
+        };
         let _guard = headless_guard();
         let mut model = BushingModel::default();
         // A case with a visible failure to show the verdict and a fix.
         model.commit_number(NumberTarget::EdgeDist, 0.42);
-        let mut session = BushingSession::new(&BushingFile::capture(&model, "Wing fitting rev C"), std::env::temp_dir().join("bushing-snapshot.json"));
+        let mut session = BushingSession::new(
+            &BushingFile::capture(&model, "Wing fitting rev C"),
+            std::env::temp_dir().join("bushing-snapshot.json"),
+        );
         let t = std::time::Instant::now();
         let wait = |s: &mut BushingSession, done: &dyn Fn(&BushingSession) -> bool| {
             while !done(s) {
@@ -1587,22 +2429,42 @@ mod snapshot_tests {
         };
         wait(&mut session, &|s| s.fea().preview_summary().is_ok());
         session.act(EditorAction::Bushing(BushingAct::EdgeCheck(false)));
-        wait(&mut session, &|s| !s.model().recommendations.is_empty() && !s.solving());
+        wait(&mut session, &|s| {
+            !s.model().recommendations.is_empty() && !s.solving()
+        });
         let scenes_of = |s: &mut BushingSession| s.scene().unwrap();
         pollster::block_on(async {
             let adapter = test_adapter().await.expect("adapter required");
             let (w, h) = (1360u32, 860u32);
             let scene = scenes_of(&mut session);
-            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
-            let shoot = |r: &mut Renderer, session: &mut BushingSession, step: &str, name: &str, dark: bool| {
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+                .await
+                .unwrap();
+            let shoot = |r: &mut Renderer,
+                         session: &mut BushingSession,
+                         step: &str,
+                         name: &str,
+                         dark: bool| {
                 let scene = scenes_of(session);
                 r.set_scene(&scene).unwrap();
                 let texture = target(r, w, h);
                 let mut gui = Gui::new();
-                gui.ctx().set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+                gui.ctx().set_theme(if dark {
+                    egui::Theme::Dark
+                } else {
+                    egui::Theme::Light
+                });
                 let view = ViewState::new(&scene);
                 let scenes = [scene];
-                let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+                let input = GuiInput {
+                    view: &view,
+                    scenes: &scenes,
+                    selected: 0,
+                    editor: Some(session as &dyn Authoring),
+                    error: None,
+                    box_drag: None,
+                    overlay: &[],
+                };
                 gui.select_tab_named(&input, step);
                 draw(r, &mut gui, &texture, &input, [0.0, 0.0], true);
                 std::fs::write(format!("{dir}/{name}.rgba"), read_back(r, &texture)).unwrap();
@@ -1610,25 +2472,47 @@ mod snapshot_tests {
             shoot(&mut r, &mut session, "Inputs", "bushing-inputs", true);
             session.act(EditorAction::Bushing(BushingAct::AllFixes));
             shoot(&mut r, &mut session, "Checks", "bushing-checks", true);
-            shoot(&mut r, &mut session, "Checks", "bushing-checks-light", false);
+            shoot(
+                &mut r,
+                &mut session,
+                "Checks",
+                "bushing-checks-light",
+                false,
+            );
         });
         session.act(EditorAction::Bushing(BushingAct::Solve));
-        wait(&mut session, &|s| s.fea().current_solution().is_some() && !s.solving());
+        wait(&mut session, &|s| {
+            s.fea().current_solution().is_some() && !s.solving()
+        });
         session.act(EditorAction::Bushing(BushingAct::Step("Simulation")));
         pollster::block_on(async {
             let adapter = test_adapter().await.expect("adapter required");
             let (w, h) = (1360u32, 860u32);
             let scene = scenes_of(&mut session);
-            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+                .await
+                .unwrap();
             let texture = target(&r, w, h);
             let mut gui = Gui::new();
             gui.ctx().set_theme(egui::Theme::Dark);
             let view = ViewState::new(&scene);
             let scenes = [scene];
-            let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+            let input = GuiInput {
+                view: &view,
+                scenes: &scenes,
+                selected: 0,
+                editor: Some(&session as &dyn Authoring),
+                error: None,
+                box_drag: None,
+                overlay: &[],
+            };
             gui.select_tab_named(&input, "Simulation");
             draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
-            std::fs::write(format!("{dir}/bushing-result.rgba"), read_back(&r, &texture)).unwrap();
+            std::fs::write(
+                format!("{dir}/bushing-result.rgba"),
+                read_back(&r, &texture),
+            )
+            .unwrap();
         });
     }
 
@@ -1637,25 +2521,44 @@ mod snapshot_tests {
     #[test]
     #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_FASTENER_OUT"]
     fn fastener_snapshot() {
-        use crate::gpu_viewer::editor::fastener::{file::FastenerFile, FastenerAct, FastenerSession};
+        use crate::gpu_viewer::editor::fastener::{
+            file::FastenerFile, FastenerAct, FastenerSession,
+        };
         use crate::gpu_viewer::editor::session::EditorAction;
-        use crate::toolboxes::fastener_hole::model::{FastenerHoleModel, FieldRow, NumberPart, NumberTarget};
-        let Ok(dir) = std::env::var("FEA_SNAPSHOT_FASTENER_OUT") else { return };
+        use crate::toolboxes::fastener_hole::model::{
+            FastenerHoleModel, FieldRow, NumberPart, NumberTarget,
+        };
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_FASTENER_OUT") else {
+            return;
+        };
         let _guard = headless_guard();
         let mut model = FastenerHoleModel::default();
         model.commit_number(NumberTarget::RegularHole2, NumberPart::TolPlus, 0.003);
-        let mut session = FastenerSession::new(&FastenerFile::capture(&model, "Skin splice"), std::env::temp_dir().join("fastener-snapshot.json"));
+        let mut session = FastenerSession::new(
+            &FastenerFile::capture(&model, "Skin splice"),
+            std::env::temp_dir().join("fastener-snapshot.json"),
+        );
         pollster::block_on(async {
             let adapter = test_adapter().await.expect("adapter required");
             let (w, h) = (1360u32, 860u32);
             let scene = session.scene().unwrap();
-            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
-            let shoot = |r: &mut Renderer, session: &mut FastenerSession, step: &str, name: &str, dark: bool| {
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+                .await
+                .unwrap();
+            let shoot = |r: &mut Renderer,
+                         session: &mut FastenerSession,
+                         step: &str,
+                         name: &str,
+                         dark: bool| {
                 let scene = session.scene().unwrap();
                 r.set_scene(&scene).unwrap();
                 let texture = target(r, w, h);
                 let mut gui = Gui::new();
-                gui.ctx().set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+                gui.ctx().set_theme(if dark {
+                    egui::Theme::Dark
+                } else {
+                    egui::Theme::Light
+                });
                 let mut view = ViewState::new(&scene);
                 // The light shot keeps the default style (wireframe: only the coloured faces are painted).
                 if dark {
@@ -1664,15 +2567,38 @@ mod snapshot_tests {
                 // The window opens on the editor's view, without mesh lines.
                 let (yaw, pitch) = session.initial_view().map_or((0.0, 0.0), |v| v.angles());
                 let scenes = [scene];
-                let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+                let input = GuiInput {
+                    view: &view,
+                    scenes: &scenes,
+                    selected: 0,
+                    editor: Some(session as &dyn Authoring),
+                    error: None,
+                    box_drag: None,
+                    overlay: &[],
+                };
                 gui.select_tab_named(&input, step);
-                draw(r, &mut gui, &texture, &input, [yaw, pitch], session.default_mesh_lines());
+                draw(
+                    r,
+                    &mut gui,
+                    &texture,
+                    &input,
+                    [yaw, pitch],
+                    session.default_mesh_lines(),
+                );
                 std::fs::write(format!("{dir}/{name}.rgba"), read_back(r, &texture)).unwrap();
             };
             shoot(&mut r, &mut session, "Inputs", "fastener-regular", true);
-            session.act(EditorAction::Fastener(FastenerAct::Row(FieldRow::ToggleHoleType)));
+            session.act(EditorAction::Fastener(FastenerAct::Row(
+                FieldRow::ToggleHoleType,
+            )));
             shoot(&mut r, &mut session, "Inputs", "fastener-countersink", true);
-            shoot(&mut r, &mut session, "Inputs", "fastener-countersink-light", false);
+            shoot(
+                &mut r,
+                &mut session,
+                "Inputs",
+                "fastener-countersink-light",
+                false,
+            );
             shoot(&mut r, &mut session, "Report", "fastener-report", true);
         });
     }
@@ -1685,47 +2611,126 @@ mod snapshot_tests {
         use crate::gpu_viewer::editor::session::EditorAction;
         use crate::gpu_viewer::editor::vessel::{file::VesselFile, VesselAct, VesselSession};
         use crate::toolboxes::pressure_vessel::model::{FieldRow, PressureVesselModel};
-        let Ok(dir) = std::env::var("FEA_SNAPSHOT_VESSEL_OUT") else { return };
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_VESSEL_OUT") else {
+            return;
+        };
         let _guard = headless_guard();
-        let mut session = VesselSession::new(&VesselFile::capture(&PressureVesselModel::default(), "Accumulator"), std::env::temp_dir().join("vessel-snapshot.json"));
-        let shoot = |session: &mut VesselSession, step: &str, name: &str, dark: bool, (w, h): (u32, u32)| {
+        let mut session = VesselSession::new(
+            &VesselFile::capture(&PressureVesselModel::default(), "Accumulator"),
+            std::env::temp_dir().join("vessel-snapshot.json"),
+        );
+        let shoot = |session: &mut VesselSession,
+                     step: &str,
+                     name: &str,
+                     dark: bool,
+                     (w, h): (u32, u32)| {
             pollster::block_on(async {
                 let adapter = test_adapter().await.expect("adapter required");
                 let scene = session.scene().unwrap();
-                let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+                let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+                    .await
+                    .unwrap();
                 let texture = target(&r, w, h);
                 let mut gui = Gui::new();
-                gui.ctx().set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+                gui.ctx().set_theme(if dark {
+                    egui::Theme::Dark
+                } else {
+                    egui::Theme::Light
+                });
                 let view = ViewState::new(&scene);
                 let (yaw, pitch) = session.initial_view().map_or((0.0, 0.0), |v| v.angles());
                 let scenes = [scene];
-                let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+                let input = GuiInput {
+                    view: &view,
+                    scenes: &scenes,
+                    selected: 0,
+                    editor: Some(session as &dyn Authoring),
+                    error: None,
+                    box_drag: None,
+                    overlay: &[],
+                };
                 gui.select_tab_named(&input, step);
-                draw(&mut r, &mut gui, &texture, &input, [yaw, pitch], session.default_mesh_lines());
+                draw(
+                    &mut r,
+                    &mut gui,
+                    &texture,
+                    &input,
+                    [yaw, pitch],
+                    session.default_mesh_lines(),
+                );
                 std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
             });
         };
-        shoot(&mut session, "Inputs", "vessel-inputs-dark", true, (1440, 900));
-        shoot(&mut session, "Inputs", "vessel-inputs-light", false, (1440, 900));
+        shoot(
+            &mut session,
+            "Inputs",
+            "vessel-inputs-dark",
+            true,
+            (1440, 900),
+        );
+        shoot(
+            &mut session,
+            "Inputs",
+            "vessel-inputs-light",
+            false,
+            (1440, 900),
+        );
         shoot(&mut session, "Inputs", "vessel-narrow", true, (860, 760));
         session.act(EditorAction::Vessel(VesselAct::Step("Results")));
-        shoot(&mut session, "Results", "vessel-results-dark", true, (1440, 900));
-        shoot(&mut session, "Results", "vessel-results-light", false, (1440, 900));
+        shoot(
+            &mut session,
+            "Results",
+            "vessel-results-dark",
+            true,
+            (1440, 900),
+        );
+        shoot(
+            &mut session,
+            "Results",
+            "vessel-results-light",
+            false,
+            (1440, 900),
+        );
         use crate::gpu_viewer::editor::session::{Key, Mods};
         use crate::toolboxes::pressure_vessel::model::NumberTarget;
-        for (target, text) in [(NumberTarget::CorrosionAllowance, "0.125"), (NumberTarget::MillUndertolerance, "12.5")] {
-            session.act(EditorAction::Vessel(VesselAct::Row(FieldRow::Number(target))));
+        for (target, text) in [
+            (NumberTarget::CorrosionAllowance, "0.125"),
+            (NumberTarget::MillUndertolerance, "12.5"),
+        ] {
+            session.act(EditorAction::Vessel(VesselAct::Row(FieldRow::Number(
+                target,
+            ))));
             for c in text.chars() {
                 session.key(Key::Char(c), Mods::default());
             }
             session.key(Key::Enter, Mods::default());
         }
-        shoot(&mut session, "Results", "vessel-allowances-results", true, (1440, 900));
+        shoot(
+            &mut session,
+            "Results",
+            "vessel-allowances-results",
+            true,
+            (1440, 900),
+        );
         session.act(EditorAction::Vessel(VesselAct::Step("Inputs")));
-        shoot(&mut session, "Inputs", "vessel-allowances-inputs", true, (1440, 900));
+        shoot(
+            &mut session,
+            "Inputs",
+            "vessel-allowances-inputs",
+            true,
+            (1440, 900),
+        );
         session.act(EditorAction::Vessel(VesselAct::Step("Inputs")));
-        session.act(EditorAction::Vessel(VesselAct::Row(FieldRow::OpenMaterialPicker)));
-        shoot(&mut session, "Inputs", "vessel-picker-dark", true, (1440, 900));
+        session.act(EditorAction::Vessel(VesselAct::Row(
+            FieldRow::OpenMaterialPicker,
+        )));
+        shoot(
+            &mut session,
+            "Inputs",
+            "vessel-picker-dark",
+            true,
+            (1440, 900),
+        );
     }
 
     /// The Preload Analysis workbench (inputs dark, light and in a narrow window; the parts picture before the member FE
@@ -1737,45 +2742,116 @@ mod snapshot_tests {
         use crate::gpu_viewer::editor::preload::{file::PreloadFile, PreloadAct, PreloadSession};
         use crate::gpu_viewer::editor::session::EditorAction;
         use crate::toolboxes::preload_analysis::model::{FieldRow, PreloadModel};
-        let Ok(dir) = std::env::var("FEA_SNAPSHOT_PRELOAD_OUT") else { return };
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_PRELOAD_OUT") else {
+            return;
+        };
         let _guard = headless_guard();
-        let mut session = PreloadSession::new(&PreloadFile::capture(&PreloadModel::default(), "Lap joint"), std::env::temp_dir().join("preload-snapshot.json"));
-        let shoot = |session: &mut PreloadSession, step: &str, name: &str, dark: bool, (w, h): (u32, u32)| {
+        let mut session = PreloadSession::new(
+            &PreloadFile::capture(&PreloadModel::default(), "Lap joint"),
+            std::env::temp_dir().join("preload-snapshot.json"),
+        );
+        let shoot = |session: &mut PreloadSession,
+                     step: &str,
+                     name: &str,
+                     dark: bool,
+                     (w, h): (u32, u32)| {
             pollster::block_on(async {
                 let adapter = test_adapter().await.expect("adapter required");
                 let scene = session.scene().unwrap();
-                let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+                let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+                    .await
+                    .unwrap();
                 let texture = target(&r, w, h);
                 let mut gui = Gui::new();
-                gui.ctx().set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+                gui.ctx().set_theme(if dark {
+                    egui::Theme::Dark
+                } else {
+                    egui::Theme::Light
+                });
                 let view = ViewState::new(&scene);
                 let (yaw, pitch) = session.initial_view().map_or((0.0, 0.0), |v| v.angles());
                 let scenes = [scene];
-                let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+                let input = GuiInput {
+                    view: &view,
+                    scenes: &scenes,
+                    selected: 0,
+                    editor: Some(session as &dyn Authoring),
+                    error: None,
+                    box_drag: None,
+                    overlay: &[],
+                };
                 gui.select_tab_named(&input, step);
-                draw(&mut r, &mut gui, &texture, &input, [yaw, pitch], session.default_mesh_lines());
+                draw(
+                    &mut r,
+                    &mut gui,
+                    &texture,
+                    &input,
+                    [yaw, pitch],
+                    session.default_mesh_lines(),
+                );
                 std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
             });
         };
         // Before the member FE answers the picture is the parts in the colour key.
         if session.fe_current().is_none() {
-            shoot(&mut session, "Inputs", "preload-parts-dark", true, (1440, 900));
+            shoot(
+                &mut session,
+                "Inputs",
+                "preload-parts-dark",
+                true,
+                (1440, 900),
+            );
         }
         let start = std::time::Instant::now();
         while session.fe_current().is_none() {
-            assert!(start.elapsed() < std::time::Duration::from_secs(120), "the member FE never answered");
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(120),
+                "the member FE never answered"
+            );
             session.poll();
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        shoot(&mut session, "Inputs", "preload-inputs-dark", true, (1440, 900));
-        shoot(&mut session, "Inputs", "preload-inputs-light", false, (1440, 900));
+        shoot(
+            &mut session,
+            "Inputs",
+            "preload-inputs-dark",
+            true,
+            (1440, 900),
+        );
+        shoot(
+            &mut session,
+            "Inputs",
+            "preload-inputs-light",
+            false,
+            (1440, 900),
+        );
         shoot(&mut session, "Inputs", "preload-narrow", true, (860, 760));
         session.act(EditorAction::Preload(PreloadAct::Step("Results")));
-        shoot(&mut session, "Results", "preload-results-dark", true, (1440, 900));
-        shoot(&mut session, "Results", "preload-results-light", false, (1440, 900));
+        shoot(
+            &mut session,
+            "Results",
+            "preload-results-dark",
+            true,
+            (1440, 900),
+        );
+        shoot(
+            &mut session,
+            "Results",
+            "preload-results-light",
+            false,
+            (1440, 900),
+        );
         session.act(EditorAction::Preload(PreloadAct::Step("Inputs")));
-        session.act(EditorAction::Preload(PreloadAct::Row(FieldRow::OpenBoltPicker)));
-        shoot(&mut session, "Inputs", "preload-picker-dark", true, (1440, 900));
+        session.act(EditorAction::Preload(PreloadAct::Row(
+            FieldRow::OpenBoltPicker,
+        )));
+        shoot(
+            &mut session,
+            "Inputs",
+            "preload-picker-dark",
+            true,
+            (1440, 900),
+        );
     }
 
     /// The Lug Analysis workbench (the parts picture before the analysis answers; inputs dark, light and in a narrow
@@ -1787,42 +2863,91 @@ mod snapshot_tests {
         use crate::gpu_viewer::editor::lug::{file::LugFile, LugAct, LugSession};
         use crate::gpu_viewer::editor::session::EditorAction;
         use crate::toolboxes::lug_analysis::model::{FieldRow, LugUiModel};
-        let Ok(dir) = std::env::var("FEA_SNAPSHOT_LUG_OUT") else { return };
-        let _guard = headless_guard();
-        let mut session = LugSession::new(&LugFile::capture(&LugUiModel::default(), "Clevis lug"), std::env::temp_dir().join("lug-snapshot.json"));
-        let shoot = |session: &mut LugSession, step: &str, name: &str, dark: bool, (w, h): (u32, u32)| {
-            pollster::block_on(async {
-                let adapter = test_adapter().await.expect("adapter required");
-                let scene = session.scene().unwrap();
-                let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
-                let texture = target(&r, w, h);
-                let mut gui = Gui::new();
-                gui.ctx().set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
-                let view = ViewState::new(&scene);
-                let (yaw, pitch) = session.initial_view().map_or((0.0, 0.0), |v| v.angles());
-                let scenes = [scene];
-                let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
-                gui.select_tab_named(&input, step);
-                draw(&mut r, &mut gui, &texture, &input, [yaw, pitch], session.default_mesh_lines());
-                std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
-            });
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_LUG_OUT") else {
+            return;
         };
+        let _guard = headless_guard();
+        let mut session = LugSession::new(
+            &LugFile::capture(&LugUiModel::default(), "Clevis lug"),
+            std::env::temp_dir().join("lug-snapshot.json"),
+        );
+        let shoot =
+            |session: &mut LugSession, step: &str, name: &str, dark: bool, (w, h): (u32, u32)| {
+                pollster::block_on(async {
+                    let adapter = test_adapter().await.expect("adapter required");
+                    let scene = session.scene().unwrap();
+                    let mut r =
+                        Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+                            .await
+                            .unwrap();
+                    let texture = target(&r, w, h);
+                    let mut gui = Gui::new();
+                    gui.ctx().set_theme(if dark {
+                        egui::Theme::Dark
+                    } else {
+                        egui::Theme::Light
+                    });
+                    let view = ViewState::new(&scene);
+                    let (yaw, pitch) = session.initial_view().map_or((0.0, 0.0), |v| v.angles());
+                    let scenes = [scene];
+                    let input = GuiInput {
+                        view: &view,
+                        scenes: &scenes,
+                        selected: 0,
+                        editor: Some(session as &dyn Authoring),
+                        error: None,
+                        box_drag: None,
+                        overlay: &[],
+                    };
+                    gui.select_tab_named(&input, step);
+                    draw(
+                        &mut r,
+                        &mut gui,
+                        &texture,
+                        &input,
+                        [yaw, pitch],
+                        session.default_mesh_lines(),
+                    );
+                    std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
+                });
+            };
         // Before the analysis answers the picture is the parts in the colour key.
         if session.current_run().is_none() {
             shoot(&mut session, "Inputs", "lug-parts-dark", true, (1440, 900));
         }
         let start = std::time::Instant::now();
         while session.current_run().is_none() {
-            assert!(start.elapsed() < std::time::Duration::from_secs(300), "the lug analysis never answered");
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(300),
+                "the lug analysis never answered"
+            );
             session.poll();
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         shoot(&mut session, "Inputs", "lug-inputs-dark", true, (1440, 900));
-        shoot(&mut session, "Inputs", "lug-inputs-light", false, (1440, 900));
+        shoot(
+            &mut session,
+            "Inputs",
+            "lug-inputs-light",
+            false,
+            (1440, 900),
+        );
         shoot(&mut session, "Inputs", "lug-narrow", true, (860, 760));
         session.act(EditorAction::Lug(LugAct::Step("Results")));
-        shoot(&mut session, "Results", "lug-results-dark", true, (1440, 900));
-        shoot(&mut session, "Results", "lug-results-light", false, (1440, 900));
+        shoot(
+            &mut session,
+            "Results",
+            "lug-results-dark",
+            true,
+            (1440, 900),
+        );
+        shoot(
+            &mut session,
+            "Results",
+            "lug-results-light",
+            false,
+            (1440, 900),
+        );
         session.act(EditorAction::Lug(LugAct::Step("Inputs")));
         session.act(EditorAction::Lug(LugAct::Row(FieldRow::OpenMaterialPicker)));
         shoot(&mut session, "Inputs", "lug-picker-dark", true, (1440, 900));
@@ -1835,15 +2960,25 @@ mod snapshot_tests {
     fn search_snapshot() {
         use crate::gpu_viewer::editor::search::{SearchAct, SearchSession};
         use crate::gpu_viewer::editor::session::EditorAction;
-        let Ok(dir) = std::env::var("FEA_SNAPSHOT_SEARCH_OUT") else { return };
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_SEARCH_OUT") else {
+            return;
+        };
         let _guard = headless_guard();
         let data = tempfile::tempdir().unwrap();
         let root = data.path().join("Wing Project");
         std::fs::create_dir_all(root.join("specs/fasteners")).unwrap();
         std::fs::create_dir_all(root.join("notes")).unwrap();
         std::fs::write(root.join("specs/fasteners/hi-lok.txt"), "Fastener schedule\nHi-Lok HL18 installed with torque 40 in-lb\nsealant applied\nCheck torque after cure\nend\n").unwrap();
-        std::fs::write(root.join("specs/wing-box.md"), "# Wing box\nSpar cap bolt torque per drawing\nrib spacing 20 in\n").unwrap();
-        std::fs::write(root.join("notes/review.txt"), "Design review\nopen item: verify bolt torque on fitting\nclosed\n").unwrap();
+        std::fs::write(
+            root.join("specs/wing-box.md"),
+            "# Wing box\nSpar cap bolt torque per drawing\nrib spacing 20 in\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("notes/review.txt"),
+            "Design review\nopen item: verify bolt torque on fitting\nclosed\n",
+        )
+        .unwrap();
         std::fs::write(root.join("notes/todo.txt"), "nothing relevant here\n").unwrap();
         let mut session = SearchSession::in_memory();
         session.document_field(0, root.to_string_lossy().into_owned());
@@ -1857,44 +2992,131 @@ mod snapshot_tests {
         }
         session.poll();
         session.act(EditorAction::Search(SearchAct::Select(0)));
-        let shoot_with = |session: &SearchSession, name: &str, dark: bool, (w, h): (u32, u32), popover: Option<&str>, layout: Option<crate::gpu_viewer::display::PageLayout>| {
-            pollster::block_on(async {
-                let adapter = test_adapter().await.expect("adapter required");
-                let s = session as &dyn Authoring;
-                let scene = Scene { label: "s".into(), positions: vec![[0.0; 3]; 3], triangles: vec![0, 1, 2], samples: vec![[0.0; 4]; 3], times: vec![0.0], range: [0.0, 1.0], gain: 1.0, harmonic_period: None, field_label: String::new(), fields: Vec::new() };
-                let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
-                let texture = target(&r, w, h);
-                let mut gui = Gui::new();
-                gui.ctx().set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
-                let mut view = ViewState::new(&scene);
-                view.page_layout = layout;
-                let scenes = [scene];
-                let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(s), error: None, box_drag: None, overlay: &[] };
-                gui.select_tab_named(&input, "Results");
-                if let Some(k) = popover {
-                    gui.open_doc_popover(k);
-                }
-                draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
-                std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
-            });
+        let shoot_with =
+            |session: &SearchSession,
+             name: &str,
+             dark: bool,
+             (w, h): (u32, u32),
+             popover: Option<&str>,
+             layout: Option<crate::gpu_viewer::display::PageLayout>| {
+                pollster::block_on(async {
+                    let adapter = test_adapter().await.expect("adapter required");
+                    let s = session as &dyn Authoring;
+                    let scene = Scene {
+                        label: "s".into(),
+                        positions: vec![[0.0; 3]; 3],
+                        triangles: vec![0, 1, 2],
+                        samples: vec![[0.0; 4]; 3],
+                        times: vec![0.0],
+                        range: [0.0, 1.0],
+                        gain: 1.0,
+                        harmonic_period: None,
+                        field_label: String::new(),
+                        fields: Vec::new(),
+                    };
+                    let mut r =
+                        Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+                            .await
+                            .unwrap();
+                    let texture = target(&r, w, h);
+                    let mut gui = Gui::new();
+                    gui.ctx().set_theme(if dark {
+                        egui::Theme::Dark
+                    } else {
+                        egui::Theme::Light
+                    });
+                    let mut view = ViewState::new(&scene);
+                    view.page_layout = layout;
+                    let scenes = [scene];
+                    let input = GuiInput {
+                        view: &view,
+                        scenes: &scenes,
+                        selected: 0,
+                        editor: Some(s),
+                        error: None,
+                        box_drag: None,
+                        overlay: &[],
+                    };
+                    gui.select_tab_named(&input, "Results");
+                    if let Some(k) = popover {
+                        gui.open_doc_popover(k);
+                    }
+                    draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+                    std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
+                });
+            };
+        let shoot = |session: &SearchSession, name: &str, dark: bool, size: (u32, u32)| {
+            shoot_with(session, name, dark, size, None, None)
         };
-        let shoot = |session: &SearchSession, name: &str, dark: bool, size: (u32, u32)| shoot_with(session, name, dark, size, None, None);
-        shoot_with(&session, "search-guide", true, (1440, 900), Some("help:1"), None);
-        shoot_with(&session, "search-options", false, (1440, 900), Some("Options"), None);
-        shoot_with(&session, "search-report", true, (1440, 900), Some("Report"), None);
+        shoot_with(
+            &session,
+            "search-guide",
+            true,
+            (1440, 900),
+            Some("help:1"),
+            None,
+        );
+        shoot_with(
+            &session,
+            "search-options",
+            false,
+            (1440, 900),
+            Some("Options"),
+            None,
+        );
+        shoot_with(
+            &session,
+            "search-report",
+            true,
+            (1440, 900),
+            Some("Report"),
+            None,
+        );
         shoot(&session, "search-results-dark", true, (1440, 900));
         shoot(&session, "search-results-light", false, (1440, 900));
         shoot(&session, "search-narrow", true, (860, 760));
         // The Exclude row, and the cards moved: matches on the left, then stacked under the list.
         session.act(EditorAction::Search(SearchAct::ToggleExclude));
         session.document_field(3, "draft, obsolete".into());
-        session.act(EditorAction::Search(SearchAct::ExcludeScope(search_core::models::ExcludeScope::File)));
+        session.act(EditorAction::Search(SearchAct::ExcludeScope(
+            search_core::models::ExcludeScope::File,
+        )));
         use crate::gpu_viewer::display::PageLayout;
-        shoot_with(&session, "search-exclude-swapped", true, (1440, 900), None, Some(PageLayout { detail_first: true, stacked: false, split: 0.45 }));
-        shoot_with(&session, "search-exclude-guide", false, (1440, 900), Some("help:3"), Some(PageLayout { detail_first: false, stacked: true, split: 0.5 }));
-        shoot_with(&session, "search-exclude-narrow", true, (860, 760), None, None);
+        shoot_with(
+            &session,
+            "search-exclude-swapped",
+            true,
+            (1440, 900),
+            None,
+            Some(PageLayout {
+                detail_first: true,
+                stacked: false,
+                split: 0.45,
+            }),
+        );
+        shoot_with(
+            &session,
+            "search-exclude-guide",
+            false,
+            (1440, 900),
+            Some("help:3"),
+            Some(PageLayout {
+                detail_first: false,
+                stacked: true,
+                split: 0.5,
+            }),
+        );
+        shoot_with(
+            &session,
+            "search-exclude-narrow",
+            true,
+            (860, 760),
+            None,
+            None,
+        );
         session.state_mut_for_snapshot();
         shoot(&session, "search-running", true, (1440, 900));
+        shoot(&session, "search-running-narrow", true, (860, 760));
     }
 
     /// The Material Lookup workbench (one material's properties, then a comparison; dark, light, a narrow window), as
@@ -1904,7 +3126,9 @@ mod snapshot_tests {
     fn materials_snapshot() {
         use crate::gpu_viewer::editor::materials::{MaterialsAct, MaterialsSession, INPUT_SEARCH};
         use crate::gpu_viewer::editor::session::EditorAction;
-        let Ok(dir) = std::env::var("FEA_SNAPSHOT_MATERIALS_OUT") else { return };
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_MATERIALS_OUT") else {
+            return;
+        };
         let _guard = headless_guard();
         let mut session = MaterialsSession::with_report(None);
         session.document_field(INPUT_SEARCH, "7075".into());
@@ -1912,14 +3136,39 @@ mod snapshot_tests {
             pollster::block_on(async {
                 let adapter = test_adapter().await.expect("adapter required");
                 let s = session as &dyn Authoring;
-                let scene = Scene { label: "m".into(), positions: vec![[0.0; 3]; 3], triangles: vec![0, 1, 2], samples: vec![[0.0; 4]; 3], times: vec![0.0], range: [0.0, 1.0], gain: 1.0, harmonic_period: None, field_label: String::new(), fields: Vec::new() };
-                let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+                let scene = Scene {
+                    label: "m".into(),
+                    positions: vec![[0.0; 3]; 3],
+                    triangles: vec![0, 1, 2],
+                    samples: vec![[0.0; 4]; 3],
+                    times: vec![0.0],
+                    range: [0.0, 1.0],
+                    gain: 1.0,
+                    harmonic_period: None,
+                    field_label: String::new(),
+                    fields: Vec::new(),
+                };
+                let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+                    .await
+                    .unwrap();
                 let texture = target(&r, w, h);
                 let mut gui = Gui::new();
-                gui.ctx().set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+                gui.ctx().set_theme(if dark {
+                    egui::Theme::Dark
+                } else {
+                    egui::Theme::Light
+                });
                 let view = ViewState::new(&scene);
                 let scenes = [scene];
-                let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(s), error: None, box_drag: None, overlay: &[] };
+                let input = GuiInput {
+                    view: &view,
+                    scenes: &scenes,
+                    selected: 0,
+                    editor: Some(s),
+                    error: None,
+                    box_drag: None,
+                    overlay: &[],
+                };
                 draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
                 std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
             });
@@ -1941,13 +3190,23 @@ mod snapshot_tests {
     #[test]
     #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_ECC_OUT"]
     fn eccentric_snapshot() {
-        use crate::gpu_viewer::editor::eccentric::{file::EccentricFile, EccentricAct, EccentricSession};
+        use crate::gpu_viewer::editor::eccentric::{
+            file::EccentricFile, EccentricAct, EccentricSession,
+        };
         use crate::gpu_viewer::editor::session::EditorAction;
         use crate::toolboxes::eccentric_bushing::model::EccentricUi;
-        let Ok(dir) = std::env::var("FEA_SNAPSHOT_ECC_OUT") else { return };
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_ECC_OUT") else {
+            return;
+        };
         let _guard = headless_guard();
-        let ui = EccentricUi { offset: 0.04, ..EccentricUi::default() };
-        let mut session = EccentricSession::new(&EccentricFile::new("Wing fitting offset bore", "none.json", &ui), std::env::temp_dir().join("ecc-snapshot.json"));
+        let ui = EccentricUi {
+            offset: 0.04,
+            ..EccentricUi::default()
+        };
+        let mut session = EccentricSession::new(
+            &EccentricFile::new("Wing fitting offset bore", "none.json", &ui),
+            std::env::temp_dir().join("ecc-snapshot.json"),
+        );
         let t = std::time::Instant::now();
         let wait = |s: &mut EccentricSession, done: &dyn Fn(&EccentricSession) -> bool| {
             while !done(s) {
@@ -1962,13 +3221,23 @@ mod snapshot_tests {
                 let adapter = test_adapter().await.expect("adapter required");
                 let (w, h) = (1360u32, 860u32);
                 let scene = session.scene().unwrap();
-                let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+                let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+                    .await
+                    .unwrap();
                 let texture = target(&r, w, h);
                 let mut gui = Gui::new();
                 gui.ctx().set_theme(egui::Theme::Dark);
                 let view = ViewState::new(&scene);
                 let scenes = [scene];
-                let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+                let input = GuiInput {
+                    view: &view,
+                    scenes: &scenes,
+                    selected: 0,
+                    editor: Some(session as &dyn Authoring),
+                    error: None,
+                    box_drag: None,
+                    overlay: &[],
+                };
                 gui.select_tab_named(&input, step);
                 draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
                 std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
@@ -1977,7 +3246,9 @@ mod snapshot_tests {
         shoot(&mut session, "Inputs", "ecc-inputs");
         session.act(EditorAction::Eccentric(EccentricAct::Analyse));
         session.act(EditorAction::Eccentric(EccentricAct::Step("Analysis")));
-        wait(&mut session, &|s| s.state().analysis.is_some() && !s.solving());
+        wait(&mut session, &|s| {
+            s.state().analysis.is_some() && !s.solving()
+        });
         shoot(&mut session, "Analysis", "ecc-result");
         session.show_bracket_for_snapshot();
         shoot(&mut session, "Analysis", "ecc-offset-bracket");
@@ -1989,13 +3260,22 @@ mod snapshot_tests {
     #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_BODY_OUT"]
     fn body_styles_snapshot() {
         use crate::gpu_viewer::editor::solid::{SolidAction, SolidSession};
-        let Ok(dir) = std::env::var("FEA_SNAPSHOT_BODY_OUT") else { return };
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_BODY_OUT") else {
+            return;
+        };
         let _guard = headless_guard();
-        let mut problem = fea_problem::templates::templates().into_iter().map(|(_, p)| p).find(|p| p.analysis == fea_problem::Analysis::Solid).unwrap();
+        let mut problem = fea_problem::templates::templates()
+            .into_iter()
+            .map(|(_, p)| p)
+            .find(|p| p.analysis == fea_problem::Analysis::Solid)
+            .unwrap();
         problem.mesh.size = 0.3;
         let mut session = SolidSession::new(problem, "demo-body.json".into());
         let t = std::time::Instant::now();
-        while session.scene().map_or(true, |s| !s.label.contains("body (not meshed)")) {
+        while session
+            .scene()
+            .map_or(true, |s| !s.label.contains("body (not meshed)"))
+        {
             session.poll();
             assert!(t.elapsed().as_secs() < 60, "body did not finish");
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -2011,21 +3291,76 @@ mod snapshot_tests {
         pollster::block_on(async {
             let adapter = test_adapter().await.expect("adapter required");
             let (w, h) = (640u32, 420u32);
-            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &body, w, h).await.unwrap();
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &body, w, h)
+                .await
+                .unwrap();
             let texture = target(&r, w, h);
-            let shot = |r: &mut Renderer, scene: &Scene, name: &str, style: DisplayStyle, mesh: bool, bg: ([u8; 3], [u8; 3])| {
+            let shot = |r: &mut Renderer,
+                        scene: &Scene,
+                        name: &str,
+                        style: DisplayStyle,
+                        mesh: bool,
+                        bg: ([u8; 3], [u8; 3])| {
                 r.set_scene(scene).unwrap();
-                r.draw_display(&texture.create_view(&Default::default()), scene, 0.0, 1.0, [-0.6, -0.5, 1.5, w as f32 / h as f32], DisplayOptions { show_mesh: mesh, style, shade: true, background: Some(bg), ..Default::default() });
+                r.draw_display(
+                    &texture.create_view(&Default::default()),
+                    scene,
+                    0.0,
+                    1.0,
+                    [-0.6, -0.5, 1.5, w as f32 / h as f32],
+                    DisplayOptions {
+                        show_mesh: mesh,
+                        style,
+                        shade: true,
+                        background: Some(bg),
+                        ..Default::default()
+                    },
+                );
                 std::fs::write(format!("{dir}/{name}.rgba"), read_back(r, &texture)).unwrap();
             };
             let grey_white = ([112u8; 3], [255u8; 3]);
             for (k, style) in DisplayStyle::ALL.into_iter().enumerate() {
-                shot(&mut r, &body, &format!("body-{k}"), style, false, grey_white);
+                shot(
+                    &mut r,
+                    &body,
+                    &format!("body-{k}"),
+                    style,
+                    false,
+                    grey_white,
+                );
             }
-            shot(&mut r, &body, "hl-wire", DisplayStyle::Wireframe, false, grey_white);
-            shot(&mut r, &body, "hl-hlr", DisplayStyle::HiddenLinesRemoved, false, grey_white);
-            shot(&mut r, &meshed, "meshed-wire", DisplayStyle::Wireframe, true, ([0; 3], [112; 3]));
-            shot(&mut r, &meshed, "meshed-shaded-edges", DisplayStyle::ShadedEdges, true, grey_white);
+            shot(
+                &mut r,
+                &body,
+                "hl-wire",
+                DisplayStyle::Wireframe,
+                false,
+                grey_white,
+            );
+            shot(
+                &mut r,
+                &body,
+                "hl-hlr",
+                DisplayStyle::HiddenLinesRemoved,
+                false,
+                grey_white,
+            );
+            shot(
+                &mut r,
+                &meshed,
+                "meshed-wire",
+                DisplayStyle::Wireframe,
+                true,
+                ([0; 3], [112; 3]),
+            );
+            shot(
+                &mut r,
+                &meshed,
+                "meshed-shaded-edges",
+                DisplayStyle::ShadedEdges,
+                true,
+                grey_white,
+            );
         });
     }
 
@@ -2035,7 +3370,9 @@ mod snapshot_tests {
     #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_EDITOR_OUT"]
     fn solid_snapshot() {
         use crate::gpu_viewer::editor::solid::SolidSession;
-        let Ok(dir) = std::env::var("FEA_SNAPSHOT_EDITOR_OUT") else { return };
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_EDITOR_OUT") else {
+            return;
+        };
         let _guard = headless_guard();
         let mut problem = fea_problem::templates::templates().remove(0).1;
         problem.mesh.size = 0.4;
@@ -2052,36 +3389,97 @@ mod snapshot_tests {
             let adapter = test_adapter().await.expect("adapter required");
             let (w, h) = (1600u32, 900u32);
             let first = session.scene().unwrap();
-            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &first, w, h).await.unwrap();
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &first, w, h)
+                .await
+                .unwrap();
             let texture = target(&r, w, h);
             let mut gui = Gui::new();
-            let mut frame = |r: &mut Renderer, session: &mut SolidSession, name: &str, mesh_lines: bool, tab: Option<&str>, dark: bool| {
-                gui.ctx().set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+            let mut frame = |r: &mut Renderer,
+                             session: &mut SolidSession,
+                             name: &str,
+                             mesh_lines: bool,
+                             tab: Option<&str>,
+                             dark: bool| {
+                gui.ctx().set_theme(if dark {
+                    egui::Theme::Dark
+                } else {
+                    egui::Theme::Light
+                });
                 let scene = session.scene().unwrap();
                 r.set_scene(&scene).unwrap();
                 let mut view = ViewState::new(&scene);
                 view.show_mesh = mesh_lines;
                 let scenes = [scene];
-                let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&*session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+                let input = GuiInput {
+                    view: &view,
+                    scenes: &scenes,
+                    selected: 0,
+                    editor: Some(&*session as &dyn Authoring),
+                    error: None,
+                    box_drag: None,
+                    overlay: &[],
+                };
                 if let Some(tab) = tab {
                     gui.select_tab_named(&input, tab);
                 }
                 draw(r, &mut gui, &texture, &input, [0.0, 0.0], mesh_lines);
                 std::fs::write(format!("{dir}/{name}.rgba"), read_back(r, &texture)).unwrap();
             };
-            frame(&mut r, &mut session, "solid-before", true, Some("Mesh"), true);
-            frame(&mut r, &mut session, "solid-before-light", true, Some("Model"), false);
+            frame(
+                &mut r,
+                &mut session,
+                "solid-before",
+                true,
+                Some("Mesh"),
+                true,
+            );
+            frame(
+                &mut r,
+                &mut session,
+                "solid-before-light",
+                true,
+                Some("Model"),
+                false,
+            );
             session.solve();
             let t = std::time::Instant::now();
             while !session.poll() || session.solving() {
                 assert!(t.elapsed().as_secs() < 120);
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
-            frame(&mut r, &mut session, "solid-after", false, Some("Simulation"), true);
-            frame(&mut r, &mut session, "solid-after-light", false, Some("Simulation"), false);
+            frame(
+                &mut r,
+                &mut session,
+                "solid-after",
+                false,
+                Some("Simulation"),
+                true,
+            );
+            frame(
+                &mut r,
+                &mut session,
+                "solid-after-light",
+                false,
+                Some("Simulation"),
+                false,
+            );
             session.do_action(crate::gpu_viewer::editor::solid::SolidAction::ClearModel);
-            frame(&mut r, &mut session, "solid-empty", false, Some("Model"), true);
-            frame(&mut r, &mut session, "solid-empty-light", false, Some("Model"), false);
+            frame(
+                &mut r,
+                &mut session,
+                "solid-empty",
+                false,
+                Some("Model"),
+                true,
+            );
+            frame(
+                &mut r,
+                &mut session,
+                "solid-empty-light",
+                false,
+                Some("Model"),
+                false,
+            );
         });
     }
 
@@ -2090,7 +3488,9 @@ mod snapshot_tests {
     #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_EDITOR_OUT"]
     fn guidance_snapshot() {
         use crate::gpu_viewer::editor::solid::{SolidAction, SolidSession};
-        let Ok(dir) = std::env::var("FEA_SNAPSHOT_EDITOR_OUT") else { return };
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_EDITOR_OUT") else {
+            return;
+        };
         let _guard = headless_guard();
         let mut problem = fea_problem::templates::templates().remove(0).1;
         problem.mesh.size = 0.4;
@@ -2113,16 +3513,30 @@ mod snapshot_tests {
             let adapter = test_adapter().await.expect("adapter required");
             let (w, h) = (1600u32, 900u32);
             let first = session.scene().unwrap();
-            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &first, w, h).await.unwrap();
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &first, w, h)
+                .await
+                .unwrap();
             let texture = target(&r, w, h);
             let mut gui = Gui::new();
             for (name, dark) in [("guidance-failed", true), ("guidance-failed-light", false)] {
-                gui.ctx().set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+                gui.ctx().set_theme(if dark {
+                    egui::Theme::Dark
+                } else {
+                    egui::Theme::Light
+                });
                 let scene = session.scene().unwrap();
                 r.set_scene(&scene).unwrap();
                 let view = ViewState::new(&scene);
                 let scenes = [scene];
-                let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+                let input = GuiInput {
+                    view: &view,
+                    scenes: &scenes,
+                    selected: 0,
+                    editor: Some(&session as &dyn Authoring),
+                    error: None,
+                    box_drag: None,
+                    overlay: &[],
+                };
                 gui.select_tab_named(&input, "Simulation");
                 draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
                 std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
@@ -2135,7 +3549,9 @@ mod snapshot_tests {
     #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_EDITOR_OUT"]
     fn fix_preview_snapshot() {
         use crate::gpu_viewer::editor::solid::{FixRef, SolidAction, SolidSession};
-        let Ok(dir) = std::env::var("FEA_SNAPSHOT_EDITOR_OUT") else { return };
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_EDITOR_OUT") else {
+            return;
+        };
         let _guard = headless_guard();
         let mut problem = fea_problem::templates::templates().remove(0).1;
         problem.mesh.size = 0.4;
@@ -2152,17 +3568,30 @@ mod snapshot_tests {
             let adapter = test_adapter().await.expect("adapter required");
             let (w, h) = (1600u32, 900u32);
             let first = session.scene().unwrap();
-            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &first, w, h).await.unwrap();
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &first, w, h)
+                .await
+                .unwrap();
             let texture = target(&r, w, h);
             let mut gui = Gui::new();
             gui.ctx().set_theme(egui::Theme::Dark);
-            for (name, fix) in [("fix-preview-off", None), ("fix-preview-on", Some(FixRef::Remedy(0, 0)))] {
+            for (name, fix) in [
+                ("fix-preview-off", None),
+                ("fix-preview-on", Some(FixRef::Remedy(0, 0))),
+            ] {
                 session.do_action(SolidAction::PreviewFix(fix));
                 let scene = session.scene().unwrap();
                 r.set_scene(&scene).unwrap();
                 let view = ViewState::new(&scene);
                 let scenes = [scene];
-                let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+                let input = GuiInput {
+                    view: &view,
+                    scenes: &scenes,
+                    selected: 0,
+                    editor: Some(&session as &dyn Authoring),
+                    error: None,
+                    box_drag: None,
+                    overlay: &[],
+                };
                 draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
                 std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
             }
@@ -2173,24 +3602,56 @@ mod snapshot_tests {
     #[test]
     #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_EDITOR_OUT"]
     fn sketch_snapshot() {
-        use crate::gpu_viewer::editor::{solid::{SketchAction, SolidAction, SolidSession}, sketcher::Tool};
+        use crate::gpu_viewer::editor::{
+            sketcher::Tool,
+            solid::{SketchAction, SolidAction, SolidSession},
+        };
         use fea_problem::history::{FeatureKind, History, Plane};
         use fea_problem::sketch::{Constraint as C, Sketch};
-        let Ok(dir) = std::env::var("FEA_SNAPSHOT_EDITOR_OUT") else { return };
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_EDITOR_OUT") else {
+            return;
+        };
         let _guard = headless_guard();
         let mut problem = fea_problem::templates::templates().remove(0).1;
         let mut sk = Sketch::default();
-        let p = [sk.add_point(0.0, 0.0), sk.add_point(12.0, 0.0), sk.add_point(12.0, 4.0), sk.add_point(0.0, 4.0)];
-        let l = [sk.add_line(p[0], p[1]), sk.add_line(p[1], p[2]), sk.add_line(p[2], p[3]), sk.add_line(p[3], p[0])];
+        let p = [
+            sk.add_point(0.0, 0.0),
+            sk.add_point(12.0, 0.0),
+            sk.add_point(12.0, 4.0),
+            sk.add_point(0.0, 4.0),
+        ];
+        let l = [
+            sk.add_line(p[0], p[1]),
+            sk.add_line(p[1], p[2]),
+            sk.add_line(p[2], p[3]),
+            sk.add_line(p[3], p[0]),
+        ];
         for (i, id) in l.iter().enumerate() {
-            sk.add_constraint(if i % 2 == 0 { C::Horizontal { line: *id } } else { C::Vertical { line: *id } });
+            sk.add_constraint(if i % 2 == 0 {
+                C::Horizontal { line: *id }
+            } else {
+                C::Vertical { line: *id }
+            });
         }
-        sk.add_constraint(C::Fixed { p: p[0], x: 0.0, y: 0.0 });
-        sk.add_constraint(C::Length { line: l[0], d: 12.0 });
+        sk.add_constraint(C::Fixed {
+            p: p[0],
+            x: 0.0,
+            y: 0.0,
+        });
+        sk.add_constraint(C::Length {
+            line: l[0],
+            d: 12.0,
+        });
         sk.add_constraint(C::Length { line: l[1], d: 4.0 });
         sk.add_circle(6.0, 2.0, 0.8);
         let mut h = History::default();
-        let id = h.add("Sketch1", FeatureKind::Sketch { plane: Plane::Front { offset: 0.0 }, sketch: sk });
+        let id = h.add(
+            "Sketch1",
+            FeatureKind::Sketch {
+                plane: Plane::Front { offset: 0.0 },
+                sketch: sk,
+            },
+        );
         problem.history = Some(h);
         let mut session = SolidSession::new(problem, "demo-sketch.json".into());
         session.do_action(SolidAction::Sketch(SketchAction::Edit(id)));
@@ -2205,17 +3666,42 @@ mod snapshot_tests {
             let adapter = test_adapter().await.expect("adapter required");
             let (w, h) = (1600u32, 900u32);
             let scene = session.scene().unwrap();
-            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h).await.unwrap();
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+                .await
+                .unwrap();
             let texture = target(&r, w, h);
             r.set_scene(&scene).unwrap();
             let view = ViewState::new(&scene);
             let scenes = [scene];
-            let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+            let input = GuiInput {
+                view: &view,
+                scenes: &scenes,
+                selected: 0,
+                editor: Some(&session as &dyn Authoring),
+                error: None,
+                box_drag: None,
+                overlay: &[],
+            };
             for (dark, suffix) in [(true, ""), (false, "-light")] {
                 let mut gui = Gui::new();
-                gui.ctx().set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+                gui.ctx().set_theme(if dark {
+                    egui::Theme::Dark
+                } else {
+                    egui::Theme::Light
+                });
                 draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
-                std::fs::write(format!("{dir}/{}{suffix}.rgba", if finished { "sketch-finished" } else { "sketch" }), read_back(&r, &texture)).unwrap();
+                std::fs::write(
+                    format!(
+                        "{dir}/{}{suffix}.rgba",
+                        if finished {
+                            "sketch-finished"
+                        } else {
+                            "sketch"
+                        }
+                    ),
+                    read_back(&r, &texture),
+                )
+                .unwrap();
             }
         });
     }
@@ -2224,16 +3710,28 @@ mod snapshot_tests {
     #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_EDITOR_OUT"]
     fn editor_snapshot() {
         use crate::gpu_viewer::editor::{camera::Hit, caps::Operation, session::Session};
-        let Ok(dir) = std::env::var("FEA_SNAPSHOT_EDITOR_OUT") else { return };
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_EDITOR_OUT") else {
+            return;
+        };
         let _guard = headless_guard();
-        let template: usize = std::env::var("FEA_SNAPSHOT_TEMPLATE").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
-        let mut session = Session::new(fea_problem::members::templates().remove(template), "demo.members.json".into());
-        session.state.select(Some(Hit::Node(session.state.problem.nodes.len() as u32)));
+        let template: usize = std::env::var("FEA_SNAPSHOT_TEMPLATE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let mut session = Session::new(
+            fea_problem::members::templates().remove(template),
+            "demo.members.json".into(),
+        );
+        session
+            .state
+            .select(Some(Hit::Node(session.state.problem.nodes.len() as u32)));
         pollster::block_on(async {
             let adapter = test_adapter().await.expect("adapter required");
             let (w, h) = (1600u32, 900u32);
             let first = session.scene().unwrap();
-            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &first, w, h).await.unwrap();
+            let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &first, w, h)
+                .await
+                .unwrap();
             let texture = target(&r, w, h);
             let mut gui = Gui::new();
             let mut frame = |r: &mut Renderer, session: &mut Session, name: &str| {
@@ -2241,7 +3739,15 @@ mod snapshot_tests {
                 r.set_scene(&scene).unwrap();
                 let view = ViewState::new(&scene);
                 let scenes = [scene];
-                let input = GuiInput { view: &view, scenes: &scenes, selected: 0, editor: Some(&*session as &dyn Authoring), error: None, box_drag: None, overlay: &[] };
+                let input = GuiInput {
+                    view: &view,
+                    scenes: &scenes,
+                    selected: 0,
+                    editor: Some(&*session as &dyn Authoring),
+                    error: None,
+                    box_drag: None,
+                    overlay: &[],
+                };
                 draw(r, &mut gui, &texture, &input, [0.55, 0.35], false);
                 std::fs::write(format!("{dir}/{name}.rgba"), read_back(r, &texture)).unwrap();
             };

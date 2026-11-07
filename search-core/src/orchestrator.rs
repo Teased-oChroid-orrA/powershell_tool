@@ -571,7 +571,7 @@ async fn process_one_file(
 
     let lines = match extracted {
         Ok(e) => {
-            result.low_confidence_pdf = e.low_confidence_pdf;
+            result.low_confidence_pdf = e.low_confidence_pdf || e.ocr_used;
             // The file extracted successfully now - clear any prior
             // recorded failure for it (fixed, or the earlier failure was
             // a fluke of that specific past content).

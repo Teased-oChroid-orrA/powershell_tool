@@ -17,6 +17,7 @@ name = "search_core"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 regex = "1"
 # Rust's `regex` crate has no lookaround (no backtracking, by design), but
 # whole-word matching's boundary check needs it (see matching.rs's
@@ -121,6 +122,16 @@ image = { version = "0.25", optional = true, default-features = false, features 
 # rather than adding more image-format dependencies for formats not yet
 # seen in a real reported case.
 ocr = ["dep:ocrs", "dep:rten", "dep:image"]
+neural-search = ["dep:search-ml"]
+semantic-search = ["neural-search"]
+
+[[example]]
+name = "entity_rank_probe"
+required-features = ["neural-search"]
+
+[dependencies.search-ml]
+path = "../search-ml"
+optional = true
 
 [dev-dependencies]
 tempfile = "3"

@@ -25,6 +25,8 @@ use crate::extraction;
 use crate::file_reader;
 use crate::models::{FileSearchResult, SearchSettings};
 use crate::orchestrator::filter_by_extension;
+#[cfg(feature = "semantic-search")]
+use crate::semantic_index::SemanticIndex;
 
 /// Name of the index subfolder created at the root of whatever folder is
 /// being searched. Dot-prefixed (matches the convention of tool-owned
@@ -56,10 +58,18 @@ pub fn index_directory(search_path: &str) -> PathBuf {
 /// recovery here and there's no reason to make the user do it by hand.
 pub fn open_or_create_with_rebuild(index_directory: &Path) -> NsResult<NativeSearchEngine> {
     let wipe_and_recreate = || -> NsResult<()> {
-        std::fs::remove_dir_all(index_directory)
-            .map_err(|io_err| NsError::index_error(format!("could not remove outdated index at {}: {io_err}", index_directory.display())))?;
-        std::fs::create_dir_all(index_directory)
-            .map_err(|io_err| NsError::index_error(format!("could not recreate index directory at {}: {io_err}", index_directory.display())))
+        std::fs::remove_dir_all(index_directory).map_err(|io_err| {
+            NsError::index_error(format!(
+                "could not remove outdated index at {}: {io_err}",
+                index_directory.display()
+            ))
+        })?;
+        std::fs::create_dir_all(index_directory).map_err(|io_err| {
+            NsError::index_error(format!(
+                "could not recreate index directory at {}: {io_err}",
+                index_directory.display()
+            ))
+        })
     };
     if !semantic_version_current(index_directory) {
         wipe_and_recreate()?;
@@ -72,8 +82,16 @@ pub fn open_or_create_with_rebuild(index_directory: &Path) -> NsResult<NativeSea
         }
         Err(e) => return Err(e),
     };
-    std::fs::write(index_directory.join(SEMANTIC_VERSION_FILE), INDEX_SEMANTIC_VERSION.to_string())
-        .map_err(|io_err| NsError::index_error(format!("could not record the index version in {}: {io_err}", index_directory.display())))?;
+    std::fs::write(
+        index_directory.join(SEMANTIC_VERSION_FILE),
+        INDEX_SEMANTIC_VERSION.to_string(),
+    )
+    .map_err(|io_err| {
+        NsError::index_error(format!(
+            "could not record the index version in {}: {io_err}",
+            index_directory.display()
+        ))
+    })?;
     Ok(engine)
 }
 
@@ -113,7 +131,10 @@ pub fn ensure_index_directory_exists(index_directory: &Path) -> std::io::Result<
 /// (case-insensitively) - the index folder must never itself be walked and
 /// indexed as if it were a document.
 pub fn ensure_index_folder_excluded(exclude_folders: &mut Vec<String>) {
-    if !exclude_folders.iter().any(|f| f.eq_ignore_ascii_case(INDEX_FOLDER_NAME)) {
+    if !exclude_folders
+        .iter()
+        .any(|f| f.eq_ignore_ascii_case(INDEX_FOLDER_NAME))
+    {
         exclude_folders.push(INDEX_FOLDER_NAME.to_string());
     }
 }
@@ -128,7 +149,9 @@ impl IndexOutcome {
     pub fn status_message(&self) -> String {
         match (self.indexed_count, self.skipped_count) {
             (0, 0) => "No hits to index for fast re-search.".to_string(),
-            (0, s) => format!("All {s} file(s) already up to date in the fast index. Search above."),
+            (0, s) => {
+                format!("All {s} file(s) already up to date in the fast index. Search above.")
+            }
             (i, 0) => format!("Indexed {i} file(s) for fast re-search. Search above."),
             (i, s) => format!("Indexed {i} file(s), {s} already up to date. Search above."),
         }
@@ -141,12 +164,17 @@ impl IndexOutcome {
 /// stored for it is skipped entirely - re-indexing an unchanged file is
 /// wasted work, and `get_document_metadata` answers "did this change" from
 /// the index itself, with no separate cache file needed.
-pub fn index_hits_for_fast_search(engine: &NativeSearchEngine, hits: &[FileSearchResult]) -> NsResult<IndexOutcome> {
+pub fn index_hits_for_fast_search(
+    engine: &NativeSearchEngine,
+    hits: &[FileSearchResult],
+) -> NsResult<IndexOutcome> {
     let mut outcome = IndexOutcome::default();
 
     for r in hits {
         let modified_unix = ticks_from_modified(r.modified);
-        if let Some((existing_modified, existing_size)) = engine.get_document_metadata(&r.full_name)? {
+        if let Some((existing_modified, existing_size)) =
+            engine.get_document_metadata(&r.full_name)?
+        {
             if existing_modified == modified_unix && existing_size == r.file_length {
                 outcome.skipped_count += 1;
                 continue;
@@ -154,7 +182,10 @@ pub fn index_hits_for_fast_search(engine: &NativeSearchEngine, hits: &[FileSearc
         }
 
         let path = Path::new(&r.full_name);
-        let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let extension = path
             .extension()
             .map(|e| format!(".{}", e.to_string_lossy()))
@@ -179,7 +210,11 @@ pub fn index_hits_for_fast_search(engine: &NativeSearchEngine, hits: &[FileSearc
         engine.commit()?;
     }
 
-    tracing::info!(indexed = outcome.indexed_count, skipped = outcome.skipped_count, "fast-search index update complete");
+    tracing::info!(
+        indexed = outcome.indexed_count,
+        skipped = outcome.skipped_count,
+        "fast-search index update complete"
+    );
     Ok(outcome)
 }
 
@@ -321,7 +356,10 @@ fn push_failure_detail(outcome: &mut CorpusIndexOutcome, detail: impl FnOnce() -
 fn record_failure(outcome: &mut CorpusIndexOutcome, full_name: &str, ext: &str, error: &str) {
     outcome.failed_count += 1;
     push_failure_detail(outcome, || format!("{full_name}: {error}"));
-    *outcome.failure_summary.entry(format!("ext={ext}: {}", redact_paths(error))).or_insert(0) += 1;
+    *outcome
+        .failure_summary
+        .entry(format!("ext={ext}: {}", redact_paths(error)))
+        .or_insert(0) += 1;
 }
 
 /// How many newly-indexed documents accumulate before an intermediate
@@ -403,19 +441,37 @@ enum ReadFail {
 
 /// Reads one file and extracts its text lines. Errors are pre-formatted
 /// strings (the failure list is display-only).
-async fn read_and_extract(full_name: String, ext: String, p: ReadParams, cancellation: CancellationToken) -> Result<Vec<String>, ReadFail> {
-    let bytes = file_reader::read_file_bytes_robust(&full_name, p.file_timeout_seconds, p.max_retries, p.retry_delay_ms, None, &cancellation)
-        .await
-        .map_err(|e| ReadFail::Error(e.to_string()))?;
+async fn read_and_extract(
+    full_name: String,
+    ext: String,
+    p: ReadParams,
+    cancellation: CancellationToken,
+) -> Result<Vec<String>, ReadFail> {
+    let bytes = file_reader::read_file_bytes_robust(
+        &full_name,
+        p.file_timeout_seconds,
+        p.max_retries,
+        p.retry_delay_ms,
+        None,
+        &cancellation,
+    )
+    .await
+    .map_err(|e| ReadFail::Error(e.to_string()))?;
     // Extraction is synchronous and CPU-bound (PDF/OOXML/zip) - keep it off
     // the async worker threads so concurrent reads are never starved by it.
     tokio::task::spawn_blocking(move || {
-        extraction::extract_lines_by_extension(&ext, &bytes, p.pdf_timeout_seconds, None, p.ocr_scanned_pdfs)
-            .map(|e| e.lines)
-            .map_err(|e| match e {
-                extraction::ExtractLinesError::Binary => ReadFail::NoText("binary file"),
-                extraction::ExtractLinesError::Failed => ReadFail::NoText("no extractable text"),
-            })
+        extraction::extract_lines_by_extension(
+            &ext,
+            &bytes,
+            p.pdf_timeout_seconds,
+            None,
+            p.ocr_scanned_pdfs,
+        )
+        .map(|e| e.lines)
+        .map_err(|e| match e {
+            extraction::ExtractLinesError::Binary => ReadFail::NoText("binary file"),
+            extraction::ExtractLinesError::Failed => ReadFail::NoText("no extractable text"),
+        })
     })
     .await
     .map_err(|e| ReadFail::Error(format!("extraction task failed: {e}")))?
@@ -457,14 +513,20 @@ const COMMIT_ATTEMPTS: u32 = 4;
 /// stays bounded when documents are large.
 const COMMIT_BATCH_BYTES: usize = 32 * 1024 * 1024;
 
-async fn commit_with_replay(engine: &NativeSearchEngine, pending: &[PendingDoc]) -> Result<(), String> {
+async fn commit_with_replay(
+    engine: &NativeSearchEngine,
+    pending: &[PendingDoc],
+) -> Result<(), String> {
     let mut last = match engine.commit() {
         Ok(()) => return Ok(()),
         Err(e) => e.to_string(),
     };
     for attempt in 2..=COMMIT_ATTEMPTS {
         tokio::time::sleep(std::time::Duration::from_millis(250 * u64::from(attempt))).await;
-        let result = pending.iter().try_for_each(|d| d.stage(engine)).and_then(|()| engine.commit());
+        let result = pending
+            .iter()
+            .try_for_each(|d| d.stage(engine))
+            .and_then(|()| engine.commit());
         match result {
             Ok(()) => return Ok(()),
             Err(e) => last = e.to_string(),
@@ -475,13 +537,21 @@ async fn commit_with_replay(engine: &NativeSearchEngine, pending: &[PendingDoc])
 
 /// Commits `pending` (replaying on failure) and records the outcome: on a
 /// permanent failure the batch's documents move from indexed to failed.
-async fn commit_pending(engine: &NativeSearchEngine, pending: &mut Vec<PendingDoc>, outcome: &mut CorpusIndexOutcome, label: &str) {
+async fn commit_pending(
+    engine: &NativeSearchEngine,
+    pending: &mut Vec<PendingDoc>,
+    outcome: &mut CorpusIndexOutcome,
+    label: &str,
+) {
     if let Err(e) = commit_with_replay(engine, pending).await {
         let n = pending.len() as i32;
         outcome.indexed_count -= n;
         outcome.failed_count += n;
         push_failure_detail(outcome, || format!("{label} ({n} document(s) lost): {e}"));
-        *outcome.failure_summary.entry(format!("{label}: {}", redact_paths(&e))).or_insert(0) += n as u32;
+        *outcome
+            .failure_summary
+            .entry(format!("{label}: {}", redact_paths(&e)))
+            .or_insert(0) += n as u32;
     }
     pending.clear();
 }
@@ -494,26 +564,66 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
 ) -> NsResult<CorpusIndexOutcome> {
     let started = std::time::Instant::now();
     let mut outcome = CorpusIndexOutcome::default();
-    let mut report = |outcome: &CorpusIndexOutcome, stage: IndexStage, done: i32, total: i32, current: &str| {
-        if let Some(cb) = on_progress.as_deref_mut() {
-            cb(CorpusIndexProgress {
-                stage,
-                files_processed: done,
-                total_files: total,
-                current_file: current.to_string(),
-                indexed_count: outcome.indexed_count,
-                failed_count: outcome.failed_count,
-            });
-        }
-    };
+    let mut report =
+        |outcome: &CorpusIndexOutcome, stage: IndexStage, done: i32, total: i32, current: &str| {
+            if let Some(cb) = on_progress.as_deref_mut() {
+                cb(CorpusIndexProgress {
+                    stage,
+                    files_processed: done,
+                    total_files: total,
+                    current_file: current.to_string(),
+                    indexed_count: outcome.indexed_count,
+                    failed_count: outcome.failed_count,
+                });
+            }
+        };
 
-    report(&outcome, IndexStage::Enumerating, 0, 0, &settings.search_path);
+    report(
+        &outcome,
+        IndexStage::Enumerating,
+        0,
+        0,
+        &settings.search_path,
+    );
+    #[cfg(feature = "semantic-search")]
+    let semantic_index = if settings.semantic_index {
+        match SemanticIndex::open(&engine.index_directory().join("semantic.sqlite")) {
+            Ok(index) => Some(index),
+            Err(error) => {
+                *outcome
+                    .failure_summary
+                    .entry("semantic index unavailable".into())
+                    .or_insert(0) += 1;
+                tracing::warn!(error = %redact_paths(&error.to_string()), "semantic index unavailable; continuing exact index build");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    #[cfg(not(feature = "semantic-search"))]
+    if settings.semantic_index {
+        *outcome
+            .failure_summary
+            .entry("semantic search unavailable in this build".into())
+            .or_insert(0) += 1;
+    };
     // The directory walk is blocking filesystem work; running it inline would
     // park an async worker thread for the whole walk of a large tree.
-    let walk_settings = (settings.search_path.clone(), settings.include_hidden, settings.exclude_folders.clone());
+    let walk_settings = (
+        settings.search_path.clone(),
+        settings.include_hidden,
+        settings.exclude_folders.clone(),
+    );
     let walk_cancel = cancellation.clone();
     let walked = tokio::task::spawn_blocking(move || {
-        file_reader::enumerate_files_safely(&walk_settings.0, walk_settings.1, &walk_settings.2, &walk_cancel, None)
+        file_reader::enumerate_files_safely(
+            &walk_settings.0,
+            walk_settings.1,
+            &walk_settings.2,
+            &walk_cancel,
+            None,
+        )
     })
     .await
     .map_err(|e| NsError::index_error(format!("directory walk task failed: {e}")))?;
@@ -553,20 +663,43 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
         }
         let full_name = file.path.to_string_lossy().into_owned();
         if i % 256 == 0 {
-            report(&outcome, IndexStage::Checking, i as i32, total_files, &full_name);
+            report(
+                &outcome,
+                IndexStage::Checking,
+                i as i32,
+                total_files,
+                &full_name,
+            );
         }
         if file.length > max_bytes {
             outcome.too_large_count += 1;
             continue;
         }
         let modified_unix = ticks_from_modified(file.modified);
-        if let Some(&(existing_modified, existing_size)) = known.get(path_key(&full_name).as_ref()) {
-            if existing_modified == modified_unix && existing_size == file.length {
+        if let Some(&(existing_modified, existing_size)) = known.get(path_key(&full_name).as_ref())
+        {
+            #[cfg(feature = "semantic-search")]
+            let semantic_current = !settings.semantic_index
+                || semantic_index.as_ref().map_or(true, |index| {
+                    index
+                        .is_current(&full_name, modified_unix, file.length)
+                        .unwrap_or(false)
+                });
+            #[cfg(not(feature = "semantic-search"))]
+            let semantic_current = true;
+            if existing_modified == modified_unix
+                && existing_size == file.length
+                && semantic_current
+            {
                 outcome.skipped_count += 1;
                 continue;
             }
         }
-        let ext = file.path.extension().map(|e| format!(".{}", e.to_string_lossy().to_lowercase())).unwrap_or_default();
+        let ext = file
+            .path
+            .extension()
+            .map(|e| format!(".{}", e.to_string_lossy().to_lowercase()))
+            .unwrap_or_default();
         work.push((file, full_name, ext));
     }
 
@@ -578,7 +711,11 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
         pdf_timeout_seconds: settings.pdf_timeout_seconds as u64,
         ocr_scanned_pdfs: settings.ocr_scanned_pdfs,
     };
-    let concurrency = if settings.parallel { settings.throttle_limit.clamp(1, 16) as usize } else { 1 };
+    let concurrency = if settings.parallel {
+        settings.throttle_limit.clamp(1, 16) as usize
+    } else {
+        1
+    };
     let work_total = work.len() as i32;
     let mut pending: Vec<PendingDoc> = Vec::new();
     let mut pending_bytes = 0usize;
@@ -590,13 +727,21 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
     // read) never holds back the already-finished files behind it. Writes
     // to the index stay serialized on this task. Dropping the set (on
     // cancel) aborts whatever is still running.
-    type Extracted = (file_reader::EnumeratedFile, String, String, Result<Vec<String>, ReadFail>);
+    type Extracted = (
+        file_reader::EnumeratedFile,
+        String,
+        String,
+        Result<Vec<String>, ReadFail>,
+    );
     let mut in_flight: tokio::task::JoinSet<Extracted> = tokio::task::JoinSet::new();
-    let mut in_flight_names: std::collections::HashMap<tokio::task::Id, (String, String)> = std::collections::HashMap::new();
+    let mut in_flight_names: std::collections::HashMap<tokio::task::Id, (String, String)> =
+        std::collections::HashMap::new();
 
     loop {
         while !outcome.cancelled && in_flight.len() < concurrency {
-            let Some((file, full_name, ext)) = work_iter.next() else { break };
+            let Some((file, full_name, ext)) = work_iter.next() else {
+                break;
+            };
             let (cancel, names) = (cancellation.clone(), (full_name.clone(), ext.clone()));
             let handle = in_flight.spawn(async move {
                 let result = read_and_extract(full_name.clone(), ext.clone(), params, cancel).await;
@@ -608,7 +753,9 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
             outcome.cancelled = true;
             break;
         }
-        let Some(joined) = in_flight.join_next_with_id().await else { break };
+        let Some(joined) = in_flight.join_next_with_id().await else {
+            break;
+        };
         let (file, full_name, ext, extracted) = match joined {
             Ok((id, item)) => {
                 in_flight_names.remove(&id);
@@ -627,7 +774,10 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
             Ok(l) => l,
             Err(ReadFail::NoText(why)) => {
                 outcome.no_text_count += 1;
-                *outcome.failure_summary.entry(format!("ext={ext}: {why} (indexed empty)")).or_insert(0) += 1;
+                *outcome
+                    .failure_summary
+                    .entry(format!("ext={ext}: {why} (indexed empty)"))
+                    .or_insert(0) += 1;
                 Vec::new()
             }
             Err(ReadFail::Error(e)) => {
@@ -636,8 +786,28 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
             }
         };
 
+        #[cfg(feature = "semantic-search")]
+        if let Some(index) = &semantic_index {
+            if let Err(error) = index.index_document(
+                &full_name,
+                ticks_from_modified(file.modified),
+                file.length,
+                &lines,
+            ) {
+                *outcome
+                    .failure_summary
+                    .entry(format!("semantic index failed: {}", redact_paths(&error)))
+                    .or_insert(0) += 1;
+                tracing::warn!(error = %redact_paths(&error), "semantic indexing failed for one document");
+            }
+        }
+
         let doc = PendingDoc {
-            filename: file.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            filename: file
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
             id: full_name.clone(),
             ext: ext.clone(),
             modified: ticks_from_modified(file.modified),
@@ -656,7 +826,13 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
         pending.push(doc);
 
         if pending.len() as i32 >= COMMIT_BATCH_SIZE || pending_bytes >= COMMIT_BATCH_BYTES {
-            report(&outcome, IndexStage::Committing, done, work_total, &full_name);
+            report(
+                &outcome,
+                IndexStage::Committing,
+                done,
+                work_total,
+                &full_name,
+            );
             commit_pending(engine, &mut pending, &mut outcome, "commit").await;
             pending_bytes = 0;
         }
@@ -670,6 +846,31 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
 
     outcome.elapsed_ms = started.elapsed().as_millis() as u64;
     outcome.index_docs = engine.num_docs();
+    #[cfg(feature = "semantic-search")]
+    if !outcome.cancelled {
+        if let Some(index) = &semantic_index {
+            report(
+                &outcome,
+                IndexStage::Committing,
+                done,
+                work_total,
+                "Cleaning semantic index",
+            );
+            match index.remove_orphaned_documents() {
+                Ok(removed) if removed > 0 => {
+                    tracing::info!(removed, "removed deleted files from semantic index")
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    *outcome
+                        .failure_summary
+                        .entry("semantic orphan cleanup failed".into())
+                        .or_insert(0) += 1;
+                    tracing::warn!(error = %redact_paths(&error), "semantic orphan cleanup failed");
+                }
+            }
+        }
+    }
     tracing::info!(
         indexed = outcome.indexed_count,
         skipped = outcome.skipped_count,
@@ -735,7 +936,10 @@ fn path_key_folded(p: &str, fold: bool) -> Cow<'_, str> {
 /// every freshness lookup compares like with like. A no-op off Windows.
 fn known_by_key(known: HashMap<String, (i64, i64)>, fold: bool) -> HashMap<String, (i64, i64)> {
     if fold {
-        known.into_iter().map(|(id, v)| (path_key_folded(&id, true).into_owned(), v)).collect()
+        known
+            .into_iter()
+            .map(|(id, v)| (path_key_folded(&id, true).into_owned(), v))
+            .collect()
     } else {
         known
     }
@@ -745,7 +949,9 @@ fn known_by_key(known: HashMap<String, (i64, i64)>, fold: bool) -> HashMap<Strin
 /// is returned, never replaced by an empty map: "index unreadable" must not
 /// look the same as "index empty".
 fn read_known(engine: &NativeSearchEngine) -> NsResult<HashMap<String, (i64, i64)>> {
-    engine.all_document_metadata().map(|known| known_by_key(known, cfg!(windows)))
+    engine
+        .all_document_metadata()
+        .map(|known| known_by_key(known, cfg!(windows)))
 }
 
 /// Narrows a re-search to the files that can possibly match, using the
@@ -765,14 +971,24 @@ pub async fn narrow_candidates(
     engine: &NativeSearchEngine,
     cancellation: &CancellationToken,
 ) -> NsResult<NarrowOutcome> {
-    let mut out = NarrowOutcome { index_docs: engine.num_docs(), segments: engine.segment_count(), ..Default::default() };
+    let mut out = NarrowOutcome {
+        index_docs: engine.num_docs(),
+        segments: engine.segment_count(),
+        ..Default::default()
+    };
     let phase = std::time::Instant::now();
 
-    let walk = (settings.search_path.clone(), settings.include_hidden, settings.exclude_folders.clone());
+    let walk = (
+        settings.search_path.clone(),
+        settings.include_hidden,
+        settings.exclude_folders.clone(),
+    );
     let walk_cancel = cancellation.clone();
-    let walked = tokio::task::spawn_blocking(move || file_reader::enumerate_files_safely(&walk.0, walk.1, &walk.2, &walk_cancel, None))
-        .await
-        .map_err(|e| NsError::index_error(format!("directory walk task failed: {e}")))?;
+    let walked = tokio::task::spawn_blocking(move || {
+        file_reader::enumerate_files_safely(&walk.0, walk.1, &walk.2, &walk_cancel, None)
+    })
+    .await
+    .map_err(|e| NsError::index_error(format!("directory walk task failed: {e}")))?;
     let Ok((all_files, _)) = walked else {
         return Err(NsError::cancelled("candidate narrowing cancelled"));
     };
@@ -787,7 +1003,8 @@ pub async fn narrow_candidates(
     // full scan and reports it) instead of looking like an empty index.
     let known = read_known(engine)?;
     let mut stale: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut scope_keys: std::collections::HashSet<String> = std::collections::HashSet::with_capacity(in_scope.len());
+    let mut scope_keys: std::collections::HashSet<String> =
+        std::collections::HashSet::with_capacity(in_scope.len());
     for file in &in_scope {
         let full_name = file.path.to_string_lossy().into_owned();
         scope_keys.insert(path_key(&full_name).into_owned());
@@ -804,7 +1021,12 @@ pub async fn narrow_candidates(
         }
     }
     if let Ok(ids) = engine.all_document_ids() {
-        out.removed = ids.iter().filter(|id| !scope_keys.contains(path_key(id).as_ref()) && !Path::new(id.as_str()).exists()).count();
+        out.removed = ids
+            .iter()
+            .filter(|id| {
+                !scope_keys.contains(path_key(id).as_ref()) && !Path::new(id.as_str()).exists()
+            })
+            .count();
     }
 
     out.freshness_ms = phase.elapsed().as_millis() as u64;
@@ -825,7 +1047,10 @@ pub async fn narrow_candidates(
         return Ok(out);
     };
     out.query_ms = phase.elapsed().as_millis() as u64;
-    let from_index: std::collections::HashSet<String> = indexed_paths.iter().map(|p| path_key(p).into_owned()).collect();
+    let from_index: std::collections::HashSet<String> = indexed_paths
+        .iter()
+        .map(|p| path_key(p).into_owned())
+        .collect();
 
     let mut chosen = Vec::new();
     for file in in_scope {
@@ -868,7 +1093,7 @@ pub fn search(engine: &NativeSearchEngine, query: &str, limit: usize) -> NsResul
 pub fn remove_orphaned_documents(engine: &NativeSearchEngine) -> NsResult<usize> {
     let mut removed = 0usize;
     for id in engine.all_document_ids()? {
-        if !Path::new(&id).exists() {
+        if Path::new(&id).try_exists().is_ok_and(|exists| !exists) {
             engine.delete_document(&id)?;
             removed += 1;
         }
@@ -903,7 +1128,12 @@ mod tests {
     use crate::models::FileSearchStatus;
     use chrono::{Local, TimeZone};
 
-    fn sample_hit(full_name: &str, modified_unix: i64, size: i64, body_lines: &[&str]) -> FileSearchResult {
+    fn sample_hit(
+        full_name: &str,
+        modified_unix: i64,
+        size: i64,
+        body_lines: &[&str],
+    ) -> FileSearchResult {
         FileSearchResult {
             full_name: full_name.to_string(),
             status: FileSearchStatus::Hit,
@@ -931,22 +1161,28 @@ mod tests {
         // non-corrupt case any caller actually hits most of the time.
         let dir = tempfile::tempdir().unwrap();
         let engine = open_or_create_with_rebuild(dir.path()).unwrap();
-        engine.index_document(DocumentInput {
-            id: "1",
-            path: "/x/a.txt",
-            filename: "a.txt",
-            extension: ".txt",
-            title: "",
-            modified_unix: 0,
-            created_unix: 0,
-            size: 1,
-            body: "hello",
-        }).unwrap();
+        engine
+            .index_document(DocumentInput {
+                id: "1",
+                path: "/x/a.txt",
+                filename: "a.txt",
+                extension: ".txt",
+                title: "",
+                modified_unix: 0,
+                created_unix: 0,
+                size: 1,
+                body: "hello",
+            })
+            .unwrap();
         engine.commit().unwrap();
         drop(engine);
 
         let reopened = open_or_create_with_rebuild(dir.path()).unwrap();
-        assert_eq!(reopened.num_docs(), 1, "reopening an already-current-schema index must not rebuild it");
+        assert_eq!(
+            reopened.num_docs(),
+            1,
+            "reopening an already-current-schema index must not rebuild it"
+        );
     }
 
     #[test]
@@ -959,29 +1195,55 @@ mod tests {
     fn ensure_index_folder_excluded_adds_once_case_insensitively() {
         let mut folders = vec!["bin".to_string()];
         ensure_index_folder_excluded(&mut folders);
-        assert_eq!(folders, vec!["bin".to_string(), INDEX_FOLDER_NAME.to_string()]);
+        assert_eq!(
+            folders,
+            vec!["bin".to_string(), INDEX_FOLDER_NAME.to_string()]
+        );
 
         ensure_index_folder_excluded(&mut folders);
         assert_eq!(folders.len(), 2, "must not add a duplicate");
 
         let mut already_upper = vec![".NATIVE-SEARCH-INDEX".to_string()];
         ensure_index_folder_excluded(&mut already_upper);
-        assert_eq!(already_upper.len(), 1, "case-insensitive match must not add a duplicate");
+        assert_eq!(
+            already_upper.len(),
+            1,
+            "case-insensitive match must not add a duplicate"
+        );
     }
 
     #[test]
     fn status_message_covers_all_four_combinations() {
-        assert_eq!(IndexOutcome { indexed_count: 0, skipped_count: 0 }.status_message(), "No hits to index for fast re-search.");
         assert_eq!(
-            IndexOutcome { indexed_count: 0, skipped_count: 3 }.status_message(),
+            IndexOutcome {
+                indexed_count: 0,
+                skipped_count: 0
+            }
+            .status_message(),
+            "No hits to index for fast re-search."
+        );
+        assert_eq!(
+            IndexOutcome {
+                indexed_count: 0,
+                skipped_count: 3
+            }
+            .status_message(),
             "All 3 file(s) already up to date in the fast index. Search above."
         );
         assert_eq!(
-            IndexOutcome { indexed_count: 2, skipped_count: 0 }.status_message(),
+            IndexOutcome {
+                indexed_count: 2,
+                skipped_count: 0
+            }
+            .status_message(),
             "Indexed 2 file(s) for fast re-search. Search above."
         );
         assert_eq!(
-            IndexOutcome { indexed_count: 2, skipped_count: 3 }.status_message(),
+            IndexOutcome {
+                indexed_count: 2,
+                skipped_count: 3
+            }
+            .status_message(),
             "Indexed 2 file(s), 3 already up to date. Search above."
         );
     }
@@ -1007,9 +1269,21 @@ mod tests {
     #[tokio::test]
     async fn index_first_routing_agrees_with_full_scan() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.txt"), "torque spec deviation on engine mount\n").unwrap();
-        std::fs::write(dir.path().join("b.txt"), "unrelated corrosion inspection notes\n").unwrap();
-        std::fs::write(dir.path().join("c.txt"), "another engineering report, different content\n").unwrap();
+        std::fs::write(
+            dir.path().join("a.txt"),
+            "torque spec deviation on engine mount\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("b.txt"),
+            "unrelated corrosion inspection notes\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("c.txt"),
+            "another engineering report, different content\n",
+        )
+        .unwrap();
 
         let mut exclude_folders = Vec::new();
         ensure_index_folder_excluded(&mut exclude_folders);
@@ -1021,26 +1295,45 @@ mod tests {
             ..Default::default()
         };
 
-        let full_scan = crate::orchestrator::run(settings.clone(), None, tokio_util::sync::CancellationToken::new())
-            .await
-            .unwrap();
+        let full_scan = crate::orchestrator::run(
+            settings.clone(),
+            None,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
 
         let index_dir = index_directory(&dir.path().to_string_lossy());
         ensure_index_directory_exists(&index_dir).unwrap();
         let engine = NativeSearchEngine::open_or_create(&index_dir).unwrap();
-        let build_outcome =
-            build_or_update_corpus_index(&settings, &engine, &tokio_util::sync::CancellationToken::new(), None)
-                .await
-                .unwrap();
+        let build_outcome = build_or_update_corpus_index(
+            &settings,
+            &engine,
+            &tokio_util::sync::CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(build_outcome.indexed_count, 3);
 
-        let candidates = engine.trigram_candidate_paths(&settings.filters).unwrap().expect("3-char filter must narrow");
-        assert_eq!(candidates.len(), 2, "a.txt and c.txt contain 'eng' as a substring, b.txt does not");
+        let candidates = engine
+            .trigram_candidate_paths(&settings.filters)
+            .unwrap()
+            .expect("3-char filter must narrow");
+        assert_eq!(
+            candidates.len(),
+            2,
+            "a.txt and c.txt contain 'eng' as a substring, b.txt does not"
+        );
 
-        let index_first =
-            crate::orchestrator::run_candidates(&candidates, settings, None, tokio_util::sync::CancellationToken::new())
-                .await
-                .unwrap();
+        let index_first = crate::orchestrator::run_candidates(
+            &candidates,
+            settings,
+            None,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
 
         let mut full_hit_files: Vec<&str> = full_scan
             .file_results
@@ -1056,13 +1349,27 @@ mod tests {
             .collect();
         full_hit_files.sort();
         narrowed_hit_files.sort();
-        assert_eq!(full_hit_files, narrowed_hit_files, "index-first must find exactly the same hit files as a full scan");
+        assert_eq!(
+            full_hit_files, narrowed_hit_files,
+            "index-first must find exactly the same hit files as a full scan"
+        );
 
         for full_name in &full_hit_files {
-            let from_full = full_scan.file_results.iter().find(|r| r.full_name == *full_name).unwrap();
-            let from_narrowed = index_first.file_results.iter().find(|r| r.full_name == *full_name).unwrap();
+            let from_full = full_scan
+                .file_results
+                .iter()
+                .find(|r| r.full_name == *full_name)
+                .unwrap();
+            let from_narrowed = index_first
+                .file_results
+                .iter()
+                .find(|r| r.full_name == *full_name)
+                .unwrap();
             assert_eq!(from_full.hits.len(), from_narrowed.hits.len());
-            assert_eq!(from_full.hits[0].match_line, from_narrowed.hits[0].match_line, "line content must be identical");
+            assert_eq!(
+                from_full.hits[0].match_line, from_narrowed.hits[0].match_line,
+                "line content must be identical"
+            );
         }
     }
 
@@ -1074,9 +1381,21 @@ mod tests {
         // `regex_literals::required_literal_chunks("eng.*mount")` =>
         // ["eng", "mount"] rather than the plain-literal trigram path.
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.txt"), "torque spec deviation on engine mount\n").unwrap();
-        std::fs::write(dir.path().join("b.txt"), "unrelated corrosion inspection notes\n").unwrap();
-        std::fs::write(dir.path().join("c.txt"), "engine reported separately from any mount reference\n").unwrap();
+        std::fs::write(
+            dir.path().join("a.txt"),
+            "torque spec deviation on engine mount\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("b.txt"),
+            "unrelated corrosion inspection notes\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("c.txt"),
+            "engine reported separately from any mount reference\n",
+        )
+        .unwrap();
 
         let mut exclude_folders = Vec::new();
         ensure_index_folder_excluded(&mut exclude_folders);
@@ -1089,33 +1408,58 @@ mod tests {
             ..Default::default()
         };
 
-        let full_scan = crate::orchestrator::run(settings.clone(), None, tokio_util::sync::CancellationToken::new())
-            .await
-            .unwrap();
+        let full_scan = crate::orchestrator::run(
+            settings.clone(),
+            None,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
 
         let index_dir = index_directory(&dir.path().to_string_lossy());
         ensure_index_directory_exists(&index_dir).unwrap();
         let engine = NativeSearchEngine::open_or_create(&index_dir).unwrap();
-        let build_outcome =
-            build_or_update_corpus_index(&settings, &engine, &tokio_util::sync::CancellationToken::new(), None)
-                .await
-                .unwrap();
+        let build_outcome = build_or_update_corpus_index(
+            &settings,
+            &engine,
+            &tokio_util::sync::CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(build_outcome.indexed_count, 3);
 
         let chunk_sets: Vec<Vec<String>> = settings
             .filters
             .iter()
-            .map(|f| crate::regex_literals::required_literal_chunks(f).expect("this pattern must extract chunks"))
+            .map(|f| {
+                crate::regex_literals::required_literal_chunks(f)
+                    .expect("this pattern must extract chunks")
+            })
             .collect();
-        assert_eq!(chunk_sets, vec![vec!["eng".to_string(), "mount".to_string()]]);
+        assert_eq!(
+            chunk_sets,
+            vec![vec!["eng".to_string(), "mount".to_string()]]
+        );
 
-        let candidates = engine.trigram_candidate_paths_for_chunk_sets(&chunk_sets).unwrap().expect("must narrow");
-        assert_eq!(candidates.len(), 2, "a.txt and c.txt contain both chunks, b.txt contains neither");
+        let candidates = engine
+            .trigram_candidate_paths_for_chunk_sets(&chunk_sets)
+            .unwrap()
+            .expect("must narrow");
+        assert_eq!(
+            candidates.len(),
+            2,
+            "a.txt and c.txt contain both chunks, b.txt contains neither"
+        );
 
-        let index_first =
-            crate::orchestrator::run_candidates(&candidates, settings, None, tokio_util::sync::CancellationToken::new())
-                .await
-                .unwrap();
+        let index_first = crate::orchestrator::run_candidates(
+            &candidates,
+            settings,
+            None,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
 
         let mut full_hit_files: Vec<&str> = full_scan
             .file_results
@@ -1131,13 +1475,20 @@ mod tests {
             .collect();
         full_hit_files.sort();
         narrowed_hit_files.sort();
-        assert_eq!(full_hit_files, narrowed_hit_files, "regex index-first must find exactly the same hit files as a full scan");
+        assert_eq!(
+            full_hit_files, narrowed_hit_files,
+            "regex index-first must find exactly the same hit files as a full scan"
+        );
     }
 
     #[tokio::test]
     async fn full_pipeline_orchestrator_run_then_index_then_native_search_finds_hit() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("report.txt"), "quarterly torque figures\nnothing else here\n").unwrap();
+        std::fs::write(
+            dir.path().join("report.txt"),
+            "quarterly torque figures\nnothing else here\n",
+        )
+        .unwrap();
         std::fs::write(dir.path().join("other.txt"), "unrelated content\n").unwrap();
 
         let mut exclude_folders = Vec::new();
@@ -1150,30 +1501,46 @@ mod tests {
             ..Default::default()
         };
 
-        let run_result = crate::orchestrator::run(settings, None, tokio_util::sync::CancellationToken::new())
-            .await
-            .unwrap();
+        let run_result =
+            crate::orchestrator::run(settings, None, tokio_util::sync::CancellationToken::new())
+                .await
+                .unwrap();
         let hit_results: Vec<FileSearchResult> = run_result
             .file_results
             .into_iter()
             .filter(|r| r.status == FileSearchStatus::Hit)
             .collect();
-        assert_eq!(hit_results.len(), 1, "expected exactly one real hit file from the orchestrator run");
+        assert_eq!(
+            hit_results.len(),
+            1,
+            "expected exactly one real hit file from the orchestrator run"
+        );
 
         let index_dir = index_directory(&dir.path().to_string_lossy());
         ensure_index_directory_exists(&index_dir).unwrap();
         {
             let engine = NativeSearchEngine::open_or_create(&index_dir).unwrap();
             let outcome = index_hits_for_fast_search(&engine, &hit_results).unwrap();
-            assert_eq!(outcome.indexed_count, 1, "the real hit file must actually get indexed");
+            assert_eq!(
+                outcome.indexed_count, 1,
+                "the real hit file must actually get indexed"
+            );
         }
 
         // A fresh engine handle, exactly like run_native_search opens
         // separately from whatever indexed the documents.
         let search_engine = NativeSearchEngine::open_or_create(&index_dir).unwrap();
         let results = search(&search_engine, "torque", 10).unwrap();
-        assert_eq!(results.len(), 1, "fast re-search must find the just-indexed document");
-        assert!(results[0].id.ends_with("report.txt"), "unexpected id: {}", results[0].id);
+        assert_eq!(
+            results.len(),
+            1,
+            "fast re-search must find the just-indexed document"
+        );
+        assert!(
+            results[0].id.ends_with("report.txt"),
+            "unexpected id: {}",
+            results[0].id
+        );
     }
 
     #[tokio::test]
@@ -1201,15 +1568,26 @@ mod tests {
             ..Default::default()
         };
 
-        let outcome =
-            build_or_update_corpus_index(&settings, &engine, &tokio_util::sync::CancellationToken::new(), None)
-                .await
-                .unwrap();
-        assert_eq!(outcome.indexed_count, 2, "both .txt files, neither filtered by any search term");
+        let outcome = build_or_update_corpus_index(
+            &settings,
+            &engine,
+            &tokio_util::sync::CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            outcome.indexed_count, 2,
+            "both .txt files, neither filtered by any search term"
+        );
         assert_eq!(engine.num_docs(), 2);
 
         let results = search(&engine, "unrelated", 10).unwrap();
-        assert_eq!(results.len(), 1, "a file that would never be a search 'hit' for most terms is still indexed");
+        assert_eq!(
+            results.len(),
+            1,
+            "a file that would never be a search 'hit' for most terms is still indexed"
+        );
     }
 
     #[tokio::test]
@@ -1232,12 +1610,70 @@ mod tests {
         };
 
         let cancel = tokio_util::sync::CancellationToken::new();
-        let first = build_or_update_corpus_index(&settings, &engine, &cancel, None).await.unwrap();
+        let first = build_or_update_corpus_index(&settings, &engine, &cancel, None)
+            .await
+            .unwrap();
         assert_eq!(first.indexed_count, 1);
 
-        let second = build_or_update_corpus_index(&settings, &engine, &cancel, None).await.unwrap();
-        assert_eq!(second.indexed_count, 0, "unchanged file must be skipped on rerun");
+        let second = build_or_update_corpus_index(&settings, &engine, &cancel, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            second.indexed_count, 0,
+            "unchanged file must be skipped on rerun"
+        );
         assert_eq!(second.skipped_count, 1);
+    }
+
+    #[cfg(feature = "semantic-search")]
+    #[tokio::test]
+    async fn corpus_build_supports_cited_semantic_search_without_changing_exact_search() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("shaft.txt"),
+            "The shaft rotates under torque and torsional load.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("tax.txt"),
+            "The annual tax policy changed after the election.\n",
+        )
+        .unwrap();
+        let mut exclude_folders = Vec::new();
+        ensure_index_folder_excluded(&mut exclude_folders);
+        let settings = SearchSettings {
+            search_path: dir.path().to_string_lossy().into_owned(),
+            output_folder: dir.path().to_string_lossy().into_owned(),
+            extensions: Some(vec![".txt".into()]),
+            exclude_folders,
+            semantic_index: true,
+            ..Default::default()
+        };
+        let index_dir = index_directory(&settings.search_path);
+        ensure_index_directory_exists(&index_dir).unwrap();
+        let engine = NativeSearchEngine::open_or_create(&index_dir).unwrap();
+        let built =
+            build_or_update_corpus_index(&settings, &engine, &CancellationToken::new(), None)
+                .await
+                .unwrap();
+        assert_eq!(built.indexed_count, 2);
+
+        assert!(
+            engine
+                .search("rotational force", 10, None)
+                .unwrap()
+                .is_empty(),
+            "exact matching must remain unchanged"
+        );
+        let semantic = SemanticIndex::open(&index_dir.join("semantic.sqlite")).unwrap();
+        let hits = semantic
+            .search("torsional force on a rotating shaft", 10)
+            .unwrap();
+        assert_eq!(
+            hits.first().map(|hit| hit.path.as_str()),
+            Some(dir.path().join("shaft.txt").to_string_lossy().as_ref())
+        );
+        assert_eq!((hits[0].first_line, hits[0].last_line), (1, 1));
     }
 
     #[test]
@@ -1246,7 +1682,12 @@ mod tests {
         ensure_index_directory_exists(dir.path()).unwrap();
         let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
 
-        let hits = vec![sample_hit("/x/apple.txt", 1_700_000_000, 10, &["apple pie recipe"])];
+        let hits = vec![sample_hit(
+            "/x/apple.txt",
+            1_700_000_000,
+            10,
+            &["apple pie recipe"],
+        )];
         let outcome = index_hits_for_fast_search(&engine, &hits).unwrap();
         assert_eq!(outcome.indexed_count, 1);
         assert_eq!(outcome.skipped_count, 0);
@@ -1266,7 +1707,11 @@ mod tests {
     #[tokio::test]
     async fn concurrent_indexing_and_searching_against_the_same_engine_does_not_panic() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.txt"), "torque spec deviation on engine mount\n").unwrap();
+        std::fs::write(
+            dir.path().join("a.txt"),
+            "torque spec deviation on engine mount\n",
+        )
+        .unwrap();
         std::fs::write(dir.path().join("b.txt"), "unrelated corrosion notes\n").unwrap();
 
         let mut exclude_folders = Vec::new();
@@ -1291,11 +1736,18 @@ mod tests {
             }
         };
         let (index_result, ()) = tokio::join!(index_fut, search_fut);
-        assert!(index_result.is_ok(), "concurrent search must not make indexing fail: {index_result:?}");
+        assert!(
+            index_result.is_ok(),
+            "concurrent search must not make indexing fail: {index_result:?}"
+        );
         assert_eq!(index_result.unwrap().indexed_count, 2);
 
         let hits = engine.search("torque", 10, None).unwrap();
-        assert_eq!(hits.len(), 1, "the document must be reliably findable once indexing has completed");
+        assert_eq!(
+            hits.len(),
+            1,
+            "the document must be reliably findable once indexing has completed"
+        );
     }
 
     #[test]
@@ -1304,12 +1756,20 @@ mod tests {
         ensure_index_directory_exists(dir.path()).unwrap();
         let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
 
-        let hits = vec![sample_hit("/x/apple.txt", 1_700_000_000, 10, &["apple pie recipe"])];
+        let hits = vec![sample_hit(
+            "/x/apple.txt",
+            1_700_000_000,
+            10,
+            &["apple pie recipe"],
+        )];
         let first = index_hits_for_fast_search(&engine, &hits).unwrap();
         assert_eq!(first.indexed_count, 1);
 
         let second = index_hits_for_fast_search(&engine, &hits).unwrap();
-        assert_eq!(second.indexed_count, 0, "unchanged mtime+size must be skipped");
+        assert_eq!(
+            second.indexed_count, 0,
+            "unchanged mtime+size must be skipped"
+        );
         assert_eq!(second.skipped_count, 1);
     }
 
@@ -1319,12 +1779,25 @@ mod tests {
         ensure_index_directory_exists(dir.path()).unwrap();
         let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
 
-        let v1 = vec![sample_hit("/x/apple.txt", 1_700_000_000, 10, &["apple pie recipe"])];
+        let v1 = vec![sample_hit(
+            "/x/apple.txt",
+            1_700_000_000,
+            10,
+            &["apple pie recipe"],
+        )];
         index_hits_for_fast_search(&engine, &v1).unwrap();
 
-        let v2 = vec![sample_hit("/x/apple.txt", 1_700_000_500, 20, &["apple pie recipe, revised"])];
+        let v2 = vec![sample_hit(
+            "/x/apple.txt",
+            1_700_000_500,
+            20,
+            &["apple pie recipe, revised"],
+        )];
         let outcome = index_hits_for_fast_search(&engine, &v2).unwrap();
-        assert_eq!(outcome.indexed_count, 1, "changed mtime/size must trigger a re-index");
+        assert_eq!(
+            outcome.indexed_count, 1,
+            "changed mtime/size must trigger a re-index"
+        );
         assert_eq!(outcome.skipped_count, 0);
     }
 
@@ -1334,12 +1807,24 @@ mod tests {
         let real_file = dir.path().join("still-here.txt");
         std::fs::write(&real_file, "content").unwrap();
         let real_path = real_file.to_string_lossy().into_owned();
-        let gone_path = dir.path().join("deleted-since-indexing.txt").to_string_lossy().into_owned();
+        let gone_path = dir
+            .path()
+            .join("deleted-since-indexing.txt")
+            .to_string_lossy()
+            .into_owned();
 
         ensure_index_directory_exists(dir.path()).unwrap();
         let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
-        index_hits_for_fast_search(&engine, &[sample_hit(&real_path, 1_700_000_000, 7, &["kept"])]).unwrap();
-        index_hits_for_fast_search(&engine, &[sample_hit(&gone_path, 1_700_000_000, 7, &["orphaned"])]).unwrap();
+        index_hits_for_fast_search(
+            &engine,
+            &[sample_hit(&real_path, 1_700_000_000, 7, &["kept"])],
+        )
+        .unwrap();
+        index_hits_for_fast_search(
+            &engine,
+            &[sample_hit(&gone_path, 1_700_000_000, 7, &["orphaned"])],
+        )
+        .unwrap();
         assert_eq!(engine.num_docs(), 2);
 
         let removed = remove_orphaned_documents(&engine).unwrap();
@@ -1357,7 +1842,11 @@ mod tests {
 
         ensure_index_directory_exists(dir.path()).unwrap();
         let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
-        index_hits_for_fast_search(&engine, &[sample_hit(&real_path, 1_700_000_000, 7, &["kept"])]).unwrap();
+        index_hits_for_fast_search(
+            &engine,
+            &[sample_hit(&real_path, 1_700_000_000, 7, &["kept"])],
+        )
+        .unwrap();
 
         assert_eq!(remove_orphaned_documents(&engine).unwrap(), 0);
         assert_eq!(engine.num_docs(), 1);
@@ -1369,7 +1858,11 @@ mod tests {
         ensure_index_directory_exists(dir.path()).unwrap();
         {
             let engine = open_or_create_with_rebuild(dir.path()).unwrap();
-            index_hits_for_fast_search(&engine, &[sample_hit("/x/a.txt", 1_700_000_000, 7, &["hi"])]).unwrap();
+            index_hits_for_fast_search(
+                &engine,
+                &[sample_hit("/x/a.txt", 1_700_000_000, 7, &["hi"])],
+            )
+            .unwrap();
         }
         assert_eq!(verify_index(dir.path()).unwrap(), 1);
     }
@@ -1380,29 +1873,57 @@ mod tests {
         ensure_index_directory_exists(dir.path()).unwrap();
         {
             let engine = open_or_create_with_rebuild(dir.path()).unwrap();
-            index_hits_for_fast_search(&engine, &[sample_hit("/x/a.txt", 1_700_000_000, 7, &["hi"])]).unwrap();
+            index_hits_for_fast_search(
+                &engine,
+                &[sample_hit("/x/a.txt", 1_700_000_000, 7, &["hi"])],
+            )
+            .unwrap();
         }
         assert!(semantic_version_current(dir.path()));
 
         // An index from before versioning (no stamp) or from another version is outdated.
         std::fs::remove_file(dir.path().join(SEMANTIC_VERSION_FILE)).unwrap();
         assert!(!semantic_version_current(dir.path()));
-        assert_eq!(verify_index(dir.path()).unwrap_err().status, native_search::error::NsStatus::CorruptIndex);
-        std::fs::write(dir.path().join(SEMANTIC_VERSION_FILE), (INDEX_SEMANTIC_VERSION + 1).to_string()).unwrap();
+        assert_eq!(
+            verify_index(dir.path()).unwrap_err().status,
+            native_search::error::NsStatus::CorruptIndex
+        );
+        std::fs::write(
+            dir.path().join(SEMANTIC_VERSION_FILE),
+            (INDEX_SEMANTIC_VERSION + 1).to_string(),
+        )
+        .unwrap();
         assert!(!semantic_version_current(dir.path()));
 
         let engine = open_or_create_with_rebuild(dir.path()).unwrap();
-        assert_eq!(engine.num_docs(), 0, "outdated index must be discarded, not reused");
-        assert!(semantic_version_current(dir.path()), "rebuilt index is stamped");
+        assert_eq!(
+            engine.num_docs(),
+            0,
+            "outdated index must be discarded, not reused"
+        );
+        assert!(
+            semantic_version_current(dir.path()),
+            "rebuilt index is stamped"
+        );
         drop(engine);
         assert!(semantic_version_current(dir.path()));
-        assert_eq!(open_or_create_with_rebuild(dir.path()).unwrap().num_docs(), 0, "a current index is kept on reopen");
+        assert_eq!(
+            open_or_create_with_rebuild(dir.path()).unwrap().num_docs(),
+            0,
+            "a current index is kept on reopen"
+        );
     }
 
     #[test]
     fn path_key_folds_case_and_separators_only_when_asked() {
-        assert_eq!(path_key_folded(r"C:\Folder\File.PDF", true), "c:/folder/file.pdf");
-        assert_eq!(path_key_folded(r"C:\Folder\File.PDF", false), r"C:\Folder\File.PDF");
+        assert_eq!(
+            path_key_folded(r"C:\Folder\File.PDF", true),
+            "c:/folder/file.pdf"
+        );
+        assert_eq!(
+            path_key_folded(r"C:\Folder\File.PDF", false),
+            r"C:\Folder\File.PDF"
+        );
     }
 
     #[test]
@@ -1410,8 +1931,15 @@ mod tests {
         let mut known = HashMap::new();
         known.insert(r"C:\Data\A.txt".to_string(), (5_i64, 9_i64));
         let folded = known_by_key(known.clone(), true);
-        assert_eq!(folded.get(path_key_folded("c:/data/a.txt", true).as_ref()), Some(&(5, 9)));
-        assert_eq!(known_by_key(known.clone(), false), known, "no re-keying off Windows");
+        assert_eq!(
+            folded.get(path_key_folded("c:/data/a.txt", true).as_ref()),
+            Some(&(5, 9))
+        );
+        assert_eq!(
+            known_by_key(known.clone(), false),
+            known,
+            "no re-keying off Windows"
+        );
     }
 
     #[test]
@@ -1437,11 +1965,18 @@ mod tests {
             // approach `open_or_create`'s own existing corruption test
             // family uses elsewhere in this codebase.
             let engine = NativeSearchEngine::open_or_create(dir.path()).unwrap();
-            index_hits_for_fast_search(&engine, &[sample_hit("/x/a.txt", 1_700_000_000, 7, &["hi"])]).unwrap();
+            index_hits_for_fast_search(
+                &engine,
+                &[sample_hit("/x/a.txt", 1_700_000_000, 7, &["hi"])],
+            )
+            .unwrap();
         }
         std::fs::write(dir.path().join("meta.json"), "not valid json at all").unwrap();
 
-        assert!(verify_index(dir.path()).is_err(), "a corrupt index must surface as an error, not silently rebuild");
+        assert!(
+            verify_index(dir.path()).is_err(),
+            "a corrupt index must surface as an error, not silently rebuild"
+        );
     }
 
     async fn built_engine(dir: &Path, settings: &SearchSettings) -> NativeSearchEngine {
@@ -1449,13 +1984,24 @@ mod tests {
         ensure_index_directory_exists(&index_dir).unwrap();
         let engine = open_or_create_with_rebuild(&index_dir).unwrap();
         let mut noop = |_p: CorpusIndexProgress| {};
-        let out = build_or_update_corpus_index_send(settings, &engine, &CancellationToken::new(), Some(&mut noop)).await.unwrap();
+        let out = build_or_update_corpus_index_send(
+            settings,
+            &engine,
+            &CancellationToken::new(),
+            Some(&mut noop),
+        )
+        .await
+        .unwrap();
         assert_eq!(out.failed_count, 0, "{:?}", out.failed_files);
         engine
     }
 
     fn narrow_settings(dir: &Path, filter: &str) -> SearchSettings {
-        let mut s = SearchSettings { search_path: dir.to_string_lossy().into_owned(), filters: vec![filter.to_string()], ..Default::default() };
+        let mut s = SearchSettings {
+            search_path: dir.to_string_lossy().into_owned(),
+            filters: vec![filter.to_string()],
+            ..Default::default()
+        };
         ensure_index_folder_excluded(&mut s.exclude_folders);
         s.exclude_folders.push(".idx-test".to_string());
         s
@@ -1470,11 +2016,30 @@ mod tests {
         let engine = built_engine(dir.path(), &settings).await;
 
         std::fs::write(dir.path().join("new.txt"), "needle in new\n").unwrap();
-        let out = narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap();
-        let names: Vec<String> = out.candidates.unwrap().iter().map(|p| Path::new(p).file_name().unwrap().to_string_lossy().into_owned()).collect();
+        let out = narrow_candidates(&settings, &engine, &CancellationToken::new())
+            .await
+            .unwrap();
+        let names: Vec<String> = out
+            .candidates
+            .unwrap()
+            .iter()
+            .map(|p| {
+                Path::new(p)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
         assert!(names.contains(&"old.txt".to_string()));
-        assert!(names.contains(&"new.txt".to_string()), "a file added after the build must never be hidden by the index");
-        assert!(!names.contains(&"other.txt".to_string()), "unchanged non-matching file must be narrowed away");
+        assert!(
+            names.contains(&"new.txt".to_string()),
+            "a file added after the build must never be hidden by the index"
+        );
+        assert!(
+            !names.contains(&"other.txt".to_string()),
+            "unchanged non-matching file must be narrowed away"
+        );
         assert_eq!(out.stale_or_new, 1);
     }
 
@@ -1487,7 +2052,9 @@ mod tests {
 
         // Different length => different size => detected as stale regardless of mtime granularity.
         std::fs::write(dir.path().join("a.txt"), "now it has the needle word\n").unwrap();
-        let out = narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap();
+        let out = narrow_candidates(&settings, &engine, &CancellationToken::new())
+            .await
+            .unwrap();
         assert_eq!(out.candidates.unwrap().len(), 1);
     }
 
@@ -1500,7 +2067,10 @@ mod tests {
         let engine = built_engine(dir.path(), &settings).await;
         let token = CancellationToken::new();
 
-        assert!(!narrow_candidates(&settings, &engine, &token).await.unwrap().is_stale());
+        assert!(!narrow_candidates(&settings, &engine, &token)
+            .await
+            .unwrap()
+            .is_stale());
 
         std::fs::write(dir.path().join("c.txt"), "added later\n").unwrap();
         let out = narrow_candidates(&settings, &engine, &token).await.unwrap();
@@ -1521,11 +2091,24 @@ mod tests {
         let mut settings = narrow_settings(dir.path(), "needle");
         settings.extensions = Some(vec![".txt".to_string(), ".pdf".to_string()]);
         let engine = built_engine(dir.path(), &settings).await;
-        assert_eq!(engine.num_docs(), 3, "no-text files are stored so their mtime/size are known");
+        assert_eq!(
+            engine.num_docs(),
+            3,
+            "no-text files are stored so their mtime/size are known"
+        );
 
-        let out = narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap();
-        assert!(!out.is_stale(), "no-text files must not be reported as needing an update");
-        assert_eq!(out.candidates.unwrap().len(), 1, "only the file that contains the needle");
+        let out = narrow_candidates(&settings, &engine, &CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(
+            !out.is_stale(),
+            "no-text files must not be reported as needing an update"
+        );
+        assert_eq!(
+            out.candidates.unwrap().len(),
+            1,
+            "only the file that contains the needle"
+        );
     }
 
     #[tokio::test]
@@ -1538,7 +2121,9 @@ mod tests {
         let engine = built_engine(dir.path(), &settings).await;
 
         settings.extensions = Some(vec![".txt".to_string()]);
-        let out = narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap();
+        let out = narrow_candidates(&settings, &engine, &CancellationToken::new())
+            .await
+            .unwrap();
         let cands = out.candidates.unwrap();
         assert_eq!(cands.len(), 1);
         assert!(cands[0].ends_with("a.txt"));
@@ -1549,21 +2134,38 @@ mod tests {
         use std::time::{Duration, UNIX_EPOCH};
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a.txt");
-        let set_mtime = |t: std::time::SystemTime| std::fs::File::options().write(true).open(&path).unwrap().set_modified(t).unwrap();
+        let set_mtime = |t: std::time::SystemTime| {
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(t)
+                .unwrap()
+        };
         let base = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
         std::fs::write(&path, "alpha\n").unwrap();
         set_mtime(base + Duration::from_millis(100));
         let settings = narrow_settings(dir.path(), "bravo");
         let engine = built_engine(dir.path(), &settings).await;
         let token = CancellationToken::new();
-        assert!(!narrow_candidates(&settings, &engine, &token).await.unwrap().is_stale());
+        assert!(!narrow_candidates(&settings, &engine, &token)
+            .await
+            .unwrap()
+            .is_stale());
 
         // Same length, mtime moved 500 ms - still inside the same whole second.
         std::fs::write(&path, "bravo\n").unwrap();
         set_mtime(base + Duration::from_millis(600));
         let out = narrow_candidates(&settings, &engine, &token).await.unwrap();
-        assert!(out.is_stale(), "whole-second mtimes would call this file unchanged");
-        assert_eq!(out.candidates.unwrap().len(), 1, "the edited file must stay a candidate for its new text");
+        assert!(
+            out.is_stale(),
+            "whole-second mtimes would call this file unchanged"
+        );
+        assert_eq!(
+            out.candidates.unwrap().len(),
+            1,
+            "the edited file must stay a candidate for its new text"
+        );
     }
 
     #[tokio::test]
@@ -1578,17 +2180,33 @@ mod tests {
 
         // `.log` leaves the scan scope but the file still exists: not an orphan.
         settings.extensions = Some(vec![".txt".to_string()]);
-        assert_eq!(narrow_candidates(&settings, &engine, &token).await.unwrap().removed, 0);
+        assert_eq!(
+            narrow_candidates(&settings, &engine, &token)
+                .await
+                .unwrap()
+                .removed,
+            0
+        );
 
         std::fs::remove_file(dir.path().join("b.log")).unwrap();
-        assert_eq!(narrow_candidates(&settings, &engine, &token).await.unwrap().removed, 1);
+        assert_eq!(
+            narrow_candidates(&settings, &engine, &token)
+                .await
+                .unwrap()
+                .removed,
+            1
+        );
     }
 
     #[tokio::test]
     async fn cancelling_mid_build_stops_early_and_keeps_what_was_committed() {
         let dir = tempfile::tempdir().unwrap();
         for i in 0..60 {
-            std::fs::write(dir.path().join(format!("f{i:02}.txt")), format!("content {i}\n")).unwrap();
+            std::fs::write(
+                dir.path().join(format!("f{i:02}.txt")),
+                format!("content {i}\n"),
+            )
+            .unwrap();
         }
         let mut settings = narrow_settings(dir.path(), "content");
         settings.parallel = true;
@@ -1607,10 +2225,21 @@ mod tests {
                 }
             }
         };
-        let out = build_or_update_corpus_index_send(&settings, &engine, &token, Some(&mut on_progress)).await.unwrap();
+        let out =
+            build_or_update_corpus_index_send(&settings, &engine, &token, Some(&mut on_progress))
+                .await
+                .unwrap();
         assert!(out.cancelled);
-        assert!(out.indexed_count > 0 && out.indexed_count < 60, "indexed {}", out.indexed_count);
-        assert_eq!(engine.num_docs(), out.indexed_count as u64, "everything counted as indexed was committed");
+        assert!(
+            out.indexed_count > 0 && out.indexed_count < 60,
+            "indexed {}",
+            out.indexed_count
+        );
+        assert_eq!(
+            engine.num_docs(),
+            out.indexed_count as u64,
+            "everything counted as indexed was committed"
+        );
     }
 
     #[tokio::test]
@@ -1622,13 +2251,22 @@ mod tests {
         settings.use_regex = true;
         let engine = built_engine(dir.path(), &settings).await;
 
-        let out = narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap();
-        let cands = out.candidates.expect("literal chunks 'eng' and 'mount' allow narrowing");
-        assert!(cands.iter().any(|p| p.ends_with("a.txt")), "the raw pattern as a literal would have dropped this real match");
+        let out = narrow_candidates(&settings, &engine, &CancellationToken::new())
+            .await
+            .unwrap();
+        let cands = out
+            .candidates
+            .expect("literal chunks 'eng' and 'mount' allow narrowing");
+        assert!(
+            cands.iter().any(|p| p.ends_with("a.txt")),
+            "the raw pattern as a literal would have dropped this real match"
+        );
         assert!(!cands.iter().any(|p| p.ends_with("b.txt")));
 
         settings.filters = vec![".*".to_string()];
-        let out = narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap();
+        let out = narrow_candidates(&settings, &engine, &CancellationToken::new())
+            .await
+            .unwrap();
         assert!(out.candidates.is_none(), "no provable literal => full scan");
     }
 
@@ -1644,7 +2282,14 @@ mod tests {
         let engine = open_or_create_with_rebuild(&index_dir).unwrap();
         let token = CancellationToken::new();
         token.cancel();
-        let out = build_or_update_corpus_index_send(&settings, &engine, &token, None::<&mut fn(CorpusIndexProgress)>).await.unwrap();
+        let out = build_or_update_corpus_index_send(
+            &settings,
+            &engine,
+            &token,
+            None::<&mut fn(CorpusIndexProgress)>,
+        )
+        .await
+        .unwrap();
         assert!(out.cancelled);
         assert_eq!(out.indexed_count, 0);
     }
@@ -1653,7 +2298,11 @@ mod tests {
     async fn parallel_build_indexes_the_same_documents_as_sequential() {
         let dir = tempfile::tempdir().unwrap();
         for i in 0..30 {
-            std::fs::write(dir.path().join(format!("f{i}.txt")), format!("content {i}\n")).unwrap();
+            std::fs::write(
+                dir.path().join(format!("f{i}.txt")),
+                format!("content {i}\n"),
+            )
+            .unwrap();
         }
         let mut settings = narrow_settings(dir.path(), "content");
         settings.parallel = true;
@@ -1664,8 +2313,16 @@ mod tests {
 
     #[test]
     fn redact_paths_removes_unix_windows_and_quoted_paths_but_keeps_plain_text() {
-        let r = redact_paths(r#"cannot open "C:\Users\Jo Smith\secret plan.docx" at /home/jo/x.txt (os error 5) D:\a\b"#);
-        assert!(!r.contains("Smith") && !r.contains("secret") && !r.contains("jo/") && !r.contains("D:\\a"), "{r}");
+        let r = redact_paths(
+            r#"cannot open "C:\Users\Jo Smith\secret plan.docx" at /home/jo/x.txt (os error 5) D:\a\b"#,
+        );
+        assert!(
+            !r.contains("Smith")
+                && !r.contains("secret")
+                && !r.contains("jo/")
+                && !r.contains("D:\\a"),
+            "{r}"
+        );
         assert!(r.contains("os error 5") && r.contains("cannot open"));
         assert_eq!(redact_paths("access denied"), "access denied");
     }
@@ -1673,9 +2330,22 @@ mod tests {
     #[test]
     fn failure_summary_never_contains_the_file_name() {
         let mut o = CorpusIndexOutcome::default();
-        record_failure(&mut o, "/home/jo/Secret Plan.docx", ".docx", "failed reading /home/jo/Secret Plan.docx: permission denied");
-        let joined = o.failure_summary.keys().cloned().collect::<Vec<_>>().join("|");
-        assert!(!joined.contains("Secret") && !joined.contains("/home"), "{joined}");
+        record_failure(
+            &mut o,
+            "/home/jo/Secret Plan.docx",
+            ".docx",
+            "failed reading /home/jo/Secret Plan.docx: permission denied",
+        );
+        let joined = o
+            .failure_summary
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("|");
+        assert!(
+            !joined.contains("Secret") && !joined.contains("/home"),
+            "{joined}"
+        );
         assert!(joined.contains("ext=.docx") && joined.contains("permission denied"));
     }
 }

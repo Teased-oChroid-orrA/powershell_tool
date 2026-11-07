@@ -23,8 +23,8 @@ use tokio_util::sync::CancellationToken;
 use native_search::error::{NsError, NsResult, NsStatus};
 use search_core::models::SearchSettings;
 use search_core::native_index::{
-    self, redact_paths, build_or_update_corpus_index_send, ensure_index_directory_exists, open_or_create_with_rebuild, CorpusIndexOutcome,
-    CorpusIndexProgress, IndexStage,
+    self, build_or_update_corpus_index_send, ensure_index_directory_exists,
+    open_or_create_with_rebuild, redact_paths, CorpusIndexOutcome, CorpusIndexProgress, IndexStage,
 };
 
 use crate::app::AppEvent;
@@ -62,6 +62,8 @@ impl IndexLocation {
 pub struct IndexSettings {
     pub enabled: bool,
     pub location: IndexLocation,
+    #[serde(default)]
+    pub semantic: bool,
 }
 
 /// Live index-build status the render layer reads. Deliberately separate
@@ -109,7 +111,9 @@ impl IndexRunState {
         if !p.current_file.is_empty() {
             self.current_file = p.current_file.clone();
         }
-        let ratio = |done: i32, total: i32| (f64::from(done.max(0)) / f64::from(total.max(1)) * 100.0).clamp(0.0, 100.0);
+        let ratio = |done: i32, total: i32| {
+            (f64::from(done.max(0)) / f64::from(total.max(1)) * 100.0).clamp(0.0, 100.0)
+        };
         self.status_text = match p.stage {
             IndexStage::Enumerating => {
                 self.percent = 0.0;
@@ -117,7 +121,12 @@ impl IndexRunState {
             }
             IndexStage::Checking => {
                 self.percent = ratio(p.files_processed, p.total_files);
-                format!("{} {}/{}", p.stage.label(), p.files_processed, p.total_files)
+                format!(
+                    "{} {}/{}",
+                    p.stage.label(),
+                    p.files_processed,
+                    p.total_files
+                )
             }
             IndexStage::Committing => format!("{} ({} indexed)…", p.stage.label(), p.indexed_count),
             IndexStage::Indexing => {
@@ -126,7 +135,12 @@ impl IndexRunState {
                 let done = p.files_processed.max(0) as f64;
                 let total = p.total_files.max(1) as f64;
                 self.percent = ratio(p.files_processed, p.total_files);
-                let mut text = format!("Indexing {}/{} ({:.0}%)", p.files_processed, p.total_files, self.percent.floor());
+                let mut text = format!(
+                    "Indexing {}/{} ({:.0}%)",
+                    p.files_processed,
+                    p.total_files,
+                    self.percent.floor()
+                );
                 if secs >= 2.0 && done >= 1.0 {
                     let rate = done / secs;
                     let eta = ((total - done) / rate).max(0.0);
@@ -148,16 +162,24 @@ impl IndexRunState {
         self.docs = Some(outcome.index_docs);
         self.last_build_failed = Some(outcome.failed_count);
         let secs = outcome.elapsed_ms as f64 / 1000.0;
-        let lead = if outcome.cancelled { "Index build cancelled" } else { "Index ready" };
+        let lead = if outcome.cancelled {
+            "Index build cancelled"
+        } else {
+            "Index ready"
+        };
         self.status_text = format!(
             "{lead}: {} docs · {} new/updated · {} unchanged · {} failed · {secs:.1}s",
             outcome.index_docs, outcome.indexed_count, outcome.skipped_count, outcome.failed_count
         );
         if outcome.no_text_count > 0 {
-            self.status_text.push_str(&format!(" · {} without text", outcome.no_text_count));
+            self.status_text
+                .push_str(&format!(" · {} without text", outcome.no_text_count));
         }
         if outcome.enumeration_errors > 0 {
-            self.status_text.push_str(&format!(" · {} folder(s) unreadable", outcome.enumeration_errors));
+            self.status_text.push_str(&format!(
+                " · {} folder(s) unreadable",
+                outcome.enumeration_errors
+            ));
         }
     }
 
@@ -193,7 +215,9 @@ pub fn index_directory(location: IndexLocation, search_path: &str, output_folder
         IndexLocation::SearchFolder => native_index::index_directory(search_path),
         IndexLocation::OutputFolder => {
             let name = sanitized_root_key(search_path);
-            Path::new(output_folder.trim()).join(".native-search-index").join(name)
+            Path::new(output_folder.trim())
+                .join(".native-search-index")
+                .join(name)
         }
     }
 }
@@ -213,8 +237,16 @@ fn sanitized_root_key(root: &str) -> String {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "root".to_string());
-    let readable: String =
-        readable.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+    let readable: String = readable
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
     format!("{readable}-{hash:x}")
 }
 
@@ -242,7 +274,13 @@ fn log_preflight(settings: &SearchSettings, index_dir: &Path, wipe_first: bool) 
             canonical.as_ref().map(|c| c.to_string_lossy().starts_with("\\\\?\\")).unwrap_or(false)
         ),
     );
-    log("INDEX", format!("preflight: index_dir chars={} wipe_first={wipe_first}", index_dir.as_os_str().len()));
+    log(
+        "INDEX",
+        format!(
+            "preflight: index_dir chars={} wipe_first={wipe_first}",
+            index_dir.as_os_str().len()
+        ),
+    );
     let lower = index_dir.to_string_lossy().to_lowercase();
     if index_dir.as_os_str().len() > 200 {
         log("WARN", "index path is longer than 200 chars - Windows MAX_PATH (260) can break Tantivy segment file names");
@@ -250,7 +288,13 @@ fn log_preflight(settings: &SearchSettings, index_dir: &Path, wipe_first: bool) 
     if lower.starts_with("\\\\") {
         log("WARN", "index path is a UNC/network path - memory-mapped index files are unreliable on network shares");
     }
-    for hint in ["onedrive", "dropbox", "google drive", "icloud", "sharepoint"] {
+    for hint in [
+        "onedrive",
+        "dropbox",
+        "google drive",
+        "icloud",
+        "sharepoint",
+    ] {
         if lower.contains(hint) {
             log("WARN", format!("index path is inside a cloud-synced folder ({hint}) - sync clients can lock/placeholder index files"));
         }
@@ -259,14 +303,31 @@ fn log_preflight(settings: &SearchSettings, index_dir: &Path, wipe_first: bool) 
     match std::fs::create_dir_all(index_dir) {
         Ok(()) => {
             let probe = index_dir.join(".write-probe");
-            let result = std::fs::write(&probe, b"probe").and_then(|_| std::fs::read(&probe)).map(|b| b.len());
+            let result = std::fs::write(&probe, b"probe")
+                .and_then(|_| std::fs::read(&probe))
+                .map(|b| b.len());
             let _ = std::fs::remove_file(&probe);
             match result {
-                Ok(n) => log("INDEX", format!("preflight: index dir writable (probe round-trip {n} bytes)")),
-                Err(e) => log("ERROR", format!("preflight: index dir NOT writable: {e} (os error {:?})", e.raw_os_error())),
+                Ok(n) => log(
+                    "INDEX",
+                    format!("preflight: index dir writable (probe round-trip {n} bytes)"),
+                ),
+                Err(e) => log(
+                    "ERROR",
+                    format!(
+                        "preflight: index dir NOT writable: {e} (os error {:?})",
+                        e.raw_os_error()
+                    ),
+                ),
             }
         }
-        Err(e) => log("ERROR", format!("preflight: cannot create index dir: {e} (os error {:?})", e.raw_os_error())),
+        Err(e) => log(
+            "ERROR",
+            format!(
+                "preflight: cannot create index dir: {e} (os error {:?})",
+                e.raw_os_error()
+            ),
+        ),
     }
 
     match std::fs::read_dir(index_dir) {
@@ -310,7 +371,13 @@ fn remove_index_dir_with_retry(index_dir: &Path) -> std::io::Result<()> {
             Ok(()) => return Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(e) => {
-                log("INDEX", format!("remove_dir_all attempt {attempt}/6 failed: {e} (os error {:?})", e.raw_os_error()));
+                log(
+                    "INDEX",
+                    format!(
+                        "remove_dir_all attempt {attempt}/6 failed: {e} (os error {:?})",
+                        e.raw_os_error()
+                    ),
+                );
                 last = Some(e);
                 std::thread::sleep(Duration::from_millis(250 * u64::from(attempt)));
             }
@@ -322,7 +389,8 @@ fn remove_index_dir_with_retry(index_dir: &Path) -> std::io::Result<()> {
 /// True when `index_dir` holds a finished Tantivy index (its `meta.json`
 /// exists). An empty or half-created folder is "not built".
 pub fn index_is_built(index_dir: &Path) -> bool {
-    index_dir.join("meta.json").is_file() && search_core::native_index::semantic_version_current(index_dir)
+    index_dir.join("meta.json").is_file()
+        && search_core::native_index::semantic_version_current(index_dir)
 }
 
 /// Builds or updates the fast re-search index for one root: an existing
@@ -354,7 +422,13 @@ pub async fn build_or_rebuild_index(
     let joined = tokio::spawn(async move {
         match build_or_rebuild_index_inner(&task_tx, &settings, &index_dir, false, &cancel).await {
             Err(e) if e.status == NsStatus::CorruptIndex => {
-                log("WARN", format!("index unusable ({}), deleting it and rebuilding from scratch", redact_paths(&e.to_string())));
+                log(
+                    "WARN",
+                    format!(
+                        "index unusable ({}), deleting it and rebuilding from scratch",
+                        redact_paths(&e.to_string())
+                    ),
+                );
                 build_or_rebuild_index_inner(&task_tx, &settings, &index_dir, true, &cancel).await
             }
             other => other,
@@ -363,7 +437,9 @@ pub async fn build_or_rebuild_index(
     .await;
     let result = match joined {
         Ok(r) => r,
-        Err(join_error) => Err(NsError::index_error(format!("index build task crashed: {join_error}"))),
+        Err(join_error) => Err(NsError::index_error(format!(
+            "index build task crashed: {join_error}"
+        ))),
     };
 
     match &result {
@@ -404,7 +480,10 @@ async fn build_or_rebuild_index_inner(
     }
 
     if !Path::new(&settings.search_path).is_dir() {
-        return Err(NsError::index_error(format!("search path {:?} is not an existing folder", settings.search_path)));
+        return Err(NsError::index_error(format!(
+            "search path {:?} is not an existing folder",
+            settings.search_path
+        )));
     }
 
     if wipe_first && index_dir.exists() {
@@ -412,16 +491,35 @@ async fn build_or_rebuild_index_inner(
         tokio::task::spawn_blocking(move || remove_index_dir_with_retry(&d))
             .await
             .map_err(|e| NsError::index_error(format!("delete task failed: {e}")))?
-            .map_err(|e| NsError::index_error(format!("could not remove existing index at {}: {e}", index_dir.display())))?;
+            .map_err(|e| {
+                NsError::index_error(format!(
+                    "could not remove existing index at {}: {e}",
+                    index_dir.display()
+                ))
+            })?;
         log("INDEX", "unusable index removed for rebuild");
     }
-    ensure_index_directory_exists(index_dir).map_err(|e| NsError::index_error(format!("cannot create index folder {}: {e}", index_dir.display())))?;
+    ensure_index_directory_exists(index_dir).map_err(|e| {
+        NsError::index_error(format!(
+            "cannot create index folder {}: {e}",
+            index_dir.display()
+        ))
+    })?;
 
     let opened = Instant::now();
     // Any failure to open an existing index means it is unusable: the caller
     // then wipes it and rebuilds from scratch (one retry).
-    let engine = open_or_create_with_rebuild(index_dir).map_err(|e| NsError::new(NsStatus::CorruptIndex, format!("cannot open index: {e}")))?;
-    log("INDEX", format!("engine opened in {:?}: docs_before={} segments={}", opened.elapsed(), engine.num_docs(), engine.segment_count()));
+    let engine = open_or_create_with_rebuild(index_dir)
+        .map_err(|e| NsError::new(NsStatus::CorruptIndex, format!("cannot open index: {e}")))?;
+    log(
+        "INDEX",
+        format!(
+            "engine opened in {:?}: docs_before={} segments={}",
+            opened.elapsed(),
+            engine.num_docs(),
+            engine.segment_count()
+        ),
+    );
 
     let progress_tx = tx.clone();
     let mut last_sent: Option<Instant> = None;
@@ -430,26 +528,47 @@ async fn build_or_rebuild_index_inner(
     let mut on_progress = move |p: CorpusIndexProgress| {
         let stage_changed = last_stage != Some(p.stage);
         if stage_changed {
-            log("INDEX", format!("stage -> {} (processed {}/{} indexed={} failed={})", p.stage.label(), p.files_processed, p.total_files, p.indexed_count, p.failed_count));
+            log(
+                "INDEX",
+                format!(
+                    "stage -> {} (processed {}/{} indexed={} failed={})",
+                    p.stage.label(),
+                    p.files_processed,
+                    p.total_files,
+                    p.indexed_count,
+                    p.failed_count
+                ),
+            );
             last_stage = Some(p.stage);
         }
         let bucket = i64::from(p.files_processed) / 500;
         if p.stage == IndexStage::Indexing && bucket != last_logged_bucket {
             last_logged_bucket = bucket;
-            log("INDEX", format!("progress {}/{} indexed={} failed={}", p.files_processed, p.total_files, p.indexed_count, p.failed_count));
+            log(
+                "INDEX",
+                format!(
+                    "progress {}/{} indexed={} failed={}",
+                    p.files_processed, p.total_files, p.indexed_count, p.failed_count
+                ),
+            );
         }
         // The UI only redraws a few times a second; flooding the event
         // channel with one message per file just queues stale redraws.
         // A stage change is always sent: a slow commit would otherwise leave the
         // previous stage's text on screen for its whole duration.
-        let due = stage_changed || last_sent.map(|t| t.elapsed() >= Duration::from_millis(100)).unwrap_or(true);
+        let due = stage_changed
+            || last_sent
+                .map(|t| t.elapsed() >= Duration::from_millis(100))
+                .unwrap_or(true);
         if due {
             last_sent = Some(Instant::now());
             let _ = progress_tx.send(AppEvent::IndexBuildProgress(p));
         }
     };
 
-    let mut outcome = build_or_update_corpus_index_send(settings, &engine, cancel, Some(&mut on_progress)).await?;
+    let mut outcome =
+        build_or_update_corpus_index_send(settings, &engine, cancel, Some(&mut on_progress))
+            .await?;
 
     // Aggregated by extension + error text; never per-file (no file names in the log).
     for (kind, count) in &outcome.failure_summary {
@@ -467,17 +586,27 @@ async fn build_or_rebuild_index_inner(
     outcome.index_docs = engine.num_docs();
     drop(engine); // release the writer lock/mmaps before verifying through a fresh open
 
-    verify_built_index(index_dir, &outcome).map_err(|e| NsError::new(NsStatus::CorruptIndex, e.to_string()))?;
+    verify_built_index(index_dir, &outcome)
+        .map_err(|e| NsError::new(NsStatus::CorruptIndex, e.to_string()))?;
     Ok(outcome)
 }
 
 /// Success is not "the progress bar hit 100%": reopen the finished index the
 /// way a search will, check the document count, and look one document up.
 fn verify_built_index(index_dir: &Path, outcome: &CorpusIndexOutcome) -> NsResult<()> {
-    let engine = native_search::engine::NativeSearchEngine::open_or_create(index_dir)
-        .map_err(|e| NsError::index_error(format!("index was built but cannot be reopened: {e}")))?;
+    let engine =
+        native_search::engine::NativeSearchEngine::open_or_create(index_dir).map_err(|e| {
+            NsError::index_error(format!("index was built but cannot be reopened: {e}"))
+        })?;
     let docs = engine.num_docs();
-    log("INDEX", format!("verify: reopened ok, docs={docs} segments={} (build reported {})", engine.segment_count(), outcome.index_docs));
+    log(
+        "INDEX",
+        format!(
+            "verify: reopened ok, docs={docs} segments={} (build reported {})",
+            engine.segment_count(),
+            outcome.index_docs
+        ),
+    );
     let expected_min = i64::from(outcome.indexed_count) + i64::from(outcome.skipped_count);
     if expected_min > 0 && docs == 0 {
         return Err(NsError::index_error(format!(
@@ -489,9 +618,14 @@ fn verify_built_index(index_dir: &Path, outcome: &CorpusIndexOutcome) -> NsResul
     }
     if let Some(id) = engine.all_document_ids()?.into_iter().next() {
         let found = engine.get_document_metadata(&id)?.is_some();
-        log("INDEX", format!("verify: sample document lookup -> {found}"));
+        log(
+            "INDEX",
+            format!("verify: sample document lookup -> {found}"),
+        );
         if !found {
-            return Err(NsError::index_error("index verification failed: a stored document cannot be looked up after reopen"));
+            return Err(NsError::index_error(
+                "index verification failed: a stored document cannot be looked up after reopen",
+            ));
         }
     }
     Ok(())
@@ -499,7 +633,9 @@ fn verify_built_index(index_dir: &Path, outcome: &CorpusIndexOutcome) -> NsResul
 
 /// Documents present in the index whose source file no longer exists -
 /// thin wrapper over `search_core::native_index::remove_orphaned_documents`.
-pub fn remove_orphaned_documents(engine: &native_search::engine::NativeSearchEngine) -> NsResult<usize> {
+pub fn remove_orphaned_documents(
+    engine: &native_search::engine::NativeSearchEngine,
+) -> NsResult<usize> {
     native_index::remove_orphaned_documents(engine)
 }
 
@@ -535,8 +671,14 @@ mod tests {
 
     #[test]
     fn location_cycles_between_both_variants_and_wraps() {
-        assert_eq!(IndexLocation::SearchFolder.cycle(), IndexLocation::OutputFolder);
-        assert_eq!(IndexLocation::OutputFolder.cycle(), IndexLocation::SearchFolder);
+        assert_eq!(
+            IndexLocation::SearchFolder.cycle(),
+            IndexLocation::OutputFolder
+        );
+        assert_eq!(
+            IndexLocation::OutputFolder.cycle(),
+            IndexLocation::SearchFolder
+        );
     }
 
     #[tokio::test]
@@ -545,7 +687,10 @@ mod tests {
         std::fs::write(dir.path().join("a.txt"), "hello world\nneedle here\n").unwrap();
         std::fs::write(dir.path().join("b.txt"), "nothing interesting\n").unwrap();
 
-        let settings = SearchSettings { search_path: dir.path().to_string_lossy().into_owned(), ..Default::default() };
+        let settings = SearchSettings {
+            search_path: dir.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        };
         let index_dir = index_directory(IndexLocation::SearchFolder, &settings.search_path, "");
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -557,7 +702,9 @@ mod tests {
                 finished = Some(result);
             }
         }
-        let outcome = finished.expect("expected an IndexBuildFinished event").expect("index build should succeed");
+        let outcome = finished
+            .expect("expected an IndexBuildFinished event")
+            .expect("index build should succeed");
         assert_eq!(outcome.indexed_count, 2);
 
         let doc_count = verify_index(&index_dir).unwrap();
@@ -570,14 +717,26 @@ mod tests {
         std::fs::write(dir.path().join("a.txt"), "hello world\nneedle here\n").unwrap();
         std::fs::write(dir.path().join("b.txt"), "nothing interesting\n").unwrap();
 
-        let settings = SearchSettings { search_path: dir.path().to_string_lossy().into_owned(), ..Default::default() };
+        let settings = SearchSettings {
+            search_path: dir.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        };
         let index_dir = index_directory(IndexLocation::SearchFolder, &settings.search_path, "");
         ensure_index_directory_exists(&index_dir).unwrap();
         let engine = open_or_create_with_rebuild(&index_dir).unwrap();
         let mut noop = |_p: CorpusIndexProgress| {};
-        build_or_update_corpus_index_send(&settings, &engine, &CancellationToken::new(), Some(&mut noop)).await.unwrap();
+        build_or_update_corpus_index_send(
+            &settings,
+            &engine,
+            &CancellationToken::new(),
+            Some(&mut noop),
+        )
+        .await
+        .unwrap();
 
-        let candidates = engine.trigram_candidate_paths(&["needle".to_string()]).unwrap();
+        let candidates = engine
+            .trigram_candidate_paths(&["needle".to_string()])
+            .unwrap();
         assert!(candidates.is_some());
         let candidates = candidates.unwrap();
         assert_eq!(candidates.len(), 1);
@@ -588,40 +747,78 @@ mod tests {
     async fn building_again_updates_the_existing_index_instead_of_recreating_it() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
-        let settings = SearchSettings { search_path: dir.path().to_string_lossy().into_owned(), ..Default::default() };
+        let settings = SearchSettings {
+            search_path: dir.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        };
         let index_dir = index_directory(IndexLocation::SearchFolder, &settings.search_path, "");
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        assert!(build_or_rebuild_index(tx.clone(), settings.clone(), index_dir.clone(), CancellationToken::new()).await);
+        assert!(
+            build_or_rebuild_index(
+                tx.clone(),
+                settings.clone(),
+                index_dir.clone(),
+                CancellationToken::new()
+            )
+            .await
+        );
         // A marker file inside the index folder survives only if the folder is not wiped.
         std::fs::write(index_dir.join("marker.keep"), "x").unwrap();
         std::fs::write(dir.path().join("b.txt"), "second file\n").unwrap();
 
         let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel();
-        assert!(build_or_rebuild_index(tx2, settings, index_dir.clone(), CancellationToken::new()).await);
-        assert!(index_dir.join("marker.keep").exists(), "an intact index must be updated in place, not deleted");
+        assert!(
+            build_or_rebuild_index(tx2, settings, index_dir.clone(), CancellationToken::new())
+                .await
+        );
+        assert!(
+            index_dir.join("marker.keep").exists(),
+            "an intact index must be updated in place, not deleted"
+        );
         assert_eq!(verify_index(&index_dir).unwrap(), 2);
         let outcome = std::iter::from_fn(|| rx2.try_recv().ok()).find_map(|e| match e {
             AppEvent::IndexBuildFinished(Ok(o)) => Some(o),
             _ => None,
         });
         let o = outcome.expect("finished");
-        assert_eq!((o.indexed_count, o.skipped_count), (1, 1), "only the new file is indexed");
+        assert_eq!(
+            (o.indexed_count, o.skipped_count),
+            (1, 1),
+            "only the new file is indexed"
+        );
     }
 
     #[tokio::test]
     async fn a_corrupt_index_is_wiped_and_rebuilt_from_scratch() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
-        let settings = SearchSettings { search_path: dir.path().to_string_lossy().into_owned(), ..Default::default() };
+        let settings = SearchSettings {
+            search_path: dir.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        };
         let index_dir = index_directory(IndexLocation::SearchFolder, &settings.search_path, "");
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        assert!(build_or_rebuild_index(tx.clone(), settings.clone(), index_dir.clone(), CancellationToken::new()).await);
+        assert!(
+            build_or_rebuild_index(
+                tx.clone(),
+                settings.clone(),
+                index_dir.clone(),
+                CancellationToken::new()
+            )
+            .await
+        );
 
         std::fs::write(index_dir.join("meta.json"), b"{ this is not json").unwrap();
         std::fs::write(index_dir.join("marker.gone"), "x").unwrap();
-        assert!(build_or_rebuild_index(tx, settings, index_dir.clone(), CancellationToken::new()).await, "a corrupt index must self-heal");
-        assert!(!index_dir.join("marker.gone").exists(), "the corrupt index folder was wiped");
+        assert!(
+            build_or_rebuild_index(tx, settings, index_dir.clone(), CancellationToken::new()).await,
+            "a corrupt index must self-heal"
+        );
+        assert!(
+            !index_dir.join("marker.gone").exists(),
+            "the corrupt index folder was wiped"
+        );
         assert_eq!(verify_index(&index_dir).unwrap(), 1);
     }
 
@@ -629,7 +826,10 @@ mod tests {
     fn progress_status_reports_stage_counts_percent_and_current_file() {
         let mut st = IndexRunState::default();
         st.begin();
-        st.apply_progress(&CorpusIndexProgress { stage: IndexStage::Enumerating, ..Default::default() });
+        st.apply_progress(&CorpusIndexProgress {
+            stage: IndexStage::Enumerating,
+            ..Default::default()
+        });
         assert!(st.status_text.starts_with("Scanning folder"));
         st.apply_progress(&CorpusIndexProgress {
             stage: IndexStage::Indexing,
@@ -639,14 +839,26 @@ mod tests {
             indexed_count: 5,
             failed_count: 2,
         });
-        assert!(st.status_text.contains("Indexing 5/20 (25%)"), "{}", st.status_text);
+        assert!(
+            st.status_text.contains("Indexing 5/20 (25%)"),
+            "{}",
+            st.status_text
+        );
         assert!(st.status_text.contains("2 failed"));
         // The file name lives in the in-flight box, not the (truncatable) status line.
         assert_eq!(st.current_file, "/x/y/report.pdf");
         assert_eq!(st.percent, 25.0);
         assert!(st.is_building);
-        st.apply_progress(&CorpusIndexProgress { stage: IndexStage::Committing, files_processed: 5, total_files: 20, ..Default::default() });
-        assert_eq!(st.current_file, "/x/y/report.pdf", "a report without a file must not blank the last one");
+        st.apply_progress(&CorpusIndexProgress {
+            stage: IndexStage::Committing,
+            files_processed: 5,
+            total_files: 20,
+            ..Default::default()
+        });
+        assert_eq!(
+            st.current_file, "/x/y/report.pdf",
+            "a report without a file must not blank the last one"
+        );
         assert_eq!(st.percent, 25.0, "committing keeps the last percentage");
     }
 
@@ -654,7 +866,12 @@ mod tests {
     fn outcome_and_error_end_the_building_state() {
         let mut st = IndexRunState::default();
         st.begin();
-        st.apply_outcome(&CorpusIndexOutcome { index_docs: 7, indexed_count: 3, skipped_count: 4, ..Default::default() });
+        st.apply_outcome(&CorpusIndexOutcome {
+            index_docs: 7,
+            indexed_count: 3,
+            skipped_count: 4,
+            ..Default::default()
+        });
         assert!(!st.is_building);
         assert_eq!(st.docs, Some(7));
         assert!(st.status_text.contains("7 docs"));
@@ -673,7 +890,10 @@ mod tests {
 
     #[tokio::test]
     async fn building_over_a_missing_folder_reports_an_error_event_instead_of_hanging() {
-        let settings = SearchSettings { search_path: "/definitely/not/a/real/folder".to_string(), ..Default::default() };
+        let settings = SearchSettings {
+            search_path: "/definitely/not/a/real/folder".to_string(),
+            ..Default::default()
+        };
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let idx = std::env::temp_dir().join("toolbench-missing-root-idx");
         build_or_rebuild_index(tx, settings, idx, CancellationToken::new()).await;
@@ -683,14 +903,19 @@ mod tests {
                 finished = Some(r);
             }
         }
-        assert!(finished.expect("a Finished event must always be sent").is_err());
+        assert!(finished
+            .expect("a Finished event must always be sent")
+            .is_err());
     }
 
     #[tokio::test]
     async fn a_cancelled_build_still_finishes_with_a_cancelled_outcome() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
-        let settings = SearchSettings { search_path: dir.path().to_string_lossy().into_owned(), ..Default::default() };
+        let settings = SearchSettings {
+            search_path: dir.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        };
         let index_dir = index_directory(IndexLocation::SearchFolder, &settings.search_path, "");
         let cancel = CancellationToken::new();
         cancel.cancel();
@@ -715,7 +940,11 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let secret_dir = root.path().join("ConfidentialClientFolderQ7");
         std::fs::create_dir_all(&secret_dir).unwrap();
-        std::fs::write(secret_dir.join("SecretProjectNameXyz.txt"), "needle ZebraTermQ9 here\n").unwrap();
+        std::fs::write(
+            secret_dir.join("SecretProjectNameXyz.txt"),
+            "needle ZebraTermQ9 here\n",
+        )
+        .unwrap();
         // Corrupt office file: exercises the per-file failure path.
         std::fs::write(secret_dir.join("BrokenBudgetXyz.docx"), b"not a real docx").unwrap();
 
@@ -726,17 +955,49 @@ mod tests {
         };
         let index_dir = index_directory(IndexLocation::SearchFolder, &settings.search_path, "");
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        build_or_rebuild_index(tx, settings.clone(), index_dir.clone(), CancellationToken::new()).await;
+        build_or_rebuild_index(
+            tx,
+            settings.clone(),
+            index_dir.clone(),
+            CancellationToken::new(),
+        )
+        .await;
         // Also a failing build (missing folder) so the error path is covered.
         let (tx2, _rx2) = tokio::sync::mpsc::unbounded_channel();
-        let bad = SearchSettings { search_path: root.path().join("MissingFolderZz").to_string_lossy().into_owned(), ..Default::default() };
+        let bad = SearchSettings {
+            search_path: root
+                .path()
+                .join("MissingFolderZz")
+                .to_string_lossy()
+                .into_owned(),
+            ..Default::default()
+        };
         build_or_rebuild_index(tx2, bad, index_dir, CancellationToken::new()).await;
 
-        let log = std::fs::read_to_string(logs.path().join(crate::debug_log::LOG_FILE_NAME)).unwrap();
-        assert!(log.contains("build start") && log.contains("build finished"), "log must still be useful:\n{log}");
-        let root_name = root.path().file_name().unwrap().to_string_lossy().into_owned();
-        for forbidden in ["SecretProjectNameXyz", "BrokenBudgetXyz", "ConfidentialClientFolderQ7", "ZebraTermQ9", "MissingFolderZz", root_name.as_str()] {
-            assert!(!log.contains(forbidden), "debug log leaked `{forbidden}`:\n{log}");
+        let log =
+            std::fs::read_to_string(logs.path().join(crate::debug_log::LOG_FILE_NAME)).unwrap();
+        assert!(
+            log.contains("build start") && log.contains("build finished"),
+            "log must still be useful:\n{log}"
+        );
+        let root_name = root
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        for forbidden in [
+            "SecretProjectNameXyz",
+            "BrokenBudgetXyz",
+            "ConfidentialClientFolderQ7",
+            "ZebraTermQ9",
+            "MissingFolderZz",
+            root_name.as_str(),
+        ] {
+            assert!(
+                !log.contains(forbidden),
+                "debug log leaked `{forbidden}`:\n{log}"
+            );
         }
     }
 }
