@@ -19,7 +19,7 @@ const RETRIEVE_PER_CONDITION: usize = 100;
 /// Files judged per search: the model is slow, so only the best-ranked files are checked.
 const MAX_JUDGED_FILES: usize = 10;
 /// Passages judged per (file, condition) pair.
-const PASSAGES_PER_PAIR: usize = 2;
+const PASSAGES_PER_PAIR: usize = 3;
 
 /// How well a file satisfies the positive conditions. Not a percentage on purpose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -75,14 +75,72 @@ impl std::fmt::Display for FindError {
 }
 impl std::error::Error for FindError {}
 
+/// Longest focused passage handed to the model, in characters.
+const FOCUS_CHARS: usize = 600;
+const FOCUS_SENTENCES: usize = 3;
+
+/// The distinct word forms of a condition's terms, as the keyword scorer reads them.
+fn wanted_stems(condition: &Condition) -> Vec<String> {
+    let mut stems: Vec<String> = condition
+        .terms
+        .iter()
+        .flat_map(|term| crate::lexical::terms(term))
+        .collect();
+    stems.sort();
+    stems.dedup();
+    stems
+}
+
+/// How many of `wanted` occur in `text`.
+fn coverage(text: &str, wanted: &[String]) -> usize {
+    let words = crate::lexical::terms(text);
+    wanted.iter().filter(|w| words.contains(w)).count()
+}
+
+/// The part of a retrieved passage that bears on the condition. A passage is a fixed-size cut of the document
+/// and often starts mid-sentence or holds a neighbouring topic, which a small model loses the sentence in. The
+/// sentences that share the most word forms with the condition's terms are kept, in their original order;
+/// a passage sharing none is handed over whole. Line-end hyphens (`re­ moved`) are rejoined.
+fn focus(passage: &str, condition: &Condition) -> String {
+    let text = passage.replace("\u{ad} ", "").replace('\u{ad}', "");
+    let wanted = wanted_stems(condition);
+    let mut sentences: Vec<(usize, usize, &str)> = Vec::new();
+    let mut start = 0;
+    for (i, c) in text.char_indices() {
+        let end = i + c.len_utf8();
+        if matches!(c, '.' | '?' | '!' | ';') && text[end..].starts_with(char::is_whitespace) {
+            sentences.push((0, sentences.len(), text[start..end].trim()));
+            start = end;
+        }
+    }
+    sentences.push((0, sentences.len(), text[start..].trim()));
+    for sentence in &mut sentences {
+        sentence.0 = coverage(sentence.2, &wanted);
+    }
+    sentences.retain(|sentence| sentence.0 > 0 && !sentence.2.is_empty());
+    if sentences.is_empty() {
+        return text;
+    }
+    sentences.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    sentences.truncate(FOCUS_SENTENCES);
+    sentences.sort_by_key(|sentence| sentence.1);
+    let joined = sentences.iter().map(|s| s.2).collect::<Vec<_>>().join(" ");
+    joined.chars().take(FOCUS_CHARS).collect()
+}
+
 fn judge_pair<M: ConditionModel + ?Sized>(
     model: &M,
     condition: &Condition,
     hits: &[&SemanticHit],
 ) -> Result<Option<Evidence>, FindError> {
-    for hit in hits.iter().take(PASSAGES_PER_PAIR) {
+    // The passages that hold the most of the condition's word forms are judged first: a short query's
+    // nearest passages by meaning alone are often a contents page or a neighbouring topic.
+    let wanted = wanted_stems(condition);
+    let mut order: Vec<&&SemanticHit> = hits.iter().collect();
+    order.sort_by_key(|hit| std::cmp::Reverse(coverage(&hit.excerpt, &wanted)));
+    for hit in order.into_iter().take(PASSAGES_PER_PAIR) {
         let verdict = model
-            .judge(&condition.text, &hit.excerpt)
+            .judge(&condition.text, &focus(&hit.excerpt, condition))
             .map_err(FindError::Model)?;
         if verdict.matches {
             return Ok(Some(Evidence {
@@ -94,14 +152,11 @@ fn judge_pair<M: ConditionModel + ?Sized>(
     Ok(None)
 }
 
-/// Group hits by file, strongest first within each file.
+/// Group hits by file, keeping the retrieval order within each file.
 fn by_file(hits: Vec<SemanticHit>) -> HashMap<String, Vec<SemanticHit>> {
     let mut files: HashMap<String, Vec<SemanticHit>> = HashMap::new();
     for hit in hits {
         files.entry(hit.path.clone()).or_default().push(hit);
-    }
-    for list in files.values_mut() {
-        list.sort_by(|a, b| b.similarity.total_cmp(&a.similarity));
     }
     files
 }
@@ -281,6 +336,18 @@ mod tests {
 
     fn run(conditions: &[Condition]) -> Vec<FileMatch> {
         find(&Fake, conditions, corpus, &AtomicBool::new(false), |_| {}).unwrap()
+    }
+
+    #[test]
+    fn focus_keeps_the_sentences_about_the_condition() {
+        let passage = "Remove the battery. Protect the surfaces next to rework areas. 6-115. All depressions should be faired or blended with the surrounding surface. Fairing can be done as follows: remove edges";
+        let blended = Condition { text: "surfaces blended".into(), terms: vec!["surface".into(), "blend".into(), "blended".into()], negated: false, grounding: 1.0 };
+        let focused = focus(passage, &blended);
+        assert!(focused.contains("faired or blended with the surrounding surface"), "{focused}");
+        assert!(!focused.contains("battery"), "{focused}");
+        let nothing = Condition { text: "paint".into(), terms: vec!["paint".into()], negated: false, grounding: 1.0 };
+        assert_eq!(focus(passage, &nothing), passage);
+        assert_eq!(focus("a re\u{ad} moved edge is blended", &blended), "a removed edge is blended");
     }
 
     #[test]

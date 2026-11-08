@@ -605,9 +605,9 @@ pub(super) fn document(s: &SearchSession) -> Document {
             inputs: index_panel_inputs(s),
             chips: index_panel_chips(s),
             cards: {
-                #[cfg_attr(not(feature = "llm-find"), allow(unused_mut))]
+                #[cfg_attr(not(feature = "semantic-search"), allow(unused_mut))]
                 let mut cards = Vec::new();
-                #[cfg(feature = "llm-find")]
+                #[cfg(feature = "semantic-search")]
                 cards.push(c.nl);
                 cards.extend([c.index, c.summary]);
                 cards
@@ -861,6 +861,12 @@ fn ask_items(s: &SearchSession) -> Vec<DockItem> {
     };
     for (part_index, part) in parts.iter().enumerate() {
         items.push(DockItem::Asked(plain(&part.question)));
+        items.extend(part.facts.iter().map(|fact| DockItem::Reply {
+            text: plain(&fact.text),
+            source: fact.source.clone(),
+            tone: Tone::Title,
+            action: None,
+        }));
         if let Some(help) = &part.help {
             match help {
                 Ok(lines) if lines.is_empty() => items.push(DockItem::text(
@@ -1636,7 +1642,7 @@ pub(super) struct Cards {
     output: Card,
     index: Card,
     summary: Card,
-    #[cfg(feature = "llm-find")]
+    #[cfg(feature = "semantic-search")]
     nl: Card,
 }
 
@@ -2028,9 +2034,29 @@ pub(super) fn cards(s: &SearchSession) -> Cards {
             .for_steps(&["Index"]),
         summary: Card::new("search-summary", "Last run", Relevance::Info, summary)
             .for_steps(&["Index"]),
-        #[cfg(feature = "llm-find")]
-        nl: Card::new("search-nl", "Natural-language Find", Relevance::Primary, super::nl::items(s))
+        #[cfg(feature = "semantic-search")]
+        nl: Card::new("search-nl", "Natural-language Find", Relevance::Primary, nl_items(s))
             .for_steps(&["Index"]),
+    }
+}
+
+/// The Natural-language Find card: its controls, or how to get them when this build lacks the language model.
+#[cfg(feature = "semantic-search")]
+fn nl_items(s: &SearchSession) -> Vec<DockItem> {
+    #[cfg(feature = "llm-find")]
+    {
+        super::nl::items(s)
+    }
+    #[cfg(not(feature = "llm-find"))]
+    {
+        let _ = s;
+        vec![
+            DockItem::text("Natural-language Find is not in this build.", Tone::Warn),
+            DockItem::text(
+                "It needs the local language model. Build with: cargo run -p app-tui --release --features llm-find",
+                Tone::Dim,
+            ),
+        ]
     }
 }
 
@@ -2086,7 +2112,7 @@ fn types_card(s: &SearchSession) -> Option<Card> {
 pub(super) fn inspector(s: &SearchSession) -> Vec<Card> {
     let c = cards(s);
     let mut all: Vec<Card> = types_card(s).into_iter().collect();
-    #[cfg(feature = "llm-find")]
+    #[cfg(feature = "semantic-search")]
     all.push(c.nl);
     all.extend([
         c.answers,

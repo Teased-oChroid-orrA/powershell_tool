@@ -46,11 +46,11 @@ pub trait ConditionModel {
 
 pub const PARSE_SYSTEM: &str = "Split the user's search sentence into the independent conditions a document must satisfy.\n\
 For each condition give: text (short phrase), terms (lowercase key words plus word-form variants, keep numbers and codes), negated (true only if the document must NOT satisfy it).\n\
-Every condition must be made of words from the sentence. Never add, infer or generalise a condition; if the sentence states one thing, return one condition. Example:\n\
+Every condition must be made of words from the sentence. Never add, infer or generalise a condition; if the sentence states one thing, return one condition. When several actions share one subject, repeat the subject in every condition. Example:\n\
 Sentence: files where the skin was cracked and repaired but not painted\n\
-{\"conditions\":[{\"text\":\"skin cracked\",\"terms\":[\"skin\",\"crack\",\"cracked\"],\"negated\":false},{\"text\":\"repaired\",\"terms\":[\"repair\",\"repaired\"],\"negated\":false},{\"text\":\"painted\",\"terms\":[\"paint\",\"painted\"],\"negated\":true}]}";
+{\"conditions\":[{\"text\":\"skin cracked\",\"terms\":[\"skin\",\"crack\",\"cracked\"],\"negated\":false},{\"text\":\"skin repaired\",\"terms\":[\"skin\",\"repair\",\"repaired\"],\"negated\":false},{\"text\":\"skin painted\",\"terms\":[\"skin\",\"paint\",\"painted\"],\"negated\":true}]}";
 
-pub const JUDGE_SYSTEM: &str = "Decide whether the passage itself asserts the condition. First copy the exact words from the passage that state it (empty string if none). Then answer yes only if the passage affirms the condition for the same item: a negation, a requirement that was not met, a different item, or a mere mention of related words is no.";
+pub const JUDGE_SYSTEM: &str = "Decide whether the passage itself asserts the condition. The passage is a cut-out of a longer document: it may begin or end mid-sentence and hold unrelated text, so look through all of it. First copy the exact words from the passage that state it (empty string if none). Then answer yes if the passage states, requires or instructs the condition for the same item (an instruction such as 'should be blended' counts). Answer no for a negation, a requirement that was not met, a different item, a different property of the same item (a preload is not a torque), or a mere mention of related words.";
 
 /// GBNF forcing the parse JSON shape (fixed key order, no whitespace).
 pub const PARSE_GRAMMAR: &str = r#"root ::= "{\"conditions\":[" cond ("," cond){0,5} "]}"

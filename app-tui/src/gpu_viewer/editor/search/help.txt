@@ -77,14 +77,15 @@ A huge file is skipped when it is larger than the Max file size option, which de
 
 ## OCR for scanned PDFs
 OCR is a setting named OCR scanned PDFs, and it is off by default.
-OCR only applies to PDFs that have no text layer, because text PDFs are read directly without it.
+OCR only applies to PDFs that have no usable text layer, because text PDFs are read directly without it; a PDF whose text layer is only font data or garbage also counts as having none.
+Search drops lines that are only noise, such as lone glyphs and speckle, from PDF text and from OCR results, so they are not indexed or shown.
 Turning OCR on makes Search recognize text in the page images of scanned PDFs, which would otherwise find nothing.
 OCR is slow because every page image of a scanned PDF is run through a text recognition model on the processor.
 Scanned PDFs take much longer than text PDFs with OCR on, so the PDF timeout and the file timeout may stop a long document.
 The OCR models are built into the app when it is compiled with OCR support, so OCR needs no download or internet connection.
 To search scanned PDFs faster, leave OCR off for runs that do not need them, or narrow the search with the Types chip.
 OCR results are recognized text and can contain mistakes, so a missed match in a scan may be a recognition error.
-# src: toolboxes/search/settings_view.rs (field_hint 26), search-core/src/ocr.rs, search-core/AGENTS.md. Other agent is editing OCR in search-core: recheck this section after that lands.
+# src: toolboxes/search/settings_view.rs (field_hint 26), search-core/src/ocr.rs, search-core/AGENTS.md, search-core/src/line_quality.rs, docs/search-ocr-line-quality.md.
 
 ## Results list and document preview
 The results table lists only files that contain a match, and rows appear while the search is still running.
@@ -148,6 +149,8 @@ The Semantic index appears only in builds of the app that include the semantic s
 ## Ask
 Ask is a question panel on the toolbar next to Index that finds lines answering a question about the Search app or about your files.
 The Look in chips choose where Ask looks: Search help, which holds the facts about this app, and My files, which are the indexed folder.
+Ask counts the files of the search folder when asked how many files, PDFs or Word documents it holds, computed from the folder itself.
+A sentence typed in the search box, such as surfaces that were blended and filled, is read as separate conditions to review in the Index panel before Find runs, when the language model is set.
 Ask does not generate answers, because it only shows unchanged lines copied from the Search help or from your files.
 Each Ask result is a source line with a citation, and clicking a line from your files opens that file.
 A help line is cited by its help section, and the line is shown exactly as written in the help.

@@ -15,7 +15,7 @@ name = "app-tui"
 path = "src/main.rs"
 
 [features]
-default = ["gpu-viewer", "neural-search", "semantic-search"]
+default = ["gpu-viewer", "neural-search", "semantic-search", "llm-find"]
 # Open, edit (hole / boss / fillet) and re-tessellate STEP solids: links a prebuilt OpenCASCADE through `cadrum`.
 occt = ["fea-problem/occt", "dep:solid-kernel", "solid-kernel/occt"]
 # The same, building OpenCASCADE from source so it follows the workspace's static CRT (the prebuilt MSVC library is /MD and cannot link

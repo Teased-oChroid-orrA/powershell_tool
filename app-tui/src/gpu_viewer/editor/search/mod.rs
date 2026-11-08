@@ -12,6 +12,8 @@ mod alerts;
 #[cfg(feature = "semantic-search")]
 mod diff;
 #[cfg(feature = "semantic-search")]
+mod facts;
+#[cfg(feature = "semantic-search")]
 mod help;
 #[cfg(feature = "llm-find")]
 mod nl;
@@ -437,6 +439,8 @@ pub(super) struct QuestionPart {
     /// Cited lines of the indexed files; empty when the files were not asked.
     evidence: Result<Vec<search_core::neural_search::CitedAnswer>, String>,
     files_asked: bool,
+    /// Computed from the folder itself (a count); when present it replaces the lines above.
+    facts: Vec<facts::Fact>,
 }
 
 #[cfg(feature = "semantic-search")]
@@ -1120,6 +1124,14 @@ impl SearchSession {
             self.status = "A search is already running (Esc stops it).".into();
             return;
         }
+        #[cfg(feature = "llm-find")]
+        if nl::looks_like_sentence(&self.st.config.filters_text) && self.nl_ready() {
+            // A sentence is not a keyword filter: read it as conditions to review, then Find.
+            self.nl.sentence = self.st.config.filters_text.trim().to_string();
+            self.nl_understand();
+            self.status = "Read your sentence as conditions: review them in the Index panel, then press Find.".into();
+            return;
+        }
         if let Some(e) = model::regex_validation_error(&self.st.config) {
             self.status = format!("Fix the pattern first: {e}");
             return;
@@ -1455,7 +1467,8 @@ impl SearchSession {
             self.ask_help,
             self.ask_files && self.st.config.index.semantic && !roots.is_empty(),
         );
-        if !help && !files {
+        let counts = self.ask_files && !roots.is_empty();
+        if !help && !files && !counts {
             self.status = "Choose where Ask looks: the Search help or your indexed files.".into();
             return;
         }
@@ -1474,15 +1487,28 @@ impl SearchSession {
             let result = tokio::task::spawn_blocking(move || {
                 Ok(parts
                     .into_iter()
-                    .map(|part| QuestionPart {
-                        help: help.then(|| help::answer(&part)),
-                        evidence: if files {
-                            file_evidence(&part, &roots)
+                    .map(|part| {
+                        let facts = if counts {
+                            roots
+                                .iter()
+                                .filter_map(|(_, settings)| facts::answer(&part, settings))
+                                .flatten()
+                                .collect()
                         } else {
-                            Ok(Vec::new())
-                        },
-                        files_asked: files,
-                        question: part,
+                            Vec::new()
+                        };
+                        let answered = !facts.is_empty();
+                        QuestionPart {
+                            help: (help && !answered).then(|| help::answer(&part)),
+                            evidence: if files && !answered {
+                                file_evidence(&part, &roots)
+                            } else {
+                                Ok(Vec::new())
+                            },
+                            files_asked: files && !answered,
+                            facts,
+                            question: part,
+                        }
                     })
                     .collect())
             })

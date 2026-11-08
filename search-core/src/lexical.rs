@@ -19,6 +19,24 @@ const STOP_WORDS: &[&str] = &[
     "which", "who", "why", "with",
 ];
 
+/// Cuts a plural or verb ending off a plain word, so `blended`, `blending` and `blends` all become `blend`
+/// and a search for one finds the others. Applied to query and text alike, so it need not give real stems.
+/// Words with digits, and short words, are left as they are.
+fn stem(word: &str) -> String {
+    if word.len() < 5 || !word.chars().all(|c| c.is_ascii_alphabetic()) {
+        return word.to_string();
+    }
+    for (ending, replacement) in [("ies", "y"), ("ied", "y"), ("ing", ""), ("ed", ""), ("es", ""), ("s", "")] {
+        if let Some(root) = word.strip_suffix(ending) {
+            let sibilant = ["s", "x", "z", "ch", "sh"].iter().any(|e| root.ends_with(e));
+            if root.len() >= 3 && !(ending == "s" && root.ends_with('s')) && (ending != "es" || sibilant) {
+                return format!("{root}{replacement}");
+            }
+        }
+    }
+    word.to_string()
+}
+
 /// Lowercased terms. A mixed letter/digit token such as `m8x1.25` also yields
 /// its pieces (`m`, `8`, `x`, `1.25`) and its first letters+digits prefix
 /// (`m8`) so a query for `M8` finds the full part number.
@@ -29,7 +47,7 @@ pub fn terms(text: &str) -> Vec<String> {
         if token.is_empty() {
             continue;
         }
-        out.push(token.clone());
+        out.push(stem(&token));
         let mut pieces = Vec::new();
         let mut piece = String::new();
         let mut last_digit = None;
@@ -155,6 +173,21 @@ mod tests {
         for want in ["m8x1.25", "m8", "1.25", "4500", "e", "d", "1.5"] {
             assert!(t.iter().any(|x| x == want), "missing {want}: {t:?}");
         }
+    }
+
+    #[test]
+    fn word_forms_match_each_other() {
+        for (a, b) in [("blended", "blending"), ("faired", "fairing"), ("fills", "filled"), ("holes", "hole"), ("bodies", "bodied")] {
+            assert_eq!(terms(a), terms(b), "{a} vs {b}");
+        }
+        assert_ne!(terms("glass"), terms("glas"));
+        let q = query_terms("surfaces blended").unwrap();
+        let docs = [
+            count_terms("Fairing or blending reworked areas into the surface", &q),
+            count_terms("The bonding surfaces should be machined smooth", &q),
+        ];
+        let s = bm25(&docs, q.len());
+        assert!(s[0] > s[1], "{s:?}");
     }
 
     #[test]

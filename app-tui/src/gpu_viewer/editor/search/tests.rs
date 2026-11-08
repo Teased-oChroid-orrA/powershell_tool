@@ -1783,6 +1783,20 @@ fn the_index_panel_no_longer_holds_ask() {
     assert_eq!(doc.panels[2].inputs[0].id, INPUT_QUESTION);
 }
 
+#[cfg(all(feature = "semantic-search", not(feature = "llm-find")))]
+#[test]
+fn a_build_without_the_language_model_says_so_in_the_index_panel() {
+    let session = SearchSession::in_memory();
+    let doc = view::document(&session);
+    let texts: Vec<String> = doc.panels[1]
+        .cards
+        .iter()
+        .flat_map(|card| card.items.iter().filter_map(DockItem::plain_text))
+        .collect();
+    assert!(texts.iter().any(|t| t.contains("not in this build")), "{texts:?}");
+    assert!(texts.iter().any(|t| t.contains("--features llm-find")), "{texts:?}");
+}
+
 #[cfg(feature = "semantic-search")]
 fn ask_help_only(session: &mut SearchSession, question: &str) {
     session.ask_files = false;
@@ -1810,6 +1824,32 @@ fn ask_answers_questions_about_the_app_from_the_help_without_a_folder() {
     let items = &ask_card(&doc).items;
     assert!(items.iter().any(|item| matches!(item, DockItem::Asked(question) if question.starts_with("How do I"))));
     assert!(items.iter().any(|item| matches!(item, DockItem::Reply { source, .. } if source.starts_with("Search help · "))));
+}
+
+#[cfg(feature = "semantic-search")]
+#[test]
+fn ask_counts_the_files_of_the_search_folder_by_type() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["a.txt", "b.txt", "c.pdf"] {
+        std::fs::write(dir.path().join(name), "x").unwrap();
+    }
+    let mut session = SearchSession::in_memory();
+    session.st.config.search_path = dir.path().to_string_lossy().into_owned();
+    session.question = "how many files in this search directory".into();
+    act_on(&mut session, SearchAct::AnswerQuestion);
+    let started = Instant::now();
+    while session.answer_running {
+        assert!(started.elapsed() < Duration::from_secs(120));
+        session.poll();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    session.poll();
+    let parts = session.current_answers().expect("an answer");
+    assert!(parts[0].help.is_none(), "a count replaces the help lines");
+    let doc = view::document(&session);
+    let texts: Vec<String> = ask_card(&doc).items.iter().filter_map(DockItem::plain_text).collect();
+    assert!(texts.iter().any(|t| t.contains("3 files in total")), "{texts:?}");
+    assert!(texts.iter().any(|t| t.contains(".txt 2") && t.contains(".pdf 1")), "{texts:?}");
 }
 
 #[cfg(feature = "semantic-search")]
@@ -1896,6 +1936,34 @@ mod natural_language_find {
     }
 
     #[test]
+    fn a_sentence_in_the_search_box_is_read_as_conditions_not_searched_as_one_phrase() {
+        assert!(nl::looks_like_sentence("surfaces that were blended and filled and fair"));
+        assert!(!nl::looks_like_sentence("blended, filled, fair"));
+        assert!(!nl::looks_like_sentence("torque and bolt"));
+        assert!(!nl::looks_like_sentence("\"blended and filled and fair surfaces\" extra"));
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = session_with_model(dir.path());
+        session.st.config.filters_text = "surfaces that were blended and filled and fair".into();
+        act_on(&mut session, SearchAct::Run);
+        assert_eq!(session.nl.stage, nl::Stage::Parsing, "the sentence goes to the language model");
+        assert!(!session.st.run.is_running, "no literal phrase search starts");
+        wait(&mut session);
+        assert_eq!(session.nl.conditions.as_ref().unwrap().len(), 3);
+        // Without a ready model the entry stays a keyword search.
+        let mut plain = SearchSession::in_memory();
+        plain.st.config.filters_text = "surfaces that were blended and filled and fair".into();
+        assert!(!plain.nl_ready());
+        // An empty model path (the default setting) leaves the regular keyword search in charge.
+        let mut empty = SearchSession::in_memory();
+        empty.st.config.index.semantic = true;
+        empty.st.config.search_path = dir.path().to_string_lossy().into_owned();
+        empty.st.config.filters_text = "surfaces that were blended and filled and fair".into();
+        act_on(&mut empty, SearchAct::Run);
+        assert_eq!(empty.nl.stage, nl::Stage::Idle);
+        assert!(empty.status.starts_with("Searching"), "{}", empty.status);
+    }
+
+    #[test]
     fn chips_can_be_removed_and_merged_then_find_cites_confirmed_files() {
         let dir = tempfile::tempdir().unwrap();
         semantic_fixture(
@@ -1936,5 +2004,91 @@ mod natural_language_find {
         assert!(session.nl.conditions.is_some());
         session.document_field(INPUT_NL, "something else".into());
         assert!(session.nl.conditions.is_none() && session.nl.files.is_empty());
+    }
+}
+
+/// Real-model probe over a folder: `FEA_CORPUS=<folder> FEA_MODEL=<qwen.gguf> FEA_SENTENCE=<sentence>
+/// cargo test -p app-tui --features llm-find corpus_probe -- --ignored --nocapture`.
+#[cfg(feature = "llm-find")]
+#[test]
+#[ignore]
+fn corpus_probe() {
+    let folder = std::env::var("FEA_CORPUS").expect("FEA_CORPUS");
+    let mut session = SearchSession::in_memory();
+    session.st.config.search_path = folder;
+    session.st.config.index.semantic = true;
+    session.st.config.llm_model_path = std::env::var("FEA_MODEL").expect("FEA_MODEL");
+    let spin = |session: &mut SearchSession, busy: &dyn Fn(&SearchSession) -> bool| {
+        while busy(session) {
+            session.poll();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        session.poll();
+    };
+    let t = Instant::now();
+    act_on(&mut session, SearchAct::BuildIndex);
+    spin(&mut session, &|s| s.st.index_run.is_building);
+    eprintln!("index built in {:?}: {}", t.elapsed(), session.status);
+
+    if let Ok(queries) = std::env::var("FEA_QUERIES") {
+        let settings = crate::toolboxes::search::model::build_settings(&session.st.config);
+        let index = crate::toolboxes::search::indexing::index_directory(
+            session.st.config.index.location,
+            &session.st.config.search_path,
+            &session.st.config.output_folder,
+        );
+        for query in queries.split('|') {
+            eprintln!("RAW {query:?}");
+            let hits = search_core::semantic_index::search_directory_with_settings(&index, query, 8, &settings);
+            for hit in hits.unwrap_or_default() {
+                eprintln!("  [{:.2}] {}:{} {}", hit.similarity, hit.path.rsplit('/').next().unwrap_or(""), hit.first_line, hit.excerpt.replace('\n', " ").chars().take(110).collect::<String>());
+            }
+        }
+        return;
+    }
+    for question in ["how many files in this search directory", "how many PDFs are there?"] {
+        session.question = question.into();
+        act_on(&mut session, SearchAct::AnswerQuestion);
+        spin(&mut session, &|s| s.answer_running);
+        let doc = view::document(&session);
+        eprintln!("ASK {question}");
+        for text in ask_card(&doc).items.iter().filter_map(DockItem::plain_text) {
+            eprintln!("  {text}");
+        }
+    }
+
+    let sentence = std::env::var("FEA_SENTENCE").unwrap_or_default();
+    if !sentence.is_empty() {
+        session.st.config.filters_text = sentence.clone();
+        let t = Instant::now();
+        act_on(&mut session, SearchAct::Run);
+        spin(&mut session, &|s| s.nl.stage != nl::Stage::Idle);
+        eprintln!("parsed in {:?}: {:?}", t.elapsed(), session.nl.conditions);
+        for condition in session.nl.conditions.clone().unwrap_or_default() {
+            let settings = crate::toolboxes::search::model::build_settings(&session.st.config);
+            let index = crate::toolboxes::search::indexing::index_directory(
+                session.st.config.index.location,
+                &session.st.config.search_path,
+                &session.st.config.output_folder,
+            );
+            let hits = search_core::semantic_index::search_directory_with_settings(&index, &condition.text, 6, &settings);
+            eprintln!("RETRIEVE {:?}", condition.text);
+            for hit in hits.unwrap_or_default() {
+                eprintln!("  [{:.2}] {}:{} {}", hit.similarity, hit.path.rsplit('/').next().unwrap_or(""), hit.first_line, hit.excerpt.replace('\n', " ").chars().take(150).collect::<String>());
+            }
+        }
+        if std::env::var("FEA_RETRIEVE_ONLY").is_ok() {
+            return;
+        }
+        let t = Instant::now();
+        act_on(&mut session, SearchAct::NlFind);
+        spin(&mut session, &|s| s.nl.stage != nl::Stage::Idle);
+        eprintln!("find in {:?}, error {:?}", t.elapsed(), session.nl.error);
+        for file in &session.nl.files {
+            eprintln!("{} fit {:?}", file.path, file.fit);
+            for e in file.evidence.iter().flatten() {
+                eprintln!("    [{:.2}] {}", e.hit.similarity, e.quote);
+            }
+        }
     }
 }

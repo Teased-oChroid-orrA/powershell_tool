@@ -119,7 +119,30 @@ fn model_problem(path: &str) -> Option<String> {
     }
 }
 
+/// A search box entry written as a sentence ("surfaces that were blended and filled"), not as filters:
+/// several words, a connecting word, and none of the filter syntax (`,` `;` `[` `(` `"`).
+pub(super) fn looks_like_sentence(text: &str) -> bool {
+    const CONNECTIVES: &[&str] = &[
+        "that", "which", "where", "were", "was", "and", "but", "with", "not", "have", "has", "had",
+    ];
+    if text.contains([',', ';', '[', ']', '(', ')', '"']) {
+        return false;
+    }
+    let words: Vec<String> = text
+        .split_whitespace()
+        .map(|w| w.to_lowercase())
+        .collect();
+    words.len() >= 5 && words.iter().any(|w| CONNECTIVES.contains(&w.as_str()))
+}
+
 impl SearchSession {
+    /// Whether a sentence typed in the search box can be understood now (index and model are ready).
+    pub(super) fn nl_ready(&self) -> bool {
+        self.st.config.index.semantic
+            && model_problem(&self.st.config.llm_model_path).is_none()
+            && self.nl.stage == Stage::Idle
+    }
+
     pub(super) fn nl_understand(&mut self) {
         let sentence = self.nl.sentence.trim().to_string();
         if sentence.is_empty() {
@@ -265,11 +288,14 @@ impl SearchSession {
                     if indexed == 0 {
                         return Err(errors.join("; "));
                     }
-                    hits.sort_by(|a, b| {
-                        b.similarity
-                            .total_cmp(&a.similarity)
-                            .then_with(|| a.path.cmp(&b.path))
-                    });
+                    if roots.len() > 1 {
+                        // One index's hits arrive in keyword-fused order, which cosine order would undo.
+                        hits.sort_by(|a, b| {
+                            b.similarity
+                                .total_cmp(&a.similarity)
+                                .then_with(|| a.path.cmp(&b.path))
+                        });
+                    }
                     hits.truncate(limit);
                     Ok(hits)
                 };

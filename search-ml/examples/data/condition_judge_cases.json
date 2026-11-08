@@ -203,5 +203,25 @@
   "cond": "sealant applied to fasteners",
   "passage": "The topcoat was applied directly with no sealant step.",
   "gold": false
+ },
+ {
+  "cond": "surfaces blended",
+  "passage": "All depressions resulting from corrosion rework should be faired or blended with the surrounding surface.",
+  "gold": true
+ },
+ {
+  "cond": "holes spot faced",
+  "passage": "Spot face the bolt holes so the nut seats flat against the skin.",
+  "gold": true
+ },
+ {
+  "cond": "surfaces blended",
+  "passage": "The depressions should have been blended with the surrounding surface, but the rework was never done.",
+  "gold": false
+ },
+ {
+  "cond": "surfaces blended",
+  "passage": "Do not blend the surface; replace the skin panel instead.",
+  "gold": false
  }
 ]
