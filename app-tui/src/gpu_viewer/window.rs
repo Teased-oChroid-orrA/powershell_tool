@@ -3682,6 +3682,53 @@ mod tests {
         assert!(!labels(&v).contains(&"Stop".into()));
     }
 
+    #[cfg(feature = "semantic-search")]
+    #[test]
+    fn the_ask_input_submits_on_enter() {
+        use crate::gpu_viewer::editor::search::SearchSession;
+
+        let search = SearchSession::in_memory();
+        let mut v = viewer(Some(Box::new(search)));
+        let ask = target(&v, "Ask");
+        click(&mut v, ask);
+        let question = target(&v, "Ask input");
+        click(&mut v, question);
+        type_text(&mut v, "Where is the design load?");
+        v.test_events.push(egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        });
+        v.input(Input::Key(Key::Named(NamedKey::Enter)));
+        frame(&mut v);
+
+        assert_eq!(
+            v.editor.as_ref().unwrap().status(),
+            "Looking for cited lines…"
+        );
+    }
+
+    #[cfg(feature = "semantic-search")]
+    #[test]
+    fn the_ask_button_submits_the_question() {
+        use crate::gpu_viewer::editor::search::SearchSession;
+
+        let mut search = SearchSession::in_memory();
+        search.document_field(5, "Where is the design load?".into());
+        let mut v = viewer(Some(Box::new(search)));
+        let panel = target(&v, "Ask");
+        click(&mut v, panel);
+        let ask = v.gui.find_target_after("Ask input", "Ask").unwrap();
+        click(&mut v, ask);
+
+        assert_eq!(
+            v.editor.as_ref().unwrap().status(),
+            "Looking for cited lines…"
+        );
+    }
+
     #[test]
     fn the_search_page_takes_typed_input_runs_on_enter_and_a_row_click_shows_its_matches() {
         use crate::gpu_viewer::editor::search::SearchSession;
@@ -4045,7 +4092,7 @@ mod tests {
         click(&mut v, out);
         type_text(&mut v, "/reports");
         assert_eq!(
-            v.editor.as_ref().unwrap().document().unwrap().panels[2].inputs[0].text,
+            v.editor.as_ref().unwrap().document().unwrap().panels.iter().find(|panel| panel.label == "Report").unwrap().inputs[0].text,
             "/reports"
         );
         let labels = v.gui.target_labels();

@@ -18,6 +18,49 @@ use egui::{
     Sense, Stroke, Vec2,
 };
 
+/// A rounded border drawn clockwise from the top middle, `fraction` (0..=1) of the way round, over a faint full track.
+pub(super) fn perimeter_progress(
+    painter: &egui::Painter,
+    rect: Rect,
+    radius: f32,
+    fraction: f32,
+    color: Color32,
+    width: f32,
+) {
+    let r = radius.min(rect.width() / 2.0).min(rect.height() / 2.0);
+    let arc = |centre: Pos2, from: f32, points: &mut Vec<Pos2>| {
+        for i in 0..=6 {
+            let a = (from + 15.0 * i as f32).to_radians();
+            points.push(Pos2::new(centre.x + r * a.sin(), centre.y - r * a.cos()));
+        }
+    };
+    let mut path = vec![Pos2::new(rect.center().x, rect.top())];
+    arc(Pos2::new(rect.right() - r, rect.top() + r), 0.0, &mut path);
+    arc(Pos2::new(rect.right() - r, rect.bottom() - r), 90.0, &mut path);
+    arc(Pos2::new(rect.left() + r, rect.bottom() - r), 180.0, &mut path);
+    arc(Pos2::new(rect.left() + r, rect.top() + r), 270.0, &mut path);
+    path.push(path[0]);
+    painter.add(egui::Shape::line(
+        path.clone(),
+        Stroke::new(width, with_alpha(color, 40)),
+    ));
+    let total: f32 = path.windows(2).map(|w| w[0].distance(w[1])).sum();
+    let mut left = total * fraction.clamp(0.0, 1.0);
+    let mut lit = vec![path[0]];
+    for w in path.windows(2) {
+        let len = w[0].distance(w[1]);
+        if len >= left {
+            if len > 0.0 {
+                lit.push(w[0] + (w[1] - w[0]) * (left / len));
+            }
+            break;
+        }
+        left -= len;
+        lit.push(w[1]);
+    }
+    painter.add(egui::Shape::line(lit, Stroke::new(width, color)));
+}
+
 pub(super) fn popup_frame(p: &Palette) -> egui::Frame {
     egui::Frame::new()
         .fill(p.panel)
@@ -1362,7 +1405,6 @@ impl Gui {
         out: &mut Vec<Outcome>,
         hint: &mut Option<String>,
     ) {
-        let _ = hint;
         match item {
             DockItem::Heading(h) => {
                 ui.add_space(8.0);
@@ -1376,6 +1418,100 @@ impl Gui {
             }
             DockItem::Gap => {
                 ui.add_space(4.0);
+            }
+            DockItem::Asked(text) => {
+                ui.add_space(6.0);
+                ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
+                    egui::Frame::new()
+                        .fill(with_alpha(p.accent, 38))
+                        .stroke(Stroke::new(1.0, with_alpha(p.accent, 110)))
+                        .corner_radius(CornerRadius {
+                            nw: 12,
+                            ne: 12,
+                            sw: 12,
+                            se: 3,
+                        })
+                        .inner_margin(Margin::symmetric(11, 7))
+                        .show(ui, |ui| {
+                            ui.set_max_width(ui.available_width() * 0.88);
+                            ui.add(
+                                egui::Label::new(RichText::new(text).size(13.0).color(p.text))
+                                    .wrap(),
+                            );
+                        });
+                });
+            }
+            DockItem::Reply {
+                text,
+                source,
+                tone,
+                action,
+            } => {
+                let bar = tone_color(p, *tone);
+                let frame = egui::Frame::new()
+                    .fill(with_alpha(p.panel, 220))
+                    .stroke(Stroke::new(1.0, p.line))
+                    .corner_radius(CornerRadius::same(10))
+                    .inner_margin(Margin {
+                        left: 14,
+                        right: 10,
+                        top: 8,
+                        bottom: 8,
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.spacing_mut().item_spacing.y = 4.0;
+                        ui.add(
+                            egui::Label::new(RichText::new(text).size(13.0).color(p.text)).wrap(),
+                        );
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(source).size(11.0).strong().color(bar),
+                            )
+                            .wrap(),
+                        );
+                    });
+                let rect = frame.response.rect;
+                ui.painter().rect_filled(
+                    Rect::from_min_max(
+                        Pos2::new(rect.left() + 5.0, rect.top() + 8.0),
+                        Pos2::new(rect.left() + 8.0, rect.bottom() - 8.0),
+                    ),
+                    CornerRadius::same(2),
+                    bar,
+                );
+                self.targets.push((source.clone(), rect));
+                if let Some(a) = action {
+                    let resp = frame.response.interact(Sense::click());
+                    if resp.hovered() {
+                        ui.painter().rect_stroke(
+                            rect,
+                            CornerRadius::same(10),
+                            Stroke::new(1.0, with_alpha(bar, 170)),
+                            egui::StrokeKind::Inside,
+                        );
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if resp.clicked() {
+                        out.push(Outcome::Action(*a));
+                    }
+                }
+                ui.add_space(2.0);
+            }
+            DockItem::Chips { title, chips } => {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(title.to_uppercase())
+                        .size(9.0)
+                        .strong()
+                        .color(p.dim),
+                );
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+                    for chip in chips {
+                        self.chip(ui, chip, p, out, hint);
+                    }
+                });
             }
             DockItem::Bracket { lower, upper } => {
                 let (rect, _) =

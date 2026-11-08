@@ -8,15 +8,22 @@ pub mod evidence;
 pub mod extraction;
 pub mod failure_log;
 pub mod file_reader;
+#[cfg(feature = "semantic-search")]
+pub mod lexical;
+pub mod line_quality;
 pub mod matching;
 pub mod models;
 pub mod native_index;
+#[cfg(feature = "nl-find")]
+pub mod nl_find;
 #[cfg(feature = "neural-search")]
 pub mod neural_search;
 #[cfg(feature = "ocr")]
 pub mod ocr;
 pub mod orchestrator;
 pub mod regex_literals;
+#[cfg(feature = "semantic-search")]
+mod pdf_page_map;
 #[cfg(feature = "neural-search")]
 pub mod relevance;
 pub mod report;

@@ -62,6 +62,7 @@ mod tests {
             last_line: first_line,
             excerpt: excerpt.into(),
             similarity,
+            page: None,
         }
     }
 

@@ -119,6 +119,20 @@ pub enum DockItem {
         focused: bool,
     },
     Gap,
+    /// A question asked in Ask, drawn as a bubble on the right.
+    Asked(String),
+    /// A cited line in Ask: the line, then where it comes from. A click opens the source when `action` is set.
+    Reply {
+        text: String,
+        source: String,
+        tone: Tone,
+        action: Option<UiAction>,
+    },
+    /// A titled row of pills (Ask's places to look and its example questions).
+    Chips {
+        title: String,
+        chips: Vec<crate::gpu_viewer::menu::Entry>,
+    },
     /// Verified lower part of a live search bracket, from zero to `upper`.
     Bracket {
         lower: f64,
@@ -175,6 +189,8 @@ impl DockItem {
         match self {
             DockItem::Line { text, .. } => Some(text.clone()),
             DockItem::Field { label, value, .. } => Some(format!("{label}  {value}")),
+            DockItem::Asked(text) => Some(text.clone()),
+            DockItem::Reply { text, source, .. } => Some(format!("{text}  [{source}]")),
             _ => None,
         }
     }
@@ -354,8 +370,12 @@ pub struct DocPanel {
     pub label: String,
     /// A short state shown on the button (the index is on).
     pub badge: Option<String>,
+    /// Work in progress, 0..=1: the button's border (or, once opened, the popover's border) fills clockwise.
+    pub progress: Option<f32>,
     /// Text inputs drawn above the cards (the output folder, with its Browse button).
     pub inputs: Vec<DocInput>,
+    /// Pills drawn under the inputs and above the cards (Search's parsed conditions).
+    pub chips: Vec<Entry>,
     pub cards: Vec<crate::gpu_viewer::editor::authoring::Card>,
 }
 

@@ -12,3 +12,10 @@
 # crate is built on (this repo's own macOS development machine included).
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# Natural-language Find runs a small language model on the CPU (search-llm, feature `llama`). llama-cpp-sys-2 turns
+# Metal on by default on macOS even with zero GPU layers, which costs ~26 s of shader compiling on the first load for
+# no benefit. Only that build script reads this. Changing it needs `cargo clean -p llama-cpp-sys-2` (cargo does not
+# track it as an input).
+[env]
+GGML_METAL = "OFF"

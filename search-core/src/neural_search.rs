@@ -162,15 +162,6 @@ pub struct CitedAnswer {
     pub answer_similarity: f32,
 }
 
-/// Generated question answer accompanied by the unchanged source lines that
-/// grounded its prompt. The answer can still be wrong; callers must show these citations.
-#[cfg(feature = "semantic-search")]
-#[derive(Clone, Debug, PartialEq)]
-pub struct CitedQuestionAnswer {
-    pub text: String,
-    pub evidence: Vec<CitedAnswer>,
-}
-
 #[cfg(feature = "semantic-search")]
 const ANSWER_CANDIDATE_BATCH: usize = 128;
 #[cfg(feature = "semantic-search")]
@@ -261,6 +252,83 @@ pub fn rank_suggestions(
     Ok(scores)
 }
 
+/// Order lines by similarity fused with keyword scoring (so bare numbers and
+/// spec codes can pick the line), best first, at most `limit`.
+#[cfg(feature = "semantic-search")]
+fn best_lines(question: &str, texts: &[&str], similarities: &[f32], limit: usize) -> Vec<usize> {
+    let order_scores = match crate::lexical::query_terms(question) {
+        Some(terms) => {
+            let counts = texts
+                .iter()
+                .map(|line| crate::lexical::count_terms(line, &terms))
+                .collect::<Vec<_>>();
+            crate::lexical::fuse(similarities, &crate::lexical::bm25(&counts, terms.len()))
+        }
+        None => similarities.to_vec(),
+    };
+    let mut best = (0..texts.len()).collect::<Vec<_>>();
+    best.sort_by(|&left, &right| {
+        order_scores[right]
+            .total_cmp(&order_scores[left])
+            .then_with(|| similarities[right].total_cmp(&similarities[left]))
+            .then_with(|| left.cmp(&right))
+    });
+    best.truncate(limit);
+    best
+}
+
+/// A fixed set of lines embedded once, ranked against any number of questions
+/// (the Search help). Like [`rank_cited_answers`] it returns unchanged lines.
+#[cfg(feature = "semantic-search")]
+pub struct LineIndex {
+    lines: Vec<String>,
+    embeddings: Vec<search_ml::Embedding>,
+}
+
+/// One ranked line of a [`LineIndex`].
+#[cfg(feature = "semantic-search")]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LineMatch {
+    pub index: usize,
+    /// Cosine similarity of the line to the question.
+    pub similarity: f32,
+}
+
+#[cfg(feature = "semantic-search")]
+impl LineIndex {
+    pub fn build(lines: Vec<String>) -> Result<Self, search_ml::MlError> {
+        let mut embeddings = Vec::with_capacity(lines.len());
+        for batch in lines.chunks(ANSWER_CANDIDATE_BATCH) {
+            let texts = batch.iter().map(String::as_str).collect::<Vec<_>>();
+            embeddings.extend(search_ml::embed_batch(&texts)?);
+        }
+        Ok(Self { lines, embeddings })
+    }
+
+    pub fn lines(&self) -> &[String] {
+        &self.lines
+    }
+
+    pub fn rank(&self, question: &str, limit: usize) -> Result<Vec<LineMatch>, search_ml::MlError> {
+        let query = search_ml::embed_batch(&[question])?;
+        let similarities = self
+            .embeddings
+            .iter()
+            .map(|embedding| {
+                search_ml::cosine_similarity(&query[0], embedding).unwrap_or(f32::NEG_INFINITY)
+            })
+            .collect::<Vec<_>>();
+        let texts = self.lines.iter().map(String::as_str).collect::<Vec<_>>();
+        Ok(best_lines(question, &texts, &similarities, limit)
+            .into_iter()
+            .map(|index| LineMatch {
+                index,
+                similarity: similarities[index],
+            })
+            .collect())
+    }
+}
+
 /// Rank unchanged lines from indexed source passages against a question.
 /// Similarity ranks candidate lines; it does not generate prose or prove an answer.
 #[cfg(feature = "semantic-search")]
@@ -279,26 +347,21 @@ pub fn rank_cited_answers(
                 .map(move |line| (hit_index, line.to_string()))
         })
         .collect::<Vec<_>>();
-    let mut best = Vec::new();
-    for (batch_index, batch) in lines.chunks(ANSWER_CANDIDATE_BATCH).enumerate() {
+    let mut similarities = Vec::with_capacity(lines.len());
+    for batch in lines.chunks(ANSWER_CANDIDATE_BATCH) {
         let candidates = batch
             .iter()
             .map(|(_, line)| line.clone())
             .collect::<Vec<_>>();
-        for score in rank_suggestions(question, &candidates)? {
-            best.push((
-                score.similarity,
-                batch_index * ANSWER_CANDIDATE_BATCH + score.index,
-            ));
-        }
-        best.sort_by(|left, right| {
-            right
-                .0
-                .total_cmp(&left.0)
-                .then_with(|| left.1.cmp(&right.1))
-        });
-        best.truncate(MAX_CITED_ANSWERS);
+        let mut scores = rank_suggestions(question, &candidates)?;
+        scores.sort_by_key(|score| score.index);
+        similarities.extend(scores.into_iter().map(|score| score.similarity));
     }
+    let texts = lines.iter().map(|(_, line)| line.as_str()).collect::<Vec<_>>();
+    let best = best_lines(question, &texts, &similarities, MAX_CITED_ANSWERS)
+        .into_iter()
+        .map(|index| (similarities[index], index))
+        .collect::<Vec<_>>();
     Ok(best
         .into_iter()
         .map(|(similarity, index)| CitedAnswer {
@@ -307,26 +370,6 @@ pub fn rank_cited_answers(
             answer_similarity: similarity,
         })
         .collect())
-}
-
-/// Generate an answer from neural-ranked source lines and retain their citations.
-#[cfg(feature = "semantic-search")]
-pub fn answer_cited(
-    question: &str,
-    hits: &[crate::semantic_index::SemanticHit],
-) -> Result<CitedQuestionAnswer, String> {
-    let evidence = rank_cited_answers(question, hits).map_err(|error| error.to_string())?;
-    if evidence.is_empty() {
-        return Err("No cited source lines are available to answer this question.".into());
-    }
-    let context = evidence
-        .iter()
-        .map(|item| item.answer.as_str())
-        .collect::<Vec<_>>();
-    let (text, used_source_count) =
-        search_ml::generate_answer(question, &context).map_err(|error| error.to_string())?;
-    let evidence = evidence.into_iter().take(used_source_count).collect();
-    Ok(CitedQuestionAnswer { text, evidence })
 }
 
 #[cfg(test)]
@@ -409,6 +452,26 @@ mod tests {
 
     #[cfg(feature = "semantic-search")]
     #[test]
+    fn cited_answer_ranking_matches_bare_numbers_and_units() {
+        let hit = |path: &str, excerpt: &str| crate::semantic_index::SemanticHit {
+            path: path.into(),
+            first_line: 1,
+            last_line: 1,
+            excerpt: excerpt.into(),
+            similarity: 0.5,
+            page: None,
+        };
+        let hits = vec![
+            hit("steel.txt", "4340 steel heat treated to 180 ksi has a yield strength of 217 ksi."),
+            hit("alu.txt", "Maximum allowable bearing stress for 7075-T6 plate is 98 ksi at room temperature."),
+            hit("alu2.txt", "Maximum allowable bearing stress for 2024-T3 sheet is 87 ksi at room temperature."),
+        ];
+        let answers = rank_cited_answers("98 ksi", &hits).unwrap();
+        assert_eq!(answers[0].hit.path, "alu.txt");
+    }
+
+    #[cfg(feature = "semantic-search")]
+    #[test]
     fn cited_answer_ranking_keeps_source_lines_and_does_not_invent_text() {
         let hits = vec![
             crate::semantic_index::SemanticHit {
@@ -417,6 +480,7 @@ mod tests {
                 last_line: 21,
                 excerpt: "The tax code changed this year.".into(),
                 similarity: 0.99,
+                page: None,
             },
             crate::semantic_index::SemanticHit {
                 path: "shaft.txt".into(),
@@ -424,6 +488,7 @@ mod tests {
                 last_line: 9,
                 excerpt: "Torque causes torsional stress in the shaft.".into(),
                 similarity: 0.6,
+                page: None,
             },
         ];
         let answers = rank_cited_answers("What creates torsional stress?", &hits).unwrap();
@@ -445,40 +510,31 @@ mod tests {
                 last_line: 21,
                 excerpt: "The tax code changed this year.\nThe budget is approved in June.".into(),
                 similarity: 0.99,
+                page: None,
             },
             crate::semantic_index::SemanticHit {
                 path: "shaft.txt".into(),
                 first_line: 8,
                 last_line: 9,
-                excerpt: "The shaft carries torque.\nTorsional stress comes from applied torque.".into(),
+                excerpt: "The shaft carries torque.\nTorsional stress comes from applied torque."
+                    .into(),
                 similarity: 0.6,
+                page: None,
             },
         ];
 
         let answers = rank_cited_answers("What causes torsional stress?", &hits).unwrap();
 
-        assert_eq!(answers[0].answer, "Torsional stress comes from applied torque.");
+        assert_eq!(
+            answers[0].answer,
+            "Torsional stress comes from applied torque."
+        );
         assert_eq!(answers[0].hit.path, "shaft.txt");
-        assert_eq!((answers[0].hit.first_line, answers[0].hit.last_line), (8, 9));
+        assert_eq!(
+            (answers[0].hit.first_line, answers[0].hit.last_line),
+            (8, 9)
+        );
         assert_eq!(answers[0].hit.excerpt, hits[1].excerpt);
-    }
-
-    #[cfg(feature = "semantic-search")]
-    #[test]
-    fn generated_question_answer_keeps_ranked_source_citations() {
-        let hit = crate::semantic_index::SemanticHit {
-            path: "shaft.txt".into(),
-            first_line: 8,
-            last_line: 9,
-            excerpt: "The shaft carries torque.\nTorsional stress comes from applied torque.".into(),
-            similarity: 0.6,
-        };
-
-        let answer = answer_cited("What causes torsional stress?", &[hit]).unwrap();
-
-        assert!(answer.text.to_lowercase().contains("torque"), "{}", answer.text);
-        assert_eq!(answer.evidence[0].hit.path, "shaft.txt");
-        assert_eq!(answer.evidence[0].answer, "Torsional stress comes from applied torque.");
     }
 
     #[cfg(feature = "semantic-search")]
@@ -492,11 +548,15 @@ mod tests {
             last_line: 129,
             excerpt: lines.join("\n"),
             similarity: 0.6,
+            page: None,
         };
 
         let answers = rank_cited_answers("What causes torsional stress?", &[hit]).unwrap();
 
         assert_eq!(answers[0].answer, "Torque causes torsional stress.");
-        assert_eq!((answers[0].hit.first_line, answers[0].hit.last_line), (1, 129));
+        assert_eq!(
+            (answers[0].hit.first_line, answers[0].hit.last_line),
+            (1, 129)
+        );
     }
 }

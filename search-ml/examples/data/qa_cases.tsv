@@ -1,0 +1,25 @@
+What causes torsional stress?	Applied torque causes torsional stress in the shaft.|||The shaft temperature limit is 120 C.	torque
+What limits the shaft temperature?	Applied torque causes torsional stress in the shaft.|||The shaft temperature limit is 120 C.	120 C
+What causes torsional stress and what limits the shaft temperature?	Applied torque causes torsional stress in the shaft.|||The shaft temperature limit is 120 C.	torque;120 C
+What is the shaft's fatigue life?	Applied torque causes torsional stress in the shaft.|||The shaft temperature limit is 120 C.	ABSTAIN
+What is the bolt preload?	Bolt preload is 4500 lbf per fastener.|||Washers shall be hardened steel.|||Torque is applied in two passes.	4500
+What material is the bushing made of?	The bushing is aluminum bronze AMS 4640.|||The housing is 7075-T6 aluminum.|||Interference is 0.0015 in.	4640
+What material is the housing and what is the interference?	The bushing is aluminum bronze AMS 4640.|||The housing is 7075-T6 aluminum.|||Interference is 0.0015 in.	7075;0.0015
+What is the proof load of the pin?	The pin is cadmium plated.|||Edge distance shall be at least 2D.|||Hole diameter is 0.250 in.	ABSTAIN
+What is the minimum edge distance?	The pin is cadmium plated.|||Edge distance shall be at least 2D.|||Hole diameter is 0.250 in.	2D
+What standard governs the fastener torque?	Fastener torque follows NAS 1351 per drawing note 4.|||Cure time is 24 hours at 70 F.	NAS 1351
+How long is the cure time?	Fastener torque follows NAS 1351 per drawing note 4.|||Cure time is 24 hours at 70 F.	24 hours
+What is the cure temperature?	Fastener torque follows NAS 1351 per drawing note 4.|||Cure time is 24 hours at 70 F.	70 F
+What is the yield strength of 4130 steel?	The lug is machined from 4130 steel.|||Lug thickness is 0.375 in.	ABSTAIN
+What is the lug thickness?	The lug is machined from 4130 steel.|||Lug thickness is 0.375 in.	0.375
+Who approved the revision?	Revision C was approved by J. Alvarez on 2026-03-14.|||Revision B was approved by M. Chen on 2025-11-02.	Alvarez
+Who approved revision B?	Revision C was approved by J. Alvarez on 2026-03-14.|||Revision B was approved by M. Chen on 2025-11-02.	Chen
+When was revision C approved?	Revision C was approved by J. Alvarez on 2026-03-14.|||Revision B was approved by M. Chen on 2025-11-02.	2026-03-14
+What is the maximum operating pressure?	Maximum operating pressure is 150 psi.|||Design pressure is 165 psi.|||Test pressure is 225 psi.	150
+What is the test pressure and the design pressure?	Maximum operating pressure is 150 psi.|||Design pressure is 165 psi.|||Test pressure is 225 psi.	225;165
+What is the corrosion allowance?	Wall thickness is 0.25 in.|||Mill tolerance is 12.5 percent.	ABSTAIN
+What is the mill tolerance?	Wall thickness is 0.25 in.|||Mill tolerance is 12.5 percent.	12.5
+Does the lug fail in bearing?	The bearing margin of safety is -0.08.|||Net tension margin of safety is 0.22.	-0.08
+What is the net tension margin of safety?	The bearing margin of safety is -0.08.|||Net tension margin of safety is 0.22.	0.22
+What coating is specified?	Anodize per MIL-A-8625 Type II.|||Paint with primer per MIL-PRF-23377.	8625
+Which primer is specified and which anodize type?	Anodize per MIL-A-8625 Type II.|||Paint with primer per MIL-PRF-23377.	23377;Type II

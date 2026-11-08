@@ -6,6 +6,11 @@ use std::sync::{Mutex, OnceLock};
 use rten::{Model, ValueView};
 use tokenizers::{Encoding, PaddingParams, Tokenizer, TruncationParams};
 
+/// Identity of the bundled sentence-embedding weights. Stored vectors are only
+/// comparable within one value: bump it whenever `all-minilm-l6-v2.onnx` (or
+/// its pooling/normalisation) changes, and `search-core` rebuilds every index.
+/// 1 = MiniLM-L6-v2 fp32.
+pub const EMBEDDING_MODEL_VERSION: i64 = 1;
 const MODEL_BYTES: &[u8] = include_bytes!("../assets/all-minilm-l6-v2.onnx");
 const TOKENIZER_BYTES: &[u8] = include_bytes!("../assets/all-minilm-l6-v2-tokenizer.json");
 const GENERATION_ENCODER_BYTES: &[u8] = include_bytes!("../assets/flan-t5-small-encoder.onnx");
@@ -345,7 +350,7 @@ impl TextGenerator {
         })
     }
 
-    fn generate(&self, question: &str, context: &[&str]) -> Result<(String, usize), MlError> {
+    fn generate(&self, question: &str, context: &[&str]) -> Result<(String, Vec<usize>), MlError> {
         let question = question.trim();
         if question.is_empty() {
             return Err(MlError("question must not be empty".into()));
@@ -364,10 +369,10 @@ impl TextGenerator {
 
         let prefix = format!("Answer the question using only the context. Question: {question} Context: ");
         let mut selected = Vec::new();
-        for passage in context {
+        for (index, passage) in context.iter().enumerate() {
             let joined = selected
                 .iter()
-                .copied()
+                .map(|(_, text)| *text)
                 .chain(std::iter::once(*passage))
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -379,16 +384,20 @@ impl TextGenerator {
                 .get_ids()
                 .len();
             if token_count > MAX_INPUT_TOKENS {
-                break;
+                continue;
             }
-            selected.push(*passage);
+            selected.push((index, *passage));
         }
         if selected.is_empty() {
             return Err(MlError(
                 "no cited source line fits the generator input limit".into(),
             ));
         }
-        let joined = selected.join("\n");
+        let joined = selected
+            .iter()
+            .map(|(_, text)| *text)
+            .collect::<Vec<_>>()
+            .join("\n");
         let prompt = format!("{prefix}{joined} Answer:");
         let encoding = self
             .tokenizer
@@ -500,13 +509,16 @@ impl TextGenerator {
         if answer.is_empty() {
             return Err(MlError("generator produced an empty answer".into()));
         }
-        Ok((answer, selected.len()))
+        Ok((
+            answer,
+            selected.into_iter().map(|(index, _)| index).collect(),
+        ))
     }
 }
 
 /// Generate a bounded answer from local evidence using bundled Flan-T5-small.
 /// The caller must show the evidence beside the answer; generation can be wrong.
-pub fn generate_answer(question: &str, context: &[&str]) -> Result<(String, usize), MlError> {
+pub fn generate_answer(question: &str, context: &[&str]) -> Result<(String, Vec<usize>), MlError> {
     static GENERATOR: OnceLock<Result<Mutex<TextGenerator>, MlError>> = OnceLock::new();
     let generator = GENERATOR
         .get_or_init(|| TextGenerator::load().map(Mutex::new))
@@ -568,6 +580,22 @@ mod tests {
         )
         .unwrap();
         assert!(answer.0.to_lowercase().contains("torque"), "{answer:?}");
+        assert_eq!(answer.1, [0]);
+    }
+
+    #[test]
+    fn bundled_generator_skips_oversized_evidence_and_reports_used_sources() {
+        let oversized = "irrelevant ".repeat(300);
+        let answer = generate_answer(
+            "What causes torsional stress?",
+            &[
+                &oversized,
+                "The shaft experiences torsional stress under applied torque.",
+            ],
+        )
+        .unwrap();
+        assert!(answer.0.to_lowercase().contains("torque"), "{answer:?}");
+        assert_eq!(answer.1, [1]);
     }
 
     #[test]

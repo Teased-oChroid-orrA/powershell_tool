@@ -78,6 +78,9 @@ pub struct SearchToolConfig {
     /// struct (see `indexing::IndexSettings`'s own doc comment) rather than
     /// flattened fields, to keep this feature's surface visually grouped.
     pub index: super::indexing::IndexSettings,
+
+    /// GGUF file of the local language model behind natural-language Find (empty: not set).
+    pub llm_model_path: String,
 }
 
 impl Default for SearchToolConfig {
@@ -118,6 +121,7 @@ impl Default for SearchToolConfig {
             file_timeout_seconds: 30,
             max_retries: 3,
             index: super::indexing::IndexSettings::default(),
+            llm_model_path: String::new(),
         }
     }
 }

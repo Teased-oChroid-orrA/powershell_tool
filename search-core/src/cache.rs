@@ -15,6 +15,11 @@ use crate::models::{
     SearchSettings,
 };
 
+/// Cached `lines_cache` text depends on how lines are extracted, which no
+/// setting captures. Bump when extraction output changes (1 = PDF/OCR line
+/// quality filter, `line_quality`) so stale caches are dropped, not reused.
+const EXTRACTION_VERSION: u32 = 1;
+
 /// One cached file's prior result, keyed by full path in [`CacheFile`].
 ///
 /// `last_write_time_ticks` is nanoseconds since the Unix epoch (not .NET's
@@ -84,6 +89,7 @@ struct FingerprintFields<'a> {
     whole_word: bool,
     use_regex: bool,
     max_file_size_mb: f64,
+    extraction_version: u32,
 }
 
 /// Derives a stable per-file freshness value from a modified timestamp -
@@ -111,6 +117,7 @@ pub fn compute_fingerprint(settings: &SearchSettings) -> String {
         whole_word: settings.whole_word,
         use_regex: settings.use_regex,
         max_file_size_mb: settings.max_file_size_mb,
+        extraction_version: EXTRACTION_VERSION,
     };
     serde_json::to_string(&fp).expect("fingerprint fields are always serializable")
 }

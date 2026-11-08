@@ -11,7 +11,9 @@ use std::{
 use rusqlite::{params, Connection, OptionalExtension};
 use search_ml::{Embedding, MlError};
 
-const EMBEDDING_VERSION: i64 = 1;
+const EMBEDDING_VERSION: i64 = search_ml::EMBEDDING_MODEL_VERSION;
+/// Per-PDF stamp: 1 = page citations, 2 = line quality repair and noise filter.
+const CITATION_VERSION: i64 = 2;
 const EMBEDDING_DIMENSIONS: usize = 384;
 const CHUNK_CHARS: usize = 800;
 const CHUNK_TOKEN_BUDGET: usize = 240;
@@ -24,6 +26,7 @@ pub struct SemanticHit {
     pub last_line: usize,
     pub excerpt: String,
     pub similarity: f32,
+    pub page: Option<std::num::NonZeroU32>,
 }
 
 /// Keep the strongest cited chunk for each possible related document.
@@ -62,7 +65,29 @@ struct TextChunk {
     first_line: usize,
     last_line: usize,
     text: String,
+    page: Option<std::num::NonZeroU32>,
     embedding: Embedding,
+}
+
+fn ensure_column(
+    tx: &rusqlite::Transaction<'_>,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> rusqlite::Result<()> {
+    let exists = {
+        let mut statement = tx.prepare(&format!("PRAGMA table_info({table})"))?;
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        columns.iter().any(|name| name == column)
+    };
+    if !exists {
+        tx.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+        ))?;
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -99,8 +124,9 @@ pub struct SemanticIndex {
 
 impl SemanticIndex {
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
-        let conn = Connection::open(path)?;
-        conn.execute_batch(
+        let mut conn = Connection::open(path)?;
+        let tx = conn.transaction()?;
+        tx.execute_batch(
             "PRAGMA foreign_keys = ON;
              CREATE TABLE IF NOT EXISTS semantic_meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
              CREATE TABLE IF NOT EXISTS semantic_documents (
@@ -115,6 +141,14 @@ impl SemanticIndex {
              );
              CREATE INDEX IF NOT EXISTS semantic_chunks_path ON semantic_chunks(path);",
         )?;
+        ensure_column(
+            &tx,
+            "semantic_documents",
+            "citation_version",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(&tx, "semantic_chunks", "page", "INTEGER")?;
+        tx.commit()?;
         let version: Option<i64> = conn
             .query_row(
                 "SELECT value FROM semantic_meta WHERE key = 'embedding_version'",
@@ -144,7 +178,27 @@ impl SemanticIndex {
         size: i64,
         lines: &[String],
     ) -> Result<usize, String> {
-        let chunks = embed_lines(lines).map_err(|error| error.to_string())?;
+        self.index_document_with_pages(path, modified, size, lines, None)
+    }
+
+    pub fn index_document_with_pages(
+        &self,
+        path: &str,
+        modified: i64,
+        size: i64,
+        lines: &[String],
+        pages: Option<&[Option<std::num::NonZeroU32>]>,
+    ) -> Result<usize, String> {
+        let pages = pages.filter(|pages| pages.len() == lines.len());
+        let chunks = embed_lines_with_pages(lines, pages).map_err(|error| error.to_string())?;
+        let citation_version = if Path::new(path)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+        {
+            CITATION_VERSION
+        } else {
+            0
+        };
         let mut conn = self
             .conn
             .lock()
@@ -153,15 +207,15 @@ impl SemanticIndex {
         tx.execute("DELETE FROM semantic_documents WHERE path=?1", [path])
             .map_err(|error| error.to_string())?;
         tx.execute(
-            "INSERT INTO semantic_documents(path,modified,size) VALUES(?1,?2,?3)",
-            params![path, modified, size],
+            "INSERT INTO semantic_documents(path,modified,size,citation_version) VALUES(?1,?2,?3,?4)",
+            params![path, modified, size, citation_version],
         )
         .map_err(|error| error.to_string())?;
         for (chunk_index, chunk) in chunks.iter().enumerate() {
             let vector = embedding_bytes(&chunk.embedding);
             tx.execute(
-                "INSERT INTO semantic_chunks(path,chunk_index,first_line,last_line,excerpt,embedding) VALUES(?1,?2,?3,?4,?5,?6)",
-                params![path, chunk_index as i64, chunk.first_line as i64, chunk.last_line as i64, chunk.text, vector],
+                "INSERT INTO semantic_chunks(path,chunk_index,first_line,last_line,excerpt,embedding,page) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![path, chunk_index as i64, chunk.first_line as i64, chunk.last_line as i64, chunk.text, vector, chunk.page.map(|page| page.get() as i64)],
             ).map_err(|error| error.to_string())?;
         }
         tx.commit().map_err(|error| error.to_string())?;
@@ -173,14 +227,22 @@ impl SemanticIndex {
             .conn
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
-        let stored: Option<(i64, i64)> = conn
+        let citation_version = if Path::new(path)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+        {
+            CITATION_VERSION
+        } else {
+            0
+        };
+        let stored: Option<(i64, i64, i64)> = conn
             .query_row(
-                "SELECT modified,size FROM semantic_documents WHERE path=?1",
+                "SELECT modified,size,citation_version FROM semantic_documents WHERE path=?1",
                 [path],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
-        Ok(stored == Some((modified, size)))
+        Ok(stored == Some((modified, size, citation_version)))
     }
 
     pub fn remove_document(&self, path: &str) -> rusqlite::Result<()> {
@@ -228,7 +290,7 @@ impl SemanticIndex {
     /// Semantic results are separate, cited suggestions. This method never
     /// changes the exact-search result set or query semantics.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SemanticHit>, String> {
-        self.search_filtered(query, limit, None, None)
+        self.search_filtered(query, limit, None, None, true)
     }
 
     pub fn search_with_settings(
@@ -237,7 +299,7 @@ impl SemanticIndex {
         limit: usize,
         settings: &crate::models::SearchSettings,
     ) -> Result<Vec<SemanticHit>, String> {
-        self.search_filtered(query, limit, Some(settings), None)
+        self.search_filtered(query, limit, Some(settings), None, true)
     }
 
     pub fn search_excluding_path_with_settings(
@@ -247,7 +309,7 @@ impl SemanticIndex {
         settings: &crate::models::SearchSettings,
         excluded_path: &str,
     ) -> Result<Vec<SemanticHit>, String> {
-        self.search_filtered(query, limit, Some(settings), Some(excluded_path))
+        self.search_filtered(query, limit, Some(settings), Some(excluded_path), true)
     }
 
     fn search_filtered(
@@ -256,6 +318,7 @@ impl SemanticIndex {
         limit: usize,
         settings: Option<&crate::models::SearchSettings>,
         excluded_path: Option<&str>,
+        hybrid: bool,
     ) -> Result<Vec<SemanticHit>, String> {
         if query.trim().is_empty() {
             return Err("semantic query must not be empty".into());
@@ -271,10 +334,14 @@ impl SemanticIndex {
             .lock()
             .map_err(|_| "semantic index lock poisoned".to_string())?;
         let mut stmt = conn
-            .prepare("SELECT c.path,c.first_line,c.last_line,c.excerpt,c.embedding,d.modified,d.size FROM semantic_chunks c JOIN semantic_documents d ON d.path=c.path ORDER BY c.path,c.chunk_index")
+            .prepare("SELECT c.path,c.first_line,c.last_line,c.excerpt,c.page,c.embedding,d.modified,d.size,c.rowid FROM semantic_chunks c JOIN semantic_documents d ON d.path=c.path ORDER BY c.path,c.chunk_index")
             .map_err(|error| error.to_string())?;
         let mut rows = stmt.query([]).map_err(|error| error.to_string())?;
         let mut best = BinaryHeap::<Reverse<HeapHit>>::new();
+        // Short queries also get keyword scoring fused with similarity; the
+        // scan keeps compact per-chunk counts, then fetches only the winners.
+        let lexical_terms = if hybrid { crate::lexical::query_terms(query) } else { None };
+        let mut fused = Vec::<FusedCandidate>::new();
         let limit = limit.min(1000);
         let allowed_extensions = settings.map(|settings| {
             settings
@@ -292,21 +359,32 @@ impl SemanticIndex {
                         &path,
                         settings,
                         allowed_extensions.as_deref(),
-                        row.get(5).map_err(|error| error.to_string())?,
                         row.get(6).map_err(|error| error.to_string())?,
+                        row.get(7).map_err(|error| error.to_string())?,
                     );
                 current_path = path.clone();
             }
             if !current_path_allowed {
                 continue;
             }
-            let bytes: Vec<u8> = row.get(4).map_err(|error| error.to_string())?;
+            let bytes: Vec<u8> = row.get(5).map_err(|error| error.to_string())?;
             let Some(embedding) = embedding_from_bytes(&bytes) else {
                 continue;
             };
             let similarity = search_ml::cosine_similarity(&query_embedding, &embedding)
                 .unwrap_or(f32::NEG_INFINITY);
             if !similarity.is_finite() {
+                continue;
+            }
+            if let Some(terms) = &lexical_terms {
+                let excerpt: String = row.get(3).map_err(|error| error.to_string())?;
+                let (counts, length) = crate::lexical::count_terms(&excerpt, terms);
+                fused.push(FusedCandidate {
+                    rowid: row.get(8).map_err(|error| error.to_string())?,
+                    similarity,
+                    counts,
+                    length,
+                });
                 continue;
             }
             let hit = SemanticHit {
@@ -321,6 +399,11 @@ impl SemanticIndex {
                     .max(0) as usize,
                 excerpt: row.get(3).map_err(|error| error.to_string())?,
                 similarity,
+                page: row
+                    .get::<_, Option<i64>>(4)
+                    .map_err(|error| error.to_string())?
+                    .and_then(|page| u32::try_from(page).ok())
+                    .and_then(std::num::NonZeroU32::new),
             };
             if limit == 0 {
                 continue;
@@ -335,12 +418,71 @@ impl SemanticIndex {
                 best.push(Reverse(HeapHit(hit)));
             }
         }
+        if lexical_terms.is_some() {
+            drop(rows);
+            drop(stmt);
+            return fuse_candidates(&conn, fused, lexical_terms.as_deref().map_or(0, <[_]>::len), limit);
+        }
         Ok(best
             .into_sorted_vec()
             .into_iter()
             .map(|Reverse(hit)| hit.0)
             .collect())
     }
+}
+
+/// Compact per-chunk record kept while scanning for fused ranking.
+struct FusedCandidate {
+    rowid: i64,
+    similarity: f32,
+    counts: Vec<u16>,
+    length: u32,
+}
+
+/// Rank by reciprocal-rank fusion of similarity and BM25, then load only the
+/// winners. `SemanticHit::similarity` stays the cosine similarity.
+fn fuse_candidates(
+    conn: &Connection,
+    candidates: Vec<FusedCandidate>,
+    query_len: usize,
+    limit: usize,
+) -> Result<Vec<SemanticHit>, String> {
+    let dense = candidates.iter().map(|c| c.similarity).collect::<Vec<_>>();
+    let documents = candidates
+        .iter()
+        .map(|c| (c.counts.clone(), c.length))
+        .collect::<Vec<_>>();
+    let scores = crate::lexical::fuse(&dense, &crate::lexical::bm25(&documents, query_len));
+    let mut order = (0..candidates.len()).collect::<Vec<_>>();
+    order.sort_by(|&a, &b| {
+        scores[b]
+            .total_cmp(&scores[a])
+            .then_with(|| candidates[b].similarity.total_cmp(&candidates[a].similarity))
+            .then_with(|| candidates[a].rowid.cmp(&candidates[b].rowid))
+    });
+    order.truncate(limit);
+    let mut stmt = conn
+        .prepare("SELECT path,first_line,last_line,excerpt,page FROM semantic_chunks WHERE rowid=?1")
+        .map_err(|error| error.to_string())?;
+    order
+        .into_iter()
+        .map(|i| {
+            stmt.query_row(params![candidates[i].rowid], |row| {
+                Ok(SemanticHit {
+                    path: row.get(0)?,
+                    first_line: row.get::<_, i64>(1)?.max(0) as usize,
+                    last_line: row.get::<_, i64>(2)?.max(0) as usize,
+                    excerpt: row.get(3)?,
+                    similarity: candidates[i].similarity,
+                    page: row
+                        .get::<_, Option<i64>>(4)?
+                        .and_then(|page| u32::try_from(page).ok())
+                        .and_then(std::num::NonZeroU32::new),
+                })
+            })
+            .map_err(|error| error.to_string())
+        })
+        .collect()
 }
 
 /// Search one semantic sidecar by its containing native-index directory.
@@ -447,21 +589,36 @@ fn semantic_path_allowed(
     true
 }
 
+#[cfg(test)]
 fn embed_lines(lines: &[String]) -> Result<Vec<TextChunk>, MlError> {
-    let mut raw = Vec::<(usize, usize, String)>::new();
-    let (mut first, mut last, mut count, mut text) = (0usize, 0usize, 0usize, String::new());
+    embed_lines_with_pages(lines, None)
+}
+
+fn embed_lines_with_pages(
+    lines: &[String],
+    pages: Option<&[Option<std::num::NonZeroU32>]>,
+) -> Result<Vec<TextChunk>, MlError> {
+    type RawChunk = (usize, usize, Option<std::num::NonZeroU32>, String);
+    let mut raw = Vec::<RawChunk>::new();
+    let (mut first, mut last, mut count, mut page, mut text) =
+        (0usize, 0usize, 0usize, None, String::new());
     for (i, line) in lines.iter().enumerate() {
+        let line_page = pages.and_then(|pages| pages.get(i)).copied().flatten();
+        if count > 0 && page != line_page {
+            raw.push((first + 1, last + 1, page, std::mem::take(&mut text)));
+            count = 0;
+        }
         if line.trim().is_empty() {
             continue;
         }
         for ch in line.chars().chain(std::iter::once('\n')) {
             if count == CHUNK_CHARS {
-                raw.push((first + 1, last + 1, std::mem::take(&mut text)));
+                raw.push((first + 1, last + 1, page, std::mem::take(&mut text)));
                 count = 0;
-                first = i;
             }
             if count == 0 {
                 first = i;
+                page = line_page;
             }
             text.push(ch);
             count += 1;
@@ -469,24 +626,25 @@ fn embed_lines(lines: &[String]) -> Result<Vec<TextChunk>, MlError> {
         }
     }
     if !text.is_empty() {
-        raw.push((first + 1, last + 1, text));
+        raw.push((first + 1, last + 1, page, text));
     }
 
     let mut bounded = Vec::with_capacity(raw.len());
-    for (first, last, text) in raw {
-        split_to_token_budget(first, last, text, &mut bounded)?;
+    for (first, last, page, text) in raw {
+        split_to_token_budget(first, last, page, text, &mut bounded)?;
     }
     let mut embedded = Vec::with_capacity(bounded.len());
     for batch in bounded.chunks(EMBED_BATCH) {
         let inputs = batch
             .iter()
-            .map(|(_, _, text)| text.as_str())
+            .map(|(_, _, _, text)| text.as_str())
             .collect::<Vec<_>>();
         let vectors = search_ml::embed_batch(&inputs)?;
         embedded.extend(batch.iter().zip(vectors).map(
-            |((first_line, last_line, text), embedding)| TextChunk {
+            |((first_line, last_line, page, text), embedding)| TextChunk {
                 first_line: *first_line,
                 last_line: *last_line,
+                page: *page,
                 text: text.clone(),
                 embedding,
             },
@@ -498,11 +656,12 @@ fn embed_lines(lines: &[String]) -> Result<Vec<TextChunk>, MlError> {
 fn split_to_token_budget(
     first: usize,
     last: usize,
+    page: Option<std::num::NonZeroU32>,
     text: String,
-    output: &mut Vec<(usize, usize, String)>,
+    output: &mut Vec<(usize, usize, Option<std::num::NonZeroU32>, String)>,
 ) -> Result<(), MlError> {
     if search_ml::token_count(&text)? <= CHUNK_TOKEN_BUDGET || text.chars().count() <= 1 {
-        output.push((first, last, text));
+        output.push((first, last, page, text));
         return Ok(());
     }
     let midpoint = text.chars().count() / 2;
@@ -512,8 +671,8 @@ fn split_to_token_budget(
         .map(|(offset, _)| offset)
         .unwrap_or(text.len());
     let (left, right) = text.split_at(split);
-    split_to_token_budget(first, last, left.to_string(), output)?;
-    split_to_token_budget(first, last, right.to_string(), output)
+    split_to_token_budget(first, last, page, left.to_string(), output)?;
+    split_to_token_budget(first, last, page, right.to_string(), output)
 }
 
 fn embedding_bytes(embedding: &Embedding) -> Vec<u8> {
@@ -701,6 +860,7 @@ mod tests {
                 last_line: 1,
                 excerpt: "same source".into(),
                 similarity: 1.0,
+                page: None,
             },
             SemanticHit {
                 path: "b.txt".into(),
@@ -708,6 +868,7 @@ mod tests {
                 last_line: 2,
                 excerpt: "weaker".into(),
                 similarity: 0.6,
+                page: None,
             },
             SemanticHit {
                 path: "b.txt".into(),
@@ -715,6 +876,7 @@ mod tests {
                 last_line: 4,
                 excerpt: "stronger".into(),
                 similarity: 0.8,
+                page: None,
             },
             SemanticHit {
                 path: "a.txt".into(),
@@ -722,6 +884,7 @@ mod tests {
                 last_line: 6,
                 excerpt: "other file".into(),
                 similarity: 0.7,
+                page: None,
             },
         ];
         let grouped = group_similar_documents("source.txt", &hits, 50);
@@ -786,5 +949,145 @@ mod tests {
         assert!(chunks
             .iter()
             .all(|chunk| (chunk.first_line, chunk.last_line) == (1, 1)));
+    }
+
+    #[test]
+    fn semantic_chunks_never_mix_verified_pdf_pages() {
+        let lines = [
+            "Page one technical content".to_string(),
+            "More page one content".to_string(),
+            "Page two technical content".to_string(),
+            "More page two content".to_string(),
+        ];
+        let pages = [
+            Some(std::num::NonZeroU32::new(1).unwrap()),
+            Some(std::num::NonZeroU32::new(1).unwrap()),
+            Some(std::num::NonZeroU32::new(2).unwrap()),
+            Some(std::num::NonZeroU32::new(2).unwrap()),
+        ];
+        let chunks = embed_lines_with_pages(&lines, Some(&pages)).unwrap();
+
+        assert!(chunks.iter().all(|chunk| {
+            let page_for_line = |line| if line <= 2 { 1 } else { 2 };
+            chunk.page.map(std::num::NonZeroU32::get) == Some(page_for_line(chunk.first_line))
+                && chunk.page.map(std::num::NonZeroU32::get) == Some(page_for_line(chunk.last_line))
+        }));
+        assert!(chunks.iter().any(|chunk| chunk.page.unwrap().get() == 1));
+        assert!(chunks.iter().any(|chunk| chunk.page.unwrap().get() == 2));
+    }
+
+    #[test]
+    fn embedding_model_version_mismatch_discards_stored_vectors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("semantic.sqlite");
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, "shaft torque").unwrap();
+        let (modified, size) = source_metadata(&file);
+        let file = file.to_string_lossy().into_owned();
+        {
+            let index = SemanticIndex::open(&path).unwrap();
+            index
+                .index_document(&file, modified, size, &["shaft torque".to_string()])
+                .unwrap();
+            assert!(index.is_current(&file, modified, size).unwrap());
+        }
+        // Same model: vectors survive a reopen.
+        assert!(SemanticIndex::open(&path)
+            .unwrap()
+            .is_current(&file, modified, size)
+            .unwrap());
+        // Vectors from another model are incomparable: reopen must drop them.
+        Connection::open(&path)
+            .unwrap()
+            .execute(
+                "UPDATE semantic_meta SET value=?1 WHERE key='embedding_version'",
+                [EMBEDDING_VERSION + 1],
+            )
+            .unwrap();
+        let index = SemanticIndex::open(&path).unwrap();
+        assert!(!index.is_current(&file, modified, size).unwrap());
+        assert!(index.search("shaft", 5).unwrap().is_empty());
+    }
+
+    #[test]
+    fn old_semantic_schema_migrates_without_discarding_documents() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("semantic.sqlite");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE semantic_meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
+             INSERT INTO semantic_meta(key,value) VALUES('embedding_version',1);
+             CREATE TABLE semantic_documents (path TEXT PRIMARY KEY, modified INTEGER NOT NULL, size INTEGER NOT NULL);
+             CREATE TABLE semantic_chunks (
+                 path TEXT NOT NULL REFERENCES semantic_documents(path) ON DELETE CASCADE,
+                 chunk_index INTEGER NOT NULL, first_line INTEGER NOT NULL, last_line INTEGER NOT NULL,
+                 excerpt TEXT NOT NULL, embedding BLOB NOT NULL, PRIMARY KEY(path,chunk_index)
+             );
+             INSERT INTO semantic_documents(path,modified,size) VALUES('legacy.pdf',7,9);
+             INSERT INTO semantic_chunks(path,chunk_index,first_line,last_line,excerpt,embedding)
+                 VALUES('legacy.pdf',0,1,1,'legacy excerpt',x'00');",
+        )
+        .unwrap();
+        drop(conn);
+
+        let index = SemanticIndex::open(&path).unwrap();
+        assert!(!index.is_current("legacy.pdf", 7, 9).unwrap());
+        drop(index);
+
+        let conn = Connection::open(path).unwrap();
+        let (documents, chunks): (i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM semantic_documents), (SELECT COUNT(*) FROM semantic_chunks)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((documents, chunks), (1, 1));
+    }
+
+    /// Hard retrieval set (`search-ml/examples/data/retrieval_eval.tsv`): near-duplicate
+    /// part numbers, bare numbers, spec codes, negation. Measured on the bundled
+    /// MiniLM: dense 34/40 top-1, fused 37/40 (lexical weight 1.5-3 all give 37).
+    #[test]
+    fn fused_ranking_beats_dense_only_on_the_hard_retrieval_set() {
+        let data = include_str!("../../search-ml/examples/data/retrieval_eval.tsv");
+        let dir = tempfile::tempdir().unwrap();
+        let index = SemanticIndex::open(&dir.path().join("semantic.sqlite")).unwrap();
+        let mut questions = Vec::new();
+        for line in data.lines() {
+            let fields: Vec<&str> = line.split('\t').collect();
+            match fields[0] {
+                "P" => {
+                    let path = dir.path().join(format!("{}.txt", fields[1]));
+                    std::fs::write(&path, fields[2]).unwrap();
+                    let (modified, size) = source_metadata(&path);
+                    index
+                        .index_document(
+                            &path.to_string_lossy(),
+                            modified,
+                            size,
+                            &[fields[2].to_string()],
+                        )
+                        .unwrap();
+                }
+                "Q" => questions.push((fields[1], fields[2].split(';').collect::<Vec<_>>())),
+                _ => {}
+            }
+        }
+        assert_eq!(questions.len(), 40);
+        let top1 = |hybrid: bool| {
+            questions
+                .iter()
+                .filter(|(question, gold)| {
+                    let hits = index
+                        .search_filtered(question, 1, None, None, hybrid)
+                        .unwrap();
+                    gold.iter().any(|id| hits[0].path.ends_with(&format!("{id}.txt")))
+                })
+                .count()
+        };
+        let (dense, fused) = (top1(false), top1(true));
+        assert!(fused > dense, "fused {fused} must beat dense {dense}");
+        assert!(fused >= 36, "fused top-1 {fused}/40");
     }
 }

@@ -2,6 +2,8 @@
 //! inspector's option cards, the ribbon, the menus and the value cards. Pure reads of the session.
 #[cfg(feature = "semantic-search")]
 use super::INPUT_QUESTION;
+#[cfg(feature = "llm-find")]
+use super::{INPUT_NL, INPUT_NL_MODEL};
 use super::{
     act, file_name, SearchAct, SearchSession, SortKey, INPUT_EXCLUDE, INPUT_FILTER, INPUT_FIND,
     INPUT_FOLDER, INPUT_OUTPUT, SETTING_EXCLUDE, SETTING_EXCLUDE_SCOPE, SETTING_FILTERS,
@@ -90,6 +92,19 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 /// The window font lacks a few symbols the terminal text uses.
 fn plain(s: &str) -> String {
     s.replace('⚠', "!").replace('…', "...").replace('→', "->")
+}
+
+#[cfg(feature = "semantic-search")]
+pub(super) fn semantic_citation(hit: &search_core::semantic_index::SemanticHit) -> String {
+    let lines = if hit.first_line == hit.last_line {
+        format!("line {}", hit.first_line)
+    } else {
+        format!("lines {}–{}", hit.first_line, hit.last_line)
+    };
+    let range = hit.page.map_or(lines.clone(), |page| {
+        format!("page {} · {lines}", page.get())
+    });
+    format!("{} · {range}", file_name(&hit.path))
 }
 
 // ---------------------------------------------------------------------- availability
@@ -563,11 +578,14 @@ pub(super) fn document(s: &SearchSession) -> Document {
 
     let c = cards(s);
     let index_on = settings_view::setting_on(&s.st.config, 29);
-    let panels = vec![
+    #[cfg_attr(not(feature = "semantic-search"), allow(unused_mut))]
+    let mut panels = vec![
         DocPanel {
             label: "Options".into(),
             badge: None,
+            progress: None,
             inputs: Vec::new(),
+            chips: Vec::new(),
             cards: vec![c.matching, c.files, c.performance],
         },
         DocPanel {
@@ -579,11 +597,25 @@ pub(super) fn document(s: &SearchSession) -> Document {
             } else {
                 "off".into()
             }),
+            progress: s
+                .st
+                .index_run
+                .is_building
+                .then(|| (s.st.index_run.percent / 100.0).clamp(0.02, 1.0) as f32),
             inputs: index_panel_inputs(s),
-            cards: vec![c.index, c.summary],
+            chips: index_panel_chips(s),
+            cards: {
+                #[cfg_attr(not(feature = "llm-find"), allow(unused_mut))]
+                let mut cards = Vec::new();
+                #[cfg(feature = "llm-find")]
+                cards.push(c.nl);
+                cards.extend([c.index, c.summary]);
+                cards
+            },
         },
         DocPanel {
             label: "Report".into(),
+            progress: None,
             badge: s
                 .st
                 .run
@@ -591,9 +623,22 @@ pub(super) fn document(s: &SearchSession) -> Document {
                 .as_ref()
                 .map(|_| "ready".to_string()),
             inputs: vec![output_input(s)],
+            chips: Vec::new(),
             cards: vec![c.output],
         },
     ];
+    #[cfg(feature = "semantic-search")]
+    panels.insert(
+        2,
+        DocPanel {
+            label: "Ask".into(),
+            badge: s.answer_running.then(|| "working".to_string()),
+            progress: None,
+            inputs: vec![question_input(s)],
+            chips: Vec::new(),
+            cards: vec![c.answers],
+        },
+    );
     let modal = types_card(s).map(|card| DocModal {
         card,
         close: act(SearchAct::CloseExtensions),
@@ -758,33 +803,172 @@ fn query_preview(config: &model::SearchToolConfig, exclude_visible: bool) -> Str
     }
 }
 
-/// Where reports and exports go: typed, or chosen with the system's folder picker, as the folder to search is.
+/// Ask's question box: a sentence about the Search app or the indexed files.
 #[cfg(feature = "semantic-search")]
 fn question_input(s: &SearchSession) -> DocInput {
+    let note = if s.answer_running {
+        "Looking for cited lines…".to_string()
+    } else if s.current_answers().is_some() {
+        "Press Enter or click Ask to ask again.".to_string()
+    } else {
+        "Ask up to three questions, each ending with ?.".to_string()
+    };
     DocInput {
         id: INPUT_QUESTION,
-        label: "Ask the index".into(),
+        label: "Ask".into(),
         text: s.question.clone(),
-        hint: "Ask a question about indexed files".into(),
-        error: None,
-        note: Some(
-            "Returns ranked source excerpts with citations. It does not generate an answer.".into(),
-        ),
+        hint: "How do I…? What does…? Where is…?".into(),
+        error: if s.answer_running { None } else { s.answer_error.as_deref().map(plain) },
+        note: Some(note),
         submit: Some(act(SearchAct::AnswerQuestion)),
         commit_on_blur: false,
         grow: 1.0,
-        trailing: None,
+        trailing: Some(e("Ask", "Look for cited lines", SearchAct::AnswerQuestion)),
         help: None,
         choices: Vec::new(),
     }
 }
 
+/// The conversation: where Ask looks, then each question with the lines that answer it, quoted unchanged.
+#[cfg(feature = "semantic-search")]
+fn ask_items(s: &SearchSession) -> Vec<DockItem> {
+    let files_ready = s.st.config.index.semantic && !s.st.config.search_path.trim().is_empty();
+    let mut items = vec![DockItem::Chips {
+        title: "Look in".into(),
+        chips: vec![
+            e("Search help", "the Search app's own help", SearchAct::AskHelp).checked(s.ask_help),
+            e("My files", "the indexed folder", SearchAct::AskFiles).checked(s.ask_files),
+        ],
+    }];
+    let Some(parts) = s.current_answers() else {
+        if !s.answer_running {
+            items.push(DockItem::Chips {
+                title: "Try asking".into(),
+                chips: super::help::EXAMPLES
+                    .iter()
+                    .enumerate()
+                    .map(|(i, question)| e(question, "", SearchAct::AskExample(i)))
+                    .collect(),
+            });
+        }
+        if s.ask_files && !files_ready {
+            items.push(DockItem::text(
+                "Questions about your files need a folder and the Semantic index (Index menu).",
+                Tone::Dim,
+            ));
+        }
+        return items;
+    };
+    for (part_index, part) in parts.iter().enumerate() {
+        items.push(DockItem::Asked(plain(&part.question)));
+        if let Some(help) = &part.help {
+            match help {
+                Ok(lines) if lines.is_empty() => items.push(DockItem::text(
+                    "The Search help does not cover this.",
+                    Tone::Dim,
+                )),
+                Ok(lines) => items.extend(lines.iter().map(|line| DockItem::Reply {
+                    text: plain(&line.line),
+                    source: format!("Search help · {}", line.section),
+                    tone: Tone::Title,
+                    action: None,
+                })),
+                Err(error) => items.push(DockItem::text(plain(error), Tone::Warn)),
+            }
+        }
+        match (&part.evidence, part.files_asked) {
+            (Ok(lines), true) if lines.is_empty() => items.push(DockItem::text(
+                "No lines of your files matched.",
+                Tone::Dim,
+            )),
+            (Ok(lines), true) => {
+                items.extend(lines.iter().enumerate().map(|(i, line)| DockItem::Reply {
+                    text: plain(&line.answer),
+                    source: semantic_citation(&line.hit),
+                    tone: Tone::Normal,
+                    action: Some(act(SearchAct::OpenAnswer(part_index, i))),
+                }))
+            }
+            (Err(error), true) => items.push(DockItem::text(plain(error), Tone::Warn)),
+            _ => {}
+        }
+    }
+    if parts.iter().any(|part| part.files_asked) || parts.iter().any(|part| part.help.is_some()) {
+        items.push(DockItem::text(
+            "Lines are quoted from their source, unchanged. They may not answer the question; check each in context.",
+            Tone::Dim,
+        ));
+    }
+    if s.ask_files && !files_ready {
+        items.push(DockItem::text(
+            "Your files were not searched: choose a folder and turn on the Semantic index.",
+            Tone::Dim,
+        ));
+    }
+    items
+}
+
 fn index_panel_inputs(s: &SearchSession) -> Vec<DocInput> {
     #[cfg(feature = "semantic-search")]
     {
-        vec![question_input(s)]
+        #[cfg(feature = "llm-find")]
+        {
+            nl_inputs(s).into()
+        }
+        #[cfg(not(feature = "llm-find"))]
+        {
+            let _ = s;
+            Vec::new()
+        }
     }
     #[cfg(not(feature = "semantic-search"))]
+    {
+        let _ = s;
+        Vec::new()
+    }
+}
+
+#[cfg(feature = "llm-find")]
+fn nl_inputs(s: &SearchSession) -> [DocInput; 2] {
+    let busy = s.nl.stage != super::nl::Stage::Idle;
+    [
+        DocInput {
+            id: INPUT_NL,
+            label: "Describe it".into(),
+            text: s.nl.sentence.clone(),
+            hint: "e.g. files where corrosion is blended and the surface filled".into(),
+            error: None,
+            note: Some("A local language model splits this into conditions you can edit, then checks the best candidates.".into()),
+            submit: Some(act(SearchAct::NlUnderstand)),
+            commit_on_blur: false,
+            grow: 1.0,
+            trailing: Some(e("Understand", "", SearchAct::NlUnderstand).when(if busy { Err("working".to_string()) } else { Ok(()) })),
+            help: None,
+            choices: Vec::new(),
+        },
+        DocInput {
+            id: INPUT_NL_MODEL,
+            label: "Language model".into(),
+            text: s.st.config.llm_model_path.clone(),
+            hint: "Path of a Qwen3-4B-Instruct Q4_K_M .gguf file".into(),
+            error: None,
+            note: None,
+            submit: None,
+            commit_on_blur: true,
+            grow: 1.0,
+            trailing: None,
+            help: None,
+            choices: Vec::new(),
+        },
+    ]
+}
+
+fn index_panel_chips(s: &SearchSession) -> Vec<Entry> {
+    #[cfg(feature = "llm-find")]
+    {
+        super::nl::chips(s)
+    }
+    #[cfg(not(feature = "llm-find"))]
     {
         let _ = s;
         Vec::new()
@@ -1445,17 +1629,24 @@ fn setting_rows(s: &SearchSession, groups: &[&str]) -> Vec<DockItem> {
 
 /// The option cards, grouped as the page's popovers show them (Options, Index, Report).
 pub(super) struct Cards {
+    answers: Card,
     matching: Card,
     files: Card,
     performance: Card,
     output: Card,
     index: Card,
     summary: Card,
+    #[cfg(feature = "llm-find")]
+    nl: Card,
 }
 
 pub(super) fn cards(s: &SearchSession) -> Cards {
     let ix = &s.st.index_run;
     let mut index = setting_rows(s, &["Fast Re-search Index"]);
+    #[cfg(feature = "semantic-search")]
+    let answers = ask_items(s);
+    #[cfg(not(feature = "semantic-search"))]
+    let answers: Vec<DockItem> = Vec::new();
     if ix.is_building {
         index.push(DockItem::row(
             "Stop the build",
@@ -1567,10 +1758,8 @@ pub(super) fn cards(s: &SearchSession) -> Cards {
                     .unwrap_or(0);
                 index.push(DockItem::row(
                     format!(
-                        "{} · lines {}–{} · {:.0}%",
-                        file_name(&hit.path),
-                        hit.first_line,
-                        hit.last_line,
+                        "{} · {:.0}%",
+                        semantic_citation(hit),
                         hit.similarity * 100.0
                     ),
                     Tone::Normal,
@@ -1587,52 +1776,6 @@ pub(super) fn cards(s: &SearchSession) -> Cards {
             }
         }
         if let Some(error) = &s.semantic_error {
-            index.push(DockItem::text(plain(error), Tone::Warn));
-        }
-        index.push(DockItem::row(
-            if s.answer_running {
-                "Finding cited evidence…"
-            } else {
-                "Find cited evidence"
-            },
-            Tone::Title,
-            Some(act(SearchAct::AnswerQuestion)),
-            false,
-        ));
-        if let Some(answers) = s.current_answers() {
-            index.push(DockItem::Heading(
-                "Generated answer and cited evidence".into(),
-            ));
-            index.push(DockItem::text(
-                "Local Flan-T5 generates the answer from MiniLM-ranked source lines. The answer can be wrong; review each citation in context.",
-                Tone::Dim,
-            ));
-            if let Some(answer) = s.current_generated_answer() {
-                index.push(DockItem::text(plain(answer), Tone::Normal));
-            }
-            index.push(DockItem::Heading("Supporting source lines".into()));
-            for (i, answer) in answers.iter().enumerate() {
-                index.push(DockItem::row(
-                    format!(
-                        "{} · lines {}–{}",
-                        file_name(&answer.hit.path),
-                        answer.hit.first_line,
-                        answer.hit.last_line
-                    ),
-                    Tone::Normal,
-                    Some(act(SearchAct::OpenAnswer(i))),
-                    false,
-                ));
-                index.push(DockItem::text(plain(&answer.answer), Tone::Dim));
-            }
-            if answers.is_empty() {
-                index.push(DockItem::text(
-                    "No current indexed evidence found.",
-                    Tone::Dim,
-                ));
-            }
-        }
-        if let Some(error) = &s.answer_error {
             index.push(DockItem::text(plain(error), Tone::Warn));
         }
         index.push(DockItem::row(
@@ -1654,10 +1797,8 @@ pub(super) fn cards(s: &SearchSession) -> Cards {
             for (i, hit) in hits.iter().enumerate() {
                 index.push(DockItem::row(
                     format!(
-                        "{} · lines {}–{} · cosine {:.0}%",
-                        file_name(&hit.path),
-                        hit.first_line,
-                        hit.last_line,
+                        "{} · cosine {:.0}%",
+                        semantic_citation(hit),
                         hit.similarity * 100.0
                     ),
                     Tone::Normal,
@@ -1876,9 +2017,19 @@ pub(super) fn cards(s: &SearchSession) -> Cards {
             output,
         )
         .for_steps(&["Output"]),
+        answers: Card::new(
+            "search-answers",
+            "Ask",
+            Relevance::Primary,
+            answers,
+        )
+        .for_steps(&["Index"]),
         index: Card::new("search-index", "Fast index", Relevance::Primary, index)
             .for_steps(&["Index"]),
         summary: Card::new("search-summary", "Last run", Relevance::Info, summary)
+            .for_steps(&["Index"]),
+        #[cfg(feature = "llm-find")]
+        nl: Card::new("search-nl", "Natural-language Find", Relevance::Primary, super::nl::items(s))
             .for_steps(&["Index"]),
     }
 }
@@ -1935,7 +2086,10 @@ fn types_card(s: &SearchSession) -> Option<Card> {
 pub(super) fn inspector(s: &SearchSession) -> Vec<Card> {
     let c = cards(s);
     let mut all: Vec<Card> = types_card(s).into_iter().collect();
+    #[cfg(feature = "llm-find")]
+    all.push(c.nl);
     all.extend([
+        c.answers,
         c.matching,
         c.files,
         c.performance,

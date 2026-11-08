@@ -564,6 +564,7 @@ impl Gui {
         key: &str,
         anchor: Rect,
         width: f32,
+        progress: Option<f32>,
         p: &Palette,
         body: impl FnOnce(&mut Gui, &mut egui::Ui),
     ) {
@@ -606,7 +607,7 @@ impl Gui {
             area = area.fixed_pos(at);
         }
         let shown = area.show(ctx, |ui| {
-            super::panels::popup_frame(p)
+            let frame = super::panels::popup_frame(p)
                 .inner_margin(Margin::same(12))
                 .show(ui, |ui| {
                     ui.set_width(popup_width);
@@ -616,6 +617,16 @@ impl Gui {
                         .auto_shrink([true, true])
                         .show(ui, |ui| body(self, ui));
                 });
+            if let Some(fraction) = progress {
+                super::panels::perimeter_progress(
+                    ui.painter(),
+                    frame.response.rect.shrink(1.0),
+                    12.0,
+                    fraction,
+                    p.accent,
+                    3.0,
+                );
+            }
         });
         self.doc.pop_rect = Some(shown.response.rect);
         self.doc.anchor = Some(anchor);
@@ -630,13 +641,14 @@ impl Gui {
         out: &mut Vec<Outcome>,
         hint: &mut Option<String>,
     ) {
-        self.popover(ctx, &panel.label, anchor, 360.0, p, |gui, ui| {
+        self.popover(ctx, &panel.label, anchor, if panel.label == "Ask" { 440.0 } else { 360.0 }, panel.progress, p, |gui, ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
-            ui.label(RichText::new(match panel.label.as_str() { "Options" => "SEARCH PREFERENCES", "Index" => "LOCAL SEARCH INDEX", _ => "SEARCH OUTPUT" }).size(9.0).strong().color(p.accent));
+            ui.label(RichText::new(match panel.label.as_str() { "Options" => "SEARCH PREFERENCES", "Index" => "LOCAL SEARCH INDEX", "Ask" => "ASK SEARCH", _ => "SEARCH OUTPUT" }).size(9.0).strong().color(p.accent));
             ui.heading(&panel.label);
             ui.add(egui::Label::new(RichText::new(match panel.label.as_str() {
                 "Options" => "Choose how Search matches content. Less common controls stay grouped below.",
                 "Index" => "Build a local index to speed repeat searches. Results still come from the same search engine.",
+                "Ask" => "Ask about using Search or about your indexed files. Answers are lines quoted from the source, never generated text.",
                 _ => "Choose where Search writes reports and exports.",
             }).small().color(p.dim)).wrap());
             ui.add_space(8.0);
@@ -648,7 +660,24 @@ impl Gui {
                 }
                 ui.add_space(10.0);
             }
-            for (k, card) in panel.cards.iter().filter(|c| !c.items.is_empty()).enumerate() {
+            if !panel.chips.is_empty() {
+                ui.label(RichText::new("CONDITIONS · CLICK ONE TO REMOVE IT").size(9.0).strong().color(p.dim));
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+                    for chip in &panel.chips {
+                        gui.chip(ui, chip, p, out, hint);
+                    }
+                });
+                ui.add_space(8.0);
+            }
+            if panel.label == "Ask" {
+                // The conversation reads as one page, not a collapsible card.
+                ui.spacing_mut().item_spacing.y = 6.0;
+                for item in panel.cards.iter().flat_map(|card| &card.items) {
+                    gui.panel_item(ui, item, p, out, hint);
+                }
+            }
+            for (k, card) in panel.cards.iter().filter(|c| !c.items.is_empty() && panel.label != "Ask").enumerate() {
                 egui::CollapsingHeader::new(&card.title).default_open(k == 0).id_salt(("search-panel-card", &panel.label, &card.id)).show(ui, |ui| {
                     egui::Frame::new().fill(with_alpha(p.raised, 125)).corner_radius(CornerRadius::same(9)).inner_margin(Margin::symmetric(8, 6)).show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 3.0;
@@ -665,7 +694,7 @@ impl Gui {
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Changes apply to your next search").small().color(p.dim));
+                ui.label(RichText::new(if panel.label == "Ask" { "Quoted lines only: nothing is generated" } else { "Changes apply to your next search" }).small().color(p.dim));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.add(egui::Button::new(RichText::new("Done").color(p.on_accent)).fill(p.accent).stroke(Stroke::NONE).corner_radius(CornerRadius::same(7))).clicked() {
                         gui.doc.open = None;
@@ -809,6 +838,7 @@ impl Gui {
             &format!("help:{}", input.id),
             anchor,
             width,
+            None,
             p,
             |gui, ui| {
                 ui.label(RichText::new(&help.title).strong().size(15.0));
@@ -1115,6 +1145,16 @@ impl Gui {
                 stroke,
                 egui::StrokeKind::Inside,
             );
+            if let (Some(fraction), false) = (panel.progress, open) {
+                super::panels::perimeter_progress(
+                    ui.painter(),
+                    rect.shrink(1.0),
+                    8.0,
+                    fraction,
+                    p.accent,
+                    2.0,
+                );
+            }
             let icon = Rect::from_min_size(
                 Pos2::new(rect.left() + 9.0, rect.center().y - 8.0),
                 Vec2::splat(16.0),
@@ -1347,7 +1387,8 @@ impl Gui {
         if text != input.text {
             out.push(Outcome::DocField { id: input.id, text });
         }
-        if r.lost_focus() && (input.commit_on_blur || ui.input(|i| i.key_pressed(egui::Key::Enter)))
+        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if (r.lost_focus() && input.commit_on_blur) || ((r.has_focus() || r.lost_focus()) && enter)
         {
             if let Some(a) = input.submit {
                 out.push(Outcome::Action(a));
@@ -1416,7 +1457,7 @@ impl Gui {
     }
 
     /// A rounded switch pill: tinted when on.
-    fn chip(
+    pub(super) fn chip(
         &mut self,
         ui: &mut egui::Ui,
         e: &Entry,

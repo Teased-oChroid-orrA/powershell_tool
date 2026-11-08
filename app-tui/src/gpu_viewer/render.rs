@@ -3119,6 +3119,155 @@ mod snapshot_tests {
         shoot(&session, "search-running-narrow", true, (860, 760));
     }
 
+    /// The Search window's Index popup before a question, and after one with cited evidence (dark and light), as raw RGBA:
+    /// `FEA_SNAPSHOT_ASK_OUT=/dir cargo test ... --features neural-search,semantic-search ask_index_snapshot -- --ignored`.
+    #[cfg(feature = "semantic-search")]
+    #[test]
+    #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_ASK_OUT"]
+    fn ask_index_snapshot() {
+        use crate::gpu_viewer::editor::search::{semantic_fixture, SearchSession};
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_ASK_OUT") else {
+            return;
+        };
+        let _guard = headless_guard();
+        let data = tempfile::tempdir().unwrap();
+        semantic_fixture(
+            data.path(),
+            &[
+                (
+                    "torque.txt",
+                    "Applied torque causes torsional stress in the shaft.",
+                ),
+                ("temperature.txt", "The shaft temperature limit is 120 C."),
+            ],
+        );
+        let shoot = |session: &SearchSession, name: &str, dark: bool, open: Option<&str>| {
+            pollster::block_on(async {
+                let (w, h) = (1440, 900);
+                let adapter = test_adapter().await.expect("adapter required");
+                let s = session as &dyn Authoring;
+                let scene = Scene {
+                    label: "s".into(),
+                    positions: vec![[0.0; 3]; 3],
+                    triangles: vec![0, 1, 2],
+                    samples: vec![[0.0; 4]; 3],
+                    times: vec![0.0],
+                    range: [0.0, 1.0],
+                    gain: 1.0,
+                    harmonic_period: None,
+                    field_label: String::new(),
+                    fields: Vec::new(),
+                };
+                let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+                    .await
+                    .unwrap();
+                let texture = target(&r, w, h);
+                let mut gui = Gui::new();
+                gui.ctx().set_theme(if dark {
+                    egui::Theme::Dark
+                } else {
+                    egui::Theme::Light
+                });
+                let view = ViewState::new(&scene);
+                let scenes = [scene];
+                let input = GuiInput {
+                    view: &view,
+                    scenes: &scenes,
+                    selected: 0,
+                    editor: Some(s),
+                    error: None,
+                    box_drag: None,
+                    overlay: &[],
+                };
+                gui.select_tab_named(&input, "Results");
+                if let Some(panel) = open {
+                    gui.open_doc_popover(panel);
+                }
+                draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+                std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
+            });
+        };
+        let mut session = SearchSession::in_memory();
+        shoot(&session, "ask-before-dark", true, Some("Ask"));
+        session.ask_for_snapshot(
+            data.path(),
+            "How do I leave a folder out of a search? What causes torsional stress?",
+        );
+        shoot(&session, "ask-answered-dark", true, Some("Ask"));
+        shoot(&session, "ask-answered-light", false, Some("Ask"));
+        session.building_for_snapshot(60.0);
+        shoot(&session, "index-building-button-dark", true, None);
+        shoot(&session, "index-building-popup-dark", true, Some("Index"));
+    }
+
+    /// The Search window's Index popup with natural-language Find: the chips to review, then the cited results (dark and light), as raw RGBA:
+    /// `FEA_SNAPSHOT_NL_OUT=/dir cargo test ... --features llm-find nl_find_snapshot -- --ignored`.
+    #[cfg(feature = "llm-find")]
+    #[test]
+    #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_NL_OUT"]
+    fn nl_find_snapshot() {
+        use crate::gpu_viewer::editor::search::{semantic_fixture, SearchSession};
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_NL_OUT") else {
+            return;
+        };
+        let _guard = headless_guard();
+        let data = tempfile::tempdir().unwrap();
+        semantic_fixture(
+            data.path(),
+            &[
+                ("blend.txt", "Corrosion was blended out and the surface was filled and faired."),
+                ("paint.txt", "The panel was painted and the torque checked."),
+            ],
+        );
+        let shoot = |session: &SearchSession, name: &str, dark: bool| {
+            pollster::block_on(async {
+                let (w, h) = (1440, 900);
+                let adapter = test_adapter().await.expect("adapter required");
+                let s = session as &dyn Authoring;
+                let scene = Scene {
+                    label: "s".into(),
+                    positions: vec![[0.0; 3]; 3],
+                    triangles: vec![0, 1, 2],
+                    samples: vec![[0.0; 4]; 3],
+                    times: vec![0.0],
+                    range: [0.0, 1.0],
+                    gain: 1.0,
+                    harmonic_period: None,
+                    field_label: String::new(),
+                    fields: Vec::new(),
+                };
+                let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
+                    .await
+                    .unwrap();
+                let texture = target(&r, w, h);
+                let mut gui = Gui::new();
+                gui.ctx().set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+                let view = ViewState::new(&scene);
+                let scenes = [scene];
+                let input = GuiInput {
+                    view: &view,
+                    scenes: &scenes,
+                    selected: 0,
+                    editor: Some(s),
+                    error: None,
+                    box_drag: None,
+                    overlay: &[],
+                };
+                gui.select_tab_named(&input, "Results");
+                gui.open_doc_popover("Index");
+                draw(&mut r, &mut gui, &texture, &input, [0.0, 0.0], false);
+                std::fs::write(format!("{dir}/{name}.rgba"), read_back(&r, &texture)).unwrap();
+            });
+        };
+        let mut session = SearchSession::in_memory();
+        shoot(&session, "nl-empty-dark", true);
+        session.nl_for_snapshot(data.path(), "corrosion blended and surface filled and faired", false);
+        shoot(&session, "nl-chips-dark", true);
+        session.nl_for_snapshot(data.path(), "corrosion blended and surface filled and faired", true);
+        shoot(&session, "nl-results-dark", true);
+        shoot(&session, "nl-results-light", false);
+    }
+
     /// The Material Lookup workbench (one material's properties, then a comparison; dark, light, a narrow window), as
     /// raw RGBA dumps: `FEA_SNAPSHOT_MATERIALS_OUT=/dir cargo test ... materials_snapshot -- --ignored`.
     #[test]

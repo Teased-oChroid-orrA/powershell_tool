@@ -1,0 +1,242 @@
+## Starting a search
+To start a search, type a folder in the Folder box, type words in the Find box, and press Enter.
+The Search button next to the Find box starts a search with the current folder and words.
+Pressing Ctrl+Enter (Cmd+Enter on a Mac) starts a search from anywhere in the Search window.
+A running search is stopped by pressing Esc or by clicking the Stop button that replaces Search.
+The Folder box takes a typed folder path, and the Browse button opens the system folder picker instead.
+Search looks through the chosen folder and every folder below it, recursively.
+The Folder box suggests recently searched folders while you type, and clicking a suggestion fills the box.
+Extra folders can be searched in the same run by listing them in the Extra roots option under Options.
+Search needs a folder first, because a search with an empty Folder box has nothing to look through.
+Search needs no internet connection or account, and Ask, the Semantic index, OCR and Natural-language Find all run locally on the computer.
+# src: app-tui/src/gpu_viewer/editor/search/mod.rs (key, run), view.rs (document, recent_folder_suggestions), toolboxes/search/settings_view.rs (FIELDS)
+
+## Find box and search terms
+The Find box takes words or phrases separated by commas, and each comma-separated term is searched for.
+To search for two words together as a phrase, type them with a space, as in bolt torque, and Search matches the words together in that order.
+A plain word in the Find box also matches inside longer words, so torque finds torqued.
+Search is never case sensitive, so upper and lower case letters in a term make no difference.
+The note under the Find box previews how the typed terms will combine before the search runs.
+The link How to write a search opens a guide with clickable examples that fill the Find box.
+Search matches terms only against the text inside files, never against file names or folder paths.
+Accented letters typed in a different Unicode form than the file uses, such as precomposed versus combining marks, will not match each other.
+Files that are not valid UTF-8 are read as Windows-1252 text instead of being corrupted.
+# src: docs/search-semantics.md, view.rs (find_help, document), search-core/src/extraction.rs (decode_text)
+
+## Match modes and proximity
+The Match chip under the search bar shows the current match mode, and clicking it moves through any line, all in file, and within N lines.
+To find files where two terms are close to each other, set the Match chip to within N lines, which requires all terms within N lines.
+Match any line lists a file when at least one line holds any of the search terms.
+Match all in file requires every search term to appear somewhere in the file, on any lines.
+Match within N lines requires every search term to appear within N lines of the others.
+The Proximity lines option sets N for the within-lines match mode, and its default is 5 lines.
+When terms were found but none were within the proximity window, a notice offers to widen the window by 3 lines.
+A semicolon in the Find box starts another group, and a file must satisfy every group.
+A tag at the end of a group, such as [any], [all], or [near 3], sets how that group matches.
+The tag [near N] makes the terms of one group match within N lines, and [near] alone uses the Proximity lines option.
+Groups with different tags can be mixed in one search, for example house anywhere and floor and two within 3 lines.
+# src: view.rs (match_mode_chips, find_help, document notice), toolboxes/search/model.rs (default proximity_lines = 5)
+
+## Whole word and regular expressions
+The Whole word switch makes each term match only as a complete word and not inside longer words.
+Whole word treats letters, digits and underscores as word characters, so a term like C# still works at its edges.
+The Regex switch makes every search term a regular expression instead of a literal piece of text.
+Regex patterns are compiled case-insensitive, and the full fancy-regex syntax including lookaround is available.
+Commas and semicolons always split search terms, and a trailing bracketed tag is always read as a tag, even inside a regex.
+An invalid regular expression shows an error message under the Find box before the search runs.
+Whole word and Regex are switches next to the Match chip, and the same two settings are under Options.
+# src: docs/search-semantics.md, view.rs (find_help, document chips), toolboxes/search/model.rs (regex_validation_error)
+
+## Excluding files, lines and folders
+The Exclude chip shows a second row under Find with terms that always leave things out of the search.
+To exclude a term, click the Exclude chip, type the word or phrase in the Exclude row, and press Enter.
+Exclude terms are comma-separated, and any one of them is enough to exclude.
+The Exclude scope choice Whole file drops every file that contains an exclude term from the results.
+The Exclude scope choice Matching lines ignores only lines with an exclude term while the rest of the file can still match.
+Matching lines is the default Exclude scope, and the choice sits in the Exclude row.
+Hiding the Exclude row does not turn exclusion off, and the chip names the active exclude terms while it is hidden.
+A bracketed [not] group in the Find box drops files containing its terms for that one search only.
+A bracketed [not line] group in the Find box ignores only the lines that contain its terms.
+To leave a folder out of a search, skip it, or ignore it, list its name in the Exclude folders option under Options, separated by commas.
+Exclude folders matches whole folder names along the path, so node_mod does not exclude node_modules_backup.
+Search skips the fast index folder automatically, so its own index files are never searched.
+# src: view.rs (exclude_chip, exclude_input, exclude_help, find_help), mod.rs AGENTS.md (Exclude is a row of the page), docs/search-semantics.md, search-core/src/native_index.rs (ensure_index_folder_excluded), toolboxes/search/model.rs (ExcludeScope::Line default)
+
+## File types and supported formats
+The Types chip opens a picker listing the file types found in the chosen folder, with a checkbox for each.
+When no file type is ticked, Search reads every supported type, which is the default.
+The file formats Search can read include plain text files, Word .docx, PowerPoint .pptx, Excel .xlsx, .rtf and .pdf documents.
+Search reads inside .zip archives, including zip files nested inside other zip files.
+Search also reads code, script, web, log and data formats such as .py, .rs, .js, .json, .xml, .yaml, .csv, .html and .sh.
+The Types chip label shows how many types are selected, or the type names when three or fewer are chosen.
+Search Office files by extracting their text, so formatting, images and charts are not searched.
+PDF text is extracted from the file, so extraction can differ from what a PDF viewer shows, and the result is worth checking against the source.
+The Hidden files switch includes hidden files and folders in the search, and it is off by default.
+A huge file is skipped when it is larger than the Max file size option, which defaults to 50 MB.
+# src: view.rs (types_card, document chips, detail subtitle), search-core/src/models.rs (extension_catalog), toolboxes/search/model.rs (defaults), search-core/AGENTS.md
+
+## OCR for scanned PDFs
+OCR is a setting named OCR scanned PDFs, and it is off by default.
+OCR only applies to PDFs that have no text layer, because text PDFs are read directly without it.
+Turning OCR on makes Search recognize text in the page images of scanned PDFs, which would otherwise find nothing.
+OCR is slow because every page image of a scanned PDF is run through a text recognition model on the processor.
+Scanned PDFs take much longer than text PDFs with OCR on, so the PDF timeout and the file timeout may stop a long document.
+The OCR models are built into the app when it is compiled with OCR support, so OCR needs no download or internet connection.
+To search scanned PDFs faster, leave OCR off for runs that do not need them, or narrow the search with the Types chip.
+OCR results are recognized text and can contain mistakes, so a missed match in a scan may be a recognition error.
+# src: toolboxes/search/settings_view.rs (field_hint 26), search-core/src/ocr.rs, search-core/AGENTS.md. Other agent is editing OCR in search-core: recheck this section after that lands.
+
+## Results list and document preview
+The results table lists only files that contain a match, and rows appear while the search is still running.
+The results table has columns for File, Matches, Size and Modified, and clicking a column heading sorts by it.
+Results stay in the order found until a column heading is clicked.
+The Filter box above the results narrows the list by file name or folder.
+Clicking a result shows the full extracted document in the preview, with every matching line highlighted.
+The preview can jump to the previous and next match, and Enter opens the selected file in its default program.
+To open a found file, select it in the results list and press Enter, or choose Open from the Results ribbon or Edit menu.
+Show in folder reveals the selected file in the system file manager.
+Ctrl+C copies the path of the selected file, and Ctrl+E exports the matches of the selected file.
+The text in the preview can be selected, and right-clicking offers to copy the selection without line numbers.
+The Up and Down arrow keys move the selection through the results list.
+Search statistics after a run show files with matches, matching lines, files checked and the time taken.
+# src: view.rs (table, detail, result_entries, document stats), mod.rs (key, SearchAct), AGENTS.md (results table)
+
+## Reports and exports
+An HTML report is written when a search finishes, because the Export HTML setting is on by default.
+CSV and JSON exports are off by default, and the Report popover or the Output ribbon turns them on.
+The Output folder box in the Report popover sets where the report and exports are written.
+When the Output folder is empty, the report goes to the folder the app was started from.
+Export matches writes the recorded hits of the selected file, beside that file when no output folder is set.
+The Open report button appears after a report is written, and the report never opens automatically.
+The Output name option sets the base file name of the generated report.
+The Group by option, found under Files and folders in Options, sets how the report groups files, with choices Created, Modified and None.
+The Output folder box has its own Browse button that opens the same folder picker as the Folder box.
+Dry run previews which files would be searched without reading or matching their contents.
+# src: view.rs (output_input, report_entry, result_entries), toolboxes/search/settings_view.rs (FIELDS, field_hint), toolboxes/search/model.rs (defaults), AGENTS.md (Both folders)
+
+## Fast re-search index
+The fast re-search index makes repeat searches of the same folder much quicker.
+The Fast index switch turns the index on, and the Index popover builds it with Build index.
+The fast index only narrows which files are read, and every match is still checked inside the file itself.
+Results found with the fast index are identical to a full scan, because only the speed differs.
+The fast index is stored in a folder named .native-search-index inside the searched folder by default.
+The Index location option can store the fast index in the Output folder instead of the search folder.
+The fast index is built with the Tantivy search engine and runs entirely on the local computer.
+A notice says the fast index is out of date when files were added, changed or removed since it was built.
+The out-of-date notice offers Update index to refresh the index and Not now to dismiss it.
+Build index shows live progress with the file being indexed, a percent, throughput and a time estimate.
+Pressing Esc or the Stop button during an index build stops it and keeps what is already indexed.
+Search waits for an index build to finish, and an index build waits for a running search to finish.
+The sidebar shows the fast index state as Not built, Building or Ready, with the number of indexed files.
+If a fast index build fails, the Index popover shows the error with a Build again button.
+# src: view.rs (document notice, sidebar), mod.rs (build_index, UpdateStaleIndex), toolboxes/search/indexing.rs, search-core/src/native_index.rs, docs/search-semantics.md (parity)
+
+## Semantic index
+The Semantic index is a separate setting that builds a local index of text meaning alongside the fast index.
+The Semantic index setting is off by default, and the features Ask, related documents and Natural-language Find all need it.
+The Semantic index is built with the same Build index button as the fast index, after the setting is turned on.
+The Semantic index splits documents into chunks of about 800 characters and stores a 384-number vector for each chunk.
+The Semantic index is stored as a file named semantic.sqlite in the fast index folder.
+The embedding model for the Semantic index is MiniLM, which is built into the app and runs locally on the processor.
+The Semantic index finds passages by meaning, so a question can match a line that uses different words.
+The button Search this query semantically ranks passages for the text in the Find box and lists the best ten.
+Semantic results are extractive excerpts with a percentage, and the percentage is a ranking signal and not a confidence.
+Semantic search needs a built index for the chosen folder, and it shows a message to enable and build one when none exists.
+The Semantic index appears only in builds of the app that include the semantic search feature.
+# src: toolboxes/search/settings_view.rs (field_hint 31), search-core/src/semantic_index.rs (CHUNK_CHARS, EMBEDDING_DIMENSIONS, semantic.sqlite), search-ml/src/lib.rs (include_bytes MiniLM), mod.rs (semantic_search), view.rs (cards)
+
+## Ask
+Ask is a question panel on the toolbar next to Index that finds lines answering a question about the Search app or about your files.
+The Look in chips choose where Ask looks: Search help, which holds the facts about this app, and My files, which are the indexed folder.
+Ask does not generate answers, because it only shows unchanged lines copied from the Search help or from your files.
+Each Ask result is a source line with a citation, and clicking a line from your files opens that file.
+A help line is cited by its help section, and the line is shown exactly as written in the help.
+Ask ranks lines with the MiniLM model, so a listed line may not actually answer the question.
+Questions about the Search app work without a folder or an index, because the help is built into the app.
+Questions about your files need a folder and the Semantic index turned on and built, and Ask says so when that is missing.
+When no help line is close to the question, Ask says the Search help does not cover it instead of showing unrelated lines.
+Up to three questions can be asked at once, and each one must end with a question mark.
+Pressing Enter in the question box or clicking Ask starts the question, and the example chips ask a sample question.
+# src: view.rs (question_input, ask_items), help.rs, mod.rs (question_parts, answer_question), search-core/src/neural_search.rs
+
+## Related documents and compare
+Find possible related documents lists indexed files that are similar in meaning to the selected result.
+Related document search needs a selected result with a loaded preview and a built Semantic index.
+Related document search uses roughly the first 2000 characters of the selected document as its query.
+Related documents are grouped by source file, and each shows an excerpt with a cosine similarity percentage.
+The cosine similarity of related documents is uncalibrated, so a high score does not prove a duplicate or a revision.
+Compare exact lines shows which extracted lines were added or removed between the selected file and a related file.
+Compare exact lines refuses files above a 1 MiB input limit, and it compares extracted text rather than the binary files.
+When the compared texts match, Search says the extracted text is identical, which confirms text equality and not binary identity.
+Page breaks in PDFs are flattened in a comparison, so line numbers refer to the extracted text.
+# src: mod.rs (find_related_documents, compare_related_document, diff.rs), view.rs (cards related, diff notes)
+
+## Natural-language Find
+Natural-language Find lets a sentence such as files where corrosion is blended be turned into search conditions.
+The Describe it box in the Index popover takes the sentence, and the Understand button splits it into conditions.
+Natural-language Find needs a local language model file, a Qwen3-4B-Instruct Q4_K_M .gguf, whose path is typed in the Language model box.
+The language model file is about 2.4 GB and is not shipped with the app, so it must be supplied separately.
+Natural-language Find runs entirely on the local computer with no internet, but each model step takes seconds on a laptop processor.
+Natural-language Find also needs the Semantic index to be turned on and built first.
+The conditions appear as pills, and clicking a pill removes that condition before the search runs.
+Clicking the plus between two condition pills merges them, but only when both are wanted or both are unwanted.
+A condition marked with an exclamation mark is not entirely made of your own words and should be checked.
+A condition marked not excludes files, and at least one wanted condition must remain.
+The Find with these conditions button searches and judges only the 10 best candidate files.
+Each result file has a fit label of all matched, one weak, or partial, and never a percentage.
+The label one weak appears when three or more conditions are wanted and exactly one of them could not be confirmed in the file.
+The label all matched means every wanted condition was confirmed with a passage from the file.
+The label partial means the file has fewer confirmed conditions than all matched or one weak allow.
+The language model never writes answers, and each confirmed result shows a quote that is verified to be inside the cited passage.
+Natural-language Find is off by default and exists only in builds of the app that include the language model feature.
+# src: toolbox: view.rs (nl_inputs), nl.rs (chips, items, model_problem), docs/search-natural-language-find.md, search-core/AGENTS.md
+
+## Alerts and relevance feedback
+Saved search alerts remember a search and report files that are new or changed since a stored baseline.
+Save current search as alert stores the current folder, terms and options, and at most 32 alerts can be saved.
+Capture baseline records which files currently match, and Check now compares the folder against that baseline.
+Replace baseline records the current matches as the new baseline, and Delete alert removes a saved alert.
+An alert decides which files changed with the exact search, and MiniLM scores only help review changed files.
+Alert results are labeled New or Updated, and the cosine distance shown for updated files is an uncalibrated review signal.
+Saved alerts are stored as files in a search-alerts folder next to the settings file.
+Local relevance feedback is off by default and is turned on from the Enable local relevance feedback item in the Tools menu.
+With feedback on, the Relevant and Not relevant buttons in the preview record a vote about how the result was ranked.
+Local relevance feedback stores only score factors and labels on the computer, and the Tools menu can reset or export it.
+The Relevance column ranks results by an estimated relevance, and clicking its heading sorts by it.
+The relevance percentage combines matching text, file name, exact lines and recency, and it is a ranking signal and not a confidence.
+Search suggests corrections and related terms under the Find box, such as a note to try one word instead of another.
+# src: view.rs (cards alerts, menus, table, detail), alerts.rs, feedback.rs, mod.rs (SearchAct), search-core/src/alerts.rs
+
+## Presets, recents and settings
+Search remembers the last 8 searches as recent searches, shown in the sidebar and in the Find suggestions.
+Clicking a recent search in the sidebar restores its folder, terms and options.
+Clear recent searches in the File menu removes all recent searches.
+Save settings as preset in the File menu stores every setting of the current search under a name.
+Saved presets appear in a Presets folder in the sidebar tree, where Apply preset restores them and Delete preset removes them.
+Search saves its settings on every change to a file named settings-tui.json, inside a GSEngineeringToolbench folder in the user data directory.
+On Windows the settings folder is under APPDATA, and on macOS it is under Library/Application Support.
+The Options popover holds the Matching, Files and folders, and Performance settings that are not on the search bar.
+The Search window has no docks, and its options open as popovers named Options, Index and Report.
+The results list and the document preview are two cards that can be moved to another side of the window by dragging their grip.
+# src: toolboxes/search/persistence.rs (recents.truncate(8), config_path), app-tui/src/paths.rs (app_data_dir), view.rs (sidebar, panels, menus), AGENTS.md (cards move, No docks)
+
+## Progress, speed and limits
+Search shows live progress while it runs, with files per second, the time left and the elapsed time.
+To tell that Search is still working, watch the progress card, which lists the files being read right now so a slow file never looks stuck.
+Large PDFs take longer than text files because their streams must be decoded, and a progress line shows the PDF still working.
+The PDF timeout option gives up on one PDF after 15 seconds by default.
+The File timeout option gives up on any single file after 30 seconds by default, and Max retries defaults to 3.
+The Parallel option searches files concurrently, and Throttle limit and Heavy throttle limit cap the number of simultaneous files.
+Heavy formats such as PDFs and archives use a lower concurrency limit than ordinary files.
+Files above the Max file size are skipped, and files that cannot be read are logged instead of stopping the search.
+Building the fast index makes later searches of the same large folder quick, while the first search of it reads every file.
+Search writes a debug log named toolbench-debug.log in the folder the app was started from, which helps diagnose failures.
+# src: view.rs (run_progress), toolboxes/search/settings_view.rs (field_hint), toolboxes/search/model.rs (defaults), CLAUDE.md (progress reporting, toolbench-debug.log), search-core/AGENTS.md (InFlightMap)
+
+## Keyboard shortcuts
+Keyboard shortcut: press Enter in the Folder or Find box to start a search.
+Keyboard shortcut: press Ctrl+Enter (Cmd+Enter on a Mac) to run the search from anywhere in the window.
+Keyboard shortcut: press Esc to stop a running search or index build, or to close an open editor or picker.
+Keyboard shortcut: press Ctrl+C to copy the path of the selected result, and Ctrl+E to export its matches.
+Keyboard shortcut: press Up or Down to move the selected result, and Enter on a result opens that file.
+# src: mod.rs (Authoring::key), view.rs (result_entries)

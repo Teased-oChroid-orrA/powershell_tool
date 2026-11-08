@@ -11,6 +11,10 @@
 mod alerts;
 #[cfg(feature = "semantic-search")]
 mod diff;
+#[cfg(feature = "semantic-search")]
+mod help;
+#[cfg(feature = "llm-find")]
+mod nl;
 #[cfg(feature = "neural-search")]
 mod feedback;
 #[cfg(test)]
@@ -83,10 +87,30 @@ pub enum SearchAct {
     SemanticSearch,
     #[cfg(feature = "semantic-search")]
     AnswerQuestion,
+    /// Turn Ask's two places to look on or off.
+    #[cfg(feature = "semantic-search")]
+    AskHelp,
+    #[cfg(feature = "semantic-search")]
+    AskFiles,
+    /// Ask the example question `.0` of `help::EXAMPLES`.
+    #[cfg(feature = "semantic-search")]
+    AskExample(usize),
     #[cfg(feature = "semantic-search")]
     OpenSemantic(usize),
     #[cfg(feature = "semantic-search")]
-    OpenAnswer(usize),
+    OpenAnswer(usize, usize),
+    #[cfg(feature = "llm-find")]
+    NlUnderstand,
+    #[cfg(feature = "llm-find")]
+    NlFind,
+    #[cfg(feature = "llm-find")]
+    NlCancel,
+    #[cfg(feature = "llm-find")]
+    NlRemove(usize),
+    #[cfg(feature = "llm-find")]
+    NlMerge(usize),
+    #[cfg(feature = "llm-find")]
+    NlOpen(usize, usize),
     #[cfg(feature = "semantic-search")]
     FindRelated,
     #[cfg(feature = "semantic-search")]
@@ -157,6 +181,10 @@ pub(crate) const INPUT_EXCLUDE: u8 = 3;
 pub(crate) const INPUT_OUTPUT: u8 = 4;
 #[cfg(feature = "semantic-search")]
 pub(crate) const INPUT_QUESTION: u8 = 5;
+#[cfg(feature = "llm-find")]
+pub(crate) const INPUT_NL: u8 = 6;
+#[cfg(feature = "llm-find")]
+pub(crate) const INPUT_NL_MODEL: u8 = 7;
 /// Settings shown on the page instead of in a popover (`settings_view::settings` indices).
 const SETTING_PATH: usize = 0;
 const SETTING_FILTERS: usize = 2;
@@ -269,14 +297,14 @@ pub struct SearchSession {
     #[cfg(feature = "semantic-search")]
     answer_running: bool,
     #[cfg(feature = "semantic-search")]
-    answers: Option<(
-        SemanticSearchKey,
-        Vec<search_core::neural_search::CitedAnswer>,
-    )>,
-    #[cfg(feature = "semantic-search")]
-    generated_answer: Option<(SemanticSearchKey, String)>,
+    answers: Option<(SemanticSearchKey, Vec<QuestionPart>)>,
     #[cfg(feature = "semantic-search")]
     answer_error: Option<String>,
+    /// Where Ask looks: the Search help and / or the indexed files.
+    #[cfg(feature = "semantic-search")]
+    ask_help: bool,
+    #[cfg(feature = "semantic-search")]
+    ask_files: bool,
     #[cfg(feature = "semantic-search")]
     related_tx: mpsc::UnboundedSender<RelatedSearchEvent>,
     #[cfg(feature = "semantic-search")]
@@ -310,6 +338,8 @@ pub struct SearchSession {
     diff_generation: u64,
     #[cfg(feature = "semantic-search")]
     diff_worker: std::sync::Arc<tokio::sync::Semaphore>,
+    #[cfg(feature = "llm-find")]
+    nl: nl::NlFind,
     preview_cancel: Option<CancellationToken>,
     edit: Option<Edit>,
     /// Asks for a folder, starting in the given one (the system dialog; tests answer without one).
@@ -396,7 +426,17 @@ struct SemanticSearchEvent {
 #[cfg(feature = "semantic-search")]
 struct QuestionAnswerEvent {
     key: SemanticSearchKey,
-    result: Result<(String, Vec<search_core::neural_search::CitedAnswer>), String>,
+    result: Result<Vec<QuestionPart>, String>,
+}
+
+#[cfg(feature = "semantic-search")]
+pub(super) struct QuestionPart {
+    question: String,
+    /// The lines of the Search help that match (`None`: the help was not asked).
+    help: Option<Result<Vec<help::HelpAnswer>, String>>,
+    /// Cited lines of the indexed files; empty when the files were not asked.
+    evidence: Result<Vec<search_core::neural_search::CitedAnswer>, String>,
+    files_asked: bool,
 }
 
 #[cfg(feature = "semantic-search")]
@@ -513,7 +553,59 @@ fn current_question_key(
         return None;
     }
     let roots = semantic_search_roots(config);
-    (!roots.is_empty()).then(|| semantic_search_key(config, question, &roots))
+    Some(semantic_search_key(config, question, &roots))
+}
+
+#[cfg(feature = "semantic-search")]
+fn file_evidence(
+    question: &str,
+    roots: &[(PathBuf, search_core::models::SearchSettings)],
+) -> Result<Vec<search_core::neural_search::CitedAnswer>, String> {
+    let mut hits = Vec::new();
+    let mut indexed = 0usize;
+    let mut errors = Vec::new();
+    for (root, settings) in roots {
+        match search_core::semantic_index::search_directory_with_settings(root, question, 12, settings)
+        {
+            Ok(mut found) => {
+                indexed += 1;
+                hits.append(&mut found);
+            }
+            Err(error) => errors.push(error),
+        }
+    }
+    if indexed == 0 {
+        return Err(errors.join("; "));
+    }
+    hits.sort_by(|left, right| {
+        right
+            .similarity
+            .total_cmp(&left.similarity)
+            .then_with(|| left.path.cmp(&right.path))
+            .then_with(|| left.first_line.cmp(&right.first_line))
+    });
+    hits.truncate(12);
+    search_core::neural_search::rank_cited_answers(question, &hits).map_err(|error| error.to_string())
+}
+
+#[cfg(feature = "semantic-search")]
+fn question_parts(question: &str) -> Result<Vec<String>, String> {
+    // shortcut: split only explicit questions; add implicit decomposition after held-out validation.
+    let count = question.matches('?').count();
+    if count <= 1 {
+        return Ok(vec![question.to_string()]);
+    }
+    if count > 3 || !question.ends_with('?') {
+        return Err("Ask at most three complete questions, each ending with ?.".into());
+    }
+    let parts = question
+        .split_terminator('?')
+        .map(str::trim)
+        .collect::<Vec<_>>();
+    if parts.iter().any(|part| part.is_empty()) {
+        return Err("Each question must contain text before ?.".into());
+    }
+    Ok(parts.into_iter().map(|part| format!("{part}?")).collect())
 }
 
 #[cfg(feature = "semantic-search")]
@@ -582,6 +674,32 @@ fn semantic_hits_match_config<'a>(
     (current_semantic_search_key(config).as_ref() == Some(request)).then_some(hits)
 }
 
+/// Write `sources` into `dir` and index each as one semantic chunk, as a built semantic index would hold them.
+#[cfg(all(test, feature = "semantic-search"))]
+pub(crate) fn semantic_fixture(dir: &Path, sources: &[(&str, &str)]) {
+    use crate::toolboxes::search::indexing::{index_directory, IndexLocation};
+    use search_core::semantic_index::SemanticIndex;
+
+    let index_dir = index_directory(IndexLocation::SearchFolder, &dir.to_string_lossy(), "");
+    std::fs::create_dir_all(&index_dir).unwrap();
+    let semantic = SemanticIndex::open(&index_dir.join("semantic.sqlite")).unwrap();
+    for (name, text) in sources {
+        let path = dir.join(name);
+        std::fs::write(&path, text).unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        semantic
+            .index_document(
+                &path.to_string_lossy(),
+                search_core::cache::ticks_from_modified(chrono::DateTime::<chrono::Local>::from(
+                    metadata.modified().unwrap(),
+                )),
+                metadata.len() as i64,
+                &[(*text).into()],
+            )
+            .unwrap();
+    }
+}
+
 impl Drop for SearchSession {
     fn drop(&mut self) {
         #[cfg(feature = "semantic-search")]
@@ -631,17 +749,10 @@ impl SearchSession {
     }
 
     #[cfg(feature = "semantic-search")]
-    pub(super) fn current_answers(&self) -> Option<&[search_core::neural_search::CitedAnswer]> {
+    pub(super) fn current_answers(&self) -> Option<&[QuestionPart]> {
         let (key, answers) = self.answers.as_ref()?;
         (current_question_key(&self.st.config, &self.question).as_ref() == Some(key))
             .then_some(answers)
-    }
-
-    #[cfg(feature = "semantic-search")]
-    pub(super) fn current_generated_answer(&self) -> Option<&str> {
-        let (key, answer) = self.generated_answer.as_ref()?;
-        (current_question_key(&self.st.config, &self.question).as_ref() == Some(key))
-            .then_some(answer.as_str())
     }
 
     #[cfg(feature = "semantic-search")]
@@ -693,6 +804,55 @@ impl SearchSession {
         // crate. Tests that check the report turn it back on with their own output folder.
         s.st.config.export_html = false;
         s
+    }
+    /// Search `folder` semantically with the Index on, then ask `question` and wait for the answer, as the window does.
+    #[cfg(all(test, feature = "semantic-search"))]
+    pub(crate) fn ask_for_snapshot(&mut self, folder: &Path, question: &str) {
+        self.st.config.search_path = folder.to_string_lossy().into_owned();
+        self.st.config.index.semantic = true;
+        self.document_field(INPUT_QUESTION, question.into());
+        self.act_on_for_snapshot(SearchAct::AnswerQuestion);
+        let started = Instant::now();
+        while self.answer_running {
+            assert!(started.elapsed() < std::time::Duration::from_secs(60));
+            self.poll();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+    /// Natural-language Find with a stand-in model: understand `sentence` (stopping at the chips when `find` is false), as the window does.
+    #[cfg(all(test, feature = "llm-find"))]
+    pub(crate) fn nl_for_snapshot(&mut self, folder: &Path, sentence: &str, find: bool) {
+        let model = folder.join("model.gguf");
+        std::fs::write(&model, b"stub").unwrap();
+        self.nl = nl::NlFind::with_loader(nl::fake::loader);
+        self.st.config.search_path = folder.to_string_lossy().into_owned();
+        self.st.config.index.semantic = true;
+        self.st.config.llm_model_path = model.to_string_lossy().into_owned();
+        self.document_field(INPUT_NL, sentence.into());
+        let mut steps = vec![SearchAct::NlUnderstand];
+        if find {
+            steps.push(SearchAct::NlFind);
+        }
+        for step in steps {
+            self.act(crate::gpu_viewer::editor::session::EditorAction::Search(step));
+            let started = Instant::now();
+            while self.nl.stage != nl::Stage::Idle {
+                assert!(started.elapsed() < std::time::Duration::from_secs(60));
+                self.poll();
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            self.poll();
+        }
+    }
+    #[cfg(all(test, feature = "semantic-search"))]
+    fn act_on_for_snapshot(&mut self, act: SearchAct) {
+        self.act(crate::gpu_viewer::editor::session::EditorAction::Search(act));
+    }
+    /// Show the index as 60 percent built, as a running build would.
+    #[cfg(test)]
+    pub(crate) fn building_for_snapshot(&mut self, percent: f64) {
+        self.st.index_run.begin();
+        self.st.index_run.percent = percent;
     }
     #[cfg(test)]
     pub(crate) fn set_folder_picker(&mut self, pick: fn(&Path) -> Option<PathBuf>) {
@@ -845,9 +1005,14 @@ impl SearchSession {
             #[cfg(feature = "semantic-search")]
             answers: None,
             #[cfg(feature = "semantic-search")]
-            generated_answer: None,
             #[cfg(feature = "semantic-search")]
             answer_error: None,
+            #[cfg(feature = "semantic-search")]
+            ask_help: true,
+            #[cfg(feature = "semantic-search")]
+            ask_files: true,
+            #[cfg(feature = "llm-find")]
+            nl: nl::NlFind::new(),
             #[cfg(feature = "semantic-search")]
             related_tx,
             #[cfg(feature = "semantic-search")]
@@ -1273,17 +1438,25 @@ impl SearchSession {
     #[cfg(feature = "semantic-search")]
     fn answer_question(&mut self) {
         let question = self.question.trim().to_string();
-        if !self.st.config.index.semantic {
-            self.status = "Enable Semantic index in the Index menu, then build the index.".into();
-            return;
-        }
         if question.is_empty() {
-            self.status = "Enter a question in the Index menu first.".into();
+            self.status = "Type a question in Ask first.".into();
             return;
         }
+        let parts = match question_parts(&question) {
+            Ok(parts) => parts,
+            Err(error) => {
+                self.status = error.clone();
+                self.answer_error = Some(error);
+                return;
+            }
+        };
         let roots = semantic_search_roots(&self.st.config);
-        if roots.is_empty() {
-            self.status = "Choose a folder before asking a question.".into();
+        let (help, files) = (
+            self.ask_help,
+            self.ask_files && self.st.config.index.semantic && !roots.is_empty(),
+        );
+        if !help && !files {
+            self.status = "Choose where Ask looks: the Search help or your indexed files.".into();
             return;
         }
         let key = semantic_search_key(&self.st.config, question.clone(), &roots);
@@ -1293,40 +1466,25 @@ impl SearchSession {
         }
         self.answer_request = Some(key.clone());
         self.answers = None;
-        self.generated_answer = None;
         self.answer_error = None;
         self.answer_running = true;
-        self.status = "Finding cited evidence for your question…".into();
+        self.status = "Looking for cited lines…".into();
         let tx = self.answer_tx.clone();
         self.rt.spawn(async move {
             let result = tokio::task::spawn_blocking(move || {
-                let mut hits = Vec::new();
-                let mut indexed = 0usize;
-                let mut errors = Vec::new();
-                for (root, settings) in roots {
-                    match search_core::semantic_index::search_directory_with_settings(
-                        &root, &question, 12, &settings,
-                    ) {
-                        Ok(mut found) => {
-                            indexed += 1;
-                            hits.append(&mut found);
-                        }
-                        Err(error) => errors.push(error),
-                    }
-                }
-                if indexed == 0 {
-                    return Err(errors.join("; "));
-                }
-                hits.sort_by(|left, right| {
-                    right
-                        .similarity
-                        .total_cmp(&left.similarity)
-                        .then_with(|| left.path.cmp(&right.path))
-                        .then_with(|| left.first_line.cmp(&right.first_line))
-                });
-                hits.truncate(12);
-                search_core::neural_search::answer_cited(&question, &hits)
-                    .map(|answer| (answer.text, answer.evidence))
+                Ok(parts
+                    .into_iter()
+                    .map(|part| QuestionPart {
+                        help: help.then(|| help::answer(&part)),
+                        evidence: if files {
+                            file_evidence(&part, &roots)
+                        } else {
+                            Ok(Vec::new())
+                        },
+                        files_asked: files,
+                        question: part,
+                    })
+                    .collect())
             })
             .await
             .unwrap_or_else(|error| Err(format!("question ranking task failed: {error}")));
@@ -2255,6 +2413,35 @@ impl SearchSession {
             SearchAct::SemanticSearch => self.semantic_search(),
             #[cfg(feature = "semantic-search")]
             SearchAct::AnswerQuestion => self.answer_question(),
+            #[cfg(feature = "semantic-search")]
+            SearchAct::AskHelp | SearchAct::AskFiles => {
+                if a == SearchAct::AskHelp {
+                    self.ask_help = !self.ask_help;
+                } else {
+                    self.ask_files = !self.ask_files;
+                }
+                self.answers = None;
+                self.answer_error = None;
+            }
+            #[cfg(feature = "semantic-search")]
+            SearchAct::AskExample(index) => {
+                if let Some(example) = help::EXAMPLES.get(index) {
+                    self.question = (*example).into();
+                    self.answer_question();
+                }
+            }
+            #[cfg(feature = "llm-find")]
+            SearchAct::NlUnderstand => self.nl_understand(),
+            #[cfg(feature = "llm-find")]
+            SearchAct::NlFind => self.nl_find(),
+            #[cfg(feature = "llm-find")]
+            SearchAct::NlCancel => self.nl_cancel(),
+            #[cfg(feature = "llm-find")]
+            SearchAct::NlRemove(i) => self.nl_remove(i),
+            #[cfg(feature = "llm-find")]
+            SearchAct::NlMerge(i) => self.nl_merge(i),
+            #[cfg(feature = "llm-find")]
+            SearchAct::NlOpen(file, condition) => self.nl_open(file, condition),
             #[cfg(feature = "neural-search")]
             SearchAct::SummarizeSelected => self.summarize_selected(),
             #[cfg(feature = "semantic-search")]
@@ -2274,10 +2461,12 @@ impl SearchSession {
                 }
             }
             #[cfg(feature = "semantic-search")]
-            SearchAct::OpenAnswer(i) => {
+            SearchAct::OpenAnswer(part_index, evidence_index) => {
                 if let Some((path, first_line, last_line)) = self
                     .current_answers()
-                    .and_then(|answers| answers.get(i))
+                    .and_then(|parts| parts.get(part_index))
+                    .and_then(|part| part.evidence.as_ref().ok())
+                    .and_then(|evidence| evidence.get(evidence_index))
                     .map(|answer| {
                         (
                             answer.hit.path.clone(),
@@ -2815,6 +3004,10 @@ impl Authoring for SearchSession {
                 }
             }
         }
+        #[cfg(feature = "llm-find")]
+        {
+            changed |= self.poll_nl();
+        }
         #[cfg(feature = "semantic-search")]
         while let Ok(event) = self.answer_rx.try_recv() {
             if self.answer_request.as_ref() == Some(&event.key) {
@@ -2823,13 +3016,24 @@ impl Authoring for SearchSession {
                     == Some(&event.key)
                 {
                     match event.result {
-                        Ok((answer, evidence)) => {
-                            self.status = format!(
-                                "Generated an answer from {} cited source lines; verify each citation.",
-                                evidence.len()
-                            );
-                            self.generated_answer = Some((event.key.clone(), answer));
-                            self.answers = Some((event.key, evidence));
+                        Ok(parts) => {
+                            let found = parts
+                                .iter()
+                                .map(|part| {
+                                    part.evidence.as_ref().map_or(0, Vec::len)
+                                        + part
+                                            .help
+                                            .as_ref()
+                                            .and_then(|help| help.as_ref().ok())
+                                            .map_or(0, Vec::len)
+                                })
+                                .sum::<usize>();
+                            self.status = if found == 0 {
+                                "No cited lines matched; try other words.".into()
+                            } else {
+                                format!("Found {found} cited lines; verify each source.")
+                            };
+                            self.answers = Some((event.key, parts));
                         }
                         Err(error) => {
                             self.status = format!("Question evidence unavailable: {error}");
@@ -3118,6 +3322,18 @@ impl Authoring for SearchSession {
                 self.answers = None;
                 self.answer_error = None;
                 self.answer_running = false;
+            }
+            #[cfg(feature = "llm-find")]
+            INPUT_NL => {
+                self.nl.sentence = text;
+                self.nl.reset();
+            }
+            #[cfg(feature = "llm-find")]
+            INPUT_NL_MODEL => {
+                if self.st.config.llm_model_path != text {
+                    self.st.config.llm_model_path = text;
+                    self.nl.forget_model();
+                }
             }
             _ => {}
         }

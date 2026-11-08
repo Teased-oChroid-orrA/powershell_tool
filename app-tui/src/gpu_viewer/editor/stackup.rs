@@ -987,10 +987,12 @@ impl Authoring for StackupSession {
         let panel = |label: &str, fields: Vec<(u8, &str)>| DocPanel {
             label: label.into(),
             badge: None,
+            progress: None,
             inputs: fields
                 .into_iter()
                 .map(|(id, label)| self.field(id, label))
                 .collect(),
+            chips: Vec::new(),
             cards: vec![],
         };
         let mut doc = Document {

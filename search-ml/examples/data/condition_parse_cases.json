@@ -1,0 +1,510 @@
+[
+ {
+  "q": "files where corrosion is blended, and the surface filled and faired",
+  "gold": [
+   {
+    "stems": [
+     "corros",
+     "blend"
+    ],
+    "negated": false
+   },
+   {
+    "stems": [
+     "surface",
+     "fill",
+     "fair"
+    ],
+    "negated": false
+   }
+  ]
+ },
+ {
+  "q": "documents about bolt preload and torque for M8 fasteners",
+  "gold": [
+   {
+    "stems": [
+     "preload"
+    ],
+    "negated": false
+   },
+   {
+    "stems": [
+     "torque",
+     "m8"
+    ],
+    "negated": false
+   }
+  ]
+ },
+ {
+  "q": "find reports where the lug failed in shear tear-out",
+  "gold": [
+   {
+    "stems": [
+     "lug",
+     "shear",
+     "tear"
+    ],
+    "negated": false
+   }
+  ]
+ },
+ {
+  "q": "anything mentioning anodize per MIL-A-8625 Type II",
+  "gold": [
+   {
+    "stems": [
+     "anodiz",
+     "mil-a-8625",
+     "ii"
+    ],
+    "negated": false
+   }
+  ]
+ },
+ {
+  "q": "files that discuss hydrostatic test pressure but not corrosion allowance",
+  "gold": [
+   {
+    "stems": [
+     "hydrostatic",
+     "pressure"
+    ],
+    "negated": false
+   },
+   {
+    "stems": [
+     "corros",
+     "allowance"
+    ],
+    "negated": true
+   }
+  ]
+ },
+ {
+  "q": "inspection intervals for the main landing gear pin",
+  "gold": [
+   {
+    "stems": [
+     "inspect",
+     "interval",
+     "landing",
+     "pin"
+    ],
+    "negated": false
+   }
+  ]
+ },
+ {
+  "q": "records where the bushing was press fit and the bore was reamed",
+  "gold": [
+   {
+    "stems": [
+     "bushing",
+     "press"
+    ],
+    "negated": false
+   },
+   {
+    "stems": [
+     "bore",
+     "ream"
+    ],
+    "negated": false
+   }
+  ]
+ },
+ {
+  "q": "show me documents with countersink knife edge cracking",
+  "gold": [
+   {
+    "stems": [
+     "countersink",
+     "knife",
+     "crack"
+    ],
+    "negated": false
+   }
+  ]
+ },
+ {
+  "q": "files saying the torque wrench was calibrated and the record signed",
+  "gold": [
+   {
+    "stems": [
+     "torque",
+     "wrench",
+     "calibrat"
+    ],
+    "negated": false
+   },
+   {
+    "stems": [
+     "record",
+     "sign"
+    ],
+    "negated": false
+   }
+  ]
+ },
+ {
+  "q": "reports where fatigue cracks started at a fastener hole and were repaired by a doubler",
+  "gold": [
+   {
+    "stems": [
+     "fatigue",
+     "crack",
+     "hole"
+    ],
+    "negated": false
+   },
+   {
+    "stems": [
+     "repair",
+     "doubler"
+    ],
+    "negated": false
+   }
+  ]
+ },
+ {
+  "q": "shot peening of the bore after reaming",
+  "gold": [
+   {
+    "stems": [
+     "peen",
+     "bore",
+     "ream"
+    ],
+    "negated": false
+   }
+  ]
+ },
+ {
+  "q": "documents that mention cadmium plating is prohibited",
+  "gold": [
+   {
+    "stems": [
+     "cadmium",
+     "plat",
+     "prohibit"
+    ],
+    "negated": false
+   }
+  ]
+ },
+ {
+  "q": "files where edge distance is below 1.5 diameters",
+  "gold": [
+   {
+    "stems": [
+     "edge",
+     "distance",
+     "1.5"
+    ],
+    "negated": false
+   }
+  ]
+ },
+ {
+  "q": "which files give the joint efficiency for spot radiography",
+  "gold": [
+   {
+    "stems": [
+     "joint",
+     "efficiency",
+     "radiograph"
+    ],
+    "negated": false
+   }
+  ]
+ },
+ {
+  "q": "notes on thermal expansion reducing the press fit at high temperature",
+  "gold": [
+   {
+    "stems": [
+     "thermal",
+     "expansion",
+     "press"
+    ],
+    "negated": false
+   }
+  ]
+ },
+ {
+  "q": "find where rivet pitch exceeds four diameters and the splice is not reinforced",
+  "gold": [
+   {
+    "stems": [
+     "rivet",
+     "pitch",
+     "four"
+    ],
+    "negated": false
+   },
+   {
+    "stems": [
+     "splice",
+     "reinforc"
+    ],
+    "negated": true
+   }
+  ]
+ },
+ {
+  "q": "eddy current inspection of the wing lug every 1200 flight hours",
+  "gold": [
+   {
+    "stems": [
+     "eddy",
+     "wing",
+     "lug",
+     "1200"
+    ],
+    "negated": false
+   }
+  ]
+ },
+ {
+  "q": "files where corrosion was removed by blending and the area was inspected after",
+  "gold": [
+   {
+    "stems": [
+     "corros",
+     "blend",
+     "remov"
+    ],
+    "negated": false
+   },
+   {
+    "stems": [
+     "inspect",
+     "after"
+    ],
+    "negated": false
+   }
+  ]
+ },
+ {
+  "q": "documents about interference fit of titanium bushings but not aluminum bronze",
+  "gold": [
+   {
+    "stems": [
+     "interference",
+     "titanium",
+     "bushing"
+    ],
+    "negated": false
+   },
+   {
+    "stems": [
+     "aluminum",
+     "bronze"
+    ],
+    "negated": true
+   }
+  ]
+ },
+ {
+  "q": "embedding preload loss in bolted joints",
+  "gold": [
+   {
+    "stems": [
+     "embed",
+     "preload",
+     "loss"
+    ],
+    "negated": false
+   }
+  ]
+ },
+ {
+  "q": "surface treated with chromic acid anodize and then primed",
+  "gold": [
+   {
+    "stems": [
+     "chromic",
+     "anodiz"
+    ],
+    "negated": false
+   },
+   {
+    "stems": [
+     "prim"
+    ],
+    "negated": false
+   }
+  ]
+ },
+ {
+  "q": "reports where the pressure vessel has a corrosion allowance and radiographed seams",
+  "gold": [
+   {
+    "stems": [
+     "pressure",
+     "vessel",
+     "corros",
+     "allowance"
+    ],
+    "negated": false
+   },
+   {
+    "stems": [
+     "radiograph",
+     "seam"
+    ],
+    "negated": false
+   }
+  ]
+ },
+ {
+  "q": "files mentioning the 7075-T6 bearing allowable",
+  "gold": [
+   {
+    "stems": [
+     "7075",
+     "bearing",
+     "allowable"
+    ],
+    "negated": false
+   }
+  ]
+ },
+ {
+  "q": "documents where the hole was oversized and a bushing installed",
+  "gold": [
+   {
+    "stems": [
+     "hole",
+     "oversiz"
+    ],
+    "negated": false
+   },
+   {
+    "stems": [
+     "bushing",
+     "install"
+    ],
+    "negated": false
+   }
+  ]
+ },
+ {
+  "q": "the gear pin was inspected and no cracks were found",
+  "gold": [
+   {
+    "stems": [
+     "gear",
+     "pin",
+     "inspect"
+    ],
+    "negated": false
+   },
+   {
+    "stems": [
+     "crack"
+    ],
+    "negated": true
+   }
+  ]
+ },
+ {
+  "q": "repairs where the damage was blended out within limits and fairing was restored",
+  "gold": [
+   {
+    "stems": [
+     "damage",
+     "blend",
+     "limit"
+    ],
+    "negated": false
+   },
+   {
+    "stems": [
+     "fair",
+     "restor"
+    ],
+    "negated": false
+   }
+  ]
+ },
+ {
+  "q": "sealant applied to fasteners, then topcoat",
+  "gold": [
+   {
+    "stems": [
+     "sealant",
+     "fastener"
+    ],
+    "negated": false
+   },
+   {
+    "stems": [
+     "topcoat"
+    ],
+    "negated": false
+   }
+  ]
+ },
+ {
+  "q": "files about yield strength of 4340 steel at 180 ksi",
+  "gold": [
+   {
+    "stems": [
+     "yield",
+     "4340",
+     "180"
+    ],
+    "negated": false
+   }
+  ]
+ },
+ {
+  "q": "tests where specimen failed below 90 percent of allowable and not at the grip",
+  "gold": [
+   {
+    "stems": [
+     "specimen",
+     "fail",
+     "90",
+     "allowable"
+    ],
+    "negated": false
+   },
+   {
+    "stems": [
+     "grip"
+    ],
+    "negated": true
+   }
+  ]
+ },
+ {
+  "q": "paint stripped, dent filled and faired, then repainted",
+  "gold": [
+   {
+    "stems": [
+     "paint",
+     "strip"
+    ],
+    "negated": false
+   },
+   {
+    "stems": [
+     "dent",
+     "fill",
+     "fair"
+    ],
+    "negated": false
+   },
+   {
+    "stems": [
+     "repaint"
+    ],
+    "negated": false
+   }
+  ]
+ }
+]

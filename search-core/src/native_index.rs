@@ -102,8 +102,10 @@ pub fn open_or_create_with_rebuild(index_directory: &Path) -> NsResult<NativeSea
 /// carrying a different (or no) version is then rebuilt on next open.
 ///
 /// History: 2 = `modified` stored as nanoseconds (was whole seconds, which
-/// could not tell apart two same-size edits inside one second).
-pub const INDEX_SEMANTIC_VERSION: u32 = 2;
+/// could not tell apart two same-size edits inside one second). 3 = PDF/OCR
+/// lines are repaired and noise lines dropped (`line_quality`), `TJ` arrays are
+/// joined into words, and non-content streams are no longer scanned for text.
+pub const INDEX_SEMANTIC_VERSION: u32 = 3;
 const SEMANTIC_VERSION_FILE: &str = "semantic-version";
 
 /// `true` when the index at `index_directory` can be used as-is: it does
@@ -430,6 +432,13 @@ struct ReadParams {
     retry_delay_ms: u64,
     pdf_timeout_seconds: u64,
     ocr_scanned_pdfs: bool,
+    #[cfg(feature = "semantic-search")]
+    capture_pdf_pages: bool,
+}
+
+struct IndexedLines {
+    lines: Vec<String>,
+    pages: Option<Vec<Option<std::num::NonZeroU32>>>,
 }
 
 /// Why [`read_and_extract`] produced no lines.
@@ -446,7 +455,7 @@ async fn read_and_extract(
     ext: String,
     p: ReadParams,
     cancellation: CancellationToken,
-) -> Result<Vec<String>, ReadFail> {
+) -> Result<IndexedLines, ReadFail> {
     let bytes = file_reader::read_file_bytes_robust(
         &full_name,
         p.file_timeout_seconds,
@@ -460,15 +469,44 @@ async fn read_and_extract(
     // Extraction is synchronous and CPU-bound (PDF/OOXML/zip) - keep it off
     // the async worker threads so concurrent reads are never starved by it.
     tokio::task::spawn_blocking(move || {
-        extraction::extract_lines_by_extension(
+        #[cfg(feature = "semantic-search")]
+        let extracted = if p.capture_pdf_pages {
+            extraction::extract_for_semantic_index(
+                &ext,
+                &bytes,
+                p.pdf_timeout_seconds,
+                p.ocr_scanned_pdfs,
+            )
+            .map(|doc| IndexedLines {
+                lines: doc.lines,
+                pages: doc.pages,
+            })
+        } else {
+            extraction::extract_lines_by_extension(
+                &ext,
+                &bytes,
+                p.pdf_timeout_seconds,
+                None,
+                p.ocr_scanned_pdfs,
+            )
+            .map(|doc| IndexedLines {
+                lines: doc.lines,
+                pages: None,
+            })
+        };
+        #[cfg(not(feature = "semantic-search"))]
+        let extracted = extraction::extract_lines_by_extension(
             &ext,
             &bytes,
             p.pdf_timeout_seconds,
             None,
             p.ocr_scanned_pdfs,
         )
-        .map(|e| e.lines)
-        .map_err(|e| match e {
+        .map(|doc| IndexedLines {
+            lines: doc.lines,
+            pages: None,
+        });
+        extracted.map_err(|e| match e {
             extraction::ExtractLinesError::Binary => ReadFail::NoText("binary file"),
             extraction::ExtractLinesError::Failed => ReadFail::NoText("no extractable text"),
         })
@@ -710,6 +748,8 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
         retry_delay_ms: settings.retry_delay_ms as u64,
         pdf_timeout_seconds: settings.pdf_timeout_seconds as u64,
         ocr_scanned_pdfs: settings.ocr_scanned_pdfs,
+        #[cfg(feature = "semantic-search")]
+        capture_pdf_pages: semantic_index.is_some(),
     };
     let concurrency = if settings.parallel {
         settings.throttle_limit.clamp(1, 16) as usize
@@ -731,7 +771,7 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
         file_reader::EnumeratedFile,
         String,
         String,
-        Result<Vec<String>, ReadFail>,
+        Result<IndexedLines, ReadFail>,
     );
     let mut in_flight: tokio::task::JoinSet<Extracted> = tokio::task::JoinSet::new();
     let mut in_flight_names: std::collections::HashMap<tokio::task::Id, (String, String)> =
@@ -770,29 +810,32 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
         };
         report(&outcome, IndexStage::Indexing, done, work_total, &full_name);
         done += 1;
-        let lines = match extracted {
-            Ok(l) => l,
+        let (lines, pages) = match extracted {
+            Ok(document) => (document.lines, document.pages),
             Err(ReadFail::NoText(why)) => {
                 outcome.no_text_count += 1;
                 *outcome
                     .failure_summary
                     .entry(format!("ext={ext}: {why} (indexed empty)"))
                     .or_insert(0) += 1;
-                Vec::new()
+                (Vec::new(), None)
             }
             Err(ReadFail::Error(e)) => {
                 record_failure(&mut outcome, &full_name, &ext, &e);
                 continue;
             }
         };
+        #[cfg(not(feature = "semantic-search"))]
+        let _pages = pages;
 
         #[cfg(feature = "semantic-search")]
         if let Some(index) = &semantic_index {
-            if let Err(error) = index.index_document(
+            if let Err(error) = index.index_document_with_pages(
                 &full_name,
                 ticks_from_modified(file.modified),
                 file.length,
                 &lines,
+                pages.as_deref(),
             ) {
                 *outcome
                     .failure_summary

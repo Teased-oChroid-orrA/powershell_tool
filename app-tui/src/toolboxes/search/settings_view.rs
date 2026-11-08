@@ -769,7 +769,7 @@ fn field_hint(index: usize) -> &'static str {
         5 => "For Proximity match mode: how many lines apart matched filters may be and still count as one match.",
         6 => "Treat each filter as a regular expression instead of a literal/whole-word match.",
         7 => "Require filters to match whole words only, not substrings within a larger word.",
-        8 => "Which folders Exclude filters apply to - just filenames, or the full path.",
+        8 => "What an Exclude filter removes - the whole file, or only the matching lines.",
         9 => "Which file extensions to search - blank searches the built-in default catalog; Enter opens a scanned per-extension checkbox picker.",
         10 => "Folder names to skip entirely during the recursive walk, comma-separated.",
         11 => "Include hidden files/folders (dotfiles on Unix, the Hidden attribute on Windows) in the search.",

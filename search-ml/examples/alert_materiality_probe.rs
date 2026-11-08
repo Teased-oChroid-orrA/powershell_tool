@@ -1,4 +1,4 @@
-use search_ml::{cosine_similarity, embed_batch};
+use search_ml::{cosine_similarity, embed_batch, generate_answer};
 
 fn main() {
     let pairs = [
@@ -23,13 +23,22 @@ fn main() {
     let embeddings = embed_batch(&texts).expect("bundled local MiniLM");
     let mut material = Vec::new();
     let mut immaterial = Vec::new();
+    let mut correct = 0;
     for (i, (label, _, _)) in pairs.iter().enumerate() {
         let similarity = cosine_similarity(&embeddings[i * 2], &embeddings[i * 2 + 1]).unwrap();
         let distance = 1.0 - similarity;
         if *label { material.push(distance); } else { immaterial.push(distance); }
-        println!("{} {:.4}", if *label { "material" } else { "immaterial" }, distance);
+        let evidence = format!("Original: {} Revised: {}", pairs[i].1, pairs[i].2);
+        let (answer, _) = generate_answer(
+            "Would this change require a different design, safety margin, inspection finding, or engineering action? Answer MATERIAL or IMMATERIAL.",
+            &[&evidence],
+        ).unwrap();
+        let answer = answer.to_ascii_uppercase();
+        let predicted = answer.split_whitespace().any(|word| word.trim_matches(|ch: char| !ch.is_ascii_alphabetic()) == "MATERIAL");
+        correct += usize::from(predicted == *label);
+        println!("{} {:.4} flan={} ({answer})", if *label { "material" } else { "immaterial" }, distance, if predicted { "material" } else { "immaterial" });
     }
     let min_material = material.iter().copied().fold(f32::INFINITY, f32::min);
     let max_immaterial = immaterial.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    println!("material_min={min_material:.4} immaterial_max={max_immaterial:.4} separable={}", min_material > max_immaterial);
+    println!("material_min={min_material:.4} immaterial_max={max_immaterial:.4} separable={} flan_accuracy={correct}/{}", min_material > max_immaterial, pairs.len());
 }

@@ -24,8 +24,11 @@ occt-source = ["occt", "solid-kernel/occt-source"]
 gpu-viewer = ["dep:wgpu", "dep:winit", "dep:bytemuck", "dep:pollster", "dep:egui", "dep:egui-wgpu", "dep:egui-winit", "dep:rfd"]
 neural-search = ["search-core/neural-search"]
 semantic-search = ["search-core/semantic-search"]
+# Natural-language Find in the Search workbench: a local GGUF language model (llama.cpp; needs CMake and a C++ toolchain).
+llm-find = ["semantic-search", "search-core/nl-find", "dep:search-llm", "search-llm/llama"]
 
 [dependencies]
+search-llm = { path = "../search-llm", optional = true }
 # Only for tests that build a STEP file with the kernel (feature `occt`).
 solid-kernel = { path = "../solid-kernel", optional = true }
 wgpu = { version = "30", optional = true }
