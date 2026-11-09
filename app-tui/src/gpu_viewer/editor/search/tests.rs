@@ -1149,6 +1149,46 @@ fn ask_index_answers_explicit_question_parts_from_their_own_sources() {
     assert!(question_parts("One? Two? Three? Four?").is_err());
 }
 
+/// Fast semantic results, then the opt-in Refine step with the real second model:
+/// `TOOLBENCH_RERANK_MODEL=<bge-small dir> cargo test -p app-tui refine_button -- --ignored`.
+#[cfg(feature = "semantic-search")]
+#[test]
+#[ignore = "needs the bge-small model folder in TOOLBENCH_RERANK_MODEL"]
+fn refine_button_reorders_the_semantic_results_in_the_background() {
+    let dir = tempfile::tempdir().unwrap();
+    semantic_fixture(
+        dir.path(),
+        &[
+            ("torque.txt", "Applied torque causes torsional stress in the shaft."),
+            ("temperature.txt", "The shaft temperature limit is 120 C."),
+            ("canteen.txt", "The canteen opens at noon."),
+        ],
+    );
+    let mut session = SearchSession::in_memory();
+    session.st.config.search_path = dir.path().to_string_lossy().into_owned();
+    session.st.config.index.semantic = true;
+    session.st.config.filters_text = "what causes torsional stress".into();
+    act_on(&mut session, SearchAct::SemanticSearch);
+    let started = Instant::now();
+    while session.semantic_running {
+        assert!(started.elapsed() < Duration::from_secs(30));
+        session.poll();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!session.refined(), "refine is never on by default");
+    act_on(&mut session, SearchAct::RefineResults);
+    assert!(session.refine.running);
+    while session.refine.running {
+        assert!(started.elapsed() < Duration::from_secs(120));
+        session.poll();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(session.refined(), "{}", session.status);
+    let hits = session.current_semantic_hits().unwrap();
+    let shown = session.evidence_hits(hits);
+    assert!(shown[0].path.ends_with("torque.txt"), "{:?}", shown.iter().map(|h| &h.path).collect::<Vec<_>>());
+}
+
 /// Poll until the run (and its report) finished, as the window does between frames.
 fn wait(s: &mut SearchSession) {
     let t = Instant::now();

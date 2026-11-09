@@ -17,6 +17,8 @@ mod facts;
 mod help;
 #[cfg(feature = "nl-find")]
 mod nl;
+#[cfg(feature = "semantic-search")]
+mod refine;
 #[cfg(feature = "neural-search")]
 mod feedback;
 #[cfg(test)]
@@ -87,6 +89,9 @@ pub enum SearchAct {
     DeleteAlert(usize),
     #[cfg(feature = "semantic-search")]
     SemanticSearch,
+    /// Re-order the semantic results with the optional second model.
+    #[cfg(feature = "semantic-search")]
+    RefineResults,
     #[cfg(feature = "semantic-search")]
     AnswerQuestion,
     /// Turn Ask's two places to look on or off.
@@ -286,6 +291,8 @@ pub struct SearchSession {
     semantic_hits: Option<Vec<search_core::semantic_index::SemanticHit>>,
     #[cfg(feature = "semantic-search")]
     semantic_error: Option<String>,
+    #[cfg(feature = "semantic-search")]
+    refine: refine::Refine,
     #[cfg(feature = "semantic-search")]
     question: String,
     #[cfg(feature = "semantic-search")]
@@ -990,6 +997,8 @@ impl SearchSession {
             semantic_hits: None,
             #[cfg(feature = "semantic-search")]
             semantic_error: None,
+            #[cfg(feature = "semantic-search")]
+            refine: refine::Refine::default(),
             #[cfg(feature = "semantic-search")]
             question: String::new(),
             #[cfg(feature = "semantic-search")]
@@ -2432,6 +2441,8 @@ impl SearchSession {
             #[cfg(feature = "semantic-search")]
             SearchAct::SemanticSearch => self.semantic_search(),
             #[cfg(feature = "semantic-search")]
+            SearchAct::RefineResults => self.refine_results(),
+            #[cfg(feature = "semantic-search")]
             SearchAct::AnswerQuestion => self.answer_question(),
             #[cfg(feature = "semantic-search")]
             SearchAct::AskHelp | SearchAct::AskFiles => {
@@ -3023,6 +3034,10 @@ impl Authoring for SearchSession {
                     changed = true;
                 }
             }
+        }
+        #[cfg(feature = "semantic-search")]
+        {
+            changed |= self.poll_refine();
         }
         #[cfg(feature = "nl-find")]
         {

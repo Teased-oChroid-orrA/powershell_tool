@@ -338,6 +338,19 @@ pub struct Document {
     pub panels: Vec<DocPanel>,
     /// A card the page must answer before going on (the file types to search), centred over a dimmed page.
     pub modal: Option<DocModal>,
+    /// A thin status strip along the page's bottom edge (Search: index state, counts, a warning).
+    pub ribbon: Option<DocRibbon>,
+}
+
+/// The page's bottom status strip: a state dot with its label, quiet facts, an optional progress track and a warning.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocRibbon {
+    pub state: String,
+    pub tone: Tone,
+    pub facts: Vec<String>,
+    /// A segmented progress track (0..=1) labelled `progress_label`, shown while something is being built.
+    pub progress: Option<(String, f32)>,
+    pub warning: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

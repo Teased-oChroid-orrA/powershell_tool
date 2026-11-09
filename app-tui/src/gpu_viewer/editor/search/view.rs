@@ -18,7 +18,7 @@ use crate::gpu_viewer::{
     menu::{Entry, Item, Menu},
     ui::{
         CardRow, DocColumn, DocDetail, DocHelp, DocNote, DocSignal, DocInput, DocMatchNavigation, DocModal, DocNotice,
-        DocPanel, DocProgress, DocRow, DocSidebar, DocSidebarRecent, DocTable, DocText, DockItem,
+        DocPanel, DocProgress, DocRibbon, DocRow, DocSidebar, DocSidebarRecent, DocTable, DocText, DockItem,
         Document, HelpRow, HelpSection, RibbonTab, TreeNode, ValueCard,
     },
 };
@@ -704,6 +704,44 @@ pub(super) fn document(s: &SearchSession) -> Document {
         detail: detail(s),
         panels,
         modal,
+        ribbon: Some(status_strip(s)),
+    }
+}
+
+/// The bottom strip: the semantic index state, the size of the result, and a PDF warning for the selected file.
+fn status_strip(s: &SearchSession) -> DocRibbon {
+    let ix = &s.st.index_run;
+    let run = &s.st.run;
+    let (state, tone) = if ix.is_building {
+        ("Index building", Tone::Warn)
+    } else if ix.docs.is_some() {
+        ("Index ready", Tone::On)
+    } else {
+        ("No index", Tone::Dim)
+    };
+    let mut facts = Vec::new();
+    if run.started.is_some() {
+        let hits: usize = run.results.iter().map(|r| r.hits.len()).sum();
+        facts.push(format!(
+            "{} · {}",
+            plural(run.results.len(), "file", "files"),
+            plural(hits, "hit", "hits")
+        ));
+    }
+    if let Some(n) = ix.docs {
+        facts.push(format!("{} indexed", group(n as usize)));
+    }
+    DocRibbon {
+        state: state.into(),
+        tone,
+        facts,
+        progress: ix
+            .is_building
+            .then(|| ("Indexing".to_string(), (ix.percent / 100.0).clamp(0.0, 1.0) as f32)),
+        warning: s
+            .current_result()
+            .filter(|r| r.low_confidence_pdf)
+            .map(|_| "PDF text may be misread".to_string()),
     }
 }
 
@@ -1212,7 +1250,7 @@ fn table(s: &SearchSession) -> DocTable {
             col("Size", 84.0, true, SortKey::Size),
             col("Modified", 138.0, false, SortKey::Modified),
             #[cfg(feature = "neural-search")]
-            col("Relevance", 86.0, true, SortKey::Relevance),
+            col("Relevance", 122.0, true, SortKey::Relevance),
         ],
         rows,
         empty_title,
@@ -1793,7 +1831,19 @@ pub(super) fn cards(s: &SearchSession) -> Cards {
                 "Extractive excerpts, not generated answers. Check each source in context.",
                 Tone::Dim,
             ));
-            for hit in search_core::evidence::select_evidence(hits) {
+            index.push(DockItem::row(
+                if s.refine.running {
+                    "Refining…"
+                } else if s.refined() {
+                    "Refined: order uses a second model"
+                } else {
+                    "Refine results"
+                },
+                Tone::Title,
+                Some(act(SearchAct::RefineResults)),
+                false,
+            ));
+            for hit in s.evidence_hits(hits) {
                 let i = hits
                     .iter()
                     .position(|candidate| std::ptr::eq(candidate, hit))

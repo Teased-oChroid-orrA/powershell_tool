@@ -213,15 +213,11 @@ fn main() {
                 let scores: Vec<f32> = model.embed_passages(&texts).expect("embed").iter().map(|e| search_ml::cosine_similarity(&query, e).unwrap_or(0.0)).collect();
                 let mut by_score: Vec<usize> = (0..top).collect();
                 by_score.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]));
-                let mut order: Vec<usize> = (0..top).collect();
-                if variant.name == "rerank" {
-                    order = by_score;
+                let order: Vec<usize> = if variant.name == "rerank" {
+                    by_score
                 } else {
-                    let mut new_rank = vec![0usize; top];
-                    for (r, &i) in by_score.iter().enumerate() { new_rank[i] = r; }
-                    let rrf = |i: usize| 1.0 / (60.0 + i as f64) + 1.0 / (60.0 + new_rank[i] as f64);
-                    order.sort_by(|&a, &b| rrf(b).total_cmp(&rrf(a)));
-                }
+                    search_core::rank_fusion::fuse_top(&scores, top)
+                };
                 let reordered: Vec<String> = order.iter().map(|&i| ranked[i].clone()).collect();
                 ranked.splice(..top, reordered);
             }

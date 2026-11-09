@@ -27,6 +27,8 @@ use egui::{
 
 /// Height of one table row (two lines: name and folder).
 const ROW_H: f32 = 42.0;
+/// Height reserved for the page's bottom status strip.
+const RIBBON_H: f32 = 32.0;
 /// Below this width the bar's inputs stack.
 const BAR_STACK: f32 = 560.0;
 /// A grip moved less than this is a click, not a move.
@@ -84,6 +86,19 @@ fn tone_fill(p: &Palette, tone: Tone) -> Color32 {
         Tone::On => p.good,
         Tone::Title => p.accent,
         _ => p.dim,
+    }
+}
+
+#[cfg(test)]
+mod design_d_tests {
+    use super::relevance_fraction;
+
+    #[test]
+    fn only_the_relevance_column_draws_a_bar() {
+        assert_eq!(relevance_fraction("Relevance", "82%"), Some(0.82));
+        assert_eq!(relevance_fraction("Relevance", ""), None);
+        assert_eq!(relevance_fraction("Relevance", "250%"), Some(1.0));
+        assert_eq!(relevance_fraction("Matches", "82%"), None);
     }
 }
 
@@ -333,7 +348,10 @@ impl Gui {
                                     });
                             });
                     }
-                    let rest = ui.available_rect_before_wrap();
+                    let full = ui.available_rect_before_wrap();
+                    let ribbon_room = if doc.ribbon.is_some() && full.height() > 160.0 { RIBBON_H } else { 0.0 };
+                    let mut rest = full;
+                    rest.max.y -= ribbon_room;
                     if rest.height() < 60.0 {
                         return;
                     }
@@ -377,7 +395,11 @@ impl Gui {
                         }
                     }
                     self.drop_preview(ui.ctx(), rest, p);
-                    ui.advance_cursor_after_rect(rest);
+                    if let (Some(r), true) = (&doc.ribbon, ribbon_room > 0.0) {
+                        let strip = Rect::from_min_max(Pos2::new(full.left(), full.bottom() - ribbon_room + 4.0), full.max);
+                        ribbon(ui, strip, r, p);
+                    }
+                    ui.advance_cursor_after_rect(full);
                 });
         });
         if let Some(m) = &doc.modal {
@@ -1511,6 +1533,52 @@ impl Gui {
         });
     }
 
+    /// The headline score as a chip; a click opens "Why this ranked" with every signal. Only one signal: no popover.
+    fn why_ranked(&mut self, ui: &mut egui::Ui, signals: &[crate::gpu_viewer::ui::DocSignal], p: &Palette) {
+        let Some(head) = signals.iter().find(|s| s.primary).or_else(|| signals.first()) else {
+            return;
+        };
+        let more = signals.len() > 1;
+        let open_id = Id::new("why-ranked-open");
+        let mut open = more && ui.ctx().data(|d| d.get_temp::<bool>(open_id).unwrap_or(false));
+        let label = format!("{:.0}% relevant{}", head.fraction.clamp(0.0, 1.0) * 100.0, if more { " \u{25BE}" } else { "" });
+        let galley = ui.painter().layout_no_wrap(label, FontId::proportional(12.0), p.accent);
+        ui.add_space(4.0);
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(galley.size().x + 22.0, 24.0), if more { Sense::click() } else { Sense::hover() });
+        ui.painter().rect(
+            rect,
+            CornerRadius::same(12),
+            with_alpha(p.accent, if open || response.hovered() { 40 } else { 22 }),
+            Stroke::new(1.0, with_alpha(p.accent, 110)),
+            egui::StrokeKind::Inside,
+        );
+        ui.painter().galley(Pos2::new(rect.left() + 11.0, rect.center().y - galley.size().y / 2.0), galley, p.accent);
+        let response = response.on_hover_text(&head.hint);
+        self.targets.push(("Why this ranked".into(), rect));
+        if more && response.clicked() {
+            open = !open;
+        }
+        if open {
+            let area = egui::Area::new(Id::new("why-ranked"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(rect.left_bottom() + Vec2::new(0.0, 6.0))
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).fill(p.panel).stroke(Stroke::new(1.0, p.line)).corner_radius(CornerRadius::same(12)).inner_margin(Margin::same(14)).show(ui, |ui| {
+                        ui.set_width(300.0);
+                        ui.label(RichText::new("Why this ranked").strong());
+                        Self::signal_meters(ui, signals, p);
+                        ui.add_space(6.0);
+                        ui.label(RichText::new("Scores compare files; they are not accuracy.").small().color(p.dim));
+                    });
+                });
+            let outside = ui.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|at| !area.response.rect.contains(at) && !rect.contains(at)));
+            if outside {
+                open = false;
+            }
+        }
+        ui.ctx().data_mut(|d| d.insert_temp(open_id, open));
+    }
+
     /// Short facts about a result as quiet pills.
     fn note_pills(ui: &mut egui::Ui, notes: &[crate::gpu_viewer::ui::DocNote], p: &Palette) {
         if notes.is_empty() {
@@ -2052,6 +2120,25 @@ impl Gui {
                 clip.galley(Pos2::new(name_x, r.top() + 5.0), name, p.text);
                 let sub = clip.layout_no_wrap(row.sub.clone(), FontId::proportional(11.5), p.dim);
                 clip.galley(Pos2::new(r.left() + 4.0, r.top() + 23.0), sub, p.dim);
+            } else if let Some(fraction) = relevance_fraction(&t.columns[k].title, cell) {
+                // A relevance score is a short bar and its number, so a column of them reads at a glance.
+                let bar = Rect::from_min_size(
+                    Pos2::new(r.left() + 6.0, r.center().y - 3.0),
+                    Vec2::new((r.width() - 48.0).max(16.0), 6.0),
+                );
+                clip.rect_filled(bar, CornerRadius::same(3), p.line);
+                clip.rect_filled(
+                    Rect::from_min_size(bar.min, Vec2::new(bar.width() * fraction, 6.0)),
+                    CornerRadius::same(3),
+                    if row.selected { p.accent } else { with_alpha(p.accent, 170) },
+                );
+                clip.text(
+                    Pos2::new(r.right() - 4.0, r.center().y),
+                    Align2::RIGHT_CENTER,
+                    cell,
+                    FontId::monospace(12.0),
+                    if row.selected { p.text } else { p.dim },
+                );
             } else {
                 let g = clip.layout_no_wrap(
                     cell.clone(),
@@ -2223,7 +2310,7 @@ impl Gui {
                 }
             });
             ui.add(egui::Label::new(RichText::new(&d.subtitle).small().color(p.dim)).wrap());
-            Self::signal_meters(ui, &d.signals, p);
+            self.why_ranked(ui, &d.signals, p);
             Self::note_pills(ui, &d.notes, p);
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
@@ -2311,12 +2398,13 @@ impl Gui {
                 } else {
                     None
                 };
-                egui::ScrollArea::vertical()
+                let shown = egui::ScrollArea::vertical()
                     .id_salt(("full-document", &d.subtitle))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         selectable_document(ui, text, &d.title, p, scroll_to_line)
                     });
+                match_gutter(ui, &shown.inner_rect, shown.state.offset.y, shown.content_size.y, text, p);
                 return;
             }
             if d.blocks.is_empty() {
@@ -2345,6 +2433,76 @@ impl Gui {
                     }
                 });
         });
+    }
+}
+
+/// A relevance cell ("82%") as a fraction, for the bar; `None` for any other cell.
+fn relevance_fraction(column: &str, cell: &str) -> Option<f32> {
+    if column != "Relevance" {
+        return None;
+    }
+    let value: f32 = cell.strip_suffix('%')?.trim().parse().ok()?;
+    Some((value / 100.0).clamp(0.0, 1.0))
+}
+
+/// Where each match sits in the document, as ticks down a thin strip at the text's right edge, with the visible part
+/// lit. The position is the byte share, which tracks the line share closely enough for orientation.
+fn match_gutter(ui: &egui::Ui, view: &Rect, offset: f32, content_height: f32, text: &DocText, p: &Palette) {
+    if text.marks.is_empty() || text.content.is_empty() || content_height <= view.height() + 1.0 {
+        return;
+    }
+    let strip = Rect::from_min_max(Pos2::new(view.right() - 9.0, view.top() + 2.0), Pos2::new(view.right() - 3.0, view.bottom() - 2.0));
+    let painter = ui.painter_at(*view);
+    painter.rect_filled(strip, CornerRadius::same(3), with_alpha(p.line, 150));
+    let lit_top = strip.top() + strip.height() * (offset / content_height).clamp(0.0, 1.0);
+    let lit_height = (strip.height() * view.height() / content_height).max(6.0);
+    painter.rect_filled(
+        Rect::from_min_size(Pos2::new(strip.left(), lit_top), Vec2::new(strip.width(), lit_height)).intersect(strip),
+        CornerRadius::same(3),
+        with_alpha(p.dim, 70),
+    );
+    let total = text.content.len() as f32;
+    for (start, _) in text.marks.iter() {
+        let y = strip.top() + strip.height() * (*start as f32 / total);
+        painter.rect_filled(
+            Rect::from_center_size(Pos2::new(strip.center().x, y.clamp(strip.top() + 1.0, strip.bottom() - 1.0)), Vec2::new(strip.width(), 3.0)),
+            CornerRadius::same(1),
+            p.accent,
+        );
+    }
+}
+
+/// The page's bottom strip: a state dot and label, quiet facts, a segmented progress track, and a warning at the right.
+fn ribbon(ui: &mut egui::Ui, strip: Rect, r: &crate::gpu_viewer::ui::DocRibbon, p: &Palette) {
+    let painter = ui.painter_at(strip);
+    painter.rect_filled(strip, CornerRadius::same(8), p.panel);
+    painter.rect_stroke(strip, CornerRadius::same(8), Stroke::new(1.0, p.line), egui::StrokeKind::Inside);
+    let mid = strip.center().y;
+    let mut x = strip.left() + 14.0;
+    painter.circle_filled(Pos2::new(x + 3.0, mid), 3.5, tone_fill(p, r.tone));
+    x += 14.0;
+    let put = |x: &mut f32, text: &str, color: Color32| {
+        let g = painter.layout_no_wrap(text.to_string(), FontId::proportional(12.0), color);
+        let width = g.size().x;
+        painter.galley(Pos2::new(*x, mid - g.size().y / 2.0), g, color);
+        *x += width + 18.0;
+    };
+    put(&mut x, &r.state, p.text);
+    for fact in &r.facts {
+        put(&mut x, fact, p.dim);
+    }
+    if let Some((label, fraction)) = &r.progress {
+        put(&mut x, label, p.dim);
+        const SEGMENTS: usize = 10;
+        for k in 0..SEGMENTS {
+            let seg = Rect::from_min_size(Pos2::new(x + k as f32 * 16.0, mid - 3.0), Vec2::new(14.0, 6.0));
+            let filled = (k as f32 + 0.5) / SEGMENTS as f32 <= *fraction;
+            painter.rect_filled(seg, CornerRadius::same(2), if filled { p.accent } else { p.line });
+        }
+    }
+    if let Some(warning) = &r.warning {
+        let g = painter.layout_no_wrap(warning.clone(), FontId::proportional(12.0), p.warn);
+        painter.galley(Pos2::new(strip.right() - 14.0 - g.size().x, mid - g.size().y / 2.0), g, p.warn);
     }
 }
 

@@ -17,6 +17,16 @@ pub fn select_evidence(hits: &[SemanticHit]) -> Vec<&SemanticHit> {
             .then_with(|| left.excerpt.cmp(&right.excerpt))
     });
 
+    pick_in_order(ranked)
+}
+
+/// Like [`select_evidence`] for hits already in the order the caller wants (for example after a refining step):
+/// the same duplicate, one-per-file and size limits, without re-sorting by similarity.
+pub fn select_ordered(hits: &[SemanticHit]) -> Vec<&SemanticHit> {
+    pick_in_order(hits.iter().collect())
+}
+
+fn pick_in_order(ranked: Vec<&SemanticHit>) -> Vec<&SemanticHit> {
     let mut citations = std::collections::HashSet::new();
     let mut excerpts = std::collections::HashSet::new();
     let mut candidates = Vec::new();

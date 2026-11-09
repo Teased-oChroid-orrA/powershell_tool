@@ -23,6 +23,9 @@ pub mod neural_search;
 #[cfg(feature = "ocr")]
 pub mod ocr;
 pub mod orchestrator;
+pub mod rank_fusion;
+#[cfg(feature = "neural-search")]
+pub mod second_model;
 pub mod regex_literals;
 #[cfg(feature = "semantic-search")]
 mod pdf_page_map;
