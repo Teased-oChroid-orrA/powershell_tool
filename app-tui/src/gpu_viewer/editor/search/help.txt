@@ -200,7 +200,7 @@ Save current search as alert stores the current folder, terms and options, and a
 Capture baseline records which files currently match, and Check now compares the folder against that baseline.
 Replace baseline records the current matches as the new baseline, and Delete alert removes a saved alert.
 An alert decides which files changed with the exact search, and MiniLM scores only help review changed files.
-Alert results are labeled New or Updated, and the cosine distance shown for updated files is an uncalibrated review signal.
+Alert results are labeled New or Updated, and the percentage shown for updated files is an uncalibrated review signal of how far the text moved.
 Saved alerts are stored as files in a search-alerts folder next to the settings file.
 Local relevance feedback is off by default and is turned on from the Enable local relevance feedback item in the Tools menu.
 With feedback on, the Relevant and Not relevant buttons in the preview record a vote about how the result was ranked.

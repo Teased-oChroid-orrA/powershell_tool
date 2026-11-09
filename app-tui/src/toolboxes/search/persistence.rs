@@ -96,8 +96,6 @@ pub struct PersistedSearchSettings {
     pub index_location: Option<super::indexing::IndexLocation>,
     #[serde(default)]
     pub semantic_index: bool,
-    #[serde(default)]
-    pub llm_model_path: String,
 }
 
 fn default_true() -> bool {
@@ -140,7 +138,6 @@ impl From<&SearchToolConfig> for PersistedSearchSettings {
             index_enabled: config.index.enabled,
             index_location: Some(config.index.location),
             semantic_index: config.index.semantic,
-            llm_model_path: config.llm_model_path.clone(),
         }
     }
 }
@@ -207,7 +204,6 @@ impl PersistedSearchSettings {
             config.index.location = v;
         }
         config.index.semantic = self.semantic_index;
-        config.llm_model_path = self.llm_model_path.clone();
     }
 }
 

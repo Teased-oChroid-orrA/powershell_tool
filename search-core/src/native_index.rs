@@ -104,8 +104,9 @@ pub fn open_or_create_with_rebuild(index_directory: &Path) -> NsResult<NativeSea
 /// History: 2 = `modified` stored as nanoseconds (was whole seconds, which
 /// could not tell apart two same-size edits inside one second). 3 = PDF/OCR
 /// lines are repaired and noise lines dropped (`line_quality`), `TJ` arrays are
-/// joined into words, and non-content streams are no longer scanned for text.
-pub const INDEX_SEMANTIC_VERSION: u32 = 3;
+/// joined into words, and non-content streams are no longer scanned for text. 4 = PDF words broken over two lines by a
+/// soft hyphen are joined.
+pub const INDEX_SEMANTIC_VERSION: u32 = 4;
 const SEMANTIC_VERSION_FILE: &str = "semantic-version";
 
 /// `true` when the index at `index_directory` can be used as-is: it does

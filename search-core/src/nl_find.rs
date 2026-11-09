@@ -1,29 +1,39 @@
 //! Natural-language Find orchestration.
 //!
-//! A sentence is split into conditions by a local language model (`search_llm`).
-//! Each condition is retrieved on its own through the hybrid semantic index, the
-//! model judges the strongest passages of the most promising files, and a file
-//! is labelled by its weakest condition. The model never writes answers: every
-//! match carries the unchanged cited passage and a quote verified against it.
-//! Negated conditions only exclude files.
+//! A sentence is split into conditions by rules (`nl_rules`, no model). Each
+//! condition is retrieved on its own through the hybrid semantic index, the
+//! strongest passages of the most promising files are judged by word-form
+//! coverage, and a file is labelled by its weakest condition. Nothing is
+//! generated: every match carries the unchanged cited passage and a quote copied
+//! from it. Negated conditions only exclude files.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use search_llm::{Condition, ConditionModel};
+pub use crate::nl_rules::{judge, parse, Condition, Verdict};
 
 use crate::semantic_index::SemanticHit;
 
 /// Passages retrieved per condition; files lacking a hit inside it are not candidates.
 const RETRIEVE_PER_CONDITION: usize = 100;
-/// Files judged per search: the model is slow, so only the best-ranked files are checked.
+/// Files judged per search: only the best-ranked files are checked.
 const MAX_JUDGED_FILES: usize = 10;
-/// Passages judged per (file, condition) pair.
-const PASSAGES_PER_PAIR: usize = 3;
+/// Files offered as unconfirmed closest passages when no passage was confirmed, and the length of each shown passage.
+const CLOSEST_FILES: usize = 5;
+const CLOSEST_QUOTE_CHARS: usize = 200;
+/// Passages judged per (file, condition) pair: many for a file that is among the best matches (a question such
+/// as "fasteners with a size specified" is satisfied by a few passages in hundreds, and judging stops at the first
+/// confirmation), few for a file much less similar than the best one.
+const STRONG_PASSAGES: usize = 8;
+const WEAK_PASSAGES: usize = 1;
+/// A file is "strong" for a condition when its best passage is at least this share of the best file's.
+const STRONG_SHARE: f32 = 0.5;
 
 /// How well a file satisfies the positive conditions. Not a percentage on purpose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Fit {
+    /// Nothing was confirmed; these are the best-retrieved passages, shown so a search is never a dead end.
+    Unconfirmed,
     Partial,
     OneWeak,
     AllMatched,
@@ -35,15 +45,16 @@ impl Fit {
             Fit::AllMatched => "all matched",
             Fit::OneWeak => "one weak",
             Fit::Partial => "partial",
+            Fit::Unconfirmed => "not confirmed",
         }
     }
 }
 
-/// A passage the model confirmed states a condition.
+/// A passage that states a condition.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Evidence {
     pub hit: SemanticHit,
-    /// Words copied from the passage by the model; verified to occur in it.
+    /// Words copied from the passage; verified to occur in it.
     pub quote: String,
 }
 
@@ -59,7 +70,6 @@ pub struct FileMatch {
 pub enum FindError {
     NoPositiveCondition,
     Retrieval(String),
-    Model(String),
 }
 
 impl std::fmt::Display for FindError {
@@ -69,13 +79,12 @@ impl std::fmt::Display for FindError {
                 f.write_str("at least one condition must not be negated")
             }
             FindError::Retrieval(error) => write!(f, "search failed: {error}"),
-            FindError::Model(error) => write!(f, "language model failed: {error}"),
         }
     }
 }
 impl std::error::Error for FindError {}
 
-/// Longest focused passage handed to the model, in characters.
+/// Longest focused passage handed to the judge, in characters.
 const FOCUS_CHARS: usize = 600;
 const FOCUS_SENTENCES: usize = 3;
 
@@ -84,8 +93,11 @@ fn wanted_stems(condition: &Condition) -> Vec<String> {
     let mut stems: Vec<String> = condition
         .terms
         .iter()
-        .flat_map(|term| crate::lexical::terms(term))
+        .map(String::as_str)
+        .flat_map(crate::lexical::query_terms_or_empty)
         .collect();
+    // Single characters and bare numbers (the `x` and `8` of "M8 x 1.25") match scraps of every passage.
+    stems.retain(|stem| stem.chars().count() >= 3 && !stem.chars().all(|c| c.is_ascii_digit() || c == '.'));
     stems.sort();
     stems.dedup();
     stems
@@ -98,9 +110,9 @@ fn coverage(text: &str, wanted: &[String]) -> usize {
 }
 
 /// The part of a retrieved passage that bears on the condition. A passage is a fixed-size cut of the document
-/// and often starts mid-sentence or holds a neighbouring topic, which a small model loses the sentence in. The
-/// sentences that share the most word forms with the condition's terms are kept, in their original order;
-/// a passage sharing none is handed over whole. Line-end hyphens (`re­ moved`) are rejoined.
+/// and often starts mid-sentence or holds a neighbouring topic, which loses the sentence in. The
+/// sentences that share the most word forms with the condition's terms are kept with the sentence on either side,
+/// in their original order; a passage sharing none is handed over whole. Line-end hyphens (`re­ moved`) are rejoined.
 fn focus(passage: &str, condition: &Condition) -> String {
     let text = passage.replace("\u{ad} ", "").replace('\u{ad}', "");
     let wanted = wanted_stems(condition);
@@ -117,39 +129,69 @@ fn focus(passage: &str, condition: &Condition) -> String {
     for sentence in &mut sentences {
         sentence.0 = coverage(sentence.2, &wanted);
     }
+    let all: Vec<String> = sentences.iter().map(|sentence| sentence.2.to_string()).collect();
     sentences.retain(|sentence| sentence.0 > 0 && !sentence.2.is_empty());
     if sentences.is_empty() {
         return text;
     }
-    sentences.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    // Best sentences first (a fragment of a few characters is rarely the answer), each with its neighbours: a
+    // passage is cut from running text, so the sentence beside a match often completes it.
+    let total = all.len();
+    sentences.sort_by(|a, b| {
+        (b.0, b.2.len().min(40)).cmp(&(a.0, a.2.len().min(40))).then(a.1.cmp(&b.1))
+    });
     sentences.truncate(FOCUS_SENTENCES);
-    sentences.sort_by_key(|sentence| sentence.1);
-    let joined = sentences.iter().map(|s| s.2).collect::<Vec<_>>().join(" ");
+    let mut wanted_indices: Vec<usize> = Vec::new();
+    for sentence in &sentences {
+        for index in sentence.1.saturating_sub(1)..=(sentence.1 + 1).min(total - 1) {
+            if !wanted_indices.contains(&index) {
+                wanted_indices.push(index);
+            }
+        }
+    }
+    wanted_indices.sort_unstable();
+    let joined = wanted_indices
+        .iter()
+        .map(|&i| all[i].as_str())
+        .filter(|sentence| !sentence.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
     joined.chars().take(FOCUS_CHARS).collect()
 }
 
-fn judge_pair<M: ConditionModel + ?Sized>(
-    model: &M,
+fn judge_pair(
     condition: &Condition,
     hits: &[&SemanticHit],
-) -> Result<Option<Evidence>, FindError> {
-    // The passages that hold the most of the condition's word forms are judged first: a short query's
-    // nearest passages by meaning alone are often a contents page or a neighbouring topic.
+    limit: usize,
+) -> Option<Evidence> {
+    // Two signals pick the passages to judge. Retrieval order is right when the condition is
+    // concrete; word-form coverage is right when meaning alone surfaces a contents page or a neighbouring topic.
+    // They are taken alternately, best first, until `limit` passages are chosen.
     let wanted = wanted_stems(condition);
-    let mut order: Vec<&&SemanticHit> = hits.iter().collect();
-    order.sort_by_key(|hit| std::cmp::Reverse(coverage(&hit.excerpt, &wanted)));
-    for hit in order.into_iter().take(PASSAGES_PER_PAIR) {
-        let verdict = model
-            .judge(&condition.text, &focus(&hit.excerpt, condition))
-            .map_err(FindError::Model)?;
-        if verdict.matches {
-            return Ok(Some(Evidence {
-                hit: (*hit).clone(),
-                quote: verdict.quote,
-            }));
+    let mut by_coverage: Vec<&SemanticHit> = hits.to_vec();
+    by_coverage.sort_by_key(|hit| std::cmp::Reverse(coverage(&hit.excerpt, &wanted)));
+    let mut order: Vec<&SemanticHit> = Vec::new();
+    'pick: for rank in 0..hits.len() {
+        for hit in [hits[rank], by_coverage[rank]] {
+            if !order.iter().any(|seen| std::ptr::eq(*seen, hit)) {
+                order.push(hit);
+                if order.len() >= limit {
+                    break 'pick;
+                }
+            }
         }
     }
-    Ok(None)
+    for hit in order {
+        let focused = focus(&hit.excerpt, condition);
+        let verdict = judge(&condition.text, &focused);
+        if verdict.matches {
+            return Some(Evidence {
+                hit: hit.clone(),
+                quote: verdict.quote,
+            });
+        }
+    }
+    None
 }
 
 /// Group hits by file, keeping the retrieval order within each file.
@@ -164,16 +206,14 @@ fn by_file(hits: Vec<SemanticHit>) -> HashMap<String, Vec<SemanticHit>> {
 /// Run a parsed sentence. `retrieve` returns scored passages for one condition
 /// text (normally `SemanticIndex::search_with_settings`). `on_file` is called as each
 /// judged file with at least one confirmed condition is finished; `cancel` stops
-/// before the next model call. Returns files best first (fit, then weakest evidence).
-pub fn find<M, R>(
-    model: &M,
+/// before the next passage is judged. Returns files best first (fit, then weakest evidence).
+pub fn find<R>(
     conditions: &[Condition],
     retrieve: R,
     cancel: &AtomicBool,
     mut on_file: impl FnMut(&FileMatch),
 ) -> Result<Vec<FileMatch>, FindError>
 where
-    M: ConditionModel + ?Sized,
     R: Fn(&str, usize) -> Result<Vec<SemanticHit>, String>,
 {
     let positive: Vec<&Condition> = conditions.iter().filter(|c| !c.negated).collect();
@@ -182,9 +222,8 @@ where
     }
     let negative: Vec<&Condition> = conditions.iter().filter(|c| c.negated).collect();
     let retrieve_for = |condition: &Condition| {
-        retrieve(&condition.text, RETRIEVE_PER_CONDITION)
-            .map(by_file)
-            .map_err(FindError::Retrieval)
+        let hits = retrieve(&condition.text, RETRIEVE_PER_CONDITION).map_err(FindError::Retrieval)?;
+        Ok(by_file(hits))
     };
     let positive_hits = positive
         .iter()
@@ -215,29 +254,42 @@ where
     });
     ranked.truncate(MAX_JUDGED_FILES);
 
+    let candidates: Vec<&str> = ranked.iter().map(|(path, _)| *path).collect();
+    // Per condition: how similar a file's best passage must be to count as a strong candidate.
+    let strong_floor = |lists: &Vec<HashMap<String, Vec<SemanticHit>>>| -> Vec<f32> {
+        lists
+            .iter()
+            .map(|files| files.values().map(|hits| hits[0].similarity).fold(0.0, f32::max) * STRONG_SHARE)
+            .collect()
+    };
+    let positive_floor = strong_floor(&positive_hits);
+    let negative_floor = strong_floor(&negative_hits);
+    let passages_for = |hits: &[SemanticHit], floor: f32| {
+        if hits[0].similarity >= floor { STRONG_PASSAGES } else { WEAK_PASSAGES }
+    };
     let mut matches = Vec::new();
     'files: for (path, _) in ranked {
         // Exclusion first: a confirmed negated condition removes the file.
-        for (condition, files) in negative.iter().zip(&negative_hits) {
+        for ((condition, files), floor) in negative.iter().zip(&negative_hits).zip(&negative_floor) {
             if let Some(hits) = files.get(path) {
                 if cancel.load(Ordering::Relaxed) {
                     break 'files;
                 }
                 let refs: Vec<&SemanticHit> = hits.iter().collect();
-                if judge_pair(model, condition, &refs)?.is_some() {
+                if judge_pair(condition, &refs, passages_for(hits, *floor)).is_some() {
                     continue 'files;
                 }
             }
         }
         let mut evidence = Vec::with_capacity(positive.len());
-        for (condition, files) in positive.iter().zip(&positive_hits) {
+        for ((condition, files), floor) in positive.iter().zip(&positive_hits).zip(&positive_floor) {
             let found = match files.get(path) {
                 Some(hits) => {
                     if cancel.load(Ordering::Relaxed) {
                         break 'files;
                     }
                     let refs: Vec<&SemanticHit> = hits.iter().collect();
-                    judge_pair(model, condition, &refs)?
+                    judge_pair(condition, &refs, passages_for(hits, *floor))
                 }
                 None => None,
             };
@@ -262,6 +314,37 @@ where
         on_file(&file);
         matches.push(file);
     }
+    if matches.is_empty() && !cancel.load(Ordering::Relaxed) {
+        // Nothing confirmed: offer the best passage of the best files, marked as unconfirmed.
+        let best_of = |path: &str| {
+            positive_hits
+                .iter()
+                .filter_map(|files| files.get(path).and_then(|hits| hits.first()))
+                .map(|hit| hit.similarity)
+                .fold(f32::NEG_INFINITY, f32::max)
+        };
+        let top = candidates.iter().map(|path| best_of(path)).fold(f32::NEG_INFINITY, f32::max);
+        // A file whose best passage is far less like the sentence than the best file's is noise, not a near miss.
+        let floor = (top * 0.5).max(0.2);
+        for path in candidates.into_iter().filter(|path| best_of(path) >= floor).take(CLOSEST_FILES) {
+            let evidence: Vec<Option<Evidence>> = positive_hits
+                .iter()
+                .zip(&positive)
+                .map(|(files, condition)| {
+                    files.get(path).and_then(|hits| hits.first()).map(|hit| Evidence {
+                        hit: hit.clone(),
+                        quote: focus(&hit.excerpt, condition).chars().take(CLOSEST_QUOTE_CHARS).collect(),
+                    })
+                })
+                .collect();
+            matches.push(FileMatch {
+                path: path.to_string(),
+                fit: Fit::Unconfirmed,
+                evidence,
+            });
+        }
+        return Ok(matches);
+    }
     let weakest = |m: &FileMatch| {
         m.evidence
             .iter()
@@ -281,34 +364,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use search_llm::Verdict;
-
-    /// Judges "yes" when the passage contains every word of the condition's first term.
-    struct Fake;
-    impl ConditionModel for Fake {
-        fn parse(&self, _: &str) -> Result<Vec<Condition>, String> {
-            unreachable!()
-        }
-        fn judge(&self, condition: &str, passage: &str) -> Result<Verdict, String> {
-            let hit = passage.contains(condition);
-            Ok(Verdict {
-                matches: hit,
-                quote: if hit {
-                    condition.to_string()
-                } else {
-                    String::new()
-                },
-            })
-        }
-    }
 
     fn cond(text: &str, negated: bool) -> Condition {
-        Condition {
-            text: text.into(),
-            terms: vec![text.into()],
-            negated,
-            grounding: 1.0,
-        }
+        Condition { text: text.into(), terms: vec![text.into()], negated, }
     }
 
     fn hit(path: &str, excerpt: &str, similarity: f32) -> SemanticHit {
@@ -329,23 +387,23 @@ mod tests {
             hit("b.txt", "painted over", 0.4),
             hit("c.txt", "filled faired", 0.7),
         ];
-        // Retrieval is loose: every passage comes back, the model decides.
+        // Retrieval is loose: every passage comes back, the judge decides.
         let _ = query;
         Ok(all.to_vec())
     }
 
     fn run(conditions: &[Condition]) -> Vec<FileMatch> {
-        find(&Fake, conditions, corpus, &AtomicBool::new(false), |_| {}).unwrap()
+        find(conditions, corpus, &AtomicBool::new(false), |_| {}).unwrap()
     }
 
     #[test]
     fn focus_keeps_the_sentences_about_the_condition() {
-        let passage = "Remove the battery. Protect the surfaces next to rework areas. 6-115. All depressions should be faired or blended with the surrounding surface. Fairing can be done as follows: remove edges";
-        let blended = Condition { text: "surfaces blended".into(), terms: vec!["surface".into(), "blend".into(), "blended".into()], negated: false, grounding: 1.0 };
+        let passage = "Remove the battery. Drain the tank. Check the tires. Protect the surfaces next to rework areas. 6-115. All depressions should be faired or blended with the surrounding surface. Fairing can be done as follows: remove edges";
+        let blended = Condition { text: "surfaces blended".into(), terms: vec!["surface".into(), "blend".into(), "blended".into()], negated: false };
         let focused = focus(passage, &blended);
         assert!(focused.contains("faired or blended with the surrounding surface"), "{focused}");
         assert!(!focused.contains("battery"), "{focused}");
-        let nothing = Condition { text: "paint".into(), terms: vec!["paint".into()], negated: false, grounding: 1.0 };
+        let nothing = Condition { text: "paint".into(), terms: vec!["paint".into()], negated: false };
         assert_eq!(focus(passage, &nothing), passage);
         assert_eq!(focus("a re\u{ad} moved edge is blended", &blended), "a removed edge is blended");
     }
@@ -376,6 +434,18 @@ mod tests {
     }
 
     #[test]
+    fn when_nothing_is_confirmed_the_closest_passages_are_offered_as_unconfirmed() {
+        let found = run(&[cond("zzzzzz", false)]);
+        assert!(!found.is_empty());
+        assert!(found.iter().all(|m| m.fit == Fit::Unconfirmed), "{found:?}");
+        assert!(found.len() <= CLOSEST_FILES);
+        let evidence = found[0].evidence[0].as_ref().expect("the best passage is shown");
+        assert!(!evidence.quote.is_empty());
+        // A confirmed match suppresses them.
+        assert!(run(&[cond("blended", false)]).iter().all(|m| m.fit != Fit::Unconfirmed));
+    }
+
+    #[test]
     fn negated_condition_excludes_files() {
         let found = run(&[cond("blended", false), cond("painted", true)]);
         assert!(found.iter().all(|m| m.path != "b.txt"));
@@ -387,13 +457,12 @@ mod tests {
         let found = run(&[cond("blended", false)]);
         let evidence = found[0].evidence[0].as_ref().unwrap();
         assert_eq!(evidence.hit.path, "a.txt");
-        assert_eq!(evidence.quote, "blended");
+        assert_eq!(evidence.quote, "blended filled faired");
     }
 
     #[test]
     fn only_negated_conditions_is_an_error() {
         let result = find(
-            &Fake,
             &[cond("painted", true)],
             corpus,
             &AtomicBool::new(false),
@@ -403,10 +472,9 @@ mod tests {
     }
 
     #[test]
-    fn cancel_stops_before_model_calls_and_progress_streams() {
+    fn cancel_stops_before_judging_and_progress_streams() {
         let cancel = AtomicBool::new(true);
         assert!(find(
-            &Fake,
             &[cond("blended", false)],
             corpus,
             &cancel,
@@ -416,7 +484,6 @@ mod tests {
         .is_empty());
         let mut seen = 0;
         find(
-            &Fake,
             &[cond("blended", false)],
             corpus,
             &AtomicBool::new(false),

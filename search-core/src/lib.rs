@@ -16,6 +16,8 @@ pub mod models;
 pub mod native_index;
 #[cfg(feature = "nl-find")]
 pub mod nl_find;
+#[cfg(feature = "nl-find")]
+pub mod nl_rules;
 #[cfg(feature = "neural-search")]
 pub mod neural_search;
 #[cfg(feature = "ocr")]
@@ -27,6 +29,8 @@ mod pdf_page_map;
 #[cfg(feature = "neural-search")]
 pub mod relevance;
 pub mod report;
+#[cfg(feature = "semantic-search")]
+mod semantic_cache;
 #[cfg(feature = "semantic-search")]
 pub mod semantic_index;
 pub mod synonyms;

@@ -59,7 +59,7 @@ pub fn rank_results(
     if candidates.is_empty() {
         return Ok(Vec::new());
     }
-    let query_embedding = search_ml::embed_batch(&[query])?
+    let query_embedding = search_ml::embed_queries(&[query])?
         .into_iter()
         .next()
         .expect("one query produces one embedding");

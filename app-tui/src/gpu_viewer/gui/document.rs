@@ -7,7 +7,7 @@
 mod stackup;
 use super::{
     page_layout,
-    theme::{self, Palette},
+    theme::Palette,
     with_alpha, Gui,
 };
 use crate::gpu_viewer::{
@@ -98,7 +98,7 @@ mod selection_tests {
             content: "copy this text".into(),
             marks: Vec::new().into(),
         };
-        let p = theme::search_palette();
+        let p = crate::gpu_viewer::gui::theme::palette(true);
         let draw = |ctx: &mut egui::Context, events| {
             let mut response = None;
             let input = egui::RawInput {
@@ -195,8 +195,6 @@ impl Gui {
             return;
         }
         let search_shell = doc.sidebar.is_some();
-        let search_palette = theme::search_palette();
-        let p = if search_shell { &search_palette } else { p };
         if search_shell {
             ui.painter().rect_filled(area, 0.0, p.bg);
         }
@@ -589,7 +587,7 @@ impl Gui {
                     ui.painter().rect_filled(
                         rect,
                         0.0,
-                        Color32::from_rgba_unmultiplied(7, 15, 19, 163),
+                        with_alpha(p.side, 163),
                     );
                     (response.clicked(), ui.input(|i| i.pointer.interact_pos()))
                 });
@@ -1456,6 +1454,100 @@ impl Gui {
         }
     }
 
+    /// Scores behind a result as small labelled meters, the headline one first; a tooltip explains each.
+    fn signal_meters(ui: &mut egui::Ui, signals: &[crate::gpu_viewer::ui::DocSignal], p: &Palette) {
+        if signals.is_empty() {
+            return;
+        }
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(14.0, 6.0);
+            for signal in signals {
+                let fraction = signal.fraction.clamp(0.0, 1.0);
+                let value = format!("{:.0}%", fraction * 100.0);
+                let galley = ui.painter().layout_no_wrap(
+                    signal.label.clone(),
+                    FontId::proportional(12.0),
+                    p.dim,
+                );
+                let value_galley = ui.painter().layout_no_wrap(
+                    value.clone(),
+                    FontId::proportional(12.0),
+                    p.text,
+                );
+                let bar = if signal.primary { 72.0 } else { 44.0 };
+                let width = galley.size().x + bar + value_galley.size().x + 16.0;
+                let (rect, response) =
+                    ui.allocate_exact_size(Vec2::new(width, 22.0), Sense::hover());
+                let painter = ui.painter();
+                let mid = rect.center().y;
+                painter.text(
+                    Pos2::new(rect.left(), mid),
+                    Align2::LEFT_CENTER,
+                    &signal.label,
+                    FontId::proportional(12.0),
+                    if signal.primary { p.text } else { p.dim },
+                );
+                let track = Rect::from_min_size(
+                    Pos2::new(rect.left() + galley.size().x + 8.0, mid - 3.0),
+                    Vec2::new(bar, 6.0),
+                );
+                painter.rect_filled(track, CornerRadius::same(3), p.line);
+                let fill = Rect::from_min_size(track.min, Vec2::new(bar * fraction, 6.0));
+                painter.rect_filled(
+                    fill,
+                    CornerRadius::same(3),
+                    if signal.primary { p.accent } else { with_alpha(p.accent, 150) },
+                );
+                painter.text(
+                    Pos2::new(track.right() + 8.0, mid),
+                    Align2::LEFT_CENTER,
+                    value,
+                    FontId::proportional(12.0),
+                    p.text,
+                );
+                response.on_hover_text(&signal.hint);
+            }
+        });
+    }
+
+    /// Short facts about a result as quiet pills.
+    fn note_pills(ui: &mut egui::Ui, notes: &[crate::gpu_viewer::ui::DocNote], p: &Palette) {
+        if notes.is_empty() {
+            return;
+        }
+        ui.add_space(2.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+            for note in notes {
+                let galley = ui.painter().layout_no_wrap(
+                    note.text.clone(),
+                    FontId::proportional(12.0),
+                    p.dim,
+                );
+                let (rect, response) = ui.allocate_exact_size(
+                    Vec2::new(galley.size().x + 18.0, 22.0),
+                    Sense::hover(),
+                );
+                if !note.hint.is_empty() {
+                    response.on_hover_text(&note.hint);
+                }
+                ui.painter().rect(
+                    rect,
+                    CornerRadius::same(11),
+                    p.panel,
+                    Stroke::new(1.0, p.line),
+                    egui::StrokeKind::Inside,
+                );
+                ui.painter().galley(
+                    Pos2::new(rect.left() + 9.0, rect.center().y - galley.size().y / 2.0),
+                    galley,
+                    p.dim,
+                );
+            }
+        });
+    }
+
     /// A rounded switch pill: tinted when on.
     pub(super) fn chip(
         &mut self,
@@ -1516,31 +1608,11 @@ impl Gui {
         hint: &mut Option<String>,
     ) {
         let running = pr.cancel.is_some();
-        let fill = if search_shell {
-            Color32::from_rgb(39, 61, 58)
-        } else {
-            with_alpha(p.panel, 238)
-        };
-        let line = if search_shell {
-            Color32::from_rgb(56, 84, 80)
-        } else {
-            p.line
-        };
-        let text = if search_shell {
-            Color32::from_rgb(198, 222, 213)
-        } else {
-            p.text
-        };
-        let dim = if search_shell {
-            Color32::from_rgb(155, 173, 159)
-        } else {
-            p.dim
-        };
-        let accent = if search_shell {
-            Color32::from_rgb(101, 201, 169)
-        } else {
-            p.accent
-        };
+        let fill = with_alpha(p.panel, 238);
+        let line = p.line;
+        let text = p.text;
+        let dim = p.dim;
+        let accent = p.accent;
         let response = egui::Frame::new()
             .fill(fill)
             .stroke(Stroke::new(1.0, line))
@@ -1560,7 +1632,7 @@ impl Gui {
                         ui.label(RichText::new(badge).strong().color(if running {
                             accent
                         } else {
-                            Color32::from_rgb(24, 122, 103)
+                            p.good
                         }));
                         ui.label(RichText::new(&pr.headline).strong().size(13.5).color(text));
                         if let Some(c) = &pr.cancel {
@@ -1587,7 +1659,7 @@ impl Gui {
                                     ui.label(RichText::new(badge).strong().color(if running {
                                         accent
                                     } else {
-                                        Color32::from_rgb(24, 122, 103)
+                                        p.good
                                     }));
                                 }
                                 ui.label(
@@ -1658,11 +1730,7 @@ impl Gui {
         let dock = response.response.rect.shrink(2.0);
         let points = rounded_perimeter(dock, 11.0);
         let painter = ui.painter();
-        let track = if search_shell {
-            Color32::from_rgb(61, 90, 83)
-        } else {
-            with_alpha(p.raised, 210)
-        };
+        let track = with_alpha(p.raised, 210);
         let lengths: Vec<f32> = points
             .windows(2)
             .map(|pair| pair[0].distance(pair[1]))
@@ -2155,6 +2223,8 @@ impl Gui {
                 }
             });
             ui.add(egui::Label::new(RichText::new(&d.subtitle).small().color(p.dim)).wrap());
+            Self::signal_meters(ui, &d.signals, p);
+            Self::note_pills(ui, &d.notes, p);
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
                 for e in &d.actions {

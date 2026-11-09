@@ -364,13 +364,54 @@ pub(crate) fn clean_lines(lines: &mut Vec<String>, source: Source, origins: Opti
             line.retain(|c| !is_stray_control(c));
         }
     }
-    if let Some(origins) = origins {
+    let mut origins = origins;
+    if let Some(origins) = origins.as_deref_mut() {
         if origins.len() == keep.len() {
             let mut flags = keep.iter().copied();
             origins.retain(|_| flags.next().unwrap_or(true));
         }
     }
-    before - lines.len()
+    let dropped = before - lines.len();
+    join_soft_hyphens(lines, origins);
+    dropped
+}
+
+/// A soft hyphen (U+00AD) at the end of a line marks a word the typesetter broke over two lines, so the two
+/// halves are one word: `re` + soft hyphen, then `moved.`, becomes `removed.`. (An ordinary hyphen is left alone:
+/// without a dictionary `high-` + `temperature` cannot be told from `optimiza-` + `tion`.) The joined line keeps
+/// the origin of its first half.
+fn join_soft_hyphens(lines: &mut Vec<String>, mut origins: Option<&mut Vec<Option<usize>>>) {
+    const SOFT_HYPHEN: char = '\u{ad}';
+    if !lines.iter().any(|l| l.trim_end().ends_with(SOFT_HYPHEN)) {
+        return;
+    }
+    let aligned = origins.as_deref().is_some_and(|o| o.len() == lines.len());
+    let mut joined: Vec<String> = Vec::with_capacity(lines.len());
+    let mut joined_origins: Vec<Option<usize>> = Vec::new();
+    let mut open = false;
+    for (i, line) in lines.drain(..).enumerate() {
+        if open {
+            let last = joined.last_mut().expect("an open line");
+            last.push_str(line.trim_start());
+        } else {
+            joined.push(line);
+            if aligned {
+                joined_origins.push(origins.as_deref().and_then(|o| o[i]));
+            }
+        }
+        let last = joined.last_mut().expect("a line");
+        open = last.trim_end().ends_with(SOFT_HYPHEN);
+        if open {
+            let kept = last.trim_end().trim_end_matches(SOFT_HYPHEN).len();
+            last.truncate(kept);
+        }
+    }
+    *lines = joined;
+    if aligned {
+        if let Some(origins) = origins.as_deref_mut() {
+            *origins = joined_origins;
+        }
+    }
 }
 
 
@@ -462,6 +503,21 @@ mod tests {
         // A control code standing alone is not a ligature.
         assert_eq!(repair_encoding("a \u{c} b"), "a \u{c} b");
         assert_eq!(repair_encoding("plain"), "plain");
+    }
+
+    #[test]
+    fn soft_hyphenated_words_are_joined_across_lines_with_origins_kept() {
+        let mut lines: Vec<String> = ["whether all corrosion has been re\u{ad}", "moved. Inspect", "the area", "for corro\u{ad}", " sion."]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut origins = vec![Some(10), Some(20), Some(30), Some(40), Some(50)];
+        clean_lines(&mut lines, Source::TextLayer, Some(&mut origins));
+        assert_eq!(lines, ["whether all corrosion has been removed. Inspect", "the area", "for corrosion."]);
+        assert_eq!(origins, [Some(10), Some(30), Some(40)]);
+        let mut plain: Vec<String> = vec!["a high-".into(), "temperature seal".into()];
+        clean_lines(&mut plain, Source::TextLayer, None);
+        assert_eq!(plain, ["a high-", "temperature seal"]);
     }
 
     #[test]

@@ -11,6 +11,51 @@ use std::collections::HashMap;
 pub const MAX_QUERY_TERMS: usize = 24;
 const RRF_K: f32 = 60.0;
 const LEXICAL_WEIGHT: f32 = 2.0;
+const CONVEX_KEYWORD_SHARE: f32 = 0.35;
+
+/// The knobs of keyword scoring and fusion. The defaults are what search uses; benchmarks (`examples/retrieval_eval.rs`,
+/// BEIR and MS MARCO) vary them to measure a change before it is adopted.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LexicalConfig {
+    /// Reduce word forms to a common root (blended = blending).
+    pub stem: bool,
+    /// Weight of the keyword rank against the similarity rank in the fusion.
+    pub weight: f32,
+    /// Reciprocal-rank-fusion constant.
+    pub rrf_k: f32,
+    /// How the two scores are combined.
+    pub fusion: Fusion,
+    /// BM25 term-frequency saturation and length normalisation.
+    pub bm25_k1: f32,
+    pub bm25_b: f32,
+}
+
+/// How similarity and keyword scores are combined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fusion {
+    /// Reciprocal-rank fusion: only the ranks count.
+    Rrf,
+    /// Weighted sum of the scores after min-max normalisation over the candidates; `weight` is then the keyword
+    /// share, a number in 0 to 1.
+    Convex,
+}
+
+impl Default for LexicalConfig {
+    /// What retrieval over indexed passages uses: min-max normalised scores with a keyword share of 0.35. Measured on
+    /// BEIR (SciFact, NFCorpus, TREC-COVID subset), an MS MARCO subset and Cranfield, it equals or beats the
+    /// rank fusion below on every set (mean nDCG@10 0.4886 to 0.5092, `docs/search-benchmarks.md`).
+    fn default() -> Self {
+        Self { fusion: Fusion::Convex, weight: CONVEX_KEYWORD_SHARE, ..Self::rrf() }
+    }
+}
+
+impl LexicalConfig {
+    /// Reciprocal-rank fusion with the keyword rank weighted 2. Kept for ranking the short lines of the Search help
+    /// (Ask), whose retrieval was validated with it and is not covered by the benchmarks.
+    pub fn rrf() -> Self {
+        Self { stem: true, weight: LEXICAL_WEIGHT, rrf_k: RRF_K, fusion: Fusion::Rrf, bm25_k1: BM25_K1, bm25_b: BM25_B }
+    }
+}
 const BM25_K1: f32 = 1.2;
 const BM25_B: f32 = 0.75;
 const STOP_WORDS: &[&str] = &[
@@ -22,7 +67,7 @@ const STOP_WORDS: &[&str] = &[
 /// Cuts a plural or verb ending off a plain word, so `blended`, `blending` and `blends` all become `blend`
 /// and a search for one finds the others. Applied to query and text alike, so it need not give real stems.
 /// Words with digits, and short words, are left as they are.
-fn stem(word: &str) -> String {
+pub fn stem(word: &str) -> String {
     if word.len() < 5 || !word.chars().all(|c| c.is_ascii_alphabetic()) {
         return word.to_string();
     }
@@ -41,13 +86,18 @@ fn stem(word: &str) -> String {
 /// its pieces (`m`, `8`, `x`, `1.25`) and its first letters+digits prefix
 /// (`m8`) so a query for `M8` finds the full part number.
 pub fn terms(text: &str) -> Vec<String> {
+    terms_with(text, true)
+}
+
+/// [`terms`], with word forms reduced to a root only when `stem` is set.
+pub fn terms_with(text: &str, stem_words: bool) -> Vec<String> {
     let mut out = Vec::new();
     for raw in text.split(|c: char| !c.is_alphanumeric() && c != '.') {
         let token = raw.trim_matches('.').to_lowercase();
         if token.is_empty() {
             continue;
         }
-        out.push(stem(&token));
+        out.push(if stem_words { stem(&token) } else { token.clone() });
         let mut pieces = Vec::new();
         let mut piece = String::new();
         let mut last_digit = None;
@@ -78,8 +128,13 @@ pub fn terms(text: &str) -> Vec<String> {
 /// Distinct, non-stop-word query terms; `None` when the query is empty of
 /// terms or longer than [`MAX_QUERY_TERMS`] (it then stays dense-only).
 pub fn query_terms(query: &str) -> Option<Vec<String>> {
+    query_terms_with(query, true)
+}
+
+/// [`query_terms`] under a given stemming choice.
+pub fn query_terms_with(query: &str, stem_words: bool) -> Option<Vec<String>> {
     let mut distinct: Vec<String> = Vec::new();
-    for term in terms(query) {
+    for term in terms_with(query, stem_words) {
         if !STOP_WORDS.contains(&term.as_str()) && !distinct.contains(&term) {
             distinct.push(term);
         }
@@ -87,15 +142,25 @@ pub fn query_terms(query: &str) -> Option<Vec<String>> {
     (!distinct.is_empty() && distinct.len() <= MAX_QUERY_TERMS).then_some(distinct)
 }
 
+/// `query_terms` of `text`, empty when there are none or too many.
+pub fn query_terms_or_empty(text: &str) -> Vec<String> {
+    query_terms(text).unwrap_or_default()
+}
+
 /// Per-query-term counts in `text` plus its length in terms.
 pub fn count_terms(text: &str, query: &[String]) -> (Vec<u16>, u32) {
+    count_terms_with(text, query, true)
+}
+
+/// [`count_terms`] under a given stemming choice (it must match the one the query terms were made with).
+pub fn count_terms_with(text: &str, query: &[String], stem_words: bool) -> (Vec<u16>, u32) {
     let index: HashMap<&str, usize> = query
         .iter()
         .enumerate()
         .map(|(i, t)| (t.as_str(), i))
         .collect();
     let mut counts = vec![0u16; query.len()];
-    let doc = terms(text);
+    let doc = terms_with(text, stem_words);
     for term in &doc {
         if let Some(&i) = index.get(term.as_str()) {
             counts[i] = counts[i].saturating_add(1);
@@ -106,6 +171,11 @@ pub fn count_terms(text: &str, query: &[String]) -> (Vec<u16>, u32) {
 
 /// BM25 over documents given as (term counts, length). Zero when no query term occurs.
 pub fn bm25(documents: &[(Vec<u16>, u32)], query_len: usize) -> Vec<f32> {
+    bm25_with(documents, query_len, BM25_K1, BM25_B)
+}
+
+/// [`bm25`] with its two parameters given.
+pub fn bm25_with(documents: &[(Vec<u16>, u32)], query_len: usize, k1: f32, b: f32) -> Vec<f32> {
     let n = documents.len() as f32;
     if documents.is_empty() {
         return Vec::new();
@@ -126,12 +196,12 @@ pub fn bm25(documents: &[(Vec<u16>, u32)], query_len: usize) -> Vec<f32> {
     documents
         .iter()
         .map(|(counts, length)| {
-            let norm = BM25_K1 * (1.0 - BM25_B + BM25_B * *length as f32 / average);
+            let norm = k1 * (1.0 - b + b * *length as f32 / average);
             counts
                 .iter()
                 .zip(&idf)
                 .filter(|(&c, _)| c > 0)
-                .map(|(&c, &idf)| idf * c as f32 * (BM25_K1 + 1.0) / (c as f32 + norm))
+                .map(|(&c, &idf)| idf * c as f32 * (k1 + 1.0) / (c as f32 + norm))
                 .sum()
         })
         .collect()
@@ -149,13 +219,28 @@ fn ranks(scores: &[f32]) -> Vec<usize> {
 
 /// Reciprocal-rank fusion. A document with no keyword match gets no keyword share.
 pub fn fuse(dense: &[f32], lexical: &[f32]) -> Vec<f32> {
+    fuse_with(dense, lexical, &LexicalConfig::rrf())
+}
+
+/// [`fuse`] under a given weight and constant.
+pub fn fuse_with(dense: &[f32], lexical: &[f32], config: &LexicalConfig) -> Vec<f32> {
+    if config.fusion == Fusion::Convex {
+        let scale = |scores: &[f32]| {
+            let (low, high) = scores.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(l, h), &x| (l.min(x), h.max(x)));
+            let span = (high - low).max(f32::EPSILON);
+            scores.iter().map(|&x| (x - low) / span).collect::<Vec<f32>>()
+        };
+        let (dense, lexical) = (scale(dense), scale(lexical));
+        let share = config.weight.clamp(0.0, 1.0);
+        return dense.iter().zip(&lexical).map(|(d, l)| (1.0 - share) * d + share * l).collect();
+    }
     let dense_rank = ranks(dense);
     let lexical_rank = ranks(lexical);
     (0..dense.len())
         .map(|i| {
-            1.0 / (RRF_K + dense_rank[i] as f32)
+            1.0 / (config.rrf_k + dense_rank[i] as f32)
                 + if lexical[i] > 0.0 {
-                    LEXICAL_WEIGHT / (RRF_K + lexical_rank[i] as f32)
+                    config.weight / (config.rrf_k + lexical_rank[i] as f32)
                 } else {
                     0.0
                 }
@@ -218,5 +303,9 @@ mod tests {
         let lexical = [0.0, 3.0, 0.0];
         let fused = fuse(&dense, &lexical);
         assert!(fused[1] > fused[0]);
+        // The same under score fusion (the default for passages): a close second by meaning that also matches wins.
+        let close = [0.9, 0.8, 0.4];
+        let fused = fuse_with(&close, &lexical, &LexicalConfig::default());
+        assert!(fused[1] > fused[0], "{fused:?}");
     }
 }

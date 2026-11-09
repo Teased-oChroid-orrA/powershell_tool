@@ -124,9 +124,8 @@ image = { version = "0.25", optional = true, default-features = false, features 
 ocr = ["dep:ocrs", "dep:rten", "dep:image"]
 neural-search = ["dep:search-ml"]
 semantic-search = ["neural-search"]
-# Natural-language Find: a local language model splits a sentence into conditions and judges passages.
-# Needs only the `search-llm` trait here; the llama.cpp engine is enabled by the app.
-nl-find = ["semantic-search", "dep:search-llm"]
+# Natural-language Find: rules (`nl_rules`) split a sentence into conditions and judge passages; no model.
+nl-find = ["semantic-search"]
 
 [[example]]
 name = "entity_rank_probe"
@@ -134,10 +133,6 @@ required-features = ["neural-search"]
 
 [dependencies.search-ml]
 path = "../search-ml"
-optional = true
-
-[dependencies.search-llm]
-path = "../search-llm"
 optional = true
 
 [dev-dependencies]

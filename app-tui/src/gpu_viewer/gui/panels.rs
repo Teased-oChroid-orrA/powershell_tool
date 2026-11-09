@@ -1,6 +1,6 @@
 //! The parts of the window: top bar, tool pill, feature tree, property manager, status bar.
 use super::{
-    theme::{tone_color, Palette},
+    theme::{self, tone_color, Palette},
     with_alpha, Gui,
 };
 use crate::gpu_viewer::{
@@ -191,7 +191,7 @@ impl Gui {
         out: &mut Vec<Outcome>,
         hint: &mut Option<String>,
     ) {
-        let bg = Color32::from_rgb(23, 42, 50);
+        let bg = p.side;
         egui::Panel::top("bar")
             .exact_size(48.0)
             .show_separator_line(false)
@@ -218,20 +218,20 @@ impl Gui {
                         ui.label(
                             RichText::new("Search")
                                 .strong()
-                                .color(Color32::from_rgb(226, 238, 237))
+                                .color(p.text)
                                 .size(12.0),
                         );
                     } else {
                         ui.label(
                             RichText::new("Toolbench")
-                                .color(Color32::from_rgb(154, 173, 170))
+                                .color(p.dim)
                                 .size(12.0),
                         );
-                        ui.label(RichText::new("/").color(Color32::from_rgb(93, 119, 126)));
+                        ui.label(RichText::new("/").color(p.muted));
                         ui.label(
                             RichText::new("Search")
                                 .strong()
-                                .color(Color32::from_rgb(226, 238, 237))
+                                .color(p.text)
                                 .size(12.0),
                         );
                     }
@@ -243,16 +243,19 @@ impl Gui {
                                     RichText::new("GS")
                                         .strong()
                                         .size(10.0)
-                                        .color(Color32::from_rgb(45, 82, 75)),
+                                        .color(p.on_accent),
                                 )
-                                .fill(Color32::from_rgb(216, 232, 226))
+                                .fill(p.accent)
                                 .stroke(Stroke::NONE),
                             );
                             self.targets
                                 .push(("GS Toolbench account".into(), avatar.rect));
                         }
                         let light = ui.ctx().theme() == egui::Theme::Dark;
-                        let theme = ui.add(
+                        theme::theme_picker(ui);
+                        theme::circadian_control(ui, p);
+                        let theme = ui.add_visible(
+                            theme::is_circadian(),
                             egui::Button::new(if light { "Light" } else { "Dark" })
                                 .small()
                                 .frame(false),
@@ -271,14 +274,14 @@ impl Gui {
                         let help = ui.add(
                             egui::Button::new(
                                 RichText::new(if compact { "Help" } else { "Help & shortcuts" })
-                                    .color(Color32::from_rgb(196, 211, 211)),
+                                    .color(p.text),
                             )
                             .shortcut_text(if compact {
                                 RichText::new("")
                             } else {
                                 RichText::new("Ctrl K")
                                     .small()
-                                    .color(Color32::from_rgb(141, 163, 170))
+                                    .color(p.muted)
                             }),
                         );
                         self.targets.push(("Help and shortcuts".into(), help.rect));
@@ -312,7 +315,7 @@ impl Gui {
                 ui.painter().rect_filled(
                     rect,
                     0.0,
-                    Color32::from_rgba_unmultiplied(7, 15, 19, 163),
+                    super::with_alpha(p.side, 163),
                 );
                 response.clicked()
             });
@@ -379,12 +382,12 @@ impl Gui {
         out: &mut Vec<Outcome>,
         hint: &mut Option<String>,
     ) {
-        let nav = Color32::from_rgb(23, 42, 50);
-        let nav_active = Color32::from_rgb(41, 73, 83);
-        let ink = Color32::from_rgb(230, 240, 240);
-        let muted = Color32::from_rgb(141, 163, 172);
-        let teal = Color32::from_rgb(128, 219, 194);
-        let line = Color32::from_rgb(53, 80, 91);
+        let nav = p.side;
+        let nav_active = p.select;
+        let ink = p.text;
+        let muted = p.muted;
+        let teal = p.accent;
+        let line = p.line;
         let width = ui.available_width();
         let max_sidebar = (width - 360.0).clamp(120.0, 460.0);
         let min_sidebar = 120.0_f32.min(max_sidebar);
@@ -414,7 +417,7 @@ impl Gui {
                                     RichText::new("G")
                                         .strong()
                                         .size(16.0)
-                                        .color(Color32::from_rgb(18, 58, 60)),
+                                        .color(p.on_accent),
                                 );
                             });
                         ui.vertical(|ui| {
@@ -431,7 +434,7 @@ impl Gui {
                         RichText::new("WORKSPACE")
                             .strong()
                             .size(9.0)
-                            .color(Color32::from_rgb(119, 144, 154)),
+                            .color(p.muted),
                     );
                     ui.add_space(5.0);
                     let (search_rect, search_response) = ui.allocate_exact_size(
@@ -456,7 +459,7 @@ impl Gui {
                             Vec2::splat(16.0),
                         ),
                         "search",
-                        Color32::from_rgb(140, 224, 199),
+                        p.accent,
                     );
                     ui.painter().text(
                         Pos2::new(search_rect.left() + 35.0, search_rect.center().y),
@@ -473,11 +476,11 @@ impl Gui {
                     ui.horizontal(|ui| {
                         let (icon, _) =
                             ui.allocate_exact_size(Vec2::splat(18.0), egui::Sense::hover());
-                        search_icon(ui, icon, "index", Color32::from_rgb(185, 201, 205));
+                        search_icon(ui, icon, "index", p.dim);
                         ui.label(
                             RichText::new("Fast index")
                                 .size(12.0)
-                                .color(Color32::from_rgb(185, 201, 205)),
+                                .color(p.dim),
                         );
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             egui::Frame::new()
@@ -488,7 +491,7 @@ impl Gui {
                                     ui.label(
                                         RichText::new(&sidebar.index_state)
                                             .size(9.0)
-                                            .color(Color32::from_rgb(184, 201, 203)),
+                                            .color(p.dim),
                                     );
                                 });
                         });
@@ -499,7 +502,7 @@ impl Gui {
                             RichText::new("RECENT SEARCHES")
                                 .strong()
                                 .size(9.0)
-                                .color(Color32::from_rgb(119, 144, 154)),
+                                .color(p.muted),
                         );
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if let Some(action) = sidebar.clear_recents {
@@ -535,7 +538,7 @@ impl Gui {
                                         if index == 0 {
                                             teal
                                         } else {
-                                            Color32::from_rgb(129, 164, 220)
+                                            p.link
                                         },
                                     );
                                     let label_width = recent_label_width(
@@ -547,7 +550,7 @@ impl Gui {
                                         egui::Label::new(
                                             RichText::new(&recent.label)
                                                 .size(11.0)
-                                                .color(Color32::from_rgb(185, 201, 205)),
+                                                .color(p.dim),
                                         )
                                         .truncate()
                                         .sense(egui::Sense::click()),
@@ -571,7 +574,7 @@ impl Gui {
                                             "×",
                                             FontId::proportional(15.0),
                                             if remove.hovered() {
-                                                Color32::from_rgb(212, 135, 127)
+                                                p.bad
                                             } else {
                                                 muted
                                             },
@@ -602,11 +605,11 @@ impl Gui {
                         ui.label(
                             RichText::new("Offline-ready · Local files stay local")
                                 .size(9.0)
-                                .color(Color32::from_rgb(114, 137, 146)),
+                                .color(p.muted),
                         );
                         ui.add_space(12.0);
                         egui::Frame::new()
-                            .fill(Color32::from_rgb(29, 53, 65))
+                            .fill(p.raised)
                             .stroke(Stroke::new(1.0, line))
                             .corner_radius(CornerRadius::same(10))
                             .inner_margin(Margin::same(11))
@@ -619,12 +622,12 @@ impl Gui {
                                         RichText::new("LOCAL INDEX")
                                             .strong()
                                             .size(9.0)
-                                            .color(Color32::from_rgb(197, 213, 216)),
+                                            .color(p.text),
                                     );
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                         ui.label(RichText::new("●").color(
                                             if sidebar.index_state == "Ready" {
-                                                Color32::from_rgb(102, 208, 169)
+                                                p.good
                                             } else {
                                                 muted
                                             },
@@ -688,13 +691,13 @@ impl Gui {
         let _ = (p, hint);
     }
 
-    pub(super) fn search_status_bar(&mut self, ui: &mut egui::Ui, input: &GuiInput, _p: &Palette) {
+    pub(super) fn search_status_bar(&mut self, ui: &mut egui::Ui, input: &GuiInput, p: &Palette) {
         egui::Panel::bottom("status")
             .exact_size(26.0)
             .show_separator_line(false)
             .frame(
                 egui::Frame::new()
-                    .fill(Color32::from_rgb(32, 45, 51))
+                    .fill(p.side)
                     .inner_margin(Margin::symmetric(12, 4)),
             )
             .show(ui, |ui| {
@@ -711,7 +714,7 @@ impl Gui {
                         egui::Label::new(
                             RichText::new(status)
                                 .size(10.0)
-                                .color(Color32::from_rgb(154, 173, 170)),
+                                .color(p.dim),
                         )
                         .truncate(),
                     );
@@ -722,7 +725,7 @@ impl Gui {
                                     "↑ ↓ move through results   Enter open file   Ctrl+C copy path",
                                 )
                                 .size(9.0)
-                                .color(Color32::from_rgb(114, 137, 146)),
+                                .color(p.muted),
                             );
                         });
                     }
@@ -783,8 +786,12 @@ impl Gui {
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let dark = ui.ctx().theme() == egui::Theme::Dark;
-                        let r =
-                            ui.add(egui::Button::new(if dark { "Light" } else { "Dark" }).small());
+                        let r = ui.add_visible(
+                            theme::is_circadian(),
+                            egui::Button::new(if dark { "Light" } else { "Dark" }).small(),
+                        );
+                        theme::theme_picker(ui);
+                        theme::circadian_control(ui, p);
                         self.targets.push(("Theme".into(), r.rect));
                         if r.on_hover_text("Switch between the light and the dark theme")
                             .clicked()

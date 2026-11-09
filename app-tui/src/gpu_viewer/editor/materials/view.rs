@@ -285,6 +285,8 @@ fn detail(s: &MaterialsSession) -> Option<DocDetail> {
             grid: Some(compare_grid(&ms)),
             title: format!("Compare  ·  {} marked", ms.len()),
             subtitle,
+            signals: Vec::new(),
+            notes: Vec::new(),
             actions: vec![
                 e("Properties", "Esc", MaterialsAct::Compare),
                 clear_marks_entry(s),
@@ -312,6 +314,8 @@ fn detail(s: &MaterialsSession) -> Option<DocDetail> {
         grid: Some(property_grid(m)),
         title: m.name.to_string(),
         subtitle,
+        signals: Vec::new(),
+        notes: Vec::new(),
         actions: vec![mark_entry(s), compare_entry(s)],
         match_navigation: None,
         scroll_to_line: None,

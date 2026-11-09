@@ -1,5 +1,6 @@
 //! Small, local neural inference building blocks for Search.
 
+use std::collections::VecDeque;
 use std::ops::Range;
 use std::sync::{Mutex, OnceLock};
 
@@ -13,14 +14,9 @@ use tokenizers::{Encoding, PaddingParams, Tokenizer, TruncationParams};
 pub const EMBEDDING_MODEL_VERSION: i64 = 1;
 const MODEL_BYTES: &[u8] = include_bytes!("../assets/all-minilm-l6-v2.onnx");
 const TOKENIZER_BYTES: &[u8] = include_bytes!("../assets/all-minilm-l6-v2-tokenizer.json");
-const GENERATION_ENCODER_BYTES: &[u8] = include_bytes!("../assets/flan-t5-small-encoder.onnx");
-const GENERATION_DECODER_BYTES: &[u8] = include_bytes!("../assets/flan-t5-small-decoder.onnx");
-const GENERATION_TOKENIZER_BYTES: &[u8] = include_bytes!("../assets/flan-t5-small-tokenizer.json");
 pub const MAX_INPUT_TOKENS: usize = 256;
 const EMBEDDING_DIMENSIONS: usize = 384;
 const TOKEN_EMBED_BATCH_SIZE: usize = 16;
-const MAX_QUESTION_TOKENS: usize = 64;
-const MAX_ANSWER_TOKENS: usize = 48;
 
 #[derive(Clone, Debug)]
 pub struct MlError(String);
@@ -59,6 +55,51 @@ impl Embedding {
     }
 }
 
+/// How a sentence vector is taken from the token vectors of the encoder.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Pooling {
+    /// Average of the attended tokens (MiniLM, gte, e5).
+    #[default]
+    Mean,
+    /// The first (`[CLS]`) token (bge, snowflake-arctic).
+    Cls,
+}
+
+/// What a candidate model needs around the encoder: pooling and the text it expects before queries and passages.
+#[derive(Clone, Debug, Default)]
+pub struct ModelSpec {
+    pub pooling: Pooling,
+    pub query_prefix: String,
+    pub passage_prefix: String,
+}
+
+/// A model used instead of the bundled one: leaked weights and tokenizer, set once before the first embedding.
+static MODEL_OVERRIDE: OnceLock<(&'static [u8], &'static [u8], ModelSpec)> = OnceLock::new();
+
+/// Use another 384-dimension sentence encoder (an ONNX file with `input_ids`, `attention_mask` and
+/// `token_type_ids`, and its `tokenizer.json`) instead of the bundled MiniLM. For benchmarking a candidate model
+/// (`search-core/examples/retrieval_eval.rs`); it must be called before anything is embedded, and the vectors it
+/// makes are not comparable with a stored index of another model.
+pub fn use_embedding_model(onnx: Vec<u8>, tokenizer_json: Vec<u8>, spec: ModelSpec) -> Result<(), MlError> {
+    MODEL_OVERRIDE
+        .set((Box::leak(onnx.into_boxed_slice()), Box::leak(tokenizer_json.into_boxed_slice()), spec))
+        .map_err(|_| MlError("an embedding model is already set".into()))
+}
+
+fn model_bytes() -> (&'static [u8], &'static [u8], ModelSpec) {
+    MODEL_OVERRIDE
+        .get()
+        .cloned()
+        .unwrap_or((MODEL_BYTES, TOKENIZER_BYTES, ModelSpec::default()))
+}
+
+/// Which side of a search a text is on; some models expect a different prefix for each.
+#[derive(Clone, Copy)]
+enum Side {
+    Query,
+    Passage,
+}
+
 struct TextEncoder {
     model: Model,
     tokenizer: Tokenizer,
@@ -67,11 +108,17 @@ struct TextEncoder {
     attention_mask: rten::NodeId,
     token_type_ids: rten::NodeId,
     output: rten::NodeId,
+    spec: ModelSpec,
 }
 
 impl TextEncoder {
     fn load() -> Result<Self, MlError> {
-        let model = Model::load_static_slice(MODEL_BYTES).map_err(|e| MlError(e.to_string()))?;
+        let (model_bytes, tokenizer_bytes, spec) = model_bytes();
+        Self::load_from(model_bytes, tokenizer_bytes, spec)
+    }
+
+    fn load_from(model_bytes: &'static [u8], tokenizer_bytes: &'static [u8], spec: ModelSpec) -> Result<Self, MlError> {
+        let model = Model::load_static_slice(model_bytes).map_err(|e| MlError(e.to_string()))?;
         let input_ids = model
             .node_id("input_ids")
             .map_err(|e| MlError(e.to_string()))?;
@@ -87,7 +134,7 @@ impl TextEncoder {
             .ok_or_else(|| MlError("model has no output".into()))?;
 
         let mut tokenizer =
-            Tokenizer::from_bytes(TOKENIZER_BYTES).map_err(|e| MlError(e.to_string()))?;
+            Tokenizer::from_bytes(tokenizer_bytes).map_err(|e| MlError(e.to_string()))?;
         tokenizer
             .with_truncation(Some(TruncationParams {
                 max_length: MAX_INPUT_TOKENS,
@@ -96,7 +143,7 @@ impl TextEncoder {
             .map_err(|e| MlError(e.to_string()))?;
         tokenizer.with_padding(Some(PaddingParams::default()));
         let mut counter =
-            Tokenizer::from_bytes(TOKENIZER_BYTES).map_err(|e| MlError(e.to_string()))?;
+            Tokenizer::from_bytes(tokenizer_bytes).map_err(|e| MlError(e.to_string()))?;
         counter
             .with_truncation(None)
             .map_err(|e| MlError(e.to_string()))?;
@@ -110,6 +157,7 @@ impl TextEncoder {
             attention_mask,
             token_type_ids,
             output,
+            spec,
         })
     }
 
@@ -120,10 +168,21 @@ impl TextEncoder {
             .map_err(|e| MlError(e.to_string()))
     }
 
-    fn encode_batch(&self, texts: &[&str]) -> Result<Vec<Embedding>, MlError> {
+    fn encode_batch(&self, texts: &[&str], side: Side) -> Result<Vec<Embedding>, MlError> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
+        let prefix = match side {
+            Side::Query => &self.spec.query_prefix,
+            Side::Passage => &self.spec.passage_prefix,
+        };
+        let prefixed: Vec<String>;
+        let texts: &[&str] = if prefix.is_empty() {
+            texts
+        } else {
+            prefixed = texts.iter().map(|text| format!("{prefix}{text}")).collect();
+            &prefixed.iter().map(String::as_str).collect::<Vec<_>>()
+        };
 
         let encodings = self
             .tokenizer
@@ -149,7 +208,7 @@ impl TextEncoder {
             let mut vector = vec![0.0f32; EMBEDDING_DIMENSIONS];
             let mut token_count = 0.0f32;
             for (token_index, &attend) in mask.iter().enumerate() {
-                if attend == 0 {
+                if attend == 0 || (self.spec.pooling == Pooling::Cls && token_index > 0) {
                     continue;
                 }
                 token_count += 1.0;
@@ -300,236 +359,6 @@ impl TextEncoder {
     }
 }
 
-struct TextGenerator {
-    encoder: Model,
-    decoder: Model,
-    tokenizer: Tokenizer,
-    encoder_input_ids: rten::NodeId,
-    encoder_attention_mask: rten::NodeId,
-    encoder_hidden_state: rten::NodeId,
-    decoder_input_ids: rten::NodeId,
-    decoder_attention_mask: rten::NodeId,
-    decoder_encoder_hidden_state: rten::NodeId,
-    decoder_logits: rten::NodeId,
-}
-
-impl TextGenerator {
-    fn load() -> Result<Self, MlError> {
-        let encoder = Model::load_static_slice(GENERATION_ENCODER_BYTES)
-            .map_err(|error| MlError(error.to_string()))?;
-        let decoder = Model::load_static_slice(GENERATION_DECODER_BYTES)
-            .map_err(|error| MlError(error.to_string()))?;
-        let tokenizer = Tokenizer::from_bytes(GENERATION_TOKENIZER_BYTES)
-            .map_err(|error| MlError(error.to_string()))?;
-
-        Ok(Self {
-            encoder_input_ids: encoder
-                .node_id("input_ids")
-                .map_err(|error| MlError(error.to_string()))?,
-            encoder_attention_mask: encoder
-                .node_id("attention_mask")
-                .map_err(|error| MlError(error.to_string()))?,
-            encoder_hidden_state: encoder
-                .node_id("last_hidden_state")
-                .map_err(|error| MlError(error.to_string()))?,
-            decoder_input_ids: decoder
-                .node_id("input_ids")
-                .map_err(|error| MlError(error.to_string()))?,
-            decoder_attention_mask: decoder
-                .node_id("encoder_attention_mask")
-                .map_err(|error| MlError(error.to_string()))?,
-            decoder_encoder_hidden_state: decoder
-                .node_id("encoder_hidden_states")
-                .map_err(|error| MlError(error.to_string()))?,
-            decoder_logits: decoder
-                .node_id("logits")
-                .map_err(|error| MlError(error.to_string()))?,
-            encoder,
-            decoder,
-            tokenizer,
-        })
-    }
-
-    fn generate(&self, question: &str, context: &[&str]) -> Result<(String, Vec<usize>), MlError> {
-        let question = question.trim();
-        if question.is_empty() {
-            return Err(MlError("question must not be empty".into()));
-        }
-        let question_tokens = self
-            .tokenizer
-            .encode(question, true)
-            .map_err(|error| MlError(error.to_string()))?
-            .get_ids()
-            .len();
-        if question_tokens > MAX_QUESTION_TOKENS {
-            return Err(MlError(format!(
-                "question exceeds the {MAX_QUESTION_TOKENS}-token limit"
-            )));
-        }
-
-        let prefix = format!("Answer the question using only the context. Question: {question} Context: ");
-        let mut selected = Vec::new();
-        for (index, passage) in context.iter().enumerate() {
-            let joined = selected
-                .iter()
-                .map(|(_, text)| *text)
-                .chain(std::iter::once(*passage))
-                .collect::<Vec<_>>()
-                .join("\n");
-            let candidate = format!("{prefix}{joined} Answer:");
-            let token_count = self
-                .tokenizer
-                .encode(candidate, true)
-                .map_err(|error| MlError(error.to_string()))?
-                .get_ids()
-                .len();
-            if token_count > MAX_INPUT_TOKENS {
-                continue;
-            }
-            selected.push((index, *passage));
-        }
-        if selected.is_empty() {
-            return Err(MlError(
-                "no cited source line fits the generator input limit".into(),
-            ));
-        }
-        let joined = selected
-            .iter()
-            .map(|(_, text)| *text)
-            .collect::<Vec<_>>()
-            .join("\n");
-        let prompt = format!("{prefix}{joined} Answer:");
-        let encoding = self
-            .tokenizer
-            .encode(prompt, true)
-            .map_err(|error| MlError(error.to_string()))?;
-        let ids = encoding
-            .get_ids()
-            .iter()
-            .map(|&id| i32::try_from(id).map_err(|error| MlError(error.to_string())))
-            .collect::<Result<Vec<_>, _>>()?;
-        let mask = encoding
-            .get_attention_mask()
-            .iter()
-            .map(|&value| value as i32)
-            .collect::<Vec<_>>();
-        if ids.is_empty() || ids.len() != mask.len() {
-            return Err(MlError("tokenizer returned invalid generator input".into()));
-        }
-        if ids.len() > MAX_INPUT_TOKENS {
-            return Err(MlError(format!(
-                "generator input exceeds the {MAX_INPUT_TOKENS}-token limit"
-            )));
-        }
-        let hidden = self
-            .encoder
-            .run(
-                vec![
-                    (
-                        self.encoder_input_ids,
-                        ValueView::from_shape([1, ids.len()], &ids)
-                            .map_err(|error| MlError(error.to_string()))?
-                            .into(),
-                    ),
-                    (
-                        self.encoder_attention_mask,
-                        ValueView::from_shape([1, mask.len()], &mask)
-                            .map_err(|error| MlError(error.to_string()))?
-                            .into(),
-                    ),
-                ],
-                &[self.encoder_hidden_state],
-                None,
-            )
-            .map_err(|error| MlError(error.to_string()))?
-            .into_iter()
-            .next()
-            .ok_or_else(|| MlError("generator encoder returned no output".into()))?;
-
-        let mut output_ids = vec![0_i32];
-        for _ in 0..MAX_ANSWER_TOKENS {
-            let outputs = self
-                .decoder
-                .run(
-                    vec![
-                        (
-                            self.decoder_input_ids,
-                            ValueView::from_shape([1, output_ids.len()], &output_ids)
-                                .map_err(|error| MlError(error.to_string()))?
-                                .into(),
-                        ),
-                        (
-                            self.decoder_attention_mask,
-                            ValueView::from_shape([1, mask.len()], &mask)
-                                .map_err(|error| MlError(error.to_string()))?
-                                .into(),
-                        ),
-                        (self.decoder_encoder_hidden_state, (&hidden).into()),
-                    ],
-                    &[self.decoder_logits],
-                    None,
-                )
-                .map_err(|error| MlError(error.to_string()))?;
-            let logits = outputs
-                .into_iter()
-                .next()
-                .ok_or_else(|| MlError("generator decoder returned no output".into()))?;
-            let (shape, logits) = logits
-                .into_shape_vec::<f32, 3>()
-                .map_err(|error| MlError(error.to_string()))?;
-            if shape[0] != 1 || shape[1] != output_ids.len() || shape[2] == 0 {
-                return Err(MlError(format!("unexpected decoder output shape: {shape:?}")));
-            }
-            let offset = (shape[1] - 1) * shape[2];
-            let next = logits[offset..offset + shape[2]]
-                .iter()
-                .enumerate()
-                .filter(|(_, value)| value.is_finite())
-                .max_by(|left, right| left.1.total_cmp(right.1))
-                .map(|(index, _)| index)
-                .ok_or_else(|| MlError("generator returned no finite token scores".into()))?;
-            if next == 0 || next == 1 {
-                break;
-            }
-            output_ids.push(
-                i32::try_from(next).map_err(|error| MlError(error.to_string()))?,
-            );
-        }
-        let generated = output_ids
-            .into_iter()
-            .skip(1)
-            .map(|id| u32::try_from(id).map_err(|error| MlError(error.to_string())))
-            .collect::<Result<Vec<_>, _>>()?;
-        let answer = self
-            .tokenizer
-            .decode(&generated, true)
-            .map_err(|error| MlError(error.to_string()))?
-            .trim()
-            .to_string();
-        if answer.is_empty() {
-            return Err(MlError("generator produced an empty answer".into()));
-        }
-        Ok((
-            answer,
-            selected.into_iter().map(|(index, _)| index).collect(),
-        ))
-    }
-}
-
-/// Generate a bounded answer from local evidence using bundled Flan-T5-small.
-/// The caller must show the evidence beside the answer; generation can be wrong.
-pub fn generate_answer(question: &str, context: &[&str]) -> Result<(String, Vec<usize>), MlError> {
-    static GENERATOR: OnceLock<Result<Mutex<TextGenerator>, MlError>> = OnceLock::new();
-    let generator = GENERATOR
-        .get_or_init(|| TextGenerator::load().map(Mutex::new))
-        .as_ref()
-        .map_err(Clone::clone)?;
-    generator
-        .lock()
-        .map_err(|_| MlError("generator lock poisoned".into()))?
-        .generate(question, context)
-}
-
 fn encoder() -> Result<&'static TextEncoder, MlError> {
     static ENCODER: OnceLock<Result<TextEncoder, MlError>> = OnceLock::new();
     ENCODER
@@ -538,10 +367,69 @@ fn encoder() -> Result<&'static TextEncoder, MlError> {
         .map_err(Clone::clone)
 }
 
-/// Embed texts with the bundled, offline sentence encoder.
-pub fn embed_batch(texts: &[&str]) -> Result<Vec<Embedding>, MlError> {
-    encoder()?.encode_batch(texts)
+/// A second, independent embedding model alongside the process-wide one (for measuring a re-ranker); it shares no state
+/// with [`embed_batch`] / [`embed_queries`].
+pub struct Embedder(TextEncoder);
+
+impl Embedder {
+    pub fn new(onnx: Vec<u8>, tokenizer_json: Vec<u8>, spec: ModelSpec) -> Result<Self, MlError> {
+        TextEncoder::load_from(
+            Box::leak(onnx.into_boxed_slice()),
+            Box::leak(tokenizer_json.into_boxed_slice()),
+            spec,
+        )
+        .map(Self)
+    }
+
+    pub fn embed_queries(&self, texts: &[&str]) -> Result<Vec<Embedding>, MlError> {
+        self.0.encode_batch(texts, Side::Query)
+    }
+
+    pub fn embed_passages(&self, texts: &[&str]) -> Result<Vec<Embedding>, MlError> {
+        self.0.encode_batch(texts, Side::Passage)
+    }
 }
+
+/// Embed passages (documents, lines) with the bundled, offline sentence encoder.
+pub fn embed_batch(texts: &[&str]) -> Result<Vec<Embedding>, MlError> {
+    encoder()?.encode_batch(texts, Side::Passage)
+}
+
+/// Embed search queries. Same as [`embed_batch`] for the bundled model, which uses no prefix; models trained with a
+/// query instruction (bge, e5, arctic-embed) get theirs here.
+///
+/// The last [`QUERY_CACHE`] distinct queries are remembered: a refined or repeated search, and the several features that
+/// embed the same text (Find, Ask, related files), skip the model. The model never changes within a process, so a cached
+/// vector cannot go stale.
+pub fn embed_queries(texts: &[&str]) -> Result<Vec<Embedding>, MlError> {
+    static CACHE: Mutex<VecDeque<(String, Embedding)>> = Mutex::new(VecDeque::new());
+    let lookup = |text: &str| {
+        CACHE.lock().ok().and_then(|cache| cache.iter().find(|(key, _)| key == text).map(|(_, e)| e.clone()))
+    };
+    let mut out: Vec<Option<Embedding>> = texts.iter().map(|text| lookup(text)).collect();
+    let missing: Vec<usize> = (0..texts.len()).filter(|&i| out[i].is_none()).collect();
+    if !missing.is_empty() {
+        let batch: Vec<&str> = missing.iter().map(|&i| texts[i]).collect();
+        let computed = encoder()?.encode_batch(&batch, Side::Query)?;
+        if let Ok(mut cache) = CACHE.lock() {
+            for (&i, embedding) in missing.iter().zip(&computed) {
+                if !cache.iter().any(|(key, _)| key == texts[i]) {
+                    if cache.len() == QUERY_CACHE {
+                        cache.pop_front();
+                    }
+                    cache.push_back((texts[i].to_string(), embedding.clone()));
+                }
+            }
+        }
+        for (&i, embedding) in missing.iter().zip(computed) {
+            out[i] = Some(embedding);
+        }
+    }
+    Ok(out.into_iter().flatten().collect())
+}
+
+/// Distinct queries [`embed_queries`] remembers.
+const QUERY_CACHE: usize = 32;
 
 /// Count full input tokens without truncation, including model special tokens.
 pub fn token_count(text: &str) -> Result<usize, MlError> {
@@ -573,29 +461,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bundled_generator_answers_from_local_evidence() {
-        let answer = generate_answer(
-            "What causes torsional stress?",
-            &["The shaft experiences torsional stress under applied torque."],
-        )
-        .unwrap();
-        assert!(answer.0.to_lowercase().contains("torque"), "{answer:?}");
-        assert_eq!(answer.1, [0]);
-    }
-
-    #[test]
-    fn bundled_generator_skips_oversized_evidence_and_reports_used_sources() {
-        let oversized = "irrelevant ".repeat(300);
-        let answer = generate_answer(
-            "What causes torsional stress?",
-            &[
-                &oversized,
-                "The shaft experiences torsional stress under applied torque.",
-            ],
-        )
-        .unwrap();
-        assert!(answer.0.to_lowercase().contains("torque"), "{answer:?}");
-        assert_eq!(answer.1, [1]);
+    fn repeated_queries_return_the_same_vectors_in_input_order() {
+        let first = embed_queries(&["torsional stress", "fuel line"]).unwrap();
+        // One cached, one new, in a different order: results must follow the inputs.
+        let second = embed_queries(&["hose clamp", "fuel line", "torsional stress"]).unwrap();
+        assert_eq!(second.len(), 3);
+        assert_eq!(second[1].values(), first[1].values());
+        assert_eq!(second[2].values(), first[0].values());
+        assert_ne!(second[0].values(), second[1].values());
+        let started = std::time::Instant::now();
+        let again = embed_queries(&["hose clamp"]).unwrap();
+        assert_eq!(again[0].values(), second[0].values());
+        assert!(started.elapsed() < std::time::Duration::from_millis(5), "cache hit still ran the model");
     }
 
     #[test]

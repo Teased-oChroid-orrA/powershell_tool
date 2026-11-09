@@ -499,6 +499,10 @@ pub struct DocDetail {
     pub grid: Option<DocGrid>,
     pub title: String,
     pub subtitle: String,
+    /// Measured scores behind this result, drawn as labelled meters under the subtitle.
+    pub signals: Vec<DocSignal>,
+    /// Short facts about the result (a PDF to double-check, entity suggestions), drawn as pills.
+    pub notes: Vec<DocNote>,
     pub actions: Vec<Entry>,
     /// Previous/next match controls shown in the detail heading.
     pub match_navigation: Option<DocMatchNavigation>,
@@ -511,6 +515,28 @@ pub struct DocDetail {
     pub text: Option<DocText>,
     /// Shown when there are no blocks.
     pub empty: String,
+}
+
+/// A short fact drawn as a pill; `hint` (when set) is the longer explanation shown on hover.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocNote {
+    pub text: String,
+    pub hint: String,
+}
+impl DocNote {
+    pub fn new(text: impl Into<String>, hint: impl Into<String>) -> Self {
+        Self { text: text.into(), hint: hint.into() }
+    }
+}
+
+/// One score in `0..=1` with a plain-language explanation shown when the pointer rests on its meter.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocSignal {
+    pub label: String,
+    pub fraction: f32,
+    pub hint: String,
+    /// The headline score: drawn first and in the accent colour.
+    pub primary: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

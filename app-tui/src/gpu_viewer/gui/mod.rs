@@ -10,6 +10,7 @@ mod document;
 mod page_layout;
 mod panels;
 pub mod theme;
+pub mod theme_library;
 pub use dashboard::DashEvent;
 
 use super::{
@@ -132,7 +133,10 @@ impl Default for Gui {
 impl Gui {
     pub fn new() -> Self {
         let ctx = egui::Context::default();
+        theme::load_saved_choice();
         theme::install(&ctx);
+        // Dark until the first frame's circadian tick sets light or dark from the hour (`theme::tick`).
+        ctx.set_theme(egui::Theme::Dark);
         Self {
             ctx,
             visible: Visible::default(),
@@ -402,7 +406,8 @@ impl Gui {
         out: &mut Vec<Outcome>,
         hint: &mut Option<String>,
     ) {
-        let mut p = theme::current(ui.ctx());
+        theme::tick(ui.ctx());
+        let p = theme::current(ui.ctx());
         self.now = ui.ctx().input(|i| i.time);
         self.pill_rect = None;
         self.chip_rect = None;
@@ -452,9 +457,6 @@ impl Gui {
         let document = input.editor.and_then(|e| e.document());
         let is_search_page = document.as_ref().is_some_and(|d| d.sidebar.is_some());
         let sidebar = document.as_ref().and_then(|d| d.sidebar.as_ref());
-        if is_search_page {
-            p = theme::search_palette();
-        }
         if is_search_page {
             ui.painter().rect_filled(ui.max_rect(), 0.0, p.bg);
             if self.search_sidebar_visible {

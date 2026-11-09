@@ -18,7 +18,7 @@ use crate::models::{
 /// Cached `lines_cache` text depends on how lines are extracted, which no
 /// setting captures. Bump when extraction output changes (1 = PDF/OCR line
 /// quality filter, `line_quality`) so stale caches are dropped, not reused.
-const EXTRACTION_VERSION: u32 = 1;
+const EXTRACTION_VERSION: u32 = 2;
 
 /// One cached file's prior result, keyed by full path in [`CacheFile`].
 ///

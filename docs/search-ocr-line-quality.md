@@ -41,7 +41,7 @@ Cost: 2.4 to 2.8 microseconds per line on this machine (release build), about 60
 
 Deliberately not done:
 
-- Hyphen joining across lines (`optimiza-` / `tion`). Without a dictionary it cannot tell it from `high-` / `temperature`, and removing the hyphen would break an exact search for the compound.
+- Hyphen joining across lines for an ordinary hyphen (`optimiza-` / `tion`). Without a dictionary it cannot tell it from `high-` / `temperature`, and removing the hyphen would break an exact search for the compound. A soft hyphen (U+00AD) at the end of a line is unambiguous and is joined (`line_quality::join_soft_hyphens`, 2026-11-08; the FAA AC 43.13-1B text had thousands: `re­` / `moved`).
 - A word list or character n-gram model. It would catch the garbled-OCR class but flags engineering vocabulary and part numbers.
 - Applying the scorer to DOCX, PPTX, XLSX, RTF, ZIP or plain text. They are not OCR or glyph-decoding sources and the evidence above does not cover them.
 

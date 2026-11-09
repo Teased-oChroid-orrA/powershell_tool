@@ -3,7 +3,7 @@ use crate::gpu_viewer::editor::authoring::Authoring;
 use search_core::models::{FileSearchStatus, LineHit, MatchMode};
 use std::time::Duration;
 
-/// The Index panel's first card, leaving out the Natural-language Find card (present only with `llm-find`).
+/// The Index panel's first card, leaving out the Natural-language Find card (present only with `nl-find`).
 fn index_card(doc: &crate::gpu_viewer::ui::Document) -> &Card {
     doc.panels[1].cards.iter().find(|card| card.title != "Natural-language Find").expect("an index card")
 }
@@ -175,7 +175,7 @@ fn entity_preview_keeps_neural_scores_separate_from_ambiguous_pattern_hints() {
 
     assert_eq!(
         view::entity_signal_label(&candidate),
-        "MiniLM among PartNumber/Standard: PartNumber 0.610"
+        "PartNumber or Standard: likely PartNumber 61%"
     );
     assert_eq!(candidate.category_scores[0].kind, EntityKind::PartNumber);
     assert_eq!(candidate.category_scores[0].similarity, 0.61);
@@ -248,7 +248,7 @@ fn saved_alert_runs_exact_search_then_updates_bounded_baseline_asynchronously() 
     assert!(rows
         .iter()
         .any(|row| row.contains("Updated ·") && row.contains("first.txt")));
-    assert!(rows.iter().any(|row| row.contains("cosine distance")));
+    assert!(rows.iter().any(|row| row.contains("% different")));
     s.delete_alert(0);
     assert!(s.last_alert_changes.is_none());
 }
@@ -395,8 +395,8 @@ fn neural_entity_suggestions_arrive_for_the_current_preview_without_changing_exa
     s.poll();
 
     let detail = view::document(&s).detail.unwrap();
-    assert!(detail.subtitle.contains("AX-42-7"));
-    assert!(detail.subtitle.contains("not confidence"));
+    assert!(detail.notes.iter().any(|note| note.hint.contains("AX-42-7")));
+    assert!(detail.notes.iter().any(|note| note.hint.contains("not confirmed")));
     assert_eq!(
         s.st.run
             .results
@@ -555,9 +555,12 @@ fn relevance_sort_only_reorders_exact_results_and_explains_each_score() {
         .iter()
         .any(|column| column.title == "Relevance"));
     let detail = view::document(&s).detail.unwrap();
-    assert!(detail.subtitle.contains("matching text"));
-    assert!(detail.subtitle.contains("filename"));
-    assert!(detail.subtitle.contains("nearby matches"));
+    let labels: Vec<_> = detail.signals.iter().map(|signal| signal.label.as_str()).collect();
+    assert_eq!(labels.first(), Some(&"Relevance"));
+    for label in ["Text", "Name", "Exact", "Recent", "Nearby"] {
+        assert!(labels.contains(&label), "missing meter {label}: {labels:?}");
+    }
+    assert!(detail.signals.iter().all(|signal| (0.0..=1.0).contains(&signal.fraction) && !signal.hint.is_empty()));
 }
 
 #[cfg(feature = "neural-search")]
@@ -1783,9 +1786,9 @@ fn the_index_panel_no_longer_holds_ask() {
     assert_eq!(doc.panels[2].inputs[0].id, INPUT_QUESTION);
 }
 
-#[cfg(all(feature = "semantic-search", not(feature = "llm-find")))]
+#[cfg(all(feature = "semantic-search", not(feature = "nl-find")))]
 #[test]
-fn a_build_without_the_language_model_says_so_in_the_index_panel() {
+fn a_build_without_natural_language_find_says_so_in_the_index_panel() {
     let session = SearchSession::in_memory();
     let doc = view::document(&session);
     let texts: Vec<String> = doc.panels[1]
@@ -1794,7 +1797,7 @@ fn a_build_without_the_language_model_says_so_in_the_index_panel() {
         .flat_map(|card| card.items.iter().filter_map(DockItem::plain_text))
         .collect();
     assert!(texts.iter().any(|t| t.contains("not in this build")), "{texts:?}");
-    assert!(texts.iter().any(|t| t.contains("--features llm-find")), "{texts:?}");
+    assert!(texts.iter().any(|t| t.contains("--features nl-find")), "{texts:?}");
 }
 
 #[cfg(feature = "semantic-search")]
@@ -1892,10 +1895,9 @@ fn the_index_panel_reports_build_progress_for_its_border() {
     );
 }
 
-#[cfg(feature = "llm-find")]
+#[cfg(feature = "nl-find")]
 mod natural_language_find {
     use super::*;
-    use super::nl::fake::loader as fake_loader;
 
     fn wait(session: &mut SearchSession) {
         let started = Instant::now();
@@ -1907,14 +1909,10 @@ mod natural_language_find {
         session.poll();
     }
 
-    fn session_with_model(dir: &Path) -> SearchSession {
-        let model = dir.join("model.gguf");
-        std::fs::write(&model, b"stub").unwrap();
+    fn ready_session(dir: &Path) -> SearchSession {
         let mut session = SearchSession::in_memory();
-        session.nl = nl::NlFind::with_loader(fake_loader);
         session.st.config.search_path = dir.to_string_lossy().into_owned();
         session.st.config.index.semantic = true;
-        session.st.config.llm_model_path = model.to_string_lossy().into_owned();
         session
     }
 
@@ -1923,16 +1921,18 @@ mod natural_language_find {
     }
 
     #[test]
-    fn a_missing_model_is_named_with_its_location() {
+    fn understanding_needs_the_semantic_index_and_a_sentence() {
         let mut session = SearchSession::in_memory();
-        session.st.config.index.semantic = true;
         session.document_field(INPUT_NL, "corrosion is blended".into());
-        assert!(texts(&session)[0].contains("No language model set"));
-        session.st.config.llm_model_path = "/nowhere/q.gguf".into();
         act_on(&mut session, SearchAct::NlUnderstand);
-        assert!(session.nl.error.as_deref().unwrap().contains("/nowhere/q.gguf"));
-        assert_eq!(session.nl.stage, nl::Stage::Idle);
         assert!(session.nl.conditions.is_none());
+        assert!(session.status.contains("Semantic index"), "{}", session.status);
+        session.st.config.index.semantic = true;
+        act_on(&mut session, SearchAct::NlUnderstand);
+        assert_eq!(session.nl.conditions.as_ref().unwrap()[0].text, "corrosion blended");
+        session.document_field(INPUT_NL, "find the files where it is".into());
+        act_on(&mut session, SearchAct::NlUnderstand);
+        assert!(session.nl.conditions.is_none() && session.nl.error.is_some());
     }
 
     #[test]
@@ -1942,25 +1942,45 @@ mod natural_language_find {
         assert!(!nl::looks_like_sentence("torque and bolt"));
         assert!(!nl::looks_like_sentence("\"blended and filled and fair surfaces\" extra"));
         let dir = tempfile::tempdir().unwrap();
-        let mut session = session_with_model(dir.path());
+        let mut session = ready_session(dir.path());
         session.st.config.filters_text = "surfaces that were blended and filled and fair".into();
         act_on(&mut session, SearchAct::Run);
-        assert_eq!(session.nl.stage, nl::Stage::Parsing, "the sentence goes to the language model");
         assert!(!session.st.run.is_running, "no literal phrase search starts");
-        wait(&mut session);
         assert_eq!(session.nl.conditions.as_ref().unwrap().len(), 3);
-        // Without a ready model the entry stays a keyword search.
+        // Without the semantic index the entry stays a keyword search.
         let mut plain = SearchSession::in_memory();
         plain.st.config.filters_text = "surfaces that were blended and filled and fair".into();
         assert!(!plain.nl_ready());
-        // An empty model path (the default setting) leaves the regular keyword search in charge.
-        let mut empty = SearchSession::in_memory();
-        empty.st.config.index.semantic = true;
-        empty.st.config.search_path = dir.path().to_string_lossy().into_owned();
-        empty.st.config.filters_text = "surfaces that were blended and filled and fair".into();
-        act_on(&mut empty, SearchAct::Run);
-        assert_eq!(empty.nl.stage, nl::Stage::Idle);
-        assert!(empty.status.starts_with("Searching"), "{}", empty.status);
+    }
+
+    #[test]
+    fn unconfirmed_closest_passages_are_labelled_as_such() {
+        use search_core::nl_find::{Evidence, Fit, FileMatch};
+        use search_core::semantic_index::SemanticHit;
+        let mut session = SearchSession::in_memory();
+        let hit = SemanticHit {
+            path: "/docs/manual.pdf".into(),
+            first_line: 3,
+            last_line: 4,
+            excerpt: "Bolts are identified by head markings.".into(),
+            similarity: 0.5,
+            page: None,
+        };
+        session.nl.conditions = Some(vec![search_core::nl_find::Condition {
+            text: "fasteners size specified".into(),
+            terms: vec!["fastener".into()],
+            negated: false,
+        }]);
+        session.nl.files = vec![FileMatch {
+            path: hit.path.clone(),
+            fit: Fit::Unconfirmed,
+            evidence: vec![Some(Evidence { hit, quote: "Bolts are identified by head markings.".into() })],
+        }];
+        let shown = texts(&session);
+        assert!(shown.iter().any(|t| t.contains("No passage states every condition")), "{shown:?}");
+        assert!(shown.iter().any(|t| t.contains("manual.pdf") && t.contains("not confirmed")), "{shown:?}");
+        assert!(shown.iter().any(|t| t.contains("?  fasteners size specified")), "{shown:?}");
+        assert!(!shown.iter().any(|t| t.contains("Each quote is copied")), "{shown:?}");
     }
 
     #[test]
@@ -1973,11 +1993,9 @@ mod natural_language_find {
                 ("paint.txt", "The panel was painted and the torque checked."),
             ],
         );
-        let mut session = session_with_model(dir.path());
+        let mut session = ready_session(dir.path());
         session.document_field(INPUT_NL, "corrosion blended and surface filled and bogus extra".into());
         act_on(&mut session, SearchAct::NlUnderstand);
-        assert_eq!(session.nl.stage, nl::Stage::Parsing);
-        wait(&mut session);
         assert_eq!(session.nl.conditions.as_ref().unwrap().len(), 3);
 
         act_on(&mut session, SearchAct::NlRemove(2));
@@ -1997,19 +2015,18 @@ mod natural_language_find {
     fn editing_the_sentence_discards_stale_conditions_and_results() {
         let dir = tempfile::tempdir().unwrap();
         semantic_fixture(dir.path(), &[("a.txt", "Corrosion was blended.")]);
-        let mut session = session_with_model(dir.path());
+        let mut session = ready_session(dir.path());
         session.document_field(INPUT_NL, "corrosion blended".into());
         act_on(&mut session, SearchAct::NlUnderstand);
-        wait(&mut session);
         assert!(session.nl.conditions.is_some());
         session.document_field(INPUT_NL, "something else".into());
         assert!(session.nl.conditions.is_none() && session.nl.files.is_empty());
     }
 }
 
-/// Real-model probe over a folder: `FEA_CORPUS=<folder> FEA_MODEL=<qwen.gguf> FEA_SENTENCE=<sentence>
-/// cargo test -p app-tui --features llm-find corpus_probe -- --ignored --nocapture`.
-#[cfg(feature = "llm-find")]
+/// Probe over a folder: `FEA_CORPUS=<folder> FEA_SENTENCE=<sentence>
+/// cargo test -p app-tui --features nl-find corpus_probe -- --ignored --nocapture`.
+#[cfg(feature = "nl-find")]
 #[test]
 #[ignore]
 fn corpus_probe() {
@@ -2017,7 +2034,6 @@ fn corpus_probe() {
     let mut session = SearchSession::in_memory();
     session.st.config.search_path = folder;
     session.st.config.index.semantic = true;
-    session.st.config.llm_model_path = std::env::var("FEA_MODEL").expect("FEA_MODEL");
     let spin = |session: &mut SearchSession, busy: &dyn Fn(&SearchSession) -> bool| {
         while busy(session) {
             session.poll();
@@ -2062,7 +2078,6 @@ fn corpus_probe() {
         session.st.config.filters_text = sentence.clone();
         let t = Instant::now();
         act_on(&mut session, SearchAct::Run);
-        spin(&mut session, &|s| s.nl.stage != nl::Stage::Idle);
         eprintln!("parsed in {:?}: {:?}", t.elapsed(), session.nl.conditions);
         for condition in session.nl.conditions.clone().unwrap_or_default() {
             let settings = crate::toolboxes::search::model::build_settings(&session.st.config);

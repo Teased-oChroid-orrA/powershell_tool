@@ -15,7 +15,7 @@ mod diff;
 mod facts;
 #[cfg(feature = "semantic-search")]
 mod help;
-#[cfg(feature = "llm-find")]
+#[cfg(feature = "nl-find")]
 mod nl;
 #[cfg(feature = "neural-search")]
 mod feedback;
@@ -101,17 +101,17 @@ pub enum SearchAct {
     OpenSemantic(usize),
     #[cfg(feature = "semantic-search")]
     OpenAnswer(usize, usize),
-    #[cfg(feature = "llm-find")]
+    #[cfg(feature = "nl-find")]
     NlUnderstand,
-    #[cfg(feature = "llm-find")]
+    #[cfg(feature = "nl-find")]
     NlFind,
-    #[cfg(feature = "llm-find")]
+    #[cfg(feature = "nl-find")]
     NlCancel,
-    #[cfg(feature = "llm-find")]
+    #[cfg(feature = "nl-find")]
     NlRemove(usize),
-    #[cfg(feature = "llm-find")]
+    #[cfg(feature = "nl-find")]
     NlMerge(usize),
-    #[cfg(feature = "llm-find")]
+    #[cfg(feature = "nl-find")]
     NlOpen(usize, usize),
     #[cfg(feature = "semantic-search")]
     FindRelated,
@@ -183,10 +183,8 @@ pub(crate) const INPUT_EXCLUDE: u8 = 3;
 pub(crate) const INPUT_OUTPUT: u8 = 4;
 #[cfg(feature = "semantic-search")]
 pub(crate) const INPUT_QUESTION: u8 = 5;
-#[cfg(feature = "llm-find")]
+#[cfg(feature = "nl-find")]
 pub(crate) const INPUT_NL: u8 = 6;
-#[cfg(feature = "llm-find")]
-pub(crate) const INPUT_NL_MODEL: u8 = 7;
 /// Settings shown on the page instead of in a popover (`settings_view::settings` indices).
 const SETTING_PATH: usize = 0;
 const SETTING_FILTERS: usize = 2;
@@ -340,7 +338,7 @@ pub struct SearchSession {
     diff_generation: u64,
     #[cfg(feature = "semantic-search")]
     diff_worker: std::sync::Arc<tokio::sync::Semaphore>,
-    #[cfg(feature = "llm-find")]
+    #[cfg(feature = "nl-find")]
     nl: nl::NlFind,
     preview_cancel: Option<CancellationToken>,
     edit: Option<Edit>,
@@ -823,15 +821,11 @@ impl SearchSession {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
-    /// Natural-language Find with a stand-in model: understand `sentence` (stopping at the chips when `find` is false), as the window does.
-    #[cfg(all(test, feature = "llm-find"))]
+    /// Natural-language Find: understand `sentence` (stopping at the chips when `find` is false), as the window does.
+    #[cfg(all(test, feature = "nl-find"))]
     pub(crate) fn nl_for_snapshot(&mut self, folder: &Path, sentence: &str, find: bool) {
-        let model = folder.join("model.gguf");
-        std::fs::write(&model, b"stub").unwrap();
-        self.nl = nl::NlFind::with_loader(nl::fake::loader);
         self.st.config.search_path = folder.to_string_lossy().into_owned();
         self.st.config.index.semantic = true;
-        self.st.config.llm_model_path = model.to_string_lossy().into_owned();
         self.document_field(INPUT_NL, sentence.into());
         let mut steps = vec![SearchAct::NlUnderstand];
         if find {
@@ -1015,7 +1009,7 @@ impl SearchSession {
             ask_help: true,
             #[cfg(feature = "semantic-search")]
             ask_files: true,
-            #[cfg(feature = "llm-find")]
+            #[cfg(feature = "nl-find")]
             nl: nl::NlFind::new(),
             #[cfg(feature = "semantic-search")]
             related_tx,
@@ -1124,7 +1118,7 @@ impl SearchSession {
             self.status = "A search is already running (Esc stops it).".into();
             return;
         }
-        #[cfg(feature = "llm-find")]
+        #[cfg(feature = "nl-find")]
         if nl::looks_like_sentence(&self.st.config.filters_text) && self.nl_ready() {
             // A sentence is not a keyword filter: read it as conditions to review, then Find.
             self.nl.sentence = self.st.config.filters_text.trim().to_string();
@@ -1775,7 +1769,7 @@ impl SearchSession {
         self.summary_error = None;
         self.summary_running = true;
         self.summary_cancel = Some(cancel.clone());
-        self.status = "Summarizing selected document with MiniLM…".into();
+        self.status = "Summarizing selected document…".into();
         let tx = self.summary_tx.clone();
         self.rt.spawn(async move {
             let result = tokio::task::spawn_blocking(move || {
@@ -2456,17 +2450,17 @@ impl SearchSession {
                     self.answer_question();
                 }
             }
-            #[cfg(feature = "llm-find")]
+            #[cfg(feature = "nl-find")]
             SearchAct::NlUnderstand => self.nl_understand(),
-            #[cfg(feature = "llm-find")]
+            #[cfg(feature = "nl-find")]
             SearchAct::NlFind => self.nl_find(),
-            #[cfg(feature = "llm-find")]
+            #[cfg(feature = "nl-find")]
             SearchAct::NlCancel => self.nl_cancel(),
-            #[cfg(feature = "llm-find")]
+            #[cfg(feature = "nl-find")]
             SearchAct::NlRemove(i) => self.nl_remove(i),
-            #[cfg(feature = "llm-find")]
+            #[cfg(feature = "nl-find")]
             SearchAct::NlMerge(i) => self.nl_merge(i),
-            #[cfg(feature = "llm-find")]
+            #[cfg(feature = "nl-find")]
             SearchAct::NlOpen(file, condition) => self.nl_open(file, condition),
             #[cfg(feature = "neural-search")]
             SearchAct::SummarizeSelected => self.summarize_selected(),
@@ -2988,7 +2982,7 @@ impl Authoring for SearchSession {
                                             record.alert.name
                                         )
                                     } else {
-                                        format!("{}: {} new or changed exact-hit files; MiniLM scores are review signals.", record.alert.name, changes.len())
+                                        format!("{}: {} new or changed exact-hit files; similarity scores are review aids.", record.alert.name, changes.len())
                                     };
                                     self.alert_status = Some(summary.clone());
                                     self.status = summary;
@@ -3030,7 +3024,7 @@ impl Authoring for SearchSession {
                 }
             }
         }
-        #[cfg(feature = "llm-find")]
+        #[cfg(feature = "nl-find")]
         {
             changed |= self.poll_nl();
         }
@@ -3349,17 +3343,10 @@ impl Authoring for SearchSession {
                 self.answer_error = None;
                 self.answer_running = false;
             }
-            #[cfg(feature = "llm-find")]
+            #[cfg(feature = "nl-find")]
             INPUT_NL => {
                 self.nl.sentence = text;
                 self.nl.reset();
-            }
-            #[cfg(feature = "llm-find")]
-            INPUT_NL_MODEL => {
-                if self.st.config.llm_model_path != text {
-                    self.st.config.llm_model_path = text;
-                    self.nl.forget_model();
-                }
             }
             _ => {}
         }

@@ -7,10 +7,10 @@ Does not own file traversal, text extraction, exact matching, persistent indexes
 
 ## Current model
 - `all-MiniLM-L6-v2` sentence encoder, Apache-2.0, 384-dimensional embeddings.
-- `google/flan-t5-small` encoder-decoder, Apache-2.0, for bounded local answer generation from cited search evidence.
 - Maximum input is 256 WordPiece tokens. Longer inputs are truncated by the matching tokenizer.
-- Generated answers cap questions at 64 tokens and output at 48 tokens. They are untrusted; `search-core` supplies citations and the UI must show the unchanged source lines beside the answer.
+- Nothing here generates text. A Flan-T5-small generator was removed 2026-11-08 (it omitted parts of questions and invented answers); Search shows cited source lines only.
 - Runtime is pinned to the same `rten` 0.24.0 used by OCR, with `onnx_format` enabled for the bundled model.
+- `embed_batch` embeds passages and `embed_queries` embeds search queries; the bundled MiniLM uses no prefix, so they match. A candidate model (`use_embedding_model` with a `ModelSpec`) can set CLS or mean pooling and query/passage prefixes (bge, e5, arctic-embed need them). Search-side code must call `embed_queries` for the user's query and `embed_batch` for stored text.
 - Model inference is CPU-only. Load lazily; a model failure must leave exact search usable.
 
 ## Contracts

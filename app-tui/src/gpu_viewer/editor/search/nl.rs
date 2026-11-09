@@ -1,13 +1,11 @@
-//! Natural-language Find: a sentence becomes removable conditions (local language model), then `search_core::nl_find`
-//! retrieves and judges per condition. The model never writes answers; every match shows a cited passage and a quote.
-//! Loading the model and every model call run on blocking threads; results stream in through `Event`.
+//! Natural-language Find: a sentence becomes removable conditions (rules, `search_core::nl_rules`), then
+//! `search_core::nl_find` retrieves and judges per condition. Nothing is generated; every match shows a cited passage
+//! and a quote copied from it. The search runs on a blocking thread; results stream in through `Event`.
 
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use search_core::nl_find::{self, Evidence, FileMatch};
-use search_llm::{Condition, ConditionModel};
+use search_core::nl_find::{self, Condition, Evidence, FileMatch};
 use tokio::sync::mpsc;
 
 use super::{act, file_name, semantic_search_roots, SearchAct, SearchSession};
@@ -15,21 +13,7 @@ use crate::gpu_viewer::editor::session::Tone;
 use crate::gpu_viewer::menu::Entry;
 use crate::gpu_viewer::ui::DockItem;
 
-pub(super) type Model = Arc<dyn ConditionModel + Send + Sync>;
-pub(super) type Loader = fn(&Path) -> Result<Model, String>;
-
-pub(super) fn load_llama(path: &Path) -> Result<Model, String> {
-    search_llm::LlamaEngine::load(path)
-        .map(|engine| Arc::new(engine) as Model)
-        .map_err(|error| error.to_string())
-}
-
 pub(super) enum Event {
-    Parsed {
-        id: u64,
-        loaded: Option<(PathBuf, Model)>,
-        result: Result<Vec<Condition>, String>,
-    },
     File {
         id: u64,
         file: FileMatch,
@@ -43,7 +27,6 @@ pub(super) enum Event {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Stage {
     Idle,
-    Parsing,
     Searching,
 }
 
@@ -54,8 +37,6 @@ pub(super) struct NlFind {
     pub stage: Stage,
     pub files: Vec<FileMatch>,
     pub error: Option<String>,
-    model: Option<(PathBuf, Model)>,
-    loader: Loader,
     /// Bumped by every new request and by edits that make running work stale.
     generation: u64,
     cancel: Arc<AtomicBool>,
@@ -72,8 +53,6 @@ impl NlFind {
             stage: Stage::Idle,
             files: Vec::new(),
             error: None,
-            model: None,
-            loader: load_llama,
             generation: 0,
             cancel: Arc::new(AtomicBool::new(false)),
             tx,
@@ -81,15 +60,7 @@ impl NlFind {
         }
     }
 
-    #[cfg(test)]
-    pub fn with_loader(loader: Loader) -> Self {
-        Self {
-            loader,
-            ..Self::new()
-        }
-    }
-
-    /// Forget results and running work (the sentence or the model changed).
+    /// Forget results and running work (the sentence changed).
     pub fn reset(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
         self.generation += 1;
@@ -97,25 +68,6 @@ impl NlFind {
         self.files.clear();
         self.error = None;
         self.stage = Stage::Idle;
-    }
-
-    pub fn forget_model(&mut self) {
-        self.model = None;
-        self.reset();
-    }
-}
-
-/// What the user sees for a missing model: where it was looked for and what to do.
-fn model_problem(path: &str) -> Option<String> {
-    let path = path.trim();
-    if path.is_empty() {
-        Some("No language model set. Enter the location of a Qwen3-4B GGUF file below.".into())
-    } else if !Path::new(path).is_file() {
-        Some(format!(
-            "Language model not found: {path}. Check the location below."
-        ))
-    } else {
-        None
     }
 }
 
@@ -136,13 +88,12 @@ pub(super) fn looks_like_sentence(text: &str) -> bool {
 }
 
 impl SearchSession {
-    /// Whether a sentence typed in the search box can be understood now (index and model are ready).
+    /// Whether a sentence typed in the search box can be understood now (the semantic index is on).
     pub(super) fn nl_ready(&self) -> bool {
-        self.st.config.index.semantic
-            && model_problem(&self.st.config.llm_model_path).is_none()
-            && self.nl.stage == Stage::Idle
+        self.st.config.index.semantic && self.nl.stage == Stage::Idle
     }
 
+    /// Read the sentence as conditions (instant: rules, no model).
     pub(super) fn nl_understand(&mut self) {
         let sentence = self.nl.sentence.trim().to_string();
         if sentence.is_empty() {
@@ -153,46 +104,18 @@ impl SearchSession {
             self.status = "Enable Semantic index in the Index menu, then build the index.".into();
             return;
         }
-        if let Some(problem) = model_problem(&self.st.config.llm_model_path) {
-            self.nl.error = Some(problem);
-            return;
-        }
         if self.nl.stage != Stage::Idle {
             self.status = "Wait for the current step to finish.".into();
             return;
         }
         self.nl.reset();
-        self.nl.stage = Stage::Parsing;
-        let id = self.nl.generation;
-        let path = PathBuf::from(self.st.config.llm_model_path.trim());
-        let cached = self
-            .nl
-            .model
-            .as_ref()
-            .filter(|(p, _)| *p == path)
-            .map(|(_, m)| m.clone());
-        let (loader, tx) = (self.nl.loader, self.nl.tx.clone());
-        self.status = "Understanding your sentence…".into();
-        self.rt.spawn(async move {
-            let outcome = tokio::task::spawn_blocking(move || {
-                let (model, loaded) = match cached {
-                    Some(model) => (model, None),
-                    None => {
-                        let model = loader(&path)?;
-                        (model.clone(), Some((path, model)))
-                    }
-                };
-                let conditions = model.parse(&sentence)?;
-                Ok::<_, String>((loaded, conditions))
-            })
-            .await
-            .unwrap_or_else(|error| Err(format!("language model task failed: {error}")));
-            let (loaded, result) = match outcome {
-                Ok((loaded, conditions)) => (loaded, Ok(conditions)),
-                Err(error) => (None, Err(error)),
-            };
-            let _ = tx.send(Event::Parsed { id, loaded, result });
-        });
+        match nl_find::parse(&sentence) {
+            Ok(conditions) => {
+                self.status = "Check the conditions, remove any that are wrong, then press Find.".into();
+                self.nl.conditions = Some(conditions);
+            }
+            Err(error) => self.nl.error = Some(error),
+        }
     }
 
     pub(super) fn nl_remove(&mut self, index: usize) {
@@ -210,7 +133,7 @@ impl SearchSession {
         }
     }
 
-    /// Join condition `index` with the next one (for a condition the model split in two).
+    /// Join condition `index` with the next one (for a condition the rules split in two).
     pub(super) fn nl_merge(&mut self, index: usize) {
         if self.nl.stage != Stage::Idle {
             return;
@@ -236,7 +159,6 @@ impl SearchSession {
                 first.terms.push(term);
             }
         }
-        first.grounding = first.grounding.min(next.grounding);
         self.nl.files.clear();
     }
 
@@ -246,10 +168,6 @@ impl SearchSession {
         }
         let Some(conditions) = self.nl.conditions.clone().filter(|list| !list.is_empty()) else {
             self.status = "Keep at least one condition.".into();
-            return;
-        };
-        let Some(model) = self.nl.model.as_ref().map(|(_, model)| model.clone()) else {
-            self.status = "Understand the sentence first.".into();
             return;
         };
         let roots = semantic_search_roots(&self.st.config);
@@ -299,7 +217,7 @@ impl SearchSession {
                     hits.truncate(limit);
                     Ok(hits)
                 };
-                nl_find::find(&*model, &conditions, retrieve, &cancel, |file| {
+                nl_find::find(&conditions, retrieve, &cancel, |file| {
                     let _ = tx.send(Event::File {
                         id,
                         file: file.clone(),
@@ -341,28 +259,6 @@ impl SearchSession {
         let mut changed = false;
         while let Ok(event) = self.nl.rx.try_recv() {
             match event {
-                Event::Parsed { id, loaded, result } if id == self.nl.generation => {
-                    if let Some(loaded) = loaded {
-                        self.nl.model = Some(loaded);
-                    }
-                    self.nl.stage = Stage::Idle;
-                    match result {
-                        Ok(conditions) if conditions.is_empty() => {
-                            self.nl.error = Some(
-                                "No condition could be taken from that sentence. Rephrase it."
-                                    .into(),
-                            );
-                        }
-                        Ok(conditions) => {
-                            self.status =
-                                "Check the conditions, remove any that are wrong, then press Find."
-                                    .into();
-                            self.nl.conditions = Some(conditions);
-                        }
-                        Err(error) => self.nl.error = Some(error),
-                    }
-                    changed = true;
-                }
                 Event::File { id, file } if id == self.nl.generation => {
                     self.nl.files.push(file);
                     changed = true;
@@ -372,9 +268,9 @@ impl SearchSession {
                     match result {
                         Ok(files) => {
                             self.status = if files.is_empty() {
-                                "No file had a passage the model confirmed.".into()
+                                "No file had a passage stating every condition.".into()
                             } else {
-                                format!("{} files with confirmed evidence; open each citation to verify.", files.len())
+                                format!("{} files with matching passages; open each citation to verify.", files.len())
                             };
                             self.nl.files = files;
                         }
@@ -397,8 +293,7 @@ fn quote_line(evidence: &Evidence) -> String {
     )
 }
 
-/// The sentence's conditions as pills: click one to remove it, click the + between two to merge them. A condition that
-/// is only partly made of the user's words is marked "!" and left unlit, so it reads as "check me".
+/// The sentence's conditions as pills: click one to remove it, click the + between two to merge them.
 pub(super) fn chips(s: &SearchSession) -> Vec<Entry> {
     let Some(conditions) = &s.nl.conditions else {
         return Vec::new();
@@ -407,13 +302,12 @@ pub(super) fn chips(s: &SearchSession) -> Vec<Entry> {
     let mut chips = Vec::new();
     for (i, condition) in conditions.iter().enumerate() {
         let mark = if condition.negated { "not " } else { "" };
-        let review = if condition.needs_review() { "! " } else { "" };
         let entry = Entry::new(
-            format!("{review}{mark}{}  ×", condition.text),
+            format!("{mark}{}  ×", condition.text),
             "click to remove",
             act(SearchAct::NlRemove(i)),
         )
-        .checked(!condition.needs_review());
+        .checked(true);
         chips.push(entry.when(if locked {
             Err("wait for the current step".to_string())
         } else {
@@ -441,14 +335,10 @@ pub(super) fn chips(s: &SearchSession) -> Vec<Entry> {
 pub(super) fn items(s: &SearchSession) -> Vec<DockItem> {
     let nl = &s.nl;
     let mut items = Vec::new();
-    if let Some(problem) = model_problem(&s.st.config.llm_model_path) {
-        items.push(DockItem::text(problem, Tone::Warn));
-    }
     if let Some(error) = &nl.error {
         items.push(DockItem::text(error.clone(), Tone::Warn));
     }
     match nl.stage {
-        Stage::Parsing => items.push(DockItem::text("Reading your sentence…", Tone::Dim)),
         Stage::Searching => {
             items.push(DockItem::text(
                 format!(
@@ -481,11 +371,20 @@ pub(super) fn items(s: &SearchSession) -> Vec<DockItem> {
             .flatten()
             .filter(|c| !c.negated)
             .collect();
-        items.push(DockItem::Heading("Files with confirmed evidence".into()));
-        items.push(DockItem::text(
-            "The model checked these passages; each quote is verified to be in the cited text. Open the source to confirm.",
-            Tone::Dim,
-        ));
+        let unconfirmed = nl.files.iter().all(|file| file.fit == nl_find::Fit::Unconfirmed);
+        if unconfirmed {
+            items.push(DockItem::Heading("Closest passages (not confirmed)".into()));
+            items.push(DockItem::text(
+                "No passage states every condition. These are the best matches by meaning and wording; read each in context.",
+                Tone::Warn,
+            ));
+        } else {
+            items.push(DockItem::Heading("Files with matching passages".into()));
+            items.push(DockItem::text(
+                "Each quote is copied from the cited passage. Open the source to confirm.",
+                Tone::Dim,
+            ));
+        }
         for (file_index, file) in nl.files.iter().enumerate() {
             items.push(DockItem::row(
                 format!("{} · {}", file_name(&file.path), file.fit.label()),
@@ -497,7 +396,7 @@ pub(super) fn items(s: &SearchSession) -> Vec<DockItem> {
                 let name = wanted.get(condition_index).map_or("", |c| c.text.as_str());
                 match evidence {
                     Some(evidence) => items.push(DockItem::row(
-                        format!("   ok  {name}: {}", quote_line(evidence)),
+                        format!("   {}  {name}: {}", if unconfirmed { "?" } else { "ok" }, quote_line(evidence)),
                         Tone::Dim,
                         Some(act(SearchAct::NlOpen(file_index, condition_index))),
                         false,
@@ -511,45 +410,4 @@ pub(super) fn items(s: &SearchSession) -> Vec<DockItem> {
         }
     }
     items
-}
-
-/// A stand-in model for tests and rendered snapshots: splits a sentence at " and ", judges by the condition's first word.
-#[cfg(test)]
-pub(super) mod fake {
-    use super::*;
-    use search_llm::Verdict;
-
-    pub struct Fake;
-    impl ConditionModel for Fake {
-        fn parse(&self, sentence: &str) -> Result<Vec<Condition>, String> {
-            Ok(sentence
-                .split(" and ")
-                .map(|part| Condition {
-                    text: part.trim().to_string(),
-                    terms: part.split_whitespace().map(str::to_string).collect(),
-                    negated: false,
-                    grounding: 1.0,
-                })
-                .collect())
-        }
-        fn judge(&self, condition: &str, passage: &str) -> Result<Verdict, String> {
-            let word = condition
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .to_lowercase();
-            let hit = passage.to_lowercase().contains(&word);
-            Ok(Verdict {
-                matches: hit,
-                quote: if hit {
-                    passage.to_string()
-                } else {
-                    String::new()
-                },
-            })
-        }
-    }
-    pub fn loader(_: &Path) -> Result<Model, String> {
-        Ok(Arc::new(Fake))
-    }
 }

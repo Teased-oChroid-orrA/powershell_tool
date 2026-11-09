@@ -15,7 +15,7 @@ name = "app-tui"
 path = "src/main.rs"
 
 [features]
-default = ["gpu-viewer", "neural-search", "semantic-search", "llm-find"]
+default = ["gpu-viewer", "neural-search", "semantic-search", "nl-find"]
 # Open, edit (hole / boss / fillet) and re-tessellate STEP solids: links a prebuilt OpenCASCADE through `cadrum`.
 occt = ["fea-problem/occt", "dep:solid-kernel", "solid-kernel/occt"]
 # The same, building OpenCASCADE from source so it follows the workspace's static CRT (the prebuilt MSVC library is /MD and cannot link
@@ -24,11 +24,12 @@ occt-source = ["occt", "solid-kernel/occt-source"]
 gpu-viewer = ["dep:wgpu", "dep:winit", "dep:bytemuck", "dep:pollster", "dep:egui", "dep:egui-wgpu", "dep:egui-winit", "dep:rfd"]
 neural-search = ["search-core/neural-search"]
 semantic-search = ["search-core/semantic-search"]
-# Natural-language Find in the Search workbench: a local GGUF language model (llama.cpp; needs CMake and a C++ toolchain).
-llm-find = ["semantic-search", "search-core/nl-find", "dep:search-llm", "search-llm/llama"]
+# Natural-language Find in the Search workbench (rule-based, no model).
+nl-find = ["semantic-search", "search-core/nl-find"]
 
 [dependencies]
-search-llm = { path = "../search-llm", optional = true }
+# Local clock for the circadian theme (`gpu_viewer/gui/theme.rs`); already in the graph through `search-core`.
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 # Only for tests that build a STEP file with the kernel (feature `occt`).
 solid-kernel = { path = "../solid-kernel", optional = true }
 wgpu = { version = "30", optional = true }
@@ -38,7 +39,7 @@ pollster = { version = "0.3", optional = true }
 # Native window front end (ADR-017). egui 0.36 pairs with wgpu 30 and winit 0.30.
 egui = { version = "0.36", default-features = false, features = ["default_fonts"], optional = true }
 egui-wgpu = { version = "0.36", default-features = false, optional = true }
-egui-winit = { version = "0.36", default-features = false, features = ["x11"], optional = true }
+egui-winit = { version = "0.36", default-features = false, features = ["x11", "clipboard"], optional = true }
 # The operating system's own folder picker (Search's Browse): Win32 IFileDialog / NSOpenPanel, no runtime needed.
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"], optional = true }
 tempfile = "3"
@@ -95,12 +96,3 @@ winresource = "0.1"
 [dev-dependencies]
 # Test-only: builds a STEP cube with the native modeller (the same crate the optional `occt` dependency names).
 solid-kernel = { path = "../solid-kernel" }
-# Test-only: constructing a `search_core::models::FileSearchResult` fixture
-# needs a `chrono::DateTime<Local>` value for `created`/`modified`, and
-# Rust 2018+ requires the crate be a direct dependency to name it at all -
-# `chrono` is already resolved into this workspace's dependency graph
-# transitively via `search-core`, so this adds no new crate, just a name
-# for one already being compiled. Kept dev-only since production code never
-# needs to name `chrono` directly (calling `.format()` on an
-# already-typed field is an inherent-method call, not a `use`).
-chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }

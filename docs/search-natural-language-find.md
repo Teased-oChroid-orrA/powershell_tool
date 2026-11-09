@@ -23,7 +23,7 @@ the unchanged cited passage, a quote the model copied from it, and a fit label. 
 - The user edits the conditions before any search: click a pill to remove it, click "+" between two to merge them.
 - Labels are "all matched", "one weak" (three or more wanted conditions, one unconfirmed) and "partial"; never a
   percentage. A negated condition only excludes a file. At least one condition must be wanted.
-- Only the 10 best-ranked candidate files are judged (3 passages per file and condition) because one model call costs
+- Only the 10 best-ranked candidate files are judged (up to 8 passages per file and condition for a strong candidate, 1 for a file whose best passage is under half as similar as the best file's) because one model call costs
   seconds on a laptop CPU. A file with no passage for a condition inside the top-100 retrieval is unconfirmed.
 - The language model does not index or OCR. OCR is `ocrs`/`rten` (`ocr.rs`); embeddings are MiniLM (`search-ml`).
 
@@ -64,6 +64,30 @@ Corpus: 14 public files in 10 types (the FAA advisory circular AC 43.13-1B PDF o
 - Extraction note: the PDF has soft hyphens at line ends (`re­ moved`); `focus` rejoins them for the model, but the
   keyword index still sees split words.
 
+## Second corpus round (2026-11-08): "search fasteners which size is specified?"
+
+- The parser kept only the clause ("size specified"). `restore_subject` puts the noun before the first relative word
+  back in front of each condition ("fasteners size specified"); the prompt carries an example of it.
+- The model judged correctly (it accepts "AN3-5A bolts with a 3/16 inch diameter" and rejects fastener text with no
+  size). Retrieval was the weak point: "fasteners size specified" is abstract, so it retrieves generic fastener text.
+  Each condition now carries a model-written `example` sentence ("The fastener size is specified as M8 x 1.25."),
+  used only to retrieve more passages; passages are still judged against the condition text, so nothing the model
+  invents is ever searched or reported as a condition.
+- Judging order: retrieval order and word-form coverage are interleaved, up to 8 passages for a strong candidate
+  file, stopping at the first confirmation. `wanted_stems` ignores one- and two-character and numeric stems (the `x`
+  and `8` of "M8 x 1.25" matched scraps of every passage). `focus` keeps the best sentences with their neighbours.
+- When nothing is confirmed, up to 5 files are shown as `Fit::Unconfirmed` ("Closest passages (not confirmed)"),
+  only those whose best passage is at least half as similar as the best file's (and at least 0.2); a search is no
+  longer a dead end. They are not judged and are labelled so.
+- Result on the 14-file corpus: the FAA manual, AllMatched, 90 s; the cited line ("Solid shank rivets ... size of
+  shank") names size as an attribute rather than giving one, so it is a loose match.
+- Model calls: the engine keeps its context and reuses the KV cache for the common prompt prefix
+  (`search-llm/src/engine.rs`, `Session`). Judge calls on the 45-pair set: mean 5.5 s against about 9.5 s, same
+  accuracy (0.933, 1 false positive).
+- PDF words broken over two lines by a soft hyphen (`re` + U+00AD, then `moved`) are joined in
+  `line_quality::join_soft_hyphens`. This changes extracted text, so `INDEX_SEMANTIC_VERSION` is 4,
+  `CITATION_VERSION` 3 and `EXTRACTION_VERSION` 2: existing indexes rebuild once (11 minutes for the 21 MB FAA PDF).
+
 ## Windows / CI
 
 `llm-find` is a default feature of `app-tui` since 2026-11-08 (owner request), so every default `app-tui` build and the
@@ -79,3 +103,12 @@ is not shipped; the user sets its path in the panel.
 
 - Judge threshold tuning on the user's own wording; grounding thresholds are from synthetic bake-off data.
 - Windows run of the panel; the model-path field is a typed path (no file picker).
+
+## 2026-11-08 update: the Qwen / `search-llm` design was replaced by `nl_rules`
+
+Everything above that describes the Qwen3-4B judge, the `search-llm` crate, the `llm-find` feature and the GGUF model path
+is historical. The crate was removed from the working tree and Natural-language Find is now rule-based:
+`search_core::nl_rules` (no model, no download, no CMake/C++ toolchain) owns the parsing, and `app-tui`'s `nl.rs`
+(feature `nl-find`) owns the panel. The bake-off numbers and the failure analysis above remain the reason a generative
+judge was not kept (17.5 s per parse on an 8 GB machine, one false positive class that rules avoid). The "Windows / CI"
+and "Not done" sections no longer apply. Current behaviour and limits: `app-tui/src/gpu_viewer/editor/search/AGENTS.md`.

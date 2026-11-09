@@ -2164,10 +2164,18 @@ mod snapshot_tests {
             let mut r = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm, &scene, w, h)
                 .await
                 .unwrap();
-            for (name, theme) in [("light", egui::Theme::Light), ("dark", egui::Theme::Dark)] {
+            // The circadian palette across a day: the hour sets colour temperature and light or dark.
+            // Then each fixed library theme (`FEA_SNAPSHOT_DASH_OUT/dashboard-t-<id>.rgba`).
+            let mut shots: Vec<(String, Option<usize>, f32)> = [3.0f32, 6.5, 8.0, 12.0, 17.5, 19.0, 21.5]
+                .iter()
+                .map(|h| (format!("h{:02}{:02}", *h as u32, (h.fract() * 60.0) as u32), None, *h))
+                .collect();
+            shots.extend(crate::gpu_viewer::gui::theme_library::LIBRARY.iter().enumerate().map(|(i, t)| (format!("t-{}", t.id), Some(i), 12.0)));
+            for (name, choice, hour) in shots {
+                crate::gpu_viewer::gui::theme::choose(choice);
+                crate::gpu_viewer::gui::theme::set_hour(Some(hour));
                 let texture = target(&r, w, h);
                 let mut gui = Gui::new();
-                gui.ctx().set_theme(theme);
                 let view = texture.create_view(&Default::default());
                 let ctx = gui.ctx().clone();
                 for _ in 0..3 {
@@ -3019,6 +3027,14 @@ mod snapshot_tests {
                             .await
                             .unwrap();
                     let texture = target(&r, w, h);
+                    // FEA_SNAPSHOT_HOUR=0..24 shoots the circadian palette at that local hour (light or dark follows it).
+                    if let Some(h) = std::env::var("FEA_SNAPSHOT_HOUR").ok().and_then(|v| v.parse().ok()) {
+                        crate::gpu_viewer::gui::theme::set_hour(Some(h));
+                    }
+                    // FEA_SNAPSHOT_THEME=<library id> shoots a fixed library theme instead.
+                    if let Ok(id) = std::env::var("FEA_SNAPSHOT_THEME") {
+                        crate::gpu_viewer::gui::theme::choose(crate::gpu_viewer::gui::theme_library::LIBRARY.iter().position(|t| t.id == id));
+                    }
                     let mut gui = Gui::new();
                     gui.ctx().set_theme(if dark {
                         egui::Theme::Dark
@@ -3201,8 +3217,8 @@ mod snapshot_tests {
     }
 
     /// The Search window's Index popup with natural-language Find: the chips to review, then the cited results (dark and light), as raw RGBA:
-    /// `FEA_SNAPSHOT_NL_OUT=/dir cargo test ... --features llm-find nl_find_snapshot -- --ignored`.
-    #[cfg(feature = "llm-find")]
+    /// `FEA_SNAPSHOT_NL_OUT=/dir cargo test ... --features nl-find nl_find_snapshot -- --ignored`.
+    #[cfg(feature = "nl-find")]
     #[test]
     #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_NL_OUT"]
     fn nl_find_snapshot() {

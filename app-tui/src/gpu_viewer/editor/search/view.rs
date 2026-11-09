@@ -2,8 +2,8 @@
 //! inspector's option cards, the ribbon, the menus and the value cards. Pure reads of the session.
 #[cfg(feature = "semantic-search")]
 use super::INPUT_QUESTION;
-#[cfg(feature = "llm-find")]
-use super::{INPUT_NL, INPUT_NL_MODEL};
+#[cfg(feature = "nl-find")]
+use super::INPUT_NL;
 use super::{
     act, file_name, SearchAct, SearchSession, SortKey, INPUT_EXCLUDE, INPUT_FILTER, INPUT_FIND,
     INPUT_FOLDER, INPUT_OUTPUT, SETTING_EXCLUDE, SETTING_EXCLUDE_SCOPE, SETTING_FILTERS,
@@ -17,7 +17,7 @@ use crate::gpu_viewer::{
     },
     menu::{Entry, Item, Menu},
     ui::{
-        CardRow, DocColumn, DocDetail, DocHelp, DocInput, DocMatchNavigation, DocModal, DocNotice,
+        CardRow, DocColumn, DocDetail, DocHelp, DocNote, DocSignal, DocInput, DocMatchNavigation, DocModal, DocNotice,
         DocPanel, DocProgress, DocRow, DocSidebar, DocSidebarRecent, DocTable, DocText, DockItem,
         Document, HelpRow, HelpSection, RibbonTab, TreeNode, ValueCard,
     },
@@ -917,11 +917,11 @@ fn ask_items(s: &SearchSession) -> Vec<DockItem> {
 fn index_panel_inputs(s: &SearchSession) -> Vec<DocInput> {
     #[cfg(feature = "semantic-search")]
     {
-        #[cfg(feature = "llm-find")]
+        #[cfg(feature = "nl-find")]
         {
             nl_inputs(s).into()
         }
-        #[cfg(not(feature = "llm-find"))]
+        #[cfg(not(feature = "nl-find"))]
         {
             let _ = s;
             Vec::new()
@@ -934,8 +934,8 @@ fn index_panel_inputs(s: &SearchSession) -> Vec<DocInput> {
     }
 }
 
-#[cfg(feature = "llm-find")]
-fn nl_inputs(s: &SearchSession) -> [DocInput; 2] {
+#[cfg(feature = "nl-find")]
+fn nl_inputs(s: &SearchSession) -> [DocInput; 1] {
     let busy = s.nl.stage != super::nl::Stage::Idle;
     [
         DocInput {
@@ -944,7 +944,7 @@ fn nl_inputs(s: &SearchSession) -> [DocInput; 2] {
             text: s.nl.sentence.clone(),
             hint: "e.g. files where corrosion is blended and the surface filled".into(),
             error: None,
-            note: Some("A local language model splits this into conditions you can edit, then checks the best candidates.".into()),
+            note: Some("Rules split this into conditions you can edit, then the best candidate files are checked passage by passage.".into()),
             submit: Some(act(SearchAct::NlUnderstand)),
             commit_on_blur: false,
             grow: 1.0,
@@ -952,29 +952,15 @@ fn nl_inputs(s: &SearchSession) -> [DocInput; 2] {
             help: None,
             choices: Vec::new(),
         },
-        DocInput {
-            id: INPUT_NL_MODEL,
-            label: "Language model".into(),
-            text: s.st.config.llm_model_path.clone(),
-            hint: "Path of a Qwen3-4B-Instruct Q4_K_M .gguf file".into(),
-            error: None,
-            note: None,
-            submit: None,
-            commit_on_blur: true,
-            grow: 1.0,
-            trailing: None,
-            help: None,
-            choices: Vec::new(),
-        },
     ]
 }
 
 fn index_panel_chips(s: &SearchSession) -> Vec<Entry> {
-    #[cfg(feature = "llm-find")]
+    #[cfg(feature = "nl-find")]
     {
         super::nl::chips(s)
     }
-    #[cfg(not(feature = "llm-find"))]
+    #[cfg(not(feature = "nl-find"))]
     {
         let _ = s;
         Vec::new()
@@ -1304,23 +1290,72 @@ fn detail(s: &SearchSession) -> Option<DocDetail> {
     #[cfg(feature = "neural-search")]
     let i = s.current()?;
     let r = s.current_result()?;
-    let mut subtitle = format!(
+    let subtitle = format!(
         "{}  ·  {}",
         r.full_name,
         plain(&preview::metadata_summary(r))
     );
+    #[cfg_attr(not(feature = "neural-search"), allow(unused_mut))]
+    let mut signals: Vec<DocSignal> = Vec::new();
+    #[cfg_attr(not(feature = "neural-search"), allow(unused_mut))]
+    let mut notes: Vec<DocNote> = Vec::new();
     #[cfg(feature = "neural-search")]
     if let Some(score) = s.current().and_then(|i| s.relevance_score(i)) {
-        subtitle.push_str(&format!("  ·  relevance {:.0}% (matching text {:.0}%, filename {:.0}%, exact lines {:.0}%, recency {:.0}%)", score.score * 100.0, score.match_text_similarity * 100.0, score.filename_similarity * 100.0, score.exact_evidence * 100.0, score.recency * 100.0));
-        if score.feedback_applied {
-            subtitle.push_str(&format!(" · baseline {:.0}%", score.base_score * 100.0));
-        }
+        let mut signal = |label: &str, fraction: f32, hint: &str, primary: bool| {
+            signals.push(DocSignal {
+                label: label.into(),
+                fraction,
+                hint: hint.into(),
+                primary,
+            })
+        };
+        signal(
+            "Relevance",
+            score.score,
+            "How well this file fits your search, combining the signals beside it. A ranking aid, not a confidence level.",
+            true,
+        );
+        signal(
+            "Text",
+            score.match_text_similarity,
+            "How closely the matching lines read like your query.",
+            false,
+        );
+        signal(
+            "Name",
+            score.filename_similarity,
+            "How closely the file name resembles your query.",
+            false,
+        );
+        signal(
+            "Exact",
+            score.exact_evidence,
+            "Share of your exact search terms found in the file.",
+            false,
+        );
+        signal(
+            "Recent",
+            score.recency,
+            "Newer files score higher; this fades as the file ages.",
+            false,
+        );
         if let Some(proximity) = score.proximity {
-            subtitle.push_str(&format!(", nearby matches {:.0}%", proximity * 100.0));
+            signal(
+                "Nearby",
+                proximity,
+                "Matches that sit close together in the file score higher.",
+                false,
+            );
+        }
+        if score.feedback_applied {
+            notes.push(DocNote::new(
+                "Adjusted by feedback",
+                format!("Your relevant / not relevant votes moved this file; it scored {:.0}% before.", score.base_score * 100.0),
+            ));
         }
     }
     if r.low_confidence_pdf {
-        subtitle.push_str("  ·  PDF text extraction: verify against source");
+        notes.push(DocNote::new("PDF: check source", "Text was read from a PDF and may be misread. Verify against the original."));
     }
     let preview = s.preview.as_ref().filter(|p| p.path == r.full_name);
     let text = preview.and_then(|p| p.text.clone());
@@ -1331,52 +1366,53 @@ fn detail(s: &SearchSession) -> Option<DocDetail> {
     if let Some(preview) = preview {
         match &preview.entities {
             Some(Ok(analysis)) if analysis.candidates.is_empty() => {
-                subtitle.push_str("  ·  no engineering entity candidates");
+                notes.push(DocNote::new("No entities", "No part numbers, standards or fastener callouts were found."));
             }
             Some(Ok(analysis)) => {
-                subtitle.push_str(&format!(
-                    "  ·  {} entity suggestions",
-                    analysis.candidates.len()
-                ));
-                if analysis.coverage.candidate_limit_reached {
-                    subtitle.push_str("  ·  candidate display cap reached");
-                }
-                if analysis.coverage.skipped_long_lines > 0 {
-                    subtitle.push_str(&format!(
-                        "  ·  {} long lines outside scan limit",
-                        analysis.coverage.skipped_long_lines
-                    ));
-                }
-                for candidate in analysis.candidates.iter().take(5) {
+                let mut hint = String::from("First suggestions (ranking aids, not confirmed):\n");
+                for candidate in analysis.candidates.iter().take(8) {
                     let value = text
                         .as_ref()
                         .and_then(|text| text.content.get(candidate.bytes.clone()))
                         .unwrap_or("?");
-                    let ranking = entity_signal_label(candidate);
-                    subtitle.push_str(&format!(
-                        "  ·  L{} {value} ({ranking})",
-                        candidate.line_number
+                    hint.push_str(&format!(
+                        "L{}  {value}  ({})\n",
+                        candidate.line_number,
+                        entity_signal_label(candidate)
                     ));
                 }
-                if analysis.candidates.len() > 5 {
-                    subtitle.push_str(&format!("  ·  +{} more", analysis.candidates.len() - 5));
+                if analysis.coverage.candidate_limit_reached {
+                    hint.push_str("The list is capped; more exist.\n");
                 }
+                if analysis.coverage.skipped_long_lines > 0 {
+                    hint.push_str(&format!("{} very long lines were not scanned.", analysis.coverage.skipped_long_lines));
+                }
+                let count = analysis.candidates.len();
+                notes.push(DocNote::new(
+                    format!(
+                        "{count}{} engineering entit{}",
+                        if analysis.coverage.candidate_limit_reached { "+" } else { "" },
+                        if count == 1 { "y" } else { "ies" }
+                    ),
+                    hint.trim_end(),
+                ));
             }
-            Some(Err(status)) => subtitle.push_str(&format!("  ·  {status}")),
+            Some(Err(status)) => notes.push(DocNote::new(status.to_string(), "")),
             None => {}
         }
-        if preview.entities.as_ref().is_some_and(Result::is_ok) {
-            subtitle.push_str("  ·  similarity is a ranking signal, not confidence");
-        }
     }
-    if text.is_some() {
-        subtitle.push_str("  ·  Select text, then right-click to copy");
-    }
+    let subtitle = if text.is_some() {
+        format!("{subtitle}  ·  Select text, then right-click to copy")
+    } else {
+        subtitle
+    };
     Some(DocDetail {
         drawing: None,
         grid: None,
         title: file_name(&r.full_name).to_string(),
         subtitle,
+        signals,
+        notes,
         #[cfg(feature = "neural-search")]
         actions: if s.feedback_enabled() && s.relevance_score(i).is_some() {
             vec![
@@ -1420,9 +1456,9 @@ fn detail(s: &SearchSession) -> Option<DocDetail> {
 pub(super) fn entity_signal_label(candidate: &search_core::entities::EntityCandidate) -> String {
     let neural = candidate.category_scores.first();
     let supported = candidate.neural_suggestion();
-    let ranking = supported.map_or_else(
+    let likely = supported.map_or_else(
         || "unranked".to_string(),
-        |score| format!("{:?} {:.3}", score.kind, score.similarity),
+        |score| format!("likely {:?} {:.0}%", score.kind, score.similarity * 100.0),
     );
     let global_disagrees = neural
         .zip(supported)
@@ -1433,19 +1469,19 @@ pub(super) fn entity_signal_label(candidate: &search_core::entities::EntityCandi
             .iter()
             .map(|kind| format!("{kind:?}"))
             .collect::<Vec<_>>()
-            .join("/");
+            .join(" or ");
         if !hints.is_empty() {
             let global = neural.map_or_else(String::new, |score| {
                 if global_disagrees {
-                    format!(" · global leader {:?}", score.kind)
+                    format!(", best overall {:?}", score.kind)
                 } else {
                     String::new()
                 }
             });
-            return format!("MiniLM among {hints}: {ranking}{global}");
+            return format!("{hints}: {likely}{global}");
         }
     }
-    format!("MiniLM {ranking}")
+    likely
 }
 
 // ---------------------------------------------------------------------- tree
@@ -1764,7 +1800,7 @@ pub(super) fn cards(s: &SearchSession) -> Cards {
                     .unwrap_or(0);
                 index.push(DockItem::row(
                     format!(
-                        "{} · {:.0}%",
+                        "{} · {:.0}% similar",
                         semantic_citation(hit),
                         hit.similarity * 100.0
                     ),
@@ -1797,13 +1833,13 @@ pub(super) fn cards(s: &SearchSession) -> Cards {
         if let Some(hits) = s.current_related_hits() {
             index.push(DockItem::Heading("Possible related documents".into()));
             index.push(DockItem::text(
-                "Grouped by source file. Raw MiniLM cosine scores are uncalibrated; review excerpts, since similarity does not prove a duplicate or revision.",
+                "Grouped by file. Similarity ranks candidates; it does not prove a duplicate or a revision, so read the excerpts.",
                 Tone::Dim,
             ));
             for (i, hit) in hits.iter().enumerate() {
                 index.push(DockItem::row(
                     format!(
-                        "{} · cosine {:.0}%",
+                        "{} · {:.0}% similar",
                         semantic_citation(hit),
                         hit.similarity * 100.0
                     ),
@@ -1875,7 +1911,7 @@ pub(super) fn cards(s: &SearchSession) -> Cards {
     {
         index.push(DockItem::Heading("Saved search alerts".into()));
         index.push(DockItem::text(
-            "Alerts use exact search for file membership. MiniLM scores help review changed files; they do not decide materiality.",
+            "Alerts match files by exact search. Similarity scores only help you review changes; they never decide what is important.",
             Tone::Dim,
         ));
         if s.alerts.len() < search_core::alerts::MAX_SAVED_ALERTS {
@@ -1956,9 +1992,9 @@ pub(super) fn cards(s: &SearchSession) -> Cards {
                         path,
                         cosine_distance,
                     } => format!(
-                        "Updated · {} · cosine distance {:.3}",
+                        "Updated · {} · {:.0}% different",
                         plain(path),
-                        cosine_distance
+                        f64::from(*cosine_distance) * 100.0
                     ),
                 };
                 index.push(DockItem::text(detail, Tone::Normal));
@@ -2040,20 +2076,20 @@ pub(super) fn cards(s: &SearchSession) -> Cards {
     }
 }
 
-/// The Natural-language Find card: its controls, or how to get them when this build lacks the language model.
+/// The Natural-language Find card: its controls, or how to get them when this build lacks the feature.
 #[cfg(feature = "semantic-search")]
 fn nl_items(s: &SearchSession) -> Vec<DockItem> {
-    #[cfg(feature = "llm-find")]
+    #[cfg(feature = "nl-find")]
     {
         super::nl::items(s)
     }
-    #[cfg(not(feature = "llm-find"))]
+    #[cfg(not(feature = "nl-find"))]
     {
         let _ = s;
         vec![
             DockItem::text("Natural-language Find is not in this build.", Tone::Warn),
             DockItem::text(
-                "It needs the local language model. Build with: cargo run -p app-tui --release --features llm-find",
+                "Build with: cargo run -p app-tui --release --features nl-find",
                 Tone::Dim,
             ),
         ]

@@ -262,7 +262,7 @@ fn best_lines(question: &str, texts: &[&str], similarities: &[f32], limit: usize
                 .iter()
                 .map(|line| crate::lexical::count_terms(line, &terms))
                 .collect::<Vec<_>>();
-            crate::lexical::fuse(similarities, &crate::lexical::bm25(&counts, terms.len()))
+            crate::lexical::fuse(similarities, &crate::lexical::bm25(&counts, terms.len())) // rank fusion: see `LexicalConfig::rrf`
         }
         None => similarities.to_vec(),
     };
@@ -310,7 +310,7 @@ impl LineIndex {
     }
 
     pub fn rank(&self, question: &str, limit: usize) -> Result<Vec<LineMatch>, search_ml::MlError> {
-        let query = search_ml::embed_batch(&[question])?;
+        let query = search_ml::embed_queries(&[question])?;
         let similarities = self
             .embeddings
             .iter()

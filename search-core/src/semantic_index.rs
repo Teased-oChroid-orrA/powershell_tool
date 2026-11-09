@@ -3,8 +3,8 @@
 
 use std::{
     cmp::{Ordering, Reverse},
-    collections::BinaryHeap,
-    path::Path,
+    collections::{BinaryHeap, HashMap},
+    path::{Path, PathBuf},
     sync::Mutex,
 };
 
@@ -13,7 +13,7 @@ use search_ml::{Embedding, MlError};
 
 const EMBEDDING_VERSION: i64 = search_ml::EMBEDDING_MODEL_VERSION;
 /// Per-PDF stamp: 1 = page citations, 2 = line quality repair and noise filter.
-const CITATION_VERSION: i64 = 2;
+const CITATION_VERSION: i64 = 3;
 const EMBEDDING_DIMENSIONS: usize = 384;
 const CHUNK_CHARS: usize = 800;
 const CHUNK_TOKEN_BUDGET: usize = 240;
@@ -120,6 +120,41 @@ impl Ord for HeapHit {
 /// during retrieval, so query memory stays proportional to `limit`.
 pub struct SemanticIndex {
     conn: Mutex<Connection>,
+    path: PathBuf,
+    /// Above this many chunks a query streams from SQLite instead of using the in-memory snapshot.
+    cache_limit: usize,
+}
+
+/// Chunks (about 1.5 KB of vector each) up to which an index is searched from memory (about 400 MB).
+const MAX_CACHED_CHUNKS: usize = 250_000;
+
+/// Record that the stored chunks changed, so cached snapshots of them are stale.
+fn bump_generation(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO semantic_meta(key,value) VALUES('generation',1)
+         ON CONFLICT(key) DO UPDATE SET value=value+1",
+        [],
+    )
+    .map(|_| ())
+}
+
+/// SHA-256 of the extracted lines and their PDF pages: what the stored vectors were made from.
+fn content_hash(lines: &[String], pages: Option<&[Option<std::num::NonZeroU32>]>) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    for (index, line) in lines.iter().enumerate() {
+        hasher.update((line.len() as u64).to_le_bytes());
+        hasher.update(line.as_bytes());
+        hasher.update(pages.and_then(|pages| pages[index]).map_or(0, |page| page.get()).to_le_bytes());
+    }
+    hasher.finalize().to_vec()
+}
+
+fn generation(conn: &Connection) -> Result<i64, String> {
+    conn.query_row("SELECT value FROM semantic_meta WHERE key='generation'", [], |row| row.get(0))
+        .optional()
+        .map(|value| value.unwrap_or(0))
+        .map_err(|error| error.to_string())
 }
 
 impl SemanticIndex {
@@ -148,6 +183,7 @@ impl SemanticIndex {
             "INTEGER NOT NULL DEFAULT 0",
         )?;
         ensure_column(&tx, "semantic_chunks", "page", "INTEGER")?;
+        ensure_column(&tx, "semantic_documents", "content_hash", "BLOB")?;
         tx.commit()?;
         let version: Option<i64> = conn
             .query_row(
@@ -158,6 +194,7 @@ impl SemanticIndex {
             .optional()?;
         if version != Some(EMBEDDING_VERSION) {
             conn.execute_batch("DELETE FROM semantic_chunks; DELETE FROM semantic_documents;")?;
+            bump_generation(&conn)?;
             conn.execute(
                 "INSERT INTO semantic_meta(key,value) VALUES('embedding_version',?1)
                  ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -166,6 +203,8 @@ impl SemanticIndex {
         }
         Ok(Self {
             conn: Mutex::new(conn),
+            path: path.to_path_buf(),
+            cache_limit: MAX_CACHED_CHUNKS,
         })
     }
 
@@ -190,7 +229,6 @@ impl SemanticIndex {
         pages: Option<&[Option<std::num::NonZeroU32>]>,
     ) -> Result<usize, String> {
         let pages = pages.filter(|pages| pages.len() == lines.len());
-        let chunks = embed_lines_with_pages(lines, pages).map_err(|error| error.to_string())?;
         let citation_version = if Path::new(path)
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
@@ -199,6 +237,44 @@ impl SemanticIndex {
         } else {
             0
         };
+        // Embedding is the expensive step. A file whose time changed but whose extracted text did not (a copy, a
+        // checkout, a sync tool) keeps its vectors and only gets its new stamp.
+        let hash = content_hash(lines, pages);
+        {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|_| "semantic index lock poisoned".to_string())?;
+            let stored: Option<(Option<Vec<u8>>, i64)> = conn
+                .query_row(
+                    "SELECT content_hash,citation_version FROM semantic_documents WHERE path=?1",
+                    [path],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(|error| error.to_string())?;
+            if stored.is_some_and(|(stored_hash, version)| {
+                version == citation_version && stored_hash.as_deref() == Some(hash.as_slice())
+            }) {
+                conn.execute(
+                    "UPDATE semantic_documents SET modified=?2,size=?3 WHERE path=?1",
+                    params![path, modified, size],
+                )
+                .map_err(|error| error.to_string())?;
+                return conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM semantic_chunks WHERE path=?1",
+                        [path],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map(|count| count as usize)
+                    .map_err(|error| error.to_string());
+            }
+        }
+        // A file that grew or was edited in one place still holds most of its old text: chunks whose text is
+        // unchanged keep their stored vectors and only the new ones go through the model.
+        let known = self.stored_chunk_embeddings(path)?;
+        let (chunks, _) = embed_lines_with_pages(lines, pages, &known).map_err(|error| error.to_string())?;
         let mut conn = self
             .conn
             .lock()
@@ -207,8 +283,8 @@ impl SemanticIndex {
         tx.execute("DELETE FROM semantic_documents WHERE path=?1", [path])
             .map_err(|error| error.to_string())?;
         tx.execute(
-            "INSERT INTO semantic_documents(path,modified,size,citation_version) VALUES(?1,?2,?3,?4)",
-            params![path, modified, size, citation_version],
+            "INSERT INTO semantic_documents(path,modified,size,citation_version,content_hash) VALUES(?1,?2,?3,?4,?5)",
+            params![path, modified, size, citation_version, hash.as_slice()],
         )
         .map_err(|error| error.to_string())?;
         for (chunk_index, chunk) in chunks.iter().enumerate() {
@@ -218,8 +294,31 @@ impl SemanticIndex {
                 params![path, chunk_index as i64, chunk.first_line as i64, chunk.last_line as i64, chunk.text, vector, chunk.page.map(|page| page.get() as i64)],
             ).map_err(|error| error.to_string())?;
         }
+        bump_generation(&tx).map_err(|error| error.to_string())?;
         tx.commit().map_err(|error| error.to_string())?;
         Ok(chunks.len())
+    }
+
+    /// The embeddings stored for `path`, by chunk text.
+    fn stored_chunk_embeddings(&self, path: &str) -> Result<HashMap<String, Embedding>, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| "semantic index lock poisoned".to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT excerpt,embedding FROM semantic_chunks WHERE path=?1")
+            .map_err(|error| error.to_string())?;
+        let rows = stmt
+            .query_map([path], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)))
+            .map_err(|error| error.to_string())?;
+        let mut known = HashMap::new();
+        for row in rows {
+            let (text, bytes) = row.map_err(|error| error.to_string())?;
+            if let Some(embedding) = embedding_from_bytes(&bytes) {
+                known.insert(text, embedding);
+            }
+        }
+        Ok(known)
     }
 
     pub fn is_current(&self, path: &str, modified: i64, size: i64) -> rusqlite::Result<bool> {
@@ -251,6 +350,7 @@ impl SemanticIndex {
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         conn.execute("DELETE FROM semantic_documents WHERE path=?1", [path])?;
+        bump_generation(&conn)?;
         Ok(())
     }
 
@@ -283,6 +383,7 @@ impl SemanticIndex {
             tx.execute("DELETE FROM semantic_documents WHERE path=?1", [path])
                 .map_err(|error| error.to_string())?;
         }
+        bump_generation(&tx).map_err(|error| error.to_string())?;
         tx.commit().map_err(|error| error.to_string())?;
         Ok(orphaned.len())
     }
@@ -290,7 +391,7 @@ impl SemanticIndex {
     /// Semantic results are separate, cited suggestions. This method never
     /// changes the exact-search result set or query semantics.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SemanticHit>, String> {
-        self.search_filtered(query, limit, None, None, true)
+        self.search_filtered(query, limit, None, None, true, &crate::lexical::LexicalConfig::default())
     }
 
     pub fn search_with_settings(
@@ -299,7 +400,7 @@ impl SemanticIndex {
         limit: usize,
         settings: &crate::models::SearchSettings,
     ) -> Result<Vec<SemanticHit>, String> {
-        self.search_filtered(query, limit, Some(settings), None, true)
+        self.search_filtered(query, limit, Some(settings), None, true, &crate::lexical::LexicalConfig::default())
     }
 
     pub fn search_excluding_path_with_settings(
@@ -309,7 +410,35 @@ impl SemanticIndex {
         settings: &crate::models::SearchSettings,
         excluded_path: &str,
     ) -> Result<Vec<SemanticHit>, String> {
-        self.search_filtered(query, limit, Some(settings), Some(excluded_path), true)
+        self.search_filtered(query, limit, Some(settings), Some(excluded_path), true, &crate::lexical::LexicalConfig::default())
+    }
+
+    /// Search under explicit keyword and fusion settings (`hybrid` off is similarity alone). Search itself uses
+    /// the defaults; this is for measuring a change on a benchmark before adopting it.
+    pub fn search_tuned(
+        &self,
+        query: &str,
+        limit: usize,
+        hybrid: bool,
+        config: &crate::lexical::LexicalConfig,
+    ) -> Result<Vec<SemanticHit>, String> {
+        self.search_filtered(query, limit, None, None, hybrid, config)
+    }
+
+    /// [`Self::search_tuned`] with the query vector given (for measuring feedback or re-weighted queries); `query`
+    /// still feeds the keyword side.
+    pub fn search_tuned_embedded(
+        &self,
+        query: &str,
+        embedding: &Embedding,
+        limit: usize,
+        hybrid: bool,
+        config: &crate::lexical::LexicalConfig,
+    ) -> Result<Vec<SemanticHit>, String> {
+        if let Some(hits) = self.search_snapshot(query, embedding, limit, None, None, hybrid, config)? {
+            return Ok(hits);
+        }
+        self.search_streaming(query, embedding, limit, None, None, hybrid, config)
     }
 
     fn search_filtered(
@@ -319,16 +448,151 @@ impl SemanticIndex {
         settings: Option<&crate::models::SearchSettings>,
         excluded_path: Option<&str>,
         hybrid: bool,
+        config: &crate::lexical::LexicalConfig,
     ) -> Result<Vec<SemanticHit>, String> {
         if query.trim().is_empty() {
             return Err("semantic query must not be empty".into());
         }
-        let Some(query_embedding) = search_ml::embed_batch(&[query])
+        let Some(query_embedding) = search_ml::embed_queries(&[query])
             .map_err(|error| error.to_string())?
             .pop()
         else {
             return Err("semantic model returned no embedding".into());
         };
+        if let Some(hits) = self.search_snapshot(query, &query_embedding, limit, settings, excluded_path, hybrid, config)? {
+            return Ok(hits);
+        }
+        self.search_streaming(query, &query_embedding, limit, settings, excluded_path, hybrid, config)
+    }
+
+    /// Search from the in-memory snapshot (rebuilt when the index changed); `None` when the index is too large for one.
+    #[allow(clippy::too_many_arguments)]
+    fn search_snapshot(
+        &self,
+        query: &str,
+        query_embedding: &Embedding,
+        limit: usize,
+        settings: Option<&crate::models::SearchSettings>,
+        excluded_path: Option<&str>,
+        hybrid: bool,
+        config: &crate::lexical::LexicalConfig,
+    ) -> Result<Option<Vec<SemanticHit>>, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| "semantic index lock poisoned".to_string())?;
+        // The generation is read before the rows: a write in between leaves a snapshot that is stale, never wrong.
+        let generation = generation(&conn)?;
+        let snapshot = match crate::semantic_cache::cached(&self.path, config.stem, generation) {
+            Some(snapshot) => snapshot,
+            None => {
+                let chunks: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM semantic_chunks", [], |row| row.get(0))
+                    .map_err(|error| error.to_string())?;
+                if chunks as usize > self.cache_limit {
+                    return Ok(None);
+                }
+                let snapshot = std::sync::Arc::new(crate::semantic_cache::Snapshot::build(
+                    &conn,
+                    generation,
+                    config.stem,
+                    EMBEDDING_DIMENSIONS,
+                )?);
+                crate::semantic_cache::store(&self.path, config.stem, snapshot.clone());
+                snapshot
+            }
+        };
+        let query_values = query_embedding.values();
+        if query_values.len() != EMBEDDING_DIMENSIONS {
+            return Ok(Some(Vec::new()));
+        }
+        let allowed_extensions = settings.map(|settings| {
+            settings
+                .extensions
+                .clone()
+                .unwrap_or_else(crate::models::extension_catalog::all_extensions)
+        });
+        let mut allowed: Vec<bool> = snapshot
+            .docs
+            .iter()
+            .map(|doc| {
+                excluded_path != Some(doc.path.as_str())
+                    && semantic_path_listed(&doc.path, settings, allowed_extensions.as_deref(), doc.size)
+            })
+            .collect();
+        // One stat per listed file, spread over the cores: a large index otherwise pays it serially on every query.
+        let listed: Vec<usize> = (0..allowed.len()).filter(|&i| allowed[i]).collect();
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(8);
+        let chunk = listed.len().div_ceil(threads.max(1)).max(256);
+        let fresh: Vec<bool> = std::thread::scope(|scope| {
+            let handles: Vec<_> = listed
+                .chunks(chunk)
+                .map(|part| {
+                    let docs = &snapshot.docs;
+                    scope.spawn(move || {
+                        part.iter()
+                            .map(|&i| semantic_path_fresh(&docs[i].path, docs[i].modified, docs[i].size))
+                            .collect::<Vec<bool>>()
+                    })
+                })
+                .collect();
+            handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+        });
+        for (&i, ok) in listed.iter().zip(fresh) {
+            allowed[i] = ok;
+        }
+        let mut candidates: Vec<u32> = Vec::new();
+        let mut dense: Vec<f32> = Vec::new();
+        for chunk in 0..snapshot.len() {
+            if !allowed[snapshot.doc_of[chunk] as usize] {
+                continue;
+            }
+            let similarity = snapshot.similarity(query_values, chunk);
+            if similarity.is_finite() {
+                candidates.push(chunk as u32);
+                dense.push(similarity);
+            }
+        }
+        let limit = limit.min(1000);
+        let lexical_terms = if hybrid { crate::lexical::query_terms_with(query, config.stem) } else { None };
+        let mut order: Vec<usize> = (0..candidates.len()).collect();
+        if let Some(terms) = &lexical_terms {
+            let lexical = snapshot.bm25(terms, &candidates, config.bm25_k1, config.bm25_b);
+            let scores = crate::lexical::fuse_with(&dense, &lexical, config);
+            order.sort_by(|&a, &b| {
+                scores[b]
+                    .total_cmp(&scores[a])
+                    .then_with(|| dense[b].total_cmp(&dense[a]))
+                    .then_with(|| snapshot.rowids[candidates[a] as usize].cmp(&snapshot.rowids[candidates[b] as usize]))
+            });
+        } else {
+            order.sort_by(|&a, &b| {
+                let (ca, cb) = (candidates[a] as usize, candidates[b] as usize);
+                dense[b]
+                    .total_cmp(&dense[a])
+                    .then_with(|| snapshot.docs[snapshot.doc_of[ca] as usize].path.cmp(&snapshot.docs[snapshot.doc_of[cb] as usize].path))
+                    .then_with(|| snapshot.first_lines[ca].cmp(&snapshot.first_lines[cb]))
+            });
+        }
+        order.truncate(limit);
+        let winners: Vec<(i64, f32)> = order
+            .into_iter()
+            .map(|i| (snapshot.rowids[candidates[i] as usize], dense[i]))
+            .collect();
+        load_hits(&conn, &winners).map(Some)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn search_streaming(
+        &self,
+        query: &str,
+        query_embedding: &Embedding,
+        limit: usize,
+        settings: Option<&crate::models::SearchSettings>,
+        excluded_path: Option<&str>,
+        hybrid: bool,
+        config: &crate::lexical::LexicalConfig,
+    ) -> Result<Vec<SemanticHit>, String> {
         let conn = self
             .conn
             .lock()
@@ -340,7 +604,7 @@ impl SemanticIndex {
         let mut best = BinaryHeap::<Reverse<HeapHit>>::new();
         // Short queries also get keyword scoring fused with similarity; the
         // scan keeps compact per-chunk counts, then fetches only the winners.
-        let lexical_terms = if hybrid { crate::lexical::query_terms(query) } else { None };
+        let lexical_terms = if hybrid { crate::lexical::query_terms_with(query, config.stem) } else { None };
         let mut fused = Vec::<FusedCandidate>::new();
         let limit = limit.min(1000);
         let allowed_extensions = settings.map(|settings| {
@@ -371,14 +635,14 @@ impl SemanticIndex {
             let Some(embedding) = embedding_from_bytes(&bytes) else {
                 continue;
             };
-            let similarity = search_ml::cosine_similarity(&query_embedding, &embedding)
+            let similarity = search_ml::cosine_similarity(query_embedding, &embedding)
                 .unwrap_or(f32::NEG_INFINITY);
             if !similarity.is_finite() {
                 continue;
             }
             if let Some(terms) = &lexical_terms {
                 let excerpt: String = row.get(3).map_err(|error| error.to_string())?;
-                let (counts, length) = crate::lexical::count_terms(&excerpt, terms);
+                let (counts, length) = crate::lexical::count_terms_with(&excerpt, terms, config.stem);
                 fused.push(FusedCandidate {
                     rowid: row.get(8).map_err(|error| error.to_string())?,
                     similarity,
@@ -421,7 +685,7 @@ impl SemanticIndex {
         if lexical_terms.is_some() {
             drop(rows);
             drop(stmt);
-            return fuse_candidates(&conn, fused, lexical_terms.as_deref().map_or(0, <[_]>::len), limit);
+            return fuse_candidates(&conn, fused, lexical_terms.as_deref().map_or(0, <[_]>::len), limit, config);
         }
         Ok(best
             .into_sorted_vec()
@@ -446,13 +710,14 @@ fn fuse_candidates(
     candidates: Vec<FusedCandidate>,
     query_len: usize,
     limit: usize,
+    config: &crate::lexical::LexicalConfig,
 ) -> Result<Vec<SemanticHit>, String> {
     let dense = candidates.iter().map(|c| c.similarity).collect::<Vec<_>>();
     let documents = candidates
         .iter()
         .map(|c| (c.counts.clone(), c.length))
         .collect::<Vec<_>>();
-    let scores = crate::lexical::fuse(&dense, &crate::lexical::bm25(&documents, query_len));
+    let scores = crate::lexical::fuse_with(&dense, &crate::lexical::bm25_with(&documents, query_len, config.bm25_k1, config.bm25_b), config);
     let mut order = (0..candidates.len()).collect::<Vec<_>>();
     order.sort_by(|&a, &b| {
         scores[b]
@@ -461,19 +726,25 @@ fn fuse_candidates(
             .then_with(|| candidates[a].rowid.cmp(&candidates[b].rowid))
     });
     order.truncate(limit);
+    let winners: Vec<(i64, f32)> = order.into_iter().map(|i| (candidates[i].rowid, candidates[i].similarity)).collect();
+    load_hits(conn, &winners)
+}
+
+/// Load the cited chunks for `(rowid, cosine similarity)` winners, in the given order.
+fn load_hits(conn: &Connection, winners: &[(i64, f32)]) -> Result<Vec<SemanticHit>, String> {
     let mut stmt = conn
         .prepare("SELECT path,first_line,last_line,excerpt,page FROM semantic_chunks WHERE rowid=?1")
         .map_err(|error| error.to_string())?;
-    order
-        .into_iter()
-        .map(|i| {
-            stmt.query_row(params![candidates[i].rowid], |row| {
+    winners
+        .iter()
+        .map(|&(rowid, similarity)| {
+            stmt.query_row(params![rowid], |row| {
                 Ok(SemanticHit {
                     path: row.get(0)?,
                     first_line: row.get::<_, i64>(1)?.max(0) as usize,
                     last_line: row.get::<_, i64>(2)?.max(0) as usize,
                     excerpt: row.get(3)?,
-                    similarity: candidates[i].similarity,
+                    similarity,
                     page: row
                         .get::<_, Option<i64>>(4)?
                         .and_then(|page| u32::try_from(page).ok())
@@ -539,19 +810,32 @@ fn semantic_path_allowed(
     indexed_modified: i64,
     indexed_size: i64,
 ) -> bool {
-    let path = Path::new(path);
+    semantic_path_listed(path, settings, allowed_extensions, indexed_size)
+        && semantic_path_fresh(path, indexed_modified, indexed_size)
+}
+
+/// The indexed file still has the size and time it was indexed with (one `stat`).
+fn semantic_path_fresh(path: &str, indexed_modified: i64, indexed_size: i64) -> bool {
     let Ok(metadata) = std::fs::metadata(path) else {
         return false;
     };
     let Ok(modified) = metadata.modified() else {
         return false;
     };
-    if metadata.len() as i64 != indexed_size
-        || crate::cache::ticks_from_modified(crate::file_reader::system_time_to_local(modified))
-            != indexed_modified
-    {
-        return false;
-    }
+    metadata.len() as i64 == indexed_size
+        && crate::cache::ticks_from_modified(crate::file_reader::system_time_to_local(modified))
+            == indexed_modified
+}
+
+/// The scope checks that need no file access (folder, hidden, size limit, extension). The size limit reads the indexed
+/// size: a file whose size changed fails `semantic_path_fresh` anyway.
+fn semantic_path_listed(
+    path: &str,
+    settings: Option<&crate::models::SearchSettings>,
+    allowed_extensions: Option<&[String]>,
+    indexed_size: i64,
+) -> bool {
+    let path = Path::new(path);
     if let Some(settings) = settings {
         let root = Path::new(&settings.search_path);
         if !path.starts_with(root)
@@ -571,7 +855,7 @@ fn semantic_path_allowed(
             }
         }
         let max_bytes = (settings.max_file_size_mb * 1024.0 * 1024.0) as i64;
-        if metadata.len() as i64 > max_bytes {
+        if indexed_size > max_bytes {
             return false;
         }
         let extension = path
@@ -591,13 +875,15 @@ fn semantic_path_allowed(
 
 #[cfg(test)]
 fn embed_lines(lines: &[String]) -> Result<Vec<TextChunk>, MlError> {
-    embed_lines_with_pages(lines, None)
+    embed_lines_with_pages(lines, None, &HashMap::new()).map(|(chunks, _)| chunks)
 }
 
+/// Chunk `lines` and embed every chunk whose text is not in `known`; also returns how many went through the model.
 fn embed_lines_with_pages(
     lines: &[String],
     pages: Option<&[Option<std::num::NonZeroU32>]>,
-) -> Result<Vec<TextChunk>, MlError> {
+    known: &HashMap<String, Embedding>,
+) -> Result<(Vec<TextChunk>, usize), MlError> {
     type RawChunk = (usize, usize, Option<std::num::NonZeroU32>, String);
     let mut raw = Vec::<RawChunk>::new();
     let (mut first, mut last, mut count, mut page, mut text) =
@@ -633,24 +919,34 @@ fn embed_lines_with_pages(
     for (first, last, page, text) in raw {
         split_to_token_budget(first, last, page, text, &mut bounded)?;
     }
-    let mut embedded = Vec::with_capacity(bounded.len());
-    for batch in bounded.chunks(EMBED_BATCH) {
-        let inputs = batch
-            .iter()
-            .map(|(_, _, _, text)| text.as_str())
-            .collect::<Vec<_>>();
+    let mut embedded: Vec<Option<TextChunk>> = bounded
+        .iter()
+        .map(|(first_line, last_line, page, text)| {
+            known.get(text).map(|embedding| TextChunk {
+                first_line: *first_line,
+                last_line: *last_line,
+                page: *page,
+                text: text.clone(),
+                embedding: embedding.clone(),
+            })
+        })
+        .collect();
+    let pending: Vec<usize> = (0..bounded.len()).filter(|&i| embedded[i].is_none()).collect();
+    for batch in pending.chunks(EMBED_BATCH) {
+        let inputs = batch.iter().map(|&i| bounded[i].3.as_str()).collect::<Vec<_>>();
         let vectors = search_ml::embed_batch(&inputs)?;
-        embedded.extend(batch.iter().zip(vectors).map(
-            |((first_line, last_line, page, text), embedding)| TextChunk {
+        for (&i, embedding) in batch.iter().zip(vectors) {
+            let (first_line, last_line, page, text) = &bounded[i];
+            embedded[i] = Some(TextChunk {
                 first_line: *first_line,
                 last_line: *last_line,
                 page: *page,
                 text: text.clone(),
                 embedding,
-            },
-        ));
+            });
+        }
     }
-    Ok(embedded)
+    Ok((embedded.into_iter().flatten().collect(), pending.len()))
 }
 
 fn split_to_token_budget(
@@ -965,7 +1261,7 @@ mod tests {
             Some(std::num::NonZeroU32::new(2).unwrap()),
             Some(std::num::NonZeroU32::new(2).unwrap()),
         ];
-        let chunks = embed_lines_with_pages(&lines, Some(&pages)).unwrap();
+        let (chunks, _) = embed_lines_with_pages(&lines, Some(&pages), &HashMap::new()).unwrap();
 
         assert!(chunks.iter().all(|chunk| {
             let page_for_line = |line| if line <= 2 { 1 } else { 2 };
@@ -974,6 +1270,85 @@ mod tests {
         }));
         assert!(chunks.iter().any(|chunk| chunk.page.unwrap().get() == 1));
         assert!(chunks.iter().any(|chunk| chunk.page.unwrap().get() == 2));
+    }
+
+    /// The in-memory snapshot, the streaming scan and a changed index all agree: same hits in the same order for
+    /// dense and fused queries, a write shows up in the next query, and a removal disappears from it.
+    #[test]
+    fn an_appended_file_embeds_only_the_new_chunks() {
+        let mut lines: Vec<String> = (0..40).map(|i| format!("Log entry {i}: torque check passed at station {i}.")).collect();
+        let (all, first) = embed_lines_with_pages(&lines, None, &HashMap::new()).unwrap();
+        assert!(first == all.len() && all.len() > 1);
+        let known: HashMap<String, Embedding> = all.iter().map(|c| (c.text.clone(), c.embedding.clone())).collect();
+        // Nothing changed: no model call, identical chunks.
+        let (same, calls) = embed_lines_with_pages(&lines, None, &known).unwrap();
+        assert_eq!(calls, 0);
+        assert_eq!(same.len(), all.len());
+        // A line appended: the old chunks are reused and only the tail is embedded.
+        lines.push("Log entry 40: new line at the end.".into());
+        let (grown, calls) = embed_lines_with_pages(&lines, None, &known).unwrap();
+        assert!(calls >= 1 && calls < grown.len(), "{calls} of {}", grown.len());
+        assert_eq!(grown[0].embedding.values(), all[0].embedding.values());
+    }
+
+    #[test]
+    fn unchanged_text_with_a_new_time_keeps_its_vectors() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = SemanticIndex::open(&dir.path().join("semantic.sqlite")).unwrap();
+        let lines = vec!["Torque the M8x1.25 bolt to 25 newton metres.".to_string()];
+        let generation_of = |index: &SemanticIndex| generation(&index.conn.lock().unwrap()).unwrap();
+        index.index_document("a.txt", 100, 40, &lines).unwrap();
+        let written = generation_of(&index);
+        // Touched, same text: stamp moves, no re-embedding (the write counter stays put), still searchable.
+        assert_eq!(index.index_document("a.txt", 200, 40, &lines).unwrap(), 1);
+        assert_eq!(generation_of(&index), written);
+        assert!(index.is_current("a.txt", 200, 40).unwrap());
+        assert!(!index.is_current("a.txt", 100, 40).unwrap());
+        // Different text is embedded again.
+        let edited = vec!["Torque the M10 bolt to 49 newton metres.".to_string()];
+        index.index_document("a.txt", 300, 41, &edited).unwrap();
+        assert!(generation_of(&index) > written);
+        assert!(index.is_current("a.txt", 300, 41).unwrap());
+    }
+
+    #[test]
+    fn snapshot_scores_equal_streaming_scores_and_follow_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut index = SemanticIndex::open(&dir.path().join("semantic.sqlite")).unwrap();
+        let add = |index: &SemanticIndex, name: &str, text: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, text).unwrap();
+            let (modified, size) = source_metadata(&path);
+            index.index_document(&path.to_string_lossy(), modified, size, &[text.to_string()]).unwrap();
+            path.to_string_lossy().into_owned()
+        };
+        add(&index, "a.txt", "Torque the M8x1.25 bolt to 25 newton metres.");
+        add(&index, "b.txt", "The shaft experiences torsional stress under load.");
+        add(&index, "c.txt", "Corrosion was blended out and the surface filled.");
+        let config = crate::lexical::LexicalConfig::default();
+        let same = |index: &mut SemanticIndex, query: &str| {
+            for hybrid in [true, false] {
+                index.cache_limit = MAX_CACHED_CHUNKS;
+                let cached = index.search_tuned(query, 10, hybrid, &config).unwrap();
+                index.cache_limit = 0;
+                let streamed = index.search_tuned(query, 10, hybrid, &config).unwrap();
+                assert_eq!(cached.len(), streamed.len(), "{query} hybrid={hybrid}");
+                for (c, s) in cached.iter().zip(&streamed) {
+                    assert_eq!((&c.path, c.first_line), (&s.path, s.first_line), "{query} hybrid={hybrid}");
+                    assert!((c.similarity - s.similarity).abs() < 1e-5, "{query}: {} vs {}", c.similarity, s.similarity);
+                }
+            }
+            index.cache_limit = MAX_CACHED_CHUNKS;
+        };
+        for query in ["M8 bolt torque", "shaft stress", "blended corrosion", "newton"] {
+            same(&mut index, query);
+        }
+        // A write is visible to the next query, a removal too.
+        let d = add(&index, "d.txt", "Hydrostatic test pressure was recorded.");
+        same(&mut index, "hydrostatic pressure");
+        assert!(index.search("hydrostatic pressure", 1).unwrap()[0].path.ends_with("d.txt"));
+        index.remove_document(&d).unwrap();
+        assert!(index.search("hydrostatic pressure", 5).unwrap().iter().all(|hit| !hit.path.ends_with("d.txt")));
     }
 
     #[test]
@@ -1080,7 +1455,7 @@ mod tests {
                 .iter()
                 .filter(|(question, gold)| {
                     let hits = index
-                        .search_filtered(question, 1, None, None, hybrid)
+                        .search_filtered(question, 1, None, None, hybrid, &crate::lexical::LexicalConfig::default())
                         .unwrap();
                     gold.iter().any(|id| hits[0].path.ends_with(&format!("{id}.txt")))
                 })
