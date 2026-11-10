@@ -3684,24 +3684,16 @@ mod tests {
 
     #[cfg(feature = "semantic-search")]
     #[test]
-    fn the_ask_input_submits_on_enter() {
+    fn a_question_typed_in_find_is_answered_on_enter_without_a_folder() {
         use crate::gpu_viewer::editor::search::SearchSession;
 
         let search = SearchSession::in_memory();
         let mut v = viewer(Some(Box::new(search)));
-        let ask = target(&v, "Ask");
-        click(&mut v, ask);
-        let question = target(&v, "Ask input");
-        click(&mut v, question);
+        assert!(v.gui.find_target("Ask").is_none(), "there is no separate Ask panel");
+        let find = target(&v, "Find input");
+        click(&mut v, find);
         type_text(&mut v, "Where is the design load?");
-        v.test_events.push(egui::Event::Key {
-            key: egui::Key::Enter,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: Default::default(),
-        });
-        v.input(Input::Key(Key::Named(NamedKey::Enter)));
+        egui_key(&mut v, egui::Key::Enter);
         frame(&mut v);
 
         assert_eq!(
@@ -3712,16 +3704,14 @@ mod tests {
 
     #[cfg(feature = "semantic-search")]
     #[test]
-    fn the_ask_button_submits_the_question() {
+    fn the_search_button_answers_a_question_typed_in_find() {
         use crate::gpu_viewer::editor::search::SearchSession;
 
         let mut search = SearchSession::in_memory();
-        search.document_field(5, "Where is the design load?".into());
+        search.document_field(1, "Where is the design load?".into());
         let mut v = viewer(Some(Box::new(search)));
-        let panel = target(&v, "Ask");
-        click(&mut v, panel);
-        let ask = v.gui.find_target_after("Ask input", "Ask").unwrap();
-        click(&mut v, ask);
+        let button = v.gui.find_target_after("Find input", "Search").expect("the Search button");
+        click(&mut v, button);
 
         assert_eq!(
             v.editor.as_ref().unwrap().status(),
@@ -3858,7 +3848,7 @@ mod tests {
             "Folder input",
             "Find input",
             "Options panel",
-            "Index panel",
+            "Report panel",
             "Help and shortcuts",
         ] {
             let (x, y) = target(&v, control);

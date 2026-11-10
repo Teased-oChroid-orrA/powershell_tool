@@ -3204,16 +3204,16 @@ mod snapshot_tests {
             });
         };
         let mut session = SearchSession::in_memory();
-        shoot(&session, "ask-before-dark", true, Some("Ask"));
+        shoot(&session, "ask-before-dark", true, None);
         session.ask_for_snapshot(
             data.path(),
             "How do I leave a folder out of a search? What causes torsional stress?",
         );
-        shoot(&session, "ask-answered-dark", true, Some("Ask"));
-        shoot(&session, "ask-answered-light", false, Some("Ask"));
+        shoot(&session, "ask-answered-dark", true, None);
+        shoot(&session, "ask-answered-light", false, None);
         session.building_for_snapshot(60.0);
         shoot(&session, "index-building-button-dark", true, None);
-        shoot(&session, "index-building-popup-dark", true, Some("Index"));
+        shoot(&session, "index-building-popup-dark", true, Some("Options"));
     }
 
     /// The Search window's Index popup with natural-language Find: the chips to review, then the cited results (dark and light), as raw RGBA:

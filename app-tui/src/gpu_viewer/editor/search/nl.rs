@@ -101,7 +101,7 @@ impl SearchSession {
             return;
         }
         if !self.st.config.index.semantic {
-            self.status = "Enable Semantic index in the Index menu, then build the index.".into();
+            self.status = "Enable Semantic index in Options, then build the index.".into();
             return;
         }
         if self.nl.stage != Stage::Idle {

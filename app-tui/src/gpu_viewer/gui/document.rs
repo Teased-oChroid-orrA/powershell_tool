@@ -306,6 +306,9 @@ impl Gui {
                     {
                         stat_tiles(ui, &doc.stats, p);
                     }
+                    if let Some(insight) = &doc.insight {
+                        self.insight_card(ui, insight, p, out, hint);
+                    }
                     if let Some(policy) = &doc.policy {
                         egui::Frame::new()
                             .fill(p.panel)
@@ -722,6 +725,49 @@ impl Gui {
                 });
             });
         });
+    }
+
+    /// What Find found besides files: cited answers, a sentence's conditions and their passages, semantic passages. One
+    /// card on the page (not a popover), scrolling inside a share of the room so the results stay in view.
+    fn insight_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        insight: &crate::gpu_viewer::ui::DocInsight,
+        p: &Palette,
+        out: &mut Vec<Outcome>,
+        hint: &mut Option<String>,
+    ) {
+        let height = (ui.available_height() * 0.38).clamp(110.0, 340.0);
+        egui::Frame::new()
+            .fill(p.panel)
+            .stroke(Stroke::new(1.0, p.line))
+            .corner_radius(CornerRadius::same(12))
+            .inner_margin(Margin::symmetric(14, 10))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new(insight.title.to_uppercase()).size(9.5).strong().color(p.accent));
+                if !insight.chips.is_empty() {
+                    ui.add_space(4.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+                        for chip in &insight.chips {
+                            self.chip(ui, chip, p, out, hint);
+                        }
+                    });
+                }
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("find-insight")
+                    .max_height(height)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 6.0;
+                        for item in &insight.items {
+                            self.panel_item(ui, item, p, out, hint);
+                        }
+                    });
+            });
+        ui.add_space(8.0);
     }
 
     fn sidebar_toggle(&mut self, ui: &mut egui::Ui, p: &Palette) {

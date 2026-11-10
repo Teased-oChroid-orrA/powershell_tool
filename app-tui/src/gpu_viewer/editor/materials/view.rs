@@ -177,6 +177,7 @@ pub(super) fn document(s: &MaterialsSession) -> Document {
         panels: Vec::new(),
         modal: None,
         ribbon: None,
+        insight: None,
     }
 }
 

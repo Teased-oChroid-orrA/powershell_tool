@@ -9,6 +9,7 @@
 //! `native-search` do.
 #[cfg(feature = "neural-search")]
 mod alerts;
+mod find;
 #[cfg(feature = "semantic-search")]
 mod diff;
 #[cfg(feature = "semantic-search")]
@@ -92,6 +93,8 @@ pub enum SearchAct {
     /// Re-order the semantic results with the optional second model.
     #[cfg(feature = "semantic-search")]
     RefineResults,
+    /// Step the Find reading: auto, words, sentence, question.
+    FindAs,
     #[cfg(feature = "semantic-search")]
     AnswerQuestion,
     /// Turn Ask's two places to look on or off.
@@ -308,6 +311,8 @@ pub struct SearchSession {
     #[cfg(feature = "semantic-search")]
     answer_error: Option<String>,
     /// Where Ask looks: the Search help and / or the indexed files.
+    /// How the Find text is read (Auto picks from what was typed).
+    find_as: find::FindAs,
     #[cfg(feature = "semantic-search")]
     ask_help: bool,
     #[cfg(feature = "semantic-search")]
@@ -819,8 +824,8 @@ impl SearchSession {
     pub(crate) fn ask_for_snapshot(&mut self, folder: &Path, question: &str) {
         self.st.config.search_path = folder.to_string_lossy().into_owned();
         self.st.config.index.semantic = true;
-        self.document_field(INPUT_QUESTION, question.into());
-        self.act_on_for_snapshot(SearchAct::AnswerQuestion);
+        self.document_field(INPUT_FIND, question.into());
+        self.act_on_for_snapshot(SearchAct::Run);
         let started = Instant::now();
         while self.answer_running {
             assert!(started.elapsed() < std::time::Duration::from_secs(60));
@@ -833,7 +838,8 @@ impl SearchSession {
     pub(crate) fn nl_for_snapshot(&mut self, folder: &Path, sentence: &str, find: bool) {
         self.st.config.search_path = folder.to_string_lossy().into_owned();
         self.st.config.index.semantic = true;
-        self.document_field(INPUT_NL, sentence.into());
+        self.nl.sentence = sentence.into();
+        self.nl.reset();
         let mut steps = vec![SearchAct::NlUnderstand];
         if find {
             steps.push(SearchAct::NlFind);
@@ -1015,6 +1021,7 @@ impl SearchSession {
             #[cfg(feature = "semantic-search")]
             answer_error: None,
             #[cfg(feature = "semantic-search")]
+            find_as: find::FindAs::Auto,
             ask_help: true,
             #[cfg(feature = "semantic-search")]
             ask_files: true,
@@ -1127,13 +1134,29 @@ impl SearchSession {
             self.status = "A search is already running (Esc stops it).".into();
             return;
         }
-        #[cfg(feature = "nl-find")]
-        if nl::looks_like_sentence(&self.st.config.filters_text) && self.nl_ready() {
-            // A sentence is not a keyword filter: read it as conditions to review, then Find.
-            self.nl.sentence = self.st.config.filters_text.trim().to_string();
-            self.nl_understand();
-            self.status = "Read your sentence as conditions: review them in the Index panel, then press Find.".into();
-            return;
+        self.clear_insight();
+        match find::classify(&self.st.config.filters_text, self.find_as) {
+            find::Intent::Question => {
+                self.ask_from_find();
+                return;
+            }
+            #[cfg(feature = "nl-find")]
+            find::Intent::Sentence if self.nl_ready() => {
+                // A sentence is not a keyword filter: read it as conditions, then find with them. The conditions stay
+                // on the page as chips; removing one and pressing Find again repeats the step.
+                self.nl.sentence = self.st.config.filters_text.trim().to_string();
+                self.nl_understand();
+                if self.nl.conditions.as_ref().is_some_and(|list| !list.is_empty()) {
+                    self.nl_find();
+                }
+                return;
+            }
+            #[cfg(feature = "nl-find")]
+            find::Intent::Sentence if self.find_as == find::FindAs::Sentence => {
+                self.status = "A sentence needs the Semantic index: turn it on in Options, then build the index.".into();
+                return;
+            }
+            _ => {}
         }
         if let Some(e) = model::regex_validation_error(&self.st.config) {
             self.status = format!("Fix the pattern first: {e}");
@@ -1159,6 +1182,43 @@ impl SearchSession {
             self.status = format!("Searching {}...", self.st.config.search_path.trim());
             self.execute(effects);
             self.save_settings();
+            // With a ready Semantic index the same Find also looks for cited passages by meaning.
+            #[cfg(feature = "semantic-search")]
+            if self.st.config.index.semantic && self.st.index_run.docs.is_some() {
+                self.semantic_search();
+                self.status = format!("Searching {}...", self.st.config.search_path.trim());
+            }
+        }
+    }
+
+    /// A new Find replaces what the last one showed beside the files: answers, conditions, semantic passages.
+    fn clear_insight(&mut self) {
+        #[cfg(feature = "semantic-search")]
+        {
+            self.answers = None;
+            self.answer_error = None;
+            self.answer_running = false;
+            self.semantic_hits = None;
+            self.semantic_error = None;
+            self.semantic_request = None;
+        }
+        #[cfg(feature = "nl-find")]
+        self.nl.reset();
+    }
+
+    /// The Find text is a question: answer it with cited lines (the Search help, counts, and the indexed files).
+    fn ask_from_find(&mut self) {
+        #[cfg(feature = "semantic-search")]
+        {
+            self.question = find::as_question(&self.st.config.filters_text);
+            self.answers = None;
+            self.answer_error = None;
+            self.answer_running = false;
+            self.answer_question();
+        }
+        #[cfg(not(feature = "semantic-search"))]
+        {
+            self.status = "Questions need a build with semantic search.".into();
         }
     }
 
@@ -1389,7 +1449,7 @@ impl SearchSession {
     fn semantic_search(&mut self) {
         let query = self.st.config.filters_text.trim().to_string();
         if !self.st.config.index.semantic {
-            self.status = "Enable Semantic index in the Index menu, then build the index.".into();
+            self.status = "Enable Semantic index in Options, then build the index.".into();
             return;
         }
         if query.is_empty() {
@@ -1454,7 +1514,7 @@ impl SearchSession {
     fn answer_question(&mut self) {
         let question = self.question.trim().to_string();
         if question.is_empty() {
-            self.status = "Type a question in Ask first.".into();
+            self.status = "Type a question in Find first.".into();
             return;
         }
         let parts = match question_parts(&question) {
@@ -1524,7 +1584,7 @@ impl SearchSession {
     #[cfg(feature = "semantic-search")]
     fn find_related_documents(&mut self) {
         if !self.st.config.index.semantic {
-            self.status = "Enable Semantic index in the Index menu, then build the index.".into();
+            self.status = "Enable Semantic index in Options, then build the index.".into();
             return;
         }
         let Some(result) = self.current_result() else {
@@ -2442,6 +2502,7 @@ impl SearchSession {
             SearchAct::SemanticSearch => self.semantic_search(),
             #[cfg(feature = "semantic-search")]
             SearchAct::RefineResults => self.refine_results(),
+            SearchAct::FindAs => self.find_as = self.find_as.next(),
             #[cfg(feature = "semantic-search")]
             SearchAct::AnswerQuestion => self.answer_question(),
             #[cfg(feature = "semantic-search")]

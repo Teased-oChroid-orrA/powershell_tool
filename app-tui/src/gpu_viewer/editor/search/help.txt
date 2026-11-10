@@ -117,7 +117,7 @@ Dry run previews which files would be searched without reading or matching their
 
 ## Fast re-search index
 The fast re-search index makes repeat searches of the same folder much quicker.
-The Fast index switch turns the index on, and the Index popover builds it with Build index.
+The Fast index switch turns the index on, and the Fast index card in the Options popover builds it with Build the index now.
 The fast index only narrows which files are read, and every match is still checked inside the file itself.
 Results found with the fast index are identical to a full scan, because only the speed differs.
 The fast index is stored in a folder named .native-search-index inside the searched folder by default.
@@ -129,28 +129,29 @@ Build index shows live progress with the file being indexed, a percent, throughp
 Pressing Esc or the Stop button during an index build stops it and keeps what is already indexed.
 Search waits for an index build to finish, and an index build waits for a running search to finish.
 The sidebar shows the fast index state as Not built, Building or Ready, with the number of indexed files.
-If a fast index build fails, the Index popover shows the error with a Build again button.
+If a fast index build fails, a notice shows the error with a Build again button.
 # src: view.rs (document notice, sidebar), mod.rs (build_index, UpdateStaleIndex), toolboxes/search/indexing.rs, search-core/src/native_index.rs, docs/search-semantics.md (parity)
 
 ## Semantic index
 The Semantic index is a separate setting that builds a local index of text meaning alongside the fast index.
-The Semantic index setting is off by default, and the features Ask, related documents and Natural-language Find all need it.
+The Semantic index setting is off by default, and answers about your files, related documents and Natural-language Find all need it.
 The Semantic index is built with the same Build index button as the fast index, after the setting is turned on.
 The Semantic index splits documents into chunks of about 800 characters and stores a 384-number vector for each chunk.
 The Semantic index is stored as a file named semantic.sqlite in the fast index folder.
 The embedding model for the Semantic index is MiniLM, which is built into the app and runs locally on the processor.
 The Semantic index finds passages by meaning, so a question can match a line that uses different words.
-The button Search this query semantically ranks passages for the text in the Find box and lists the best ten.
+With a built Semantic index, every words search in the Find box also lists the ten best passages by meaning above the results.
 Semantic results are extractive excerpts with a percentage, and the percentage is a ranking signal and not a confidence.
+Refine results, shown with the passages, re-scores the top 30 with a second model that is not part of the app, kept in a folder named rerank-model holding model.onnx and tokenizer.json.
 Semantic search needs a built index for the chosen folder, and it shows a message to enable and build one when none exists.
 The Semantic index appears only in builds of the app that include the semantic search feature.
 # src: toolboxes/search/settings_view.rs (field_hint 31), search-core/src/semantic_index.rs (CHUNK_CHARS, EMBEDDING_DIMENSIONS, semantic.sqlite), search-ml/src/lib.rs (include_bytes MiniLM), mod.rs (semantic_search), view.rs (cards)
 
 ## Ask
-Ask is a question panel on the toolbar next to Index that finds lines answering a question about the Search app or about your files.
-The Look in chips choose where Ask looks: Search help, which holds the facts about this app, and My files, which are the indexed folder.
+A question typed in the Find box, such as how many PDFs are there?, is answered with lines that answer it, about the Search app or about your files.
+The Look in chips above the answers choose where a question looks: Search help, which holds the facts about this app, and My files, which are the indexed folder.
 Ask counts the files of the search folder when asked how many files, PDFs or Word documents it holds, computed from the folder itself.
-A sentence typed in the search box, such as surfaces that were blended and filled, is read as separate conditions to review in the Index panel before Find runs, when the language model is set.
+A sentence typed in the Find box, such as surfaces that were blended and filled, is read as separate conditions that show as pills above the results while the files are found.
 Ask does not generate answers, because it only shows unchanged lines copied from the Search help or from your files.
 Each Ask result is a source line with a citation, and clicking a line from your files opens that file.
 A help line is cited by its help section, and the line is shown exactly as written in the help.
@@ -159,8 +160,8 @@ Questions about the Search app work without a folder or an index, because the he
 Questions about your files need a folder and the Semantic index turned on and built, and Ask says so when that is missing.
 When no help line is close to the question, Ask says the Search help does not cover it instead of showing unrelated lines.
 Up to three questions can be asked at once, and each one must end with a question mark.
-Pressing Enter in the question box or clicking Ask starts the question, and the example chips ask a sample question.
-# src: view.rs (question_input, ask_items), help.rs, mod.rs (question_parts, answer_question), search-core/src/neural_search.rs
+Pressing Enter in the Find box starts the question, and the Find as chip pins whether the text is read as words, a sentence or a question.
+# src: view.rs (insight, ask_items), find.rs, help.rs, mod.rs (question_parts, answer_question), search-core/src/neural_search.rs
 
 ## Related documents and compare
 Find possible related documents lists indexed files that are similar in meaning to the selected result.
@@ -176,10 +177,9 @@ Page breaks in PDFs are flattened in a comparison, so line numbers refer to the 
 
 ## Natural-language Find
 Natural-language Find lets a sentence such as files where corrosion is blended be turned into search conditions.
-The Describe it box in the Index popover takes the sentence, and the Understand button splits it into conditions.
-Natural-language Find needs a local language model file, a Qwen3-4B-Instruct Q4_K_M .gguf, whose path is typed in the Language model box.
-The language model file is about 2.4 GB and is not shipped with the app, so it must be supplied separately.
-Natural-language Find runs entirely on the local computer with no internet, but each model step takes seconds on a laptop processor.
+The Find box takes the sentence, and Find splits it into conditions.
+Natural-language Find reads the sentence with fixed rules, so it needs no language model file.
+Natural-language Find runs entirely on the local computer with no internet.
 Natural-language Find also needs the Semantic index to be turned on and built first.
 The conditions appear as pills, and clicking a pill removes that condition before the search runs.
 Clicking the plus between two condition pills merges them, but only when both are wanted or both are unwanted.
@@ -190,9 +190,9 @@ Each result file has a fit label of all matched, one weak, or partial, and never
 The label one weak appears when three or more conditions are wanted and exactly one of them could not be confirmed in the file.
 The label all matched means every wanted condition was confirmed with a passage from the file.
 The label partial means the file has fewer confirmed conditions than all matched or one weak allow.
-The language model never writes answers, and each confirmed result shows a quote that is verified to be inside the cited passage.
-Natural-language Find is off by default and exists only in builds of the app that include the language model feature.
-# src: toolbox: view.rs (nl_inputs), nl.rs (chips, items, model_problem), docs/search-natural-language-find.md, search-core/AGENTS.md
+Natural-language Find never writes answers, and each confirmed result shows a quote that is verified to be inside the cited passage.
+Natural-language Find needs a built Semantic index and exists only in builds of the app that include the nl-find feature.
+# src: toolbox: view.rs (insight), nl.rs (chips, items), docs/search-natural-language-find.md, search-core/AGENTS.md
 
 ## Alerts and relevance feedback
 Saved search alerts remember a search and report files that are new or changed since a stored baseline.

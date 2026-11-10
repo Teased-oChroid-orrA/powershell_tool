@@ -1,9 +1,5 @@
 //! What the Search workbench shows: the page (search bar, progress, results table, matches), the tree, the
 //! inspector's option cards, the ribbon, the menus and the value cards. Pure reads of the session.
-#[cfg(feature = "semantic-search")]
-use super::INPUT_QUESTION;
-#[cfg(feature = "nl-find")]
-use super::INPUT_NL;
 use super::{
     act, file_name, SearchAct, SearchSession, SortKey, INPUT_EXCLUDE, INPUT_FILTER, INPUT_FIND,
     INPUT_FOLDER, INPUT_OUTPUT, SETTING_EXCLUDE, SETTING_EXCLUDE_SCOPE, SETTING_FILTERS,
@@ -18,7 +14,7 @@ use crate::gpu_viewer::{
     menu::{Entry, Item, Menu},
     ui::{
         CardRow, DocColumn, DocDetail, DocHelp, DocNote, DocSignal, DocInput, DocMatchNavigation, DocModal, DocNotice,
-        DocPanel, DocProgress, DocRibbon, DocRow, DocSidebar, DocSidebarRecent, DocTable, DocText, DockItem,
+        DocInsight, DocPanel, DocProgress, DocRibbon, DocRow, DocSidebar, DocSidebarRecent, DocTable, DocText, DockItem,
         Document, HelpRow, HelpSection, RibbonTab, TreeNode, ValueCard,
     },
 };
@@ -113,10 +109,13 @@ fn run_rule(s: &SearchSession) -> Result<(), String> {
     let c = &s.st.config;
     if s.st.run.is_running {
         Err("a search is running (Esc stops it)".into())
-    } else if c.search_path.trim().is_empty() {
-        Err("choose a folder to search first".into())
     } else if c.filters_text.trim().is_empty() {
         Err("type what to find first".into())
+    } else if super::find::classify(&c.filters_text, s.find_as) == super::find::Intent::Question {
+        // A question about the app needs no folder; one about files asks for it when it is answered.
+        Ok(())
+    } else if c.search_path.trim().is_empty() {
+        Err("choose a folder to search first".into())
     } else if let Some(e) = model::regex_validation_error(c) {
         Err(format!("the pattern is not valid: {e}"))
     } else {
@@ -453,7 +452,7 @@ pub(super) fn document(s: &SearchSession) -> Document {
             id: INPUT_FIND,
             label: "Find".into(),
             text: c.filters_text.clone(),
-            hint: "Words or phrases, comma-separated; ; starts a group".into(),
+            hint: "Words or phrases, a sentence, or a question".into(),
             error: model::regex_validation_error(c),
             note: (!groups_note.is_empty()).then_some(groups_note),
             submit: Some(act(SearchAct::Run)),
@@ -477,7 +476,13 @@ pub(super) fn document(s: &SearchSession) -> Document {
     if run.last_report_path.is_some() {
         buttons.push(report_entry(s));
     }
-    let mut chips = match_mode_chips(s);
+    let mut chips = vec![Entry::new(
+        s.find_as.label(),
+        "How Find reads what you typed: auto picks words, a sentence or a question; click to pin one",
+        act(SearchAct::FindAs),
+    )
+    .checked(s.find_as != super::find::FindAs::Auto)];
+    chips.extend(match_mode_chips(s));
     chips.push(exclude_chip(s));
     chips.push(switch(s, "Regex", 6));
     chips.push(switch(s, "Whole word", 7));
@@ -578,40 +583,24 @@ pub(super) fn document(s: &SearchSession) -> Document {
 
     let c = cards(s);
     let index_on = settings_view::setting_on(&s.st.config, 29);
-    #[cfg_attr(not(feature = "semantic-search"), allow(unused_mut))]
-    let mut panels = vec![
+    let panels = vec![
         DocPanel {
             label: "Options".into(),
-            badge: None,
-            progress: None,
-            inputs: Vec::new(),
-            chips: Vec::new(),
-            cards: vec![c.matching, c.files, c.performance],
-        },
-        DocPanel {
-            label: "Index".into(),
             badge: Some(if s.st.index_run.is_building {
-                "building".into()
+                "index building".into()
             } else if index_on {
-                "on".into()
+                "index on".into()
             } else {
-                "off".into()
+                "index off".into()
             }),
             progress: s
                 .st
                 .index_run
                 .is_building
                 .then(|| (s.st.index_run.percent / 100.0).clamp(0.02, 1.0) as f32),
-            inputs: index_panel_inputs(s),
-            chips: index_panel_chips(s),
-            cards: {
-                #[cfg_attr(not(feature = "semantic-search"), allow(unused_mut))]
-                let mut cards = Vec::new();
-                #[cfg(feature = "semantic-search")]
-                cards.push(c.nl);
-                cards.extend([c.index, c.summary]);
-                cards
-            },
+            inputs: Vec::new(),
+            chips: Vec::new(),
+            cards: vec![c.matching, c.files, c.performance, c.index, c.summary],
         },
         DocPanel {
             label: "Report".into(),
@@ -627,18 +616,6 @@ pub(super) fn document(s: &SearchSession) -> Document {
             cards: vec![c.output],
         },
     ];
-    #[cfg(feature = "semantic-search")]
-    panels.insert(
-        2,
-        DocPanel {
-            label: "Ask".into(),
-            badge: s.answer_running.then(|| "working".to_string()),
-            progress: None,
-            inputs: vec![question_input(s)],
-            chips: Vec::new(),
-            cards: vec![c.answers],
-        },
-    );
     let modal = types_card(s).map(|card| DocModal {
         card,
         close: act(SearchAct::CloseExtensions),
@@ -705,6 +682,7 @@ pub(super) fn document(s: &SearchSession) -> Document {
         panels,
         modal,
         ribbon: Some(status_strip(s)),
+        insight: insight(s),
     }
 }
 
@@ -841,32 +819,6 @@ fn query_preview(config: &model::SearchToolConfig, exclude_visible: bool) -> Str
     }
 }
 
-/// Ask's question box: a sentence about the Search app or the indexed files.
-#[cfg(feature = "semantic-search")]
-fn question_input(s: &SearchSession) -> DocInput {
-    let note = if s.answer_running {
-        "Looking for cited lines…".to_string()
-    } else if s.current_answers().is_some() {
-        "Press Enter or click Ask to ask again.".to_string()
-    } else {
-        "Ask up to three questions, each ending with ?.".to_string()
-    };
-    DocInput {
-        id: INPUT_QUESTION,
-        label: "Ask".into(),
-        text: s.question.clone(),
-        hint: "How do I…? What does…? Where is…?".into(),
-        error: if s.answer_running { None } else { s.answer_error.as_deref().map(plain) },
-        note: Some(note),
-        submit: Some(act(SearchAct::AnswerQuestion)),
-        commit_on_blur: false,
-        grow: 1.0,
-        trailing: Some(e("Ask", "Look for cited lines", SearchAct::AnswerQuestion)),
-        help: None,
-        choices: Vec::new(),
-    }
-}
-
 /// The conversation: where Ask looks, then each question with the lines that answer it, quoted unchanged.
 #[cfg(feature = "semantic-search")]
 fn ask_items(s: &SearchSession) -> Vec<DockItem> {
@@ -891,7 +843,7 @@ fn ask_items(s: &SearchSession) -> Vec<DockItem> {
         }
         if s.ask_files && !files_ready {
             items.push(DockItem::text(
-                "Questions about your files need a folder and the Semantic index (Index menu).",
+                "Questions about your files need a folder and the Semantic index (Options).",
                 Tone::Dim,
             ));
         }
@@ -950,59 +902,6 @@ fn ask_items(s: &SearchSession) -> Vec<DockItem> {
         ));
     }
     items
-}
-
-fn index_panel_inputs(s: &SearchSession) -> Vec<DocInput> {
-    #[cfg(feature = "semantic-search")]
-    {
-        #[cfg(feature = "nl-find")]
-        {
-            nl_inputs(s).into()
-        }
-        #[cfg(not(feature = "nl-find"))]
-        {
-            let _ = s;
-            Vec::new()
-        }
-    }
-    #[cfg(not(feature = "semantic-search"))]
-    {
-        let _ = s;
-        Vec::new()
-    }
-}
-
-#[cfg(feature = "nl-find")]
-fn nl_inputs(s: &SearchSession) -> [DocInput; 1] {
-    let busy = s.nl.stage != super::nl::Stage::Idle;
-    [
-        DocInput {
-            id: INPUT_NL,
-            label: "Describe it".into(),
-            text: s.nl.sentence.clone(),
-            hint: "e.g. files where corrosion is blended and the surface filled".into(),
-            error: None,
-            note: Some("Rules split this into conditions you can edit, then the best candidate files are checked passage by passage.".into()),
-            submit: Some(act(SearchAct::NlUnderstand)),
-            commit_on_blur: false,
-            grow: 1.0,
-            trailing: Some(e("Understand", "", SearchAct::NlUnderstand).when(if busy { Err("working".to_string()) } else { Ok(()) })),
-            help: None,
-            choices: Vec::new(),
-        },
-    ]
-}
-
-fn index_panel_chips(s: &SearchSession) -> Vec<Entry> {
-    #[cfg(feature = "nl-find")]
-    {
-        super::nl::chips(s)
-    }
-    #[cfg(not(feature = "nl-find"))]
-    {
-        let _ = s;
-        Vec::new()
-    }
 }
 
 fn output_input(s: &SearchSession) -> DocInput {
@@ -1709,24 +1608,17 @@ fn setting_rows(s: &SearchSession, groups: &[&str]) -> Vec<DockItem> {
 
 /// The option cards, grouped as the page's popovers show them (Options, Index, Report).
 pub(super) struct Cards {
-    answers: Card,
     matching: Card,
     files: Card,
     performance: Card,
     output: Card,
     index: Card,
     summary: Card,
-    #[cfg(feature = "semantic-search")]
-    nl: Card,
 }
 
 pub(super) fn cards(s: &SearchSession) -> Cards {
     let ix = &s.st.index_run;
     let mut index = setting_rows(s, &["Fast Re-search Index"]);
-    #[cfg(feature = "semantic-search")]
-    let answers = ask_items(s);
-    #[cfg(not(feature = "semantic-search"))]
-    let answers: Vec<DockItem> = Vec::new();
     if ix.is_building {
         index.push(DockItem::row(
             "Stop the build",
@@ -1808,68 +1700,6 @@ pub(super) fn cards(s: &SearchSession) -> Cards {
     }
     #[cfg(feature = "semantic-search")]
     {
-        index.push(DockItem::row(
-            if s.semantic_running {
-                "Searching semantically…"
-            } else {
-                "Search this query semantically"
-            },
-            Tone::Title,
-            Some(act(SearchAct::SemanticSearch)),
-            false,
-        ));
-        if let Some(hits) = s.current_semantic_hits() {
-            index.push(DockItem::Heading(format!(
-                "Possible evidence for ‘{}’",
-                plain(
-                    s.semantic_request
-                        .as_ref()
-                        .map_or("", |key| key.query.as_str())
-                )
-            )));
-            index.push(DockItem::text(
-                "Extractive excerpts, not generated answers. Check each source in context.",
-                Tone::Dim,
-            ));
-            index.push(DockItem::row(
-                if s.refine.running {
-                    "Refining…"
-                } else if s.refined() {
-                    "Refined: order uses a second model"
-                } else {
-                    "Refine results"
-                },
-                Tone::Title,
-                Some(act(SearchAct::RefineResults)),
-                false,
-            ));
-            for hit in s.evidence_hits(hits) {
-                let i = hits
-                    .iter()
-                    .position(|candidate| std::ptr::eq(candidate, hit))
-                    .unwrap_or(0);
-                index.push(DockItem::row(
-                    format!(
-                        "{} · {:.0}% similar",
-                        semantic_citation(hit),
-                        hit.similarity * 100.0
-                    ),
-                    Tone::Normal,
-                    Some(act(SearchAct::OpenSemantic(i))),
-                    false,
-                ));
-                index.push(DockItem::text(plain(&hit.excerpt), Tone::Dim));
-            }
-            if hits.is_empty() {
-                index.push(DockItem::text(
-                    "No current indexed evidence found.",
-                    Tone::Dim,
-                ));
-            }
-        }
-        if let Some(error) = &s.semantic_error {
-            index.push(DockItem::text(plain(error), Tone::Warn));
-        }
         index.push(DockItem::row(
             if s.related_running {
                 "Comparing selected document…"
@@ -2109,41 +1939,109 @@ pub(super) fn cards(s: &SearchSession) -> Cards {
             output,
         )
         .for_steps(&["Output"]),
-        answers: Card::new(
-            "search-answers",
-            "Ask",
-            Relevance::Primary,
-            answers,
-        )
-        .for_steps(&["Index"]),
         index: Card::new("search-index", "Fast index", Relevance::Primary, index)
             .for_steps(&["Index"]),
         summary: Card::new("search-summary", "Last run", Relevance::Info, summary)
             .for_steps(&["Index"]),
-        #[cfg(feature = "semantic-search")]
-        nl: Card::new("search-nl", "Natural-language Find", Relevance::Primary, nl_items(s))
-            .for_steps(&["Index"]),
     }
 }
 
-/// The Natural-language Find card: its controls, or how to get them when this build lacks the feature.
-#[cfg(feature = "semantic-search")]
-fn nl_items(s: &SearchSession) -> Vec<DockItem> {
+/// What Find found besides files, in one card on the page: cited answers to a question, a sentence's conditions with
+/// their passages, and the passages the Semantic index finds for the words. `None` when there is nothing to show.
+pub(super) fn insight(s: &SearchSession) -> Option<DocInsight> {
+    #[cfg_attr(not(feature = "semantic-search"), allow(unused_mut))]
+    let mut items: Vec<DockItem> = Vec::new();
+    #[cfg_attr(not(feature = "nl-find"), allow(unused_mut))]
+    let mut chips: Vec<Entry> = Vec::new();
+    #[cfg(feature = "semantic-search")]
+    {
+        if s.answer_running {
+            items.push(DockItem::text("Looking for cited lines…", Tone::Dim));
+        } else if s.current_answers().is_some() || s.answer_error.is_some() {
+            items.extend(ask_items(s));
+            let files_ready = s.st.config.index.semantic && !s.st.config.search_path.trim().is_empty();
+            if s.ask_files && !files_ready && s.current_answers().is_some() {
+                items.push(DockItem::text(
+                    "Your files were not searched: choose a folder and turn on the Semantic index (Options).",
+                    Tone::Dim,
+                ));
+            }
+        }
+        if let Some(error) = &s.answer_error {
+            items.push(DockItem::text(plain(error), Tone::Warn));
+        }
+    }
     #[cfg(feature = "nl-find")]
     {
-        super::nl::items(s)
+        let nl = &s.nl;
+        if nl.conditions.is_some() || nl.stage != super::nl::Stage::Idle || nl.error.is_some() || !nl.files.is_empty() {
+            chips = super::nl::chips(s);
+            items.extend(super::nl::items(s));
+        }
     }
-    #[cfg(not(feature = "nl-find"))]
+    #[cfg(feature = "semantic-search")]
     {
-        let _ = s;
-        vec![
-            DockItem::text("Natural-language Find is not in this build.", Tone::Warn),
-            DockItem::text(
-                "Build with: cargo run -p app-tui --release --features nl-find",
+        if s.semantic_running {
+            items.push(DockItem::text("Searching the semantic index for passages…", Tone::Dim));
+        }
+        if let Some(hits) = s.current_semantic_hits() {
+            items.push(DockItem::Heading(format!(
+                "Possible evidence for ‘{}’",
+                plain(
+                    s.semantic_request
+                        .as_ref()
+                        .map_or("", |key| key.query.as_str())
+                )
+            )));
+            items.push(DockItem::text(
+                "Extractive excerpts, not generated answers. Check each source in context.",
                 Tone::Dim,
-            ),
-        ]
+            ));
+            items.push(DockItem::row(
+                if s.refine.running {
+                    "Refining…"
+                } else if s.refined() {
+                    "Refined: order uses a second model"
+                } else {
+                    "Refine results"
+                },
+                Tone::Title,
+                Some(act(SearchAct::RefineResults)),
+                false,
+            ));
+            for hit in s.evidence_hits(hits) {
+                let i = hits
+                    .iter()
+                    .position(|candidate| std::ptr::eq(candidate, hit))
+                    .unwrap_or(0);
+                items.push(DockItem::row(
+                    format!(
+                        "{} · {:.0}% similar",
+                        semantic_citation(hit),
+                        hit.similarity * 100.0
+                    ),
+                    Tone::Normal,
+                    Some(act(SearchAct::OpenSemantic(i))),
+                    false,
+                ));
+                items.push(DockItem::text(plain(&hit.excerpt), Tone::Dim));
+            }
+            if hits.is_empty() {
+                items.push(DockItem::text(
+                    "No current indexed evidence found.",
+                    Tone::Dim,
+                ));
+            }
+        }
+        if let Some(error) = &s.semantic_error {
+            items.push(DockItem::text(plain(error), Tone::Warn));
+        }
     }
+    (!items.is_empty() || !chips.is_empty()).then(|| DocInsight {
+        title: "Answers and passages".into(),
+        chips,
+        items,
+    })
 }
 
 /// The file types read from the folder, to tick; shown as a modal while the picker is open.
@@ -2198,10 +2096,7 @@ fn types_card(s: &SearchSession) -> Option<Card> {
 pub(super) fn inspector(s: &SearchSession) -> Vec<Card> {
     let c = cards(s);
     let mut all: Vec<Card> = types_card(s).into_iter().collect();
-    #[cfg(feature = "semantic-search")]
-    all.push(c.nl);
     all.extend([
-        c.answers,
         c.matching,
         c.files,
         c.performance,

@@ -340,6 +340,16 @@ pub struct Document {
     pub modal: Option<DocModal>,
     /// A thin status strip along the page's bottom edge (Search: index state, counts, a warning).
     pub ribbon: Option<DocRibbon>,
+    /// A card between the bar and the results for what Find found besides files (answers, passages, conditions).
+    pub insight: Option<DocInsight>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocInsight {
+    pub title: String,
+    /// Pills under the title (a sentence's conditions).
+    pub chips: Vec<Entry>,
+    pub items: Vec<DockItem>,
 }
 
 /// The page's bottom status strip: a state dot with its label, quiet facts, an optional progress track and a warning.

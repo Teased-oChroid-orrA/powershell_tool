@@ -3,14 +3,27 @@ use crate::gpu_viewer::editor::authoring::Authoring;
 use search_core::models::{FileSearchStatus, LineHit, MatchMode};
 use std::time::Duration;
 
-/// The Index panel's first card, leaving out the Natural-language Find card (present only with `nl-find`).
+/// The Fast index card of the Options panel.
 fn index_card(doc: &crate::gpu_viewer::ui::Document) -> &Card {
-    doc.panels[1].cards.iter().find(|card| card.title != "Natural-language Find").expect("an index card")
+    doc.panels[0].cards.iter().find(|card| card.title == "Fast index").expect("an index card")
 }
+/// The items of the "Answers and passages" card between the bar and the results (empty when it is not shown).
 #[cfg(feature = "semantic-search")]
-fn ask_card(doc: &crate::gpu_viewer::ui::Document) -> &Card {
-    let panel = doc.panels.iter().find(|panel| panel.label == "Ask").expect("an Ask panel");
-    &panel.cards[0]
+fn insight_items(doc: &crate::gpu_viewer::ui::Document) -> &[DockItem] {
+    doc.insight.as_ref().map_or(&[], |insight| insight.items.as_slice())
+}
+/// Type `text` into Find and press Run, then wait for any answer, as the window does.
+#[cfg(feature = "semantic-search")]
+fn find_and_wait(session: &mut SearchSession, text: &str) {
+    session.document_field(INPUT_FIND, text.into());
+    act_on(session, SearchAct::Run);
+    let started = Instant::now();
+    while session.answer_running || session.semantic_running || session.st.run.is_running {
+        assert!(started.elapsed() < Duration::from_secs(120));
+        session.poll();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    session.poll();
 }
 fn hit(n: i32, line: &str, filter: &str) -> LineHit {
     LineHit {
@@ -911,7 +924,7 @@ fn semantic_search_shows_cited_hits_separately_from_exact_results() {
         "semantic search must not modify exact results"
     );
     let doc = view::document(&s);
-    let index_items = &index_card(&doc).items;
+    let index_items = insight_items(&doc);
     assert!(index_items
         .iter()
         .any(|item| matches!(item, DockItem::Heading(label) if label == "Possible evidence for ‘rotational force’")));
@@ -924,19 +937,8 @@ fn semantic_search_shows_cited_hits_separately_from_exact_results() {
         .filter_map(DockItem::plain_text)
         .any(|row| row.contains("not generated answers")));
 
-    s.question = "What creates torsional stress?".into();
     s.ask_help = false;
-    act_on(&mut s, SearchAct::AnswerQuestion);
-    let started = Instant::now();
-    while s.answer_running {
-        assert!(
-            started.elapsed() < Duration::from_secs(10),
-            "question evidence did not return"
-        );
-        s.poll();
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    s.poll();
+    find_and_wait(&mut s, "What creates torsional stress?");
     let parts = s.current_answers().expect("cited question evidence");
     let answers = parts[0].evidence.as_ref().expect("ranked source lines");
     assert_eq!(answers[0].hit.path, file.to_string_lossy());
@@ -954,18 +956,16 @@ fn semantic_search_shows_cited_hits_separately_from_exact_results() {
         "The shaft rotates under torque and torsional load."
     );
     let doc = view::document(&s);
-    let question_input = &doc.panels[2].inputs[0];
-    assert_eq!(question_input.id, INPUT_QUESTION);
-    assert_eq!(question_input.text, "What creates torsional stress?");
-    assert!(ask_card(&doc).items.iter().any(|item| {
+    assert!(insight_items(&doc).iter().any(|item| {
         item.plain_text()
             .is_some_and(|text| text.contains("unchanged"))
     }));
     assert!(
         !index_card(&doc).items.iter().filter_map(DockItem::plain_text).any(|text| text.contains("unchanged source lines")),
-        "the Index panel no longer holds the answers"
+        "the Fast index card does not hold the answers"
     );
-    assert_eq!(s.st.config.filters_text, "rotational force");
+    assert_eq!(s.st.config.filters_text, "What creates torsional stress?", "the question stays in the one Find box");
+    assert!(s.st.run.results.is_empty(), "a question starts no exact search");
 
     semantic
         .index_document(
@@ -1026,7 +1026,7 @@ fn semantic_search_shows_cited_hits_separately_from_exact_results() {
     let index_panel = view::document(&s)
         .panels
         .into_iter()
-        .find(|panel| panel.label == "Index")
+        .find(|panel| panel.label == "Options")
         .unwrap();
     assert!(index_panel
         .cards
@@ -1104,7 +1104,7 @@ fn question_answers_are_hidden_when_question_or_scope_changes() {
 
 #[cfg(feature = "semantic-search")]
 #[test]
-fn ask_index_answers_explicit_question_parts_from_their_own_sources() {
+fn find_answers_explicit_question_parts_from_their_own_sources() {
     let dir = tempfile::tempdir().unwrap();
     let sources = [
         (
@@ -1118,15 +1118,8 @@ fn ask_index_answers_explicit_question_parts_from_their_own_sources() {
     let mut session = SearchSession::in_memory();
     session.st.config.search_path = dir.path().to_string_lossy().into_owned();
     session.st.config.index.semantic = true;
-    session.question = "What causes torsional stress? What is the shaft temperature limit?".into();
     session.ask_help = false;
-    act_on(&mut session, SearchAct::AnswerQuestion);
-    let started = Instant::now();
-    while session.answer_running {
-        assert!(started.elapsed() < Duration::from_secs(30));
-        session.poll();
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    find_and_wait(&mut session, "What causes torsional stress? What is the shaft temperature limit?");
     let parts = session.current_answers().expect("current question parts");
     assert_eq!(parts.len(), 2);
     for (index, (name, source)) in sources.iter().enumerate() {
@@ -1138,12 +1131,12 @@ fn ask_index_answers_explicit_question_parts_from_their_own_sources() {
         );
     }
     let doc = view::document(&session);
-    let evidence = ask_card(&doc);
-    assert_eq!(evidence.title, "Ask");
-    assert!(evidence.items.iter().any(|item| item
+    assert_eq!(doc.insight.as_ref().expect("answers card").title, "Answers and passages");
+    let evidence = insight_items(&doc);
+    assert!(evidence.iter().any(|item| item
         .plain_text()
         .is_some_and(|text| text.ends_with("[temperature.txt · line 1]"))));
-    assert!(!evidence.items.iter().any(|item| item
+    assert!(!evidence.iter().any(|item| item
         .plain_text()
         .is_some_and(|text| text.contains("Generated answer"))));
     assert!(question_parts("One? Two? Three? Four?").is_err());
@@ -1290,6 +1283,11 @@ fn a_test_session_writes_no_report_unless_a_test_asks_for_one() {
 #[test]
 fn a_search_that_cannot_run_says_why_and_starts_nothing() {
     let mut s = SearchSession::in_memory();
+    // Nothing typed: the button says what is missing.
+    let search = s.ribbon().remove(0).groups.remove(0).buttons.remove(0);
+    assert!(!search.enabled && search.reason.as_deref().unwrap().contains("find"));
+    // Words but no folder (a question would not need one).
+    s.st.config.filters_text = "torque, bolt".into();
     act_on(&mut s, SearchAct::Run);
     assert!(!s.solving());
     assert!(
@@ -1572,13 +1570,8 @@ fn the_page_puts_its_options_in_bar_popovers_and_the_file_types_in_a_modal() {
     let mut s = SearchSession::in_memory();
     let doc = s.document().unwrap();
     let labels: Vec<&str> = doc.panels.iter().map(|p| p.label.as_str()).collect();
-    let expected: &[&str] = if cfg!(feature = "semantic-search") {
-        &["Options", "Index", "Ask", "Report"]
-    } else {
-        &["Options", "Index", "Report"]
-    };
-    assert_eq!(labels, expected);
-    assert_eq!(doc.panels[1].badge.as_deref(), Some("off"));
+    assert_eq!(labels, ["Options", "Report"]);
+    assert_eq!(doc.panels[0].badge.as_deref(), Some("index off"));
     let options: Vec<String> = doc.panels[0]
         .cards
         .iter()
@@ -1800,30 +1793,13 @@ fn every_example_of_the_exclude_guide_is_a_valid_exclusion() {
 
 #[cfg(feature = "semantic-search")]
 #[test]
-fn ask_names_the_missing_semantic_index_in_its_conversation() {
-    let mut session = SearchSession::in_memory();
-    let notes = |session: &SearchSession| {
-        let doc = view::document(session);
-        ask_card(&doc)
-            .items
-            .iter()
-            .filter_map(DockItem::plain_text)
-            .any(|text| text.contains("need a folder and the Semantic index"))
-    };
-    assert!(notes(&session), "files cannot be asked until the index is on");
-    session.st.config.search_path = "/w".into();
-    session.st.config.index.semantic = true;
-    assert!(!notes(&session), "the note goes once files can be asked");
-}
-
-#[cfg(feature = "semantic-search")]
-#[test]
-fn the_index_panel_no_longer_holds_ask() {
+fn the_page_has_only_options_and_report_panels_and_one_find_input() {
     let session = SearchSession::in_memory();
     let doc = view::document(&session);
-    assert!(doc.panels[1].inputs.iter().all(|input| input.id != INPUT_QUESTION));
-    assert_eq!(doc.panels[2].label, "Ask");
-    assert_eq!(doc.panels[2].inputs[0].id, INPUT_QUESTION);
+    let labels: Vec<&str> = doc.panels.iter().map(|panel| panel.label.as_str()).collect();
+    assert_eq!(labels, ["Options", "Report"]);
+    assert!(doc.panels.iter().all(|panel| panel.inputs.iter().all(|input| input.id <= INPUT_OUTPUT)));
+    assert!(doc.insight.is_none(), "nothing found yet");
 }
 
 #[cfg(all(feature = "semantic-search", not(feature = "nl-find")))]
@@ -1843,15 +1819,7 @@ fn a_build_without_natural_language_find_says_so_in_the_index_panel() {
 #[cfg(feature = "semantic-search")]
 fn ask_help_only(session: &mut SearchSession, question: &str) {
     session.ask_files = false;
-    session.question = question.into();
-    act_on(session, SearchAct::AnswerQuestion);
-    let started = Instant::now();
-    while session.answer_running {
-        assert!(started.elapsed() < Duration::from_secs(120));
-        session.poll();
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    session.poll();
+    find_and_wait(session, question);
 }
 
 #[cfg(feature = "semantic-search")]
@@ -1864,7 +1832,7 @@ fn ask_answers_questions_about_the_app_from_the_help_without_a_folder() {
     assert!(!help.is_empty(), "the help covers excluding folders");
     assert!(help.iter().any(|line| line.line.to_lowercase().contains("exclu")), "{help:?}");
     let doc = view::document(&session);
-    let items = &ask_card(&doc).items;
+    let items = insight_items(&doc);
     assert!(items.iter().any(|item| matches!(item, DockItem::Asked(question) if question.starts_with("How do I"))));
     assert!(items.iter().any(|item| matches!(item, DockItem::Reply { source, .. } if source.starts_with("Search help · "))));
 }
@@ -1878,19 +1846,11 @@ fn ask_counts_the_files_of_the_search_folder_by_type() {
     }
     let mut session = SearchSession::in_memory();
     session.st.config.search_path = dir.path().to_string_lossy().into_owned();
-    session.question = "how many files in this search directory".into();
-    act_on(&mut session, SearchAct::AnswerQuestion);
-    let started = Instant::now();
-    while session.answer_running {
-        assert!(started.elapsed() < Duration::from_secs(120));
-        session.poll();
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    session.poll();
+    find_and_wait(&mut session, "how many files in this search directory");
     let parts = session.current_answers().expect("an answer");
     assert!(parts[0].help.is_none(), "a count replaces the help lines");
     let doc = view::document(&session);
-    let texts: Vec<String> = ask_card(&doc).items.iter().filter_map(DockItem::plain_text).collect();
+    let texts: Vec<String> = insight_items(&doc).iter().filter_map(DockItem::plain_text).collect();
     assert!(texts.iter().any(|t| t.contains("3 files in total")), "{texts:?}");
     assert!(texts.iter().any(|t| t.contains(".txt 2") && t.contains(".pdf 1")), "{texts:?}");
 }
@@ -1903,8 +1863,7 @@ fn ask_says_so_when_the_help_does_not_cover_the_question() {
     let parts = session.current_answers().expect("an answer");
     assert!(parts[0].help.as_ref().unwrap().as_ref().unwrap().is_empty());
     let doc = view::document(&session);
-    assert!(ask_card(&doc)
-        .items
+    assert!(insight_items(&doc)
         .iter()
         .filter_map(DockItem::plain_text)
         .any(|text| text.contains("does not cover this")));
@@ -1921,9 +1880,9 @@ fn ask_example_chips_fill_and_ask_the_question() {
 }
 
 #[test]
-fn the_index_panel_reports_build_progress_for_its_border() {
+fn the_options_panel_reports_build_progress_for_its_border() {
     let mut session = SearchSession::in_memory();
-    let progress = |session: &SearchSession| view::document(session).panels[1].progress;
+    let progress = |session: &SearchSession| view::document(session).panels[0].progress;
     assert_eq!(progress(&session), None);
     session.building_for_snapshot(60.0);
     assert_eq!(progress(&session), Some(0.6));
@@ -1933,6 +1892,71 @@ fn the_index_panel_reports_build_progress_for_its_border() {
         Some(0.02),
         "a started build always shows a sliver"
     );
+}
+
+#[cfg(feature = "semantic-search")]
+#[test]
+fn a_question_typed_in_find_is_answered_from_the_help_without_a_folder() {
+    let mut session = SearchSession::in_memory();
+    assert!(view::document(&session).insight.is_none());
+    session.ask_files = false;
+    session.document_field(INPUT_FIND, "How do I leave a folder out of a search?".into());
+    assert!(view::document(&session).buttons[0].enabled, "a question needs no folder");
+    find_and_wait(&mut session, "How do I leave a folder out of a search?");
+    assert!(!session.st.run.is_running && session.st.run.results.is_empty(), "no exact search starts");
+    let doc = view::document(&session);
+    let insight = doc.insight.expect("the answer card");
+    assert_eq!(insight.title, "Answers and passages");
+    assert!(insight.items.iter().any(|item| matches!(item, DockItem::Reply { source, .. } if source.starts_with("Search help · "))));
+}
+
+#[test]
+fn the_find_as_chip_cycles_the_pinned_reading() {
+    let mut session = SearchSession::in_memory();
+    let label = |session: &SearchSession| view::document(session).chips[0].label.clone();
+    assert_eq!(label(&session), "Find as: auto");
+    for expected in ["Find as: words", "Find as: sentence", "Find as: question", "Find as: auto"] {
+        act_on(&mut session, SearchAct::FindAs);
+        assert_eq!(label(&session), expected);
+    }
+    act_on(&mut session, SearchAct::FindAs);
+    assert_eq!(view::document(&session).chips[0].checked, Some(true), "a pinned reading is lit");
+}
+
+#[cfg(feature = "semantic-search")]
+#[test]
+fn a_words_find_with_a_built_semantic_index_also_shows_cited_passages() {
+    let dir = tempfile::tempdir().unwrap();
+    semantic_fixture(dir.path(), &[("shaft.txt", "The shaft rotates under torque and torsional load.")]);
+    let mut session = SearchSession::in_memory();
+    session.st.config.search_path = dir.path().to_string_lossy().into_owned();
+    session.st.config.index.semantic = true;
+    session.st.index_run.docs = Some(1);
+    act_on(&mut session, SearchAct::FindAs); // pin "words": the text is searched as typed
+    find_and_wait(&mut session, "shaft rotates under torque");
+    assert_eq!(session.st.run.results.len(), 1, "the exact search still runs");
+    let doc = view::document(&session);
+    assert!(
+        insight_items(&doc).iter().any(|item| matches!(item, DockItem::Heading(h) if h.starts_with("Possible evidence for"))),
+        "{:?}",
+        insight_items(&doc).iter().filter_map(DockItem::plain_text).collect::<Vec<_>>()
+    );
+    assert!(insight_items(&doc).iter().filter_map(DockItem::plain_text).any(|t| t.contains("shaft.txt")));
+}
+
+#[cfg(feature = "semantic-search")]
+#[test]
+fn a_new_find_clears_the_previous_insight() {
+    let mut session = SearchSession::in_memory();
+    session.ask_files = false;
+    find_and_wait(&mut session, "How do I leave a folder out of a search?");
+    assert!(view::document(&session).insight.is_some());
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "bolt torque\n").unwrap();
+    session.st.config.search_path = dir.path().to_string_lossy().into_owned();
+    find_and_wait(&mut session, "torque, bolt");
+    assert!(session.current_answers().is_none(), "the old answer is gone");
+    assert!(view::document(&session).insight.is_none(), "words without an index leave no card");
 }
 
 #[cfg(feature = "nl-find")]
@@ -2103,12 +2127,12 @@ fn corpus_probe() {
         return;
     }
     for question in ["how many files in this search directory", "how many PDFs are there?"] {
-        session.question = question.into();
-        act_on(&mut session, SearchAct::AnswerQuestion);
+        session.document_field(INPUT_FIND, question.into());
+        act_on(&mut session, SearchAct::Run);
         spin(&mut session, &|s| s.answer_running);
         let doc = view::document(&session);
         eprintln!("ASK {question}");
-        for text in ask_card(&doc).items.iter().filter_map(DockItem::plain_text) {
+        for text in insight_items(&doc).iter().filter_map(DockItem::plain_text) {
             eprintln!("  {text}");
         }
     }
