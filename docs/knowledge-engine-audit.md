@@ -121,3 +121,12 @@ Scale above 5k chunks / 3000 files; indexing throughput; memory and startup; Win
 
 ## 7. Approval
 Per the directive, no architectural change starts before the owner approves this roadmap. Approval is a checkbox in #240.
+
+## 8. Progress log
+
+### 2026-11-10: P0-2 offline proof (done)
+`scripts/offline_proof.sh` (macOS) runs the Search test binaries under `sandbox-exec` with `(deny network*)`, after a control (`curl` must fail), and then checks the sandbox log for denials attributed to our binaries. Result on this Mac: `search-core` with `semantic-search,ocr` (271 lib tests plus integration tests, real embedding inference, indexing and OCR), `native-search` (32) and `app-tui` lib (1277: Search window flows, index, semantic, alerts) all pass with the network denied; the log shows no denied network attempt by any of them (the only denials in the window were system processes such as `findmylocateagent`). Limits: this exercises the library and the window model through tests, not the GPU window itself; Windows has no equivalent run yet (needs a firewall-blocked run on hardware). The first run also exposed a flaky OCR test that raced on a process-wide cache setting; it now uses an explicit-folder helper (`ocr::read_page` / `write_page`).
+
+### 2026-11-10: P0-3 damaged semantic index (done)
+`SemanticIndex::open` runs `PRAGMA quick_check` and recreates a damaged `semantic.sqlite` empty (test `a_damaged_database_is_rebuilt_empty_and_a_sound_one_is_kept`).
+

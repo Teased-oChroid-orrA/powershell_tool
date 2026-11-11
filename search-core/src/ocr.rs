@@ -142,20 +142,31 @@ pub(crate) fn cache_key(header: &str, body: &str) -> String {
 }
 
 pub(crate) fn cached_lines(key: &str) -> Option<Vec<String>> {
+    let dir = CACHE_DIR.lock().ok().and_then(|d| d.clone());
+    read_page(dir.as_deref(), key)
+}
+
+pub(crate) fn store_lines(key: &str, lines: &[String]) {
+    let dir = CACHE_DIR.lock().ok().and_then(|d| d.clone());
+    write_page(dir.as_deref(), key, lines);
+}
+
+/// Memory first, then `dir` (when there is one). Takes the folder as a parameter so tests need not touch the
+/// process-wide setting that every search run reconfigures.
+fn read_page(dir: Option<&std::path::Path>, key: &str) -> Option<Vec<String>> {
     if let Some(lines) = MEMORY.lock().ok()?.as_ref().and_then(|m| m.get(key)) {
         return Some(lines.clone());
     }
-    let dir = CACHE_DIR.lock().ok()?.clone()?;
-    let text = std::fs::read_to_string(dir.join(format!("{key}.txt"))).ok()?;
+    let text = std::fs::read_to_string(dir?.join(format!("{key}.txt"))).ok()?;
     let lines: Vec<String> = text.lines().map(str::to_string).collect();
     remember(key, &lines);
     Some(lines)
 }
 
-pub(crate) fn store_lines(key: &str, lines: &[String]) {
+fn write_page(dir: Option<&std::path::Path>, key: &str, lines: &[String]) {
     remember(key, lines);
-    let Some(dir) = CACHE_DIR.lock().ok().and_then(|d| d.clone()) else { return };
-    if std::fs::create_dir_all(&dir).is_err() {
+    let Some(dir) = dir else { return };
+    if std::fs::create_dir_all(dir).is_err() {
         return;
     }
     // Temp file then rename, so a crash never leaves a truncated page behind.
@@ -191,22 +202,24 @@ mod tests {
     #[test]
     fn page_text_round_trips_through_memory_and_disk() {
         let dir = tempfile::tempdir().unwrap();
-        set_cache_dir(Some(dir.path().to_str().unwrap()));
+        let folder = Some(dir.path());
         let key = cache_key("<< /Subtype /Image >>", "pixels one");
         assert_ne!(key, cache_key("<< /Subtype /Image >>", "pixels two"));
-        assert!(cached_lines(&key).is_none());
-        store_lines(&key, &["first line".into(), "second line".into()]);
-        assert_eq!(cached_lines(&key).unwrap(), ["first line", "second line"]);
+        assert!(read_page(folder, &key).is_none());
+        write_page(folder, &key, &["first line".into(), "second line".into()]);
+        assert_eq!(read_page(folder, &key).unwrap(), ["first line", "second line"]);
         // Disk alone is enough: drop the in-memory copy.
-        MEMORY.lock().unwrap().take();
-        assert_eq!(cached_lines(&key).unwrap(), ["first line", "second line"]);
+        MEMORY.lock().unwrap().as_mut().map(|m| m.remove(&key));
+        assert_eq!(read_page(folder, &key).unwrap(), ["first line", "second line"]);
         // A page with no text is a real, cached answer.
         let blank = cache_key("h", "blank page");
-        store_lines(&blank, &[]);
-        MEMORY.lock().unwrap().take();
-        assert_eq!(cached_lines(&blank), Some(Vec::new()));
-        set_cache_dir(None);
-        MEMORY.lock().unwrap().take();
-        assert!(cached_lines(&key).is_none());
+        write_page(folder, &blank, &[]);
+        MEMORY.lock().unwrap().as_mut().map(|m| m.remove(&blank));
+        assert_eq!(read_page(folder, &blank), Some(Vec::new()));
+        // Without a folder nothing survives the memory copy.
+        MEMORY.lock().unwrap().as_mut().map(|m| m.remove(&key));
+        std::fs::remove_file(dir.path().join(format!("{key}.txt"))).unwrap();
+        MEMORY.lock().unwrap().as_mut().map(|m| m.remove(&key));
+        assert!(read_page(folder, &key).is_none());
     }
 }
