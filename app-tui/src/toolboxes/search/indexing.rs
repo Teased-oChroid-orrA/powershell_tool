@@ -21,9 +21,10 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
 use native_search::error::{NsError, NsResult, NsStatus};
+use search_core::embed_policy::EmbedPolicy;
 use search_core::models::SearchSettings;
 use search_core::native_index::{
-    self, build_or_update_corpus_index_send, ensure_index_directory_exists,
+    self, build_or_update_corpus_index_lazy_send, ensure_index_directory_exists,
     open_or_create_with_rebuild, redact_paths, CorpusIndexOutcome, CorpusIndexProgress, IndexStage,
 };
 
@@ -71,6 +72,21 @@ pub struct IndexSettings {
     /// Keep the index current by watching the folder (opt-in; user-mode, nothing installed or changed outside the app).
     #[serde(default)]
     pub watch: bool,
+    /// Embed the semantic index in the background, a few files at a time, instead of in one long build (opt-in; the
+    /// exact index is complete after the first pass). Only meaningful with `semantic`.
+    #[serde(default)]
+    pub lazy_embed: bool,
+}
+
+/// Files embedded per pass when lazy embedding is on. A pass also walks the folder once, so it must be large next to
+/// that walk, yet short enough that the Search page is blocked only briefly between passes.
+pub const LAZY_EMBED_PASS_FILES: usize = 200;
+
+impl IndexSettings {
+    /// Embedding budget of one build: lazy only when both the semantic index and lazy embedding are on.
+    pub fn embed_policy(&self) -> EmbedPolicy {
+        EmbedPolicy { limit: (self.semantic && self.lazy_embed).then_some(LAZY_EMBED_PASS_FILES), ..Default::default() }
+    }
 }
 
 /// Live index-build status the render layer reads. Deliberately separate
@@ -95,6 +111,8 @@ pub struct IndexRunState {
     /// Files that failed in the most recent finished build (shown in the
     /// post-search index health line).
     pub last_build_failed: Option<i32>,
+    /// Lazy embedding: (files embedded so far, files still waiting). `None` when the last build was not lazy.
+    pub embedding: Option<(i32, i32)>,
     pub(super) indexing_started: Option<Instant>,
 }
 
@@ -107,6 +125,7 @@ impl IndexRunState {
             last_narrow: self.last_narrow.take(),
             stale: None,
             last_build_failed: self.last_build_failed,
+            embedding: self.embedding,
             ..Default::default()
         };
     }
@@ -178,6 +197,14 @@ impl IndexRunState {
             "{lead}: {} docs · {} new/updated · {} unchanged · {} failed · {secs:.1}s",
             outcome.index_docs, outcome.indexed_count, outcome.skipped_count, outcome.failed_count
         );
+        if let Some((done, pending)) = self.embedding_after(outcome) {
+            self.embedding = Some((done, pending));
+            if pending > 0 {
+                self.status_text.push_str(&format!(" · {done} of {} embedded", done + pending));
+            }
+        } else {
+            self.embedding = None;
+        }
         if outcome.no_text_count > 0 {
             self.status_text
                 .push_str(&format!(" · {} without text", outcome.no_text_count));
@@ -188,6 +215,21 @@ impl IndexRunState {
                 outcome.enumeration_errors
             ));
         }
+    }
+
+    /// Embedding progress after `outcome`: counts accumulate over the chained passes of one lazy run and restart
+    /// when the previous run had nothing pending. `None` when this build was not lazy (nothing pending and nothing
+    /// embedded in a run that did not continue a lazy one).
+    fn embedding_after(&self, outcome: &CorpusIndexOutcome) -> Option<(i32, i32)> {
+        let continuing = self.embedding.filter(|&(_, pending)| pending > 0).map_or(0, |(done, _)| done);
+        let done = continuing + outcome.semantic_embedded_count;
+        (outcome.semantic_pending_count > 0 || continuing > 0).then_some((done, outcome.semantic_pending_count))
+    }
+
+    /// Whether another lazy pass should follow `outcome`: files are pending, the run was not cancelled, and this pass
+    /// embedded something (otherwise every remaining file fails and chaining would loop forever).
+    pub fn wants_next_embed_pass(outcome: &CorpusIndexOutcome) -> bool {
+        outcome.semantic_pending_count > 0 && outcome.semantic_embedded_count > 0 && !outcome.cancelled
     }
 
     pub fn apply_error(&mut self, error: String) {
@@ -455,7 +497,19 @@ pub async fn build_or_rebuild_index(
     index_dir: PathBuf,
     cancel: CancellationToken,
 ) -> bool {
-    run_index_job(tx, settings, index_dir, cancel, None).await
+    build_or_rebuild_index_with(tx, settings, index_dir, cancel, EmbedPolicy::default()).await
+}
+
+/// [`build_or_rebuild_index`] with an embedding budget (`IndexSettings::embed_policy`): the exact index is complete
+/// afterwards, at most `embed.limit` files are embedded, and the outcome counts what is still pending.
+pub async fn build_or_rebuild_index_with(
+    tx: UnboundedSender<AppEvent>,
+    settings: SearchSettings,
+    index_dir: PathBuf,
+    cancel: CancellationToken,
+    embed: EmbedPolicy,
+) -> bool {
+    run_index_job(tx, settings, index_dir, cancel, None, embed).await
 }
 
 /// Brings the index up to date for just the paths a folder watcher reported (see
@@ -467,7 +521,7 @@ pub async fn update_index_paths(
     cancel: CancellationToken,
     paths: Vec<String>,
 ) -> bool {
-    run_index_job(tx, settings, index_dir, cancel, Some(paths)).await
+    run_index_job(tx, settings, index_dir, cancel, Some(paths), EmbedPolicy::default()).await
 }
 
 async fn run_index_job(
@@ -476,6 +530,7 @@ async fn run_index_job(
     index_dir: PathBuf,
     cancel: CancellationToken,
     paths: Option<Vec<String>>,
+    embed: EmbedPolicy,
 ) -> bool {
     log("INDEX", if paths.is_some() { "=== update from watcher" } else { "=== build start" });
     let _ = tx.send(AppEvent::IndexBuildProgress(CorpusIndexProgress {
@@ -490,7 +545,7 @@ async fn run_index_job(
     // Run in its own task so a panic is a `JoinError` here rather than a
     // silently dead task that leaves the UI spinning forever.
     let joined = tokio::spawn(async move {
-        match build_or_rebuild_index_inner(&task_tx, &settings, &index_dir, false, &cancel, paths.as_deref()).await {
+        match build_or_rebuild_index_inner(&task_tx, &settings, &index_dir, false, &cancel, paths.as_deref(), &embed).await {
             Err(e) if e.status == NsStatus::CorruptIndex => {
                 log(
                     "WARN",
@@ -500,7 +555,7 @@ async fn run_index_job(
                     ),
                 );
                 // A damaged index cannot take a path delta: rebuild it completely.
-                build_or_rebuild_index_inner(&task_tx, &settings, &index_dir, true, &cancel, None).await
+                build_or_rebuild_index_inner(&task_tx, &settings, &index_dir, true, &cancel, None, &embed).await
             }
             other => other,
         }
@@ -550,6 +605,7 @@ async fn build_or_rebuild_index_inner(
     wipe_first: bool,
     cancel: &CancellationToken,
     paths: Option<&[String]>,
+    embed: &EmbedPolicy,
 ) -> NsResult<CorpusIndexOutcome> {
     {
         let (s, d) = (settings.clone(), index_dir.to_path_buf());
@@ -649,7 +705,7 @@ async fn build_or_rebuild_index_inner(
             native_index::update_corpus_index_paths_send(settings, &engine, cancel, changed, Some(&mut on_progress))
                 .await?
         }
-        None => build_or_update_corpus_index_send(settings, &engine, cancel, Some(&mut on_progress)).await?,
+        None => build_or_update_corpus_index_lazy_send(settings, &engine, cancel, Some(&mut on_progress), embed).await?,
     };
 
     // Aggregated by extension + error text; never per-file (no file names in the log).
@@ -731,6 +787,7 @@ pub fn verify_index(index_directory: &Path) -> NsResult<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use search_core::native_index::build_or_update_corpus_index_send;
 
     #[test]
     fn search_folder_location_delegates_to_native_index_directory() {
@@ -1002,6 +1059,43 @@ mod tests {
         st.apply_error("boom".to_string());
         assert!(!st.is_building);
         assert!(st.last_error.as_deref().unwrap().starts_with("boom"));
+    }
+
+    fn lazy_outcome(embedded: i32, pending: i32) -> CorpusIndexOutcome {
+        CorpusIndexOutcome { semantic_embedded_count: embedded, semantic_pending_count: pending, ..Default::default() }
+    }
+
+    #[test]
+    fn lazy_embedding_is_opt_in_needs_the_semantic_index_and_reports_n_of_m_across_passes() {
+        assert_eq!(IndexSettings::default().embed_policy().limit, None);
+        assert_eq!(IndexSettings { lazy_embed: true, ..Default::default() }.embed_policy().limit, None, "no semantic index: nothing to embed lazily");
+        assert_eq!(
+            IndexSettings { semantic: true, lazy_embed: true, ..Default::default() }.embed_policy().limit,
+            Some(LAZY_EMBED_PASS_FILES)
+        );
+        let mut st = IndexRunState::default();
+        st.begin();
+        st.apply_outcome(&lazy_outcome(200, 300));
+        assert!(st.status_text.contains("200 of 500 embedded"), "{}", st.status_text);
+        st.begin();
+        st.apply_outcome(&lazy_outcome(200, 100));
+        assert!(st.status_text.contains("400 of 500 embedded"), "{}", st.status_text);
+        st.begin();
+        st.apply_outcome(&lazy_outcome(100, 0));
+        assert!(!st.status_text.contains("embedded"), "finished run shows no pending line: {}", st.status_text);
+        st.begin();
+        st.apply_outcome(&lazy_outcome(7, 0));
+        assert_eq!(st.embedding, None, "a later non-lazy build starts from zero");
+    }
+
+    #[test]
+    fn another_lazy_pass_follows_only_while_files_are_pending_and_progress_is_made() {
+        assert!(IndexRunState::wants_next_embed_pass(&lazy_outcome(200, 5)));
+        assert!(!IndexRunState::wants_next_embed_pass(&lazy_outcome(200, 0)));
+        assert!(!IndexRunState::wants_next_embed_pass(&lazy_outcome(0, 5)), "every remaining file fails: stop");
+        let mut cancelled = lazy_outcome(200, 5);
+        cancelled.cancelled = true;
+        assert!(!IndexRunState::wants_next_embed_pass(&cancelled));
     }
 
     #[test]

@@ -3091,6 +3091,7 @@ mod snapshot_tests {
         shoot(&session, "search-results-dark", true, (1440, 900));
         shoot(&session, "search-results-light", false, (1440, 900));
         shoot(&session, "search-narrow", true, (860, 760));
+        shoot(&session, "search-short", true, (1100, 560));
         // The Exclude row, and the cards moved: matches on the left, then stacked under the list.
         session.act(EditorAction::Search(SearchAct::ToggleExclude));
         session.document_field(3, "draft, obsolete".into());

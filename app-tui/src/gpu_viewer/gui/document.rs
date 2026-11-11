@@ -29,7 +29,8 @@ use egui::{
 const ROW_H: f32 = 42.0;
 /// Height reserved for the page's bottom status strip.
 const RIBBON_H: f32 = 32.0;
-/// Below this width the bar's inputs stack.
+/// A page window shorter than this drops the header's eyebrow and subtitle so the cards keep the room.
+const SHORT_PAGE_H: f32 = 720.0;/// Below this width the bar's inputs stack.
 const BAR_STACK: f32 = 560.0;
 /// A grip moved less than this is a click, not a move.
 const DRAG_LEAST: f32 = 24.0;
@@ -245,23 +246,29 @@ impl Gui {
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing = Vec2::new(8.0, 10.0);
                     if let Some(header) = &doc.header {
-                        ui.add_space(if search_shell { 16.0 } else { 8.0 });
+                        // A short window gives the space to the results: no eyebrow or subtitle, a smaller title.
+                        let short = search_shell && area.height() < SHORT_PAGE_H;
+                        ui.add_space(if short { 4.0 } else if search_shell { 16.0 } else { 8.0 });
                         let compact = search_shell && ui.available_width() < 680.0;
                         ui.horizontal(|ui| {
                             ui.vertical(|ui| {
-                                ui.label(
-                                    RichText::new(&header.eyebrow)
-                                        .small()
-                                        .strong()
-                                        .color(p.accent),
-                                );
+                                if !short {
+                                    ui.label(
+                                        RichText::new(&header.eyebrow)
+                                            .small()
+                                            .strong()
+                                            .color(p.accent),
+                                    );
+                                }
                                 ui.label(
                                     RichText::new(&header.title)
-                                        .size(27.0)
+                                        .size(if short { 22.0 } else { 27.0 })
                                         .strong()
                                         .color(p.text),
                                 );
-                                ui.label(RichText::new(&header.subtitle).size(12.5).color(p.dim));
+                                if !short {
+                                    ui.label(RichText::new(&header.subtitle).size(12.5).color(p.dim));
+                                }
                             });
                             if search_shell && !compact {
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -351,8 +358,10 @@ impl Gui {
                                     });
                             });
                     }
-                    let full = ui.available_rect_before_wrap();
-                    let ribbon_room = if doc.ribbon.is_some() && full.height() > 160.0 { RIBBON_H } else { 0.0 };
+                    let left = ui.available_rect_before_wrap();
+                    let ribbon_room = if doc.ribbon.is_some() && left.height() > 160.0 { RIBBON_H } else { 0.0 };
+                    // A short window never squeezes the cards: the page scrolls to them instead.
+                    let full = page_layout::room_for_cards(left, ribbon_room);
                     let mut rest = full;
                     rest.max.y -= ribbon_room;
                     if rest.height() < 60.0 {

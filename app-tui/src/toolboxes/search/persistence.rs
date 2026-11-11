@@ -99,6 +99,8 @@ pub struct PersistedSearchSettings {
     #[serde(default)]
     pub watch_index: bool,
     #[serde(default)]
+    pub lazy_embed_index: bool,
+    #[serde(default)]
     pub fold_accents: bool,
     #[serde(default)]
     pub typo_tolerance: u8,
@@ -145,6 +147,7 @@ impl From<&SearchToolConfig> for PersistedSearchSettings {
             index_location: Some(config.index.location),
             semantic_index: config.index.semantic,
             watch_index: config.index.watch,
+            lazy_embed_index: config.index.lazy_embed,
             fold_accents: config.fold_accents,
             typo_tolerance: config.typo_tolerance,
         }
@@ -214,6 +217,7 @@ impl PersistedSearchSettings {
         }
         config.index.semantic = self.semantic_index;
         config.index.watch = self.watch_index;
+        config.index.lazy_embed = self.lazy_embed_index;
         config.fold_accents = self.fold_accents;
         config.typo_tolerance = self.typo_tolerance.min(2);
     }

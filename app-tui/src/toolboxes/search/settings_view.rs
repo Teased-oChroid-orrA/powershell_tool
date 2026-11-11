@@ -189,6 +189,10 @@ const FIELDS: &[FieldDef] = &[
         label: "Keep index current",
         kind: FieldKind::Bool,
     },
+    FieldDef {
+        label: "Embed in the background",
+        kind: FieldKind::Bool,
+    },
 ];
 
 /// A row in the rendered/navigable Fields list - either a non-selectable
@@ -809,6 +813,7 @@ fn field_hint(index: usize) -> &'static str {
         32 => "Match accented letters, ligatures and curly quotes as their plain forms (e.g. cafe finds café). Applies to literal and whole-word searches; searches every file instead of using the fast index.",
         33 => "Allow this many typos per word (0 = exact, 1 or 2). Words under 4 letters or with digits stay exact; excluded terms are never fuzzy. Searches every file instead of using the fast index.",
         34 => "Watch the folder while the app is open and update the fast index for the files that change, instead of re-checking every file. Runs inside this app only: no administrator rights, nothing installed and no system setting or file changed; it stops when the app closes. Network shares and some synced folders report no changes, so Build / update remains the way to be sure.",
+        35 => "With the semantic index on, embed files a few hundred at a time in the background (documents first, then code, then data) instead of in one long build. Exact search is complete after the first pass; semantic results grow as files are embedded, and the index status shows how many are done. Stop build pauses it; Build / update continues.",
         _ => "",
     }
 }
@@ -1094,6 +1099,7 @@ fn bool_field_mut(config: &mut SearchToolConfig, idx: usize) -> Option<&mut bool
         31 => Some(&mut config.index.semantic),
         32 => Some(&mut config.fold_accents),
         34 => Some(&mut config.index.watch),
+        35 => Some(&mut config.index.lazy_embed),
         _ => None,
     }
 }
@@ -1114,6 +1120,7 @@ fn bool_field(config: &SearchToolConfig, idx: usize) -> bool {
         31 => config.index.semantic,
         32 => config.fold_accents,
         34 => config.index.watch,
+        35 => config.index.lazy_embed,
         _ => false,
     }
 }

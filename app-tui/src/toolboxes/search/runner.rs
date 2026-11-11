@@ -149,7 +149,7 @@ async fn narrow_via_index(
     let mut engine = if indexing::index_is_built(&index_dir) { open_engine(&index_dir).await.ok() } else { None };
     if engine.is_none() {
         log("SEARCH", "index missing or unreadable - building it before searching");
-        let built = indexing::build_or_rebuild_index(tx.clone(), settings.clone(), index_dir.clone(), cancellation.clone()).await;
+        let built = indexing::build_or_rebuild_index_with(tx.clone(), settings.clone(), index_dir.clone(), cancellation.clone(), index.embed_policy()).await;
         if cancellation.is_cancelled() {
             return None;
         }

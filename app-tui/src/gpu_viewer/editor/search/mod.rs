@@ -1146,6 +1146,7 @@ impl SearchSession {
             location: record.ui_settings.index_location.unwrap_or_default(),
             semantic: false,
             watch: false,
+            lazy_embed: false,
         };
         let generation = self.alert_generation;
         self.alert_generation = self.alert_generation.wrapping_add(1);

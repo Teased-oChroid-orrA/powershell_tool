@@ -48,10 +48,10 @@ pub fn execute(tx: &mpsc::UnboundedSender<AppEvent>, search: &mut SearchToolStat
             let persisted = search.to_persisted_file();
             tokio::task::spawn_blocking(move || persistence::save(&persisted));
         }
-        Effect::BuildIndex { settings, index_dir, cancel, paths } => {
+        Effect::BuildIndex { settings, index_dir, cancel, paths, embed } => {
             match paths {
                 Some(paths) => tokio::spawn(indexing::update_index_paths(tx.clone(), settings, index_dir, cancel, paths)),
-                None => tokio::spawn(indexing::build_or_rebuild_index(tx.clone(), settings, index_dir, cancel)),
+                None => tokio::spawn(indexing::build_or_rebuild_index_with(tx.clone(), settings, index_dir, cancel, embed)),
             };
         }
         Effect::ScanExtensions { root, exclude_folders, include_hidden } => {

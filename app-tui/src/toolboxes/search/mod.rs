@@ -199,7 +199,8 @@ fn start_index_job(state: &mut SearchToolState, paths: Option<Vec<String>>) -> V
     state.index_run.begin();
     let cancel = CancellationToken::new();
     state.index_cancel = Some(cancel.clone());
-    vec![Effect::BuildIndex { settings, index_dir, cancel, paths }]
+    let embed = state.config.index.embed_policy();
+    vec![Effect::BuildIndex { settings, index_dir, cancel, paths, embed }]
 }
 
 /// Toolbox-local key routing for whichever workspace pane currently has
@@ -416,6 +417,10 @@ pub fn apply_event(state: &mut SearchToolState, notifications: &mut Notification
             match result {
                 Ok(outcome) => {
                     state.index_run.apply_outcome(&outcome);
+                    if state.config.index.embed_policy().limit.is_some() && indexing::IndexRunState::wants_next_embed_pass(&outcome) {
+                        // Lazy embedding: the next pass starts now; the page is searchable in between.
+                        return start_index_build(state);
+                    }
                     if outcome.failed_count > 0 {
                         // `failed_count` alone told the user something broke but
                         // never why - surface the actual per-file reason (first
@@ -667,6 +672,39 @@ mod tests {
         assert!(state.index_run.is_building);
         assert_eq!(effects.len(), 1);
         assert!(matches!(effects[0], Effect::BuildIndex { .. }));
+    }
+
+    #[test]
+    fn a_lazy_pass_with_files_pending_starts_the_next_pass_and_a_finished_one_does_not() {
+        let finished = |embedded, pending, cancelled| {
+            use crate::app::AppEvent;
+            AppEvent::IndexBuildFinished(Ok(search_core::native_index::CorpusIndexOutcome {
+                semantic_embedded_count: embedded,
+                semantic_pending_count: pending,
+                cancelled,
+                ..Default::default()
+            }))
+        };
+        let mut state = SearchToolState::default();
+        let mut notes = NotificationQueue::default();
+        state.config.search_path = "/tmp/project".to_string();
+        state.config.index.semantic = true;
+        state.index_run.is_building = true;
+
+        // Not lazy: pending files never chain a pass.
+        assert!(apply_event(&mut state, &mut notes, finished(200, 50, false)).is_empty());
+
+        state.config.index.lazy_embed = true;
+        state.index_run = Default::default();
+        state.index_run.is_building = true;
+        let effects = apply_event(&mut state, &mut notes, finished(200, 50, false));
+        assert!(matches!(effects.as_slice(), [Effect::BuildIndex { embed, .. }] if embed.limit.is_some()));
+        assert!(state.index_run.is_building && state.index_run.embedding == Some((200, 50)));
+
+        state.index_run.is_building = true;
+        assert!(apply_event(&mut state, &mut notes, finished(200, 0, false)).is_empty(), "nothing pending: done");
+        state.index_run.is_building = true;
+        assert!(apply_event(&mut state, &mut notes, finished(200, 50, true)).is_empty(), "cancelled: stop");
     }
 
     #[test]
