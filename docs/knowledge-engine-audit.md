@@ -175,3 +175,26 @@ Not verified: Windows (the Windows backend compiled only through CI later; no ru
 
 ### 2026-11-10: P1-5 and P1-6 rarity experiments (measured, both negative, nothing adopted)
 Two ideas about the rarity of words, measured on the five benchmark sets under the adoption rule (no loss on any set). P1-5, a keyword share that depends on the rarity of the query terms: eight variants, each loses at least one set (2 to 4); best mean +0.0011 against `default`. P1-6, token vectors pooled with idf weights (upper bound, per-set corpus idf): every variant loses TREC-COVID by 0.008 to 0.012 once fused with BM25, which already carries rarity; the dense-only gains on MS MARCO and TREC-COVID vanish after fusion. `default` unchanged, `EMBEDDING_MODEL_VERSION` stays 1, no stored data changed. Numbers: `docs/search-benchmarks.md`, "rarity of words". Code left for reproduction: `FeatureSet::term_idf`, `rar-*` variants in `ranking_experiments.rs`, `examples/idf_pooling_eval.rs`. Not verified: other models (only bundled MiniLM), a static (corpus-independent) token weight, the P1-7 rare-term entity idea (not started).
+
+### 2026-11-11: P2-1 scale baseline, second part (500,000 and 1,000,000 files; exact search and fast index only)
+Method: as the first part, except each file has 10 lines of about 12 words (about 0.8 KB; `exact_bench <files> needlefound 10`, new third argument) so the corpus fits the disk, in the same 40 folders (12,500 and 25,000 files per folder, against 2,500 at 100k). One run each, not repeated; the machine was otherwise idle but shared with the benchmark's own file generation. Not an SLA.
+
+| Measure | 500,000 files | 1,000,000 files |
+|---|---|---|
+| Generate corpus | 78.7 s | 175.7 s |
+| Cold full scan, sequential | 128.2 s | 419.5 s |
+| Cold full scan, parallel (writes cache) | 53.6 s | 180.4 s |
+| Warm re-run, result cache hit | 26.9 s | 123.8 s |
+| Fast index build | 992 s | 1,981 s |
+| Index narrow, total | 34.7 s | 140.7 s |
+| of which directory walk / freshness check / trigram query | 27.3 s / 7.1 s / 53 ms | 125.6 s / 14.3 s / 88 ms |
+| Verify candidates (1% of files) | 0.96 s (5,155 files) | 2.56 s (10,310 files) |
+| Peak resident memory (whole run) | 1.36 GB | 1.65 GB |
+
+Findings:
+- Index build stays linear: about 2 ms per file at every size from 10k to 1M (the cost is per file, not per byte; the 0.8 KB files cost the same as the 12 KB ones).
+- Peak memory is flat (1.4 to 1.6 GB from 100k to 1M), so the whole-process peak is not set by corpus size for files this small.
+- The trigram query is not the problem at any size (53 to 88 ms). The directory walk is: 0.69 s at 100k, 27 s at 500k, 126 s at 1M, i.e. 40x for 5x the files and 4.6x for the next 2x, and the warm result-cache re-run (124 s at 1M) is dominated by the same walk. At 500k an index narrow (34.7 s) is slower than a cold parallel scan of the same files was at 100k scaled linearly would suggest and only 1.5x faster than the cold parallel scan (53.6 s); at 1M it is 1.3x faster (140.7 s against 180.4 s). The index stops paying off for files this small, and the first-part conclusion (the per-search walk and freshness pass are what grows) is confirmed and sharper.
+- Not explained: the walk is worse than linear. Two confounds are not separated: 5x to 10x more files per folder than the 100k run (large directories), and a cold directory cache after the corpus was generated. The cause was not profiled, so no fix was attempted; the next step is to rerun 500k with 400 folders (same files per folder as 100k) and to time the walk cold against warm. The watcher (P2-2, `update_corpus_index_paths_send`) already avoids the walk for the opt-in case; the default path still walks.
+
+Still open for P2-1 (box stays unticked): the walk scaling cause above, the semantic index at scale (embedding throughput, snapshot memory above the 250,000-chunk limit), startup time, Windows, memory attributed per stage.

@@ -1,6 +1,6 @@
 //! Manual timing harness for the exact (keyword) search path: in-memory line
 //! matching, a cold full scan, a warm cache re-run, and a warm index re-search.
-//! `cargo run --release -p search-core --example exact_bench [files] [filter]`
+//! `cargo run --release -p search-core --example exact_bench [files] [filter] [lines per file, default 150]`
 //! Not an SLA - synthetic text, one machine (see docs/benchmarking.md caveats).
 
 use std::path::Path;
@@ -18,16 +18,16 @@ const VOCAB: &[&str] = &[
     "Cafe\u{301}", "r\u{e9}sum\u{e9}", "naive", "na\u{ef}ve", "don\u{2019}t", "pre\u{a0}load",
 ];
 
-fn body(doc: usize) -> String {
+fn body(doc: usize, lines: usize) -> String {
     let mut s = String::new();
     let mut x = doc as u64 * 2654435761 + 12345;
-    for line in 0..150 {
+    for line in 0..lines {
         for _ in 0..12 {
             x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             s.push_str(VOCAB[((x >> 33) as usize) % VOCAB.len()]);
             s.push(' ');
         }
-        if doc % 97 == 0 && line == 70 {
+        if doc % 97 == 0 && line == (lines / 2).min(70) {
             s.push_str("needlefound");
         }
         s.push('\n');
@@ -35,12 +35,12 @@ fn body(doc: usize) -> String {
     s
 }
 
-fn make_corpus(root: &Path, n: usize) {
+fn make_corpus(root: &Path, n: usize, lines: usize) {
     for d in 0..40 {
         std::fs::create_dir_all(root.join(format!("d{d}"))).unwrap();
     }
     for i in 0..n {
-        std::fs::write(root.join(format!("d{}/f{i}.txt", i % 40)), body(i)).unwrap();
+        std::fs::write(root.join(format!("d{}/f{i}.txt", i % 40)), body(i, lines)).unwrap();
     }
 }
 
@@ -55,8 +55,9 @@ fn time<T>(label: &str, f: impl FnOnce() -> T) -> T {
 async fn main() {
     let n: usize = std::env::args().nth(1).and_then(|a| a.parse().ok()).unwrap_or(3000);
     let filter = std::env::args().nth(2).unwrap_or_else(|| "needlefound".to_string());
+    let lines: usize = std::env::args().nth(3).and_then(|a| a.parse().ok()).unwrap_or(150);
     let dir = tempfile::tempdir().unwrap();
-    time(&format!("generate {n} files"), || make_corpus(dir.path(), n));
+    time(&format!("generate {n} files"), || make_corpus(dir.path(), n, lines));
     let root = dir.path().to_string_lossy().into_owned();
     let mut exclude = Vec::new();
     native_index::ensure_index_folder_excluded(&mut exclude);
@@ -70,7 +71,7 @@ async fn main() {
     };
 
     // In-memory matching, no I/O: the pure line-scan cost.
-    let lines: Vec<Vec<String>> = (0..200).map(|i| body(i).lines().map(String::from).collect()).collect();
+    let lines: Vec<Vec<String>> = (0..200).map(|i| body(i, 150).lines().map(String::from).collect()).collect();
     let total: usize = lines.iter().map(Vec::len).sum();
     for (label, tweak) in [
         ("match literal", 0),
