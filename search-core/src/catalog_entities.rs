@@ -79,6 +79,26 @@ fn read_text(path: &Path) -> Option<String> {
         .map(|doc| doc.lines.join("\n"))
 }
 
+/// What `index_entities` stores for one file's text: `(kind, normalised value, text as written, first
+/// line)`, one per (kind, value). Shared with the relationship evaluation so both see the same entities.
+pub(crate) fn entity_occurrences(text: &str) -> Vec<(&'static str, String, String, usize)> {
+    let extraction = extract_candidates(text);
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for candidate in &extraction.candidates {
+        let shown = &text[candidate.bytes.clone()];
+        for kind in candidate.shape_hints.iter().copied().filter(|k| identifies(*k, shown)) {
+            let value = normalize(shown);
+            // One row per (kind, value) per file: the first line is the evidence.
+            if value.is_empty() || !seen.insert((kind.as_str(), value.clone())) {
+                continue;
+            }
+            out.push((kind.as_str(), value, shown.to_string(), candidate.line_number));
+        }
+    }
+    out
+}
+
 impl Catalog {
     /// Extracts entities for every file of `root` whose stored entities are missing or out of date
     /// (stamp is the file's size and mtime when it was extracted). `read` returns a file's text; use
@@ -107,26 +127,16 @@ impl Catalog {
             tx.execute("DELETE FROM entities WHERE root_id=?1 AND path=?2", params![root_id, path])
                 .map_err(|e| e.to_string())?;
             if let Some(text) = &text {
-                let extraction = extract_candidates(text);
                 let mut insert = tx
                     .prepare(
                         "INSERT INTO entities(root_id,path,kind,value,shown,line,class,extractor)
                          VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
                     )
                     .map_err(|e| e.to_string())?;
-                let mut seen = std::collections::HashSet::new();
-                for candidate in &extraction.candidates {
-                    let shown = &text[candidate.bytes.clone()];
-                    for kind in candidate.shape_hints.iter().copied().filter(|k| identifies(*k, shown)) {
-                        let value = normalize(shown);
-                        // One row per (kind, value) per file: the first line is the evidence.
-                        if value.is_empty() || !seen.insert((kind.as_str(), value.clone())) {
-                            continue;
-                        }
-                        insert
-                            .execute(params![root_id, path, kind.as_str(), value, shown, candidate.line_number, CLASS, EXTRACTOR])
-                            .map_err(|e| e.to_string())?;
-                    }
+                for (kind, value, shown, line) in entity_occurrences(text) {
+                    insert
+                        .execute(params![root_id, path, kind, value, shown, line, CLASS, EXTRACTOR])
+                        .map_err(|e| e.to_string())?;
                 }
             }
             // An unreadable file is stamped too (no entities) so it is not retried until it changes.

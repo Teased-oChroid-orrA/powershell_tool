@@ -139,6 +139,10 @@ name = "idf_pooling_eval"
 required-features = ["semantic-search"]
 
 [[example]]
+name = "edges_eval"
+required-features = ["semantic-search"]
+
+[[example]]
 name = "entity_rank_probe"
 required-features = ["neural-search"]
 

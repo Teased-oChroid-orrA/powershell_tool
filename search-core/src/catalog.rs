@@ -93,6 +93,7 @@ impl Catalog {
         if !has_stamp {
             conn.execute_batch("ALTER TABLE files ADD COLUMN entities_stamp TEXT;")?;
         }
+        crate::catalog_edges::create_table(&conn)?;
         Ok(Self { conn })
     }
 
