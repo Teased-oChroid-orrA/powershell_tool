@@ -198,3 +198,17 @@ Findings:
 - Not explained: the walk is worse than linear. Two confounds are not separated: 5x to 10x more files per folder than the 100k run (large directories), and a cold directory cache after the corpus was generated. The cause was not profiled, so no fix was attempted; the next step is to rerun 500k with 400 folders (same files per folder as 100k) and to time the walk cold against warm. The watcher (P2-2, `update_corpus_index_paths_send`) already avoids the walk for the opt-in case; the default path still walks.
 
 Still open for P2-1 (box stays unticked): the walk scaling cause above, the semantic index at scale (embedding throughput, snapshot memory above the 250,000-chunk limit), startup time, Windows, memory attributed per stage.
+
+### 2026-11-11: P2-1 directory-walk scaling explained (macOS vnode cache; no code change)
+`search-core/examples/walk_bench.rs <files> <folders>` times, three passes each, bare `read_dir`, `read_dir` plus `metadata`, and `enumerate_files_safely` over N one-line files. Results on this Mac (8 GB RAM, `kern.maxvnodes` = 120,553), seconds:
+
+| Files / folders | read_dir only | + metadata | enumerate_files_safely (pass 1 / 2 / 3) |
+|---|---|---|---|
+| 100,000 / 40 | 0.07 | 0.32 to 0.47 | 0.51 / 0.39 / 0.35 (3.5 us per file) |
+| 100,000 / 400 | 0.08 | 0.30 | 0.35 / 0.35 / 0.34 |
+| 500,000 / 40 | 0.4 to 2.1 | 19.9 to 23.2 | 23.2 / 21.5 / 20.7 (41 us per file) |
+| 500,000 / 400 | 0.4 to 1.7 | 17.2 to 21.0 | 19.3 / 19.2 / 18.9 |
+
+Both open hypotheses from the part-2 entry are answered: files per folder does not matter (40 against 400 folders, same time), and the cost is not a cold directory cache (the second and third passes are as slow as the first). The code is linear, one `read_dir` entry and one `stat` per file. What changes between 100k and 500k is the price of one `stat`: 3.5 us up to 100,000 files, about 40 us at 500,000 and 125 us at 1,000,000 (the earlier run). The step sits where the file count passes the kernel's vnode cache (120,553 entries here): below it every `stat` is answered from memory, above it the walk evicts as fast as it reads and each `stat` goes to the APFS catalog. Listing names alone stays fast (0.4 to 2 s for 500,000). I did not run it with a larger `kern.maxvnodes` (needs root and changes a system setting), so the vnode cache is the best-supported explanation and not proven.
+
+Consequence: the per-search walk of a tree larger than the vnode cache costs tens of microseconds per file on macOS, which is why the fast index barely beats a scan at 500k to 1M files. It is a property of this Mac's cache size and the per-file `stat`, not of the walk code or the folder layout. No fix made. On the shipped target (Windows) `DirEntry::metadata` comes from the directory listing itself without a further call, so this cliff is not expected there; that is unmeasured (no Windows hardware; hosted CI is the only Windows evidence). The mitigation that does not depend on the platform is already built: the opt-in watcher (P2-2) updates the index from changed paths without walking, and a persisted directory snapshot would do the same for the default path. Closes the "walk scaling cause" item of P2-1; the box stays unticked for the semantic index at scale, startup time, Windows and per-stage memory.
