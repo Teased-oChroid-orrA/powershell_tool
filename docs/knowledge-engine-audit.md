@@ -130,3 +130,20 @@ Per the directive, no architectural change starts before the owner approves this
 ### 2026-11-10: P0-3 damaged semantic index (done)
 `SemanticIndex::open` runs `PRAGMA quick_check` and recreates a damaged `semantic.sqlite` empty (test `a_damaged_database_is_rebuilt_empty_and_a_sound_one_is_kept`).
 
+### 2026-11-10: P2-1 scale baseline, first part (10k and 100k files; exact search and fast index only)
+Method: `search-core/examples/exact_bench.rs` (release build, this Mac, disk-backed temp folder, 40 folders, 150 lines of about 12 words per file, so about 12 KB per file; synthetic text; `/usr/bin/time -l` for peak memory of the whole process including file generation). One run each, not repeated: treat differences under about 20 percent as noise. Not an SLA.
+
+| Measure | 10,000 files | 100,000 files | Ratio |
+|---|---|---|---|
+| Cold full scan, sequential | 1.14 s | 24.4 s | 21x |
+| Cold full scan, parallel (writes cache) | 0.45 s | 5.8 s | 13x |
+| Warm re-run, result cache hit | 85 ms | 891 ms | 10x |
+| Fast index build | 19.6 s | 203.5 s | 10x |
+| Index narrow (walk + freshness + trigram query) | 129 ms | 1.82 s | 14x |
+| Verify candidates (about 1% of files) | 9 ms | 62 ms | 7x |
+| Peak resident memory (whole run) | 392 MB | 1,536 MB | 3.9x |
+
+Reading: index build is linear (about 2 ms per file here, 10x files = 10x time). Narrowing with the index is 14x slower at 100k, and it is the directory walk (689 ms) plus the freshness check against the index (1,077 ms) that dominate, not the trigram query (7 ms): at this size an index search (1.8 s) is only about 3x faster than a cold parallel scan (5.8 s) and slower than a warm result-cache hit (0.9 s). The cost that grows with the corpus is the per-search freshness pass over every file, which a background watcher (P2-2) or a persisted directory snapshot would remove. Sequential cold scan is 4x slower than parallel at both sizes (the `parallel` default question). Peak memory 1.5 GB at 100k comes from the whole process (generation, result cache, index writer); which part belongs to search is not separated yet.
+
+Still open for P2-1 (box stays unticked): 500,000 and 1,000,000 files (a 12 KB-per-file corpus would need 6 GB and 12 GB of the 16 GB free, so these need a smaller-file corpus or an external disk), the semantic index at scale (embedding throughput, snapshot memory above the 250,000-chunk limit), startup time, Windows, and memory attributed per stage.
+
