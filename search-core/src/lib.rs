@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod catalog;
+pub mod catalog_edges;
 #[cfg(feature = "neural-search")]
 mod catalog_entities;
 #[cfg(feature = "neural-search")]
