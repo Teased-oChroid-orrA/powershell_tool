@@ -471,3 +471,41 @@ De-hyphenation: `xlarge.pdf` has 2315 lines ending in a letter and a hyphen foll
 - Column reading order: no fixture or measurement; the extractor emits text in content-stream order.
 - Encrypted PDFs report the generic "no usable text" reason; a distinct reason needs a new `ExtractLinesError` variant touching other agents' code.
 - Hashing a whole file (rather than an image stream) for the OCR cache: the stream hash already skips decoding and recognition, which are the costs.
+
+## 2026-11-10: rarity of words (P1-5 and P1-6): neither adopted
+
+Question from the owner: can the rarity of words improve semantic search? The keyword side already weights terms by BM25 idf, so the tests are about the dense side and the balance between the two. Adoption rule as before: no loss on any of the five sets (Cranfield 200 queries, SciFact 200, NFCorpus 60, MS MARCO 60, TREC-COVID 50). **Nothing adopted; `default` unchanged; no stored data changed, `EMBEDDING_MODEL_VERSION` stays 1.**
+
+### P1-5 rarity-aware keyword share: not adopted
+
+Per query, share = a + b * r, clamped to 0..1, where r is the mean (or the maximum) over the query terms of idf / ln(2n + 1) computed over all chunks of the index with the keyword score's own formula (0 = term in nearly every chunk, 1 = in none). Queries without terms keep share 0.35. Run through `retrieval_eval --rank-experiments` against `default`; the feature path reproduces `default` exactly (0.3988 / 0.7518 / 0.3300 / 0.6519 / 0.4121). nDCG@10 and the change against `default`:
+
+| Variant (r, a, b) | Cranfield | SciFact | NFCorpus | MS MARCO | TREC-COVID | Mean | Sets lost |
+|---|---|---|---|---|---|---|---|
+| default | 0.3988 | 0.7518 | 0.3300 | 0.6519 | 0.4121 | 0.5089 | 0 |
+| mean, 0.15, +0.40 | -0.0045 | +0.0017 | +0.0014 | -0.0049 | +0.0021 | 0.5080 | 2 |
+| mean, 0.20, +0.30 | -0.0035 | +0.0026 | +0.0019 | -0.0046 | +0.0031 | 0.5088 | 2 |
+| mean, 0.25, +0.20 | -0.0023 | +0.0022 | +0.0020 | -0.0056 | +0.0036 | 0.5089 | 2 |
+| mean, 0.45, -0.20 | -0.0005 | -0.0016 | -0.0018 | +0.0014 | +0.0021 | 0.5088 | 3 |
+| mean, 0.55, -0.40 | -0.0047 | -0.0038 | -0.0022 | +0.0039 | -0.0007 | 0.5074 | 4 |
+| max, 0.15, +0.30 | -0.0068 | -0.0010 | -0.0000 | +0.0080 | +0.0014 | 0.5092 | 3 |
+| max, 0.25, +0.15 | -0.0023 | -0.0000 | +0.0049 | -0.0003 | +0.0034 | 0.5100 | 3 |
+| max, 0.45, -0.15 | +0.0020 | +0.0019 | +0.0017 | -0.0005 | -0.0018 | 0.5096 | 2 |
+
+Both signs of the slope were tried (more keyword weight for rare queries and less) and neither is consistent: the best means (+0.0003 to +0.0011) sit inside the set-to-set noise, and every variant loses at least one set. Mean rarity per set differs (Cranfield 0.37, SciFact 0.45, NFCorpus 0.53, MS MARCO 0.53, TREC-COVID 0.28) but the best slope does not follow it. Consistent with the query-length result above: one keyword share is already close to what a per-query signal can give. Negative.
+
+### P1-6 idf-weighted pooling of token vectors: not adopted
+
+`examples/idf_pooling_eval.rs` re-embeds each set with token vectors (`search_ml::embed_tokens`), pools them with weight idf^p, where idf is the WordPiece token's corpus idf in that set (an upper bound: a stored vector cannot depend on a corpus that changes, so a static weight would do no better), and fuses with BM25 at share 0.35. It uses its own 120-word chunker, so the control (`uniform`, plain mean of the normalised token vectors) is compared with the variants on identical candidates; the control's fused numbers differ slightly from `default` (0.3912 / 0.7373 / 0.3344 / 0.6679 / 0.4045). nDCG@10 fused, change against `uniform`:
+
+| Variant | Cranfield | SciFact | NFCorpus | MS MARCO | TREC-COVID | Sets lost |
+|---|---|---|---|---|---|---|
+| uniform (control) | 0.3912 | 0.7373 | 0.3344 | 0.6679 | 0.4045 | 0 |
+| idf, passage and query | -0.0012 | +0.0050 | -0.0012 | -0.0111 | -0.0085 | 4 |
+| idf, passage only | +0.0015 | +0.0015 | +0.0027 | +0.0089 | -0.0109 | 1 |
+| idf^0.5, passage and query | +0.0029 | +0.0045 | +0.0018 | -0.0124 | -0.0115 | 2 |
+| idf^2, passage and query | -0.0042 | +0.0026 | -0.0002 | -0.0119 | -0.0082 | 4 |
+
+Dense only (control 0.3485 / 0.6690 / 0.3264 / 0.6611 / 0.3432): idf-weighted passage and query gains on MS MARCO (+0.0240) and TREC-COVID (+0.0170) but loses NFCorpus (-0.0058); once fused with BM25 (which already carries rarity) the gain disappears and TREC-COVID loses 0.009 to 0.011 in every variant. The best (passage only) loses TREC-COVID by 0.011. Negative; with a corpus-dependent weight it would also need a re-embed on every index change, so it is dropped rather than refined.
+
+Left in the code: `FeatureSet::term_idf` (measurement only), the `rar-*` variants in `ranking_experiments.rs` (they also write a `rarity-mean` row per query to `perquery.tsv`), `examples/idf_pooling_eval.rs`. Reproduce: `retrieval_eval <set> --queries N --tag rank-eval --rank-experiments <outdir>`; `idf_pooling_eval <set> --queries N` (about 90 s on Cranfield, 8 minutes on SciFact, this Mac).

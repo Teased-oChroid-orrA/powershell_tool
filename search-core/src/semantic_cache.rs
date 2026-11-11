@@ -96,6 +96,11 @@ impl Snapshot {
         dot(query, &self.vectors[index * self.dimensions..(index + 1) * self.dimensions])
     }
 
+    /// Number of chunks that contain `term`.
+    pub(crate) fn doc_freq(&self, term: &str) -> usize {
+        self.postings.get(term).map_or(0, Vec::len)
+    }
+
     /// BM25 of each candidate chunk (`candidates` are chunk indices) for `terms`, with document frequency, average
     /// length and `n` taken over the candidates only, as the streaming path does. Zero where no term occurs.
     pub fn bm25(&self, terms: &[String], candidates: &[u32], k1: f32, b: f32) -> Vec<f32> {

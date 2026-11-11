@@ -53,6 +53,9 @@ pub struct FeatureSet {
     pub chunks: Vec<ChunkFeatures>,
     /// Distinct non-stop-word terms of the query (0 when the query stays dense-only).
     pub query_terms: usize,
+    /// BM25 idf of each query term over all chunks (the largest value, `ln(2n + 1)`, for a term that occurs nowhere), the
+    /// same formula the keyword score uses; measurement only.
+    pub term_idf: Vec<f32>,
 }
 
 pub(crate) fn feature_set(snapshot: &Snapshot, query_values: &[f32], query: &str, stem: bool) -> Option<FeatureSet> {
@@ -84,7 +87,15 @@ pub(crate) fn feature_set(snapshot: &Snapshot, query_values: &[f32], query: &str
         });
         seen[doc as usize] += 1;
     }
-    Some(FeatureSet { docs: snapshot.docs.iter().map(|d| d.path.clone()).collect(), chunks, query_terms: terms.map_or(0, |t| t.len()) })
+    let n = snapshot.len() as f32;
+    let term_idf = terms
+        .as_ref()
+        .map(|t| t.iter().map(|term| {
+            let df = snapshot.doc_freq(term) as f32;
+            ((n - df + 0.5) / (df + 0.5) + 1.0).ln()
+        }).collect())
+        .unwrap_or_default();
+    Some(FeatureSet { docs: snapshot.docs.iter().map(|d| d.path.clone()).collect(), chunks, query_terms: terms.map_or(0, |t| t.len()), term_idf })
 }
 
 #[cfg(test)]

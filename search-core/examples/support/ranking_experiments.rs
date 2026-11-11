@@ -122,6 +122,23 @@ pub fn run(inputs: &Inputs) {
         for &s in &shares {
             record(&format!("share{s:.2}"), &rank_docs(&fs, &fuse(&dn, &bn, s)));
         }
+        // 1b. rarity-aware keyword share (P1-5): share = a + b * r, r = mean or max of the query terms' idf over ln(2n + 1)
+        // (0 = every term in nearly every chunk, 1 = no chunk has the term); queries without terms keep the default.
+        let top_idf = ((2 * fs.chunks.len() + 1) as f32).ln();
+        let rarity = |max: bool| -> f32 {
+            if fs.term_idf.is_empty() { return 0.0; }
+            let v = fs.term_idf.iter().map(|x| x / top_idf);
+            if max { v.fold(0.0, f32::max) } else { v.sum::<f32>() / fs.term_idf.len() as f32 }
+        };
+        for (name, max, a, b) in [
+            ("rar-mean-0.15-0.40", false, 0.15f32, 0.40f32), ("rar-mean-0.20-0.30", false, 0.20, 0.30), ("rar-mean-0.25-0.20", false, 0.25, 0.20),
+            ("rar-mean-0.45-neg0.20", false, 0.45, -0.20), ("rar-mean-0.55-neg0.40", false, 0.55, -0.40),
+            ("rar-max-0.15-0.30", true, 0.15, 0.30), ("rar-max-0.25-0.15", true, 0.25, 0.15), ("rar-max-0.45-neg0.15", true, 0.45, -0.15),
+        ] {
+            let share = if terms == 0 { config.weight } else { (a + b * rarity(max)).clamp(0.0, 1.0) };
+            record(name, &rank_docs(&fs, &fuse(&dn, &bn, share)));
+        }
+        writeln!(out.borrow_mut(), "{}\t{qi}\t{qid}\t{terms}\trarity-mean\t{:.6}\t{:.6}", inputs.set, rarity(false), rarity(true)).unwrap();
         // 2. document-level scoring.
         for (alpha, k) in [(0.1f32, 1usize), (0.25, 1), (0.5, 1), (0.25, 2), (0.5, 2)] {
             let t = Instant::now();
