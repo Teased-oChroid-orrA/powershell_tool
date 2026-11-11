@@ -56,10 +56,30 @@ pub struct FailureRecord {
 
 pub struct FailureLog {
     conn: Mutex<Connection>,
+    /// Extraction settings the failures are recorded under (see
+    /// [`extraction_context`]). A failure only counts as known when the
+    /// current context matches, so enabling OCR or raising the PDF
+    /// timeout retries files that failed under the old setting.
+    context: i64,
+}
+
+/// Folds the settings that can turn an extraction failure into a success
+/// (OCR on/off, PDF time budget) into one number stored beside each
+/// failure. `0` is the default no-OCR / 15 s context, matching rows that
+/// predate this column.
+pub fn extraction_context(settings: &crate::models::SearchSettings) -> i64 {
+    let timeout = i64::from(settings.pdf_timeout_seconds.max(0)) - 15;
+    (timeout << 1) | i64::from(settings.ocr_scanned_pdfs)
 }
 
 impl FailureLog {
     pub fn open(path: &str) -> rusqlite::Result<Self> {
+        Self::open_with_context(path, 0)
+    }
+
+    /// Opens the log for one run's extraction settings; see
+    /// [`extraction_context`].
+    pub fn open_with_context(path: &str, context: i64) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS extraction_failures (
@@ -72,7 +92,14 @@ impl FailureLog {
                 extractor_version INTEGER NOT NULL
             );",
         )?;
-        Ok(Self { conn: Mutex::new(conn) })
+        // Databases written before the context column existed: add it (rows default to 0).
+        let has_context = conn
+            .prepare("SELECT 1 FROM pragma_table_info('extraction_failures') WHERE name = 'context'")?
+            .exists([])?;
+        if !has_context {
+            conn.execute_batch("ALTER TABLE extraction_failures ADD COLUMN context INTEGER NOT NULL DEFAULT 0;")?;
+        }
+        Ok(Self { conn: Mutex::new(conn), context })
     }
 
     /// Records (or overwrites) a failure for `path` - a file's failure
@@ -82,16 +109,17 @@ impl FailureLog {
     pub fn record_failure(&self, path: &str, size: i64, modified_unix: i64, status: &str, reason: &str, now_unix: i64) {
         let Ok(conn) = self.conn.lock() else { return };
         let _ = conn.execute(
-            "INSERT INTO extraction_failures (path, size, modified_unix, status, reason, failed_at_unix, extractor_version)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "INSERT INTO extraction_failures (path, size, modified_unix, status, reason, failed_at_unix, extractor_version, context)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(path) DO UPDATE SET
                 size = excluded.size,
                 modified_unix = excluded.modified_unix,
                 status = excluded.status,
                 reason = excluded.reason,
                 failed_at_unix = excluded.failed_at_unix,
-                extractor_version = excluded.extractor_version",
-            rusqlite::params![path, size, modified_unix, status, reason, now_unix, EXTRACTOR_VERSION],
+                extractor_version = excluded.extractor_version,
+                context = excluded.context",
+            rusqlite::params![path, size, modified_unix, status, reason, now_unix, EXTRACTOR_VERSION, self.context],
         );
     }
 
@@ -112,8 +140,8 @@ impl FailureLog {
     pub fn known_failure_reason(&self, path: &str, size: i64, modified_unix: i64) -> Option<String> {
         let conn = self.conn.lock().ok()?;
         conn.query_row(
-            "SELECT reason FROM extraction_failures WHERE path = ?1 AND size = ?2 AND modified_unix = ?3 AND extractor_version = ?4",
-            rusqlite::params![path, size, modified_unix, EXTRACTOR_VERSION],
+            "SELECT reason FROM extraction_failures WHERE path = ?1 AND size = ?2 AND modified_unix = ?3 AND extractor_version = ?4 AND context = ?5",
+            rusqlite::params![path, size, modified_unix, EXTRACTOR_VERSION, self.context],
             |row| row.get(0),
         )
         .ok()
@@ -225,5 +253,43 @@ mod tests {
         }
         let reopened = FailureLog::open(db_path.to_str().unwrap()).unwrap();
         assert!(reopened.known_failure_reason("/x/a.pdf", 100, 1_700_000_000).is_some());
+    }
+
+    #[test]
+    fn a_failure_is_not_sticky_across_an_ocr_or_timeout_change() {
+        use crate::models::SearchSettings;
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("failures.db");
+        let db = db.to_str().unwrap();
+        let off = SearchSettings::default();
+        let on = SearchSettings { ocr_scanned_pdfs: true, ..Default::default() };
+        let slow = SearchSettings { pdf_timeout_seconds: 60, ..Default::default() };
+
+        let log = FailureLog::open_with_context(db, extraction_context(&off)).unwrap();
+        log.record_failure("/x/scan.pdf", 100, 1, "ReadError", "no text", 2);
+        assert!(log.known_failure_reason("/x/scan.pdf", 100, 1).is_some());
+
+        for changed in [&on, &slow] {
+            let log = FailureLog::open_with_context(db, extraction_context(changed)).unwrap();
+            assert!(log.known_failure_reason("/x/scan.pdf", 100, 1).is_none());
+        }
+        let log = FailureLog::open_with_context(db, extraction_context(&off)).unwrap();
+        assert!(log.known_failure_reason("/x/scan.pdf", 100, 1).is_some());
+    }
+
+    #[test]
+    fn a_database_without_the_context_column_is_upgraded_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("old.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE extraction_failures (path TEXT PRIMARY KEY, size INTEGER NOT NULL, modified_unix INTEGER NOT NULL,
+             status TEXT NOT NULL, reason TEXT NOT NULL, failed_at_unix INTEGER NOT NULL, extractor_version INTEGER NOT NULL);
+             INSERT INTO extraction_failures VALUES ('/x/a.pdf', 1, 1, 'ReadError', 'old', 0, 1);",
+        )
+        .unwrap();
+        drop(conn);
+        let log = FailureLog::open(db.to_str().unwrap()).unwrap();
+        assert_eq!(log.known_failure_reason("/x/a.pdf", 1, 1).as_deref(), Some("old"));
     }
 }

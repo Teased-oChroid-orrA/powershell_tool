@@ -85,6 +85,15 @@ pub(crate) fn extract_for_semantic_index(
     }
 }
 
+/// Points the persistent OCR text cache at `dir` (`None` = memory only). A
+/// no-op without the `ocr` feature. Process-wide, set once per run.
+pub fn configure_ocr_cache(dir: Option<&str>) {
+    #[cfg(feature = "ocr")]
+    crate::ocr::set_cache_dir(dir);
+    #[cfg(not(feature = "ocr"))]
+    let _ = dir;
+}
+
 /// Distinguishes *why* extraction produced no lines - `orchestrator.rs`
 /// maps this to a different `FileSearchStatus` per variant (`Binary` vs
 /// `ReadError`), so this can't just collapse to `Option<Vec<String>>`.
@@ -1211,7 +1220,7 @@ fn stream_re() -> &'static Regex {
 /// assertion around the literal either, so this preserves that exact,
 /// slightly odd but pre-existing behavior rather than "fixing" it as an
 /// incidental side effect of a performance change).
-#[cfg(any(feature = "ocr", test))]
+#[cfg(test)]
 fn find_stream_blocks(raw: &str) -> impl Iterator<Item = (&str, &str)> {
     find_stream_blocks_with_offsets(raw).map(|(header, body, _)| (header, body))
 }
@@ -1591,33 +1600,31 @@ pub(crate) struct OcrCandidateImage {
     pub rgb: Vec<u8>,
 }
 
-#[cfg(feature = "ocr")]
+#[cfg(all(feature = "ocr", test))]
 fn find_jpeg_image_streams(raw: &str) -> Vec<OcrCandidateImage> {
-    let mut out = Vec::new();
-    for (header, stream_text) in find_stream_blocks(raw) {
-        if !header.contains("/Image") || !header.contains("/DCTDecode") || stream_text.is_empty() {
-            continue;
-        }
-        let jpeg_bytes = if header.contains("/ASCII85Decode") {
-            decode_ascii85(stream_text)
-        } else {
-            encode_latin1(stream_text)
-        };
-        if jpeg_bytes.is_empty() {
-            continue;
-        }
-        let Ok(decoded) = image::load_from_memory(&jpeg_bytes) else {
-            continue;
-        };
-        let rgb_img = decoded.into_rgb8();
-        let (width, height) = rgb_img.dimensions();
-        out.push(OcrCandidateImage {
-            width,
-            height,
-            rgb: rgb_img.into_raw(),
-        });
+    find_stream_blocks(raw)
+        .filter_map(|(header, stream_text)| jpeg_image_from_stream(header, stream_text))
+        .collect()
+}
+
+/// Decodes one `/Image` + `/DCTDecode` stream to RGB8; `None` if the stream is
+/// not such an image or does not decode.
+#[cfg(feature = "ocr")]
+fn jpeg_image_from_stream(header: &str, stream_text: &str) -> Option<OcrCandidateImage> {
+    if !header.contains("/Image") || !header.contains("/DCTDecode") || stream_text.is_empty() {
+        return None;
     }
-    out
+    let jpeg_bytes = if header.contains("/ASCII85Decode") {
+        decode_ascii85(stream_text)
+    } else {
+        encode_latin1(stream_text)
+    };
+    if jpeg_bytes.is_empty() {
+        return None;
+    }
+    let rgb_img = image::load_from_memory(&jpeg_bytes).ok()?.into_rgb8();
+    let (width, height) = rgb_img.dimensions();
+    Some(OcrCandidateImage { width, height, rgb: rgb_img.into_raw() })
 }
 
 #[cfg(feature = "ocr")]
@@ -1642,39 +1649,47 @@ fn header_u32(header: &str, key: &str) -> Option<u32> {
 /// other than 8, a `ColorSpace` other than the two handled, or an
 /// inflated byte count that doesn't match `width * height *
 /// bytes_per_pixel` exactly) is skipped, not guessed at.
-#[cfg(feature = "ocr")]
+#[cfg(all(feature = "ocr", test))]
 fn find_raw_flate_image_streams(raw: &str) -> Vec<OcrCandidateImage> {
-    let mut out = Vec::new();
-    for (header, stream_text) in find_stream_blocks(raw) {
+    find_stream_blocks(raw)
+        .filter_map(|(header, stream_text)| raw_flate_image_from_stream(header, stream_text))
+        .collect()
+}
+
+/// Decodes one raw `/Image` + `/FlateDecode` stream (see above) to RGB8;
+/// `None` for anything outside the handled shape.
+#[cfg(feature = "ocr")]
+fn raw_flate_image_from_stream(header: &str, stream_text: &str) -> Option<OcrCandidateImage> {
+    {
         if !header.contains("/Image")
             || !header.contains("/FlateDecode")
             || header.contains("/DCTDecode")
             || stream_text.is_empty()
         {
-            continue;
+            return None;
         }
         let (Some(width), Some(height), Some(bits_per_component)) = (
             header_u32(header, "/Width"),
             header_u32(header, "/Height"),
             header_u32(header, "/BitsPerComponent"),
         ) else {
-            continue;
+            return None;
         };
         if bits_per_component != 8 {
-            continue; // 1/2/4/16-bit-per-component images not handled - see doc comment
+            return None; // 1/2/4/16-bit-per-component images not handled - see doc comment
         }
         let bytes_per_pixel: u32 = if header.contains("/DeviceRGB") {
             3
         } else if header.contains("/DeviceGray") {
             1
         } else {
-            continue; // DeviceCMYK and indexed/ICC color spaces not handled
+            return None; // DeviceCMYK and indexed/ICC color spaces not handled
         };
         let Some(expected_len) = (width as u64)
             .checked_mul(height as u64)
             .and_then(|n| n.checked_mul(bytes_per_pixel as u64))
         else {
-            continue;
+            return None;
         };
         // A real full-page scan at a few hundred DPI in DeviceRGB (no
         // subsampling) is genuinely 20-100MB of raw pixel data - well
@@ -1690,15 +1705,15 @@ fn find_raw_flate_image_streams(raw: &str) -> Vec<OcrCandidateImage> {
         // (a claimed Width/Height large enough to make even `expected_len`
         // itself an unreasonable allocation, before any inflating starts).
         if expected_len > 300_000_000 {
-            continue;
+            return None;
         }
 
         let working_bytes = encode_latin1(stream_text);
         if working_bytes.len() <= 2 {
-            continue;
+            return None;
         }
         let Some(inflated) = bounded_inflate_to_exact_len(&working_bytes[2..], expected_len) else {
-            continue;
+            return None;
         };
 
         let rgb = if bytes_per_pixel == 3 {
@@ -1711,9 +1726,8 @@ fn find_raw_flate_image_streams(raw: &str) -> Vec<OcrCandidateImage> {
             }
             rgb
         };
-        out.push(OcrCandidateImage { width, height, rgb });
+        Some(OcrCandidateImage { width, height, rgb })
     }
-    out
 }
 
 /// An image-only/scanned PDF (no text-showing operators at all, just a
@@ -1951,28 +1965,38 @@ fn extract_pdf_lines_capture(
     if ocr_scanned_pdfs && lines.is_empty() && !truncated_by_time {
         #[cfg(feature = "ocr")]
         {
-            let mut candidates = find_jpeg_image_streams(&raw);
-            candidates.extend(find_raw_flate_image_streams(&raw));
-            // Real full-page OCR measured around 0.6-1s per page against
-            // a real scanned document - a multi-page scanned PDF could
-            // easily have dozens of page images, which would blow far
-            // past `overall_timeout_seconds` if run unconditionally.
-            // Checked before *every* image (not just once up front), so
-            // a run that's already close to the timeout after the normal
-            // extraction pass still gets bounded correctly, and results
-            // already found are always kept - this never trades a
-            // completed page's real text away because a later page would
-            // have run over.
+            // Pages are decoded and recognised one at a time, in file order:
+            // decoding them all first would hold every page's pixels (about
+            // 26 MB for an A4 scan at 300 dpi) at once and stay silent until
+            // the first page was done.
             let mut ocr_truncated = false;
-            for image in &candidates {
+            let mut images_done: i32 = 0;
+            for (header, stream_text, _) in find_stream_blocks_with_offsets(&raw) {
+                if !header.contains("/Image") || !(header.contains("/DCTDecode") || header.contains("/FlateDecode")) || stream_text.is_empty() {
+                    continue;
+                }
                 if start.elapsed().as_secs_f64() >= overall_timeout_seconds as f64 {
                     ocr_truncated = true;
                     break;
                 }
                 if let Some(cb) = on_progress.as_deref_mut() {
-                    cb(streams_scanned, start.elapsed());
+                    cb(streams_scanned + images_done, start.elapsed());
                 }
-                if let Some(mut ocr_lines) = crate::ocr::ocr_image(image) {
+                images_done += 1;
+                let key = crate::ocr::cache_key(header, stream_text);
+                let recognised = match crate::ocr::cached_lines(&key) {
+                    Some(lines) => Some(lines),
+                    None => {
+                        let image = jpeg_image_from_stream(header, stream_text)
+                            .or_else(|| raw_flate_image_from_stream(header, stream_text));
+                        let lines = image.as_ref().and_then(crate::ocr::ocr_image);
+                        if let Some(lines) = &lines {
+                            crate::ocr::store_lines(&key, lines);
+                        }
+                        lines
+                    }
+                };
+                if let Some(mut ocr_lines) = recognised {
                     crate::line_quality::clean_lines(&mut ocr_lines, crate::line_quality::Source::Ocr, None);
                     if !ocr_lines.is_empty() {
                         ocr_used = true;
@@ -3175,5 +3199,38 @@ mod tests {
         // has none) - this proves the pipeline doesn't panic and
         // completes, which is what this integration point can break.
         let _ = result;
+    }
+
+    // ----- Damaged / hostile PDFs must finish quickly -----
+
+    fn timed_extract(bytes: &[u8]) -> (Option<Vec<String>>, bool, Duration) {
+        let t = Instant::now();
+        let (lines, truncated) = extract_pdf_lines(bytes, 15, None, false);
+        (lines, truncated, t.elapsed())
+    }
+
+    #[test]
+    fn truncated_encrypted_and_stream_flooded_pdfs_finish_without_hanging() {
+        // A real PDF cut off mid-stream keeps the text before the cut.
+        let medium = include_bytes!("../benches/data/medium.pdf");
+        let (lines, _, took) = timed_extract(&medium[..medium.len() / 2]);
+        assert!(took < Duration::from_secs(60), "{took:?}");
+        assert!(lines.is_some_and(|l| !l.is_empty()));
+
+        // Encrypted streams are flate-looking noise: no text, no hang.
+        let mut encrypted = b"%PDF-1.6\n1 0 obj\n<< /Filter /FlateDecode /Length 4000 >>\nstream\n".to_vec();
+        encrypted.extend((0..4000u32).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8));
+        encrypted.extend_from_slice(b"\nendstream\nendobj\ntrailer << /Encrypt 9 0 R >>\n%%EOF");
+        let (lines, _, took) = timed_extract(&encrypted);
+        assert!(lines.is_none() && took < Duration::from_secs(60), "{took:?}");
+
+        // Tens of thousands of tiny and unterminated streams stay linear.
+        let mut flood = Vec::new();
+        for _ in 0..30_000 {
+            flood.extend_from_slice(b"<< /Length 3 >>\nstream\nBT\nendstream\nstream\n");
+        }
+        let (_, _, took) = timed_extract(&flood);
+        // The 15 s extraction budget bounds this; the margin is for loaded debug builds.
+        assert!(took < Duration::from_secs(60), "{took:?}");
     }
 }

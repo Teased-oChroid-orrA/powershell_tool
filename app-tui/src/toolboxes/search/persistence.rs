@@ -96,6 +96,10 @@ pub struct PersistedSearchSettings {
     pub index_location: Option<super::indexing::IndexLocation>,
     #[serde(default)]
     pub semantic_index: bool,
+    #[serde(default)]
+    pub fold_accents: bool,
+    #[serde(default)]
+    pub typo_tolerance: u8,
 }
 
 fn default_true() -> bool {
@@ -138,6 +142,8 @@ impl From<&SearchToolConfig> for PersistedSearchSettings {
             index_enabled: config.index.enabled,
             index_location: Some(config.index.location),
             semantic_index: config.index.semantic,
+            fold_accents: config.fold_accents,
+            typo_tolerance: config.typo_tolerance,
         }
     }
 }
@@ -204,6 +210,8 @@ impl PersistedSearchSettings {
             config.index.location = v;
         }
         config.index.semantic = self.semantic_index;
+        config.fold_accents = self.fold_accents;
+        config.typo_tolerance = self.typo_tolerance.min(2);
     }
 }
 
@@ -354,6 +362,31 @@ mod tests {
         }
         assert_eq!(recents.len(), 8);
         assert_eq!(recents[0], ".e9");
+    }
+
+    #[test]
+    fn matching_settings_round_trip_clamp_and_default_on_old_files() {
+        let mut config = SearchToolConfig::default();
+        config.fold_accents = true;
+        config.typo_tolerance = 2;
+        let json = serde_json::to_string(&PersistedSearchSettings::from(&config)).unwrap();
+        let mut restored = SearchToolConfig::default();
+        serde_json::from_str::<PersistedSearchSettings>(&json)
+            .unwrap()
+            .apply_to(&mut restored);
+        assert!(restored.fold_accents);
+        assert_eq!(restored.typo_tolerance, 2);
+
+        let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("fold_accents");
+        object.insert("typo_tolerance".into(), 9.into());
+        let mut clamped = SearchToolConfig::default();
+        serde_json::from_value::<PersistedSearchSettings>(value)
+            .unwrap()
+            .apply_to(&mut clamped);
+        assert!(!clamped.fold_accents, "missing key defaults off");
+        assert_eq!(clamped.typo_tolerance, 2, "stored value is clamped");
     }
 
     #[test]

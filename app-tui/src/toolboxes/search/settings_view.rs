@@ -177,6 +177,14 @@ const FIELDS: &[FieldDef] = &[
         label: "Semantic index",
         kind: FieldKind::Bool,
     },
+    FieldDef {
+        label: "Fold accents",
+        kind: FieldKind::Bool,
+    },
+    FieldDef {
+        label: "Typo tolerance (0-2)",
+        kind: FieldKind::Number,
+    },
 ];
 
 /// A row in the rendered/navigable Fields list - either a non-selectable
@@ -206,6 +214,7 @@ const SETTINGS_HEADERS: &[(usize, &str)] = &[
     (14, "Output"),
     (20, "Concurrency & Diagnostics"),
     (29, "Fast Re-search Index"),
+    (32, "Matching"),
 ];
 
 fn settings_field_rows() -> Vec<SettingsFieldRow> {
@@ -793,6 +802,8 @@ fn field_hint(index: usize) -> &'static str {
         29 => "Build/use the fast Tantivy-backed re-search index for near-instant repeat searches of the same folder.",
         30 => "Where the fast re-search index itself is stored on disk.",
         31 => "Build a local neural embedding index for separate semantic search results.",
+        32 => "Match accented letters, ligatures and curly quotes as their plain forms (e.g. cafe finds café). Applies to literal and whole-word searches; searches every file instead of using the fast index.",
+        33 => "Allow this many typos per word (0 = exact, 1 or 2). Words under 4 letters or with digits stay exact; excluded terms are never fuzzy. Searches every file instead of using the fast index.",
         _ => "",
     }
 }
@@ -960,6 +971,7 @@ fn field_value_string(config: &SearchToolConfig, idx: usize) -> String {
         25 => config.pdf_timeout_seconds.to_string(),
         27 => config.file_timeout_seconds.to_string(),
         28 => config.max_retries.to_string(),
+        33 => config.typo_tolerance.to_string(),
         _ => String::new(),
     }
 }
@@ -1012,6 +1024,11 @@ fn apply_text_edit(config: &mut SearchToolConfig, idx: usize, text: &str) {
         28 => {
             if let Ok(v) = trimmed.parse() {
                 config.max_retries = v;
+            }
+        }
+        33 => {
+            if let Ok(v) = trimmed.parse::<u8>() {
+                config.typo_tolerance = v.min(2);
             }
         }
         _ => {}
@@ -1070,6 +1087,7 @@ fn bool_field_mut(config: &mut SearchToolConfig, idx: usize) -> Option<&mut bool
         26 => Some(&mut config.ocr_scanned_pdfs),
         29 => Some(&mut config.index.enabled),
         31 => Some(&mut config.index.semantic),
+        32 => Some(&mut config.fold_accents),
         _ => None,
     }
 }
@@ -1088,6 +1106,7 @@ fn bool_field(config: &SearchToolConfig, idx: usize) -> bool {
         26 => config.ocr_scanned_pdfs,
         29 => config.index.enabled,
         31 => config.index.semantic,
+        32 => config.fold_accents,
         _ => false,
     }
 }
@@ -1230,6 +1249,22 @@ mod tests {
             shift_key(KeyCode::Char('A')),
         );
         assert!(view.naming_preset);
+    }
+
+    #[test]
+    fn matching_fields_edit_toggle_and_clamp() {
+        let mut config = SearchToolConfig::default();
+        assert!(!bool_field(&config, 32));
+        apply_toggle(&mut config, 32, FieldKind::Bool);
+        assert!(config.fold_accents && bool_field(&config, 32));
+        apply_text_edit(&mut config, 33, "1");
+        assert_eq!(config.typo_tolerance, 1);
+        assert_eq!(field_value_string(&config, 33), "1");
+        apply_text_edit(&mut config, 33, "9");
+        assert_eq!(config.typo_tolerance, 2, "tolerance clamps to 2");
+        apply_text_edit(&mut config, 33, "abc");
+        assert_eq!(config.typo_tolerance, 2, "non-numeric input is ignored");
+        assert!(!field_hint(32).is_empty() && !field_hint(33).is_empty());
     }
 
     #[test]

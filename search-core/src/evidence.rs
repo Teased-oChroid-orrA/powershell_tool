@@ -6,6 +6,13 @@ const MAX_CHARS: usize = 2_400;
 /// Select complete, cited excerpts for an extractive evidence brief.
 /// Similarity only orders passages; it does not establish that a passage answers a question.
 pub fn select_evidence(hits: &[SemanticHit]) -> Vec<&SemanticHit> {
+    select_evidence_with(hits, None)
+}
+
+/// [`select_evidence`] with a near-duplicate limit (word-3-gram Jaccard; `None` drops only identical passages, which is what
+/// search uses). Measured for the brief on the five benchmark sets, dropping near-duplicates loses on MS MARCO, so it is not
+/// applied (`docs/search-benchmarks.md`).
+pub fn select_evidence_with(hits: &[SemanticHit], near_duplicate: Option<f32>) -> Vec<&SemanticHit> {
     let mut ranked = hits.iter().collect::<Vec<_>>();
     ranked.sort_by(|left, right| {
         right
@@ -17,24 +24,29 @@ pub fn select_evidence(hits: &[SemanticHit]) -> Vec<&SemanticHit> {
             .then_with(|| left.excerpt.cmp(&right.excerpt))
     });
 
-    pick_in_order(ranked)
+    pick_in_order(ranked, near_duplicate)
 }
 
-/// Like [`select_evidence`] for hits already in the order the caller wants (for example after a refining step):
-/// the same duplicate, one-per-file and size limits, without re-sorting by similarity.
-pub fn select_ordered(hits: &[SemanticHit]) -> Vec<&SemanticHit> {
-    pick_in_order(hits.iter().collect())
-}
-
-fn pick_in_order(ranked: Vec<&SemanticHit>) -> Vec<&SemanticHit> {
+fn pick_in_order(ranked: Vec<&SemanticHit>, near_duplicate: Option<f32>) -> Vec<&SemanticHit> {
+    let mut shingles: Vec<std::collections::HashSet<u64>> = Vec::new();
     let mut citations = std::collections::HashSet::new();
     let mut excerpts = std::collections::HashSet::new();
     let mut candidates = Vec::new();
     for hit in ranked {
         let citation = (&hit.path, hit.first_line, hit.last_line, &hit.excerpt);
-        if citations.insert(citation) && excerpts.insert(&hit.excerpt) {
-            candidates.push(hit);
+        if !citations.insert(citation) || !excerpts.insert(&hit.excerpt) {
+            continue;
         }
+        // A passage that repeats one already kept (a copied paragraph, an overlapping chunk) would use a slot of the
+        // brief for nothing; the file ranking is not touched.
+        if let Some(limit) = near_duplicate {
+            let own = crate::ranking::shingles(&hit.excerpt);
+            if shingles.iter().any(|kept| crate::ranking::jaccard(&own, kept) >= limit) {
+                continue;
+            }
+            shingles.push(own);
+        }
+        candidates.push(hit);
     }
 
     let mut selected = Vec::new();
@@ -96,6 +108,21 @@ mod tests {
             ["top", "other source", "third source"]
         );
         assert_eq!(selected[0].first_line, 1);
+    }
+
+    #[test]
+    fn near_duplicate_limit_is_opt_in_and_search_keeps_copies() {
+        let copy = "the stud torque for the m8 flange bolts is 25 newton metres when dry and 20 when oiled";
+        let hits = vec![
+            hit("a.txt", 1, copy, 0.99),
+            hit("b.txt", 7, &format!("{copy} (revision 2)"), 0.98),
+            hit("c.txt", 4, "different passage about gasket thickness", 0.80),
+        ];
+
+        let kept: Vec<_> = super::select_evidence_with(&hits, Some(crate::ranking::NEAR_DUPLICATE)).iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(kept, ["a.txt", "c.txt"]);
+        let all: Vec<_> = select_evidence(&hits).iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(all, ["a.txt", "b.txt", "c.txt"]);
     }
 
     #[test]

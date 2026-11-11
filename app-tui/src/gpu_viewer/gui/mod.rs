@@ -505,7 +505,7 @@ impl Gui {
             self.tool_pill(ui.ctx(), &tabs, &p, out, hint);
         }
         if let Some(plan) = &plan {
-            self.inspector(ui.ctx(), plan, &p, out, hint);
+            self.inspector(ui.ctx(), plan, &p, out);
         }
         // A bench without a model draws its page in the model's place, below the tool pill.
         if let Some(doc) = document {

@@ -3682,9 +3682,8 @@ mod tests {
         assert!(!labels(&v).contains(&"Stop".into()));
     }
 
-    #[cfg(feature = "semantic-search")]
     #[test]
-    fn a_question_typed_in_find_is_answered_on_enter_without_a_folder() {
+    fn a_question_typed_in_find_is_an_ordinary_find_that_needs_a_folder() {
         use crate::gpu_viewer::editor::search::SearchSession;
 
         let search = SearchSession::in_memory();
@@ -3696,27 +3695,9 @@ mod tests {
         egui_key(&mut v, egui::Key::Enter);
         frame(&mut v);
 
-        assert_eq!(
-            v.editor.as_ref().unwrap().status(),
-            "Looking for cited lines…"
-        );
-    }
-
-    #[cfg(feature = "semantic-search")]
-    #[test]
-    fn the_search_button_answers_a_question_typed_in_find() {
-        use crate::gpu_viewer::editor::search::SearchSession;
-
-        let mut search = SearchSession::in_memory();
-        search.document_field(1, "Where is the design load?".into());
-        let mut v = viewer(Some(Box::new(search)));
-        let button = v.gui.find_target_after("Find input", "Search").expect("the Search button");
-        click(&mut v, button);
-
-        assert_eq!(
-            v.editor.as_ref().unwrap().status(),
-            "Looking for cited lines…"
-        );
+        let editor = v.editor.as_ref().unwrap();
+        assert!(!editor.solving(), "no search starts without a folder");
+        assert!(editor.status().contains("search path"), "{}", editor.status());
     }
 
     #[test]

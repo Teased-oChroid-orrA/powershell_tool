@@ -111,9 +111,6 @@ fn run_rule(s: &SearchSession) -> Result<(), String> {
         Err("a search is running (Esc stops it)".into())
     } else if c.filters_text.trim().is_empty() {
         Err("type what to find first".into())
-    } else if super::find::classify(&c.filters_text, s.find_as) == super::find::Intent::Question {
-        // A question about the app needs no folder; one about files asks for it when it is answered.
-        Ok(())
     } else if c.search_path.trim().is_empty() {
         Err("choose a folder to search first".into())
     } else if let Some(e) = model::regex_validation_error(c) {
@@ -452,7 +449,7 @@ pub(super) fn document(s: &SearchSession) -> Document {
             id: INPUT_FIND,
             label: "Find".into(),
             text: c.filters_text.clone(),
-            hint: "Words or phrases, a sentence, or a question".into(),
+            hint: "Words or phrases, or a sentence".into(),
             error: model::regex_validation_error(c),
             note: (!groups_note.is_empty()).then_some(groups_note),
             submit: Some(act(SearchAct::Run)),
@@ -478,7 +475,7 @@ pub(super) fn document(s: &SearchSession) -> Document {
     }
     let mut chips = vec![Entry::new(
         s.find_as.label(),
-        "How Find reads what you typed: auto picks words, a sentence or a question; click to pin one",
+        "How Find reads what you typed: auto picks words or a sentence; click to pin one",
         act(SearchAct::FindAs),
     )
     .checked(s.find_as != super::find::FindAs::Auto)];
@@ -819,91 +816,6 @@ fn query_preview(config: &model::SearchToolConfig, exclude_visible: bool) -> Str
     }
 }
 
-/// The conversation: where Ask looks, then each question with the lines that answer it, quoted unchanged.
-#[cfg(feature = "semantic-search")]
-fn ask_items(s: &SearchSession) -> Vec<DockItem> {
-    let files_ready = s.st.config.index.semantic && !s.st.config.search_path.trim().is_empty();
-    let mut items = vec![DockItem::Chips {
-        title: "Look in".into(),
-        chips: vec![
-            e("Search help", "the Search app's own help", SearchAct::AskHelp).checked(s.ask_help),
-            e("My files", "the indexed folder", SearchAct::AskFiles).checked(s.ask_files),
-        ],
-    }];
-    let Some(parts) = s.current_answers() else {
-        if !s.answer_running {
-            items.push(DockItem::Chips {
-                title: "Try asking".into(),
-                chips: super::help::EXAMPLES
-                    .iter()
-                    .enumerate()
-                    .map(|(i, question)| e(question, "", SearchAct::AskExample(i)))
-                    .collect(),
-            });
-        }
-        if s.ask_files && !files_ready {
-            items.push(DockItem::text(
-                "Questions about your files need a folder and the Semantic index (Options).",
-                Tone::Dim,
-            ));
-        }
-        return items;
-    };
-    for (part_index, part) in parts.iter().enumerate() {
-        items.push(DockItem::Asked(plain(&part.question)));
-        items.extend(part.facts.iter().map(|fact| DockItem::Reply {
-            text: plain(&fact.text),
-            source: fact.source.clone(),
-            tone: Tone::Title,
-            action: None,
-        }));
-        if let Some(help) = &part.help {
-            match help {
-                Ok(lines) if lines.is_empty() => items.push(DockItem::text(
-                    "The Search help does not cover this.",
-                    Tone::Dim,
-                )),
-                Ok(lines) => items.extend(lines.iter().map(|line| DockItem::Reply {
-                    text: plain(&line.line),
-                    source: format!("Search help · {}", line.section),
-                    tone: Tone::Title,
-                    action: None,
-                })),
-                Err(error) => items.push(DockItem::text(plain(error), Tone::Warn)),
-            }
-        }
-        match (&part.evidence, part.files_asked) {
-            (Ok(lines), true) if lines.is_empty() => items.push(DockItem::text(
-                "No lines of your files matched.",
-                Tone::Dim,
-            )),
-            (Ok(lines), true) => {
-                items.extend(lines.iter().enumerate().map(|(i, line)| DockItem::Reply {
-                    text: plain(&line.answer),
-                    source: semantic_citation(&line.hit),
-                    tone: Tone::Normal,
-                    action: Some(act(SearchAct::OpenAnswer(part_index, i))),
-                }))
-            }
-            (Err(error), true) => items.push(DockItem::text(plain(error), Tone::Warn)),
-            _ => {}
-        }
-    }
-    if parts.iter().any(|part| part.files_asked) || parts.iter().any(|part| part.help.is_some()) {
-        items.push(DockItem::text(
-            "Lines are quoted from their source, unchanged. They may not answer the question; check each in context.",
-            Tone::Dim,
-        ));
-    }
-    if s.ask_files && !files_ready {
-        items.push(DockItem::text(
-            "Your files were not searched: choose a folder and turn on the Semantic index.",
-            Tone::Dim,
-        ));
-    }
-    items
-}
-
 fn output_input(s: &SearchSession) -> DocInput {
     let folder = s.st.config.output_folder.trim();
     DocInput {
@@ -1191,7 +1103,14 @@ fn result_row(s: &SearchSession, i: usize, selected: bool, root: &str) -> DocRow
     }
 }
 
-pub(super) fn full_text(r: &search_core::models::FileSearchResult, lines: &[String]) -> DocText {
+/// Marks matches with the matcher's own `LineExplainer`, so accent-folded,
+/// typo-tolerant and regex hits are highlighted exactly where they matched.
+/// A substring scan of the hit's own filters is merged in.
+pub(super) fn full_text(
+    r: &search_core::models::FileSearchResult,
+    lines: &[String],
+    explainer: Option<&search_core::explain::LineExplainer>,
+) -> DocText {
     let mut hits = std::collections::HashMap::new();
     for h in &r.hits {
         hits.entry(h.line_number).or_insert_with(Vec::new).push(h);
@@ -1210,17 +1129,33 @@ pub(super) fn full_text(r: &search_core::models::FileSearchResult, lines: &[Stri
                 .filter(|h| h.match_line == *line)
                 .flat_map(|h| h.matched_filters.iter().cloned())
                 .collect();
-            marks.extend(
-                preview::highlight_ranges(line, &filters)
-                    .into_iter()
-                    .map(|(start, end)| (offset + start, offset + end)),
-            );
+            // Union with the substring scan: a hit stays marked even when the
+            // settings were edited after the run.
+            let mut ranges: Vec<(usize, usize)> = preview::highlight_ranges(line, &filters);
+            if let Some(explainer) = explainer {
+                ranges.extend(explainer.spans(line).into_iter().map(|span| (span.start, span.end)));
+            }
+            let ranges = merge_ranges(ranges);
+            marks.extend(ranges.into_iter().map(|(start, end)| (offset + start, offset + end)));
         }
     }
     DocText {
         content: content.into(),
         marks: marks.into(),
     }
+}
+
+/// Sorted, non-overlapping union of byte ranges.
+fn merge_ranges(mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+    ranges.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for range in ranges {
+        match merged.last_mut() {
+            Some(last) if range.0 <= last.1 => last.1 = last.1.max(range.1),
+            _ => merged.push(range),
+        }
+    }
+    merged
 }
 
 fn detail(s: &SearchSession) -> Option<DocDetail> {
@@ -1915,7 +1850,7 @@ pub(super) fn cards(s: &SearchSession) -> Cards {
             "search-matching",
             "Matching",
             Relevance::Context,
-            setting_rows(s, &["Filters"]),
+            setting_rows(s, &["Filters", "Matching"]),
         )
         .for_steps(&["Search"]),
         files: Card::new(
@@ -1946,7 +1881,7 @@ pub(super) fn cards(s: &SearchSession) -> Cards {
     }
 }
 
-/// What Find found besides files, in one card on the page: cited answers to a question, a sentence's conditions with
+/// What Find found besides files, in one card on the page: a sentence's conditions with
 /// their passages, and the passages the Semantic index finds for the words. `None` when there is nothing to show.
 pub(super) fn insight(s: &SearchSession) -> Option<DocInsight> {
     #[cfg_attr(not(feature = "semantic-search"), allow(unused_mut))]
@@ -1955,21 +1890,6 @@ pub(super) fn insight(s: &SearchSession) -> Option<DocInsight> {
     let mut chips: Vec<Entry> = Vec::new();
     #[cfg(feature = "semantic-search")]
     {
-        if s.answer_running {
-            items.push(DockItem::text("Looking for cited lines…", Tone::Dim));
-        } else if s.current_answers().is_some() || s.answer_error.is_some() {
-            items.extend(ask_items(s));
-            let files_ready = s.st.config.index.semantic && !s.st.config.search_path.trim().is_empty();
-            if s.ask_files && !files_ready && s.current_answers().is_some() {
-                items.push(DockItem::text(
-                    "Your files were not searched: choose a folder and turn on the Semantic index (Options).",
-                    Tone::Dim,
-                ));
-            }
-        }
-        if let Some(error) = &s.answer_error {
-            items.push(DockItem::text(plain(error), Tone::Warn));
-        }
     }
     #[cfg(feature = "nl-find")]
     {
@@ -1994,22 +1914,10 @@ pub(super) fn insight(s: &SearchSession) -> Option<DocInsight> {
                 )
             )));
             items.push(DockItem::text(
-                "Extractive excerpts, not generated answers. Check each source in context.",
+                "Excerpts quoted from your files. Check each source in context.",
                 Tone::Dim,
             ));
-            items.push(DockItem::row(
-                if s.refine.running {
-                    "Refining…"
-                } else if s.refined() {
-                    "Refined: order uses a second model"
-                } else {
-                    "Refine results"
-                },
-                Tone::Title,
-                Some(act(SearchAct::RefineResults)),
-                false,
-            ));
-            for hit in s.evidence_hits(hits) {
+            for hit in search_core::evidence::select_evidence(hits) {
                 let i = hits
                     .iter()
                     .position(|candidate| std::ptr::eq(candidate, hit))
@@ -2038,7 +1946,7 @@ pub(super) fn insight(s: &SearchSession) -> Option<DocInsight> {
         }
     }
     (!items.is_empty() || !chips.is_empty()).then(|| DocInsight {
-        title: "Answers and passages".into(),
+        title: "Passages".into(),
         chips,
         items,
     })
@@ -2248,6 +2156,7 @@ pub(super) fn ribbon(s: &SearchSession) -> Vec<RibbonTab> {
                     ("Matches", SortKey::Hits),
                     ("Size", SortKey::Size),
                     ("Modified", SortKey::Modified),
+                    ("Best match", SortKey::BestMatch),
                 ]
                 .into_iter()
                 .map(|(l, k)| Entry::new(l, "", act(SearchAct::SortBy(k))).checked(s.sort.0 == k))

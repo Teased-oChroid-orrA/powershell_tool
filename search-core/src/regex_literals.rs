@@ -68,10 +68,17 @@ pub fn required_literal_chunks(pattern: &str) -> Option<Vec<String>> {
                 match chars.get(i) {
                     None => return None, // trailing backslash - malformed pattern, bail
                     Some(esc) if LITERAL_ESCAPES.contains(esc) => run.push(*esc),
-                    // \d \D \w \W \s \S \b \B \A \z \Z and anything else -
-                    // contributes no guaranteed literal text, but doesn't
-                    // itself break the safety of what's already in `run`.
-                    Some(_) => flush(&mut run, &mut chunks),
+                    // Classes, anchors and control-character escapes
+                    // contribute no guaranteed literal text, but don't
+                    // themselves break the safety of what's already in `run`.
+                    Some('d' | 'D' | 'w' | 'W' | 's' | 'S' | 'b' | 'B' | 'A' | 'z' | 'Z' | 'n' | 'r' | 't' | 'f' | 'v' | 'a') => {
+                        flush(&mut run, &mut chunks)
+                    }
+                    // Any other escape takes operand characters of its own
+                    // (`\x41` is "A", `\pL` a letter class, `\1` a backreference,
+                    // `\u{..}`, `\k<name>`): the characters after it are not
+                    // literal text. Bail rather than guess.
+                    Some(_) => return None,
                 }
                 i += 1;
             }
@@ -102,7 +109,17 @@ pub fn required_literal_chunks(pattern: &str) -> Option<Vec<String>> {
                 // than guess.
                 None => return None,
             },
-            '(' | ')' | '[' | ']' | '}' | '|' => return None,
+            // A character class matches exactly one char: it breaks the
+            // literal run like `.` does. A nested `[` (set algebra, POSIX
+            // names) or an unterminated class bails.
+            '[' => match class_end(&chars, i) {
+                Some(end) => {
+                    flush(&mut run, &mut chunks);
+                    i = end + 1;
+                }
+                None => return None,
+            },
+            '(' | ')' | ']' | '}' | '|' => return None,
             other => {
                 run.push(other);
                 i += 1;
@@ -117,6 +134,68 @@ pub fn required_literal_chunks(pattern: &str) -> Option<Vec<String>> {
     } else {
         Some(usable)
     }
+}
+
+/// Index of the `]` closing the plain character class opened at `chars[open]`
+/// (`[abc]`, `[^a-z]`, `[]a]`), or `None` for anything with a nested `[` or
+/// no closing bracket.
+fn class_end(chars: &[char], open: usize) -> Option<usize> {
+    let mut j = open + 1;
+    if chars.get(j) == Some(&'^') {
+        j += 1;
+    }
+    if chars.get(j) == Some(&']') {
+        j += 1; // a leading `]` is a literal member
+    }
+    while j < chars.len() {
+        match chars[j] {
+            '\\' => j += 2,
+            '[' => return None,
+            ']' => return Some(j),
+            _ => j += 1,
+        }
+    }
+    None
+}
+
+/// OR of [`required_literal_chunks`] over the top-level alternatives of
+/// `pattern` (`foo.*bar|baz`): every match contains all chunks of at least
+/// one returned set. `None` when any alternative has no usable chunk, or the
+/// pattern has groups (parentheses are not analysed). A pattern without `|`
+/// returns one set - the same chunks `required_literal_chunks` gives.
+pub fn required_literal_alternatives(pattern: &str) -> Option<Vec<Vec<String>>> {
+    if pattern.contains('(') || pattern.contains(')') {
+        return required_literal_chunks(pattern).map(|c| vec![c]);
+    }
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut branches: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '\\' => {
+                current.push('\\');
+                if let Some(c) = chars.get(i + 1) {
+                    current.push(*c);
+                }
+                i += 2;
+                continue;
+            }
+            '[' => match class_end(&chars, i) {
+                Some(end) => {
+                    current.extend(&chars[i..=end]);
+                    i = end + 1;
+                    continue;
+                }
+                None => return None,
+            },
+            '|' => branches.push(std::mem::take(&mut current)),
+            c => current.push(c),
+        }
+        i += 1;
+    }
+    branches.push(current);
+    branches.iter().map(|b| required_literal_chunks(b)).collect()
 }
 
 /// If `chars[open_brace_idx..]` starts with a syntactically valid bounded-
@@ -179,10 +258,74 @@ mod tests {
     }
 
     #[test]
-    fn groups_classes_and_alternation_all_bail() {
-        for pattern in ["(engine|motor)", "eng[ei]ne", "(?:engine)", "a(bc)d"] {
+    fn groups_and_alternation_bail() {
+        for pattern in ["(engine|motor)", "(?:engine)", "a(bc)d", "foo|bar"] {
             assert_eq!(required_literal_chunks(pattern), None, "pattern {pattern:?} must bail, not guess");
         }
+    }
+
+    #[test]
+    fn a_character_class_breaks_the_literal_run_like_a_dot() {
+        assert_eq!(required_literal_chunks("eng[ei]ne"), Some(vec!["eng".to_string()]));
+        assert_eq!(required_literal_chunks("torque[ _-]+value"), Some(vec!["torque".to_string(), "value".to_string()]));
+        assert_eq!(required_literal_chunks(r"abc[\]x]def"), Some(vec!["abc".to_string(), "def".to_string()]));
+        assert_eq!(required_literal_chunks("abc[]x]def"), Some(vec!["abc".to_string(), "def".to_string()]));
+        assert_eq!(required_literal_chunks("abc[a-z&&[^aeiou]]def"), None, "nested class bails");
+        assert_eq!(required_literal_chunks("abc[unclosed"), None);
+    }
+
+    #[test]
+    fn escapes_with_operands_bail_instead_of_leaking_operand_characters() {
+        // `\x41` is "A": the old code kept "41" as required literal text and would have
+        // dropped every real match of `\x41BC` (text "ABC"). Same for `\pL`, `\1`.
+        for pattern in [r"\x41BCD", r"\pLfoo", r"foo\1bar", r"\u{41}BCD", r"\k<n>abc"] {
+            assert_eq!(required_literal_chunks(pattern), None, "{pattern}");
+        }
+        assert_eq!(required_literal_chunks(r"abc\tdef\n"), Some(vec!["abc".to_string(), "def".to_string()]));
+    }
+
+    #[test]
+    fn chunks_are_present_in_every_real_match_of_class_and_alternation_patterns() {
+        let patterns = [
+            "eng[ei]ne", "torque[ _-]+value", "abc[]x]def", r"abc[\]x]def", "torque.*value|bolt load", "[a|b]cde|fgh",
+            r"\x41BCD", r"foo\d+bar", r"load\s*path|shear\b", "colou?r[s]? chart", "x{2}yzw[0-9]{3}",
+        ];
+        let texts = [
+            "engine", "engene", "torque value", "torque - value", "TORQUE_VALUE", "abcxdef", "abc]def", "bolt load",
+            "ABCD", "ABCDE", "foo12bar", "load  path", "shear force", "colour charts", "color chart", "xxyzw123", "acde", "bcde", "|cde", "fgh",
+        ];
+        for p in patterns {
+            let rx = compile_ci(p);
+            let alts = required_literal_alternatives(p);
+            for t in texts {
+                if rx.is_match(t).unwrap_or(false) {
+                    if let Some(alts) = &alts {
+                        let low = t.to_lowercase();
+                        assert!(
+                            alts.iter().any(|set| set.iter().all(|c| low.contains(&c.to_lowercase()))),
+                            "{p:?} matches {t:?} but no chunk set is contained in it: {alts:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn compile_ci(p: &str) -> fancy_regex::Regex {
+        fancy_regex::RegexBuilder::new(p).case_insensitive(true).build().unwrap()
+    }
+
+    #[test]
+    fn top_level_alternatives_become_or_of_chunk_sets() {
+        assert_eq!(
+            required_literal_alternatives("torque.*value|bolt load"),
+            Some(vec![vec!["torque".to_string(), "value".to_string()], vec!["bolt load".to_string()]])
+        );
+        assert_eq!(required_literal_alternatives("foo|ab"), None, "one unusable branch means no narrowing");
+        assert_eq!(required_literal_alternatives("turbofan"), Some(vec![vec!["turbofan".to_string()]]));
+        assert_eq!(required_literal_alternatives("[a|b]cde|fgh"), Some(vec![vec!["cde".to_string()], vec!["fgh".to_string()]]));
+        assert_eq!(required_literal_alternatives("(foo|bar)baz"), None, "groups are not analysed");
+        assert_eq!(required_literal_alternatives(r"a\|bcd"), Some(vec![vec!["a|bcd".to_string()]]));
     }
 
     /// Issue #9 epic §6's own example: `foo.{0,5}bar` must narrow to

@@ -762,14 +762,15 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "xlarge classic-xref rejection still needs root-cause analysis (issue #0127)"]
     fn real_large_pdf_keeps_bounded_page_numbers() {
         let pdf = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/benches/data/xlarge.pdf"
         ))
         .unwrap();
-        let extracted = crate::extraction::extract_for_semantic_index(".pdf", &pdf, 30, false)
+        // Generous timeout: a debug build needs ~14 s here, and a time-truncated
+        // extraction (no page 144, no map) is what once looked like a mapper reject.
+        let extracted = crate::extraction::extract_for_semantic_index(".pdf", &pdf, 300, false)
             .expect("large PDF text extraction");
         let pages = extracted.pages.expect("classic-xref page map");
         assert_eq!(pages.len(), extracted.lines.len());
@@ -815,3 +816,4 @@ mod tests {
         assert!(page_by_stream_offset(&bad_count).is_none());
     }
 }
+

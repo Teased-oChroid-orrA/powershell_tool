@@ -12,6 +12,9 @@ use std::path::Path;
 use search_core::lexical::{Fusion, LexicalConfig};
 use search_core::semantic_index::SemanticIndex;
 
+#[path = "support/ranking_experiments.rs"]
+mod ranking_experiments;
+
 struct Variant {
     name: &'static str,
     hybrid: bool,
@@ -26,10 +29,8 @@ fn variants() -> Vec<Variant> {
         v("dense", false, d),
         v("keyword-led", true, LexicalConfig { weight: 1000.0, ..d }),
         v("default", true, LexicalConfig::default()),
-        // Experiments built on `default`, handled in `main`: pseudo-relevance feedback and a second-model re-rank.
+        // Experiments built on `default`, handled in `main`: pseudo-relevance feedback.
         v("prf", true, LexicalConfig::default()),
-        v("rerank", true, LexicalConfig::default()),
-        v("rerank-rrf", true, LexicalConfig::default()),
         v("rrf-w2", true, LexicalConfig::rrf()),
         v("no-stem", true, LexicalConfig { stem: false, ..LexicalConfig::default() }),
         v("rrf-no-stem", true, LexicalConfig { stem: false, ..d }),
@@ -101,20 +102,6 @@ fn main() {
         )
         .expect("set the embedding model");
     }
-    // `--rerank-model <dir>` (with `--rerank-pooling`, `--rerank-query-prefix`) loads a second model for the `rerank` variants.
-    let reranker = flag("--rerank-model").map(Path::new).map(|dir| {
-        let spec = search_ml::ModelSpec {
-            pooling: if flag("--rerank-pooling").is_some_and(|p| p == "cls") { search_ml::Pooling::Cls } else { search_ml::Pooling::Mean },
-            query_prefix: flag("--rerank-query-prefix").cloned().unwrap_or_default(),
-            passage_prefix: String::new(),
-        };
-        search_ml::Embedder::new(
-            std::fs::read(dir.join("model.onnx")).expect("rerank model.onnx"),
-            std::fs::read(dir.join("tokenizer.json")).expect("rerank tokenizer.json"),
-            spec,
-        )
-        .expect("load the re-rank model")
-    });
     let corpus = read_jsonl(&folder.join("corpus.jsonl"));
     let mut qrels: HashMap<String, HashMap<String, f64>> = HashMap::new();
     for line in std::fs::read_to_string(folder.join("qrels/test.tsv")).expect("qrels").lines().skip(1) {
@@ -166,6 +153,15 @@ fn main() {
     }
     eprintln!("{}: {} docs ({} newly indexed in {:.0}s), {} queries", folder.display(), corpus.len(), built, started.elapsed().as_secs_f64(), queries.len());
 
+    // `--rank-experiments <outdir>`: offline query-time ranking ideas (examples/support/ranking_experiments.rs).
+    if let Some(outdir) = flag("--rank-experiments") {
+        let titles: HashMap<String, String> = corpus.iter().filter_map(|d| Some((d["_id"].as_str()?.to_string(), d["title"].as_str()?.to_string()))).collect();
+        let set = folder.to_string_lossy().rsplit('/').find(|p| !p.is_empty() && *p != "sub").unwrap_or("set").to_string();
+        let weights = flag("--weights").map(Path::new);
+        ranking_experiments::run(&ranking_experiments::Inputs { set: &set, index: &index, queries: &queries, qrels: &qrels, titles: &titles, outdir: Path::new(outdir), weights });
+        return;
+    }
+
     let embed_started = std::time::Instant::now();
     for (_, text) in &queries {
         search_ml::embed_queries(&[text.as_str()]).expect("embed");
@@ -199,27 +195,6 @@ fn main() {
                 if !ranked.contains(&id) {
                     ranked.push(id);
                 }
-            }
-            if let (Some(model), true) = (&reranker, variant.name.starts_with("rerank")) {
-                // Re-score the first 30 documents with the second model; the rest keep their order.
-                let top = ranked.len().min(30);
-                let mut excerpts: HashMap<String, String> = HashMap::new();
-                for hit in index.search_tuned(text, 600, true, &variant.config).expect("search") {
-                    let id = Path::new(&hit.path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-                    excerpts.entry(id).or_insert(hit.excerpt);
-                }
-                let texts: Vec<&str> = ranked[..top].iter().map(|id| excerpts[id].as_str()).collect();
-                let query = model.embed_queries(&[text.as_str()]).expect("embed").remove(0);
-                let scores: Vec<f32> = model.embed_passages(&texts).expect("embed").iter().map(|e| search_ml::cosine_similarity(&query, e).unwrap_or(0.0)).collect();
-                let mut by_score: Vec<usize> = (0..top).collect();
-                by_score.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]));
-                let order: Vec<usize> = if variant.name == "rerank" {
-                    by_score
-                } else {
-                    search_core::rank_fusion::fuse_top(&scores, top)
-                };
-                let reordered: Vec<String> = order.iter().map(|&i| ranked[i].clone()).collect();
-                ranked.splice(..top, reordered);
             }
             let gains = &qrels[qid];
             ndcg += ndcg_at(&ranked, gains, 10);

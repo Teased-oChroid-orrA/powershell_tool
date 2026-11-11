@@ -3135,14 +3135,14 @@ mod snapshot_tests {
         shoot(&session, "search-running-narrow", true, (860, 760));
     }
 
-    /// The Search window's Index popup before a question, and after one with cited evidence (dark and light), as raw RGBA:
-    /// `FEA_SNAPSHOT_ASK_OUT=/dir cargo test ... --features neural-search,semantic-search ask_index_snapshot -- --ignored`.
+    /// The Search window before a search, and after a words search with cited semantic passages (dark and light), as raw RGBA:
+    /// `FEA_SNAPSHOT_PASSAGES_OUT=/dir cargo test ... --features neural-search,semantic-search passages_snapshot -- --ignored`.
     #[cfg(feature = "semantic-search")]
     #[test]
-    #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_ASK_OUT"]
-    fn ask_index_snapshot() {
+    #[ignore = "needs a graphics adapter and FEA_SNAPSHOT_PASSAGES_OUT"]
+    fn passages_snapshot() {
         use crate::gpu_viewer::editor::search::{semantic_fixture, SearchSession};
-        let Ok(dir) = std::env::var("FEA_SNAPSHOT_ASK_OUT") else {
+        let Ok(dir) = std::env::var("FEA_SNAPSHOT_PASSAGES_OUT") else {
             return;
         };
         let _guard = headless_guard();
@@ -3204,13 +3204,10 @@ mod snapshot_tests {
             });
         };
         let mut session = SearchSession::in_memory();
-        shoot(&session, "ask-before-dark", true, None);
-        session.ask_for_snapshot(
-            data.path(),
-            "How do I leave a folder out of a search? What causes torsional stress?",
-        );
-        shoot(&session, "ask-answered-dark", true, None);
-        shoot(&session, "ask-answered-light", false, None);
+        shoot(&session, "passages-before-dark", true, None);
+        session.words_for_snapshot(data.path(), "what causes torsional stress");
+        shoot(&session, "passages-dark", true, None);
+        shoot(&session, "passages-light", false, None);
         session.building_for_snapshot(60.0);
         shoot(&session, "index-building-button-dark", true, None);
         shoot(&session, "index-building-popup-dark", true, Some("Options"));

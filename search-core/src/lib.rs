@@ -5,6 +5,7 @@ pub mod alerts;
 pub mod entities;
 #[cfg(feature = "semantic-search")]
 pub mod evidence;
+pub mod explain;
 pub mod extraction;
 pub mod failure_log;
 pub mod file_reader;
@@ -23,9 +24,7 @@ pub mod neural_search;
 #[cfg(feature = "ocr")]
 pub mod ocr;
 pub mod orchestrator;
-pub mod rank_fusion;
-#[cfg(feature = "neural-search")]
-pub mod second_model;
+pub mod ordering;
 pub mod regex_literals;
 #[cfg(feature = "semantic-search")]
 mod pdf_page_map;
@@ -33,7 +32,10 @@ mod pdf_page_map;
 pub mod relevance;
 pub mod report;
 #[cfg(feature = "semantic-search")]
+pub mod ranking;
+#[cfg(feature = "semantic-search")]
 mod semantic_cache;
 #[cfg(feature = "semantic-search")]
 pub mod semantic_index;
 pub mod synonyms;
+pub mod textfold;

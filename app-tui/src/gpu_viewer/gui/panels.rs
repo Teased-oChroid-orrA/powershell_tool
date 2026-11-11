@@ -1265,7 +1265,6 @@ impl Gui {
         plan: &InspectorPlan,
         p: &Palette,
         out: &mut Vec<Outcome>,
-        hint: &mut Option<String>,
     ) {
         let Some(vp) = self.viewport else { return };
         let top = vp.top() + 12.0;
@@ -1299,7 +1298,6 @@ impl Gui {
                                         &plan.signature,
                                         p,
                                         out,
-                                        hint,
                                     );
                                 }
                             });
@@ -1317,7 +1315,6 @@ impl Gui {
         signature: &str,
         p: &Palette,
         out: &mut Vec<Outcome>,
-        hint: &mut Option<String>,
     ) {
         let folded_by_habit = self.adapt.idle(ctx_key, &card.id);
         let open = *self.card_open.get(&card.id).unwrap_or(&!folded_by_habit);
@@ -1396,7 +1393,7 @@ impl Gui {
         if open {
             for item in &card.items {
                 let before = out.len();
-                self.dock_item(ui, item, p, out, hint);
+                self.dock_item(ui, item, p, out);
                 if out.len() > before {
                     self.adapt.used(ctx_key, &card.id);
                 }
@@ -1410,7 +1407,6 @@ impl Gui {
         item: &DockItem,
         p: &Palette,
         out: &mut Vec<Outcome>,
-        hint: &mut Option<String>,
     ) {
         match item {
             DockItem::Heading(h) => {
@@ -1425,100 +1421,6 @@ impl Gui {
             }
             DockItem::Gap => {
                 ui.add_space(4.0);
-            }
-            DockItem::Asked(text) => {
-                ui.add_space(6.0);
-                ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
-                    egui::Frame::new()
-                        .fill(with_alpha(p.accent, 38))
-                        .stroke(Stroke::new(1.0, with_alpha(p.accent, 110)))
-                        .corner_radius(CornerRadius {
-                            nw: 12,
-                            ne: 12,
-                            sw: 12,
-                            se: 3,
-                        })
-                        .inner_margin(Margin::symmetric(11, 7))
-                        .show(ui, |ui| {
-                            ui.set_max_width(ui.available_width() * 0.88);
-                            ui.add(
-                                egui::Label::new(RichText::new(text).size(13.0).color(p.text))
-                                    .wrap(),
-                            );
-                        });
-                });
-            }
-            DockItem::Reply {
-                text,
-                source,
-                tone,
-                action,
-            } => {
-                let bar = tone_color(p, *tone);
-                let frame = egui::Frame::new()
-                    .fill(with_alpha(p.panel, 220))
-                    .stroke(Stroke::new(1.0, p.line))
-                    .corner_radius(CornerRadius::same(10))
-                    .inner_margin(Margin {
-                        left: 14,
-                        right: 10,
-                        top: 8,
-                        bottom: 8,
-                    })
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.spacing_mut().item_spacing.y = 4.0;
-                        ui.add(
-                            egui::Label::new(RichText::new(text).size(13.0).color(p.text)).wrap(),
-                        );
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(source).size(11.0).strong().color(bar),
-                            )
-                            .wrap(),
-                        );
-                    });
-                let rect = frame.response.rect;
-                ui.painter().rect_filled(
-                    Rect::from_min_max(
-                        Pos2::new(rect.left() + 5.0, rect.top() + 8.0),
-                        Pos2::new(rect.left() + 8.0, rect.bottom() - 8.0),
-                    ),
-                    CornerRadius::same(2),
-                    bar,
-                );
-                self.targets.push((source.clone(), rect));
-                if let Some(a) = action {
-                    let resp = frame.response.interact(Sense::click());
-                    if resp.hovered() {
-                        ui.painter().rect_stroke(
-                            rect,
-                            CornerRadius::same(10),
-                            Stroke::new(1.0, with_alpha(bar, 170)),
-                            egui::StrokeKind::Inside,
-                        );
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
-                    if resp.clicked() {
-                        out.push(Outcome::Action(*a));
-                    }
-                }
-                ui.add_space(2.0);
-            }
-            DockItem::Chips { title, chips } => {
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(title.to_uppercase())
-                        .size(9.0)
-                        .strong()
-                        .color(p.dim),
-                );
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
-                    for chip in chips {
-                        self.chip(ui, chip, p, out, hint);
-                    }
-                });
             }
             DockItem::Bracket { lower, upper } => {
                 let (rect, _) =

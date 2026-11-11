@@ -105,9 +105,21 @@ pub fn open_or_create_with_rebuild(index_directory: &Path) -> NsResult<NativeSea
 /// could not tell apart two same-size edits inside one second). 3 = PDF/OCR
 /// lines are repaired and noise lines dropped (`line_quality`), `TJ` arrays are
 /// joined into words, and non-content streams are no longer scanned for text. 4 = PDF words broken over two lines by a
-/// soft hyphen are joined.
-pub const INDEX_SEMANTIC_VERSION: u32 = 4;
+/// soft hyphen are joined. 5 = words broken over two lines by an ordinary hyphen are repaired when the document
+/// confirms the joined word.
+pub const INDEX_SEMANTIC_VERSION: u32 = 5;
 const SEMANTIC_VERSION_FILE: &str = "semantic-version";
+/// Records whether the PDFs in the index were extracted with OCR on (`1`) or off (`0`). The per-file
+/// (modified, size) check cannot see a settings change, so turning OCR on re-extracts every PDF once.
+const OCR_FLAG_FILE: &str = "ocr-pdfs";
+
+fn has_pdf_extension(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+}
+
+fn stored_ocr_flag(index_directory: &Path) -> bool {
+    std::fs::read_to_string(index_directory.join(OCR_FLAG_FILE)).map(|v| v.trim() == "1").unwrap_or(false)
+}
 
 /// `true` when the index at `index_directory` can be used as-is: it does
 /// not exist yet (a fresh one gets stamped on creation) or it was built
@@ -603,6 +615,9 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
 ) -> NsResult<CorpusIndexOutcome> {
     let started = std::time::Instant::now();
     let mut outcome = CorpusIndexOutcome::default();
+    crate::extraction::configure_ocr_cache(settings.ocr_cache_dir.as_deref());
+    // OCR was just switched on: PDFs indexed without it hold no text for their scanned pages.
+    let ocr_upgrade = settings.ocr_scanned_pdfs && !stored_ocr_flag(engine.index_directory());
     let mut report =
         |outcome: &CorpusIndexOutcome, stage: IndexStage, done: i32, total: i32, current: &str| {
             if let Some(cb) = on_progress.as_deref_mut() {
@@ -726,9 +741,12 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
                 });
             #[cfg(not(feature = "semantic-search"))]
             let semantic_current = true;
+            let ocr_current = !(ocr_upgrade
+                && file.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf")));
             if existing_modified == modified_unix
                 && existing_size == file.length
                 && semantic_current
+                && ocr_current
             {
                 outcome.skipped_count += 1;
                 continue;
@@ -890,6 +908,14 @@ async fn build_or_update_corpus_index_impl<F: FnMut(CorpusIndexProgress) + ?Size
 
     outcome.elapsed_ms = started.elapsed().as_millis() as u64;
     outcome.index_docs = engine.num_docs();
+    if !outcome.cancelled {
+        if let Err(error) = std::fs::write(
+            engine.index_directory().join(OCR_FLAG_FILE),
+            if settings.ocr_scanned_pdfs { "1" } else { "0" },
+        ) {
+            tracing::warn!(error = %redact_paths(&error.to_string()), "could not record the OCR setting of the index");
+        }
+    }
     #[cfg(feature = "semantic-search")]
     if !outcome.cancelled {
         if let Some(index) = &semantic_index {
@@ -1046,6 +1072,8 @@ pub async fn narrow_candidates(
     // Unreadable metadata fails the narrowing (the caller falls back to a
     // full scan and reports it) instead of looking like an empty index.
     let known = read_known(engine)?;
+    // OCR switched on since the build: the indexed PDFs lack their scanned pages' text.
+    let ocr_pending = settings.ocr_scanned_pdfs && !stored_ocr_flag(engine.index_directory());
     let mut stale: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut scope_keys: std::collections::HashSet<String> =
         std::collections::HashSet::with_capacity(in_scope.len());
@@ -1055,7 +1083,7 @@ pub async fn narrow_candidates(
         let up_to_date = matches!(
             known.get(path_key(&full_name).as_ref()),
             Some(&(m, sz)) if m == ticks_from_modified(file.modified) && sz == file.length
-        );
+        ) && !(ocr_pending && has_pdf_extension(&file.path));
         if !up_to_date {
             out.stale_or_new += 1;
             if file.length <= max_bytes {
@@ -1075,11 +1103,17 @@ pub async fn narrow_candidates(
 
     out.freshness_ms = phase.elapsed().as_millis() as u64;
     let phase = std::time::Instant::now();
+    // The index stores unfolded text and exact words: neither folding nor typo
+    // tolerance can be answered from its trigrams, so those searches scan.
+    if !settings.use_regex && (settings.fold_accents || settings.typo_tolerance > 0) {
+        return Ok(out);
+    }
     let indexed_paths = if settings.use_regex {
         let mut chunk_sets = Vec::with_capacity(settings.filters.len());
         for f in &settings.filters {
-            match crate::regex_literals::required_literal_chunks(f) {
-                Some(chunks) if !chunks.is_empty() => chunk_sets.push(chunks),
+            // Each alternative of a filter is its own OR'd set.
+            match crate::regex_literals::required_literal_alternatives(f) {
+                Some(alts) if !alts.is_empty() && alts.iter().all(|c| !c.is_empty()) => chunk_sets.extend(alts),
                 _ => return Ok(out),
             }
         }
@@ -1669,6 +1703,41 @@ mod tests {
         assert_eq!(second.skipped_count, 1);
     }
 
+    #[tokio::test]
+    async fn turning_ocr_on_re_extracts_pdfs_once_and_leaves_other_files_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "apple pie recipe").unwrap();
+        std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/test-data/test.pdf"), dir.path().join("b.pdf")).unwrap();
+        let index_dir = index_directory(&dir.path().to_string_lossy());
+        ensure_index_directory_exists(&index_dir).unwrap();
+        let engine = NativeSearchEngine::open_or_create(&index_dir).unwrap();
+        let mut exclude_folders = Vec::new();
+        ensure_index_folder_excluded(&mut exclude_folders);
+        let mut settings = crate::models::SearchSettings {
+            search_path: dir.path().to_string_lossy().into_owned(),
+            output_folder: dir.path().to_string_lossy().into_owned(),
+            extensions: Some(vec![".txt".to_string(), ".pdf".to_string()]),
+            exclude_folders,
+            ..Default::default()
+        };
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let first = build_or_update_corpus_index(&settings, &engine, &cancel, None).await.unwrap();
+        assert_eq!(first.indexed_count, 2);
+        let same = build_or_update_corpus_index(&settings, &engine, &cancel, None).await.unwrap();
+        assert_eq!((same.indexed_count, same.skipped_count), (0, 2));
+
+        settings.ocr_scanned_pdfs = true;
+        let pending = narrow_candidates(&settings, &engine, &cancel).await.unwrap();
+        assert_eq!((pending.needs_update, pending.is_stale()), (1, true), "the PDF needs an OCR re-index");
+        let upgraded = build_or_update_corpus_index(&settings, &engine, &cancel, None).await.unwrap();
+        let settled = narrow_candidates(&settings, &engine, &cancel).await.unwrap();
+        assert!(!settled.is_stale(), "nothing pending once the index records OCR");
+        assert_eq!(upgraded.indexed_count + upgraded.failed_count, 1, "only the PDF is read again");
+        assert_eq!(upgraded.skipped_count, 1);
+        let again = build_or_update_corpus_index(&settings, &engine, &cancel, None).await.unwrap();
+        assert_eq!((again.indexed_count, again.skipped_count), (0, 2), "recorded: not repeated");
+    }
+
     #[cfg(feature = "semantic-search")]
     #[tokio::test]
     async fn corpus_build_supports_cited_semantic_search_without_changing_exact_search() {
@@ -2085,6 +2154,54 @@ mod tests {
             "unchanged non-matching file must be narrowed away"
         );
         assert_eq!(out.stale_or_new, 1);
+    }
+
+    fn names(out: &NarrowOutcome) -> Vec<String> {
+        let mut v: Vec<String> = out
+            .candidates
+            .as_ref()
+            .map(|c| c.iter().map(|p| Path::new(p).file_name().unwrap().to_string_lossy().into_owned()).collect())
+            .unwrap_or_default();
+        v.sort();
+        v
+    }
+
+    #[tokio::test]
+    async fn regex_alternation_and_classes_narrow_without_losing_a_match() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "the torque value is 5\n").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "bolt load rating\n").unwrap();
+        std::fs::write(dir.path().join("c.txt"), "nothing relevant\n").unwrap();
+        std::fs::write(dir.path().join("d.txt"), "an engine\n").unwrap();
+        let mut settings = narrow_settings(dir.path(), "torque.*value|bolt load");
+        settings.use_regex = true;
+        let engine = built_engine(dir.path(), &settings).await;
+        let out = narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap();
+        assert_eq!(names(&out), vec!["a.txt", "b.txt"]);
+
+        settings.filters = vec!["eng[ei]ne".to_string()];
+        let out = narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap();
+        assert_eq!(names(&out), vec!["d.txt"]);
+
+        // A branch with no usable literal cannot be narrowed: full scan.
+        settings.filters = vec!["torque|ab".to_string()];
+        let out = narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap();
+        assert!(out.candidates.is_none());
+    }
+
+    #[tokio::test]
+    async fn folding_and_typo_tolerance_turn_narrowing_off() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "un caf\u{e9} noir\n").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "nothing\n").unwrap();
+        let mut settings = narrow_settings(dir.path(), "cafe");
+        let engine = built_engine(dir.path(), &settings).await;
+        assert!(narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap().candidates.is_some());
+        settings.fold_accents = true; // "cafe" is not a substring of the indexed "caf\u{e9}"
+        assert!(narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap().candidates.is_none());
+        settings.fold_accents = false;
+        settings.typo_tolerance = 1;
+        assert!(narrow_candidates(&settings, &engine, &CancellationToken::new()).await.unwrap().candidates.is_none());
     }
 
     #[tokio::test]

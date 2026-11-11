@@ -15,6 +15,7 @@
 //! nothing does or when symbols and fragments clearly dominate.
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 
 /// Why a line was judged noise (for tests and diagnostics).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -372,8 +373,112 @@ pub(crate) fn clean_lines(lines: &mut Vec<String>, source: Source, origins: Opti
         }
     }
     let dropped = before - lines.len();
-    join_soft_hyphens(lines, origins);
+    join_soft_hyphens(lines, origins.as_deref_mut());
+    dehyphenate(lines, origins);
     dropped
+}
+
+/// Whole words (lowercase letter runs) and hyphenated compounds (`a-b`, lowercase) used as the document's own dictionary.
+fn word_sets(lines: &[String]) -> (HashSet<String>, HashSet<String>) {
+    let mut words = HashSet::new();
+    let mut compounds = HashSet::new();
+    for line in lines {
+        let mut prev_word: Option<&str> = None;
+        let mut prev_end = 0;
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i].is_ascii_alphabetic() {
+                let start = i;
+                while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+                    i += 1;
+                }
+                let word = &line[start..i];
+                // A word that ends the line with a hyphen is a break, not a whole word.
+                let broken = i == line.trim_end().len() - 1 && line.trim_end().ends_with('-');
+                if !broken {
+                    words.insert(word.to_ascii_lowercase());
+                }
+                if let Some(prev) = prev_word {
+                    if prev_end + 1 == start && bytes[prev_end] == b'-' {
+                        compounds.insert(format!("{}-{}", prev.to_ascii_lowercase(), word.to_ascii_lowercase()));
+                    }
+                }
+                prev_word = Some(word);
+                prev_end = i;
+            } else {
+                i += 1;
+            }
+        }
+    }
+    (words, compounds)
+}
+
+/// A line ending `letters-` whose next line starts with lowercase letters is either a hyphenated compound
+/// (`pre-` + `training`) or a word the typesetter broke (`understand-` + `ing`). Without a dictionary the two cannot
+/// be told apart from the pair alone, so the document's own text decides: the break is repaired (`understanding` on
+/// the first line, the fragment removed from the second) only when the joined word appears whole elsewhere in the
+/// document and the hyphenated form appears nowhere. Lines on different pages (different origins) are never joined.
+/// Line count and page citations stay as they were, except that a line left empty by the move is dropped.
+fn dehyphenate(lines: &mut Vec<String>, mut origins: Option<&mut Vec<Option<usize>>>) {
+    let breaks = |l: &String| {
+        let t = l.trim_end();
+        let b = t.as_bytes();
+        b.len() >= 2 && b[b.len() - 1] == b'-' && b[b.len() - 2].is_ascii_alphabetic()
+    };
+    if !lines.iter().any(breaks) {
+        return;
+    }
+    let (words, compounds) = word_sets(lines);
+    let aligned = origins.as_deref().is_some_and(|o| o.len() == lines.len());
+    let mut emptied: Vec<usize> = Vec::new();
+    for i in 0..lines.len().saturating_sub(1) {
+        if !breaks(&lines[i]) || (aligned && origins.as_deref().map(|o| o[i] != o[i + 1]).unwrap_or(false)) {
+            continue;
+        }
+        let first = lines[i].trim_end();
+        let before_hyphen = &first[..first.len() - 1];
+        let head_len = before_hyphen.bytes().rev().take_while(u8::is_ascii_alphabetic).count();
+        let head = &before_hyphen[before_hyphen.len() - head_len..];
+        let next = lines[i + 1].trim_start();
+        let frag_len = next.bytes().take_while(u8::is_ascii_lowercase).count();
+        // A fragment that runs into a non-ASCII letter (`ü`) is not a plain ASCII word; leave it.
+        if frag_len == 0 || next[frag_len..].chars().next().is_some_and(char::is_alphabetic) {
+            continue;
+        }
+        let frag = &next[..frag_len];
+        let joined = format!("{}{}", head.to_ascii_lowercase(), frag);
+        if !words.contains(&joined) || compounds.contains(&format!("{}-{}", head.to_ascii_lowercase(), frag)) {
+            continue;
+        }
+        // Closing punctuation stuck to the fragment (`ment.`) belongs to the word too.
+        let moved_len = frag_len + next.bytes().skip(frag_len).take_while(|b| b".,;:)]!?".contains(b)).count();
+        let new_first = format!("{}{}", before_hyphen, &next[..moved_len]);
+        let rest = next[moved_len..].trim_start().to_string();
+        lines[i] = new_first;
+        if rest.is_empty() {
+            emptied.push(i + 1);
+        }
+        lines[i + 1] = rest;
+    }
+    if !emptied.is_empty() {
+        let mut idx = 0;
+        lines.retain(|_| {
+            let keep = !emptied.contains(&idx);
+            idx += 1;
+            keep
+        });
+        if aligned {
+            if let Some(o) = origins.as_deref_mut() {
+                let mut idx = 0;
+                o.retain(|_| {
+                    let keep = !emptied.contains(&idx);
+                    idx += 1;
+                    keep
+                });
+            }
+        }
+    }
 }
 
 /// A soft hyphen (U+00AD) at the end of a line marks a word the typesetter broke over two lines, so the two
@@ -518,6 +623,41 @@ mod tests {
         let mut plain: Vec<String> = vec!["a high-".into(), "temperature seal".into()];
         clean_lines(&mut plain, Source::TextLayer, None);
         assert_eq!(plain, ["a high-", "temperature seal"]);
+    }
+
+    #[test]
+    fn ordinary_hyphen_breaks_are_repaired_only_when_the_document_confirms_the_word() {
+        let mut lines: Vec<String> = [
+            "Models of understand-",
+            "ing and communicating in the field",
+            "Good understanding helps. Pre-training is common,",
+            "and pre-",
+            "training data is large. A high-",
+            "temperature seal. Next the de-",
+            "veloped parts",
+            "More developed parts",
+            "Pairs end with perfor-",
+            "mance. Performance is whole.",
+            "The last line of a page ends with measure-",
+            "ment on the next page and measurement is whole here",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let mut origins: Vec<Option<usize>> = vec![Some(1); 12];
+        origins[11] = Some(2);
+        clean_lines(&mut lines, Source::TextLayer, Some(&mut origins));
+        assert_eq!(lines[0], "Models of understanding");
+        assert_eq!(lines[1], "and communicating in the field");
+        // "pre-training" is written with its hyphen elsewhere, "high-temperature" never as one word.
+        assert_eq!(lines[3], "and pre-");
+        assert_eq!(lines[4], "training data is large. A high-");
+        assert_eq!(lines[5], "temperature seal. Next the developed");
+        assert_eq!(lines[6], "parts");
+        // Across a page boundary (different origins) nothing is joined.
+        assert_eq!(&lines[8..10], ["Pairs end with performance.", "Performance is whole."]);
+        assert_eq!(&lines[10..], ["The last line of a page ends with measure-", "ment on the next page and measurement is whole here"]);
+        assert_eq!(origins.len(), lines.len());
     }
 
     #[test]

@@ -399,7 +399,7 @@ pub fn embed_batch(texts: &[&str]) -> Result<Vec<Embedding>, MlError> {
 /// query instruction (bge, e5, arctic-embed) get theirs here.
 ///
 /// The last [`QUERY_CACHE`] distinct queries are remembered: a refined or repeated search, and the several features that
-/// embed the same text (Find, Ask, related files), skip the model. The model never changes within a process, so a cached
+/// embed the same text (Find, related files), skip the model. The model never changes within a process, so a cached
 /// vector cannot go stale.
 pub fn embed_queries(texts: &[&str]) -> Result<Vec<Embedding>, MlError> {
     static CACHE: Mutex<VecDeque<(String, Embedding)>> = Mutex::new(VecDeque::new());

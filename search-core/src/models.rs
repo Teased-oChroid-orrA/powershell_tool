@@ -91,6 +91,14 @@ pub struct SearchSettings {
     /// all regardless of this flag - see `extraction.rs`'s
     /// `extract_pdf_lines` and `ocr.rs`.
     pub ocr_scanned_pdfs: bool,
+    /// Folder for the persistent OCR text cache (one small file per scanned
+    /// page image, keyed by a hash of the image bytes), so a re-run with
+    /// other filters, an OCR off/on toggle or a new session does not
+    /// recognise the same pages again. `None` (default) keeps recognised
+    /// text in memory for this process only. No effect without the `ocr`
+    /// Cargo feature.
+    #[serde(default)]
+    pub ocr_cache_dir: Option<String>,
 
     pub export_csv: bool,
     pub export_json: bool,
@@ -125,6 +133,21 @@ pub struct SearchSettings {
     #[serde(default, skip_serializing)]
     pub semantic_index: bool,
     pub dry_run: bool,
+
+    /// Compare ignoring accents and typographic variants (`Cafe\u{301}`,
+    /// `Caf\u{e9}` and `cafe` match each other; `\u{fb01}` matches `fi`;
+    /// no-break spaces match spaces; curly quotes and en/em dashes match
+    /// `'`, `"` and `-`). Literal and whole-word modes only; ignored in regex
+    /// mode. Off by default. Turns off the index candidate narrowing (the
+    /// index stores unfolded text), so a warm re-search scans every file.
+    #[serde(default)]
+    pub fold_accents: bool,
+    /// Typo tolerance for literal and whole-word modes: 0 = off (default),
+    /// 1 = one edit on words of 4+ letters, 2 = up to two edits on words of
+    /// 8+ letters. Words with digits or under 4 letters stay exact. Applies
+    /// to search filters, not exclusions. Also turns off index narrowing.
+    #[serde(default)]
+    pub typo_tolerance: u8,
 
     pub max_retries: i32,
     pub retry_delay_ms: i32,
@@ -200,6 +223,7 @@ impl Default for SearchSettings {
             max_embed_lines: 4000,
             pdf_timeout_seconds: 15,
             ocr_scanned_pdfs: false,
+            ocr_cache_dir: None,
             export_csv: false,
             export_json: false,
             open_report_when_done: false,
@@ -210,6 +234,8 @@ impl Default for SearchSettings {
             failure_log_path: None,
             semantic_index: false,
             dry_run: false,
+            fold_accents: false,
+            typo_tolerance: 0,
             max_retries: 3,
             retry_delay_ms: 250,
             file_timeout_seconds: 30,

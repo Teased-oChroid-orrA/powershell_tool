@@ -12,14 +12,8 @@ mod alerts;
 mod find;
 #[cfg(feature = "semantic-search")]
 mod diff;
-#[cfg(feature = "semantic-search")]
-mod facts;
-#[cfg(feature = "semantic-search")]
-mod help;
 #[cfg(feature = "nl-find")]
 mod nl;
-#[cfg(feature = "semantic-search")]
-mod refine;
 #[cfg(feature = "neural-search")]
 mod feedback;
 #[cfg(test)]
@@ -90,25 +84,10 @@ pub enum SearchAct {
     DeleteAlert(usize),
     #[cfg(feature = "semantic-search")]
     SemanticSearch,
-    /// Re-order the semantic results with the optional second model.
-    #[cfg(feature = "semantic-search")]
-    RefineResults,
-    /// Step the Find reading: auto, words, sentence, question.
+    /// Step the Find reading: auto, words, sentence.
     FindAs,
     #[cfg(feature = "semantic-search")]
-    AnswerQuestion,
-    /// Turn Ask's two places to look on or off.
-    #[cfg(feature = "semantic-search")]
-    AskHelp,
-    #[cfg(feature = "semantic-search")]
-    AskFiles,
-    /// Ask the example question `.0` of `help::EXAMPLES`.
-    #[cfg(feature = "semantic-search")]
-    AskExample(usize),
-    #[cfg(feature = "semantic-search")]
     OpenSemantic(usize),
-    #[cfg(feature = "semantic-search")]
-    OpenAnswer(usize, usize),
     #[cfg(feature = "nl-find")]
     NlUnderstand,
     #[cfg(feature = "nl-find")]
@@ -173,6 +152,8 @@ pub enum SortKey {
     Hits,
     Size,
     Modified,
+    /// Files with the most distinctive hit lines first (`search_core::ordering`, BM25-style over the hit lines).
+    BestMatch,
     #[cfg(feature = "neural-search")]
     Relevance,
 }
@@ -189,8 +170,6 @@ pub(crate) const INPUT_FIND: u8 = 1;
 pub(crate) const INPUT_FILTER: u8 = 2;
 pub(crate) const INPUT_EXCLUDE: u8 = 3;
 pub(crate) const INPUT_OUTPUT: u8 = 4;
-#[cfg(feature = "semantic-search")]
-pub(crate) const INPUT_QUESTION: u8 = 5;
 #[cfg(feature = "nl-find")]
 pub(crate) const INPUT_NL: u8 = 6;
 /// Settings shown on the page instead of in a popover (`settings_view::settings` indices).
@@ -203,6 +182,8 @@ const SETTING_OUTPUT: usize = 14;
 pub struct SearchSession {
     st: SearchToolState,
     rows_cache: RefCell<Option<view::RowsCache>>,
+    /// Position of each result in the Best match order, kept for the run state it was computed for.
+    best_match: RefCell<Option<((usize, String), Vec<usize>)>>,
     notes: NotificationQueue,
     /// Owns the search, report, index and scan tasks; dropped with the window.
     rt: tokio::runtime::Runtime,
@@ -294,29 +275,8 @@ pub struct SearchSession {
     semantic_hits: Option<Vec<search_core::semantic_index::SemanticHit>>,
     #[cfg(feature = "semantic-search")]
     semantic_error: Option<String>,
-    #[cfg(feature = "semantic-search")]
-    refine: refine::Refine,
-    #[cfg(feature = "semantic-search")]
-    question: String,
-    #[cfg(feature = "semantic-search")]
-    answer_tx: mpsc::UnboundedSender<QuestionAnswerEvent>,
-    #[cfg(feature = "semantic-search")]
-    answer_rx: mpsc::UnboundedReceiver<QuestionAnswerEvent>,
-    #[cfg(feature = "semantic-search")]
-    answer_request: Option<SemanticSearchKey>,
-    #[cfg(feature = "semantic-search")]
-    answer_running: bool,
-    #[cfg(feature = "semantic-search")]
-    answers: Option<(SemanticSearchKey, Vec<QuestionPart>)>,
-    #[cfg(feature = "semantic-search")]
-    answer_error: Option<String>,
-    /// Where Ask looks: the Search help and / or the indexed files.
     /// How the Find text is read (Auto picks from what was typed).
     find_as: find::FindAs,
-    #[cfg(feature = "semantic-search")]
-    ask_help: bool,
-    #[cfg(feature = "semantic-search")]
-    ask_files: bool,
     #[cfg(feature = "semantic-search")]
     related_tx: mpsc::UnboundedSender<RelatedSearchEvent>,
     #[cfg(feature = "semantic-search")]
@@ -436,24 +396,6 @@ struct SemanticSearchEvent {
 }
 
 #[cfg(feature = "semantic-search")]
-struct QuestionAnswerEvent {
-    key: SemanticSearchKey,
-    result: Result<Vec<QuestionPart>, String>,
-}
-
-#[cfg(feature = "semantic-search")]
-pub(super) struct QuestionPart {
-    question: String,
-    /// The lines of the Search help that match (`None`: the help was not asked).
-    help: Option<Result<Vec<help::HelpAnswer>, String>>,
-    /// Cited lines of the indexed files; empty when the files were not asked.
-    evidence: Result<Vec<search_core::neural_search::CitedAnswer>, String>,
-    files_asked: bool,
-    /// Computed from the folder itself (a count); when present it replaces the lines above.
-    facts: Vec<facts::Fact>,
-}
-
-#[cfg(feature = "semantic-search")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RelatedSearchKey {
     source_path: String,
@@ -555,71 +497,6 @@ fn current_semantic_search_key(
     }
     let roots = semantic_search_roots(config);
     (!roots.is_empty()).then(|| semantic_search_key(config, query, &roots))
-}
-
-#[cfg(feature = "semantic-search")]
-fn current_question_key(
-    config: &crate::toolboxes::search::model::SearchToolConfig,
-    question: &str,
-) -> Option<SemanticSearchKey> {
-    let question = question.trim().to_string();
-    if question.is_empty() {
-        return None;
-    }
-    let roots = semantic_search_roots(config);
-    Some(semantic_search_key(config, question, &roots))
-}
-
-#[cfg(feature = "semantic-search")]
-fn file_evidence(
-    question: &str,
-    roots: &[(PathBuf, search_core::models::SearchSettings)],
-) -> Result<Vec<search_core::neural_search::CitedAnswer>, String> {
-    let mut hits = Vec::new();
-    let mut indexed = 0usize;
-    let mut errors = Vec::new();
-    for (root, settings) in roots {
-        match search_core::semantic_index::search_directory_with_settings(root, question, 12, settings)
-        {
-            Ok(mut found) => {
-                indexed += 1;
-                hits.append(&mut found);
-            }
-            Err(error) => errors.push(error),
-        }
-    }
-    if indexed == 0 {
-        return Err(errors.join("; "));
-    }
-    hits.sort_by(|left, right| {
-        right
-            .similarity
-            .total_cmp(&left.similarity)
-            .then_with(|| left.path.cmp(&right.path))
-            .then_with(|| left.first_line.cmp(&right.first_line))
-    });
-    hits.truncate(12);
-    search_core::neural_search::rank_cited_answers(question, &hits).map_err(|error| error.to_string())
-}
-
-#[cfg(feature = "semantic-search")]
-fn question_parts(question: &str) -> Result<Vec<String>, String> {
-    // shortcut: split only explicit questions; add implicit decomposition after held-out validation.
-    let count = question.matches('?').count();
-    if count <= 1 {
-        return Ok(vec![question.to_string()]);
-    }
-    if count > 3 || !question.ends_with('?') {
-        return Err("Ask at most three complete questions, each ending with ?.".into());
-    }
-    let parts = question
-        .split_terminator('?')
-        .map(str::trim)
-        .collect::<Vec<_>>();
-    if parts.iter().any(|part| part.is_empty()) {
-        return Err("Each question must contain text before ?.".into());
-    }
-    Ok(parts.into_iter().map(|part| format!("{part}?")).collect())
 }
 
 #[cfg(feature = "semantic-search")]
@@ -763,13 +640,6 @@ impl SearchSession {
     }
 
     #[cfg(feature = "semantic-search")]
-    pub(super) fn current_answers(&self) -> Option<&[QuestionPart]> {
-        let (key, answers) = self.answers.as_ref()?;
-        (current_question_key(&self.st.config, &self.question).as_ref() == Some(key))
-            .then_some(answers)
-    }
-
-    #[cfg(feature = "semantic-search")]
     pub(super) fn current_related_hits(
         &self,
     ) -> Option<&[search_core::semantic_index::SemanticHit]> {
@@ -819,19 +689,22 @@ impl SearchSession {
         s.st.config.export_html = false;
         s
     }
-    /// Search `folder` semantically with the Index on, then ask `question` and wait for the answer, as the window does.
+    /// Search `folder` for `words` exactly and semantically with the Index on, and wait for both, as the window does.
     #[cfg(all(test, feature = "semantic-search"))]
-    pub(crate) fn ask_for_snapshot(&mut self, folder: &Path, question: &str) {
+    pub(crate) fn words_for_snapshot(&mut self, folder: &Path, words: &str) {
         self.st.config.search_path = folder.to_string_lossy().into_owned();
         self.st.config.index.semantic = true;
-        self.document_field(INPUT_FIND, question.into());
+        self.find_as = find::FindAs::Words;
+        self.document_field(INPUT_FIND, words.into());
         self.act_on_for_snapshot(SearchAct::Run);
+        self.act_on_for_snapshot(SearchAct::SemanticSearch);
         let started = Instant::now();
-        while self.answer_running {
+        while self.semantic_running || self.st.run.is_running {
             assert!(started.elapsed() < std::time::Duration::from_secs(60));
             self.poll();
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+        self.poll();
     }
     /// Natural-language Find: understand `sentence` (stopping at the chips when `find` is false), as the window does.
     #[cfg(all(test, feature = "nl-find"))]
@@ -891,8 +764,6 @@ impl SearchSession {
         #[cfg(feature = "semantic-search")]
         let (semantic_tx, semantic_rx) = mpsc::unbounded_channel();
         #[cfg(feature = "semantic-search")]
-        let (answer_tx, answer_rx) = mpsc::unbounded_channel();
-        #[cfg(feature = "semantic-search")]
         let (related_tx, related_rx) = mpsc::unbounded_channel();
         #[cfg(feature = "semantic-search")]
         let (diff_tx, diff_rx) = mpsc::unbounded_channel();
@@ -908,6 +779,7 @@ impl SearchSession {
         };
         Ok(Self {
             rows_cache: RefCell::new(None),
+            best_match: RefCell::new(None),
             notes: NotificationQueue::default(),
             rt,
             tx,
@@ -1003,28 +875,7 @@ impl SearchSession {
             semantic_hits: None,
             #[cfg(feature = "semantic-search")]
             semantic_error: None,
-            #[cfg(feature = "semantic-search")]
-            refine: refine::Refine::default(),
-            #[cfg(feature = "semantic-search")]
-            question: String::new(),
-            #[cfg(feature = "semantic-search")]
-            answer_tx,
-            #[cfg(feature = "semantic-search")]
-            answer_rx,
-            #[cfg(feature = "semantic-search")]
-            answer_request: None,
-            #[cfg(feature = "semantic-search")]
-            answer_running: false,
-            #[cfg(feature = "semantic-search")]
-            answers: None,
-            #[cfg(feature = "semantic-search")]
-            #[cfg(feature = "semantic-search")]
-            answer_error: None,
-            #[cfg(feature = "semantic-search")]
             find_as: find::FindAs::Auto,
-            ask_help: true,
-            #[cfg(feature = "semantic-search")]
-            ask_files: true,
             #[cfg(feature = "nl-find")]
             nl: nl::NlFind::new(),
             #[cfg(feature = "semantic-search")]
@@ -1136,10 +987,6 @@ impl SearchSession {
         }
         self.clear_insight();
         match find::classify(&self.st.config.filters_text, self.find_as) {
-            find::Intent::Question => {
-                self.ask_from_find();
-                return;
-            }
             #[cfg(feature = "nl-find")]
             find::Intent::Sentence if self.nl_ready() => {
                 // A sentence is not a keyword filter: read it as conditions, then find with them. The conditions stay
@@ -1191,35 +1038,16 @@ impl SearchSession {
         }
     }
 
-    /// A new Find replaces what the last one showed beside the files: answers, conditions, semantic passages.
+    /// A new Find replaces what the last one showed beside the files: conditions, semantic passages.
     fn clear_insight(&mut self) {
         #[cfg(feature = "semantic-search")]
         {
-            self.answers = None;
-            self.answer_error = None;
-            self.answer_running = false;
             self.semantic_hits = None;
             self.semantic_error = None;
             self.semantic_request = None;
         }
         #[cfg(feature = "nl-find")]
         self.nl.reset();
-    }
-
-    /// The Find text is a question: answer it with cited lines (the Search help, counts, and the indexed files).
-    fn ask_from_find(&mut self) {
-        #[cfg(feature = "semantic-search")]
-        {
-            self.question = find::as_question(&self.st.config.filters_text);
-            self.answers = None;
-            self.answer_error = None;
-            self.answer_running = false;
-            self.answer_question();
-        }
-        #[cfg(not(feature = "semantic-search"))]
-        {
-            self.status = "Questions need a build with semantic search.".into();
-        }
     }
 
     fn cancel(&mut self) {
@@ -1511,77 +1339,6 @@ impl SearchSession {
     }
 
     #[cfg(feature = "semantic-search")]
-    fn answer_question(&mut self) {
-        let question = self.question.trim().to_string();
-        if question.is_empty() {
-            self.status = "Type a question in Find first.".into();
-            return;
-        }
-        let parts = match question_parts(&question) {
-            Ok(parts) => parts,
-            Err(error) => {
-                self.status = error.clone();
-                self.answer_error = Some(error);
-                return;
-            }
-        };
-        let roots = semantic_search_roots(&self.st.config);
-        let (help, files) = (
-            self.ask_help,
-            self.ask_files && self.st.config.index.semantic && !roots.is_empty(),
-        );
-        let counts = self.ask_files && !roots.is_empty();
-        if !help && !files && !counts {
-            self.status = "Choose where Ask looks: the Search help or your indexed files.".into();
-            return;
-        }
-        let key = semantic_search_key(&self.st.config, question.clone(), &roots);
-        if self.answer_running {
-            self.status = "Wait for the current answer to finish before starting another.".into();
-            return;
-        }
-        self.answer_request = Some(key.clone());
-        self.answers = None;
-        self.answer_error = None;
-        self.answer_running = true;
-        self.status = "Looking for cited lines…".into();
-        let tx = self.answer_tx.clone();
-        self.rt.spawn(async move {
-            let result = tokio::task::spawn_blocking(move || {
-                Ok(parts
-                    .into_iter()
-                    .map(|part| {
-                        let facts = if counts {
-                            roots
-                                .iter()
-                                .filter_map(|(_, settings)| facts::answer(&part, settings))
-                                .flatten()
-                                .collect()
-                        } else {
-                            Vec::new()
-                        };
-                        let answered = !facts.is_empty();
-                        QuestionPart {
-                            help: (help && !answered).then(|| help::answer(&part)),
-                            evidence: if files && !answered {
-                                file_evidence(&part, &roots)
-                            } else {
-                                Ok(Vec::new())
-                            },
-                            files_asked: files && !answered,
-                            facts,
-                            question: part,
-                        }
-                    })
-                    .collect())
-            })
-            .await
-            .unwrap_or_else(|error| Err(format!("question ranking task failed: {error}")));
-            let _ = tx.send(QuestionAnswerEvent { key, result });
-        });
-    }
-
-    #[cfg(feature = "semantic-search")]
     fn find_related_documents(&mut self) {
         if !self.st.config.index.semantic {
             self.status = "Enable Semantic index in Options, then build the index.".into();
@@ -1747,6 +1504,25 @@ impl SearchSession {
             SortKey::Hits => v.sort_by_key(|&i| results[i].hits.len()),
             SortKey::Size => v.sort_by_key(|&i| results[i].file_length),
             SortKey::Modified => v.sort_by_key(|&i| results[i].modified),
+            SortKey::BestMatch => {
+                let key = (results.len(), self.st.config.filters_text.clone());
+                let mut cache = self.best_match.borrow_mut();
+                if cache.as_ref().map(|(k, _)| k) != Some(&key) {
+                    let order = search_core::ordering::relevance_order(
+                        results,
+                        &crate::toolboxes::search::model::build_settings(&self.st.config),
+                    );
+                    let mut rank = vec![0usize; results.len()];
+                    for (position, &index) in order.iter().enumerate() {
+                        rank[index] = position;
+                    }
+                    *cache = Some((key, rank));
+                }
+                if let Some((_, rank)) = cache.as_ref() {
+                    // Worst first, so the default (descending) view shows the best match on top.
+                    v.sort_by_key(|&i| std::cmp::Reverse(rank.get(i).copied().unwrap_or(usize::MAX)));
+                }
+            }
             #[cfg(feature = "neural-search")]
             SortKey::Relevance => {
                 if let Some((ranked_key, scores)) = &self.relevance_scores {
@@ -1775,6 +1551,12 @@ impl SearchSession {
             v.reverse();
         }
         v
+    }
+    /// Position finder built from the settings the run used, for highlighting.
+    fn line_explainer(&self) -> Option<search_core::explain::LineExplainer> {
+        search_core::explain::LineExplainer::new(&crate::toolboxes::search::model::build_settings(
+            &self.st.config,
+        ))
     }
     /// The selected result, or the first shown when nothing is selected.
     pub(crate) fn current(&self) -> Option<usize> {
@@ -2008,7 +1790,7 @@ impl SearchSession {
         }
         let cached = (result.total_line_count as usize <= result.lines_cache.len()
             && !result.lines_cache.is_empty())
-        .then(|| view::full_text(result, &result.lines_cache));
+        .then(|| view::full_text(result, &result.lines_cache, self.line_explainer().as_ref()));
         #[cfg(feature = "semantic-search")]
         {
             self.invalidate_related_diff();
@@ -2500,28 +2282,7 @@ impl SearchSession {
             SearchAct::DeleteAlert(i) => self.delete_alert(i),
             #[cfg(feature = "semantic-search")]
             SearchAct::SemanticSearch => self.semantic_search(),
-            #[cfg(feature = "semantic-search")]
-            SearchAct::RefineResults => self.refine_results(),
             SearchAct::FindAs => self.find_as = self.find_as.next(),
-            #[cfg(feature = "semantic-search")]
-            SearchAct::AnswerQuestion => self.answer_question(),
-            #[cfg(feature = "semantic-search")]
-            SearchAct::AskHelp | SearchAct::AskFiles => {
-                if a == SearchAct::AskHelp {
-                    self.ask_help = !self.ask_help;
-                } else {
-                    self.ask_files = !self.ask_files;
-                }
-                self.answers = None;
-                self.answer_error = None;
-            }
-            #[cfg(feature = "semantic-search")]
-            SearchAct::AskExample(index) => {
-                if let Some(example) = help::EXAMPLES.get(index) {
-                    self.question = (*example).into();
-                    self.answer_question();
-                }
-            }
             #[cfg(feature = "nl-find")]
             SearchAct::NlUnderstand => self.nl_understand(),
             #[cfg(feature = "nl-find")]
@@ -2545,30 +2306,6 @@ impl SearchSession {
                 {
                     self.status = format!(
                         "Semantic match: {} lines {}–{}.",
-                        file_name(&path),
-                        first_line,
-                        last_line
-                    );
-                    self.execute(vec![Effect::OpenPath(path)]);
-                }
-            }
-            #[cfg(feature = "semantic-search")]
-            SearchAct::OpenAnswer(part_index, evidence_index) => {
-                if let Some((path, first_line, last_line)) = self
-                    .current_answers()
-                    .and_then(|parts| parts.get(part_index))
-                    .and_then(|part| part.evidence.as_ref().ok())
-                    .and_then(|evidence| evidence.get(evidence_index))
-                    .map(|answer| {
-                        (
-                            answer.hit.path.clone(),
-                            answer.hit.first_line,
-                            answer.hit.last_line,
-                        )
-                    })
-                {
-                    self.status = format!(
-                        "Extractive evidence: {} lines {}–{}.",
                         file_name(&path),
                         first_line,
                         last_line
@@ -3096,49 +2833,9 @@ impl Authoring for SearchSession {
                 }
             }
         }
-        #[cfg(feature = "semantic-search")]
-        {
-            changed |= self.poll_refine();
-        }
         #[cfg(feature = "nl-find")]
         {
             changed |= self.poll_nl();
-        }
-        #[cfg(feature = "semantic-search")]
-        while let Ok(event) = self.answer_rx.try_recv() {
-            if self.answer_request.as_ref() == Some(&event.key) {
-                self.answer_running = false;
-                if current_question_key(&self.st.config, &self.question).as_ref()
-                    == Some(&event.key)
-                {
-                    match event.result {
-                        Ok(parts) => {
-                            let found = parts
-                                .iter()
-                                .map(|part| {
-                                    part.evidence.as_ref().map_or(0, Vec::len)
-                                        + part
-                                            .help
-                                            .as_ref()
-                                            .and_then(|help| help.as_ref().ok())
-                                            .map_or(0, Vec::len)
-                                })
-                                .sum::<usize>();
-                            self.status = if found == 0 {
-                                "No cited lines matched; try other words.".into()
-                            } else {
-                                format!("Found {found} cited lines; verify each source.")
-                            };
-                            self.answers = Some((event.key, parts));
-                        }
-                        Err(error) => {
-                            self.status = format!("Question evidence unavailable: {error}");
-                            self.answer_error = Some(error);
-                        }
-                    }
-                    changed = true;
-                }
-            }
         }
         #[cfg(feature = "semantic-search")]
         while let Ok(event) = self.related_rx.try_recv() {
@@ -3275,7 +2972,7 @@ impl Authoring for SearchSession {
                 {
                     let ready = result.and_then(|lines| {
                         self.current_result()
-                            .map(|r| view::full_text(r, &lines))
+                            .map(|r| view::full_text(r, &lines, self.line_explainer().as_ref()))
                             .ok_or_else(|| "Result changed while loading.".to_string())
                     });
                     #[cfg(feature = "neural-search")]
@@ -3412,13 +3109,6 @@ impl Authoring for SearchSession {
             INPUT_FILTER => self.filter = text,
             INPUT_EXCLUDE => self.st.config.exclude_filters_text = text,
             INPUT_OUTPUT => self.st.config.output_folder = text,
-            #[cfg(feature = "semantic-search")]
-            INPUT_QUESTION => {
-                self.question = text;
-                self.answers = None;
-                self.answer_error = None;
-                self.answer_running = false;
-            }
             #[cfg(feature = "nl-find")]
             INPUT_NL => {
                 self.nl.sentence = text;

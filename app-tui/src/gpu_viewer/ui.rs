@@ -119,20 +119,6 @@ pub enum DockItem {
         focused: bool,
     },
     Gap,
-    /// A question asked in Ask, drawn as a bubble on the right.
-    Asked(String),
-    /// A cited line in Ask: the line, then where it comes from. A click opens the source when `action` is set.
-    Reply {
-        text: String,
-        source: String,
-        tone: Tone,
-        action: Option<UiAction>,
-    },
-    /// A titled row of pills (Ask's places to look and its example questions).
-    Chips {
-        title: String,
-        chips: Vec<crate::gpu_viewer::menu::Entry>,
-    },
     /// Verified lower part of a live search bracket, from zero to `upper`.
     Bracket {
         lower: f64,
@@ -189,8 +175,6 @@ impl DockItem {
         match self {
             DockItem::Line { text, .. } => Some(text.clone()),
             DockItem::Field { label, value, .. } => Some(format!("{label}  {value}")),
-            DockItem::Asked(text) => Some(text.clone()),
-            DockItem::Reply { text, source, .. } => Some(format!("{text}  [{source}]")),
             _ => None,
         }
     }
@@ -340,7 +324,7 @@ pub struct Document {
     pub modal: Option<DocModal>,
     /// A thin status strip along the page's bottom edge (Search: index state, counts, a warning).
     pub ribbon: Option<DocRibbon>,
-    /// A card between the bar and the results for what Find found besides files (answers, passages, conditions).
+    /// A card between the bar and the results for what Find found besides files (passages, conditions).
     pub insight: Option<DocInsight>,
 }
 

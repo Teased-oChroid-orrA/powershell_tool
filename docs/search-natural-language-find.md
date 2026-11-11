@@ -112,3 +112,8 @@ is historical. The crate was removed from the working tree and Natural-language 
 (feature `nl-find`) owns the panel. The bake-off numbers and the failure analysis above remain the reason a generative
 judge was not kept (17.5 s per parse on an 8 GB machine, one false positive class that rules avoid). The "Windows / CI"
 and "Not done" sections no longer apply. Current behaviour and limits: `app-tui/src/gpu_viewer/editor/search/AGENTS.md`.
+
+## 2026-11-10: Ask removed
+
+The Ask question-answering feature mentioned above (and its `Find as: question` reading) was removed by owner decision.
+A typed question runs as an ordinary Find; sentence Find (rules, no model) is unchanged. Earlier notes stay as history.

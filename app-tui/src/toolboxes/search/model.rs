@@ -71,6 +71,10 @@ pub struct SearchToolConfig {
     pub dry_run: bool,
     pub pdf_timeout_seconds: i32,
     pub ocr_scanned_pdfs: bool,
+    /// Fold accents, ligatures and curly quotes when matching (off by default).
+    pub fold_accents: bool,
+    /// Typos allowed per word, 0 to 2 (0 = exact).
+    pub typo_tolerance: u8,
     pub file_timeout_seconds: i32,
     pub max_retries: i32,
 
@@ -115,6 +119,8 @@ impl Default for SearchToolConfig {
             dry_run: false,
             pdf_timeout_seconds: 15,
             ocr_scanned_pdfs: false,
+            fold_accents: false,
+            typo_tolerance: 0,
             file_timeout_seconds: 30,
             max_retries: 3,
             index: super::indexing::IndexSettings::default(),
@@ -333,6 +339,9 @@ pub fn build_settings(config: &SearchToolConfig) -> SearchSettings {
         max_embed_lines: 4000,
         pdf_timeout_seconds: config.pdf_timeout_seconds,
         ocr_scanned_pdfs: config.ocr_scanned_pdfs,
+        fold_accents: config.fold_accents,
+        typo_tolerance: config.typo_tolerance,
+        ocr_cache_dir: crate::paths::app_data_dir().map(|d| d.join("ocr-cache").to_string_lossy().into_owned()),
         export_csv: config.export_csv,
         export_json: config.export_json,
         open_report_when_done: config.open_report_when_done,

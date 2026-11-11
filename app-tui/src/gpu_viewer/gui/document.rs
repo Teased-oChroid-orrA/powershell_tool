@@ -205,7 +205,7 @@ impl Gui {
         if doc.precision.is_some() {
             self.precision_page(ui, area, doc, p, out, hint);
             if let Some(modal) = &doc.modal {
-                self.modal(ui.ctx(), modal, p, out, hint);
+                self.modal(ui.ctx(), modal, p, out);
             }
             return;
         }
@@ -406,7 +406,7 @@ impl Gui {
                 });
         });
         if let Some(m) = &doc.modal {
-            self.modal(ui.ctx(), m, p, out, hint);
+            self.modal(ui.ctx(), m, p, out);
         }
     }
 
@@ -664,14 +664,13 @@ impl Gui {
         out: &mut Vec<Outcome>,
         hint: &mut Option<String>,
     ) {
-        self.popover(ctx, &panel.label, anchor, if panel.label == "Ask" { 440.0 } else { 360.0 }, panel.progress, p, |gui, ui| {
+        self.popover(ctx, &panel.label, anchor, 360.0, panel.progress, p, |gui, ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
-            ui.label(RichText::new(match panel.label.as_str() { "Options" => "SEARCH PREFERENCES", "Index" => "LOCAL SEARCH INDEX", "Ask" => "ASK SEARCH", _ => "SEARCH OUTPUT" }).size(9.0).strong().color(p.accent));
+            ui.label(RichText::new(match panel.label.as_str() { "Options" => "SEARCH PREFERENCES", "Index" => "LOCAL SEARCH INDEX", _ => "SEARCH OUTPUT" }).size(9.0).strong().color(p.accent));
             ui.heading(&panel.label);
             ui.add(egui::Label::new(RichText::new(match panel.label.as_str() {
                 "Options" => "Choose how Search matches content. Less common controls stay grouped below.",
                 "Index" => "Build a local index to speed repeat searches. Results still come from the same search engine.",
-                "Ask" => "Ask about using Search or about your indexed files. Answers are lines quoted from the source, never generated text.",
                 _ => "Choose where Search writes reports and exports.",
             }).small().color(p.dim)).wrap());
             ui.add_space(8.0);
@@ -693,20 +692,13 @@ impl Gui {
                 });
                 ui.add_space(8.0);
             }
-            if panel.label == "Ask" {
-                // The conversation reads as one page, not a collapsible card.
-                ui.spacing_mut().item_spacing.y = 6.0;
-                for item in panel.cards.iter().flat_map(|card| &card.items) {
-                    gui.panel_item(ui, item, p, out, hint);
-                }
-            }
-            for (k, card) in panel.cards.iter().filter(|c| !c.items.is_empty() && panel.label != "Ask").enumerate() {
+            for (k, card) in panel.cards.iter().filter(|c| !c.items.is_empty()).enumerate() {
                 egui::CollapsingHeader::new(&card.title).default_open(k == 0).id_salt(("search-panel-card", &panel.label, &card.id)).show(ui, |ui| {
                     egui::Frame::new().fill(with_alpha(p.raised, 125)).corner_radius(CornerRadius::same(9)).inner_margin(Margin::symmetric(8, 6)).show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 3.0;
                         for item in &card.items {
                             let before = out.len();
-                            gui.panel_item(ui, item, p, out, hint);
+                            gui.panel_item(ui, item, p, out);
                             if out.len() > before {
                                 // A typed value opens its card beside the popover.
                                 gui.menu_at = ui.input(|i| i.pointer.interact_pos()).map(|q| Pos2::new(anchor.left(), q.y));
@@ -717,7 +709,7 @@ impl Gui {
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new(if panel.label == "Ask" { "Quoted lines only: nothing is generated" } else { "Changes apply to your next search" }).small().color(p.dim));
+                ui.label(RichText::new("Changes apply to your next search").small().color(p.dim));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.add(egui::Button::new(RichText::new("Done").color(p.on_accent)).fill(p.accent).stroke(Stroke::NONE).corner_radius(CornerRadius::same(7))).clicked() {
                         gui.doc.open = None;
@@ -727,7 +719,7 @@ impl Gui {
         });
     }
 
-    /// What Find found besides files: cited answers, a sentence's conditions and their passages, semantic passages. One
+    /// What Find found besides files: a sentence's conditions and their passages, semantic passages. One
     /// card on the page (not a popover), scrolling inside a share of the room so the results stay in view.
     fn insight_card(
         &mut self,
@@ -763,7 +755,7 @@ impl Gui {
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 6.0;
                         for item in &insight.items {
-                            self.panel_item(ui, item, p, out, hint);
+                            self.panel_item(ui, item, p, out);
                         }
                     });
             });
@@ -795,7 +787,6 @@ impl Gui {
         item: &DockItem,
         p: &Palette,
         out: &mut Vec<Outcome>,
-        hint: &mut Option<String>,
     ) {
         let DockItem::Field {
             label,
@@ -805,7 +796,7 @@ impl Gui {
             focused,
         } = item
         else {
-            self.dock_item(ui, item, p, out, hint);
+            self.dock_item(ui, item, p, out);
             return;
         };
         let width = ui.available_width();
@@ -978,7 +969,6 @@ impl Gui {
         m: &DocModal,
         p: &Palette,
         out: &mut Vec<Outcome>,
-        hint: &mut Option<String>,
     ) {
         let shown = egui::Modal::new(Id::new(("doc-modal", &m.card.id))).show(ctx, |ui| {
             ui.set_width(380.0);
@@ -991,7 +981,7 @@ impl Gui {
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     for item in &m.card.items {
-                        self.dock_item(ui, item, p, out, hint);
+                        self.dock_item(ui, item, p, out);
                     }
                 });
         });

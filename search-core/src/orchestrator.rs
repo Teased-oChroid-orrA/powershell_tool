@@ -208,6 +208,8 @@ async fn run_over_candidates(
         return Ok(run_result);
     }
 
+    crate::extraction::configure_ocr_cache(settings.ocr_cache_dir.as_deref());
+
     // ---- Incremental cache ----
     let prior_cache = match settings.cache_file_path.as_deref() {
         Some(p) if !p.trim().is_empty() => cache::try_load(p, &settings),
@@ -216,7 +218,7 @@ async fn run_over_candidates(
 
     // ---- Extraction-failure log (issue #6 §12/§16) ----
     let failure_log: Option<Arc<crate::failure_log::FailureLog>> = match settings.failure_log_path.as_deref() {
-        Some(p) if !p.trim().is_empty() => crate::failure_log::FailureLog::open(p).ok().map(Arc::new),
+        Some(p) if !p.trim().is_empty() => crate::failure_log::FailureLog::open_with_context(p, crate::failure_log::extraction_context(&settings)).ok().map(Arc::new),
         _ => None,
     };
 
@@ -225,8 +227,14 @@ async fn run_over_candidates(
 
     for f in &candidates {
         let full_name = f.path.to_string_lossy().into_owned();
+        // Read and unexpected errors are never reused: a locked file or a
+        // timeout is transient, and a cached error would hide the file
+        // until it was next modified. (Known extraction failures are
+        // skipped separately by the failure log.)
         let cached = prior_cache.as_ref().and_then(|c| c.get(&full_name)).filter(|entry| {
-            entry.length == f.length && entry.last_write_time_ticks == cache::ticks_from_modified(f.modified)
+            entry.length == f.length
+                && entry.last_write_time_ticks == cache::ticks_from_modified(f.modified)
+                && !matches!(entry.status, FileSearchStatus::ReadError | FileSearchStatus::UnexpectedError)
         });
 
         if let Some(entry) = cached {
@@ -1085,6 +1093,7 @@ mod tests {
     async fn incremental_cache_reuses_unchanged_files() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "apple\n").unwrap();
+        age_file(&dir.path().join("a.txt"), 3600);
         let cache_path = dir.path().join("cache.json");
 
         let mut settings = settings_for(dir.path(), &["apple"]);
@@ -1097,6 +1106,73 @@ mod tests {
         assert_eq!(second.summary.cache_reused, 1);
         let hit = second.file_results.iter().find(|r| r.full_name.ends_with("a.txt")).unwrap();
         assert_eq!(hit.status, FileSearchStatus::Hit);
+    }
+
+    /// Sets a file's modified time `seconds_ago` into the past.
+    fn age_file(path: &std::path::Path, seconds_ago: u64) {
+        let t = std::time::SystemTime::now() - Duration::from_secs(seconds_ago);
+        std::fs::File::options().write(true).open(path).unwrap().set_modified(t).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_file_modified_just_before_the_cache_was_saved_is_not_trusted() {
+        // Same size, same (coarse) mtime tick: (size, mtime) alone would call the
+        // stale entry fresh. Entries newer than the racy window are re-read once.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "apple\n").unwrap();
+        let cache_path = dir.path().join("cache.json");
+        let mut settings = settings_for(dir.path(), &["apple"]);
+        settings.cache_file_path = Some(cache_path.to_string_lossy().into_owned());
+
+        let first = run(settings.clone(), None, CancellationToken::new()).await.unwrap();
+        let status_of = |r: &SearchRunResult| r.file_results.iter().find(|f| f.full_name.ends_with("a.txt")).unwrap().status;
+        assert_eq!(status_of(&first), FileSearchStatus::Hit);
+        let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::fs::write(&path, "grape\n").unwrap(); // same length, new content
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(mtime).unwrap();
+
+        let second = run(settings, None, CancellationToken::new()).await.unwrap();
+        assert_eq!(status_of(&second), FileSearchStatus::NoHit, "the edit must be seen");
+    }
+
+    #[tokio::test]
+    async fn a_cached_read_error_is_retried_not_reused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "apple\n").unwrap();
+        age_file(&path, 3600);
+        let cache_path = dir.path().join("cache.json");
+        let mut settings = settings_for(dir.path(), &["apple"]);
+        settings.cache_file_path = Some(cache_path.to_string_lossy().into_owned());
+
+        // A previous run could not read the file (locked), and the file is unchanged since.
+        let meta = std::fs::metadata(&path).unwrap();
+        let full_name = path.to_string_lossy().into_owned();
+        let modified = system_time_to_local(meta.modified().unwrap());
+        let failed = FileSearchResult {
+            full_name: full_name.clone(),
+            status: FileSearchStatus::ReadError,
+            hits: Vec::new(),
+            created: modified,
+            modified,
+            file_length: meta.len() as i64,
+            lines_cache: Vec::new(),
+            total_line_count: 0,
+            proximity_min_range: None,
+            low_confidence_pdf: false,
+            error_message: Some("file locked".into()),
+        };
+        let candidate = CandidateMetadata {
+            full_name,
+            length: meta.len() as i64,
+            last_write_time_ticks: cache::ticks_from_modified(modified),
+        };
+        cache::save(cache_path.to_str().unwrap(), &settings, &[candidate], &[failed]);
+
+        let run1 = run(settings, None, CancellationToken::new()).await.unwrap();
+        let a = run1.file_results.iter().find(|f| f.full_name.ends_with("a.txt")).unwrap();
+        assert_eq!(a.status, FileSearchStatus::Hit, "the read error must not be replayed");
     }
 
     #[tokio::test]

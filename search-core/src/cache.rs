@@ -17,8 +17,8 @@ use crate::models::{
 
 /// Cached `lines_cache` text depends on how lines are extracted, which no
 /// setting captures. Bump when extraction output changes (1 = PDF/OCR line
-/// quality filter, `line_quality`) so stale caches are dropped, not reused.
-const EXTRACTION_VERSION: u32 = 2;
+/// quality filter, `line_quality`; 3 = hyphen-broken words repaired) so stale caches are dropped, not reused.
+const EXTRACTION_VERSION: u32 = 3;
 
 /// One cached file's prior result, keyed by full path in [`CacheFile`].
 ///
@@ -64,7 +64,19 @@ impl CachedFileEntry {
 struct CacheFile {
     fingerprint: String,
     entries: HashMap<String, CachedFileEntry>,
+    /// When this file was written (ns since the Unix epoch); 0 in files
+    /// written before it existed. Used to spot racily-clean entries, see
+    /// [`RACY_WINDOW_NS`].
+    #[serde(default)]
+    saved_at_ns: i64,
 }
+
+/// A file modified within this long before the cache was written may be
+/// edited again in the same filesystem-timestamp tick (FAT: 2 s, HFS+/some
+/// network shares: 1 s) with the same size, and then `(size, mtime)` would
+/// still match the stale entry. Such entries are not trusted on the next
+/// load (git's "racily clean" rule); the file is simply re-read once.
+const RACY_WINDOW_NS: i64 = 2_000_000_000;
 
 /// Precomputed metadata for one candidate file, supplied by the caller
 /// (the directory walk already gathered it) rather than re-stat'd here -
@@ -90,6 +102,32 @@ struct FingerprintFields<'a> {
     use_regex: bool,
     max_file_size_mb: f64,
     extraction_version: u32,
+    // Both change what extraction returns for a PDF. Skipped at their
+    // defaults so caches written before they were fingerprinted stay valid.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    ocr_scanned_pdfs: bool,
+    #[serde(skip_serializing_if = "is_default_pdf_timeout")]
+    pdf_timeout_seconds: i32,
+    // Change which lines match / how many lines are stored; skipped at their
+    // defaults for the same reason.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    fold_accents: bool,
+    #[serde(skip_serializing_if = "is_zero_u8")]
+    typo_tolerance: u8,
+    #[serde(skip_serializing_if = "is_default_embed_lines")]
+    max_embed_lines: i32,
+}
+
+fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
+}
+
+fn is_default_embed_lines(v: &i32) -> bool {
+    *v == 4000
+}
+
+fn is_default_pdf_timeout(seconds: &i32) -> bool {
+    *seconds == 15
 }
 
 /// Derives a stable per-file freshness value from a modified timestamp -
@@ -118,6 +156,11 @@ pub fn compute_fingerprint(settings: &SearchSettings) -> String {
         use_regex: settings.use_regex,
         max_file_size_mb: settings.max_file_size_mb,
         extraction_version: EXTRACTION_VERSION,
+        ocr_scanned_pdfs: settings.ocr_scanned_pdfs,
+        pdf_timeout_seconds: settings.pdf_timeout_seconds,
+        fold_accents: settings.fold_accents,
+        typo_tolerance: settings.typo_tolerance,
+        max_embed_lines: settings.max_embed_lines,
     };
     serde_json::to_string(&fp).expect("fingerprint fields are always serializable")
 }
@@ -142,7 +185,12 @@ pub fn try_load(
         return None;
     }
 
-    Some(cache.entries)
+    let mut entries = cache.entries;
+    if cache.saved_at_ns > 0 {
+        let cutoff = cache.saved_at_ns - RACY_WINDOW_NS;
+        entries.retain(|_, e| e.last_write_time_ticks < cutoff);
+    }
+    Some(entries)
 }
 
 pub fn save(
@@ -181,6 +229,7 @@ pub fn save(
     let cache_file = CacheFile {
         fingerprint: compute_fingerprint(settings),
         entries,
+        saved_at_ns: ticks_from_modified(Local::now()),
     };
 
     // Failing to write the cache should never fail the search itself - it
@@ -246,6 +295,18 @@ mod tests {
         let mut c = a.clone();
         c.match_mode = MatchMode::AllInFile;
         assert_ne!(compute_fingerprint(&a), compute_fingerprint(&c));
+    }
+
+    #[test]
+    fn fingerprint_changes_with_ocr_and_pdf_timeout_but_not_at_defaults() {
+        let base = SearchSettings::default();
+        let ocr = SearchSettings { ocr_scanned_pdfs: true, ..base.clone() };
+        let slow = SearchSettings { pdf_timeout_seconds: 60, ..base.clone() };
+        assert_ne!(compute_fingerprint(&base), compute_fingerprint(&ocr));
+        assert_ne!(compute_fingerprint(&base), compute_fingerprint(&slow));
+        // Default values add nothing, so pre-existing caches keep loading.
+        assert!(!compute_fingerprint(&base).contains("ocr_scanned_pdfs"));
+        assert!(!compute_fingerprint(&base).contains("pdf_timeout_seconds"));
     }
 
     #[test]

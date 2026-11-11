@@ -177,3 +177,297 @@ Bundled MiniLM retrieves, the fused `default` ranking supplies the top 30, and b
 ## 2026-11-09: rerank-rrf is now an opt-in step
 
 The `rerank-rrf` variant above is available in the Search window as a "Refine results" row under the semantic results. It is off until clicked, runs in the background with progress in the status line, and needs the bge-small folder (`model.onnx`, `tokenizer.json`) from `TOOLBENCH_RERANK_MODEL`, `rerank-model/` beside the exe, or `<app data>/fea-editor/rerank-model/`; the model is not bundled. The fusion is `search_core::rank_fusion::fuse_top`, shared with `retrieval_eval.rs`. Window behaviour is not part of the benchmark: the top-30 pool there came from the `default` variant, in the window it comes from the semantic index search. Details: `app-tui/src/gpu_viewer/editor/search/AGENTS.md`.
+
+## 2026-11-09: bigger and int8 second models for rerank-rrf
+
+Question: does a stronger (bge-base-en-v1.5, fp32) or cheaper (bge-small int8) second model beat the fp32 bge-small `rerank-rrf` step above? Same method (`--variants default,rerank-rrf --tag minilm-rerank --rerank-model <dir>`, same query counts), adoption rule: loses on none of the five sets.
+
+**bge-base: not measurable with the current code.** `search-ml` hard-codes `EMBEDDING_DIMENSIONS = 384` (`search-ml/src/lib.rs`, also `search-core/src/semantic_index.rs`); bge-base outputs 768 and the run stops with `unexpected model output shape: [1, 8, 768]`. Measuring it needs a per-model embedding width in `search-ml` (a code change, deliberately not made in this measurement session). The ONNX (436 MB) and tokenizer are in `benchmarks/models/bge-base` for when that is done. No quality or timing number exists for it.
+
+**bge-small int8** (nDCG@10; fp32 column copied from the 2026-11-08 table, same `default` per row):
+
+| Set (queries) | default | rerank-rrf fp32 | rerank-rrf int8 | int8 vs fp32 |
+|---|---|---|---|---|
+| Cranfield (200) | 0.3988 | 0.4053 | 0.3994 | -0.0059 (loses) |
+| SciFact (200) | 0.7518 | 0.7553 | not run | |
+| NFCorpus (60) | 0.3300 | 0.3499 | not run | |
+| MS MARCO (60) | 0.6519 | 0.6694 | 0.6704 | +0.0010 |
+| TREC-COVID (50) | 0.4121 | 0.4466 | 0.4381 | -0.0085 (loses) |
+
+Verdict: **int8 is not adopted.** It loses to fp32 on Cranfield and TREC-COVID, which already fails the five-set rule, so SciFact and NFCorpus were not completed (two runs stopped on a locked shared index while another job used the same `--tag minilm-rerank` folders, and the verdict could not change). On Cranfield int8 keeps only +0.0006 over `default`, i.e. almost all of the rerank gain is lost. Cost: 5.3 s (MS MARCO), 8.4 s (Cranfield) and 11.9 s (TREC-COVID) per query for int8 under heavy concurrent load (load average about 30; the fp32 numbers above were 2.5 to 5.8 s), so no speed advantage was visible; timings here are not comparable with the earlier table. Negative result recorded; do not retry int8 for rerank.
+
+## 2026-11-09: cross-encoder rerank of the default top 30
+
+A cross-encoder reads each (query, passage) pair jointly and outputs one relevance logit, so it can judge matching that a bi-encoder's separate vectors cannot. The new `search_core::cross_encoder::score_pairs` (on `search_ml::CrossEncoder`, the same rten runtime as the embedder; pairs truncated to 512 tokens) scores the same top-30 pool as the bge-small rerank. Two models were tried, each a folder with `model.onnx` and `tokenizer.json`: `cross-encoder/ms-marco-MiniLM-L-6-v2` fp32 (91 MB, `ce-minilm`) and `Xenova/bge-reranker-base` `model_quantized.onnx` int8 (279 MB, `ce-bge-reranker-int8`). `ce` orders the pool by the cross-encoder score alone; `ce-rrf` fuses it with the `default` ranking by `rank_fusion::fuse_top`. Run as `--variants default,ce,ce-rrf --tag minilm-rerank --ce-model <dir>`; nDCG@10, same query counts as the bge-small table (Cranfield 200, SciFact 200, NFCorpus 60, MS MARCO 60, TREC-COVID 50), so compare only within a row.
+
+| Set (queries) | default | MiniLM ce | MiniLM ce-rrf | bge-reranker int8 ce | bge-reranker int8 ce-rrf | (bge-small rerank-rrf) |
+|---|---|---|---|---|---|---|
+| Cranfield (200) | 0.3988 | 0.3736 | 0.3964 | 0.3631 | 0.3985 | 0.4053 |
+| SciFact (200) | 0.7518 | 0.7088 | 0.7506 | 0.6528 | 0.7255 | 0.7553 |
+| NFCorpus (60) | 0.3300 | 0.3669 | 0.3649 | 0.2368 | 0.3171 | 0.3499 |
+| MS MARCO (60) | 0.6519 | 0.7280 | 0.6897 | 0.7112 | 0.6821 | 0.6694 |
+| TREC-COVID (50) | 0.4121 | 0.3768 | 0.4080 | 0.3484 | 0.3994 | 0.4466 |
+
+Verdict by the rule (adopt only if it loses on none of the five sets versus `default`): **neither cross-encoder is adopted, in either variant.** MiniLM `ce` wins NFCorpus (+0.037) and MS MARCO (+0.076) but loses Cranfield, SciFact and TREC-COVID; MiniLM `ce-rrf` wins the same two but sits just under `default` on Cranfield (-0.0024), SciFact (-0.0012) and TREC-COVID (-0.0041). The int8 bge-reranker is worse: it wins only MS MARCO and loses the other four in `ce` and in `ce-rrf`. The ms-marco MiniLM is trained on MS MARCO, so its MS MARCO gain is in-domain and says little about the other sets. The int8 quantization may cost the bge-reranker accuracy (SciFact -0.099 alone); an fp32 bge-reranker (1.1 GB) was not tried. Neither beats the existing bge-small `rerank-rrf`, which won all five sets.
+
+Cost per query (re-scoring 30 pairs, measured on 20 SciFact queries while other jobs ran, about 6 load average, including model load): MiniLM about 1.8 s, bge-reranker int8 about 5.0 s; during the full runs under load of 20 to 30 these were 12 to 40 s. `default` is 22 to 52 ms. Model size on disk: 91 MB and 279 MB, against 133 MB for the bge-small rerank. Numbers in the printed `ce-rrf` ms/query column are not meaningful, because the eval reuses the `ce` scores for `ce-rrf` within a run.
+
+## 2026-11-09: bge-base-en-v1.5 as the second model for rerank-rrf
+
+`search-ml` used to assume a 384-wide hidden state, so only MiniLM-sized models could load. The embedder now reads the width from the model's output shape (the stored-index path still requires 384, so the bundled MiniLM index is unchanged). That made `bge-base-en-v1.5` fp32 (436 MB, 768 wide, CLS pooling, same query prefix as bge-small) loadable as the `--rerank-model`. Same method as the bge-small table: `--variants default,rerank-rrf --tag minilm-rerank --rerank-model <bge-base dir>`, Cranfield and SciFact 200 queries, NFCorpus 60, MS MARCO 60, TREC-COVID 50 (the `trec-covid/sub` folder). The `default` column was rebuilt in this session's index folders and differs from the 2026-11-08 one by up to 0.004 on some sets, so compare gains (rerank-rrf minus its own `default`), not absolute rows across tables.
+
+| Set (queries) | default | bge-base rerank-rrf | gain | bge-small gain (2026-11-08) |
+|---|---|---|---|---|
+| Cranfield (200) | 0.3988 | 0.4154 | +0.0166 | +0.0065 |
+| SciFact (200) | 0.7497 | 0.7616 | +0.0119 | +0.0035 |
+| NFCorpus (60) | 0.3340 | 0.3550 | +0.0210 | +0.0199 |
+| MS MARCO (60) | 0.6519 | 0.6846 | +0.0327 | +0.0175 |
+| TREC-COVID (50) | 0.4121 | 0.4421 | +0.0300 | +0.0345 |
+
+Verdict by the rule: bge-base `rerank-rrf` **wins all five sets against `default`**, so it passes. Against bge-small `rerank-rrf` it gains more on four sets and less on TREC-COVID (-0.0045, a 50-query set, within noise). It is not adopted as the shipped Refine model because of cost: 436 MB against 133 MB, and 9 to 18 s per query under load (load average 6 to 30, so not comparable with the bge-small timings) against 25 to 175 ms for `default`. The owner can use it today without a code change: put its `model.onnx` and `tokenizer.json` in the `rerank-model` folder. Whether to ship it, or recommend it as an optional download, is a product decision.
+
+## 2026-11-10: Ask, Refine, cross-encoder and second-model code removed
+
+By owner decision ("get rid of the Ask and anything related to AI questions, it does not work; keep Semantics where it is
+fast and accurate") the Search window no longer has Ask (question answering, the embedded Search help, folder counts),
+Refine results (and the `Refine automatically` option), the cross-encoder, the second embedding model
+(`search_core::second_model`) or rank fusion over a second model (`search_core::rank_fusion`). The `rerank`,
+`rerank-rrf`, `ce` and `ce-rrf` variants and the `--rerank-model` / `--ce-model` flags left `retrieval_eval`; the
+hidden-width generalisation of `search-ml` that served them was reverted. A typed question now runs as an ordinary Find
+(words, or a sentence when Auto reads it as one). The results above stay as history; none of the removed variants is
+part of `default`, so the numbers for `default` are unchanged.
+
+## 2026-11-10: query-time ranking ideas (none adopted)
+
+Five ideas measured on the five sets (Cranfield 200 queries, SciFact 200, NFCorpus 60, MS MARCO 60, TREC-COVID 50), bundled MiniLM, chunk size 800, nDCG@10 over files ranked by best chunk, index folders under `--tag rank-eval`. Adoption rule: a change must lose on no set against `default` (score fusion, keyword share 0.35). **Nothing is adopted; `default` is unchanged and no stored data changed** (no version constant bumped).
+
+Method: `SemanticIndex::rank_features` returns every chunk's raw similarity, BM25, length and place in its file for a query; `retrieval_eval --rank-experiments <outdir>` (`examples/support/ranking_experiments.rs`) scores all variants from those, so one pass measures them all, and writes per-query results for pooled and held-out analysis. Sanity check: the feature path reproduces the shipped `default` exactly (Cranfield 0.3988, SciFact 0.7518, TREC-COVID 0.4121, equal to the numbers of the PRF/chunk-size section; NFCorpus and MS MARCO use 60 queries here, 0.3300 and 0.6519).
+
+Setup trap found on the way: an index folder copied from an earlier run holds paths as written then (relative to the working directory); a run from another directory or with the newer absolute paths re-embeds every document and leaves the old rows beside the new ones. Both copies were fresh files, so each document was ranked twice and nDCG exceeded 1. Delete rows whose path does not start with `/` (or rebuild) before trusting a copied index.
+
+### 1. Query-length-aware keyword share: not adopted
+
+Keyword share per query over the pooled queries (nDCG@10; the 0.35 column is `default`):
+
+| Share | Cranfield | SciFact | NFCorpus | MS MARCO | TREC-COVID | Mean |
+|---|---|---|---|---|---|---|
+| 0.00 | 0.3637 | 0.6634 | 0.3051 | 0.6632 | 0.3534 | 0.4698 |
+| 0.10 | 0.3775 | 0.7141 | 0.3190 | 0.6792 | 0.3943 | 0.4968 |
+| 0.20 | 0.3911 | 0.7380 | 0.3341 | 0.6802 | 0.4128 | 0.5112 |
+| 0.25 | 0.3946 | 0.7470 | 0.3338 | 0.6719 | 0.4180 | 0.5131 |
+| 0.30 | 0.3956 | 0.7569 | 0.3301 | 0.6647 | 0.4184 | 0.5131 |
+| 0.35 (default) | 0.3988 | 0.7518 | 0.3300 | 0.6519 | 0.4121 | 0.5089 |
+| 0.50 | 0.3891 | 0.7419 | 0.3304 | 0.6392 | 0.3907 | 0.4982 |
+
+The best share differs by set (Cranfield 0.35, SciFact 0.30, TREC-COVID 0.30, NFCorpus and MS MARCO 0.20), and the sets' queries differ in length (median distinct query terms: NFCorpus 4, MS MARCO 3, TREC-COVID 7, SciFact and Cranfield 10), so length is the natural handle. To avoid per-set tuning the bucket shares were fit on the pooled queries of one half (even or odd query number) and scored on the other half, the two folds together covering every query; a bucket's best share maximises the mean over sets of the set's mean nDCG in the bucket. Held-out result against `default`, set deltas in the order Cranfield, SciFact, NFCorpus, MS MARCO, TREC-COVID:
+
+| Buckets (query terms) | Mean delta | Set deltas | Fitted shares (fold 0 / fold 1) |
+|---|---|---|---|
+| <=4, 5+ | +0.0051 | -0.0024 +0.0030 -0.0079 +0.0261 +0.0069 | 0.15, 0.30 / 0.05, 0.30 |
+| <=3, 4-6, 7+ | +0.0036 | -0.0024 +0.0002 -0.0018 +0.0159 +0.0062 | 0.25 0.40 0.25 / 0.05 0.40 0.25 |
+| <=4, 5-8, 9+ | +0.0046 | +0.0034 -0.0019 -0.0074 +0.0239 +0.0050 | 0.15 0.40 0.35 / 0.05 0.35 0.30 |
+| <=3, 4-6, 7-10, 11+ | +0.0021 | +0.0012 +0.0001 -0.0055 +0.0159 -0.0012 | unstable |
+| four or five buckets | -0.0005 to -0.0014 | lose on 4 to 5 sets | unstable |
+
+Every bucketing loses on at least one set held-out. The gain comes from the shortest bucket (MS MARCO, whose 60 queries pull it to a share of 0.05 to 0.15 in one fold and the full-data fit gives 0.6 for the same bucket): the fold fits disagree, so there is no stable length effect to encode. A constant share of 0.30 is +0.0042 mean but loses Cranfield by 0.0032; 0.25 loses Cranfield and SciFact. Negative result; shares 0.25 to 0.35 remain flat as recorded before.
+
+### 2. Document-level scoring (max plus decayed next chunks): not adopted
+
+File score = best chunk + alpha times the next chunk (k=1) or + alpha^2 times the one after (k=2); chunk scores are the fused 0 to 1 scores.
+
+| Variant | Cranfield | SciFact | NFCorpus | MS MARCO | TREC-COVID | Mean |
+|---|---|---|---|---|---|---|
+| max (default) | 0.3988 | 0.7518 | 0.3300 | 0.6519 | 0.4121 | 0.5089 |
+| alpha 0.1, k=1 | 0.3989 | 0.7558 | 0.3344 | 0.6526 | 0.4021 | 0.5088 |
+| alpha 0.25, k=1 | 0.3738 | 0.7460 | 0.3340 | 0.6621 | 0.3853 | 0.5002 |
+| alpha 0.5, k=1 | 0.3376 | 0.7318 | 0.3318 | 0.6621 | 0.3810 | 0.4889 |
+| alpha 0.25, k=2 | 0.3711 | 0.7386 | 0.3340 | 0.6621 | 0.3712 | 0.4954 |
+| alpha 0.5, k=2 | 0.3103 | 0.6855 | 0.3277 | 0.6621 | 0.3375 | 0.4646 |
+
+Every setting loses on TREC-COVID and most on Cranfield; the best (alpha 0.1) is a tie on the mean and loses TREC-COVID by 0.01. Short abstracts (one to three chunks) carry no extra evidence in the following chunks; they only favour longer files. Max stays. Cost was about 1 to 3 ms per query (not significant).
+
+### 3. Heading, title or file-name boost: measured as a proxy, not adopted
+
+The sets have a title field (all but MS MARCO). The boost adds beta times the min-max-normalised BM25 of the query over the file's title to every chunk of the file. MS MARCO has no titles, so it is unchanged and unmeasured. Cranfield's text already begins with its title.
+
+| beta | Cranfield | SciFact | NFCorpus | MS MARCO | TREC-COVID | Mean |
+|---|---|---|---|---|---|---|
+| 0 (default) | 0.3988 | 0.7518 | 0.3300 | 0.6519 | 0.4121 | 0.5089 |
+| 0.05 | 0.3993 | 0.7553 | 0.3315 | 0.6519 | 0.4205 | 0.5117 |
+| 0.10 | 0.3996 | 0.7551 | 0.3378 | 0.6519 | 0.4216 | 0.5132 |
+| 0.20 | 0.4007 | 0.7378 | 0.3241 | 0.6519 | 0.4211 | 0.5071 |
+| 0.40 | 0.3929 | 0.7029 | 0.3145 | 0.6519 | 0.4207 | 0.4966 |
+
+Beta 0.05 to 0.1 loses on no set (+0.003 to +0.004 mean), larger weights lose SciFact. This measures the benefit of a clean title field. The product has no title: it would have to take the first line of a file or its name, and the stored index has no per-file heading (a schema change, chunking and indexing are owned elsewhere). Whether the first line of real files (reports, PDFs, code) behaves like these titles is unmeasured, and no benchmark here has file names or first lines separate from the text, so no ranking code was added. To adopt it: store or derive a heading per file, build a benchmark set whose documents begin with a title line (the harness writes `title text` on one line today), and require beta 0.05 to 0.1 to hold there.
+
+### 4. Near-duplicate removal: not adopted
+
+Word 3-gram Jaccard on excerpts, among the first 100 passages of `default`. Files ranked by nDCG@10 after dropping a passage that repeats an earlier one:
+
+| Variant | Cranfield | SciFact | NFCorpus | MS MARCO | TREC-COVID | Mean |
+|---|---|---|---|---|---|---|
+| none | 0.3988 | 0.7518 | 0.3300 | 0.6519 | 0.4121 | 0.5089 |
+| Jaccard 0.5 | 0.3982 | 0.7518 | 0.3348 | 0.6304 | 0.4096 | 0.5050 |
+| Jaccard 0.7 | 0.3982 | 0.7518 | 0.3348 | 0.6282 | 0.4102 | 0.5046 |
+| Jaccard 0.9 | 0.3988 | 0.7518 | 0.3348 | 0.6457 | 0.4092 | 0.5081 |
+| Jaccard 0.7, same file only | 0.3988 | 0.7518 | 0.3300 | 0.6519 | 0.4121 | 0.5089 |
+
+Passages dropped from the first 30 (all queries): Jaccard 0.7 drops 4 (Cranfield), 0 (SciFact), 52 (NFCorpus), 39 (MS MARCO), 44 (TREC-COVID); same-file only drops none on any set (these documents are one to three chunks without overlap). The losses are real duplicates: the sets contain the same text as different judged-relevant files (MS MARCO pools each query's candidates, TREC-COVID repeats records), so dropping the later copy drops a relevant file. As a presentation fix for the evidence brief (3 passages of the best 20), counting distinct relevant files in it divided by 3: none 0.3750 / 0.2483 / 0.3444 / 0.2444 / 0.5267 (mean 0.3478); Jaccard 0.7: 0.3750 / 0.2483 / 0.3444 / 0.2333 / 0.5333 (0.3469); Jaccard 0.9: 0.3750 / 0.2483 / 0.3444 / 0.2389 / 0.5333 (0.3480). Neutral on the mean but it loses MS MARCO, so by the rule it is not applied. What was kept: `evidence::select_evidence_with(hits, Some(limit))` (the default `select_evidence` is unchanged: it still drops only identical passages) and `ranking::{shingles, jaccard, NEAR_DUPLICATE}`, with a unit test, so the measurement is reproducible and a UI that wants to collapse copies (show "also in: ..." rather than hide a file) can use them. Collapsing in the display keeps the file ranking unchanged by construction.
+
+### 5. Small learned fusion: not adopted
+
+Pointwise logistic regression (L2, set-balanced) on the top 100 chunks of `default` per query, label = file judged relevant; features: normalised dense and BM25 scores, both times query length, log chunk length, first-chunk flag, relative position in file, BM25 > 0 (8 weights). Trained on the queries of one parity, scored on the other, both folds together covering all queries.
+
+| nDCG@10 | Cranfield | SciFact | NFCorpus | MS MARCO | TREC-COVID | Mean |
+|---|---|---|---|---|---|---|
+| default | 0.3988 | 0.7518 | 0.3300 | 0.6519 | 0.4121 | 0.5089 |
+| learned (held out) | 0.3911 | 0.7425 | 0.3390 | 0.6541 | 0.4114 | 0.5076 |
+
+Recall@100 0.7176 to 0.7153. Loses on three sets; the weights also moved between folds (the dense weight stayed near 5.4 to 6.1, query-length interactions changed sign), i.e. no stable constants to put in code. Negative; the fused score with one keyword share is already close to what these features can give, and chunk length and position carry no signal on documents of one to three chunks.
+
+### Cost and code
+
+Query-time cost of the experiments is not a product cost since nothing is adopted. Reference: `rank_features` plus 17 share fusions plus the other variants took 70 to 110 ms per query on this loaded machine (load average 35), of which the fusion itself is under 1 ms per share.
+
+Left in the code: `SemanticIndex::rank_features` and `ranking.rs` (raw per-chunk scores, shingle helpers; no filtering, no extension or freshness checks, measurement only), `evidence::select_evidence_with`, `retrieval_eval --rank-experiments <outdir> [--weights file]` with `examples/support/ranking_experiments.rs`. Tests: `ranking::tests::{shingle_similarity_separates_copies_from_different_text, features_rebuild_the_search_order}`, `evidence::tests::near_duplicate_limit_is_opt_in_and_search_keeps_copies`.
+
+## 2026-11-10: semantic indexing (chunking, incremental updates, large indexes)
+
+Bundled MiniLM, fused `default` variant, nDCG@10, harness `search-core/examples/retrieval_eval.rs`, one binary for all runs so ranking code was identical across variants. Machine was shared with other jobs, so timings are rough; quality numbers are exact.
+
+### 1. Boundary-aware chunking: not adopted
+
+Shipped chunking cuts the character stream every 800 characters wherever that falls. Tried two variants, each under its own tag (`chunk-eval-b`, `chunk-eval-bo`), selected by a temporary environment switch (removed again):
+
+- `b`: split each line into sentences (after `.`, `!`, `?` plus closing quote or bracket, whitespace, and a next character that is not lower case), pack whole sentences and lines into chunks of at most 800 characters, close a chunk at a blank line once it holds 400 characters, never cross a PDF page. Over-long sentences are cut at the last space in their final quarter. Cited first/last line come from the pieces themselves, so they are exact by construction.
+- `bo`: the same plus an overlap: a chunk closed because the next sentence did not fit starts with the trailing whole sentences of its predecessor, up to 100 characters (about 12 percent).
+
+Cranfield, 200 queries (baseline `default` reproduces the documented 0.3988):
+
+| Variant | nDCG@10 | Recall@100 | MRR@10 |
+|---|---|---|---|
+| fixed 800 (shipped) | 0.3988 | 0.8020 | 0.5573 |
+| sentence boundaries | 0.3947 | 0.8046 | 0.5517 |
+| boundaries + 100-char overlap | 0.3947 | 0.8041 | 0.5517 |
+
+Both variants lose 0.0041 nDCG@10 on Cranfield, which fails the owner rule (a change must lose on none of the five sets). The other four sets were not completed: the run was stopped once the rule was already failed (SciFact indexing under CPU contention takes tens of minutes per variant, and a result there cannot change the verdict). Likely reason: Cranfield abstracts are about 1,000 characters, so fixed chunking gives an 800 plus a 200 character tail, which the dense model and keyword scorer both handle fine, while sentence packing splits them into two roughly equal halves that each carry less of the vocabulary. Unit tests for the chunker (sentence ends, 800-character cap, overlap, exact cited lines on 30 line input, paragraph break, page separation, unbroken text, abbreviation followed by lower case) passed while it was in the tree; the code and tests were removed with the negative result, so chunking is byte-for-byte the shipped behavior and no index version constant was bumped.
+
+Side effect worth knowing: with fixed boundaries an insert near the top of a file re-embeds every later chunk. A boundary-aware chunker would reduce that, but the benefit does not outweigh the retrieval loss.
+
+### 2. Incremental updates: audit, two gaps fixed, tests added
+
+Already correct: per-file freshness is `(modified, size)` (`is_current`), then a SHA-256 of the extracted lines and pages decides whether vectors are kept; unchanged chunk text keeps its vector within a file; each document is one transaction (so an interrupted build keeps finished documents and the next run embeds only the rest); deleted source files are removed at the end of a build (`remove_orphaned_documents`, skipped if the build was cancelled).
+
+Gaps fixed in `search-core/src/semantic_index.rs`:
+
+1. A copy, renamed or moved file, or the same document under a second revision folder was embedded again in full. Now a document whose content hash and citation version equal another indexed document's reuses that document's chunk vectors (new index `semantic_documents_hash`; no schema break, old databases get the index on open).
+2. `PRAGMA foreign_keys = ON` was executed inside the schema transaction, where SQLite ignores it, so the chunk cascade on replace and delete worked only because the bundled SQLite happens to default foreign keys on. It is now set after the transaction on every connection.
+
+New tests: `incremental_updates_embed_only_changes_and_leave_no_orphan_rows` (restamp embeds 0, appended line embeds only the new tail, copy embeds 0, replacement leaves no stale rows, orphan cleanup keeps live files, no chunk row without a document) and `an_interrupted_build_resumes_without_redoing_finished_documents`. A private `index_document_counting` returns the number of chunks that went through the model so tests can assert it.
+
+Known and left alone: a same-size edit that restores the original modification time to the nanosecond is not detected (same as the exact index); a single very large document is lost if cancelled mid-embedding (atomic per document).
+
+### 3. Large-index search: approximate nearest neighbour not adopted
+
+Probe: `search-core/examples/ann_probe.rs` (`cargo run -p search-core --release --example ann_probe -- <N> <semantic.sqlite>...`). Corpus: the 35,449 real chunk vectors of the five benchmark indexes seed N synthetic chunks; 200 held-out real vectors are the queries (never in the corpus). Two corpus shapes: diffuse (each chunk a random 0.3 to 0.7 mix of two seeds plus noise, the hard case) and clustered (one seed plus noise of norm 0.8, the easy case for IVF). IVF is spherical k-means (500 lists, 8 iterations on a sample), probe the nearest `nprobe` lists, exact dot products inside them. Recall is recall@100 against the exact f32 top 100.
+
+N = 250,000 (the current snapshot limit), exact scan: 36 to 41 ms per query on one thread, 19 to 20 ms on 8 threads (the snapshot code does the same lane-wise dot product); 100,000 chunks: 14 ms single thread.
+
+| nprobe | diffuse recall@100 | diffuse share scanned | clustered recall@100 | clustered share scanned |
+|---|---|---|---|---|
+| 8 | 0.738 | 2.7% | 0.849 | 2.2% |
+| 16 | 0.831 | 5.1% | 0.918 | 4.2% |
+| 32 | 0.897 | 9.4% | 0.964 | 8.1% |
+| 64 | 0.939 | 17.3% | 0.985 | 15.1% |
+| 128 | 0.966 | 31.3% | 0.995 | 28.5% |
+| 256 | 0.987 | 57.3% | 1.000 | 54.4% |
+
+Reaching 0.98 needs 15 percent of the corpus in the easy case and 57 percent in the hard case. Timings of the IVF runs were distorted by CPU contention and random access into the lists, and did not beat the exact scan at equal recall; the best case is about 6 times fewer dot products on a scan that is already 20 to 40 ms. K-means build took 85 to 230 seconds at 250,000 vectors and would have to be redone on every write generation. IVF also does not carry the hybrid keyword side: lexical matches that are far from the query vector in embedding space fall outside the probed lists, so the fused ranking would change. Verdict: not adopted (recall at equal speed fails the 0.98 bar on the diffuse corpus; the speed gain is small on the easy one). The 250,000 limit is a memory limit (about 1.5 KB per chunk plus postings), the snapshot build time and the per-file `stat`, not the vector scan.
+
+Side measurement: an int8 copy of the vectors (per-vector scale) kept recall@100 at 0.995 against exact f32 at 100,000 and 250,000 chunks with a quarter of the memory. My probe's int8 loop was not vectorised, so its 250 to 700 ms is not a real speed figure. If large indexes matter, quantised snapshot vectors (and a higher `MAX_CACHED_CHUNKS`) is the better lever than ANN; not built, because it touches the snapshot scoring owned by the ranking work and would break the exact-equality test against the streaming path.
+
+## Regular (exact) search: findings, measurements, decisions (2026-11-10)
+
+Scope: search-core (matching, cache, native_index narrowing, regex_literals, new textfold / ordering / explain) and nothing in app-tui or native-search code.
+
+### New settings fields (SearchSettings, both with serde default, defaults keep today's behaviour)
+- `fold_accents: bool` (default false). Literal and whole-word modes only (ignored with regex). Folds precomposed vs combining accents (`Caf\u{e9}` = `Cafe\u{301}` = `cafe`), ss/ae/oe/th letters, ligature code points (fi, fl, ffi...), no-break and other Unicode spaces to a space, curly quotes and en/em dashes to ' " -, soft hyphen and zero-width characters dropped. Applies to filters, excludes and lines identically, so plain text, Office, ZIP, RTF and PDF text all compare the same way.
+- `typo_tolerance: u8` (default 0 = off). 1 = one edit on words of 4+ letters; 2 = up to two edits on words of 8+ letters (Damerau, adjacent swap counts once). Words under 4 letters and words containing a digit stay exact (M8 never matches M9). Multi-word filters match consecutive words, each within its bound. Search filters only, never excludes. Literal and whole-word modes.
+- Both turn off index narrowing (the index stores unfolded text and exact words), so a warm re-search with either option scans all files in scope. Both are part of the cache fingerprint only when non-default, so existing caches stay valid.
+- UI notes: the Ignore accents toggle and Typo tolerance (0-2) are wired as Search settings 32 and 33. Highlighting should use `explain::LineExplainer::spans(line)` (byte spans in the original line) instead of a substring search, or folded or fuzzy hits will not highlight.
+
+### New APIs (no change to LineHit / FileSearchResult, so app-tui literals still compile)
+- `ordering::relevance_order(results, settings) -> Vec<usize>` and `score_results` (score, matched filters, filename filters, hit lines). Found order stays the default (`file_results` is untouched).
+- `explain::LineExplainer::new(settings)?.spans(line) -> Vec<MatchSpan{start,end,filter}>`; `explain::explain_file(results, settings) -> Vec<Option<FileWhy>>` (per filter: hit lines and first line; filters found in the file name; proximity range; score). Computed on demand, nothing stored, no tokens.
+- `regex_literals::required_literal_alternatives`, `textfold::{fold_lower, FuzzyFilter}`.
+- Harnesses: `examples/exact_bench.rs` (speed), `examples/exact_order_eval.rs` (ordering, BEIR-format folders).
+
+### Speed (3000 files x 150 lines, this Mac, release; not an SLA)
+In-memory matching, 150k lines: literal 437 -> 71 ms (6x); whole word 5236 -> 181 ms (29x); regex unchanged (62-77 ms, noise); literal with three filters that hit 63 % of lines 836 -> ~1000 ms (the prefilter is pure overhead when most lines match; the only regression found). Cause of the old costs: literal lowercased and allocated for every line; whole word ran a lookaround regex (about 20-35 us a line) once for the combined check and again per filter.
+How: an ASCII case-insensitive prefilter regex rejects lines before lowercasing (exact: only U+212A and U+0130 lowercase to ASCII; U+212A is matched by (?i), lines with U+0130 skip the prefilter; proved by an exhaustive test over all code points), and whole word on ASCII lines checks word boundaries by hand (differential test against the regex).
+Stages for 3000 files: std read 190 ms, extract 357 ms, match 158 ms (was ~600+); cold full scan sequential 0.9-2.5 s (noisy, other builds ran concurrently), parallel 0.33-0.45 s; warm re-run through the JSON cache 60-100 ms; index narrow 63-72 ms (walk 31, freshness 27, query 1) then verify 12 ms for 31 candidates; index build 7-8 s.
+Open question: the UI default `parallel: false` makes a cold scan about 3-7x slower than it needs to be on this corpus; consider defaulting to `parallel: true` (SearchSettings::default is also false; I did not change it because it is not a pure speed knob, progress ordering changes).
+
+### Cache and index correctness (bugs fixed)
+1. Cached `ReadError`/`UnexpectedError` results were replayed on every later run while (size, mtime) matched, so a file locked once stayed "unreadable" until edited. Now never reused (orchestrator.rs). Test: `a_cached_read_error_is_retried_not_reused`.
+2. Racily-clean entries: with a coarse filesystem mtime and an unchanged size, an edit made right after a run was invisible. The cache now stores `saved_at_ns` and drops entries whose mtime is within 2 s of it on load (old cache files without it are unaffected). Test: `a_file_modified_just_before_the_cache_was_saved_is_not_trusted`. Existing test `incremental_cache_reuses_unchanged_files` now ages its file.
+3. `max_embed_lines` (lines stored in cached results) was not in the fingerprint; added at non-default values. (OCR and PDF timeout were added to the fingerprint concurrently by another agent; left as is.)
+4. Files changing during a run were already safe (the cache stores the walk-time mtime, so a mid-run edit mismatches next run).
+5. `regex_literals`: escapes with operands (`\x41`, `\pL`, `\1`, `\u{..}`) kept their operand characters as required literal text, so index narrowing could drop real matches (`\x41BCD` demanded "41BCD"). Now bail. Test checks chunk sets against real matches.
+Index freshness check itself (size + mtime ns) is unchanged: same-size same-mtime edits remain invisible (documented in AGENTS.md).
+
+### Narrowing coverage added
+Regex filters with character classes (`eng[ei]ne` -> "eng") and top-level alternation (`torque.*value|bolt load`) now narrow through the index (OR of chunk sets); groups still bail. Not measured separately: it only turns a full scan into a trigram lookup for those patterns, which the earlier numbers (63 ms narrow + 12 ms verify vs 330-900 ms scan) bound.
+
+### Ordering evaluation (the new `ordering` module)
+Method: exact matcher with the query's content words as whole-word filters (any-line), every document split into sentence lines, hit files ordered three ways, nDCG@10 averaged over queries with hits. Found order = corpus order (arbitrary, as completion order is), "hit lines" = most matched lines first.
+- Cranfield (225 queries): found 0.0096, hit lines 0.0970, relevance 0.3372
+- SciFact (300 queries): found 0.0083, hit lines 0.1320, relevance 0.6663
+- NFCorpus: found 0.1156, hit lines 0.2156, relevance 0.3337 (wins on all three sets)
+Score = BM25 over hit lines per filter (tf = lines matching the filter, idf over all files searched, line count as length) plus a filename-match bonus (0.6 x idf; not exercised by these corpora, whose file names are ids, so that weight is unevaluated and conservative). Adopted as an opt-in order; found order unchanged by default. Caveat: queries are natural-language questions turned into any-line filters, a harder case than a few hand-typed keywords; the gap to found order is the point, the absolute numbers are not an SLA. A hand-labelled engineering fixture was not built: the three public sets are labelled and larger.
+
+### Rejected / not done, and why
+- Word-distance proximity (`a NEAR/5 b`): the existing syntax is `[near N]` in LINES (`N = 0` means the same line) and phrases are plain substrings with spaces. Same-line adjacency is already `[near 0]`; a word-distance operator needs parser changes in app-tui (Filters field), which I was told not to touch, and would not change which files match in practice. Not built.
+- Phrase across a wrapped line break: not built; PDF line joining belongs to the extraction agent, and joining line pairs would change hit line numbers. Worth a look once extraction output is stable.
+- Dropping the Greek final-sigma / Turkish-i edge cases: noted only, no engineering corpus impact.
+- Folding in regex mode: a folded pattern would break regex syntax; ignored there by design.
+- Proximity bonus in the order score: not evaluated (the corpora have no filter proximity signal beyond co-occurrence), left out rather than guessed.
+
+## 2026-11-10: OCR and PDF indexing in search-core: findings, measurements, decisions
+
+Machine note: all timings were taken with a load average around 30 (other agents building), so absolute numbers are inflated; only before/after ratios taken in the same session mean anything.
+
+### Open issues from the log
+
+**#0127 page mapper.** The mapper does not reject the bundled 144-page `benches/data/xlarge.pdf`. A trace (the module compiled standalone) shows `Pdf::open` succeeds, all 7109 xref objects parse, and `page_by_stream_offset` returns 147 stream offsets. The previously ignored test `real_large_pdf_keeps_bounded_page_numbers` passes unchanged in release (1.8 s) and debug (13.8 s). I could not reproduce the reject; the likeliest cause is that extraction hit the test's 30 s budget in a loaded debug build, which cuts the text before page 144 (a hypothesis, not proven). The test is un-ignored and now gives extraction 300 s. Known real limit: the mapper only handles classic xref tables (no xref streams, object streams, `/Prev`, `/Encrypt`), so most PDFs written as 1.5+ with compressed object streams get line-only citations. Supporting them would mean parsing xref streams, PNG predictors and object streams; not done.
+
+**#0119 sticky OCR results.** Confirmed two real bugs. (1) `cache::compute_fingerprint` ignored `ocr_scanned_pdfs` and `pdf_timeout_seconds`, so a result cached without OCR was reused after switching OCR on. Both now enter the fingerprint (omitted at their defaults so old caches stay valid). (2) `failure_log` recorded "extractor produced no usable text" for a scanned PDF and `known_failure_reason` then skipped the file forever, even with OCR on. Failures now carry a context number (`failure_log::extraction_context`: OCR flag and PDF timeout); a mismatching context is not a known failure. Old databases get the new column on open. Tests: `fingerprint_changes_with_ocr_and_pdf_timeout_but_not_at_defaults`, `a_failure_is_not_sticky_across_an_ocr_or_timeout_change`, `a_database_without_the_context_column_is_upgraded_in_place`. Not fixed (other agent's file): `native_index` skips a PDF whose path, size and time are unchanged, so a PDF indexed without OCR stays text-less in the fast index after OCR is switched on; the index stamp would need the OCR flag.
+
+**#0116 recognition confidence.** Not obtainable. ocrs 0.12 `TextChar` is a character plus a box, the recogniser module is private, and the CTC decode drops the score. A real score needs a patched ocrs. Nothing in search-core or the report text calls detection probability "confidence"; the only user-visible wording is the pre-existing `low_confidence_pdf` flag (set for any OCR output and for the text-layer heuristic) and the report note "may be incomplete or misrecognized". No change made, negative result recorded.
+
+### Measurements
+
+Extraction (release, no OCR): `medium.pdf` 0.3 MB 0.09 s (3349 lines); `xlarge.pdf` 5.9 MB, 144 pages, 0.78 s (about 5 ms per page, 23391 lines); `large.pdf` 0 lines is correct (a form PDF; the `Tj` matches are inside font programs); `xlarge-scanned.pdf` 38.6 MB 0.84 s, 0 lines without OCR.
+
+OCR on `xlarge-scanned.pdf` (100 pages, 2479x3509 raw RGB): before my change a 600 s timeout run produced 1290 lines because every page image was decoded first (about 26 MB each held at once, no progress until the first page finished). Now 8 pages in 46 s under load with the first progress call at 0.14 s and the longest gap one page (8 s). A second run over the same file recognised the first 8 pages from the cache instantly and continued.
+
+Cache: generated 600 dpi page, cold 34.7 s, warm 0.09 s; 300 dpi page 31.2 s to 0.07 s.
+
+Preprocessing (generated scans with known text, word recall against ground truth, same engine): full size / longest side capped at 2480 -- clean 300 dpi 0.997 / 0.998; noisy small type 0.966 / 0.981; 200 dpi 0.994 / 0.994; 600 dpi 0.974 / 0.997; 150 dpi 0.965 / 0.965. Capped at 1800: clean 0.997, noisy 0.981, 200 dpi 0.999, other pages not finished, speed not measured reliably under load; not adopted. Adopted the 2480 cap (images already below it are untouched, so the real 100-page fixture is unchanged).
+
+De-hyphenation: `xlarge.pdf` has 2315 lines ending in a letter and a hyphen followed by a lowercase line; 1495 were repaired (the rest are real compounds such as pre-training/in-context, or words never written whole elsewhere in the document). Samples checked by eye: espe-/cially, anno-/tations, Trans-/formers all correct; compounds kept. A first version left a stray ". " at the start of the next line; closing punctuation now moves with the fragment.
+
+### Added
+
+- `line_quality::dehyphenate` (document-vocabulary rule, page-boundary safe), versions bumped: `cache::EXTRACTION_VERSION` 3, `native_index::INDEX_SEMANTIC_VERSION` 5, `semantic_index::CITATION_VERSION` 4.
+- Lazy page-by-page OCR with per-page timeout and progress, per-image OCR cache (memory, plus disk when `SearchSettings::ocr_cache_dir` is set; wired in the orchestrator via `extraction::configure_ocr_cache`), image cap 2480 px.
+- Fingerprint and failure-log context for OCR and PDF timeout.
+- Robustness test for truncated, encrypted-looking and stream-flooded PDFs (all finish; no hang found, so no code change).
+- Examples `pdf_extract_bench` (timing, progress behaviour, `--ocr`, `--cache=DIR`, `--timeout=N`) and `pdf_dump` / `pdf_dump_ocr`.
+
+### Not done, with reasons
+
+- OCR only when the whole text layer is empty; PDFs mixing text pages and scanned pages are not OCR'd. A per-page decision needs a page map for non-classic PDFs; no evidence gathered.
+- Column reading order: no fixture or measurement; the extractor emits text in content-stream order.
+- Encrypted PDFs report the generic "no usable text" reason; a distinct reason needs a new `ExtractLinesError` variant touching other agents' code.
+- Hashing a whole file (rather than an image stream) for the OCR cache: the stream hash already skips decoding and recognition, which are the costs.

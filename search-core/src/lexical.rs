@@ -50,8 +50,8 @@ impl Default for LexicalConfig {
 }
 
 impl LexicalConfig {
-    /// Reciprocal-rank fusion with the keyword rank weighted 2. Kept for ranking the short lines of the Search help
-    /// (Ask), whose retrieval was validated with it and is not covered by the benchmarks.
+    /// Reciprocal-rank fusion with the keyword rank weighted 2. Kept as the benchmark baseline (`retrieval_eval` variants)
+    /// and for the older fusion settings; search itself uses `default`.
     pub fn rrf() -> Self {
         Self { stem: true, weight: LEXICAL_WEIGHT, rrf_k: RRF_K, fusion: Fusion::Rrf, bm25_k1: BM25_K1, bm25_b: BM25_B }
     }

@@ -12,8 +12,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use search_ml::{Embedding, MlError};
 
 const EMBEDDING_VERSION: i64 = search_ml::EMBEDDING_MODEL_VERSION;
-/// Per-PDF stamp: 1 = page citations, 2 = line quality repair and noise filter.
-const CITATION_VERSION: i64 = 3;
+/// Per-PDF stamp: 1 = page citations, 2 = line quality repair and noise filter, 4 = hyphen-break repair.
+const CITATION_VERSION: i64 = 4;
 const EMBEDDING_DIMENSIONS: usize = 384;
 const CHUNK_CHARS: usize = 800;
 const CHUNK_TOKEN_BUDGET: usize = 240;
@@ -184,7 +184,11 @@ impl SemanticIndex {
         )?;
         ensure_column(&tx, "semantic_chunks", "page", "INTEGER")?;
         ensure_column(&tx, "semantic_documents", "content_hash", "BLOB")?;
+        tx.execute_batch("CREATE INDEX IF NOT EXISTS semantic_documents_hash ON semantic_documents(content_hash);")?;
         tx.commit()?;
+        // SQLite ignores this pragma inside a transaction, so it must be set here: replacing or removing a document
+        // relies on the cascade to drop its chunks.
+        conn.pragma_update(None, "foreign_keys", true)?;
         let version: Option<i64> = conn
             .query_row(
                 "SELECT value FROM semantic_meta WHERE key = 'embedding_version'",
@@ -228,6 +232,18 @@ impl SemanticIndex {
         lines: &[String],
         pages: Option<&[Option<std::num::NonZeroU32>]>,
     ) -> Result<usize, String> {
+        self.index_document_counting(path, modified, size, lines, pages).map(|(chunks, _)| chunks)
+    }
+
+    /// Like `index_document_with_pages`; also returns how many chunks went through the embedding model.
+    fn index_document_counting(
+        &self,
+        path: &str,
+        modified: i64,
+        size: i64,
+        lines: &[String],
+        pages: Option<&[Option<std::num::NonZeroU32>]>,
+    ) -> Result<(usize, usize), String> {
         let pages = pages.filter(|pages| pages.len() == lines.len());
         let citation_version = if Path::new(path)
             .extension()
@@ -267,14 +283,18 @@ impl SemanticIndex {
                         [path],
                         |row| row.get::<_, i64>(0),
                     )
-                    .map(|count| count as usize)
+                    .map(|count| (count as usize, 0))
                     .map_err(|error| error.to_string());
             }
         }
         // A file that grew or was edited in one place still holds most of its old text: chunks whose text is
         // unchanged keep their stored vectors and only the new ones go through the model.
-        let known = self.stored_chunk_embeddings(path)?;
-        let (chunks, _) = embed_lines_with_pages(lines, pages, &known).map_err(|error| error.to_string())?;
+        let mut known = self.stored_chunk_embeddings(path)?;
+        // The same text under another path (a copy, a renamed file, a second revision folder) was embedded already.
+        if let Some(donor) = self.donor_path(path, &hash, citation_version)? {
+            known.extend(self.stored_chunk_embeddings(&donor)?);
+        }
+        let (chunks, embedded) = embed_lines_with_pages(lines, pages, &known).map_err(|error| error.to_string())?;
         let mut conn = self
             .conn
             .lock()
@@ -296,7 +316,22 @@ impl SemanticIndex {
         }
         bump_generation(&tx).map_err(|error| error.to_string())?;
         tx.commit().map_err(|error| error.to_string())?;
-        Ok(chunks.len())
+        Ok((chunks.len(), embedded))
+    }
+
+    /// Another indexed document made from exactly the same extracted text (and pages), if any.
+    fn donor_path(&self, path: &str, hash: &[u8], citation_version: i64) -> Result<Option<String>, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| "semantic index lock poisoned".to_string())?;
+        conn.query_row(
+            "SELECT path FROM semantic_documents WHERE content_hash=?1 AND citation_version=?2 AND path<>?3 LIMIT 1",
+            params![hash, citation_version, path],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())
     }
 
     /// The embeddings stored for `path`, by chunk text.
@@ -439,6 +474,26 @@ impl SemanticIndex {
             return Ok(hits);
         }
         self.search_streaming(query, embedding, limit, None, None, hybrid, config)
+    }
+
+    /// Every chunk's raw scores for `query` (similarity, BM25 over all chunks, length, place in its file), unranked.
+    /// For measuring ranking ideas offline on a benchmark (`examples/support/ranking_experiments.rs`); no extension or
+    /// freshness filtering. `None` when the index is too large for a snapshot.
+    pub fn rank_features(&self, query: &str, stem: bool) -> Result<Option<crate::ranking::FeatureSet>, String> {
+        let Some(embedding) = search_ml::embed_queries(&[query]).map_err(|e| e.to_string())?.pop() else {
+            return Err("semantic model returned no embedding".into());
+        };
+        let conn = self.conn.lock().map_err(|_| "semantic index lock poisoned".to_string())?;
+        let generation = generation(&conn)?;
+        let snapshot = match crate::semantic_cache::cached(&self.path, stem, generation) {
+            Some(snapshot) => snapshot,
+            None => {
+                let snapshot = std::sync::Arc::new(crate::semantic_cache::Snapshot::build(&conn, generation, stem, EMBEDDING_DIMENSIONS)?);
+                crate::semantic_cache::store(&self.path, stem, snapshot.clone());
+                snapshot
+            }
+        };
+        Ok(crate::ranking::feature_set(&snapshot, embedding.values(), query, stem))
     }
 
     fn search_filtered(
@@ -1289,6 +1344,83 @@ mod tests {
         let (grown, calls) = embed_lines_with_pages(&lines, None, &known).unwrap();
         assert!(calls >= 1 && calls < grown.len(), "{calls} of {}", grown.len());
         assert_eq!(grown[0].embedding.values(), all[0].embedding.values());
+    }
+
+    fn chunk_rows(index: &SemanticIndex, path: &str) -> i64 {
+        index
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM semantic_chunks WHERE path=?1", [path], |row| row.get(0))
+            .unwrap()
+    }
+
+    fn log_lines(count: usize) -> Vec<String> {
+        (0..count).map(|i| format!("Log entry {i}: torque check passed at station {i}.")).collect()
+    }
+
+    /// Re-indexing embeds only what changed; a copy under another path embeds nothing; replacing or removing a
+    /// document leaves no chunk rows behind.
+    #[test]
+    fn incremental_updates_embed_only_changes_and_leave_no_orphan_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = SemanticIndex::open(&dir.path().join("semantic.sqlite")).unwrap();
+        let mut lines = log_lines(40);
+        let (total, embedded) = index.index_document_counting("a.txt", 1, 100, &lines, None).unwrap();
+        assert!(total > 1 && embedded == total);
+        // Same text, new time and size: stamp only.
+        assert_eq!(index.index_document_counting("a.txt", 2, 101, &lines, None).unwrap(), (total, 0));
+        assert!(index.is_current("a.txt", 2, 101).unwrap() && !index.is_current("a.txt", 1, 100).unwrap());
+        // A line appended: the unchanged leading chunks keep their vectors.
+        lines.push("Log entry 40: new line at the end.".into());
+        let (grown, embedded) = index.index_document_counting("a.txt", 3, 150, &lines, None).unwrap();
+        assert!(embedded >= 1 && embedded < grown, "{embedded} of {grown}");
+        assert_eq!(chunk_rows(&index, "a.txt"), grown as i64);
+        // The same text under another path (copy or rename): no model call.
+        let (copied, embedded) = index.index_document_counting("copy/b.txt", 3, 150, &lines, None).unwrap();
+        assert_eq!((copied, embedded), (grown, 0));
+        // Replaced by shorter text: the old rows are gone, not merged.
+        let (short, _) = index.index_document_counting("a.txt", 4, 20, &lines[..3], None).unwrap();
+        assert_eq!(chunk_rows(&index, "a.txt"), short as i64);
+        // Deleted source files lose their rows; live ones keep theirs.
+        let live = dir.path().join("live.txt");
+        std::fs::write(&live, "x").unwrap();
+        index.index_document(&live.to_string_lossy(), 1, 1, &lines[..3]).unwrap();
+        assert_eq!(index.remove_orphaned_documents().unwrap(), 2);
+        assert_eq!(chunk_rows(&index, "a.txt") + chunk_rows(&index, "copy/b.txt"), 0);
+        assert!(chunk_rows(&index, &live.to_string_lossy()) > 0);
+        let stray: i64 = index
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM semantic_chunks WHERE path NOT IN (SELECT path FROM semantic_documents)", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(stray, 0);
+    }
+
+    /// A build that stops half way keeps the finished documents; the next run skips them and embeds only the rest.
+    #[test]
+    fn an_interrupted_build_resumes_without_redoing_finished_documents() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("semantic.sqlite");
+        let docs: Vec<(String, Vec<String>)> =
+            (0..6).map(|n| (format!("doc{n}.txt"), vec![format!("Document {n} describes fastener preload case {n}.")])).collect();
+        {
+            let index = SemanticIndex::open(&path).unwrap();
+            for (name, lines) in &docs[..3] {
+                index.index_document(name, 1, 10, lines).unwrap();
+            }
+        } // process ends here
+        let index = SemanticIndex::open(&path).unwrap();
+        let mut embedded = 0;
+        for (name, lines) in &docs {
+            if index.is_current(name, 1, 10).unwrap() {
+                continue;
+            }
+            embedded += index.index_document_counting(name, 1, 10, lines, None).unwrap().1;
+        }
+        assert_eq!(embedded, 3);
+        assert!(docs.iter().all(|(name, _)| index.is_current(name, 1, 10).unwrap()));
     }
 
     #[test]
