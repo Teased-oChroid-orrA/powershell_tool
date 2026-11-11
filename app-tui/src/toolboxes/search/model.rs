@@ -112,7 +112,7 @@ impl Default for SearchToolConfig {
             export_csv: false,
             export_json: false,
 
-            parallel: false,
+            parallel: true,
             throttle_limit: search_core::models::default_throttle_limit(),
             heavy_throttle_limit: search_core::models::default_heavy_throttle_limit(),
             cache_file_path: String::new(),

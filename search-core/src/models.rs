@@ -227,7 +227,7 @@ impl Default for SearchSettings {
             export_csv: false,
             export_json: false,
             open_report_when_done: false,
-            parallel: false,
+            parallel: true,
             throttle_limit: default_throttle_limit(),
             heavy_throttle_limit: default_heavy_throttle_limit(),
             cache_file_path: None,
