@@ -29,6 +29,7 @@ Plain Rust library, zero GUI dependency — `cargo test -p search-core` must bui
 | Persistent extraction-failure log (SQLite) | `src/failure_log.rs::FailureLog` |
 | HTML/CSV/JSON/JSONL report generation | `src/report.rs` (`build_html_report`, `build_export_rows`, `write_csv`/`write_json`/`write_jsonl`) |
 | Parallel search driver, progress/in-flight status | `src/orchestrator.rs` (`run`, `run_candidates`, `InFlightMap`, `ticker_handle`) |
+| Machine-level catalog of roots/files, cross-root fast search (derived, additive; single-root search never uses it) | `src/catalog.rs` (`Catalog::register_root`, `sync_root`, `search_all`, `duplicate_groups`) |
 | Fast re-search index policy (folder placement, auto-exclude) | `src/native_index.rs` (`index_directory`, `ensure_index_folder_excluded`, `build_or_update_corpus_index`) |
 | Optional neural suggestion ranking over caller-provided candidates | `src/neural_search.rs` (feature `neural-search`; model execution is in `search-ml`) |
 | Natural-language Find orchestration (per-condition hybrid retrieval, model judge with verified quote, weakest-condition label, negation as exclusion) | `src/nl_find.rs` (feature `nl-find`; generic over `search_llm::ConditionModel`, retrieval is a closure; tests use a fake model) |
